@@ -15,42 +15,45 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from tests.conftest import FakeRedis
 from src.services import storage  # noqa: E402
 
 
 class TestMarkHot:
+    """R05 changed HOW the flag is written — a plain `setex` became a compare-and-swap `eval`,
+    so a concurrent ingest cannot be clobbered — but not WHAT ends up stored. These assert on
+    the stored value rather than on the Redis verb, which is what actually matters and which
+    survives the next change to the write mechanism."""
+
     def test_writes_a_redis_key_with_the_right_ttl_and_payload(self, monkeypatch):
-        fake_redis = MagicMock()
+        fake_redis = FakeRedis()
         monkeypatch.setattr(storage, "get_redis", lambda: fake_redis)
         storage._mark_hot("AAPL", "Apple issues profit warning", "negative")
-        fake_redis.setex.assert_called_once()
-        args, _ = fake_redis.setex.call_args
-        key, ttl, payload = args
-        assert key == "stockai:hot_news:AAPL"
-        assert ttl == storage._HOT_NEWS_TTL_SECONDS
-        parsed = json.loads(payload)
+        assert "stockai:hot_news:AAPL" in fake_redis.store
+        assert fake_redis.ttls["stockai:hot_news:AAPL"] == storage._HOT_NEWS_TTL_SECONDS
+        parsed = json.loads(fake_redis.store["stockai:hot_news:AAPL"])
         assert parsed["headline"] == "Apple issues profit warning"
         assert parsed["sentiment_label"] == "negative"
 
     def test_uppercases_the_symbol_in_the_key(self, monkeypatch):
-        fake_redis = MagicMock()
+        fake_redis = FakeRedis()
         monkeypatch.setattr(storage, "get_redis", lambda: fake_redis)
         storage._mark_hot("aapl", "headline", "negative")
-        key = fake_redis.setex.call_args[0][0]
-        assert key == "stockai:hot_news:AAPL"
+        assert list(fake_redis.store) == ["stockai:hot_news:AAPL"]
 
     def test_missing_sentiment_label_defaults_to_neutral_in_payload(self, monkeypatch):
-        fake_redis = MagicMock()
+        fake_redis = FakeRedis()
         monkeypatch.setattr(storage, "get_redis", lambda: fake_redis)
         storage._mark_hot("AAPL", "headline", None)
-        payload = json.loads(fake_redis.setex.call_args[0][2])
+        payload = json.loads(fake_redis.store["stockai:hot_news:AAPL"])
         assert payload["sentiment_label"] == "neutral"
 
     def test_redis_failure_does_not_raise(self, monkeypatch):
         fake_redis = MagicMock()
-        fake_redis.setex.side_effect = RuntimeError("redis down")
+        fake_redis.get.side_effect = RuntimeError("redis down")
         monkeypatch.setattr(storage, "get_redis", lambda: fake_redis)
         storage._mark_hot("AAPL", "headline", "negative")  # must not raise
+        assert not fake_redis.eval.called, "a failed read must not be followed by a blind write"
 
 
 class TestIsHot:

@@ -56,20 +56,7 @@ def _item(headline, url, symbols):
     }
 
 
-class _FakeRedis:
-    """A minimal in-memory stand-in for get_redis() — real setex/get/delete semantics,
-    no TTL enforcement needed since these tests never sleep past one."""
-    def __init__(self):
-        self.store: dict[str, str] = {}
-
-    def setex(self, key, ttl, value):
-        self.store[key] = value
-
-    def get(self, key):
-        return self.store.get(key)
-
-    def delete(self, key):
-        self.store.pop(key, None)
+from tests.conftest import FakeRedis as _FakeRedis  # noqa: E402  (R05: one shared fake, with `eval`)
 
 
 class TestMarkHotStampsARealTimestamp:
@@ -100,6 +87,9 @@ class TestClearHotAndCurrentHotSentiment:
         with patch.object(storage, "get_redis", return_value=fake_redis):
             storage._mark_hot("NVDA", "bad news", "negative")
             assert "stockai:hot_news:NVDA" in fake_redis.store
+            # No expect_raw: the caller did not read first, so there is nothing to compare
+            # against and an unconditional delete is correct. The compare-and-delete path has
+            # its own coverage in test_r05_hot_flag_overwrite.py.
             storage._clear_hot("NVDA")
             assert "stockai:hot_news:NVDA" not in fake_redis.store
 
@@ -116,17 +106,26 @@ class TestClearHotAndCurrentHotSentiment:
 
 
 class TestPersistNewsItemsClearsStaleNegativeFlags:
-    def test_a_positive_material_followup_still_overwrites_via_mark_hot_not_clear(self):
-        """A genuinely material positive follow-up already goes through _mark_hot's own
-        overwrite (it's still material, non-macro) — _clear_hot must NOT also fire for the
-        same item, since that would be a redundant/confusing double-write."""
+    def test_a_positive_material_followup_is_routed_to_mark_hot_not_clear(self):
+        """A material positive follow-up is routed to _mark_hot, not _clear_hot — one write
+        path per item, never both.
+
+        RENAMED under R05 (2026-09-24). This was
+        `test_a_positive_material_followup_still_overwrites_via_mark_hot_not_clear`, and the
+        word "overwrites" asserted something the follow-up audit then classified as the defect:
+        _mark_hot() replaced an unresolved negative flag unconditionally, so a positive story
+        removed a risk brake by overwriting it rather than clearing it — going around the DA-09
+        guard entirely. The ROUTING this test actually exercises is still correct and still
+        worth pinning; whether the overwrite is permitted is now _mark_hot()'s own decision and
+        is covered in test_r05_hot_flag_overwrite.py. Only the name and docstring changed."""
         with patch.object(storage, "SessionLocal", _SessionLocal), \
              patch.object(storage, "RealtimeNewsItem", _models.RealtimeNewsItem), \
              patch.object(storage, "get_admin_ai_key", return_value="fake-key"), \
              patch.object(storage, "classify_in_batches") as mock_classify, \
              patch.object(storage, "_mark_hot") as mock_mark_hot, \
              patch.object(storage, "_clear_hot") as mock_clear_hot, \
-             patch.object(storage, "_current_hot_sentiment", return_value="negative"):
+             patch.object(storage, "_current_hot_raw",
+                         return_value=json.dumps({"sentiment_label": "negative"})):
             mock_classify.return_value = [
                 {"sentiment_score": 80, "sentiment_label": "positive", "is_material": True, "category": "earnings"},
             ]
@@ -134,7 +133,10 @@ class TestPersistNewsItemsClearsStaleNegativeFlags:
                 [_item("Apple beats on earnings", "https://x/clear1", ["AAPL"])],
                 source="pr_newswire", symbol_mode="tagged",
             )
-            mock_mark_hot.assert_called_once_with("AAPL", "Apple beats on earnings", "positive")
+            mock_mark_hot.assert_called_once()
+            assert mock_mark_hot.call_args[0][:3] == ("AAPL", "Apple beats on earnings", "positive")
+            # R05: the publication time must be forwarded, or _mark_hot cannot judge recency.
+            assert mock_mark_hot.call_args[0][3] is not None
             mock_clear_hot.assert_not_called()
 
     def test_a_non_material_followup_clears_an_existing_negative_flag(self):
@@ -148,8 +150,7 @@ class TestPersistNewsItemsClearsStaleNegativeFlags:
              patch.object(storage, "classify_in_batches") as mock_classify, \
              patch.object(storage, "_mark_hot") as mock_mark_hot, \
              patch.object(storage, "_clear_hot") as mock_clear_hot, \
-             patch.object(storage, "_current_hot_sentiment", return_value="negative"), \
-             patch.object(storage, "_current_hot_payload", return_value={
+             patch.object(storage, "_current_hot_raw", return_value=json.dumps({
                  # DA-09: the clear path now also checks that the incoming story is NEWER than
                  # the flagged event (an old article ingested late must not clear a fresh
                  # brake). This test's item is published "now", so the flagged event is dated
@@ -157,7 +158,7 @@ class TestPersistNewsItemsClearsStaleNegativeFlags:
                  "headline": "Apple slides on supply worries",
                  "sentiment_label": "negative",
                  "ts": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),
-             }):
+             })):
             mock_classify.return_value = [
                 {"sentiment_score": 55, "sentiment_label": "neutral", "is_material": False, "category": "other"},
             ]
@@ -166,7 +167,10 @@ class TestPersistNewsItemsClearsStaleNegativeFlags:
                 source="pr_newswire", symbol_mode="tagged",
             )
             mock_mark_hot.assert_not_called()
-            mock_clear_hot.assert_called_once_with("AAPL")
+            # R05: the delete is conditioned on the exact value the guard judged.
+            mock_clear_hot.assert_called_once()
+            assert mock_clear_hot.call_args[0][0] == "AAPL"
+            assert mock_clear_hot.call_args.kwargs["expect_raw"] is not None
 
     def test_a_followup_does_not_clear_when_the_current_flag_is_not_negative(self):
         """No wasted Redis DELETE for a symbol whose current flag is already
@@ -178,7 +182,8 @@ class TestPersistNewsItemsClearsStaleNegativeFlags:
              patch.object(storage, "classify_in_batches") as mock_classify, \
              patch.object(storage, "_mark_hot") as mock_mark_hot, \
              patch.object(storage, "_clear_hot") as mock_clear_hot, \
-             patch.object(storage, "_current_hot_sentiment", return_value="positive"):
+             patch.object(storage, "_current_hot_raw",
+                         return_value=json.dumps({"sentiment_label": "positive"})):
             mock_classify.return_value = [
                 {"sentiment_score": 55, "sentiment_label": "neutral", "is_material": False, "category": "other"},
             ]

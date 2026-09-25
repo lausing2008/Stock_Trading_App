@@ -33,28 +33,110 @@ _HOT_NEWS_TTL_SECONDS = 2 * 3600
 _HOT_NEWS_KEY_PREFIX = "stockai:hot_news:"
 
 
-def _mark_hot(symbol: str, headline: str, sentiment_label: str | None) -> None:
-    # AUD264-HOTNEWS-FLAG-STALE-NO-CLEAR-PATH: the payload previously carried no timestamp at
-    # all, so signal-engine's reader could not tell a 2-minute-old headline from a
-    # 119-minute-old one — the compression applied was a flat, binary all-or-nothing for the
-    # full 2h window. Adding `ts` (a real ISO timestamp, not just relying on the Redis key's
-    # own TTL) lets the reader compute real age and decay the compression's strength with it.
+# R05 (2026-09-24 follow-up audit): write the flag only if nobody changed it since we read it.
+# The decision below is read-check-write, and without a compare the check can be made against a
+# value a concurrent ingest has already replaced — silently discarding a newer adverse event.
+_HOT_SET_IF_UNCHANGED_LUA = """
+local cur = redis.call("GET", KEYS[1])
+if (cur == false and ARGV[1] == "") or (cur == ARGV[1]) then
+    redis.call("SET", KEYS[1], ARGV[2], "EX", ARGV[3])
+    return 1
+end
+return 0
+"""
+
+
+def _mark_hot(symbol: str, headline: str, sentiment_label: str | None,
+              published_at=None) -> None:
+    """Set (or refresh) the hot-news flag for a symbol.
+
+    AUD264-HOTNEWS-FLAG-STALE-NO-CLEAR-PATH: the payload carries `ts` so signal-engine's reader
+    can decay the compression with real age rather than applying a flat binary for the full 2h.
+
+    R05 — TWO DEFECTS FIXED HERE.
+
+    1. A POSITIVE STORY COULD SILENTLY OVERWRITE AN UNRESOLVED NEGATIVE EVENT. Every material,
+       non-macro classification called this function directly, so it replaced whatever was
+       stored without consulting anything — the recency guard added for DA-09 sits on the CLEAR
+       path and this route went around it entirely. An older material-positive article ingested
+       late therefore removed an active negative flag just as effectively as clearing it, and
+       nothing recorded that it had happened. Overwriting a negative flag with a non-negative
+       one is a CLEAR decision wearing a different name, so it now has to satisfy the same test.
+    2. `ts` WAS INGESTION TIME COMPARED AGAINST PUBLICATION TIME. The guard compares a
+       follow-up's `published_at` to this field; storing `datetime.now()` in it meant comparing
+       two different clocks, and a valid correction published after the adverse article but
+       before its delayed ingestion was rejected as "older". Both are now stored, and the guard
+       prefers publication-to-publication.
+
+    STILL NOT CLOSED, and the audit says so: an unrelated newer POSITIVE story can still clear
+    an unresolved event, because nothing links a story to the event it supposedly resolves.
+    That needs the event table — ids, materiality, supersession, expiry — not another guard.
+    """
+    key = f"{_HOT_NEWS_KEY_PREFIX}{symbol.upper()}"
+    incoming = (sentiment_label or "neutral").lower()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    pub_iso = None
+    if published_at is not None:
+        try:
+            pub_iso = published_at.isoformat() if hasattr(published_at, "isoformat") else str(published_at)
+        except Exception:
+            pub_iso = None
+
+    payload = json.dumps({
+        "headline": headline,
+        "sentiment_label": incoming,
+        # Ingestion time — what this platform knew, and when. Kept under its original name so
+        # signal-engine's age-decay reader is unaffected.
+        "ts": now_iso,
+        # R05: when the story was PUBLISHED, so a later comparison is like-for-like.
+        "published_at": pub_iso,
+        "ingested_at": now_iso,
+    })
+
     try:
         r = get_redis()
-        r.setex(
-            f"{_HOT_NEWS_KEY_PREFIX}{symbol.upper()}",
-            _HOT_NEWS_TTL_SECONDS,
-            json.dumps({
-                "headline": headline,
-                "sentiment_label": sentiment_label or "neutral",
-                "ts": datetime.now(timezone.utc).isoformat(),
-            }),
-        )
+        # Bounded optimistic-concurrency loop. Re-deciding on a lost race is NOT optional: the
+        # alternative — dropping the write — loses a material NEGATIVE brake whenever an
+        # unrelated story happens to land in the same instant, which is the very outcome this
+        # function exists to prevent. Re-read, re-judge against what is actually there now, and
+        # write again. Three attempts, then give up rather than spin.
+        for _attempt in range(3):
+            raw_prev = r.get(key)
+            prev = _parse_hot(raw_prev)
+
+            if (prev and (prev.get("sentiment_label") or "").lower() == "negative"
+                    and incoming != "negative"):
+                # R05: replacing a negative flag with a non-negative one IS a clear. Same test.
+                if not _may_clear_negative_flag(symbol, {"sentiment_label": incoming},
+                                                published_at, flagged=prev):
+                    log.info("news_storage.hot_flag_overwrite_refused", symbol=symbol,
+                             incoming=incoming, headline=headline[:120],
+                             note="non-negative story may not replace an unresolved negative event")
+                    return
+
+            if r.eval(_HOT_SET_IF_UNCHANGED_LUA, 1, key,
+                      raw_prev if raw_prev is not None else "",
+                      payload, _HOT_NEWS_TTL_SECONDS):
+                return
+            log.info("news_storage.hot_flag_write_retry", symbol=symbol, attempt=_attempt + 1)
+        log.warning("news_storage.hot_flag_write_gave_up", symbol=symbol, sentiment=incoming)
     except Exception as exc:
         log.warning("news_storage.hot_flag_failed", symbol=symbol, error=str(exc))
 
 
-def _clear_hot(symbol: str) -> None:
+# R05: delete the flag ONLY if it is still the exact value the guard was allowed to judge. A
+# plain DEL here erases whatever is present at the moment it runs — including a NEWER adverse
+# event written between the guard's read and this call, which would silently drop a real brake.
+_HOT_DEL_IF_UNCHANGED_LUA = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    redis.call("DEL", KEYS[1])
+    return 1
+end
+return 0
+"""
+
+
+def _clear_hot(symbol: str, expect_raw: str | bytes | None = None) -> None:
     """AUD264-HOTNEWS-FLAG-STALE-NO-CLEAR-PATH: no delete path existed anywhere — a stale
     NEGATIVE flag could only ever be overwritten by another MATERIAL follow-up (never cleared
     by a genuine, non-material correction/retraction), and a positive material follow-up for
@@ -67,8 +149,17 @@ def _clear_hot(symbol: str) -> None:
     non-material follow-up) actively clears the stale warning instead of leaving it to silently
     ride out its full 2h TTL regardless of what's actually happened since.
     """
+    key = f"{_HOT_NEWS_KEY_PREFIX}{symbol.upper()}"
     try:
-        get_redis().delete(f"{_HOT_NEWS_KEY_PREFIX}{symbol.upper()}")
+        r = get_redis()
+        if expect_raw is None:
+            # No observed value to compare against — the caller did not read first, so there is
+            # nothing this could be racing with from its own point of view.
+            r.delete(key)
+            return
+        if not r.eval(_HOT_DEL_IF_UNCHANGED_LUA, 1, key, expect_raw):
+            log.info("news_storage.hot_flag_clear_raced", symbol=symbol,
+                     note="flag changed after the guard read it; the newer flag was kept")
     except Exception as exc:
         log.warning("news_storage.hot_flag_clear_failed", symbol=symbol, error=str(exc))
 
@@ -78,19 +169,31 @@ def _current_hot_sentiment(symbol: str) -> str | None:
     return payload.get("sentiment_label") if payload else None
 
 
-def _current_hot_payload(symbol: str) -> dict | None:
-    """The whole stored flag, not just its label — DA-09 needs the flagged event's timestamp."""
+def _current_hot_raw(symbol: str) -> str | bytes | None:
+    """The flag's stored BYTES. R05 needs the exact value, not just its parse, so the clear can
+    be conditioned on nothing having replaced it since."""
     try:
-        raw = get_redis().get(f"{_HOT_NEWS_KEY_PREFIX}{symbol.upper()}")
-        if not raw:
-            return None
+        return get_redis().get(f"{_HOT_NEWS_KEY_PREFIX}{symbol.upper()}")
+    except Exception:
+        return None
+
+
+def _parse_hot(raw) -> dict | None:
+    if not raw:
+        return None
+    try:
         payload = json.loads(raw)
         return payload if isinstance(payload, dict) else None
     except Exception:
         return None
 
 
-def _may_clear_negative_flag(symbol: str, cls: dict, published_at) -> bool:
+def _current_hot_payload(symbol: str) -> dict | None:
+    """The whole stored flag, not just its label — DA-09 needs the flagged event's timestamp."""
+    return _parse_hot(_current_hot_raw(symbol))
+
+
+def _may_clear_negative_flag(symbol: str, cls: dict, published_at, flagged: dict | None = None) -> bool:
     """DA-09 (2026-09-24): whether this story is evidence an adverse event has resolved.
 
     The old condition was "any inserted, classified, non-macro story for a symbol whose flag is
@@ -114,10 +217,18 @@ def _may_clear_negative_flag(symbol: str, cls: dict, published_at) -> bool:
     """
     if (cls.get("sentiment_label") or "neutral") == "negative":
         return False
-    flagged = _current_hot_payload(symbol)
+    # R05: the caller may pass the flag it already read, so the guard and the compare-and-delete
+    # judge the SAME value. Reading again here would reopen the race it is meant to close.
+    if flagged is None:
+        flagged = _current_hot_payload(symbol)
     if not flagged:
         return False
-    flagged_ts = flagged.get("ts")
+    # R05: COMPARE LIKE WITH LIKE. This originally read the flag's `ts`, which _mark_hot() wrote
+    # as datetime.now() — INGESTION time — and compared it against the follow-up's PUBLICATION
+    # time. Since ingestion always trails publication, a correction genuinely published after the
+    # adverse article was still rejected as "older" whenever the adverse article was ingested
+    # late. Prefer the flagged story's own publication time now that it is stored.
+    flagged_ts = flagged.get("published_at") or flagged.get("ts")
     if not flagged_ts or not published_at:
         return False
     try:
@@ -291,7 +402,8 @@ def persist_news_items(
                     # exists (classify.py) and is already persisted (category, just above) —
                     # this was previously the one place that computed it but never read it back.
                     if sym and cls and cls["is_material"] and cls["category"] != "macro":
-                        _mark_hot(sym, headline, cls["sentiment_label"])
+                        _mark_hot(sym, headline, cls["sentiment_label"],
+                                  raw.get("published_at"))
                     # AUD264-HOTNEWS-FLAG-STALE-NO-CLEAR-PATH: any OTHER new, real,
                     # COMPANY-SPECIFIC classification for this symbol — positive, neutral, or
                     # simply non-material — is genuine evidence the situation has moved on and
@@ -301,14 +413,24 @@ def persist_news_items(
                     # lines above): an index-level story is not evidence ABOUT this specific
                     # company either way, so it must not clear a company-specific flag any
                     # more than it should be allowed to set one.
-                    elif (
-                        sym and cls and cls["category"] != "macro"
-                        and _current_hot_sentiment(sym) == "negative"
-                        # DA-09: an unrelated, still-negative, non-material story used to clear
-                        # a material-negative brake here. See _may_clear_negative_flag().
-                        and _may_clear_negative_flag(sym, cls, raw.get("published_at"))
-                    ):
-                        _clear_hot(sym)
+                    elif sym and cls and cls["category"] != "macro":
+                        # R05: ONE read serves both the guard and the delete. Previously
+                        # `_current_hot_sentiment()` read the flag, `_may_clear_negative_flag()`
+                        # read it again, and `_clear_hot()` then deleted whatever was present —
+                        # three separate looks at a value another ingest can replace in between,
+                        # so a newer adverse event arriving mid-decision was erased by a verdict
+                        # that had never seen it. Read once, judge that value, and delete only
+                        # if it is still the one that was judged.
+                        _prev_raw = _current_hot_raw(sym)
+                        _prev = _parse_hot(_prev_raw)
+                        if (
+                            (_prev or {}).get("sentiment_label") == "negative"
+                            # DA-09: an unrelated, still-negative, non-material story used to
+                            # clear a material-negative brake here.
+                            and _may_clear_negative_flag(
+                                sym, cls, raw.get("published_at"), flagged=_prev)
+                        ):
+                            _clear_hot(sym, expect_raw=_prev_raw)
         session.commit()
 
     log.info(

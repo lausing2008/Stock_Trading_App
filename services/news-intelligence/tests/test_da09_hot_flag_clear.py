@@ -158,10 +158,26 @@ def test_the_clear_path_consults_the_guard():
     import re
 
     src = inspect.getsource(S.persist_news_items)
-    clear = src[src.index("_clear_hot(sym)") - 900:src.index("_clear_hot(sym)")]
+    call = "_clear_hot(sym, expect_raw="
+    clear = src[src.index(call) - 900:src.index(call)]
     assert "_may_clear_negative_flag(" in clear, "the clear branch no longer consults the guard"
     # It must GATE the clear, not merely be mentioned nearby.
     assert re.search(r"and\s+_may_clear_negative_flag\(", clear)
+
+
+def test_the_guard_judges_the_same_value_the_delete_is_conditioned_on():
+    """R05. The branch used to read the flag three times — `_current_hot_sentiment()`,
+    then `_may_clear_negative_flag()`, then an unconditional `_clear_hot()` DELETE — so a
+    NEWER adverse event written between the verdict and the delete was erased by a decision
+    that had never seen it. One read, passed to both."""
+    import inspect
+
+    src = inspect.getsource(S.persist_news_items)
+    branch = src[src.index("_prev_raw = _current_hot_raw(sym)"):
+                 src.index("_clear_hot(sym, expect_raw=") + 60]
+    assert branch.count("_current_hot_raw(") == 1, "the flag must be read exactly once"
+    assert "flagged=_prev" in branch, "the guard must judge the value that was read, not re-read"
+    assert "expect_raw=_prev_raw" in branch, "the delete must be conditioned on that same value"
 
 
 def test_the_classifier_coerces_rather_than_trusting_python_truthiness():
@@ -175,10 +191,20 @@ def test_the_classifier_coerces_rather_than_trusting_python_truthiness():
 
 def test_the_guard_is_the_last_condition_so_the_cheap_checks_run_first():
     """Not correctness, but it reads Redis — placing it after the category and sentiment checks
-    keeps it off the path for every macro or non-flagged story."""
+    keeps it off the path for every macro or non-flagged story.
+
+    R05 restructured the branch: the category test is now the `elif` itself and the
+    currently-negative test reads the flag once into a local, so the orderings asserted here
+    are against those rather than against three chained `and`s."""
     import inspect
 
+    # Comments must be stripped first. The branch's own comment EXPLAINS why the guard is where
+    # it is, and so names `_may_clear_negative_flag()` in prose ~200 characters before the real
+    # call — which made this assertion measure the comment's position, not the code's. The same
+    # trap (a comment reproducing the string a test searches for) cost a cycle on R04.
     src = inspect.getsource(S.persist_news_items)
-    clear = src[src.index("elif ("):src.index("_clear_hot(sym)")]
+    code = "\n".join(ln.split("#", 1)[0] for ln in src.splitlines())
+    clear = code[code.index('elif sym and cls and cls["category"] != "macro":'):
+                 code.index("_clear_hot(sym, expect_raw=")]
     assert clear.index('cls["category"] != "macro"') < clear.index("_may_clear_negative_flag(")
-    assert clear.index("_current_hot_sentiment(sym)") < clear.index("_may_clear_negative_flag(")
+    assert clear.index('.get("sentiment_label") == "negative"') < clear.index("_may_clear_negative_flag(")

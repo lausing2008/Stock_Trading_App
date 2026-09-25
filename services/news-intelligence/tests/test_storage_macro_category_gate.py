@@ -93,7 +93,11 @@ class TestMacroCategoryNeverSetsHotFlag:
                 [_item("Apple issues surprise profit warning", "https://x/earnings1", ["AAPL"])],
                 source="pr_newswire", symbol_mode="tagged",
             )
-            mock_mark_hot.assert_called_once_with("AAPL", "Apple issues surprise profit warning", "negative")
+            mock_mark_hot.assert_called_once()
+            # R05 added a 4th argument (the story's publication time) so _mark_hot can judge
+            # recency for itself. The first three, which this test is about, are unchanged.
+            assert mock_mark_hot.call_args[0][:3] == (
+                "AAPL", "Apple issues surprise profit warning", "negative")
 
     def test_macro_headline_naming_multiple_symbols_marks_none_of_them(self):
         """The exact failure scenario from the tracker item — a single index-level story
