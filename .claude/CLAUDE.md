@@ -309,6 +309,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
+- **`docs/audits/2026-09-24-deep-audit-remediation.md`** — all 12 findings of the 2026-09-23 external deep audit, fixed and deployed. Two remedies deliberately NOT followed on measurement (enforcing the embargo would disable GROWTH for all 180 symbols; redefining the yield denominator invalidates a 417-trade calibration) [audit]
 - **`docs/audits/2026-09-23-session-index.md`** — START HERE for 2026-09-23/24: a parse bug discarding 81% of congress rows, Who to Follow + Big Funds tabs, alert-type prefs/unsubscribe, and THREE datasets measuring returns from a date nobody could act on [session index]
 - **`docs/audits/2026-09-22-session-index.md`** — START HERE for 2026-09-21/22: the connpool incident, the prediction audit, Phase 0/1 fixes, the earnings edge, purged walk-forward — and a NOT BUILT section with the reasoning for each rejected item [session index]
 - **`docs/audits/2026-09-22-news-llm-hmm-prediction-audit.md`** — BUY alpha −1.08pp (t=−9.24) BUT Sept alone is −0.32pp (ns) — READ THE CORRECTION BOX FIRST. Losses are TWO episodes, not a trend. SELL beats BUY by 3.67pp; confidence INVERTED; HMM never uses its transmat [alpha, HMM, inversion]
