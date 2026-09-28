@@ -333,3 +333,41 @@ def test_the_evaluation_travels_on_both_the_promoted_and_rejected_paths():
     assert '"evaluation": evaluation,' in rejected
     promoted = _META[_META.index('"trained": True, "promoted": True'):]
     assert '"evaluation": evaluation,' in promoted[:400]
+
+
+# ── The early-stop slice needs the same purge ────────────────────────────────
+
+def test_the_early_stop_slice_is_purged_against_the_final_slice():
+    """FOUND 2026-09-28 (pre-deployment audit). R03 purged train -> validation and stopped
+    there, treating "validation" as one block. But the early-stop rows are passed to
+    `eval_set`, so they choose the number of boosting rounds — and a row whose label resolves
+    after the final slice begins carries information from inside the slice that then decides
+    promotion. With SWING/10 the last early-stop session's label lands ten bars later,
+    comfortably past the final slice's start.
+
+    The same leak as the train boundary, one boundary further down, walked past because the fix
+    was thinking in blocks rather than in boundaries."""
+    assert "_es_idx = [i for i in _es_idx if label_available[i] < _final_start]" in _META
+    assert "_final_start = record_dates[_final_idx[0]]" in _META
+
+
+def test_the_early_stop_purge_uses_the_same_strict_comparison():
+    """`<`, not `<=`: a label that becomes knowable on the day the final slice starts was not
+    knowable BEFORE it — the same boundary rule as the train purge."""
+    block = _META[_META.index("_final_start = record_dates[_final_idx[0]]"):]
+    block = block[:block.index("if len(_es_idx) < 10")]
+    assert "label_available[i] < _final_start" in block
+    assert "label_available[i] <= _final_start" not in block
+
+
+def test_the_early_stop_purge_count_is_recorded():
+    """The count is what says whether the old split was contaminated for this symbol set."""
+    assert '"n_purged_early_stop_unavailable": _es_purged,' in _META
+
+
+def test_purging_can_still_leave_the_slice_too_small_and_that_refuses():
+    """The purge runs BEFORE the minimum-size check, so a slice gutted by it declines rather
+    than training on a handful of rows."""
+    purge_at = _META.index("_es_idx = [i for i in _es_idx if label_available[i] < _final_start]")
+    check_at = _META.index("if len(_es_idx) < 10 or len(_final_idx) < 10:")
+    assert purge_at < check_at

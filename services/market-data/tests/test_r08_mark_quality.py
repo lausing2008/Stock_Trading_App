@@ -42,6 +42,17 @@ _ENGINE = (pathlib.Path(__file__).resolve().parents[1]
            / "src" / "services" / "options_income_engine.py").read_text()
 
 
+def _executable_only(src: str) -> str:
+    """Source with its docstring and comments removed — see the prose-collision note above."""
+    for q in ('"' * 3, "'" * 3):
+        first = src.find(q)
+        if first != -1:
+            second = src.find(q, first + 3)
+            if second != -1:
+                src = src[:first] + src[second + 3:]
+                break
+    return "\n".join(ln.split("#", 1)[0] for ln in src.splitlines())
+
 # ── The grade ────────────────────────────────────────────────────────────────
 
 def test_a_same_session_quote_is_fresh():
@@ -157,15 +168,71 @@ def test_the_underlying_source_is_recorded_not_inferred():
 
 def test_a_historical_snapshot_does_not_reach_for_the_live_price():
     """Mixing a past option quote with today's underlying is a mixed-time valuation, and the
-    intrinsic floor computed from it is wrong in both directions."""
+    intrinsic floor computed from it is wrong in both directions.
+
+    REWRITTEN 2026-09-28 (pre-deployment audit). This test used to assert that
+    `if as_of >= _today_et():` appeared BEFORE `SELECT close FROM prices` in the source — and it
+    passed while that SELECT named a column (`prices.symbol`) which does not exist and a
+    timeframe label (`'1d'`) which is not in the enum, so the statement raised on every call and
+    the historical branch never executed once. It then fell through to the live price anyway,
+    which is the exact behaviour the test claimed to forbid.
+
+    A source-text assertion cannot tell a correct query from an unrunnable one. These run the
+    real function against a real database instead — see _r06_db_probe.py for why a subprocess."""
+    r = _probe("underlying_historical_uses_archived_close")
+    assert r["result"] == [90.0, "close"], \
+        "a historical snapshot must use the archived close for that date"
+
+
+def test_a_historical_snapshot_never_looks_ahead_to_a_later_bar():
+    """The archive holds a 2026-09-27 close of 130; a snapshot dated 2026-09-22 must not see
+    it. Reaching forward is the same defect as reaching for the live price, one bar closer."""
+    r = _probe("underlying_historical_uses_archived_close")
+    assert r["result"][0] == 90.0 and r["result"][0] != 130.0
+
+
+def test_a_historical_date_with_no_archived_close_uses_the_entry_price_not_the_live_one():
+    """CORRECTED BEHAVIOUR. The original fell through to today's live quote and labelled it
+    "live", silently presenting a current valuation as a historical one. The entry price is at
+    least drawn from the position's own history, and `entry_fallback` says the mark is not a
+    valuation."""
+    r = _probe("underlying_historical_without_a_close_never_uses_live")
+    assert r["result"] == [111.0, "entry_fallback"]
+
+
+def test_todays_snapshot_still_prefers_the_live_quote():
+    """The guard must not be so broad that the normal daily path stops using the live price."""
+    assert _probe("underlying_today_prefers_live")["result"] == [999.0, "live"]
+
+
+def test_todays_snapshot_falls_back_to_the_archived_close_when_live_is_missing():
+    """A missing live quote for one symbol must not drop the whole position to its entry price
+    while a perfectly good close exists."""
+    assert _probe("underlying_today_without_live_falls_back_to_close")["result"] == [90.0, "close"]
+
+
+def test_an_unknown_symbol_degrades_to_the_entry_price_rather_than_raising():
+    """The caller values every open position in a loop; raising here would lose the entire
+    snapshot for one missing stock row — which is how the broken query hid for a whole session."""
+    assert _probe("underlying_unknown_symbol_uses_entry")["result"] == [111.0, "entry_fallback"]
+
+
+def test_the_price_query_names_columns_that_actually_exist():
+    """The defect in one assertion. `prices` carries `stock_id` and joins through `stocks`; it
+    has no `symbol` column, and the timeframe enum's label is 'D1', not '1d'."""
     import inspect
 
     from src.services.options_income_engine import _underlying_price_as_of
-    code = "\n".join(ln.split("#", 1)[0]
-                     for ln in inspect.getsource(_underlying_price_as_of).splitlines())
-    assert "if as_of >= _today_et():" in code, \
-        "the live price must be gated on the snapshot actually being today"
-    assert code.index("if as_of >= _today_et():") < code.index("SELECT close FROM prices")
+    # Comments AND the docstring stripped first. The correction comment in that function QUOTES
+    # the broken query it replaced, so a raw search reports the defect as still present. Fifth
+    # time this session (R04, R05, the T398 ordering test, R01, here) — prose that legitimately
+    # names the thing under test is the single most reliable way to break a source assertion.
+    code = _executable_only(inspect.getsource(_underlying_price_as_of))
+    assert "JOIN stocks s ON s.id = p.stock_id" in code
+    assert "s.symbol = :sym" in code
+    assert "p.timeframe = 'D1'" in code
+    assert "WHERE symbol = :sym" not in code, "the nonexistent column is back"
+    assert "timeframe = '1d'" not in code, "the nonexistent enum label is back"
 
 
 def test_the_entry_price_fallback_is_labelled_rather_than_silent():

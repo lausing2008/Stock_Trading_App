@@ -40,6 +40,15 @@ _cfg.get_settings = MagicMock(return_value=MagicMock())
 import common.logging as _log  # noqa: E402
 _log.get_logger = MagicMock(return_value=MagicMock())
 
+# R07: auth.py imports revoke_user_tokens / user_tokens_revoked from the stubbed common.jwt_auth.
+# A bare MagicMock attribute returns a truthy Mock, so user_tokens_revoked() would report EVERY
+# token revoked and 401 the entire auth suite — a stub failing open in the dangerous direction.
+# Real callables with the real default (nothing revoked); the revocation behaviour itself is
+# tested against the actual module in ml-prediction's test_r07_account_state_authz.py.
+import common.jwt_auth as _jwtauth  # noqa: E402
+_jwtauth.user_tokens_revoked = lambda _payload: False
+_jwtauth.revoke_user_tokens = lambda _username: True
+
 # common.indicators has no env/structlog dependencies (pure pandas/numpy) and
 # candidate_event_mining.py needs the REAL implementation (not a MagicMock) to compute
 # actual ATR values in tests — load it for real instead of leaving it under the blanket

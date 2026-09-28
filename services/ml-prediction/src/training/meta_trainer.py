@@ -423,6 +423,27 @@ def train_meta_model(db=None) -> dict:
         while _es_cut > 0 and record_dates[_val_idx[_es_cut - 1]] == _es_date:
             _es_cut -= 1
     _es_idx, _final_idx = _val_idx[:_es_cut], _val_idx[_es_cut:]
+
+    # ADDED 2026-09-28 (pre-deployment audit): PURGE THE EARLY-STOP SLICE TOO.
+    #
+    # The first version purged only train -> validation and stopped there. But the early-stop
+    # rows are passed to `eval_set`, so they decide the number of boosting rounds — and a row
+    # whose label resolves after the final slice begins carries information from inside the
+    # slice that then decides promotion. The audit's probe: with SWING/10, the last early-stop
+    # session's label is available 10 bars later, comfortably past `_final_idx[0]`'s date.
+    # Exactly the leak the train purge closes, at the next boundary down, which the first fix
+    # walked past because it was thinking of "validation" as one block.
+    if _final_idx:
+        _final_start = record_dates[_final_idx[0]]
+        _es_before = len(_es_idx)
+        _es_idx = [i for i in _es_idx if label_available[i] < _final_start]
+        _es_purged = _es_before - len(_es_idx)
+        if _es_purged:
+            log.info("meta_trainer.purged_early_stop_unavailable purged=%d kept=%d final_from=%s",
+                     _es_purged, len(_es_idx), _final_start)
+    else:
+        _es_purged = 0
+
     if len(_es_idx) < 10 or len(_final_idx) < 10:
         # Without two usable slices there is no honest way to both stop the fit and score it.
         # Refusing is the correct outcome: a promotion decided on the early-stop window is the
@@ -488,6 +509,7 @@ def train_meta_model(db=None) -> dict:
     evaluation = {
         "n_train": len(_train_idx), "n_early_stop": len(_es_idx), "n_final": len(_final_idx),
         "n_purged_unavailable_label": _purged,
+        "n_purged_early_stop_unavailable": _es_purged,
         "train_dates": [str(record_dates[_train_idx[0]]), str(record_dates[_train_idx[-1]])],
         "early_stop_dates": [str(record_dates[_es_idx[0]]), str(record_dates[_es_idx[-1]])],
         "final_dates": [str(_val_dates[0]), str(_val_dates[-1])] if _val_dates else None,

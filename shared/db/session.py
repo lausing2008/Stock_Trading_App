@@ -34,6 +34,7 @@ def init_db() -> None:
     """Idempotent metadata create — suitable for dev. Use Alembic in prod."""
     Base.metadata.create_all(bind=engine)
     _run_migrations()
+    _apply_isolated_ddl()
     _seed_admin()
 
 
@@ -761,6 +762,51 @@ def _run_migrations() -> None:  # noqa: C901
         ))
 
 
+def _apply_isolated_ddl() -> None:
+    """Post-hoc schema changes that must each succeed or fail ALONE.
+
+    CORRECTED 2026-09-28 (pre-deployment audit). Both statements below were originally written
+    inside `_seed_admin()`, which was wrong twice over:
+
+      1. `_seed_admin()` RETURNS EARLY when `admin_password` is unset — and it is unset in
+         production. So neither statement would have run at all: R06's unique intent key and
+         R08's `mark_evidence` column would both have been dead on arrival, while every test
+         asserting "the DDL exists in session.py" kept passing. This is the same class as the
+         create_all()-only-creates-tables incident these statements exist to work around, one
+         level up: the migration was written correctly and then placed where it does not run.
+
+      2. The index creation was wrapped in `try/except` with `conn.rollback()` INSIDE a
+         `with engine.begin()` block. Rolling back there closes the transaction, so every
+         later statement in that block raises InvalidRequestError — and the rollback would
+         also have discarded the admin seeding already done in the same transaction. A guard
+         that takes down the thing it was guarding.
+
+    Each statement therefore gets its OWN transaction, and its own try/except around the whole
+    `with`, so a failure rolls back nothing but itself.
+    """
+    statements = [
+        # R08: create_all() only creates MISSING TABLES, so a column added to an existing table
+        # never appears from the model declaration alone.
+        ("mark_evidence column",
+         "ALTER TABLE options_income_equity_curve "
+         "ADD COLUMN IF NOT EXISTS mark_evidence JSONB"),
+        # R06: same reason for the unique Index() declared on OptionsIncomePosition. This one
+        # CAN legitimately fail — if the table already holds duplicate
+        # (portfolio_id, option_symbol, entry_date) rows from before the guard existed, the
+        # CREATE is rejected. Startup must not die for that: the row lock and the lease check
+        # remain in force, and the failure has to be visible rather than silent.
+        ("uq_options_income_intent",
+         "CREATE UNIQUE INDEX IF NOT EXISTS uq_options_income_intent "
+         "ON options_income_positions (portfolio_id, option_symbol, entry_date)"),
+    ]
+    for name, sql in statements:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(sql))
+        except Exception as exc:          # noqa: BLE001 — see the docstring
+            print(f"[init_db] WARNING {name} not applied: {exc}")
+
+
 def _seed_admin() -> None:
     try:
         import bcrypt as _bcrypt
@@ -794,33 +840,6 @@ def _seed_admin() -> None:
             text("UPDATE watchlist_items SET user_id = :uid WHERE user_id IS NULL"),
             {"uid": admin_id},
         )
-
-        # ── R08: durable mark evidence on options-income equity rows ──────────
-        # create_all() only creates MISSING TABLES, so a column added to an existing table
-        # never appears from the model declaration alone — a repeated incident in this repo.
-        conn.execute(text(
-            "ALTER TABLE options_income_equity_curve ADD COLUMN IF NOT EXISTS mark_evidence JSONB"
-        ))
-
-        # ── R06: deterministic intent key for options-income entries ──────────
-        # create_all() only creates MISSING TABLES, so the unique Index() declared on
-        # OptionsIncomePosition never reaches an existing deployed table. Added here, the way
-        # every other post-hoc index in this function is.
-        #
-        # Wrapped: if the table already holds duplicates from before this guard existed, the
-        # CREATE fails and startup must NOT. A platform that refuses to boot because a
-        # concurrency guard could not be added is a worse outcome than one that boots with the
-        # row lock and the lease check still in force — but it has to be visible, not silent.
-        try:
-            conn.execute(text("""
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_options_income_intent
-                ON options_income_positions (portfolio_id, option_symbol, entry_date)
-            """))
-        except Exception as _exc:          # noqa: BLE001 — deliberately broad, see above
-            conn.rollback()
-            print(f"[init_db] WARNING uq_options_income_intent not created: {_exc}. "
-                  "Existing duplicate (portfolio_id, option_symbol, entry_date) rows must be "
-                  "resolved before the R06 intent key can be enforced.")
 
         # AUD19-ARCH1: Seed service accounts so service JWT tokens (sub="scheduler",
         # sub="paper-engine") resolve via get_current_user DB lookup when called via HTTP.

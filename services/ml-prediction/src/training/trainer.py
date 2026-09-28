@@ -377,6 +377,7 @@ def _compute_oos_suppression(
     recall: float,
     precision: float,
     overfit_gap_val: float | None,
+    evaluation_valid: bool | None = None,
 ) -> tuple[bool, str | None]:
     """Decide whether a freshly-trained model's OOS predictions should be suppressed (held at
     0.5/neutral downstream) — and why, for logging. Pulled out of train_model() as its own pure
@@ -394,6 +395,18 @@ def _compute_oos_suppression(
        9961.HK's random_forest (auc=1.0, recall=0.0, cv_auc_mean=0.716) and its xgboost sibling
        (auc=0.875, recall=0.0, cv_auc_mean=0.683) both cleared condition 1 and were serving at
        high live ML fusion weight despite zero true positives ever observed.
+    4. R02 / ADDED 2026-09-28 (pre-deployment audit): `evaluation_valid is False` — the model's
+       own recorded evaluation is not out of sample, because its embargo left a gap shorter than
+       the label horizon or its threshold was fitted on the rows the metrics were then computed
+       on. train_model() already suppressed for both, but resweep_oos_suppression() re-applies
+       THIS function to stored metrics and knew nothing about them — so the nightly resweep
+       would have UNSUPPRESSED exactly the models R02 had just suppressed, silently undoing the
+       fix on its first scheduled run. The audit's probe shows it doing so.
+
+       `None` means UNKNOWN, not valid: artifacts written before R02 carry no such key, and
+       treating their absence as a failure would mass-suppress the fleet for a property that
+       was never measured. Only an explicit False suppresses.
+
     3. AUD-ML2-ASYMMETRICOVERFITGAP: abs(overfit_gap) > 0.10 — the existing ML-FIX-4 check only
        ever fires when CV-AUC is HIGHER than test-AUC (memorized-training-data direction). A
        large gap in the OPPOSITE direction (test-AUC dramatically higher than CV-AUC) is equally
@@ -403,6 +416,10 @@ def _compute_oos_suppression(
        (mirroring the existing 0.10 threshold) catches this population without needing
        degenerate recall specifically.
     """
+    # R02: checked FIRST. A contaminated evaluation makes every metric below untrustworthy, so
+    # reporting one of them as the reason would name a symptom and hide the cause.
+    if evaluation_valid is False:
+        return True, "evaluation_not_out_of_sample"
     if cv_auc_mean is not None and cv_auc_mean < 0.52:
         return True, "cv_auc_below_0.52"
     if recall == 0.0 and precision == 0.0:
@@ -410,6 +427,28 @@ def _compute_oos_suppression(
     if overfit_gap_val is not None and abs(overfit_gap_val) > 0.10:
         return True, "overfit_gap_magnitude"
     return False, None
+
+
+def label_end_date(signal_date, bars: int):
+    """The calendar date a `bars`-BAR forward label actually resolves on, erring LATE.
+
+    FOUND 2026-09-28 (pre-deployment audit). R01 computed availability as
+    `signal_date + timedelta(days=horizon)` — but the horizon is measured in BARS (trading
+    days), not calendar days. Ten bars from a Monday is a fortnight away, not ten days: the
+    audit's probe has a 2026-09-14 signal whose SWING/10 target bar is 2026-09-28, while the
+    old arithmetic reported 2026-09-24. Against a 2026-09-25 cutoff that row was admitted, and
+    its label is built from a price four days past the training boundary — the exact leak R01
+    exists to close, left open by a unit mismatch.
+
+    Business days, then a holiday allowance on top. `bdate_range` skips weekends but not market
+    holidays, and every holiday pushes the real bar LATER, so the allowance only ever makes this
+    stricter. Erring late is the safe direction: it admits fewer rows, never more.
+    """
+    try:
+        end = pd.bdate_range(start=signal_date, periods=int(bars) + 1)[-1].date()
+    except Exception:
+        end = signal_date + timedelta(days=int(round(int(bars) * 7 / 5)))
+    return end + timedelta(days=max(1, int(bars) // 10))
 
 
 def _load_outcome_features(
@@ -490,7 +529,10 @@ def _load_outcome_features(
         _horizon_days = _HORIZON_BY_STYLE.get(style.upper(), 10)
         avail_map: dict = {}
         for o in outcomes:
-            cands = [o.signal_date + _td(days=_horizon_days)]
+            # CORRECTED 2026-09-28: the horizon is in BARS, not calendar days. See
+            # label_end_date() — the old `+ timedelta(days=horizon)` reported a date ~4 sessions
+            # too early and admitted rows whose labels resolve after the training cutoff.
+            cands = [label_end_date(o.signal_date, _horizon_days)]
             if getattr(o, "exit_date", None):
                 cands.append(o.exit_date)
             _te = getattr(o, "ts_evaluated", None)
@@ -666,6 +708,17 @@ def train_model(
         log.warning("train.skipped", symbol=symbol, reason=f"only {len(X)} clean samples")
         return {"symbol": symbol, "skipped": True, "reason": f"only {len(X)} clean samples"}
 
+    # Each surviving row's real calendar date, captured HERE — where X.index is still the
+    # positional index into df — and thereafter masked in lockstep with X.
+    #
+    # FOUND 2026-09-28 (pre-deployment audit). The split later re-derived these with
+    # `df["ts"].iloc[X.index]`, which is correct only until the outcome dedup runs
+    # `X = X[_keep].reset_index(drop=True)`. After that X.index is 0..n-1, so `.iloc[X.index]`
+    # silently returns the FIRST n rows of df rather than the surviving ones — the audit's probe
+    # reports 2026-09-14 for a row whose real date is 2026-09-18. Every date the split depends
+    # on was then wrong: the R01 training cutoff, and every range in slice_date_ranges.
+    X_row_dates = pd.to_datetime(df["ts"]).dt.normalize().iloc[X.index].reset_index(drop=True)
+
     # Tier 87 / T229-C2 — Outcome-informed augmentation: append closed signal_outcomes as
     # additional rows in the FINAL MODEL FIT only (not in CV folds).
     # These rows carry real live-trading labels (is_correct) — higher-quality ground truth
@@ -733,6 +786,8 @@ def train_model(
                     # misalign those splits.
                     _keep = ~_overlap_dates
                     X = X[_keep].reset_index(drop=True)
+                    # Masked with X, not re-derived from it. See X_row_dates' own note above.
+                    X_row_dates = X_row_dates[_keep].reset_index(drop=True)
                     y_dir = y_dir[_keep].reset_index(drop=True)
                     y_ret = y_ret[_keep].reset_index(drop=True)
                     log.info("train.outcome_dedup_from_main", symbol=symbol,
@@ -849,8 +904,15 @@ def train_model(
     # `X_dates` built inside the outcome block, which was taken BEFORE rows were dropped from X
     # and would therefore be misaligned with the split points.
     try:
-        X_dates_for_split = pd.DatetimeIndex(
-            pd.to_datetime(df["ts"]).dt.normalize().iloc[X.index].values)
+        # CORRECTED 2026-09-28: taken from X_row_dates, which was masked alongside X, rather
+        # than re-derived from X.index — which the dedup's reset_index() makes meaningless.
+        X_dates_for_split = pd.DatetimeIndex(X_row_dates.values)
+        if len(X_dates_for_split) != len(X):
+            # Fail CLOSED on any drift: an off-by-one here silently moves the training cutoff
+            # and every reported date range, which is exactly the defect being fixed.
+            log.error("train.row_dates_misaligned", symbol=symbol,
+                      n_dates=len(X_dates_for_split), n_rows=len(X))
+            X_dates_for_split = pd.DatetimeIndex([])
     except Exception:
         X_dates_for_split = pd.DatetimeIndex([])
 
@@ -2172,6 +2234,11 @@ def resweep_oos_suppression(dry_run: bool = True) -> dict:
             metrics.get("recall", -1.0),
             metrics.get("precision", -1.0),
             metrics.get("overfit_gap"),
+            # R02: the reason this sweep exists is to re-apply TODAY'S rule to yesterday's
+            # numbers — and today's rule includes "was this evaluation even out of sample".
+            # Without it the sweep would unsuppress every model R02 suppressed for leakage.
+            # `.get()` returns None for pre-R02 artifacts, which means UNKNOWN, not valid.
+            metrics.get("evaluation_valid"),
         )
         if should == stored:
             unchanged += 1

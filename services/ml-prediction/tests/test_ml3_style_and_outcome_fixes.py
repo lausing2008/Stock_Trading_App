@@ -124,12 +124,21 @@ def test_dedup_reindexes_after_masking():
         assert target in body, f"missing reindex: {target}"
 
 
-def test_dedup_keeps_x_y_aligned():
-    """X, y_dir and y_ret must all be masked by the SAME boolean — masking only some would
-    misalign features from labels, silently training on wrong answers."""
+def test_dedup_keeps_every_parallel_array_aligned():
+    """Everything that must stay row-aligned with X has to be masked by the SAME boolean.
+    Masking only some would misalign features from labels — silently training on wrong answers.
+
+    RENAMED AND WIDENED 2026-09-28. This counted occurrences of `[_keep]` and required exactly
+    THREE, which made adding a fourth parallel array look like a regression rather than a fix.
+    X_row_dates is that fourth array, and it exists because the split used to re-derive dates
+    from `X.index` AFTER this block resets it — see test_r01_outcome_training_cutoff.py. Naming
+    the arrays instead of counting them says what the rule actually is.
+    """
     body = TRAINER[TRAINER.index("# AUD-ML3-OUTCOMEDEDUP"):]
     body = body[:body.index("if len(X_out) >= 5")]
-    assert body.count("[_keep]") == 3, "X, y_dir, y_ret must each be masked exactly once"
+    code = "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
+    for arr in ("X", "X_row_dates", "y_dir", "y_ret"):
+        assert f"{arr} = {arr}[_keep].reset_index(drop=True)" in code, f"{arr} is not masked"
 
 
 def test_dedup_falls_back_rather_than_shrinking_x_below_the_training_floor():

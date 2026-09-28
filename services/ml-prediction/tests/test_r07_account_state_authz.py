@@ -212,6 +212,19 @@ def test_a_token_issued_before_a_revocation_is_rejected(auth):
     assert e.value.status_code == 401
 
 
+def test_a_token_issued_in_the_SAME_SECOND_as_the_revocation_is_rejected(auth):
+    """FOUND 2026-09-28 (pre-deployment audit). `iat` and the marker are both integer seconds,
+    so a token minted at the instant of revocation is indistinguishable from one minted just
+    before it — and `<` let it through. The whole point of a revocation is that everything up
+    to that moment stops working, so the comparison is `<=`. The cost is that a user who logs
+    in within the same second of their own password reset needs one extra login, which is the
+    correct direction to be wrong in."""
+    now = int(time.time())
+    auth.redis.store["auth:user_revoked_at:alice"] = str(now)
+    with pytest.raises(HTTPException):
+        auth.get_current_username(_token(sub="alice", role="user", iat=now))
+
+
 def test_a_token_issued_after_a_revocation_still_works(auth):
     """Re-enabling an account, or simply logging back in, must work. A marker that killed every
     future token too would make disablement permanent and undebuggable."""

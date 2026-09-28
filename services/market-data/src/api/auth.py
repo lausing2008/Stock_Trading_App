@@ -15,7 +15,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from common.config import get_settings
-from common.jwt_auth import revoke_user_tokens
+from common.jwt_auth import revoke_user_tokens, user_tokens_revoked
 from common.logging import get_logger
 from db import SessionLocal, PriceAlert, SignalAlert, User, UserRole, UserTier, get_session
 
@@ -174,7 +174,7 @@ def _make_token(username: str, role: str, tier: str = "basic") -> str:
          "jti": str(uuid.uuid4()),
          # R07: WHEN this token was issued. Without it, a per-user revocation marker cannot
          # tell a token minted before a disable from one minted after the account was restored,
-         # and every check has to fail closed forever. jwt_auth._user_revoked() reads it.
+         # and every check has to fail closed forever. jwt_auth.user_tokens_revoked() reads it.
          "iat": int(datetime.now(timezone.utc).timestamp())},
         _settings.jwt_secret,
         algorithm=ALGORITHM,
@@ -194,6 +194,15 @@ def get_current_user(
     except JWTError:
         raise HTTPException(401, "Invalid or expired token")
     if jti and _is_blacklisted(jti):
+        raise HTTPException(401, "Token has been revoked")
+    # R07, ADDED 2026-09-28 (pre-deployment audit). This validator already re-reads the live row
+    # below, so a DISABLED or DELETED account was correctly rejected. What it did not honour is
+    # the per-user revocation marker — so a token issued before an admin password reset kept
+    # working on every market-data endpoint until it expired, which is most of the platform.
+    # R07 enforced the marker in shared/common/jwt_auth.py and this service's own validator went
+    # around it: the same "guard on one route while another route bypasses it" shape R07 itself
+    # was fixing. One marker, honoured by both validators.
+    if user_tokens_revoked(payload):
         raise HTTPException(401, "Token has been revoked")
     user = session.execute(
         select(User).where(User.username == username)

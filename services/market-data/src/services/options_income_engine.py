@@ -548,6 +548,19 @@ def _corroborate_settlement_close(stock_id: int, want: date, stored_close: float
     a later day and says nothing about `want`, so that case is accepted on the clock guard
     alone: by then ingestion has had days and subsequent sessions to complete, which is itself
     the evidence the live quote would otherwise supply.
+
+    WHY "superseded_by_later_session" IS EVIDENCE OF FINALITY, checked 2026-09-28 after the
+    pre-deployment audit questioned it. On its own, a later bar existing would NOT prove the
+    `want` bar was ever refreshed after its own session closed — an appending ingest would leave
+    an intraday snapshot in place forever. This ingest does not append: for the "1d" timeframe
+    it re-fetches from `head.date() - 7 days` on every incremental run and upserts with
+    `on_conflict_do_update` overwriting `close` (services/market-data/src/services/ingestion.py,
+    the `head` branch). So any bar with a successor inside that trailing week has been
+    rewritten from the provider's own finalised history at least once.
+
+    THAT COUPLING IS LOAD-BEARING AND INVISIBLE FROM HERE. Shrinking the re-fetch window to
+    zero would turn this from a sound inference into a guess, with nothing in this file
+    changing. test_t398_options_income_engine.py pins it.
     """
     try:
         from .paper_trading_engine import _fetch_live_prices
@@ -670,6 +683,16 @@ def settle_expired_positions(session: Session, portfolio: OptionsIncomePortfolio
     high would settle a position a full day BEFORE its real expiry, against a session that
     has not happened yet for that contract."""
     as_of = as_of or _today_et()
+    # R06, EXTENDED 2026-09-28 (pre-deployment audit). The row lock was added to
+    # open_income_positions() and this function — which mutates the SAME `current_cash` — was
+    # left unguarded. It is a read/modify/write like any other: it reads cash, adds released
+    # collateral and P&L, and writes the total back. The audit's probe interleaves an entry's
+    # debit between the read and the write and the debit is lost, because this function's
+    # write is computed from a value it read before the other transaction committed.
+    #
+    # Same lock, same reason: the second worker blocks here and then re-reads the cash the
+    # first actually spent, rather than the cash they both saw before either did.
+    _lock_portfolio_row(session, portfolio)
     open_positions = session.execute(
         select(OptionsIncomePosition).where(
             OptionsIncomePosition.portfolio_id == portfolio.id,
@@ -1081,21 +1104,44 @@ def _underlying_price_as_of(session: Session, symbol: str, as_of: date,
     "entry_fallback" (nothing else available — the mark is not a valuation at that point, and
     saying so is the only honest option).
     """
-    if as_of >= _today_et():
+    _is_today = as_of >= _today_et()
+    if _is_today:
         px = live.get(symbol)
         if px:
             return float(px), "live"
-    row = session.execute(text("""
-        SELECT close FROM prices
-        WHERE symbol = :sym AND timeframe = '1d' AND close IS NOT NULL
-          AND DATE(ts) <= :ref
-        ORDER BY ts DESC LIMIT 1
-    """), {"sym": symbol, "ref": as_of}).first()
+
+    # CORRECTED 2026-09-28 (pre-deployment audit). The first version of this query read
+    #     SELECT close FROM prices WHERE symbol = :sym AND timeframe = '1d'
+    # and `prices` has NO `symbol` column — it carries `stock_id` and joins through `stocks` —
+    # while the timeframe enum's label is 'D1', not '1d'. Both are wrong, so the statement
+    # raised on every call and the historical branch this function exists for never ran once.
+    # It was invisible because the today-path returns above before reaching the SQL, and the
+    # caller's snapshot-level `except Exception` swallowed the rest.
+    try:
+        row = session.execute(text("""
+            SELECT p.close FROM prices p
+            JOIN stocks s ON s.id = p.stock_id
+            WHERE s.symbol = :sym AND p.timeframe = 'D1' AND p.close IS NOT NULL
+              AND DATE(p.ts) <= :ref
+            ORDER BY p.ts DESC LIMIT 1
+        """), {"sym": symbol.upper(), "ref": as_of}).first()
+    except Exception:
+        log.warning("options_income.underlying_close_lookup_failed",
+                    symbol=symbol, as_of=str(as_of), exc_info=True)
+        row = None
     if row and row.close is not None:
         return float(row.close), "close"
-    px = live.get(symbol)
-    if px:
-        return float(px), "live"
+
+    # CORRECTED 2026-09-28. The first version fell through to the LIVE price here for a
+    # historical date and labelled it "live" — valuing a past snapshot with today's underlying,
+    # which is the mixed-time valuation this whole function was added to prevent. For a
+    # historical date the live quote is not a worse source, it is the WRONG one, so it is not
+    # consulted at all. The entry price is at least drawn from the position's own history, and
+    # it is labelled so a reader can see the mark is not a valuation.
+    if _is_today:
+        px = live.get(symbol)
+        if px:
+            return float(px), "live"
     return float(entry_price), "entry_fallback"
 
 

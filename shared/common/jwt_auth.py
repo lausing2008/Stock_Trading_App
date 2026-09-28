@@ -52,7 +52,7 @@ def get_current_username(authorization: str | None = Header(default=None)) -> st
             raise HTTPException(401, "Token missing jti claim")
         if _check_blacklist(jti):
             raise HTTPException(401, "Token has been revoked")
-        if _user_revoked(payload):
+        if user_tokens_revoked(payload):
             raise HTTPException(401, "Token has been revoked")
         return username
     except HTTPException:
@@ -126,7 +126,7 @@ def revoke_user_tokens(username: str) -> bool:
         return False
 
 
-def _user_revoked(payload: dict) -> bool:
+def user_tokens_revoked(payload: dict) -> bool:
     """True if this token predates a revocation of its account.
 
     AN UNREADABLE MARKER ALLOWS, matching the deliberate fail-open the JTI blacklist above
@@ -158,7 +158,13 @@ def _user_revoked(payload: dict) -> bool:
         # only accounts someone actually disabled are affected.
         return True
     try:
-        return int(iat) < revoked_at
+        # CORRECTED 2026-09-28 (pre-deployment audit): `<` let a token minted in the SAME SECOND
+        # as the revocation through. Both values are integer seconds, so "issued at the instant
+        # of revocation" is indistinguishable from "issued just before it" — and the whole point
+        # of a revocation is that everything up to that moment stops working. `<=` costs a user
+        # who logs in within the same second of their own password reset one extra login, which
+        # is the correct direction to be wrong in.
+        return int(iat) <= revoked_at
     except (TypeError, ValueError):
         return True
 
@@ -178,7 +184,7 @@ def _decode_or_401(authorization: str | None) -> dict:
         raise HTTPException(401, "Token missing jti claim")
     if _check_blacklist(jti):
         raise HTTPException(401, "Token has been revoked")
-    if _user_revoked(payload):
+    if user_tokens_revoked(payload):
         raise HTTPException(401, "Token has been revoked")
     return payload
 

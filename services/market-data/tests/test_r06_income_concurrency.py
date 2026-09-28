@@ -30,6 +30,7 @@ independent guards, and the one being exercised is the one that survives a dead 
 """
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import threading
@@ -350,6 +351,42 @@ def test_the_step_starts_a_lease_and_stops_it():
         "stop renewing before releasing, or the renewal can outlive the lock"
 
 
+def test_the_settlement_path_is_locked_too():
+    """FOUND 2026-09-28 (pre-deployment audit). R06 locked `open_income_positions` and left
+    `settle_expired_positions` — which mutates the SAME `current_cash` — unguarded. It is a
+    read/modify/write like any other: it reads cash, adds released collateral and P&L, and
+    writes the total back. The audit's probe interleaves an entry's debit between that read and
+    that write, and the debit is lost.
+
+    Asserted structurally, and the reason is worth stating rather than hiding: SQLite has no
+    row-level locking, so the probe database cannot stage two writers serialising. The REFRESH
+    half — what repairs the arithmetic once the lock is held — is covered on the helper itself
+    by test_the_row_lock_refreshes_the_stale_orm_snapshot. What is left for this test is that
+    the settlement path calls it at all, before it reads anything.
+
+    This gap survived the first sabotage pass: removing the lock from settle_expired_positions
+    left every test green.
+    """
+    import inspect
+
+    code = "\n".join(ln.split("#", 1)[0]
+                     for ln in inspect.getsource(E.settle_expired_positions).splitlines())
+    assert "_lock_portfolio_row(session, portfolio)" in code, \
+        "the settlement path mutates portfolio cash without taking the row lock"
+    assert code.index("_lock_portfolio_row(") < code.index("open_positions = session.execute("), \
+        "the lock must be held before the positions and the cash are read"
+
+
+def test_both_cash_mutating_paths_take_the_same_lock():
+    """One helper, both writers. A second locking idiom in either place is how the two paths
+    drift into disagreeing about what is protected."""
+    import inspect
+
+    for fn in (E.open_income_positions, E.settle_expired_positions):
+        code = "\n".join(ln.split("#", 1)[0] for ln in inspect.getsource(fn).splitlines())
+        assert "_lock_portfolio_row(session, portfolio)" in code, fn.__name__
+
+
 def test_the_portfolio_row_is_locked_before_anything_is_read_from_it():
     import inspect
 
@@ -384,9 +421,160 @@ def test_the_intent_key_is_declared_on_the_model_and_created_on_existing_tables(
 def test_a_failed_index_creation_does_not_block_startup():
     """A platform that refuses to boot because a concurrency guard could not be added is a
     worse outcome than one that boots with the other two guards in force — but it must be
-    visible."""
+    visible.
+
+    REWRITTEN 2026-09-28 (pre-deployment audit). The original searched for `try:` /
+    `except Exception` near the CREATE INDEX and passed while the handler called
+    `conn.rollback()` INSIDE a `with engine.begin()` block — which closes the transaction, so
+    every later statement in it raises InvalidRequestError and the admin seeding already done
+    in that same transaction is discarded. A guard that takes down the thing it guards. Worse,
+    the whole block lived in `_seed_admin()`, which RETURNS EARLY when admin_password is unset
+    — and it is unset in production, so neither statement would have run at all.
+
+    Asserting on structure now: each statement in its OWN transaction, reached unconditionally
+    from init_db, with no rollback inside a begin block."""
     src = (_ROOT / "shared" / "db" / "session.py").read_text()
-    block = src[src.index("CREATE UNIQUE INDEX IF NOT EXISTS uq_options_income_intent") - 700:]
-    block = block[:block.index("AUD19-ARCH1")]
-    assert "try:" in block and "except Exception" in block
-    assert "WARNING uq_options_income_intent not created" in block
+    # Comments AND docstrings stripped: the corrected function's own docstring explains what
+    # `conn.rollback()` did wrong, which a raw search reads as the defect still being present.
+    code = "\n".join(ln.split("#", 1)[0] for ln in src.splitlines())
+    code = re.sub(r'"""(?:.|\n)*?"""', "", code)
+
+    # Reached on every startup, not only when a password happens to be configured.
+    assert "_apply_isolated_ddl()" in code[code.index("def init_db("):code.index("_seed_admin()")]
+
+    body = code[code.index("def _apply_isolated_ddl("):code.index("def _seed_admin(")]
+    assert "uq_options_income_intent" in body and "mark_evidence" in body
+    assert "with engine.begin() as conn:" in body, "each statement needs its own transaction"
+    assert "conn.rollback()" not in body, \
+        "a rollback inside a begin block closes the transaction and kills everything after it"
+    assert "except Exception" in body and "WARNING" in body
+
+    # And they must NOT be back inside the early-returning seeder.
+    seeder = code[code.index("def _seed_admin("):]
+    assert "uq_options_income_intent" not in seeder
+    assert "mark_evidence" not in seeder
+
+
+def test_the_isolated_ddl_survives_one_statement_failing():
+    """Behavioural, against a real database: a duplicate row makes the unique index fail, and
+    the statements around it must still be applied. Run in the probe subprocess because this
+    service's conftest stubs sqlalchemy wholesale."""
+    r = _probe("isolated_ddl_one_failure")
+    assert r["applied"] == ["good"], "a failing statement must not prevent the ones after it"
+    assert r["later_table_exists"] is True
+
+
+# ── The lease itself ─────────────────────────────────────────────────────────
+
+class _FakeRedis:
+    """Real GET/SET/EXPIRE semantics for the renew and release scripts."""
+
+    def __init__(self):
+        self.store, self.ttls, self.fail = {}, {}, False
+
+    def set(self, key, value, nx=False, ex=None):
+        if nx and key in self.store:
+            return None
+        self.store[key], self.ttls[key] = value, ex
+        return True
+
+    def eval(self, script, _n, key, *args):
+        if self.fail:
+            raise RuntimeError("redis down")
+        cur = self.store.get(key)
+        if script == E._INCOME_LOCK_RENEW_LUA:
+            if cur == args[0]:
+                self.ttls[key] = int(args[1])
+                return 1
+            return 0
+        if script == E._INCOME_LOCK_RELEASE_LUA:
+            if cur == args[0]:
+                del self.store[key]
+                return 1
+            return 0
+        raise AssertionError("unknown script")
+
+
+def test_renewal_extends_only_the_holders_own_lease():
+    r = _FakeRedis()
+    with patch.object(E, "_get_income_redis", lambda: r):
+        r.set(E._INCOME_STEP_LOCK_KEY, "mine", nx=True, ex=10)
+        assert E._renew_income_lock("mine") is True
+        assert r.ttls[E._INCOME_STEP_LOCK_KEY] == E._INCOME_STEP_LOCK_TTL
+        assert E._renew_income_lock("someone-else") is False
+
+
+def test_renewal_of_an_expired_lease_fails_rather_than_recreating_it():
+    """EXPIRE on a missing key is a no-op in Redis, so this must not resurrect a lease another
+    worker may already have taken."""
+    r = _FakeRedis()
+    with patch.object(E, "_get_income_redis", lambda: r):
+        assert E._renew_income_lock("mine") is False
+        assert E._INCOME_STEP_LOCK_KEY not in r.store
+
+
+def test_the_lease_marks_itself_lost_when_renewal_is_refused():
+    r = _FakeRedis()
+    with patch.object(E, "_get_income_redis", lambda: r), \
+         patch.object(E, "_INCOME_LOCK_RENEW_INTERVAL", 0.01):
+        r.set(E._INCOME_STEP_LOCK_KEY, "theirs", nx=True, ex=10)   # someone else owns it
+        lease = E.IncomeLease("mine").start()
+        try:
+            deadline = time.time() + 2
+            while lease.is_held() and time.time() < deadline:
+                time.sleep(0.01)
+            assert not lease.is_held(), "a refused renewal must mark the lease lost"
+        finally:
+            lease.stop()
+
+
+def test_a_transient_redis_error_does_not_abort_a_healthy_run():
+    """A blip is not proof the lease was lost, and treating it as such would abort a good run
+    every time Redis hiccups. The TTL is the backstop."""
+    r = _FakeRedis()
+    r.fail = True
+    with patch.object(E, "_get_income_redis", lambda: r), \
+         patch.object(E, "_INCOME_LOCK_RENEW_INTERVAL", 0.01):
+        lease = E.IncomeLease("mine").start()
+        try:
+            time.sleep(0.1)
+            assert lease.is_held()
+        finally:
+            lease.stop()
+
+
+def test_a_lost_lease_never_returns_to_held():
+    """Re-acquiring the key would not make the snapshot the work was decided against correct
+    again."""
+    r = _FakeRedis()
+    with patch.object(E, "_get_income_redis", lambda: r), \
+         patch.object(E, "_INCOME_LOCK_RENEW_INTERVAL", 0.01):
+        r.set(E._INCOME_STEP_LOCK_KEY, "theirs", nx=True, ex=10)
+        lease = E.IncomeLease("mine").start()
+        try:
+            deadline = time.time() + 2
+            while lease.is_held() and time.time() < deadline:
+                time.sleep(0.01)
+            assert not lease.is_held()
+            r.store[E._INCOME_STEP_LOCK_KEY] = "mine"     # we somehow own it again
+            time.sleep(0.05)
+            assert not lease.is_held()
+        finally:
+            lease.stop()
+
+
+def test_the_renewal_interval_leaves_room_for_failures():
+    """Renewing at the TTL would mean one missed renewal loses the lease. A third leaves room
+    for two consecutive failures."""
+    assert E._INCOME_LOCK_RENEW_INTERVAL <= E._INCOME_STEP_LOCK_TTL / 3
+    assert E._INCOME_LOCK_RENEW_INTERVAL > 0
+
+
+def test_the_renewal_thread_is_a_daemon_and_is_stopped():
+    """A non-daemon renewal thread would hold the process open after the step finished."""
+    lease = E.IncomeLease("t")
+    with patch.object(E, "_INCOME_LOCK_RENEW_INTERVAL", 60):
+        lease.start()
+        assert lease._thread.daemon
+        lease.stop()
+        assert not lease._thread.is_alive()

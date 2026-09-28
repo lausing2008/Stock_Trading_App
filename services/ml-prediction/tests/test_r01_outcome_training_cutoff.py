@@ -68,10 +68,54 @@ def test_the_loader_returns_a_label_availability_series():
 def test_availability_is_the_LATEST_of_the_candidate_dates():
     """exit_date, ts_evaluated and signal_date+horizon can disagree. Taking the earliest would
     admit a row before its label existed, which is the bug with extra steps."""
-    body = _fn("_load_outcome_features")
-    assert "avail_map[o.signal_date] = max(cands)" in body
-    for candidate in ("o.exit_date", "ts_evaluated", "_td(days=_horizon_days)"):
-        assert candidate in body, candidate
+    code = _code_only("_load_outcome_features")
+    assert "avail_map[o.signal_date] = max(cands)" in code
+    for candidate in ("o.exit_date", "ts_evaluated", "label_end_date(o.signal_date"):
+        assert candidate in code, candidate
+    # CORRECTED 2026-09-28: the third candidate used to be `_td(days=_horizon_days)`, which
+    # added the horizon as CALENDAR days when it is measured in BARS — ~4 sessions early for
+    # SWING/10, which admitted rows whose labels resolve after the cutoff. See label_end_date().
+    assert "_td(days=_horizon_days)" not in code, "the calendar/bar unit mismatch is back"
+
+
+def test_the_label_end_date_is_computed_in_BARS_and_errs_late():
+    """Behavioural, on the real helper. The audit's case: a 2026-09-14 SWING/10 signal resolves
+    on 2026-09-28, not the 2026-09-24 the old arithmetic reported."""
+    import importlib.util
+    import sys as _sys
+    from datetime import date as _d
+
+    # trainer.py imports xgboost/lightgbm at module scope, so extract just this function.
+    spec = importlib.util.spec_from_loader("r01_label_end", loader=None)
+    mod = importlib.util.module_from_spec(spec)
+    import pandas as _pd
+    from datetime import timedelta as _delta
+    src = _fn("label_end_date")
+    exec(compile(src, "<trainer>", "exec"), {"pd": _pd, "timedelta": _delta}, mod.__dict__)
+    fn = mod.__dict__["label_end_date"]
+
+    got = fn(_d(2026, 9, 14), 10)
+    assert got >= _d(2026, 9, 28), f"10 bars from 2026-09-14 resolves 2026-09-28, got {got}"
+    # Erring LATE only ever makes the filter stricter, so it must never precede the true bar.
+    naive = _d(2026, 9, 14) + _delta(days=10)
+    assert got > naive, "the calendar-day arithmetic must no longer be what is returned"
+
+
+def test_the_label_end_date_grows_with_the_horizon():
+    """A helper that ignored `bars` would pass the single case above by accident."""
+    import importlib.util
+    from datetime import date as _d, timedelta as _delta
+
+    import pandas as _pd
+    spec = importlib.util.spec_from_loader("r01_label_end2", loader=None)
+    mod = importlib.util.module_from_spec(spec)
+    exec(compile(_fn("label_end_date"), "<trainer>", "exec"),
+         {"pd": _pd, "timedelta": _delta}, mod.__dict__)
+    fn = mod.__dict__["label_end_date"]
+
+    start = _d(2026, 9, 14)
+    ends = [fn(start, b) for b in (5, 10, 15, 20)]
+    assert ends == sorted(ends) and len(set(ends)) == 4
 
 
 def test_every_early_return_keeps_the_three_value_shape():
@@ -138,18 +182,37 @@ def test_the_cutoff_is_taken_from_the_last_TRAINING_row():
         )
 
 
-def test_the_row_dates_are_recomputed_AFTER_the_outcome_dedup():
-    """X loses rows during dedup. Reusing the `X_dates` built before that would be misaligned
-    with the split points — an off-by-N cutoff, which is worse than none because it looks
-    deliberate."""
-    body = _fn("train_model")
-    dedup_at = body.index("X_dates = pd.DatetimeIndex(")
-    recompute_at = body.index("X_dates_for_split = pd.DatetimeIndex(")
-    assert recompute_at > dedup_at
-    # ...and it must actually READ the current X, not merely exist. Replacing the recompute
-    # with an empty index passed the ordering check alone.
-    frag = body[recompute_at:recompute_at + 300]
-    assert 'df["ts"]' in frag and "iloc[X.index]" in frag
+def test_the_row_dates_survive_the_outcome_dedup_aligned_with_X():
+    """X loses rows during dedup, so the dates the split reads must lose the SAME rows.
+
+    REWRITTEN 2026-09-28 (pre-deployment audit). This used to assert that the recompute came
+    after the dedup and contained `df["ts"]` and `iloc[X.index]` — and it passed while that
+    expression was wrong in exactly the way the test was meant to catch. The dedup ends with
+    `X = X[_keep].reset_index(drop=True)`, after which `X.index` is 0..n-1, so
+    `df["ts"].iloc[X.index]` returns the FIRST n rows of df rather than the surviving ones. The
+    audit's probe reports 2026-09-14 for a row whose real date is 2026-09-18 — and every date
+    downstream (the R01 training cutoff, every range in slice_date_ranges) inherited the error.
+
+    The dates are now captured once, where X.index is still positional, and masked in lockstep.
+    """
+    body = _code_only("train_model")
+    capture_at = body.index("X_row_dates = pd.to_datetime(df[\"ts\"])")
+    dedup_at = body.index("X_row_dates = X_row_dates[_keep]")
+    split_at = body.index("X_dates_for_split = pd.DatetimeIndex(X_row_dates.values)")
+    assert capture_at < dedup_at < split_at, "capture, then mask with X, then read at the split"
+    # The broken re-derivation must not come back.
+    assert "iloc[X.index]" not in body[split_at:split_at + 400]
+
+
+def test_a_length_mismatch_between_rows_and_dates_fails_closed():
+    """An off-by-one here moves the training cutoff and every reported range silently. Refusing
+    to supply dates at all is recoverable — R01's own filter then fails closed and declines the
+    augmentation — whereas wrong dates are used with full confidence."""
+    body = _code_only("train_model")
+    assert "if len(X_dates_for_split) != len(X):" in body
+    frag = body[body.index("if len(X_dates_for_split) != len(X):"):][:400]
+    assert "train.row_dates_misaligned" in frag
+    assert "pd.DatetimeIndex([])" in frag
 
 
 def test_admissibility_is_judged_on_availability_not_the_signal_date():

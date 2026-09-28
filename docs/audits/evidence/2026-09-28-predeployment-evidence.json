@@ -1,0 +1,209 @@
+{
+  "audit_date": "2026-09-28",
+  "source_commit": "0e72d3a927a2e0bd50fde37173164abb2a2b599c",
+  "source_sha256": {
+    "services/ml-prediction/src/training/trainer.py": "a66916b2a237ac75b2f4a11723b8562872be8f7e2401b8ee2b17d528fb465854",
+    "services/ml-prediction/src/training/meta_trainer.py": "4f188e545397060396473d7ce7157cdd98917550be99449c6cbfa5f608d1b029",
+    "services/market-data/src/services/options_income_engine.py": "66fe84a47176403b4cf81a06d362fb8910d1026380b41a95543c721a1387db22",
+    "services/market-data/src/api/auth.py": "173c0ff15ab005e89814629d084935abbde4166f63c0d1c348a40cee2e809032",
+    "shared/common/jwt_auth.py": "0f6feac74b19e093b8661ee1c6bda779b7c13f8a249e7970897f270adc858b81",
+    "shared/db/session.py": "085d3b32cc51351e55e86947dcb63d004d8e220556bcc9b1af9ba7d5a3f4ee98",
+    "shared/db/models.py": "d43da8245c494cd78b4febe615e559639beebffc8302c6a6c9f026f8e29d43e8"
+  },
+  "reproductions": {
+    "price_query": {
+      "sql_error": "(sqlite3.OperationalError) no such column: symbol",
+      "actual_columns": [
+        "id",
+        "stock_id",
+        "ts",
+        "timeframe",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "adj_close",
+        "session"
+      ],
+      "enum_labels": [
+        "M1",
+        "M5",
+        "M15",
+        "H1",
+        "D1",
+        "W1"
+      ],
+      "historical_no_row_fallback": [
+        120.0,
+        "live"
+      ]
+    },
+    "suppression_resweep": {
+      "dry_run": true,
+      "changed_count": 1,
+      "unchanged_count": 0,
+      "failed_count": 0,
+      "newly_suppressed": [],
+      "newly_unsuppressed": [
+        {
+          "artifact": "TEST/model.joblib",
+          "was": true,
+          "now": false,
+          "reason": null,
+          "test_auc": null,
+          "cv_auc": 0.65,
+          "overfit_gap": 0.02
+        }
+      ],
+      "failures": []
+    },
+    "settlement_finality": {
+      "later_bar": [
+        true,
+        "superseded_by_later_session"
+      ],
+      "within_tolerance": [
+        true,
+        "corroborated_by_live_quote"
+      ],
+      "stored_close_economics": {
+        "assigned": true,
+        "settle_price": 99.9,
+        "pnl": 90.00000000000057,
+        "cash_released": 9990.0
+      },
+      "hypothetical_final_close_economics": {
+        "assigned": false,
+        "settle_price": 100,
+        "pnl": 100,
+        "cash_released": 10000
+      }
+    },
+    "auth": {
+      "shared_validator_revoked": true,
+      "local_auth_still_accepts": true,
+      "same_second_token_revoked": false,
+      "scope": "controlled decoded JWT; no HTTP request"
+    },
+    "migration_transaction": {
+      "after_rollback_error": "Can't operate on closed transaction inside context manager.  Please complete the context manager before emitting further commands.",
+      "no_admin_password_enters_migration": false
+    },
+    "label_dates": {
+      "R01_computed_available": "2026-09-24",
+      "R01_actual_target_bar_date": "2026-09-28",
+      "training_cutoff": "2026-09-25",
+      "dedup_first_row_actual_date": "2026-09-18",
+      "dedup_first_row_reported_date": "2026-09-14",
+      "future_target_admitted": true,
+      "meta_final_start": "2026-05-07",
+      "meta_latest_early_stop_label_available": "2026-05-16",
+      "meta_split_keeps_overlapping_label": true
+    },
+    "settlement_lost_update": {
+      "cash_written": 1500.0,
+      "cash_including_other_committed_debit": 600,
+      "scope": "actual settlement function with controlled interleaving; not a PostgreSQL race test"
+    }
+  },
+  "production_read_only": {
+    "observed_at_utc": "2026-09-28T13:43:19.216653+00:00",
+    "prices_columns": [
+      {
+        "column_name": "id"
+      },
+      {
+        "column_name": "stock_id"
+      },
+      {
+        "column_name": "ts"
+      },
+      {
+        "column_name": "timeframe"
+      },
+      {
+        "column_name": "open"
+      },
+      {
+        "column_name": "high"
+      },
+      {
+        "column_name": "low"
+      },
+      {
+        "column_name": "close"
+      },
+      {
+        "column_name": "volume"
+      },
+      {
+        "column_name": "adj_close"
+      },
+      {
+        "column_name": "session"
+      }
+    ],
+    "price_timeframe_labels": [
+      {
+        "label": "M1"
+      },
+      {
+        "label": "M5"
+      },
+      {
+        "label": "M15"
+      },
+      {
+        "label": "H1"
+      },
+      {
+        "label": "D1"
+      },
+      {
+        "label": "W1"
+      }
+    ],
+    "option_positions": [
+      {
+        "strategy": "CASH_SECURED_PUT",
+        "stage": "open",
+        "n": 9,
+        "first_expiry": "2026-09-25",
+        "last_expiry": "2026-10-30"
+      }
+    ],
+    "option_schema": [],
+    "intent_index": []
+  },
+  "production_queries": {
+    "prices_columns": "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='prices' ORDER BY ordinal_position",
+    "price_timeframe_labels": "SELECT unnest(enum_range(NULL::timeframe))::text AS label",
+    "option_positions": "SELECT strategy,stage,count(*) n,min(expiry) first_expiry,max(expiry) last_expiry FROM options_income_positions GROUP BY 1,2",
+    "option_schema": "SELECT column_name FROM information_schema.columns WHERE table_name='options_income_equity_curve' AND column_name='mark_evidence'",
+    "intent_index": "SELECT indexname FROM pg_indexes WHERE tablename='options_income_positions' AND indexname='uq_options_income_intent'"
+  },
+  "verification": {
+    "backend_command": "PYTHONPATH=.:../../shared python -m pytest -q -p no:cacheprovider (from each listed service)",
+    "backend_results": {
+      "market-data": "4378 passed, 1 skipped, 27 warnings in 83.56s (0:01:23)",
+      "ml-prediction": "360 passed, 6 warnings in 7.14s",
+      "news-intelligence": "129 passed in 2.74s",
+      "portfolio-optimizer": "83 passed, 2 warnings in 2.80s",
+      "signal-engine": "549 passed, 1 skipped in 9.88s"
+    },
+    "backend_passed": 5499,
+    "backend_skipped": 2,
+    "frontend_command": "npm test -- --run",
+    "frontend_passed": 304,
+    "frontend_files_passed": 16,
+    "typecheck_command": "npm run typecheck -- --incremental false",
+    "typecheck_exit_code": 0,
+    "empty_suite_runner_exit_code": 2,
+    "probes_exit_code": 0,
+    "all_twelve_backend_suites_rerun": false,
+    "mutation_campaign_rerun": false,
+    "browser_visual_review": false,
+    "deployment_performed": false
+  }
+}

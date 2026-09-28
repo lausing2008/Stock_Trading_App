@@ -550,3 +550,45 @@ def test_backtest_settlement_uses_the_same_resolver_as_the_live_engine():
     assert "def _settlement_close_bt" in bt
     assert "expected_settlement_session(expiry)" in bt
     assert '_settlement_close_bt(closes, cand["symbol"], expiry)' in bt
+
+
+# ── R04: the ingest window that makes settlement corroboration sound ──────────
+
+def test_the_daily_refetch_window_that_settlement_corroboration_depends_on():
+    """`_corroborate_settlement_close()` accepts a stored close as final when a LATER daily bar
+    exists, reasoning that ingestion has moved past it. That inference is only valid because
+    the daily ingest RE-FETCHES a trailing window and overwrites `close` on conflict — an
+    appending ingest would leave an intraday snapshot in place forever and the corroboration
+    would be a guess.
+
+    The dependency runs across two files and is invisible from either one, so it is pinned
+    here. A pre-deployment audit questioned the corroboration on exactly this point; the
+    answer was the re-fetch window, and an answer nothing checks is an answer with a shelf
+    life.
+    """
+    import ast
+    import pathlib
+
+    ing = (pathlib.Path(__file__).resolve().parents[1]
+           / "src" / "services" / "ingestion.py").read_text()
+
+    # The incremental daily start must look BACK from the last stored bar, not resume at it.
+    branch = ing[ing.index('if timeframe == "1d":'):]
+    branch = branch[:branch.index("else:")]
+    tree = ast.parse(branch.strip().replace('if timeframe == "1d":', "if True:"))
+    assign = next(n for n in ast.walk(tree) if isinstance(n, ast.Assign))
+    # head.date() - timedelta(days=N) + timedelta(days=1): extract N and require a real window.
+    days = [n.value for n in ast.walk(assign)
+            if isinstance(n, ast.keyword) and n.arg == "days"]
+    window = max(d.value for d in days if isinstance(d, ast.Constant))
+    assert window >= 2, (
+        f"the daily re-fetch window is {window} days; settlement corroboration assumes a bar "
+        "with a later successor has been rewritten from finalised history"
+    )
+
+    # And the upsert must actually overwrite the close, not skip existing rows.
+    assert "on_conflict_do_update(" in ing
+    upsert = ing[ing.index("on_conflict_do_update("):]
+    upsert = upsert[:upsert.index("}")]
+    assert '"close": stmt.excluded.close' in upsert, \
+        "a DO NOTHING upsert would leave a stale intraday close in place forever"

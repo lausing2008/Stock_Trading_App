@@ -42,7 +42,7 @@ sys.modules["r06_models"] = models
 _spec.loader.exec_module(models)
 
 for _cls in (models.OptionsIncomePortfolio, models.OptionsIncomePosition,
-             models.OptionsIncomeEquityCurve, models.Stock):
+             models.OptionsIncomeEquityCurve, models.Stock, models.Price):
     _cls.__table__.c.id.type = Integer()
 
 # A FILE, not ":memory:". An in-memory SQLite database is one connection shared by every
@@ -73,6 +73,7 @@ models.Base.metadata.create_all(ENGINE, tables=[
     models.OptionsIncomePosition.__table__,
     models.OptionsIncomeEquityCurve.__table__,
     models.Stock.__table__,
+    models.Price.__table__,
 ])
 Session = sessionmaker(bind=ENGINE)
 
@@ -271,6 +272,63 @@ def main(scenario: str) -> dict:
             row = s.execute(select(models.OptionsIncomeEquityCurve).where(
                 models.OptionsIncomeEquityCurve.portfolio_id == p_id)).scalars().one()
             return {"mark_evidence": row.mark_evidence, "equity": round(float(row.equity), 2)}
+
+    # ── R08 corrected: the underlying lookup must actually RUN ──────────────
+    if scenario.startswith("underlying_"):
+        from sqlalchemy import text as _text
+        with Session() as s:
+            stock = models.Stock(symbol="AAA", name="AAA", market="US", exchange="NASDAQ")
+            s.add(stock)
+            s.commit()
+            # Two archived daily closes, the later one AFTER the historical as_of.
+            for d, close in ((date(2026, 9, 20), 90.0), (date(2026, 9, 27), 130.0)):
+                s.execute(_text(
+                    "INSERT INTO prices (stock_id, ts, timeframe, open, high, low, close, volume)"
+                    " VALUES (:sid, :ts, 'D1', 1, 1, 1, :c, 1)"),
+                    {"sid": stock.id, "ts": datetime(d.year, d.month, d.day), "c": close})
+            s.commit()
+
+            if scenario == "underlying_historical_uses_archived_close":
+                # as_of is 2026-09-22, strictly before the probe's "today" (2026-09-24) and
+                # before the 09-27 bar. Must pick the 09-20 close of 90.0 — never the live 999
+                # (wrong period) and never the 09-27 close of 130 (look-ahead).
+                return {"result": list(E._underlying_price_as_of(
+                    s, "AAA", date(2026, 9, 22), {"AAA": 999.0}, 111.0))}
+            if scenario == "underlying_historical_without_a_close_never_uses_live":
+                return {"result": list(E._underlying_price_as_of(
+                    s, "AAA", date(2026, 9, 1), {"AAA": 999.0}, 111.0))}
+            if scenario == "underlying_today_prefers_live":
+                return {"result": list(E._underlying_price_as_of(
+                    s, "AAA", TODAY, {"AAA": 999.0}, 111.0))}
+            if scenario == "underlying_today_without_live_falls_back_to_close":
+                return {"result": list(E._underlying_price_as_of(
+                    s, "AAA", TODAY, {}, 111.0))}
+            if scenario == "underlying_unknown_symbol_uses_entry":
+                return {"result": list(E._underlying_price_as_of(
+                    s, "ZZZ", date(2026, 9, 25), {}, 111.0))}
+
+    if scenario == "isolated_ddl_one_failure":
+        # A duplicate row makes the unique index fail. Each statement in its own transaction
+        # means the failure is isolated — which is what the corrected _apply_isolated_ddl does.
+        from sqlalchemy import create_engine as _ce, text as _t
+        eng = _ce("sqlite://")
+        with eng.begin() as c:
+            c.execute(_t("CREATE TABLE t (a INTEGER)"))
+            c.execute(_t("INSERT INTO t VALUES (1), (1)"))
+        applied = []
+        for name, sql in (("bad", "CREATE UNIQUE INDEX ix ON t(a)"),
+                          ("good", "CREATE TABLE later (b INTEGER)")):
+            try:
+                with eng.begin() as c:
+                    c.execute(_t(sql))
+                applied.append(name)
+            except Exception:
+                pass
+        with eng.begin() as c:
+            exists = c.execute(_t(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='later'"
+            )).scalar() == 1
+        return {"applied": applied, "later_table_exists": exists}
 
     raise SystemExit(f"unknown scenario: {scenario}")
 

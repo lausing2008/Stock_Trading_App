@@ -303,3 +303,77 @@ def test_publication_status_is_recorded_on_every_path():
     say so; an absent key on one branch is the asymmetry that hides it."""
     assert 'metrics["published"] = False' in _TRAINER
     assert 'metrics["published"] = True' in _TRAINER
+
+
+# ── The resweep must not undo what R02 suppressed ────────────────────────────
+#
+# FOUND 2026-09-28 (pre-deployment audit). R02 added two new reasons to suppress, but
+# `resweep_oos_suppression()` re-applies `_compute_oos_suppression()` to STORED metrics and
+# that function knew only about AUC, recall/precision and the overfit gap. So the nightly
+# resweep would have UNSUPPRESSED exactly the models R02 had just suppressed for leakage —
+# silently undoing the fix on its first scheduled run. The audit's probe shows it doing so.
+#
+# The repair is one rule, not two: evaluation validity is now a condition inside
+# _compute_oos_suppression(), so both the training path and the sweep read the same rule.
+
+def _suppression_fn():
+    """The real _compute_oos_suppression, extracted (trainer.py imports xgboost at module scope)."""
+    import ast
+
+    src = (Path(__file__).resolve().parents[1] / "src" / "training" / "trainer.py").read_text()
+    node = next(n for n in ast.parse(src).body
+                if isinstance(n, ast.FunctionDef) and n.name == "_compute_oos_suppression")
+    ns: dict = {}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "<trainer>", "exec"), ns)
+    return ns["_compute_oos_suppression"]
+
+
+def test_an_invalid_evaluation_suppresses():
+    """A model whose own metrics say the evaluation was not out of sample must stay suppressed
+    however good those metrics look — they are the numbers in question."""
+    fn = _suppression_fn()
+    should, reason = fn(0.90, 0.8, 0.8, 0.01, False)
+    assert should is True
+    assert reason == "evaluation_not_out_of_sample"
+
+
+def test_a_valid_evaluation_with_good_metrics_is_not_suppressed():
+    """The guard must be losable, or it suppresses the fleet."""
+    fn = _suppression_fn()
+    assert fn(0.90, 0.8, 0.8, 0.01, True)[0] is False
+
+
+def test_an_UNKNOWN_evaluation_status_does_not_suppress():
+    """`None` means the property was never measured — every artifact written before R02 carries
+    no such key. Treating absence as failure would mass-suppress the fleet for a reason that was
+    never evaluated, and would wreck the measured 4-of-130 impact this change was sized on."""
+    fn = _suppression_fn()
+    assert fn(0.90, 0.8, 0.8, 0.01, None)[0] is False
+    assert fn(0.90, 0.8, 0.8, 0.01)[0] is False, "the parameter must default to unknown"
+
+
+def test_validity_is_checked_before_the_metric_conditions():
+    """A contaminated evaluation makes every metric below it untrustworthy, so reporting one of
+    them as the reason would name a symptom and hide the cause."""
+    fn = _suppression_fn()
+    # cv_auc is ALSO bad here; the reported reason must still be the validity one.
+    assert fn(0.10, 0.0, 0.0, 0.99, False)[1] == "evaluation_not_out_of_sample"
+
+
+def test_the_resweep_passes_the_stored_validity_through():
+    """The rule knowing about validity is useless if the sweep does not hand it over."""
+    import ast
+
+    tree = ast.parse(_TRAINER)
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+              and n.name == "resweep_oos_suppression")
+    call = next(n for n in ast.walk(fn)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == "_compute_oos_suppression")
+    # Parsed rather than sliced: the call spans several lines with comments between the
+    # arguments, so `body.index(")")` lands on the first close paren inside `metrics.get(...)`
+    # and truncates the argument list before the one being checked for.
+    passed = ast.unparse(call)
+    assert "evaluation_valid" in passed, \
+        "the sweep re-applies the rule without the condition R02 added to it"
+    assert len(call.args) == 5, f"expected 5 positional args, got {len(call.args)}"
