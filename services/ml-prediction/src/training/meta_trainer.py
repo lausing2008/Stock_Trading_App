@@ -276,7 +276,22 @@ def train_meta_model(db=None) -> dict:
 
             # DA-01 (2026-09-24): carry the signal date. Without it the split below could not
             # be chronological however it was described — see the global sort further down.
-            records.append((vec, int(row.is_correct), row.signal_date))
+            #
+            # R03 (2026-09-24 follow-up audit): carry WHEN THE LABEL BECAME KNOWABLE too.
+            # Sorting by signal date makes the split chronological in the signals, not in the
+            # information: a signal emitted before the boundary whose position closed after it
+            # carries an outcome from inside the validation period. Resolution lags vary by
+            # horizon and by how the trade actually went, so this cannot be derived from the
+            # signal date alone. Same rule as trainer.py's own R01 fix — the LATEST of the
+            # exit, the platform's evaluation timestamp, and signal_date + horizon.
+            _lbl_cands = [row.signal_date + timedelta(
+                days=_HORIZON_DAYS.get(str(row.horizon).upper(), 10))]
+            if getattr(row, "exit_date", None):
+                _lbl_cands.append(row.exit_date)
+            _te = getattr(row, "ts_evaluated", None)
+            if _te is not None:
+                _lbl_cands.append(_te.date() if hasattr(_te, "date") else _te)
+            records.append((vec, int(row.is_correct), row.signal_date, max(_lbl_cands)))
 
     if len(records) < 50:
         log.warning("meta_trainer.insufficient_feature_records n=%d", len(records))
@@ -318,6 +333,7 @@ def train_meta_model(db=None) -> dict:
     )
     y = np.array([r[1] for r in records], dtype=np.int32)
     record_dates = [r[2] for r in records]
+    label_available = [r[3] for r in records]
 
     # Remove constant columns (avoids numerical issues in StandardScaler / XGBoost).
     # T242-METAMODEL-NANFILL: must use np.nanstd(), not the plain .std() this replaced — with
@@ -330,8 +346,50 @@ def train_meta_model(db=None) -> dict:
     # rows alone. Selecting non-constant columns across the full dataset lets the validation
     # slice decide which features the model is allowed to see — a mild leak, but one that makes
     # the validation AUC no longer a clean out-of-sample measurement.
-    split = int(len(X_raw) * 0.8)
-    non_const = np.where(np.nanstd(X_raw[:split], axis=0) > 1e-8)[0]
+    # R03 (2026-09-24 follow-up audit): THE SPLIT IS A SESSION BOUNDARY, NOT A ROW INDEX.
+    #
+    # `int(len(X_raw) * 0.8)` lands wherever the 80th percentile row happens to be, which — with
+    # many symbols observed on the same dates — routinely falls INSIDE a decision session. The
+    # audit's reproduction: five symbols over four dates put September 4 on both sides, and the
+    # chronological guard below accepted it because it only rejected `>`, never `==`. The same
+    # session cannot be both the end of training and the start of validation; that is the
+    # symbol-block leak DA-01 fixed, reappearing one row at a time.
+    #
+    # So the boundary is moved BACK to the first row of the session it lands in. Moving back
+    # rather than forward keeps validation at least as large as intended, and never borrows a
+    # training row for it.
+    _raw_split = int(len(X_raw) * 0.8)
+    split = _raw_split
+    if 0 < _raw_split < len(record_dates):
+        _boundary_date = record_dates[_raw_split]
+        while split > 0 and record_dates[split - 1] == _boundary_date:
+            split -= 1
+    if split <= 0 or split >= len(record_dates):
+        log.warning("meta_trainer.session_split_degenerate raw=%d adjusted=%d n=%d",
+                    _raw_split, split, len(record_dates))
+        return {"trained": False, "reason": "session_split_degenerate"}
+
+    # R03: PURGE BY LABEL AVAILABILITY, not by signal date.
+    #
+    # A training signal emitted before the boundary whose position closed after it carries an
+    # outcome from inside the validation period — the model is fitted on the answer to a
+    # question it is then scored on. Sorting by signal date cannot see this, because the
+    # resolution lag varies by horizon and by how each trade actually went. Rows whose label
+    # was not knowable before the validation session begins are dropped from TRAINING; they are
+    # not moved into validation, because their features are older than everything around them.
+    _val_start = record_dates[split]
+    _train_idx = [i for i in range(split) if label_available[i] < _val_start]
+    _purged = split - len(_train_idx)
+    if _purged:
+        log.info("meta_trainer.purged_unavailable_labels purged=%d kept=%d val_from=%s",
+                 _purged, len(_train_idx), _val_start)
+    if len(_train_idx) < 30:
+        log.warning("meta_trainer.too_few_after_purge kept=%d purged=%d",
+                    len(_train_idx), _purged)
+        return {"trained": False, "reason": "too_few_training_rows_after_purge"}
+
+    _val_idx = list(range(split, len(X_raw)))
+    non_const = np.where(np.nanstd(X_raw[_train_idx], axis=0) > 1e-8)[0]
     X = X_raw[:, non_const]
 
     # 80/20 chronological split for AUC evaluation.
@@ -348,15 +406,44 @@ def train_meta_model(db=None) -> dict:
     # (SELFIMPROVE-PROMOTION-GATES-INCOMPLETE, a few lines below), a leaked, optimistically-
     # biased AUC could let a genuinely worse model pass the promotion gate.
     # `split` was computed above, before feature selection, so both use the same boundary.
-    X_tr_raw, X_val_raw = X[:split], X[split:]
-    y_tr, y_val = y[:split], y[split:]
+    # R03: EARLY STOPPING AND PROMOTION MUST NOT SHARE A SLICE.
+    #
+    # `model.fit(..., eval_set=[(X_val, y_val)], early_stopping_rounds=20)` selected the tree
+    # count against the very rows whose AUC then decided promotion. The number of boosting
+    # rounds is a fitted parameter; choosing it on the validation slice makes that slice
+    # partially in-sample, and the AUC it reports optimistic — the same defect T232-ML2 fixed
+    # for the base models' threshold, in a different costume.
+    #
+    # The validation block is therefore split in two, in time order: the first half stops the
+    # fit, the second half is never seen during fitting and is the only slice promotion is
+    # decided on. It is also split at a SESSION boundary, for the reason above.
+    _es_cut = len(_val_idx) // 2
+    if _es_cut > 0:
+        _es_date = record_dates[_val_idx[_es_cut]]
+        while _es_cut > 0 and record_dates[_val_idx[_es_cut - 1]] == _es_date:
+            _es_cut -= 1
+    _es_idx, _final_idx = _val_idx[:_es_cut], _val_idx[_es_cut:]
+    if len(_es_idx) < 10 or len(_final_idx) < 10:
+        # Without two usable slices there is no honest way to both stop the fit and score it.
+        # Refusing is the correct outcome: a promotion decided on the early-stop window is the
+        # defect this is closing, and "train anyway and hope" is how it got here.
+        log.warning("meta_trainer.validation_too_small_to_separate es=%d final=%d",
+                    len(_es_idx), len(_final_idx))
+        return {"trained": False, "reason": "validation_too_small_to_separate"}
+
+    X_tr_raw, y_tr = X[_train_idx], y[_train_idx]
+    X_es_raw, y_es = X[_es_idx], y[_es_idx]
+    X_val_raw, y_val = X[_final_idx], y[_final_idx]
 
     # DA-01: with a genuinely chronological split this invariant is now assertable, and worth
     # asserting — a future refactor that reorders `records` would otherwise silently restore
     # the defect while every metric kept rendering.
     if record_dates and split < len(record_dates):
-        _last_train, _first_val = record_dates[split - 1], record_dates[split]
-        if _last_train > _first_val:
+        # R03: the last TRAINING row after purging, not the last row before the raw boundary.
+        _last_train, _first_val = record_dates[_train_idx[-1]], record_dates[split]
+        # R03: `>` alone accepted a session sitting on BOTH sides, which is the audit's own
+        # reproduction. A session boundary means the last training date is strictly earlier.
+        if _last_train >= _first_val:
             log.error("meta_trainer.split_not_chronological last_train=%s first_val=%s",
                       _last_train, _first_val)
             return {"trained": False, "reason": "split_not_chronological"}
@@ -365,6 +452,7 @@ def train_meta_model(db=None) -> dict:
 
     scaler = StandardScaler()
     X_tr = scaler.fit_transform(X_tr_raw)
+    X_es = scaler.transform(X_es_raw)
     X_val = scaler.transform(X_val_raw)
 
     pos_count = max((y_tr == 1).sum(), 1)
@@ -383,12 +471,35 @@ def train_meta_model(db=None) -> dict:
         random_state=42,
         verbosity=0,
     )
-    model.fit(X_tr, y_tr, eval_set=[(X_val, y_val)], verbose=False)
+    # R03: stopped on _es_, scored on _val_. These are different rows, in that order in time.
+    model.fit(X_tr, y_tr, eval_set=[(X_es, y_es)], verbose=False)
 
     auc = 0.0
     if len(np.unique(y_val)) > 1:
         auc = float(roc_auc_score(y_val, model.predict_proba(X_val)[:, 1]))
-    log.info("meta_trainer.trained n=%d auc=%.4f", len(records), auc)
+
+    # R03: the audit asks for observation counts, date ranges and CLUSTERED uncertainty.
+    # Many symbols share each date, so rows are not independent draws — the effective sample
+    # size is closer to the number of distinct SESSIONS than to the row count, and an interval
+    # computed from n rows would be far too narrow. Reported so a promotion decision can be
+    # read against the noise it is competing with rather than against a bare AUC.
+    _val_dates = sorted({record_dates[i] for i in _final_idx})
+    _n_val_days = len(_val_dates)
+    evaluation = {
+        "n_train": len(_train_idx), "n_early_stop": len(_es_idx), "n_final": len(_final_idx),
+        "n_purged_unavailable_label": _purged,
+        "train_dates": [str(record_dates[_train_idx[0]]), str(record_dates[_train_idx[-1]])],
+        "early_stop_dates": [str(record_dates[_es_idx[0]]), str(record_dates[_es_idx[-1]])],
+        "final_dates": [str(_val_dates[0]), str(_val_dates[-1])] if _val_dates else None,
+        "n_final_sessions": _n_val_days,
+        # A rank statistic's standard error is roughly 1/sqrt(effective n); clustering by
+        # session is the honest denominator here.
+        "auc_se_day_clustered": round(1.0 / np.sqrt(_n_val_days), 4) if _n_val_days else None,
+        "class_counts_final": {int(k): int(v)
+                               for k, v in zip(*np.unique(y_val, return_counts=True))},
+    }
+    log.info("meta_trainer.trained n=%d auc=%.4f n_final=%d n_sessions=%d",
+             len(records), auc, len(_final_idx), _n_val_days)
 
     # SELFIMPROVE-PROMOTION-GATES-INCOMPLETE: this used to unconditionally overwrite
     # META_MODEL_PATH regardless of how the new AUC compared to whatever bundle was already
@@ -407,10 +518,36 @@ def train_meta_model(db=None) -> dict:
     # once real promotion_rejected/promoted log volume exists.
     MIN_AUC_IMPROVEMENT = 0.0
     previous_auc: float | None = None
+    # R03: SCORE THE INCUMBENT ON THESE ROWS, not on the ones it was measured against months ago.
+    #
+    # The comparison was `auc < previous_bundle["auc"]` — the challenger's score on TODAY'S
+    # holdout against the incumbent's score on ITS OWN, from a different market, a different
+    # symbol mix and a different number of observations. Two AUCs from different cohorts are
+    # not comparable, and the sign of their difference is not evidence about which model is
+    # better. The incumbent is re-scored on the same final slice, using its OWN scaler and its
+    # own non-constant column selection, so the only thing differing between the two numbers is
+    # the model.
+    comparison_basis = "none"
     if META_MODEL_PATH.exists():
         try:
             previous_bundle = joblib.load(META_MODEL_PATH)
-            previous_auc = previous_bundle.get("auc")
+            try:
+                _prev_cols = previous_bundle.get("non_const")
+                _prev_scaler = previous_bundle["scaler"]
+                _prev_model = previous_bundle["model"]
+                _prev_X = X_raw[_final_idx][:, _prev_cols] if _prev_cols is not None \
+                    else X_raw[_final_idx]
+                _prev_probs = _prev_model.predict_proba(_prev_scaler.transform(_prev_X))[:, 1]
+                if len(np.unique(y_val)) > 1:
+                    previous_auc = float(roc_auc_score(y_val, _prev_probs))
+                    comparison_basis = "same_holdout"
+            except Exception as _score_err:
+                # A feature-schema change between bundles makes the incumbent unscorable here.
+                # Falling back to its stored historical AUC is the OLD, incomparable comparison
+                # — so it is labelled as such rather than presented as a like-for-like result.
+                log.warning("meta_trainer.incumbent_unscorable error=%s", _score_err)
+                previous_auc = previous_bundle.get("auc")
+                comparison_basis = "historical_incomparable" if previous_auc is not None else "none"
         except Exception as exc:
             # An unreadable/corrupt existing bundle must NOT block the new one — failing
             # closed here would turn a corrupted file into a permanent retrain freeze, worse
@@ -418,15 +555,21 @@ def train_meta_model(db=None) -> dict:
             # hard_rejects.py's macro-blackout check.
             log.warning("meta_trainer.previous_bundle_unreadable error=%s", exc)
 
+    evaluation["comparison_basis"] = comparison_basis
+    evaluation["previous_auc_on_this_holdout"] = (
+        round(previous_auc, 4) if (previous_auc is not None and comparison_basis == "same_holdout")
+        else None)
+
     if previous_auc is not None and auc < previous_auc - MIN_AUC_IMPROVEMENT:
         log.warning(
-            "meta_trainer.promotion_rejected new_auc=%.4f previous_auc=%.4f n_samples=%d",
-            auc, previous_auc, len(records),
+            "meta_trainer.promotion_rejected new_auc=%.4f previous_auc=%.4f basis=%s n_samples=%d",
+            auc, previous_auc, comparison_basis, len(records),
         )
         _record_promotion_status(promoted=False, auc=auc, previous_auc=previous_auc, n_samples=len(records))
         return {
             "trained": True, "promoted": False, "n_samples": len(records),
             "auc": round(auc, 4), "previous_auc": round(previous_auc, 4),
+            "comparison_basis": comparison_basis, "evaluation": evaluation,
         }
 
     META_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -443,6 +586,11 @@ def train_meta_model(db=None) -> dict:
         # confirmed) — purely descriptive metadata on the bundle, but was actively misleading.
         "n_meta_features": 7,
         "auc": round(auc, 4),
+        # R03: the evidence this AUC rests on — slice sizes, their date ranges, how many rows
+        # were purged for an unavailable label, the number of distinct SESSIONS in the final
+        # slice, and the day-clustered standard error. A bare AUC cannot be read against the
+        # noise it is competing with, and the next promotion decision needs exactly that.
+        "evaluation": evaluation,
     }
 
     # Atomic write — same pattern as trainer.py (RACE-001)
@@ -463,6 +611,7 @@ def train_meta_model(db=None) -> dict:
     return {
         "trained": True, "promoted": True, "n_samples": len(records),
         "auc": round(auc, 4), "previous_auc": round(previous_auc, 4) if previous_auc is not None else None,
+        "comparison_basis": comparison_basis, "evaluation": evaluation,
     }
 
 

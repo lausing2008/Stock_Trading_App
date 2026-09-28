@@ -38,8 +38,13 @@ _TRAINER = (_SVC / "src" / "training" / "trainer.py").read_text()
 # ── DA-01: the split must be ordered by time ─────────────────────────────────
 
 def test_records_carry_their_signal_date():
-    """Dates were dropped from the tuple, so no later code COULD order by time."""
-    assert "records.append((vec, int(row.is_correct), row.signal_date))" in _META
+    """Dates were dropped from the tuple, so no later code COULD order by time.
+
+    R03 added a FOURTH element: when the label became knowable. Sorting by signal date makes
+    the split chronological in the signals, not in the information — a signal emitted before
+    the boundary whose position closed after it carries an outcome from inside the validation
+    period, and the resolution lag varies by horizon and by how the trade went."""
+    assert "records.append((vec, int(row.is_correct), row.signal_date, max(_lbl_cands)))" in _META
 
 
 def test_records_are_sorted_globally_before_the_split():
@@ -75,10 +80,14 @@ def test_the_split_boundary_is_asserted_at_runtime():
 
 def test_feature_selection_is_fitted_on_training_rows_only():
     """Choosing non-constant columns across the full dataset lets the validation slice decide
-    which features the model may see — the validation AUC then is not a clean measurement."""
+    which features the model may see — the validation AUC then is not a clean measurement.
+
+    R03 narrowed the training rows further: `X_raw[:split]` became `X_raw[_train_idx]`, the
+    rows remaining after the label-availability purge. A row dropped for carrying an outcome
+    from inside the validation period must not get to influence feature selection either."""
     m = re.search(r"non_const = np\.where\(np\.nanstd\(([^)]+)\)", _META)
     assert m, "the feature selector is missing"
-    assert "X_raw[:split]" in m.group(1), f"selector still sees the full dataset: {m.group(1)}"
+    assert "X_raw[_train_idx]" in m.group(1), f"selector still sees the full dataset: {m.group(1)}"
 
 
 def test_the_split_boundary_is_computed_exactly_once():
