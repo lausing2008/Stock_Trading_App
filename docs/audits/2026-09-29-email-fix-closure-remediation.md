@@ -97,9 +97,9 @@ Both facts are true. Their combination is false — 80 is not above 90. The expl
 underneath does not unsay the headline above it, and a reader who sees only a subject line has
 already been told the wrong thing.
 
-**The fix.** A new `_crossing_still_holds(condition, threshold, price)` predicate, and the retry path
-now passes the original `event_at` as its own field rather than only burying it in prose. When the
-crossing no longer holds:
+**The fix.** The renderer now asks whether the crossing still holds, and the retry path passes the
+original `event_at` as its own field rather than only burying it in prose. When the crossing no
+longer holds:
 
 ```text
 Subject: Price Alert (delayed): RETRY had risen above 90.0
@@ -115,6 +115,14 @@ Scoped deliberately: a crossing that still holds keeps its original wording exac
 indicator alert (EA-04's descriptive-condition path) is untouched — its threshold is in different
 units and there is no crossing to re-evaluate.
 
+**The predicate is inline, and that is not a style choice.** I first wrote it as a module-level
+`_crossing_still_holds()` helper, and three existing EA-04 tests immediately raised `NameError`.
+`email_service.py` states in `_crossing_words`' own comment that every renderer in the module is
+extracted and executed on its own by this repo's test and audit harnesses, so a module-level sibling
+is out of scope exactly where the rendering is checked. The convention is load-bearing. My EC-02
+tests consequently drive the predicate through the rendered output rather than calling it directly —
+which is the stronger assertion anyway, since it pins what a reader is actually told.
+
 ## Verification
 
 - `test_ec01_one_shot_migration.py` — 8 tests, running the **real** `_apply_one_shot_migrations()`
@@ -128,6 +136,26 @@ units and there is no crossing to re-evaluate.
   `test_the_statement_does_not_run_a_second_time_at_all`, which isolates the ledger by introducing a
   second pre-watermark row after the migration has run; the watermark would match it happily and
   only the ledger can leave it alone. That test now fails when the guard is removed.
+
+### Running the review's own script after the fix
+
+`evidence/2026-09-28-email-fix-closure-checks.py` has two halves. Its `checks()` half — the EF
+acceptance assertions — **passes**: the mixed signal batch still makes both sender calls with the
+first transition pending and the second advanced, the retry still requests its own symbol and
+renders the observed 123.0, a missing quote still produces zero sends, `_classify_flow_side` still
+separates unknown from a measured zero, and the preference ratchet still rejects a comment-only
+call.
+
+Its `migration()` half is a **defect witness**, and it no longer reproduces:
+
+```text
+KeyError: 'legacy price-alert delivery closeout'
+```
+
+— the statement is no longer in `_apply_isolated_ddl()`'s every-startup list for it to find. That
+is the intended outcome. As the previous review noted, assertions written to require a bug cannot
+serve as a release gate; the behaviour they described is now covered by
+`test_ec01_one_shot_migration.py` against a real database.
 
 ## Still open, unchanged
 
