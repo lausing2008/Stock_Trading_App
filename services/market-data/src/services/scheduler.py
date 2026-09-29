@@ -80,7 +80,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, func, text
+from sqlalchemy import select, func, text, update
 from sqlalchemy.orm import selectinload, Session
 
 from common.config import get_settings
@@ -288,6 +288,56 @@ def _signal_cohort_stats(session, direction: str, horizon: str | None) -> dict |
 
 
 # ── AUD-ALERTPREFS: per-alert-type audience filtering ─────────────────────────
+
+def _may_send(session, user, alert_type: str) -> bool:
+    """Whether this user should receive this alert type, right now.
+
+    EA-05 (2026-09-28 email audit): TWELVE OF THE 23 ADVERTISED TYPES HAD NO ENFORCEMENT AT
+    ALL — signal, morning_digest, premarket_brief, squeeze_watch_revert, sr_watch, value_area,
+    earnings_reminder, portfolio_digest, post_open_digest, theme_forecast, trade_coach and
+    trade_exit. Their settings toggle wrote a row nothing read, and their unsubscribe footer
+    linked to a preference no sending job consulted.
+
+    `_filter_by_alert_pref` below exists and works; it was simply never called from those
+    twelve. That is the failure mode of a per-job check — each new job has to remember — so
+    this is the single-recipient form of the same rule, and
+    `test_every_manageable_alert_type_is_enforced` fails the build when a type has neither.
+
+    It also enforces what the dict filter cannot: an INACTIVE account. The flow digest selected
+    every user with a nonempty email and mailed disabled accounts.
+
+    Same two conventions as the dict filter, deliberately: absence means SUBSCRIBED (only an
+    explicit `enabled = FALSE` opts out), and a failed lookup FAILS OPEN, because silently
+    dropping mail on a settings-query error is indistinguishable from the alert never firing.
+    """
+    if user is None:
+        return False
+    if not getattr(user, "email", None):
+        return False
+    # An inactive account is not a preference question — it is not a recipient.
+    if not getattr(user, "is_active", True):
+        return False
+    try:
+        from common.alert_prefs import ESSENTIAL
+        if alert_type in ESSENTIAL:
+            return True
+    except Exception:
+        pass
+    uid = getattr(user, "id", None)
+    if uid is None:
+        return True
+    try:
+        row = session.execute(
+            text("SELECT enabled FROM alert_preferences "
+                 "WHERE user_id = :u AND alert_type = :at"),
+            {"u": uid, "at": alert_type},
+        ).first()
+    except Exception as exc:
+        log.warning("alert_prefs.single_lookup_failed", alert_type=alert_type,
+                    user_id=uid, error=str(exc))
+        return True
+    return True if row is None else bool(row[0])
+
 
 def _filter_by_alert_pref(session, recipients: dict, alert_type: str) -> dict:
     """Drop users who have turned `alert_type` off.
@@ -1408,7 +1458,22 @@ def _build_game_plan(
         # Take profit: analyst target (only if meaningfully above current) else style default
         target_price = (fundamentals or {}).get("target_price")
         min_tp_pct = params["default_tp_pct"]
-        if target_price and float(target_price) > current_price * min(1.03, min_tp_pct * 0.8):
+        # EA-02 (2026-09-28 email audit): AN ANALYST TARGET MUST CLEAR THE PRICE, NOT A
+        # FRACTION OF IT.
+        #
+        # The bar was `current_price * min(1.03, default_tp_pct * 0.8)`. For SWING the
+        # multiplier is 1.12, so `min(1.03, 0.896)` is 0.896 — the target only had to exceed
+        # 89.6% OF THE CURRENT PRICE. At price 100 an analyst target of 90 passed, and the plan
+        # rendered entries 98.5/96.5, stop 94.5 and "take profit" 90: a bullish setup whose
+        # profit target sits BELOW its own stop. `min()` was reached for by symmetry with the
+        # 1.03 floor and silently inverted the test, because 0.8 × a multiplier above 1.0 is
+        # still below 1.0 for every style here.
+        #
+        # The floor is now an explicit MAXIMUM of the two, so it is always above the current
+        # price, and the geometry is validated outright below regardless of where the number
+        # came from.
+        _tp_floor = current_price * max(1.03, min_tp_pct * 0.8)
+        if target_price and float(target_price) > _tp_floor:
             take_profit = float(target_price)
             tp_note = "analyst mean price target"
         else:
@@ -1437,10 +1502,32 @@ def _build_game_plan(
         # Earnings catalyst / risk
         next_earnings = (fundamentals or {}).get("next_earnings_date")
         days_to_earnings = (fundamentals or {}).get("days_to_earnings")
+        # EA-03: ZERO IS A NUMBER OF DAYS, NOT A MISSING VALUE.
+        #
+        # `days_to_earnings or 99` turned "earnings are TODAY" into 99, and `days_to_earnings
+        # or "?"` turned it into unknown — so a stock reporting this session rendered as
+        # "No earnings until 2026-09-28 (?d) — clean runway". Exactly inverted, on the day the
+        # event risk is highest. The same falsy test appears in the risk line below.
+        #
+        # Four states, told apart explicitly: unknown, today, upcoming, overdue.
+        _dte = None
+        if days_to_earnings is not None:
+            try:
+                _dte = int(days_to_earnings)
+            except (TypeError, ValueError):
+                _dte = None
         earnings_line = ""
         if next_earnings:
-            d = days_to_earnings or "?"
-            earnings_line = f"No earnings until {next_earnings} ({d}d) — clean runway" if (days_to_earnings or 99) > 10 else f"⚠ Earnings {next_earnings} ({d}d) — position size accordingly"
+            if _dte is None:
+                earnings_line = f"Earnings {next_earnings} — timing unconfirmed, size accordingly"
+            elif _dte < 0:
+                earnings_line = f"⚠ Earnings {next_earnings} already reported ({abs(_dte)}d ago) — data may be stale"
+            elif _dte == 0:
+                earnings_line = f"⚠ Earnings TODAY ({next_earnings}) — binary event risk before this setup resolves"
+            elif _dte <= 10:
+                earnings_line = f"⚠ Earnings {next_earnings} ({_dte}d) — position size accordingly"
+            else:
+                earnings_line = f"No earnings until {next_earnings} ({_dte}d) — clean runway"
 
         # AUD-GAMEPLAN-NONERECOMMENDATION: .get("recommendation", "")'s "" default only applies
         # when the key is MISSING — an ETF (e.g. GDX) has no individual analyst rating at all,
@@ -1462,17 +1549,29 @@ def _build_game_plan(
             "OBV trend up — volume confirming price direction" if reasons.get("obv_trend_bullish") else None,
         ] if c is not None][:3]
         if not catalysts:
-            catalysts = ["AI signal + analyst consensus aligned", "Technical structure improving", "Volume trend supporting move"]
+            # EA-03: DO NOT INVENT EVIDENCE THAT WAS NOT SUPPLIED.
+            #
+            # With no reasons and no fundamentals this asserted "AI signal + analyst consensus
+            # aligned", "Technical structure improving" and "Volume trend supporting move" —
+            # three specific claims about analyst agreement, structure and volume, none of
+            # which this helper received anything about. A reader cannot tell them from the
+            # real, derived catalysts above. An absence of supporting detail is a fact worth
+            # showing; it is not a reason to manufacture some.
+            catalysts = ["No supporting catalyst data available for this symbol — "
+                         "the signal itself is the only evidence here"]
 
         regime = reasons.get("market_regime", "unknown")
         risk = (
             "Broad market bear regime active — higher false-signal rate; reduce size"
             if regime == "bear"
-            else f"Earnings in {days_to_earnings}d — binary event risk; consider waiting for print" if days_to_earnings and int(days_to_earnings) <= 10
+            # EA-03: `days_to_earnings and ...` skipped ZERO here too, so the day of the print
+            # fell through to the generic market-risk sentence.
+            else f"Earnings TODAY — binary event risk; consider waiting for the print" if _dte == 0
+            else f"Earnings in {_dte}d — binary event risk; consider waiting for print" if _dte is not None and 0 < _dte <= 10
             else "Broader market sell-off would override stock-specific signal regardless of fundamentals"
         )
 
-        return {
+        plan = {
             "entry1": entry1, "entry1_note": e1_note,
             "entry2": entry2, "entry2_note": e2_note,
             "breakout": breakout, "breakout_note": breakout_note,
@@ -1484,9 +1583,73 @@ def _build_game_plan(
             "horizon_note": params["horizon_note"],
             "style": style.upper(),
         }
+        # EA-02: A PLAN THAT FAILS ITS OWN GEOMETRY IS NOT RENDERED.
+        #
+        # The analyst-target bar above is one way to produce an incoherent plan; it is not the
+        # only one, and this helper also serves the squeeze family. Validating the OUTPUT
+        # catches every route, including ones added later, rather than each input in turn.
+        #
+        # Returning None is an established, handled outcome here — the alert still sends, just
+        # without a plan section (see AUD-GAMEPLAN-NONERECOMMENDATION, which made exactly that
+        # trade for ETFs). An instruction that says "buy at 98.5, stop at 94.5, take profit at
+        # 90" is worse than no instruction.
+        _ok, _why = _plan_geometry_ok(plan)
+        if not _ok:
+            log.warning("game_plan.rejected_invalid_geometry", symbol=symbol, style=style,
+                        reason=_why, entry1=entry1, entry2=entry2, stop=stop,
+                        take_profit=take_profit, current_price=current_price)
+            return None
+        return plan
     except Exception as exc:
         log.warning("game_plan.build_failed", symbol=symbol, error=str(exc))
         return None
+
+
+def _plan_geometry_ok(plan: dict) -> tuple[bool, str]:
+    """Is this long-trade plan internally coherent? Returns (ok, reason_if_not).
+
+    EA-02 (2026-09-28 email audit). Pure and separate from the builder so the rule can be
+    tested directly against adversarial numbers rather than only through a full plan build.
+
+    A LONG setup has one ordering, and every level has to respect it:
+
+        stop  <  entry2  <=  entry1  <=  breakout      and      entry1  <  take_profit
+
+    The audit's counterexample passed every individual input check and still produced entries
+    98.5/96.5, stop 94.5 and take-profit 90 — a target below the stop. No single input was
+    obviously wrong; their combination was.
+
+    Every level must also be FINITE and POSITIVE. NaN fails all comparisons silently, so a NaN
+    price would otherwise slip through each `<` test without raising; `math.isfinite` is what
+    catches it.
+    """
+    import math
+
+    required = ("entry1", "entry2", "breakout", "stop", "take_profit", "current_price")
+    vals = {}
+    for k in required:
+        v = plan.get(k)
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return False, f"{k} is not a number"
+        if not math.isfinite(v) or v <= 0:
+            return False, f"{k} is not finite and positive"
+        vals[k] = v
+
+    if not vals["stop"] < vals["entry2"]:
+        return False, "stop is not below the lower entry"
+    if not vals["entry2"] <= vals["entry1"]:
+        return False, "the second entry is above the first"
+    if not vals["entry1"] <= vals["breakout"]:
+        return False, "the breakout level is below the primary entry"
+    if not vals["take_profit"] > vals["entry1"]:
+        return False, "take profit is not above the entry"
+    # The target must also beat the stop by more than rounding noise; a plan whose reward is
+    # smaller than its risk is coherent arithmetic and still not worth sending as a setup.
+    if not vals["take_profit"] > vals["stop"]:
+        return False, "take profit is below the stop"
+    return True, ""
 
 
 def _round_step(price: float) -> float:
@@ -2815,6 +2978,8 @@ def send_premarket_brief(markets: list | None = None) -> None:
                 if a.user and a.user.email and _sym_market(a.symbol) in markets:
                     user_symbols.setdefault(a.user_id, set()).add(a.symbol)
                     recipients[a.user_id] = a.user
+            # EA-05: this type is user-manageable and was never filtered.
+            recipients = _filter_by_alert_pref(session, recipients, "premarket_brief")
             if not recipients:
                 _record_job_status(_job_name, "ok", time.monotonic() - _t0)
                 return
@@ -4896,6 +5061,35 @@ _OPTIONS_FLOW_ALERT_EMAIL_CAP = 12
 _OPTIONS_FLOW_ALERT_COOLDOWN_MINUTES = 30
 
 
+# EA-09: how lopsided the classified premium must be before a side is called dominant.
+# 0.60 means the winning side carries at least 60% of the premium that was classified at all —
+# a 55/45 split is not evidence of aggression in either direction, and `>=` treated 50/50 as
+# evidence of one.
+_FLOW_SIDE_MIN_IMBALANCE = 0.60
+
+
+def _classify_flow_side(ask_prem: float, bid_prem: float) -> tuple[str, float]:
+    """Which side dominates this print's classified premium, and by how much.
+
+    Returns ("ask" | "bid" | "neutral", dominant_fraction). The fraction is of the CLASSIFIED
+    premium only — premium the provider did not attribute to a side is not in either number,
+    so this says nothing about how much of the print was classified at all. That is a separate
+    quantity and is reported separately.
+
+    Pure, so the threshold can be tested as a number against adversarial splits rather than
+    only observed through a full scan.
+    """
+    total = (ask_prem or 0.0) + (bid_prem or 0.0)
+    if total <= 0:
+        return "neutral", 0.0
+    ask_frac = (ask_prem or 0.0) / total
+    if ask_frac >= _FLOW_SIDE_MIN_IMBALANCE:
+        return "ask", ask_frac
+    if (1.0 - ask_frac) >= _FLOW_SIDE_MIN_IMBALANCE:
+        return "bid", 1.0 - ask_frac
+    return "neutral", max(ask_frac, 1.0 - ask_frac)
+
+
 def _options_flow_alert_direction(option_type: str, ask_side_dominant: bool) -> str:
     """MPE-OPTIONS-FLOW-ALERT: the real directional read UW's own ask-side/bid-side split
     provides, not a naive "call=bullish, put=bearish" — see OptionsFlowAlertOutcome's own
@@ -5134,7 +5328,26 @@ def check_options_flow_alerts() -> None:
                         bid = row.total_bid_side_prem or 0.0
                         if ask == 0.0 and bid == 0.0:
                             continue  # no real premium split to derive a direction from
-                        ask_side_dominant = ask >= bid
+                        # EA-09 (2026-09-28 email audit): `ask >= bid` CLASSIFIED A TIE AS
+                        # AGGRESSIVE BUYING.
+                        #
+                        # Equal ask-side and bid-side premium is the definition of no
+                        # directional evidence, and `>=` resolved it to bullish every time. A
+                        # missing side became 0.0 via `or 0.0`, so "we were sent one number"
+                        # also read as total dominance. The template then called the result
+                        # "aggressive BUYING/SELLING" — a certainty the arithmetic never had.
+                        #
+                        # A side must now actually dominate. The imbalance is carried through
+                        # so the email can state what was measured instead of asserting a
+                        # verdict, and a balanced print produces no directional candidate at
+                        # all rather than a coin-flip one.
+                        _side, _imbalance = _classify_flow_side(ask, bid)
+                        if _side == "neutral":
+                            log.debug("options_flow.neutral_side_skipped", symbol=symbol,
+                                      chain=row.option_chain, ask=ask, bid=bid,
+                                      imbalance=_imbalance)
+                            continue
+                        ask_side_dominant = _side == "ask"
                         direction = _options_flow_alert_direction(row.option_type, ask_side_dominant)
                         cal = _cal_buckets.get(direction)
                         candidates[row.option_chain] = {
@@ -5142,6 +5355,9 @@ def check_options_flow_alerts() -> None:
                             "option_chain": row.option_chain,
                             "option_type": row.option_type,
                             "direction": direction,
+                            # EA-09: carried so the email can report the measured imbalance
+                            # instead of asserting "aggressive BUYING".
+                            "side_imbalance": _imbalance,
                             "strike": row.strike,
                             "expiry": row.expiry,
                             "price": price,
@@ -5939,6 +6155,9 @@ def check_squeeze_watch_reverts() -> None:
                     reason_str = "; ".join(reasons)
 
                     user = w.user
+                    # EA-05: user-manageable type, never filtered before.
+                    if not _may_send(session, user, "squeeze_watch_revert"):
+                        continue
                     sent_ok = True
                     if user and user.email:
                         sent_ok = send_squeeze_watch_revert_email(
@@ -6112,6 +6331,9 @@ def check_sr_watch_reverts() -> None:
                         level_kind, level_price = "resistance", nearest_resistance
 
                     user = session.get(User, w.user_id)
+                    # EA-05: user-manageable type, never filtered before.
+                    if not _may_send(session, user, "sr_watch"):
+                        continue
                     if user is None or not user.email:
                         continue
                     sent_ok = send_sr_watch_alert_email(
@@ -6798,6 +7020,9 @@ def check_value_area_breakdown() -> None:
             sent = 0
             for uid, syms in user_symbols.items():
                 u_obj = next((a.user for a in alerts if a.user_id == uid), None)
+                # EA-05: user-manageable type, never filtered before.
+                if not _may_send(session, u_obj, "value_area"):
+                    continue
                 if not u_obj or not u_obj.email:
                     continue
                 my_alerts = []
@@ -7007,10 +7232,17 @@ def check_top3_conviction() -> None:
             # Same qualifying set as last cycle — nothing new to report.
             _record_job_status("check_top3_conviction", "ok", time.monotonic() - _t0)
             return
-        try:
-            _rc.set("stockai:top3_last_composition", composition_key, ex=6 * 3600)
-        except Exception:
-            pass
+        # EA-07 (2026-09-28 email audit): THE GLOBAL COMPOSITION IS NOT ADVANCED HERE ANY MORE.
+        #
+        # It used to be written at this point, BEFORE a single delivery was attempted. If every
+        # recipient's send then failed, the next scan found an unchanged composition, took the
+        # equality early-return above, and never retried anyone — one transient SMTP problem
+        # silently consumed the whole alert for the 6h TTL. A composition CHANGING and a
+        # recipient RECEIVING it are different facts and cannot share one flag.
+        #
+        # It is written after the loop instead, and only when nobody is still owed the mail.
+        # The per-recipient dedup keys below already prevent duplicates for whoever did get it,
+        # so a retry cycle re-attempts exactly the recipients who failed.
 
         if not top3:
             _record_job_status("check_top3_conviction", "ok", time.monotonic() - _t0)
@@ -7029,6 +7261,7 @@ def check_top3_conviction() -> None:
 
             from .email_service import send_top3_conviction_email
             sent = 0
+            failed = 0
             for uid, user in recipients.items():
                 dedup_key = f"stockai:top3_sent:{uid}:{composition_key}"
                 try:
@@ -7055,10 +7288,27 @@ def check_top3_conviction() -> None:
                         _rc.setex(dedup_key, 6 * 3600, "1")
                     except Exception:
                         pass
+                else:
+                    # EA-07: somebody is still owed this composition.
+                    failed += 1
 
+            # EA-07: advance the global composition only when no recipient is still owed it.
+            # Advancing on partial success would silence the retry for whoever failed, which is
+            # the same defect one recipient narrower.
+            if failed == 0:
+                try:
+                    _rc.set("stockai:top3_last_composition", composition_key, ex=6 * 3600)
+                except Exception:
+                    pass
+            else:
+                log.warning("top3_conviction.composition_not_advanced", failed=failed,
+                            sent=sent, composition=composition_key,
+                            note="recipients still owed this composition; the next scan retries "
+                                 "them and the per-recipient dedup keys prevent duplicates")
             _record_job_status("check_top3_conviction", "ok", time.monotonic() - _t0)
             log.info("top3_conviction.done", qualifying=len(qualifying), sent=sent,
-                     recipients=len(recipients), picks=[q["symbol"] for q in top3])
+                     failed=failed, recipients=len(recipients),
+                     picks=[q["symbol"] for q in top3])
     except Exception as exc:
         log.error("top3_conviction.failed", error=str(exc), exc_info=True)
         _record_job_status("check_top3_conviction", "error", time.monotonic() - _t0, str(exc))
@@ -7159,6 +7409,20 @@ def check_signal_alerts() -> None:
             # DP-3: Build per-symbol price freshness map; skip symbols with stale bars.
             # Use 4-day window to accommodate weekends (Fri close → Mon alert run = 3 calendar days).
             fresh_symbols: set[str] = set()
+            # EA-08 (2026-09-28 email audit): WHICH symbols are in `fresh_symbols` BECAUSE WE
+            # CHECKED, and which are there because we could not check and assumed the best.
+            #
+            # Two paths below put every symbol into `fresh_symbols` without establishing
+            # anything about them: a failed freshness query, and a universe with no price rows
+            # at all. Both are deliberate fail-opens — a silent blackout is its own failure —
+            # but they were indistinguishable afterwards from a symbol whose bar was verified
+            # minutes ago, and a NEW ACTIONABLE BUY was emitted on that basis.
+            #
+            # Failing open is right for an EXIT: telling somebody to reduce risk on imperfect
+            # data costs them little, and withholding it can cost a lot. Failing open for a BUY
+            # is the opposite trade. So the assumption is recorded rather than erased, and the
+            # BUY gate below refuses it while exits still go out.
+            assumed_fresh_symbols: set[str] = set()
             stale_cutoff = datetime.now(timezone.utc) - timedelta(days=4)
             try:
                 price_rows = session.execute(
@@ -7181,6 +7445,7 @@ def check_signal_alerts() -> None:
             except Exception as exc:
                 log.warning("signal_alert.freshness_check_failed", error=str(exc))
                 fresh_symbols = set(symbols)  # fall through on DB error
+                assumed_fresh_symbols = set(symbols)
                 price_rows = None  # sentinel: the query itself never ran, distinct from "ran and found 0 rows"
 
             # AUD-E08-FRESHNESSFAILOPEN (2026-09-19): "the query found zero price rows for any
@@ -7196,6 +7461,7 @@ def check_signal_alerts() -> None:
                             note="No price bars found for any alert symbol — assuming fresh to avoid silent blackout",
                             symbol_count=len(symbols))
                 fresh_symbols = set(symbols)
+                assumed_fresh_symbols = set(symbols)
             elif not fresh_symbols and symbols:
                 log.error("signal_alert.freshness_all_stale",
                           note="Price bars exist but EVERY alert symbol is stale — suppressing "
@@ -7317,8 +7583,24 @@ def check_signal_alerts() -> None:
 
             fired = 0
             for alert in alerts:
+                # EA-05: `signal` is advertised as a manageable type and its settings toggle
+                # wrote a row nothing read. Checked here, before any per-alert work, so an
+                # opted-out user costs nothing rather than being filtered at the send.
+                if not _may_send(session, alert.user, "signal"):
+                    continue
                 # DP-3: skip if price data is stale
                 if alert.symbol not in fresh_symbols:
+                    continue
+                # EA-08: a symbol that is only ASSUMED fresh — the freshness query failed, or
+                # the universe had no price rows at all — may still produce a risk-reducing
+                # alert, but never a new actionable BUY. We would be telling someone to open a
+                # position on inputs we could not verify, which is the one direction where
+                # being wrong costs them money they had not already committed.
+                if (alert.symbol in assumed_fresh_symbols
+                        and signals.get((alert.symbol, getattr(alert, "horizon", "SWING"))) == "BUY"):
+                    log.warning("signal_alert.buy_suppressed_unverified_freshness",
+                                symbol=alert.symbol,
+                                note="price freshness could not be established; exits still send")
                     continue
 
                 style = getattr(alert, "horizon", "SWING")
@@ -7461,8 +7743,23 @@ def check_signal_alerts() -> None:
                     continue
 
                 # DE gate: for BUY transitions, confirm Decision Engine agrees before emailing.
-                # Fail-open (allow alert) if DE is unreachable — never block on infrastructure failure.
+                #
+                # EA-08 (2026-09-28 email audit): THIS USED TO FAIL OPEN, AND A SAFETY VETO THAT
+                # FAILS OPEN IS NOT A VETO.
+                #
+                # A non-200 response fell through with no branch at all, and an exception was
+                # swallowed at debug level — either way the BUY went out exactly as though DE
+                # had approved it. The original note, "never block on infrastructure failure",
+                # is the right instinct for an EXIT and the wrong one here: an exit withheld
+                # costs the reader a chance to reduce risk, while a BUY emitted without its
+                # veto asks them to commit money on a check that never ran.
+                #
+                # It now defers instead of proceeding. `last_signal` is deliberately NOT
+                # advanced — the same treatment a real SKIP verdict already gets — so the
+                # transition stays pending and the next run re-asks. A DE outage delays BUY
+                # alerts; it no longer silently converts them into unchecked ones.
                 if is_bullish and current == "BUY":
+                    _de_available = False
                     try:
                         de_r = httpx.post(
                             f"{_settings.decision_engine_url}/decide/{alert.symbol}",
@@ -7490,9 +7787,18 @@ def check_signal_alerts() -> None:
                                 # Do NOT advance last_signal — retry next run in case DE changes.
                                 continue
                             log.info("signal_alert.de_gate_passed", symbol=alert.symbol, de_verdict=de_verdict)
+                            _de_available = True
+                        else:
+                            log.warning("signal_alert.de_gate_unavailable", symbol=alert.symbol,
+                                        status=de_r.status_code,
+                                        note="non-200 from decision-engine; deferring this BUY")
                     except Exception as _de_exc:
-                        log.debug("signal_alert.de_gate_error", symbol=alert.symbol, error=str(_de_exc),
-                                  note="DE unreachable — fail-open, allowing alert")
+                        log.warning("signal_alert.de_gate_error", symbol=alert.symbol, error=str(_de_exc),
+                                    note="decision-engine unreachable; deferring this BUY")
+                    if not _de_available:
+                        # Not advancing last_signal: the transition is still pending and the
+                        # next run re-asks once DE is back.
+                        continue
 
                 # Build game plan for BUY transitions, tailored to the user's trading style
                 game_plan = None
@@ -7542,6 +7848,26 @@ def check_signal_alerts() -> None:
                 # would otherwise propagate to this function's outer except, aborting the
                 # whole remaining alerts loop — every other user/symbol still left in `alerts`
                 # would silently get no alert this cycle.
+                # EA-01 (2026-09-28 email audit): OPTIONAL ENRICHMENT, FAILING ON ITS OWN.
+                #
+                # This used to be evaluated inline as an argument to the call below:
+                #     cohort_stats=_signal_cohort_stats(session, new_signal, style)
+                # `new_signal` is the KEYWORD NAME of another argument, not a local variable, so
+                # every evaluation raised NameError BEFORE send_signal_alert_email was entered.
+                # The surrounding try treated that as a delivery failure, and after five of them
+                # the give-up branch advanced `last_signal` — so the transition was consumed and
+                # the user was never told. Introduced by f7e9fea3 on 2026-09-23; production's
+                # most recent signal email is 2026-09-24 03:40 against 362 subscriptions.
+                #
+                # It is computed separately now because it is a BADGE. A win-rate cohort failing
+                # must never cost the reader the alert itself — the thing they subscribed to.
+                try:
+                    _cohort_stats = _signal_cohort_stats(session, current, style)
+                except Exception as _cohort_exc:
+                    _cohort_stats = None
+                    log.warning("signal_alert.cohort_stats_failed", symbol=alert.symbol,
+                                style=style, error=str(_cohort_exc),
+                                note="sending without the cohort badge; the alert is the point")
                 try:
                     email_ok = send_signal_alert_email(
                         to=effective_email,
@@ -7558,10 +7884,16 @@ def check_signal_alerts() -> None:
                         near_conviction_failed=near_conviction_failed,
                         horizon=style,
                         win_rate_90d=sym_wr_map.get(alert.symbol),
-                        cohort_stats=_signal_cohort_stats(session, new_signal, style),
+                        cohort_stats=_cohort_stats,
                     )
+                    _send_raised = False
                 except Exception as _send_exc:
                     email_ok = False
+                    # EA-01: remember that this was an EXCEPTION, not a transport "false".
+                    # A raised error is a defect in our own code far more often than it is a
+                    # broken mailbox, and the give-up branch below must not consume an unsent
+                    # transition on the strength of one.
+                    _send_raised = True
                     log.warning("signal_alert.recipient_send_error", symbol=alert.symbol, alert_id=alert.id, error=str(_send_exc))
                 if email_ok:
                     alert.last_signal = current  # advance state only after successful send
@@ -7620,7 +7952,24 @@ def check_signal_alerts() -> None:
                 else:
                     # DP-1: cap retries to prevent infinite loop on broken email config
                     _alert_fail_counts[alert.id] = _alert_fail_counts.get(alert.id, 0) + 1
-                    if _alert_fail_counts[alert.id] >= 5:
+                    if _send_raised:
+                        # EA-01: A PROGRAMMING ERROR IS NOT A DELIVERY FAILURE, and must never
+                        # consume the transition. DP-1's give-up exists for a genuinely broken
+                        # SMTP config that will never succeed on its own; an exception from our
+                        # own code is the opposite — it will succeed the moment the code is
+                        # fixed, and advancing `last_signal` throws the notification away
+                        # permanently. That is exactly what happened here for four days.
+                        #
+                        # The counter still increments, so the condition stays visible and
+                        # bounded in the logs; what it no longer does is discard the alert.
+                        log.error(
+                            "signal_alert.send_raised_not_consuming",
+                            symbol=alert.symbol, alert_id=alert.id,
+                            failures=_alert_fail_counts[alert.id], error=str(_send_exc),
+                            note="code-level failure: the transition stays pending and will "
+                                 "retry; this is operator-visible and needs a fix, not a retry",
+                        )
+                    elif _alert_fail_counts[alert.id] >= 5:
                         log.error(
                             "signal_alert.email_retry_limit",
                             symbol=alert.symbol, retries=5,
@@ -7656,6 +8005,9 @@ def check_signal_alerts() -> None:
 
                 for uid, syms in user_symbols.items():
                     u_obj = next((a.user for a in alerts if a.user_id == uid), None)
+                    # EA-05: user-manageable type, never filtered before.
+                    if not _may_send(session, u_obj, "earnings_reminder"):
+                        continue
                     if not u_obj or not u_obj.email:
                         continue
                     digest_rows: list[dict] = []
@@ -7865,7 +8217,40 @@ def check_price_alerts() -> None:
             alerts = session.execute(
                 select(PriceAlert).where(PriceAlert.triggered.is_(False))
             ).scalars().all()
-            if not alerts:
+
+            # EA-06 (2026-09-28 email audit): THE TRIGGER AND ITS NOTIFICATION ARE SEPARATE
+            # FACTS, AND ONLY ONE OF THEM WAS DURABLE.
+            #
+            # A firing alert is marked `triggered=True` and COMMITTED before the send result is
+            # known — deliberately, so a crash cannot double-send. But a send that then FAILS
+            # left nothing behind: the alert was consumed, the next scan skipped it (it filters
+            # on `triggered.is_(False)`), and the user was never told about a price they had
+            # explicitly asked to be told about.
+            #
+            # `triggered` is correct as it stands and stays committed: the market event really
+            # did happen, and un-setting it would re-fire the alert as though the price had
+            # crossed twice. What was missing is retryable state for the NOTIFICATION, which
+            # `last_sent_at` already models — it is simply never written on this path. So it is
+            # written on success only, below, and a triggered alert that still has no
+            # `last_sent_at` is picked up here for another attempt.
+            #
+            # Bounded to a day: a notification nobody could deliver in 24h is stale news, and
+            # retrying it forever would be its own defect.
+            _retry_cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            _undelivered = session.execute(
+                select(PriceAlert).where(
+                    PriceAlert.triggered.is_(True),
+                    PriceAlert.last_sent_at.is_(None),
+                    PriceAlert.triggered_at.isnot(None),
+                    PriceAlert.triggered_at >= _retry_cutoff,
+                    PriceAlert.email.isnot(None),
+                )
+            ).scalars().all()
+            if _undelivered:
+                log.info("alert.retrying_undelivered", count=len(_undelivered),
+                         note="triggered but never successfully emailed")
+
+            if not alerts and not _undelivered:
                 _record_job_status("check_price_alerts", "ok", time.monotonic() - _t0)
                 return
 
@@ -7963,9 +8348,13 @@ def check_price_alerts() -> None:
 
                 if alert.email:
                     pending_emails.append(dict(
+                        # EA-06: identity, so a successful send can mark the notification
+                        # delivered and stop it being retried on the next scan.
+                        _alert_id=alert.id,
                         to=alert.email, symbol=alert.symbol,
                         condition=alert.condition.value,
                         threshold=alert.threshold, price=price, note=note,
+                        recurring=bool(alert.recurring),
                     ))
                 if alert.webhook_url:
                     pending_webhooks.append((alert.webhook_url, dict(
@@ -7989,14 +8378,41 @@ def check_price_alerts() -> None:
             # inside send_price_alert_email() would otherwise propagate out of this loop,
             # skipping every remaining triggered alert this cycle (already-triggered flags
             # were committed above, so those alerts would simply never get their email).
+            # EA-06: the retry queue, built from alerts whose notification never landed. Same
+            # renderer, same shape — the only difference is that these were triggered earlier.
+            for _ua in _undelivered:
+                pending_emails.append(dict(
+                    to=_ua.email, symbol=_ua.symbol, condition=_ua.condition.value,
+                    threshold=_ua.threshold, price=prices.get(_ua.symbol, _ua.threshold),
+                    note=_ua.note, recurring=bool(_ua.recurring),
+                    _alert_id=_ua.id,
+                ))
+
+            _delivered_ids: list[int] = []
             for kwargs in pending_emails:
+                # EA-06: which alert this mail belongs to, so a success can be recorded. Popped
+                # rather than passed — the renderer takes rendering arguments, not identity.
+                _alert_id = kwargs.pop("_alert_id", None)
                 try:
                     ok = send_price_alert_email(**kwargs)
                 except Exception as _send_exc:
                     ok = False
                     log.warning("alert.email_send_error", symbol=kwargs["symbol"], email=kwargs["to"], error=str(_send_exc))
-                if not ok:
-                    log.warning("alert.email_failed", symbol=kwargs["symbol"], email=kwargs["to"])
+                if ok:
+                    if _alert_id is not None:
+                        _delivered_ids.append(_alert_id)
+                else:
+                    log.warning("alert.email_failed", symbol=kwargs["symbol"], email=kwargs["to"],
+                                note="notification stays undelivered and will be retried")
+            if _delivered_ids:
+                # Recorded AFTER the provider accepted it, which is what makes the retry above
+                # terminate. A failure simply leaves last_sent_at NULL and it is tried again.
+                session.execute(
+                    update(PriceAlert)
+                    .where(PriceAlert.id.in_(_delivered_ids))
+                    .values(last_sent_at=datetime.now(timezone.utc))
+                )
+                session.commit()
             for url, payload in pending_webhooks:
                 _fire_webhook(url, payload)
             for user, symbol, condition, threshold, price in pending_pushes:
@@ -8351,6 +8767,10 @@ def check_technical_alerts() -> None:
                             threshold=threshold_val,
                             price=float(close.iloc[-1]),
                             note=alert.note,
+                            # EA-04: the renderer used to claim every technical alert "will not
+                            # fire again", which is false for the recurring ones this very
+                            # branch keeps active. The flag is right here; pass it.
+                            recurring=bool(alert.recurring),
                         ))
                     if alert.webhook_url:
                         pending_webhooks.append((alert.webhook_url, dict(
@@ -10170,6 +10590,9 @@ def send_weekly_theme_forecast() -> None:
             sent = 0
             errors = 0
             for user in users:
+                # EA-05: user-manageable type, never filtered before.
+                if not _may_send(session, user, "theme_forecast"):
+                    continue
                 redis_key = f"stockai:theme_forecast:{user.id}:{today.isoformat()}"
                 try:
                     if _rc and _rc.exists(redis_key):
@@ -10276,6 +10699,9 @@ def send_weekly_trade_coach() -> None:
                 # Per-(user, date) dedup — matches send_weekly_theme_forecast()'s own AUD256
                 # pattern, guarding against a restart within this job's misfire_grace_time
                 # window re-sending the same week's review a second time.
+                # EA-05: user-manageable type, never filtered before.
+                if not _may_send(session, user, "trade_coach"):
+                    continue
                 redis_key = f"stockai:trade_coach:{user.id}:{today.isoformat()}"
                 try:
                     if _rc and _rc.exists(redis_key):
@@ -11086,6 +11512,9 @@ def send_morning_digest(markets: list | None = None) -> None:
         sent = 0
         errors = 0
         for user in users:
+            # EA-05: this type is user-manageable; honour the preference.
+            if not _may_send(session, user, "morning_digest"):
+                continue
             redis_key = f"stockai:morning_digest:{user.id}:{market_key}:{today_str}"
             try:
                 if _rc and _rc.exists(redis_key):
@@ -11437,6 +11866,9 @@ def send_post_open_digest(market: str, window: str) -> None:
             sent = 0
             errors = 0
             for user in users:
+                # EA-05: this type is user-manageable; honour the preference.
+                if not _may_send(session, user, "post_open_digest"):
+                    continue
                 redis_key = f"stockai:post_open_digest:{user.id}:{market}:{window}:{today_str}"
                 try:
                     if _rc and _rc.exists(redis_key):
@@ -12357,7 +12789,12 @@ def send_flow_digest(lookback: str = "intraday", label: str = "flow_digest") -> 
             of_acc = _flow_hit_rate(session, OptionsFlowAlertOutcome)
 
             users = session.execute(
-                select(User).where(User.email.isnot(None), User.email != "")
+                # EA-05: this selected EVERY user with a nonempty address — no active-account
+                # predicate at all, so a disabled account still received a send attempt. The
+                # per-recipient _may_send() gate below is the common boundary; excluding them
+                # here as well means they are never even loaded.
+                select(User).where(User.email.isnot(None), User.email != "",
+                                   User.is_active.is_(True))
             ).scalars().all()
             if not users:
                 _record_job_status(label, "ok", time.monotonic() - _t0)
@@ -12374,6 +12811,9 @@ def send_flow_digest(lookback: str = "intraday", label: str = "flow_digest") -> 
             )
             sent = 0
             for u in users:
+                # EA-05: the flow digest had no manageable type and no preference check.
+                if not _may_send(session, u, "flow_digest"):
+                    continue
                 if send_email(u.email, subject, html, text):
                     sent += 1
             log.info("flow_digest.sent", label=label, lookback=lookback,
@@ -12771,6 +13211,9 @@ def send_paper_portfolio_digest(market: str = "US") -> None:
                     # Dedup key is per (user, MARKET, date) rather than per portfolio — there is
                     # one email now, so a per-portfolio key would let a restart re-send it once
                     # for every portfolio the email contains.
+                    # EA-05: this type is user-manageable; honour the preference.
+                    if not _may_send(session, user, "portfolio_digest"):
+                        continue
                     redis_key = f"stockai:paper_portfolio_digest:{user.id}:{_mkt}:{today_str}"
                     try:
                         if _rc and _rc.exists(redis_key):

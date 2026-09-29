@@ -126,8 +126,14 @@ def test_ask_side_dominant_renders_aggressive_buying_text():
              "ask_side_dominant": True, "volume_oi_ratio": 1.5, "has_sweep": True, "alert_rule": "RepeatedHits"},
         ])
     html = calls[0]["html"]
-    assert "aggressive BUYING" in html
-    assert "aggressive SELLING" not in html
+    # REWORDED 2026-09-28 by the email audit (EA-09). This asserted "aggressive BUYING" / not
+    # "aggressive SELLING" — wording that claims INTENT from a quote-side classification. The
+    # print and its price are observations; which side was the aggressor is an inference, and
+    # it establishes neither opening-versus-closing nor a directional bet. The classification
+    # was also `ask >= bid`, so a dead tie rendered as buying. The side is still reported and
+    # is still distinguishable; it now says what was measured.
+    assert "ask-side dominant" in html
+    assert "bid-side dominant" not in html
 
 
 def test_bid_side_dominant_renders_aggressive_selling_text():
@@ -139,8 +145,9 @@ def test_bid_side_dominant_renders_aggressive_selling_text():
              "ask_side_dominant": False, "volume_oi_ratio": 1.5, "has_sweep": True, "alert_rule": "RepeatedHits"},
         ])
     html = calls[0]["html"]
-    assert "aggressive SELLING" in html
-    assert "aggressive BUYING" not in html
+    # See the EA-09 note on the ask-side test above.
+    assert "bid-side dominant" in html
+    assert "ask-side dominant" not in html
 
 
 def test_sweep_flag_renders_when_true_and_omitted_when_false():

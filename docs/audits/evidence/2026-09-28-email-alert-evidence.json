@@ -1,0 +1,558 @@
+{
+  "audit_date_local": "2026-09-28",
+  "timezone": "America/Los_Angeles",
+  "recorded_at_utc": "2026-09-29T01:51:08.179407+00:00",
+  "reviewed_head": "5509dd76fd110422c473f2b438e8004d6f1481e6",
+  "email_application_diff_from_b5332a3": "",
+  "interpretation": "The original email script asserts bad behavior. Exit zero means defects reproduced. Remediation checks assert desired behavior in separate settlement and label paths.",
+  "file_sha256": {
+    "services/market-data/src/services/scheduler.py": "7d430d949603c9428064cd362688021af683f85bd3cb6d8bb875b44a7ad2c5c5",
+    "services/market-data/src/services/email_service.py": "17d76a22b62f2bcf570c00bdd45eeba37139da0565661efda6c2ef5afde7547b",
+    "shared/common/alert_prefs.py": "cc30d8ded3fa4d17977a11e4796109a5fdb0801a86a28f9773a25a0f28f7b75b",
+    "services/market-data/src/services/unusual_whales.py": "cde50a9aac508fafae86f7d30843313acef1b505dcf089bf1bfb1af230a027ae",
+    "services/market-data/src/services/options_game_plan_snapshot.py": "2bc83bc9dd3f2577cb9923fe33fcde6622633b5536e81d94ffc7bae1a950fa3c",
+    "services/market-data/src/services/paper_trading_engine.py": "4994b33a96e8cbada416b0fd41dc8a1ac334571a701b9a27a1fbe353ba61fef7",
+    "services/market-data/src/services/conditional_orders.py": "a8d1fac4ee08097dc13b60af579e896677fd013a949fd3cc88487200ee3ceb8b",
+    "services/market-data/src/services/options_income_engine.py": "05f97cfe75a28653a74d9db62f406d32fbb442579924c7438d1cf97d0ac2741d",
+    "services/ml-prediction/src/training/trainer.py": "a89171e710da091e1c7e8ff0c78c95dfd9640e3c9df535eabc1bc0f317bf03f9",
+    "services/ml-prediction/src/training/meta_trainer.py": "5aa20564073d2eac9839b98b5086b88527caf35d02ad491410d237930338acfb",
+    "docs/audits/evidence/2026-09-28-email-alert-reproductions.py": "f6e65c982a66603d6a8fb8b0977ff587afb0e2f5227a6740b1323e4747783b44",
+    "docs/audits/evidence/2026-09-28-email-review-remediation-checks.py": "2df1ba2424eda61cd78507f26a091b770ef7c69307ee8c67d7ca481ab17c83ff"
+  },
+  "email_checks": [
+    {
+      "name": "signal_retry_loss",
+      "status": "defect_reproduced",
+      "result": {
+        "iterations": 5,
+        "sender_calls": 0,
+        "errors": [
+          "name 'new_signal' is not defined",
+          "name 'new_signal' is not defined",
+          "name 'new_signal' is not defined",
+          "name 'new_signal' is not defined",
+          "name 'new_signal' is not defined"
+        ],
+        "last_signal_after_giveup": "SELL",
+        "last_sent_at": null
+      }
+    },
+    {
+      "name": "plan_defects",
+      "status": "defect_reproduced",
+      "result": {
+        "bad_target": {
+          "entry1": 98.5,
+          "entry1_note": "near-term support \u2014 scale in on weakness",
+          "entry2": 96.5,
+          "entry2_note": "secondary support \u2014 averaging down level",
+          "breakout": 102.0,
+          "breakout_note": "breakout above resistance on volume \u2014 momentum confirmed",
+          "stop": 94.5,
+          "stop_note": "daily close below invalidates bullish swing setup",
+          "take_profit": 90.0,
+          "take_profit_note": "analyst mean price target",
+          "catalysts": [
+            "AI signal + analyst consensus aligned",
+            "Technical structure improving",
+            "Volume trend supporting move"
+          ],
+          "risk": "Broader market sell-off would override stock-specific signal regardless of fundamentals",
+          "current_price": 100.0,
+          "horizon_note": "Swing trade (5\u201330 days) \u2014 hold through normal volatility",
+          "style": "SWING"
+        },
+        "earnings_today": {
+          "entry1": 98.5,
+          "entry1_note": "near-term support \u2014 scale in on weakness",
+          "entry2": 96.5,
+          "entry2_note": "secondary support \u2014 averaging down level",
+          "breakout": 102.0,
+          "breakout_note": "breakout above resistance on volume \u2014 momentum confirmed",
+          "stop": 94.5,
+          "stop_note": "daily close below invalidates bullish swing setup",
+          "take_profit": 112.0,
+          "take_profit_note": "+12% from current, near next resistance",
+          "catalysts": [
+            "No earnings until 2026-09-28 (?d) \u2014 clean runway"
+          ],
+          "risk": "Broader market sell-off would override stock-specific signal regardless of fundamentals",
+          "current_price": 100.0,
+          "horizon_note": "Swing trade (5\u201330 days) \u2014 hold through normal volatility",
+          "style": "SWING"
+        }
+      }
+    },
+    {
+      "name": "technical_render",
+      "status": "defect_reproduced",
+      "result": {
+        "subject": "Price Alert: TEST has fallen below 0.0",
+        "text": "Your price alert for TEST has triggered.\n\nTEST is now 100.0000 (fallen below your target of 0.0).\n\nLog in to your StockAI dashboard to review.\n",
+        "recurring_footer_says_no_repeat": true
+      }
+    },
+    {
+      "name": "price_delivery_loss",
+      "status": "defect_reproduced",
+      "result": {
+        "delivery_failed": true,
+        "triggered_stays_true": true,
+        "sender_calls_across_two_runs": 1,
+        "commits": 1
+      }
+    },
+    {
+      "name": "top3_delivery_loss",
+      "status": "defect_reproduced",
+      "result": {
+        "sender_calls_across_two_runs": 1,
+        "failed_send_consumes_composition": true
+      }
+    },
+    {
+      "name": "preference_inventory",
+      "status": "static_inventory_completed",
+      "result": [
+        {
+          "type": "signal",
+          "builder": "send_signal_alert_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_signal_alerts",
+              "has_preference_filter": false
+            }
+          ]
+        },
+        {
+          "type": "morning_digest",
+          "builder": "send_morning_digest_email",
+          "scheduler_jobs": [
+            {
+              "job": "send_morning_digest",
+              "has_preference_filter": false
+            }
+          ]
+        },
+        {
+          "type": "premarket_brief",
+          "builder": "send_premarket_brief_email",
+          "scheduler_jobs": [
+            {
+              "job": "send_premarket_brief",
+              "has_preference_filter": false
+            }
+          ]
+        },
+        {
+          "type": "volume_anomaly",
+          "builder": "send_volume_anomaly_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_volume_anomalies",
+              "has_preference_filter": true
+            }
+          ]
+        },
+        {
+          "type": "short_squeeze",
+          "builder": "send_short_squeeze_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_short_squeeze_alerts",
+              "has_preference_filter": true
+            }
+          ]
+        },
+        {
+          "type": "squeeze_ignition",
+          "builder": "send_squeeze_ignition_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_squeeze_ignition_alerts",
+              "has_preference_filter": true
+            }
+          ]
+        },
+        {
+          "type": "gamma_unwind",
+          "builder": "send_gamma_unwind_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_gamma_unwind_alerts",
+              "has_preference_filter": true
+            }
+          ]
+        },
+        {
+          "type": "options_flow",
+          "builder": "send_options_flow_alert_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_options_flow_alerts",
+              "has_preference_filter": true
+            }
+          ]
+        },
+        {
+          "type": "dark_pool",
+          "builder": "send_dark_pool_alert_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_dark_pool_alerts",
+              "has_preference_filter": true
+            }
+          ]
+        },
+        {
+          "type": "prebreakout",
+          "builder": "send_prebreakout_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_prebreakout_alerts",
+              "has_preference_filter": true
+            }
+          ]
+        },
+        {
+          "type": "squeeze_watch_revert",
+          "builder": "send_squeeze_watch_revert_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_squeeze_watch_reverts",
+              "has_preference_filter": false
+            }
+          ]
+        },
+        {
+          "type": "sr_watch",
+          "builder": "send_sr_watch_alert_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_sr_watch_reverts",
+              "has_preference_filter": false
+            }
+          ]
+        },
+        {
+          "type": "sector_rotation",
+          "builder": "send_sector_rotation_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_sector_rotation_alerts",
+              "has_preference_filter": true
+            }
+          ]
+        },
+        {
+          "type": "earnings_screener",
+          "builder": "send_earnings_beat_screener_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_earnings_beat_screener_alerts",
+              "has_preference_filter": true
+            }
+          ]
+        },
+        {
+          "type": "portfolio_drawdown",
+          "builder": "send_portfolio_drawdown_alert_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_portfolio_drawdown_alerts",
+              "has_preference_filter": true
+            }
+          ]
+        },
+        {
+          "type": "top3_conviction",
+          "builder": "send_top3_conviction_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_top3_conviction",
+              "has_preference_filter": true
+            }
+          ]
+        },
+        {
+          "type": "value_area",
+          "builder": "send_value_area_breakdown_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_value_area_breakdown",
+              "has_preference_filter": false
+            }
+          ]
+        },
+        {
+          "type": "earnings_reminder",
+          "builder": "send_earnings_reminder_digest_email",
+          "scheduler_jobs": [
+            {
+              "job": "check_signal_alerts",
+              "has_preference_filter": false
+            }
+          ]
+        },
+        {
+          "type": "trade_exit",
+          "builder": "send_trade_exit_email",
+          "scheduler_jobs": []
+        },
+        {
+          "type": "portfolio_digest",
+          "builder": "send_paper_portfolio_digest_email",
+          "scheduler_jobs": [
+            {
+              "job": "send_paper_portfolio_digest",
+              "has_preference_filter": false
+            }
+          ]
+        },
+        {
+          "type": "post_open_digest",
+          "builder": "send_post_open_digest_email",
+          "scheduler_jobs": [
+            {
+              "job": "send_post_open_digest",
+              "has_preference_filter": false
+            }
+          ]
+        },
+        {
+          "type": "theme_forecast",
+          "builder": "send_theme_forecast_email",
+          "scheduler_jobs": [
+            {
+              "job": "send_weekly_theme_forecast",
+              "has_preference_filter": false
+            }
+          ]
+        },
+        {
+          "type": "trade_coach",
+          "builder": "send_trade_coach_email",
+          "scheduler_jobs": [
+            {
+              "job": "send_weekly_trade_coach",
+              "has_preference_filter": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "disabled_flow_recipient",
+      "status": "defect_reproduced",
+      "result": {
+        "disabled_user_received_send_attempt": true,
+        "scope": "controlled recipient; current production has one active emailed user"
+      }
+    }
+  ],
+  "separate_remediation_checks": {
+    "settlement": {
+      "refreshed_close_returned": 100.1,
+      "corroboration_reads": 2,
+      "provider_calls": 0
+    },
+    "label_blocks": {
+      "trainer_target": "2026-10-01",
+      "trainer_kept": 1,
+      "missing_or_unprinted_rows_dropped": 2,
+      "later_observed_exit_preserved": "2026-10-05",
+      "meta_target": "2026-10-01",
+      "meta_unprinted_target_dropped": true,
+      "scope": "actual availability blocks; not whole model training"
+    }
+  },
+  "validation": [
+    {
+      "scope": "earlier in same email review at b5332a3; 56 email/alert-related market-data test files",
+      "passed": 921,
+      "skipped": 1,
+      "log_summary": "921 passed, 1 skipped, 5 warnings in 8.65s"
+    },
+    {
+      "command": "cd services/market-data && python -m pytest -q tests/test_t398_options_income_engine.py tests/test_r06_income_concurrency.py",
+      "head": "5509dd76",
+      "passed": 90,
+      "log_summary": "90 passed in 12.90s"
+    },
+    {
+      "command": "cd services/ml-prediction && python -m pytest -q tests/test_r01_outcome_training_cutoff.py tests/test_r03_meta_promotion_evidence.py",
+      "head": "5509dd76",
+      "passed": 70,
+      "log_summary": "70 passed in 0.20s"
+    }
+  ],
+  "production_snapshot_earlier_in_review": {
+    "observed_at_utc": "2026-09-28T23:55:26.759880+00:00",
+    "queries": {
+      "users": "SELECT is_active,count(*) n FROM users WHERE email IS NOT NULL AND email<>'' GROUP BY is_active",
+      "preferences": "SELECT alert_type,enabled,count(*) n FROM alert_preferences GROUP BY 1,2 ORDER BY 1,2",
+      "signal_alerts": "SELECT count(*) n,count(*) FILTER (WHERE last_sent_at>=now()-interval '7 days') sent_last_7d,max(last_sent_at) last_sent FROM signal_alerts",
+      "signal_cohorts": "SELECT horizon::text,signal_direction,count(*) n,count(return_5d) resolved_5d,round((100.0*count(*) FILTER(WHERE is_correct_5d)/NULLIF(count(is_correct_5d),0))::numeric,2) hit_rate_5d_pct,round((100.0*avg(return_5d))::numeric,2) avg_underlying_5d_pct FROM signal_outcomes WHERE signal_date>=DATE '2026-09-01' GROUP BY 1,2 ORDER BY 1,2",
+      "options_cohorts": "SELECT CASE WHEN fired_date>=DATE '2026-09-01' THEN 'September' ELSE 'before September' END cohort,direction,count(*) candidates,count(DISTINCT fired_date) dates,count(is_correct_10d) resolved_10d,round((100.0*count(*) FILTER(WHERE is_correct_10d)/NULLIF(count(is_correct_10d),0))::numeric,2) hit_rate_10d_pct FROM options_flow_alert_outcomes GROUP BY 1,2 ORDER BY 1,2",
+      "darkpool_cohorts": "SELECT CASE WHEN fired_date>=DATE '2026-09-01' THEN 'September' ELSE 'before September' END cohort,count(*) candidates,count(DISTINCT fired_date) dates,count(is_correct_1d) resolved_1d,round((100.0*count(*) FILTER(WHERE is_correct_1d)/NULLIF(count(is_correct_1d),0))::numeric,2) hit_rate_1d_pct FROM dark_pool_alert_outcomes GROUP BY 1 ORDER BY 1",
+      "squeeze_cohorts": "SELECT alert_type,count(*) candidates,count(is_correct_10d) resolved_10d,round((100.0*count(*) FILTER(WHERE is_correct_10d)/NULLIF(count(is_correct_10d),0))::numeric,2) hit_rate_10d_pct FROM squeeze_alert_outcomes WHERE fired_date>=DATE '2026-09-01' GROUP BY 1 ORDER BY 1"
+    },
+    "users": [
+      {
+        "is_active": true,
+        "n": 1
+      }
+    ],
+    "preferences": [],
+    "signal_alerts": [
+      {
+        "n": 362,
+        "sent_last_7d": 14,
+        "last_sent": "2026-09-24 03:40:45.686878"
+      }
+    ],
+    "signal_cohorts": [
+      {
+        "horizon": "GROWTH",
+        "signal_direction": "BUY",
+        "n": 318,
+        "resolved_5d": 318,
+        "hit_rate_5d_pct": "29.87",
+        "avg_underlying_5d_pct": "-2.23"
+      },
+      {
+        "horizon": "GROWTH",
+        "signal_direction": "SELL",
+        "n": 191,
+        "resolved_5d": 191,
+        "hit_rate_5d_pct": "41.36",
+        "avg_underlying_5d_pct": "1.75"
+      },
+      {
+        "horizon": "LONG",
+        "signal_direction": "SELL",
+        "n": 426,
+        "resolved_5d": 426,
+        "hit_rate_5d_pct": "40.85",
+        "avg_underlying_5d_pct": "2.16"
+      },
+      {
+        "horizon": "SHORT",
+        "signal_direction": "BUY",
+        "n": 588,
+        "resolved_5d": 588,
+        "hit_rate_5d_pct": "33.67",
+        "avg_underlying_5d_pct": "-1.28"
+      },
+      {
+        "horizon": "SHORT",
+        "signal_direction": "SELL",
+        "n": 307,
+        "resolved_5d": 307,
+        "hit_rate_5d_pct": "51.47",
+        "avg_underlying_5d_pct": "0.52"
+      },
+      {
+        "horizon": "SWING",
+        "signal_direction": "BUY",
+        "n": 200,
+        "resolved_5d": 200,
+        "hit_rate_5d_pct": "29.00",
+        "avg_underlying_5d_pct": "-2.85"
+      },
+      {
+        "horizon": "SWING",
+        "signal_direction": "SELL",
+        "n": 384,
+        "resolved_5d": 384,
+        "hit_rate_5d_pct": "45.83",
+        "avg_underlying_5d_pct": "1.55"
+      }
+    ],
+    "options_cohorts": [
+      {
+        "cohort": "September",
+        "direction": "bearish",
+        "candidates": 1059,
+        "dates": 21,
+        "resolved_10d": 891,
+        "hit_rate_10d_pct": "43.21"
+      },
+      {
+        "cohort": "September",
+        "direction": "bullish",
+        "candidates": 1031,
+        "dates": 21,
+        "resolved_10d": 818,
+        "hit_rate_10d_pct": "59.78"
+      }
+    ],
+    "darkpool_cohorts": [
+      {
+        "cohort": "September",
+        "candidates": 811,
+        "dates": 23,
+        "resolved_1d": 742,
+        "hit_rate_1d_pct": "40.70"
+      }
+    ],
+    "squeeze_cohorts": [
+      {
+        "alert_type": "gamma_unwind_calls",
+        "candidates": 77,
+        "resolved_10d": 45,
+        "hit_rate_10d_pct": "48.89"
+      },
+      {
+        "alert_type": "gamma_unwind_puts",
+        "candidates": 149,
+        "resolved_10d": 102,
+        "hit_rate_10d_pct": "42.16"
+      },
+      {
+        "alert_type": "short_squeeze",
+        "candidates": 5,
+        "resolved_10d": 4,
+        "hit_rate_10d_pct": "75.00"
+      },
+      {
+        "alert_type": "squeeze_ignition",
+        "candidates": 6,
+        "resolved_10d": 3,
+        "hit_rate_10d_pct": "66.67"
+      }
+    ]
+  },
+  "bounded_production_logs_earlier_in_review": {
+    "observed_at_utc": "2026-09-28T23:55:53.988021+00:00",
+    "scope": "docker logs --since 24h --tail 50000; retained bounded window only",
+    "lines_examined": 50001,
+    "counts": {
+      "signal_alert.recipient_send_error": 0,
+      "signal_alert.email_retry_limit": 0,
+      "signal_alert.fired": 0,
+      "email.sent": 62,
+      "email.failed": 0,
+      "options_flow_alert.done": 41,
+      "dark_pool_alert.done": 285,
+      "top3_conviction.done": 0,
+      "paper.exit_email_sent": 0,
+      "undefined_new_signal": 0
+    },
+    "redacted_examples": []
+  },
+  "limits": [
+    "Latest deployment and sabotage campaign not independently rechecked in this continuation.",
+    "No actual email was sent and no inbox rendering was tested.",
+    "Email jobs use controlled DB/provider dependencies; preference inventory is static.",
+    "SQLite settlement check is not a PostgreSQL concurrency test.",
+    "Availability checks execute actual blocks, not full training.",
+    "Legacy signal cohorts are maturity-selected; flow outcomes measure candidates, not delivered emails or option P&L.",
+    "Initial new availability probe had a fixture-local binding error; corrected its function parameters, then reran successfully."
+  ],
+  "external_sources": [
+    "https://www.finra.org/investors/insights/where-do-stocks-trade",
+    "https://api.unusualwhales.com/docs/kafka/types/FlowAlert",
+    "https://www.optionseducation.org/optionsoverview/options-pricing"
+  ]
+}

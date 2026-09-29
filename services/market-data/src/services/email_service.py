@@ -17,6 +17,10 @@ from common.config import get_settings
 from common.logging import get_logger
 
 log = get_logger("email_service")
+
+# EA-12: bound every SMTP conversation. Long enough for a slow-but-working provider,
+# short enough that a stall cannot outlive the 30-minute scheduler lock leases around it.
+_SMTP_TIMEOUT_S = 30
 _settings = get_settings()
 
 # T239-EMAIL2: Gmail's daily sending quota (550 5.4.5) is a TRANSIENT, self-healing failure —
@@ -49,7 +53,14 @@ def _build_message(to: str, subject: str, body_html: str, body_text: str) -> MIM
 
 def _send_smtp(to: str, subject: str, body_html: str, body_text: str) -> None:
     msg = _build_message(to, subject, body_html, body_text)
-    with smtplib.SMTP(_settings.smtp_host, _settings.smtp_port) as server:
+    # EA-12 (2026-09-28 email audit): AN EXPLICIT TIMEOUT.
+    #
+    # smtplib defaults to the global socket timeout, which is None — so a blocked transport
+    # hangs this call indefinitely. The scheduler jobs that call it hold a Redis lock with a
+    # finite TTL, so a stall long enough outlives its own lease and a second worker starts
+    # while the first is still inside a socket read. Bounding the transport is the smallest
+    # part of that fix and the one with no design work attached.
+    with smtplib.SMTP(_settings.smtp_host, _settings.smtp_port, timeout=_SMTP_TIMEOUT_S) as server:
         server.ehlo()
         server.starttls()
         server.login(_settings.smtp_user, _settings.smtp_password)
@@ -2040,7 +2051,18 @@ def send_options_flow_alert_email(to: str, candidates: list[dict], omitted_count
         price = c.get("price")
         premium = c.get("total_premium")
         ask_dominant = c.get("ask_side_dominant")
-        side_str = "aggressive BUYING (ask-side)" if ask_dominant else "aggressive SELLING (bid-side)"
+        # EA-09 (2026-09-28 email audit): STATE THE MEASUREMENT, NOT A VERDICT.
+        #
+        # "aggressive BUYING" is an inference about intent drawn from where a print landed in
+        # the spread. It does not establish opening versus closing, a hedge versus a directional
+        # bet, or who traded. The classification itself was also `ask >= bid`, so a dead tie
+        # read as buying — fixed at the source, where a balanced print now produces no
+        # directional candidate at all. What is left here is wording: report the imbalance that
+        # was actually measured and name it as a side classification.
+        _imb = c.get("side_imbalance")
+        _imb_str = f" {_imb * 100:.0f}% of classified premium" if isinstance(_imb, (int, float)) else ""
+        side_str = (f"ask-side dominant —{_imb_str}" if ask_dominant
+                    else f"bid-side dominant —{_imb_str}")
         strike_str = f"${strike:.2f}" if strike is not None else "—"
         price_str = f"${price:.2f}" if price else "—"
         premium_str = f"${premium:,.0f}" if premium is not None else "—"
@@ -2995,26 +3017,67 @@ def send_earnings_reminder_digest_email(to: str, rows: list[dict]) -> bool:
     return send_email(to, subject, body_html, body_text)
 
 
-def send_price_alert_email(to: str, symbol: str, condition: str, threshold: float, price: float, note: str | None) -> bool:
-    direction = "risen above" if condition == "above" else "fallen below"
-    subject = f"Price Alert: {symbol} has {direction} {threshold}"
+def send_price_alert_email(to: str, symbol: str, condition: str, threshold: float, price: float,
+                           note: str | None, recurring: bool = False,
+                           value_label: str = "Current price") -> bool:
+    """Render a triggered alert.
+
+    EA-04: THIS TEMPLATE USED TO DESCRIBE EVERY NON-"above" CONDITION AS "fallen below".
+
+    `check_technical_alerts` passes a descriptive condition — "MACD Bullish Cross …", "RSI
+    crossed 70", "Now 12.3% below 52-week high …" — and this read `condition == "above"` and
+    called everything else a fall. A bullish MACD cross rendered as
+    *"Price Alert: TEST has fallen below 0.0"*: the wrong direction, a stock price compared
+    against an indicator threshold as though they shared units, and the MACD label dropped from
+    the body entirely. The footer then told the reader it would never fire again, which is
+    false for the recurring alerts that scheduler supports.
+
+    So the condition is now interpreted rather than assumed. A crossing condition ("above" /
+    "below") keeps the original wording exactly; anything else is an indicator trigger and says
+    what it actually is, with the threshold labelled as the condition's own rather than as a
+    price target.
+    """
+    # The only two conditions this template may describe as a DIRECTION. Deliberately local:
+    # every renderer in this module is extracted and executed on its own by the test and audit
+    # harnesses, so a module-level constant here would be out of scope exactly where the
+    # rendering is checked.
+    _crossing_words = {"above": "risen above", "below": "fallen below"}
+    _crossing = _crossing_words.get(str(condition).strip().lower())
+    _is_crossing = _crossing is not None
+    direction = _crossing or ""
+
+    if _is_crossing:
+        subject = f"Price Alert: {symbol} has {direction} {threshold}"
+        _headline_text = f"{symbol} is now {price:.4f} ({direction} your target of {threshold})."
+        _headline_html = (f"<strong>{symbol}</strong> has <strong>{direction}</strong> "
+                          f"your target of <strong>{threshold}</strong>.")
+    else:
+        # The caller's own description IS the event. Do not invent a direction for it.
+        subject = f"Alert: {symbol} — {condition}"
+        _headline_text = f"{symbol}: {condition}\n\n{value_label} is {price:.4f}."
+        _headline_html = (f"<strong>{symbol}</strong> — <strong>{condition}</strong><br>"
+                          f"<span style=\"color:#64748b\">{value_label} is {price:.4f}.</span>")
+
+    _footer = ("This alert is recurring and may fire again."
+               if recurring else
+               "This alert has been marked as triggered and will not fire again.")
     body_text = (
-        f"Your price alert for {symbol} has triggered.\n\n"
-        f"{symbol} is now {price:.4f} ({direction} your target of {threshold}).\n"
+        f"Your alert for {symbol} has triggered.\n\n"
+        f"{_headline_text}\n"
         + (f"\nNote: {note}\n" if note else "")
         + "\nLog in to your StockAI dashboard to review.\n"
     )
     body_html = f"""
 <html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px">
   <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
-    <h2 style="margin-top:0;color:#6366f1">📈 StockAI Price Alert</h2>
-    <p style="font-size:16px"><strong>{symbol}</strong> has <strong>{direction}</strong> your target of <strong>{threshold}</strong>.</p>
+    <h2 style="margin-top:0;color:#6366f1">📈 StockAI {'Price Alert' if _is_crossing else 'Alert'}</h2>
+    <p style="font-size:16px">{_headline_html}</p>
     <div style="background:#f1f5f9;border-radius:8px;padding:16px;margin:16px 0">
-      <div style="font-size:28px;font-weight:700;color:{'#22c55e' if condition == 'above' else '#ef4444'}">{price:.4f}</div>
-      <div style="font-size:13px;color:#64748b;margin-top:4px">Current price</div>
+      <div style="font-size:28px;font-weight:700;color:{'#22c55e' if condition == 'above' else '#ef4444' if _is_crossing else '#334155'}">{price:.4f}</div>
+      <div style="font-size:13px;color:#64748b;margin-top:4px">{value_label}</div>
     </div>
     {f'<p style="color:#64748b;font-size:14px"><em>{note}</em></p>' if note else ''}
-    <p style="font-size:13px;color:#94a3b8;margin-top:24px">This alert has been marked as triggered and will not fire again.</p>
+    <p style="font-size:13px;color:#94a3b8;margin-top:24px">{_footer}</p>
   </div>
 </body></html>"""
     return send_email(to, subject, body_html, body_text)

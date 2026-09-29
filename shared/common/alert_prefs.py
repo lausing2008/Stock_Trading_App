@@ -88,6 +88,12 @@ ALERT_TYPES: list[dict] = [
      "desc": "A paper position closing."},
     {"key": "squeeze_watch_revert", "group": "Portfolio", "label": "Squeeze watch reverts",
      "desc": "A stock you added to a squeeze watch losing the setup."},
+    # EA-05 (2026-09-28 email audit): the flow digest was sent to EVERY user with a nonempty
+    # address — no active-account predicate, no preference check, and no entry here, so there
+    # was no way to turn it off. Registered so the settings page can manage it and
+    # test_every_manageable_alert_type_is_enforced can hold its delivery path to the same bar.
+    {"key": "flow_digest",         "group": "Market", "label": "Options & dark-pool digest",
+     "desc": "A periodic summary of unusual options activity and dark-pool prints."},
 ]
 
 _BY_KEY = {a["key"]: a for a in ALERT_TYPES}

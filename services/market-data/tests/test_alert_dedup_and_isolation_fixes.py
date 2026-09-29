@@ -186,9 +186,16 @@ def test_signal_alerts_earnings_reminder_digest_send_is_isolated_per_recipient()
 
 
 def test_price_alerts_pending_emails_loop_is_isolated_per_recipient():
+    """One recipient's send raising must not abort the rest of the batch.
+
+    The slice strips COMMENTS first. EA-06 (2026-09-28) added an explanatory comment inside
+    this loop, which pushed `except` past a fixed 300-character window and failed a test whose
+    subject — per-recipient isolation — was entirely unaffected. A character budget that counts
+    prose is measuring the wrong thing."""
     body = _function_body("check_price_alerts")
-    for_idx = body.index("for kwargs in pending_emails:")
-    tail = body[for_idx:for_idx + 300]
+    code = "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
+    for_idx = code.index("for kwargs in pending_emails:")
+    tail = code[for_idx:for_idx + 400]
     assert "try:" in tail
     assert "except Exception as _send_exc:" in tail
 

@@ -41,6 +41,7 @@ import pandas as pd
 from common.logging import get_logger
 from common.indicators import atr as _canon_atr
 from db import (
+    AlertPreference,
     BrokerConnection, Indicator, PaperEntryScanLog, PaperEquityCurve, PaperPortfolio, PaperTrade,
     Price, TimeFrame, Ranking, SessionLocal, Signal, SignalAlert, Stock, User, UserPosition,
     Watchlist, WatchlistItem, RestrictedSymbol, PaperTradeDecisionLog,
@@ -7192,7 +7193,26 @@ def _send_exit_emails(session, closed_exits: list[dict]) -> None:
     for exit_info in closed_exits:
         symbol = exit_info["symbol"]
         try:
-            # Find all users subscribed to this symbol with an email address
+            # Find all users subscribed to this symbol with an email address.
+            #
+            # EA-05 (2026-09-28 email audit): `trade_exit` is one of the 23 advertised
+            # manageable types and NOTHING enforced it — the settings toggle wrote a row this
+            # query never read. Enforced in SQL rather than in Python because this path selects
+            # bare EMAIL ADDRESSES: reconstructing a user from an address to look up their
+            # preference is exactly the identity guesswork the finding warns against, and the
+            # join already has the real `user_id` in hand.
+            #
+            # Absence means SUBSCRIBED, matching _filter_by_alert_pref: only an explicit
+            # `enabled = FALSE` row removes anyone. A user who has never opened settings is
+            # unaffected.
+            _optout = (
+                select(AlertPreference.user_id)
+                .where(
+                    AlertPreference.user_id == SignalAlert.user_id,
+                    AlertPreference.alert_type == "trade_exit",
+                    AlertPreference.enabled.is_(False),
+                )
+            )
             rows = session.execute(
                 select(SignalAlert.email)
                 .join(User, SignalAlert.user_id == User.id)
@@ -7200,13 +7220,18 @@ def _send_exit_emails(session, closed_exits: list[dict]) -> None:
                     SignalAlert.symbol == symbol,
                     SignalAlert.email.isnot(None),
                     User.is_active.is_(True),
+                    ~_optout.exists(),
                 )
             ).scalars().all()
             for email in rows:
                 if not (email or "").strip():
                     continue
                 try:
-                    send_trade_exit_email(
+                    # EA-12: the sender's BOOLEAN is the delivery result. This call ignored it
+                    # and logged `paper.exit_email_sent` regardless, so a provider rejection
+                    # was recorded as a successful send — the log said the opposite of what
+                    # happened, which is worse than no log at all.
+                    _exit_ok = send_trade_exit_email(
                         to=email,
                         symbol=symbol,
                         exit_reason=exit_info["exit_reason"],
@@ -7222,8 +7247,14 @@ def _send_exit_emails(session, closed_exits: list[dict]) -> None:
                         entry_notes=exit_info.get("entry_notes", []),
                         market_hours_open=exit_info.get("market_hours_open", True),
                     )
-                    log.info("paper.exit_email_sent", symbol=symbol, to=email,
-                             reason=exit_info["exit_reason"])
+                    if _exit_ok:
+                        log.info("paper.exit_email_sent", symbol=symbol, to=email,
+                                 reason=exit_info["exit_reason"])
+                    else:
+                        log.warning("paper.exit_email_not_delivered", symbol=symbol, to=email,
+                                    reason=exit_info["exit_reason"],
+                                    note="transport reported failure; the trade is closed "
+                                         "regardless — only the notification was lost")
                 except Exception as _em:
                     log.error("paper.exit_email_failed", symbol=symbol, to=email, error=str(_em))
         except Exception as _qe:

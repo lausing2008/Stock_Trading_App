@@ -35,6 +35,17 @@ def _extract_build_game_plan():
     round_step_end = _scheduler_source.index("\ndef ", round_step_start + 1)
     exec(_scheduler_source[round_step_start:round_step_end], namespace)  # noqa: S102
 
+    # EA-02 (2026-09-28 email audit) added _plan_geometry_ok, which _build_game_plan calls to
+    # refuse a plan whose own levels contradict each other. Extracted the same way rather than
+    # stubbed, so these tests exercise the real rejection rule.
+    geom_start = _scheduler_source.index("def _plan_geometry_ok(")
+    geom_end = _scheduler_source.index("\ndef ", geom_start + 1)
+    exec(_scheduler_source[geom_start:geom_end], namespace)  # noqa: S102
+
+    # The builder logs a rejection before returning None.
+    namespace["log"] = type("_L", (), {"warning": lambda *a, **k: None,
+                                       "info": lambda *a, **k: None})()
+
     exec(func_source, namespace)  # noqa: S102 — isolated eval of the real function under test
     return namespace["_build_game_plan"]
 

@@ -53,8 +53,39 @@ def test_hold_is_a_real_verdict_decision_engine_returns():
     assert '"SCALE"' not in _de_routes_source
 
 
-def test_fail_open_on_de_unreachable_is_unchanged():
-    """Regression guard: the fail-open-on-exception behavior (never block an alert on a DE
-    infrastructure failure) must be untouched by this fix."""
+def test_an_unavailable_decision_engine_DEFERS_a_buy_rather_than_allowing_it():
+    """REVERSED 2026-09-28 by the email audit (EA-08). This test previously read:
+
+        def test_fail_open_on_de_unreachable_is_unchanged():
+            '''Regression guard: the fail-open-on-exception behavior (never block an alert on
+            a DE infrastructure failure) must be untouched by this fix.'''
+            assert "except Exception as _de_exc:" in _scheduler_source
+            assert 'note="DE unreachable — fail-open, allowing alert"' in _scheduler_source
+
+    — it pinned the fail-open as a REQUIREMENT, so correcting it read as a regression.
+
+    The original instinct is right for an EXIT and wrong for a BUY. A safety veto that fails
+    open is not a veto: a non-200 fell through with no branch at all and an exception was
+    swallowed at debug level, and either way the BUY was emitted exactly as though
+    decision-engine had approved it. Withholding an exit costs the reader a chance to reduce
+    risk; emitting a BUY without its veto asks them to commit money on a check that never ran.
+
+    Deferring — not dropping. `last_signal` is deliberately not advanced, which is the same
+    treatment a real SKIP verdict already receives, so the transition stays pending and the
+    next run re-asks once DE is back."""
     assert "except Exception as _de_exc:" in _scheduler_source
-    assert "note=\"DE unreachable — fail-open, allowing alert\"" in _scheduler_source
+    assert 'note="DE unreachable — fail-open, allowing alert"' not in _scheduler_source, \
+        "the fail-open is back"
+    assert "_de_available = True" in _scheduler_source
+    assert "if not _de_available:" in _scheduler_source
+    # A non-200 must be handled too, not only an exception.
+    assert "signal_alert.de_gate_unavailable" in _scheduler_source
+
+
+def test_the_deferral_does_not_consume_the_transition():
+    """If `last_signal` advanced here, a decision-engine outage would permanently swallow every
+    BUY that happened during it — trading a fail-open for a silent-drop, which is worse."""
+    body = _scheduler_source[_scheduler_source.index("if not _de_available:"):]
+    body = body[:body.index("# Build game plan")]
+    assert "alert.last_signal" not in body
+    assert "continue" in body
