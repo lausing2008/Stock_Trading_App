@@ -1645,10 +1645,21 @@ def _plan_geometry_ok(plan: dict) -> tuple[bool, str]:
         return False, "the breakout level is below the primary entry"
     if not vals["take_profit"] > vals["entry1"]:
         return False, "take profit is not above the entry"
-    # The target must also beat the stop by more than rounding noise; a plan whose reward is
-    # smaller than its risk is coherent arithmetic and still not worth sending as a setup.
     if not vals["take_profit"] > vals["stop"]:
         return False, "take profit is below the stop"
+    # ADDED 2026-09-28 (follow-up review): the BREAKOUT entry needs upside too.
+    #
+    # The plan offers three ways in — two pullback entries below the price and a breakout entry
+    # above it — and only the pullback entries were checked against the target. A take-profit
+    # at or below the breakout level means that third entry is instructed to buy at a price the
+    # plan simultaneously says to sell at. The same class of contradiction as EA-02's original
+    # below-stop target, on the entry the earlier fix did not look at.
+    if not vals["take_profit"] > vals["breakout"]:
+        return False, "take profit is not above the breakout entry"
+    # A COMMENT HERE USED TO PROMISE A REWARD/RISK CHECK THAT THE CODE DID NOT PERFORM, and the
+    # follow-up review caught it. No minimum ratio is enforced: the style parameters set the
+    # levels and a floor would silently suppress whole horizons rather than fix them. The
+    # ordering above is what this function claims to validate, and now all of it is checked.
     return True, ""
 
 
@@ -5068,21 +5079,30 @@ _OPTIONS_FLOW_ALERT_COOLDOWN_MINUTES = 30
 _FLOW_SIDE_MIN_IMBALANCE = 0.60
 
 
-def _classify_flow_side(ask_prem: float, bid_prem: float) -> tuple[str, float]:
+def _classify_flow_side(ask_prem: float | None, bid_prem: float | None) -> tuple[str, float]:
     """Which side dominates this print's classified premium, and by how much.
 
-    Returns ("ask" | "bid" | "neutral", dominant_fraction). The fraction is of the CLASSIFIED
-    premium only — premium the provider did not attribute to a side is not in either number,
-    so this says nothing about how much of the print was classified at all. That is a separate
-    quantity and is reported separately.
+    Returns ("ask" | "bid" | "neutral" | "unknown", dominant_fraction). The fraction is of the
+    CLASSIFIED premium only — premium the provider did not attribute to a side is in neither
+    number, so this says nothing about how much of the print was classified at all.
 
-    Pure, so the threshold can be tested as a number against adversarial splits rather than
-    only observed through a full scan.
+    EF-05 (2026-09-28 follow-up): MISSING IS NOT ZERO.
+    
+    `(ask_prem or 0.0)` collapsed an ABSENT side into a measured zero, so ask=100 with bid
+    missing returned ("ask", 1.0) — total dominance, from a feed that reported one number.
+    "The other side was zero" and "we were not told the other side" are different statements
+    and only the first is evidence. A missing side now returns "unknown", which the caller
+    treats like neutral: no directional candidate, rather than the most confident one possible.
+
+    Pure, so the rule can be tested against adversarial splits rather than only observed
+    through a full scan.
     """
-    total = (ask_prem or 0.0) + (bid_prem or 0.0)
+    if ask_prem is None or bid_prem is None:
+        return "unknown", 0.0
+    total = float(ask_prem) + float(bid_prem)
     if total <= 0:
         return "neutral", 0.0
-    ask_frac = (ask_prem or 0.0) / total
+    ask_frac = float(ask_prem) / total
     if ask_frac >= _FLOW_SIDE_MIN_IMBALANCE:
         return "ask", ask_frac
     if (1.0 - ask_frac) >= _FLOW_SIDE_MIN_IMBALANCE:
@@ -5324,9 +5344,12 @@ def check_options_flow_alerts() -> None:
                     for row in rows:
                         if not row.option_chain or row.option_type not in ("call", "put"):
                             continue
-                        ask = row.total_ask_side_prem or 0.0
-                        bid = row.total_bid_side_prem or 0.0
-                        if ask == 0.0 and bid == 0.0:
+                        # EF-05: missingness preserved. `or 0.0` here turned "not reported"
+                        # into "measured zero", which _classify_flow_side then read as total
+                        # dominance by the side that WAS reported.
+                        ask = row.total_ask_side_prem
+                        bid = row.total_bid_side_prem
+                        if not ask and not bid:
                             continue  # no real premium split to derive a direction from
                         # EA-09 (2026-09-28 email audit): `ask >= bid` CLASSIFIED A TIE AS
                         # AGGRESSIVE BUYING.
@@ -5342,10 +5365,10 @@ def check_options_flow_alerts() -> None:
                         # verdict, and a balanced print produces no directional candidate at
                         # all rather than a coin-flip one.
                         _side, _imbalance = _classify_flow_side(ask, bid)
-                        if _side == "neutral":
-                            log.debug("options_flow.neutral_side_skipped", symbol=symbol,
+                        if _side in ("neutral", "unknown"):
+                            log.debug("options_flow.no_directional_side", symbol=symbol,
                                       chain=row.option_chain, ask=ask, bid=bid,
-                                      imbalance=_imbalance)
+                                      side=_side, imbalance=_imbalance)
                             continue
                         ask_side_dominant = _side == "ask"
                         direction = _options_flow_alert_direction(row.option_type, ask_side_dominant)
@@ -7868,6 +7891,7 @@ def check_signal_alerts() -> None:
                     log.warning("signal_alert.cohort_stats_failed", symbol=alert.symbol,
                                 style=style, error=str(_cohort_exc),
                                 note="sending without the cohort badge; the alert is the point")
+                _send_error_msg = ""
                 try:
                     email_ok = send_signal_alert_email(
                         to=effective_email,
@@ -7894,7 +7918,17 @@ def check_signal_alerts() -> None:
                     # broken mailbox, and the give-up branch below must not consume an unsent
                     # transition on the strength of one.
                     _send_raised = True
-                    log.warning("signal_alert.recipient_send_error", symbol=alert.symbol, alert_id=alert.id, error=str(_send_exc))
+                    # EF-01 (2026-09-28 follow-up): KEEP THE MESSAGE, NOT THE EXCEPTION.
+                    #
+                    # Python DELETES the name bound by `except ... as` when the handler exits,
+                    # so reading `_send_exc` further down raised UnboundLocalError — inside the
+                    # per-recipient error path, which the outer job handler then caught,
+                    # ABORTING THE WHOLE BATCH. One bad subscription starved every recipient
+                    # after it, and a persistent failure in an early one starved them forever.
+                    # My own EA-01 fix introduced this while reaching for the exception outside
+                    # its handler. A plain string survives the handler; the exception does not.
+                    _send_error_msg = str(_send_exc)
+                    log.warning("signal_alert.recipient_send_error", symbol=alert.symbol, alert_id=alert.id, error=_send_error_msg)
                 if email_ok:
                     alert.last_signal = current  # advance state only after successful send
                     now_utc = datetime.now(timezone.utc)
@@ -7965,7 +7999,7 @@ def check_signal_alerts() -> None:
                         log.error(
                             "signal_alert.send_raised_not_consuming",
                             symbol=alert.symbol, alert_id=alert.id,
-                            failures=_alert_fail_counts[alert.id], error=str(_send_exc),
+                            failures=_alert_fail_counts[alert.id], error=_send_error_msg,
                             note="code-level failure: the transition stays pending and will "
                                  "retry; this is operator-visible and needs a fix, not a retry",
                         )
@@ -8244,6 +8278,17 @@ def check_price_alerts() -> None:
                     PriceAlert.triggered_at.isnot(None),
                     PriceAlert.triggered_at >= _retry_cutoff,
                     PriceAlert.email.isnot(None),
+                    # EF-03 (2026-09-28 follow-up): ONLY THE FAMILIES THIS JOB CAN RENDER.
+                    #
+                    # `price_alerts` holds technical conditions too — MACD crosses, EMA
+                    # crosses, 52-week highs — and `check_technical_alerts` sets `triggered`
+                    # and `triggered_at` on them without ever stamping `last_sent_at`. So a
+                    # SUCCESSFULLY delivered one-shot MACD alert satisfied this query exactly
+                    # like a failed price alert, and would have been re-sent by THIS job,
+                    # through the PRICE renderer, with the raw enum as its condition and the
+                    # configured threshold in place of a price. A retry that reaches for another
+                    # job's rows cannot render them, and should not try.
+                    PriceAlert.condition.in_([AlertCondition.ABOVE, AlertCondition.BELOW]),
                 )
             ).scalars().all()
             if _undelivered:
@@ -8254,8 +8299,11 @@ def check_price_alerts() -> None:
                 _record_job_status("check_price_alerts", "ok", time.monotonic() - _t0)
                 return
 
-            # Fetch live prices for all unique symbols at once
-            symbols = list({a.symbol for a in alerts})
+            # Fetch live prices for all unique symbols at once.
+            # EF-02: the retry symbols are included. They were not, so a retry-only symbol had
+            # no quote and the send below fell back to the configured THRESHOLD as the
+            # displayed current price — a number no observation supports.
+            symbols = list({a.symbol for a in alerts} | {u.symbol for u in _undelivered})
             tickers = yf.Tickers(" ".join(symbols))
             prices: dict[str, float] = {}
             for sym in symbols:
@@ -8381,10 +8429,30 @@ def check_price_alerts() -> None:
             # EA-06: the retry queue, built from alerts whose notification never landed. Same
             # renderer, same shape — the only difference is that these were triggered earlier.
             for _ua in _undelivered:
+                # EF-02: NEVER SUBSTITUTE THE THRESHOLD FOR AN OBSERVATION.
+                #
+                # This read `prices.get(_ua.symbol, _ua.threshold)`. With retry symbols absent
+                # from the fetch above, the default always won: an alert configured at 90 was
+                # emailed as "is now 90.0000" while the real price was anything at all. That is
+                # not a stale quote — no quote supports it. With the symbol now in the fetch a
+                # real price is normally available; when it is not, the notification waits for
+                # the next cycle rather than inventing one. It is already undelivered, so
+                # waiting costs nothing and the 24h window still bounds it.
+                _retry_price = prices.get(_ua.symbol)
+                if _retry_price is None:
+                    log.info("alert.retry_deferred_no_quote", symbol=_ua.symbol,
+                             alert_id=_ua.id,
+                             note="no current quote; not fabricating one from the threshold")
+                    continue
+                _triggered_note = (
+                    f"Delayed notification — this alert triggered at "
+                    f"{_ua.triggered_at.isoformat()} and could not be delivered then."
+                )
                 pending_emails.append(dict(
                     to=_ua.email, symbol=_ua.symbol, condition=_ua.condition.value,
-                    threshold=_ua.threshold, price=prices.get(_ua.symbol, _ua.threshold),
-                    note=_ua.note, recurring=bool(_ua.recurring),
+                    threshold=_ua.threshold, price=_retry_price,
+                    note=f"{_ua.note}\n\n{_triggered_note}" if _ua.note else _triggered_note,
+                    recurring=bool(_ua.recurring),
                     _alert_id=_ua.id,
                 ))
 
@@ -8771,6 +8839,8 @@ def check_technical_alerts() -> None:
                             # fire again", which is false for the recurring ones this very
                             # branch keeps active. The flag is right here; pass it.
                             recurring=bool(alert.recurring),
+                            # EF-03: so a successful send can be recorded, see below.
+                            _alert_id=alert.id,
                         ))
                     if alert.webhook_url:
                         pending_webhooks.append((alert.webhook_url, dict(
@@ -8789,14 +8859,29 @@ def check_technical_alerts() -> None:
             # AUD266-PER-RECIPIENT-ISOLATION-NEVER-PROPAGATED: an uncaught exception from
             # inside send_price_alert_email() would otherwise propagate out of this loop,
             # skipping every remaining triggered alert this cycle.
+            _tech_delivered: list[int] = []
             for kwargs in pending_emails:
+                # EF-03: identity, so a successful technical send records delivery under the
+                # SAME contract the price job's retry reads. Without it, a delivered one-shot
+                # technical alert was indistinguishable from an undelivered one.
+                _t_alert_id = kwargs.pop("_alert_id", None)
                 try:
                     ok = send_price_alert_email(**kwargs)
-                except Exception as _send_exc:
+                except Exception as _tech_send_exc:
                     ok = False
-                    log.warning("tech_alert.email_send_error", symbol=kwargs["symbol"], email=kwargs["to"], error=str(_send_exc))
-                if not ok:
+                    log.warning("tech_alert.email_send_error", symbol=kwargs["symbol"], email=kwargs["to"], error=str(_tech_send_exc))
+                if ok:
+                    if _t_alert_id is not None:
+                        _tech_delivered.append(_t_alert_id)
+                else:
                     log.warning("tech_alert.email_failed", symbol=kwargs["symbol"], email=kwargs["to"])
+            if _tech_delivered:
+                session.execute(
+                    update(PriceAlert)
+                    .where(PriceAlert.id.in_(_tech_delivered))
+                    .values(last_sent_at=datetime.now(timezone.utc))
+                )
+                session.commit()
             for url, payload in pending_webhooks:
                 _fire_webhook(url, payload)
 
@@ -10768,15 +10853,35 @@ def check_sector_rotation_alerts(rotation: dict[str, dict]) -> None:
         # Always resync the tracked set, regardless of whether anything newly emerged this
         # week — a sector that fades out must be removed so it correctly re-alerts if it
         # later re-emerges, matching check_short_squeeze_alerts()'s own resync pattern.
-        try:
-            _rc.delete(state_key)
-            if emerging:
-                _rc.sadd(state_key, *emerging)
-            _rc.expire(state_key, 10 * 86400)  # generous — this is a weekly job
-        except Exception:
-            pass
+        # EA-07 SIBLING, FIXED 2026-09-28 (follow-up review): the emerging-sector set was
+        # written HERE, before a single recipient was mailed. If every delivery then failed,
+        # the next weekly run found the same set, computed no `newly_emerging` sectors, and
+        # never retried anyone — a week of rotation alerts lost to one transient SMTP problem.
+        #
+        # THE FIRST ATTEMPT AT THIS FIX BROKE SOMETHING ELSE. Moving the write below the send
+        # loop put it after the `if not newly_emerging: return` guard, so a sector FADING OUT
+        # stopped being removed whenever nothing new emerged — and a faded sector that is never
+        # removed can never re-alert. A pre-existing test caught it.
+        #
+        # check_short_squeeze_alerts already solved exactly this shape: resync ALWAYS, but
+        # exclude the newly-qualifying entries whose send failed. A fade-out is a fact
+        # independent of delivery; a new arrival is the thing that must survive to be retried.
+        # `_resync_sector_state` below is that rule, called on both paths.
+        def _resync_sector_state(exclude: set | None = None) -> None:
+            keep = set(emerging) - (exclude or set())
+            try:
+                _rc.delete(state_key)
+                if keep:
+                    _rc.sadd(state_key, *keep)
+                _rc.expire(state_key, 10 * 86400)  # generous — this is a weekly job
+            except Exception:
+                pass
 
         if not newly_emerging:
+            # Nothing new to alert on, but fade-outs must still be recorded or a sector that
+            # left the set can never re-alert when it returns. Nobody is owed anything here, so
+            # nothing is withheld.
+            _resync_sector_state()
             return
 
         with SessionLocal() as session:
@@ -10813,6 +10918,7 @@ def check_sector_rotation_alerts(rotation: dict[str, dict]) -> None:
 
             from .email_service import send_sector_rotation_email
             sent = 0
+            rotation_failed = 0
             for uid, user in recipients.items():
                 # AUD266-PER-RECIPIENT-ISOLATION-NEVER-PROPAGATED: an uncaught exception from
                 # inside send_sector_rotation_email() would otherwise propagate to this
@@ -10824,7 +10930,20 @@ def check_sector_rotation_alerts(rotation: dict[str, dict]) -> None:
                     log.warning("sector_rotation_alert.recipient_send_error", user=uid, error=str(_send_exc))
                 if rotation_ok:
                     sent += 1
-            log.info("sector_rotation_alert.done", sectors=len(candidates), sent=sent, recipients=len(recipients))
+                else:
+                    rotation_failed += 1
+            # EA-07 sibling: fade-outs are recorded either way; the newly-emerging sectors are
+            # withheld when a recipient is still owed them, so the next run re-alerts.
+            if rotation_failed == 0:
+                _resync_sector_state()
+            else:
+                _resync_sector_state(exclude=set(newly_emerging))
+                log.warning("sector_rotation_alert.new_sectors_not_recorded",
+                            failed=rotation_failed, sent=sent,
+                            withheld=sorted(newly_emerging),
+                            note="recipients still owed these sectors; the next run retries")
+            log.info("sector_rotation_alert.done", sectors=len(candidates), sent=sent,
+                     failed=rotation_failed, recipients=len(recipients))
     except Exception as exc:
         log.error("sector_rotation_alert.symbol_error", error=str(exc), exc_info=True)
 
@@ -12800,7 +12919,7 @@ def send_flow_digest(lookback: str = "intraday", label: str = "flow_digest") -> 
                 _record_job_status(label, "ok", time.monotonic() - _t0)
                 return
 
-            from .email_service import send_email
+            from .email_service import send_email, _with_unsub
             html, text = _render_flow_digest(
                 dp_rows, of_rows, dp_acc, of_acc, lookback, since
             )
@@ -12814,7 +12933,11 @@ def send_flow_digest(lookback: str = "intraday", label: str = "flow_digest") -> 
                 # EA-05: the flow digest had no manageable type and no preference check.
                 if not _may_send(session, u, "flow_digest"):
                     continue
-                if send_email(u.email, subject, html, text):
+                # FOLLOW-UP REVIEW 2026-09-28: it also called raw send_email, so the type it
+                # now advertises as manageable arrived with no unsubscribe link. Registering a
+                # preference and then omitting the control that exercises it is half a fix.
+                _fd_html, _fd_text = _with_unsub(u.email, "flow_digest", html, text)
+                if send_email(u.email, subject, _fd_html, _fd_text):
                     sent += 1
             log.info("flow_digest.sent", label=label, lookback=lookback,
                      dark_pool=len(dp_rows), options_flow=len(of_rows),

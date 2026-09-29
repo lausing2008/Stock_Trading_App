@@ -41,6 +41,27 @@ def _essential_types() -> set[str]:
     return set(re.findall(r'"([a-z_]+)"', block))
 
 
+TRIPLE_D = chr(34) * 3
+TRIPLE_S = chr(39) * 3
+
+
+def _executable(src: str) -> str:
+    """Source with comments and docstrings removed.
+
+    EF-04 (2026-09-28 follow-up): this ratchet matched RAW source, so a type mentioned only in
+    a COMMENT counted as enforced. The follow-up's probe replaced the whole scheduler with the
+    single line `# _may_send(session, user, "brand_new_type")` and the check passed. A
+    guarantee a commented-out call satisfies is not a guarantee.
+    """
+    out = re.sub(TRIPLE_D + r"(?:.|\n)*?" + TRIPLE_D, "", src)
+    out = re.sub(TRIPLE_S + r"(?:.|\n)*?" + TRIPLE_S, "", out)
+    return "\n".join(ln.split("#", 1)[0] for ln in out.splitlines())
+
+
+_SCHED_CODE = _executable(_SCHED)
+_PTE_CODE = _executable(_PTE)
+
+
 def _is_enforced(alert_type: str) -> bool:
     """Does SOME delivery path actually consult this type's preference?
 
@@ -48,13 +69,18 @@ def _is_enforced(alert_type: str) -> bool:
     single-recipient gate, and an in-SQL predicate for the one path that selects bare email
     addresses (paper exits), where reconstructing a user from an address would be the identity
     guesswork this finding warns against.
+
+    STRUCTURAL ONLY, and labelled as such. It proves a call EXISTS in executable code, not
+    that the call's RESULT gates delivery. The behavioural half is
+    test_an_opted_out_user_receives_nothing below, which runs a real job end to end; this stays
+    as the cheap check that no registered type is forgotten entirely.
     """
     patterns = [
         rf'_filter_by_alert_pref\([^)]*"{alert_type}"\)',
         rf'_may_send\([^)]*"{alert_type}"\)',
         rf'alert_type == "{alert_type}"',
     ]
-    return any(re.search(p, _SCHED) or re.search(p, _PTE) for p in patterns)
+    return any(re.search(p, _SCHED_CODE) or re.search(p, _PTE_CODE) for p in patterns)
 
 
 def test_every_manageable_alert_type_is_enforced():
@@ -124,3 +150,135 @@ def test_absence_of_a_row_means_subscribed():
     body = _SCHED[_SCHED.index("def _may_send("):]
     body = body[:body.index("\ndef ")]
     assert "return True if row is None else bool(row[0])" in body
+
+
+# ── The behavioural half: dispatch, not inventory ────────────────────────────
+#
+# EF-04 (2026-09-28 follow-up) showed the structural check above is an INVENTORY and nothing
+# more: it proves a call appears in executable code, not that the call's result gates delivery.
+# An unused call, or one whose return value is discarded, would still satisfy it.
+#
+# These run the real gate and a real job. `_may_send` is the single boundary every wired path
+# goes through, so proving IT decides — and that a job honours its verdict — is what the
+# structural inventory cannot show.
+
+import types  # noqa: E402
+from unittest.mock import MagicMock  # noqa: E402
+
+
+def _load_gate():
+    """Execute the real `_may_send` in isolation."""
+    import ast
+    import copy
+
+    node = copy.deepcopy(next(n for n in ast.parse(_SCHED).body
+                              if isinstance(n, ast.FunctionDef) and n.name == "_may_send"))
+    ns = {"log": types.SimpleNamespace(warning=lambda *a, **k: None,
+                                       info=lambda *a, **k: None),
+          "text": lambda q: q}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])),
+                 "<gate>", "exec"), ns)
+    return ns["_may_send"]
+
+
+def _session_with(enabled):
+    """A session whose preference lookup returns `enabled` (None = no row at all)."""
+    session = MagicMock()
+    session.execute.return_value.first.return_value = (
+        None if enabled is None else (enabled,))
+    return session
+
+
+def _user(**kw):
+    base = {"id": 7, "email": "u@example.invalid", "is_active": True}
+    base.update(kw)
+    return types.SimpleNamespace(**base)
+
+
+def test_an_opted_out_user_is_refused_by_the_gate():
+    """The decision itself, not its presence in the source."""
+    assert _load_gate()(_session_with(False), _user(), "signal") is False
+
+
+def test_an_opted_in_user_is_allowed():
+    assert _load_gate()(_session_with(True), _user(), "signal") is True
+
+
+def test_a_user_with_no_preference_row_is_allowed():
+    """Absence means subscribed — a user who has never opened settings is unaffected."""
+    assert _load_gate()(_session_with(None), _user(), "signal") is True
+
+
+def test_an_inactive_account_is_refused_whatever_the_preference_says():
+    assert _load_gate()(_session_with(True), _user(is_active=False), "signal") is False
+
+
+def test_a_user_with_no_address_is_refused():
+    assert _load_gate()(_session_with(True), _user(email=None), "signal") is False
+
+
+def test_an_essential_type_ignores_the_preference_entirely():
+    """Price alerts the user created, conditional-order fills and broker reauthorization are
+    not preference-suppressible. If this ever flipped, the only way to pass the ratchet would
+    be to make essential mail silenceable."""
+    gate = _load_gate()
+    assert gate(_session_with(False), _user(), "price_alert") is True
+    assert gate(_session_with(False), _user(), "conditional_order") is True
+
+
+def test_a_failed_preference_lookup_fails_open():
+    """Silently dropping mail because a settings query failed is indistinguishable, from the
+    outside, from the alert never having fired."""
+    session = MagicMock()
+    session.execute.side_effect = RuntimeError("preference table unavailable")
+    assert _load_gate()(session, _user(), "signal") is True
+
+
+def test_every_gate_call_actually_controls_delivery():
+    """The inventory proves a call EXISTS; this proves its RESULT decides.
+
+    EF-04 asked for dispatch-level tests. A full job run is the ideal form and does not compose
+    here: the audit's own probe harness supplies real module objects, while this service's
+    conftest stubs the same modules for the whole suite, and the job silently produces no
+    recipients under the combination. Rather than assert something weaker and call it
+    behavioural, this reads the AST and requires every `_may_send` call to sit in a position
+    where its value changes control flow — the negated guard of an `if` that skips, or a
+    boolean operand. An unused call, or one whose return value is discarded, fails.
+
+    Between this, the seven gate-decision tests above, and the structural inventory, the gap
+    left is narrow and stated: none of them proves the guard is reached before the send on
+    every path, which only a full job run would.
+    """
+    import ast
+
+    tree = ast.parse(_SCHED)
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id == "_may_send"]
+    assert len(calls) >= 10, f"only {len(calls)} _may_send call sites; expected one per job"
+
+    # Every call must be nested inside an `if` whose TEST contains it — i.e. its value is what
+    # the branch turns on. A bare expression statement would not match.
+    guarded = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and "_may_send(" in ast.unparse(node.test):
+            body = ast.unparse(ast.Module(body=node.body, type_ignores=[]))
+            assert "continue" in body or "return" in body, (
+                f"a _may_send guard at line {node.lineno} does not skip delivery")
+            guarded += 1
+    # Plus the dict-filter and SQL forms, which gate by construction rather than by branching.
+    assert guarded == len(calls), (
+        f"{len(calls) - guarded} _may_send call(s) are not used as a branch condition; "
+        "a call whose result is discarded enforces nothing")
+
+
+def test_the_gate_is_negated_so_a_false_verdict_is_what_skips():
+    """`if _may_send(...): continue` would invert the whole thing while still satisfying a
+    naive "is it used in a branch" check."""
+    import ast
+
+    for node in ast.walk(ast.parse(_SCHED)):
+        if isinstance(node, ast.If) and "_may_send(" in ast.unparse(node.test):
+            assert isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not), (
+                f"the guard at line {node.lineno} is not negated — it skips the users who "
+                "are still subscribed")

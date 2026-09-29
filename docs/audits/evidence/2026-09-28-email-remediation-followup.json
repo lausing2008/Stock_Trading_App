@@ -1,0 +1,73 @@
+{
+  "observed_at_utc": "2026-09-29T03:57:50.280248+00:00",
+  "reviewed_head": "f55b7f93316f7be83a0e0fac4d9799987f151f35",
+  "implementation": "c2703484",
+  "source_sha256": {
+    "services/market-data/src/services/scheduler.py": "19181505b2c19c513fd43913f6920124aa85804ef382bdd7ac595e71e360cdb1",
+    "services/market-data/src/services/email_service.py": "0ba020f4338fb9a41acbfd190d77f1ce6b931eaab2bcdbcf59b425e1ea9e056a",
+    "services/market-data/src/services/paper_trading_engine.py": "e466179887de94e5159cddd0c5bd28a90e29bac2b5d6cf05395f4367676ee890",
+    "shared/common/alert_prefs.py": "b013d00298b87cddb6a2686014c146885628d2ec4752a1dceede0e93e02dd667",
+    "services/market-data/tests/test_ea05_every_alert_type_is_enforced.py": "cc37ea2ab6f96aeba6ff01d8c5472bbe3e4c1e65d8db6a0d65302135ca4df1ff",
+    "docs/audits/evidence/2026-09-28-email-remediation-followup.py": "5953ea554df2c205e98bde79b85752e4fc2fd9bf96a8c556a08b011e2935d525"
+  },
+  "checks": {
+    "signal_batch": {
+      "defect_reproduced": true,
+      "sender_calls_for_two_eligible_alerts": 1,
+      "outer_job_error": [
+        "cannot access local variable '_send_exc' where it is not associated with a value"
+      ],
+      "transitions_not_consumed": true
+    },
+    "retry_price": {
+      "defect_reproduced": true,
+      "requested_symbols": [
+        ""
+      ],
+      "available_provider_price": 123.0,
+      "rendered_current_price": 90.0,
+      "actual_source": "configured threshold; not observed price"
+    },
+    "ratchet_false_positive": {
+      "defect_reproduced": true,
+      "comment_only_source_accepted_as_enforcement": true,
+      "scope": "isolated in-memory test inputs; repository source unmodified"
+    },
+    "flow_unknown_side": {
+      "defect_reproduced": true,
+      "missing_bid_side": [
+        "ask",
+        1.0
+      ]
+    },
+    "signal_success_with_failed_badge": {
+      "fix_verified": true,
+      "sender_calls_despite_badge_failure": 2,
+      "transitions_advanced_after_success": true
+    }
+  },
+  "tests": {
+    "service": "market-data",
+    "files": [
+      "test_ea01_to_ea12_email_audit.py",
+      "test_ea05_every_alert_type_is_enforced.py",
+      "test_alert_dedup_and_isolation_fixes.py",
+      "test_de_gate_admits_hold.py",
+      "test_options_flow_alert.py",
+      "test_build_game_plan_none_recommendation.py"
+    ],
+    "result": "110 passed in 5.77s"
+  },
+  "author_reported_not_independently_recounted": {
+    "consumed_transitions": 69,
+    "processed_signal_events_since_rebuild": 812,
+    "latest_deployment_zero_drift": true
+  },
+  "limits": [
+    "No production access or mutation in this continuation.",
+    "No actual email sent.",
+    "Actual scheduler bodies use controlled database/provider results.",
+    "Ratchet counterexample changes only in-memory test-module source strings.",
+    "Technical-success duplication and recurring retry gap are source-traced, not separate whole-job reproductions."
+  ]
+}

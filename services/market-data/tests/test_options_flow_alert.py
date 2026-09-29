@@ -279,8 +279,17 @@ def test_keys_candidates_by_option_chain_not_symbol():
 
 
 def test_skips_a_row_with_no_real_ask_bid_premium_split():
+    """A print with no premium on either side supports no direction.
+
+    UPDATED 2026-09-28 (EF-05). The check used to read `ask == 0.0 and bid == 0.0` against
+    values that had already been flattened with `or 0.0` — so a MISSING side became a measured
+    zero, and `_classify_flow_side` then read the one reported number as 100% dominance.
+    Missingness is preserved now, and the emptiness test is `not ask and not bid`, which covers
+    both None and 0.0."""
     body = _func_body("check_options_flow_alerts")
-    assert "ask == 0.0 and bid == 0.0" in body
+    code = "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
+    assert "if not ask and not bid:" in code
+    assert "ask = row.total_ask_side_prem or 0.0" not in code, "missingness is flattened again"
 
 
 def test_records_outcome_and_sends_email_only_for_real_candidates():

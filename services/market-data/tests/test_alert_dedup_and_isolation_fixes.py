@@ -221,11 +221,18 @@ def test_price_alerts_drawdown_dedup_key_written_only_after_successful_send():
 
 
 def test_technical_alerts_pending_emails_loop_is_isolated_per_recipient():
+    """One recipient's send raising must not abort the rest of the batch.
+
+    Comments stripped first, and a wider window: EF-03 (2026-09-28) added delivery recording
+    inside this loop, whose explanatory comment pushed `try:` past a fixed character budget.
+    A budget that counts prose measures the wrong thing — the subject here is isolation."""
     body = _function_body("check_technical_alerts")
-    for_idx = body.index("for kwargs in pending_emails:")
-    tail = body[for_idx:for_idx + 300]
+    code = "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
+    for_idx = code.index("for kwargs in pending_emails:")
+    tail = code[for_idx:for_idx + 400]
     assert "try:" in tail
-    assert "except Exception as _send_exc:" in tail
+    assert "except Exception as _tech_send_exc:" in tail
+
 
 
 def test_earnings_beat_screener_send_is_isolated_per_recipient():

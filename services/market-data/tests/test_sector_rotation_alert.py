@@ -128,11 +128,29 @@ def test_classifies_using_trajectory_field_not_a_new_computation():
 def test_resyncs_the_tracked_set_even_when_nothing_newly_emerged():
     """A sector that fades OUT of Emerging Leader must be removed from the tracked set, so it
     correctly re-alerts if it later re-emerges — matches check_short_squeeze_alerts()'s own
-    always-resync pattern."""
+    always-resync pattern.
+
+    UPDATED 2026-09-28 (follow-up review). The EA-07 sibling fix moved the state write below
+    the delivery loop so a failed send could not consume a newly-emerged sector — which put it
+    after this guard and broke exactly the behaviour this test protects. The resync is now a
+    helper called on BOTH paths, so the assertion is that the no-new-sectors path still resyncs,
+    not that a particular line precedes the guard.
+
+    Comments are stripped first: the fix's own comment explains the interaction and therefore
+    QUOTES this guard, so a raw search finds the prose before the code."""
     body = _check_sector_rotation_alerts_body()
-    resync_idx = body.index("_rc.delete(state_key)")
-    guard_idx = body.index("if not newly_emerging:")
-    assert resync_idx < guard_idx
+    code = "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
+    assert "def _resync_sector_state(" in code
+    # The helper must exist before the guard, and the guard's own branch must call it.
+    assert code.index("def _resync_sector_state(") < code.index("if not newly_emerging:")
+    guard_branch = code[code.index("if not newly_emerging:"):]
+    guard_branch = guard_branch[:guard_branch.index("with SessionLocal()")]
+    assert "_resync_sector_state()" in guard_branch, \
+        "a fade-out is no longer recorded when nothing newly emerged"
+    # And the resync itself still deletes-then-rebuilds the set.
+    helper = code[code.index("def _resync_sector_state("):]
+    helper = helper[:helper.index("if not newly_emerging:")]
+    assert "_rc.delete(state_key)" in helper and "_rc.sadd(state_key" in helper
 
 
 def test_delivered_only_to_price_alert_subscribed_recipients():

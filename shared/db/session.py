@@ -795,6 +795,22 @@ def _apply_isolated_ddl() -> None:
         # (portfolio_id, option_symbol, entry_date) rows from before the guard existed, the
         # CREATE is rejected. Startup must not die for that: the row lock and the lease check
         # remain in force, and the failure has to be visible rather than silent.
+        # EF-03 (2026-09-28 email-remediation follow-up): CLOSE OUT THE AMBIGUOUS LEGACY ROWS.
+        #
+        # `last_sent_at` only began recording notification delivery for price alerts on
+        # 2026-09-28. Every row triggered before that has it NULL whether or not its email
+        # actually went out — so the new retry query cannot tell "never delivered" from
+        # "delivered before we started recording it", and re-sending them would mail people
+        # price alerts that are weeks old.
+        #
+        # The audit's own guidance: do not interpret every legacy null as a failed delivery.
+        # These are stamped from their own trigger time, which marks them NOT RETRYABLE and
+        # says plainly that their delivery is unknown rather than asserting it succeeded. Rows
+        # triggered from here on are unambiguous, because the sender now stamps on success.
+        # One-shot: after this runs there are no NULL-timestamped triggered rows left to match.
+        ("legacy price-alert delivery closeout",
+         "UPDATE price_alerts SET last_sent_at = triggered_at "
+         "WHERE triggered IS TRUE AND last_sent_at IS NULL AND triggered_at IS NOT NULL"),
         ("uq_options_income_intent",
          "CREATE UNIQUE INDEX IF NOT EXISTS uq_options_income_intent "
          "ON options_income_positions (portfolio_id, option_symbol, entry_date)"),

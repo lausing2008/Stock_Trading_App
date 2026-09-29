@@ -32,9 +32,11 @@ baseline with a reason.
 import pathlib
 import re
 
-# Measured 2026-09-18. LOWER THIS when you convert assertions; raising it needs a reason in the
-# commit message, because every increment is a test that cannot fail for the bug it names.
-_BASELINE = 181
+# Measured 2026-09-18 at 181. Lowered to 180 on 2026-09-28: the email-audit follow-up replaced
+# a threshold-pinning assertion with a behavioural one, and the gain is locked in here so it
+# cannot be quietly spent. LOWER THIS when you convert assertions; raising it needs a reason in
+# the commit message, because every increment is a test that cannot fail for the bug it names.
+_BASELINE = 180
 
 _REPO = pathlib.Path(__file__).resolve().parents[3]
 

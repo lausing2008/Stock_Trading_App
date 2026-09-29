@@ -405,7 +405,9 @@ def test_no_classified_premium_is_neutral_rather_than_a_division_error():
 def test_a_neutral_print_produces_no_directional_candidate():
     body = _code(_fn_src(_SCHED, "check_options_flow_alerts"))
     assert '_side, _imbalance = _classify_flow_side(ask, bid)' in body
-    assert 'if _side == "neutral":' in body
+    # EF-05 (2026-09-28 follow-up) added "unknown" alongside "neutral": a MISSING side is not a
+    # measured zero, and `or 0.0` had been turning one reported number into total dominance.
+    assert 'if _side in ("neutral", "unknown"):' in body
     assert "ask_side_dominant = ask >= bid" not in body
 
 
@@ -434,3 +436,177 @@ def test_the_exit_email_log_reflects_the_senders_result():
     assert "_exit_ok = send_trade_exit_email(" in body
     assert "if _exit_ok:" in body
     assert "paper.exit_email_not_delivered" in _PTE
+
+
+# ── EF-01…EF-05: defects introduced BY the EA remediation ────────────────────
+#
+# The follow-up review found five. Three were mine, created while fixing EA-01/EA-06/EA-09 —
+# which is the reason this section exists rather than being folded into the EA tests above:
+# a fix's own regressions deserve their own names.
+
+def test_the_send_error_message_survives_its_handler():
+    """EF-01, AND IT ABORTED THE WHOLE BATCH.
+
+    Python DELETES the name bound by `except ... as` when the handler exits. My EA-01 fix read
+    `_send_exc` further down, in the `_send_raised` branch, which raised UnboundLocalError
+    inside the per-recipient error path — and the outer job handler caught that and stopped the
+    loop. One persistently failing subscription starved every recipient after it.
+
+    A plain string survives the handler. The exception object does not."""
+    body = _code(_fn_src(_SCHED, "check_signal_alerts"))
+    assert "_send_error_msg = str(_send_exc)" in body
+    # The later use must be the string, never the exception.
+    give_up = body[body.index("if _send_raised:"):]
+    give_up = give_up[:give_up.index("session.commit()")]
+    assert "str(_send_exc)" not in give_up, "the exception is read outside its handler again"
+    assert "error=_send_error_msg" in give_up
+    # Initialised before the try, so the name always exists.
+    assert body.index('_send_error_msg = ""') < body.index("email_ok = send_signal_alert_email(")
+
+
+def test_one_failing_recipient_does_not_starve_the_next():
+    """EF-01's acceptance. Asserted structurally — the exception never escapes the recipient
+    loop, so the loop continues — because the full two-recipient run belongs to the audit's own
+    probe harness, which does not compose with this suite's module stubs."""
+    import ast
+
+    # Word-boundary, not substring: the flag this very fix introduced is `_send_raised`, which
+    # CONTAINS "raise" — so a naive `"raise" not in frag` fails on its own fix.
+    fn = next(n for n in ast.walk(ast.parse(_SCHED))
+              if isinstance(n, ast.FunctionDef) and n.name == "check_signal_alerts")
+    handler = next(h for n in ast.walk(fn) if isinstance(n, ast.Try)
+                   for h in n.handlers
+                   if h.name == "_send_exc")
+    assert not [n for n in ast.walk(handler) if isinstance(n, ast.Raise)], \
+        "the per-recipient handler re-raises, which aborts the batch"
+
+
+def test_a_retry_never_renders_the_threshold_as_the_current_price():
+    """EF-02. `prices.get(_ua.symbol, _ua.threshold)` supplied the CONFIGURED THRESHOLD as the
+    displayed price — and retry symbols were not in the price fetch, so the default always
+    won. An alert set at 90 was emailed as "is now 90.0000" whatever the market was doing.
+    That is not a stale quote; no observation supports it."""
+    body = _code(_fn_src(_SCHED, "check_price_alerts"))
+    assert "prices.get(_ua.symbol, _ua.threshold)" not in body
+    assert "_retry_price = prices.get(_ua.symbol)" in body
+    assert "if _retry_price is None:" in body
+    assert "alert.retry_deferred_no_quote" in _SCHED
+
+
+def test_retry_symbols_are_included_in_the_price_fetch():
+    """The other half of EF-02: without this the quote is never available and every retry
+    defers forever."""
+    body = _code(_fn_src(_SCHED, "check_price_alerts"))
+    assert "{u.symbol for u in _undelivered}" in body
+
+
+def test_a_delayed_notification_says_that_it_is_delayed():
+    """A message arriving hours late, showing a current price, reads as a fresh trigger."""
+    body = _fn_src(_SCHED, "check_price_alerts")
+    assert "Delayed notification" in body
+    assert "_ua.triggered_at.isoformat()" in body
+
+
+def test_the_retry_only_claims_alerts_this_job_can_render():
+    """EF-03. `price_alerts` holds technical conditions too, and check_technical_alerts sets
+    `triggered` without stamping `last_sent_at` — so a SUCCESSFULLY delivered one-shot MACD
+    alert matched the retry query exactly like a failed price alert, and would have been
+    re-sent through the PRICE renderer with the raw enum and the threshold as its price."""
+    body = _code(_fn_src(_SCHED, "check_price_alerts"))
+    assert "PriceAlert.condition.in_([AlertCondition.ABOVE, AlertCondition.BELOW])" in body
+
+
+def test_technical_sends_record_delivery_under_the_same_contract():
+    """The other half of EF-03: if technical sends never stamp `last_sent_at`, their rows stay
+    indistinguishable from undelivered ones for any job that reads that column."""
+    body = _code(_fn_src(_SCHED, "check_technical_alerts"))
+    assert "_tech_delivered" in body
+    assert "update(PriceAlert)" in body
+    frag = body[body.index("for kwargs in pending_emails:"):]
+    assert "if ok:" in frag and "_tech_delivered.append(_t_alert_id)" in frag
+
+
+def test_legacy_rows_are_closed_out_rather_than_read_as_pending():
+    """EF-03's fifth point. `last_sent_at` only began recording delivery on 2026-09-28, so
+    every earlier triggered row has it NULL whether or not its mail went out. Re-sending them
+    would mail people price alerts that are weeks old. The audit's own guidance: do not
+    interpret every legacy null as a failed delivery."""
+    session_src = (_ROOT / "shared/db/session.py").read_text()
+    assert "legacy price-alert delivery closeout" in session_src
+    assert "UPDATE price_alerts SET last_sent_at = triggered_at" in session_src
+
+
+def test_a_missing_flow_side_is_unknown_not_total_dominance():
+    """EF-05. `(ask_prem or 0.0)` collapsed an ABSENT side into a measured zero, so ask=100
+    with bid missing returned ("ask", 1.0) — the most confident answer possible, from a feed
+    that reported one number."""
+    fn = _load(_SCHED, "_classify_flow_side", {"_FLOW_SIDE_MIN_IMBALANCE": 0.60})
+    assert fn(100.0, None)[0] == "unknown"
+    assert fn(None, 100.0)[0] == "unknown"
+    assert fn(None, None)[0] == "unknown"
+    # A genuine measured zero is still a classification, not an absence.
+    assert fn(100.0, 0.0)[0] == "ask"
+
+
+def test_an_unknown_side_produces_no_candidate():
+    body = _code(_fn_src(_SCHED, "check_options_flow_alerts"))
+    assert 'if _side in ("neutral", "unknown"):' in body
+    assert "ask = row.total_ask_side_prem or 0.0" not in body
+
+
+# ── Residuals the follow-up review raised against the EA fixes ───────────────
+
+def test_the_breakout_entry_must_also_have_upside():
+    """EA-02 residual. The plan offers three ways in, and only the two pullback entries were
+    checked against the target. A take-profit at or below the BREAKOUT level instructs a buy at
+    a price the same plan says to sell at."""
+    g = _load(_SCHED, "_plan_geometry_ok")
+    ok, why = g({"entry1": 98.5, "entry2": 96.5, "breakout": 115.0,
+                 "stop": 94.5, "take_profit": 112.0, "current_price": 100.0})
+    assert ok is False and "breakout" in why
+
+
+def test_the_validator_does_not_claim_a_reward_risk_check_it_never_makes():
+    """A comment here promised a reward/risk floor that the code did not enforce, and the
+    follow-up review caught the mismatch. No ratio is enforced — the style parameters set the
+    levels, and a floor would suppress whole horizons rather than fix them — so the comment
+    now says that."""
+    body = _fn_src(_SCHED, "_plan_geometry_ok")
+    assert "No minimum ratio is enforced" in body
+
+
+def test_sector_rotation_does_not_consume_its_state_on_a_failed_send():
+    """EA-07's SIBLING, which the original fix did not touch. The emerging set was written
+    before any delivery, so a total failure left the next weekly run seeing no new sectors."""
+    body = _code(_fn_src(_SCHED, "check_sector_rotation_alerts"))
+    assert "def _resync_sector_state(" in body
+    assert "exclude=set(newly_emerging)" in body
+    assert "sector_rotation_alert.new_sectors_not_recorded" in _SCHED
+
+
+def test_sector_rotation_still_records_fade_outs_when_nothing_newly_emerged():
+    """The regression my first attempt at the above introduced: moving the write below the send
+    loop put it after the early return, so a sector leaving the set was never removed and could
+    never re-alert. Both paths call the resync."""
+    body = _code(_fn_src(_SCHED, "check_sector_rotation_alerts"))
+    guard = body[body.index("if not newly_emerging:"):]
+    guard = guard[:guard.index("with SessionLocal()")]
+    assert "_resync_sector_state()" in guard
+
+
+def test_the_dark_pool_side_is_labelled_an_inference():
+    """EA-09's other half, which the first pass left untouched: the template called an inferred
+    aggressor side a measured fact. The print and its price are reported; the side is derived
+    from where the block landed in the spread."""
+    assert "measured fact, not a forecast" not in _EMAIL
+    assert "inference, not a measured fact" in _EMAIL
+    # The existing disclaimers must survive the rewording.
+    assert "aggressor" in _EMAIL.lower()
+    assert "not a forecast" in _EMAIL
+
+
+def test_the_flow_digest_carries_an_unsubscribe_footer():
+    """It called raw send_email, so the type it now advertises as manageable arrived with no
+    way to act on that. Registering a preference and omitting the control is half a fix."""
+    body = _code(_fn_src(_SCHED, "send_flow_digest"))
+    assert '_with_unsub(u.email, "flow_digest", html, text)' in body

@@ -2274,11 +2274,14 @@ def send_dark_pool_alert_email(to: str, candidates: list[dict], omitted_count: i
       as a result. Institutional blocks cross dark pools for many reasons unrelated to a
       directional view. Not financial advice.
       <br><br>
-      BUY/SELL is <strong>also a measured fact, not a forecast</strong>: it says which side was
-      the aggressor, from where the block printed inside the bid-ask spread at execution
-      (nearer the ask = buyer-initiated). It does <strong>not</strong> mean the stock will go
-      up or down — a &quot;BUY&quot; can be a hedge, an index rebalance, or the other leg of a
-      pair. This platform has not yet measured whether the side predicts anything;
+      BUY/SELL is an <strong>inference, not a measured fact</strong>: the print and its price
+      are reported, but which side was the <em>aggressor</em> is DERIVED from where the block
+      landed inside the bid-ask spread at execution (nearer the ask = buyer-initiated). That derivation says
+      nothing about whether the trade opened or closed a position, whether it was a hedge, an
+      index rebalance, or the other leg of a pair — and the quote it is measured against may
+      itself be imperfect. It is <strong>not a forecast</strong> and does <strong>not</strong>
+      mean the stock will go up or down. This platform has not measured whether the side
+      predicts anything;
       <strong>&quot;—&quot; means undeterminable</strong> (a midpoint cross or no quote), never
       neutral.
     </p>
@@ -2289,9 +2292,12 @@ def send_dark_pool_alert_email(to: str, candidates: list[dict], omitted_count: i
         + rows_text
         + omitted_text
         + "\nMeasured fact (a real off-exchange print), not a prediction of direction. Not financial advice.\n"
-        + "BUY/SELL is also measured, not forecast: it says which side was the AGGRESSOR, from\n"
-        + "where the block printed inside the bid-ask spread. It does not mean the stock will go\n"
-        + "up or down. '-' means undeterminable (a midpoint cross or no quote), never neutral.\n"
+        + "BUY/SELL is an INFERENCE, not a measured fact: the print and its price are reported,\n"
+        + "but which side was the AGGRESSOR is DERIVED from where the block landed inside the\n"
+        + "bid-ask spread. It does\n"
+        + "not establish opening vs closing intent or a hedge, it is not a forecast, and it does\n"
+        + "not mean the stock will go up or down. '-' means\n"
+        + "undeterminable (a midpoint cross or no quote), never neutral.\n"
     )
     body_html, body_text = _with_unsub(to, "dark_pool", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
