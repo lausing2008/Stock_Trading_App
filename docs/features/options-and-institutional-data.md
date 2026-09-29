@@ -1395,3 +1395,117 @@ The fake session also had to be taught to distinguish queries by their **bound p
 their SQL text: this suite stubs sqlalchemy, so `text()` yields a MagicMock containing no SQL, and
 text-matching silently routed the benchmark query into the aggregate branch — making alpha read
 `None` in a way that looked exactly like a missing feature.
+
+---
+
+## T411-IVHV — Implied vs Realized Volatility, and a three-week gain/loss table (2026-09-29)
+
+**User request:** *"In the Option tab in the stock detail page, Give me a IV vs HV Graph and a table
+of the 'gain and lose performance' for near 3 weeks."* Asked which performance the table should
+show, the user chose the stacked form — the underlying's daily move alongside what its at-the-money
+call and put did — and asked whether IV/HV history would be too expensive to fetch on the fly.
+
+### The measurement that made "on the fly" the right answer
+
+`get_iv_rank()` was already calling `/api/stock/{ticker}/iv-rank` once per symbol per day for the
+Options Game Plan snapshot. Measured against the live API on 2026-09-28:
+
+| `timespan` | rows returned | span |
+|---|---|---|
+| *(none — what the existing call sent)* | 5 | 2026-09-22 → 2026-09-28 |
+| `1M` | 20 | 2026-08-31 → 2026-09-28 |
+| `1Y` | **251** | 2025-09-29 → 2026-09-28 |
+| `3M`, `6M`, `90d`, `180d` | 251 | *(falls back to the maximum window)* |
+
+**One request buys a full year of daily IV.** Three months costs exactly the same as the single
+reading the daily job already fetches, so there is nothing to persist and no backfill obligation:
+the panel fetches on demand behind a 1-hour Redis cache (`_IV_HISTORY_TTL`, deliberately longer
+than `_IV_RANK_TTL`'s 15 min because this one serves live page views). UW's accepted vocabulary
+here is narrower than the parameter name suggests — anything it does not recognise silently
+returns the maximum window rather than erroring.
+
+Historical volatility needs no fetch at all: it is computed from this platform's own daily closes.
+
+### T411-IVRANK-OLDESTROW — a bug found while building it
+
+`get_iv_rank()` took `rows[0]` and its docstring asserted the response was "most recent first".
+**It is ascending.** Measured on AAPL, NVDA and SPY, all three identical: `rows[0]` is the OLDEST
+row. Every consumer had been reading an IV roughly a trading week stale, and the error scales with
+the window — at `timespan=1Y`, `rows[0]` is a year old.
+
+On AAPL that day: `iv_rank_1y` **32.05** (the row being read) against **45.06** (the current one).
+Not a rounding difference — a different answer to "are options cheap here", which is exactly the
+question `OptionsGamePlanSnapshot.iv_rank_1y` feeds into the signal alert email's "options
+relatively expensive / relatively cheap" badge, and into the expected-move calculation behind the
+game plan's take-profit.
+
+Fixed by selecting on the row's own `date` rather than by position, so it is correct under either
+ordering and cannot regress silently if UW changes it.
+
+### HV is not the portfolio helper's volatility, deliberately
+
+`services/market-data/src/services/volatility.py` is a new module, not a reuse of
+`paper_trading_engine._vol_target_multiplier()`'s annualized figure. Three choices differ, each of
+which changes the number:
+
+- **Log returns, not simple returns.** The series is plotted against a Black-Scholes implied
+  volatility, and BS is defined on log-normal dynamics. Simple returns bias HV upward against the
+  IV beside it, by an amount that grows with volatility — precisely the regime where a reader is
+  most likely to act on the gap.
+- **Sample variance with the mean subtracted.** Over a 20-day window on a trending stock the drift
+  is not zero, and the zero-mean convention inflates HV.
+- **No partial windows.** The first 20 sessions produce no point at all rather than a 3-day HV
+  plotted as though it were a 20-day one.
+
+An unmeasurable sample returns `None`, never `0.0`: a zero renders as a real reading of "this stock
+did not move", which is a different claim from "there is not enough history to say". A genuinely
+flat series does return a real `0.0`.
+
+### The gain/loss table — one contract, held
+
+`GET /stocks/{symbol}/options-performance` returns 15 sessions of the underlying beside the call
+and put that were **at the money when the window opened**, each a single contract held across every
+row — not "whatever was at the money that day", which would relabel a different instrument each
+line. Selection is `expiry ASC, |strike − spot| ASC` among contracts with a two-sided quote at entry
+and an expiry at least 7 days past the window's end, so one contract stays quoted down the whole
+table.
+
+Marks are the NBBO midpoint and the response says so; each row carries the spread alongside, because
+a midpoint is not a fill.
+
+Real production output on 2026-09-29, which is the case the table exists for:
+
+| Symbol | Stock | ATM call | ATM put |
+|---|---|---|---|
+| AAPL | +7.01% | +120.68% | −95.78% |
+| NVDA | **+1.50%** | **−23.00%** | −60.73% |
+| TSLA | −2.91% | −68.81% | **−3.51%** |
+
+NVDA is the point: the stock rose and the call lost 23%. TSLA is the sharper one — the stock fell
+and *both* legs lost, the put included. A table showing only the underlying cannot tell a reader
+either of those things.
+
+### Availability is different for the two halves, so they are two endpoints
+
+IV vs HV works for any symbol UW covers. The performance table needs per-contract price history,
+which exists only for the symbols the daily archive job captures — **35 as of 2026-09-28** — because
+UW's option-chain window is rolling and an uncaptured day expires permanently (OPTHIST-1). Bundling
+them would make the whole panel fail on the narrower half. `no_option_history` and
+`insufficient_option_history` are separate reasons, and a symbol whose archive has sessions but no
+contract with runway returns the underlying column plus `contracts_reason`, rather than empty option
+columns that read as "the options did nothing".
+
+A missing capture day leaves a hole in the table, never a carried-forward mark — the archive job has
+misfired before (`docs/incidents/scheduler-misfire-data-gaps.md`), and a carried mark would show a
+real position as flat on a day it was not.
+
+### Files
+
+- `services/market-data/src/services/volatility.py` — new, pure
+- `services/market-data/src/api/_t411_ivhv.py` — both routes, registered onto routes.py's `/stocks` router
+- `services/market-data/src/services/unusual_whales.py` — `get_iv_history()`, `_newest_iv_row()`, the `get_iv_rank()` fix
+- `frontend/src/lib/ivHvChart.ts` — chart geometry; gaps BREAK the line rather than bridging it
+- `frontend/src/components/IvVsHvChart.tsx`, `OptionsPerformanceTable.tsx`
+- Tests: `test_t411_volatility.py` (10), `test_t411_iv_history_and_rank.py` (14),
+  `test_t411_options_performance.py` (16, real SQLite in a subprocess), `ivHvChart.test.ts` (24).
+  All sabotage-verified — 18 deliberate breaks, each caught.

@@ -39,6 +39,8 @@ import OptionsGamePlanCard from '@/components/OptionsGamePlanCard';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
 import OptionsChainChart from '@/components/OptionsChainChart';
+import IvVsHvChart from '@/components/IvVsHvChart';
+import OptionsPerformanceTable from '@/components/OptionsPerformanceTable';
 import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary, type QuarterlyRow, type AnalystConsensus, type Fundamentals, type StockEarningsHistory, type StockEarningsEvent } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { nearestActionableFvg, nearestPivotToFvg, classifyFvgVolumeContext } from '@/lib/fvgTradePlan';
@@ -771,6 +773,21 @@ export default function StockDetail() {
     () => api.getOptionsChain(symbol, chainExpiry),
     { revalidateOnFocus: false },
   );
+  // T411-IVHV: both are gated on the Options tab being open. Neither is needed by the other
+  // three tabs, and the IV half costs a real Unusual Whales request on a cache miss, so
+  // fetching them on every stock page view would spend quota on pages nobody looked at.
+  const [ivHvDays, setIvHvDays] = useState(90);
+  const { data: ivHv } = useSWR(
+    symbol && pageTab === 'Options' ? `iv-vs-hv-${symbol}-${ivHvDays}` : null,
+    () => api.getIvVsHv(symbol, ivHvDays),
+    { revalidateOnFocus: false },
+  );
+  const { data: optionsPerf } = useSWR(
+    symbol && pageTab === 'Options' ? `options-perf-${symbol}` : null,
+    () => api.getOptionsPerformance(symbol),
+    { revalidateOnFocus: false },
+  );
+
   const { data: dividendData } = useSWR<DividendData>(
     symbol && divOpen ? `dividends-${symbol}` : null,
     () => api.getDividends(symbol),
@@ -1400,6 +1417,15 @@ Return ONLY valid JSON — no markdown, no prose:
             />
           );
         })()}
+
+        {/* T411-IVHV: placed ahead of Options Flow deliberately. Flow and dealer positioning
+            describe what other people are doing right now; these two describe what this
+            symbol's own options have been priced at and what they actually paid over the last
+            three weeks — the context a reader needs before reading anyone else's flow. */}
+        {ivHv && ivHv.available && (
+          <IvVsHvChart data={ivHv} days={ivHvDays} onDaysChange={setIvHvDays} />
+        )}
+        {optionsPerf && <OptionsPerformanceTable data={optionsPerf} />}
 
         {/* Options Flow */}
         {optionsFlow && optionsFlow.available && (

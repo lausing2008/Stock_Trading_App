@@ -1,3 +1,8 @@
+// T411-IVHV: the IV/HV point and response shapes live beside the chart geometry that
+// consumes them (lib/ivHvChart.ts), and are re-exported below so callers can keep
+// importing every API type from this one module.
+import type { IvHvResponse } from './ivHvChart';
+
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
 function authHeader(): Record<string, string> {
@@ -551,6 +556,15 @@ export const api = {
   getOptionsChain: (symbol: string, expiry?: string) =>
     request<OptionsChain>(`/stocks/${symbol}/options-chain${expiry ? `?expiry=${expiry}` : ''}`),
   getGammaExposure: (symbol: string) => request<GammaExposure>(`/stocks/${symbol}/gamma-exposure`),
+
+  // T411-IVHV: the Options tab's IV vs HV chart and 3-week gain/loss table. Two calls, not one,
+  // because their availability differs — IV vs HV works for any symbol Unusual Whales covers,
+  // while the performance table needs this platform's own archived option-chain history, which
+  // exists for 35 symbols. Bundling them would make the whole panel fail on the narrower half.
+  getIvVsHv: (symbol: string, days = 90) =>
+    request<IvHvResponse>(`/stocks/${symbol}/iv-vs-hv?days=${days}`),
+  getOptionsPerformance: (symbol: string, sessions = 15) =>
+    request<OptionsPerformance>(`/stocks/${symbol}/options-performance?sessions=${sessions}`),
   getDarkPoolPrints: (symbol: string) => request<DarkPoolPrints>(`/stocks/${symbol}/dark-pool-prints`),
 
   // T324-OPTIONSFLOW-TAB
@@ -4155,3 +4169,60 @@ export type HotNewsFlag = {
   headline?: string | null;
   sentiment_label?: string | null;
 };
+
+
+// ── T411-IVHV ───────────────────────────────────────────────────────────────────────────
+export type { IvHvPoint, IvHvResponse } from './ivHvChart';
+
+/** One session of the gain/loss table, for one option leg. Every field is nullable because a
+ * capture day can be missing from the archive and the first row has no prior session to
+ * measure a daily change against — see OptionsPerformanceTable for how each is rendered. */
+export interface OptionsPerformanceLeg {
+  mark: number | null;
+  spread_pct: number | null;
+  change_pct: number | null;
+  cum_pct: number | null;
+}
+
+export interface OptionsPerformanceRow {
+  date: string;
+  close: number | null;
+  change_pct: number | null;
+  cum_pct: number | null;
+  call?: OptionsPerformanceLeg;
+  put?: OptionsPerformanceLeg;
+}
+
+export interface OptionsPerformanceContract {
+  option_symbol: string;
+  strike: number;
+  expiry: string;
+  entry_mark: number;
+  marks_available: number;
+}
+
+export interface OptionsPerformanceTally {
+  up: number;
+  down: number;
+  flat: number;
+  measured_sessions: number;
+  total_pct: number | null;
+}
+
+export interface OptionsPerformance {
+  symbol: string;
+  available: boolean;
+  /** no_option_history | insufficient_option_history | no_underlying_price | query_error */
+  reason?: string;
+  sessions_available?: number;
+  sessions?: number;
+  start_date?: string;
+  end_date?: string;
+  entry_spot?: number;
+  contracts?: Partial<Record<'call' | 'put', OptionsPerformanceContract>>;
+  /** Set when the archive has sessions but no contract had runway past the window's end. */
+  contracts_reason?: string | null;
+  rows?: OptionsPerformanceRow[];
+  summary?: Partial<Record<'underlying' | 'call' | 'put', OptionsPerformanceTally>>;
+  mark_basis?: string;
+}

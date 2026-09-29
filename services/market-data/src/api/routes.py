@@ -5413,3 +5413,15 @@ def get_prices(
         )
         for r in rows
     ]
+
+
+# ── T411-IVHV: IV vs HV chart + 3-week gain/loss table for the Options tab ──────────────────
+#
+# Registered here rather than defined inline because this file is already 5,400 lines; the two
+# routes and their query logic live in their own module, which also makes the leg-selection and
+# summary math importable by tests without dragging in this file's import graph.
+from ..services import volatility as _t411_volatility  # noqa: E402
+from ..services import unusual_whales as _t411_uw  # noqa: E402
+from . import _t411_ivhv  # noqa: E402
+
+_t411_ivhv.register(router, get_session, _t411_uw, _t411_volatility)

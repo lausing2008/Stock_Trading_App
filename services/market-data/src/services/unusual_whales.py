@@ -101,6 +101,11 @@ _IV_RANK_TTL = 900      # 15 min, matching _GEX_TTL — this app's only consumer
 # Options Game Plan batch snapshot, AUD-DECIDE4-EXPECTEDMOVE) reads it at most once/day per
 # symbol anyway; a short TTL just avoids a stale read if the same symbol is looked up twice in
 # one batch run for any reason, not a claim that IV itself is stable at this cadence intraday.
+_IV_HISTORY_TTL = 3600  # 1h — T411-IVHV. Deliberately LONGER than _IV_RANK_TTL despite reading
+# the same endpoint: this one serves live per-page-view requests from the stock detail page's IV
+# vs HV panel, so its cache is what stands between a popular symbol and one UW request per page
+# view. The payload is a year of DAILY rows whose only mutable element is today's last point, so
+# an hour of staleness costs at most a partial final bar on a chart about multi-week trends.
 _GREEKS_TTL = 900       # 15 min, same rationale as _IV_RANK_TTL — this app's only consumer
 # (the daily Options Game Plan batch snapshot, AUD-GREEKS) reads a specific (expiry, strike)
 # pair once/day per symbol.
@@ -1073,6 +1078,106 @@ def get_sector_seasonality() -> list[SeasonalityRow]:
     return result
 
 
+def _newest_iv_row(rows: list) -> dict:
+    """The most recent row of an iv-rank response, chosen by its own `date` field.
+
+    T411-IVRANK-OLDESTROW: deliberately NOT `rows[0]` or `rows[-1]`. Both are bets on an
+    ordering UW does not document, and the codebase has already been wrong about it once in the
+    direction that silently produced a stale-but-plausible number rather than an error. A row
+    with a missing/unparseable date sorts to the bottom rather than winning by accident.
+    """
+    dated = [r for r in rows if isinstance(r, dict)]
+    if not dated:
+        return {}
+    return max(dated, key=lambda r: str(r.get("date") or ""))
+
+
+@dataclass
+class IVHistoryRow:
+    """One trading day of implied-volatility history — the per-day shape of the same
+    /api/stock/{ticker}/iv-rank response `get_iv_rank()` reduces to a single reading.
+
+    T411-IVHV: added for the stock detail page's IV vs HV panel. `volatility` is the annualized
+    implied volatility as a decimal fraction (0.247 = 24.7%), matching the units
+    `volatility.historical_volatility_series()` produces, so the two series share one axis.
+    """
+    as_of_date: str
+    volatility: float | None
+    iv_rank_1y: float | None
+    close: float | None
+
+
+def get_iv_history(symbol: str, *, timespan: str = "1Y") -> list[IVHistoryRow]:
+    """Daily implied-volatility history for `symbol`, ascending by date.
+
+    T411-IVHV. **One request buys a full year.** Measured 2026-09-28 against the live API: with
+    no params the response is 5 rows; with `timespan=1Y` it is 251 rows — a complete year of
+    daily IV — for the same single request against the same endpoint. `timespan=1M` returns 20
+    rows. Other values tried ("3M", "6M", "90d", "180d") all returned the same 251 rows as 1Y,
+    so UW's accepted vocabulary here is narrower than its parameter name suggests and anything
+    it does not recognise falls back to the maximum window rather than erroring.
+
+    That measurement is why this is fetched on demand rather than persisted: a caller wanting
+    three months of history costs exactly one UW request, the same as the single-reading call
+    the daily snapshot job already makes, and the response is small enough to cache whole. A
+    persisted per-day IV table would add a second staleness layer and a backfill obligation to
+    buy nothing. Contrast `OptionChainHistory`, which IS persisted because UW's option-chain
+    window is a rolling one whose uncaptured days expire permanently.
+
+    Returns [] on any failure or unavailability, never None and never raising — matching
+    `get_greeks()`'s list contract. Redis-cached for `_IV_HISTORY_TTL`.
+    """
+    if not is_available():
+        return []
+    sym = symbol.upper()
+    cache_key = f"stockai:uw:iv_history:{sym}:{timespan}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            import json
+            return [IVHistoryRow(**d) for d in json.loads(cached)]
+    except Exception:
+        pass
+
+    try:
+        data = _get(
+            f"/api/stock/{sym}/iv-rank",
+            params={"timespan": timespan},
+            endpoint="/api/stock/{symbol}/iv-rank",
+        )
+    except Exception as exc:
+        log.warning("unusual_whales.iv_history_failed", symbol=sym, error=str(exc))
+        return []
+
+    if not data or not isinstance(data, list):
+        return []
+
+    rows: list[IVHistoryRow] = []
+    for r in data:
+        if not isinstance(r, dict):
+            continue
+        d = r.get("date")
+        if not d:
+            continue
+        rows.append(IVHistoryRow(
+            as_of_date=str(d),
+            volatility=_to_float(r.get("volatility")),
+            iv_rank_1y=_to_float(r.get("iv_rank_1y")),
+            close=_to_float(r.get("close")),
+        ))
+    # Sort explicitly rather than trusting UW's ordering — see _newest_iv_row's own note on
+    # why this file no longer assumes it.
+    rows.sort(key=lambda r: r.as_of_date)
+
+    try:
+        import json
+        from dataclasses import asdict
+        _get_redis().setex(cache_key, _IV_HISTORY_TTL, json.dumps([asdict(r) for r in rows]))
+    except Exception:
+        pass
+    return rows
+
+
 def get_iv_rank(symbol: str) -> IVRankData | None:
     """AUD-DECIDE4-EXPECTEDMOVE: real, per-symbol implied volatility + 1-year percentile from
     Unusual Whales' /api/stock/{ticker}/iv-rank — confirmed field shape via UW's own published
@@ -1083,9 +1188,23 @@ def get_iv_rank(symbol: str) -> IVRankData | None:
     (shared/db/models.py) for the full rationale and why this is computed via the daily batch
     snapshot rather than a live per-candidate call.
 
-    Response is a list of daily rows (most recent first, per UW's own `timespan`/`date` params
-    — this call takes neither, so UW's own default window applies); the most recent row is what
-    a caller wants. Redis-cached 15 min.
+    Response is a list of daily rows; the most recent row is what a caller wants. Redis-cached
+    15 min.
+
+    T411-IVRANK-OLDESTROW: this docstring used to say "most recent first", and the code below
+    took `rows[0]` accordingly. **UW returns the rows ASCENDING** — oldest first. Measured
+    2026-09-28 against the live API on AAPL/NVDA/SPY, all three identical: with no params the
+    response is 5 rows spanning 2026-09-22 -> 2026-09-28, and `rows[0]` is the 22nd. So every
+    consumer of this function has been reading an IV reading roughly a trading week stale, and
+    the error is unbounded with the window: at `timespan=1Y` the response is 251 rows and
+    `rows[0]` is a YEAR old. On AAPL the difference on the measured day was iv_rank_1y 32.05
+    (stale) vs 45.06 (current) — not a rounding difference, a different read of whether options
+    were cheap or mid-range. This fed `OptionsGamePlanSnapshot.iv_rank_1y` (and from there the
+    signal alert email's "options relatively expensive/cheap" badge) and the expected-move
+    calculation behind the game plan's take-profit.
+
+    The fix selects by DATE rather than by position, so it is correct under either ordering and
+    cannot silently regress if UW changes it.
     """
     if not is_available():
         return None
@@ -1113,7 +1232,7 @@ def get_iv_rank(symbol: str) -> IVRankData | None:
     if not rows or not isinstance(rows, list):
         result = None
     else:
-        row = rows[0]
+        row = _newest_iv_row(rows)
         result = IVRankData(
             volatility=_to_float(row.get("volatility")),
             iv_rank_1y=_to_float(row.get("iv_rank_1y")),
