@@ -1,0 +1,196 @@
+{
+  "review_commit": "b5332a3b517774379b4601c9b1f1244a663c35f4",
+  "source_sha256": {
+    "services/market-data/src/services/options_income_engine.py": "e6c937029ac6cd569e2143e15faa83f8b17d4e1473d6c435404b10a99e8ffd42",
+    "services/market-data/src/services/ingestion.py": "7b70a658b7c2884464fefbf7d8626ca9214355dbc6baf0a5056ac79c8146d5f6",
+    "services/ml-prediction/src/training/trainer.py": "0fd4c7d619219a2e0004aab6a7f6e547de3c2188ab3b1a68ee874d0bf049ce9b",
+    "services/ml-prediction/src/training/meta_trainer.py": "fc1481bc16fe7ed5153dab7ecfd6a6fd7d51667c960a43c1fc0671aa308526d5",
+    "shared/db/session.py": "a3100919a16988ce4773b0d9bc572b1fa8bb0664650e30f8d6e1d3c937788980",
+    "shared/common/jwt_auth.py": "f9ad2ce9565d4e8e09b6a1d1b9a78105173a5aac3b59ae73a9670cd321ad58d8",
+    "services/market-data/src/api/auth.py": "8edd71fc52721fd4370b99f43e6b1afd0aecbdcd58311a8089cc29b07cb8e157"
+  },
+  "production_read_only": {
+    "observed_at_utc": "2026-09-28T23:45:00.677234+00:00",
+    "prices_columns": [
+      {
+        "column_name": "id"
+      },
+      {
+        "column_name": "stock_id"
+      },
+      {
+        "column_name": "ts"
+      },
+      {
+        "column_name": "timeframe"
+      },
+      {
+        "column_name": "open"
+      },
+      {
+        "column_name": "high"
+      },
+      {
+        "column_name": "low"
+      },
+      {
+        "column_name": "close"
+      },
+      {
+        "column_name": "volume"
+      },
+      {
+        "column_name": "adj_close"
+      },
+      {
+        "column_name": "session"
+      }
+    ],
+    "price_timeframe_labels": [
+      {
+        "label": "M1"
+      },
+      {
+        "label": "M5"
+      },
+      {
+        "label": "M15"
+      },
+      {
+        "label": "H1"
+      },
+      {
+        "label": "D1"
+      },
+      {
+        "label": "W1"
+      }
+    ],
+    "option_positions": [
+      {
+        "strategy": "COVERED_CALL",
+        "stage": "open",
+        "n": 1,
+        "first_expiry": "2026-10-16",
+        "last_expiry": "2026-10-16"
+      },
+      {
+        "strategy": "CASH_SECURED_PUT",
+        "stage": "closed",
+        "n": 3,
+        "first_expiry": "2026-09-25",
+        "last_expiry": "2026-09-25"
+      },
+      {
+        "strategy": "CASH_SECURED_PUT",
+        "stage": "open",
+        "n": 7,
+        "first_expiry": "2026-10-02",
+        "last_expiry": "2026-10-30"
+      }
+    ],
+    "option_schema": [
+      {
+        "column_name": "mark_evidence"
+      }
+    ],
+    "intent_index": [
+      {
+        "indexname": "uq_options_income_intent"
+      }
+    ]
+  },
+  "production_followup_read_only": {
+    "observed_at_utc": "2026-09-28T23:48:10.597980+00:00",
+    "index_state": [
+      {
+        "indisvalid": true,
+        "indisready": true,
+        "indisunique": true
+      }
+    ],
+    "historical_AAPL": {
+      "2026-09-23": [
+        337.02,
+        "close"
+      ],
+      "2026-08-29": [
+        319.70001220703125,
+        "close"
+      ]
+    },
+    "expected_AAPL": {
+      "2026-09-23": [
+        {
+          "close": 337.02,
+          "bar_date": "2026-09-23"
+        }
+      ],
+      "2026-08-29": [
+        {
+          "close": 319.70001220703125,
+          "bar_date": "2026-08-28"
+        }
+      ]
+    },
+    "meta_blend_flag": null,
+    "revocation_function_controlled_inputs": {
+      "old": true,
+      "same_second": true,
+      "future": false,
+      "missing_iat": true,
+      "service": false,
+      "no_subject": false
+    }
+  },
+  "drift_check": "Comparing local working tree (clean, == b5332a3) against EC2 running containers...\n\nOK    market-data\nOK    signal-engine\nOK    api-gateway\nOK    ml-prediction\nOK    research-engine\nOK    ranking-engine\nOK    strategy-engine\nOK    technical-analysis\nOK    portfolio-optimizer\nOK    event-intelligence\nOK    news-intelligence\nOK    decision-engine\n\nChecked 12 service(s), 0 drifted/errored.\n",
+  "tests": {
+    "market-data": "4395 passed, 1 skipped, 27 warnings in 89.41s (0:01:29)",
+    "ml-prediction": "373 passed, 6 warnings in 6.29s"
+  },
+  "offline_reproductions": {
+    "label_endpoint": {
+      "signal_date": "2026-09-14",
+      "bars": 10,
+      "helper_available": "2026-09-29",
+      "actual_target_bar": "2026-10-01",
+      "training_cutoff": "2026-09-30",
+      "future_target_would_be_admitted": true,
+      "scope": "controlled sparse bar history, not an observed production label"
+    },
+    "prices_and_settlement": {
+      "historical_lookup_fixed": [
+        99.9,
+        "close"
+      ],
+      "missing_historical_never_uses_live": [
+        105.0,
+        "entry_fallback"
+      ],
+      "atomic_ingest_refreshed_expiry_close": 100.1,
+      "accepted_settlement_close": 99.9,
+      "live_quote_calls": 0,
+      "accepted_price_economics": {
+        "assigned": true,
+        "settle_price": 99.9,
+        "pnl": 90.00000000000057,
+        "cash_released": 9990.0
+      },
+      "refreshed_price_economics": {
+        "assigned": false,
+        "settle_price": 100,
+        "pnl": 100,
+        "cash_released": 10000
+      }
+    }
+  },
+  "limits": {
+    "all_twelve_suites_rerun": false,
+    "frontend_rerun": false,
+    "visual_browser_check": false,
+    "production_trades_or_mutations": false,
+    "production_http_auth_checked": false,
+    "postgresql_concurrency_test": false
+  },
+  "disk_observed": "60% used (df -h /); pruning history not independently verified"
+}

@@ -26,7 +26,7 @@ import sys
 import tempfile
 import types
 from datetime import date, datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 _HERE = pathlib.Path(__file__).resolve()
 _SVC = _HERE.parents[1]
@@ -306,6 +306,60 @@ def main(scenario: str) -> dict:
             if scenario == "underlying_unknown_symbol_uses_entry":
                 return {"result": list(E._underlying_price_as_of(
                     s, "ZZZ", date(2026, 9, 25), {}, 111.0))}
+
+    # ── R04 post-deployment: the value returned must be the value corroborated ──
+    #
+    # The defect: `_settlement_close` READ the close, then the corroborator opened its own
+    # session and judged the state as it was THEN, and the pre-read value was returned. The
+    # daily ingest's re-fetch window rewrites exactly that bar in the gap — atomically with the
+    # later bar that makes `superseded_by_later_session` true.
+    #
+    # The corroborator is replaced here rather than a concurrent ingest being staged, because
+    # what is under test is the SEQUENCE inside _settlement_close (read -> corroborate ->
+    # re-read -> compare), and SQLite cannot host two writers to stage the real interleaving.
+    # The stand-in mutates through the caller's own session at exactly the moment the real
+    # corroborator would have observed the refreshed state.
+    if scenario.startswith("settlement_close_"):
+        from sqlalchemy import text as _t
+        expiry = date(2026, 9, 25)
+        with Session() as s:
+            s.add(models.Stock(symbol="SET", name="SET", market="US", exchange="NASDAQ"))
+            s.commit()
+            sid = s.execute(select(models.Stock.id).where(
+                models.Stock.symbol == "SET")).scalar_one()
+            s.execute(_t("INSERT INTO prices (stock_id, ts, timeframe, open, high, low,"
+                         " close, volume) VALUES (:i,:ts,'D1',99.9,100,99,99.9,100)"),
+                      {"i": sid, "ts": datetime(2026, 9, 25)})
+            s.commit()
+
+        calls = {"n": 0}
+
+        with Session() as sess:
+            def _corroborator(stock_id, want, stored_close):
+                """Stands in for the real one at the moment it opens its own session."""
+                calls["n"] += 1
+                if scenario == "settlement_close_refreshed_mid_check" and calls["n"] == 1:
+                    # One successful ingest lands: the expiry bar is rewritten.
+                    sess.execute(_t("UPDATE prices SET close = 100.1 WHERE stock_id = :i"
+                                    " AND date(ts) = '2026-09-25'"), {"i": sid})
+                    sess.flush()
+                elif scenario == "settlement_close_keeps_moving":
+                    sess.execute(_t("UPDATE prices SET close = close + 1 WHERE stock_id = :i"
+                                    " AND date(ts) = '2026-09-25'"), {"i": sid})
+                    sess.flush()
+                return True, "superseded_by_later_session"
+
+            with patch.object(E, "_corroborate_settlement_close", _corroborator), \
+                 patch.object(E, "settlement_session_is_final", lambda _d: True), \
+                 patch.object(E, "expected_settlement_session", lambda d: d), \
+                 patch.object(E, "_today_et", lambda: date(2026, 9, 28)):
+                out = E._settlement_close(sess, sid, expiry)
+            final = sess.execute(_t("SELECT close FROM prices WHERE stock_id = :i"
+                                    " AND date(ts) = '2026-09-25'"), {"i": sid}).scalar()
+
+        return {"returned": [round(out[0], 4), str(out[1])] if out else None,
+                "close_in_db": round(float(final), 4),
+                "corroborations": calls["n"]}
 
     if scenario == "isolated_ddl_one_failure":
         # A duplicate row makes the unique index fail. Each statement in its own transaction

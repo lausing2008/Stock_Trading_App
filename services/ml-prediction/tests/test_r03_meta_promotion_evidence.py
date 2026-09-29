@@ -185,15 +185,37 @@ def test_a_label_available_exactly_on_the_boundary_is_purged():
     assert _purge(signal_dates, avail, split=1) == []
 
 
-def test_availability_is_the_latest_of_exit_evaluation_and_signal_plus_horizon():
-    """Any single one of the three can be missing or optimistic. The exit date is the real
-    resolution; ts_evaluated is when this platform computed it; signal+horizon is the
-    conservative fallback for rows predating those columns."""
-    block = _META[_META.index("_lbl_cands = ["):]
+def test_availability_is_read_off_the_symbols_own_bar_index():
+    """REWRITTEN 2026-09-28 (post-deployment audit). This file's fix originally added
+    `signal_date + timedelta(days=horizon)` — the horizon is in BARS, so as calendar days it
+    reported a date about a fortnight early for SWING/10 and the purge let rows straight
+    through. It was the identical unit mismatch fixed in trainer.py, left here because the
+    earlier pass thought of the two files as one change.
+
+    `feat_ts` is this symbol's own bar index and `row_idx` is the signal's position in it, so
+    the target bar is knowable exactly. No estimate remains."""
+    assert "_target_pos = row_idx + _h_bars" in _META
+    assert "_lbl_cands = [feat_ts.iloc[_target_pos].date()]" in _META
+    assert "timedelta(\n                days=_HORIZON_DAYS" not in _META
+    assert "_label_end_date(" not in _META, "the estimate fallback is back"
+
+
+def test_a_record_whose_target_bar_has_not_printed_is_skipped():
+    """The label is not available yet, so the record is not usable yet. Estimating a date here
+    is what the audit caught."""
+    block = _META[_META.index("_target_pos = row_idx + _h_bars"):]
     block = block[:block.index("records.append(")]
-    assert "_HORIZON_DAYS.get(str(row.horizon).upper(), 10)" in block
-    assert 'getattr(row, "exit_date", None)' in block
-    assert 'getattr(row, "ts_evaluated", None)' in block
+    assert "if _target_pos >= len(feat_ts):" in block
+    assert "continue" in block
+
+
+def test_the_observed_resolution_dates_are_still_taken_into_account():
+    """A trade that closed AFTER its horizon elapsed resolved when it closed, not when the bar
+    printed — so exit_date and ts_evaluated still widen the availability."""
+    block = _META[_META.index("_lbl_cands = [feat_ts.iloc[_target_pos].date()]"):]
+    block = block[:block.index("records.append(")]
+    assert "row.exit_date" in block
+    assert "ts_evaluated" in block
     assert "max(_lbl_cands)" in _META
 
 

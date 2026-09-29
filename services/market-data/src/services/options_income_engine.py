@@ -647,13 +647,64 @@ def _settlement_close(session: Session, stock_id: int, expiry: date) -> tuple[fl
     #
     # Deliberately not a rebuild of every price consumer: this is the settlement-specific
     # final-bar check the finding asks for as the smaller first step.
-    confirmed, reason = _corroborate_settlement_close(stock_id, want, stored_close)
-    if not confirmed:
-        log.warning("options_income.settlement_deferred_unconfirmed_close",
-                    stock_id=stock_id, expiry=str(expiry), expected_session=str(want),
-                    stored_close=stored_close, reason=reason)
-        return None
-    return (stored_close, want)
+    # R04, EXTENDED 2026-09-28 (post-deployment audit). CORROBORATE THE VALUE IN HAND, NOT
+    # MERELY THE SESSION.
+    #
+    # `stored_close` is read above; the corroborator then opens its OWN session and checks the
+    # state as it is THEN. Those are two different moments, and the daily ingest's re-fetch
+    # window rewrites exactly this bar in between — atomically, together with the later bar
+    # that makes `superseded_by_later_session` true. So the path was: read 99.90, ingest
+    # refreshes the bar to 100.10 and inserts the next session, the corroborator sees that
+    # later session and says "final", and settlement books 99.90. On a $100 strike that is the
+    # difference between assigned and expired worthless. The check was correct and the number
+    # was stale, which is worse than either alone, because the check vouched for it.
+    #
+    # THIS IS THE FLAW IN THE REASONING I RECORDED AT THE PREVIOUS AUDIT. I verified that the
+    # ingest re-fetches a 7-day window and overwrites `close`, concluded the stored bar must
+    # therefore be final, and missed that OUR OWN READ happened before that rewrite. The
+    # database being correct does not make a value already taken from it correct.
+    #
+    # The invariant this restores: THE VALUE RETURNED IS THE VALUE THAT WAS CORROBORATED.
+    # Corroborate, re-read, and only settle when the two agree exactly. If the bar moved, the
+    # evidence belongs to a number we no longer hold — so corroborate the new one instead. The
+    # loop is bounded at two passes because a bar that is still moving after a full
+    # corroboration round is not settling today; deferring leaves the position open and the
+    # next run retries, the same recoverable outcome this function already uses for missing
+    # data. It cannot spin: the re-fetch window closes and the value stops changing.
+    reason = "not_attempted"
+    for _pass in range(2):
+        confirmed, reason = _corroborate_settlement_close(stock_id, want, stored_close)
+        if not confirmed:
+            log.warning("options_income.settlement_deferred_unconfirmed_close",
+                        stock_id=stock_id, expiry=str(expiry), expected_session=str(want),
+                        stored_close=stored_close, reason=reason)
+            return None
+        fresh = session.execute(
+            select(Price.close).where(
+                Price.stock_id == stock_id,
+                Price.timeframe == TimeFrame.D1,
+                func.date(Price.ts) == want,
+            ).limit(1)
+        ).first()
+        if not fresh or fresh.close is None:
+            log.warning("options_income.settlement_deferred_close_vanished",
+                        stock_id=stock_id, expiry=str(expiry), expected_session=str(want))
+            return None
+        fresh_close = float(fresh.close)
+        if fresh_close == stored_close:
+            return (stored_close, want)
+        # The bar was rewritten between the read and the corroboration. Exact comparison, not a
+        # tolerance: any change at all means the evidence was gathered about a different number.
+        log.info("options_income.settlement_close_moved_during_check",
+                 stock_id=stock_id, expiry=str(expiry), expected_session=str(want),
+                 was=stored_close, now=fresh_close, reason=reason,
+                 note="re-corroborating the refreshed close before settling on it")
+        stored_close = fresh_close
+
+    log.warning("options_income.settlement_deferred_close_still_moving",
+                stock_id=stock_id, expiry=str(expiry), expected_session=str(want),
+                last_seen=stored_close, reason=reason)
+    return None
 
 
 def _closing_price_on_or_before(session: Session, stock_id: int, target_date: date, window_days: int = 7) -> float | None:

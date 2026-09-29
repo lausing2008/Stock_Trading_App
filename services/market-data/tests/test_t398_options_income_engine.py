@@ -592,3 +592,66 @@ def test_the_daily_refetch_window_that_settlement_corroboration_depends_on():
     upsert = upsert[:upsert.index("}")]
     assert '"close": stmt.excluded.close' in upsert, \
         "a DO NOTHING upsert would leave a stale intraday close in place forever"
+
+
+# ── R04 post-deployment: the value returned is the value corroborated ─────────
+#
+# FOUND 2026-09-28. `_settlement_close` read the close, THEN corroborated, THEN returned the
+# value it had read. The corroborator opens its own session and judges the state as it is at
+# that later moment — and the daily ingest's re-fetch window rewrites exactly this bar in the
+# gap, atomically with the later bar that makes `superseded_by_later_session` true. So:
+# read 99.90, ingest refreshes to 100.10 and inserts the next session, corroborator says
+# "final", settlement books 99.90. On a $100 strike that is assigned versus expired worthless.
+#
+# This is the flaw in the reasoning recorded at the PREVIOUS audit, where I verified the
+# re-fetch window and concluded the stored bar must be final. It is — but our own read happened
+# before the rewrite. The database being correct does not make a value already taken from it
+# correct.
+
+import src.services.options_income_engine as _ENGINE_MODULE  # noqa: E402
+from tests.test_r06_income_concurrency import _probe  # noqa: E402
+
+
+def test_a_stable_close_settles_on_the_corroborated_value():
+    """The normal path: one corroboration, the value unchanged, settle."""
+    r = _probe("settlement_close_stable")
+    assert r["returned"] == [99.9, "2026-09-25"]
+    assert r["corroborations"] == 1
+
+
+def test_a_close_refreshed_during_the_check_is_not_settled_on_the_stale_value():
+    """THE DEFECT. The bar is rewritten to 100.10 while the corroboration runs. Settlement must
+    not book the 99.90 it read beforehand."""
+    r = _probe("settlement_close_refreshed_mid_check")
+    assert r["returned"] is not None
+    assert r["returned"][0] != 99.9, "settled on the pre-refresh close"
+    assert r["returned"][0] == 100.1, "must settle on the refreshed, finalised close"
+
+
+def test_the_refreshed_close_is_itself_corroborated_before_being_used():
+    """Returning the fresh value without re-checking would swap one uncorroborated number for
+    another — the evidence was gathered about the value we no longer hold."""
+    r = _probe("settlement_close_refreshed_mid_check")
+    assert r["corroborations"] == 2, "the refreshed close must be corroborated in its own right"
+
+
+def test_a_close_that_keeps_moving_defers_rather_than_looping():
+    """Bounded at two passes. A bar still moving after a full corroboration round is not
+    settling today, and the position stays open for the next run — the same recoverable outcome
+    this function already uses for missing data."""
+    r = _probe("settlement_close_keeps_moving")
+    assert r["returned"] is None
+    assert r["corroborations"] == 2, "the retry must be bounded, not unbounded"
+
+
+def test_the_returned_value_comes_from_the_re_read_not_the_first_read():
+    """Structural companion: the function must re-read after corroborating, and return from
+    that read. The original returned `stored_close` captured before the check."""
+    import inspect
+
+    code = "\n".join(ln.split("#", 1)[0]
+                     for ln in inspect.getsource(_ENGINE_MODULE._settlement_close).splitlines())
+    assert "for _pass in range(2):" in code, "the corroborate/re-read cycle must be bounded"
+    assert "if fresh_close == stored_close:" in code, \
+        "settling requires the re-read to agree with what was corroborated"
+    assert "return (stored_close, want)" in code

@@ -284,8 +284,25 @@ def train_meta_model(db=None) -> dict:
             # horizon and by how the trade actually went, so this cannot be derived from the
             # signal date alone. Same rule as trainer.py's own R01 fix — the LATEST of the
             # exit, the platform's evaluation timestamp, and signal_date + horizon.
-            _lbl_cands = [row.signal_date + timedelta(
-                days=_HORIZON_DAYS.get(str(row.horizon).upper(), 10))]
+            # CORRECTED 2026-09-28 (post-deployment audit). This added the horizon as CALENDAR
+            # days when it is measured in BARS — the identical unit mismatch fixed in
+            # trainer.py, left unfixed here because the earlier pass thought of the two files
+            # as one change. Calendar days is the WORST of the three available answers: ten
+            # bars is a fortnight, not ten days, so every label looked knowable well before it
+            # was and the R03 purge let rows through.
+            #
+            # `feat_ts` is this symbol's own bar index and `row_idx` is the signal's position
+            # in it, so the target bar is knowable exactly rather than estimated. The
+            # business-day helper remains the fallback when the target runs off the end of the
+            # frame, and it errs late, so the fallback is stricter than the measurement.
+            _h_bars = _HORIZON_DAYS.get(str(row.horizon).upper(), 10)
+            _target_pos = row_idx + _h_bars
+            if _target_pos >= len(feat_ts):
+                # The target bar has not printed, so the label is not yet available. Skipping
+                # is the honest answer; the first version estimated a date here, and an
+                # estimate is what the audit caught.
+                continue
+            _lbl_cands = [feat_ts.iloc[_target_pos].date()]
             if getattr(row, "exit_date", None):
                 _lbl_cands.append(row.exit_date)
             _te = getattr(row, "ts_evaluated", None)

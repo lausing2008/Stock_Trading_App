@@ -429,28 +429,6 @@ def _compute_oos_suppression(
     return False, None
 
 
-def label_end_date(signal_date, bars: int):
-    """The calendar date a `bars`-BAR forward label actually resolves on, erring LATE.
-
-    FOUND 2026-09-28 (pre-deployment audit). R01 computed availability as
-    `signal_date + timedelta(days=horizon)` — but the horizon is measured in BARS (trading
-    days), not calendar days. Ten bars from a Monday is a fortnight away, not ten days: the
-    audit's probe has a 2026-09-14 signal whose SWING/10 target bar is 2026-09-28, while the
-    old arithmetic reported 2026-09-24. Against a 2026-09-25 cutoff that row was admitted, and
-    its label is built from a price four days past the training boundary — the exact leak R01
-    exists to close, left open by a unit mismatch.
-
-    Business days, then a holiday allowance on top. `bdate_range` skips weekends but not market
-    holidays, and every holiday pushes the real bar LATER, so the allowance only ever makes this
-    stricter. Erring late is the safe direction: it admits fewer rows, never more.
-    """
-    try:
-        end = pd.bdate_range(start=signal_date, periods=int(bars) + 1)[-1].date()
-    except Exception:
-        end = signal_date + timedelta(days=int(round(int(bars) * 7 / 5)))
-    return end + timedelta(days=max(1, int(bars) // 10))
-
-
 def _load_outcome_features(
     symbol: str, style: str = "SWING", lookback_days: int = 365,
     *, feature_inputs: dict | None = None,
@@ -523,22 +501,26 @@ def _load_outcome_features(
         # R01 (2026-09-24 follow-up audit): WHEN each label became knowable, not just the date
         # the signal was emitted. A BUY outcome signalled on day D is not resolved until its
         # position exits, so using it to fit a model that is then EVALUATED on days after D is
-        # training on the future. exit_date is the real resolution; ts_evaluated is when this
-        # platform computed it; signal_date + horizon is the conservative fallback when a row
-        # predates those columns. The LATEST of whichever exist is the honest availability.
-        _horizon_days = _HORIZON_BY_STYLE.get(style.upper(), 10)
+        # training on the future. exit_date is the real resolution and ts_evaluated is when
+        # this platform computed it — both OBSERVED dates.
+        #
+        # CORRECTED 2026-09-28 (post-deployment audit): there is no longer a third, ESTIMATED
+        # candidate here. `signal_date + horizon` was added as a "conservative fallback" and
+        # was neither: the horizon is in BARS, so as calendar days it landed ~4 sessions early,
+        # and the business-day version that replaced it still under-counted whenever the frame
+        # had gaps. The real target bar is read off the frame further down (see the
+        # label-resolution block) and max'd in there. An estimate that is always dominated by a
+        # measurement is dead weight that reads as though it matters.
         avail_map: dict = {}
         for o in outcomes:
-            # CORRECTED 2026-09-28: the horizon is in BARS, not calendar days. See
-            # label_end_date() — the old `+ timedelta(days=horizon)` reported a date ~4 sessions
-            # too early and admitted rows whose labels resolve after the training cutoff.
-            cands = [label_end_date(o.signal_date, _horizon_days)]
+            cands = []
             if getattr(o, "exit_date", None):
                 cands.append(o.exit_date)
             _te = getattr(o, "ts_evaluated", None)
             if _te is not None:
                 cands.append(_te.date() if hasattr(_te, "date") else _te)
-            avail_map[o.signal_date] = max(cands)
+            # None when a row predates both columns: the target bar alone then decides.
+            avail_map[o.signal_date] = max(cands) if cands else None
 
         # Fetch enough price history to build features for the earliest signal date
         earliest = min(outcome_dates) - _td(days=400)
@@ -619,7 +601,49 @@ def _load_outcome_features(
              note="label used is the base forward-return target; is_correct is diagnostic only")
 
     # R01: carried alongside, on the same index, so the caller can apply a cutoff.
-    avail = pd.Series([avail_map[d.date()] for d in _usable], index=X_out.index, dtype="object")
+    # CORRECTED 2026-09-28 (post-deployment audit): THE REAL BAR DATE, OR THE ROW IS DROPPED.
+    #
+    # The first version of this fix estimated the label's resolution date by counting BUSINESS
+    # days, which equals counting BARS only while every business day has one. It does not:
+    # `df` holds whatever rows the price table actually has, and gaps — holidays beyond the
+    # flat allowance, suspensions, dead-zone filtering, a delisting pause — push the real
+    # target further out. The audit's probe removes three sessions from a twenty-bar window:
+    # the estimate says the label resolves 2026-09-29, the tenth bar forward is 2026-10-01, and
+    # against a 2026-09-30 cutoff that row is admitted while its label is built from a price
+    # four days past the boundary. The leak R01 exists to close, one approximation along.
+    #
+    # There is no estimate now. The label is `close.shift(-horizon)` over THIS frame, so the
+    # target is the row `horizon` positions ahead in `df` — exactly knowable, because `df` is
+    # in hand. When it is NOT knowable (the target bar has not printed yet, or the signal's own
+    # bar cannot be located) the answer is not a guess, it is that the label is not yet
+    # available: the row is DROPPED. That is the same fail-closed rule the rest of R01 uses,
+    # and a guess is what this audit caught twice.
+    _bar_dates = df["ts"].dt.normalize()
+    _pos_by_date = {d.date(): i for i, d in enumerate(_bar_dates)}
+    _kept, _avail_vals, _unresolvable = [], [], 0
+    for _d in _usable:
+        _sd = _d.date()
+        _pos = _pos_by_date.get(_sd)
+        if _pos is None or _pos + _outcome_horizon >= len(_bar_dates):
+            _unresolvable += 1
+            continue
+        _target_bar = _bar_dates.iloc[_pos + _outcome_horizon].date()
+        # Still the LATEST of every candidate: a trade that closed after its horizon elapsed
+        # resolved when it closed, not when the bar printed.
+        _kept.append(_d)
+        _observed = avail_map.get(_sd)
+        _avail_vals.append(max(_observed, _target_bar) if _observed else _target_bar)
+
+    if _unresolvable:
+        log.info("trainer.outcome_rows_dropped_label_not_resolvable", symbol=symbol,
+                 style=style, dropped=_unresolvable, kept=len(_kept),
+                 note="target bar has not printed, or the signal's bar is not in the frame")
+    if not _kept:
+        return pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype="object")
+
+    X_out = X_out.loc[_kept]
+    y_out = y_out.loc[_kept]
+    avail = pd.Series(_avail_vals, index=X_out.index, dtype="object")
 
     return X_out, y_out, avail
 

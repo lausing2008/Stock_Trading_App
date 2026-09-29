@@ -65,57 +65,69 @@ def test_the_loader_returns_a_label_availability_series():
     assert "return X_out, y_out, avail" in body
 
 
-def test_availability_is_the_LATEST_of_the_candidate_dates():
-    """exit_date, ts_evaluated and signal_date+horizon can disagree. Taking the earliest would
-    admit a row before its label existed, which is the bug with extra steps."""
+def test_availability_is_the_LATEST_of_the_OBSERVED_candidate_dates():
+    """exit_date and ts_evaluated can disagree. Taking the earliest would admit a row before
+    its label existed, which is the bug with extra steps.
+
+    REWRITTEN 2026-09-28 (post-deployment audit). A third, ESTIMATED candidate used to sit in
+    this list: first `signal_date + timedelta(days=horizon)` (the horizon is in BARS, so that
+    landed ~4 sessions early), then a business-day helper that still under-counted whenever the
+    frame had gaps. Both are gone. The label's resolution date is now READ OFF THE FRAME, and
+    only genuinely observed dates remain here.
+    """
     code = _code_only("_load_outcome_features")
-    assert "avail_map[o.signal_date] = max(cands)" in code
-    for candidate in ("o.exit_date", "ts_evaluated", "label_end_date(o.signal_date"):
+    assert "avail_map[o.signal_date] = max(cands) if cands else None" in code
+    for candidate in ("o.exit_date", "ts_evaluated"):
         assert candidate in code, candidate
-    # CORRECTED 2026-09-28: the third candidate used to be `_td(days=_horizon_days)`, which
-    # added the horizon as CALENDAR days when it is measured in BARS — ~4 sessions early for
-    # SWING/10, which admitted rows whose labels resolve after the cutoff. See label_end_date().
     assert "_td(days=_horizon_days)" not in code, "the calendar/bar unit mismatch is back"
+    assert "label_end_date(" not in code, "the estimate is back"
 
 
-def test_the_label_end_date_is_computed_in_BARS_and_errs_late():
-    """Behavioural, on the real helper. The audit's case: a 2026-09-14 SWING/10 signal resolves
-    on 2026-09-28, not the 2026-09-24 the old arithmetic reported."""
-    import importlib.util
-    import sys as _sys
-    from datetime import date as _d
+def test_the_label_date_is_read_off_the_frame_not_estimated():
+    """THE CORE POST-DEPLOYMENT FIX. Counting business days equals counting BARS only while
+    every business day has one — and `df` holds whatever the price table actually has. The
+    audit's probe removes three sessions from a twenty-bar window: the estimate said the label
+    resolved 2026-09-29, the tenth bar forward is 2026-10-01, and against a 2026-09-30 cutoff
+    that row was admitted with its label built from a price past the boundary."""
+    code = _code_only("_load_outcome_features")
+    assert "_bar_dates.iloc[_pos + _outcome_horizon].date()" in code, \
+        "the target bar must be located in the frame, not computed from a calendar"
+    assert "_pos_by_date = {d.date(): i for i, d in enumerate(_bar_dates)}" in code
 
-    # trainer.py imports xgboost/lightgbm at module scope, so extract just this function.
-    spec = importlib.util.spec_from_loader("r01_label_end", loader=None)
-    mod = importlib.util.module_from_spec(spec)
+
+def test_an_unresolvable_label_date_drops_the_row_rather_than_guessing():
+    """When the target bar has not printed, or the signal's own bar is not in the frame, the
+    label is not yet available. The honest answer is to exclude the row — a guess is what this
+    audit caught twice, in two different shapes."""
+    code = _code_only("_load_outcome_features")
+    assert "if _pos is None or _pos + _outcome_horizon >= len(_bar_dates):" in code
+    frag = code[code.index("if _pos is None or _pos + _outcome_horizon"):][:200]
+    assert "continue" in frag, "an unresolvable row must be dropped, not estimated"
+    assert "trainer.outcome_rows_dropped_label_not_resolvable" in _SRC
+
+
+def test_the_bar_walk_is_behaviourally_correct_over_a_gappy_frame():
+    """The audit's own construction, run as arithmetic: a twenty-business-day window with three
+    sessions missing. The tenth bar forward from 2026-09-14 is 2026-10-01, four days later than
+    a business-day count would report."""
     import pandas as _pd
-    from datetime import timedelta as _delta
-    src = _fn("label_end_date")
-    exec(compile(src, "<trainer>", "exec"), {"pd": _pd, "timedelta": _delta}, mod.__dict__)
-    fn = mod.__dict__["label_end_date"]
 
-    got = fn(_d(2026, 9, 14), 10)
-    assert got >= _d(2026, 9, 28), f"10 bars from 2026-09-14 resolves 2026-09-28, got {got}"
-    # Erring LATE only ever makes the filter stricter, so it must never precede the true bar.
-    naive = _d(2026, 9, 14) + _delta(days=10)
-    assert got > naive, "the calendar-day arithmetic must no longer be what is returned"
+    bars = _pd.bdate_range(date(2026, 9, 14), periods=20)
+    bars = bars[~bars.isin(_pd.to_datetime(["2026-09-16", "2026-09-17", "2026-09-18"]))]
+    pos_by_date = {d.date(): i for i, d in enumerate(bars)}
+
+    pos = pos_by_date[date(2026, 9, 14)]
+    assert bars[pos + 10].date() == date(2026, 10, 1)
+    # What a business-day count would have said, and why it is not safe:
+    assert _pd.bdate_range(date(2026, 9, 14), periods=11)[-1].date() == date(2026, 9, 28)
 
 
-def test_the_label_end_date_grows_with_the_horizon():
-    """A helper that ignored `bars` would pass the single case above by accident."""
-    import importlib.util
-    from datetime import date as _d, timedelta as _delta
-
-    import pandas as _pd
-    spec = importlib.util.spec_from_loader("r01_label_end2", loader=None)
-    mod = importlib.util.module_from_spec(spec)
-    exec(compile(_fn("label_end_date"), "<trainer>", "exec"),
-         {"pd": _pd, "timedelta": _delta}, mod.__dict__)
-    fn = mod.__dict__["label_end_date"]
-
-    start = _d(2026, 9, 14)
-    ends = [fn(start, b) for b in (5, 10, 15, 20)]
-    assert ends == sorted(ends) and len(set(ends)) == 4
+def test_the_estimate_helper_is_gone_entirely():
+    """An "errs late" estimator sitting unused in a file full of leakage guards is exactly what
+    gets picked up later and used wrongly — and this one was wrong twice before it was removed.
+    It is dominated by a measurement everywhere it was used, so it is deleted rather than kept
+    as a fallback nobody audits."""
+    assert "def label_end_date(" not in _SRC
 
 
 def test_every_early_return_keeps_the_three_value_shape():
@@ -388,3 +400,94 @@ def test_the_build_features_call_no_longer_discards_its_own_labels():
     body = _fn("_load_outcome_features")
     assert "X_full, y_dir, _ = build_features" in body
     assert "_base = y_dir.copy()" in body
+
+
+# ── The availability block, executed ──────────────────────────────────────────
+#
+# The two tests below run the REAL block rather than asserting on its shape. Both properties
+# survived a sabotage pass when they were only structural: one assertion looked for `continue`
+# within a fragment and passed when a row was appended immediately before it, the other did not
+# exist at all.
+
+def _run_availability_block(bar_dates, usable, horizon, avail_map):
+    """Execute the shipped label-resolution block with controlled inputs."""
+    import ast
+
+    import pandas as _pd
+
+    src = _SRC
+    start = src.index('    _bar_dates = df["ts"].dt.normalize()')
+    end = src.index('    avail = pd.Series(_avail_vals, index=X_out.index, dtype="object")')
+    block = src[start:end]
+    # Drop the two lines that re-index the caller's frames; this harness supplies them.
+    block = "\n".join(ln for ln in block.splitlines()
+                      if "X_out = X_out.loc[_kept]" not in ln
+                      and "y_out = y_out.loc[_kept]" not in ln
+                      and "return pd.DataFrame()" not in ln
+                      and "if not _kept:" not in ln)
+    import textwrap
+    ns = {
+        "df": _pd.DataFrame({"ts": _pd.to_datetime(bar_dates)}),
+        "_usable": [_pd.Timestamp(d) for d in usable],
+        "_outcome_horizon": horizon,
+        "avail_map": avail_map,
+        "pd": _pd,
+        "log": type("L", (), {"info": lambda *a, **k: None})(),
+        "symbol": "T", "style": "SWING",
+    }
+    exec(compile(ast.parse(textwrap.dedent(block)), "<trainer-block>", "exec"), ns)
+    return ns["_kept"], ns["_avail_vals"], ns["_unresolvable"]
+
+
+def test_a_row_whose_target_bar_has_not_printed_is_actually_dropped():
+    """BEHAVIOURAL. A structural check for `continue` passed when a sabotage appended the row
+    just before it — the row was kept AND counted as unresolvable."""
+    bars = [date(2026, 9, 1) + timedelta(days=i) for i in range(12)]
+    # The last signal's target bar (10 ahead) runs off the end of the frame.
+    kept, avail, unresolvable = _run_availability_block(
+        bars, usable=[bars[0], bars[5]], horizon=10, avail_map={})
+    assert unresolvable == 1
+    assert [k.date() for k in kept] == [bars[0]], "the unresolvable row was not dropped"
+    assert len(avail) == len(kept), "availability must stay aligned with the kept rows"
+
+
+def test_the_target_bar_is_the_nth_BAR_not_the_nth_day():
+    """The gappy frame from the audit's probe: three sessions missing, so the tenth bar forward
+    is four days later than any day-count would report."""
+    import pandas as _pd
+
+    bars = _pd.bdate_range(date(2026, 9, 14), periods=20)
+    bars = [b.date() for b in bars
+            if b not in _pd.to_datetime(["2026-09-16", "2026-09-17", "2026-09-18"])]
+    kept, avail, _ = _run_availability_block(
+        bars, usable=[date(2026, 9, 14)], horizon=10, avail_map={})
+    assert kept and avail[0] == date(2026, 10, 1), f"got {avail[0]}"
+
+
+def test_an_observed_exit_date_still_widens_availability():
+    """A trade that closed AFTER its horizon elapsed resolved when it CLOSED. Dropping the
+    observed dates would report the label knowable earlier than it was — and that sabotage
+    passed until this test existed."""
+    bars = [date(2026, 9, 1) + timedelta(days=i) for i in range(40)]
+    late = date(2026, 10, 5)
+    kept, avail, _ = _run_availability_block(
+        bars, usable=[bars[0]], horizon=10, avail_map={bars[0]: late})
+    assert kept and avail[0] == late, "the later observed resolution date was discarded"
+
+
+def test_the_target_bar_wins_when_it_is_later_than_the_observed_dates():
+    """The other direction: an exit recorded before the label's own bar printed must not make
+    the label look available early."""
+    bars = [date(2026, 9, 1) + timedelta(days=i) for i in range(40)]
+    kept, avail, _ = _run_availability_block(
+        bars, usable=[bars[0]], horizon=10, avail_map={bars[0]: date(2026, 9, 2)})
+    assert kept and avail[0] == bars[10]
+
+
+def test_a_row_with_no_observed_dates_uses_the_target_bar_alone():
+    """avail_map is None for a row predating exit_date/ts_evaluated; that must not crash or
+    fall back to the signal date."""
+    bars = [date(2026, 9, 1) + timedelta(days=i) for i in range(40)]
+    kept, avail, _ = _run_availability_block(
+        bars, usable=[bars[0]], horizon=10, avail_map={bars[0]: None})
+    assert kept and avail[0] == bars[10]
