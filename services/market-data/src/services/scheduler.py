@@ -8453,6 +8453,12 @@ def check_price_alerts() -> None:
                     threshold=_ua.threshold, price=_retry_price,
                     note=f"{_ua.note}\n\n{_triggered_note}" if _ua.note else _triggered_note,
                     recurring=bool(_ua.recurring),
+                    # EC-02: the renderer needs the ORIGINAL event time as its own field, not
+                    # only buried in the prose note, so that when the price has crossed back it
+                    # can write "crossed above 90 at <then>; now 80" instead of the present-tense
+                    # "is now 80 (risen above your target of 90)" — two true facts joined into
+                    # one false sentence.
+                    event_at=_ua.triggered_at.isoformat(),
                     _alert_id=_ua.id,
                 ))
 

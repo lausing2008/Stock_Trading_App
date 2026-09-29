@@ -3025,7 +3025,8 @@ def send_earnings_reminder_digest_email(to: str, rows: list[dict]) -> bool:
 
 def send_price_alert_email(to: str, symbol: str, condition: str, threshold: float, price: float,
                            note: str | None, recurring: bool = False,
-                           value_label: str = "Current price") -> bool:
+                           value_label: str = "Current price",
+                           event_at: str | None = None) -> bool:
     """Render a triggered alert.
 
     EA-04: THIS TEMPLATE USED TO DESCRIBE EVERY NON-"above" CONDITION AS "fallen below".
@@ -3048,11 +3049,50 @@ def send_price_alert_email(to: str, symbol: str, condition: str, threshold: floa
     # harnesses, so a module-level constant here would be out of scope exactly where the
     # rendering is checked.
     _crossing_words = {"above": "risen above", "below": "fallen below"}
-    _crossing = _crossing_words.get(str(condition).strip().lower())
+    _cond = str(condition).strip().lower()
+    _crossing = _crossing_words.get(_cond)
     _is_crossing = _crossing is not None
     direction = _crossing or ""
 
-    if _is_crossing:
+    # EC-02: does the CURRENT price still satisfy the crossing that fired this alert?
+    #
+    # Deliberately inline, for the same reason `_crossing_words` above is local: every renderer
+    # in this module is extracted and executed on its own by the test and audit harnesses, so a
+    # module-level sibling is out of scope exactly where the rendering is checked. Written as a
+    # helper first, it made three existing EA-04 tests raise NameError — the convention is load-
+    # bearing, not stylistic.
+    #
+    # Nothing used to ask this question, so the renderer always wrote the present tense: "X is
+    # now 80.0 (risen above your target of 90.0)" — one false sentence built from two true
+    # facts. The historical crossing was real and the current quote was real; only joining them
+    # in one present-tense clause was wrong, and the explanatory note underneath does not unsay
+    # it. A reader who sees only the subject line has already been told the wrong thing.
+    _still_holds = (
+        price >= threshold if _cond == "above"
+        else price <= threshold if _cond == "below"
+        else False
+    )
+
+    # EC-02: a crossing that no longer holds must be reported as HISTORY plus a current quote,
+    # never as one present-tense claim. `_reverted` is the only thing that changes the wording;
+    # a delayed alert whose price is still beyond the threshold reads exactly as it always did.
+    _reverted = _is_crossing and not _still_holds
+    _when = f" at {event_at}" if event_at else ""
+    _back_word = "back below" if _cond == "above" else "back above"
+
+    if _is_crossing and _reverted:
+        subject = f"Price Alert (delayed): {symbol} had {direction} {threshold}"
+        _headline_text = (
+            f"Earlier alert: {symbol} {direction} your target of {threshold}{_when}.\n"
+            f"Current price is {price:.4f} — {_back_word} the threshold."
+        )
+        _headline_html = (
+            f"Earlier alert: <strong>{symbol}</strong> {direction} your target of "
+            f"<strong>{threshold}</strong>{_when}.<br>"
+            f"<span style=\"color:#64748b\">Current price is <strong>{price:.4f}</strong> — "
+            f"{_back_word} the threshold.</span>"
+        )
+    elif _is_crossing:
         subject = f"Price Alert: {symbol} has {direction} {threshold}"
         _headline_text = f"{symbol} is now {price:.4f} ({direction} your target of {threshold})."
         _headline_html = (f"<strong>{symbol}</strong> has <strong>{direction}</strong> "
@@ -3079,8 +3119,8 @@ def send_price_alert_email(to: str, symbol: str, condition: str, threshold: floa
     <h2 style="margin-top:0;color:#6366f1">📈 StockAI {'Price Alert' if _is_crossing else 'Alert'}</h2>
     <p style="font-size:16px">{_headline_html}</p>
     <div style="background:#f1f5f9;border-radius:8px;padding:16px;margin:16px 0">
-      <div style="font-size:28px;font-weight:700;color:{'#22c55e' if condition == 'above' else '#ef4444' if _is_crossing else '#334155'}">{price:.4f}</div>
-      <div style="font-size:13px;color:#64748b;margin-top:4px">{value_label}</div>
+      <div style="font-size:28px;font-weight:700;color:{'#334155' if _reverted or not _is_crossing else '#22c55e' if condition == 'above' else '#ef4444'}">{price:.4f}</div>
+      <div style="font-size:13px;color:#64748b;margin-top:4px">{'Current price (alert has since reverted)' if _reverted else value_label}</div>
     </div>
     {f'<p style="color:#64748b;font-size:14px"><em>{note}</em></p>' if note else ''}
     <p style="font-size:13px;color:#94a3b8;margin-top:24px">{_footer}</p>

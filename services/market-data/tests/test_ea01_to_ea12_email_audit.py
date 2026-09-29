@@ -530,10 +530,27 @@ def test_legacy_rows_are_closed_out_rather_than_read_as_pending():
     """EF-03's fifth point. `last_sent_at` only began recording delivery on 2026-09-28, so
     every earlier triggered row has it NULL whether or not its mail went out. Re-sending them
     would mail people price alerts that are weeks old. The audit's own guidance: do not
-    interpret every legacy null as a failed delivery."""
+    interpret every legacy null as a failed delivery.
+
+    MOVED 2026-09-29 by EC-01. This test used to assert the statement's presence in
+    `_apply_isolated_ddl()`'s list, which is where it was originally — and wrongly — placed. That
+    list runs on EVERY startup of every backend service, and a triggered row with a NULL
+    `last_sent_at` is precisely what a FAILED SEND looks like, so the next restart would have
+    stamped every genuinely-pending alert as delivered with zero transport calls. The closure
+    review caught it. The statement now lives in `_apply_one_shot_migrations()` behind a ledger
+    and a deploy watermark.
+
+    This remains a structural check that the closeout still exists at all. Its actual behaviour
+    — including the once-only guarantee this test's own earlier version would have let regress —
+    is covered against a real database by `test_ec01_one_shot_migration.py`."""
     session_src = (_ROOT / "shared/db/session.py").read_text()
-    assert "legacy price-alert delivery closeout" in session_src
+    assert "legacy-price-alert-delivery-closeout" in session_src
     assert "UPDATE price_alerts SET last_sent_at = triggered_at" in session_src
+    # The statement must NOT be back in the every-startup list.
+    _isolated = session_src[session_src.index("def _apply_isolated_ddl"):
+                            session_src.index("def _apply_once")]
+    assert "UPDATE price_alerts" not in _isolated, \
+        "a row-mutating statement is back in the re-run-on-every-startup list"
 
 
 def test_a_missing_flow_side_is_unknown_not_total_dominance():

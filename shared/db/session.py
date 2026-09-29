@@ -35,6 +35,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _run_migrations()
     _apply_isolated_ddl()
+    _apply_one_shot_migrations()
     _seed_admin()
 
 
@@ -795,22 +796,6 @@ def _apply_isolated_ddl() -> None:
         # (portfolio_id, option_symbol, entry_date) rows from before the guard existed, the
         # CREATE is rejected. Startup must not die for that: the row lock and the lease check
         # remain in force, and the failure has to be visible rather than silent.
-        # EF-03 (2026-09-28 email-remediation follow-up): CLOSE OUT THE AMBIGUOUS LEGACY ROWS.
-        #
-        # `last_sent_at` only began recording notification delivery for price alerts on
-        # 2026-09-28. Every row triggered before that has it NULL whether or not its email
-        # actually went out — so the new retry query cannot tell "never delivered" from
-        # "delivered before we started recording it", and re-sending them would mail people
-        # price alerts that are weeks old.
-        #
-        # The audit's own guidance: do not interpret every legacy null as a failed delivery.
-        # These are stamped from their own trigger time, which marks them NOT RETRYABLE and
-        # says plainly that their delivery is unknown rather than asserting it succeeded. Rows
-        # triggered from here on are unambiguous, because the sender now stamps on success.
-        # One-shot: after this runs there are no NULL-timestamped triggered rows left to match.
-        ("legacy price-alert delivery closeout",
-         "UPDATE price_alerts SET last_sent_at = triggered_at "
-         "WHERE triggered IS TRUE AND last_sent_at IS NULL AND triggered_at IS NOT NULL"),
         ("uq_options_income_intent",
          "CREATE UNIQUE INDEX IF NOT EXISTS uq_options_income_intent "
          "ON options_income_positions (portfolio_id, option_symbol, entry_date)"),
@@ -821,6 +806,94 @@ def _apply_isolated_ddl() -> None:
                 conn.execute(text(sql))
         except Exception as exc:          # noqa: BLE001 — see the docstring
             print(f"[init_db] WARNING {name} not applied: {exc}")
+
+
+# EC-01 (2026-09-29 email-fix closure review): the deploy watermark for the legacy price-alert
+# closeout below. Rows triggered BEFORE this instant predate `last_sent_at` recording delivery;
+# rows triggered at or after it are unambiguous, because the sender stamps on success from then
+# on. A pending row from after the watermark is a REAL undelivered notification and must survive.
+_PRICE_ALERT_DELIVERY_WATERMARK = "2026-09-28 00:00:00+00"
+
+
+def _apply_once(name: str, sql: str, params: dict | None = None) -> None:
+    """Run `sql` exactly once across the lifetime of this database, ever.
+
+    EC-01 — WHY THIS EXISTS, AND WHY THE PREVIOUS ATTEMPT WAS WORSE THAN NO MIGRATION.
+
+    The legacy price-alert closeout used to sit in `_apply_isolated_ddl()`'s plain statement
+    list, carrying a comment that called it "one-shot: after this runs there are no
+    NULL-timestamped triggered rows left to match". That reasoning is simply wrong, and the
+    closure review caught it. `init_db()` runs `_apply_isolated_ddl()` on EVERY startup of
+    every one of the twelve backend services. New NULL-timestamped triggered rows appear
+    constantly — that is precisely what a FAILED SEND looks like, and producing them is the
+    entire point of the retry mechanism the same remediation added. So the next restart of any
+    service would stamp every genuinely-pending alert as delivered, with zero transport calls,
+    and the retry query (which requires `last_sent_at IS NULL`) would never see it again.
+
+    A migration that silently deletes the evidence of the failure it was written to disambiguate
+    is worse than not having run it: the retry feature would have looked implemented and been
+    inert after the first restart. Measured on production 2026-09-29 before this fix: 0 rows
+    were in that pending state, so the damage had not yet occurred — this is a latent defect
+    being closed, not an incident being cleaned up.
+
+    The guard is a real ledger, not a comment. The INSERT and the statement share ONE
+    transaction, so two services starting simultaneously cannot both run it: the second blocks
+    on the primary key until the first commits, then conflicts, inserts nothing, and skips.
+    """
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS applied_migrations ("
+                "  name VARCHAR(160) PRIMARY KEY,"
+                "  applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"
+                ")"
+            ))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[init_db] WARNING applied_migrations ledger unavailable: {exc}")
+        return
+
+    try:
+        with engine.begin() as conn:
+            claimed = conn.execute(text(
+                "INSERT INTO applied_migrations (name) VALUES (:name) "
+                "ON CONFLICT (name) DO NOTHING"
+            ), {"name": name}).rowcount
+            if not claimed:
+                return  # already applied, by this or another service, at some point in the past
+            conn.execute(text(sql), params or {})
+    except Exception as exc:  # noqa: BLE001 — same rationale as _apply_isolated_ddl's own
+        print(f"[init_db] WARNING one-shot migration {name} not applied: {exc}")
+
+
+def _apply_one_shot_migrations() -> None:
+    """One-shot data migrations — each runs exactly once per database, guarded by the ledger.
+
+    Distinct from `_apply_isolated_ddl()`, whose statements are all IDEMPOTENT by construction
+    (`ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`) and are therefore safe — and
+    correct — to re-run on every startup. Anything that MUTATES ROWS belongs here instead: re-
+    running it is not a no-op, and "it will not match anything the second time" is a claim about
+    data, which changes, not about schema, which does not.
+    """
+    _apply_once(
+        "2026-09-28-legacy-price-alert-delivery-closeout",
+        # EF-03: close out the AMBIGUOUS LEGACY ROWS. `last_sent_at` only began recording
+        # notification delivery for price alerts on 2026-09-28. A row triggered before that has
+        # it NULL whether or not its email actually went out, so the retry query cannot tell
+        # "never delivered" from "delivered before we started recording it" — and re-sending
+        # would mail people price alerts that are weeks old.
+        #
+        # The audit's guidance was explicit: do not interpret every legacy null as a failed
+        # delivery. These are stamped from their own trigger time, which both marks them
+        # not-retryable and leaves them distinguishable afterwards (`last_sent_at = triggered_at`
+        # exactly, which a real send never produces — it stamps strictly later).
+        #
+        # The watermark is the second guard, independent of the ledger. Even on a database where
+        # the ledger were somehow lost, this can no longer touch a post-fix pending row.
+        "UPDATE price_alerts SET last_sent_at = triggered_at "
+        "WHERE triggered IS TRUE AND last_sent_at IS NULL AND triggered_at IS NOT NULL "
+        "AND triggered_at < :watermark",
+        {"watermark": _PRICE_ALERT_DELIVERY_WATERMARK},
+    )
 
 
 def _seed_admin() -> None:

@@ -1,0 +1,64 @@
+{
+  "observed_at_utc": "2026-09-29T06:50:25.561476+00:00",
+  "reviewed_head": "174192f920201a35610f060fcb485a119b179f0f",
+  "source_sha256": {
+    "shared/db/session.py": "e8d5e7695099e18fde8693b2c95400c3d7357400ec87fd34a4b3a59b816e6ce8",
+    "services/market-data/src/services/scheduler.py": "18417399bbea5968661949dc8b1e857ece65d659294b1f9f7c1f2ff61b725e83",
+    "services/market-data/src/services/email_service.py": "b9e1c535a03c9c4ebca102c5e1267fe9ec0e4eabf59ea40f978d808b4b543298",
+    "services/market-data/tests/test_ea01_to_ea12_email_audit.py": "d8f485e7bab91741beec327f50acd7805cf3c369550eb57428c18cc7f8d4b694",
+    "services/market-data/tests/test_ea05_every_alert_type_is_enforced.py": "b42c0b575b37b4ab9cb31de17558b3275b648ff6f17d28fe0eef577dfeea20fd",
+    "docs/audits/evidence/2026-09-28-email-fix-closure-checks.py": "626226e6a72756dd811032306ab88d5766d60c2de95da73cb47dd159c9e93fdd"
+  },
+  "results": {
+    "closure_checks": {
+      "signal_mixed_batch": {
+        "sender_calls": 2,
+        "states": [
+          "BUY",
+          "SELL"
+        ],
+        "outer_errors": []
+      },
+      "price_retry": {
+        "requested_symbols": [
+          "RETRY"
+        ],
+        "observed_price": 123.0,
+        "missing_quote_sends": 0
+      },
+      "unknown_side_fixed": true,
+      "comment_only_ratchet_rejected": true,
+      "crossed_back_retry_semantic_residual": {
+        "subject": "Price Alert: RETRY has risen above 90.0",
+        "body": "Your alert for RETRY has triggered.\n\nRETRY is now 80.0000 (risen above your target of 90.0).\n\nNote: Delayed notification \u2014 this alert triggered at 2026-09-29T06:43:05.042129+00:00 and could not be delivered then.\n\nLog in to your StockAI dashboard to review.\n"
+      }
+    },
+    "migration_restart": {
+      "defect_reproduced": true,
+      "sql": "UPDATE price_alerts SET last_sent_at = triggered_at WHERE triggered IS TRUE AND last_sent_at IS NULL AND triggered_at IS NOT NULL",
+      "later_unsent_row_before_restart": null,
+      "later_unsent_row_after_restart": "2026-09-29T12:00:00",
+      "transport_calls": 0,
+      "scope": "exact UPDATE, minimal SQLite table; startup invocation verified in source"
+    }
+  },
+  "validation": {
+    "service": "market-data",
+    "test_files": [
+      "test_ea01_to_ea12_email_audit.py",
+      "test_ea05_every_alert_type_is_enforced.py",
+      "test_alert_dedup_and_isolation_fixes.py",
+      "test_sector_rotation_alert.py",
+      "test_options_flow_alert.py",
+      "test_t401_source_text_assertion_ratchet.py"
+    ],
+    "summary": "144 passed in 8.98s"
+  },
+  "limits": [
+    "No production access or mutations in this continuation.",
+    "Scheduler bodies use controlled database and provider responses.",
+    "Migration uses exact SQL on a minimal SQLite schema; invocation from init_db confirmed by source.",
+    "No historical delivery truth reconstructed from timestamps.",
+    "Deployment, production counts and author sabotage campaign not independently rerun."
+  ]
+}
