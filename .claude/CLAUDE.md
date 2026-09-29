@@ -309,6 +309,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
+- **`docs/audits/2026-09-28-postdeployment-audit-remediation.md`** — audit of the DEPLOYED code: settlement returned a close read BEFORE its corroboration (assigned vs worthless on a $100 strike), and the label date was still an estimate. Includes a conclusion I got wrong the round before [audit]
 - **`docs/audits/2026-09-28-predeployment-audit-remediation.md`** — an audit of the R01-R10 fix ITSELF, pre-deploy: 7 defects. Two shipped DEAD code (a query naming a column that does not exist; DDL in a function that returns early in prod) behind passing source-text tests [audit]
 - **`docs/audits/2026-09-24-followup-audit-remediation.md`** — R01-R10 of the follow-up audit, all closed. Eight are one shape: a defect DETECTED, RECORDED, then used anyway. Carries the 4-of-130 fleet measurement, and 4 test-harness failures incl. a sabotage loop that ran zero tests [audit]
 - **`docs/audits/2026-09-24-deep-audit-remediation.md`** — all 12 findings of the 2026-09-23 external deep audit, fixed and deployed. Two remedies deliberately NOT followed on measurement (enforcing the embargo would disable GROWTH for all 180 symbols; redefining the yield denominator invalidates a 417-trade calibration) [audit]
