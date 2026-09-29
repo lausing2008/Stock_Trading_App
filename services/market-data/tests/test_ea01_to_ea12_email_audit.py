@@ -610,3 +610,35 @@ def test_the_flow_digest_carries_an_unsubscribe_footer():
     way to act on that. Registering a preference and omitting the control is half a fix."""
     body = _code(_fn_src(_SCHED, "send_flow_digest"))
     assert '_with_unsub(u.email, "flow_digest", html, text)' in body
+
+
+def test_no_exception_name_is_ever_read_outside_its_own_handler():
+    """EF-01 GENERALISED, across the whole scheduler.
+
+    `except ... as NAME` deletes NAME when the handler exits, so any later read raises
+    UnboundLocalError — and in an error path that means the recovery code fails, which is how
+    EF-01 took down a whole recipient batch. This file has ~40 such handlers; checking only the
+    one that broke would leave the other thirty-nine.
+
+    Scoped per function and per handler span, so the many legitimate uses INSIDE handlers pass.
+    """
+    import ast
+
+    tree = ast.parse(_SCHED)
+    offenders = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        spans = [(h.lineno, h.end_lineno, h.name)
+                 for n in ast.walk(fn) if isinstance(n, ast.Try)
+                 for h in n.handlers if h.name]
+        bound = {nm for _, _, nm in spans}
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+                    and node.id in bound):
+                if not any(a <= node.lineno <= b and nm == node.id for a, b, nm in spans):
+                    offenders.append(f"{fn.name}:{node.lineno} reads {node.id}")
+    assert not offenders, (
+        "an exception name is read after its handler exited; Python has already deleted it, so "
+        "this raises UnboundLocalError at exactly the moment something has gone wrong:\n  "
+        + "\n  ".join(offenders))
