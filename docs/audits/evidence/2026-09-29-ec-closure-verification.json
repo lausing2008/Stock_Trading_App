@@ -1,0 +1,29 @@
+{
+  "observed_at_utc": "2026-09-29T23:40:12.209606+00:00",
+  "reviewed_head": "01bf695509ac3c38261f83b33f8187dde937ff93",
+  "results": {
+    "migration": {
+      "watermark": "2026-09-28 00:00:00+00",
+      "legacy_closed": true,
+      "pending_survives_restarts": true,
+      "late_legacy_proves_ledger": true,
+      "pending_survives_ledger_loss": true,
+      "failed_statement_rolls_back_claim": true,
+      "retry_after_failure_applies": true
+    },
+    "render": {
+      "subject": "Price Alert (delayed): RETRY had risen above 90.0",
+      "body": "Your alert for RETRY has triggered.\n\nEarlier alert: RETRY risen above your target of 90.0 at 2026-09-29T23:39:11.246844+00:00.\nCurrent price is 80.0000 \u2014 back below the threshold.\n\nNote: Delayed notification \u2014 this alert triggered at 2026-09-29T23:39:11.246844+00:00 and could not be delivered then.\n\nLog in to your StockAI dashboard to review.\n",
+      "event_at_wired": true,
+      "false_current_sentence_absent": true
+    }
+  },
+  "test_summary": "87 passed in 9.77s",
+  "source_sha256": {
+    "shared/db/session.py": "20905dd215f2a2b9aa1436f4c7c1b35b3149a1b46421fac1fe81358277c0c9b9",
+    "services/market-data/src/services/scheduler.py": "74426950e64277c544b4daf6be67dd1a1631e59c914d7ad2bff0aa130523f38f",
+    "services/market-data/src/services/email_service.py": "bd62ac3ea1e7ec68e8a61e6e51a990e989760420659a1274609cdfbff753262a",
+    "docs/audits/evidence/2026-09-29-ec-closure-verification.py": "b03528fbbd978e2b5029e72e5b926e56bd7ce547a9c107faf34cc0d74118e548"
+  },
+  "scope": "Offline SQLite migration checks and controlled scheduler-to-renderer checks. No production access, email, or code changes. PostgreSQL concurrency not tested."
+}

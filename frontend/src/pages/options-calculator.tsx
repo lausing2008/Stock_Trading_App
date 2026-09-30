@@ -12,10 +12,24 @@
  * expiry, and it has no Greeks — that needs Black-Scholes plus an IV surface, which this app
  * does not have (see the Option Trading Guide's own known-limitations note). Showing a
  * confident mid-life P&L from a model that does not exist would be worse than showing none.
+ *
+ * T412 (2026-09-29) AMENDS THE "NO FETCH" PART OF THAT SCOPE, deliberately. The page now loads a
+ * real option chain so the expiry buttons and the gain/loss table can use REAL quoted premiums.
+ * The original note's concern was fabricating prices — inventing a quote and presenting it with
+ * the confidence of a real one. Using genuinely quoted midpoints, labelling which side they came
+ * from, and flagging a spread too wide to fill at is the opposite of that, not a relaxation of
+ * it. The payoff engine itself is unchanged and still model-free: every figure on this page is
+ * still exact arithmetic on numbers someone actually quoted.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
+import useSWR from 'swr';
+import { api } from '@/lib/api';
+import NumberField from '@/components/NumberField';
+import GainLossTable from '@/components/GainLossTable';
+import { daysToExpiry } from '@/lib/optionsGainLoss';
+import type { OptionAction, OptionRight } from '@/lib/optionsGainLoss';
 
 type Leg = {
   id: number;
@@ -83,7 +97,13 @@ function payoff(legs: Leg[], spotAtExpiry: number, shares: number, entrySpot: nu
 export default function OptionsCalculator() {
   const router = useRouter();
   const qSpot = Number(router.query.spot);
-  const symbol = typeof router.query.symbol === 'string' ? router.query.symbol : '';
+  const qSymbol = typeof router.query.symbol === 'string' ? router.query.symbol : '';
+
+  // T412: the symbol is now editable rather than read-only from the query string, because the
+  // expiry buttons need one and arriving here without a link should not be a dead end.
+  const [symbol, setSymbol] = useState(qSymbol);
+  const [symbolDraft, setSymbolDraft] = useState(qSymbol);
+  useEffect(() => { if (qSymbol) { setSymbol(qSymbol); setSymbolDraft(qSymbol); } }, [qSymbol]);
 
   const [spot, setSpot] = useState<number>(Number.isFinite(qSpot) && qSpot > 0 ? qSpot : 100);
   const [shares, setShares] = useState<number>(0);
@@ -91,6 +111,45 @@ export default function OptionsCalculator() {
   const [legs, setLegs] = useState<Leg[]>([
     { id: 1, action: 'buy', right: 'call', strike: 100, premium: 3, contracts: 1 },
   ]);
+
+  // T412: expiry buttons and the gain/loss table. Fetching with no expiry returns the nearest
+  // chain PLUS the full `expiries` list, so one request populates the buttons and the first
+  // table — no separate expirations call, which is capped at 6 and does a heavier rollup.
+  const [expiry, setExpiry] = useState<string | undefined>(undefined);
+  const [tableAction, setTableAction] = useState<OptionAction>('buy');
+  const [tableRight, setTableRight] = useState<OptionRight>('call');
+  const [targetPrice, setTargetPrice] = useState<number>(0);
+  const [tableContracts, setTableContracts] = useState(1);
+
+  const { data: chain, isLoading: chainLoading } = useSWR(
+    symbol ? `calc-chain-${symbol}-${expiry ?? 'nearest'}` : null,
+    () => api.getOptionsChain(symbol, expiry),
+    { revalidateOnFocus: false },
+  );
+
+  // The chain endpoint lists whatever the provider still carries, which includes expiries that
+  // have already passed — measured against production 2026-09-29, the nearest expiry it returned
+  // for AAPL was 2026-09-28. A button for a date that has been and gone is not a choice: clicking
+  // it builds a table for a contract nobody can trade. Filter them out rather than render a
+  // negative countdown.
+  const liveExpiries = useMemo(
+    () => (chain?.expiries ?? []).filter(e => (daysToExpiry(e) ?? -1) >= 0),
+    [chain?.expiries],
+  );
+
+  // If the chain came back defaulted to an expiry that has already passed, advance to the first
+  // tradeable one. Guarded on `!expiry` so it runs once and never fights a user's own choice.
+  useEffect(() => {
+    if (!expiry && chain?.expiry && (daysToExpiry(chain.expiry) ?? -1) < 0 && liveExpiries.length) {
+      setExpiry(liveExpiries[0]);
+    }
+  }, [chain?.expiry, liveExpiries, expiry]);
+
+  // Default the target to spot the first time a real one is known, so the table opens on "what
+  // if nothing moves" rather than on an arbitrary number. Never overwrites a user's own entry.
+  useEffect(() => {
+    if (targetPrice === 0 && spot > 0) setTargetPrice(Number(spot.toFixed(2)));
+  }, [spot, targetPrice]);
 
   const applyPreset = (name: string) => {
     const built = PRESETS[name](spot);
@@ -159,6 +218,20 @@ export default function OptionsCalculator() {
           you would actually pay or receive.
         </p>
 
+        <form onSubmit={e => { e.preventDefault(); setSymbol(symbolDraft.trim().toUpperCase()); setExpiry(undefined); }}
+          style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 16, flexWrap: 'wrap' }}>
+          <div>
+            <label style={LABEL}>Symbol (for real premiums)</label>
+            <input value={symbolDraft} onChange={e => setSymbolDraft(e.target.value)}
+              placeholder="AAPL" aria-label="Symbol"
+              style={{ ...INPUT, width: 120, textTransform: 'uppercase' }} />
+          </div>
+          <button type="submit" style={{
+            padding: '6px 12px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+            border: '1px solid #334155', background: 'transparent', color: '#38bdf8',
+          }}>Load chain</button>
+        </form>
+
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
           {Object.keys(PRESETS).map(name => (
             <button key={name} onClick={() => applyPreset(name)} style={{
@@ -172,11 +245,11 @@ export default function OptionsCalculator() {
           <div style={CARD}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
               <div><label style={LABEL}>Underlying price</label>
-                <input style={INPUT} type="number" step="0.01" value={spot}
-                  onChange={e => setSpot(Math.max(0.01, Number(e.target.value) || 0.01))} /></div>
+                <NumberField value={spot} onChange={setSpot} min={0.01} step={0.01} style={INPUT}
+                  aria-label="Underlying price" /></div>
               <div><label style={LABEL}>Shares held</label>
-                <input style={INPUT} type="number" step="100" value={shares}
-                  onChange={e => setShares(Number(e.target.value) || 0)} /></div>
+                <NumberField value={shares} onChange={setShares} step={100} style={INPUT}
+                  aria-label="Shares held" /></div>
             </div>
 
             {legs.map(l => (
@@ -191,14 +264,14 @@ export default function OptionsCalculator() {
                       <option value="call">Call</option><option value="put">Put</option>
                     </select></div>
                   <div><label style={LABEL}>Contracts</label>
-                    <input style={INPUT} type="number" min={1} value={l.contracts}
-                      onChange={e => update(l.id, { contracts: Math.max(1, Number(e.target.value) || 1) })} /></div>
+                    <NumberField value={l.contracts} onChange={n => update(l.id, { contracts: n })}
+                      min={1} step={1} style={INPUT} aria-label="Contracts" /></div>
                   <div><label style={LABEL}>Strike</label>
-                    <input style={INPUT} type="number" step="0.5" value={l.strike}
-                      onChange={e => update(l.id, { strike: Number(e.target.value) || 0 })} /></div>
+                    <NumberField value={l.strike} onChange={n => update(l.id, { strike: n })}
+                      min={0} step={0.5} style={INPUT} aria-label="Strike" /></div>
                   <div><label style={LABEL}>Premium /sh</label>
-                    <input style={INPUT} type="number" step="0.01" value={l.premium}
-                      onChange={e => update(l.id, { premium: Number(e.target.value) || 0 })} /></div>
+                    <NumberField value={l.premium} onChange={n => update(l.id, { premium: n })}
+                      min={0} step={0.01} style={INPUT} aria-label="Premium per share" /></div>
                   <div style={{ display: 'flex', alignItems: 'flex-end' }}>
                     <button onClick={() => setLegs(ls => ls.filter(x => x.id !== l.id))}
                       disabled={legs.length === 1}
@@ -256,6 +329,27 @@ export default function OptionsCalculator() {
             </div>
           </div>
         </div>
+
+        <GainLossTable
+          symbol={symbol}
+          spot={spot}
+          expiries={liveExpiries}
+          // The user's own choice wins over the loaded chain's, so the button highlights
+          // immediately rather than lagging a round-trip behind the click.
+          expiry={expiry ?? chain?.expiry}
+          onExpiryChange={setExpiry}
+          calls={chain?.calls ?? []}
+          puts={chain?.puts ?? []}
+          loading={Boolean(symbol) && chainLoading}
+          unavailableReason={chain && !chain.available ? (chain.reason ?? 'unavailable') : undefined}
+          action={tableAction}
+          right={tableRight}
+          onPositionChange={(a, r) => { setTableAction(a); setTableRight(r); }}
+          targetPrice={targetPrice || spot}
+          onTargetChange={setTargetPrice}
+          contracts={tableContracts}
+          onContractsChange={setTableContracts}
+        />
       </div>
     </>
   );

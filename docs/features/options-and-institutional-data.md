@@ -1509,3 +1509,117 @@ real position as flat on a day it was not.
 - Tests: `test_t411_volatility.py` (10), `test_t411_iv_history_and_rank.py` (14),
   `test_t411_options_performance.py` (16, real SQLite in a subprocess), `ivHvChart.test.ts` (24).
   All sabotage-verified — 18 deliberate breaks, each caught.
+
+---
+
+## T412 — Expiry buttons, a four-position gain/loss table, and typeable inputs (2026-09-29)
+
+Two user reports on the Options Calculator, one a bug and one a feature.
+
+### T412-CALCINPUT — the fields could not be typed in
+
+**Reported:** *"the option calculator is not able to input the numbers. always showing decimal
+0.00 if I remove the numbers."*
+
+Every field was a controlled `<input type="number">` collapsing to a fallback on each keystroke:
+
+```js
+onChange={e => setSpot(Math.max(0.01, Number(e.target.value) || 0.01))}
+```
+
+Clear the box and `e.target.value` is `""`; `Number("") === 0`; `0 || 0.01` is `0.01`; and because
+the input is controlled, React writes 0.01 straight back. **The field can never be empty, so it
+can never be retyped** — which is exactly why the reported screenshot shows an underlying price
+of 0.01.
+
+A second, independent reason decimals were nearly impossible: for `type="number"`, a browser
+reports `value === ""` for anything that is *not yet* a valid number — and `"1."` is not one. So
+typing "1.5" passes through a state the handler reads as empty and overwrites, destroying the
+keystroke.
+
+**The fix** is a `NumberField` component over pure helpers in `lib/numberField.ts`, enforcing two
+rules:
+
+1. **Hold the raw text while focused.** The committed number only moves when the text parses as a
+   *complete* number, so an in-progress `"1."` survives to become `"1.5"`. `parseDraft` returns
+   `null` — never 0 — for `""`, `"-"`, `"."` and `"1."`.
+2. **Clamp only on blur.** Clamping mid-typing pushes a half-typed `"1"` up to a minimum of 10 and
+   the next digit lands somewhere the user did not mean.
+
+`type="text"` + `inputMode="decimal"` rather than `type="number"`, so the component can actually
+see the in-progress text; phones still get the numeric keypad, and explicit ▲/▼ buttons (plus
+arrow keys) replace the spinners, with step rounding so a 0.01 step cannot produce
+`0.30000000000000004`.
+
+### T412-GAINLOSS — expiry buttons and gain/loss by strike
+
+**Requested:** buttons to choose the expiration date, and a table showing gain or loss across
+strike prices — then, on follow-up, *"for all 4 basic options - call buy or sell and put buy or
+sell."*
+
+One `getOptionsChain(symbol)` call with no expiry returns the nearest chain **and** the full
+`expiries` list, so a single request populates both the buttons and the first table. Measured on
+production for AAPL: 10+ expiries, 49 call strikes, 28 of them two-sided.
+
+**The premiums are real** — the quoted NBBO midpoint per strike at the chosen expiry, not the round
+numbers a textbook uses. That is the point of attaching the table to an expiry picker, and it is
+why each row carries its own quote quality: a one-sided quote falls back to the last trade and is
+marked `*`; a spread of 25%+ of the midpoint is marked `⚠`, because the shown premium is not a
+price anyone gets filled at; a strike with no open interest and no volume is marked `thin`; and a
+strike with no price at all is **dropped**, since it is not a cheaper trade but an unquoted one.
+
+#### The thing four positions must not get wrong: ROI's denominator
+
+For a **long** option, return on premium paid is right — the premium is the whole outlay and the
+whole risk, so a worthless expiry reads −100% and cannot read worse.
+
+For a **short** it is wrong, and wrong in a dangerous direction. Every short that expires worthless
+keeps 100% of the premium, so a "return on premium" column would read **+100% on nearly every row**
+and make selling look like free money. The denominator is the capital the position ties up:
+
+| Position | Denominator | Max loss |
+|---|---|---|
+| Buy call / buy put | premium paid | the premium |
+| Sell put | strike × 100 (cash secured) | (strike − premium) × 100 |
+| Sell call | spot × 100 (shares held) | **unbounded** |
+
+which matches the collateral convention the calculator's own capital-required figure already uses,
+so the two halves of the page cannot disagree.
+
+A short call's max-loss cell reports **"Unbounded"**, not a number — there is no highest price a
+stock can reach, so any number there would understate it.
+
+Worked example (spot 100, target 120), reproducing the primer table exactly: the $90 call returns
++100%, $100 +300%, $110 +400%, $120 −100%. The same quotes sold instead of bought produce exactly
+mirrored P&L, which is asserted structurally across both rights and three target prices — the test
+most likely to catch a sign error.
+
+The highest-ROI row is labelled as arithmetic at one assumed price, explicitly **not** a
+recommendation, and for a long position the note adds that it is also the strike that needed the
+most movement to get there.
+
+#### Two scope notes
+
+The page's docstring said "no fetch, no live quotes", and that is now amended rather than quietly
+broken. The original concern was *fabricating* prices; using genuinely quoted midpoints, labelling
+which side they came from and flagging spreads too wide to fill at is the opposite of that. The
+payoff engine itself is unchanged and still model-free.
+
+The chain endpoint lists whatever the provider still carries, **including expiries that have
+already passed** — on 2026-09-29 the nearest it returned for AAPL was 2026-09-28. Those are
+filtered out of the buttons, and a chain that defaults to one auto-advances to the first tradeable
+expiry: a button for a date that has been and gone is not a choice.
+
+### Files and verification
+
+- `frontend/src/lib/numberField.ts` + `.test.ts` (22 tests)
+- `frontend/src/lib/optionsGainLoss.ts` + `.test.ts` (52 tests)
+- `frontend/src/components/NumberField.tsx`, `GainLossTable.tsx`
+- `frontend/src/pages/options-calculator.tsx`
+
+10 deliberate sabotages, each caught — including reinstating the original input bug, accepting a
+trailing decimal point, measuring short ROI against premium, turning the unbounded short-call max
+loss into a number, and flipping the buy/sell sign. One earlier sabotage attempt
+(`daysToExpiry` via `new Date(expiry)`) turned out to be an *equivalent* rewrite rather than a
+break — `new Date('YYYY-MM-DD')` is spec'd as UTC — so it was re-targeted at the real risk, which
+is comparing an expiry date against a local wall-clock instant.
