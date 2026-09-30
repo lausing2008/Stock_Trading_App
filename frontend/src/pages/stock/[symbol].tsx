@@ -41,6 +41,9 @@ import NewsCard from '@/components/NewsCard';
 import OptionsChainChart from '@/components/OptionsChainChart';
 import IvVsHvChart from '@/components/IvVsHvChart';
 import OptionsPerformanceTable from '@/components/OptionsPerformanceTable';
+import GainLossTable from '@/components/GainLossTable';
+import { daysToExpiry as glDaysToExpiry } from '@/lib/optionsGainLoss';
+import type { OptionAction, OptionRight } from '@/lib/optionsGainLoss';
 import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary, type QuarterlyRow, type AnalystConsensus, type Fundamentals, type StockEarningsHistory, type StockEarningsEvent } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { nearestActionableFvg, nearestPivotToFvg, classifyFvgVolumeContext } from '@/lib/fvgTradePlan';
@@ -782,6 +785,39 @@ export default function StockDetail() {
     () => api.getIvVsHv(symbol, ivHvDays),
     { revalidateOnFocus: false },
   );
+  // T412 on the stock detail page. The four-position strike table shipped on /options-calculator
+  // first; the user looked for it HERE, on the Options tab, which is the more natural home — it
+  // is the "what would I make at each strike" companion to the ATM table just above it. Same
+  // component, its own chain fetch, gated on the tab being open like the IV/HV panel.
+  //
+  // Deliberately NOT reusing the `optionsChain` fetch further down this file: that one is gated
+  // on the user expanding the Options Chain section (`chainOpen`), so reusing it would make this
+  // table appear only after an unrelated click.
+  const [glExpiry, setGlExpiry] = useState<string | undefined>(undefined);
+  const [glAction, setGlAction] = useState<OptionAction>('buy');
+  const [glRight, setGlRight] = useState<OptionRight>('call');
+  const [glTarget, setGlTarget] = useState<number>(0);
+  const [glContracts, setGlContracts] = useState(1);
+
+  const { data: glChain, isLoading: glLoading } = useSWR(
+    symbol && pageTab === 'Options' ? `gl-chain-${symbol}-${glExpiry ?? 'nearest'}` : null,
+    () => api.getOptionsChain(symbol, glExpiry),
+    { revalidateOnFocus: false },
+  );
+
+  // The chain lists expiries the provider still carries, INCLUDING ones already past — measured
+  // 2026-09-29, the nearest returned for AAPL was 2026-09-28. A button for a date that has been
+  // and gone is not a choice.
+  const glLiveExpiries = useMemo(
+    () => (glChain?.expiries ?? []).filter(e => (glDaysToExpiry(e) ?? -1) >= 0),
+    [glChain?.expiries],
+  );
+  useEffect(() => {
+    if (!glExpiry && glChain?.expiry && (glDaysToExpiry(glChain.expiry) ?? -1) < 0 && glLiveExpiries.length) {
+      setGlExpiry(glLiveExpiries[0]);
+    }
+  }, [glChain?.expiry, glLiveExpiries, glExpiry]);
+
   const { data: optionsPerf } = useSWR(
     symbol && pageTab === 'Options' ? `options-perf-${symbol}` : null,
     () => api.getOptionsPerformance(symbol),
@@ -1426,6 +1462,34 @@ Return ONLY valid JSON — no markdown, no prose:
           <IvVsHvChart data={ivHv} days={ivHvDays} onDaysChange={setIvHvDays} />
         )}
         {optionsPerf && <OptionsPerformanceTable data={optionsPerf} />}
+
+        {(() => {
+          // Spot from the same source the rest of this tab uses, so the table cannot disagree
+          // with the price shown above it.
+          const glSpot = allPrices?.find(p => p.symbol === symbol)?.price
+            ?? data.prices?.at(-1)?.close ?? 0;
+          if (!glSpot) return null;
+          return (
+            <GainLossTable
+              symbol={symbol as string}
+              spot={glSpot}
+              expiries={glLiveExpiries}
+              expiry={glExpiry ?? glChain?.expiry}
+              onExpiryChange={setGlExpiry}
+              calls={glChain?.calls ?? []}
+              puts={glChain?.puts ?? []}
+              loading={glLoading}
+              unavailableReason={glChain && !glChain.available ? (glChain.reason ?? 'unavailable') : undefined}
+              action={glAction}
+              right={glRight}
+              onPositionChange={(a, r) => { setGlAction(a); setGlRight(r); }}
+              targetPrice={glTarget || glSpot}
+              onTargetChange={setGlTarget}
+              contracts={glContracts}
+              onContractsChange={setGlContracts}
+            />
+          );
+        })()}
 
         {/* Options Flow */}
         {optionsFlow && optionsFlow.available && (

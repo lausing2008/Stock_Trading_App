@@ -1610,6 +1610,22 @@ already passed** — on 2026-09-29 the nearest it returned for AAPL was 2026-09-
 filtered out of the buttons, and a chain that defaults to one auto-advances to the first tradeable
 expiry: a button for a date that has been and gone is not a choice.
 
+### Where it lives — both places
+
+Shipped first on `/options-calculator`, because that is the page the request's screenshots came
+from. The user then looked for it on the **stock detail page's Options tab** and reported it
+missing — which is fair: that tab is the more natural home, since the strike table is the
+"what would I make at each strike" companion to T411's "what did the at-the-money options actually
+do" table directly above it. The same component now renders in both places.
+
+On the stock page it fetches its own chain rather than reusing the existing `optionsChain` call
+further down that file: that one is gated on the user expanding the Options Chain section, so
+reusing it would make the table appear only after an unrelated click.
+
+The two Gain/Loss tables on that tab are deliberately different questions — T411's is **backward**
+looking (a fixed contract, marked daily over the last three weeks) and T412's is **forward** looking
+(every strike, at a price you choose, at expiry).
+
 ### Files and verification
 
 - `frontend/src/lib/numberField.ts` + `.test.ts` (22 tests)
