@@ -6904,13 +6904,57 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             _cgval = _gate_redis.get(f"conv_gate:{stock.symbol}:{_style}")
             if _cgval:
                 _cgdata = json.loads(_cgval)
-                # sent=False means the gate explicitly failed for this BUY signal
-                if _cgdata.get("signal") == "BUY" and _cgdata.get("sent") is False:
-                    _failed_layers = _cgdata.get("failed", [])
-                    log.info("paper.entry_gate_blocked",
-                             symbol=stock.symbol, style=_style, failed=_failed_layers[:2])
-                    _skip_tally["conviction_gate"] = _skip_tally.get("conviction_gate", 0) + 1
-                    continue
+                # AUD-CONVGATE-IDENTITY: THE RECORD MUST BE ABOUT THE SIGNAL BEING EVALUATED.
+                #
+                # This block read the cached conviction result without binding it to the current
+                # signal at all. The record carries a 24-hour TTL, so a gate that failed against
+                # the 09:30 refresh kept blocking entries for the rest of the day — including
+                # against a NEWER signal the gate had never seen and might well have passed.
+                # Trading eligibility was decided by whether the alert path happened to have
+                # evaluated this symbol earlier, and by which refresh it happened to catch.
+                #
+                # `ts` is when the gate ran. If it predates the signal now being considered, it
+                # evaluated an older one and says nothing about this plan. Treat that exactly as
+                # a MISSING record is already treated — no information, fall through to the real
+                # gates below — rather than as permission or as a veto. Removing a stale veto
+                # must not bypass a genuine risk check, and it does not: the decision engine,
+                # `_should_enter()` and every remaining gate still run.
+                _cg_stale = False
+                _cg_ts_raw = _cgdata.get("ts")
+                if _cg_ts_raw and getattr(sig, "ts", None) is not None:
+                    try:
+                        _cg_ts = datetime.fromisoformat(str(_cg_ts_raw))
+                        if _cg_ts.tzinfo is None:
+                            _cg_ts = _cg_ts.replace(tzinfo=timezone.utc)
+                        _sig_ts = sig.ts
+                        if _sig_ts.tzinfo is None:
+                            _sig_ts = _sig_ts.replace(tzinfo=timezone.utc)
+                        _cg_stale = _cg_ts < _sig_ts
+                    except Exception:
+                        _cg_stale = False   # unparseable ts → behave as before, do not widen
+                if _cg_stale:
+                    log.info("paper.entry_gate_stale",
+                             symbol=stock.symbol, style=_style,
+                             gate_ts=str(_cg_ts_raw), signal_ts=str(getattr(sig, "ts", None)),
+                             note="conviction record predates this signal — no information, "
+                                  "not a veto")
+                    _skip_tally["conviction_gate_stale_ignored"] = (
+                        _skip_tally.get("conviction_gate_stale_ignored", 0) + 1)
+                else:
+                    # AUD-CONVGATE-IDENTITY: prefer the explicit gate result. `sent` is named for
+                    # delivery but actually carries the GATE outcome at three of its four call
+                    # sites, and conflating the two is how a delivery problem could start
+                    # reading as a conviction failure. `gate_passed` is written by the producer
+                    # from now on; `sent` remains the fallback for records cached before this.
+                    _gate_passed = _cgdata.get("gate_passed")
+                    _gate_failed = (_gate_passed is False) if _gate_passed is not None \
+                        else (_cgdata.get("sent") is False)
+                    if _cgdata.get("signal") == "BUY" and _gate_failed:
+                        _failed_layers = _cgdata.get("failed", [])
+                        log.info("paper.entry_gate_blocked",
+                                 symbol=stock.symbol, style=_style, failed=_failed_layers[:2])
+                        _skip_tally["conviction_gate"] = _skip_tally.get("conviction_gate", 0) + 1
+                        continue
         except Exception:
             pass  # Redis unavailable or parse error → allow entry (fail-open)
 

@@ -535,6 +535,12 @@ def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed:
             86400,  # 1-day TTL — expires with the trading day so stale conviction data doesn't persist
             json.dumps({
                 "sent": sent,
+                # AUD-CONVGATE-IDENTITY: the GATE outcome, stated explicitly. `sent` is named for
+                # delivery but three of this function's four call sites pass the gate result into
+                # it, so a reader cannot tell the two apart from the name. Paper trading's entry
+                # gate now prefers this field and falls back to `sent` only for records written
+                # before it existed.
+                "gate_passed": sent,
                 "passed": passed,
                 "failed": failed,
                 "signal": signal,
