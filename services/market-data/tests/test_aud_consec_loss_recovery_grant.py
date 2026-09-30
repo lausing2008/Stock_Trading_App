@@ -45,11 +45,20 @@ def _fn_src(name: str) -> str:
 
 # ── The core fix: the grant must be PERSISTED, not a local ──────────────────────────────
 
-def test_the_recovery_branch_now_marks_the_grant():
-    """THE FIX. Without a persisted marker the branch re-fires every scan cycle."""
+def test_the_recovery_branch_now_reserves_the_grant():
+    """THE FIX, as superseded 2026-09-30 by AUD-RECOVERY-LIFECYCLE.
+
+    This test originally required `_mark_recovery_grant(portfolio.id, _consec_losses)` here. That
+    call was correct about PERSISTING the grant and wrong about WHEN: it ran before the per-day
+    cap, before candidate selection, before every remaining gate and before `_open_paper_trade`,
+    so a scan that opened nothing still burned the grant for seven days. The branch now RESERVES
+    (minutes, atomic) and the entry site consumes (a week) only once a trade actually opens.
+
+    See test_aud_recovery_grant_lifecycle.py for the lifecycle itself."""
     i = PT_SRC.index("no open trades — allowing one recovery entry to break deadlock")
-    block = PT_SRC[i:i + 500]
-    assert "_mark_recovery_grant(portfolio.id, _consec_losses)" in block
+    block = PT_SRC[i:i + 1400]
+    assert "_reserve_recovery_grant(portfolio.id, _consec_losses)" in block
+    assert "_mark_recovery_grant(" not in block, "the consume-on-attempt call is gone"
 
 
 def test_an_already_used_grant_blocks_instead_of_re_granting():
@@ -64,9 +73,9 @@ def test_the_local_zeroing_alone_is_no_longer_the_whole_mechanism():
     """`_consec_losses = 0` is still needed (it stops DE's own T187 gate double-blocking) but it
     must no longer be the ONLY thing standing between a freefalling portfolio and more trades."""
     i = PT_SRC.index("no open trades — allowing one recovery entry to break deadlock")
-    block = PT_SRC[i:i + 500]
+    block = PT_SRC[i:i + 1400]
     assert "_consec_losses = 0" in block, "still needed for the DE call"
-    mark = block.index("_mark_recovery_grant")
+    mark = block.index("_reserve_recovery_grant")
     zero = block.index("_consec_losses = 0")
     assert mark < zero, "the grant must be recorded BEFORE the local is zeroed"
 
@@ -79,8 +88,10 @@ def test_the_marker_is_keyed_on_the_streak_length():
     the branch exists for while keeping it strictly finite."""
     fn = _fn_src("_recovery_grant_used")
     assert "str(streak)" in fn, "must compare against the streak that earned the grant"
-    fn_mark = _fn_src("_mark_recovery_grant")
-    assert "str(streak)" in fn_mark
+    # AUD-RECOVERY-LIFECYCLE: `_mark_recovery_grant` was split into reserve + consume. Both
+    # must still key on the streak, or a worse streak would not earn its fresh attempt.
+    assert "streak" in _fn_src("_reserve_recovery_grant")
+    assert "str(streak)" in _fn_src("_consume_recovery_grant")
 
 
 def _grant_used(stored: str | None, streak: int) -> bool:
@@ -140,7 +151,7 @@ def test_redis_failure_fails_OPEN_not_closed():
 
 def test_all_three_helpers_are_fail_silent():
     """Consistent with _write_gate_block/_clear_gate_block, which this follows."""
-    for name in ("_recovery_grant_used", "_mark_recovery_grant", "_clear_recovery_grant"):
+    for name in ("_recovery_grant_used", "_reserve_recovery_grant", "_consume_recovery_grant", "_clear_recovery_grant"):
         assert "except Exception" in _fn_src(name), f"{name} must not raise into the scan loop"
 
 

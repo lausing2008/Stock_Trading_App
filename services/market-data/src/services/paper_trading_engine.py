@@ -4588,6 +4588,11 @@ def _recovery_grant_key(portfolio_id: int) -> str:
 # the whole defect), short enough that a genuinely stuck portfolio is not frozen forever if the
 # marker is never cleared by a winning trade. 7 days ~= one trading week.
 _RECOVERY_GRANT_TTL = 7 * 86400
+# AUD-RECOVERY-LIFECYCLE: how long a RESERVATION survives before self-healing. One scan cadence is
+# 5 minutes; 15 gives a scan room to finish (including a slow DE call) while guaranteeing that a
+# crashed or rejected attempt frees the grant on its own rather than costing a week.
+_RECOVERY_RESERVE_TTL = 900
+_RECOVERY_RESERVED_PREFIX = "reserved:"
 
 
 def _recovery_grant_used(portfolio_id: int, streak: int) -> bool:
@@ -4617,13 +4622,61 @@ def _recovery_grant_used(portfolio_id: int, streak: int) -> bool:
     try:
         from common.redis_client import get_redis as _get_pool_redis
         _r = _get_pool_redis()
-        return _r.get(_recovery_grant_key(portfolio_id)) == str(streak)
+        _v = _r.get(_recovery_grant_key(portfolio_id))
+        if _v is None:
+            return False
+        if isinstance(_v, bytes):
+            _v = _v.decode()
+        # AUD-RECOVERY-LIFECYCLE: a RESERVATION blocks too. It means another scan (or this one,
+        # moments ago) is already spending this streak's single attempt — two workers must not
+        # both enter. The difference between the two states is only how long they last: a
+        # reservation expires in minutes, a consumption in a week.
+        return _v == str(streak) or _v == f"{_RECOVERY_RESERVED_PREFIX}{streak}"
     except Exception:
         return False
 
 
-def _mark_recovery_grant(portfolio_id: int, streak: int) -> None:
-    """Record that this streak level has consumed its one recovery entry."""
+def _reserve_recovery_grant(portfolio_id: int, streak: int) -> bool:
+    """Claim this streak's single recovery attempt for the duration of ONE scan.
+
+    AUD-RECOVERY-LIFECYCLE — THE DEFECT THIS REPLACES. `_mark_recovery_grant()` was called at the
+    top of the deadlock branch, before the per-day cap, before candidate selection, before every
+    remaining gate and before `_open_paper_trade()`. So the sequence
+
+        losing streak -> no open trades -> MARK USED -> zero candidates -> no entry
+
+    burned the grant for SEVEN DAYS without a trade ever being opened. The code recorded
+    *permission to attempt* as *consumption of an entry*. Measured on production 2026-09-30:
+    portfolios 2 and 5 both sat at zero open positions holding markers (streak 4 and 10) with
+    584,763s and 23,432s left; portfolio 2 had a zero-candidate scan that same day and no
+    September trades at all.
+
+    Reserve -> consume fixes it. This function reserves ATOMICALLY (`SET NX`), so two concurrent
+    scans cannot both spend the attempt, and the reservation self-expires in minutes if the scan
+    ends without an entry. Only `_consume_recovery_grant()` — called after a trade actually
+    opens — extends it to the full week.
+
+    Returns True when this caller now holds the attempt. Fails OPEN (True) on a Redis error, the
+    same direction `_recovery_grant_used()` already fails: an outage must not permanently freeze a
+    portfolio, and the degraded behaviour is today's, not something new.
+    """
+    try:
+        from common.redis_client import get_redis as _get_pool_redis
+        _r = _get_pool_redis()
+        return bool(_r.set(_recovery_grant_key(portfolio_id),
+                           f"{_RECOVERY_RESERVED_PREFIX}{streak}",
+                           nx=True, ex=_RECOVERY_RESERVE_TTL))
+    except Exception:
+        return True
+
+
+def _consume_recovery_grant(portfolio_id: int, streak: int) -> None:
+    """Spend the reservation — called ONLY after a recovery entry has really been opened.
+
+    Overwrites the short reservation with the week-long consumption marker. Unconditional rather
+    than compare-and-set: the caller has just opened a trade under this grant, so the attempt is
+    spent regardless of what the key currently holds.
+    """
     try:
         from common.redis_client import get_redis as _get_pool_redis
         _r = _get_pool_redis()
@@ -5785,6 +5838,13 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
 
     # ── Consecutive-loss circuit breaker ─────────────────────────────────────────
     # Uses precomputed _consec_losses (avoids a second DB query here).
+    # AUD-RECOVERY-LIFECYCLE: initialised BEFORE the branch that may set it. The entry site far
+    # below reads this unconditionally, and most scans never reach the deadlock branch at all —
+    # leaving it unbound would raise UnboundLocalError on the ordinary path. That is exactly the
+    # EF-01 shape (a name bound only inside a conditional, read outside it) and it is worth
+    # naming here rather than rediscovering.
+    _recovery_reserved_streak: int | None = None
+
     max_consec_losses = cfg.get("max_consecutive_losses", 3)
     if max_consec_losses and max_consec_losses > 0 and _consec_losses >= max_consec_losses and not _gates_override:
         if open_count > 0:
@@ -5818,7 +5878,18 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         portfolio=portfolio.name,
                         consecutive_losses=_consec_losses,
                         note="no open trades — allowing one recovery entry to break deadlock")
-            _mark_recovery_grant(portfolio.id, _consec_losses)
+            # AUD-RECOVERY-LIFECYCLE: RESERVE, do not consume. The grant is spent only when a
+            # trade is actually opened, far below. A scan that reaches here and then finds no
+            # candidate leaves a reservation that expires in minutes instead of a week.
+            if not _reserve_recovery_grant(portfolio.id, _consec_losses):
+                log.warning("paper.consecutive_loss_limit", portfolio=portfolio.name,
+                            consecutive_losses=_consec_losses,
+                            note="recovery attempt already reserved by a concurrent scan")
+                _write_gate_block(session, portfolio.id, "consecutive_losses",
+                                  f"{_consec_losses} consecutive losses — recovery attempt in "
+                                  f"progress elsewhere")
+                return
+            _recovery_reserved_streak = _consec_losses
             _consec_losses = 0
             _clear_gate_block(portfolio.id)  # remove stale Redis gate so UI clears
 
@@ -6978,6 +7049,11 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         if trade is None:
             _skip_tally[skip_reason] = _skip_tally.get(skip_reason, 0) + 1
             continue
+
+        # AUD-RECOVERY-LIFECYCLE: a trade really opened, so the reserved attempt is now spent.
+        if _recovery_reserved_streak is not None:
+            _consume_recovery_grant(portfolio.id, _recovery_reserved_streak)
+            _recovery_reserved_streak = None
 
         open_symbols.add(stock.symbol)
         # AUD-GLOBALSYMCAP-STALE: keep the CROSS-portfolio counter in step with the

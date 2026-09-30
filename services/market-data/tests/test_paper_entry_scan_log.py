@@ -204,11 +204,16 @@ def test_write_no_entry_summary_calls_persist_scan_log_with_the_session_and_tall
 
 
 def test_every_write_gate_block_call_site_passes_the_scan_session():
-    """Regression guard: all 14 real call sites (all inside _scan_for_entries(), which already
+    """Regression guard: all 15 real call sites (all inside _scan_for_entries(), which already
     has `session` in scope) must pass it through — a single site left on the old shape would
-    just be a straight TypeError at runtime, but this catches it at test time instead."""
+    just be a straight TypeError at runtime, but this catches it at test time instead.
+
+    14 -> 15 on 2026-09-30 (AUD-RECOVERY-LIFECYCLE): the recovery grant's new
+    reservation-contended arm writes a gate block so the UI can say why entries are suspended
+    while another scan holds the attempt. The count is the point of this guard, so it is raised
+    deliberately rather than loosened to >=."""
     count = _ENGINE_SOURCE.count("_write_gate_block(session, portfolio.id,")
-    assert count == 14, f"expected 14 call sites passing session, found {count}"
+    assert count == 15, f"expected 15 call sites passing session, found {count}"
 
 
 def test_write_no_entry_summary_call_site_passes_the_scan_session():

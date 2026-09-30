@@ -19,10 +19,57 @@ reasoning for three of them was wrong, and one was backwards.**
 
 | § | What I concluded | What the verification found |
 |---|---|---|
-| 1 | Confidence "barely discriminates — flat 36.5–43.9%" | **A pooling artifact.** My query had no market/horizon/direction split, used `is_correct_5d` rather than the consumer's primary outcome, 10-point buckets rather than `_CONF_BANDS`, and no 180-day window. Sliced the way production slices: 76 slices, 59 with n≥30, and wide dispersion — LONG/US 0–40 **53.0%** vs LONG/US 85+ **35.9%**; GROWTH/HK 85+ **13.8%**; SWING/HK 55–70 **16.5%**. Range is **7.4pp**, not "about 5". |
+| 1 | Confidence "barely discriminates — flat 36.5–43.9%" | **A pooling artifact.** My query had no market/horizon/direction split, used `is_correct_5d` rather than the consumer's primary outcome, 10-point buckets rather than `_CONF_BANDS`, and no 180-day window. Range is **7.4pp**, not "about 5". **Periods must be kept apart — see the note below.** |
 | 2 | Bearish flow "anti-predictive, 29.1% vs 55.2% — opposite in quality" | **Not robust.** ~1,000 rows are not ~1,000 bets: outcomes dedupe per option chain, so many contracts reuse one stock return. Weighting each symbol/fire-date equally **reverses the 5d gap** — bullish 42.3%, bearish **47.1%**. 116 symbol/date groups carry *both* labels. Matched SPY excess is nearly identical (+1.85 vs +1.84 pp). And the production consumer gates on **10d**, not 5d. |
 | 3 | GEX: "corroborated +0.88% vs uncorroborated −1.53%" | **Backwards.** I pooled raw returns across bullish `gamma_unwind_calls` and bearish `gamma_unwind_puts`; production scores puts as a *bearish* thesis, so raw return means the opposite for half the rows. Thesis-signed: corroborated **−1.87%** vs uncorroborated **+2.28%**. |
 | 4 | Dark pool: "~17% or ~45%, denominator unresolved" | Both understate it. Per **session**, alerting names / names with observed prints that session runs **81–88%** (Sep 23–29). My 78-symbol denominator was lifetime coverage, not daily. |
+
+### The two periods are different evidence and must not be merged
+
+The dispersion figures come from the **broader historical window**, not September:
+
+| | Broad window (180d consumer definition) | **September only** |
+|---|---|---|
+| Populated slices | 76 | 48 |
+| Slices with n≥30 | **59** | **23** |
+| Pooled 5d resolved rows | 19,256 | **2,524** |
+| Upper bands | LONG/US 85+ n=131; GROWTH/HK 85+ n=58 | 90–99 **n=6**; 80–89 n=25; 100–109 n=2 |
+
+The LONG/US 53.0%-vs-35.9% and GROWTH/HK 13.8% examples are **broad-window**. September's upper
+confidence bands are too sparse to carry any claim at all. Quoting a broad-window slice as
+September evidence would repeat the error this correction exists to fix, one level along. Neither
+period changes the decision: **do not promote.**
+
+### Anti-chase counters must record the AUTHORITATIVE rejection
+
+The one-`skip_tally`-key observation stands as a starting point, but a tally of `_should_enter()`'s
+anti-chase branch would be wrong on its own: `_should_enter()` also runs when the **decision engine
+is authoritative**, so counting its rejection without checking which result actually controlled the
+entry would record blocks that never happened.
+
+Record three things, not one: **candidates reaching anti-chase**, **authoritative anti-chase
+rejections**, and **decision source**. That answers the narrow operational question — what fraction
+of entries this gate really stopped. It still does not establish incremental lost trades or
+profitability, which needs counterfactual outcomes for vetoed candidates.
+
+### Dark-pool selectivity is a HYPOTHESIS, not a confirmed failed fix
+
+The 81–88% ratio uses *symbols with persisted prints*, which is not a verified record of each
+scan's eligible universe. Before it can be compared with the old 85–89%, eligibility, dates,
+freshness, duplicate handling and pre/post-fix code versions all have to be aligned. I stated this
+too strongly as "the fix may have barely moved the real rate" — it is worth investigating, not
+concluded.
+
+The sharpest form of the question: **how often does the relative threshold actually reject a
+candidate that already passed the absolute threshold?** That is directly measurable and does not
+depend on settling the denominator.
+
+### On GEX
+
+"Could corroboration be harmful?" is a valid hypothesis and worth testing. But worse outcomes
+*among* corroborated alerts do not demonstrate that **using the gate** worsens portfolio returns —
+that needs a baseline-versus-gated comparison accounting for avoided trades, costs and changed
+exposure. Keep the gate unpromoted while testing.
 
 Two further factual corrections to §1 below: the 10d mean **rounds to 0.0%**, so "negative at
 every horizon beyond 3d" is not established; and RGTI is +0.43%, so **POET is not the only positive
@@ -39,8 +86,9 @@ promote" holds — but "it adds noise" was never demonstrated, and the real slic
 **A new finding from following this up:** the anti-chase funnel in §8 is closer than I said.
 `paper_entry_scan_logs.skip_tally` already records 10 skip reasons over 32,316 September candidate
 checks (`not_on_watchlist` 39.2%, `conviction_gate` 16.5%, …). Anti-chase is simply **not one of
-them** — it returns early inside `_should_enter()` without writing a tally key. So the realised
-block rate is one `skip_tally` key away, not a new observability subsystem. It also confirms the
+them** — it returns early inside `_should_enter()` without writing a tally key. So the starting
+point is a small observability change, not a new subsystem — but see the authority note above: the
+tally must record which result actually controlled the entry. It also confirms the
 30.1% figure is not comparable to the predicted 17%: anti-chase sits *after* the watchlist and
 conviction gates, so its exposed population is a fraction of all BUY signals.
 
