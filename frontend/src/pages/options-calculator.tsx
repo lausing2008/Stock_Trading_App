@@ -333,6 +333,7 @@ export default function OptionsCalculator() {
         <GainLossTable
           symbol={symbol}
           spot={spot}
+          onSpotChange={setSpot}
           expiries={liveExpiries}
           // The user's own choice wins over the loaded chain's, so the button highlights
           // immediately rather than lagging a round-trip behind the click.

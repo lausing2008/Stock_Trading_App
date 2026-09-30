@@ -73,6 +73,11 @@ export interface GainLossRow {
   roiPct: number;
   /** null means genuinely unbounded — a naked short call. Not "unknown", not zero. */
   maxLoss: number | null;
+  /** The underlying price at which this position breaks even at expiry. */
+  breakeven: number;
+  /** How far the underlying must travel from spot to reach breakeven, as a signed percentage.
+   * Negative means it can FALL that far and still break even (a short call, a long put). */
+  breakevenMovePct: number | null;
   moneyness: 'ITM' | 'ATM' | 'OTM';
   /** True when nothing has traded and nothing is open — the premium is a quote nobody has taken. */
   illiquid: boolean;
@@ -140,6 +145,24 @@ export function maxLossFor(
   return null;
 }
 
+/** The underlying price at which the position breaks even at expiry.
+ *
+ * Identical for both sides of the same contract, which is the point: a buyer and a seller of the
+ * same option break even at exactly the same price — it is the price at which the contract's
+ * intrinsic value equals the premium that changed hands. Above it the buyer profits and the
+ * seller loses; below it, the reverse.
+ *
+ *   call -> strike + premium
+ *   put  -> strike - premium
+ *
+ * This is the single number that says how far the stock actually has to move for the trade to be
+ * worth doing, which no other column states directly: a row can show a large ROI at an assumed
+ * target while requiring a move the stock has never made in a month.
+ */
+export function breakevenFor(right: OptionRight, strike: number, premium: number): number {
+  return right === 'call' ? strike + premium : strike - premium;
+}
+
 /** One table row per strike, for the given position held to expiry.
  *
  * Rows whose premium is zero or missing are DROPPED rather than shown with an infinite or
@@ -184,6 +207,10 @@ export function buildGainLossRows(
       netPL,
       roiPct: basis > 0 ? Number(((netPL / basis) * 100).toFixed(1)) : 0,
       maxLoss: maxLossFor(action, right, strike, premium, contracts),
+      breakeven: Number(breakevenFor(right, strike, premium).toFixed(2)),
+      breakevenMovePct: spot > 0
+        ? Number((((breakevenFor(right, strike, premium) - spot) / spot) * 100).toFixed(1))
+        : null,
       moneyness: moneynessOf(right, strike, spot),
       illiquid: (Number(q.oi) || 0) === 0 && (Number(q.volume) || 0) === 0,
     });

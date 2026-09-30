@@ -1626,6 +1626,40 @@ The two Gain/Loss tables on that tab are deliberately different questions — T4
 looking (a fixed contract, marked daily over the last three weeks) and T412's is **forward** looking
 (every strike, at a price you choose, at expiry).
 
+### Follow-up round (same day)
+
+Three user requests after first use, plus one non-issue.
+
+**An editable current price.** Spot was read-only, seeded from the live quote. It is now a field.
+On the stock detail page that needed care: a later quote poll would otherwise overwrite a figure
+the user had typed, which reads as the box "not accepting" input — the same complaint that started
+T412-CALCINPUT. An `edited` flag makes the live quote a *seed* rather than a continuing source.
+
+Spot is not cosmetic here. It sets each row's moneyness label, the capital basis for a short call
+(spot × 100), and the breakeven-move percentage below.
+
+**A breakeven column.** `call -> strike + premium`, `put -> strike - premium`, and deliberately
+**identical for the buyer and the seller** of the same contract — both break even where intrinsic
+value equals the premium that changed hands. Signing it by side, the way P&L is signed, would be
+the obvious wrong move; a test asserts the two match.
+
+It carries the move required to get there, measured **from spot, not from the strike**. That
+distinction is the whole value of the column: at spot 90, a 100-strike call with a 5.00 premium
+breaks even at 105, which is a **+16.7%** move — not the gentle-looking +5% that measuring from the
+strike would show. No other column says how far the stock actually has to travel; a row can show a
+large ROI at an assumed target while needing a move the stock has never made in a month.
+
+**The highest-return row is picked out** with a left rule, a tint and a `TOP RETURN` badge, winning
+the highlight over the ATM tint. Labelled "highest return", never "best": it is arithmetic at one
+assumed price, and for a long position it is also the strike that needed the most movement to get
+there. The badge's tooltip says so.
+
+**Not an issue:** the four position buttons were reported missing and then found — no change made.
+
+One weak test of mine was caught in this round's sabotage run: the breakeven-move test used a
+fixture where spot equalled the strike, so measuring from either gave the same answer and a
+deliberate break walked straight through it. Rewritten with spot ≠ strike.
+
 ### Files and verification
 
 - `frontend/src/lib/numberField.ts` + `.test.ts` (22 tests)

@@ -797,6 +797,12 @@ export default function StockDetail() {
   const [glAction, setGlAction] = useState<OptionAction>('buy');
   const [glRight, setGlRight] = useState<OptionRight>('call');
   const [glTarget, setGlTarget] = useState<number>(0);
+  // The current price is now the user's to change: the live quote seeds it, and after that it is
+  // theirs. `glSpotEdited` is what stops a later quote refresh from silently overwriting a figure
+  // they typed — without it, a value entered during market hours would be reverted by the next
+  // poll, which reads as the box "not accepting" input.
+  const [glSpot, setGlSpot] = useState<number>(0);
+  const [glSpotEdited, setGlSpotEdited] = useState(false);
   const [glContracts, setGlContracts] = useState(1);
 
   const { data: glChain, isLoading: glLoading } = useSWR(
@@ -1464,15 +1470,17 @@ Return ONLY valid JSON — no markdown, no prose:
         {optionsPerf && <OptionsPerformanceTable data={optionsPerf} />}
 
         {(() => {
-          // Spot from the same source the rest of this tab uses, so the table cannot disagree
-          // with the price shown above it.
-          const glSpot = allPrices?.find(p => p.symbol === symbol)?.price
+          // Seeded from the same source the rest of this tab uses, so the table opens agreeing
+          // with the price shown above it — then the user can override it.
+          const liveSpot = allPrices?.find(p => p.symbol === symbol)?.price
             ?? data.prices?.at(-1)?.close ?? 0;
-          if (!glSpot) return null;
+          const effectiveSpot = glSpotEdited && glSpot > 0 ? glSpot : liveSpot;
+          if (!effectiveSpot) return null;
           return (
             <GainLossTable
               symbol={symbol as string}
-              spot={glSpot}
+              spot={effectiveSpot}
+              onSpotChange={n => { setGlSpot(n); setGlSpotEdited(true); }}
               expiries={glLiveExpiries}
               expiry={glExpiry ?? glChain?.expiry}
               onExpiryChange={setGlExpiry}
@@ -1483,7 +1491,7 @@ Return ONLY valid JSON — no markdown, no prose:
               action={glAction}
               right={glRight}
               onPositionChange={(a, r) => { setGlAction(a); setGlRight(r); }}
-              targetPrice={glTarget || glSpot}
+              targetPrice={glTarget || effectiveSpot}
               onTargetChange={setGlTarget}
               contracts={glContracts}
               onContractsChange={setGlContracts}

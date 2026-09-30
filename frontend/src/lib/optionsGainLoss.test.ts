@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  premiumFor, intrinsic, moneynessOf, capitalFor, maxLossFor,
+  premiumFor, intrinsic, moneynessOf, capitalFor, maxLossFor, breakevenFor,
   buildGainLossRows, nearestStrikes, highestRoi, daysToExpiry,
 } from './optionsGainLoss';
 import type { ChainQuote } from './optionsGainLoss';
@@ -287,6 +287,61 @@ describe('buildGainLossRows — data quality', () => {
 
   it('ignores a nonsensical strike', () => {
     expect(buildGainLossRows([q(0, 1, 2), q(-5, 1, 2)], 'buy', 'call', 100, 120)).toEqual([]);
+  });
+});
+
+describe('breakevenFor', () => {
+  it('is strike plus premium for a call', () => {
+    expect(breakevenFor('call', 100, 5)).toBe(105);
+  });
+
+  it('is strike minus premium for a put', () => {
+    expect(breakevenFor('put', 100, 5)).toBe(95);
+  });
+
+  it('is IDENTICAL for the buyer and the seller of the same contract', () => {
+    // The point of the column. Both sides break even at the same price — it is where the
+    // contract's intrinsic value equals the premium that changed hands. Making it differ by side
+    // would be a real error, and an easy one to introduce by "signing" it like P&L.
+    const l = buildGainLossRows([q(100, 4.9, 5.1)], 'buy', 'call', 100, 120)[0];
+    const s = buildGainLossRows([q(100, 4.9, 5.1)], 'sell', 'call', 100, 120)[0];
+    expect(l.breakeven).toBe(s.breakeven);
+    expect(l.breakeven).toBe(105);
+  });
+
+  it('is the price at which net P/L is actually zero', () => {
+    // Behavioural check against the P&L engine itself rather than against the formula: build the
+    // row, then re-price the same strike AT its own breakeven and require the P&L to vanish.
+    for (const right of ['call', 'put'] as const) {
+      for (const action of ['buy', 'sell'] as const) {
+        const row = buildGainLossRows([q(100, 4.9, 5.1)], action, right, 100, 120)[0];
+        const atBe = buildGainLossRows([q(100, 4.9, 5.1)], action, right, 100, row.breakeven)[0];
+        expect(atBe.netPL).toBeCloseTo(0, 6);
+      }
+    }
+  });
+
+  it('measures the required move from SPOT, not from the strike', () => {
+    // Spot deliberately != strike, or the two formulas agree and the test proves nothing — which
+    // is exactly what an earlier version of this test did, and a sabotage walked straight
+    // through it. Spot 90, strike 100, premium 5 -> breakeven 105, which is +16.7% from 90 and
+    // would be a misleading +5% if measured from the strike.
+    const row = buildGainLossRows([q(100, 4.9, 5.1)], 'buy', 'call', 90, 120)[0];
+    expect(row.breakeven).toBe(105);
+    expect(row.breakevenMovePct).toBe(16.7);
+  });
+
+  it('reports a NEGATIVE move for a put, which can fall that far and still break even', () => {
+    // Spot 110, strike 100, premium 5 -> breakeven 95, i.e. the stock must fall 13.6% from where
+    // it is now. Measured from the strike it would read a much gentler -5%.
+    const row = buildGainLossRows([q(100, 4.9, 5.1)], 'buy', 'put', 110, 80)[0];
+    expect(row.breakeven).toBe(95);
+    expect(row.breakevenMovePct).toBe(-13.6);
+  });
+
+  it('leaves the move percentage null when there is no spot to measure from', () => {
+    const row = buildGainLossRows([q(100, 4.9, 5.1)], 'buy', 'call', 0, 120)[0];
+    expect(row.breakevenMovePct).toBeNull();
   });
 });
 

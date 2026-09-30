@@ -38,6 +38,7 @@ const POSITIONS: { action: OptionAction; right: OptionRight; label: string }[] =
 interface Props {
   symbol: string;
   spot: number;
+  onSpotChange: (n: number) => void;
   expiries: string[];
   expiry: string | undefined;
   onExpiryChange: (e: string) => void;
@@ -55,7 +56,7 @@ interface Props {
 }
 
 export default function GainLossTable({
-  symbol, spot, expiries, expiry, onExpiryChange, calls, puts, loading, unavailableReason,
+  symbol, spot, onSpotChange, expiries, expiry, onExpiryChange, calls, puts, loading, unavailableReason,
   action, right, onPositionChange, targetPrice, onTargetChange, contracts, onContractsChange,
 }: Props) {
   const quotes = right === 'call' ? calls : puts;
@@ -119,6 +120,11 @@ export default function GainLossTable({
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 10, marginBottom: 14 }}>
           <div>
+            <label style={LABEL}>Current price</label>
+            <NumberField value={spot} onChange={onSpotChange} min={0.01} step={0.01} style={INPUT}
+              aria-label="Current underlying price" />
+          </div>
+          <div>
             <label style={LABEL}>Stock price at expiry</label>
             <NumberField value={targetPrice} onChange={onTargetChange} min={0.01} step={1} style={INPUT} />
           </div>
@@ -127,8 +133,7 @@ export default function GainLossTable({
             <NumberField value={contracts} onChange={onContractsChange} min={1} step={1} style={INPUT} />
           </div>
           <div style={{ alignSelf: 'end', fontSize: 11, color: '#64748b' }}>
-            Now ${spot.toFixed(2)}
-            {dte != null && <> · {dte}d to expiry</>}
+            {dte != null && <>{dte}d to expiry</>}
           </div>
         </div>
 
@@ -149,6 +154,7 @@ export default function GainLossTable({
                   <tr style={{ color: '#64748b', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4 }}>
                     <th style={th('left')}>Strike</th>
                     <th style={th('right')}>Premium</th>
+                    <th style={th('right')}>Breakeven</th>
                     <th style={th('right')}>{action === 'buy' ? 'Cost' : 'Credit'}</th>
                     <th style={th('right')}>Capital</th>
                     <th style={th('right')}>Value at ${targetPrice.toFixed(2)}</th>
@@ -160,10 +166,15 @@ export default function GainLossTable({
                 <tbody>
                   {rows.map(r => {
                     const atm = r.moneyness === 'ATM';
+                    const isBest = best?.strike === r.strike;
                     return (
                       <tr key={r.strike} style={{
                         borderTop: '1px solid #1e293b',
-                        background: atm ? 'rgba(56,189,248,0.06)' : undefined,
+                        // The highest-return row wins the highlight over the ATM tint — it is the
+                        // one the reader asked to have picked out.
+                        background: isBest ? 'rgba(74,222,128,0.09)'
+                          : atm ? 'rgba(56,189,248,0.06)' : undefined,
+                        boxShadow: isBest ? 'inset 2px 0 0 #4ade80' : undefined,
                       }}>
                         <td style={td('left', '#e2e8f0')}>
                           ${r.strike}
@@ -172,6 +183,15 @@ export default function GainLossTable({
                             color: r.moneyness === 'ITM' ? '#4ade80' : atm ? '#38bdf8' : '#64748b',
                             border: `1px solid ${r.moneyness === 'ITM' ? 'rgba(74,222,128,0.3)' : atm ? 'rgba(56,189,248,0.3)' : '#334155'}`,
                           }}>{r.moneyness}</span>
+                          {isBest && (
+                            <span title="Highest return at the price you entered — arithmetic at one assumed price, not a recommendation."
+                              style={{
+                                fontSize: 9, marginLeft: 6, padding: '1px 5px', borderRadius: 3,
+                                fontWeight: 700, cursor: 'help',
+                                color: '#4ade80', border: '1px solid rgba(74,222,128,0.35)',
+                                background: 'rgba(74,222,128,0.12)',
+                              }}>TOP RETURN</span>
+                          )}
                           {r.illiquid && (
                             <span title="No open interest and no volume — this quote is one nobody has taken."
                               style={{ fontSize: 9, marginLeft: 4, color: '#f59e0b', cursor: 'help' }}>thin</span>
@@ -186,6 +206,15 @@ export default function GainLossTable({
                           {r.spreadPct != null && r.spreadPct >= 25 && (
                             <span title={`Wide spread: ${r.spreadPct}% of the mid`}
                               style={{ color: '#f59e0b', marginLeft: 3, cursor: 'help' }}>⚠</span>
+                          )}
+                        </td>
+                        <td style={td('right', '#cbd5e1')}
+                          title="The underlying price at which this position breaks even at expiry — identical for the buyer and the seller of the same contract.">
+                          ${r.breakeven.toFixed(2)}
+                          {r.breakevenMovePct != null && (
+                            <span style={{ fontSize: 10, color: '#64748b', marginLeft: 5 }}>
+                              {r.breakevenMovePct >= 0 ? '+' : ''}{r.breakevenMovePct.toFixed(1)}%
+                            </span>
                           )}
                         </td>
                         <td style={td('right', r.cashFlow < 0 ? '#f59e0b' : UP)}>{money(Math.abs(r.cashFlow))}</td>
