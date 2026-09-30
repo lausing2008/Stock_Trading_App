@@ -41,7 +41,11 @@ def _run(scenario: str) -> dict:
         capture_output=True, text=True, timeout=180,
     )
     assert proc.returncode == 0, f"probe failed:\n{proc.stdout}\n{proc.stderr}"
-    return json.loads(proc.stdout)
+    # The probe emits a marker before its JSON: a scenario that deliberately fails a migration
+    # also produces `_apply_once`'s own stdout warning ahead of it.
+    marker = "---PROBE-JSON---"
+    assert marker in proc.stdout, f"probe produced no payload:\n{proc.stdout}\n{proc.stderr}"
+    return json.loads(proc.stdout.split(marker, 1)[1])
 
 
 def _by_symbol(rows):
@@ -101,6 +105,33 @@ def test_the_statement_does_not_run_a_second_time_at_all():
     late = _by_symbol(out["after_restart"])["LATE_LEGACY"]
     assert late["last_sent_at"] is None, \
         "the migration ran a second time; the ledger is not holding"
+
+
+def test_a_failed_migration_does_not_leave_its_name_claimed():
+    """A failure must be retryable, or it becomes permanent.
+
+    If the ledger kept the claim after the statement raised, the ledger would report "already
+    applied" forever and the statement would never get a second chance — a migration that
+    silently never ran, which is the same failure shape as EC-01 itself one level along.
+
+    This holds only because the INSERT and the statement share ONE transaction. That is easy to
+    lose in a later edit — claim in one `with engine.begin()`, run in the next — and nothing else
+    in this suite would notice, which is why it gets its own test.
+
+    Raised by the independent EC closure verification, which tested it before I did.
+    """
+    out = _run("failed_then_retry")
+    assert "probe-failing-migration" not in (out["ledger_after_failure"] or []), \
+        "a failed statement left its name claimed; the migration can never run again"
+
+
+def test_a_migration_that_failed_once_still_runs_on_the_retry():
+    """The other half: rolling the claim back is only useful if the retry actually applies."""
+    out = _run("failed_then_retry")
+    assert "probe-failing-migration" in (out["ledger_after_retry"] or [])
+    target = _by_symbol(out["after_restart"])["RETRY_TARGET"]
+    assert target["last_sent_at"] == target["triggered_at"], \
+        "the retry claimed the ledger but its statement did not run"
 
 
 def test_the_watermark_protects_the_row_even_if_the_ledger_is_lost():

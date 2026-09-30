@@ -139,6 +139,26 @@ def main():
         sess._apply_one_shot_migrations()
         out["after_restart"] = _rows(engine)
         out["ledger_after_restart"] = _ledger(engine)
+    elif scenario == "failed_then_retry":
+        # THE CLAIM THIS EXISTS TO CHECK: a migration whose statement fails must not leave its
+        # name claimed in the ledger, or the failure becomes permanent — the ledger would say
+        # "already applied" forever and the statement would never get a second chance.
+        #
+        # It holds only because the INSERT and the statement share ONE transaction. That is easy
+        # to lose in a later edit (claim first, run after, two `with engine.begin()` blocks), and
+        # nothing else in the suite would notice.
+        sess._apply_once("probe-failing-migration", "UPDATE no_such_table SET x = 1")
+        out["ledger_after_failure"] = _ledger(engine)
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO price_alerts (id, symbol, triggered, triggered_at, last_sent_at) "
+                "VALUES (9, 'RETRY_TARGET', 1, :t, NULL)"), {"t": LEGACY_AT})
+        # Same name, now with a statement that works. It must be allowed to run.
+        sess._apply_once(
+            "probe-failing-migration",
+            "UPDATE price_alerts SET last_sent_at = triggered_at WHERE symbol = 'RETRY_TARGET'")
+        out["ledger_after_retry"] = _ledger(engine)
+        out["after_restart"] = _rows(engine)
     elif scenario == "ledger_lost":
         # The watermark is the SECOND, independent guard. Drop the ledger entirely and confirm
         # the pending row still survives — a defence-in-depth check, not the primary mechanism.
@@ -148,6 +168,10 @@ def main():
         out["after_restart"] = _rows(engine)
         out["ledger_after_restart"] = _ledger(engine)
 
+    # `_apply_once` reports a failed migration with print(), so a scenario that deliberately
+    # fails one emits that warning on stdout ahead of this payload. Mark the boundary rather than
+    # assume the whole stream is JSON — the parent splits on this line.
+    print("---PROBE-JSON---")
     print(json.dumps(out, indent=2))
 
 

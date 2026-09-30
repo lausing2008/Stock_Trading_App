@@ -110,6 +110,8 @@ _REDIS_ALPACA_SECRET    = "stockai:admin:alpaca_secret_key"
 # the "unset=on" semantics macro_llm_reaction_enabled uses.
 _REDIS_UW_KEY           = "stockai:admin:unusual_whales_api_key"
 _REDIS_UW_ENABLED       = "stockai:admin:feature:unusual_whales_enabled"
+# Configuration foundation only; enrichment and experiment consumers are planned.
+_REDIS_JEV_ENABLED      = "stockai:admin:feature:jev_enabled"
 
 def _get_redis():
     from common.redis_client import get_redis as _get_pool_redis
@@ -226,6 +228,7 @@ class ConfigRequest(BaseModel):
     unusual_whales_api_key: str | None = None
     unshare_unusual_whales_key: bool | None = None
     unusual_whales_enabled: bool | None = None
+    jev_enabled: bool | None = None  # opt-in, defaults OFF
 
 
 @router.get("/feature-flags")
@@ -241,6 +244,7 @@ def get_feature_flags(_: User = Depends(get_admin_user)):
         "trade_coach_email_enabled": r.get(_REDIS_TRADE_COACH_ENABLED) == "1",
         "earnings_llm_forecast_enabled": r.get(_REDIS_EARNINGS_FORECAST_ENABLED) == "1",
         "unusual_whales_enabled": r.get(_REDIS_UW_ENABLED) == "1",
+        "jev_enabled": r.get(_REDIS_JEV_ENABLED) == "1",
         # presence-only signal — never the real secret value — so the Settings page can show
         # "already configured" without re-displaying (or losing on refresh) a saved key.
         "unusual_whales_key_set": bool(r.exists(_REDIS_UW_KEY)),
@@ -264,6 +268,7 @@ def get_feature_flags_public():
         "trade_coach_email_enabled": r.get(_REDIS_TRADE_COACH_ENABLED) == "1",
         "earnings_llm_forecast_enabled": r.get(_REDIS_EARNINGS_FORECAST_ENABLED) == "1",
         "unusual_whales_enabled": r.get(_REDIS_UW_ENABLED) == "1",
+        "jev_enabled": r.get(_REDIS_JEV_ENABLED) == "1",
         "unusual_whales_key_set": bool(r.exists(_REDIS_UW_KEY)),
         **_provider_key_presence(),
     }
@@ -293,7 +298,7 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
        req.earnings_llm_impact_enabled is not None or req.theme_forecast_email_enabled is not None or \
        req.trade_coach_email_enabled is not None or req.earnings_llm_forecast_enabled is not None or \
        req.unusual_whales_api_key is not None or req.unshare_unusual_whales_key or \
-       req.unusual_whales_enabled is not None:
+       req.unusual_whales_enabled is not None or req.jev_enabled is not None:
         r = _get_redis()
     if req.claude_api_key is not None:
         r.set(_REDIS_CLAUDE_KEY, req.claude_api_key)
@@ -334,7 +339,9 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
         r.delete(_REDIS_UW_KEY)
     if req.unusual_whales_enabled is not None:
         r.set(_REDIS_UW_ENABLED, "1" if req.unusual_whales_enabled else "0")
-    log.info("admin.config_updated", broker_enabled=req.broker_enabled,
+    if req.jev_enabled is not None:
+        r.set(_REDIS_JEV_ENABLED, "1" if req.jev_enabled else "0")
+    log.info("admin.config_updated", jev_enabled=req.jev_enabled, broker_enabled=req.broker_enabled,
               auto_research_enabled=req.auto_research_enabled,
               macro_llm_reaction_enabled=req.macro_llm_reaction_enabled,
               earnings_llm_impact_enabled=req.earnings_llm_impact_enabled,

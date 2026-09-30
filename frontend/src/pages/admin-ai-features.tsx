@@ -113,19 +113,43 @@ export default function AdminAiFeaturesPage() {
   const [earningsLlmForecastEnabled, setEarningsLlmForecastEnabled] = useState(false);
   const [themeForecastEnabled, setThemeForecastEnabled] = useState(false);
   const [tradeCoachEnabled, setTradeCoachEnabled] = useState(false);
+  const [jevEnabled, setJevEnabled] = useState<boolean | null>(null);
+  const [jevSaving, setJevSaving] = useState(false);
+  const [jevError, setJevError] = useState<string | null>(null);
   const [globalSaving, setGlobalSaving] = useState<string | null>(null);
 
   useEffect(() => {
     if (!authed) return;
     api.getFeatureFlags().then(f => {
+      if (typeof f.jev_enabled === 'boolean') {
+        setJevEnabled(f.jev_enabled);
+      } else {
+        setJevError('Jev setting is unavailable on this server.');
+      }
       setAutoResearchEnabled(f.auto_research_enabled);
       setMacroLlmReactionEnabled(f.macro_llm_reaction_enabled);
       setEarningsLlmImpactEnabled(f.earnings_llm_impact_enabled);
       setEarningsLlmForecastEnabled(f.earnings_llm_forecast_enabled);
       setThemeForecastEnabled(f.theme_forecast_email_enabled);
       setTradeCoachEnabled(f.trade_coach_email_enabled);
-    }).catch(() => {});
+    }).catch(() => setJevError('Could not load the Jev setting. Reload to try again.'));
   }, [authed]);
+
+  async function handleToggleJev() {
+    if (jevEnabled === null || jevSaving) return;
+    const next = !jevEnabled;
+    setJevSaving(true);
+    setJevError(null);
+    try {
+      await api.pushConfig({ jev_enabled: next });
+      setJevEnabled(next);
+    } catch {
+      setJevEnabled(null);
+      setJevError('Could not confirm the save. Reload to check the current setting.');
+    } finally {
+      setJevSaving(false);
+    }
+  }
 
   async function handleToggleAutoResearch(val: boolean) {
     setGlobalSaving('auto_research');
@@ -242,7 +266,7 @@ export default function AdminAiFeaturesPage() {
           AI Assistant Features
         </h1>
         <p style={{ fontSize: '12px', color: '#475569' }}>
-          Every place this app calls Claude (Anthropic) — what it does, how it can help, and
+          AI services and integration settings — what they do, how they can help, and
           which ones you can turn on or off. Costs scale with the model used and how often a
           feature fires — Sonnet is the most expensive; Haiku calls are cheap but frequent.
         </p>
@@ -311,6 +335,30 @@ export default function AdminAiFeaturesPage() {
               disabled={globalSaving === 'trade_coach'}
             />
           </div>
+        </div>
+      </div>
+
+      <div style={card}>
+        <div style={cardBar('linear-gradient(90deg,#0891b2,#22d3ee,#0891b2)')} />
+        <div style={cardHead}>Jev enrichment — configuration preview</div>
+        <div style={cardBody}>
+          <p id="jev-description" style={{ fontSize: 12, color: '#94a3b8', margin: '0 0 12px', lineHeight: 1.6 }}>
+            Save the on/off preference for the planned Jev news enrichment integration.
+            The integration is not connected yet: this setting currently makes no model requests
+            and changes no alerts or trades. Future experiments will require separate configuration.
+          </p>
+          <button
+            type="button" role="switch" aria-label="Jev enrichment preference"
+            aria-checked={jevEnabled === true} aria-describedby="jev-description"
+            disabled={jevEnabled === null || jevSaving}
+            onClick={handleToggleJev}
+            style={{ padding: '8px 14px', borderRadius: 6, border: '1px solid #334155',
+              color: '#e2e8f0', background: jevEnabled ? '#155e75' : '#1e293b',
+              cursor: jevEnabled === null || jevSaving ? 'default' : 'pointer' }}
+          >
+            {jevSaving ? 'Saving…' : jevEnabled === null ? (jevError ? 'Setting unavailable' : 'Loading…') : jevEnabled ? 'Preference: On' : 'Preference: Off'}
+          </button>
+          {jevError && <p role="alert" style={{ color: '#fca5a5', fontSize: 12 }}>{jevError}</p>}
         </div>
       </div>
 

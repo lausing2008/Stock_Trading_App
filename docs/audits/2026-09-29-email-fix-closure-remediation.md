@@ -177,6 +177,41 @@ is the intended outcome. As the previous review noted, assertions written to req
 serve as a release gate; the behaviour they described is now covered by
 `test_ec01_one_shot_migration.py` against a real database.
 
+### Independently verified, and one scenario it tested before I did
+
+The [EC closure verification](2026-09-29-ec-closure-verification.md) confirms both defects closed
+against real databases, and raised a scenario my own tests did not cover: **a migration whose
+statement fails must not leave its name claimed in the ledger.** If it did, the ledger would report
+"already applied" forever and the statement would never get a second chance — a migration that
+silently never runs, which is EC-01's own failure shape one step along.
+
+Checked against this implementation: it holds, because the `INSERT ... ON CONFLICT DO NOTHING` and
+the statement share one transaction, so the rollback takes the claim with it. Verified directly —
+after a deliberately failing statement the ledger carries no claim, and a retry under the same name
+then runs and commits.
+
+It is now a permanent test rather than a one-off check in someone else's evidence file
+(`test_a_failed_migration_does_not_leave_its_name_claimed` and its retry half). Sabotage-verified:
+splitting the claim and the statement into two `engine.begin()` blocks — an easy thing to lose in a
+later edit, and something nothing else in the suite would notice — fails both.
+
+**Test-harness defect found while adding it:** `_apply_once` reports a failure with `print()`, so a
+scenario that deliberately fails a migration emitted that warning on stdout ahead of the probe's
+JSON payload, and the parent's `json.loads` choked on it. The probe now marks the payload boundary
+explicitly rather than assuming its whole stdout stream is JSON.
+
+### One point from the verification NOT addressed here
+
+Its point 3: `_apply_once` logs a failed migration and returns, so a successful process startup is
+not proof that every prerequisite was applied. That is correct and remains open — it is general
+migration-readiness infrastructure (workers verifying the state they depend on before enabling
+dependent behaviour), not something specific to these two fixes.
+
+Its blast radius for this particular migration is bounded, and worth stating rather than assuming:
+if the closeout had failed, the 60 legacy rows would stay NULL and become retry candidates — but
+the retry query's own 24-hour cutoff excludes them all, since every one was triggered on or before
+2026-09-21. The migration has in any case already applied in production; the ledger records it.
+
 ## Still open, unchanged
 
 The transactional outbox, checked lease ownership, recorded expiry/dead-letter state, and

@@ -219,6 +219,7 @@ export const api = {
     trade_coach_email_enabled?: boolean;
     unshare_claude_key?: boolean; unshare_deepseek_key?: boolean;
     alpaca_api_key?: string; alpaca_secret_key?: string; unshare_alpaca_key?: boolean;
+    jev_enabled?: boolean;
     unusual_whales_api_key?: string; unshare_unusual_whales_key?: boolean; unusual_whales_enabled?: boolean;
   }) => request<{ status: string }>(`/admin/config`, { method: 'POST', body: JSON.stringify(keys) }),
   getFeatureFlags: () => request<{
@@ -226,6 +227,7 @@ export const api = {
     macro_llm_reaction_enabled: boolean; earnings_llm_impact_enabled: boolean;
     earnings_llm_forecast_enabled: boolean;
     theme_forecast_email_enabled: boolean; trade_coach_email_enabled: boolean;
+    jev_enabled: boolean;
     unusual_whales_enabled: boolean;
     unusual_whales_key_set: boolean;
     // AUD-PROVIDERKEY-ZOMBIEPUSH: presence-only, so _app.tsx's seed-on-load can tell
