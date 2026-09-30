@@ -8270,8 +8270,31 @@ def check_price_alerts() -> None:
             #
             # Bounded to a day: a notification nobody could deliver in 24h is stale news, and
             # retrying it forever would be its own defect.
+            #
+            # EC-03 (2026-09-29): VERIFY THE PREREQUISITE, DO NOT ASSUME STARTUP PROVED IT.
+            #
+            # This retry's premise is that the legacy closeout migration already ran: before
+            # 2026-09-28 `last_sent_at` recorded nothing, so a triggered row with a NULL value
+            # means "never delivered" ONLY on a database where those older rows were closed out.
+            # If that migration failed, every pre-cutoff legacy row is indistinguishable from a
+            # failed send and this job would email people alerts that were already delivered.
+            #
+            # The process starting is not evidence the migration applied — `_apply_once` logs a
+            # failure and returns. So ask. `None` means the question could not be answered (no
+            # ledger, database unreachable), and an unverifiable prerequisite is treated the same
+            # as a failed one: skip the retry, keep the rows pending, try again next cycle. The
+            # ordinary alert path below is untouched, because it does not depend on this.
+            _closeout_ok = True
+            try:
+                from db.session import migration_applied as _migration_applied
+                _closeout_ok = _migration_applied(
+                    "2026-09-28-legacy-price-alert-delivery-closeout") is True
+            except Exception as _mig_exc:
+                _closeout_ok = False
+                log.warning("alert.retry_prereq_check_failed", error=str(_mig_exc))
+
             _retry_cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-            _undelivered = session.execute(
+            _undelivered = [] if not _closeout_ok else session.execute(
                 select(PriceAlert).where(
                     PriceAlert.triggered.is_(True),
                     PriceAlert.last_sent_at.is_(None),
@@ -8291,6 +8314,12 @@ def check_price_alerts() -> None:
                     PriceAlert.condition.in_([AlertCondition.ABOVE, AlertCondition.BELOW]),
                 )
             ).scalars().all()
+            if not _closeout_ok:
+                log.warning(
+                    "alert.retry_skipped_unverified_migration",
+                    migration="2026-09-28-legacy-price-alert-delivery-closeout",
+                    note="legacy rows may be indistinguishable from failed sends; "
+                         "retries deferred rather than risk re-delivering old alerts")
             if _undelivered:
                 log.info("alert.retrying_undelivered", count=len(_undelivered),
                          note="triggered but never successfully emailed")

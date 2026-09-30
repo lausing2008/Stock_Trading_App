@@ -200,17 +200,49 @@ scenario that deliberately fails a migration emitted that warning on stdout ahea
 JSON payload, and the parent's `json.loads` choked on it. The probe now marks the payload boundary
 explicitly rather than assuming its whole stdout stream is JSON.
 
-### One point from the verification NOT addressed here
+## EC-03 — migration readiness (the verification's point 3, now closed)
 
-Its point 3: `_apply_once` logs a failed migration and returns, so a successful process startup is
-not proof that every prerequisite was applied. That is correct and remains open — it is general
-migration-readiness infrastructure (workers verifying the state they depend on before enabling
-dependent behaviour), not something specific to these two fixes.
+Raised by the [EC closure verification](2026-09-29-ec-closure-verification.md) as its one
+unaddressed point, and restated in the follow-up review's priority table. It was correct.
 
-Its blast radius for this particular migration is bounded, and worth stating rather than assuming:
-if the closeout had failed, the 60 legacy rows would stay NULL and become retry candidates — but
-the retry query's own 24-hour cutoff excludes them all, since every one was triggered on or before
-2026-09-21. The migration has in any case already applied in production; the ledger records it.
+`_apply_once` logs a failed migration and returns — deliberately, so one bad statement cannot take
+down twelve services at startup. But `/health` returned `{"status": "ok"}` **unconditionally**, so
+the failure had nowhere to surface: the container reported healthy, the scheduler started, and the
+jobs whose premise was that migration ran anyway.
+
+**The concrete risk.** The price-alert retry can only tell "never delivered" from "delivered before
+we started recording it" on a database where the legacy rows were closed out. Without that
+migration, every pre-cutoff legacy row is indistinguishable from a failed send, and the job would
+email people alerts that had already gone out.
+
+**Fixed in three parts.** Failures are recorded rather than only printed, so they survive the
+function that produced them. `/health` reports a `migrations` block. And `migration_applied(name)`
+lets a dependent job ask — `check_price_alerts` now asks before running its retry, skipping it and
+leaving the rows pending if the closeout cannot be confirmed. The ordinary alert path is untouched,
+because it does not depend on the migration.
+
+**`status` deliberately stays `"ok"` when a migration failed.** Flipping it would fail the
+container healthcheck, and several services declare `depends_on: condition: service_healthy`, so
+one unapplied *data* migration would cascade into a refusal to start — a far worse outcome than the
+thing being reported, and the exact shape of the 2026-09-17 outage recorded in
+`scripts/rebuild_backend_images.sh`'s own docstring. Enforcement belongs at the job that can skip
+precisely the affected work.
+
+**A three-state answer, not a boolean.** `migration_applied()` returns `None` when the question
+cannot be *answered* — no ledger table, database unreachable. The gate treats unknown exactly like
+"not applied". Returning `True` there would run the retry on an unverified prerequisite; returning
+`False` would be a definite claim the code cannot support.
+
+**Two sabotages survived my first test pass**, both in the branch that matters most: removing the
+recorded-failure fast path, and returning `True` instead of `None` on an unreachable database.
+Neither was covered, because every test used a healthy ledger. A scenario that drops the ledger
+table mid-run now fails both.
+
+The 24-hour cutoff still bounds *this* migration's exposure — all 60 legacy rows predate it — but
+that is a property of one migration, not a general guarantee, which is why the gate exists rather
+than relying on it.
+
+### The verification's other points, unchanged
 
 ## Still open, unchanged
 

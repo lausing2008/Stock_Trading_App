@@ -815,6 +815,50 @@ def _apply_isolated_ddl() -> None:
 _PRICE_ALERT_DELIVERY_WATERMARK = "2026-09-28 00:00:00+00"
 
 
+# EC-03 (2026-09-29): migration readiness. `_apply_once` used to report a failure with print()
+# and return, and `/health` reported "ok" unconditionally — so a service whose migration never
+# applied started, passed its healthcheck, and ran every job that depended on it. A successful
+# process startup is not proof that its prerequisites were applied.
+#
+# Failures are recorded here so they survive the function that produced them, and are readable by
+# two consumers: the health endpoint (visibility) and the jobs that depend on them (enforcement).
+_MIGRATION_FAILURES: dict[str, str] = {}
+
+
+def migration_state() -> dict:
+    """What this process knows about its own one-shot migrations.
+
+    Deliberately reports what THIS process attempted, not a query of the ledger: a service that
+    started before a migration was written has nothing to report and is not broken, while one
+    that tried and failed is. The two are different states and a ledger query would conflate them.
+    """
+    return {
+        "ok": not _MIGRATION_FAILURES,
+        "failed": sorted(_MIGRATION_FAILURES),
+        "detail": dict(_MIGRATION_FAILURES),
+    }
+
+
+def migration_applied(name: str) -> bool | None:
+    """Has `name` been applied to this database, per the ledger?
+
+    Returns None — not False — when the answer cannot be established (no ledger table yet, the
+    database unreachable). A caller gating a dependent job must treat None as "unknown" and decide
+    deliberately; collapsing it to False would make an unreachable database look like a definite
+    "not applied", and collapsing it to True would run the job on an unverified prerequisite.
+    """
+    if name in _MIGRATION_FAILURES:
+        return False
+    try:
+        with engine.begin() as conn:
+            row = conn.execute(text(
+                "SELECT 1 FROM applied_migrations WHERE name = :name"
+            ), {"name": name}).first()
+        return row is not None
+    except Exception:
+        return None
+
+
 def _apply_once(name: str, sql: str, params: dict | None = None) -> None:
     """Run `sql` exactly once across the lifetime of this database, ever.
 
@@ -849,6 +893,7 @@ def _apply_once(name: str, sql: str, params: dict | None = None) -> None:
                 ")"
             ))
     except Exception as exc:  # noqa: BLE001
+        _MIGRATION_FAILURES[name] = f"ledger unavailable: {exc}"
         print(f"[init_db] WARNING applied_migrations ledger unavailable: {exc}")
         return
 
@@ -861,7 +906,9 @@ def _apply_once(name: str, sql: str, params: dict | None = None) -> None:
             if not claimed:
                 return  # already applied, by this or another service, at some point in the past
             conn.execute(text(sql), params or {})
+        _MIGRATION_FAILURES.pop(name, None)
     except Exception as exc:  # noqa: BLE001 — same rationale as _apply_isolated_ddl's own
+        _MIGRATION_FAILURES[name] = str(exc)
         print(f"[init_db] WARNING one-shot migration {name} not applied: {exc}")
 
 

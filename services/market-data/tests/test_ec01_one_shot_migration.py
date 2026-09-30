@@ -35,6 +35,68 @@ _PROBE = pathlib.Path(__file__).resolve().parent / "_ec01_migration_probe.py"
 _MIGRATION = "2026-09-28-legacy-price-alert-delivery-closeout"
 
 
+# ── EC-03: migration readiness ──────────────────────────────────────────────────────────
+
+@pytest.fixture(scope="module")
+def readiness():
+    return _run("readiness")
+
+
+def test_a_clean_process_reports_its_migrations_ok(readiness):
+    assert readiness["state_after_success"]["ok"] is True
+    assert readiness["state_after_success"]["failed"] == []
+
+
+def test_an_applied_migration_can_be_verified_by_a_dependent_job(readiness):
+    """The question `check_price_alerts` asks before running its retry. Its premise is that the
+    legacy closeout ran; if it did not, every pre-cutoff legacy row is indistinguishable from a
+    failed send and the job would re-deliver alerts that already went out."""
+    assert readiness["applied_true"] is True
+
+
+def test_an_unknown_migration_is_reported_as_not_applied(readiness):
+    assert readiness["applied_unknown_name"] is False
+
+
+def test_a_failure_survives_the_function_that_produced_it(readiness):
+    """THE READINESS GAP. `_apply_once` used to print and return, and /health reported "ok"
+    unconditionally — so a service whose migration never applied started, passed its healthcheck,
+    and ran every job that depended on it. Process startup is not proof of prerequisites."""
+    state = readiness["state_after_failure"]
+    assert state["ok"] is False
+    assert "probe-broken" in state["failed"]
+    assert state["detail"]["probe-broken"]
+
+
+def test_a_failed_migration_reports_as_not_applied(readiness):
+    assert readiness["applied_failed"] is False
+
+
+def test_an_unanswerable_question_returns_None_not_a_guess(readiness):
+    """THE DISTINCTION THE GATE DEPENDS ON. With no ledger table the answer is unknown, and
+    `check_price_alerts` treats unknown exactly like "not applied" — it skips the retry. Returning
+    True here would let the retry run on an unverified prerequisite and re-deliver old alerts;
+    returning False would be a definite claim the code cannot support.
+
+    An earlier version of this file had no test for the unreachable case at all, and a sabotage
+    that returned True walked straight through it."""
+    assert readiness["applied_unknown_no_ledger"] is None
+
+
+def test_a_recorded_failure_answers_the_question_even_with_no_ledger(readiness):
+    """The recorded failure is why `migration_applied` checks it BEFORE querying. Without that
+    branch this falls through to a query that cannot run, and a definite "it failed" degrades
+    into "unknown"."""
+    assert readiness["applied_recorded_failure_no_ledger"] is False
+
+
+def test_a_repaired_migration_clears_the_recorded_failure(readiness):
+    """A process must not stay permanently marked broken once the migration actually applies —
+    otherwise the readiness signal is unusable after any transient database problem."""
+    assert readiness["state_after_repair"]["ok"] is True
+    assert readiness["state_after_repair"]["failed"] == []
+
+
 def _run(scenario: str) -> dict:
     proc = subprocess.run(
         [sys.executable, str(_PROBE), scenario],

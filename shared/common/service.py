@@ -68,7 +68,31 @@ def create_app(
 
     @app.get("/health", tags=["meta"])
     def health():
-        return {"status": "ok", "service": name, "version": version}
+        """Liveness, plus whether this process's own one-shot migrations actually applied.
+
+        EC-03 (2026-09-29): this used to return "ok" unconditionally, so a service whose
+        migration failed started, passed its healthcheck, and ran every job that depended on it.
+        A successful process startup is not proof that its prerequisites were applied.
+
+        `status` deliberately stays "ok" when a migration failed, and the failure is reported
+        alongside it as `migrations`. Flipping status would fail the container's healthcheck, and
+        several services declare `depends_on: condition: service_healthy` — so a single
+        unapplied data migration would cascade into a refusal to start, which is a far worse
+        outcome than the thing being reported. The 2026-09-17 outage in
+        scripts/rebuild_backend_images.sh's own docstring is exactly that shape.
+
+        Enforcement belongs at the JOB that depends on the migration, which can skip precisely
+        the affected work — see `migration_applied()` and check_price_alerts' own retry gate.
+        """
+        payload = {"status": "ok", "service": name, "version": version}
+        try:
+            from db.session import migration_state
+            payload["migrations"] = migration_state()
+        except Exception:
+            # A service that cannot import the DB layer at all (or has no database) is not
+            # reporting a migration problem — it simply has nothing to say here.
+            pass
+        return payload
 
     for r in routers:
         app.include_router(r)

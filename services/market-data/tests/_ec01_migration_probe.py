@@ -139,6 +139,28 @@ def main():
         sess._apply_one_shot_migrations()
         out["after_restart"] = _rows(engine)
         out["ledger_after_restart"] = _ledger(engine)
+    elif scenario == "readiness":
+        # EC-03: what the process KNOWS about its own migrations, and what a dependent job can
+        # ask before running. A failure must survive the function that produced it.
+        out["state_after_success"] = sess.migration_state()
+        out["applied_true"] = sess.migration_applied("2026-09-28-legacy-price-alert-delivery-closeout")
+        out["applied_unknown_name"] = sess.migration_applied("never-written")
+        sess._apply_once("probe-broken", "UPDATE no_such_table SET x = 1")
+        out["state_after_failure"] = sess.migration_state()
+        out["applied_failed"] = sess.migration_applied("probe-broken")
+        # A retry with a valid statement clears the recorded failure rather than leaving the
+        # process permanently marked broken.
+        sess._apply_once("probe-broken", "UPDATE price_alerts SET symbol = symbol")
+        out["state_after_repair"] = sess.migration_state()
+        # With the ledger gone the question cannot be ANSWERED. A name this process recorded as
+        # failed is still definitively not applied (the recorded failure answers it); a name it
+        # knows nothing about is genuinely unknown and must say so rather than guess either way.
+        sess._apply_once("probe-lost", "UPDATE no_such_table SET x = 1")
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE applied_migrations"))
+        out["applied_recorded_failure_no_ledger"] = sess.migration_applied("probe-lost")
+        out["applied_unknown_no_ledger"] = sess.migration_applied("2026-09-28-legacy-price-alert-delivery-closeout")
+        out["after_restart"] = _rows(engine)
     elif scenario == "failed_then_retry":
         # THE CLAIM THIS EXISTS TO CHECK: a migration whose statement fails must not leave its
         # name claimed in the ledger, or the failure becomes permanent — the ledger would say
