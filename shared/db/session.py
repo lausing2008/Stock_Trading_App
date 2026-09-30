@@ -824,6 +824,22 @@ _PRICE_ALERT_DELIVERY_WATERMARK = "2026-09-28 00:00:00+00"
 # two consumers: the health endpoint (visibility) and the jobs that depend on them (enforcement).
 _MIGRATION_FAILURES: dict[str, str] = {}
 
+# What STOPS WORKING when a given migration has not applied, in operator language.
+#
+# EC-03 follow-up: a health block reporting only `{"ok": false, "failed": ["<name>"]}` tells a
+# monitor that something is wrong but not what it costs, and a migration name is not a capability.
+# Keeping the container alive must not make a failure look operationally healthy — so the block
+# says, in words, which behaviour is currently degraded and how it degrades.
+#
+# A migration absent from this map still reports as failed; it simply has no capability statement
+# yet, which is honest rather than silent.
+_MIGRATION_CAPABILITIES: dict[str, str] = {
+    "2026-09-28-legacy-price-alert-delivery-closeout": (
+        "price-alert delivery retries are SKIPPED — undelivered alerts stay pending and are "
+        "retried once this migration applies; no alert is lost, none is re-sent"
+    ),
+}
+
 
 def migration_state() -> dict:
     """What this process knows about its own one-shot migrations.
@@ -836,6 +852,13 @@ def migration_state() -> dict:
         "ok": not _MIGRATION_FAILURES,
         "failed": sorted(_MIGRATION_FAILURES),
         "detail": dict(_MIGRATION_FAILURES),
+        # The operator-facing half: what is actually degraded right now. A monitor must read
+        # THIS, not the top-level `status`, which stays "ok" so that one unapplied data
+        # migration cannot cascade through `depends_on: service_healthy` into a refusal to start.
+        "degraded": [
+            _MIGRATION_CAPABILITIES.get(name, f"unknown capability (migration {name!r})")
+            for name in sorted(_MIGRATION_FAILURES)
+        ],
     }
 
 

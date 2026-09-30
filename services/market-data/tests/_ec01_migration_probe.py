@@ -161,6 +161,30 @@ def main():
         out["applied_recorded_failure_no_ledger"] = sess.migration_applied("probe-lost")
         out["applied_unknown_no_ledger"] = sess.migration_applied("2026-09-28-legacy-price-alert-delivery-closeout")
         out["after_restart"] = _rows(engine)
+    elif scenario == "recovery":
+        # EC-03 acceptance, as the reviewer framed it: "after the prerequisite becomes available,
+        # the worker should resume without losing pending work or remaining blocked by stale
+        # failure state." Three things have to hold, and they are separable.
+        MIG = "probe-recovery"
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO price_alerts (id, symbol, triggered, triggered_at, last_sent_at) "
+                "VALUES (7, 'PENDING_WORK', 1, :t, NULL)"), {"t": NEW_FAIL_AT})
+
+        # 1. The prerequisite fails. The gate must say "do not run", and the pending work must
+        #    still be there afterwards — skipped, not consumed.
+        sess._apply_once(MIG, "UPDATE no_such_table SET x = 1")
+        out["gate_while_broken"] = sess.migration_applied(MIG)
+        out["degraded_while_broken"] = sess.migration_state()["degraded"]
+        out["rows_while_broken"] = _rows(engine)
+
+        # 2. The prerequisite becomes available.
+        sess._apply_once(MIG, "UPDATE price_alerts SET symbol = symbol WHERE id = 7")
+        out["gate_after_repair"] = sess.migration_applied(MIG)
+        out["state_after_repair2"] = sess.migration_state()
+
+        # 3. The work is still pending and now processable — nothing was lost while blocked.
+        out["after_restart"] = _rows(engine)
     elif scenario == "failed_then_retry":
         # THE CLAIM THIS EXISTS TO CHECK: a migration whose statement fails must not leave its
         # name claimed in the ledger, or the failure becomes permanent — the ledger would say

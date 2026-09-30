@@ -1,0 +1,1417 @@
+
+{
+  "et_days": [
+    "2026-09-18",
+    "2026-09-20",
+    "2026-09-21",
+    "2026-09-22",
+    "2026-09-23",
+    "2026-09-24",
+    "2026-09-25",
+    "2026-09-26",
+    "2026-09-27",
+    "2026-09-28",
+    "2026-09-29",
+    "2026-09-30"
+  ],
+  "rows_per_et_day": {
+    "2026-09-18": 720,
+    "2026-09-20": 720,
+    "2026-09-21": 720,
+    "2026-09-22": 720,
+    "2026-09-23": 720,
+    "2026-09-24": 720,
+    "2026-09-25": 720,
+    "2026-09-26": 4,
+    "2026-09-27": 720,
+    "2026-09-28": 720,
+    "2026-09-29": 720,
+    "2026-09-30": 168
+  },
+  "weekend_days_present": [
+    "2026-09-20",
+    "2026-09-26",
+    "2026-09-27"
+  ],
+  "outage_trading_days": [
+    "2026-09-25",
+    "2026-09-28"
+  ],
+  "totals": {
+    "subscriptions_total": 362,
+    "affected_subscriptions": 160,
+    "missed_events": 202,
+    "affected_symbols": 111,
+    "affected_recipients": 2
+  },
+  "transition_kinds": {
+    "HOLD->WAIT": 56,
+    "WAIT->HOLD": 34,
+    "WAIT->SELL": 34,
+    "HOLD->BUY": 28,
+    "BUY->HOLD": 24,
+    "SELL->WAIT": 20,
+    "SELL->HOLD": 3,
+    "HOLD->SELL": 2,
+    "WAIT->BUY": 1
+  },
+  "actionable_subscriptions": 65,
+  "actionable_events": 65,
+  "buy_events": 29,
+  "sell_events": 36,
+  "actionable_still_current": 38,
+  "actionable_moved_on": 27,
+  "already_notified_since_fix": 1,
+  "actionable_detail": [
+    {
+      "symbol": "0285.HK",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "SELL",
+          "to": "WAIT"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-09 05:36:17.273004",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "0669.HK",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "SELL",
+          "to": "WAIT"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-02 02:05:52.270786",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "0939.HK",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "HOLD",
+          "to": "WAIT"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "BUY"
+        }
+      ],
+      "current": "BUY",
+      "as_of": "2026-09-30",
+      "last_signal_field": "WAIT",
+      "last_sent_at": "2026-09-15 04:20:00.529627",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "0992.HK",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "HOLD",
+          "to": "BUY"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "BUY",
+          "to": "HOLD"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-30",
+      "last_signal_field": "WAIT",
+      "last_sent_at": "2026-09-10 02:16:57.746337",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "1768.HK",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-24 02:30:43.803476",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "1768.HK",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-23 05:25:24.048480",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "1810.HK",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": null,
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "1810.HK",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-15 08:18:27.779136",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "1879.HK",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-16 02:21:55.029287",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "3323.HK",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "SELL",
+          "to": "WAIT"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-07-10 06:10:35.543344",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "3323.HK",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "SELL",
+          "to": "WAIT"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-15 02:36:32.679134",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "3690.HK",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "SELL",
+          "to": "WAIT"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": null,
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "3896.HK",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-05 06:23:45.022030",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "6613.HK",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "HOLD",
+          "to": "WAIT"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-07-21 02:05:33.438347",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "6613.HK",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-10 02:02:21.736514",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "6651.HK",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-12 01:29:04.111257",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "6651.HK",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-08 04:11:57.918908",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "9880.HK",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-30",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-08 04:11:57.028532",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "ABBV",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "WAIT",
+      "last_sent_at": "2026-08-06 14:26:41.454073",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "AKAM",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "HOLD",
+          "to": "BUY"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "BUY",
+          "to": "HOLD"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-22 16:35:38.574823",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "ALAB",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-07-29 13:41:16.561476",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "AMADY",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-17 13:31:45.476797",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "AMGN",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-15 14:32:04.834509",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "ASX",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "WAIT",
+      "last_sent_at": "2026-07-20 13:36:25.758486",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "ASX",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "HOLD",
+          "to": "BUY"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "BUY",
+          "to": "HOLD"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-07-20 13:36:24.549561",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "AXON",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "HOLD",
+          "to": "SELL"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "SELL",
+          "to": "WAIT"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-16 14:01:55.886957",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "AXON",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-01 13:47:04.800985",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "BE",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "BUY",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-07-16 14:56:14.403548",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "BULL",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-18 13:45:50.866807",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "CLBT",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-08 01:27:33.321505",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "DIVO",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-23 14:06:23.402204",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "DT",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "BUY",
+      "as_of": "2026-09-29",
+      "last_signal_field": "HOLD",
+      "last_sent_at": "2026-09-01 14:51:27.317290",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "DT",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "HOLD",
+          "to": "BUY"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "BUY",
+          "to": "HOLD"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-08 16:22:30.775976",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "GOOG",
+      "horizon": "LONG",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "HOLD",
+          "to": "BUY"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "BUY",
+          "to": "HOLD"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": null,
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "HPE",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "BUY",
+          "to": "HOLD"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "BUY",
+      "as_of": "2026-09-29",
+      "last_signal_field": "HOLD",
+      "last_sent_at": "2026-09-23 17:41:43.176246",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "IBM",
+      "horizon": "LONG",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-07-14 15:06:50.730798",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "IMVT",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "SELL",
+          "to": "WAIT"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-10 13:42:18.288497",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "IONQ",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "BUY",
+          "to": "HOLD"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-07-02 15:01:27.382037",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "IONQ",
+      "horizon": "SHORT",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "BUY",
+          "to": "HOLD"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-17 19:47:12.376773",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "LMT",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-09 14:02:12.628687",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "LMT",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-08 04:11:54.611873",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "MSFT",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "HOLD",
+      "last_sent_at": "2026-09-29 15:41:41.724578",
+      "still_current": false,
+      "sent_since_fix": true,
+      "user_active": true
+    },
+    {
+      "symbol": "MU",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "BUY",
+          "to": "HOLD"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "WAIT",
+      "last_sent_at": "2026-09-14 13:47:22.842684",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "MUU",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "BUY",
+          "to": "HOLD"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "BUY",
+      "as_of": "2026-09-29",
+      "last_signal_field": "HOLD",
+      "last_sent_at": "2026-09-18 14:01:12.413659",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "NET",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "WAIT",
+      "last_sent_at": "2026-09-02 14:11:21.720100",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "NVDA",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "WAIT",
+      "last_sent_at": "2026-07-27 17:11:25.487882",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "NVDA",
+      "horizon": "SWING",
+      "email": null,
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "BUY",
+      "last_sent_at": null,
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "NVDA",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-14 13:42:25.578693",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "ORCL",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-11 13:47:39.946973",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "OSCR",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-16 14:02:01.569084",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "PLTR",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "HOLD",
+      "last_sent_at": "2026-09-01 14:16:42.109764",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "PLTR",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "HOLD",
+          "to": "BUY"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "BUY",
+          "to": "HOLD"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "WAIT",
+      "last_sent_at": "2026-09-02 15:56:59.401831",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "QQQ",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "BUY",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-07-23 13:41:11.798628",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "SMTC",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "HOLD",
+          "to": "BUY"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "BUY",
+          "to": "HOLD"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "HOLD",
+      "last_sent_at": "2026-09-09 15:53:11.848139",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "SNDK",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "BUY",
+      "as_of": "2026-09-29",
+      "last_signal_field": "HOLD",
+      "last_sent_at": "2026-09-09 14:02:17.864706",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "SOUN",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": null,
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "SOUN",
+      "horizon": "SHORT",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": null,
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "SOUN",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-05 13:37:20.464323",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "TMDX",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-09-04 13:46:27.459853",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "TSLA",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "HOLD",
+      "last_sent_at": null,
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "UPST",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "HOLD",
+          "to": "SELL"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "SELL",
+          "to": "WAIT"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": null,
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "UPST",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-25",
+          "from": "WAIT",
+          "to": "SELL"
+        },
+        {
+          "date": "2026-09-28",
+          "from": "SELL",
+          "to": "WAIT"
+        }
+      ],
+      "current": "WAIT",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-05 15:43:14.445739",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "XAR",
+      "horizon": "GROWTH",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-07-29 16:16:03.767037",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "XAR",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "WAIT",
+          "to": "SELL"
+        }
+      ],
+      "current": "SELL",
+      "as_of": "2026-09-29",
+      "last_signal_field": "SELL",
+      "last_sent_at": "2026-06-08 01:27:16.864587",
+      "still_current": true,
+      "sent_since_fix": false,
+      "user_active": true
+    },
+    {
+      "symbol": "ZS",
+      "horizon": "SWING",
+      "email": "stockai2028@gmail.com",
+      "missed": [
+        {
+          "date": "2026-09-28",
+          "from": "HOLD",
+          "to": "BUY"
+        }
+      ],
+      "current": "HOLD",
+      "as_of": "2026-09-29",
+      "last_signal_field": "WAIT",
+      "last_sent_at": "2026-09-01 16:42:01.168783",
+      "still_current": false,
+      "sent_since_fix": false,
+      "user_active": true
+    }
+  ]
+}

@@ -90,6 +90,48 @@ def test_a_recorded_failure_answers_the_question_even_with_no_ledger(readiness):
     assert readiness["applied_recorded_failure_no_ledger"] is False
 
 
+# ── EC-03 acceptance: the worker recovers ───────────────────────────────────────────────
+
+@pytest.fixture(scope="module")
+def recovery():
+    return _run("recovery")
+
+
+def test_the_gate_refuses_while_the_prerequisite_is_broken(recovery):
+    assert recovery["gate_while_broken"] is False
+
+
+def test_the_health_block_names_the_degraded_capability_not_just_the_migration(recovery):
+    """Keeping the container alive must not make the failure look operationally healthy. A
+    monitor reading only `{"ok": false, "failed": ["<name>"]}` learns that something is wrong but
+    not what it costs, and a migration name is not a capability."""
+    degraded = recovery["degraded_while_broken"]
+    assert degraded, "a failed migration must report a degraded capability"
+    assert any("probe-recovery" in d or "unknown capability" in d for d in degraded)
+
+
+def test_pending_work_survives_the_outage(recovery):
+    """Skipped, not consumed. The whole reason the gate skips rather than proceeding is that the
+    work must still be there afterwards."""
+    pending = _by_symbol(recovery["rows_while_broken"])["PENDING_WORK"]
+    assert pending["last_sent_at"] is None
+
+
+def test_the_gate_opens_once_the_prerequisite_applies(recovery):
+    """No stale failure state: a process that saw one transient failure must not stay blocked
+    forever, or the readiness signal is unusable after any brief database problem."""
+    assert recovery["gate_after_repair"] is True
+    assert recovery["state_after_repair2"]["ok"] is True
+    assert recovery["state_after_repair2"]["degraded"] == []
+
+
+def test_the_work_is_still_there_to_do_after_recovery(recovery):
+    """The point of the whole arrangement: nothing was lost while blocked, so the next cycle can
+    process exactly what it deferred."""
+    pending = _by_symbol(recovery["after_restart"])["PENDING_WORK"]
+    assert pending["last_sent_at"] is None
+
+
 def test_a_repaired_migration_clears_the_recorded_failure(readiness):
     """A process must not stay permanently marked broken once the migration actually applies —
     otherwise the readiness signal is unusable after any transient database problem."""
