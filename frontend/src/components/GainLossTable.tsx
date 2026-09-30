@@ -6,7 +6,7 @@
 import { useMemo } from 'react';
 import type { OptionsChainRow } from '@/lib/api';
 import {
-  buildGainLossRows, nearestStrikes, highestRoi, daysToExpiry,
+  buildGainLossRows, nearestStrikes, highestRoi, daysToExpiry, unrealized,
 } from '@/lib/optionsGainLoss';
 import type { OptionAction, OptionRight } from '@/lib/optionsGainLoss';
 import NumberField from './NumberField';
@@ -53,17 +53,29 @@ interface Props {
   onTargetChange: (n: number) => void;
   contracts: number;
   onContractsChange: (n: number) => void;
+  fillStrike: number;
+  onFillStrikeChange: (n: number) => void;
+  fillPremium: number;
+  onFillPremiumChange: (n: number) => void;
 }
 
 export default function GainLossTable({
   symbol, spot, onSpotChange, expiries, expiry, onExpiryChange, calls, puts, loading, unavailableReason,
   action, right, onPositionChange, targetPrice, onTargetChange, contracts, onContractsChange,
+  fillStrike, onFillStrikeChange, fillPremium, onFillPremiumChange,
 }: Props) {
+  const fill = fillStrike > 0 && fillPremium > 0 ? { strike: fillStrike, premium: fillPremium } : null;
   const quotes = right === 'call' ? calls : puts;
 
   const rows = useMemo(
-    () => nearestStrikes(buildGainLossRows(quotes, action, right, spot, targetPrice, contracts), spot, 14),
-    [quotes, action, right, spot, targetPrice, contracts],
+    () => nearestStrikes(
+      buildGainLossRows(quotes, action, right, spot, targetPrice, contracts, fill), spot, 14),
+    [quotes, action, right, spot, targetPrice, contracts, fill?.strike, fill?.premium],
+  );
+  const held = useMemo(() => rows.find(r => r.isUserFill) ?? null, [rows]);
+  const mark = useMemo(
+    () => (held ? unrealized(action, held.premium, held.quotedPremium, contracts) : null),
+    [held, action, contracts],
   );
   const best = useMemo(() => highestRoi(rows), [rows]);
   const dte = expiry ? daysToExpiry(expiry) : null;
@@ -132,10 +144,40 @@ export default function GainLossTable({
             <label style={LABEL}>Contracts</label>
             <NumberField value={contracts} onChange={onContractsChange} min={1} step={1} style={INPUT} />
           </div>
+          <div>
+            <label style={LABEL}>Your strike (optional)</label>
+            <NumberField value={fillStrike} onChange={onFillStrikeChange} min={0} step={0.5} style={INPUT}
+              aria-label="Strike you hold" />
+          </div>
+          <div>
+            <label style={LABEL}>Your fill price</label>
+            <NumberField value={fillPremium} onChange={onFillPremiumChange} min={0} step={0.05} style={INPUT}
+              aria-label="Premium you paid or received" />
+          </div>
           <div style={{ alignSelf: 'end', fontSize: 11, color: '#64748b' }}>
             {dte != null && <>{dte}d to expiry</>}
           </div>
         </div>
+
+        {held && mark && (
+          <div style={{
+            background: 'rgba(56,189,248,0.07)', border: '1px solid rgba(56,189,248,0.25)',
+            borderRadius: 6, padding: '10px 12px', marginBottom: 12, fontSize: 12, lineHeight: 1.7,
+          }}>
+            <strong style={{ color: '#38bdf8' }}>Your position.</strong>{' '}
+            {contracts} × ${held.strike} {right} @ ${held.premium.toFixed(2)} = {money(mark.cost)}
+            {' · '}now marked {money(mark.markValue)} (${held.quotedPremium.toFixed(2)} mid)
+            {' · '}
+            <strong style={{ color: tone(mark.pnl) }}>
+              {mark.pnl >= 0 ? '+' : ''}{money(mark.pnl)} ({pct(mark.pnlPct)})
+            </strong>
+            <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
+              Marked at the midpoint, which is not a fill — closing crosses the spread, so you
+              would realise less than this. Your row below is priced from what you paid, so its
+              breakeven and return are yours; every other row is the current market quote.
+            </div>
+          </div>
+        )}
 
         {loading && <div style={{ fontSize: 12, color: '#64748b' }}>Loading chain…</div>}
 
@@ -172,9 +214,13 @@ export default function GainLossTable({
                         borderTop: '1px solid #1e293b',
                         // The highest-return row wins the highlight over the ATM tint — it is the
                         // one the reader asked to have picked out.
-                        background: isBest ? 'rgba(74,222,128,0.09)'
+                        // The user's own position outranks both the top-return and ATM tints:
+                        // it is the row they came to the table to find.
+                        background: r.isUserFill ? 'rgba(56,189,248,0.12)'
+                          : isBest ? 'rgba(74,222,128,0.09)'
                           : atm ? 'rgba(56,189,248,0.06)' : undefined,
-                        boxShadow: isBest ? 'inset 2px 0 0 #4ade80' : undefined,
+                        boxShadow: r.isUserFill ? 'inset 2px 0 0 #38bdf8'
+                          : isBest ? 'inset 2px 0 0 #4ade80' : undefined,
                       }}>
                         <td style={td('left', '#e2e8f0')}>
                           ${r.strike}
@@ -183,6 +229,15 @@ export default function GainLossTable({
                             color: r.moneyness === 'ITM' ? '#4ade80' : atm ? '#38bdf8' : '#64748b',
                             border: `1px solid ${r.moneyness === 'ITM' ? 'rgba(74,222,128,0.3)' : atm ? 'rgba(56,189,248,0.3)' : '#334155'}`,
                           }}>{r.moneyness}</span>
+                          {r.isUserFill && (
+                            <span title={`Priced from your fill of $${r.premium.toFixed(2)}, not the current $${r.quotedPremium.toFixed(2)} midpoint.`}
+                              style={{
+                                fontSize: 9, marginLeft: 6, padding: '1px 5px', borderRadius: 3,
+                                fontWeight: 700, cursor: 'help',
+                                color: '#38bdf8', border: '1px solid rgba(56,189,248,0.4)',
+                                background: 'rgba(56,189,248,0.15)',
+                              }}>YOUR FILL</span>
+                          )}
                           {isBest && (
                             <span title="Highest return at the price you entered — arithmetic at one assumed price, not a recommendation."
                               style={{
@@ -202,6 +257,11 @@ export default function GainLossTable({
                             ? 'One-sided quote — this is the last traded price, not a midpoint.'
                             : r.spreadPct != null ? `Bid/ask spread ${r.spreadPct}% of the mid` : undefined}>
                           ${r.premium.toFixed(2)}
+                          {r.isUserFill && (
+                            <span style={{ fontSize: 10, color: '#64748b', marginLeft: 5 }}>
+                              (mkt ${r.quotedPremium.toFixed(2)})
+                            </span>
+                          )}
                           {r.premiumSource === 'last' && <span style={{ color: '#f59e0b' }}>*</span>}
                           {r.spreadPct != null && r.spreadPct >= 25 && (
                             <span title={`Wide spread: ${r.spreadPct}% of the mid`}

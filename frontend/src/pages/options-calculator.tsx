@@ -120,6 +120,10 @@ export default function OptionsCalculator() {
   const [tableRight, setTableRight] = useState<OptionRight>('call');
   const [targetPrice, setTargetPrice] = useState<number>(0);
   const [tableContracts, setTableContracts] = useState(1);
+  // T412-USERFILL: an optional position the user already holds, so the table can price their
+  // strike from what they actually paid rather than from today's quote.
+  const [fillStrike, setFillStrike] = useState(0);
+  const [fillPremium, setFillPremium] = useState(0);
 
   const { data: chain, isLoading: chainLoading } = useSWR(
     symbol ? `calc-chain-${symbol}-${expiry ?? 'nearest'}` : null,
@@ -350,6 +354,10 @@ export default function OptionsCalculator() {
           onTargetChange={setTargetPrice}
           contracts={tableContracts}
           onContractsChange={setTableContracts}
+          fillStrike={fillStrike}
+          onFillStrikeChange={setFillStrike}
+          fillPremium={fillPremium}
+          onFillPremiumChange={setFillPremium}
         />
       </div>
     </>

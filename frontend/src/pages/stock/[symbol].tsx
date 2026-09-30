@@ -803,6 +803,9 @@ export default function StockDetail() {
   // poll, which reads as the box "not accepting" input.
   const [glSpot, setGlSpot] = useState<number>(0);
   const [glSpotEdited, setGlSpotEdited] = useState(false);
+  // T412-USERFILL: a position the user already holds on this symbol.
+  const [glFillStrike, setGlFillStrike] = useState(0);
+  const [glFillPremium, setGlFillPremium] = useState(0);
   const [glContracts, setGlContracts] = useState(1);
 
   const { data: glChain, isLoading: glLoading } = useSWR(
@@ -1495,6 +1498,10 @@ Return ONLY valid JSON — no markdown, no prose:
               onTargetChange={setGlTarget}
               contracts={glContracts}
               onContractsChange={setGlContracts}
+              fillStrike={glFillStrike}
+              onFillStrikeChange={setGlFillStrike}
+              fillPremium={glFillPremium}
+              onFillPremiumChange={setGlFillPremium}
             />
           );
         })()}

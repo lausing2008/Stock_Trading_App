@@ -1660,6 +1660,40 @@ One weak test of mine was caught in this round's sabotage run: the breakeven-mov
 fixture where spot equalled the strike, so measuring from either gave the same answer and a
 deliberate break walked straight through it. Rewritten with spot ≠ strike.
 
+### T412-USERFILL — pricing a row from what you actually paid
+
+**Reported:** *"Today, I bought a MUU 32 call buy filled at 6.6 expired on 10/16 but I don't see in
+the table."*
+
+The $32 strike **was** in the table. What was missing was their cost basis: every row prices from
+the current quoted midpoint, so a holder cannot find their own trade in it. Verified against the
+real chain — MUU 2026-10-16, $32 call, bid 7.00 / ask 8.30, **mid 7.65** against the **6.60** they
+paid. Every figure on that row — cost, breakeven, P&L, return — was about a hypothetical new entry
+at today's price, not about their position.
+
+Two optional inputs (**Your strike**, **Your fill price**) now override that one strike's premium.
+With them set, the row is computed from what was actually paid, badged `YOUR FILL`, and outranks
+both the top-return and ATM highlights — it is the row they came to the table to find. The market
+quote is kept beside it (`(mkt $7.65)`) rather than silently replaced, and every other row stays on
+the market price.
+
+A **position banner** above the table answers the question the rest of the table cannot, because
+everything else here is an at-expiry calculation and this one is about today:
+
+```
+Your position. 1 × $32 call @ $6.60 = $660 · now marked $765 ($7.65 mid) · +$105 (+15.9%)
+```
+
+Marked at the midpoint, which is **not a fill** — closing crosses the spread, so the realised
+figure is lower for a long and higher to buy back for a short. Stated on the banner rather than
+left implicit. `unrealized()` inverts for a short, which gains when the mark falls.
+
+The difference the override makes, on the real numbers: breakeven **$38.60** instead of $39.65, and
+at a $40 target **+$140 / +21.2%** instead of +$35 / +4.6%.
+
+`nearestStrikes()` never trims the filled row away, however far from the money it sits — a
+distance-based window would reintroduce the exact complaint this feature answers.
+
 ### Files and verification
 
 - `frontend/src/lib/numberField.ts` + `.test.ts` (22 tests)

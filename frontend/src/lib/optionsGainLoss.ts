@@ -51,13 +51,33 @@ export interface ChainQuote {
   iv: number;
 }
 
+/** A position the user actually holds, entered by hand.
+ *
+ * T412-USERFILL. Reported: "Today, I bought a MUU 32 call buy filled at 6.6 expired on 10/16 but
+ * I don't see in the table." The strike WAS in the table — what was missing was their cost basis.
+ * Every row prices from the current quoted midpoint, so a holder cannot see their own trade in it:
+ * the 32 strike showed $7.65 (bid 7.00 / ask 8.30) against the $6.60 they paid.
+ *
+ * With a fill entered, that strike's row is computed from the price they actually paid, so its
+ * P&L, breakeven and return are theirs rather than a hypothetical new entry's.
+ */
+export interface UserFill {
+  strike: number;
+  /** Per-share premium actually paid or received. */
+  premium: number;
+}
+
 export interface GainLossRow {
   strike: number;
   action: OptionAction;
   right: OptionRight;
   /** NBBO midpoint, or last price when the quote is one-sided. */
   premium: number;
-  premiumSource: 'mid' | 'last';
+  premiumSource: 'mid' | 'last' | 'your fill';
+  /** The market's current midpoint, kept alongside when `premium` is the user's own fill, so the
+   * table can show both rather than silently replacing one with the other. */
+  quotedPremium: number;
+  isUserFill: boolean;
   /** Bid/ask spread as a percentage of the midpoint. null when there is no two-sided quote. */
   spreadPct: number | null;
   /** Negative when you pay (a debit), positive when you receive (a credit). */
@@ -175,13 +195,20 @@ export function buildGainLossRows(
   spot: number,
   targetPrice: number,
   contracts = 1,
+  fill?: UserFill | null,
 ): GainLossRow[] {
   const out: GainLossRow[] = [];
   for (const q of quotes) {
     const strike = Number(q.strike);
     if (!Number.isFinite(strike) || strike <= 0) continue;
-    const { premium, source, spreadPct } = premiumFor(q);
-    if (!(premium > 0)) continue;
+    const quoted = premiumFor(q);
+    if (!(quoted.premium > 0)) continue;
+
+    // A fill entered for THIS strike replaces the quote as the basis of every figure in the row.
+    const usesFill = Boolean(fill && fill.premium > 0 && Math.abs(fill.strike - strike) < 1e-9);
+    const premium = usesFill ? fill!.premium : quoted.premium;
+    const source: GainLossRow['premiumSource'] = usesFill ? 'your fill' : quoted.source;
+    const spreadPct = quoted.spreadPct;
 
     const grossPremium = premium * CONTRACT * contracts;
     const valueAtTarget = intrinsic(right, strike, targetPrice) * CONTRACT * contracts;
@@ -199,6 +226,8 @@ export function buildGainLossRows(
       right,
       premium,
       premiumSource: source,
+      quotedPremium: quoted.premium,
+      isUserFill: usesFill,
       spreadPct: spreadPct == null ? null : Number(spreadPct.toFixed(1)),
       cashFlow: sign * -grossPremium,
       capitalBasis: basis,
@@ -226,10 +255,16 @@ export function buildGainLossRows(
  */
 export function nearestStrikes(rows: GainLossRow[], spot: number, count = 12): GainLossRow[] {
   if (rows.length <= count) return rows;
-  return [...rows]
+  // The user's own position is never trimmed away, however far from the money it sits. A holder
+  // looking for their trade and not finding it is the exact complaint this feature answers, and
+  // a distance-based window would reintroduce it for anything deep ITM or far OTM.
+  const kept = [...rows]
     .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot))
-    .slice(0, count)
-    .sort((a, b) => a.strike - b.strike);
+    .slice(0, count);
+  for (const r of rows) {
+    if (r.isUserFill && !kept.some(k => k.strike === r.strike)) kept.push(r);
+  }
+  return kept.sort((a, b) => a.strike - b.strike);
 }
 
 /** The strike with the highest ROI at the target price, or null when nothing profits.
@@ -243,6 +278,31 @@ export function highestRoi(rows: GainLossRow[]): GainLossRow | null {
   const profitable = rows.filter(r => r.netPL > 0);
   if (!profitable.length) return null;
   return profitable.reduce((best, r) => (r.roiPct > best.roiPct ? r : best));
+}
+
+/** What a held position is worth RIGHT NOW, marked at the current quoted midpoint.
+ *
+ * Separate from every other figure in this module, which is an at-EXPIRY calculation. This one
+ * answers the different question a holder actually has — "I paid X, where am I today?" — and it
+ * is the only place in the table that speaks about the present.
+ *
+ * Marked at the midpoint, which is not a fill: closing crosses the spread, so a long position
+ * realises less than this and a short costs more to buy back. The caller is expected to say so.
+ */
+export function unrealized(
+  action: OptionAction, fillPremium: number, quotedPremium: number, contracts: number,
+): { cost: number; markValue: number; pnl: number; pnlPct: number } | null {
+  if (!(fillPremium > 0) || !(quotedPremium > 0) || !(contracts > 0)) return null;
+  const cost = fillPremium * CONTRACT * contracts;
+  const markValue = quotedPremium * CONTRACT * contracts;
+  // A buyer gains when the mark rises; a seller gains when it falls.
+  const pnl = (action === 'buy' ? 1 : -1) * (markValue - cost);
+  return {
+    cost,
+    markValue,
+    pnl: Number(pnl.toFixed(2)),
+    pnlPct: Number(((pnl / cost) * 100).toFixed(1)),
+  };
 }
 
 /** Days from today to an ISO expiry date, in whole calendar days.

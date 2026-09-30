@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   premiumFor, intrinsic, moneynessOf, capitalFor, maxLossFor, breakevenFor,
-  buildGainLossRows, nearestStrikes, highestRoi, daysToExpiry,
+  buildGainLossRows, nearestStrikes, highestRoi, daysToExpiry, unrealized,
 } from './optionsGainLoss';
 import type { ChainQuote } from './optionsGainLoss';
 
@@ -342,6 +342,130 @@ describe('breakevenFor', () => {
   it('leaves the move percentage null when there is no spot to measure from', () => {
     const row = buildGainLossRows([q(100, 4.9, 5.1)], 'buy', 'call', 0, 120)[0];
     expect(row.breakevenMovePct).toBeNull();
+  });
+});
+
+// ── T412-USERFILL: the reported case, with its real numbers ─────────────────────────────────
+
+describe('a position the user actually holds', () => {
+  // MUU 2026-10-16 calls, as really quoted: the 32 strike was bid 7.00 / ask 8.30, mid 7.65.
+  // The user filled at 6.60 and could not find their trade, because every row priced from the
+  // quote. The strike WAS there; their cost basis was not.
+  const muu = [q(31, 7.7, 9.0), q(32, 7.0, 8.3), q(33, 6.4, 7.7), q(34, 5.8, 7.1)];
+  const fill = { strike: 32, premium: 6.6 };
+
+  it('prices the filled strike from what was actually paid', () => {
+    const row = buildGainLossRows(muu, 'buy', 'call', 36, 40, 1, fill).find(r => r.strike === 32)!;
+    expect(row.premium).toBe(6.6);
+    expect(row.capitalBasis).toBe(660);
+    expect(row.isUserFill).toBe(true);
+    expect(row.premiumSource).toBe('your fill');
+  });
+
+  it('keeps the market quote alongside rather than replacing it silently', () => {
+    const row = buildGainLossRows(muu, 'buy', 'call', 36, 40, 1, fill).find(r => r.strike === 32)!;
+    expect(row.quotedPremium).toBe(7.65);
+  });
+
+  it('recomputes P&L, breakeven and return from the real basis', () => {
+    const row = buildGainLossRows(muu, 'buy', 'call', 36, 40, 1, fill).find(r => r.strike === 32)!;
+    // At $40 the 32 call is worth $800. Paid $660 -> +$140, +21.2%. Breakeven 32 + 6.60 = 38.60,
+    // NOT the 39.65 the quoted 7.65 would give.
+    expect(row.valueAtTarget).toBe(800);
+    expect(row.netPL).toBe(140);
+    expect(row.roiPct).toBe(21.2);
+    expect(row.breakeven).toBe(38.6);
+  });
+
+  it('differs from the quoted row, which is the whole point', () => {
+    const quoted = buildGainLossRows(muu, 'buy', 'call', 36, 40, 1)[1];
+    const filled = buildGainLossRows(muu, 'buy', 'call', 36, 40, 1, fill).find(r => r.strike === 32)!;
+    expect(quoted.strike).toBe(32);
+    expect(quoted.premium).toBe(7.65);
+    expect(quoted.netPL).toBe(35);
+    expect(filled.netPL).toBe(140);
+  });
+
+  it('leaves every other strike on the market quote', () => {
+    const rows = buildGainLossRows(muu, 'buy', 'call', 36, 40, 1, fill);
+    for (const r of rows.filter(r => r.strike !== 32)) {
+      expect(r.isUserFill).toBe(false);
+      expect(r.premium).toBe(r.quotedPremium);
+    }
+  });
+
+  it('ignores a fill for a strike that is not quoted', () => {
+    const rows = buildGainLossRows(muu, 'buy', 'call', 36, 40, 1, { strike: 99, premium: 1 });
+    expect(rows.some(r => r.isUserFill)).toBe(false);
+  });
+
+  it('ignores a zero or negative fill price', () => {
+    for (const bad of [0, -1]) {
+      const rows = buildGainLossRows(muu, 'buy', 'call', 36, 40, 1, { strike: 32, premium: bad });
+      expect(rows.find(r => r.strike === 32)!.isUserFill).toBe(false);
+    }
+  });
+
+  it('scales with contract count', () => {
+    const row = buildGainLossRows(muu, 'buy', 'call', 36, 40, 3, fill).find(r => r.strike === 32)!;
+    expect(row.capitalBasis).toBe(1980);
+    expect(row.netPL).toBe(420);
+    expect(row.roiPct).toBe(21.2);
+  });
+});
+
+describe('nearestStrikes keeps the user position', () => {
+  const many = Array.from({ length: 40 }, (_, i) => q(20 + i, 1, 1.2));
+
+  it('never trims away the filled row, however far from the money', () => {
+    // A holder looking for their trade and not finding it is the exact complaint this answers.
+    const rows = buildGainLossRows(many, 'buy', 'call', 40, 45, 1, { strike: 21, premium: 5 });
+    const kept = nearestStrikes(rows, 40, 6);
+    expect(kept.some(r => r.strike === 21 && r.isUserFill)).toBe(true);
+  });
+
+  it('still returns ascending strikes with the extra row spliced in', () => {
+    const rows = buildGainLossRows(many, 'buy', 'call', 40, 45, 1, { strike: 21, premium: 5 });
+    const kept = nearestStrikes(rows, 40, 6).map(r => r.strike);
+    expect(kept).toEqual([...kept].sort((a, b) => a - b));
+  });
+
+  it('does not duplicate the row when it was already inside the window', () => {
+    const rows = buildGainLossRows(many, 'buy', 'call', 40, 45, 1, { strike: 40, premium: 5 });
+    const kept = nearestStrikes(rows, 40, 6);
+    expect(kept.filter(r => r.strike === 40)).toHaveLength(1);
+  });
+});
+
+describe('unrealized — where the position stands today', () => {
+  it('marks a long position up when the quote has risen above the fill', () => {
+    // The reported trade: paid 6.60, now marked 7.65.
+    const u = unrealized('buy', 6.6, 7.65, 1)!;
+    expect(u.cost).toBe(660);
+    expect(u.markValue).toBe(765);
+    expect(u.pnl).toBe(105);
+    expect(u.pnlPct).toBe(15.9);
+  });
+
+  it('marks a long position down when the quote has fallen', () => {
+    const u = unrealized('buy', 7.65, 6.6, 1)!;
+    expect(u.pnl).toBe(-105);
+  });
+
+  it('INVERTS for a short, which gains when the mark falls', () => {
+    const u = unrealized('sell', 6.6, 5.0, 1)!;
+    expect(u.pnl).toBeGreaterThan(0);
+    expect(unrealized('sell', 6.6, 8.0, 1)!.pnl).toBeLessThan(0);
+  });
+
+  it('scales with contract count', () => {
+    expect(unrealized('buy', 6.6, 7.65, 4)!.pnl).toBe(420);
+  });
+
+  it('returns null rather than a number when there is nothing to mark against', () => {
+    expect(unrealized('buy', 0, 7.65, 1)).toBeNull();
+    expect(unrealized('buy', 6.6, 0, 1)).toBeNull();
+    expect(unrealized('buy', 6.6, 7.65, 0)).toBeNull();
   });
 });
 
