@@ -62,7 +62,10 @@ def test_guard_returns_the_same_false_minus99_shape_as_every_other_reject():
     """_should_enter()'s own established contract: (False, -99, [reason]) for a hard reject —
     must match every sibling guard (R:R, earnings, gap-chase) exactly."""
     fn = _should_enter_fn()
-    idx = fn.index("_roc10_paper = reasons.get")
+    # AUD-ANTICHASE-FUNNEL widened this: the window was a fixed 400 characters from the
+    # assignment, so adding an explanatory comment above the branch pushed the code out of view
+    # and failed a test about the branch. Anchor on the `if` itself instead of counting bytes.
+    idx = fn.index("if _roc10_paper is not None and")
     block = fn[idx:idx + 400]
     assert "return False, -99, [" in block
     assert "chasing an extended move" in block
@@ -79,7 +82,7 @@ def test_guard_fails_open_when_roc_10_is_absent():
     """Older/degraded reasons payloads without roc_10 must not be blocked by a value that
     isn't there — matches the email-alert sibling's own fail-open contract exactly."""
     fn = _should_enter_fn()
-    idx = fn.index("_roc10_paper = reasons.get")
+    idx = fn.index("if _roc10_paper is not None and")
     block = fn[idx:idx + 200]
     assert "if _roc10_paper is not None and" in block
 

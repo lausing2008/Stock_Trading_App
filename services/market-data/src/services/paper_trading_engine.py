@@ -2238,6 +2238,7 @@ def _should_enter(
     max_open_corr: float | None = None,
     as_of: datetime | None = None,
     recent_win_rate: float | None = None,
+    telemetry: dict | None = None,
 ) -> tuple[bool, int, list[str]]:
     """Score current conditions to decide if NOW is a good time to enter.
 
@@ -2394,7 +2395,21 @@ def _should_enter(
     # subset of the population the original analysis was run against, not an independent
     # population that would justify its own separately-fitted cutoff.
     _roc10_paper = reasons.get("roc_10")
+    # AUD-ANTICHASE-FUNNEL: record that a candidate REACHED this gate, separately from whether it
+    # was rejected here, and separately again from whether that rejection actually controlled the
+    # entry. `_should_enter()` cannot know the last of those — when the decision engine is
+    # authoritative this whole function is a shadow comparison — so it only reports what it saw
+    # and the caller, which knows `gate_source`, decides what was authoritative.
+    #
+    # Deliberately an optional out-parameter rather than a wider return tuple: this function has
+    # several callers (including historical replay) and changing its arity to carry diagnostics
+    # would be a breaking change for a measurement.
+    if telemetry is not None and _roc10_paper is not None:
+        telemetry["reached_anti_chase"] = True
+        telemetry["roc_10"] = float(_roc10_paper)
     if _roc10_paper is not None and float(_roc10_paper) >= _MAX_ROC10_FOR_ENTRY_PAPER:
+        if telemetry is not None:
+            telemetry["anti_chase_rejected"] = True
         return False, -99, [
             f"Already ran {float(_roc10_paper):.1f}% in 10 days (limit "
             f"{_MAX_ROC10_FOR_ENTRY_PAPER:.0f}%) — chasing an extended move, not entering early"
@@ -7024,9 +7039,11 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         _max_corr = _max_correlation_with_open_positions(
             session, stock.id, _open_stock_ids, _open_closes_cache,
         )
+        _ac_telemetry: dict = {}
         se_result = _should_enter(
             session, stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
             kscore=kscore_f, max_open_corr=_max_corr, recent_win_rate=_recent_wr,
+            telemetry=_ac_telemetry,
         )
 
         # AUD-ENTRY-SIZEEXCESS-STALEMINSCORE: bind before the branches. Both assignments below
@@ -7065,6 +7082,40 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                     de_min_score if de_min_score is not None else cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]),
                     de_blocked,
                 )
+
+        # AUD-ANTICHASE-FUNNEL: three counters, and the distinction between them is the point.
+        #
+        #   reached                — candidates that got as far as the anti-chase gate at all.
+        #                            Far fewer than "BUY signals": watchlist, conviction and
+        #                            every earlier gate have already run. This is why a 30.1%
+        #                            share of BUY signals carrying roc_10 >= 10 is NOT comparable
+        #                            to a predicted ~17% incremental block rate.
+        #   rejected               — the gate said no. Says nothing about what controlled entry.
+        #   authoritative rejected — the gate said no AND `_should_enter()`'s verdict is what
+        #                            actually decided. When the decision engine is primary and
+        #                            reachable, gate_source == "de" and this function's verdict
+        #                            was a shadow comparison: counting it would record a block
+        #                            that never happened.
+        #
+        # Broken out by decision source so the denominator is always visible. This answers the
+        # narrow operational question — what share of entries this gate really stopped — and
+        # nothing more. It does NOT establish incremental lost trades or profitability, which
+        # needs the counterfactual outcomes of vetoed candidates.
+        if _ac_telemetry.get("reached_anti_chase"):
+            _skip_tally["anti_chase_reached"] = _skip_tally.get("anti_chase_reached", 0) + 1
+            _skip_tally[f"anti_chase_reached_via_{gate_source}"] = (
+                _skip_tally.get(f"anti_chase_reached_via_{gate_source}", 0) + 1)
+        if _ac_telemetry.get("anti_chase_rejected"):
+            _skip_tally["anti_chase_rejected"] = _skip_tally.get("anti_chase_rejected", 0) + 1
+            if gate_source in ("fallback", "legacy"):
+                _skip_tally["anti_chase_rejected_authoritative"] = (
+                    _skip_tally.get("anti_chase_rejected_authoritative", 0) + 1)
+                log.info("paper.anti_chase_block", symbol=stock.symbol,
+                         roc_10=_ac_telemetry.get("roc_10"), decision_source=gate_source,
+                         note="anti-chase rejection controlled this entry")
+            else:
+                _skip_tally["anti_chase_rejected_shadow_only"] = (
+                    _skip_tally.get("anti_chase_rejected_shadow_only", 0) + 1)
 
         if not should_enter:
             log.info("paper.entry_skipped",
