@@ -67,8 +67,28 @@ statement can no longer touch a post-fix pending row.
 
 The review also asked that legacy uncertainty stay distinguishable from delivery evidence. It is,
 without a schema change: the closeout sets `last_sent_at = triggered_at` **exactly**, and a real
-send stamps strictly later. That equality identifies the closed-out set precisely, and the fix
-records it rather than leaving it to be rediscovered.
+price-alert send stamps strictly later.
+
+**CORRECTED 2026-09-29** by the [EC closure verification](2026-09-29-ec-closure-verification.md).
+This paragraph originally claimed that equality "identifies the closed-out set precisely", with no
+qualifier. That is wrong as stated. `check_technical_alerts` stamps a RECURRING technical alert's
+`last_sent_at` and `triggered_at` to the same `fire_time` **before** delivery
+(`scheduler.py`, the `if alert.recurring:` branch), so equality alone is not a legacy marker.
+
+Measured on production the same day:
+
+| rows where `last_sent_at = triggered_at` | count |
+|---|---|
+| ...and `triggered IS TRUE` — the legacy closeout set | 60 |
+| ...and `triggered IS FALSE` — a recurring technical fire | **1** |
+| any triggered state | 61 |
+
+So the marker is `triggered IS TRUE AND last_sent_at = triggered_at`, and an unqualified equality
+query already over-counts by one row today — a number that grows every time a recurring technical
+alert fires. Even qualified, it is a **migration convention, not a delivery-state model**: it says
+which rows this migration touched, and nothing about whether any of them was delivered. A non-null
+timestamp is likewise not universal proof of delivery on every path. Explicit per-event delivery
+provenance remains part of the outbox work, listed as still open below.
 
 ### What the review asked for that I did not build
 
