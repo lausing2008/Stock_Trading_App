@@ -9,6 +9,45 @@ what is now judgeable, not to re-engineer anything — see the
 
 ---
 
+## ⚠ CORRECTED 2026-09-30 — three of the headline findings below do not survive review
+
+An independent production verification ([broad](2026-09-29-production-checkpoint-verification.md),
+[September-only](2026-09-29-september-only-production-verification.md)) and an
+[improvement plan](2026-09-29-deferred-checkpoint-review-and-improvement-plan.md) re-ran these
+measurements against the *actual production consumers*. **The decisions below all stand. The
+reasoning for three of them was wrong, and one was backwards.**
+
+| § | What I concluded | What the verification found |
+|---|---|---|
+| 1 | Confidence "barely discriminates — flat 36.5–43.9%" | **A pooling artifact.** My query had no market/horizon/direction split, used `is_correct_5d` rather than the consumer's primary outcome, 10-point buckets rather than `_CONF_BANDS`, and no 180-day window. Sliced the way production slices: 76 slices, 59 with n≥30, and wide dispersion — LONG/US 0–40 **53.0%** vs LONG/US 85+ **35.9%**; GROWTH/HK 85+ **13.8%**; SWING/HK 55–70 **16.5%**. Range is **7.4pp**, not "about 5". |
+| 2 | Bearish flow "anti-predictive, 29.1% vs 55.2% — opposite in quality" | **Not robust.** ~1,000 rows are not ~1,000 bets: outcomes dedupe per option chain, so many contracts reuse one stock return. Weighting each symbol/fire-date equally **reverses the 5d gap** — bullish 42.3%, bearish **47.1%**. 116 symbol/date groups carry *both* labels. Matched SPY excess is nearly identical (+1.85 vs +1.84 pp). And the production consumer gates on **10d**, not 5d. |
+| 3 | GEX: "corroborated +0.88% vs uncorroborated −1.53%" | **Backwards.** I pooled raw returns across bullish `gamma_unwind_calls` and bearish `gamma_unwind_puts`; production scores puts as a *bearish* thesis, so raw return means the opposite for half the rows. Thesis-signed: corroborated **−1.87%** vs uncorroborated **+2.28%**. |
+| 4 | Dark pool: "~17% or ~45%, denominator unresolved" | Both understate it. Per **session**, alerting names / names with observed prints that session runs **81–88%** (Sep 23–29). My 78-symbol denominator was lifetime coverage, not daily. |
+
+Two further factual corrections to §1 below: the 10d mean **rounds to 0.0%**, so "negative at
+every horizon beyond 3d" is not established; and RGTI is +0.43%, so **POET is not the only positive
+name**. September-only, prebreakout is 36 events across 6 names with AI at **50%**.
+
+Also: September alone has **5** short-squeeze events, not 16 — the 16 spans earlier months and must
+not be quoted as September support. And the September confidence extract is **2,524** resolved
+rows, not 19,256; the upper bands nearly vanish (90–99: n=6).
+
+**One thing the corrections sharpen rather than overturn:** every pooled band sits *between* the
+policy's ±1 thresholds (≤35% / ≥55%), so on pooled data the adjustment would be a no-op. "Do not
+promote" holds — but "it adds noise" was never demonstrated, and the real slices are far from flat.
+
+**A new finding from following this up:** the anti-chase funnel in §8 is closer than I said.
+`paper_entry_scan_logs.skip_tally` already records 10 skip reasons over 32,316 September candidate
+checks (`not_on_watchlist` 39.2%, `conviction_gate` 16.5%, …). Anti-chase is simply **not one of
+them** — it returns early inside `_should_enter()` without writing a tally key. So the realised
+block rate is one `skip_tally` key away, not a new observability subsystem. It also confirms the
+30.1% figure is not comparable to the predicted 17%: anti-chase sits *after* the watchlist and
+conviction gates, so its exposed population is a fraction of all BUY signals.
+
+---
+
+---
+
 ## 1. Entry timing / prebreakout — MEASURABLE NOW, AND NOT ENCOURAGING
 
 The highest-value item. The prior reading was a 0% win rate on an effective sample of ~2–3,
