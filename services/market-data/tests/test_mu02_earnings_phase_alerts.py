@@ -32,9 +32,16 @@ _spec.loader.exec_module(ep)
 SCHED = (pathlib.Path(__file__).resolve().parents[1]
          / "src/services/scheduler.py").read_text()
 
-# The two REAL MU headlines production stored, verbatim from the review.
-MU_RESULT = "Micron Technology Q4 Adj EPS $3.42 Beats $1.45 Estimate, Sales $54.229B Beat $50.751B Estimate"
-MU_GUIDANCE = "Micron Technology Sees Q1 Adj EPS $7.15-$9.15 vs $5.07 Est, Sees Sales $60.000B-$63.000B vs $56.553B Est"
+# FIXTURES, reconstructed from the article URL slugs the review captured — NOT verbatim headline
+# text. An earlier version of this file called them "verbatim" and had the figures wrong (3.42 /
+# 1.45 instead of 33.42 / 31.45), which the reviewer caught. The numbers below now match the
+# captured slugs, but the wording is still a reconstruction: these fixtures exist to pin
+# CLASSIFICATION, and classification depends on the verbs and the Q<n>/EPS/estimate shape, not on
+# the figures. Nothing here should be quoted as a captured headline.
+MU_RESULT = ("Micron Technology Q4 Adj EPS $33.42 Beats $31.45 Estimate, "
+             "Sales $54.229B Beat $50.751B Estimate")
+MU_GUIDANCE = ("Micron Technology Sees Q1 Adj EPS $37.15-$39.15 vs $35.07 Est, "
+               "Sees Sales $60.000B-$63.000B vs $56.553B Est")
 MU_PREVIEW = "Micron Earnings Ahead"
 
 
@@ -121,8 +128,11 @@ def test_the_preview_alert_says_nothing_has_been_reported():
 # ── the scheduler wiring ────────────────────────────────────────────────────────────────
 
 def test_the_dedup_key_includes_the_phase():
-    """THE FIX. Without the phase in the key, stages share one slot."""
-    assert 'f"stockai:early_earnings_news:{uid}:{sym}:{phase}:{today_str}"' in SCHED
+    """THE FIX. Without the phase in the key, stages share one slot.
+
+    The key also gained the EVENT date in the same round — see
+    test_dedup_identity_includes_the_EARNINGS_EVENT_not_the_calendar_day."""
+    assert 'f"stockai:early_earnings_news:{uid}:{sym}:{event_date}:{phase}"' in SCHED
 
 
 def test_the_job_iterates_every_earnings_headline_not_just_the_first():
@@ -140,8 +150,8 @@ def test_unnotifiable_phases_are_skipped_before_sending():
 def test_the_candidate_window_now_has_an_upper_bound():
     """The query said {yesterday, today} in its comment and enforced only the lower half, so a
     symbol reporting weeks ahead counted as pending."""
-    i = SCHED.index("still_pending = set(session.execute(")
-    block = SCHED[i - 700:i + 500]
+    i = SCHED.index("EarningsEvent.eps_actual.is_(None),")
+    block = SCHED[i - 900:i + 400]
     assert "EarningsEvent.report_date >= cutoff" in block
     assert "EarningsEvent.report_date <= _upper" in block
 
@@ -151,3 +161,88 @@ def test_the_plural_fetcher_returns_a_list_and_never_raises():
     block = SCHED[i:i + 1200]
     assert "-> list[str]" in block
     assert "return []" in block, "an unreachable news service must not break the alert cycle"
+
+
+# ── the reviewer's four pre-deployment checks ───────────────────────────────────────────
+
+def test_dedup_identity_includes_the_EARNINGS_EVENT_not_the_calendar_day():
+    """Check 1. A calendar-day key is wrong twice over for an after-hours US release: a 20:01 EDT
+    print is 00:01 UTC the NEXT day, so a retry minutes later lands on a different key and
+    re-sends a phase already delivered; and two adjacent-day events for one symbol would share a
+    key and suppress each other. The key is scoped to the event's own report date."""
+    assert 'f"stockai:early_earnings_news:{uid}:{sym}:{event_date}:{phase}"' in SCHED
+    assert "{today_str}" not in SCHED[SCHED.index("def _send_early_earnings_stage"):
+                                      SCHED.index("def _fetch_earnings_news_headlines")]
+
+
+def test_the_event_date_comes_from_the_earnings_row_not_from_todays_date():
+    i = SCHED.index("_event_date_by_symbol")
+    block = SCHED[i - 900:i + 900]
+    assert "EarningsEvent.report_date" in block
+    assert "_event_date_by_symbol[sym].isoformat()" in SCHED
+
+
+def test_an_after_hours_release_crossing_UTC_midnight_keeps_one_identity():
+    """Check 4, as arithmetic. 2026-09-30 20:01 EDT is 2026-10-01 00:01 UTC — two different
+    calendar days for the same release. Keying on the report date gives one identity for both."""
+    from datetime import datetime, timedelta, timezone
+    release_et = datetime(2026, 9, 30, 20, 1, tzinfo=timezone(timedelta(hours=-4)))
+    assert release_et.astimezone(timezone.utc).date().isoformat() == "2026-10-01"
+    assert release_et.date().isoformat() == "2026-09-30"
+    # The key uses the EarningsEvent.report_date, which is a single value for this release.
+    event_date = "2026-09-30"
+    before = f"stockai:early_earnings_news:7:MU:{event_date}:results"
+    after = f"stockai:early_earnings_news:7:MU:{event_date}:results"
+    assert before == after, "the same release must not produce two dedup identities"
+
+
+def test_the_ttl_outlives_the_utc_midnight_boundary():
+    """A 24h TTL keyed on the event could still expire mid-incident while retries continue. The
+    key is event-scoped, so a longer TTL cannot bleed into a different earnings event."""
+    i = SCHED.index("def _send_early_earnings_stage")
+    block = SCHED[i:i + 2500]
+    assert "_rc.setex(redis_key, 172800" in block
+
+
+def test_one_fetch_carrying_three_stages_handles_all_three():
+    """Check 2. MU published result and guidance three minutes apart, with transcript later. A
+    single fetch must produce a notification per stage regardless of the order they arrive in."""
+    for order in ([MU_RESULT, MU_GUIDANCE, "Micron Q4 Earnings Call Transcript"],
+                  ["Micron Q4 Earnings Call Transcript", MU_GUIDANCE, MU_RESULT],
+                  [MU_GUIDANCE, "Micron Q4 Earnings Call Transcript", MU_RESULT]):
+        phases = [ep.classify_earnings_phase(h) for h in order]
+        assert set(phases) == {ep.PHASE_RESULTS, ep.PHASE_GUIDANCE, ep.PHASE_CALL}
+        assert all(ep.phase_is_notifiable(p) for p in phases)
+        assert len(set(phases)) == 3, "ordering must not collapse two stages into one"
+
+
+def test_the_job_loops_every_headline_so_ordering_cannot_drop_a_stage():
+    i = SCHED.index("for _hl in _fetch_earnings_news_headlines(sym):")
+    block = SCHED[i:i + 700]
+    assert "break" not in block, "a break would stop at the first stage and drop the rest"
+
+
+def test_phase_state_advances_only_after_a_successful_send():
+    """Check 3. A transient failure must leave the phase retryable, not permanently suppressed.
+
+    Asserts there is NO marker write anywhere BEFORE the send — not merely that one exists after
+    it. An earlier version searched forward from `if sent_ok:` and therefore could not see a
+    second, earlier write; a sabotage that marked the phase before sending passed it."""
+    i = SCHED.index("def _send_early_earnings_stage")
+    block = SCHED[i:i + 2500]
+    send_idx = block.index("sent_ok = send_email(")
+    before_send = block[:send_idx]
+    assert "setex" not in before_send, \
+        "the dedup marker is written before the send — a failed send would suppress the phase"
+    ok_idx = block.index("if sent_ok:", send_idx)
+    setex_idx = block.index("_rc.setex(redis_key", ok_idx)
+    assert send_idx < ok_idx < setex_idx
+    assert block.count("_rc.setex(redis_key") == 1, "exactly one marker write"
+
+
+def test_a_failed_send_leaves_no_marker():
+    i = SCHED.index("def _send_early_earnings_stage")
+    block = SCHED[i:i + 2500]
+    fail_arm = block[block.index("except Exception as _send_exc:"):block.index("if sent_ok:")]
+    assert "setex" not in fail_arm
+    assert "sent_ok = False" in fail_arm

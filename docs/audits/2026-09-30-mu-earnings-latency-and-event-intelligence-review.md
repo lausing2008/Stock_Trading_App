@@ -110,18 +110,21 @@ deliberately left.
 
 ## MU-02 — implemented: phase-aware release stages
 
-`stockai:early_earnings_news:{user}:{symbol}:{day}` now carries the **release phase**:
-`…:{user}:{symbol}:{phase}:{day}`. A preview can no longer consume the slot the actual print
-needs. Deliberately *not* "one email per headline", which the review rejects — each stage still
+**CORRECTED after review — three overclaims below are withdrawn; see "Qualifications" at the end.**
+
+`stockai:early_earnings_news:{user}:{symbol}:{day}` now keys on the **earnings event and the
+release phase**: `…:{user}:{symbol}:{report_date}:{phase}`. A preview can no longer consume the
+slot the actual print needs, and an after-hours release that crosses UTC midnight keeps one
+identity across the boundary. Deliberately *not* "one email per headline", which the review rejects — each stage still
 dedups to one notification, so duplicate provider coverage of the same stage collapses.
 
 Phases, classified from headline text in the new `services/earnings_phase.py`:
 
-| Phase | The real MU headline it matches |
+| Phase | Fixture it matches (reconstructed from the captured URL slugs, **not** verbatim headlines) |
 |---|---|
 | `preview` | "Micron Earnings Ahead" |
-| `results` | "Micron Technology Q4 Adj EPS $3.42 Beats $1.45 Estimate…" |
-| `guidance` | "Micron Technology Sees Q1 Adj EPS $7.15-$9.15 vs $5.07 Est…" |
+| `results` | "Micron Technology Q4 Adj EPS $33.42 Beats $31.45 Estimate…" |
+| `guidance` | "Micron Technology Sees Q1 Adj EPS $37.15-$39.15 vs $35.07 Est…" |
 | `call` | "…Q4 Earnings Call Transcript" |
 | `other` | anything unrecognised — **does not notify** |
 
@@ -160,8 +163,10 @@ unresolved."* Measured read-only at **2026-10-01 00:04 UTC**:
 | MU row `fetched_at` | **2026-09-30 23:45:00** — the sync touched it 19 minutes earlier |
 | Provider `earnings_history`, latest row | period end **2026-08-31**, `epsActual` **33.42**, `epsEstimate` 31.818 |
 
-`33.42` is the figure in the Benzinga result headline. **The provider had the value, the sync ran,
-and the row was left NULL** — so this is an orchestration/mapping failure, not provider delay.
+`33.42` is the figure in the Benzinga result slug. **What this establishes is narrower than it
+first appears**, and the original wording here claimed too much — see the qualifications below.
+Observing `epsActual` at 00:04 does not prove it was present during the 23:45 sync, and
+`fetched_at` does not prove the history branch ran at all, let alone succeeded.
 
 The precise failing step is *not* established and is not guessed at here. The likeliest reading is
 that `fetched_at` was advanced by the calendar path (which writes pending rows with NULL actuals)
@@ -177,8 +182,44 @@ So the mapping outcome is now **recorded** rather than reconstructed. Two log li
   signature of this failure** and is now visible as such.
 
 That satisfies the P0 acceptance criterion — *capture the mapping outcome; explain NULL fields
-without guessing provider latency* — for the next occurrence. It does not retroactively explain
-this one beyond ruling latency out.
+without guessing provider latency* — for the **next** occurrence. **MU-01's root cause remains
+open** and is not resolved by this pass.
+
+## Qualifications — three claims withdrawn
+
+**1. The 17:27 preview is not established as the culprit.** The production probe at 23:28 found a
+marker whose remaining TTL implied creation near **00:00 UTC**, which *predates* the preview. The
+daily-key defect is established and is fixed; **which earlier headline consumed the slot is not**,
+and identifying it needs evidence this pass does not have. Text above that reads as though the
+preview caused it should be read as illustrating the mechanism, not as attribution.
+
+**2. "Not provider latency" is withdrawn as stated.** Seeing `epsActual=33.42` at 00:04 does not
+prove it was available at 23:45, and `fetched_at` advancing does not prove the history branch
+succeeded — the calendar path writes pending rows too. What is established: the row was touched 19
+minutes before the observation and left NULL. **MU-01 stays unresolved until an instrumented sync
+shows an available result either mapping or failing to map.**
+
+**3. The headline examples are fixtures, not captures.** They are reconstructed from the article
+URL slugs the review recorded. An earlier version called them verbatim *and had the figures wrong*
+(3.42 / 1.45 rather than 33.42 / 31.45). The numbers now match the slugs, but the wording is still
+a reconstruction; classification depends on the verbs and the `Q<n>`/EPS/estimate shape, not the
+figures. Nothing here should be quoted as a captured headline.
+
+## Pre-deployment checks — all four now covered by tests
+
+| Check | Status |
+|---|---|
+| Dedup identity includes the earnings event **and** phase | Key is `{uid}:{sym}:{report_date}:{phase}`, taken from `EarningsEvent.report_date`, never `date.today()` |
+| One fetch with results + guidance + transcript handles all phases regardless of order | Asserted across three orderings; the loop has no `break` |
+| Phase advances only on the intended send outcome | Asserted there is **no** marker write anywhere before the send, and exactly one after |
+| After-hours release crossing UTC midnight | 20:01 EDT = 00:01 UTC next day, one identity either side; TTL raised 24h → 48h so the marker outlives the boundary |
+
+One of those checks caught a weak test of mine: the ordering assertion searched *forward* from
+`if sent_ok:` and so could not see a second, earlier marker write — a sabotage that marked the
+phase before sending passed it. Now asserted as an absence.
+
+**Status: MU-02 implemented and tested, awaiting deployment verification. MU-01 instrumentation
+added, root cause still open. MU-03 and the larger delivery work pending.**
 
 ## Deliberately NOT built
 

@@ -162,7 +162,7 @@ def test_only_symbols_with_eps_actual_still_null_are_checked():
     assert "EarningsEvent.eps_actual.is_(None)" in body
 
 
-def test_dedup_key_is_scoped_per_user_symbol_PHASE_and_day():
+def test_dedup_key_is_scoped_per_user_symbol_EVENT_and_phase():
     """SUPERSEDED 2026-09-30 by MU-02. This required the key to be
     `{uid}:{sym}:{today_str}` — one notification per symbol per calendar day. That is exactly
     what suppressed MU's actual Q4 result: a "Micron Earnings Ahead" preview had already taken
@@ -172,7 +172,9 @@ def test_dedup_key_is_scoped_per_user_symbol_PHASE_and_day():
     The send loop also moved into `_send_early_earnings_stage()` so the dedup key is defined in
     one place rather than three levels deep inside the job."""
     body = _function_body("_send_early_earnings_stage")
-    assert 'redis_key = f"stockai:early_earnings_news:{uid}:{sym}:{phase}:{today_str}"' in body
+    # The key gained the EVENT date in the same round: a calendar day is the wrong identity for
+    # an after-hours release, which crosses UTC midnight between the print and the retry.
+    assert 'redis_key = f"stockai:early_earnings_news:{uid}:{sym}:{event_date}:{phase}"' in body
 
 
 def test_dedup_key_written_only_after_a_successful_send():
@@ -182,7 +184,10 @@ def test_dedup_key_written_only_after_a_successful_send():
     body = _function_body("_send_early_earnings_stage")  # MU-02: loop extracted
     send_idx = body.index("sent_ok = send_email(u_obj.email, subject, f\"<p>{body_text}</p>\", body_text)")
     if_ok_idx = body.index("if sent_ok:")
-    setex_idx = body.index('_rc and _rc.setex(redis_key, 86400, "1")')
+    # TTL 86400 -> 172800 in the MU-02 round: an after-hours release lands near UTC midnight and
+    # the marker must still be visible on the following session's retries. Anchored on the call
+    # rather than the literal TTL so a future TTL change does not fail an ordering test.
+    setex_idx = body.index("_rc.setex(redis_key")
     assert send_idx < if_ok_idx < setex_idx
 
 

@@ -2354,14 +2354,27 @@ def check_early_earnings_news_alerts() -> None:
             # ahead therefore qualified as "pending", so pre-release chatter could notify as if a
             # release were underway. Bounded to the window the code already claimed.
             _upper = date.today()
-            still_pending = set(session.execute(
-                select(Stock.symbol).join(EarningsEvent, EarningsEvent.stock_id == Stock.id).where(
+            # MU-02 follow-up: carry the EVENT IDENTITY, not just the symbol. The dedup key used
+            # the calendar day, which is wrong twice over for an after-hours US release: a 20:01
+            # EDT print is 00:01 UTC the NEXT day, so a retry minutes later lands on a different
+            # day key and re-sends the same phase; and two adjacent-day events for one symbol
+            # would share a key and suppress each other. Keying on the report period fixes both,
+            # and is stable across any timezone boundary because it is the event's own date.
+            _pending_rows = session.execute(
+                select(Stock.symbol, EarningsEvent.report_date)
+                .join(EarningsEvent, EarningsEvent.stock_id == Stock.id).where(
                     Stock.symbol.in_(all_symbols),
                     EarningsEvent.report_date >= cutoff,
                     EarningsEvent.report_date <= _upper,
                     EarningsEvent.eps_actual.is_(None),
                 )
-            ).scalars().all())
+            ).all()
+            # Most recent qualifying event per symbol.
+            _event_date_by_symbol: dict[str, date] = {}
+            for _sym_r, _rd in _pending_rows:
+                if _sym_r not in _event_date_by_symbol or _rd > _event_date_by_symbol[_sym_r]:
+                    _event_date_by_symbol[_sym_r] = _rd
+            still_pending = set(_event_date_by_symbol)
             if not still_pending:
                 _record_job_status("check_early_earnings_news_alerts", "ok", time.monotonic() - _t0)
                 return
@@ -2383,7 +2396,8 @@ def check_early_earnings_news_alerts() -> None:
                     body_text = phase_body(sym, phase, headline)
                     _send_early_earnings_stage(
                         session, sym, phase, headline, subject, body_text,
-                        user_symbols, users_by_id, _rc, today_str,
+                        user_symbols, users_by_id, _rc,
+                        _event_date_by_symbol[sym].isoformat(),
                     )
             _record_job_status("check_early_earnings_news_alerts", "ok", time.monotonic() - _t0)
     except Exception as exc:
@@ -2404,10 +2418,11 @@ def _send_early_earnings_stage(session, sym, phase, headline, subject, body_text
         u_obj = users_by_id.get(uid)
         if not u_obj or not u_obj.email:
             continue
-        # MU-02: the PHASE is part of the key. Same stage twice (duplicate provider
-        # coverage of one release) still collapses to one email; a different stage
-        # gets its own.
-        redis_key = f"stockai:early_earnings_news:{uid}:{sym}:{phase}:{today_str}"
+        # MU-02: the key is (recipient, symbol, EVENT, phase). The phase stops a preview
+        # consuming the result's slot; the event date — not the calendar day — stops an
+        # after-hours release that crosses UTC midnight from re-sending a phase it already
+        # delivered, and stops two adjacent-day events sharing one slot.
+        redis_key = f"stockai:early_earnings_news:{uid}:{sym}:{event_date}:{phase}"
         try:
             if _rc and _rc.exists(redis_key):
                 continue
@@ -2418,9 +2433,16 @@ def _send_early_earnings_stage(session, sym, phase, headline, subject, body_text
         except Exception as _send_exc:
             log.warning("signal_alert.early_earnings_news_send_error", symbol=sym, error=str(_send_exc))
             sent_ok = False
+        # MU-02: the marker advances ONLY on a successful send. A transient failure leaves the
+        # phase unmarked and therefore retryable, rather than permanently suppressing a stage
+        # nobody received — the AUD266-DEDUP-KEY-SET-BEFORE-SEND discipline this file already
+        # follows elsewhere.
         if sent_ok:
             try:
-                _rc and _rc.setex(redis_key, 86400, "1")  # 1-day TTL — one per user/symbol/day
+                # 48h, not 24: an after-hours release lands near UTC midnight, and the marker
+                # must still be visible on the following session's retries. The key is scoped to
+                # the EVENT date, so a longer TTL cannot bleed into a different earnings event.
+                _rc and _rc.setex(redis_key, 172800, "1")
             except Exception:
                 pass
             log.info("signal_alert.early_earnings_news_sent",
