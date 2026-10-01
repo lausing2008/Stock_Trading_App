@@ -85,6 +85,17 @@ def test_a_live_lease_is_not_stealable_but_an_expired_one_is_reclaimed(probe):
     assert lease["attempts"] == 2, "the reclaim must consume an attempt, not reset the count"
 
 
+def test_an_in_flight_row_is_not_claimable_without_the_quarantine_sweep(probe):
+    """Defence in depth, and it is load-bearing. A caller that claims directly — any worker, a
+    future job, the repl — must not be handed a row whose provider call may already have
+    succeeded. Making that depend on `quarantine_uncertain()` running first would make the
+    guarantee a matter of call order."""
+    f = probe["inflight_not_claimable"]
+    assert f["reclaimed"] == 0, "an in-flight row must never re-enter the claim path"
+    assert f["dispatch_started"] is True
+    assert f["quarantined"] == 1 and f["final_state"] == "unknown"
+
+
 # ── Ambiguous send outcome ────────────────────────────────────────────────────────────────────
 
 def test_a_timeout_after_possible_acceptance_claims_neither_success_nor_failure(probe):
@@ -109,26 +120,35 @@ def test_the_system_does_not_claim_exactly_once_delivery(probe):
 
 def test_preferences_are_rechecked_immediately_before_the_provider_call(probe):
     r = probe["presend_recheck"]
-    assert r["opted_out"] == [False, "recipient opted out"]
-    assert r["subscribed"] == [True, "subscribed"]
+    assert r["opted_out"] == ["suppress", "recipient opted out"]
+    assert r["subscribed"] == ["send", "subscribed"]
 
 
-def test_an_unchecked_preference_says_so_rather_than_implying_consent(probe):
-    assert probe["presend_recheck"]["unchecked"] == [True, "preference not checked"]
+def test_a_failed_preference_lookup_DEFERS_rather_than_sending(probe):
+    """CORRECTED 2026-10-01. The first version failed OPEN here, following this repo's
+    established alert-preference rule: absence of a preference means subscribed, and a lookup
+    error must not silently suppress every alert.
+
+    That rule was written when there was no durable queue, so the only options were "send
+    anyway" or "lose the alert", and sending was the lesser harm. The outbox removes the
+    dilemma: a deferred notification is retried when the preference source returns. Sending on
+    an unreadable preference is an unenforced opt-out — mail to someone who may have asked not
+    to receive it — and logging the error does not undo that."""
+    gate, reason = probe["presend_recheck"]["preference_error_defers"]
+    assert gate == "defer" and "redis down" in reason
 
 
-def test_a_failed_preference_lookup_fails_open_and_records_why(probe):
-    """Matches this repo's established alert-preference rule: absence of a preference is
-    subscribed, and a lookup error must not silently suppress every alert."""
-    ok, reason = probe["presend_recheck"]["preference_error_fails_open"]
-    assert ok is True and "redis down" in reason
+def test_an_unestablished_preference_is_not_treated_as_consent(probe):
+    """No preference source supplied, or a lookup that returns unknown. Neither is consent."""
+    assert probe["presend_recheck"]["unchecked"][0] == "defer"
+    assert probe["presend_recheck"]["preference_unknown_defers"][0] == "defer"
 
 
 def test_a_notification_that_goes_stale_while_queued_is_not_sent(probe):
     """Valid at enqueue, expired by the time the worker reaches the provider. The gap between
     the two is the whole point of an outbox and is long enough to matter."""
     assert probe["presend_recheck"]["expired_between_enqueue_and_send"] == \
-        [False, "expired before send"]
+        ["expire", "expired before send"]
 
 
 def test_expired_rows_are_terminal_auditable_and_never_attempted(probe):

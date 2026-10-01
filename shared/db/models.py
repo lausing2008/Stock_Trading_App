@@ -3255,6 +3255,30 @@ class NotificationOutbox(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     max_attempts: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
 
+    #: Deferrals are counted SEPARATELY from attempts. A deferral means nothing was sent — the
+    #: preference source was unreachable, so the opt-out state is unknown — and burning a send
+    #: attempt on it would let an hour of Redis downtime dead-letter every queued alert. Capped
+    #: so a permanently broken preference source cannot defer forever in silence.
+    defers: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_defers: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
+
+    #: Set and COMMITTED immediately before the provider call, cleared only by settling.
+    #: This is what makes the acceptance/crash gap detectable: a reclaimed row carrying a
+    #: dispatch timestamp from a previous attempt was in flight when its worker died, so the
+    #: provider may already have accepted it. Such a row is moved to `unknown` for
+    #: reconciliation, never blindly resent.
+    dispatch_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    #: Set when a human or a reconciliation job resolved an `unknown` outcome against external
+    #: evidence. Keeps "we found out what happened" distinct from "it completed normally".
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: WHO decided, WHAT the row was before, and WHAT evidence was cited. A reconciliation is a
+    #: manual override of the system's own record, so it is the one transition that must name an
+    #: accountable actor — "the state changed" is not an audit trail.
+    reconciled_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reconciled_from_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    reconciliation_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     #: Lease ownership. A claim is a compare-and-set on (state, lease_expires_at); a worker that
     #: dies mid-send leaves an expired lease that another worker may reclaim, rather than a row
     #: locked forever by a process that no longer exists.

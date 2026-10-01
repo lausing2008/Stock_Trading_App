@@ -60,6 +60,51 @@ jobs:
           path: "**/.pytest_cache"
           retention-days: 7
 
+  outbox-concurrency:
+    name: Outbox concurrency (PostgreSQL)
+    runs-on: ubuntu-latest
+
+    # REQUIRED, NOT OPTIONAL. The outbox's claim protocol is a compare-and-set under
+    # contention, and SQLite serialises writers — so the SQLite suite structurally cannot
+    # exercise simultaneous claims, racing settles, or transaction conflicts. Skipping locally
+    # is fine; a release must not pass without these having run. OUTBOX_PG_REQUIRED turns the
+    # skip into a failure, so a misconfigured service container cannot make this job pass green
+    # while testing nothing.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: probe
+          POSTGRES_DB: outboxprobe
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -q -r services/market-data/requirements.txt
+          pip install -q pytest psycopg2-binary
+
+      - name: Outbox concurrency and crash recovery
+        env:
+          OUTBOX_PG_URL: postgresql+psycopg2://postgres:probe@localhost:5432/outboxprobe
+          OUTBOX_PG_REQUIRED: "1"
+        run: |
+          cd services/market-data
+          python -m pytest tests/test_outbox_postgres_concurrency.py -q
+
   typecheck:
     name: Frontend typecheck + unit tests
     runs-on: ubuntu-latest

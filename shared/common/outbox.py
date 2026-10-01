@@ -18,6 +18,7 @@ upstream, in the code that sets `expires_at`.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 
 from sqlalchemy import and_, or_, update
 from sqlalchemy.exc import IntegrityError
@@ -141,7 +142,13 @@ def claim(session, *, owner: str, limit: int = 20,
     claimable = (
         NotificationOutbox.available_at <= now,
         or_(NotificationOutbox.state == PENDING,
+            # A lapsed lease is reclaimable ONLY if no dispatch was in flight. If
+            # `dispatch_started_at` is set, the worker reached the provider and never returned,
+            # so the send outcome is unknown and resending would risk a duplicate. Those rows
+            # belong to `quarantine_uncertain()`, not to the claim path — excluded here so the
+            # order the two run in cannot change the outcome.
             and_(NotificationOutbox.state == LEASED,
+                 NotificationOutbox.dispatch_started_at.is_(None),
                  NotificationOutbox.lease_expires_at.isnot(None),
                  NotificationOutbox.lease_expires_at <= now)),
     )
@@ -292,6 +299,15 @@ def expire_stale(session, *, now: datetime | None = None) -> int:
     return int(result.rowcount or 0)
 
 
+def mark_expired(session, row: NotificationOutbox, *, owner: str, reason: str,
+                 now: datetime | None = None) -> bool:
+    """Terminal-expire a LEASED row whose deadline passed while it was held."""
+    now = now or utcnow()
+    return _settle(session, row, owner, dict(
+        state=EXPIRED, terminal_at=now, terminal_reason=reason[:255],
+        lease_owner=None, lease_expires_at=None, dispatch_started_at=None), now)
+
+
 def suppress(session, row: NotificationOutbox, *, reason: str,
              now: datetime | None = None) -> None:
     """Withhold deliberately — an opt-out, a disabled alert type, a paused experiment.
@@ -319,33 +335,188 @@ def release(session, row: NotificationOutbox, *, owner: str,
         state=PENDING, lease_owner=None, lease_expires_at=None, available_at=now), now)
 
 
+class SendGate(str, Enum):
+    """What the pre-send recheck decided."""
+    SEND = "send"
+    SUPPRESS = "suppress"   # terminal: the recipient opted out
+    EXPIRE = "expire"       # terminal: too late to be worth sending
+    DEFER = "defer"         # TRANSIENT: we could not establish consent — try again later
+
+
 def may_send(row: NotificationOutbox, *, now: datetime | None = None,
-             is_subscribed=None) -> tuple[bool, str]:
+             is_subscribed=None) -> tuple[SendGate, str]:
     """Re-check, IMMEDIATELY BEFORE the provider call, that this should still go out.
 
     Conditions change between enqueue and send — that gap is the whole point of an outbox, and
     it is also long enough for an alert to go stale or a recipient to unsubscribe. Checking only
-    at enqueue would send alerts that were valid when queued and are not when delivered.
+    at enqueue would deliver alerts that were valid when queued and are not when sent.
 
-    `is_subscribed` is injected rather than imported so the preference source stays the caller's
-    concern. When it is None the preference check is SKIPPED and that is stated in the reason —
-    an unchecked preference must never read as a confirmed opt-in.
+    AN UNREADABLE PREFERENCE DEFERS. It does not send.
+
+    This repo's established alert-preference rule is fail-open: absence of a preference means
+    subscribed, and a lookup error must not silently suppress every alert. That rule was written
+    when there was no durable queue, so the only alternatives were "send anyway" or "lose the
+    alert" — and sending was the lesser harm. **The outbox removes that dilemma.** A deferred
+    notification is not lost; it is retried when the preference source returns. Sending on an
+    unreadable preference, by contrast, is an unenforced opt-out — it delivers mail to someone
+    who may have asked not to receive it, and no amount of logging undoes that.
+
+    So the fail-open rule still holds where a notification would otherwise be dropped, and does
+    not hold here. Deferral is counted separately from send attempts (see `defers`) so that an
+    outage of the preference source cannot dead-letter the backlog.
     """
     now = now or utcnow()
     if row.state != LEASED:
-        return False, f"not leased (state={row.state})"
+        return SendGate.DEFER, f"not leased (state={row.state})"
     if row.expires_at is not None and row.expires_at <= now:
-        return False, "expired before send"
+        return SendGate.EXPIRE, "expired before send"
     if is_subscribed is None:
-        return True, "preference not checked"
+        # Not "assume consent". The caller did not supply a preference source, so consent is
+        # unestablished, and unestablished consent is not consent.
+        return SendGate.DEFER, "no preference source supplied; consent unestablished"
     try:
         subscribed = is_subscribed(row)
     except Exception as exc:                      # noqa: BLE001
-        # Fail OPEN, matching this repo's established alert-preference rule: a preference
-        # lookup that errors must not silently suppress every alert. The reason records that
-        # the check did not actually succeed.
-        return True, f"preference check failed, sending anyway: {exc}"
-    return (True, "subscribed") if subscribed else (False, "recipient opted out")
+        return SendGate.DEFER, f"preference lookup failed, deferring: {exc}"
+    if subscribed is None:
+        return SendGate.DEFER, "preference lookup returned unknown"
+    return (SendGate.SEND, "subscribed") if subscribed else \
+        (SendGate.SUPPRESS, "recipient opted out")
+
+
+def defer(session, row: NotificationOutbox, *, owner: str, reason: str,
+          now: datetime | None = None) -> str | None:
+    """Put a notification back WITHOUT consuming a send attempt.
+
+    Refunds the attempt that `claim()` consumed, because nothing was sent — the alternative
+    would let an hour of preference-source downtime exhaust `max_attempts` and dead-letter a
+    backlog of perfectly deliverable alerts. Deferrals have their own cap so a permanently
+    broken preference source cannot defer forever in silence; exceeding it dead-letters with a
+    reason that names the real cause.
+    """
+    now = now or utcnow()
+    if row.defers + 1 >= row.max_defers:
+        values = dict(state=DEAD_LETTER, terminal_at=now, defers=NotificationOutbox.defers + 1,
+                      attempts=NotificationOutbox.attempts - 1,
+                      lease_owner=None, lease_expires_at=None, dispatch_started_at=None,
+                      last_error=reason[:512],
+                      terminal_reason=f"deferred {row.defers + 1} times without establishing "
+                                      f"consent: {reason}"[:255])
+        outcome = DEAD_LETTER
+    else:
+        values = dict(state=PENDING, defers=NotificationOutbox.defers + 1,
+                      attempts=NotificationOutbox.attempts - 1,
+                      lease_owner=None, lease_expires_at=None, dispatch_started_at=None,
+                      last_error=reason[:512],
+                      available_at=now + timedelta(seconds=backoff_seconds(row.defers + 1)))
+        outcome = PENDING
+    return outcome if _settle(session, row, owner, values, now) else None
+
+
+def begin_dispatch(session, row: NotificationOutbox, *, owner: str,
+                   now: datetime | None = None) -> bool:
+    """Record that a provider call is ABOUT to be made, and commit it.
+
+    THE ACCEPTANCE/CRASH GAP. If the process dies after the provider accepts a message but
+    before that fact is committed, nothing local distinguishes it from a crash that happened
+    before the call was made. Without this marker a reclaiming worker sees only "leased, lease
+    lapsed" and would resend — duplicating a message the recipient already has.
+
+    With it, the reclaiming worker can tell the two apart: a dispatch timestamp from a previous
+    attempt means the send was IN FLIGHT and its outcome is genuinely unknown. The caller must
+    commit after this returns, before touching the provider — an uncommitted marker records
+    nothing.
+    """
+    now = now or utcnow()
+    return _settle(session, row, owner,
+                   dict(dispatch_started_at=now,
+                        lease_expires_at=row.lease_expires_at), now)
+
+
+def quarantine_uncertain(session, *, now: datetime | None = None) -> int:
+    """Move in-flight rows whose worker died into `unknown`, instead of resending them.
+
+    A row is uncertain when its lease has lapsed while `dispatch_started_at` is set: the worker
+    reached the provider and never came back. Returns how many were quarantined. These land in
+    the review queue; nothing retries them automatically.
+    """
+    now = now or utcnow()
+    result = session.execute(
+        update(NotificationOutbox)
+        .where(NotificationOutbox.state == LEASED,
+               NotificationOutbox.dispatch_started_at.isnot(None),
+               NotificationOutbox.lease_expires_at.isnot(None),
+               NotificationOutbox.lease_expires_at <= now)
+        .values(state=UNKNOWN, terminal_at=now, lease_owner=None, lease_expires_at=None,
+                terminal_reason="worker died in flight; provider may have accepted")
+        .execution_options(synchronize_session=False))
+    return int(result.rowcount or 0)
+
+
+# ── Reconciliation and the review queue ───────────────────────────────────────────────────────
+
+def needs_review(session, *, limit: int = 100, now: datetime | None = None) -> list:
+    """Unresolved ambiguous outcomes, oldest first.
+
+    WHY THIS EXISTS. Never auto-retrying an `unknown` avoids duplicates, but on its own it
+    strands the notification forever: nobody is told, and the recipient simply never hears. The
+    absence of a retry is only defensible if something surfaces these for a decision.
+    """
+    return (session.query(NotificationOutbox)
+            .filter(NotificationOutbox.state == UNKNOWN,
+                    NotificationOutbox.reconciled_at.is_(None))
+            .order_by(NotificationOutbox.terminal_at)
+            .limit(limit).all())
+
+
+def reconcile_unknown(session, row: NotificationOutbox, *, resolution: str, evidence: str,
+                      actor: str, now: datetime | None = None) -> None:
+    """Resolve one ambiguous outcome against EXTERNAL evidence — a provider log, a bounce
+    record, a recipient confirming receipt.
+
+    `resolution` is `accepted` (it did go out) or `dead_letter` (it did not). Both are terminal.
+
+    AUDITABLE: actor, prior state, verdict and evidence are all recorded. This is the one
+    transition that is a human overriding the system's own record, so "the state changed" is not
+    an adequate trail — someone has to be accountable for the claim.
+
+    IDEMPOTENT AND NON-CONFLICTING: only an `unknown` row can be reconciled, so a second call —
+    whether repeating the same verdict or asserting a conflicting one — is REJECTED rather than
+    silently overwriting the first. The first decision and its evidence stand until someone
+    deliberately reopens the row.
+
+    NEVER RESENDS. There is no resolution that returns the row to `pending`. Reconciliation
+    records what happened to a message whose content may now be stale; re-queueing it would send
+    expired content under cover of an audit action.
+    """
+    if row.state != UNKNOWN:
+        raise ValueError(
+            f"only `unknown` rows are reconciled, not {row.state!r}. If this row was already "
+            f"reconciled (by {row.reconciled_by!r} at {row.reconciled_at}), that decision "
+            f"stands; reopening it is a separate, deliberate act.")
+    if resolution not in (ACCEPTED, DEAD_LETTER):
+        raise ValueError(
+            f"resolution must be {ACCEPTED!r} or {DEAD_LETTER!r}. There is deliberately no "
+            f"'retry' resolution: the content may be stale, and re-queueing it would resend "
+            f"expired content under an audit action.")
+    if not (evidence or "").strip():
+        raise ValueError("reconciliation requires evidence; a bare verdict is a guess")
+    if not (actor or "").strip():
+        raise ValueError("reconciliation requires an actor; an override needs someone "
+                         "accountable for it")
+    now = now or utcnow()
+    row.reconciled_from_state = row.state
+    row.state = resolution
+    row.reconciled_at = now
+    row.reconciled_by = actor
+    row.reconciliation_evidence = evidence
+    row.terminal_at = now
+    row.terminal_reason = f"reconciled as {resolution} by {actor}"[:255]
+    if resolution == ACCEPTED and row.accepted_at is None:
+        # Reconstructed, not observed — the acceptance instant is unknown, so no send timestamp
+        # is invented for it.
+        row.reconstructed = True
+
 
 
 # ── Migration safety ──────────────────────────────────────────────────────────────────────────
@@ -412,9 +583,28 @@ def stats(session, *, now: datetime | None = None) -> dict:
     observed = int(session.query(NotificationOutbox)
                    .filter(NotificationOutbox.delivery_status.isnot(None)).count())
 
+    oldest_unknown = (session.query(NotificationOutbox)
+                      .filter(NotificationOutbox.state == UNKNOWN,
+                              NotificationOutbox.reconciled_at.is_(None))
+                      .order_by(NotificationOutbox.terminal_at).first())
+    # Stranding is the cost of never auto-retrying an ambiguous outcome. If this age grows,
+    # notifications are sitting unresolved and nobody has looked.
+    unknown_age = ((now - oldest_unknown.terminal_at).total_seconds()
+                   if oldest_unknown is not None and oldest_unknown.terminal_at else None)
+    deferred = int(session.query(NotificationOutbox)
+                   .filter(NotificationOutbox.defers > 0).count())
+    in_flight = int(session.query(NotificationOutbox)
+                    .filter(NotificationOutbox.dispatch_started_at.isnot(None),
+                            NotificationOutbox.state == LEASED).count())
     return {
         "total": total,
         "by_state": counts,
+        "awaiting_review": int(session.query(NotificationOutbox)
+                               .filter(NotificationOutbox.state == UNKNOWN,
+                                       NotificationOutbox.reconciled_at.is_(None)).count()),
+        "oldest_unknown_age_seconds": unknown_age,
+        "deferred_at_least_once": deferred,
+        "in_flight": in_flight,
         "reconciles": sum(counts.values()) == total,
         "oldest_pending_age_seconds": oldest_age,
         "attempted": attempted,

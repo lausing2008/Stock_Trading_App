@@ -246,6 +246,37 @@ with Session() as s:
         results["blank_event_id"] = str(exc)
 
 
+# ── 11b. AN IN-FLIGHT ROW IS NOT CLAIMABLE, independently of the quarantine sweep ─────────────
+# The claim path must exclude rows whose worker died mid-dispatch on its own. Relying on
+# `quarantine_uncertain()` having run first makes the guarantee depend on call order, and any
+# caller that claims directly would resend a message the provider may already have accepted.
+_fresh()
+with Session() as s:
+    _enq(s, "evt-inflight")
+    s.commit()
+with Session() as s:
+    got = outbox.claim(s, owner="doomed", lease_seconds=60, now=T0)
+    outbox.begin_dispatch(s, got[0], owner="doomed", now=T0)
+    s.commit()                                   # in flight, then the worker dies
+LAPSED = T0 + timedelta(seconds=600)
+with Session() as s:
+    reclaimed = outbox.claim(s, owner="next", now=LAPSED)   # NO quarantine sweep first
+    s.commit()
+with Session() as s:
+    row = s.query(NotificationOutbox).one()
+    results["inflight_not_claimable"] = {
+        "reclaimed": len(reclaimed), "state": row.state,
+        "dispatch_started": row.dispatch_started_at is not None,
+    }
+# ...and the quarantine sweep is what resolves it.
+with Session() as s:
+    n = outbox.quarantine_uncertain(s, now=LAPSED)
+    s.commit()
+with Session() as s:
+    results["inflight_not_claimable"]["quarantined"] = n
+    results["inflight_not_claimable"]["final_state"] = \
+        s.query(NotificationOutbox).one().state
+
 # ── 12. ATOMIC EVENT/OUTBOX PERSISTENCE ───────────────────────────────────────────────────────
 # A crash between committing the event and queueing its notification must lose BOTH or NEITHER.
 from sqlalchemy import text as _text                       # noqa: E402
@@ -347,13 +378,15 @@ with Session() as s:
     unchecked = outbox.may_send(rows["evt-pref"], now=T0)
     errored = outbox.may_send(rows["evt-pref"], now=T0,
                               is_subscribed=lambda r: (_ for _ in ()).throw(RuntimeError("redis down")))
+    unknown_pref = outbox.may_send(rows["evt-pref"], now=T0, is_subscribed=lambda r: None)
     # Valid at enqueue, stale by the time the worker reaches the provider call.
     went_stale = outbox.may_send(rows["evt-pref-expiring"], now=T0 + timedelta(seconds=60),
                                  is_subscribed=lambda r: True)
     s.commit()
     results["presend_recheck"] = {
         "opted_out": opted_out, "subscribed": subscribed, "unchecked": unchecked,
-        "preference_error_fails_open": errored, "expired_between_enqueue_and_send": went_stale}
+        "preference_error_defers": errored, "preference_unknown_defers": unknown_pref,
+        "expired_between_enqueue_and_send": went_stale}
 
 # ── 17. HONEST DELIVERY STATES: accepted != delivered ─────────────────────────────────────────
 _fresh()

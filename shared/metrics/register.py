@@ -280,7 +280,10 @@ REGISTER: tuple[WorkItem, ...] = (
                    "earnings_phase.KNOWN_UNRESOLVED_RISK (the in-window retrospective article). "
                    "That was wrong: an outbox delivers whatever event the classifier SELECTED, "
                    "reliably, including a wrong selection. Event identification is M19/M23 and "
-                   "needs its own acceptance criteria. Does not promise exactly-once delivery."),
+                   "needs its own acceptance criteria. Does not promise exactly-once delivery. "
+                   "PARTIAL 2026-10-01: schema, state machine and the earnings-phase producer/"
+                   "worker exist and are verified on SQLite AND PostgreSQL; rollout flag is OFF "
+                   "and no scheduler job calls them yet. Other alert families unmigrated."),
     WorkItem("M21", "approval pending", "Outage recount: 65 actionable, 18 consumed-and-current",
              "Refresh signal state and recipients; prepare the exact digest for review.",
              "Operator approves one digest with a unique incident key.",
