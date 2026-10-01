@@ -753,6 +753,11 @@ def train_model(
     # splitting — for well-trained symbols (N ≈ 300, k ≈ 20) all outcome rows landed
     # past the 70% split boundary (test set) and the 2× weight never fired.
     n_outcome_rows = 0
+    # M13: where the outcome rows go, stage by stage. The final count alone could not tell a
+    # 43 -> 6 collapse apart from a symbol that simply had 6 — which is how AUD-ML3-OUTCOMEDEDUP
+    # stayed invisible across 490 of 548 artifacts.
+    from metrics.attrition import AttritionLedger as _AttritionLedger
+    _attrition = _AttritionLedger(f"{symbol}/{style}")
     _X_out_for_fit: "pd.DataFrame | None" = None   # kept separate — merged at fit time
     _y_out_for_fit: "pd.Series | None"   = None
     _avail_out_for_fit: "pd.Series | None" = None  # R01: when each outcome's label was knowable
@@ -768,8 +773,16 @@ def train_model(
                 "fund_snapshots": fund_snapshots, "options_snapshots": options_snapshots,
             },
         )
+        _loaded = len(X_out)
+        _attrition.record("loaded", rows_in=_loaded, rows_out=_loaded,
+                          note="resolved live BUY outcomes for this symbol/style")
         if not X_out.empty and len(X_out) >= 20:
+            _attrition.record("min_sample", rows_in=_loaded, rows_out=_loaded)
             shared_cols = [c for c in FEATURE_COLUMNS if c in X_out.columns and c in X.columns]
+            _attrition.record(
+                "shared_features", rows_in=_loaded,
+                rows_out=_loaded if shared_cols else 0,
+                dropped={} if shared_cols else {"no_feature_overlap_with_training_set": _loaded})
             if shared_cols:
                 X = X[shared_cols]  # narrow main X to shared feature set
                 X_out = X_out[shared_cols]
@@ -814,6 +827,11 @@ def train_model(
                     X_row_dates = X_row_dates[_keep].reset_index(drop=True)
                     y_dir = y_dir[_keep].reset_index(drop=True)
                     y_ret = y_ret[_keep].reset_index(drop=True)
+                    # Dropped from the MAIN set, so every outcome row survives this stage.
+                    _attrition.record(
+                        "dedup", rows_in=_loaded, rows_out=len(X_out),
+                        note=f"{_n_overlap} overlapping rows dropped from the MAIN training "
+                             f"set instead, keeping the real live-trade label")
                     log.info("train.outcome_dedup_from_main", symbol=symbol,
                              dropped_from_X=_n_overlap, remaining_X=len(X))
                 else:
@@ -824,18 +842,46 @@ def train_model(
                     # R01: availability must survive deduplication on the same index, or the
                     # cutoff filter below has nothing to filter on.
                     avail_out = avail_out.drop(index=overlap_idx, errors="ignore")
+                    _attrition.record(
+                        "dedup", rows_in=_loaded, rows_out=len(X_out),
+                        dropped={"overlaps_training_window": _loaded - len(X_out)},
+                        note="fallback: too few main rows would survive, so the outcome rows "
+                             "were dropped instead")
                     if _n_overlap:
                         log.warning("train.outcome_dedup_fallback", symbol=symbol,
                                     overlap=_n_overlap, x_rows=len(X),
                                     note="dropping from X would leave too few rows; dropped from X_out instead")
+                # NOTE: the `len(X_out) >= 5` expression is left verbatim — three existing
+                # tests anchor their source slices on it. Instrumentation must not move the
+                # code it instruments.
+                _after_dedup = len(X_out)
                 if len(X_out) >= 5:
+                    _attrition.record("min_after_dedup", rows_in=_after_dedup,
+                                      rows_out=_after_dedup)
                     _X_out_for_fit = X_out
                     _y_out_for_fit = y_out
                     _avail_out_for_fit = avail_out
                     n_outcome_rows = len(X_out)
                     log.info("train.outcome_augment", symbol=symbol, n_outcomes=n_outcome_rows)
+                else:
+                    _attrition.record(
+                        "min_after_dedup", rows_in=_after_dedup, rows_out=0,
+                        dropped={"below_min_rows_to_augment": _after_dedup})
+        elif not X_out.empty:
+            _attrition.record("min_sample", rows_in=_loaded, rows_out=0,
+                              dropped={"below_min_outcomes": _loaded})
     except Exception as _oe:
         log.warning("train.outcome_augment_failed", symbol=symbol, error=str(_oe))
+
+    # M13: emitted whenever rows were loaded, INCLUDING when none survived — that is precisely
+    # the case the old single count could not explain. `reconciles` false means a stage lost
+    # rows it could not account for, which is a defect in this instrumentation, not in the data.
+    if _attrition.stages:
+        _att = _attrition.to_dict()
+        log.info("train.outcome_attrition", symbol=symbol, style=style,
+                 survived=n_outcome_rows, survival_rate=_att["survival_rate"],
+                 biggest_loss=_att["biggest_loss"], reconciles=_att["reconciles"],
+                 unexplained=_att["unexplained"], stages=_att["stages"])
 
     # --- Hyperparams: passed > saved tuned > defaults ---
     if hyperparams is None and model_name == "xgboost":

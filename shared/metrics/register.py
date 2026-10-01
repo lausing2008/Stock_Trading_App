@@ -224,8 +224,17 @@ REGISTER: tuple[WorkItem, ...] = (
     WorkItem("M13", "P1", "ML n_outcome_rows attrition unresolved",
              "Record rows at join, feature availability, label maturity, dedup, purge, "
              "calibration and promotion stages.", "Every exclusion has a reason and reconciles.",
-             "ML", Engineering.PROPOSED, Research.NOT_MEASURABLE, Decision.NO_ACTION,
-             _t(TriggerKind.IMPLEMENTATION, "stage-by-stage attrition instrumentation exists")),
+             "ML", Engineering.IMPLEMENTED, Research.NOT_MEASURABLE, Decision.NO_ACTION,
+             _t(TriggerKind.OCCURRENCE, "a retrain cycle runs with the ledger deployed, so real "
+                                       "attrition can be read instead of inferred",
+                "ledger built and wired 2026-10-01; NOT deployed"),
+             notes="AttritionLedger records rows at loaded / min_sample / shared_features / "
+                   "dedup / min_after_dedup, each exclusion with a REASON, and reconciles: "
+                   "rows_in == rows_out + dropped, with an `unexplained` bucket rather than a "
+                   "silent balance. Emitted even when NOTHING survived - the 490-of-548 case "
+                   "the old single count could not explain. Reproduces the historical 43 -> 6 "
+                   "collapse and names the stage and reason. Read it after a retrain; a "
+                   "`reconciles: false` line is a defect in the instrumentation, not the data."),
     WorkItem("M14", "P1", "OOS-suppression rollout not independently settled",
              "Inventory active artifacts/consumers; verify invalid models cannot publish or be "
              "unsuppressed by resweeps.", "Versioned suppression reasons and coverage effects.",
