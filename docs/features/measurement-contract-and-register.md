@@ -79,10 +79,29 @@ raises. Every item partitions into exactly one of data-gated (10), awaiting-appr
 blocked (2), actionable-now (11) — an item in two buckets means its real blocker was never
 identified.
 
-**The dependency this surfaced:** M22 (Jev) and M17 are blocked on **M20** (outbox / immutable
-event IDs). Neither design doc states it outright, but M22 requires reusing the experiment
-registry and JEV-05's paired trial cannot be interpreted without durable delivery. Encoded as
-`blocked_by` so it is checkable rather than remembered.
+**A dependency claim I got wrong, corrected 2026-10-01.** I first encoded M22 (Jev) and M17
+(ablation grid) as `blocked_by=M20`, reasoning that a paired trial needs durable delivery. That
+conflated two different durability requirements, and review caught it:
+
+- **Jev's shadow and paper arms need durable decisions, assignments and outcomes — not email.**
+  The outbox becomes a prerequisite only for an arm that measures notification availability or
+  delivery-dependent behaviour.
+- **M17's documented blockers are the simpler two-arm result and the absent margin features.**
+  An outbox is not automatically another blocker.
+
+Both are now unblocked, with the real triggers recorded, and tests pin the corrected
+relationships so the claim cannot quietly return.
+
+## Milestone A is PARTIAL, not complete
+
+Required declarations prevent omissions. **They cannot prove a query actually measures the
+population it declares** — a metric may truthfully declare `symbol_session` weighting while its
+SQL groups by row. The contract closes the "unstated dimension" failure, which is the one that
+produced all three withdrawn findings, and no more than that.
+
+Still outstanding for Milestone A: the **versioned September baseline extract**, the **known
+missingness report**, and **reproducible reconciliation** run against real data rather than
+fixtures.
 
 ## Verification
 

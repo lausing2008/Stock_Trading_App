@@ -11,10 +11,35 @@ test_scheduler_static_names.py's established pattern.
 """
 import pathlib
 from types import SimpleNamespace
-from datetime import date
+from datetime import date, datetime, timedelta
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from src.services.email_service import send_signal_alert_email
+
+
+def _today_et():
+    """The SAME clock the renderer uses to decide whether a contract has expired.
+
+    These expiries used to be hardcoded (`2026-10-15`, `2026-09-30`). That is a time bomb, and
+    it went off: the renderer drops expired contracts, so the moment ET crossed into October the
+    `2026-09-30` call stopped rendering and two tests failed — with nothing wrong in the code
+    they cover. `2026-10-15` was two weeks from the same fate.
+
+    Same bug class as the CI failure fixed in a368e4c4: build fixture dates on the clock the
+    code under test reads, never on a literal and never on the local one. See
+    docs/incidents/utc-vs-et-date-boundary.md.
+    """
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
+
+def _expiry(days_ahead: int) -> str:
+    return (_today_et() + timedelta(days=days_ahead)).isoformat()
+
+
+#: Two distinct future expiries, near and far, preserving the original fixtures' ordering.
+_NEAR = _expiry(7)
+_FAR = _expiry(22)
 
 _scheduler_path = pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "scheduler.py"
 _scheduler_source = _scheduler_path.read_text()
@@ -43,8 +68,8 @@ def _fake_snapshot(**overrides):
 
 def test_options_game_plan_renders_both_legs_when_present():
     snap = _fake_snapshot(
-        put_strike=140.0, put_expiry="2026-10-15", put_mid_price=3.0,
-        call_strike=168.0, call_expiry="2026-09-30", call_mid_price=1.85,
+        put_strike=140.0, put_expiry=_FAR, put_mid_price=3.0,
+        call_strike=168.0, call_expiry=_NEAR, call_mid_price=1.85,
     )
     calls, fake = _capture_send()
     with patch("src.services.email_service.send_email", fake):
@@ -54,8 +79,8 @@ def test_options_game_plan_renders_both_legs_when_present():
         )
     html, text = calls[0]["html"], calls[0]["text"]
     assert "Options Game Plan" in html and "Advanced tier" in html
-    assert "$140.00" in html and "2026-10-15" in html
-    assert "$168.00" in html and "2026-09-30" in html
+    assert "$140.00" in html and _FAR in html
+    assert "$168.00" in html and _NEAR in html
     assert "Options Game Plan" in text and "$140.00" in text and "$168.00" in text
 
 
@@ -63,7 +88,7 @@ def test_options_game_plan_renders_only_the_leg_that_exists():
     """A symbol whose covered-call leg had no listed contract in the target DTE window today
     (a real, documented case — see OptionsGamePlanSnapshot's own model docstring) must render
     only the put, not a fabricated or blank call row."""
-    snap = _fake_snapshot(put_strike=140.0, put_expiry="2026-10-15", put_mid_price=3.0)
+    snap = _fake_snapshot(put_strike=140.0, put_expiry=_FAR, put_mid_price=3.0)
     calls, fake = _capture_send()
     with patch("src.services.email_service.send_email", fake):
         send_signal_alert_email(
@@ -92,7 +117,7 @@ def test_none_options_game_plan_renders_no_section_at_all():
 def test_options_game_plan_omitted_for_non_buy_transitions():
     """Even if a snapshot were somehow passed for a non-BUY transition, this section is
     scoped to BUY only — matching the existing stock game_plan's own new_signal == 'BUY' gate."""
-    snap = _fake_snapshot(put_strike=140.0, put_expiry="2026-10-15", put_mid_price=3.0)
+    snap = _fake_snapshot(put_strike=140.0, put_expiry=_FAR, put_mid_price=3.0)
     calls, fake = _capture_send()
     with patch("src.services.email_service.send_email", fake):
         send_signal_alert_email(
@@ -128,7 +153,7 @@ def _check_signal_alerts_body() -> str:
 
 def test_iv_and_expected_move_render_alongside_legs():
     snap = _fake_snapshot(
-        put_strike=140.0, put_expiry="2026-10-15", put_mid_price=3.0,
+        put_strike=140.0, put_expiry=_FAR, put_mid_price=3.0,
         expected_move_pct=6.2, expected_move_dte=30, iv_rank_1y=72.0,
     )
     calls, fake = _capture_send()
@@ -147,7 +172,7 @@ def test_iv_and_expected_move_render_alongside_legs():
 
 def test_iv_rank_reading_labels_low_high_and_mid_range_correctly():
     for iv_rank, expected_label in ((85.0, "options relatively expensive"), (10.0, "options relatively cheap"), (50.0, "mid-range")):
-        snap = _fake_snapshot(put_strike=140.0, put_expiry="2026-10-15", put_mid_price=3.0, iv_rank_1y=iv_rank)
+        snap = _fake_snapshot(put_strike=140.0, put_expiry=_FAR, put_mid_price=3.0, iv_rank_1y=iv_rank)
         calls, fake = _capture_send()
         with patch("src.services.email_service.send_email", fake):
             send_signal_alert_email("user@example.com", "AAPL", "HOLD", "BUY", "buy", options_game_plan=snap)
@@ -179,7 +204,7 @@ def test_no_iv_data_and_no_legs_still_renders_no_section():
 
 def test_greeks_suffix_renders_when_present_on_a_leg():
     snap = _fake_snapshot(
-        put_strike=140.0, put_expiry="2026-10-15", put_mid_price=3.0,
+        put_strike=140.0, put_expiry=_FAR, put_mid_price=3.0,
         put_delta=-0.45, put_theta=-0.04, put_vega=0.11,
     )
     calls, fake = _capture_send()
@@ -192,7 +217,7 @@ def test_greeks_suffix_renders_when_present_on_a_leg():
 
 def test_greeks_suffix_omitted_entirely_when_all_three_are_none():
     """No placeholder/empty parens when Unusual Whales had no Greeks for this contract."""
-    snap = _fake_snapshot(put_strike=140.0, put_expiry="2026-10-15", put_mid_price=3.0)
+    snap = _fake_snapshot(put_strike=140.0, put_expiry=_FAR, put_mid_price=3.0)
     calls, fake = _capture_send()
     with patch("src.services.email_service.send_email", fake):
         send_signal_alert_email("user@example.com", "AAPL", "HOLD", "BUY", "buy", options_game_plan=snap)
@@ -203,8 +228,8 @@ def test_greeks_suffix_omitted_entirely_when_all_three_are_none():
 
 def test_greeks_suffix_is_independent_per_leg():
     snap = _fake_snapshot(
-        put_strike=140.0, put_expiry="2026-10-15", put_mid_price=3.0, put_delta=-0.45,
-        call_strike=168.0, call_expiry="2026-09-30", call_mid_price=1.85,
+        put_strike=140.0, put_expiry=_FAR, put_mid_price=3.0, put_delta=-0.45,
+        call_strike=168.0, call_expiry=_NEAR, call_mid_price=1.85,
     )
     calls, fake = _capture_send()
     with patch("src.services.email_service.send_email", fake):

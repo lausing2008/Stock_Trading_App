@@ -385,11 +385,29 @@ def test_every_item_falls_in_exactly_one_bucket():
     assert sum(len(b) for b in buckets) == len(union), "some item is in two buckets"
 
 
-def test_jev_is_blocked_on_the_outbox_work():
-    """The ordering dependency the two design docs imply but neither states outright: M22 says
-    Jev must "reuse this experiment registry", and its paired trial cannot be interpreted before
-    durable delivery exists. Encoded so the block is checkable, not remembered."""
-    assert "M20" in reg.BY_ID["M22"].blocked_by
+def test_jev_is_not_blocked_on_email_delivery():
+    """CORRECTED 2026-10-01. An earlier version of this register asserted M22 was blocked on M20,
+    reasoning that a paired trial needs durable delivery. That conflated two different durability
+    requirements: Jev's shadow and paper arms need durable DECISIONS, ASSIGNMENTS and OUTCOMES —
+    none of which is email. The outbox becomes a prerequisite only for an arm that measures
+    notification availability or delivery-dependent behaviour."""
+    assert "M20" not in reg.BY_ID["M22"].blocked_by
+    assert "notification availability" in reg.BY_ID["M22"].notes
+
+
+def test_the_ablation_grid_is_not_blocked_on_the_outbox_either():
+    """M17's documented blockers are the simpler two-arm result and the absent margin features."""
+    assert "M20" not in reg.BY_ID["M17"].blocked_by
+    assert "margin features" in reg.BY_ID["M17"].trigger.description
+
+
+def test_the_outbox_does_not_claim_to_resolve_event_attribution():
+    """An outbox delivers whatever event the classifier SELECTED, reliably — including a wrong
+    selection. Delivery reliability and event identification need separate acceptance criteria,
+    and an earlier note here wrongly merged them."""
+    notes = reg.BY_ID["M20"].notes
+    assert "DELIVERY RELIABILITY ONLY" in notes
+    assert "M19/M23" in notes
 
 
 def test_the_approval_gated_items_are_exactly_the_two_untouched_ones():

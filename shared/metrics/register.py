@@ -250,7 +250,8 @@ REGISTER: tuple[WorkItem, ...] = (
              "Finish one two-arm study first.", "A completed two-arm result.", "research",
              Engineering.PROPOSED, Research.NOT_MEASURABLE, Decision.NO_ACTION,
              _t(TriggerKind.IMPLEMENTATION, "one two-arm study completed; margin features exist"),
-             blocked_by=("M20",)),
+             notes="Blockers are the simpler two-arm result and the absent margin features. An "
+                   "outbox is not among them."),
     WorkItem("M18", "deferred", "Watchlist/style rerun remains open",
              "Review intentional exclusions versus stale membership; shadow an alternative.",
              "Incremental outcomes, not hypothetical conversion of rejected checks.",
@@ -275,8 +276,11 @@ REGISTER: tuple[WorkItem, ...] = (
              Decision.NO_ACTION,
              _t(TriggerKind.IMPLEMENTATION, "transactional outbox with immutable event IDs "
                                             "exists"),
-             notes="Also the only thing that closes earnings_phase.KNOWN_UNRESOLVED_RISK - the "
-                   "in-window retrospective article. No further heuristic can."),
+             notes="DELIVERY RELIABILITY ONLY. An earlier note here claimed this also closes "
+                   "earnings_phase.KNOWN_UNRESOLVED_RISK (the in-window retrospective article). "
+                   "That was wrong: an outbox delivers whatever event the classifier SELECTED, "
+                   "reliably, including a wrong selection. Event identification is M19/M23 and "
+                   "needs its own acceptance criteria. Does not promise exactly-once delivery."),
     WorkItem("M21", "approval pending", "Outage recount: 65 actionable, 18 consumed-and-current",
              "Refresh signal state and recipients; prepare the exact digest for review.",
              "Operator approves one digest with a unique incident key.",
@@ -292,11 +296,15 @@ REGISTER: tuple[WorkItem, ...] = (
              "Jev adapter/admin/research", Engineering.IMPLEMENTED, Research.NOT_MEASURABLE,
              Decision.NO_ACTION,
              _t(TriggerKind.IMPLEMENTATION, "JEV-02 schema/queue/client and JEV-03 policy "
-                                            "evaluator built; experiment registry available"),
-             blocked_by=("M20",),
+                                            "evaluator built; durable decision, assignment and "
+                                            "outcome records available"),
              notes="JEV-01 (admin flag, default OFF) is implemented and makes no provider "
                    "request. OPENROUTER_API_KEY is deliberately not configured, so the client "
-                   "can be built and tested against recorded responses but not exercised live."),
+                   "can be built and tested against recorded responses but not exercised live. "
+                   "NOT blocked on M20: shadow/paper experiments need durable decisions, "
+                   "assignments and outcomes, not email. The outbox becomes a prerequisite only "
+                   "if an arm measures notification availability or delivery-dependent "
+                   "behaviour."),
     WorkItem("M23", "open design", "Event-linked resolution of material negative news",
              "Link resolutions to originating events; unrelated positive news must not clear "
              "unresolved risk.", "A newer positive article cannot resolve an unrelated lawsuit.",

@@ -3184,3 +3184,110 @@ class InstitutionalOwnership(Base):
         UniqueConstraint("ticker", "institution", "report_date", name="uq_instown_tkr_inst_date"),
         Index("ix_instown_ticker_report", "ticker", "report_date"),
     )
+
+
+class NotificationOutbox(Base):
+    """M20 — durable, idempotent notification delivery.
+
+    WHAT THIS REPLACES, AND WHY A TTL WAS NEVER IDEMPOTENCY. Alert de-duplication across this
+    platform is a Redis `SETEX` key — `stockai:early_earnings_news:{uid}:{sym}:{date}:{phase}`
+    and its siblings. A TTL answers "have I seen this key lately", which is a different question
+    from "has this notification already been sent", and the two diverge in both directions:
+
+      * Redis restarts, is evicted under memory pressure, or the key simply expires while the
+        underlying condition still holds — and the same alert is sent again.
+      * The key is written and the send then fails — and the alert is suppressed for the whole
+        TTL with no record that anything was lost. AUD266-DEDUP-KEY-SET-BEFORE-SEND is this
+        repo's own prior incident of exactly that shape.
+
+    A UNIQUE constraint on an immutable business key is idempotency. It holds across restarts,
+    evictions and clock changes, it cannot expire, and a duplicate enqueue is rejected by the
+    database rather than by a cache that may or may not still remember.
+
+    ACCEPTANCE IS NOT DELIVERY, and this table refuses to blur them. `accepted_at` records that
+    the PROVIDER took the message — SMTP returned success, or SES accepted it. That is the last
+    thing this process can actually observe. Whether it reached an inbox is not knowable here,
+    so there is deliberately no `delivered_at` column to be quietly misread as one. A bounce or
+    an open would arrive through a separate provider callback and belongs in its own record.
+
+    RETRY CONTENT IS FROZEN AT ENQUEUE. The rendered subject and body are stored, so attempt
+    five sends exactly what attempt one would have. EF-01 is why: a retry that re-rendered its
+    content shipped the threshold in place of the price, because the value it read had moved on
+    between attempts. A retry is a transport concern and must not be a re-computation.
+
+    EXPIRY AND DEAD-LETTER ARE DIFFERENT TERMINAL STATES. `expired` means the alert went stale
+    before it could be sent and must NOT be delivered — a signal change from four days ago is not
+    news. `dead_letter` means delivery was attempted to exhaustion and failed. Collapsing them
+    would hide the difference between "we chose not to send" and "we could not send".
+    """
+    __tablename__ = "notification_outbox"
+
+    # BigInteger in production; SQLite has no BIGINT autoincrement, and the real-database tests
+    # run on SQLite. The variant keeps one model definition rather than a test-only second one.
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+
+    #: THE IDEMPOTENCY KEY. Immutable, unique, and derived from the EVENT — never from a clock.
+    #: Two workers racing to enqueue the same notification produce one row; the loser gets an
+    #: IntegrityError, which is the correct and expected outcome, not an error to be retried.
+    event_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+
+    channel: Mapped[str] = mapped_column(String(32), default="email")
+    alert_type: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    recipient: Mapped[str] = mapped_column(String(320), nullable=False)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    #: Content frozen at enqueue time. See the class docstring on EF-01.
+    subject: Mapped[str] = mapped_column(String(512), nullable=False)
+    body_html: Mapped[str] = mapped_column(Text, nullable=False)
+    body_text: Mapped[str] = mapped_column(Text, nullable=False)
+
+    #: pending | leased | accepted | unknown | dead_letter | expired | suppressed
+    #:
+    #: `unknown` is the state this design exists to be honest about. If the transport times out
+    #: AFTER the provider may already have accepted the message, neither "sent" nor "failed" is
+    #: true, and asserting either is a lie with consequences: calling it failed invites a
+    #: duplicate, calling it sent loses the alert. It is terminal pending RECONCILIATION, never
+    #: retried automatically.
+    state: Mapped[str] = mapped_column(String(16), default="pending", nullable=False, index=True)
+
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+
+    #: Lease ownership. A claim is a compare-and-set on (state, lease_expires_at); a worker that
+    #: dies mid-send leaves an expired lease that another worker may reclaim, rather than a row
+    #: locked forever by a process that no longer exists.
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    #: Earliest next attempt (backoff). Distinct from `expires_at`: one defers, the other cancels.
+    available_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    #: After this instant the notification is stale and must never be sent.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: The provider ACCEPTED the message. Not proof of inbox arrival — see the class docstring.
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: Provider-side identifier, when one is returned. The only thing that could later
+    #: reconcile an `unknown` outcome against the provider's own record.
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: OBSERVED delivery, from a provider callback — NOT inferred from acceptance.
+    #: NULL means UNOBSERVED, which is the normal state and must never be read as "delivered".
+    #: delivered | bounced | complaint | deferred
+    delivery_status: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    delivery_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    terminal_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    terminal_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    #: Set when the row was reconstructed from historical evidence rather than observed live.
+    #: "Historical backfills must be labeled reconstructed with uncertainty, never given invented
+    #: send/fill timestamps."
+    reconstructed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    __table_args__ = (
+        Index("ix_outbox_claimable", "state", "available_at"),
+        Index("ix_outbox_recipient_created", "recipient", "created_at"),
+    )
