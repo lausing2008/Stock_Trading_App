@@ -15,6 +15,24 @@ source of each function under test is then extracted and exec()'d against this r
 """
 import sys
 
+def _today_et():
+    """The SAME clock the evaluator under test uses.
+
+    CI FAILURE 2026-10-01: these fixtures built their dates with `date.today()` — the LOCAL date —
+    while `evaluate_*_alert_outcomes()` reasons about `_today_et()`, the America/New_York date.
+    In a UTC container those disagree for ~4-5 hours every evening (UTC crosses midnight at 8pm
+    EDT), so a fixture dated "3 days ago" by UTC is only 2 days old by ET and a window the test
+    expects to have closed is still open. Locally the tests passed; in CI they failed.
+
+    That is the exact bug class `docs/incidents/utc-vs-et-date-boundary.md` documents, reappearing
+    in the TEST rather than the code — and a test on a different clock from its subject cannot
+    check the subject's date handling at all.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
+
 _STUBBED_MODULES = ("sqlalchemy", "sqlalchemy.orm", "sqlalchemy.dialects", "sqlalchemy.dialects.postgresql", "db")
 _saved_stubs = {_mod: sys.modules.pop(_mod, None) for _mod in _STUBBED_MODULES}
 
@@ -567,7 +585,7 @@ def test_evaluate_leaves_a_window_open_when_it_hasnt_closed_yet():
     None-on-no-match path masked the missing guard identically."""
     session = _make_session()
     st = _make_stock(session, "AAPL")
-    fired = date.today() - timedelta(days=3)
+    fired = _today_et() - timedelta(days=3)
     entry_date = fired + timedelta(days=1)
     _make_price(session, st.id, entry_date, 100.0)
     _make_price(session, st.id, entry_date + timedelta(days=5), 120.0)
