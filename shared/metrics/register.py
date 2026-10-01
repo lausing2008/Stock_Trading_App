@@ -281,9 +281,13 @@ REGISTER: tuple[WorkItem, ...] = (
                    "That was wrong: an outbox delivers whatever event the classifier SELECTED, "
                    "reliably, including a wrong selection. Event identification is M19/M23 and "
                    "needs its own acceptance criteria. Does not promise exactly-once delivery. "
-                   "PARTIAL 2026-10-01: schema, state machine and the earnings-phase producer/"
-                   "worker exist and are verified on SQLite AND PostgreSQL; rollout flag is OFF "
-                   "and no scheduler job calls them yet. Other alert families unmigrated."),
+                   "PARTIAL 2026-10-01. DONE: schema, state machine, earnings-phase producer "
+                   "and worker, verified on SQLite and on PostgreSQL as a REQUIRED CI check. "
+                   "REMAINING, explicitly: (1) scheduler wiring - no job calls the producer or "
+                   "worker; (2) the cutover runbook and a real cutover, including the rollout "
+                   "flag move off `off`; (3) migration of the other alert families; (4) "
+                   "provider-callback ingestion for delivery_status. Production activation and "
+                   "any historical recovery send remain separate decisions."),
     WorkItem("M21", "approval pending", "Outage recount: 65 actionable, 18 consumed-and-current",
              "Refresh signal state and recipients; prepare the exact digest for review.",
              "Operator approves one digest with a unique incident key.",
