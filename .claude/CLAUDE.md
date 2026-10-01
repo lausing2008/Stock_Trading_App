@@ -312,6 +312,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
+- **`docs/audits/2026-10-01-checkback-calendar.md`** — 8 dated check-backs for the open M01-M25 work, each dated by WHAT IT WAITS ON (expiring decision / scheduled run / occurrence / outcome count / market). Replay JSON beside it: gcal was `invalid_grant`, so NONE were created [calendar, M01-M25]
 - **`docs/audits/2026-09-28-email-followup-remediation.md`** — EF-01..EF-05: a review of the EA fixes found five more, THREE of them regressions that work introduced. EF-01 aborted the signal batch (`except as` deletes its name on exit); a retry rendered the threshold as the price [email]
 - **`docs/audits/2026-09-28-email-audit-remediation.md`** — EA-01..EA-12. EA-01 was a LIVE OUTAGE of mine: a keyword-name used as a value raised NameError, silencing all 362 signal subscriptions for 4 days AND consuming transitions, every test green. Plus 12 unenforced opt-outs [email, outage]
 - **`docs/audits/2026-09-28-postdeployment-audit-remediation.md`** — audit of the DEPLOYED code: settlement returned a close read BEFORE its corroboration (assigned vs worthless on a $100 strike), and the label date was still an estimate. Includes a conclusion I got wrong the round before [audit]

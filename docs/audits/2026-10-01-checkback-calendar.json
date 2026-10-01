@@ -1,0 +1,55 @@
+{
+  "_comment": "Replayable payload for mcp__gcal__create-events. Drafted 2026-09-30; the Google token was invalid_grant at the time, so these were NOT created. After re-auth, pass `events` verbatim with timeZone America/Los_Angeles, calendarId primary. Narrative version: docs/audits/2026-10-01-checkback-calendar.md",
+  "timeZone": "America/Los_Angeles",
+  "calendarId": "primary",
+  "events": [
+    {
+      "summary": "StockAI · MU-01: read the FIRST instrumented earnings sync",
+      "start": "2026-10-01T08:00:00",
+      "end": "2026-10-01T08:30:00",
+      "description": "MU-01 root cause is UNRESOLVED. Instrumentation shipped 2026-10-01 ~01:45 UTC; the sync window is */15 during 07:00-20:59 ET weekdays, so the first instrumented runs happen this morning.\n\nREAD-ONLY, do not trigger a write:\n  docker logs stockai-event-intelligence-1 --since 3h 2>&1 | grep -E 'history_fetch|history_map'\nthen read the MU row alongside it.\n\nDECISIVE EVIDENCE is the whole chain, not one line:\n  provider row with a NON-NULL actual -> its mapping destination -> the attempted DB write -> the committed value.\n\nCAUTION: history_map showing eps_actual=None is NOT by itself proof of a mapping defect. If the provider returned no actual, that line is the correct and honest output. If the logs cannot connect those four steps, REPORT THE EVIDENCE GAP rather than inferring a cause.\n\nContext: on 2026-09-30 the provider's earnings_history already carried epsActual 33.42 for period end 2026-08-31 while the row stayed NULL after a sync 19 minutes earlier."
+    },
+    {
+      "summary": "StockAI · DECISION: recovery markers on portfolios 2 and 5 (expire ~Oct 6)",
+      "start": "2026-10-03T09:00:00",
+      "end": "2026-10-03T09:30:00",
+      "description": "M02. Time-boxed: both markers expire around 2026-10-06, after which this decision is moot.\n\nSTATE: portfolios 2 (streak 4) and 5 (streak 10) hold recovery markers written by the OLD bug, which marked the grant used BEFORE any trade opened. Both sat at zero open positions. The fix is deployed, so no NEW marker can be burned this way - but these two predate it and still block entries.\n\nREGISTER RECOMMENDATION (M02): clear ONLY portfolio 2, by compare-and-delete against the inspected value, and only if no corresponding entry or pending/unknown order exists. Leave portfolio 5 unchanged pending a recovery-strategy review.\n\nWHY 5 IS DIFFERENT: its seven recovery-branch trades all lost, totalling -$452.92. Its breaker tripping is not obviously wrong.\n\nNOTE: with no open positions, a positive close is not an available escape. Clearing restores an exception to a breaker; it does not guarantee a trade. NOTHING HAS BEEN TOUCHED."
+    },
+    {
+      "summary": "StockAI · DECISION: signal-outage recovery digest (65 events, 18 recoverable)",
+      "start": "2026-10-03T09:30:00",
+      "end": "2026-10-03T10:00:00",
+      "description": "M21. Manifest is BUILT and READ-ONLY: docs/audits/2026-09-30-signal-outage-recovery-manifest.md\n\nFINDINGS: the long-quoted '69 consumed transitions' does NOT reproduce - the evidence supports 65 actionable. Of those, 37 were consumed and only 18 are BOTH consumed AND still the current signal. All 18 are SELL, for one recipient, across 15 symbols. Outage was TWO trading days (09-25, 09-28), not four.\n\nIF APPROVING A SEND: one digest, unique incident key, original date and today's signal stated SEPARATELY, explicit staleness warning, and - from the register - a SELL is NOT necessarily an exit for an account with no holdings, so it must never read as a short-entry instruction.\n\nMUST NOT: bulk-clear last_signal. The transition logic recognises None->BUY but not None->SELL, so clearing would silently do nothing for a set that is entirely SELL.\n\nNo send has been made and none is authorized."
+    },
+    {
+      "summary": "StockAI · MU-02 live verification + broker fill re-poll (M16, M19)",
+      "start": "2026-10-15T09:00:00",
+      "end": "2026-10-15T09:45:00",
+      "description": "Two OCCURRENCE-gated items - neither can be forced, both need something to happen.\n\nM19 - MU-02 phase delivery is DEPLOYED but its live end-to-end behaviour is UNVERIFIED. Container health proves deployment, not notification delivery. Mid-October is earnings season, so a real release should have exercised it. Check: did preview / results / guidance each produce their OWN notification? Any 'early_earnings_news_excluded' lines with a reason? Any 'early_earnings_news_abstained_summary'?\n\nAlso check the unresolved set: redis GET stockai:early_earnings_news:unresolved - a STALE PENDING ROW would make the job abstain every cycle and silently suppress real results.\n\nM16 - broker fill re-poll needs a broker-linked position open across MORE THAN ONE scheduler cycle. Sandbox a partial/pending fill across cycles, restart, reconcile. Distinguish an accepted order from a fill."
+    },
+    {
+      "summary": "StockAI · Monthly data check: the six COLLECTING items",
+      "start": "2026-11-02T09:00:00",
+      "end": "2026-11-02T10:00:00",
+      "description": "These need accumulated outcomes, not code. CHECK THE COUNT FIRST and defer again if it has not moved - that is the whole purpose of the project_pending_data_verification memory.\n\nM08 prebreakout - was 8 names with AI at 42% (September: 6 names, AI 50%). Revisit at ~20 names with none above 15%, plus leave-one-name-out sensitivity. Diversity floors are screening rules, not proof.\n\nM10 squeeze ignition - was 6 events, mean about -5.3%, QUBT twice. Do NOT loosen thresholds just to create observations.\n\nM11 short-squeeze corroboration - count the ACTUAL short_squeeze family member (16 overall, only 5 in September), not the 481 mostly gamma-unwind events.\n\nM06 confidence feedback - stays OFF. Re-evaluate on consumer-matched market/horizon/direction slices with the PRIMARY outcome, not a pooled 5d histogram. The pooled 'flat bands' reading was an artifact.\n\nM07 options flow - match the production 10-session outcome and equal-weight independent symbol/session events. No automatic bearish inversion.\n\nM15 portfolio concentration - test limits with synthetic positions now; do not wait for trades to test a hard limit."
+    },
+    {
+      "summary": "StockAI · Engineering backlog: M13, M14, M20, M24, M25",
+      "start": "2026-10-08T09:00:00",
+      "end": "2026-10-08T10:00:00",
+      "description": "Open ENGINEERING work - not gated on data, only on someone doing it.\n\nM20 (P1, biggest) - durable delivery: transactional outbox, immutable event IDs, lease ownership, expiry/dead-letter, and provider-ACCEPTED measured separately from delivered. This is also what closes the in-window retrospective risk in the earnings classifier, which no further heuristic can.\n\nM13 - ML n_outcome_rows attrition. Record rows at join, feature availability, label maturity, dedup, purge, calibration and promotion. Every exclusion needs a reason.\n\nM14 - OOS-suppression inventory: verify invalid models cannot publish or be un-suppressed by resweeps.\n\nM24 - migration readiness beyond the one job it was built for. Inventory prerequisites for outbox and intent uniqueness, mark evidence. Keep liveness distinct from capability readiness.\n\nM25 - reconcile A01-A03 broker lifecycle and research-vs-executable options marks BEFORE any live-capital proposal. Historical fix claims do not close this gate."
+    },
+    {
+      "summary": "StockAI · GEX control arm — review trigger, not a promotion threshold",
+      "start": "2026-12-01T09:00:00",
+      "end": "2026-12-01T09:30:00",
+      "description": "M09. Gate stays OFF.\n\nSTATE: the uncorroborated control arm had only 13 resolved outcomes. My first comparison was BACKWARDS - it pooled raw returns across bullish gamma_unwind_calls and bearish gamma_unwind_puts, and production scores puts as a bearish thesis. Thesis-signed, corroborated is -1.87% against uncorroborated +2.28%.\n\nAlso: corroboration is true for ~91% of alerts, so it cannot discriminate much regardless of direction.\n\nAT ~30 CONTROL EVENTS this becomes reviewable - but 30 is a REVIEW TRIGGER, not a promotion threshold. Worse outcomes among corroborated alerts still would not show that USING the gate worsens portfolio returns; that needs a baseline-versus-gated comparison with avoided trades, costs and changed exposure."
+    },
+    {
+      "summary": "StockAI · Quarterly: regime robustness + dark-pool baseline replay",
+      "start": "2026-12-31T09:00:00",
+      "end": "2026-12-31T10:00:00",
+      "description": "M12 - regime robustness. Still ONE bear observation across the system's lifetime. This gates any live-automation decision and cannot be satisfied by building anything; it requires the market to do something it has not done. Separate regime COVERAGE from average performance and restrict conclusions to observed regimes.\n\nM05 - dark pool. MEASURED 2026-10-01: the relative threshold rejects 15 of 9,707 evaluable prints (~0.15%), because for 55 of 57 symbols 5x the trailing median sits BELOW the $1M absolute floor and the bar cannot bind. That explains why the fire rate never moved from 85-89%.\n\nNEXT: point-in-time baseline replay or forward baseline capture, then compare absolute-only / relative-only / combined WITHOUT changing production thresholds. Exit evidence is incremental unique-event selection plus a held-out economic and alert-load comparison. Note a bar that never binds was not shown not to work - it was never given a value at which it could act."
+    }
+  ]
+}
