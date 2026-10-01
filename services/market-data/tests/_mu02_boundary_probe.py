@@ -72,17 +72,29 @@ def main():
         # after UTC midnight must agree on WHICH event they are notifying about.
         before = fn(s, syms, date(2026, 9, 30))
         after = fn(s, syms, date(2026, 10, 1))
-        out["before_midnight"] = {k: str(v) for k, v in before.items()}
-        out["after_midnight"] = {k: str(v) for k, v in after.items()}
-        out["same_event_date_for_MU"] = (
-            before.get("MU") == after.get("MU") == date(2026, 9, 30))
-        out["dedup_key_before"] = f"stockai:early_earnings_news:7:MU:{before.get('MU')}:results"
-        out["dedup_key_after"] = f"stockai:early_earnings_news:7:MU:{after.get('MU')}:results"
+        # The query now returns EVERY pending event per symbol so the caller can abstain on
+        # ambiguity rather than silently pick the latest.
+        out["before_midnight"] = {k: [str(d) for d in v] for k, v in before.items()}
+        out["after_midnight"] = {k: [str(d) for d in v] for k, v in after.items()}
+        _b = before.get("MU", [])
+        _a = after.get("MU", [])
+        out["same_event_date_for_MU"] = (_b == _a == [date(2026, 9, 30)])
+        out["dedup_key_before"] = f"stockai:early_earnings_news:7:MU:{_b[0] if _b else None}:results"
+        out["dedup_key_after"] = f"stockai:early_earnings_news:7:MU:{_a[0] if _a else None}:results"
         out["keys_identical"] = out["dedup_key_before"] == out["dedup_key_after"]
         out["future_event_excluded"] = "FUT" not in before and "FUT" not in after
         out["reported_event_excluded"] = "DONE" not in before and "DONE" not in after
         # Two days on, MU's event falls out of the {yesterday, today} window entirely.
-        out["two_days_later"] = {k: str(v) for k, v in fn(s, syms, date(2026, 10, 2)).items()}
+        out["two_days_later"] = {k: [str(d) for d in v]
+                                 for k, v in fn(s, syms, date(2026, 10, 2)).items()}
+        # Two pending events for one symbol -> the caller must abstain. Add a second MU event.
+        with S() as s2:
+            s2.add(EarningsEvent(id=9, stock_id=1, report_date=date(2026, 9, 29), eps_actual=None))
+            s2.commit()
+        with S() as s3:
+            amb = fn(s3, syms, date(2026, 9, 30))
+            out["ambiguous_candidates"] = {k: [str(d) for d in v] for k, v in amb.items()}
+            out["mu_has_two_candidates"] = len(amb.get("MU", [])) == 2
     print("---PROBE-JSON---")
     print(json.dumps(out, indent=2, default=str))
 

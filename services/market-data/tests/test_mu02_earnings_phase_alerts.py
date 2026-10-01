@@ -142,7 +142,7 @@ def test_the_job_iterates_every_earnings_headline_not_just_the_first():
 
 def test_unnotifiable_phases_are_skipped_before_sending():
     i = SCHED.index("for _hl, _pub, _isym in _fetch_earnings_news_headlines(sym):")
-    block = SCHED[i:i + 900]
+    block = SCHED[i:i + 1800]
     assert "phase_is_notifiable(phase)" in block
     assert "continue" in block
 
@@ -185,7 +185,10 @@ def test_the_event_date_comes_from_the_earnings_row_not_from_todays_date():
     i = SCHED.index("def _pending_earnings_events")
     assert "EarningsEvent.report_date" in SCHED[i:i + 1800]
     assert "_event_date.isoformat()" in SCHED
-    assert "_event_date = _event_date_by_symbol[sym]" in SCHED
+    # The caller now abstains on ambiguity rather than taking the latest. The unwrapping is
+    # asserted BEHAVIOURALLY against a real database in test_mu02_delivery_behaviour.py — no
+    # index pinned here, per the T401 ratchet.
+    assert "_candidates = _event_date_by_symbol[sym]" in SCHED
 
 
 def test_an_after_hours_release_crossing_UTC_midnight_keeps_one_identity():

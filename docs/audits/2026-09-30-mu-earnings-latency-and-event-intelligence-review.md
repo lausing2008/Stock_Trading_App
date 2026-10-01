@@ -315,6 +315,63 @@ decisive evidence is the full chain: a provider row carrying a non-null actual, 
 destination, the attempted write, and the committed value. `history_fetch` supplies the first
 link; the rest still needs reading together with the row.
 
+## Fourth round — a named period narrows a class; it does not identify an event
+
+Accepted, and the correction exposed a worse problem in my own rule than the one it fixed.
+
+**A quarter-only requirement silently excluded valid releases.** A real release can report
+**full-year results** and name no quarter at all. `extract_period()` now returns `FY` for
+full-year / fiscal-year / `FY2026` forms, so those are no longer dropped.
+
+**And matching a named period against the stored label would have been actively wrong.** Measured
+on production:
+
+```
+MU  report_date 2026-09-30   DB period label: "Q3 2026"   fy 2026  fq 3
+    actual result headline:  "... Q4 Adj EPS $33.42 Beats ..."
+```
+
+MU has an **August fiscal year-end**, and `fiscal_quarter` is derived from the calendar month —
+the model's own comment calls it "a best-effort calendar-month label". A rule comparing the
+headline's `Q4` against the row's `Q3` would have **rejected the very release this entire fix
+exists for.** So the extracted period and any named year are recorded for reconciliation and are
+explicitly never matched against the stored label; a test asserts the scheduler does not reference
+`fiscal_quarter` at all.
+
+**Exclusions are now recorded, not silent.** Every path that drops a headline logs at INFO with a
+reason — `issuer_or_freshness`, `results_not_bindable:no_period_named`, `phase_not_notifiable` —
+along with the headline, the period and any named year. A legitimate release disappearing
+invisibly is the same failure mode as the bug this replaced.
+
+**Ambiguity now abstains instead of choosing.** `_pending_earnings_events()` returns **every**
+pending event per symbol rather than the most recent; when a symbol has more than one, the job
+logs `early_earnings_news_abstained` and processes nothing for it. A wrong attribution is worse
+than a missing alert here, because it marks the **wrong event's** phase as delivered. Verified
+against a real database: two pending MU events are both returned, so the caller can see the
+ambiguity rather than have it resolved silently.
+
+**Coverage added:** full-year releases, a retrospective article naming an old quarter, guidance
+naming a future quarter (MU's own case — guidance said Q1 while results said Q4), and the
+two-pending-event abstention. The retrospective case is kept as an **honest limit**: a piece
+naming Q2 passes the period test, and it is the date window and issuer check that exclude it — not
+the period, which is exactly why the period is not treated as event identity.
+
+Five sabotages, each caught: re-excluding full-year releases, picking the latest instead of
+abstaining, collapsing the query to one event, dropping the exclusion reason, and making
+`results_binding` always succeed.
+
+Two of my assertions again pinned numbers in source text and tripped the T401 ratchet; both
+replaced with behavioural equivalents. Baseline still 180.
+
+## Versioning
+
+MU-02 is now **two versions**, and they should be tracked separately:
+
+| Version | Contents | State |
+|---|---|---|
+| **v1** | phase- and event-scoped deduplication, plural fetcher, bounded candidate window | **deployed**; live end-to-end behaviour unverified |
+| **v2** | issuer binding, period identity incl. full-year, recorded exclusion reasons, abstention on overlapping events | **committed, not deployed** |
+
 ## One timestamp correction
 
 MU's captured result was published **20:01 UTC — 16:01 EDT**. The earlier "20:01 EDT → 00:01 UTC"

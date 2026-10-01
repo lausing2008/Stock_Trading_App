@@ -89,8 +89,9 @@ from db import AlertCondition, AnalystPriceTarget, DarkPoolAlertOutcome, DarkPoo
 
 
 from .ingestion import ingest_universe
-from .earnings_phase import (classify_earnings_phase, phase_is_notifiable, phase_subject,
-                             phase_body)
+from .earnings_phase import (classify_earnings_phase, extract_fiscal_year, extract_period,
+                             phase_body, phase_is_notifiable, phase_subject,
+                             results_binding)
 from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email, send_data_quality_alert_email, send_llm_usage_spike_email, is_quota_exceeded
 from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills, poll_broker_exit_fills, sync_broker_positions
 from ..api.routes import refresh_live_price_cache, refresh_avg_volume_cache, _AVG_VOLUME_KEY
@@ -2365,15 +2366,38 @@ def check_early_earnings_news_alerts() -> None:
                 # slot for the calendar day, so the actual result — which arrived 5.08 seconds
                 # after publication and was sitting in the database — was suppressed by a story
                 # that told the reader nothing. Each release stage now dedups independently.
-                _event_date = _event_date_by_symbol[sym]
+                _candidates = _event_date_by_symbol[sym]
+                if len(_candidates) != 1:
+                    # ABSTAIN rather than choose. Two pending events for one symbol means a
+                    # headline in the window cannot be attributed to either without guessing,
+                    # and a wrong attribution is worse than a missing alert here: it would mark
+                    # the wrong event's phase as delivered.
+                    log.warning("signal_alert.early_earnings_news_abstained",
+                                symbol=sym, candidate_events=[str(d) for d in _candidates],
+                                reason="multiple pending earnings events — cannot bind a headline")
+                    continue
+                _event_date = _candidates[0]
                 for _hl, _pub, _isym in _fetch_earnings_news_headlines(sym):
                     # MU-02 follow-up: bind the headline to THIS event before using it.
                     if not _headline_belongs_to_event(_pub, _event_date, _isym, sym):
-                        log.debug("signal_alert.early_earnings_news_unbound",
-                                  symbol=sym, published_at=_pub, event_date=str(_event_date))
+                        # Logged at INFO, not DEBUG: a legitimate release excluded by a filter
+                        # must not disappear invisibly. That failure mode is indistinguishable
+                        # from the bug this whole fix replaced.
+                        log.info("signal_alert.early_earnings_news_excluded",
+                                 symbol=sym, headline=(_hl or "")[:120], published_at=_pub,
+                                 item_symbol=_isym, event_date=str(_event_date),
+                                 reason="issuer_or_freshness")
                         continue
                     phase = classify_earnings_phase(_hl)
                     if not phase_is_notifiable(phase):
+                        _ok, _why = results_binding(_hl)
+                        log.info("signal_alert.early_earnings_news_excluded",
+                                 symbol=sym, headline=(_hl or "")[:120], phase=phase,
+                                 event_date=str(_event_date),
+                                 period=extract_period(_hl),
+                                 fiscal_year_named=extract_fiscal_year(_hl),
+                                 reason=("results_not_bindable:" + _why) if not _ok
+                                        else "phase_not_notifiable")
                         continue
                     headline = _hl
                     subject = phase_subject(sym, phase)
@@ -2389,7 +2413,7 @@ def check_early_earnings_news_alerts() -> None:
         _record_job_status("check_early_earnings_news_alerts", "error", time.monotonic() - _t0, str(exc))
 
 
-def _pending_earnings_events(session, symbols, today: date) -> dict[str, date]:
+def _pending_earnings_events(session, symbols, today: date) -> dict[str, list[date]]:
     """Symbols with an un-reported earnings event in the {yesterday, today} window, and the date
     of the most recent such event.
 
@@ -2411,10 +2435,14 @@ def _pending_earnings_events(session, symbols, today: date) -> dict[str, date]:
             EarningsEvent.eps_actual.is_(None),
         )
     ).all()
-    out: dict[str, date] = {}
+    # ALL pending events per symbol, not the most recent one. Collapsing to a single date here
+    # would be "selecting one arbitrarily" — the caller must be able to see that a symbol has two
+    # candidate events and abstain rather than guess which a headline belongs to.
+    out: dict[str, list[date]] = {}
     for sym, rd in rows:
-        if sym not in out or rd > out[sym]:
-            out[sym] = rd
+        out.setdefault(sym, []).append(rd)
+    for sym in out:
+        out[sym].sort()
     return out
 
 

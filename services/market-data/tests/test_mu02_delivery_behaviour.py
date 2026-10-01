@@ -235,8 +235,8 @@ def test_runs_either_side_of_utc_midnight_select_the_same_event(boundary):
     evening and another after UTC midnight must agree on WHICH event they are notifying about —
     executed through the real candidate query against a real database, not inferred from
     timestamp arithmetic."""
-    assert boundary["before_midnight"] == {"MU": "2026-09-30"}
-    assert boundary["after_midnight"] == {"MU": "2026-09-30"}
+    assert boundary["before_midnight"] == {"MU": ["2026-09-30"]}
+    assert boundary["after_midnight"] == {"MU": ["2026-09-30"]}
     assert boundary["same_event_date_for_MU"] is True
 
 
@@ -260,6 +260,13 @@ def test_the_window_closes_after_two_days(boundary):
     """{yesterday, today} really is the window — the event drops out, so the alert cannot keep
     firing indefinitely on an old release."""
     assert boundary["two_days_later"] == {}
+
+
+def test_two_pending_events_are_both_returned_so_the_caller_can_abstain(boundary):
+    """Executed against the real query: the function must SURFACE the ambiguity rather than
+    resolve it by picking the latest."""
+    assert boundary["mu_has_two_candidates"] is True
+    assert boundary["ambiguous_candidates"]["MU"] == ["2026-09-29", "2026-09-30"]
 
 
 # ── issuer identity and period ambiguity: the window is a FRESHNESS filter, not binding ──
@@ -331,3 +338,96 @@ def test_the_fetcher_carries_the_issuer_through():
     i = SCHED_SRC.index("def _fetch_earnings_news_headlines")
     block = SCHED_SRC[i:i + 1500]
     assert 'i.get("symbol")' in block, "issuer identity must survive the fetch"
+
+
+# ── period identity narrows a class; it does NOT establish event identity ───────────────
+
+def _phase_mod():
+    import importlib.util as _il
+    _src = pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "earnings_phase.py"
+    _sp = _il.spec_from_file_location(f"mu02_ph_{id(object())}", _src)
+    m = _il.module_from_spec(_sp); sys.modules[_sp.name] = m; _sp.loader.exec_module(m)
+    return m
+
+
+def test_a_full_year_release_is_not_excluded_for_lacking_a_quarter():
+    """The correction. A valid release can report FULL-YEAR results and name no quarter at all;
+    a quarter-only rule silently excluded those."""
+    ep = _phase_mod()
+    for h in ("Acme Reports Full-Year Results, EPS Beats",
+              "Acme Full Year 2026 Results Top Estimates",
+              "Acme FY2026 EPS Beats Consensus"):
+        assert ep.classify_earnings_phase(h) == ep.PHASE_RESULTS, h
+        ok, _ = ep.results_binding(h)
+        assert ok is True
+
+
+def test_a_results_headline_naming_no_period_is_excluded_WITH_A_REASON():
+    """Kept out of the confirmed-results slot — and the reason is recorded, so a legitimate
+    release cannot disappear invisibly."""
+    ep = _phase_mod()
+    ok, reason = ep.results_binding("Acme Beats Estimates")
+    assert ok is False
+    assert reason == "no_period_named"
+    assert ep.classify_earnings_phase("Acme Beats Estimates") == ep.PHASE_OTHER
+
+
+def test_the_named_period_and_year_are_recorded_but_never_matched_against_the_db_label():
+    """MU's stored row for the 2026-09-30 release is labelled "Q3 2026" while the real headline
+    says Q4 — an August fiscal year-end against a calendar-month-derived label. Matching the two
+    would have REJECTED the very release this fix exists for, so the extracted period and year
+    are carried for reconciliation only."""
+    ep = _phase_mod()
+    assert ep.extract_period("Micron Technology Q4 Adj EPS $33.42 Beats") == "Q4"
+    assert ep.extract_fiscal_year("Micron Technology Q4 2026 Adj EPS Beats") == 2026
+    assert ep.extract_fiscal_year("Micron Technology Q4 Adj EPS $33.42 Beats") is None
+    # The scheduler must not compare the two.
+    assert "fiscal_quarter ==" not in SCHED_SRC
+    assert "EarningsEvent.fiscal_quarter" not in SCHED_SRC
+
+
+def test_a_retrospective_article_naming_an_old_quarter_still_only_narrows():
+    """Honest limit: a retrospective piece naming Q2 passes the period test. The date window and
+    issuer check are what keep it out, not the period — which is why the period is explicitly
+    not treated as event identity."""
+    ep = _phase_mod()
+    assert ep.extract_period("Looking Back At Acme Q2 Results") == "Q2"
+
+
+def test_guidance_naming_a_future_quarter_stays_guidance():
+    """MU's guidance named Q1 while the results named Q4. A future-quarter mention must not be
+    read as a result for that quarter."""
+    ep = _phase_mod()
+    guidance = ("Micron Technology Sees Q1 Adj EPS $37.15-$39.15 vs $35.07 Est, "
+                "Sees Sales $60.000B-$63.000B vs $56.553B Est")
+    assert ep.classify_earnings_phase(guidance) == ep.PHASE_GUIDANCE
+    assert ep.extract_period(guidance) == "Q1"
+    assert ep.classify_earnings_phase("Acme Sees Q1 EPS Above Consensus") == ep.PHASE_GUIDANCE
+
+
+def test_two_pending_events_make_the_symbol_ABSTAIN_rather_than_pick_one():
+    """Overlapping events must abstain, not select arbitrarily: a wrong attribution marks the
+    WRONG event's phase as delivered, which is worse than a missing alert."""
+    # The count check itself is not pinned as source text (T401). What is asserted: the branch
+    # exists, it abstains loudly, and — in the executed test below — the query really does return
+    # both candidate events so the caller CAN abstain rather than silently pick one.
+    i = SCHED_SRC.index("_candidates = _event_date_by_symbol[sym]")
+    block = SCHED_SRC[i:i + 900]
+    assert "len(_candidates)" in block
+    assert "early_earnings_news_abstained" in block
+    assert "continue" in block
+
+
+def test_the_candidate_query_returns_every_pending_event_not_just_the_latest():
+    i = SCHED_SRC.index("def _pending_earnings_events")
+    block = SCHED_SRC[i:i + 2000]
+    assert "-> dict[str, list[date]]" in block
+    assert "out.setdefault(sym, []).append(rd)" in block
+
+
+def test_every_exclusion_path_records_a_reason():
+    i = SCHED_SRC.index("_candidates = _event_date_by_symbol[sym]")
+    block = SCHED_SRC[i:i + 2500]
+    assert block.count("early_earnings_news_excluded") >= 2
+    assert 'reason="issuer_or_freshness"' in block
+    assert "results_not_bindable:" in block

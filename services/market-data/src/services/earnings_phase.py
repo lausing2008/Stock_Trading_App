@@ -62,15 +62,23 @@ _PREVIEW = re.compile(
 
 
 _PERIOD_Q = re.compile(r"\bQ([1-4])\b", re.I)
+_PERIOD_FY = re.compile(r"\b(full[- ]year|fiscal[- ]year|FY\s?\d{2,4}|full[- ]year results)\b", re.I)
+_PERIOD_YEAR = re.compile(r"\b(?:FY\s?|fiscal\s+)?(20\d{2})\b")
 _PERIOD_WORD = re.compile(r"\b(first|second|third|fourth)[- ]quarter\b", re.I)
 _WORD_TO_Q = {"first": "Q1", "second": "Q2", "third": "Q3", "fourth": "Q4"}
 
 
 def extract_period(headline: str | None) -> str | None:
-    """The fiscal period a headline names, e.g. "Q4" — or None when it names none.
+    """The fiscal period a headline names — "Q4", "FY", or None when it names none.
 
-    Carried so a headline can be checked against the event it is being attached to, and so an
-    ambiguous one can be kept out of the results phase. Handles both "Q4" and "fourth quarter".
+    **This does NOT establish event identity, and must not be used as if it did.** Naming "Q4"
+    does not bind an article to the right fiscal YEAR or the right report event, and a
+    retrospective piece can name a quarter it is merely discussing. It narrows a class of
+    headlines; that is all it is for.
+
+    `FY` covers the case a quarter-only rule got wrong: a valid release can report **full-year
+    results** without naming a quarter at all, and an earlier version of this function would have
+    returned None for those and silently excluded them.
     """
     if not headline:
         return None
@@ -80,7 +88,37 @@ def extract_period(headline: str | None) -> str | None:
     m = _PERIOD_WORD.search(headline)
     if m:
         return _WORD_TO_Q[m.group(1).lower()]
+    if _PERIOD_FY.search(headline):
+        return "FY"
     return None
+
+
+def extract_fiscal_year(headline: str | None) -> int | None:
+    """Any four-digit year the headline names, for provenance — never for matching.
+
+    **Deliberately not compared against `EarningsEvent.fiscal_year`.** Measured on production
+    2026-10-01: MU's row for the 2026-09-30 release is labelled **"Q3 2026"** while the actual
+    result headline says **Q4** — MU has an August fiscal year-end and the stored label is derived
+    from the calendar month, which the model's own comment admits is "a best-effort calendar-month
+    label". A rule matching headline period against that label would have rejected MU's own
+    release: the exact event this whole fix exists for. Recorded for later reconciliation only.
+    """
+    if not headline:
+        return None
+    m = _PERIOD_YEAR.search(headline)
+    return int(m.group(1)) if m else None
+
+
+def results_binding(headline: str | None) -> tuple[bool, str]:
+    """May this headline occupy the confirmed-RESULTS slot, and if not, why not?
+
+    Returns `(ok, reason)`. The reason exists so an excluded release does not disappear
+    invisibly — the failure mode of a silent filter is indistinguishable from the bug it replaced.
+    """
+    period = extract_period(headline)
+    if period is None:
+        return False, "no_period_named"
+    return True, "period_" + period
 
 
 def classify_earnings_phase(headline: str | None) -> str:
@@ -100,11 +138,15 @@ def classify_earnings_phase(headline: str | None) -> str:
     if _RESULTS.search(text):
         # AMBIGUOUS ARTICLES MUST NOT CONSUME THE RESULTS PHASE. The date window is a freshness
         # filter, not event binding: a nearby article can discuss a different fiscal period, or
-        # another company's print, and still read as "results". A genuine result headline names
-        # its quarter — MU's did ("Q4 Adj EPS…"). One that names none cannot be bound to an
-        # event, so it is downgraded to `other`: no notification, and crucially no consumption
-        # of the slot the real print needs.
-        return PHASE_RESULTS if extract_period(text) else PHASE_OTHER
+        # another company's print, and still read as "results".
+        #
+        # Requiring a NAMED PERIOD narrows that class — it does not establish event identity, and
+        # is not treated as if it did. "Q4" binds nothing to a fiscal year or a report event; see
+        # `extract_fiscal_year()` for why matching against the stored label would be worse than
+        # not matching at all. A full-year release counts, so a legitimate "full-year results"
+        # headline is not excluded for lacking a quarter.
+        _ok, _ = results_binding(text)
+        return PHASE_RESULTS if _ok else PHASE_OTHER
     if _PREVIEW.search(text):
         return PHASE_PREVIEW
     return PHASE_OTHER
