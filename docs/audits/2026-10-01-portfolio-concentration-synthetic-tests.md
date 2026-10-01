@@ -70,7 +70,7 @@ needs the eventual execution model rather than a competing one invented now:
 | Finding | Treatment |
 |---|---|
 | Pending orders invisible | Include outstanding entry commitments. Partial fills transfer exposure from reserved to held without double counting; cancellations release only confirmed unfilled quantity. Shares the order model, not a parallel one. |
-| Missing marks fall back to entry price | Preserve mark age/provenance; report exposure as uncertain; defer risk-increasing entries when the cap cannot be established. **Mechanism built** (`require_fresh_marks` → `exposure_stale_mark`) and **off by default** — the policy change is a separate decision. Protective exits stay available either way. |
+| Missing marks fall back to entry price | Distinguish **unvaluable** (no number; fails closed — and unreachable from the live path today) from **fallback** (a number from a substitute source, which is not current exposure and is currently permitted). **Mechanism built** (`require_fresh_marks` → `exposure_stale_mark`), **off by default**, and now measured in shadow via `paper.exposure_stale_mark_shadow` so enabling it rests on a measured block rate. Protective exits stay available either way. |
 | No FX conversion | The single-currency assumption is now enforced in one place rather than assumed everywhere. Mixed-currency portfolios require timestamped FX conversion first. |
 | No order/assignment representation | A prerequisite for broader broker/options automation. Assignment's stock, cash and collateral consequences must be modelled explicitly. |
 

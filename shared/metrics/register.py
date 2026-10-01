@@ -253,9 +253,15 @@ REGISTER: tuple[WorkItem, ...] = (
                    "conditional orders; witness preserved; verified on PostgreSQL under "
                    "contention (8 threads x 4%% vs a 15%% cap -> exactly 3 granted). The other "
                    "four stay open and must share the eventual execution model rather than a "
-                   "competing one: pending-order commitments, mark provenance (mechanism built, "
-                   "OFF by default), timestamped FX before any mixed-currency book, and "
-                   "order/assignment representation as a broker/options prerequisite."),
+                   "competing one. MIXED-WRITER EVIDENCE OBTAINED: the organic entry and the "
+                   "real conditional_orders._execute_buy were raced through their actual paths "
+                   "- organic opened, conditional refused with sector_cap, reservations "
+                   "reconcile, and a `committing` reservation is never swept so crash reclaim "
+                   "cannot free in-flight capacity. STILL OPEN: fresh marks (unvaluable fails "
+                   "closed but is unreachable from the live path; the FALLBACK is what occurs "
+                   "and is permitted - now measured in shadow), pending broker exposure, "
+                   "timestamped FX before any mixed-currency book, and order/assignment "
+                   "representation as a broker/options prerequisite."),
     WorkItem("M16", "occurrence-gated", "Broker fill re-poll needs multi-cycle observation",
              "Sandbox partial/pending fill across cycles, restart and reconciliation.",
              "Accepted order distinguished from fill; no duplicate trades/cash.",

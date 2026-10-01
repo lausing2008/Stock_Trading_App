@@ -5374,6 +5374,10 @@ def _open_paper_trade(
     # the portfolio, sums committed exposure plus every active reservation, and claims this
     # entry's value, all inside that lock. `sector_value` above remains the definition of
     # committed exposure; this adds the in-flight half.
+    # SHADOW MEASUREMENT for the stale-mark finding. `require_fresh_marks` stays OFF; this
+    # records how often it WOULD have refused an entry, so enabling it can rest on a measured
+    # block rate instead of a guess. A fallback price is a number, not current exposure.
+    _exposure_telemetry: dict = {}
     _reservation, _res_reason = _exposure.reserve(
         session, portfolio_id=portfolio.id,
         intent_id=f"entry:{portfolio.id}:{stock.symbol}:{_uuid4().hex}",
@@ -5383,7 +5387,15 @@ def _open_paper_trade(
         # rule); only the ROW SET is read fresh inside the lock. The flag reports whether a
         # fallback was used, which is what the separate stale-mark finding needs.
         price_for=lambda t: (live_prices.get(t.symbol, t.entry_price),
-                             t.symbol not in live_prices))
+                             t.symbol not in live_prices),
+        telemetry=_exposure_telemetry)
+    if _exposure_telemetry.get("fallback_marks"):
+        log.info("paper.exposure_stale_mark_shadow", symbol=stock.symbol,
+                 sector=_sector or "unclassified",
+                 fallback_marks=_exposure_telemetry["fallback_marks"],
+                 would_block=True, enforced=False,
+                 note="a fallback price is a number, not current exposure; "
+                      "require_fresh_marks is OFF")
     if _reservation is None:
         log.info("paper.skip_sector_cap", symbol=stock.symbol,
                  sector=_sector or "unclassified",
@@ -5467,6 +5479,11 @@ def _open_paper_trade(
         stage                 = "open",
         hold_days             = 0,
     )
+    # Mark the reservation mid-commit BEFORE the trade row exists. From here until `consume`
+    # the expiry sweep must not reclaim this capacity: the position may already exist, and the
+    # broker submission below may return an unknown outcome. A worker dying in this window
+    # leaves a `committing` row for reconciliation rather than silently freeing room.
+    _exposure.begin_commit(session, _reservation)
     session.add(trade)
     session.flush()  # IF-12: assign trade.id before the decision-log FK reference below
     # Hand the reserved exposure to the position that now carries it. Compare-and-set: if the

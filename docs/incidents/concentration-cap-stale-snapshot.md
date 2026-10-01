@@ -3,6 +3,14 @@
 **Found 2026-10-01** by synthetic-position testing (M15). **Fixed the same day.** No production
 deployment is implied by either; this was found and fixed in the repository.
 
+| Item | Status |
+|---|---|
+| Atomic reservation primitive | Verified on PostgreSQL |
+| Organic / conditional integration | Verified: both production writers raced through their real paths |
+| Crash reclaim vs in-flight commit | Verified: `committing` is never swept |
+| Fresh marks | **Open** — mechanism built, OFF, now measured in shadow |
+| Pending broker exposure, FX, assignment | **Open** |
+
 ## The defect
 
 Entry candidates are sized against `prefetched_open`, a snapshot of open positions captured
@@ -66,12 +74,19 @@ regression fails with the original symptom rather than vanishing:
 | Rejected entries release immediately | Released, not left to time out |
 | Terminal reservations cannot be reused | Consumed cannot be released; expired cannot be consumed |
 | Reconciliation surfaces orphans | A consumed reservation with no open position is reported |
-| Fails closed | An unvaluable position refuses the entry; protective exits never route through this module |
+| Fails closed on an UNVALUABLE position | Refuses the entry. **Unreachable from the live path today** — see below |
+| Mixed-writer integration | Organic entry raced against the real `conditional_orders._execute_buy`: organic opened, conditional refused with `sector_cap`, combined within cap |
+| Reservation carried through trade creation | Every reservation terminal, every consumed one pointing at a real open trade, none left `reserved` |
+| Crash reclaim cannot free in-flight capacity | A `committing` reservation swept an hour past TTL: still held, new entry still refused, surfaced for review |
 
-**SQLite cannot establish two of these.** pysqlite does not open a transaction for DML, so a
-released SAVEPOINT is already durable and rollback does not undo it; and it serialises writers,
-so contention never occurs. Those two live in the **required** PostgreSQL CI job. The SQLite
-suite records the limitation explicitly rather than asserting a guarantee it cannot test.
+**Two of these cannot be established under the SQLite configuration used here** — which is a
+statement about the driver and the locking available, not about SQLite. Under the default
+pysqlite configuration the driver does not emit `BEGIN` for DML, so a released SAVEPOINT is
+already durable and `rollback()` does not undo it (the documented `isolation_level=None` plus an
+explicit `BEGIN` would restore it); and there is no PostgreSQL-equivalent row lock, writers
+being serialised at the database level instead. Those two guarantees live in the **required**
+PostgreSQL CI job, and the SQLite suite records the limitation rather than asserting something
+it has not tested.
 
 Five sabotage runs caught: committed read from a stale snapshot again; active reservations not
 counted; consume leaving the reservation counting; expired reservations still blocking; an
@@ -85,9 +100,19 @@ one invented now. See `docs/audits/2026-10-01-portfolio-concentration-synthetic-
 1. **Pending/unfilled orders remain invisible** — needs outstanding entry commitments, with
    partial fills transferring exposure from reserved to held without double counting, and
    cancellations releasing only confirmed unfilled quantity.
-2. **Missing marks fall back to entry price** — mechanism built (`require_fresh_marks`,
-   `exposure_stale_mark`) and **off by default**; policy change is separate. Needs mark
-   age/provenance preserved and exposure reported as uncertain.
+2. **Missing marks fall back to entry price.** Two different kinds of not-knowing, which must
+   not be conflated:
+   - **Unvaluable** — no number can be produced, so the cap cannot be computed and the entry
+     fails closed. **This is unreachable from the live entry path today**, because the
+     production caller substitutes `entry_price` whenever a live mark is missing and so never
+     reports a position as unvaluable. It guards a future caller that reports honestly.
+   - **Fallback** — a number IS produced, from a substitute source. It is a number, and it is
+     not current exposure; it can understate or overstate. **This is the case that actually
+     occurs, and it is currently permitted to decide a cap.**
+
+   `require_fresh_marks` → `exposure_stale_mark` is built and **off by default**. Shadow
+   telemetry (`paper.exposure_stale_mark_shadow`) now records how often it *would* have refused
+   an entry, so enabling it can rest on a measured block rate rather than a guess.
 3. **No FX conversion** — single-currency assumption now enforced in one place; mixed-currency
    portfolios need timestamped conversion first.
 4. **No order/assignment representation** — a prerequisite for broader broker/options

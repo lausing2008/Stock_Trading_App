@@ -15,10 +15,10 @@ it, so reservations for one portfolio are ordered and the sum they each see incl
 earlier one. Portfolios do not contend with each other.
 
     **On PostgreSQL** `SELECT ... FOR UPDATE` genuinely serialises them.
-    **On SQLite** `with_for_update()` is accepted and IGNORED; SQLite serialises writers at the
-    database level instead, which happens to produce the same outcome for a single-writer test
-    but is NOT the same guarantee. The PostgreSQL concurrency test is the real evidence here;
-    the SQLite tests establish the lifecycle, not the mutual exclusion.
+    **On SQLite** there is no PostgreSQL-equivalent row lock — `with_for_update()` is accepted
+    and ignored, and writers are serialised at the database level instead. That produces the
+    same outcome for a single-writer test without being the same guarantee. The PostgreSQL
+    tests are the real evidence for mutual exclusion; the SQLite tests establish the lifecycle.
 
 FAIL CLOSED. Opening a position is the risk-INCREASING action. If committed exposure cannot be
 established — a missing mark, an unreadable row — the reservation is refused. A protective exit
@@ -34,6 +34,12 @@ from sqlalchemy.exc import IntegrityError
 from db.models import PaperPortfolio, PaperTrade, PortfolioExposureReservation
 
 RESERVED = "reserved"
+#: The entry is being created RIGHT NOW: the trade row is about to be written, or has been
+#: written and its broker outcome is not yet known. A reservation in this state must NEVER be
+#: reclaimed by the expiry sweep — releasing capacity while an entry is mid-commit is how the
+#: cap gets exceeded by the very mechanism meant to enforce it. Stale `committing` rows are
+#: surfaced for reconciliation instead, never auto-released.
+COMMITTING = "committing"
 CONSUMED = "consumed"
 RELEASED = "released"
 EXPIRED = "expired"
@@ -64,9 +70,13 @@ def active_reserved_value(session, portfolio_id: int, sector: str | None,
     rows = session.execute(
         select(PortfolioExposureReservation).where(
             PortfolioExposureReservation.portfolio_id == portfolio_id,
-            PortfolioExposureReservation.state == RESERVED,
-            PortfolioExposureReservation.expires_at > now)).scalars().all()
-    return float(sum(r.value for r in rows if _same_bucket(r.sector, sector)))
+            PortfolioExposureReservation.state.in_((RESERVED, COMMITTING)))).scalars().all()
+    # `committing` always counts, regardless of age: the capacity is in use by an entry that may
+    # already exist. `reserved` counts only while live, so a lapsed one stops blocking at read
+    # time rather than waiting for the sweep.
+    return float(sum(r.value for r in rows
+                     if _same_bucket(r.sector, sector)
+                     and (r.state == COMMITTING or r.expires_at > now)))
 
 
 def committed_value(session, portfolio_id: int, sector: str | None, *, price_for
@@ -83,8 +93,23 @@ def committed_value(session, portfolio_id: int, sector: str | None, *, price_for
     `Stock.sector`. That is deliberate: it asks "what exposure did we take in this sector",
     which a later reclassification of the stock should not retroactively rewrite.
 
-    `price_for(trade) -> float | None` keeps the VALUATION the caller's definition while the ROW
-    SET is this module's. `None` means no mark could be established for that position.
+    `price_for(trade) -> (price, is_fallback)` keeps the VALUATION the caller's definition while
+    the ROW SET is this module's.
+
+    TWO DIFFERENT KINDS OF NOT-KNOWING, and they must not be conflated:
+
+      `price is None`  — the position is UNVALUABLE. No number can be produced, so the cap
+                         cannot be computed at all and the entry fails closed.
+      `is_fallback`    — a number WAS produced, from a stale or substitute source (today: the
+                         entry price). It is a number, and it is not current exposure. It can
+                         understate or overstate, and the caller is told so rather than being
+                         left to assume the figure is live.
+
+    NOTE, because it changes what "fails closed" currently buys: the production caller's
+    `price_for` substitutes `entry_price` whenever a live mark is missing and therefore NEVER
+    returns None. `exposure_unknown_mark` is consequently unreachable from the live entry path
+    today — it guards a future caller that reports unvaluable positions honestly. The condition
+    that actually occurs in production is the FALLBACK, and it is currently permitted.
     """
     rows = session.execute(
         select(PaperTrade).where(PaperTrade.portfolio_id == portfolio_id,
@@ -106,6 +131,7 @@ def committed_value(session, portfolio_id: int, sector: str | None, *, price_for
 def reserve(session, *, portfolio_id: int, intent_id: str, symbol: str, sector: str | None,
             value: float, equity: float, cap_pct: float, price_for,
             require_fresh_marks: bool = False, ttl_seconds: int = DEFAULT_TTL_SECONDS,
+            telemetry: dict | None = None,
             now: datetime | None = None) -> tuple[PortfolioExposureReservation | None, str]:
     """Read committed exposure, add active reservations, and claim `value` — in ONE atomic step.
 
@@ -115,9 +141,13 @@ def reserve(session, *, portfolio_id: int, intent_id: str, symbol: str, sector: 
     reintroduce the race this function exists to remove.
 
     `require_fresh_marks` is the switch for the separate stale-mark finding: when True, an entry
-    is refused if any open position in the sector had to be valued by fallback, because the cap
-    cannot then be established reliably. It defaults to False, which preserves today's
+    is refused if any open position in the sector had to be valued by fallback, because current
+    exposure cannot then be established. It defaults to False, which preserves today's
     behaviour — the mechanism is built and tested, the policy is not switched on here.
+
+    `telemetry` is an optional out-parameter (the pattern the anti-chase counters already use).
+    It records what a fresh-mark policy WOULD have done without changing what happens, so the
+    decision to enable it can rest on a measured block rate rather than a guess.
     """
     now = now or utcnow()
     if equity <= 0:
@@ -130,6 +160,9 @@ def reserve(session, *, portfolio_id: int, intent_id: str, symbol: str, sector: 
         select(PaperPortfolio.id).where(PaperPortfolio.id == portfolio_id).with_for_update())
 
     committed, fallbacks = committed_value(session, portfolio_id, sector, price_for=price_for)
+    if telemetry is not None:
+        telemetry["fallback_marks"] = fallbacks
+        telemetry["would_block_on_fresh_marks"] = bool(fallbacks)
     if committed != committed:                      # NaN: a position could not be valued
         return None, "exposure_unknown_mark"
     if require_fresh_marks and fallbacks:
@@ -137,6 +170,10 @@ def reserve(session, *, portfolio_id: int, intent_id: str, symbol: str, sector: 
 
     reserved = active_reserved_value(session, portfolio_id, sector, now=now)
     projected = committed + reserved + value
+    if telemetry is not None:
+        telemetry["committed"] = committed
+        telemetry["reserved"] = reserved
+        telemetry["projected_pct"] = projected / equity
     if projected / equity > cap_pct:
         return None, "sector_cap"
 
@@ -158,6 +195,30 @@ def reserve(session, *, portfolio_id: int, intent_id: str, symbol: str, sector: 
     return row, "reserved"
 
 
+def begin_commit(session, reservation: PortfolioExposureReservation,
+                 now: datetime | None = None) -> bool:
+    """Mark the reservation as mid-commit, immediately before the trade row is written.
+
+    THE GAP THIS CLOSES. Between `reserve()` and `consume()` the worker does real work — sizing,
+    slippage, constructing the trade, and then a broker submission whose outcome may be unknown.
+    If that window outlasts the TTL, the expiry sweep would reclaim the capacity while the entry
+    was still completing, and another candidate could take room that is about to be occupied.
+    Worse, the broker outcome may be UNKNOWN, so nobody can say whether the position exists.
+
+    `committing` is excluded from the sweep for exactly that reason. A worker that dies here
+    leaves a row that is neither released nor consumed — which is the honest state, and the one
+    reconciliation needs to see.
+    """
+    now = now or utcnow()
+    result = session.execute(
+        update(PortfolioExposureReservation)
+        .where(PortfolioExposureReservation.id == reservation.id,
+               PortfolioExposureReservation.state == RESERVED)
+        .values(state=COMMITTING)
+        .execution_options(synchronize_session=False))
+    return result.rowcount == 1
+
+
 def consume(session, reservation: PortfolioExposureReservation, *, trade_id: int,
             now: datetime | None = None) -> bool:
     """The entry opened. Hand the exposure over to the open position.
@@ -171,7 +232,7 @@ def consume(session, reservation: PortfolioExposureReservation, *, trade_id: int
     result = session.execute(
         update(PortfolioExposureReservation)
         .where(PortfolioExposureReservation.id == reservation.id,
-               PortfolioExposureReservation.state == RESERVED)
+               PortfolioExposureReservation.state.in_((RESERVED, COMMITTING)))
         .values(state=CONSUMED, trade_id=trade_id, terminal_at=now,
                 terminal_reason="entry opened")
         .execution_options(synchronize_session=False))
@@ -204,6 +265,9 @@ def expire_stale(session, *, now: datetime | None = None) -> int:
     reconciliation needs to look at.
     """
     now = now or utcnow()
+    # `state == RESERVED` only. A `committing` row is deliberately NOT swept: the entry may
+    # already exist, or its broker outcome may be unknown, and reclaiming its capacity would let
+    # another candidate take room that is about to be occupied.
     result = session.execute(
         update(PortfolioExposureReservation)
         .where(PortfolioExposureReservation.state == RESERVED,
@@ -212,6 +276,24 @@ def expire_stale(session, *, now: datetime | None = None) -> int:
                 terminal_reason="reservation expired; worker did not consume or release it")
         .execution_options(synchronize_session=False))
     return int(result.rowcount or 0)
+
+
+def stale_committing(session, *, older_than_seconds: int = 900,
+                     now: datetime | None = None) -> list:
+    """Reservations stuck mid-commit. For REVIEW — nothing here releases them.
+
+    A row sitting in `committing` means a worker died between deciding to open a position and
+    recording that it had. Either the trade exists (and the reservation should have been
+    consumed) or it does not (and the capacity is being held by a ghost). Only evidence can say
+    which, so this surfaces them rather than guessing — the same reasoning as the outbox's
+    `unknown` outcomes.
+    """
+    now = now or utcnow()
+    cutoff = now - timedelta(seconds=older_than_seconds)
+    return (session.query(PortfolioExposureReservation)
+            .filter(PortfolioExposureReservation.state == COMMITTING,
+                    PortfolioExposureReservation.created_at <= cutoff)
+            .order_by(PortfolioExposureReservation.created_at).all())
 
 
 def reconcile(session, *, portfolio_id: int, open_trade_ids: set[int],
@@ -236,6 +318,7 @@ def reconcile(session, *, portfolio_id: int, open_trade_ids: set[int],
     return {
         "total": len(rows),
         "active": sum(1 for r in rows if r.state == RESERVED and r.expires_at > now),
+        "committing": sum(1 for r in rows if r.state == COMMITTING),
         "consumed": sum(1 for r in rows if r.state == CONSUMED),
         "released": sum(1 for r in rows if r.state == RELEASED),
         "expired_unconsumed": sum(1 for r in rows if r.state == EXPIRED),

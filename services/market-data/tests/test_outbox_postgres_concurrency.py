@@ -48,7 +48,12 @@ def pg():
                           timeout=300, env={**os.environ, "OUTBOX_PG_URL": _URL})
     if proc.returncode != 0:
         pytest.fail(f"postgres probe failed:\n{proc.stdout}\n{proc.stderr}")
-    data = json.loads(proc.stdout)
+    # The probe imports the real trading engine for the mixed-writer scenario, whose structlog
+    # writes to stdout. Parse from the delimiter rather than assuming stdout is only JSON.
+    marker = "===PROBE_JSON==="
+    if marker not in proc.stdout:
+        pytest.fail(f"probe produced no result block:\n{proc.stdout[-3000:]}\n{proc.stderr[-2000:]}")
+    data = json.loads(proc.stdout.split(marker, 1)[1])
     if data.get("skipped"):
         if _REQUIRED:
             pytest.fail(f"probe skipped while required: {data.get('reason')}")
@@ -142,3 +147,51 @@ def test_the_same_intent_reserved_concurrently_claims_exposure_once(pg):
     assert d["outcomes"].count("reserved") == 1
     assert d["outcomes"].count("already_reserved") == 5
     assert d["reserved_value"] == 1000.0
+
+
+# ── Mixed-writer integration: the two PRODUCTION entry paths against each other ───────────────
+
+def test_organic_and_conditional_entries_contend_correctly_at_the_cap(pg):
+    """Racing two `reserve()` calls shows the PRIMITIVE works. It does not show the two
+    production writers are protected: `_scan_for_entries` and `conditional_orders._execute_buy`
+    are different modules that build their own snapshots and could reach the cap by different
+    routes.
+
+    This races the real organic entry against the real `_execute_buy` — each sized at ~10,010
+    against a 15,000 cap, so only one can fit — and requires the surviving positions to respect
+    the cap."""
+    m = pg["mixed_writer"]
+    assert all("error" not in r for r in m["results"]), m["results"]
+    paths = {r["path"]: r for r in m["results"]}
+    assert paths["organic"]["opened"] is True
+    assert paths["conditional"]["opened"] is False
+    assert "sector_cap" in paths["conditional"]["reason"]
+    assert m["within_cap"] is True
+    assert m["combined_value"] <= m["cap_value"]
+
+
+def test_both_paths_carry_the_reservation_through_trade_creation(pg):
+    """The handover must leave neither an accounting gap nor a double count: every reservation
+    ends terminal, every consumed one points at a real open trade, and none is left `reserved`
+    holding capacity nothing will use."""
+    m = pg["mixed_writer"]
+    assert m["none_left_reserved"] is True
+    assert m["consumed_point_at_open_trades"] is True
+    assert m["reconcile"]["reconciles"] is True
+    assert m["reconcile"]["consumed"] == m["positions_opened"]
+    assert m["reconcile"]["consumed_without_open_trade"] == []
+
+
+def test_crash_reclamation_cannot_free_capacity_mid_commit(pg):
+    """A reservation marked `committing` — the trade row is being written, or its broker outcome
+    is unknown — must NEVER be reclaimed by the expiry sweep. Releasing capacity there is how
+    the cap gets exceeded by the mechanism meant to enforce it.
+
+    Swept an hour past its TTL: still held, a new entry is still refused, and it is surfaced for
+    review rather than silently released."""
+    c = pg["committing_not_reclaimed"]
+    assert c["swept_by_expiry"] == 0
+    assert c["state"] == "committing"
+    assert c["capacity_still_held"] == 14000.0
+    assert c["new_entry_blocked"] == "sector_cap"
+    assert "pg-commit" in c["surfaced_for_review"]

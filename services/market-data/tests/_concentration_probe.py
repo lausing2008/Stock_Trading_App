@@ -277,11 +277,12 @@ with Session() as s:
 
 # (a) ROLLBACK — NOT AUTHORITATIVE ON SQLITE, and the probe says so rather than guessing.
 #
-# pysqlite does not emit BEGIN for DML by default, so a released SAVEPOINT is effectively
-# already durable and `session.rollback()` does not undo it. That is a driver property, not a
-# property of the reservation: the same sequence on PostgreSQL rolls back correctly, and that is
-# where the guarantee is actually asserted (test_outbox_postgres_concurrency.py's sibling
-# reservation scenarios).
+# NOT "SQLite cannot test rollback". Under the DEFAULT pysqlite configuration used here the
+# driver does not emit BEGIN for DML, so a released SAVEPOINT is already durable and
+# `session.rollback()` does not undo it; SQLite itself supports rollback, and the documented
+# workaround (isolation_level=None plus an explicit BEGIN) would restore it. A driver/
+# transaction-configuration property, not a property of the reservation — so the guarantee is
+# asserted on PostgreSQL instead.
 #
 # Its own portfolio, because the first version of this scenario leaked a 10,000 reservation into
 # the NEXT scenario and silently turned a valid reservation into a `sector_cap` refusal — a
@@ -301,8 +302,10 @@ with Session() as s:
         "rows_after_rollback": s.query(_Res).filter_by(portfolio_id=PF_RB).count(),
         "reserved_value_after_rollback": _exp.active_reserved_value(s, PF_RB, "Energy", now=T),
         "authoritative_on_this_engine": False,
-        "why": "pysqlite does not open a transaction for DML, so a released SAVEPOINT is "
-               "already durable; rollback is asserted on PostgreSQL instead",
+        "why": "under the default pysqlite configuration the driver does not emit BEGIN for "
+               "DML, so a released SAVEPOINT is already durable and rollback does not undo it; "
+               "SQLite itself supports rollback (isolation_level=None plus an explicit BEGIN "
+               "restores it). Asserted on PostgreSQL instead.",
     }
 
 # (b) WORKER CRASH: reserved, never consumed or released. Must not block forever.
@@ -415,8 +418,29 @@ with Session() as s:
                                  price_for=lambda t: (float(t.entry_price), True),
                                  require_fresh_marks=True, now=T)[1]
     s.rollback()
+# Shadow telemetry: what a fresh-mark policy WOULD have done, without doing it.
+with Session() as s:
+    _tel_fallback, _tel_fresh = {}, {}
+    _exp.reserve(s, portfolio_id=PF2, intent_id="tel-1", symbol="T1", sector="Energy",
+                 value=1.0, equity=EQUITY, cap_pct=0.90,
+                 price_for=lambda t: (float(t.entry_price), True), telemetry=_tel_fallback,
+                 now=T)
+    s.rollback()
+with Session() as s:
+    _exp.reserve(s, portfolio_id=PF2, intent_id="tel-2", symbol="T2", sector="Energy",
+                 value=1.0, equity=EQUITY, cap_pct=0.90,
+                 price_for=lambda t: (float(t.entry_price), False), telemetry=_tel_fresh, now=T)
+    s.rollback()
+
 R["fail_closed"] = {"unvaluable_position": none_price, "stale_mark_default": stale_ok,
                     "stale_mark_when_fresh_required": stale_refused}
+R["shadow_fresh_marks"] = {
+    "with_fallback": {k: _tel_fallback.get(k) for k in
+                      ("fallback_marks", "would_block_on_fresh_marks")},
+    "all_fresh": {k: _tel_fresh.get(k) for k in
+                  ("fallback_marks", "would_block_on_fresh_marks")},
+    "entry_still_allowed_with_fallback": stale_ok,
+}
 
 # ── 10. M20: eligibility must not depend on notification infrastructure ───────────────────────
 #

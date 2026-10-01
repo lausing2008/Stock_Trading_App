@@ -29,16 +29,22 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 import importlib.util as _ilu
 
+# `common` must be the REAL package from shared/, not a stub: the trading engine imports
+# common.logging, common.indicators and others from it. Only `common.config` is replaced, so the
+# engine's module-level engine construction points at this throwaway database.
+import common                                                             # noqa: E402
 _cfg = types.ModuleType("common.config")
-_cfg.get_settings = lambda: types.SimpleNamespace(database_url=_URL, admin_password=None)
-sys.modules.setdefault("common", types.ModuleType("common"))
+_cfg.get_settings = lambda: types.SimpleNamespace(
+    database_url=_URL, admin_password=None, jwt_secret="x", email_provider="", email_from="")
 sys.modules["common.config"] = _cfg
+common.config = _cfg
 
-_db_pkg = types.ModuleType("db"); _db_pkg.__path__ = [str(_ROOT / "shared" / "db")]
-sys.modules["db"] = _db_pkg
-_mspec = _ilu.spec_from_file_location("db.models", _ROOT / "shared" / "db" / "models.py")
-_models = _ilu.module_from_spec(_mspec); sys.modules["db.models"] = _models
-_mspec.loader.exec_module(_models)
+# The REAL `db` package. Unlike the SQLite probes, nothing needs stubbing here: session.py
+# builds its engine from `database_url`, which is this throwaway PostgreSQL, so the pool
+# arguments it passes are valid and `db/__init__.py` runs normally — which the trading engine's
+# `from db import AlertPreference, ...` requires.
+import db.models as _models                                               # noqa: E402
+
 NotificationOutbox, Base = _models.NotificationOutbox, _models.Base
 PaperPortfolio = _models.PaperPortfolio
 PortfolioExposureReservation = _models.PortfolioExposureReservation
@@ -300,4 +306,178 @@ with Session() as s:
         "reserved_value": exposure.active_reserved_value(s, PFID, "Energy", now=TR),
     }
 
+# ── 9. MIXED-WRITER INTEGRATION: organic entry vs conditional order, real paths ───────────────
+#
+# Racing two calls to reserve() shows the primitive works. It does NOT show that the two
+# PRODUCTION writers are actually protected: they are different modules, build their own
+# `prefetched_open`, and could in principle reach the cap by different routes. This races the
+# real `_open_paper_trade` (organic shape) against the real `conditional_orders._execute_buy`
+# (which builds its own snapshot and calls the same function) and checks the resulting
+# positions against the cap.
+import types as _types                                                    # noqa: E402
+from unittest.mock import MagicMock as _MM                                # noqa: E402
+
+for _m in ["redis", "httpx", "structlog", "apscheduler", "apscheduler.schedulers",
+           "apscheduler.schedulers.background", "apscheduler.triggers",
+           "apscheduler.triggers.cron", "yfinance"]:
+    sys.modules.setdefault(_m, _MM())
+sys.path.insert(0, str(_ROOT / "services" / "market-data"))
+common.exposure = exposure
+
+from src.services import paper_trading_engine as pte                      # noqa: E402
+from src.services import conditional_orders as co                         # noqa: E402
+
+Stock = _models.Stock
+PaperTrade = _models.PaperTrade
+Signal = _models.Signal
+SignalType = _models.SignalType
+SignalHorizon = _models.SignalHorizon
+
+# UPSTREAM GATES ARE STUBBED; `_open_paper_trade` IS NOT.
+#
+# `_execute_buy` runs a full eligibility chain — stored signal, drawdown, loss streak, win rate,
+# game plan, decision engine — before it reaches the entry path. None of that is what this
+# scenario tests: the question is whether two DIFFERENT production writers contend correctly at
+# the concentration cap. Stubbing the chain is what makes the race actually happen; leaving it
+# in place meant the conditional order was rejected by an earlier gate and the test passed
+# while racing nothing.
+pte._should_enter = lambda *a, **kw: (True, 8, [])
+pte._call_decision_engine = lambda *a, **kw: None
+pte._compute_portfolio_drawdown = lambda *a, **kw: 0.0
+pte._consec_loss_streak = lambda *a, **kw: 0
+pte._recent_win_rate = lambda *a, **kw: 0.6
+pte._entry_gates_override_active = lambda *a, **kw: False
+pte._build_game_plan_for_style = lambda *a, **kw: {"stop": 95.0, "take_profit": 115.0,
+                                                  "atr": None}
+pte._compute_equity = lambda *a, **kw: 100_000.0
+
+MW_EQUITY = 100_000.0
+MW_CAP = 0.15                       # 15,000 of room; each entry is ~10,010
+
+
+def _mw_cfg():
+    c = dict(pte._DEFAULT_CONFIG)
+    c.update(max_sector_pct=MW_CAP, max_sector_positions=99, max_position_pct=0.10,
+             max_open_risk_pct=0.90, market="US")
+    return c
+
+
+with Session() as s:
+    s.query(PortfolioExposureReservation).delete()
+    s.query(PaperTrade).delete()
+    s.commit()
+    mwpf = PaperPortfolio(name="mixed", initial_capital=MW_EQUITY, current_cash=MW_EQUITY,
+                          config={**_mw_cfg(), "trading_style": "SWING"})
+    s.add(mwpf); s.flush()
+    org = Stock(symbol="ORG", name="ORG", sector="Industrials", market="US",
+                exchange="NASDAQ", currency="USD")
+    cnd = Stock(symbol="CND", name="CND", sector="Industrials", market="US",
+                exchange="NASDAQ", currency="USD")
+    s.add_all([org, cnd]); s.flush()
+    # The conditional path requires a real, already-eligible BUY signal — it never fabricates
+    # one. That gate is genuine and is left in place.
+    s.add(Signal(stock_id=cnd.id, signal=SignalType.BUY, horizon=SignalHorizon.SWING,
+                 confidence=70.0, reasons={}, source="probe"))
+    s.flush()
+    s.commit()
+    MWPF, ORG_ID, CND_ID = mwpf.id, org.id, cnd.id
+
+_MW_PRICE = 100.0
+_MW_GP = {"stop": 95.0, "take_profit": 115.0}
+
+
+def _organic_entry():
+    """The scan path: a snapshot built before the candidate loop, then _open_paper_trade."""
+    with Session() as s:
+        try:
+            pf = s.query(PaperPortfolio).filter_by(id=MWPF).one()
+            st = s.query(Stock).filter_by(id=ORG_ID).one()
+            snapshot = [(t, s.query(Stock).filter_by(symbol=t.symbol).one())
+                        for t in s.query(PaperTrade).filter_by(portfolio_id=MWPF,
+                                                               stage="open").all()]
+            sig = _types.SimpleNamespace(id=None, symbol="ORG", confidence=70.0, reasons={},
+                                         signal="BUY", horizon=None)
+            trade, reason = pte._open_paper_trade(
+                s, pf, st, sig, None, _MW_PRICE, dict(_MW_GP), 8, [], "fallback",
+                _mw_cfg(), "SWING", MW_EQUITY, 1.0, None, {"ORG": _MW_PRICE}, snapshot, 2.0)
+            s.commit()
+            return {"path": "organic", "opened": trade is not None, "reason": reason}
+        except Exception as exc:                        # noqa: BLE001
+            s.rollback()
+            return {"path": "organic", "error": f"{type(exc).__name__}: {exc}"[:200]}
+
+
+def _conditional_entry():
+    """The conditional-order path: the REAL _execute_buy, which builds its own snapshot and
+    calls the same _open_paper_trade."""
+    with Session() as s:
+        try:
+            pf = s.query(PaperPortfolio).filter_by(id=MWPF).one()
+            order = _types.SimpleNamespace(
+                id=1, portfolio_id=MWPF, symbol="CND", action="buy", style="SWING",
+                condition_type="price_above", threshold=1.0, notes=None)
+            ok, msg, trade_id = co._execute_buy(order, pf, _MW_PRICE, s)
+            s.commit()
+            return {"path": "conditional", "opened": ok, "reason": msg}
+        except Exception as exc:                        # noqa: BLE001
+            s.rollback()
+            return {"path": "conditional", "error": f"{type(exc).__name__}: {exc}"[:200]}
+
+
+with ThreadPoolExecutor(max_workers=2) as ex:
+    mixed = list(ex.map(lambda f: f(), [_organic_entry, _conditional_entry]))
+
+with Session() as s:
+    opened = s.query(PaperTrade).filter_by(portfolio_id=MWPF, stage="open").all()
+    total_value = sum(float(t.shares) * float(t.entry_price) for t in opened)
+    res_rows = s.query(PortfolioExposureReservation).filter_by(portfolio_id=MWPF).all()
+    R["mixed_writer"] = {
+        "results": mixed,
+        "positions_opened": len(opened),
+        "combined_value": round(total_value, 2),
+        "cap_value": MW_EQUITY * MW_CAP,
+        "within_cap": total_value <= MW_EQUITY * MW_CAP,
+        "reservation_states": sorted(r.state for r in res_rows),
+        # Every reservation must be terminal and every consumed one must point at a real trade:
+        # that is the reserved -> committed handover with no gap and no double count.
+        "consumed_point_at_open_trades": all(
+            r.trade_id in {t.id for t in opened} for r in res_rows if r.state == "consumed"),
+        "none_left_reserved": all(r.state != "reserved" for r in res_rows),
+        "reconcile": exposure.reconcile(s, portfolio_id=MWPF,
+                                        open_trade_ids={t.id for t in opened}, now=TR),
+    }
+
+# ── 10. CRASH RECLAMATION MUST NOT FREE CAPACITY MID-COMMIT ───────────────────────────────────
+with Session() as s:
+    s.query(PortfolioExposureReservation).filter_by(portfolio_id=PFID).delete(); s.commit()
+with Session() as s:
+    r, _ = exposure.reserve(s, portfolio_id=PFID, intent_id="pg-commit", symbol="CM",
+                            sector="Energy", value=14_000.0, equity=100_000.0, cap_pct=0.15,
+                            price_for=_PRICE, ttl_seconds=60, now=TR)
+    exposure.begin_commit(s, r, now=TR)               # entry is being written right now
+    s.commit()
+LONG_AFTER = TR + timedelta(seconds=3600)
+with Session() as s:
+    swept = exposure.expire_stale(s, now=LONG_AFTER)
+    s.commit()
+with Session() as s:
+    still_held = exposure.active_reserved_value(s, PFID, "Energy", now=LONG_AFTER)
+    blocked = exposure.reserve(s, portfolio_id=PFID, intent_id="pg-commit-block", symbol="B",
+                               sector="Energy", value=5_000.0, equity=100_000.0, cap_pct=0.15,
+                               price_for=_PRICE, now=LONG_AFTER)[1]
+    row = s.query(PortfolioExposureReservation).filter_by(intent_id="pg-commit").one()
+    stale = exposure.stale_committing(s, older_than_seconds=900, now=LONG_AFTER)
+    # Read every attribute INSIDE the session: the rollback below detaches these instances.
+    R["committing_not_reclaimed"] = {
+        "swept_by_expiry": swept,
+        "state": row.state,
+        "capacity_still_held": still_held,
+        "new_entry_blocked": blocked,
+        "surfaced_for_review": [x.intent_id for x in stale],
+    }
+    s.rollback()
+
+# The real trading engine's structlog writes to stdout, so the result is delimited rather than
+# assumed to be the only thing on it.
+print("===PROBE_JSON===")
 print(json.dumps(R, indent=2, default=str))

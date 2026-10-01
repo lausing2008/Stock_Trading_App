@@ -35,6 +35,10 @@ def _stub_exposure_reservation():
             return SimpleNamespace(id=1, state="reserved"), "reserved"
 
         @staticmethod
+        def begin_commit(*a, **kw):
+            return True
+
+        @staticmethod
         def consume(*a, **kw):
             return True
 
@@ -233,6 +237,10 @@ def test_a_refused_exposure_reservation_skips_the_entry_as_sector_cap():
         @staticmethod
         def reserve(*a, **kw):
             return None, "sector_cap"
+
+        @staticmethod
+        def begin_commit(*a, **kw):
+            return True
 
         @staticmethod
         def consume(*a, **kw):

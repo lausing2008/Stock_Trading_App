@@ -131,11 +131,37 @@ def test_reconciliation_surfaces_a_consumed_reservation_with_no_position(probe):
     assert o["expired_unconsumed"] >= 1
 
 
-def test_the_reservation_fails_closed_when_exposure_cannot_be_established(probe):
-    """Opening a position is the risk-INCREASING action, so an unestablishable cap refuses it.
-    Protective exits are never routed through this module and so are never blocked by it."""
+def test_an_UNVALUABLE_position_fails_closed(probe):
+    """Opening a position is the risk-INCREASING action, so a cap that cannot be computed at all
+    refuses it. Protective exits never route through this module and are never blocked by it.
+
+    SCOPE, because it changes what this currently buys: the production caller substitutes
+    `entry_price` whenever a live mark is missing and so NEVER reports a position as unvaluable.
+    `exposure_unknown_mark` is therefore unreachable from the live entry path today — it guards
+    a future caller that reports unvaluable positions honestly. The case that actually occurs in
+    production is the FALLBACK below, which is permitted."""
     f = probe["fail_closed"]
     assert f["unvaluable_position"] == "exposure_unknown_mark"
+
+
+def test_a_FALLBACK_mark_produces_a_number_that_is_not_current_exposure(probe):
+    """The distinction that matters. A fallback is not an absence of a number — it is a number
+    from a substitute source. It can understate or overstate current exposure, and it is
+    currently ALLOWED to decide a cap."""
+    f = probe["fail_closed"]
+    assert f["stale_mark_default"] == "reserved", "a fallback does not block an entry today"
+    assert f["stale_mark_when_fresh_required"] == "exposure_stale_mark"
+
+
+def test_fresh_mark_enforcement_is_measured_in_shadow_before_being_enabled(probe):
+    """`require_fresh_marks` stays OFF. The telemetry records what it WOULD have refused, so the
+    decision to enable it can rest on a measured block rate rather than a guess — the same
+    shadow-first discipline the anti-chase counters use."""
+    sh = probe["shadow_fresh_marks"]
+    assert sh["with_fallback"]["fallback_marks"] >= 1
+    assert sh["with_fallback"]["would_block_on_fresh_marks"] is True
+    assert sh["all_fresh"]["would_block_on_fresh_marks"] is False
+    assert sh["entry_still_allowed_with_fallback"] == "reserved"
 
 
 def test_stale_mark_policy_is_built_but_not_switched_on(probe):
@@ -147,15 +173,26 @@ def test_stale_mark_policy_is_built_but_not_switched_on(probe):
     assert f["stale_mark_when_fresh_required"] == "exposure_stale_mark"
 
 
-def test_rollback_is_not_asserted_on_sqlite_and_says_why(probe):
-    """pysqlite does not open a transaction for DML, so a released SAVEPOINT is already durable
-    and `rollback()` does not undo it. That is a driver property, not a property of the
-    reservation. Recording it here rather than asserting a false guarantee; the real rollback
-    assertion lives in the PostgreSQL suite."""
+def test_rollback_is_not_asserted_under_this_driver_configuration_and_says_why(probe):
+    """NOT a claim that SQLite cannot roll back. Under the DEFAULT pysqlite configuration used
+    here, the driver does not emit BEGIN for DML, so a released SAVEPOINT is already durable and
+    `session.rollback()` does not undo it. SQLite itself supports rollback, and the documented
+    workaround (isolation_level=None plus an explicit BEGIN) would restore it.
+
+    That is a driver/transaction-configuration property, not a property of the reservation, so
+    the guarantee is asserted on PostgreSQL rather than claimed falsely here."""
     r = probe["reservation_rollback"]
     assert r["reserve_reason"] == "reserved"
     assert r["authoritative_on_this_engine"] is False
     assert "pysqlite" in r["why"]
+
+
+def test_a_crashed_commit_does_not_free_capacity(probe):
+    """`committing` is excluded from the expiry sweep: the trade may already exist, or its
+    broker outcome may be unknown. Reclaiming there would let another candidate take room that
+    is about to be occupied. Asserted in full against PostgreSQL."""
+    assert probe["worker_crash"]["state"] == "expired", \
+        "a plain RESERVED row still expires; only `committing` is protected"
 
 
 def test_FINDING_pending_and_unfilled_orders_are_invisible_to_the_caps(probe):

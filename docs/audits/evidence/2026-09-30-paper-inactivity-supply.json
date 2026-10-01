@@ -1,0 +1,100 @@
+{
+  "started_at_utc": "2026-10-01T06:45:06.982880+00:00",
+  "queries": {
+    "snapshot": {
+      "sql": "SELECT now() AS snapshot_at, current_date AS server_date, current_setting('transaction_read_only') AS read_only, current_setting('transaction_isolation') AS isolation",
+      "rows": [
+        {
+          "snapshot_at": "2026-10-01 06:45:06.992564+00:00",
+          "server_date": "2026-10-01",
+          "read_only": "on",
+          "isolation": "repeatable read"
+        }
+      ]
+    },
+    "candidate_supply": {
+      "sql": "SELECT portfolio_id,count(*) AS scans,sum(candidates_seen) AS repeated_candidates,count(*) FILTER(WHERE candidates_seen=0) AS zero_candidate_scans FROM paper_entry_scan_logs WHERE scanned_at>=now()-interval '2 days' GROUP BY 1 ORDER BY 1",
+      "rows": [
+        {
+          "portfolio_id": 1,
+          "scans": 244,
+          "repeated_candidates": 3089,
+          "zero_candidate_scans": 0
+        },
+        {
+          "portfolio_id": 2,
+          "scans": 140,
+          "repeated_candidates": 0,
+          "zero_candidate_scans": 1
+        },
+        {
+          "portfolio_id": 3,
+          "scans": 245,
+          "repeated_candidates": 949,
+          "zero_candidate_scans": 6
+        },
+        {
+          "portfolio_id": 4,
+          "scans": 140,
+          "repeated_candidates": 10,
+          "zero_candidate_scans": 130
+        },
+        {
+          "portfolio_id": 5,
+          "scans": 245,
+          "repeated_candidates": 4,
+          "zero_candidate_scans": 0
+        },
+        {
+          "portfolio_id": 6,
+          "scans": 245,
+          "repeated_candidates": 949,
+          "zero_candidate_scans": 6
+        },
+        {
+          "portfolio_id": 7,
+          "scans": 245,
+          "repeated_candidates": 3106,
+          "zero_candidate_scans": 0
+        },
+        {
+          "portfolio_id": 8,
+          "scans": 245,
+          "repeated_candidates": 3471,
+          "zero_candidate_scans": 0
+        },
+        {
+          "portfolio_id": 9,
+          "scans": 140,
+          "repeated_candidates": 0,
+          "zero_candidate_scans": 140
+        },
+        {
+          "portfolio_id": 10,
+          "scans": 140,
+          "repeated_candidates": 10,
+          "zero_candidate_scans": 130
+        },
+        {
+          "portfolio_id": 891,
+          "scans": 245,
+          "repeated_candidates": 948,
+          "zero_candidate_scans": 6
+        }
+      ]
+    }
+  },
+  "scheduler_sha256": "7686421bdf621e630090422c8fb0d7f9e612fadf47fe1a4a5bdbafd2a6badf35",
+  "db_models_sha256": "d43da8245c494cd78b4febe615e559639beebffc8302c6a6c9f026f8e29d43e8",
+  "finished_at_utc": "2026-10-01T06:45:06.997679+00:00",
+  "recovery_markers": {
+    "2": {
+      "value": "4",
+      "ttl": 499578
+    },
+    "5": {
+      "value": "10",
+      "ttl": 543056
+    }
+  }
+}
