@@ -184,7 +184,7 @@ def test_a_recipient_without_an_email_is_skipped_without_a_marker():
 
 def _binder():
     from datetime import date, datetime, timedelta, timezone
-    env = {"date": date, "datetime": datetime, "timedelta": timedelta, "timezone": timezone}
+    env = {"date": date, "datetime": datetime, "timedelta": timedelta, "timezone": timezone}  # noqa
     exec(compile(_fn_src("_headline_belongs_to_event"), "<bind>", "exec"), env)
     return env["_headline_belongs_to_event"]
 
@@ -260,3 +260,74 @@ def test_the_window_closes_after_two_days(boundary):
     """{yesterday, today} really is the window — the event drops out, so the alert cannot keep
     firing indefinitely on an old release."""
     assert boundary["two_days_later"] == {}
+
+
+# ── issuer identity and period ambiguity: the window is a FRESHNESS filter, not binding ──
+
+def test_a_different_issuer_in_the_same_window_is_rejected():
+    """The date window cannot tell one company's print from another's. A nearby article about a
+    different issuer, published in the same window, must not attach to this event."""
+    from datetime import date
+    b = _binder()
+    assert b("2026-09-30T20:01:00+00:00", date(2026, 9, 30), "AMD", "MU") is False
+    assert b("2026-09-30T20:01:00+00:00", date(2026, 9, 30), "MU", "MU") is True
+
+
+def test_issuer_matching_is_case_insensitive_and_optional():
+    from datetime import date
+    b = _binder()
+    assert b("2026-09-30T20:01:00+00:00", date(2026, 9, 30), "mu", "MU") is True
+    # Absent issuer info falls back to the freshness window rather than rejecting outright.
+    assert b("2026-09-30T20:01:00+00:00", date(2026, 9, 30), None, "MU") is True
+
+
+def test_overlapping_event_windows_do_not_cross_attach():
+    """Two events four days apart have overlapping ±windows. A headline in the overlap binds to
+    whichever event is passed — so the caller's event choice, not the window, decides — and a
+    headline outside an event's own window never binds to it."""
+    from datetime import date
+    b = _binder()
+    early, late = date(2026, 9, 30), date(2026, 10, 3)
+    # Windows are [event-1, event+2], so early covers 09-29..10-02 and late covers 10-02..10-05.
+    # They overlap on EXACTLY ONE DAY, 10-02 — a headline there is genuinely ambiguous by date
+    # alone, which is why date is a freshness filter and not an event binding.
+    assert b("2026-10-02T12:00:00+00:00", early) is True
+    assert b("2026-10-02T12:00:00+00:00", late) is True
+    # Either side of the overlap, each event accepts only its own.
+    assert b("2026-10-01T12:00:00+00:00", early) is True
+    assert b("2026-10-01T12:00:00+00:00", late) is False
+    assert b("2026-10-05T12:00:00+00:00", early) is False
+    assert b("2026-10-05T12:00:00+00:00", late) is True
+
+
+def test_a_results_headline_that_names_no_period_does_not_consume_the_results_phase():
+    """AMBIGUITY MUST NOT EAT THE SLOT. A genuine result headline names its quarter — MU's did.
+    One that names none cannot be bound to a fiscal period, so it is downgraded to `other`: no
+    notification, and no consumption of the slot the real print needs."""
+    import importlib.util as _il
+    _src = pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "earnings_phase.py"
+    _sp = _il.spec_from_file_location("mu02_phase_amb", _src)
+    _ep = _il.module_from_spec(_sp); sys.modules[_sp.name] = _ep; _sp.loader.exec_module(_ep)
+
+    assert _ep.classify_earnings_phase("Acme Beats Estimates") == _ep.PHASE_OTHER
+    assert _ep.phase_is_notifiable(_ep.classify_earnings_phase("Acme Beats Estimates")) is False
+    # ...while a period-bearing result still classifies and still notifies.
+    assert _ep.classify_earnings_phase("Acme Q3 EPS Of $1.10 Beats") == _ep.PHASE_RESULTS
+    assert _ep.classify_earnings_phase("Acme Reports Fourth Quarter Results") == _ep.PHASE_RESULTS
+
+
+def test_the_period_a_headline_names_is_preserved():
+    import importlib.util as _il
+    _src = pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "earnings_phase.py"
+    _sp = _il.spec_from_file_location("mu02_phase_per", _src)
+    _ep = _il.module_from_spec(_sp); sys.modules[_sp.name] = _ep; _sp.loader.exec_module(_ep)
+    assert _ep.extract_period("Micron Technology Q4 Adj EPS $33.42 Beats") == "Q4"
+    assert _ep.extract_period("Micron Technology Sees Q1 Adj EPS $37.15-$39.15") == "Q1"
+    assert _ep.extract_period("Acme Reports Fourth Quarter Results") == "Q4"
+    assert _ep.extract_period("Acme Beats Estimates") is None
+
+
+def test_the_fetcher_carries_the_issuer_through():
+    i = SCHED_SRC.index("def _fetch_earnings_news_headlines")
+    block = SCHED_SRC[i:i + 1500]
+    assert 'i.get("symbol")' in block, "issuer identity must survive the fetch"

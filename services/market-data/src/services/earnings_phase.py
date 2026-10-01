@@ -61,6 +61,28 @@ _PREVIEW = re.compile(
     r"analysts? expect)\b", re.I)
 
 
+_PERIOD_Q = re.compile(r"\bQ([1-4])\b", re.I)
+_PERIOD_WORD = re.compile(r"\b(first|second|third|fourth)[- ]quarter\b", re.I)
+_WORD_TO_Q = {"first": "Q1", "second": "Q2", "third": "Q3", "fourth": "Q4"}
+
+
+def extract_period(headline: str | None) -> str | None:
+    """The fiscal period a headline names, e.g. "Q4" — or None when it names none.
+
+    Carried so a headline can be checked against the event it is being attached to, and so an
+    ambiguous one can be kept out of the results phase. Handles both "Q4" and "fourth quarter".
+    """
+    if not headline:
+        return None
+    m = _PERIOD_Q.search(headline)
+    if m:
+        return f"Q{m.group(1)}"
+    m = _PERIOD_WORD.search(headline)
+    if m:
+        return _WORD_TO_Q[m.group(1).lower()]
+    return None
+
+
 def classify_earnings_phase(headline: str | None) -> str:
     """Which release stage this headline represents.
 
@@ -76,7 +98,13 @@ def classify_earnings_phase(headline: str | None) -> str:
     if _GUIDANCE.search(text):
         return PHASE_GUIDANCE
     if _RESULTS.search(text):
-        return PHASE_RESULTS
+        # AMBIGUOUS ARTICLES MUST NOT CONSUME THE RESULTS PHASE. The date window is a freshness
+        # filter, not event binding: a nearby article can discuss a different fiscal period, or
+        # another company's print, and still read as "results". A genuine result headline names
+        # its quarter — MU's did ("Q4 Adj EPS…"). One that names none cannot be bound to an
+        # event, so it is downgraded to `other`: no notification, and crucially no consumption
+        # of the slot the real print needs.
+        return PHASE_RESULTS if extract_period(text) else PHASE_OTHER
     if _PREVIEW.search(text):
         return PHASE_PREVIEW
     return PHASE_OTHER

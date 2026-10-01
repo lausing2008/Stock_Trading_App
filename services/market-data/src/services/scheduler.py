@@ -2366,9 +2366,9 @@ def check_early_earnings_news_alerts() -> None:
                 # after publication and was sitting in the database — was suppressed by a story
                 # that told the reader nothing. Each release stage now dedups independently.
                 _event_date = _event_date_by_symbol[sym]
-                for _hl, _pub in _fetch_earnings_news_headlines(sym):
+                for _hl, _pub, _isym in _fetch_earnings_news_headlines(sym):
                     # MU-02 follow-up: bind the headline to THIS event before using it.
-                    if not _headline_belongs_to_event(_pub, _event_date):
+                    if not _headline_belongs_to_event(_pub, _event_date, _isym, sym):
                         log.debug("signal_alert.early_earnings_news_unbound",
                                   symbol=sym, published_at=_pub, event_date=str(_event_date))
                         continue
@@ -2462,7 +2462,9 @@ def _send_early_earnings_stage(session, sym, phase, headline, subject, body_text
                      symbol=sym, phase=phase, user=u_obj.username)
 
 
-def _headline_belongs_to_event(published_at: str | None, event_date: date) -> bool:
+def _headline_belongs_to_event(published_at: str | None, event_date: date,
+                               item_symbol: str | None = None,
+                               expected_symbol: str | None = None) -> bool:
     """Is this headline plausibly ABOUT the earnings event dated `event_date`?
 
     MU-02 follow-up. Putting the report date in the dedup key stops two events sharing a slot, but
@@ -2475,6 +2477,12 @@ def _headline_belongs_to_event(published_at: str | None, event_date: date) -> bo
     UTC. A headline with no usable timestamp is REJECTED rather than assumed to belong — an
     unbindable headline is exactly the case this exists to catch.
     """
+    # ISSUER IDENTITY FIRST. The date window is only a FRESHNESS filter — it cannot tell one
+    # company's print from another's, and a nearby article in the same window can be about a
+    # different issuer entirely. news-intelligence's own filter is an exact symbol match, so a
+    # mismatch here means something upstream changed; reject rather than trust the window alone.
+    if expected_symbol and item_symbol and item_symbol.upper() != expected_symbol.upper():
+        return False
     if not published_at:
         return False
     try:
@@ -2485,7 +2493,7 @@ def _headline_belongs_to_event(published_at: str | None, event_date: date) -> bo
     return (event_date - timedelta(days=1)) <= _d <= (event_date + timedelta(days=2))
 
 
-def _fetch_earnings_news_headlines(symbol: str) -> list[tuple[str, str | None]]:
+def _fetch_earnings_news_headlines(symbol: str) -> list[tuple[str, str | None, str | None]]:
     """Every earnings-classified headline for `symbol` in the last 24h, newest first.
 
     MU-02: the singular `_fetch_earnings_news_headline()` below returned only the FIRST match and
@@ -2502,7 +2510,7 @@ def _fetch_earnings_news_headlines(symbol: str) -> list[tuple[str, str | None]]:
             r = c.get(url, params={"symbol": symbol, "since_hours": 24, "limit": 20})
             if r.status_code != 200:
                 return []
-            return [(i.get("headline"), i.get("published_at")) for i in r.json()
+            return [(i.get("headline"), i.get("published_at"), i.get("symbol")) for i in r.json()
                     if i.get("category") == "earnings" and i.get("headline")]
     except Exception:
         return []

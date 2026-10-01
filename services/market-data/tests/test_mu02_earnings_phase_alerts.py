@@ -137,11 +137,11 @@ def test_the_dedup_key_includes_the_phase():
 
 def test_the_job_iterates_every_earnings_headline_not_just_the_first():
     assert "_fetch_earnings_news_headlines(sym)" in SCHED
-    assert "for _hl, _pub in _fetch_earnings_news_headlines(sym):" in SCHED
+    assert "for _hl, _pub, _isym in _fetch_earnings_news_headlines(sym):" in SCHED
 
 
 def test_unnotifiable_phases_are_skipped_before_sending():
-    i = SCHED.index("for _hl, _pub in _fetch_earnings_news_headlines(sym):")
+    i = SCHED.index("for _hl, _pub, _isym in _fetch_earnings_news_headlines(sym):")
     block = SCHED[i:i + 900]
     assert "phase_is_notifiable(phase)" in block
     assert "continue" in block
@@ -165,7 +165,7 @@ def test_the_plural_fetcher_returns_a_list_and_never_raises():
     i = SCHED.index("def _fetch_earnings_news_headlines")
     block = SCHED[i:i + 1400]
     # Returns (headline, published_at) now — the timestamp is what binds a headline to an event.
-    assert "-> list[tuple[str, str | None]]" in block
+    assert "-> list[tuple[str, str | None, str | None]]" in block
     assert "return []" in block, "an unreachable news service must not break the alert cycle"
 
 
@@ -225,7 +225,7 @@ def test_one_fetch_carrying_three_stages_handles_all_three():
 
 
 def test_the_job_loops_every_headline_so_ordering_cannot_drop_a_stage():
-    i = SCHED.index("for _hl, _pub in _fetch_earnings_news_headlines(sym):")
+    i = SCHED.index("for _hl, _pub, _isym in _fetch_earnings_news_headlines(sym):")
     block = SCHED[i:i + 900]
     assert "break" not in block, "a break would stop at the first stage and drop the rest"
 

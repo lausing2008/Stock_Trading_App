@@ -272,6 +272,49 @@ only widens the window past a UTC-midnight crossing.
 Durable per-event delivery identities remain the real answer and are part of the P1 outbox work,
 which is **not built**.
 
+## Third round — the window is a freshness filter, not a binding
+
+Correct, and the fix now says so in its own terms. Two additions:
+
+**Issuer identity is carried and checked.** `_fetch_earnings_news_headlines()` returns
+`(headline, published_at, symbol)` and binding rejects an item whose own symbol differs from the
+one being processed. news-intelligence's endpoint already filters `symbol == :sym` exactly, so
+this is defence in depth rather than a fix for a known leak — but a date window cannot tell one
+company's print from another's, and the code should not rely on an upstream filter it does not own.
+
+**An ambiguous article can no longer consume the results phase.** A genuine result headline names
+its quarter — MU's did ("Q4 Adj EPS…"). `extract_period()` reads both "Q4" and "fourth quarter",
+and a `results`-shaped headline that names **no** period is downgraded to `other`: not notified,
+and crucially not consuming the slot the real print needs.
+
+**Overlapping windows are tested rather than assumed.** Windows are `[event-1, event+2]`, so two
+events three days apart overlap on exactly one day. The tests pin that: a headline in the overlap
+binds to either event, one outside binds to neither, and the caller's event choice — not the date
+— decides. Writing that test corrected an error of mine: I first asserted the overlap was at
+10-01 when it is at 10-02.
+
+Four sabotages, each caught: removing the issuer check, letting a period-less result consume the
+phase, making the period extractor always return a value, and widening the window to 30 days.
+
+## MU-01 — step 1 answered: the next sync is not soon
+
+`sync_todays_earnings` is `CronTrigger(minute="*/15", hour="7-20", day_of_week="mon-fri",
+timezone="America/New_York")`. At the time of this pass it is **21:55 EDT**, outside that window.
+
+So the last run was **20:45 EDT** — visible as the MU row's `fetched_at = 2026-10-01 00:45 UTC` —
+and it ran on the **pre-rebuild code**, so it produced no instrumentation. The next run is
+**07:00 EDT**, about nine hours out.
+
+That matters for how this is read: there is currently **no instrumented sync to inspect**, and the
+absence of `history_fetch`/`history_map` lines in the log is expected rather than evidence of
+anything. Checking the scheduler window first, as advised, is what made that legible.
+
+Also accepted: `history_map` showing `eps_actual=None` is **not** by itself proof of a mapping
+defect — if the provider returned no actual, the same line is the correct and honest output. The
+decisive evidence is the full chain: a provider row carrying a non-null actual, its mapping
+destination, the attempted write, and the committed value. `history_fetch` supplies the first
+link; the rest still needs reading together with the row.
+
 ## One timestamp correction
 
 MU's captured result was published **20:01 UTC — 16:01 EDT**. The earlier "20:01 EDT → 00:01 UTC"
