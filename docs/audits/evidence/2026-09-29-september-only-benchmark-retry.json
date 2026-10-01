@@ -1,0 +1,61 @@
+{
+  "started_at_utc": "2026-09-30T06:57:49.219042+00:00",
+  "queries": {
+    "snapshot": {
+      "sql": "SELECT now() AS snapshot_at, current_date AS server_date, current_setting('transaction_read_only') AS read_only, current_setting('transaction_isolation') AS isolation",
+      "rows": [
+        {
+          "snapshot_at": "2026-09-30 06:57:49.231903+00:00",
+          "server_date": "2026-09-30",
+          "read_only": "on",
+          "isolation": "repeatable read"
+        }
+      ]
+    },
+    "flow_5d_spy": {
+      "sql": "WITH signal_outcomes AS (SELECT * FROM public.signal_outcomes WHERE signal_date >= DATE '2026-09-01' AND signal_date < DATE '2026-10-01'), options_flow_alert_outcomes AS (SELECT * FROM public.options_flow_alert_outcomes WHERE fired_date >= DATE '2026-09-01' AND fired_date < DATE '2026-10-01'), squeeze_alert_outcomes AS (SELECT * FROM public.squeeze_alert_outcomes WHERE fired_date >= DATE '2026-09-01' AND fired_date < DATE '2026-10-01'), prebreakout_alert_outcomes AS (SELECT * FROM public.prebreakout_alert_outcomes WHERE fired_date >= DATE '2026-09-01' AND fired_date < DATE '2026-10-01'), dark_pool_alert_outcomes AS (SELECT * FROM public.dark_pool_alert_outcomes WHERE fired_date >= DATE '2026-09-01' AND fired_date < DATE '2026-10-01'), prices AS NOT MATERIALIZED (SELECT * FROM public.prices WHERE ts >= DATE '2026-09-01' AND ts < DATE '2026-10-01'), dark_pool_prints AS (SELECT * FROM public.dark_pool_prints WHERE executed_at >= TIMESTAMP '2026-09-01 04:00:00' AND executed_at < TIMESTAMP '2026-10-01 04:00:00'), f AS (SELECT direction,stock_id,symbol,fired_date,entry_date,avg(return_5d) AS ret,avg(price_5d) AS recorded_exit FROM options_flow_alert_outcomes WHERE return_5d IS NOT NULL GROUP BY 1,2,3,4,5), matched AS (SELECT f.*,u.ts::date AS exit_day,u.close AS observed_exit, b0.close AS bench_entry,b1.close AS bench_exit FROM f LEFT JOIN LATERAL (SELECT ts,close FROM prices WHERE stock_id=f.stock_id AND timeframe='D1' AND ts::date>=f.entry_date+5 AND ts::date<=f.entry_date+5+10 ORDER BY ts LIMIT 1) u ON true LEFT JOIN stocks s ON s.symbol='SPY' LEFT JOIN prices b0 ON b0.stock_id=s.id AND b0.timeframe='D1' AND b0.ts::date=f.entry_date LEFT JOIN prices b1 ON b1.stock_id=s.id AND b1.timeframe='D1' AND b1.ts::date=u.ts::date) SELECT direction,count(*) AS clusters,count(*) FILTER(WHERE bench_entry>0 AND bench_exit IS NOT NULL AND abs(observed_exit-recorded_exit)<0.0001) AS matched_clusters,avg(ret) FILTER(WHERE bench_entry>0 AND bench_exit IS NOT NULL AND abs(observed_exit-recorded_exit)<0.0001) AS matched_return,avg(bench_exit/bench_entry-1) FILTER(WHERE bench_entry>0 AND bench_exit IS NOT NULL AND abs(observed_exit-recorded_exit)<0.0001) AS spy_return,avg(ret-(bench_exit/bench_entry-1)) FILTER(WHERE bench_entry>0 AND bench_exit IS NOT NULL AND abs(observed_exit-recorded_exit)<0.0001) AS excess_return FROM matched GROUP BY 1 ORDER BY 1",
+      "rows": [
+        {
+          "direction": "bearish",
+          "clusters": 174,
+          "matched_clusters": 135,
+          "matched_return": 0.017608517417158714,
+          "spy_return": -0.0007733479693161914,
+          "excess_return": 0.018381865386474905
+        },
+        {
+          "direction": "bullish",
+          "clusters": 156,
+          "matched_clusters": 125,
+          "matched_return": 0.01722539666362643,
+          "spy_return": -0.0012535324650664768,
+          "excess_return": 0.018478929128692912
+        }
+      ]
+    },
+    "flow_10d_spy": {
+      "sql": "WITH signal_outcomes AS (SELECT * FROM public.signal_outcomes WHERE signal_date >= DATE '2026-09-01' AND signal_date < DATE '2026-10-01'), options_flow_alert_outcomes AS (SELECT * FROM public.options_flow_alert_outcomes WHERE fired_date >= DATE '2026-09-01' AND fired_date < DATE '2026-10-01'), squeeze_alert_outcomes AS (SELECT * FROM public.squeeze_alert_outcomes WHERE fired_date >= DATE '2026-09-01' AND fired_date < DATE '2026-10-01'), prebreakout_alert_outcomes AS (SELECT * FROM public.prebreakout_alert_outcomes WHERE fired_date >= DATE '2026-09-01' AND fired_date < DATE '2026-10-01'), dark_pool_alert_outcomes AS (SELECT * FROM public.dark_pool_alert_outcomes WHERE fired_date >= DATE '2026-09-01' AND fired_date < DATE '2026-10-01'), prices AS NOT MATERIALIZED (SELECT * FROM public.prices WHERE ts >= DATE '2026-09-01' AND ts < DATE '2026-10-01'), dark_pool_prints AS (SELECT * FROM public.dark_pool_prints WHERE executed_at >= TIMESTAMP '2026-09-01 04:00:00' AND executed_at < TIMESTAMP '2026-10-01 04:00:00'), f AS (SELECT direction,stock_id,symbol,fired_date,entry_date,avg(return_10d) AS ret,avg(price_10d) AS recorded_exit FROM options_flow_alert_outcomes WHERE return_10d IS NOT NULL GROUP BY 1,2,3,4,5), matched AS (SELECT f.*,u.ts::date AS exit_day,u.close AS observed_exit, b0.close AS bench_entry,b1.close AS bench_exit FROM f LEFT JOIN LATERAL (SELECT ts,close FROM prices WHERE stock_id=f.stock_id AND timeframe='D1' AND ts::date>=f.entry_date+10 AND ts::date<=f.entry_date+10+10 ORDER BY ts LIMIT 1) u ON true LEFT JOIN stocks s ON s.symbol='SPY' LEFT JOIN prices b0 ON b0.stock_id=s.id AND b0.timeframe='D1' AND b0.ts::date=f.entry_date LEFT JOIN prices b1 ON b1.stock_id=s.id AND b1.timeframe='D1' AND b1.ts::date=u.ts::date) SELECT direction,count(*) AS clusters,count(*) FILTER(WHERE bench_entry>0 AND bench_exit IS NOT NULL AND abs(observed_exit-recorded_exit)<0.0001) AS matched_clusters,avg(ret) FILTER(WHERE bench_entry>0 AND bench_exit IS NOT NULL AND abs(observed_exit-recorded_exit)<0.0001) AS matched_return,avg(bench_exit/bench_entry-1) FILTER(WHERE bench_entry>0 AND bench_exit IS NOT NULL AND abs(observed_exit-recorded_exit)<0.0001) AS spy_return,avg(ret-(bench_exit/bench_entry-1)) FILTER(WHERE bench_entry>0 AND bench_exit IS NOT NULL AND abs(observed_exit-recorded_exit)<0.0001) AS excess_return FROM matched GROUP BY 1 ORDER BY 1",
+      "rows": [
+        {
+          "direction": "bearish",
+          "clusters": 136,
+          "matched_clusters": 53,
+          "matched_return": 0.05116239227965201,
+          "spy_return": 0.007701668060107029,
+          "excess_return": 0.04346072421954499
+        },
+        {
+          "direction": "bullish",
+          "clusters": 122,
+          "matched_clusters": 48,
+          "matched_return": 0.06966094954150749,
+          "spy_return": 0.007365753680438865,
+          "excess_return": 0.062295195861068624
+        }
+      ]
+    }
+  },
+  "scheduler_sha256": "d37f73ebc6d6d19145cd2c515e655e88c5c0b855c63d03f798852573a2dc822f",
+  "db_models_sha256": "d43da8245c494cd78b4febe615e559639beebffc8302c6a6c9f026f8e29d43e8",
+  "finished_at_utc": "2026-09-30T06:57:49.371527+00:00"
+}

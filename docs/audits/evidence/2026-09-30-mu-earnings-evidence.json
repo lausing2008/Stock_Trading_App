@@ -1,0 +1,249 @@
+{
+  "started_at_utc": "2026-09-30T23:24:39.345621+00:00",
+  "queries": {
+    "snapshot": {
+      "sql": "SELECT now() AS snapshot_at, current_date AS server_date, current_setting('transaction_read_only') AS read_only, current_setting('transaction_isolation') AS isolation",
+      "rows": [
+        {
+          "snapshot_at": "2026-09-30 23:24:39.387184+00:00",
+          "server_date": "2026-09-30",
+          "read_only": "on",
+          "isolation": "repeatable read"
+        }
+      ]
+    },
+    "mu_earnings": {
+      "sql": "SELECT e.report_date,e.eps_actual,e.eps_estimate,e.revenue_actual,e.fetched_at,e.impact_generated_at,e.impact_sent_at,e.impact_direction FROM earnings_events e JOIN stocks s ON s.id=e.stock_id WHERE s.symbol='MU' AND report_date>='2026-09-01' ORDER BY report_date",
+      "rows": [
+        {
+          "report_date": "2026-09-30",
+          "eps_actual": null,
+          "eps_estimate": null,
+          "revenue_actual": null,
+          "fetched_at": "2026-09-30 23:15:00.223643",
+          "impact_generated_at": null,
+          "impact_sent_at": null,
+          "impact_direction": null
+        }
+      ]
+    },
+    "mu_news": {
+      "sql": "SELECT source,headline,url,published_at,ingested_at,category FROM realtime_news_items WHERE (symbol='MU' OR headline ILIKE '%micron%') AND published_at>='2026-09-30' ORDER BY published_at DESC LIMIT 20",
+      "rows": [
+        {
+          "source": "alpaca",
+          "headline": "Transcript: Micron Technology Q4 2026 Earnings Conference Call",
+          "url": "https://www.benzinga.com/news/26/09/62095451/transcript-micron-technology-q4-2026-earnings-conference-call",
+          "published_at": "2026-09-30 21:41:38.756000",
+          "ingested_at": "2026-09-30 21:41:43.857881",
+          "category": "earnings"
+        },
+        {
+          "source": "alpaca",
+          "headline": "$100 Invested In Micron Technology 20 Years Ago Would Be Worth This Much Today",
+          "url": "https://www.benzinga.com/news/26/09/62093749/100-invested-micron-technology-20-years-ago-would-be-worth-much-today",
+          "published_at": "2026-09-30 20:30:43.522000",
+          "ingested_at": "2026-09-30 20:30:48.706165",
+          "category": "other"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Micron Expects Server Unit Growth In High-Teens Percentage Range In Both Calendar 2026 And 2027",
+          "url": "https://www.benzinga.com/news/26/09/62093628/micron-expects-server-unit-growth-high-teens-percentage-range-both-calendar-2026-and-2027",
+          "published_at": "2026-09-30 20:25:02.441000",
+          "ingested_at": "2026-09-30 20:25:07.520047",
+          "category": "earnings"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Micron Delivers Q4 Double Beat, Sees &#39;Even Stronger&#39; Year Ahead",
+          "url": "https://www.benzinga.com/markets/earnings/26/09/62093596/micron-delivers-q4-double-beat-sees-even-stronger-year-ahead",
+          "published_at": "2026-09-30 20:23:56.503000",
+          "ingested_at": "2026-09-30 20:24:01.687741",
+          "category": "earnings"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Micron Projects Operating Expenses To Rise By About $2.5B In Fiscal 2027, Mainly On Higher R&amp;D And Incentive Pay",
+          "url": "https://www.benzinga.com/news/26/09/62093522/micron-projects-operating-expenses-rise-about-2-5b-fiscal-2027-mainly-higher-r-d-and-incentive-pay",
+          "published_at": "2026-09-30 20:20:56.295000",
+          "ingested_at": "2026-09-30 20:21:01.348298",
+          "category": "other"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Micron Expects Memory And Storage Supply-Demand Conditions To Be Much Tighter In 2027 And 2028 Than In 2026",
+          "url": "https://www.benzinga.com/news/26/09/62093499/micron-expects-memory-and-storage-supply-demand-conditions-be-much-tighter-2027-and-2028-2026",
+          "published_at": "2026-09-30 20:20:46.405000",
+          "ingested_at": "2026-09-30 20:21:01.348298",
+          "category": "other"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Micron Technology CEO Says AI Is Becoming Super Intelligence, And Memory Enhances This Intelligence and the Competitiveness of Our Customers&#39; Platforms; Increasing Investments in Technology, Products And Manufacturing to Help Drive SI Forward With Customers",
+          "url": "https://www.benzinga.com/news/26/09/62093179/micron-technology-ceo-says-ai-becoming-super-intelligence-and-memory-enhances-intelligence-and-compe",
+          "published_at": "2026-09-30 20:11:00.310000",
+          "ingested_at": "2026-09-30 20:11:05.683962",
+          "category": "other"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Micron Technology Sees Q1 GAAP EPS $36.84-$38.84 vs $34.97 Est; Sees Sales $60.000B-$63.000B",
+          "url": "https://www.benzinga.com/news/26/09/62092807/micron-technology-sees-q1-gaap-eps-36-84-38-84-vs-34-97-est-sees-sales-60-000b-63-000b",
+          "published_at": "2026-09-30 20:05:25.568000",
+          "ingested_at": "2026-09-30 20:05:30.635179",
+          "category": "earnings"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Micron Technology Sees Q1 Adj EPS $37.15-$39.15 vs $35.07 Est; Sees Sales $60.000B-$63.000B vs $56.553B Est",
+          "url": "https://www.benzinga.com/news/26/09/62092737/micron-technology-sees-q1-adj-eps-37-15-39-15-vs-35-07-est-sees-sales-60-000b-63-000b-vs-56-553b-est",
+          "published_at": "2026-09-30 20:04:30.993000",
+          "ingested_at": "2026-09-30 20:04:36.177050",
+          "category": "earnings"
+        },
+        {
+          "source": "sec_edgar",
+          "headline": "8-K filed \u2014 MICRON TECHNOLOGY INC",
+          "url": "https://www.sec.gov/Archives/edgar/data/723125/000072312526000018/0000723125-26-000018-index.htm",
+          "published_at": "2026-09-30 20:02:22",
+          "ingested_at": "2026-09-30 20:04:27.564011",
+          "category": "other"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Micron Technology Q4 Adj. EPS $33.42 Beats $31.45 Estimate, Sales $54.229B Beat $50.751B Estimate",
+          "url": "https://www.benzinga.com/news/earnings/26/09/62092519/micron-technology-q4-adj-eps-33-42-beats-31-45-estimate-sales-54-229b-beat-50-751b-estimate",
+          "published_at": "2026-09-30 20:01:49.928000",
+          "ingested_at": "2026-09-30 20:01:55.007778",
+          "category": "earnings"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Top 5 Semiconductor Stocks to Own Into Year End: Bank of America",
+          "url": "https://www.benzinga.com/markets/tech/26/09/62092509/top-semiconductor-stocks-to-own-bank-of-america-picks",
+          "published_at": "2026-09-30 20:01:40.166000",
+          "ingested_at": "2026-09-30 20:01:45.340083",
+          "category": "analyst"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Make Or Break for AI Trade\u2013Micron Earnings Ahead; Consumers Spend More Even As Income Drops",
+          "url": "https://www.benzinga.com/Opinion/26/09/62087536/make-or-break-for-ai-trade-micron-earnings-ahead-consumers-spend-more-even-as-income-drops",
+          "published_at": "2026-09-30 17:27:01.066000",
+          "ingested_at": "2026-09-30 17:27:06.790622",
+          "category": "earnings"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Nasdaq 100 Climbs as Cooler PCE Cuts Rate Hike Bets, Micron Earnings Loom: Stock Market Today",
+          "url": "https://www.benzinga.com/markets/equities/26/09/62086386/nasdaq-100-climbs-cooler-pce-cuts-rate-hike-bets-micron-earnings-loom-stock-market-today",
+          "published_at": "2026-09-30 16:47:40.118000",
+          "ingested_at": "2026-09-30 16:47:45.377564",
+          "category": "macro"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Nasdaq 100 Climbs as Cooler PCE Cuts Rate Hike Bets, Micron Earnings Loom: Stock Market Today",
+          "url": "https://www.benzinga.com/markets/equities/26/09/62086386/nasdaq-100-climbs-cooler-pce-cuts-rate-hike-bets-micron-earnings-loom-stock-market-today",
+          "published_at": "2026-09-30 16:47:40.118000",
+          "ingested_at": "2026-09-30 16:47:45.377564",
+          "category": "macro"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Nasdaq 100 Climbs as Cooler PCE Cuts Rate Hike Bets, Micron Earnings Loom: Stock Market Today",
+          "url": "https://www.benzinga.com/markets/equities/26/09/62086386/nasdaq-100-climbs-cooler-pce-cuts-rate-hike-bets-micron-earnings-loom-stock-market-today",
+          "published_at": "2026-09-30 16:47:40.118000",
+          "ingested_at": "2026-09-30 16:47:45.377564",
+          "category": "macro"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Nasdaq 100 Climbs as Cooler PCE Cuts Rate Hike Bets, Micron Earnings Loom: Stock Market Today",
+          "url": "https://www.benzinga.com/markets/equities/26/09/62086386/nasdaq-100-climbs-cooler-pce-cuts-rate-hike-bets-micron-earnings-loom-stock-market-today",
+          "published_at": "2026-09-30 16:47:40.118000",
+          "ingested_at": "2026-09-30 16:47:45.377564",
+          "category": "macro"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Nasdaq 100 Climbs as Cooler PCE Cuts Rate Hike Bets, Micron Earnings Loom: Stock Market Today",
+          "url": "https://www.benzinga.com/markets/equities/26/09/62086386/nasdaq-100-climbs-cooler-pce-cuts-rate-hike-bets-micron-earnings-loom-stock-market-today",
+          "published_at": "2026-09-30 16:47:40.118000",
+          "ingested_at": "2026-09-30 16:47:45.377564",
+          "category": "macro"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Nasdaq 100 Climbs as Cooler PCE Cuts Rate Hike Bets, Micron Earnings Loom: Stock Market Today",
+          "url": "https://www.benzinga.com/markets/equities/26/09/62086386/nasdaq-100-climbs-cooler-pce-cuts-rate-hike-bets-micron-earnings-loom-stock-market-today",
+          "published_at": "2026-09-30 16:47:40.118000",
+          "ingested_at": "2026-09-30 16:47:45.377564",
+          "category": "macro"
+        },
+        {
+          "source": "alpaca",
+          "headline": "Nasdaq 100 Climbs as Cooler PCE Cuts Rate Hike Bets, Micron Earnings Loom: Stock Market Today",
+          "url": "https://www.benzinga.com/markets/equities/26/09/62086386/nasdaq-100-climbs-cooler-pce-cuts-rate-hike-bets-micron-earnings-loom-stock-market-today",
+          "published_at": "2026-09-30 16:47:40.118000",
+          "ingested_at": "2026-09-30 16:47:45.377564",
+          "category": "macro"
+        }
+      ]
+    },
+    "mu_subs": {
+      "sql": "SELECT 'earnings' AS kind,count(*) AS n FROM earnings_alert_subscriptions WHERE symbol='MU' UNION ALL SELECT 'active_price',count(*) FROM price_alerts WHERE symbol='MU' AND triggered IS FALSE UNION ALL SELECT 'signal',count(*) FROM signal_alerts WHERE symbol='MU'",
+      "rows": [
+        {
+          "kind": "earnings",
+          "n": 0
+        },
+        {
+          "kind": "active_price",
+          "n": 2
+        },
+        {
+          "kind": "signal",
+          "n": 2
+        }
+      ]
+    },
+    "sources": {
+      "sql": "SELECT source,count(*) AS n,max(published_at) AS latest_publication,max(ingested_at) AS latest_ingestion FROM realtime_news_items WHERE ingested_at>='2026-09-30' GROUP BY 1",
+      "rows": [
+        {
+          "source": "alpaca",
+          "n": 1717,
+          "latest_publication": "2026-09-30 23:15:49.552000",
+          "latest_ingestion": "2026-09-30 23:15:54.697036"
+        },
+        {
+          "source": "businesswire",
+          "n": 25,
+          "latest_publication": "2026-09-30 22:08:00",
+          "latest_ingestion": "2026-09-30 22:14:27.029089"
+        },
+        {
+          "source": "pr_newswire",
+          "n": 248,
+          "latest_publication": "2026-09-30 22:49:00",
+          "latest_ingestion": "2026-09-30 22:51:26.657405"
+        },
+        {
+          "source": "sec_edgar",
+          "n": 2172,
+          "latest_publication": "2026-09-30 23:01:06",
+          "latest_ingestion": "2026-09-30 23:02:26.929808"
+        }
+      ]
+    }
+  },
+  "scheduler_sha256": "d37f73ebc6d6d19145cd2c515e655e88c5c0b855c63d03f798852573a2dc822f",
+  "db_models_sha256": "d43da8245c494cd78b4febe615e559639beebffc8302c6a6c9f026f8e29d43e8",
+  "finished_at_utc": "2026-09-30T23:24:39.938852+00:00",
+  "flags": {
+    "earnings_llm_impact_enabled": "1",
+    "earnings_llm_forecast_enabled": "1"
+  }
+}

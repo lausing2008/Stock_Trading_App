@@ -1,0 +1,36 @@
+{
+  "returncode": 0,
+  "tail_limit": 60000,
+  "parsed_json_lines": 5260,
+  "first": "2026-09-30T06:30:28.230359882Z",
+  "last": "2026-09-30T07:03:28.930123423Z",
+  "events": {
+    "signal_alert.skipped": 1701,
+    "paper.regime_applied": 36,
+    "signal_alert.skipped_de_gate": 35,
+    "signal_alert.conviction_met": 34,
+    "paper.vol_targeting_size_adjusted": 12,
+    "paper.consecutive_loss_limit": 12,
+    "signal_alert.skipped_stale": 7,
+    "paper.regime_classified": 1,
+    "paper.min_rr_override_loaded": 1
+  },
+  "reason_counts": [
+    {
+      "event": "signal_alert.skipped",
+      "reason": "\"analyst_or_confidence\"",
+      "count": 1638
+    },
+    {
+      "event": "signal_alert.skipped",
+      "reason": "\"conviction_layers_failed\"",
+      "count": 63
+    },
+    {
+      "event": "signal_alert.skipped_de_gate",
+      "reason": "\"DE does not agree with BUY \\u2014 suppressing alert\"",
+      "count": 35
+    }
+  ],
+  "all_email_acceptances_by_utc_hour": {}
+}

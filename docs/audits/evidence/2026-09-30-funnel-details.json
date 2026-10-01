@@ -1,0 +1,458 @@
+{
+  "started_at_utc": "2026-09-30T07:04:04.220827+00:00",
+  "queries": {
+    "snapshot": {
+      "sql": "SELECT now() AS snapshot_at, current_date AS server_date, current_setting('transaction_read_only') AS read_only, current_setting('transaction_isolation') AS isolation",
+      "rows": [
+        {
+          "snapshot_at": "2026-09-30 07:04:04.232794+00:00",
+          "server_date": "2026-09-30",
+          "read_only": "on",
+          "isolation": "repeatable read"
+        }
+      ]
+    },
+    "skip_reasons": {
+      "sql": "SELECT l.portfolio_id,j.key AS reason,sum(j.value::bigint) AS checks FROM paper_entry_scan_logs l CROSS JOIN LATERAL jsonb_each_text(CASE WHEN jsonb_typeof(l.skip_tally::jsonb)='object' THEN l.skip_tally::jsonb ELSE '{}'::jsonb END) j WHERE scanned_at>='2026-09-01' AND scanned_at<'2026-10-01' GROUP BY 1,2 ORDER BY 1,3 DESC",
+      "rows": [
+        {
+          "portfolio_id": 1,
+          "reason": "not_on_watchlist",
+          "checks": "3513"
+        },
+        {
+          "portfolio_id": 1,
+          "reason": "conviction_gate",
+          "checks": "1769"
+        },
+        {
+          "portfolio_id": 1,
+          "reason": "already_open_scale_in_only",
+          "checks": "891"
+        },
+        {
+          "portfolio_id": 1,
+          "reason": "price_drift",
+          "checks": "849"
+        },
+        {
+          "portfolio_id": 1,
+          "reason": "declining_confidence",
+          "checks": "738"
+        },
+        {
+          "portfolio_id": 1,
+          "reason": "restricted_symbol",
+          "checks": "499"
+        },
+        {
+          "portfolio_id": 1,
+          "reason": "kscore",
+          "checks": "366"
+        },
+        {
+          "portfolio_id": 1,
+          "reason": "entry_score_below_threshold",
+          "checks": "56"
+        },
+        {
+          "portfolio_id": 3,
+          "reason": "not_on_watchlist",
+          "checks": "575"
+        },
+        {
+          "portfolio_id": 3,
+          "reason": "already_open_scale_in_only",
+          "checks": "386"
+        },
+        {
+          "portfolio_id": 3,
+          "reason": "conviction_gate",
+          "checks": "202"
+        },
+        {
+          "portfolio_id": 3,
+          "reason": "price_drift",
+          "checks": "163"
+        },
+        {
+          "portfolio_id": 3,
+          "reason": "declining_confidence",
+          "checks": "143"
+        },
+        {
+          "portfolio_id": 3,
+          "reason": "restricted_symbol",
+          "checks": "115"
+        },
+        {
+          "portfolio_id": 3,
+          "reason": "entry_score_below_threshold",
+          "checks": "24"
+        },
+        {
+          "portfolio_id": 3,
+          "reason": "no_ranking",
+          "checks": "7"
+        },
+        {
+          "portfolio_id": 4,
+          "reason": "conviction_gate",
+          "checks": "169"
+        },
+        {
+          "portfolio_id": 4,
+          "reason": "no_ranking",
+          "checks": "119"
+        },
+        {
+          "portfolio_id": 4,
+          "reason": "ta_gate",
+          "checks": "98"
+        },
+        {
+          "portfolio_id": 4,
+          "reason": "not_on_watchlist",
+          "checks": "34"
+        },
+        {
+          "portfolio_id": 4,
+          "reason": "price_drift",
+          "checks": "22"
+        },
+        {
+          "portfolio_id": 6,
+          "reason": "not_on_watchlist",
+          "checks": "575"
+        },
+        {
+          "portfolio_id": 6,
+          "reason": "already_open_scale_in_only",
+          "checks": "385"
+        },
+        {
+          "portfolio_id": 6,
+          "reason": "conviction_gate",
+          "checks": "203"
+        },
+        {
+          "portfolio_id": 6,
+          "reason": "price_drift",
+          "checks": "163"
+        },
+        {
+          "portfolio_id": 6,
+          "reason": "declining_confidence",
+          "checks": "143"
+        },
+        {
+          "portfolio_id": 6,
+          "reason": "restricted_symbol",
+          "checks": "115"
+        },
+        {
+          "portfolio_id": 6,
+          "reason": "entry_score_below_threshold",
+          "checks": "23"
+        },
+        {
+          "portfolio_id": 6,
+          "reason": "no_ranking",
+          "checks": "7"
+        },
+        {
+          "portfolio_id": 7,
+          "reason": "not_on_watchlist",
+          "checks": "3514"
+        },
+        {
+          "portfolio_id": 7,
+          "reason": "conviction_gate",
+          "checks": "1770"
+        },
+        {
+          "portfolio_id": 7,
+          "reason": "already_open_scale_in_only",
+          "checks": "891"
+        },
+        {
+          "portfolio_id": 7,
+          "reason": "price_drift",
+          "checks": "849"
+        },
+        {
+          "portfolio_id": 7,
+          "reason": "declining_confidence",
+          "checks": "738"
+        },
+        {
+          "portfolio_id": 7,
+          "reason": "restricted_symbol",
+          "checks": "498"
+        },
+        {
+          "portfolio_id": 7,
+          "reason": "kscore",
+          "checks": "366"
+        },
+        {
+          "portfolio_id": 7,
+          "reason": "entry_score_below_threshold",
+          "checks": "54"
+        },
+        {
+          "portfolio_id": 8,
+          "reason": "not_on_watchlist",
+          "checks": "3831"
+        },
+        {
+          "portfolio_id": 8,
+          "reason": "entry_score_below_threshold",
+          "checks": "1876"
+        },
+        {
+          "portfolio_id": 8,
+          "reason": "already_open_scale_in_only",
+          "checks": "1133"
+        },
+        {
+          "portfolio_id": 8,
+          "reason": "conviction_gate",
+          "checks": "800"
+        },
+        {
+          "portfolio_id": 8,
+          "reason": "declining_confidence",
+          "checks": "574"
+        },
+        {
+          "portfolio_id": 8,
+          "reason": "restricted_symbol",
+          "checks": "462"
+        },
+        {
+          "portfolio_id": 8,
+          "reason": "price_drift",
+          "checks": "452"
+        },
+        {
+          "portfolio_id": 9,
+          "reason": "conviction_gate",
+          "checks": "50"
+        },
+        {
+          "portfolio_id": 10,
+          "reason": "conviction_gate",
+          "checks": "167"
+        },
+        {
+          "portfolio_id": 10,
+          "reason": "no_ranking",
+          "checks": "117"
+        },
+        {
+          "portfolio_id": 10,
+          "reason": "ta_gate",
+          "checks": "96"
+        },
+        {
+          "portfolio_id": 10,
+          "reason": "not_on_watchlist",
+          "checks": "31"
+        },
+        {
+          "portfolio_id": 10,
+          "reason": "price_drift",
+          "checks": "22"
+        },
+        {
+          "portfolio_id": 891,
+          "reason": "not_on_watchlist",
+          "checks": "576"
+        },
+        {
+          "portfolio_id": 891,
+          "reason": "already_open_scale_in_only",
+          "checks": "384"
+        },
+        {
+          "portfolio_id": 891,
+          "reason": "conviction_gate",
+          "checks": "203"
+        },
+        {
+          "portfolio_id": 891,
+          "reason": "price_drift",
+          "checks": "163"
+        },
+        {
+          "portfolio_id": 891,
+          "reason": "declining_confidence",
+          "checks": "143"
+        },
+        {
+          "portfolio_id": 891,
+          "reason": "restricted_symbol",
+          "checks": "116"
+        },
+        {
+          "portfolio_id": 891,
+          "reason": "entry_score_below_threshold",
+          "checks": "24"
+        },
+        {
+          "portfolio_id": 891,
+          "reason": "no_ranking",
+          "checks": "7"
+        }
+      ]
+    },
+    "gate_details": {
+      "sql": "SELECT portfolio_id,portfolio_gate,portfolio_gate_reason,count(*) AS occurrences FROM paper_entry_scan_logs WHERE scanned_at>='2026-09-01' AND scanned_at<'2026-10-01' AND portfolio_gate IS NOT NULL GROUP BY 1,2,3 ORDER BY 4 DESC LIMIT 35",
+      "rows": [
+        {
+          "portfolio_id": 2,
+          "portfolio_gate": "consecutive_losses",
+          "portfolio_gate_reason": "4 consecutive losses \u2014 recovery entry already used; no new entries until a winning trade",
+          "occurrences": 775
+        },
+        {
+          "portfolio_id": 5,
+          "portfolio_gate": "consecutive_losses",
+          "portfolio_gate_reason": "10 consecutive losses \u2014 recovery entry already used; no new entries until a winning trade",
+          "occurrences": 754
+        },
+        {
+          "portfolio_id": 10,
+          "portfolio_gate": "index_trend",
+          "portfolio_gate_reason": "^HSI down 1.7% today \u2014 no new entries on bad index days",
+          "occurrences": 21
+        },
+        {
+          "portfolio_id": 9,
+          "portfolio_gate": "index_trend",
+          "portfolio_gate_reason": "^HSI down 1.6% today \u2014 no new entries on bad index days",
+          "occurrences": 21
+        },
+        {
+          "portfolio_id": 9,
+          "portfolio_gate": "index_trend",
+          "portfolio_gate_reason": "^HSI down 1.7% today \u2014 no new entries on bad index days",
+          "occurrences": 21
+        },
+        {
+          "portfolio_id": 4,
+          "portfolio_gate": "index_trend",
+          "portfolio_gate_reason": "^HSI down 1.6% today \u2014 no new entries on bad index days",
+          "occurrences": 21
+        },
+        {
+          "portfolio_id": 10,
+          "portfolio_gate": "index_trend",
+          "portfolio_gate_reason": "^HSI down 1.6% today \u2014 no new entries on bad index days",
+          "occurrences": 21
+        },
+        {
+          "portfolio_id": 4,
+          "portfolio_gate": "index_trend",
+          "portfolio_gate_reason": "^HSI down 1.7% today \u2014 no new entries on bad index days",
+          "occurrences": 20
+        },
+        {
+          "portfolio_id": 10,
+          "portfolio_gate": "index_trend",
+          "portfolio_gate_reason": "^HSI down 1.8% today \u2014 no new entries on bad index days",
+          "occurrences": 13
+        },
+        {
+          "portfolio_id": 9,
+          "portfolio_gate": "index_trend",
+          "portfolio_gate_reason": "^HSI down 1.8% today \u2014 no new entries on bad index days",
+          "occurrences": 12
+        },
+        {
+          "portfolio_id": 4,
+          "portfolio_gate": "index_trend",
+          "portfolio_gate_reason": "^HSI down 1.8% today \u2014 no new entries on bad index days",
+          "occurrences": 10
+        },
+        {
+          "portfolio_id": 4,
+          "portfolio_gate": "index_trend",
+          "portfolio_gate_reason": "^HSI down 1.9% today \u2014 no new entries on bad index days",
+          "occurrences": 5
+        },
+        {
+          "portfolio_id": 10,
+          "portfolio_gate": "index_trend",
+          "portfolio_gate_reason": "^HSI down 1.9% today \u2014 no new entries on bad index days",
+          "occurrences": 4
+        },
+        {
+          "portfolio_id": 9,
+          "portfolio_gate": "index_trend",
+          "portfolio_gate_reason": "^HSI down 1.9% today \u2014 no new entries on bad index days",
+          "occurrences": 4
+        },
+        {
+          "portfolio_id": 9,
+          "portfolio_gate": "index_trend",
+          "portfolio_gate_reason": "^HSI down 1.5% today \u2014 no new entries on bad index days",
+          "occurrences": 1
+        },
+        {
+          "portfolio_id": 4,
+          "portfolio_gate": "index_trend",
+          "portfolio_gate_reason": "^HSI down 1.5% today \u2014 no new entries on bad index days",
+          "occurrences": 1
+        },
+        {
+          "portfolio_id": 10,
+          "portfolio_gate": "index_trend",
+          "portfolio_gate_reason": "^HSI down 1.5% today \u2014 no new entries on bad index days",
+          "occurrences": 1
+        }
+      ]
+    },
+    "last_2_days_skips": {
+      "sql": "SELECT j.key AS reason,sum(j.value::bigint) AS checks FROM paper_entry_scan_logs l CROSS JOIN LATERAL jsonb_each_text(CASE WHEN jsonb_typeof(l.skip_tally::jsonb)='object' THEN l.skip_tally::jsonb ELSE '{}'::jsonb END) j WHERE scanned_at>='2026-09-29' AND scanned_at<'2026-10-01' GROUP BY 1 ORDER BY 2 DESC",
+      "rows": [
+        {
+          "reason": "not_on_watchlist",
+          "checks": "1956"
+        },
+        {
+          "reason": "conviction_gate",
+          "checks": "953"
+        },
+        {
+          "reason": "already_open_scale_in_only",
+          "checks": "744"
+        },
+        {
+          "reason": "declining_confidence",
+          "checks": "496"
+        },
+        {
+          "reason": "restricted_symbol",
+          "checks": "447"
+        },
+        {
+          "reason": "price_drift",
+          "checks": "415"
+        },
+        {
+          "reason": "entry_score_below_threshold",
+          "checks": "253"
+        },
+        {
+          "reason": "kscore",
+          "checks": "162"
+        }
+      ]
+    }
+  },
+  "scheduler_sha256": "d37f73ebc6d6d19145cd2c515e655e88c5c0b855c63d03f798852573a2dc822f",
+  "db_models_sha256": "d43da8245c494cd78b4febe615e559639beebffc8302c6a6c9f026f8e29d43e8",
+  "finished_at_utc": "2026-09-30T07:04:04.286860+00:00"
+}

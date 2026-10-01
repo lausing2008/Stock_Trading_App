@@ -1,0 +1,660 @@
+{
+  "started_at_utc": "2026-09-30T07:02:32.062651+00:00",
+  "queries": {
+    "snapshot": {
+      "sql": "SELECT now() AS snapshot_at, current_date AS server_date, current_setting('transaction_read_only') AS read_only, current_setting('transaction_isolation') AS isolation",
+      "rows": [
+        {
+          "snapshot_at": "2026-09-30 07:02:32.072214+00:00",
+          "server_date": "2026-09-30",
+          "read_only": "on",
+          "isolation": "repeatable read"
+        }
+      ]
+    },
+    "portfolios": {
+      "sql": "SELECT id,is_active,initial_capital,current_cash, config->>'trading_style' AS style, config->>'market' AS market, config->>'max_positions' AS max_positions,config->>'min_entry_score' AS min_score, config->>'min_confidence' AS min_confidence,config->>'min_rr_ratio' AS min_rr,config->>'decision_engine_mode' AS de_mode FROM paper_portfolios ORDER BY id",
+      "rows": [
+        {
+          "id": 1,
+          "is_active": true,
+          "initial_capital": "50000.000000",
+          "current_cash": "50046.290000",
+          "style": "GROWTH",
+          "market": "US",
+          "max_positions": "12",
+          "min_score": "4",
+          "min_confidence": "45.0",
+          "min_rr": "2.0",
+          "de_mode": null
+        },
+        {
+          "id": 2,
+          "is_active": true,
+          "initial_capital": "300000.000000",
+          "current_cash": "293389.340000",
+          "style": "SWING",
+          "market": "HK",
+          "max_positions": "8",
+          "min_score": "6",
+          "min_confidence": "65.0",
+          "min_rr": "2.0",
+          "de_mode": null
+        },
+        {
+          "id": 3,
+          "is_active": true,
+          "initial_capital": "50000.000000",
+          "current_cash": "50685.850000",
+          "style": "SWING",
+          "market": "US",
+          "max_positions": "10",
+          "min_score": "5",
+          "min_confidence": "50.0",
+          "min_rr": "2.0",
+          "de_mode": null
+        },
+        {
+          "id": 4,
+          "is_active": true,
+          "initial_capital": "300000.000000",
+          "current_cash": "302106.410000",
+          "style": "GROWTH",
+          "market": "HK",
+          "max_positions": "10",
+          "min_score": "6",
+          "min_confidence": "65.0",
+          "min_rr": "2.0",
+          "de_mode": null
+        },
+        {
+          "id": 5,
+          "is_active": true,
+          "initial_capital": "50000.000000",
+          "current_cash": "48487.990000",
+          "style": "SWING",
+          "market": "US",
+          "max_positions": "6",
+          "min_score": "4",
+          "min_confidence": "30.0",
+          "min_rr": "2.0",
+          "de_mode": "primary"
+        },
+        {
+          "id": 6,
+          "is_active": true,
+          "initial_capital": "50000.000000",
+          "current_cash": "49610.880000",
+          "style": "SWING",
+          "market": "US",
+          "max_positions": "6",
+          "min_score": "5",
+          "min_confidence": "50.0",
+          "min_rr": "2.0",
+          "de_mode": "primary"
+        },
+        {
+          "id": 7,
+          "is_active": true,
+          "initial_capital": "50000.000000",
+          "current_cash": "49974.790000",
+          "style": "GROWTH",
+          "market": "US",
+          "max_positions": "6",
+          "min_score": "4",
+          "min_confidence": "45.0",
+          "min_rr": "2.0",
+          "de_mode": "primary"
+        },
+        {
+          "id": 8,
+          "is_active": true,
+          "initial_capital": "50000.000000",
+          "current_cash": "40293.460000",
+          "style": "LONG",
+          "market": "US",
+          "max_positions": "6",
+          "min_score": "4",
+          "min_confidence": "40.0",
+          "min_rr": "2.0",
+          "de_mode": "primary"
+        },
+        {
+          "id": 9,
+          "is_active": true,
+          "initial_capital": "300000.000000",
+          "current_cash": "300000.000000",
+          "style": "SWING",
+          "market": "HK",
+          "max_positions": "6",
+          "min_score": "5",
+          "min_confidence": "50.0",
+          "min_rr": "2.0",
+          "de_mode": "primary"
+        },
+        {
+          "id": 10,
+          "is_active": true,
+          "initial_capital": "300000.000000",
+          "current_cash": "300000.000000",
+          "style": "GROWTH",
+          "market": "HK",
+          "max_positions": "6",
+          "min_score": "4",
+          "min_confidence": "45.0",
+          "min_rr": "2.0",
+          "de_mode": "primary"
+        },
+        {
+          "id": 891,
+          "is_active": true,
+          "initial_capital": "50000.000000",
+          "current_cash": "50000.000000",
+          "style": "SWING",
+          "market": "US",
+          "max_positions": "6",
+          "min_score": "5",
+          "min_confidence": "50.0",
+          "min_rr": "2.0",
+          "de_mode": "primary"
+        }
+      ]
+    },
+    "scan_schema": {
+      "sql": "SELECT column_name,data_type FROM information_schema.columns WHERE table_name='paper_entry_scan_logs'",
+      "rows": [
+        {
+          "column_name": "id",
+          "data_type": "bigint"
+        },
+        {
+          "column_name": "portfolio_id",
+          "data_type": "integer"
+        },
+        {
+          "column_name": "scanned_at",
+          "data_type": "timestamp without time zone"
+        },
+        {
+          "column_name": "portfolio_gate",
+          "data_type": "character varying"
+        },
+        {
+          "column_name": "portfolio_gate_reason",
+          "data_type": "character varying"
+        },
+        {
+          "column_name": "candidates_seen",
+          "data_type": "integer"
+        },
+        {
+          "column_name": "skip_tally",
+          "data_type": "json"
+        }
+      ]
+    },
+    "scans": {
+      "sql": "SELECT portfolio_id,portfolio_gate,count(*) AS scans,sum(candidates_seen) AS candidate_checks,min(scanned_at) AS first,max(scanned_at) AS last FROM paper_entry_scan_logs WHERE scanned_at>='2026-09-01' AND scanned_at<'2026-10-01' GROUP BY 1,2 ORDER BY 1,3 DESC",
+      "rows": [
+        {
+          "portfolio_id": 1,
+          "portfolio_gate": null,
+          "scans": 755,
+          "candidate_checks": 8699,
+          "first": "2026-09-22 13:32:00.635599",
+          "last": "2026-09-29 19:56:19.856491"
+        },
+        {
+          "portfolio_id": 2,
+          "portfolio_gate": "consecutive_losses",
+          "scans": 775,
+          "candidate_checks": null,
+          "first": "2026-09-22 02:45:25.552680",
+          "last": "2026-09-30 07:00:36.891473"
+        },
+        {
+          "portfolio_id": 2,
+          "portfolio_gate": null,
+          "scans": 2,
+          "candidate_checks": 0,
+          "first": "2026-09-23 01:30:57.211514",
+          "last": "2026-09-30 01:31:24.719196"
+        },
+        {
+          "portfolio_id": 3,
+          "portfolio_gate": null,
+          "scans": 755,
+          "candidate_checks": 1618,
+          "first": "2026-09-22 13:32:06.589972",
+          "last": "2026-09-29 19:56:21.143239"
+        },
+        {
+          "portfolio_id": 4,
+          "portfolio_gate": null,
+          "scans": 722,
+          "candidate_checks": 446,
+          "first": "2026-09-22 01:30:22.702041",
+          "last": "2026-09-30 07:00:36.087210"
+        },
+        {
+          "portfolio_id": 4,
+          "portfolio_gate": "index_trend",
+          "scans": 57,
+          "candidate_checks": null,
+          "first": "2026-09-25 01:45:49.591666",
+          "last": "2026-09-25 05:40:45.407998"
+        },
+        {
+          "portfolio_id": 5,
+          "portfolio_gate": "consecutive_losses",
+          "scans": 754,
+          "candidate_checks": null,
+          "first": "2026-09-22 13:32:03.937373",
+          "last": "2026-09-29 19:56:20.822372"
+        },
+        {
+          "portfolio_id": 5,
+          "portfolio_gate": null,
+          "scans": 1,
+          "candidate_checks": 0,
+          "first": "2026-09-23 13:35:53.339058",
+          "last": "2026-09-23 13:35:53.339058"
+        },
+        {
+          "portfolio_id": 6,
+          "portfolio_gate": null,
+          "scans": 754,
+          "candidate_checks": 1617,
+          "first": "2026-09-22 13:32:04.396741",
+          "last": "2026-09-29 19:56:21.594287"
+        },
+        {
+          "portfolio_id": 7,
+          "portfolio_gate": null,
+          "scans": 755,
+          "candidate_checks": 8698,
+          "first": "2026-09-22 13:32:08.785117",
+          "last": "2026-09-29 19:56:21.844934"
+        },
+        {
+          "portfolio_id": 8,
+          "portfolio_gate": null,
+          "scans": 754,
+          "candidate_checks": 9133,
+          "first": "2026-09-22 13:32:21.447170",
+          "last": "2026-09-29 19:56:23.252467"
+        },
+        {
+          "portfolio_id": 9,
+          "portfolio_gate": null,
+          "scans": 719,
+          "candidate_checks": 50,
+          "first": "2026-09-22 02:45:24.150606",
+          "last": "2026-09-30 07:00:36.377902"
+        },
+        {
+          "portfolio_id": 9,
+          "portfolio_gate": "index_trend",
+          "scans": 59,
+          "candidate_checks": null,
+          "first": "2026-09-24 01:35:38.946724",
+          "last": "2026-09-25 05:40:45.657681"
+        },
+        {
+          "portfolio_id": 10,
+          "portfolio_gate": null,
+          "scans": 717,
+          "candidate_checks": 436,
+          "first": "2026-09-22 02:45:24.864543",
+          "last": "2026-09-30 07:00:36.646713"
+        },
+        {
+          "portfolio_id": 10,
+          "portfolio_gate": "index_trend",
+          "scans": 60,
+          "candidate_checks": null,
+          "first": "2026-09-24 01:35:39.445925",
+          "last": "2026-09-25 05:40:45.861701"
+        },
+        {
+          "portfolio_id": 891,
+          "portfolio_gate": null,
+          "scans": 755,
+          "candidate_checks": 1619,
+          "first": "2026-09-22 13:31:57.975426",
+          "last": "2026-09-29 19:56:19.433296"
+        }
+      ]
+    },
+    "skip_reasons": {
+      "sql": "SELECT l.portfolio_id,j.key AS reason,sum(j.value::bigint) AS checks FROM paper_entry_scan_logs l CROSS JOIN LATERAL jsonb_each_text(l.skip_tally::jsonb) j WHERE scanned_at>='2026-09-01' AND scanned_at<'2026-10-01' GROUP BY 1,2 ORDER BY 1,3 DESC",
+      "error_type": "DataError",
+      "error": "(psycopg2.errors.InvalidParameterValue) cannot call jsonb_each_text on a non-object\n\n"
+    },
+    "scans_daily": {
+      "sql": "SELECT scanned_at::date AS utc_day,count(*) AS scans,count(*) FILTER(WHERE portfolio_gate IS NOT NULL) AS gated FROM paper_entry_scan_logs WHERE scanned_at>='2026-09-01' AND scanned_at<'2026-10-01' GROUP BY 1 ORDER BY 1",
+      "rows": [
+        {
+          "utc_day": "2026-09-22",
+          "scans": 1187,
+          "gated": 211
+        },
+        {
+          "utc_day": "2026-09-23",
+          "scans": 1009,
+          "gated": 181
+        },
+        {
+          "utc_day": "2026-09-24",
+          "scans": 1436,
+          "gated": 259
+        },
+        {
+          "utc_day": "2026-09-25",
+          "scans": 1521,
+          "gated": 444
+        },
+        {
+          "utc_day": "2026-09-28",
+          "scans": 1472,
+          "gated": 264
+        },
+        {
+          "utc_day": "2026-09-29",
+          "scans": 1361,
+          "gated": 245
+        },
+        {
+          "utc_day": "2026-09-30",
+          "scans": 408,
+          "gated": 101
+        }
+      ]
+    },
+    "entries": {
+      "sql": "SELECT portfolio_id,trading_style,count(*) AS entries,count(DISTINCT entry_date) AS entry_days,min(entry_time) AS first,max(entry_time) AS last,count(*) FILTER(WHERE stage='open') AS still_open,count(*) FILTER(WHERE stage='closed') AS closed,count(*) FILTER(WHERE stage='closed' AND pnl>0) AS wins,sum(pnl) FILTER(WHERE stage='closed') AS closed_pnl FROM paper_trades WHERE entry_date>='2026-09-01' AND entry_date<'2026-10-01' GROUP BY 1,2 ORDER BY 1",
+      "rows": [
+        {
+          "portfolio_id": 1,
+          "trading_style": "GROWTH",
+          "entries": 5,
+          "entry_days": 4,
+          "first": "2026-09-02 16:22:22.185622",
+          "last": "2026-09-11 14:02:04.502313",
+          "still_open": 0,
+          "closed": 5,
+          "wins": 1,
+          "closed_pnl": "-1419.260000"
+        },
+        {
+          "portfolio_id": 3,
+          "trading_style": "SWING",
+          "entries": 3,
+          "entry_days": 2,
+          "first": "2026-09-02 14:06:54.747129",
+          "last": "2026-09-03 14:31:16.011451",
+          "still_open": 0,
+          "closed": 3,
+          "wins": 0,
+          "closed_pnl": "-406.050000"
+        },
+        {
+          "portfolio_id": 4,
+          "trading_style": "GROWTH",
+          "entries": 1,
+          "entry_days": 1,
+          "first": "2026-09-17 02:05:28.690260",
+          "last": "2026-09-17 02:05:28.690260",
+          "still_open": 0,
+          "closed": 1,
+          "wins": 0,
+          "closed_pnl": "-208.200000"
+        },
+        {
+          "portfolio_id": 5,
+          "trading_style": "SWING",
+          "entries": 2,
+          "entry_days": 2,
+          "first": "2026-09-03 16:11:12.459121",
+          "last": "2026-09-04 14:01:32.626778",
+          "still_open": 0,
+          "closed": 2,
+          "wins": 0,
+          "closed_pnl": "-338.130000"
+        },
+        {
+          "portfolio_id": 6,
+          "trading_style": "SWING",
+          "entries": 1,
+          "entry_days": 1,
+          "first": "2026-09-23 14:01:25.256321",
+          "last": "2026-09-23 14:01:25.256321",
+          "still_open": 0,
+          "closed": 1,
+          "wins": 0,
+          "closed_pnl": "-389.130000"
+        },
+        {
+          "portfolio_id": 7,
+          "trading_style": "GROWTH",
+          "entries": 1,
+          "entry_days": 1,
+          "first": "2026-09-15 14:17:15.931244",
+          "last": "2026-09-15 14:17:15.931244",
+          "still_open": 0,
+          "closed": 1,
+          "wins": 0,
+          "closed_pnl": "-25.210000"
+        },
+        {
+          "portfolio_id": 8,
+          "trading_style": "LONG",
+          "entries": 2,
+          "entry_days": 2,
+          "first": "2026-09-09 18:26:39.947424",
+          "last": "2026-09-18 19:01:58.758203",
+          "still_open": 2,
+          "closed": 0,
+          "wins": 0,
+          "closed_pnl": null
+        }
+      ]
+    },
+    "open_positions": {
+      "sql": "SELECT portfolio_id,count(*) AS open_positions,sum(shares*current_price) AS marked_value,min(entry_date) AS oldest_entry FROM paper_trades WHERE stage='open' GROUP BY 1 ORDER BY 1",
+      "rows": [
+        {
+          "portfolio_id": 8,
+          "open_positions": 2,
+          "marked_value": "10142.028574827800",
+          "oldest_entry": "2026-09-09"
+        }
+      ]
+    },
+    "subscriptions": {
+      "sql": "SELECT horizon,alert_mode,require_consensus,count(*) AS subscriptions,count(*) FILTER(WHERE email IS NULL OR email='') AS missing_email,count(*) FILTER(WHERE last_sent_at>='2026-09-01' AND last_sent_at<'2026-10-01') AS latest_send_in_september,min(last_sent_at) AS oldest_last_send,max(last_sent_at) AS newest_last_send FROM signal_alerts GROUP BY 1,2,3 ORDER BY 1",
+      "rows": [
+        {
+          "horizon": "GROWTH",
+          "alert_mode": "all",
+          "require_consensus": false,
+          "subscriptions": 153,
+          "missing_email": 0,
+          "latest_send_in_september": 68,
+          "oldest_last_send": "2026-06-11 07:33:22.807077",
+          "newest_last_send": "2026-09-29 16:46:45.084304"
+        },
+        {
+          "horizon": "LONG",
+          "alert_mode": "all",
+          "require_consensus": false,
+          "subscriptions": 24,
+          "missing_email": 0,
+          "latest_send_in_september": 11,
+          "oldest_last_send": "2026-06-24 18:05:42.399965",
+          "newest_last_send": "2026-09-29 15:41:45.723754"
+        },
+        {
+          "horizon": "SHORT",
+          "alert_mode": "all",
+          "require_consensus": false,
+          "subscriptions": 13,
+          "missing_email": 0,
+          "latest_send_in_september": 2,
+          "oldest_last_send": "2026-06-17 19:47:12.376773",
+          "newest_last_send": "2026-09-18 13:45:54.159988"
+        },
+        {
+          "horizon": "SWING",
+          "alert_mode": "all",
+          "require_consensus": false,
+          "subscriptions": 172,
+          "missing_email": 7,
+          "latest_send_in_september": 56,
+          "oldest_last_send": "2026-06-04 13:26:16.762492",
+          "newest_last_send": "2026-09-29 20:00:58.534332"
+        }
+      ]
+    },
+    "signal_counts": {
+      "sql": "SELECT horizon,signal,count(*) AS rows,count(DISTINCT stock_id) AS symbols,min(ts) AS first,max(ts) AS last FROM signals WHERE ts>='2026-09-01' AND ts<'2026-10-01' GROUP BY 1,2 ORDER BY 1,2",
+      "rows": [
+        {
+          "horizon": "SHORT",
+          "signal": "BUY",
+          "rows": 704,
+          "symbols": 123,
+          "first": "2026-09-01 08:30:18.589302",
+          "last": "2026-09-30 07:01:32.448602"
+        },
+        {
+          "horizon": "SHORT",
+          "signal": "SELL",
+          "rows": 290,
+          "symbols": 72,
+          "first": "2026-09-01 20:40:58.599789",
+          "last": "2026-09-29 20:37:06.950025"
+        },
+        {
+          "horizon": "SHORT",
+          "signal": "HOLD",
+          "rows": 1897,
+          "symbols": 176,
+          "first": "2026-09-01 08:30:21.233274",
+          "last": "2026-09-30 07:01:59.463203"
+        },
+        {
+          "horizon": "SHORT",
+          "signal": "WAIT",
+          "rows": 1577,
+          "symbols": 167,
+          "first": "2026-09-01 08:30:34.101879",
+          "last": "2026-09-30 07:02:23.544784"
+        },
+        {
+          "horizon": "SWING",
+          "signal": "BUY",
+          "rows": 506,
+          "symbols": 120,
+          "first": "2026-09-01 08:30:18.589302",
+          "last": "2026-09-28 20:36:05.397342"
+        },
+        {
+          "horizon": "SWING",
+          "signal": "SELL",
+          "rows": 435,
+          "symbols": 103,
+          "first": "2026-09-01 08:30:46.286200",
+          "last": "2026-09-30 07:00:49.741131"
+        },
+        {
+          "horizon": "SWING",
+          "signal": "HOLD",
+          "rows": 1448,
+          "symbols": 165,
+          "first": "2026-09-01 08:31:01.745603",
+          "last": "2026-09-30 07:01:32.448602"
+        },
+        {
+          "horizon": "SWING",
+          "signal": "WAIT",
+          "rows": 2079,
+          "symbols": 177,
+          "first": "2026-09-01 08:30:34.101879",
+          "last": "2026-09-30 07:02:23.544784"
+        },
+        {
+          "horizon": "LONG",
+          "signal": "BUY",
+          "rows": 1505,
+          "symbols": 149,
+          "first": "2026-09-01 08:30:18.589302",
+          "last": "2026-09-30 07:01:32.448602"
+        },
+        {
+          "horizon": "LONG",
+          "signal": "SELL",
+          "rows": 535,
+          "symbols": 114,
+          "first": "2026-09-01 08:30:46.286200",
+          "last": "2026-09-30 07:00:49.741131"
+        },
+        {
+          "horizon": "LONG",
+          "signal": "HOLD",
+          "rows": 1093,
+          "symbols": 167,
+          "first": "2026-09-01 08:31:01.745603",
+          "last": "2026-09-30 07:01:59.463203"
+        },
+        {
+          "horizon": "LONG",
+          "signal": "WAIT",
+          "rows": 1335,
+          "symbols": 156,
+          "first": "2026-09-01 08:30:34.101879",
+          "last": "2026-09-30 07:02:23.544784"
+        },
+        {
+          "horizon": "GROWTH",
+          "signal": "BUY",
+          "rows": 655,
+          "symbols": 114,
+          "first": "2026-09-01 08:30:18.589302",
+          "last": "2026-09-30 07:01:32.448602"
+        },
+        {
+          "horizon": "GROWTH",
+          "signal": "SELL",
+          "rows": 195,
+          "symbols": 63,
+          "first": "2026-09-01 08:33:04.745684",
+          "last": "2026-09-30 06:59:21.072578"
+        },
+        {
+          "horizon": "GROWTH",
+          "signal": "HOLD",
+          "rows": 2155,
+          "symbols": 178,
+          "first": "2026-09-01 08:30:21.233274",
+          "last": "2026-09-30 07:01:59.463203"
+        },
+        {
+          "horizon": "GROWTH",
+          "signal": "WAIT",
+          "rows": 1463,
+          "symbols": 156,
+          "first": "2026-09-01 08:30:34.101879",
+          "last": "2026-09-30 07:02:23.544784"
+        }
+      ]
+    },
+    "preferences": {
+      "sql": "SELECT alert_type,enabled,count(*) AS n FROM alert_preferences GROUP BY 1,2",
+      "rows": []
+    }
+  },
+  "scheduler_sha256": "d37f73ebc6d6d19145cd2c515e655e88c5c0b855c63d03f798852573a2dc822f",
+  "db_models_sha256": "d43da8245c494cd78b4febe615e559639beebffc8302c6a6c9f026f8e29d43e8",
+  "finished_at_utc": "2026-09-30T07:02:32.237486+00:00"
+}

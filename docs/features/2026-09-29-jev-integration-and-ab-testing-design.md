@@ -76,6 +76,32 @@ flowchart TD
 
 A future shared `JevPolicyEvaluator` should be a pure function over validated snapshots. The decision service, stock engine and options engine use the same policy contract. No synchronous provider request belongs inside an order transaction. The execution layer rechecks decision expiry, account/risk state and active adverse events immediately before submission.
 
+### Component boundary and separate-service decision
+
+**Recommendation: a separate enrichment component within `news-intelligence` first; a separately deployed engine only when measurements justify it.** This is an architectural plan, not an implemented worker or new service.
+
+Keep the provider client, response validation, durable-job processor and enrichment persistence behind a clear module boundary, for example `services/news-intelligence/src/services/jev/`. Give the worker bounded concurrency, timeouts and its own queue so provider delays do not occupy ingestion handlers. The scheduler should dispatch or consume durable work without synchronously enriching each article on the ingestion path.
+
+| Component | Owns | Boundary |
+|---|---|---|
+| Jev enrichment worker | Provider calls, schema validation, retries, budget checks, model provenance and stored answers | No trade authorization, position sizing or broker calls. |
+| Shared deterministic policy / decision engine | Calibrated interpretation of evidence alongside baseline strategy and risk rules | Reads stored, point-in-time evidence; never waits on a synchronous Jev request. |
+| Trading engines | Execution checks, orders, positions and protective exits | Remain independent of enrichment availability for necessary exits. |
+| Experiment framework | Assignment, paired evaluations, portfolio comparison and outcome analysis | Preserves control behavior and includes treatment failures/abstentions. |
+
+The shared policy contract described above also serves stock and options paths that do not all traverse the same decision-service endpoint. Keep trading policy outside the provider-specific package: changing text-classification providers should not require rewriting execution logic.
+
+**Extract a separately deployed worker/service when evidence shows one or more of these needs:**
+
+- Queue age or throughput requires scaling enrichment independently of ingestion.
+- Provider/client failures or resource use affect news ingestion despite bounded concurrency and timeouts.
+- Filings, disclosures or journal workloads need materially different resource limits, credentials or release schedules.
+- Operational ownership or security isolation warrants a separate process/container.
+
+Track queue age, ingestion latency, worker CPU/memory and provider failures before deciding. Module separation alone does not isolate process crashes; if ingestion reliability is affected, move the worker into a separate process/container earlier. Start by running the same worker package independently, retaining durable job IDs and the versioned evidence contract; a new synchronous HTTP dependency is not required. Preserve lease ownership, deduplication, feature-flag checks and budget accounting across old/new workers during migration.
+
+A new deployed service brings monitoring, health/readiness, deployment and schema-compatibility obligations. Begin with modular enrichment, shadow evaluation and paired paper trials; use measured operating needs to choose the deployment boundary. No separate Jev service is created by this document update.
+
 ### Processing contract
 
 1. Persist original source identity, text revision, UTC publication and receipt timestamps. Store a typed source reference; preserve documents even if today's baseline classifier calls them irrelevant.

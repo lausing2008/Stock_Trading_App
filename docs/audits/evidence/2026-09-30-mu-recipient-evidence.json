@@ -1,0 +1,6 @@
+{
+  "at": "2026-09-30T23:28:01.067260+00:00",
+  "recipients": [{"has_email": true, "early_marker_exists": true, "ttl_seconds": 1947, "approx_marker_set_at_if_unrenewed": "2026-09-30T00:00:28.067260+00:00"}],
+  "forecast_cache_exists": true,
+  "limitations": ["Marker time inferred from 86400-second TTL; not an immutable send receipt", "Retained market-data logs did not identify an MU earnings send or its original headline", "Cache existence does not establish forecast freshness or correctness"]
+}

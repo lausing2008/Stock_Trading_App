@@ -1,0 +1,343 @@
+{
+  "started_at_utc": "2026-09-30T06:51:33.269036+00:00",
+  "queries": {
+    "snapshot": {
+      "sql": "SELECT now() AS snapshot_at, current_date AS server_date, current_setting('transaction_read_only') AS read_only, current_setting('transaction_isolation') AS isolation",
+      "rows": [
+        {
+          "snapshot_at": "2026-09-30 06:51:33.278920+00:00",
+          "server_date": "2026-09-30",
+          "read_only": "on",
+          "isolation": "repeatable read"
+        }
+      ]
+    },
+    "paper_feedback_flags": {
+      "sql": "SELECT trading_style, is_active, config->>'calibration_feedback_enabled' AS feedback, count(*) AS portfolios FROM paper_portfolios GROUP BY 1,2,3",
+      "error_type": "ProgrammingError",
+      "error": "(psycopg2.errors.UndefinedColumn) column \"trading_style\" does not exist\nLINE 1: SELECT trading_style, is_active, config->>'calibration_feedb...\n               ^\n\n"
+    },
+    "benchmark_coverage": {
+      "sql": "SELECT s.symbol,count(p.id) AS bars,min(p.ts) AS first,max(p.ts) AS last FROM stocks s LEFT JOIN prices p ON p.stock_id=s.id AND p.timeframe='D1' WHERE s.symbol IN ('SPY','QQQ','IWM') GROUP BY 1",
+      "rows": [
+        {
+          "symbol": "QQQ",
+          "bars": 753,
+          "first": "2023-09-28 00:00:00",
+          "last": "2026-09-29 00:00:00"
+        },
+        {
+          "symbol": "SPY",
+          "bars": 585,
+          "first": "2024-05-30 00:00:00",
+          "last": "2026-09-29 00:00:00"
+        }
+      ]
+    },
+    "gex_signed": {
+      "sql": "SELECT alert_type,gex_corroborated,count(return_5d) AS resolved,count(*) FILTER(WHERE is_correct_5d) AS wins,avg(CASE WHEN alert_type='gamma_unwind_puts' THEN -return_5d ELSE return_5d END) AS signed_return FROM squeeze_alert_outcomes WHERE gex_corroborated IS NOT NULL GROUP BY 1,2 ORDER BY 1,2",
+      "rows": [
+        {
+          "alert_type": "gamma_unwind_calls",
+          "gex_corroborated": false,
+          "resolved": 9,
+          "wins": 2,
+          "signed_return": 0.005441037469194969
+        },
+        {
+          "alert_type": "gamma_unwind_calls",
+          "gex_corroborated": true,
+          "resolved": 45,
+          "wins": 15,
+          "signed_return": -0.012009173867971616
+        },
+        {
+          "alert_type": "gamma_unwind_puts",
+          "gex_corroborated": false,
+          "resolved": 4,
+          "wins": 2,
+          "signed_return": 0.06182091062840405
+        },
+        {
+          "alert_type": "gamma_unwind_puts",
+          "gex_corroborated": true,
+          "resolved": 64,
+          "wins": 31,
+          "signed_return": -0.02343169645351789
+        }
+      ]
+    },
+    "flow_resolved_dates": {
+      "sql": "SELECT fired_date,direction,count(return_5d) AS n5,count(return_10d) AS n10 FROM options_flow_alert_outcomes GROUP BY 1,2 ORDER BY 1,2",
+      "rows": [
+        {
+          "fired_date": "2026-09-01",
+          "direction": "bearish",
+          "n5": 596,
+          "n10": 596
+        },
+        {
+          "fired_date": "2026-09-01",
+          "direction": "bullish",
+          "n5": 549,
+          "n10": 549
+        },
+        {
+          "fired_date": "2026-09-02",
+          "direction": "bearish",
+          "n5": 165,
+          "n10": 165
+        },
+        {
+          "fired_date": "2026-09-02",
+          "direction": "bullish",
+          "n5": 134,
+          "n10": 134
+        },
+        {
+          "fired_date": "2026-09-03",
+          "direction": "bearish",
+          "n5": 15,
+          "n10": 15
+        },
+        {
+          "fired_date": "2026-09-03",
+          "direction": "bullish",
+          "n5": 16,
+          "n10": 16
+        },
+        {
+          "fired_date": "2026-09-04",
+          "direction": "bearish",
+          "n5": 20,
+          "n10": 20
+        },
+        {
+          "fired_date": "2026-09-04",
+          "direction": "bullish",
+          "n5": 16,
+          "n10": 16
+        },
+        {
+          "fired_date": "2026-09-05",
+          "direction": "bearish",
+          "n5": 17,
+          "n10": 17
+        },
+        {
+          "fired_date": "2026-09-05",
+          "direction": "bullish",
+          "n5": 11,
+          "n10": 11
+        },
+        {
+          "fired_date": "2026-09-06",
+          "direction": "bearish",
+          "n5": 6,
+          "n10": 6
+        },
+        {
+          "fired_date": "2026-09-06",
+          "direction": "bullish",
+          "n5": 7,
+          "n10": 7
+        },
+        {
+          "fired_date": "2026-09-08",
+          "direction": "bearish",
+          "n5": 7,
+          "n10": 7
+        },
+        {
+          "fired_date": "2026-09-08",
+          "direction": "bullish",
+          "n5": 5,
+          "n10": 5
+        },
+        {
+          "fired_date": "2026-09-09",
+          "direction": "bearish",
+          "n5": 9,
+          "n10": 9
+        },
+        {
+          "fired_date": "2026-09-09",
+          "direction": "bullish",
+          "n5": 14,
+          "n10": 14
+        },
+        {
+          "fired_date": "2026-09-10",
+          "direction": "bearish",
+          "n5": 12,
+          "n10": 12
+        },
+        {
+          "fired_date": "2026-09-10",
+          "direction": "bullish",
+          "n5": 22,
+          "n10": 22
+        },
+        {
+          "fired_date": "2026-09-11",
+          "direction": "bearish",
+          "n5": 9,
+          "n10": 9
+        },
+        {
+          "fired_date": "2026-09-11",
+          "direction": "bullish",
+          "n5": 14,
+          "n10": 14
+        },
+        {
+          "fired_date": "2026-09-14",
+          "direction": "bearish",
+          "n5": 3,
+          "n10": 3
+        },
+        {
+          "fired_date": "2026-09-14",
+          "direction": "bullish",
+          "n5": 1,
+          "n10": 1
+        },
+        {
+          "fired_date": "2026-09-15",
+          "direction": "bearish",
+          "n5": 5,
+          "n10": 5
+        },
+        {
+          "fired_date": "2026-09-15",
+          "direction": "bullish",
+          "n5": 4,
+          "n10": 4
+        },
+        {
+          "fired_date": "2026-09-16",
+          "direction": "bearish",
+          "n5": 13,
+          "n10": 13
+        },
+        {
+          "fired_date": "2026-09-16",
+          "direction": "bullish",
+          "n5": 7,
+          "n10": 7
+        },
+        {
+          "fired_date": "2026-09-17",
+          "direction": "bearish",
+          "n5": 14,
+          "n10": 14
+        },
+        {
+          "fired_date": "2026-09-17",
+          "direction": "bullish",
+          "n5": 18,
+          "n10": 18
+        },
+        {
+          "fired_date": "2026-09-18",
+          "direction": "bearish",
+          "n5": 21,
+          "n10": 0
+        },
+        {
+          "fired_date": "2026-09-18",
+          "direction": "bullish",
+          "n5": 28,
+          "n10": 0
+        },
+        {
+          "fired_date": "2026-09-21",
+          "direction": "bearish",
+          "n5": 9,
+          "n10": 0
+        },
+        {
+          "fired_date": "2026-09-21",
+          "direction": "bullish",
+          "n5": 16,
+          "n10": 0
+        },
+        {
+          "fired_date": "2026-09-22",
+          "direction": "bearish",
+          "n5": 31,
+          "n10": 0
+        },
+        {
+          "fired_date": "2026-09-22",
+          "direction": "bullish",
+          "n5": 50,
+          "n10": 0
+        },
+        {
+          "fired_date": "2026-09-23",
+          "direction": "bearish",
+          "n5": 32,
+          "n10": 0
+        },
+        {
+          "fired_date": "2026-09-23",
+          "direction": "bullish",
+          "n5": 45,
+          "n10": 0
+        },
+        {
+          "fired_date": "2026-09-24",
+          "direction": "bearish",
+          "n5": 0,
+          "n10": 0
+        },
+        {
+          "fired_date": "2026-09-24",
+          "direction": "bullish",
+          "n5": 0,
+          "n10": 0
+        },
+        {
+          "fired_date": "2026-09-25",
+          "direction": "bearish",
+          "n5": 0,
+          "n10": 0
+        },
+        {
+          "fired_date": "2026-09-25",
+          "direction": "bullish",
+          "n5": 0,
+          "n10": 0
+        },
+        {
+          "fired_date": "2026-09-28",
+          "direction": "bearish",
+          "n5": 0,
+          "n10": 0
+        },
+        {
+          "fired_date": "2026-09-28",
+          "direction": "bullish",
+          "n5": 0,
+          "n10": 0
+        },
+        {
+          "fired_date": "2026-09-29",
+          "direction": "bearish",
+          "n5": 0,
+          "n10": 0
+        },
+        {
+          "fired_date": "2026-09-29",
+          "direction": "bullish",
+          "n5": 0,
+          "n10": 0
+        }
+      ]
+    }
+  },
+  "scheduler_sha256": "d37f73ebc6d6d19145cd2c515e655e88c5c0b855c63d03f798852573a2dc822f",
+  "db_models_sha256": "d43da8245c494cd78b4febe615e559639beebffc8302c6a6c9f026f8e29d43e8",
+  "finished_at_utc": "2026-09-30T06:51:33.297171+00:00"
+}

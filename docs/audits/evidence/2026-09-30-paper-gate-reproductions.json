@@ -1,0 +1,20 @@
+{
+  "source_sha256": "e466179887de94e5159cddd0c5bd28a90e29bac2b5d6cf05395f4367676ee890",
+  "scope": "Extracted gate branches with simulated dependencies; not a full scan or historical replay",
+  "recovery": {
+    "first_scan_reaches_candidates": true,
+    "trades_opened": 0,
+    "second_scan_reaches_candidates": false,
+    "marker_streak": 4,
+    "blocks": [
+      "consecutive_losses"
+    ],
+    "source_line": 5789
+  },
+  "conviction": {
+    "old_failure_passes_gate": false,
+    "absent_cache_passes_gate": true,
+    "current_signal_identity_or_age_checked": false,
+    "source_line": 6834
+  }
+}
