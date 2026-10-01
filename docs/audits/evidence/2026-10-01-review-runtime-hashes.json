@@ -1,0 +1,9 @@
+{
+  "verification": "Read-only SSH sha256sum comparison; four files matched running containers during this review; not full deployment audit",
+  "files": {
+    "services/decision-engine/src/api/core/hard_rejects.py": "606d768e27f6562830e34d78cb5a1ca9802b7cbaf0fc8a1729a89c0e6476c645",
+    "services/decision-engine/src/api/routes.py": "cb6f3b7ceae06b4de1f332abd07adf919a41fc04e9857cded72d113d1127a625",
+    "services/market-data/src/services/scheduler.py": "7686421bdf621e630090422c8fb0d7f9e612fadf47fe1a4a5bdbafd2a6badf35",
+    "services/news-intelligence/src/services/storage.py": "f6e504faadfe91f667d57f5f735d05d03ea242093041d3841f64a6aeca0c43f4"
+  }
+}
