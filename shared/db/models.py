@@ -2925,7 +2925,12 @@ class PaperTradeDecisionLog(Base):
     """
     __tablename__ = "paper_trade_decision_log"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # BigInteger in production; SQLite has no BIGINT autoincrement and the real-database
+    # tests run on SQLite. The variant keeps one model definition rather than a
+    # test-only second one.
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True,
+        autoincrement=True)
     trade_id: Mapped[int] = mapped_column(ForeignKey("paper_trades.id", ondelete="CASCADE"), index=True)
     portfolio_id: Mapped[int] = mapped_column(ForeignKey("paper_portfolios.id", ondelete="CASCADE"), index=True)
     symbol: Mapped[str] = mapped_column(String(32), index=True)

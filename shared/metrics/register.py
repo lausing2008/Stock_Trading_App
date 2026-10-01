@@ -235,10 +235,20 @@ REGISTER: tuple[WorkItem, ...] = (
     WorkItem("M15", "collecting", "Portfolio concentration sample limited",
              "Test limits now with synthetic positions; measure realised concentration as "
              "exposure accumulates.", "Limits demonstrably bind under synthetic exposure.",
-             "portfolio/risk", Engineering.IMPLEMENTED, Research.NOT_MEASURABLE,
+             "portfolio/risk", Engineering.TESTED, Research.INCONCLUSIVE,
              Decision.NO_ACTION,
-             _t(TriggerKind.IMPLEMENTATION, "synthetic-position limit tests written"),
-             notes="Do not wait for trades to test a hard limit."),
+             _t(TriggerKind.IMPLEMENTATION, "the five measured gaps are addressed or "
+                                            "explicitly accepted as design decisions"),
+             notes="MEASURED 2026-10-01 with synthetic positions against the REAL entry path "
+                   "(docs/audits/2026-10-01-portfolio-concentration-synthetic-tests.md). Caps "
+                   "bind on open exposure, and exits are NOT gated by entry caps - the result "
+                   "that most needed checking. Five gaps found: concurrent entries in one scan "
+                   "opened 20.02% against a 15% sector cap; pending/unfilled orders are "
+                   "invisible; a missing mark values a position at entry price (50% "
+                   "understatement); currency is summed unconverted (latent - portfolios are "
+                   "single-market); no ordered-vs-filled or option-assignment representation. "
+                   "Each is a design trade-off, deliberately not fixed inside a measurement "
+                   "task; tests pin current behaviour so a fix has a failing test to flip."),
     WorkItem("M16", "occurrence-gated", "Broker fill re-poll needs multi-cycle observation",
              "Sandbox partial/pending fill across cycles, restart and reconciliation.",
              "Accepted order distinguished from fill; no duplicate trades/cash.",
