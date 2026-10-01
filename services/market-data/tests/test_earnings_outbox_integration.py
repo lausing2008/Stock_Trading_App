@@ -17,6 +17,21 @@ import pytest
 _PROBE = pathlib.Path(__file__).resolve().parent / "_earnings_outbox_probe.py"
 
 
+def _function_body(name: str) -> str:
+    """One top-level function from scheduler.py, sliced on real boundaries.
+
+    Slicing to the next `\ndef ` is wrong when a function runs long — it silently swallows the
+    next one. That mistake produced a false finding earlier in this work.
+    """
+    src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "services"
+           / "scheduler.py").read_text()
+    lines = src.split("\n")
+    starts = {i: ln for i, ln in enumerate(lines) if ln.startswith("def ")}
+    i = next(k for k, ln in starts.items() if ln.startswith(f"def {name}("))
+    j = next((k for k in sorted(starts) if k > i), len(lines))
+    return "\n".join(lines[i:j])
+
+
 @pytest.fixture(scope="module")
 def probe():
     proc = subprocess.run([sys.executable, str(_PROBE)], capture_output=True, text=True,
@@ -309,3 +324,100 @@ def test_classification_is_carried_as_a_label_not_a_verdict(probe):
     provider took the message — never that the right release was identified."""
     assert probe["attribution"]["module_doc_disclaims"] is True
     assert probe["attribution"]["accepted_means"] == "the provider took this message"
+
+
+# ── M20 cutover wiring: the flag is the single switch ─────────────────────────────────────────
+
+_SCHED = (pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "scheduler.py").read_text()
+
+
+def _drain_job_kwargs() -> dict:
+    """The drain job's registration, parsed as VALUES.
+
+    Asserting `"minutes=1" in source` is the defect T401 exists to prevent: that substring
+    survives the interval being changed to `minutes=10`. Parsing the call gives the integer, so
+    the assertion is about the schedule rather than about the text that describes it."""
+    import ast
+    tree = ast.parse(_SCHED)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        kw = {k.arg: k.value for k in node.keywords if k.arg}
+        tgt = kw.get("id")
+        if isinstance(tgt, ast.Constant) and tgt.value == "earnings_outbox_drain":
+            out = {k: v.value for k, v in kw.items() if isinstance(v, ast.Constant)}
+            out["_func"] = (node.args[0].id if node.args and isinstance(node.args[0], ast.Name)
+                            else None)
+            out["_trigger"] = (node.args[1].value
+                               if len(node.args) > 1 and isinstance(node.args[1], ast.Constant)
+                               else None)
+            return out
+    raise AssertionError("the drain job is not registered in start_scheduler()")
+
+
+def test_the_drain_job_is_registered_unconditionally():
+    """Registered whatever the flag says, so the cutover is a FLAG CHANGE rather than a deploy.
+    A job that only comes into existence once the flag moves cannot be observed working
+    beforehand — which is the whole point of having a shadow mode."""
+    kw = _drain_job_kwargs()
+    assert kw["_func"] == "drain_earnings_outbox"
+    assert kw["_trigger"] == "interval"
+    assert kw["minutes"] == 1
+    assert kw["max_instances"] == 1, "a second drain must not run alongside the first"
+
+
+def test_the_drain_job_survives_a_brief_outage_instead_of_discarding_the_cycle():
+    """Grace well above the usual 60s. Notifications are not market-hours work, and the
+    scheduler-misfire incident is precisely a job being DISCARDED after a short delay. The
+    outbox is durable, so a late drain still delivers; a discarded one leaves rows sitting.
+
+    Asserted as an inequality against the default, not as the literal 300 — the requirement is
+    'survives a brief outage', and pinning the exact number would fail on any reasonable tuning
+    while passing if it were changed to 61."""
+    assert _drain_job_kwargs()["misfire_grace_time"] >= 180
+
+
+def test_the_drain_job_declines_to_dispatch_unless_the_flag_says_outbox():
+    body = _function_body("drain_earnings_outbox")
+    assert "if not _eo.outbox_should_send(mode):" in body
+    assert '_record_job_status("drain_earnings_outbox", "skipped"' in body
+
+
+def test_an_unknown_recipient_defers_rather_than_being_treated_as_subscribed():
+    """`_subscribed` returns None when the user row is gone. `may_send` treats None as consent
+    UNESTABLISHED and defers — it must never read as permission."""
+    body = _function_body("drain_earnings_outbox")
+    assert "if user is None:" in body
+    assert "return None" in body
+
+
+def test_the_producer_enqueues_in_shadow_as_well_as_outbox_mode():
+    """Shadow accumulates real traffic in the outbox with zero delivery effect. Enqueuing only
+    in `outbox` mode would mean the first rows ever written are also the first ones sent."""
+    body = _function_body("_send_early_earnings_stage")
+    assert "if _mode in (_eo.SHADOW, _eo.OUTBOX):" in body
+
+
+def test_the_legacy_sender_is_skipped_in_outbox_mode_and_writes_no_marker():
+    """The two paths are mutually exclusive. Writing the legacy marker in outbox mode would make
+    the outbox's own cutover check believe the old path had already delivered the event."""
+    body = _function_body("_send_early_earnings_stage")
+    skip_idx = body.index("if not _legacy_sends:")
+    send_idx = body.index("sent_ok = send_email(")
+    assert skip_idx < send_idx, "the legacy send must be AFTER the outbox-mode bail-out"
+    assert "continue" in body[skip_idx:send_idx]
+
+
+def test_an_outbox_enqueue_failure_never_suppresses_the_legacy_send():
+    """While legacy owns delivery, an outbox problem must not cost a real notification."""
+    body = _function_body("_send_early_earnings_stage")
+    enq = body.index("_eo.enqueue_phase_alert(")
+    tail = body[enq:enq + 900]
+    assert "except Exception as _enq_exc:" in tail
+    assert "early_earnings_outbox_enqueue_failed" in tail
+
+
+def test_the_rollout_flag_is_not_defaulted_on_anywhere_in_the_scheduler():
+    """A cutover must be deliberate. Nothing in the scheduler may write the flag."""
+    assert "earnings_outbox_rollout" not in _SCHED, \
+        "the scheduler reads the mode through rollout_mode(); it must never set the flag"

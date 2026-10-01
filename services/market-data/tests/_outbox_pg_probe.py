@@ -61,7 +61,11 @@ with engine.begin() as c:
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 
-T0 = datetime(2026, 10, 1, 12, 0, 0)
+# DERIVED FROM THE CLOCK, NOT PINNED TO A LITERAL. `enqueue` stamps `available_at` from the real
+# clock, so a fixture instant frozen in the past stops being able to claim its own rows the
+# moment wall-clock time passes it — exactly how this probe broke in CI while passing locally
+# hours earlier. Every offset below is relative to this.
+T0 = ob.utcnow().replace(microsecond=0)
 R = {"skipped": False}
 
 
@@ -71,6 +75,7 @@ def _fresh():
 
 
 def _enq(s, eid, **kw):
+    kw.setdefault("available_at", T0)
     kw.setdefault("recipient", "a@example.com"); kw.setdefault("subject", "s")
     kw.setdefault("body_html", "<p>b</p>"); kw.setdefault("body_text", "b")
     return ob.enqueue(s, event_id=eid, **kw)
@@ -224,7 +229,7 @@ exposure = _ilu.module_from_spec(_espec); sys.modules["common.exposure"] = expos
 _espec.loader.exec_module(exposure)
 
 _PRICE = lambda t: (float(t.entry_price), None)          # noqa: E731
-TR = datetime(2026, 10, 1, 12, 0, 0)
+TR = T0
 
 with Session() as s:
     pf = PaperPortfolio(name="pg", initial_capital=100_000.0, current_cash=100_000.0,

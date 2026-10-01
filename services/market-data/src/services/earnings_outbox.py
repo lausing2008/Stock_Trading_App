@@ -122,7 +122,11 @@ def enqueue_phase_alert(session, *, user_id, recipient: str, symbol: str, event_
     row, created = _ob.enqueue(
         session, event_id=event_id, recipient=recipient, subject=subject,
         body_html=body_html, body_text=body_text, alert_type="early_earnings_news",
-        user_id=user_id, expires_at=expires_at)
+        # Availability derives from the EVENT, not from when the row happened to be written.
+        # Deriving it from the wall clock made the fixtures clock-dependent — a probe pinned to
+        # a fixed instant stopped being able to claim its own rows once real time passed it,
+        # the same stale-literal failure as the hardcoded option expiries fixed earlier.
+        user_id=user_id, expires_at=expires_at, available_at=event_time)
     if not created:
         return row, False, "already_enqueued"
     if marker is True:
@@ -132,7 +136,7 @@ def enqueue_phase_alert(session, *, user_id, recipient: str, symbol: str, event_
         # Deliberately NOT suppressed. Left pending and deferred at send time until the marker
         # becomes readable; see this function's docstring.
         row.last_error = "legacy marker state unknown at enqueue; will recheck before sending"
-        row.available_at = _ob.utcnow() + timedelta(seconds=_ob.backoff_seconds(1))
+        row.available_at = event_time + timedelta(seconds=_ob.backoff_seconds(1))
         return row, True, "legacy_state_unknown_pending"
     return row, True, "queued"
 

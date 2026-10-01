@@ -49,7 +49,11 @@ _engine = create_engine(f"sqlite:///{_DB}")
 Base.metadata.create_all(_engine)
 Session = sessionmaker(bind=_engine)
 
-T0 = datetime(2026, 10, 1, 12, 0, 0)
+# DERIVED FROM THE CLOCK, NOT PINNED TO A LITERAL. `enqueue` stamps timestamps from the real
+# clock, so a fixture instant frozen in the past stops matching its own rows once wall-clock time
+# passes it — the failure that turned this suite red in CI while it had passed locally hours
+# earlier. Every offset below is relative to this.
+T0 = ob.utcnow().replace(microsecond=0)
 R = {}
 
 

@@ -53,7 +53,11 @@ _engine = create_engine(f"sqlite:///{_DB}")
 Base.metadata.create_all(_engine)
 Session = sessionmaker(bind=_engine)
 
-T0 = datetime(2026, 10, 1, 12, 0, 0)
+# DERIVED FROM THE CLOCK, NOT PINNED TO A LITERAL. `enqueue` stamps timestamps from the real
+# clock, so a fixture instant frozen in the past stops matching its own rows once wall-clock time
+# passes it — the failure that turned this suite red in CI while it had passed locally hours
+# earlier. Every offset below is relative to this.
+T0 = outbox.utcnow().replace(microsecond=0)
 
 
 def _fresh():
@@ -64,6 +68,9 @@ def _fresh():
 
 
 def _enq(s, event_id, **kw):
+    # Pin availability to the fixture clock. Left to default it is stamped from the real clock,
+    # which lands microseconds AFTER T0 and makes the row unclaimable at T0.
+    kw.setdefault("available_at", T0)
     kw.setdefault("recipient", "a@example.com")
     kw.setdefault("subject", "Subject")
     kw.setdefault("body_html", "<p>body</p>")

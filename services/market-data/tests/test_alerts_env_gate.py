@@ -161,6 +161,10 @@ def _job_registration_gating() -> dict[str, bool]:
 
 
 _ALERT_JOB_IDS = {
+    # M20: the outbox drain SENDS EMAIL (it is the delivery half of the earnings-phase alert),
+    # so it belongs on the alert side and must obey the same environment gate. It is inert
+    # unless the rollout flag says `outbox`, but "inert by default" is a flag, not a gate.
+    "earnings_outbox_drain",
     "broker_auth_check",
     "morning_digest_us",
     "morning_digest_hk",

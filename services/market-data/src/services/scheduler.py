@@ -2301,6 +2301,9 @@ def check_earnings_impact_alerts() -> None:
         _record_job_status("check_earnings_impact_alerts", "error", time.monotonic() - _t0, str(exc))
 
 
+_EARNINGS_OUTBOX_LOCK_KEY = "stockai:lock:drain_earnings_outbox"
+_EARNINGS_OUTBOX_LOCK_TTL = 55
+
 _EARLY_EARNINGS_NEWS_LOCK_KEY = "stockai:lock:check_early_earnings_news_alerts"
 _EARLY_EARNINGS_NEWS_LOCK_TTL = 55  # seconds — runs every 60s, same pattern as check_price_alerts
 
@@ -2477,6 +2480,14 @@ def _send_early_earnings_stage(session, sym, phase, headline, subject, body_text
     Extracted so the per-recipient loop is not nested three deep inside the job, and so the
     dedup key is defined in exactly one place."""
     from .email_service import send_email
+    from . import earnings_outbox as _eo
+
+    # M20 CUTOVER. The rollout flag is the single switch, and the two paths are mutually
+    # exclusive by construction — `off`/`shadow` deliver through the legacy sender below,
+    # `outbox` delivers through the drain job instead. There is no mode in which both send.
+    _mode = _eo.rollout_mode(_rc)
+    _legacy_sends = _eo.legacy_should_send(_mode)
+
     for uid, syms in user_symbols.items():
         if sym not in syms:
             continue
@@ -2493,6 +2504,31 @@ def _send_early_earnings_stage(session, sym, phase, headline, subject, body_text
                 continue
         except Exception:
             pass
+
+        # Enqueue in `shadow` AND `outbox`. In shadow the row is written and evaluated but the
+        # drain job does not run, so the outbox accumulates real traffic with zero delivery
+        # effect — the evidence needed before moving the flag, without moving it first.
+        if _mode in (_eo.SHADOW, _eo.OUTBOX):
+            try:
+                _eo.enqueue_phase_alert(
+                    session, user_id=uid, recipient=u_obj.email, symbol=sym,
+                    event_date=event_date, phase=phase, subject=subject,
+                    body_html=f"<p>{body_text}</p>", body_text=body_text, redis_client=_rc)
+                session.commit()
+            except Exception as _enq_exc:
+                session.rollback()
+                # An outbox failure must NEVER suppress the legacy send while legacy still owns
+                # delivery. In `outbox` mode it means this stage is not queued and the drain job
+                # has nothing to send — visible, and better than a silent double-send.
+                log.warning("signal_alert.early_earnings_outbox_enqueue_failed",
+                            symbol=sym, phase=phase, mode=_mode, error=str(_enq_exc))
+
+        if not _legacy_sends:
+            # `outbox` mode: the drain job owns delivery from here. The legacy marker is
+            # deliberately NOT written — writing it would make the outbox's own cutover check
+            # believe the old path had already delivered this event.
+            continue
+
         try:
             sent_ok = send_email(u_obj.email, subject, f"<p>{body_text}</p>", body_text)
         except Exception as _send_exc:
@@ -2512,6 +2548,81 @@ def _send_early_earnings_stage(session, sym, phase, headline, subject, body_text
                 pass
             log.info("signal_alert.early_earnings_news_sent",
                      symbol=sym, phase=phase, user=u_obj.username)
+
+
+def drain_earnings_outbox() -> None:
+    """M20 — deliver queued earnings-phase notifications. The outbox's drain side.
+
+    DOES NOTHING UNLESS THE ROLLOUT FLAG SAYS `outbox`. In `off` the outbox is not even written
+    to; in `shadow` rows accumulate and are evaluated but this job declines to dispatch, so real
+    traffic can be observed without a single message being delivered by the new path. That is
+    the evidence needed before the flag moves, gathered without moving it first.
+
+    The job is thin on purpose: every decision — claiming, the pre-send recheck, the
+    acceptance/crash gap, expiry, dead-lettering — lives in `common.outbox` and
+    `earnings_outbox.deliver_batch`, which are exercised against PostgreSQL in CI. This supplies
+    the three things only production has: a real sender, a real preference source, and the real
+    legacy marker.
+    """
+    import os as _os
+    import time as _time
+    _started = _time.time()
+    # Identifies the lease holder. The pid is enough here: leases are reclaimed on expiry, not
+    # by matching a worker across restarts, so a recycled pid cannot steal a live lease.
+    _worker_id = f"md:{_os.getpid()}"
+    _rc = _get_redis()
+    try:
+        acquired = _rc.set(_EARNINGS_OUTBOX_LOCK_KEY, "1", nx=True,
+                           ex=_EARNINGS_OUTBOX_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+
+    from . import earnings_outbox as _eo
+    from .email_service import send_email
+
+    mode = _eo.rollout_mode(_rc)
+    if not _eo.outbox_should_send(mode):
+        _record_job_status("drain_earnings_outbox", "skipped", _time.time() - _started,
+                           f"rollout mode is {mode!r}; legacy sender owns delivery")
+        return
+
+    try:
+        with SessionLocal() as session:
+            def _send(row):
+                # Returns PROVIDER ACCEPTANCE, not delivery. send_email returns False on a
+                # refusal and raises on a transport failure; a timeout surfaces as an exception
+                # and `deliver_batch` classifies it as `unknown` rather than guessing.
+                return send_email(row.recipient, row.subject, row.body_html, row.body_text)
+
+            def _subscribed(row):
+                user = session.get(User, row.user_id) if row.user_id else None
+                if user is None:
+                    # Consent cannot be established for an unknown recipient. DEFER — the
+                    # caller treats None as unknown, never as permission.
+                    return None
+                # EA-05: the preference result must GATE a branch, not be returned as a value.
+                # A call whose result is merely passed along enforces nothing structurally, and
+                # the ratchet that checks this exists because a previous version did exactly
+                # that.
+                if not _may_send(session, user, row.alert_type or "early_earnings_news"):
+                    return False
+                return True
+
+            def _legacy_marker(row):
+                return _eo.legacy_marker_exists(_rc, row.event_id)
+
+            result = _eo.deliver_batch(session, owner=_worker_id, send=_send,
+                                       is_subscribed=_subscribed,
+                                       legacy_marker=_legacy_marker)
+        if any(result.get(k) for k in ("accepted", "failed", "unknown", "deferred",
+                                       "suppressed", "quarantined")):
+            log.info("earnings_outbox.drained", mode=mode, **result)
+        _record_job_status("drain_earnings_outbox", "ok", _time.time() - _started)
+    except Exception as exc:
+        log.error("earnings_outbox.drain_failed", error=str(exc))
+        _record_job_status("drain_earnings_outbox", "error", _time.time() - _started, str(exc))
 
 
 def _headline_belongs_to_event(published_at: str | None, event_date: date,
@@ -14437,6 +14548,24 @@ def start_scheduler() -> None:
             id="early_earnings_news_alert_check",
             replace_existing=True,
             max_instances=1, coalesce=True, misfire_grace_time=60,
+        )
+
+        # ── M20: drain the earnings notification outbox — every minute ───────────
+        # INERT UNLESS THE ROLLOUT FLAG SAYS `outbox`. Registered unconditionally so the
+        # cutover is a flag change rather than a deploy: a job that only exists once the
+        # flag moves cannot be observed working beforehand.
+        #
+        # misfire_grace_time is 300, not 60. Notifications are not market-hours work and a
+        # brief outage must not DISCARD a drain cycle — the scheduler-misfire incident
+        # (docs/incidents/scheduler-misfire-data-gaps.md) is exactly that failure. The outbox
+        # is durable, so a late drain still delivers; a discarded one leaves rows sitting.
+        _scheduler.add_job(
+            drain_earnings_outbox,
+            "interval",
+            minutes=1,
+            id="earnings_outbox_drain",
+            replace_existing=True,
+            max_instances=1, coalesce=True, misfire_grace_time=300,
         )
 
     # ── Live price cache refresh — every minute during market hours ──────────

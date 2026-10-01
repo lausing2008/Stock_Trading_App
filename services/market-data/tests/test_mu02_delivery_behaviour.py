@@ -60,8 +60,37 @@ class Recorder:
         return True
 
 
-def _make_sender(recorder):
+class EnqueueRecorder:
+    """Stands in for `earnings_outbox`, recording what the sender would queue.
+
+    Added when M20's cutover gave `_send_early_earnings_stage` a second dependency. Stubbing it
+    here rather than rewriting the test keeps the REAL function under test — the whole point of
+    this harness — and lets the cutover be asserted behaviourally instead of by reading source.
+    """
+    OFF, SHADOW, OUTBOX = "off", "shadow", "outbox"
+
+    def __init__(self, mode="off", raise_on_enqueue=False):
+        self.mode = mode
+        self.raise_on_enqueue = raise_on_enqueue
+        self.enqueued = []
+
+    def rollout_mode(self, _rc):
+        return self.mode
+
+    @staticmethod
+    def legacy_should_send(mode):
+        return mode in ("off", "shadow")
+
+    def enqueue_phase_alert(self, session, **kw):
+        if self.raise_on_enqueue:
+            raise RuntimeError("outbox unavailable")
+        self.enqueued.append(kw)
+        return object(), True, "queued"
+
+
+def _make_sender(recorder, outbox=None):
     """Execute the REAL `_send_early_earnings_stage` with its dependencies supplied."""
+    outbox = outbox if outbox is not None else EnqueueRecorder()
     env = {
         "log": types.SimpleNamespace(info=lambda *a, **k: None,
                                      warning=lambda *a, **k: None,
@@ -71,9 +100,16 @@ def _make_sender(recorder):
     mod = types.ModuleType("email_service_stub")
     mod.send_email = recorder
     sys.modules["__mu02_email_stub"] = mod
-    src = _fn_src("_send_early_earnings_stage").replace(
-        "from .email_service import send_email",
-        "from __mu02_email_stub import send_email")
+    ob_mod = types.ModuleType("earnings_outbox_stub")
+    for _n in ("rollout_mode", "legacy_should_send", "enqueue_phase_alert"):
+        setattr(ob_mod, _n, getattr(outbox, _n))
+    ob_mod.SHADOW, ob_mod.OUTBOX = EnqueueRecorder.SHADOW, EnqueueRecorder.OUTBOX
+    sys.modules["__mu02_outbox_stub"] = ob_mod
+    src = (_fn_src("_send_early_earnings_stage")
+           .replace("from .email_service import send_email",
+                    "from __mu02_email_stub import send_email")
+           .replace("from . import earnings_outbox as _eo",
+                    "import __mu02_outbox_stub as _eo"))
     exec(compile(src, "<sender>", "exec"), env)
     return env["_send_early_earnings_stage"]
 
@@ -83,8 +119,23 @@ USER_SYMBOLS = {7: {"MU"}}
 EVENT = "2026-09-30"
 
 
-def _send(fn, rc, phase, subject_extra="", recorder_subject=None):
-    fn(None, "MU", phase, "a headline", recorder_subject or f"subj-{phase}{subject_extra}",
+class FakeSession:
+    """The sender commits the outbox enqueue so the drain job can see it. These tests used to
+    pass None, which was fine while the function touched no database at all."""
+    def __init__(self):
+        self.commits = 0
+        self.rollbacks = 0
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
+def _send(fn, rc, phase, subject_extra="", recorder_subject=None, session=None):
+    fn(session or FakeSession(), "MU", phase,
+       "a headline", recorder_subject or f"subj-{phase}{subject_extra}",
        "body", USER_SYMBOLS, USERS, rc, EVENT)
 
 
@@ -174,7 +225,7 @@ def test_a_recipient_without_an_email_is_skipped_without_a_marker():
     rc = FakeRedis()
     rec = Recorder()
     fn = _make_sender(rec)
-    fn(None, "MU", "results", "h", "s", "b", {9: {"MU"}},
+    fn(FakeSession(), "MU", "results", "h", "s", "b", {9: {"MU"}},
        {9: types.SimpleNamespace(email=None, username="noemail")}, rc, EVENT)
     assert rec.sent == []
     assert rc.store == {}
@@ -498,3 +549,52 @@ def test_the_abstention_summary_names_the_suppression_hazard():
     i = SCHED_SRC.index("early_earnings_news_abstained_summary")
     block = SCHED_SRC[i:i + 600]
     assert "stale pending row" in block
+
+
+# ── M20 cutover, asserted through the REAL sender ─────────────────────────────────────────────
+
+def _run(mode, **kw):
+    rec, rc = Recorder(), FakeRedis()
+    ob = EnqueueRecorder(mode=mode, **kw)
+    _send(_make_sender(rec, outbox=ob), rc, "results")
+    return rec, rc, ob
+
+
+def test_off_mode_sends_via_legacy_and_queues_nothing():
+    """The default. The outbox is not even written to, so deploying the cutover code changes
+    nothing until the flag moves."""
+    rec, rc, ob = _run("off")
+    assert len(rec.sent) == 1
+    assert ob.enqueued == []
+    assert f"stockai:early_earnings_news:7:MU:{EVENT}:results" in rc.store
+
+
+def test_shadow_mode_queues_AND_still_delivers_through_legacy():
+    """Shadow accumulates real traffic in the outbox with zero delivery effect — the evidence
+    needed before moving the flag, gathered without moving it."""
+    rec, rc, ob = _run("shadow")
+    assert len(rec.sent) == 1, "legacy still owns delivery in shadow"
+    assert len(ob.enqueued) == 1
+    assert ob.enqueued[0]["symbol"] == "MU" and ob.enqueued[0]["phase"] == "results"
+
+
+def test_outbox_mode_queues_and_the_legacy_sender_does_NOT_fire():
+    """THE DOUBLE-SEND CASE. The two paths are mutually exclusive; if both delivered, every
+    recipient would get the alert twice on the day of the cutover."""
+    rec, rc, ob = _run("outbox")
+    assert rec.sent == [], "legacy must not send once the outbox owns delivery"
+    assert len(ob.enqueued) == 1
+
+
+def test_outbox_mode_writes_no_legacy_marker():
+    """Writing it would make the outbox's own cutover check believe the old path had already
+    delivered this event — and the drain job would then suppress it, losing the alert."""
+    rec, rc, ob = _run("outbox")
+    assert rc.store == {}
+
+
+def test_an_outbox_failure_never_costs_a_legacy_delivery():
+    """While legacy still owns delivery, an outbox problem must not suppress a real alert."""
+    rec, rc, ob = _run("shadow", raise_on_enqueue=True)
+    assert len(rec.sent) == 1
+    assert f"stockai:early_earnings_news:7:MU:{EVENT}:results" in rc.store

@@ -205,13 +205,24 @@ def test_an_after_hours_release_crossing_UTC_midnight_keeps_one_identity():
     assert before == after, "the same release must not produce two dedup identities"
 
 
+def _whole_fn(name: str) -> str:
+    """One top-level function, sliced on real `def` boundaries."""
+    lines = SCHED.split("\n")
+    starts = {i: ln for i, ln in enumerate(lines) if ln.startswith("def ")}
+    i = next(k for k, ln in starts.items() if ln.startswith(f"def {name}("))
+    j = next((k for k in sorted(starts) if k > i), len(lines))
+    return "\n".join(lines[i:j])
+
+
 def test_the_ttl_outlives_the_utc_midnight_boundary():
     """A 24h TTL keyed on the event could still expire mid-incident while retries continue.
 
     Asserted on the TTL actually written, in test_mu02_delivery_behaviour.py — the value, not the
     digits in the source. See `test_the_marker_ttl_spans_more_than_one_calendar_day`."""
-    i = SCHED.index("def _send_early_earnings_stage")
-    block = SCHED[i:i + 2500]
+    # WHOLE FUNCTION, not a fixed 2500-character window. The window silently stopped covering
+    # the code these assertions target the moment the function grew (M20's cutover added a
+    # dozen lines above them), turning a real check into a substring-not-found error.
+    block = _whole_fn("_send_early_earnings_stage")
     assert "_rc.setex(redis_key" in block
 
 
@@ -239,8 +250,10 @@ def test_phase_state_advances_only_after_a_successful_send():
     Asserts there is NO marker write anywhere BEFORE the send — not merely that one exists after
     it. An earlier version searched forward from `if sent_ok:` and therefore could not see a
     second, earlier write; a sabotage that marked the phase before sending passed it."""
-    i = SCHED.index("def _send_early_earnings_stage")
-    block = SCHED[i:i + 2500]
+    # WHOLE FUNCTION, not a fixed 2500-character window. The window silently stopped covering
+    # the code these assertions target the moment the function grew (M20's cutover added a
+    # dozen lines above them), turning a real check into a substring-not-found error.
+    block = _whole_fn("_send_early_earnings_stage")
     send_idx = block.index("sent_ok = send_email(")
     before_send = block[:send_idx]
     assert "setex" not in before_send, \
@@ -252,8 +265,10 @@ def test_phase_state_advances_only_after_a_successful_send():
 
 
 def test_a_failed_send_leaves_no_marker():
-    i = SCHED.index("def _send_early_earnings_stage")
-    block = SCHED[i:i + 2500]
+    # WHOLE FUNCTION, not a fixed 2500-character window. The window silently stopped covering
+    # the code these assertions target the moment the function grew (M20's cutover added a
+    # dozen lines above them), turning a real check into a substring-not-found error.
+    block = _whole_fn("_send_early_earnings_stage")
     fail_arm = block[block.index("except Exception as _send_exc:"):block.index("if sent_ok:")]
     assert "setex" not in fail_arm
     assert "sent_ok = False" in fail_arm
