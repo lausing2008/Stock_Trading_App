@@ -35,6 +35,22 @@ PHASE_GUIDANCE = "guidance"
 PHASE_CALL = "call"
 PHASE_OTHER = "other"
 
+#: UNRESOLVED CLASSIFICATION RISK, recorded rather than papered over.
+#:
+#: A newly PUBLISHED retrospective article — "Revisiting Acme's Q2 Results" posted today — passes
+#: every check this module and its caller apply: the issuer matches, the publication date is
+#: inside the freshness window, and it names a period. It would be classified `results` and could
+#: occupy the confirmed-results slot for an event it is not about.
+#:
+#: Nothing here closes that. Freshness excludes OLD articles, not NEW articles ABOUT old events,
+#: and period extraction is explicitly not identity. Closing it needs authoritative release
+#: identity — an issuer/period/event key from the release or filing itself — which is the P1
+#: outbox/event-identity work, not another heuristic.
+KNOWN_UNRESOLVED_RISK = (
+    "A newly published retrospective article about a PAST period passes issuer, freshness and "
+    "period checks and can be classified as results. Requires authoritative release identity."
+)
+
 #: Phases that justify their own notification, in release order. `other` is excluded — an
 #: unclassifiable earnings-category headline should not consume a slot a real stage needs.
 NOTIFIABLE_PHASES = (PHASE_PREVIEW, PHASE_RESULTS, PHASE_GUIDANCE, PHASE_CALL)
@@ -71,10 +87,11 @@ _WORD_TO_Q = {"first": "Q1", "second": "Q2", "third": "Q3", "fourth": "Q4"}
 def extract_period(headline: str | None) -> str | None:
     """The fiscal period a headline names — "Q4", "FY", or None when it names none.
 
-    **This does NOT establish event identity, and must not be used as if it did.** Naming "Q4"
-    does not bind an article to the right fiscal YEAR or the right report event, and a
-    retrospective piece can name a quarter it is merely discussing. It narrows a class of
-    headlines; that is all it is for.
+    PERIOD EXTRACTION FOR RECONCILIATION — not event identity, and the name matters. This
+    records what a headline SAYS so it can be reconciled later against authoritative data. It
+    does not bind the article to a fiscal year or a report event, and it never could: a
+    retrospective piece names a quarter it is merely discussing, and "Q4" alone fixes no year.
+    It narrows a class of headlines. That is the whole of its job.
 
     `FY` covers the case a quarter-only rule got wrong: a valid release can report **full-year
     results** without naming a quarter at all, and an earlier version of this function would have
@@ -111,6 +128,10 @@ def extract_fiscal_year(headline: str | None) -> int | None:
 
 def results_binding(headline: str | None) -> tuple[bool, str]:
     """May this headline occupy the confirmed-RESULTS slot, and if not, why not?
+
+    A NARROWING CHECK, NOT AN IDENTITY CHECK. It excludes headlines that name no period at all;
+    it cannot exclude one that names a period for a different event. See
+    `KNOWN_UNRESOLVED_RISK` below.
 
     Returns `(ok, reason)`. The reason exists so an excluded release does not disappear
     invisibly — the failure mode of a silent filter is indistinguishable from the bug it replaced.

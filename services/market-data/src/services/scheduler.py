@@ -2361,6 +2361,7 @@ def check_early_earnings_news_alerts() -> None:
             _rc = _get_redis()
             from .email_service import send_email
             today_str = date.today().isoformat()
+            _abstained: list[dict] = []
             for sym in sorted(still_pending):
                 # MU-02: PER-STAGE, not one-per-day. A preview used to consume the symbol's only
                 # slot for the calendar day, so the actual result — which arrived 5.08 seconds
@@ -2368,6 +2369,13 @@ def check_early_earnings_news_alerts() -> None:
                 # that told the reader nothing. Each release stage now dedups independently.
                 _candidates = _event_date_by_symbol[sym]
                 if len(_candidates) != 1:
+                    # SURFACE IT FOR REVIEW, do not just log and move on. A stale pending row
+                    # left in place would make this branch abstain every cycle, silently
+                    # suppressing a genuine new result for as long as the row survives. Writing
+                    # the unresolved set somewhere inspectable is what makes that visible rather
+                    # than indistinguishable from "no earnings news today".
+                    _abstained.append({"symbol": sym,
+                                       "candidate_events": [str(d) for d in _candidates]})
                     # ABSTAIN rather than choose. Two pending events for one symbol means a
                     # headline in the window cannot be attributed to either without guessing,
                     # and a wrong attribution is worse than a missing alert here: it would mark
@@ -2407,6 +2415,22 @@ def check_early_earnings_news_alerts() -> None:
                         user_symbols, users_by_id, _rc,
                         _event_date.isoformat(),
                     )
+            # MEASURE THE ABSTENTIONS. A count in the job status makes "we abstained on 3
+            # symbols today" visible without reading logs, and the per-symbol detail is written
+            # to a short-lived key so an unresolved release can actually be reviewed.
+            if _abstained:
+                log.warning("signal_alert.early_earnings_news_abstained_summary",
+                            count=len(_abstained),
+                            symbols=[a["symbol"] for a in _abstained],
+                            note="multiple pending earnings events — headlines cannot be bound; "
+                                 "a stale pending row will keep suppressing real results")
+                try:
+                    _rc and _rc.setex(
+                        "stockai:early_earnings_news:unresolved",
+                        86400, json.dumps({"as_of": datetime.now(timezone.utc).isoformat(),
+                                           "abstained": _abstained}))
+                except Exception:
+                    pass
             _record_job_status("check_early_earnings_news_alerts", "ok", time.monotonic() - _t0)
     except Exception as exc:
         log.error("signal_alert.early_earnings_news_error", error=str(exc))

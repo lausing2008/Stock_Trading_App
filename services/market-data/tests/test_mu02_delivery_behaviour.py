@@ -412,7 +412,7 @@ def test_two_pending_events_make_the_symbol_ABSTAIN_rather_than_pick_one():
     # exists, it abstains loudly, and — in the executed test below — the query really does return
     # both candidate events so the caller CAN abstain rather than silently pick one.
     i = SCHED_SRC.index("_candidates = _event_date_by_symbol[sym]")
-    block = SCHED_SRC[i:i + 900]
+    block = SCHED_SRC[i:i + 1600]
     assert "len(_candidates)" in block
     assert "early_earnings_news_abstained" in block
     assert "continue" in block
@@ -427,7 +427,74 @@ def test_the_candidate_query_returns_every_pending_event_not_just_the_latest():
 
 def test_every_exclusion_path_records_a_reason():
     i = SCHED_SRC.index("_candidates = _event_date_by_symbol[sym]")
-    block = SCHED_SRC[i:i + 2500]
+    block = SCHED_SRC[i:i + 3600]
     assert block.count("early_earnings_news_excluded") >= 2
     assert 'reason="issuer_or_freshness"' in block
     assert "results_not_bindable:" in block
+
+
+# ── the unresolved classification risk, tested as a GAP rather than a fix ───────────────
+
+def test_an_IN_WINDOW_retrospective_article_is_NOT_caught():
+    """RECORDED AS AN UNRESOLVED RISK, not as a passing safeguard.
+
+    Everything so far excludes OLD articles. A retrospective PUBLISHED TODAY about a past period
+    passes every check: the issuer matches, the publication date is inside the freshness window,
+    and it names a period. It is classified `results` and would occupy the confirmed-results slot
+    for an event it is not about.
+
+    This test asserts the gap EXISTS so it cannot be quietly assumed closed. If a future change
+    genuinely closes it, this test fails and should be rewritten — that is the intended signal.
+    """
+    from datetime import date
+    ep = _phase_mod()
+    retro = "Revisiting Acme Q2 Results: EPS Beats In Hindsight"
+
+    # Issuer: matches. Freshness: published today, inside the window. Period: named.
+    assert _binder()("2026-09-30T14:00:00+00:00", date(2026, 9, 30), "ACME", "ACME") is True
+    assert ep.extract_period(retro) == "Q2"
+    ok, _ = ep.results_binding(retro)
+    assert ok is True
+
+    # ...and so it is classified as RESULTS. This is the open risk.
+    assert ep.classify_earnings_phase(retro) == ep.PHASE_RESULTS, (
+        "if this now returns something else, the gap may be closed — rewrite this test")
+
+
+def test_the_unresolved_risk_is_documented_in_the_module():
+    """So the next reader finds it where the logic lives, not only in an audit document."""
+    ep = _phase_mod()
+    assert "retrospective" in ep.KNOWN_UNRESOLVED_RISK.lower()
+    assert "authoritative release identity" in ep.KNOWN_UNRESOLVED_RISK.lower()
+
+
+def test_period_extraction_is_named_for_reconciliation_not_identity():
+    ep = _phase_mod()
+    doc = (ep.extract_period.__doc__ or "").lower()
+    assert "reconciliation" in doc
+    assert "not event identity" in doc
+
+
+# ── abstentions are measured and surfaced, not merely logged ────────────────────────────
+
+def test_abstentions_are_collected_and_summarised():
+    i = SCHED_SRC.index("_candidates = _event_date_by_symbol[sym]")
+    block = SCHED_SRC[i:i + 1200]
+    assert "_abstained.append(" in block, "each abstention must be recorded, not just logged"
+    assert "early_earnings_news_abstained_summary" in SCHED_SRC
+
+
+def test_unresolved_releases_are_written_somewhere_inspectable():
+    """A stale pending row would make the job abstain every cycle, silently suppressing a real
+    result for as long as it survives. The unresolved set has to be reviewable."""
+    assert '"stockai:early_earnings_news:unresolved"' in SCHED_SRC
+    i = SCHED_SRC.index('"stockai:early_earnings_news:unresolved"')
+    block = SCHED_SRC[i - 400:i + 400]
+    assert "abstained" in block
+    assert "as_of" in block, "the snapshot must say when it was taken"
+
+
+def test_the_abstention_summary_names_the_suppression_hazard():
+    i = SCHED_SRC.index("early_earnings_news_abstained_summary")
+    block = SCHED_SRC[i:i + 600]
+    assert "stale pending row" in block
