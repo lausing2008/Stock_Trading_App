@@ -17,7 +17,7 @@ import json
 import pathlib
 import sys
 import types
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -256,6 +256,224 @@ R["options_assignment"] = {
     "paper_trade_has_option_fields": [c.name for c in PaperTrade.__table__.columns
                                       if "option" in c.name or "assign" in c.name],
     "concentration_reads": "prefetched_open, built from PaperTrade rows with stage='open'",
+}
+
+# ── 9. RESERVATION LIFECYCLE — rollback, crash, double-count, reconciliation ──────────────────
+from db.models import PortfolioExposureReservation as _Res                 # noqa: E402
+import importlib.util as _ilu2                                             # noqa: E402
+
+_espec = _ilu2.spec_from_file_location("common.exposure", ROOT / "shared" / "common" / "exposure.py")
+_exp = _ilu2.module_from_spec(_espec); sys.modules["common.exposure"] = _exp
+_espec.loader.exec_module(_exp)
+
+_PRICE = lambda t: (float(t.entry_price), False)   # noqa: E731
+T = datetime(2026, 10, 1, 12, 0, 0)
+
+with Session() as s:
+    pf2 = PaperPortfolio(name="p2", initial_capital=EQUITY, current_cash=EQUITY,
+                         config={"market": "US"}); s.add(pf2); s.flush()
+    s.commit()
+    PF2 = pf2.id
+
+# (a) ROLLBACK — NOT AUTHORITATIVE ON SQLITE, and the probe says so rather than guessing.
+#
+# pysqlite does not emit BEGIN for DML by default, so a released SAVEPOINT is effectively
+# already durable and `session.rollback()` does not undo it. That is a driver property, not a
+# property of the reservation: the same sequence on PostgreSQL rolls back correctly, and that is
+# where the guarantee is actually asserted (test_outbox_postgres_concurrency.py's sibling
+# reservation scenarios).
+#
+# Its own portfolio, because the first version of this scenario leaked a 10,000 reservation into
+# the NEXT scenario and silently turned a valid reservation into a `sector_cap` refusal — a
+# fixture leak that looked exactly like a code defect.
+with Session() as s:
+    _rb = PaperPortfolio(name="rollback", initial_capital=EQUITY, current_cash=EQUITY,
+                         config={"market": "US"}); s.add(_rb); s.flush(); s.commit()
+    PF_RB = _rb.id
+with Session() as s:
+    _, rolled_reason = _exp.reserve(s, portfolio_id=PF_RB, intent_id="roll-1", symbol="RB",
+                                    sector="Energy", value=10_000.0, equity=EQUITY,
+                                    cap_pct=0.15, price_for=_PRICE, now=T)
+    s.rollback()
+with Session() as s:
+    R["reservation_rollback"] = {
+        "reserve_reason": rolled_reason,
+        "rows_after_rollback": s.query(_Res).filter_by(portfolio_id=PF_RB).count(),
+        "reserved_value_after_rollback": _exp.active_reserved_value(s, PF_RB, "Energy", now=T),
+        "authoritative_on_this_engine": False,
+        "why": "pysqlite does not open a transaction for DML, so a released SAVEPOINT is "
+               "already durable; rollback is asserted on PostgreSQL instead",
+    }
+
+# (b) WORKER CRASH: reserved, never consumed or released. Must not block forever.
+with Session() as s:
+    _exp.reserve(s, portfolio_id=PF2, intent_id="crash-1", symbol="CR", sector="Energy",
+                 value=14_000.0, equity=EQUITY, cap_pct=0.15, price_for=_PRICE,
+                 ttl_seconds=60, now=T)
+    s.commit()
+with Session() as s:
+    blocked = _exp.reserve(s, portfolio_id=PF2, intent_id="crash-blocked", symbol="X",
+                           sector="Energy", value=5_000.0, equity=EQUITY, cap_pct=0.15,
+                           price_for=_PRICE, now=T)[1]
+    s.commit()
+LATER = T + timedelta(seconds=600)
+with Session() as s:
+    # Read-time expiry frees it even before the sweep runs.
+    freed_at_read = _exp.active_reserved_value(s, PF2, "Energy", now=LATER)
+    n_expired = _exp.expire_stale(s, now=LATER)
+    s.commit()
+with Session() as s:
+    after = _exp.reserve(s, portfolio_id=PF2, intent_id="crash-after", symbol="X2",
+                         sector="Energy", value=5_000.0, equity=EQUITY, cap_pct=0.15,
+                         price_for=_PRICE, now=LATER)[1]
+    s.commit()
+    row = s.query(_Res).filter_by(intent_id="crash-1").one()
+    R["worker_crash"] = {
+        "blocked_while_held": blocked,
+        "reserved_value_after_ttl": freed_at_read,
+        "expired_by_sweep": n_expired, "state": row.state, "reason": row.terminal_reason,
+        "reserve_after_expiry": after,
+    }
+
+# (c) NO DOUBLE COUNT: once consumed, the reservation stops counting — the position carries it.
+with Session() as s:
+    s.query(_Res).filter_by(portfolio_id=PF2).delete(); s.commit()
+with Session() as s:
+    st = _mk_stock(s, "DC1", "Energy"); s.commit()
+    r, _ = _exp.reserve(s, portfolio_id=PF2, intent_id="dc-1", symbol="DC1", sector="Energy",
+                        value=10_000.0, equity=EQUITY, cap_pct=0.15, price_for=_PRICE, now=T)
+    s.commit()
+    before = _exp.active_reserved_value(s, PF2, "Energy", now=T)
+    tr = _mk_open(s, s.query(PaperPortfolio).filter_by(id=PF2).one(), st, 100, 100.0, 95.0)
+    s.flush()
+    consumed = _exp.consume(s, r, trade_id=tr.id, now=T)
+    s.commit()
+with Session() as s:
+    committed, _fb = _exp.committed_value(s, PF2, "Energy", price_for=_PRICE)
+    R["no_double_count"] = {
+        "reserved_before_consume": before, "consumed": consumed,
+        "reserved_after_consume": _exp.active_reserved_value(s, PF2, "Energy", now=T),
+        "committed_after_consume": committed,
+        "total_counted_once": committed + _exp.active_reserved_value(s, PF2, "Energy", now=T),
+    }
+
+# (d) RELEASE returns exposure immediately, without waiting out the TTL.
+with Session() as s:
+    r, _ = _exp.reserve(s, portfolio_id=PF2, intent_id="rel-1", symbol="RL", sector="Materials",
+                        value=12_000.0, equity=EQUITY, cap_pct=0.15, price_for=_PRICE, now=T)
+    s.commit()
+    held = _exp.active_reserved_value(s, PF2, "Materials", now=T)
+    released = _exp.release(s, r, reason="rejected: sector_count_cap", now=T)
+    s.commit()
+with Session() as s:
+    R["release"] = {
+        "held": held, "released": released,
+        "after": _exp.active_reserved_value(s, PF2, "Materials", now=T),
+        "second_release_is_refused": _exp.release(
+            s, s.query(_Res).filter_by(intent_id="rel-1").one(), reason="again", now=T),
+    }
+
+# (e) A CONSUMED reservation cannot be released, and an EXPIRED one cannot be consumed.
+# (c) deleted this portfolio's earlier reservations, so build a fresh expired one here rather
+# than reaching for one a previous scenario may have removed.
+with Session() as s:
+    _exp.reserve(s, portfolio_id=PF2, intent_id="sm-expired", symbol="SM", sector="Utilities",
+                 value=1.0, equity=EQUITY, cap_pct=0.90, price_for=_PRICE, ttl_seconds=60,
+                 now=T)
+    s.commit()
+with Session() as s:
+    _exp.expire_stale(s, now=T + timedelta(seconds=600)); s.commit()
+with Session() as s:
+    consumed_row = s.query(_Res).filter_by(intent_id="dc-1").one()
+    expired_row = s.query(_Res).filter_by(intent_id="sm-expired").one()
+    R["state_machine"] = {
+        "release_a_consumed_reservation": _exp.release(s, consumed_row, reason="x", now=T),
+        "consume_an_expired_reservation": _exp.consume(s, expired_row, trade_id=1, now=T),
+    }
+    s.rollback()
+
+# (f) RECONCILIATION surfaces a consumed reservation whose position is gone.
+with Session() as s:
+    open_ids = {t.id for t in s.query(PaperTrade).filter_by(portfolio_id=PF2, stage="open")}
+    R["reconciliation_clean"] = _exp.reconcile(s, portfolio_id=PF2, open_trade_ids=open_ids,
+                                               now=T)
+    R["reconciliation_orphaned"] = _exp.reconcile(s, portfolio_id=PF2, open_trade_ids=set(),
+                                                  now=T)
+
+# (g) FAIL CLOSED when a position cannot be valued at all.
+with Session() as s:
+    none_price = _exp.reserve(s, portfolio_id=PF2, intent_id="fc-1", symbol="FC",
+                              sector="Energy", value=1.0, equity=EQUITY, cap_pct=0.90,
+                              price_for=lambda t: (None, True), now=T)[1]
+    stale_ok = _exp.reserve(s, portfolio_id=PF2, intent_id="fc-2", symbol="FC2",
+                            sector="Energy", value=1.0, equity=EQUITY, cap_pct=0.90,
+                            price_for=lambda t: (float(t.entry_price), True), now=T)[1]
+    s.rollback()
+with Session() as s:
+    stale_refused = _exp.reserve(s, portfolio_id=PF2, intent_id="fc-3", symbol="FC3",
+                                 sector="Energy", value=1.0, equity=EQUITY, cap_pct=0.90,
+                                 price_for=lambda t: (float(t.entry_price), True),
+                                 require_fresh_marks=True, now=T)[1]
+    s.rollback()
+R["fail_closed"] = {"unvaluable_position": none_price, "stale_mark_default": stale_ok,
+                    "stale_mark_when_fresh_required": stale_refused}
+
+# ── 10. M20: eligibility must not depend on notification infrastructure ───────────────────────
+#
+# The architectural tests assert that the entry path REFERENCES no outbox or delivery state.
+# This asserts the BEHAVIOUR that restriction exists to guarantee: identical trading inputs
+# produce an identical eligibility decision whether notification infrastructure is healthy or
+# completely unavailable. A source check can be satisfied by an indirect call; this cannot.
+def _entry_outcome(s, pf, stock, snapshot, cfg, live_price=100.0):
+    gp = {"stop": live_price * 0.95, "take_profit": live_price * 1.15}
+    trade, reason = pte._open_paper_trade(
+        s, pf, stock, _sig(stock.symbol), None, live_price, gp, 8, [], "fallback",
+        cfg, "SWING", EQUITY, 1.0, None, {stock.symbol: live_price}, snapshot, 2.0)
+    return {"opened": trade is not None, "reason": reason,
+            "shares": round(float(trade.shares), 6) if trade is not None else None,
+            "entry_price": round(float(trade.entry_price), 6) if trade is not None else None}
+
+
+class _Exploding:
+    """Every attribute access raises. Stands in for notification infrastructure that is not
+    merely failing but unreachable — the strongest form of 'unavailable'."""
+    def __getattr__(self, name):
+        raise ConnectionError(f"notification infrastructure unavailable: {name}")
+
+
+with Session() as s:
+    pf3 = PaperPortfolio(name="parity", initial_capital=EQUITY, current_cash=EQUITY,
+                         config={"market": "US"}); s.add(pf3); s.flush()
+    st_a = _mk_stock(s, "PAR1", "Industrials")
+    st_b = _mk_stock(s, "PAR2", "Industrials")
+    s.commit()
+    cfg_par = _cfg(max_sector_pct=0.50, max_sector_positions=99, max_position_pct=0.10)
+    healthy = _entry_outcome(s, pf3, st_a, [], cfg_par)
+    s.commit()
+
+import src.services.email_service as _email                                # noqa: E402
+_saved = (_email.send_email, getattr(pte, "_exposure"))
+try:
+    _email.send_email = lambda *a, **kw: (_ for _ in ()).throw(
+        ConnectionError("smtp unreachable"))
+    sys.modules["common.outbox"] = _Exploding()
+    with Session() as s:
+        pf3 = s.query(PaperPortfolio).filter_by(name="parity").one()
+        st_b = s.query(Stock).filter_by(symbol="PAR2").one()
+        degraded = _entry_outcome(s, pf3, st_b, [], cfg_par)
+        s.commit()
+finally:
+    _email.send_email = _saved[0]
+
+R["eligibility_parity_under_notification_outage"] = {
+    "healthy": healthy,
+    "notifications_unavailable": degraded,
+    # Symbol differs by construction (two candidates); everything that constitutes ELIGIBILITY
+    # must match exactly.
+    "identical_eligibility": (healthy["opened"] == degraded["opened"]
+                              and healthy["reason"] == degraded["reason"]
+                              and healthy["shares"] == degraded["shares"]
+                              and healthy["entry_price"] == degraded["entry_price"]),
 }
 
 print(json.dumps(R, indent=2, default=str))

@@ -276,6 +276,34 @@ def test_the_outbox_producer_does_not_import_trading_or_decision_modules():
         assert forbidden not in mod, f"earnings_outbox imports/references {forbidden!r}"
 
 
+def test_trading_eligibility_is_identical_whether_notifications_work_or_not():
+    """THE BEHAVIOUR the import/source restrictions exist to guarantee.
+
+    Those checks assert the entry path does not NAME outbox or delivery state; they could still
+    be satisfied by an indirect call. This runs the real entry path twice with identical trading
+    inputs — once normally, once with `send_email` raising and `common.outbox` replaced by an
+    object whose every attribute access raises — and requires the eligibility decision, the
+    share count and the fill price to match exactly.
+
+    If they ever diverge, a mail-server outage has become a trading input.
+
+    Runs inside `_concentration_probe.py` because it needs the real engine against a real
+    database; market-data's conftest stubs sqlalchemy."""
+    import json as _json
+    import subprocess as _sp
+    import sys as _sys
+    probe_path = pathlib.Path(__file__).resolve().parent / "_concentration_probe.py"
+    proc = _sp.run([_sys.executable, str(probe_path)], capture_output=True, text=True,
+                   timeout=300)
+    if proc.returncode != 0:
+        pytest.fail(f"concentration probe failed:\n{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}")
+    r = _json.loads(proc.stdout)["eligibility_parity_under_notification_outage"]
+    assert r["identical_eligibility"] is True, (
+        f"eligibility changed when notification infrastructure was unavailable: "
+        f"{r['healthy']} vs {r['notifications_unavailable']}")
+    assert r["healthy"]["opened"] is True, "the parity fixture must actually open a trade"
+
+
 def test_classification_is_carried_as_a_label_not_a_verdict(probe):
     """`phase` travels through so delivery is idempotent per label. Acceptance records that the
     provider took the message — never that the right release was identified."""

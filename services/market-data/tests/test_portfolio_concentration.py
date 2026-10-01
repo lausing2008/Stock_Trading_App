@@ -40,10 +40,15 @@ def test_existing_exposure_binds_the_sector_cap(probe):
     assert probe["existing_exposure_binds"]["reason"] == "sector_cap"
 
 
-def test_risk_reducing_exits_are_not_gated_by_entry_caps(probe):
+def test_risk_reducing_exits_are_not_gated_by_entry_caps_on_the_scheduled_path(probe):
     """The requirement: an account over its concentration limit must still be able to REDUCE
-    risk. Entry caps and exits live in different functions, and the cap names that do appear in
-    the exit path are a warning log — no return or continue is guarded by one."""
+    risk.
+
+    SCOPE: verified for `_monitor_positions`, the scheduled exit path — the cap names present
+    there are a warning log and no return/continue is guarded by one. This is NOT a claim about
+    every exit route; source inspection of one function cannot establish that manual exits,
+    liquidation, conditional-order exits or broker-side closes behave the same way. Those are
+    unverified."""
     e = probe["exits_when_capped"]
     assert e["cap_usage_is_warning_only"] is True
     assert e["exit_returns_guarded_by_a_cap"] == [], \
@@ -52,18 +57,105 @@ def test_risk_reducing_exits_are_not_gated_by_entry_caps(probe):
 
 # ── Findings: gaps in what the caps can see ───────────────────────────────────────────────────
 
-def test_FINDING_concurrent_entries_can_jointly_breach_a_sector_cap(probe):
-    """Both candidates are sized against the SAME pre-fetched snapshot, so neither sees the
-    other. Measured: two entries opened **20.02% of equity** in one sector against a **15%**
-    cap — each individually legal, jointly over.
+def test_the_witness_fixture_no_longer_breaches_the_sector_cap(probe):
+    """THE DEFECT WITNESS, PRESERVED. This is the exact fixture that reproduced
+    M15-DEFECT-CONCURRENT-CAP on 2026-10-01: two candidates sized against the SAME pre-fetched
+    snapshot, so neither saw the other. It opened **20.02% of equity** in one sector against a
+    **15%** cap — each entry individually legal, jointly over.
 
-    `prefetched_open` is captured once before the candidate loop (AUD19-PERF2, to avoid a query
-    per candidate). That is a real performance fix; the cost is that within one scan cycle the
-    caps are evaluated against a stale view of the portfolio."""
+    The fixture is unchanged; only the expected outcome is. The second entry is now refused,
+    because `exposure.reserve()` reads committed exposure fresh under a portfolio row lock
+    instead of trusting the snapshot.
+
+    Keeping the witness matters: if the reservation is ever bypassed or the fresh read reverts
+    to a caller-supplied snapshot, this test fails with the original symptom rather than
+    disappearing quietly."""
     c = probe["concurrent_entries"]
-    assert c["first"] == "opened" and c["second_same_snapshot"] == "opened"
-    assert c["breaches_sector_cap"] is True
-    assert c["combined_pct_of_equity"] > c["sector_cap_pct"]
+    assert c["first"] == "opened"
+    assert c["second_same_snapshot"] == "sector_cap"
+    assert c["breaches_sector_cap"] is False
+    assert c["combined_pct_of_equity"] <= c["sector_cap_pct"]
+
+
+# ── Reservation lifecycle ─────────────────────────────────────────────────────────────────────
+
+def test_a_crashed_worker_does_not_block_entries_forever(probe):
+    """A reservation held by a dead worker blocks while live — that is the point — and is
+    reclaimed when its TTL lapses, both at read time and by the sweep, so the portfolio is never
+    frozen by a crash."""
+    w = probe["worker_crash"]
+    assert w["blocked_while_held"] == "sector_cap"
+    assert w["reserved_value_after_ttl"] == 0.0
+    assert w["state"] == "expired" and w["expired_by_sweep"] >= 1
+    assert w["reserve_after_expiry"] == "reserved"
+
+
+def test_consuming_a_reservation_does_not_double_count_the_exposure(probe):
+    """Once the position exists it carries the exposure. If the reservation kept counting, one
+    entry would consume twice its own room and the cap would be wrong in the SAFE direction —
+    still wrong, and it would block legitimate entries."""
+    n = probe["no_double_count"]
+    assert n["consumed"] is True
+    assert n["reserved_before_consume"] == 10000.0
+    assert n["reserved_after_consume"] == 0.0
+    assert n["committed_after_consume"] == 10000.0
+    assert n["total_counted_once"] == 10000.0
+
+
+def test_a_rejected_entry_releases_its_exposure_immediately(probe):
+    """A later gate rejecting the entry must not leave exposure claimed for the whole TTL, or
+    one rejected candidate would crowd out the rest of the cycle."""
+    r = probe["release"]
+    assert r["held"] == 12000.0 and r["released"] is True and r["after"] == 0.0
+
+
+def test_release_is_idempotent_by_refusal(probe):
+    assert probe["release"]["second_release_is_refused"] is False
+
+
+def test_terminal_reservations_cannot_be_reused(probe):
+    """A consumed reservation cannot be released back into the pool, and an expired one cannot
+    be consumed — the latter is why `_open_paper_trade` logs a warning when consume fails: the
+    cap was not enforced atomically for that trade and reconciliation needs to see it."""
+    sm = probe["state_machine"]
+    assert sm["release_a_consumed_reservation"] is False
+    assert sm["consume_an_expired_reservation"] is False
+
+
+def test_reconciliation_surfaces_a_consumed_reservation_with_no_position(probe):
+    """Means the entry was rolled back after its reservation was consumed. Distinguished from an
+    ordinary close by the caller supplying the live open-trade ids."""
+    o = probe["reconciliation_orphaned"]
+    assert o["reconciles"] is False
+    assert "dc-1" in o["consumed_without_open_trade"]
+    assert o["expired_unconsumed"] >= 1
+
+
+def test_the_reservation_fails_closed_when_exposure_cannot_be_established(probe):
+    """Opening a position is the risk-INCREASING action, so an unestablishable cap refuses it.
+    Protective exits are never routed through this module and so are never blocked by it."""
+    f = probe["fail_closed"]
+    assert f["unvaluable_position"] == "exposure_unknown_mark"
+
+
+def test_stale_mark_policy_is_built_but_not_switched_on(probe):
+    """`require_fresh_marks` refuses an entry when any position in the sector was valued by
+    fallback. It defaults to False, preserving today's behaviour — the mechanism exists and is
+    tested, the policy change is a separate decision."""
+    f = probe["fail_closed"]
+    assert f["stale_mark_default"] == "reserved"
+    assert f["stale_mark_when_fresh_required"] == "exposure_stale_mark"
+
+
+def test_rollback_is_not_asserted_on_sqlite_and_says_why(probe):
+    """pysqlite does not open a transaction for DML, so a released SAVEPOINT is already durable
+    and `rollback()` does not undo it. That is a driver property, not a property of the
+    reservation. Recording it here rather than asserting a false guarantee; the real rollback
+    assertion lives in the PostgreSQL suite."""
+    r = probe["reservation_rollback"]
+    assert r["reserve_reason"] == "reserved"
+    assert r["authoritative_on_this_engine"] is False
+    assert "pysqlite" in r["why"]
 
 
 def test_FINDING_pending_and_unfilled_orders_are_invisible_to_the_caps(probe):
@@ -80,8 +172,10 @@ def test_FINDING_a_missing_mark_values_a_position_at_its_entry_price(probe):
     doubled is then counted at HALF its real value, so concentration is understated exactly when
     a winner has grown into the risk the cap exists to limit.
 
-    Measured: entry 100, live 200, value used when the mark is missing **100** — a 50%
-    understatement."""
+    In the fixture — entry 100, live 200 — the value used when the mark is missing is **100**.
+    The 50% figure is a property of THAT FIXTURE, not an estimate of production exposure: the
+    understatement equals the position's unrealised gain, so it is zero for a flat position and
+    unbounded for a large winner. The finding is the mechanism, not a magnitude."""
     m = probe["stale_marks"]
     assert m["priced_with_live_mark"] == 200.0
     assert m["price_when_mark_missing"] == 100

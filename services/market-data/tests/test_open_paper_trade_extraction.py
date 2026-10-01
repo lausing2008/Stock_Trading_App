@@ -18,6 +18,34 @@ import pytest
 from src.services.paper_trading_engine import _open_paper_trade
 
 
+@pytest.fixture(autouse=True)
+def _stub_exposure_reservation():
+    """M15-DEFECT-CONCURRENT-CAP added an atomic exposure reservation to `_open_paper_trade`.
+
+    `common` is stubbed wholesale in this environment, so `_exposure.reserve(...)` returns a
+    MagicMock that cannot unpack into `(reservation, reason)`. These tests are about the
+    EXTRACTION — sizing, kwargs, broker routing — not about the cap, so the reservation is
+    stubbed to always grant. A reservation-REFUSING path is covered for real against a database
+    in test_portfolio_concentration.py, where it belongs."""
+    from src.services import paper_trading_engine as _pte
+
+    class _AlwaysGrants:
+        @staticmethod
+        def reserve(*a, **kw):
+            return SimpleNamespace(id=1, state="reserved"), "reserved"
+
+        @staticmethod
+        def consume(*a, **kw):
+            return True
+
+        @staticmethod
+        def release(*a, **kw):
+            return True
+
+    with patch.object(_pte, "_exposure", _AlwaysGrants):
+        yield
+
+
 class _FakePaperTrade:
     """A real, attribute-capturing stand-in for db.PaperTrade — the module's own PaperTrade
     name is a MagicMock class in this test environment (db is stubbed wholesale, since it
@@ -26,6 +54,11 @@ class _FakePaperTrade:
     reference to this class instead makes every constructor kwarg a real, assertable
     attribute — the same "patch the module's own name, not the mock" technique already
     established elsewhere in this test suite for exactly this class of gap."""
+    #: `session.flush()` is a MagicMock here, so no primary key is ever assigned. The
+    #: exposure reservation reads `trade.id` to link the consumed reservation to the position,
+    #: so the attribute must at least exist.
+    id = None
+
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
             setattr(self, k, v)
@@ -180,17 +213,42 @@ def test_open_risk_cap_skips_when_aggregate_risk_would_exceed_the_limit():
     assert skip_reason == "open_risk_cap"
 
 
-def test_sector_concentration_cap_skips_when_the_new_position_would_breach_it():
-    """max_open_risk_pct raised to a level the existing MSFT position's own open risk
-    ($20,000 = (200-180)*1000 shares, 20% of equity) does NOT trip on its own — isolating
-    this test to the sector-cap condition specifically, not an incidental open-risk-cap trip
-    that would mask which gate is actually being tested."""
+def test_a_refused_exposure_reservation_skips_the_entry_as_sector_cap():
+    """CHANGED BY M15-DEFECT-CONCURRENT-CAP. This used to assert the in-memory arithmetic
+    `sector_value + position_value > max_sector_pct` directly.
+
+    That check was the defect: it read `prefetched_open`, a snapshot taken once before the
+    candidate loop, so candidates in the same cycle could not see each other and two legal
+    entries jointly breached the cap. The decision now lives in `exposure.reserve()`, which
+    reads committed exposure fresh under a portfolio row lock and counts in-flight reservations.
+
+    There is therefore no longer any cap arithmetic inside this function to assert, and
+    asserting it here would mean reimplementing it. What this function still owns is the
+    TRANSLATION — a refused reservation must skip the entry as `sector_cap` — and that is what
+    this now tests. The arithmetic itself is tested against a real database (and against
+    PostgreSQL under contention) in test_portfolio_concentration.py."""
+    from src.services import paper_trading_engine as _pte
+
+    class _AlwaysRefuses:
+        @staticmethod
+        def reserve(*a, **kw):
+            return None, "sector_cap"
+
+        @staticmethod
+        def consume(*a, **kw):
+            return True
+
+        @staticmethod
+        def release(*a, **kw):
+            return True
+
     existing_trade = SimpleNamespace(symbol="MSFT", entry_price=200.0, current_stop=180.0, shares=1000.0, current_price=200.0)
     existing_stock = SimpleNamespace(sector="Technology")
-    trade, skip_reason = _call(
-        prefetched_open=[(existing_trade, existing_stock)],
-        cfg={**_base_kwargs()["cfg"], "max_sector_pct": 0.001, "max_open_risk_pct": 0.50},
-    )
+    with patch.object(_pte, "_exposure", _AlwaysRefuses):
+        trade, skip_reason = _call(
+            prefetched_open=[(existing_trade, existing_stock)],
+            cfg={**_base_kwargs()["cfg"], "max_sector_pct": 0.001, "max_open_risk_pct": 0.50},
+        )
     assert trade is None
     assert skip_reason == "sector_cap"
 

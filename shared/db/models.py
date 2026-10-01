@@ -3320,3 +3320,61 @@ class NotificationOutbox(Base):
         Index("ix_outbox_claimable", "state", "available_at"),
         Index("ix_outbox_recipient_created", "recipient", "created_at"),
     )
+
+
+class PortfolioExposureReservation(Base):
+    """M15-DEFECT-CONCURRENT-CAP: atomic exposure reservation for a proposed entry.
+
+    THE DEFECT THIS EXISTS FOR (measured 2026-10-01). Entry candidates are sized against a
+    snapshot of open positions captured ONCE before the candidate loop (AUD19-PERF2, to avoid a
+    query per candidate). Within one scan cycle, every candidate therefore evaluates the sector
+    cap against the same stale view, and none sees the others. Two individually legal entries
+    opened **20.02% of equity in one sector against a 15% cap**.
+
+    RE-QUERYING WOULD NOT FIX IT. A fresh read per candidate narrows the window but does not
+    close it: two workers — an entry scan and a conditional order firing in the same moment —
+    can both read, both find room, and both write. The check and the commitment have to be one
+    atomic step, which is what a reservation is.
+
+    The lifecycle mirrors the recovery-grant reserve->consume pattern already in this codebase:
+
+        reserved  — exposure is claimed but no position exists yet. Counts against the cap.
+        consumed  — the entry opened; `trade_id` points at it. The open trade now carries the
+                    exposure, so the reservation must stop counting or it double-counts.
+        released  — the entry did not happen. Exposure returns to the portfolio immediately.
+        expired   — the worker died holding it. Reclaimed by the sweep, never by a timer alone,
+                    so an abandoned reservation cannot block a portfolio forever.
+
+    `intent_id` is unique for the same reason the outbox's `event_id` is: a retry of the same
+    proposed entry must not reserve twice.
+    """
+    __tablename__ = "portfolio_exposure_reservations"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("paper_portfolios.id", ondelete="CASCADE"), index=True)
+    #: Idempotency key for one proposed entry. A retry reserves nothing new.
+    intent_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    #: NULL is a real bucket — unclassified stocks share one, matching the entry gate's own
+    #: `(st.sector is None) == (_sector is None)` grouping.
+    sector: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    #: Position value in the PORTFOLIO's currency. Portfolios are single-market today; a
+    #: mixed-currency book would need a timestamped FX rate recorded alongside this.
+    value: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+
+    #: reserved | consumed | released | expired
+    state: Mapped[str] = mapped_column(String(16), default="reserved", nullable=False, index=True)
+    trade_id: Mapped[int | None] = mapped_column(
+        ForeignKey("paper_trades.id", ondelete="SET NULL"), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    terminal_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    terminal_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    __table_args__ = (
+        Index("ix_expres_active", "portfolio_id", "state", "sector"),
+    )

@@ -108,3 +108,37 @@ def test_crash_recovery_quarantines_instead_of_resending(pg):
 
 def test_stats_reconcile_on_postgres(pg):
     assert pg["stats"]["reconciles"] is True
+
+
+# ── M15 exposure reservation — the guarantees SQLite cannot establish ─────────────────────────
+
+def test_an_aborted_transaction_claims_no_exposure(pg):
+    """On SQLite this cannot be tested at all: pysqlite does not open a transaction for DML, so
+    a released SAVEPOINT is already durable. Here the rollback is real."""
+    r = pg["reservation_rollback"]
+    assert r["reserve_reason"] == "reserved"
+    assert r["rows_after_rollback"] == 0
+    assert r["reserved_after_rollback"] == 0.0
+
+
+def test_concurrent_reservations_cannot_jointly_exceed_the_cap(pg):
+    """THE GUARANTEE THE WHOLE RESERVATION EXISTS FOR, under real contention. Eight threads on
+    eight connections each claim 4% of equity against a 15% sector cap. At most three can fit.
+
+    SQLite serialises writers, so it would pass this by accident; PostgreSQL does not, which is
+    why the portfolio row lock has to be real."""
+    c = pg["concurrent_reservation"]
+    assert c["errors"] == []
+    assert c["granted"] == 3 and c["refused"] == 5
+    assert c["within_cap"] is True
+    assert c["total_reserved_value"] <= c["cap_value"]
+
+
+def test_the_same_intent_reserved_concurrently_claims_exposure_once(pg):
+    """A retry of one proposed entry must not reserve twice. Six simultaneous attempts, one
+    winner, five told it is already reserved, and a single row's worth of exposure claimed."""
+    d = pg["idempotent_intent"]
+    assert d["rows"] == 1
+    assert d["outcomes"].count("reserved") == 1
+    assert d["outcomes"].count("already_reserved") == 5
+    assert d["reserved_value"] == 1000.0

@@ -40,6 +40,8 @@ _mspec = _ilu.spec_from_file_location("db.models", _ROOT / "shared" / "db" / "mo
 _models = _ilu.module_from_spec(_mspec); sys.modules["db.models"] = _models
 _mspec.loader.exec_module(_models)
 NotificationOutbox, Base = _models.NotificationOutbox, _models.Base
+PaperPortfolio = _models.PaperPortfolio
+PortfolioExposureReservation = _models.PortfolioExposureReservation
 
 _ospec = _ilu.spec_from_file_location("common.outbox", _ROOT / "shared" / "common" / "outbox.py")
 ob = _ilu.module_from_spec(_ospec); sys.modules["common.outbox"] = ob
@@ -207,5 +209,95 @@ with Session() as s:
     st = ob.stats(s, now=LATER)
 R["stats"] = {"reconciles": st["reconciles"], "awaiting_review": st["awaiting_review"],
               "by_state": st["by_state"]}
+
+# ── 8. EXPOSURE RESERVATION under real transactions and real contention ───────────────────────
+# SQLite could not answer either of these: pysqlite does not open a transaction for DML, so a
+# released SAVEPOINT is already durable, and it serialises writers so contention never happens.
+_espec = _ilu.spec_from_file_location("common.exposure", _ROOT / "shared" / "common" / "exposure.py")
+exposure = _ilu.module_from_spec(_espec); sys.modules["common.exposure"] = exposure
+_espec.loader.exec_module(exposure)
+
+_PRICE = lambda t: (float(t.entry_price), False)        # noqa: E731
+TR = datetime(2026, 10, 1, 12, 0, 0)
+
+with Session() as s:
+    pf = PaperPortfolio(name="pg", initial_capital=100_000.0, current_cash=100_000.0,
+                        config={"market": "US"})
+    s.add(pf); s.flush(); s.commit()
+    PFID = pf.id
+
+# (a) ROLLBACK genuinely discards the reservation.
+with Session() as s:
+    _, why = exposure.reserve(s, portfolio_id=PFID, intent_id="pg-roll", symbol="RB",
+                              sector="Energy", value=10_000.0, equity=100_000.0, cap_pct=0.15,
+                              price_for=_PRICE, now=TR)
+    s.rollback()
+with Session() as s:
+    R["reservation_rollback"] = {
+        "reserve_reason": why,
+        "rows_after_rollback": s.query(PortfolioExposureReservation).filter_by(
+            portfolio_id=PFID).count(),
+        "reserved_after_rollback": exposure.active_reserved_value(s, PFID, "Energy", now=TR),
+    }
+
+# (b) CONCURRENT RESERVATION: 8 threads each claim 4% against a 15% cap. At most 3 may win.
+with Session() as s:
+    s.query(PortfolioExposureReservation).filter_by(portfolio_id=PFID).delete(); s.commit()
+
+
+def _try_reserve(i):
+    with Session() as s:
+        try:
+            row, why = exposure.reserve(
+                s, portfolio_id=PFID, intent_id=f"pg-race-{i}", symbol=f"S{i}",
+                sector="Energy", value=4_000.0, equity=100_000.0, cap_pct=0.15,
+                price_for=_PRICE, now=TR)
+            s.commit()
+            return why
+        except Exception as exc:                      # noqa: BLE001
+            s.rollback()
+            return f"error:{type(exc).__name__}"
+
+
+with ThreadPoolExecutor(max_workers=8) as ex:
+    outcomes = list(ex.map(_try_reserve, range(8)))
+with Session() as s:
+    total = exposure.active_reserved_value(s, PFID, "Energy", now=TR)
+R["concurrent_reservation"] = {
+    "outcomes": outcomes,
+    "granted": sum(1 for o in outcomes if o == "reserved"),
+    "refused": sum(1 for o in outcomes if o == "sector_cap"),
+    "errors": [o for o in outcomes if o.startswith("error:")],
+    "total_reserved_value": total,
+    "cap_value": 15_000.0,
+    "within_cap": total <= 15_000.0,
+}
+
+# (c) IDEMPOTENT intent: the same proposed entry reserved twice claims once.
+with Session() as s:
+    s.query(PortfolioExposureReservation).filter_by(portfolio_id=PFID).delete(); s.commit()
+
+
+def _same_intent(i):
+    with Session() as s:
+        try:
+            _, why = exposure.reserve(s, portfolio_id=PFID, intent_id="pg-dup",
+                                      symbol="D", sector="Energy", value=1_000.0,
+                                      equity=100_000.0, cap_pct=0.15, price_for=_PRICE, now=TR)
+            s.commit()
+            return why
+        except Exception as exc:                      # noqa: BLE001
+            s.rollback()
+            return f"error:{type(exc).__name__}"
+
+
+with ThreadPoolExecutor(max_workers=6) as ex:
+    dup = list(ex.map(_same_intent, range(6)))
+with Session() as s:
+    R["idempotent_intent"] = {
+        "outcomes": dup,
+        "rows": s.query(PortfolioExposureReservation).filter_by(intent_id="pg-dup").count(),
+        "reserved_value": exposure.active_reserved_value(s, PFID, "Energy", now=TR),
+    }
 
 print(json.dumps(R, indent=2, default=str))

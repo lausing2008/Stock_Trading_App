@@ -20,28 +20,36 @@ asserting its own copy of a bug.
 | Behaviour | Evidence |
 |---|---|
 | Existing exposure binds the sector cap | 3 open positions at the cap → 4th refused with `sector_cap` |
-| **Risk-reducing exits are not gated by entry caps** | The cap names in `_monitor_positions` are a **warning log**; zero `return`/`continue` is guarded by one |
+| Risk-reducing exits are not gated by entry caps **on the tested path** | In `_monitor_positions` the cap names are a **warning log**; zero `return`/`continue` is guarded by one |
 
-The exit result is the one that most needed checking, and it is correct: an account over its
-concentration limit can still reduce risk.
+**Scope of the exit result, stated precisely.** It is verified for `_monitor_positions`, the
+scheduled exit path. It is *not* a claim about every exit route: source inspection of one
+function cannot establish that manual exits, liquidation, conditional-order exits or broker-side
+closes are equally unconstrained. Those remain unverified.
 
 ## Findings — five gaps in what the caps can see
 
-**1. Concurrent entries within one scan can jointly breach a sector cap.** Both candidates are
-sized against the *same* pre-fetched snapshot, so neither sees the other. Measured: two entries
-opened **20.02% of equity** in one sector against a **15%** cap — each individually legal,
-jointly over. `prefetched_open` is captured once before the candidate loop (AUD19-PERF2, to
-avoid a query per candidate); that is a real performance fix, and the cost is that within one
-cycle the caps run against a stale view.
+**1. Concurrent entries within one scan can jointly breach a sector cap. — FIXED, tracked as
+[M15-DEFECT-CONCURRENT-CAP](../incidents/concentration-cap-stale-snapshot.md).** Both candidates
+were sized against the *same* pre-fetched snapshot, so neither saw the other: two entries opened
+**20.02% of equity** in one sector against a **15%** cap. Affected organic entries *and*
+conditional orders (two independent writers); the backtest has its own declared subset and is
+unaffected. Fixed by atomic exposure reservation under a portfolio row lock, with the defect
+witness preserved. Re-querying per candidate would have narrowed the window without closing it.
 
 **2. Pending and unfilled orders are invisible.** The snapshot query selects
 `PaperTrade.stage == "open"` and nothing else, so a working conditional order or an accepted
 broker order not yet filled contributes **zero** to every concentration check.
 
 **3. A missing mark values a position at its entry price.** `_best_price` falls back to
-`entry_price`. Measured: entry 100, live 200, value used when the mark is missing **100** — a
-**50% understatement**, arriving exactly when a winner has grown into the risk the cap exists to
-limit.
+`entry_price`. In the fixture — entry 100, live 200 — the value used when the mark is missing is
+**100**.
+
+**The 50% figure is a property of that fixture, not an estimate of production exposure.** The
+understatement equals the position's unrealised gain, so it is zero for a flat position and
+unbounded for a large winner; nothing here measures the real distribution of stale marks or
+unrealised gains in production. The finding is the *mechanism* — concentration is understated
+exactly when a winner has grown into the risk the cap exists to limit — not a magnitude.
 
 **4. Concentration sums local currency without conversion.** A 300,000 HKD position is summed
 raw against USD equity — ~3x equity when its true weight is ~38%. **Latent, not live:** a
@@ -54,13 +62,19 @@ The arithmetic is nonetheless currency-naive and would be wrong the moment one d
 columns, so shares delivered by assignment reach the caps only if something writes an ordinary
 open trade for them.
 
-## Deliberately not fixed here
+## Treatment of the remaining four
 
-Each finding is a design decision with trade-offs — re-querying per candidate undoes a
-deliberate performance fix; reserving pending exposure needs an order model that does not exist;
-FX conversion needs a timestamped rate source and a stated base currency. Shipping any of those
-inside a measurement task would change live entry behaviour under cover of "adding tests". The
-tests pin **current** behaviour, so a later fix has a failing test to flip.
+Finding 1 was a defect and is fixed. The other four are not defects of the same kind — each
+needs the eventual execution model rather than a competing one invented now:
+
+| Finding | Treatment |
+|---|---|
+| Pending orders invisible | Include outstanding entry commitments. Partial fills transfer exposure from reserved to held without double counting; cancellations release only confirmed unfilled quantity. Shares the order model, not a parallel one. |
+| Missing marks fall back to entry price | Preserve mark age/provenance; report exposure as uncertain; defer risk-increasing entries when the cap cannot be established. **Mechanism built** (`require_fresh_marks` → `exposure_stale_mark`) and **off by default** — the policy change is a separate decision. Protective exits stay available either way. |
+| No FX conversion | The single-currency assumption is now enforced in one place rather than assumed everywhere. Mixed-currency portfolios require timestamped FX conversion first. |
+| No order/assignment representation | A prerequisite for broader broker/options automation. Assignment's stock, cash and collateral consequences must be modelled explicitly. |
+
+The tests pin **current** behaviour for all four, so a later fix has a failing test to flip.
 
 ## Two errors in this probe, both caught before they became findings
 

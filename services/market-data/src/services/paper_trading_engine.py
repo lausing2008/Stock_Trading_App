@@ -38,6 +38,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from uuid import uuid4 as _uuid4
+
+from common import exposure as _exposure
 from common.logging import get_logger
 from common.indicators import atr as _canon_atr
 from db import (
@@ -5359,10 +5362,33 @@ def _open_paper_trade(
         for t, st in prefetched_open
         if (st.sector is None) == (_sector is None) and (st.sector == _sector or _sector is None and st.sector is None)
     )
-    if (sector_value + position_value) / max(equity, 1) > cfg["max_sector_pct"]:
+    # M15-DEFECT-CONCURRENT-CAP (measured 2026-10-01). The check above is computed from
+    # `prefetched_open`, a snapshot taken ONCE before the candidate loop. Every candidate in a
+    # cycle therefore evaluates the cap against the same stale view and none sees the others:
+    # two individually legal entries opened 20.02% of equity in one sector against a 15% cap.
+    # A conditional order firing concurrently is a second, independent writer with the same
+    # problem.
+    #
+    # Re-querying per candidate would narrow that window without closing it — check-then-act is
+    # only safe when the check and the act are ONE atomic step. `reserve()` takes a row lock on
+    # the portfolio, sums committed exposure plus every active reservation, and claims this
+    # entry's value, all inside that lock. `sector_value` above remains the definition of
+    # committed exposure; this adds the in-flight half.
+    _reservation, _res_reason = _exposure.reserve(
+        session, portfolio_id=portfolio.id,
+        intent_id=f"entry:{portfolio.id}:{stock.symbol}:{_uuid4().hex}",
+        symbol=stock.symbol, sector=_sector, value=position_value,
+        equity=max(equity, 1), cap_pct=cfg["max_sector_pct"],
+        # Valuation stays this module's definition (`_best_price`'s live-mark-then-entry-price
+        # rule); only the ROW SET is read fresh inside the lock. The flag reports whether a
+        # fallback was used, which is what the separate stale-mark finding needs.
+        price_for=lambda t: (live_prices.get(t.symbol, t.entry_price),
+                             t.symbol not in live_prices))
+    if _reservation is None:
         log.info("paper.skip_sector_cap", symbol=stock.symbol,
                  sector=_sector or "unclassified",
-                 sector_pct=round((sector_value + position_value) / equity * 100, 1))
+                 sector_pct=round((sector_value + position_value) / equity * 100, 1),
+                 reason=_res_reason)
         return None, "sector_cap"
     max_sector_pos = int(cfg.get("max_sector_positions", 3))
     sector_count = sum(
@@ -5370,6 +5396,9 @@ def _open_paper_trade(
         if (st.sector is None) == (_sector is None) and (st.sector == _sector or _sector is None and st.sector is None)
     )
     if sector_count >= max_sector_pos:
+        # Release immediately: no position will exist, so the reserved exposure must go back
+        # rather than wait out its TTL blocking other candidates in the same cycle.
+        _exposure.release(session, _reservation, reason="rejected: sector_count_cap")
         log.info("paper.skip_sector_count_cap", symbol=stock.symbol,
                  sector=_sector or "unclassified", limit=max_sector_pos)
         return None, "sector_count_cap"
@@ -5440,6 +5469,14 @@ def _open_paper_trade(
     )
     session.add(trade)
     session.flush()  # IF-12: assign trade.id before the decision-log FK reference below
+    # Hand the reserved exposure to the position that now carries it. Compare-and-set: if the
+    # reservation had already expired (this worker stalled past its TTL) the consume FAILS, and
+    # that is recorded rather than ignored — the cap was not honoured for this entry and the
+    # reconciliation sweep needs to see it.
+    if not _exposure.consume(session, _reservation, trade_id=trade.id):
+        log.warning("paper.exposure_reservation_lost", symbol=stock.symbol, trade_id=trade.id,
+                    note="reservation expired before the entry opened; sector cap was not "
+                         "enforced atomically for this trade")
     _write_decision_log(
         session, trade, "entry", slipped_entry, shares, "; ".join(notes) if notes else None,
         {"entry_score": score, "rr_ratio": round(rr, 2), "gate_source": gate_source,

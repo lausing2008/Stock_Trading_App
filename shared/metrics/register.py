@@ -247,8 +247,15 @@ REGISTER: tuple[WorkItem, ...] = (
                    "invisible; a missing mark values a position at entry price (50% "
                    "understatement); currency is summed unconverted (latent - portfolios are "
                    "single-market); no ordered-vs-filled or option-assignment representation. "
-                   "Each is a design trade-off, deliberately not fixed inside a measurement "
-                   "task; tests pin current behaviour so a fix has a failing test to flip."),
+                   "FINDING 1 WAS A DEFECT AND IS FIXED (M15-DEFECT-CONCURRENT-CAP, "
+                   "docs/incidents/concentration-cap-stale-snapshot.md): atomic exposure "
+                   "reservation under a portfolio row lock, affecting organic entries AND "
+                   "conditional orders; witness preserved; verified on PostgreSQL under "
+                   "contention (8 threads x 4%% vs a 15%% cap -> exactly 3 granted). The other "
+                   "four stay open and must share the eventual execution model rather than a "
+                   "competing one: pending-order commitments, mark provenance (mechanism built, "
+                   "OFF by default), timestamped FX before any mixed-currency book, and "
+                   "order/assignment representation as a broker/options prerequisite."),
     WorkItem("M16", "occurrence-gated", "Broker fill re-poll needs multi-cycle observation",
              "Sandbox partial/pending fill across cycles, restart and reconciliation.",
              "Accepted order distinguished from fill; no duplicate trades/cash.",
