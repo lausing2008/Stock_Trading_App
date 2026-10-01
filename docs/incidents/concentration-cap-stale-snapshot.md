@@ -12,7 +12,7 @@ and is tracked as pending broker exposure.
 | Organic / conditional integration | Verified: both production writers raced through their real paths and both reached the reservation check |
 | Internal paper entry across a crash | Verified atomic: rollback leaves no trade and no stranded capacity |
 | In-flight capacity during an entry | Protected — **by PostgreSQL's row lock, not by `committing` visibility**. See below |
-| **Broker submission boundary** | **OPEN.** A crash after the broker accepts leaves a real order with no local record |
+| **Broker submission boundary** | **FIX BUILT, OFF BY DEFAULT.** See `broker_submission.py` and the note below |
 | Fresh marks | **Open** — mechanism built, OFF, now measured in shadow |
 | Pending broker exposure, FX, assignment | **Open** |
 

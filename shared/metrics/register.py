@@ -364,7 +364,18 @@ REGISTER: tuple[WorkItem, ...] = (
              Decision.NO_ACTION,
              _t(TriggerKind.IMPLEMENTATION, "A01-A03 and options marks reconciled against "
                                             "current code"),
-             notes="Historical fix claims do not close this gate."),
+             notes="BROKER COMMIT BOUNDARY ADDRESSED 2026-10-01, OFF BY DEFAULT. "
+                   "_place_broker_entry ran inside _open_paper_trade, which never commits, so a "
+                   "real order was submitted from an uncommitted transaction and a crash after "
+                   "acceptance left an accepted order with no local row. broker_submission.py "
+                   "records durable intent, commits, dispatches, and reconciles unknowns - "
+                   "never auto-retrying one, since a blind retry is how a duplicate REAL order "
+                   "happens. A call returning without an order id is FAILED, not submitted, "
+                   "because the historical path swallows errors and falls back silently. The "
+                   "flag moves WHERE an order is placed relative to the commit and is a "
+                   "person's decision. STILL OPEN: A01-A03 reconciliation, research-vs-"
+                   "executable options marks, pending-order exposure, FX, assignment. "
+                   "Historical fix claims do not close this gate."),
 )
 
 BY_ID = {w.id: w for w in REGISTER}

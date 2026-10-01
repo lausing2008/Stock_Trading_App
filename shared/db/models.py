@@ -1099,6 +1099,31 @@ class PaperTrade(Base):
     # polling for a fill" signal, consulted by poll_broker_order_fills()'s own query — without
     # it, every broker-entered position gets silently re-polled against the broker API forever,
     # not just until its fill is confirmed.
+    #: M25-BROKER-COMMIT-BOUNDARY. Where this trade is in the broker handshake.
+    #:
+    #: THE DEFECT THIS EXISTS FOR (measured 2026-10-01). `_place_broker_entry` is called from
+    #: inside `_open_paper_trade`, which contains no `session.commit()` — the caller commits
+    #: afterwards. So the order was submitted from within an UNCOMMITTED transaction. A crash or
+    #: rollback between the broker accepting and that commit left a REAL accepted order with no
+    #: local trade row at all, and an exposure reservation that reverts and expires: capacity
+    #: released for exposure that exists at the broker. `_place_broker_entry`'s own comment
+    #: asserted the trade was "already committed by the caller before this function runs", which
+    #: was simply not true of this path.
+    #:
+    #: NULL      — no linked broker; nothing to submit (the overwhelming majority).
+    #: pending   — intent recorded and COMMITTED. Nothing has been sent yet.
+    #: submitting— about to contact the broker. Committed BEFORE the call, so a crash here is
+    #:             detectable: the order may or may not exist.
+    #: submitted — the broker accepted; `broker_order_id` is set.
+    #: unknown   — contacted and the outcome is not known. Terminal pending RECONCILIATION,
+    #:             never retried automatically, because a blind retry may duplicate a real order.
+    #: failed    — a definite rejection. Safe to retry.
+    broker_submission_state: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, index=True)
+    broker_submit_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0")
+    broker_submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     broker_fill_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     # AUD-B02-EXITIDPERSISTED (2026-09-19): the exit leg's counterpart to broker_order_id/
     # broker_fill_confirmed above. Before this, _place_broker_exit() held a broker-returned

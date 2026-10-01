@@ -41,6 +41,21 @@ import pandas as pd
 from uuid import uuid4 as _uuid4
 
 from common import exposure as _exposure
+from . import broker_submission as _broker_submission
+
+
+def _get_redis_safe():
+    """Redis for a FLAG READ, or None. Never raises.
+
+    A flag this module cannot read must behave as absent, not as an error — an unreachable
+    cache deciding whether a real broker order is placed inline or deferred would be a worse
+    failure than either ordering.
+    """
+    try:
+        from common.redis_client import get_redis as _p
+        return _p()
+    except Exception:                                   # noqa: BLE001
+        return None
 from common.logging import get_logger
 from common.indicators import atr as _canon_atr
 from db import (
@@ -5515,9 +5530,23 @@ def _open_paper_trade(
          "confidence": sig.confidence, "kscore": ranking.score if ranking else None,
          "market_regime": trade.market_regime_at_entry},
     )
-    # Broker routing: submit real BUY order to linked broker (US only; falls back on error)
+    # Broker routing: submit real BUY order to linked broker (US only; falls back on error).
+    #
+    # M25-BROKER-COMMIT-BOUNDARY. The inline call below submits a REAL order from inside this
+    # function's uncommitted transaction — `_open_paper_trade` never commits, the caller does.
+    # A crash between the broker accepting and that commit leaves an accepted order with no
+    # local trade row. When the flag is on, the intent is recorded instead and the submission
+    # happens after the caller has committed, so the local record always exists first.
+    #
+    # The flag defaults OFF: switching it changes WHERE a real order is placed relative to the
+    # commit, which is a live execution-ordering change and belongs to a person, not a deploy.
     if portfolio.broker_connection_id:
-        _place_broker_entry(session, trade, portfolio)
+        if _broker_submission.submit_after_commit_enabled(_get_redis_safe()):
+            _broker_submission.mark_pending(trade)
+            log.info("broker.entry_intent_recorded", symbol=stock.symbol, trade_id=trade.id,
+                     note="submission deferred until the trade row is committed")
+        else:
+            _place_broker_entry(session, trade, portfolio)
 
     log.info("paper.entry",
              symbol=stock.symbol, price=live_price,

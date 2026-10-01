@@ -504,4 +504,119 @@ R["eligibility_parity_under_notification_outage"] = {
                               and healthy["entry_price"] == degraded["entry_price"]),
 }
 
+# ── 11. M25: the broker commit boundary ───────────────────────────────────────────────────────
+import importlib.util as _ilu3                                             # noqa: E402
+_bspec = _ilu3.spec_from_file_location(
+    "broker_submission",
+    ROOT / "services" / "market-data" / "src" / "services" / "broker_submission.py")
+bs = _ilu3.module_from_spec(_bspec); _bspec.loader.exec_module(bs)
+
+
+class FlagRedis:
+    def __init__(self, on): self.on = on
+    def get(self, k): return "1" if self.on else None
+
+
+class BrokerRecorder:
+    """Records every call, so a DUPLICATE submission is detectable rather than assumed absent."""
+    def __init__(self, behaviour="accept"):
+        self.behaviour = behaviour
+        self.calls = []
+
+    def __call__(self, session, trade, portfolio):
+        self.calls.append(trade.id)
+        if self.behaviour == "timeout":
+            raise TimeoutError("broker read timeout after submit")
+        if self.behaviour == "reject":
+            raise RuntimeError("broker rejected: insufficient buying power")
+        if self.behaviour == "silent_fallback":
+            return                      # the historical behaviour: swallows and falls back
+        trade.broker_order_id = f"ord-{trade.id}"
+
+
+R["broker_flag"] = {
+    "absent": bs.submit_after_commit_enabled(FlagRedis(False)),
+    "set": bs.submit_after_commit_enabled(FlagRedis(True)),
+    "no_client": bs.submit_after_commit_enabled(None),
+}
+
+with Session() as s:
+    bpf = PaperPortfolio(name="broker", initial_capital=EQUITY, current_cash=EQUITY,
+                         config={"market": "US"}); s.add(bpf); s.flush()
+    bst = _mk_stock(s, "BRK1", "Financials"); s.commit()
+    BPF, BST = bpf.id, bst.id
+
+
+def _pending_trade(s, symbol="BRK1"):
+    st = s.query(Stock).filter_by(id=BST).one()
+    t = _mk_open(s, s.query(PaperPortfolio).filter_by(id=BPF).one(), st, 10, 100.0, 95.0)
+    bs.mark_pending(t)
+    s.flush()
+    return t
+
+
+# (a) The intent is recorded and COMMITTED before anything is sent.
+with Session() as s:
+    t = _pending_trade(s); s.commit()
+    R["broker_intent"] = {"state": t.broker_submission_state, "order_id": t.broker_order_id,
+                          "claimable": len(bs.claimable(s, portfolio_id=BPF))}
+
+# (b) Happy path: submitting -> submitted, exactly one call.
+rec = BrokerRecorder("accept")
+with Session() as s:
+    res = bs.submit_pending(s, place=rec, commit=s.commit, portfolio_id=BPF)
+with Session() as s:
+    t = s.query(PaperTrade).filter_by(portfolio_id=BPF).order_by(PaperTrade.id).first()
+    R["broker_submit_ok"] = {"batch": res, "state": t.broker_submission_state,
+                             "order_id": t.broker_order_id, "calls": len(rec.calls),
+                             "attempts": t.broker_submit_attempts}
+
+# (c) TIMEOUT after a possible acceptance -> unknown, never retried.
+rec_t = BrokerRecorder("timeout")
+with Session() as s:
+    _pending_trade(s, "BRK1"); s.commit()
+with Session() as s:
+    res_t = bs.submit_pending(s, place=rec_t, commit=s.commit, portfolio_id=BPF)
+with Session() as s:
+    again = bs.submit_pending(s, place=rec_t, commit=s.commit, portfolio_id=BPF)
+    unknown_rows = [t.id for t in bs.needs_reconciliation(s)]
+    R["broker_timeout"] = {"batch": res_t, "retried": again["claimed"],
+                           "calls": len(rec_t.calls), "awaiting_reconciliation": len(unknown_rows)}
+
+# (d) A definite rejection is retryable, and bounded.
+rec_r = BrokerRecorder("reject")
+with Session() as s:
+    _pending_trade(s); s.commit()
+with Session() as s:
+    first = bs.submit_pending(s, place=rec_r, commit=s.commit, portfolio_id=BPF)
+with Session() as s:
+    rows = [t for t in s.query(PaperTrade).filter_by(portfolio_id=BPF).all()
+            if t.broker_submission_state == "failed"]
+    R["broker_reject"] = {"batch": first, "failed_rows": len(rows),
+                          "attempts": max((t.broker_submit_attempts for t in rows), default=0)}
+
+# (e) A call that returns WITHOUT an order id is a failure, not a success.
+rec_s = BrokerRecorder("silent_fallback")
+with Session() as s:
+    t = _pending_trade(s); s.commit(); SILENT = t.id
+with Session() as s:
+    res_s = bs.submit_pending(s, place=rec_s, commit=s.commit, portfolio_id=BPF, limit=50)
+with Session() as s:
+    t = s.query(PaperTrade).filter_by(id=SILENT).one()
+    R["broker_silent_fallback"] = {"state": t.broker_submission_state,
+                                   "order_id": t.broker_order_id,
+                                   "error": t.broker_error}
+
+# (f) A row stuck in `submitting` is NEVER re-claimed — it may already exist at the broker.
+with Session() as s:
+    t = _pending_trade(s); s.flush()
+    bs.begin_submission(s, t); s.commit(); STUCK = t.id
+with Session() as s:
+    claim_ids = [x.id for x in bs.claimable(s, portfolio_id=BPF, limit=50)]
+    recon_ids = [x.id for x in bs.needs_reconciliation(s)]
+    R["broker_stuck_submitting"] = {
+        "reclaimed": STUCK in claim_ids,
+        "surfaced_for_reconciliation": STUCK in recon_ids,
+    }
+
 print(json.dumps(R, indent=2, default=str))
