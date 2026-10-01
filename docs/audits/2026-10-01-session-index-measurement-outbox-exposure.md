@@ -82,3 +82,29 @@ and the M21 digest remain untouched and unauthorised.
 
 4,804 tests pass; 17 PostgreSQL concurrency tests pass as a **required** CI job. Nineteen
 sabotage runs across the session, all caught except the one named above, which was then covered.
+
+## Deployed 2026-10-01
+
+| Check | Result |
+|---|---|
+| EC2 `HEAD` | `b0a46ea4` (from `f7609926`) |
+| Backend rebuild | **All 12** rebuilt, recreated, healthy — `shared/` changed, so a full-fleet rebuild was required |
+| Deploy drift | **0 of 12** |
+| New tables | `notification_outbox` and `portfolio_exposure_reservations` both created by `create_all()` |
+| Earnings outbox rollout flag | **absent = off**, unchanged |
+| `require_fresh_marks` | **off**, unchanged |
+| Containers | 15 healthy, **0 unhealthy** |
+| Exposure module against production | Read-only probe over 11 active portfolios: queries, `committed_value` and `reconcile` all work against the live schema |
+| Frontend | Rebuilt with `DOCKER_BUILDKIT=0`; Tier 404 present in the built bundle |
+| Public site | `lausing.com` 200 |
+
+**THE RESERVATION PATH HAS NOT YET RUN IN PRODUCTION.** The deploy happened outside US market
+hours, so `_open_paper_trade` was never reached — there were no entry attempts to exercise it.
+Zero tracebacks and zero exposure-related errors since restart, and the module itself queries the
+live schema correctly, but *that is not the same as a live entry having been sized through it*.
+
+The first real exercise is the next US session. What to look for then: `paper.entry` and
+`paper.skip_sector_cap` appearing normally (the reservation **fails closed**, so a broken table
+would stop entries rather than over-concentrate), and `paper.exposure_stale_mark_shadow` lines
+beginning to accumulate. **The fresh-mark observation window starts at confirmed emission, not
+at this deploy.**
