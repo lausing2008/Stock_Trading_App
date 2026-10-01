@@ -158,7 +158,7 @@ def test_only_symbols_with_eps_actual_still_null_are_checked():
     """The core non-duplication guarantee: once eps_actual has landed for a symbol,
     check_earnings_reactions() already owns the alert for it — this early-heads-up alert must
     not also fire (or re-fire) once the real numbers are in."""
-    body = _function_body("check_early_earnings_news_alerts")
+    body = _function_body("_pending_earnings_events")  # MU-02: query extracted
     assert "EarningsEvent.eps_actual.is_(None)" in body
 
 

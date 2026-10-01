@@ -212,11 +212,71 @@ figures. Nothing here should be quoted as a captured headline.
 | Dedup identity includes the earnings event **and** phase | Key is `{uid}:{sym}:{report_date}:{phase}`, taken from `EarningsEvent.report_date`, never `date.today()` |
 | One fetch with results + guidance + transcript handles all phases regardless of order | Asserted across three orderings; the loop has no `break` |
 | Phase advances only on the intended send outcome | Asserted there is **no** marker write anywhere before the send, and exactly one after |
-| After-hours release crossing UTC midnight | 20:01 EDT = 00:01 UTC next day, one identity either side; TTL raised 24h → 48h so the marker outlives the boundary |
+| After-hours release crossing UTC midnight | Executed through the real candidate query against a real database, both sides of midnight; TTL raised 24h → 48h, asserted as the value written |
 
 One of those checks caught a weak test of mine: the ordering assertion searched *forward* from
 `if sent_ok:` and so could not see a second, earlier marker write — a sabotage that marked the
 phase before sending passed it. Now asserted as an absence.
+
+## Second round — behaviour, not statement order
+
+The reviewer's point stands that "no marker write before the send" is still a claim about source
+text. The lifecycle is now **executed** against a fake sender and a fake Redis:
+
+| Case | Result |
+|---|---|
+| Send fails (returns False) | no marker — the phase stays retryable |
+| Send raises | no marker |
+| Retry after a failure | succeeds, marker written |
+| Retry after success | **no second email** |
+| One phase fails, others follow | results suppressed; guidance and call still delivered, each with its own marker |
+| Recipient with no email | skipped, no marker |
+
+Five sabotages against that suite, each caught — including marking before the send, marking
+regardless of outcome, and removing the dedup check.
+
+**The midnight case now runs through the real query against a real database.** The candidate
+query was extracted into `_pending_earnings_events(session, symbols, today)` — `today` is a
+parameter precisely so the boundary is executable rather than inferred. A subprocess builds a real
+SQLite database and runs it on both sides:
+
+```
+before (2026-09-30): {"MU": "2026-09-30"}      key …:MU:2026-09-30:results
+after  (2026-10-01): {"MU": "2026-09-30"}      key …:MU:2026-09-30:results   identical
+future event (2026-10-20): excluded
+already-reported event:    excluded
+two days later:            {} — the window closes
+```
+
+Four sabotages against the query, each caught.
+
+## Headline↔event binding — the gap the key alone did not close
+
+Correct that `report_date` in the key prevents **collisions** without preventing an old headline
+being **attached** to the wrong event. The fetch was a rolling 24-hour window with no binding at
+all, so whatever it returned was implicitly assumed to belong to whichever pending event existed.
+
+`_fetch_earnings_news_headlines()` now returns `(headline, published_at)`, and
+`_headline_belongs_to_event()` requires publication within **one day before through two days
+after** the report date — asymmetric because a preview legitimately precedes the report while
+result, guidance and call coverage trail it. **A headline with no usable timestamp is rejected**,
+not assumed to belong: an unbindable headline is exactly the case this exists to catch.
+
+## 48 hours is not idempotency — stated as a limit, not a fix
+
+A TTL is a cache, not a delivery identity. Within the window a replay cannot duplicate, and that
+is tested. **Beyond it, an already-sent phase can become eligible again** through replay, delayed
+ingestion or a changed timestamp — nothing in this design prevents that, and the 48-hour figure
+only widens the window past a UTC-midnight crossing.
+
+Durable per-event delivery identities remain the real answer and are part of the P1 outbox work,
+which is **not built**.
+
+## One timestamp correction
+
+MU's captured result was published **20:01 UTC — 16:01 EDT**. The earlier "20:01 EDT → 00:01 UTC"
+example is a valid *synthetic* boundary case and is retained as one, but it is **not this
+release's actual time**, and the text above no longer implies it is.
 
 **Status: MU-02 implemented and tested, awaiting deployment verification. MU-01 instrumentation
 added, root cause still open. MU-03 and the larger delivery work pending.**

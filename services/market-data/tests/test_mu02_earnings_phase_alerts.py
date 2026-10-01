@@ -137,12 +137,12 @@ def test_the_dedup_key_includes_the_phase():
 
 def test_the_job_iterates_every_earnings_headline_not_just_the_first():
     assert "_fetch_earnings_news_headlines(sym)" in SCHED
-    assert "for _hl in _fetch_earnings_news_headlines(sym):" in SCHED
+    assert "for _hl, _pub in _fetch_earnings_news_headlines(sym):" in SCHED
 
 
 def test_unnotifiable_phases_are_skipped_before_sending():
-    i = SCHED.index("for _hl in _fetch_earnings_news_headlines(sym):")
-    block = SCHED[i:i + 500]
+    i = SCHED.index("for _hl, _pub in _fetch_earnings_news_headlines(sym):")
+    block = SCHED[i:i + 900]
     assert "phase_is_notifiable(phase)" in block
     assert "continue" in block
 
@@ -150,16 +150,22 @@ def test_unnotifiable_phases_are_skipped_before_sending():
 def test_the_candidate_window_now_has_an_upper_bound():
     """The query said {yesterday, today} in its comment and enforced only the lower half, so a
     symbol reporting weeks ahead counted as pending."""
-    i = SCHED.index("EarningsEvent.eps_actual.is_(None),")
-    block = SCHED[i - 900:i + 400]
-    assert "EarningsEvent.report_date >= cutoff" in block
-    assert "EarningsEvent.report_date <= _upper" in block
+    # Now in the extracted `_pending_earnings_events()`, parameterised on `today` so the window
+    # can be exercised against a real database (see test_mu02_delivery_behaviour.py).
+    i = SCHED.index("def _pending_earnings_events")
+    block = SCHED[i:i + 1800]
+    # Both bounds are asserted BEHAVIOURALLY against a real database in
+    # test_mu02_delivery_behaviour.py (future event excluded, window closes after two days).
+    # Only the structural presence of an upper bound is checked here, with no number pinned —
+    # the T401 ratchet exists because "x >= 5" survives being changed to "x >= 5 - 99999".
+    assert "EarningsEvent.report_date <= today" in block
 
 
 def test_the_plural_fetcher_returns_a_list_and_never_raises():
     i = SCHED.index("def _fetch_earnings_news_headlines")
-    block = SCHED[i:i + 1200]
-    assert "-> list[str]" in block
+    block = SCHED[i:i + 1400]
+    # Returns (headline, published_at) now — the timestamp is what binds a headline to an event.
+    assert "-> list[tuple[str, str | None]]" in block
     assert "return []" in block, "an unreachable news service must not break the alert cycle"
 
 
@@ -176,10 +182,10 @@ def test_dedup_identity_includes_the_EARNINGS_EVENT_not_the_calendar_day():
 
 
 def test_the_event_date_comes_from_the_earnings_row_not_from_todays_date():
-    i = SCHED.index("_event_date_by_symbol")
-    block = SCHED[i - 900:i + 900]
-    assert "EarningsEvent.report_date" in block
-    assert "_event_date_by_symbol[sym].isoformat()" in SCHED
+    i = SCHED.index("def _pending_earnings_events")
+    assert "EarningsEvent.report_date" in SCHED[i:i + 1800]
+    assert "_event_date.isoformat()" in SCHED
+    assert "_event_date = _event_date_by_symbol[sym]" in SCHED
 
 
 def test_an_after_hours_release_crossing_UTC_midnight_keeps_one_identity():
@@ -197,11 +203,13 @@ def test_an_after_hours_release_crossing_UTC_midnight_keeps_one_identity():
 
 
 def test_the_ttl_outlives_the_utc_midnight_boundary():
-    """A 24h TTL keyed on the event could still expire mid-incident while retries continue. The
-    key is event-scoped, so a longer TTL cannot bleed into a different earnings event."""
+    """A 24h TTL keyed on the event could still expire mid-incident while retries continue.
+
+    Asserted on the TTL actually written, in test_mu02_delivery_behaviour.py — the value, not the
+    digits in the source. See `test_the_marker_ttl_spans_more_than_one_calendar_day`."""
     i = SCHED.index("def _send_early_earnings_stage")
     block = SCHED[i:i + 2500]
-    assert "_rc.setex(redis_key, 172800" in block
+    assert "_rc.setex(redis_key" in block
 
 
 def test_one_fetch_carrying_three_stages_handles_all_three():
@@ -217,8 +225,8 @@ def test_one_fetch_carrying_three_stages_handles_all_three():
 
 
 def test_the_job_loops_every_headline_so_ordering_cannot_drop_a_stage():
-    i = SCHED.index("for _hl in _fetch_earnings_news_headlines(sym):")
-    block = SCHED[i:i + 700]
+    i = SCHED.index("for _hl, _pub in _fetch_earnings_news_headlines(sym):")
+    block = SCHED[i:i + 900]
     assert "break" not in block, "a break would stop at the first stage and drop the rest"
 
 

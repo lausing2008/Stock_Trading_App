@@ -1,0 +1,262 @@
+"""MU-02: the notification lifecycle, EXECUTED — not asserted by reading statement order.
+
+The previous round checked "no marker write before the send" structurally. That is a claim about
+source text, and the reviewer is right that it is not evidence: it cannot distinguish code that
+behaves correctly from code that merely reads correctly, and one such assertion already let a
+sabotage through.
+
+These tests run the real `_send_early_earnings_stage` against a fake sender and a fake Redis and
+assert on what actually happened:
+
+    failed send        -> no marker, so the phase stays retryable
+    successful send    -> marker written
+    retry after success-> no duplicate email
+    one phase failing  -> the other phases still go out
+
+Plus the event-binding window, which decides whether a headline is even considered.
+"""
+import pathlib
+import sys
+import types
+
+import pytest
+
+SCHED_SRC = (pathlib.Path(__file__).resolve().parents[1]
+             / "src/services/scheduler.py").read_text()
+
+
+def _fn_src(name: str) -> str:
+    i = SCHED_SRC.index(f"def {name}")
+    nxt = SCHED_SRC.find("\ndef ", i + 10)
+    return SCHED_SRC[i:nxt if nxt != -1 else len(SCHED_SRC)]
+
+
+class FakeRedis:
+    def __init__(self):
+        self.store = {}
+
+    def exists(self, k):
+        return 1 if k in self.store else 0
+
+    def setex(self, k, ttl, v):
+        self.store[k] = (v, ttl)
+        return True
+
+
+class Recorder:
+    """Stands in for email_service.send_email. `fail_for` makes specific subjects fail."""
+
+    def __init__(self, fail_for=(), raise_for=()):
+        self.sent = []
+        self.fail_for = fail_for
+        self.raise_for = raise_for
+
+    def __call__(self, to, subject, html, text):
+        if any(f in subject for f in self.raise_for):
+            raise RuntimeError("controlled transport failure")
+        if any(f in subject for f in self.fail_for):
+            return False
+        self.sent.append({"to": to, "subject": subject, "text": text})
+        return True
+
+
+def _make_sender(recorder):
+    """Execute the REAL `_send_early_earnings_stage` with its dependencies supplied."""
+    env = {
+        "log": types.SimpleNamespace(info=lambda *a, **k: None,
+                                     warning=lambda *a, **k: None,
+                                     debug=lambda *a, **k: None),
+    }
+    # The function does `from .email_service import send_email` on entry — satisfy that import.
+    mod = types.ModuleType("email_service_stub")
+    mod.send_email = recorder
+    sys.modules["__mu02_email_stub"] = mod
+    src = _fn_src("_send_early_earnings_stage").replace(
+        "from .email_service import send_email",
+        "from __mu02_email_stub import send_email")
+    exec(compile(src, "<sender>", "exec"), env)
+    return env["_send_early_earnings_stage"]
+
+
+USERS = {7: types.SimpleNamespace(email="r@example.invalid", username="reader")}
+USER_SYMBOLS = {7: {"MU"}}
+EVENT = "2026-09-30"
+
+
+def _send(fn, rc, phase, subject_extra="", recorder_subject=None):
+    fn(None, "MU", phase, "a headline", recorder_subject or f"subj-{phase}{subject_extra}",
+       "body", USER_SYMBOLS, USERS, rc, EVENT)
+
+
+# ── the four behavioural cases ──────────────────────────────────────────────────────────
+
+def test_a_successful_send_writes_the_marker():
+    rec = Recorder()
+    rc = FakeRedis()
+    _send(_make_sender(rec), rc, "results")
+    assert len(rec.sent) == 1
+    assert f"stockai:early_earnings_news:7:MU:{EVENT}:results" in rc.store
+
+
+def test_the_marker_ttl_spans_more_than_one_calendar_day():
+    """Executed, not read: the TTL the code actually writes must outlive a UTC-midnight crossing,
+    so a phase delivered at 20:01 UTC is still marked when retries run the next morning. Asserted
+    as a VALUE — a source-text check on the digits would survive the number being changed."""
+    rec = Recorder()
+    rc = FakeRedis()
+    _send(_make_sender(rec), rc, "results")
+    _value, ttl = rc.store[f"stockai:early_earnings_news:7:MU:{EVENT}:results"]
+    assert ttl > 86400, "a one-day TTL can expire mid-incident while retries continue"
+    assert ttl <= 7 * 86400, "but not so long that it outlives the event window"
+
+
+def test_a_FAILED_send_writes_no_marker_so_the_phase_stays_retryable():
+    """THE CASE THE STRUCTURAL ASSERTION COULD NOT PROVE."""
+    rec = Recorder(fail_for=("subj-results",))
+    rc = FakeRedis()
+    _send(_make_sender(rec), rc, "results")
+    assert rec.sent == []
+    assert rc.store == {}, "a failed send must not suppress the phase"
+
+
+def test_a_RAISING_send_also_writes_no_marker():
+    rec = Recorder(raise_for=("subj-results",))
+    rc = FakeRedis()
+    _send(_make_sender(rec), rc, "results")
+    assert rc.store == {}
+
+
+def test_a_failed_send_can_be_retried_and_then_succeeds():
+    rc = FakeRedis()
+    failing = Recorder(fail_for=("subj-results",))
+    _send(_make_sender(failing), rc, "results")
+    assert rc.store == {}
+    ok = Recorder()
+    _send(_make_sender(ok), rc, "results")
+    assert len(ok.sent) == 1
+    assert f"stockai:early_earnings_news:7:MU:{EVENT}:results" in rc.store
+
+
+def test_a_retry_after_success_does_not_send_again():
+    rc = FakeRedis()
+    rec = Recorder()
+    fn = _make_sender(rec)
+    _send(fn, rc, "results")
+    _send(fn, rc, "results")
+    assert len(rec.sent) == 1, "the same phase must not be delivered twice"
+
+
+def test_one_failing_phase_does_not_stop_the_others():
+    """Results fails; guidance and call must still go out, each with its own marker."""
+    rc = FakeRedis()
+    rec = Recorder(fail_for=("subj-results",))
+    fn = _make_sender(rec)
+    for phase in ("results", "guidance", "call"):
+        _send(fn, rc, phase)
+    subjects = [s["subject"] for s in rec.sent]
+    assert "subj-guidance" in subjects and "subj-call" in subjects
+    assert "subj-results" not in subjects
+    assert f"stockai:early_earnings_news:7:MU:{EVENT}:results" not in rc.store
+    assert f"stockai:early_earnings_news:7:MU:{EVENT}:guidance" in rc.store
+
+
+def test_each_phase_gets_its_own_marker_and_its_own_email():
+    rc = FakeRedis()
+    rec = Recorder()
+    fn = _make_sender(rec)
+    for phase in ("preview", "results", "guidance"):
+        _send(fn, rc, phase)
+    assert len(rec.sent) == 3
+    assert len(rc.store) == 3
+
+
+def test_a_recipient_without_an_email_is_skipped_without_a_marker():
+    rc = FakeRedis()
+    rec = Recorder()
+    fn = _make_sender(rec)
+    fn(None, "MU", "results", "h", "s", "b", {9: {"MU"}},
+       {9: types.SimpleNamespace(email=None, username="noemail")}, rc, EVENT)
+    assert rec.sent == []
+    assert rc.store == {}
+
+
+# ── event binding ───────────────────────────────────────────────────────────────────────
+
+def _binder():
+    from datetime import date, datetime, timedelta, timezone
+    env = {"date": date, "datetime": datetime, "timedelta": timedelta, "timezone": timezone}
+    exec(compile(_fn_src("_headline_belongs_to_event"), "<bind>", "exec"), env)
+    return env["_headline_belongs_to_event"]
+
+
+@pytest.mark.parametrize("published,expected", [
+    ("2026-09-30T20:01:49+00:00", True),    # MU's actual result publication time (UTC)
+    ("2026-09-29T12:00:00+00:00", True),    # a preview the day before
+    ("2026-10-02T12:00:00+00:00", True),    # trailing call coverage
+    ("2026-09-28T12:00:00+00:00", False),   # too early to be this event
+    ("2026-10-03T12:00:00+00:00", False),   # too late
+    (None, False),                          # unbindable -> rejected, never assumed
+    ("not-a-timestamp", False),
+])
+def test_headline_event_binding_window(published, expected):
+    from datetime import date
+    assert _binder()(published, date(2026, 9, 30)) is expected
+
+
+def test_an_unbindable_headline_is_rejected_rather_than_assumed():
+    """Adding report_date to the KEY prevents collisions but does not stop an old headline being
+    attached to the wrong event. A headline with no usable timestamp cannot be bound, so it is
+    not used."""
+    from datetime import date
+    assert _binder()(None, date(2026, 9, 30)) is False
+
+
+# ── the UTC-midnight case, executed against a REAL database ─────────────────────────────
+
+import json as _json
+import subprocess as _sp
+
+
+def _boundary():
+    proc = _sp.run([sys.executable,
+                    str(pathlib.Path(__file__).resolve().parent / "_mu02_boundary_probe.py")],
+                   capture_output=True, text=True, timeout=180)
+    assert proc.returncode == 0, f"probe failed:\n{proc.stdout}\n{proc.stderr}"
+    return _json.loads(proc.stdout.split("---PROBE-JSON---", 1)[1])
+
+
+@pytest.fixture(scope="module")
+def boundary():
+    return _boundary()
+
+
+def test_runs_either_side_of_utc_midnight_select_the_same_event(boundary):
+    """THE REVIEWER'S CHECK. MU's result published 2026-09-30 20:01 UTC. A scheduler run that
+    evening and another after UTC midnight must agree on WHICH event they are notifying about —
+    executed through the real candidate query against a real database, not inferred from
+    timestamp arithmetic."""
+    assert boundary["before_midnight"] == {"MU": "2026-09-30"}
+    assert boundary["after_midnight"] == {"MU": "2026-09-30"}
+    assert boundary["same_event_date_for_MU"] is True
+
+
+def test_the_dedup_key_is_identical_either_side_of_midnight(boundary):
+    """So a phase delivered before midnight cannot be re-delivered after it."""
+    assert boundary["keys_identical"] is True
+    assert boundary["dedup_key_before"] == "stockai:early_earnings_news:7:MU:2026-09-30:results"
+
+
+def test_a_future_earnings_event_is_not_selected(boundary):
+    """The unbounded-window bug: a symbol reporting weeks ahead counted as pending."""
+    assert boundary["future_event_excluded"] is True
+
+
+def test_an_already_reported_event_is_not_selected(boundary):
+    """Once eps_actual lands, check_earnings_reactions owns the alert for that symbol."""
+    assert boundary["reported_event_excluded"] is True
+
+
+def test_the_window_closes_after_two_days(boundary):
+    """{yesterday, today} really is the window — the event drops out, so the alert cannot keep
+    firing indefinitely on an old release."""
+    assert boundary["two_days_later"] == {}

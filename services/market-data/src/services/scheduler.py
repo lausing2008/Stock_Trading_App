@@ -2348,32 +2348,10 @@ def check_early_earnings_news_alerts() -> None:
             # has eps_actual NULL — once the real number has landed, check_earnings_reactions()
             # already owns the alert for that symbol; this early-heads-up alert must not also
             # fire (or re-fire) once the full reaction has already been sent.
-            cutoff = date.today() - timedelta(days=1)
-            # MU-02: the comment above says {yesterday, today}, and the lower bound enforced it
-            # while there was NO UPPER BOUND at all. A symbol with an earnings row dated weeks
-            # ahead therefore qualified as "pending", so pre-release chatter could notify as if a
-            # release were underway. Bounded to the window the code already claimed.
-            _upper = date.today()
-            # MU-02 follow-up: carry the EVENT IDENTITY, not just the symbol. The dedup key used
-            # the calendar day, which is wrong twice over for an after-hours US release: a 20:01
-            # EDT print is 00:01 UTC the NEXT day, so a retry minutes later lands on a different
-            # day key and re-sends the same phase; and two adjacent-day events for one symbol
-            # would share a key and suppress each other. Keying on the report period fixes both,
-            # and is stable across any timezone boundary because it is the event's own date.
-            _pending_rows = session.execute(
-                select(Stock.symbol, EarningsEvent.report_date)
-                .join(EarningsEvent, EarningsEvent.stock_id == Stock.id).where(
-                    Stock.symbol.in_(all_symbols),
-                    EarningsEvent.report_date >= cutoff,
-                    EarningsEvent.report_date <= _upper,
-                    EarningsEvent.eps_actual.is_(None),
-                )
-            ).all()
-            # Most recent qualifying event per symbol.
-            _event_date_by_symbol: dict[str, date] = {}
-            for _sym_r, _rd in _pending_rows:
-                if _sym_r not in _event_date_by_symbol or _rd > _event_date_by_symbol[_sym_r]:
-                    _event_date_by_symbol[_sym_r] = _rd
+            # MU-02 follow-up: extracted so the boundary behaviour can be EXECUTED against a
+            # real database rather than asserted from timestamp arithmetic. See
+            # `_pending_earnings_events()`.
+            _event_date_by_symbol = _pending_earnings_events(session, all_symbols, date.today())
             still_pending = set(_event_date_by_symbol)
             if not still_pending:
                 _record_job_status("check_early_earnings_news_alerts", "ok", time.monotonic() - _t0)
@@ -2387,7 +2365,13 @@ def check_early_earnings_news_alerts() -> None:
                 # slot for the calendar day, so the actual result — which arrived 5.08 seconds
                 # after publication and was sitting in the database — was suppressed by a story
                 # that told the reader nothing. Each release stage now dedups independently.
-                for _hl in _fetch_earnings_news_headlines(sym):
+                _event_date = _event_date_by_symbol[sym]
+                for _hl, _pub in _fetch_earnings_news_headlines(sym):
+                    # MU-02 follow-up: bind the headline to THIS event before using it.
+                    if not _headline_belongs_to_event(_pub, _event_date):
+                        log.debug("signal_alert.early_earnings_news_unbound",
+                                  symbol=sym, published_at=_pub, event_date=str(_event_date))
+                        continue
                     phase = classify_earnings_phase(_hl)
                     if not phase_is_notifiable(phase):
                         continue
@@ -2397,7 +2381,7 @@ def check_early_earnings_news_alerts() -> None:
                     _send_early_earnings_stage(
                         session, sym, phase, headline, subject, body_text,
                         user_symbols, users_by_id, _rc,
-                        _event_date_by_symbol[sym].isoformat(),
+                        _event_date.isoformat(),
                     )
             _record_job_status("check_early_earnings_news_alerts", "ok", time.monotonic() - _t0)
     except Exception as exc:
@@ -2405,8 +2389,37 @@ def check_early_earnings_news_alerts() -> None:
         _record_job_status("check_early_earnings_news_alerts", "error", time.monotonic() - _t0, str(exc))
 
 
+def _pending_earnings_events(session, symbols, today: date) -> dict[str, date]:
+    """Symbols with an un-reported earnings event in the {yesterday, today} window, and the date
+    of the most recent such event.
+
+    `today` is a PARAMETER, not `date.today()` inside, for two reasons. It makes the UTC-midnight
+    boundary executable in a test — the reviewer's point that timestamp arithmetic cannot
+    establish which event a run selects — and it keeps the one date the window depends on
+    visible at the call site instead of buried.
+
+    MU-02: the original query described {yesterday, today} in its comment and enforced only the
+    LOWER bound, so a symbol reporting weeks ahead counted as pending and pre-release chatter
+    could notify as though a release were under way.
+    """
+    rows = session.execute(
+        select(Stock.symbol, EarningsEvent.report_date)
+        .join(EarningsEvent, EarningsEvent.stock_id == Stock.id).where(
+            Stock.symbol.in_(symbols),
+            EarningsEvent.report_date >= today - timedelta(days=1),
+            EarningsEvent.report_date <= today,
+            EarningsEvent.eps_actual.is_(None),
+        )
+    ).all()
+    out: dict[str, date] = {}
+    for sym, rd in rows:
+        if sym not in out or rd > out[sym]:
+            out[sym] = rd
+    return out
+
+
 def _send_early_earnings_stage(session, sym, phase, headline, subject, body_text,
-                   user_symbols, users_by_id, _rc, today_str) -> None:
+                               user_symbols, users_by_id, _rc, event_date) -> None:
     """Deliver ONE release stage to every eligible recipient, deduplicated per stage.
 
     Extracted so the per-recipient loop is not nested three deep inside the job, and so the
@@ -2449,7 +2462,30 @@ def _send_early_earnings_stage(session, sym, phase, headline, subject, body_text
                      symbol=sym, phase=phase, user=u_obj.username)
 
 
-def _fetch_earnings_news_headlines(symbol: str) -> list[str]:
+def _headline_belongs_to_event(published_at: str | None, event_date: date) -> bool:
+    """Is this headline plausibly ABOUT the earnings event dated `event_date`?
+
+    MU-02 follow-up. Putting the report date in the dedup key stops two events sharing a slot, but
+    it does not stop an OLD headline being attached to the wrong event — the fetch is a rolling
+    24-hour window with no event binding at all, so whatever it returned was implicitly assumed to
+    belong to whichever pending event the symbol happened to have.
+
+    Bound it explicitly. A preview legitimately precedes the report, and result/guidance/call
+    coverage trails it, so the window is asymmetric: one day before through two days after, in
+    UTC. A headline with no usable timestamp is REJECTED rather than assumed to belong — an
+    unbindable headline is exactly the case this exists to catch.
+    """
+    if not published_at:
+        return False
+    try:
+        _ts = datetime.fromisoformat(str(published_at).replace("Z", "+00:00"))
+    except Exception:
+        return False
+    _d = (_ts.astimezone(timezone.utc) if _ts.tzinfo else _ts.replace(tzinfo=timezone.utc)).date()
+    return (event_date - timedelta(days=1)) <= _d <= (event_date + timedelta(days=2))
+
+
+def _fetch_earnings_news_headlines(symbol: str) -> list[tuple[str, str | None]]:
     """Every earnings-classified headline for `symbol` in the last 24h, newest first.
 
     MU-02: the singular `_fetch_earnings_news_headline()` below returned only the FIRST match and
@@ -2466,7 +2502,7 @@ def _fetch_earnings_news_headlines(symbol: str) -> list[str]:
             r = c.get(url, params={"symbol": symbol, "since_hours": 24, "limit": 20})
             if r.status_code != 200:
                 return []
-            return [i.get("headline") for i in r.json()
+            return [(i.get("headline"), i.get("published_at")) for i in r.json()
                     if i.get("category") == "earnings" and i.get("headline")]
     except Exception:
         return []
