@@ -3,11 +3,13 @@
 **Drafted 2026-09-30.** Requested as "create a calendar to check back for me … for the work we
 left and also those need data to verify."
 
-> **STATUS: NOT YET IN GOOGLE CALENDAR.** The `create-events` call returned `invalid_grant` —
-> the stored Google refresh token is revoked or expired, and the OAuth flow cannot run from a
-> non-interactive session. The eight events are drafted and replayable from
-> `docs/audits/2026-10-01-checkback-calendar.json` (pass its `events` array verbatim once the
-> account is re-authorized). Nothing was created, so nothing is duplicated by replaying it.
+> **STATUS: CREATED 2026-10-01 02:54 UTC.** All 8 events exist in `stockai2028@gmail.com`
+> (calendar `primary`). **Do not replay the JSON beside this file — it would duplicate them.**
+>
+> The first attempt failed with `invalid_grant`: the stored Google OAuth grant was dead even
+> though the MCP server itself was connected and healthy. Re-auth needed a specific sequence,
+> because the server refuses to re-add over an existing nickname *and* refuses to remove the
+> last account — add a NEW nickname to force a fresh consent flow.
 
 Dates are America/Los_Angeles. Every item traces to the M01–M25 register in
 `docs/features/2026-09-30-measurement-framework-and-improvement-backlog.md` and the status map in

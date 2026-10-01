@@ -1,5 +1,5 @@
 {
-  "_comment": "Replayable payload for mcp__gcal__create-events. Drafted 2026-09-30; the Google token was invalid_grant at the time, so these were NOT created. After re-auth, pass `events` verbatim with timeZone America/Los_Angeles, calendarId primary. Narrative version: docs/audits/2026-10-01-checkback-calendar.md",
+  "_comment": "HISTORICAL RECORD — these 8 events were CREATED in stockai2028@gmail.com on 2026-10-01T02:54Z. DO NOT replay this payload: create-events is not idempotent and would duplicate every entry. Kept so the exact wording is diffable and so a future check-back set can be drafted from the same shape. Narrative: docs/audits/2026-10-01-checkback-calendar.md",
   "timeZone": "America/Los_Angeles",
   "calendarId": "primary",
   "events": [
@@ -51,5 +51,20 @@
       "end": "2026-12-31T10:00:00",
       "description": "M12 - regime robustness. Still ONE bear observation across the system's lifetime. This gates any live-automation decision and cannot be satisfied by building anything; it requires the market to do something it has not done. Separate regime COVERAGE from average performance and restrict conclusions to observed regimes.\n\nM05 - dark pool. MEASURED 2026-10-01: the relative threshold rejects 15 of 9,707 evaluable prints (~0.15%), because for 55 of 57 symbols 5x the trailing median sits BELOW the $1M absolute floor and the bar cannot bind. That explains why the fire rate never moved from 85-89%.\n\nNEXT: point-in-time baseline replay or forward baseline capture, then compare absolute-only / relative-only / combined WITHOUT changing production thresholds. Exit evidence is incremental unique-event selection plus a held-out economic and alert-load comparison. Note a bar that never binds was not shown not to work - it was never given a value at which it could act."
     }
-  ]
+  ],
+  "_created": {
+    "at": "2026-10-01T02:54:51Z",
+    "calendar": "stockai2028@gmail.com",
+    "account": "normal",
+    "event_ids": [
+      "7k0ot5mrb8m8g62fe4k8cfbv88",
+      "3nt0v0rvj8nlfvrf5epj0mpp3s",
+      "3oj0velmj0eh6v351mqb502r34",
+      "pqfh56q4gi7v3nrppjl071e038",
+      "0226fmn8a06d4vf112gvmvhmq4",
+      "rkfd78uvnc1fgvn8q3inmqsuv0",
+      "i8b4c6g4kgsfr0jsv3oj8jbdsg",
+      "igamkk4b3v53rom0fk17t0ij7o"
+    ]
+  }
 }
