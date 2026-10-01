@@ -942,6 +942,20 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
         # Historical earnings (EPS beats)
         try:
             hist = ticker.earnings_history
+            # MU-01: RECORD THE MAPPING OUTCOME, so a NULL actual can be explained instead of
+            # guessed at. The 2026-09-30 MU incident could not be diagnosed from stored state:
+            # the row's `fetched_at` showed the sync had touched it 19 minutes earlier while the
+            # provider's own earnings_history already carried epsActual 33.42 for period-end
+            # 2026-08-31 — so it was NOT provider latency, but nothing recorded which step
+            # dropped the value. These two lines make the next occurrence self-explaining.
+            log.info("earnings.history_fetch",
+                     symbol=symbol,
+                     rows=(0 if hist is None or hist.empty else int(len(hist))),
+                     latest_period_end=(None if hist is None or hist.empty
+                                        else str(hist.index[-1])[:10]),
+                     latest_eps_actual=(None if hist is None or hist.empty
+                                        else (float(hist.iloc[-1].get("epsActual"))
+                                              if pd.notna(hist.iloc[-1].get("epsActual")) else None)))
             if hist is not None and not hist.empty:
                 # AUD264-EARNINGS-FISCAL-QUARTER-FROM-ANNOUNCEMENT-MONTH: fetch earnings_dates
                 # too so real announcement dates (see _match_report_dates_to_history's own
@@ -1039,6 +1053,14 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                                     EarningsEvent.eps_actual.is_(None),
                                 )
                             ).scalars().first()
+                            # MU-01: which branch claimed this period, and whether an actual
+                            # was present to write. A pending row updated with eps_act=None is
+                            # the signature of the MU failure and is now visible as such.
+                            log.info("earnings.history_map",
+                                     symbol=symbol, period_end=period_end.isoformat(),
+                                     report_date=report_date.isoformat(),
+                                     eps_actual=eps_act, eps_estimate=eps_est,
+                                     matched_pending=existing_pending is not None)
                             if existing_pending is not None:
                                 # revenue_estimate was already set by the earlier calendar-path
                                 # write that created this pending row (see the calendar block

@@ -89,6 +89,8 @@ from db import AlertCondition, AnalystPriceTarget, DarkPoolAlertOutcome, DarkPoo
 
 
 from .ingestion import ingest_universe
+from .earnings_phase import (classify_earnings_phase, phase_is_notifiable, phase_subject,
+                             phase_body)
 from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email, send_data_quality_alert_email, send_llm_usage_spike_email, is_quota_exceeded
 from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills, poll_broker_exit_fills, sync_broker_positions
 from ..api.routes import refresh_live_price_cache, refresh_avg_volume_cache, _AVG_VOLUME_KEY
@@ -2347,10 +2349,16 @@ def check_early_earnings_news_alerts() -> None:
             # already owns the alert for that symbol; this early-heads-up alert must not also
             # fire (or re-fire) once the full reaction has already been sent.
             cutoff = date.today() - timedelta(days=1)
+            # MU-02: the comment above says {yesterday, today}, and the lower bound enforced it
+            # while there was NO UPPER BOUND at all. A symbol with an earnings row dated weeks
+            # ahead therefore qualified as "pending", so pre-release chatter could notify as if a
+            # release were underway. Bounded to the window the code already claimed.
+            _upper = date.today()
             still_pending = set(session.execute(
                 select(Stock.symbol).join(EarningsEvent, EarningsEvent.stock_id == Stock.id).where(
                     Stock.symbol.in_(all_symbols),
                     EarningsEvent.report_date >= cutoff,
+                    EarningsEvent.report_date <= _upper,
                     EarningsEvent.eps_actual.is_(None),
                 )
             ).scalars().all())
@@ -2362,43 +2370,84 @@ def check_early_earnings_news_alerts() -> None:
             from .email_service import send_email
             today_str = date.today().isoformat()
             for sym in sorted(still_pending):
-                headline = _fetch_earnings_news_headline(sym)
-                if headline is None:
-                    continue
-                subject = f"📰 {sym} — earnings news spotted"
-                body_text = (
-                    f"We spotted a real-time news item classified as earnings-related for {sym}: "
-                    f"\"{headline}\". The structured EPS actual/estimate isn't available yet — "
-                    f"you'll get a follow-up alert with the full numbers once they land. "
-                    f"This is a detection of the news itself, not a confirmed result."
-                )
-                for uid, syms in user_symbols.items():
-                    if sym not in syms:
+                # MU-02: PER-STAGE, not one-per-day. A preview used to consume the symbol's only
+                # slot for the calendar day, so the actual result — which arrived 5.08 seconds
+                # after publication and was sitting in the database — was suppressed by a story
+                # that told the reader nothing. Each release stage now dedups independently.
+                for _hl in _fetch_earnings_news_headlines(sym):
+                    phase = classify_earnings_phase(_hl)
+                    if not phase_is_notifiable(phase):
                         continue
-                    u_obj = users_by_id.get(uid)
-                    if not u_obj or not u_obj.email:
-                        continue
-                    redis_key = f"stockai:early_earnings_news:{uid}:{sym}:{today_str}"
-                    try:
-                        if _rc and _rc.exists(redis_key):
-                            continue
-                    except Exception:
-                        pass
-                    try:
-                        sent_ok = send_email(u_obj.email, subject, f"<p>{body_text}</p>", body_text)
-                    except Exception as _send_exc:
-                        log.warning("signal_alert.early_earnings_news_send_error", symbol=sym, error=str(_send_exc))
-                        sent_ok = False
-                    if sent_ok:
-                        try:
-                            _rc and _rc.setex(redis_key, 86400, "1")  # 1-day TTL — one per user/symbol/day
-                        except Exception:
-                            pass
-                        log.info("signal_alert.early_earnings_news_sent", symbol=sym, user=u_obj.username)
+                    headline = _hl
+                    subject = phase_subject(sym, phase)
+                    body_text = phase_body(sym, phase, headline)
+                    _send_early_earnings_stage(
+                        session, sym, phase, headline, subject, body_text,
+                        user_symbols, users_by_id, _rc, today_str,
+                    )
             _record_job_status("check_early_earnings_news_alerts", "ok", time.monotonic() - _t0)
     except Exception as exc:
         log.error("signal_alert.early_earnings_news_error", error=str(exc))
         _record_job_status("check_early_earnings_news_alerts", "error", time.monotonic() - _t0, str(exc))
+
+
+def _send_early_earnings_stage(session, sym, phase, headline, subject, body_text,
+                   user_symbols, users_by_id, _rc, today_str) -> None:
+    """Deliver ONE release stage to every eligible recipient, deduplicated per stage.
+
+    Extracted so the per-recipient loop is not nested three deep inside the job, and so the
+    dedup key is defined in exactly one place."""
+    from .email_service import send_email
+    for uid, syms in user_symbols.items():
+        if sym not in syms:
+            continue
+        u_obj = users_by_id.get(uid)
+        if not u_obj or not u_obj.email:
+            continue
+        # MU-02: the PHASE is part of the key. Same stage twice (duplicate provider
+        # coverage of one release) still collapses to one email; a different stage
+        # gets its own.
+        redis_key = f"stockai:early_earnings_news:{uid}:{sym}:{phase}:{today_str}"
+        try:
+            if _rc and _rc.exists(redis_key):
+                continue
+        except Exception:
+            pass
+        try:
+            sent_ok = send_email(u_obj.email, subject, f"<p>{body_text}</p>", body_text)
+        except Exception as _send_exc:
+            log.warning("signal_alert.early_earnings_news_send_error", symbol=sym, error=str(_send_exc))
+            sent_ok = False
+        if sent_ok:
+            try:
+                _rc and _rc.setex(redis_key, 86400, "1")  # 1-day TTL — one per user/symbol/day
+            except Exception:
+                pass
+            log.info("signal_alert.early_earnings_news_sent",
+                     symbol=sym, phase=phase, user=u_obj.username)
+
+
+def _fetch_earnings_news_headlines(symbol: str) -> list[str]:
+    """Every earnings-classified headline for `symbol` in the last 24h, newest first.
+
+    MU-02: the singular `_fetch_earnings_news_headline()` below returned only the FIRST match and
+    discarded the rest, so a release that published its result and its guidance as two separate
+    headlines — which is exactly what MU did, 3 minutes apart — could only ever surface one of
+    them. The caller classifies each into a release stage and dedups per stage.
+
+    Order is preserved from news-intelligence (newest first), and the caller's per-stage dedup
+    means a stage covered by several providers still produces one email.
+    """
+    try:
+        url = f"{_settings.news_intelligence_url}/news"
+        with httpx.Client(timeout=5) as c:
+            r = c.get(url, params={"symbol": symbol, "since_hours": 24, "limit": 20})
+            if r.status_code != 200:
+                return []
+            return [i.get("headline") for i in r.json()
+                    if i.get("category") == "earnings" and i.get("headline")]
+    except Exception:
+        return []
 
 
 def _fetch_earnings_news_headline(symbol: str) -> str | None:

@@ -1,3 +1,4 @@
+import pathlib
 """Tests for check_early_earnings_news_alerts() — a user-requested follow-up (2026-08-06) to
 check_earnings_reactions()/check_earnings_impact_alerts(). Both existing alerts only fire once
 EarningsEvent.eps_actual lands via event-intelligence's yfinance-based sync_todays_earnings()
@@ -161,16 +162,24 @@ def test_only_symbols_with_eps_actual_still_null_are_checked():
     assert "EarningsEvent.eps_actual.is_(None)" in body
 
 
-def test_dedup_key_is_scoped_per_user_symbol_and_day():
-    body = _function_body("check_early_earnings_news_alerts")
-    assert 'redis_key = f"stockai:early_earnings_news:{uid}:{sym}:{today_str}"' in body
+def test_dedup_key_is_scoped_per_user_symbol_PHASE_and_day():
+    """SUPERSEDED 2026-09-30 by MU-02. This required the key to be
+    `{uid}:{sym}:{today_str}` — one notification per symbol per calendar day. That is exactly
+    what suppressed MU's actual Q4 result: a "Micron Earnings Ahead" preview had already taken
+    the day's single slot, so the print that arrived 5.08 seconds after publication was never
+    sent. The release PHASE is now part of the key, so each stage notifies once.
+
+    The send loop also moved into `_send_early_earnings_stage()` so the dedup key is defined in
+    one place rather than three levels deep inside the job."""
+    body = _function_body("_send_early_earnings_stage")
+    assert 'redis_key = f"stockai:early_earnings_news:{uid}:{sym}:{phase}:{today_str}"' in body
 
 
 def test_dedup_key_written_only_after_a_successful_send():
     """Matches this codebase's established AUD266-DEDUP-KEY-SET-BEFORE-SEND fix — the dedup
     key must be set INSIDE the successful-send branch, not before the send is attempted, so a
     transient failure doesn't permanently suppress the alert for the rest of the day."""
-    body = _function_body("check_early_earnings_news_alerts")
+    body = _function_body("_send_early_earnings_stage")  # MU-02: loop extracted
     send_idx = body.index("sent_ok = send_email(u_obj.email, subject, f\"<p>{body_text}</p>\", body_text)")
     if_ok_idx = body.index("if sent_ok:")
     setex_idx = body.index('_rc and _rc.setex(redis_key, 86400, "1")')
@@ -180,9 +189,12 @@ def test_dedup_key_written_only_after_a_successful_send():
 def test_send_call_is_isolated_per_recipient():
     """A single recipient's send raising must not abort the loop for every other recipient —
     matches this codebase's established AUD266-PER-RECIPIENT-ISOLATION-NEVER-PROPAGATED fix."""
-    body = _function_body("check_early_earnings_news_alerts")
-    try_idx = body.index("try:\n                        sent_ok = send_email(")
-    tail = body[try_idx:try_idx + 350]
+    body = _function_body("_send_early_earnings_stage")  # MU-02: loop extracted
+    # MU-02: anchored on the call rather than on a literal indentation level — extracting the
+    # loop into its own function changed the indentation, and a test about exception isolation
+    # should not break because code moved left.
+    send_idx = body.index("sent_ok = send_email(")
+    tail = body[send_idx:send_idx + 350]
     assert "except Exception as _send_exc:" in tail
     assert "sent_ok = False" in tail
 
@@ -208,6 +220,22 @@ def test_job_is_registered_in_start_scheduler_every_minute():
 
 
 def test_email_body_frames_this_as_a_detection_not_a_confirmed_result():
+    """SUPERSEDED 2026-09-30 by MU-02: the body text moved into `earnings_phase.phase_body()`,
+    which writes a DIFFERENT body per release stage — a preview must not read like a print. The
+    honesty requirement is unchanged and is asserted there against every stage; this checks the
+    results stage, the one the MU incident suppressed."""
+    import importlib.util, sys as _sys
+    _src = pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "earnings_phase.py"
+    _sp = importlib.util.spec_from_file_location("eearly_phase", _src)
+    _ep = importlib.util.module_from_spec(_sp); _sys.modules[_sp.name] = _ep
+    _sp.loader.exec_module(_ep)
+    body = _ep.phase_body("MU", _ep.PHASE_RESULTS, "Micron Q4 Adj EPS $3.42 Beats")
+    assert "not a verified result" in body
+    assert "have not landed" in body
+    return
+
+
+def _superseded_test_email_body_frames_this_as_a_detection_not_a_confirmed_result():
     """Design invariant: this alert has no real EPS numbers, so its body must not imply one —
     matches this codebase's established alert-honesty discipline (T249-P3, T257-TOP3-CONVICTION
     etc. all explicitly disclaim what they are NOT claiming)."""
