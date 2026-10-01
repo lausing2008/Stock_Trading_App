@@ -80,8 +80,12 @@ def active_reserved_value(session, portfolio_id: int, sector: str | None,
 
 
 def committed_value(session, portfolio_id: int, sector: str | None, *, price_for
-                    ) -> tuple[float, int]:
-    """Exposure held by OPEN POSITIONS in this sector, read fresh. Returns `(value, n_fallback)`.
+                    ) -> tuple[float, list]:
+    """Exposure held by OPEN POSITIONS in this sector, read fresh.
+
+    Returns `(value, fallbacks)` where `fallbacks` is one record per position priced from a
+    substitute source — symbol, provenance, value and shares — so the shadow measurement can
+    say WHICH exposure was uncertain and by how much, not merely how many positions were.
 
     READ FRESH, INSIDE THE LOCK — this is the part the first version of this module got wrong.
     It took `committed_value` as an argument from the caller, who computed it from
@@ -93,8 +97,10 @@ def committed_value(session, portfolio_id: int, sector: str | None, *, price_for
     `Stock.sector`. That is deliberate: it asks "what exposure did we take in this sector",
     which a later reclassification of the stock should not retroactively rewrite.
 
-    `price_for(trade) -> (price, is_fallback)` keeps the VALUATION the caller's definition while
-    the ROW SET is this module's.
+    `price_for(trade) -> (price, provenance)` keeps the VALUATION the caller's definition while
+    the ROW SET is this module's. `provenance` is `None` for a live mark, or a short string
+    naming the substitute source ("entry_price", "last_close", ...). A string is what makes a
+    fallback distinguishable from a live mark AFTER the fact, which a boolean does not.
 
     TWO DIFFERENT KINDS OF NOT-KNOWING, and they must not be conflated:
 
@@ -115,16 +121,19 @@ def committed_value(session, portfolio_id: int, sector: str | None, *, price_for
         select(PaperTrade).where(PaperTrade.portfolio_id == portfolio_id,
                                  PaperTrade.stage == "open")).scalars().all()
     total = 0.0
-    fallbacks = 0
+    fallbacks: list = []
     for t in rows:
         if not _same_bucket(t.sector, sector):
             continue
-        price, is_fallback = price_for(t)
+        price, provenance = price_for(t)
         if price is None:
-            return float("nan"), fallbacks        # unestablishable; caller must fail closed
-        if is_fallback:
-            fallbacks += 1
-        total += float(price) * float(t.shares)
+            # UNVALUABLE: no number at all. Distinct from a fallback, which produces one.
+            return float("nan"), fallbacks
+        value = float(price) * float(t.shares)
+        if provenance is not None:
+            fallbacks.append({"symbol": t.symbol, "provenance": str(provenance),
+                              "value": value, "shares": float(t.shares)})
+        total += value
     return total, fallbacks
 
 
@@ -160,21 +169,32 @@ def reserve(session, *, portfolio_id: int, intent_id: str, symbol: str, sector: 
         select(PaperPortfolio.id).where(PaperPortfolio.id == portfolio_id).with_for_update())
 
     committed, fallbacks = committed_value(session, portfolio_id, sector, price_for=price_for)
+    unvaluable = committed != committed             # NaN: a position could not be valued at all
     if telemetry is not None:
-        telemetry["fallback_marks"] = fallbacks
+        telemetry["fallback_marks"] = len(fallbacks)
+        telemetry["fallback_detail"] = fallbacks
+        telemetry["fallback_value"] = sum(f["value"] for f in fallbacks)
+        telemetry["unvaluable"] = unvaluable
         telemetry["would_block_on_fresh_marks"] = bool(fallbacks)
-    if committed != committed:                      # NaN: a position could not be valued
+    if unvaluable:
         return None, "exposure_unknown_mark"
     if require_fresh_marks and fallbacks:
         return None, "exposure_stale_mark"
 
     reserved = active_reserved_value(session, portfolio_id, sector, now=now)
     projected = committed + reserved + value
+    over_cap = projected / equity > cap_pct
     if telemetry is not None:
         telemetry["committed"] = committed
         telemetry["reserved"] = reserved
         telemetry["projected_pct"] = projected / equity
-    if projected / equity > cap_pct:
+        telemetry["cap_pct"] = cap_pct
+        telemetry["would_exceed_cap"] = over_cap
+        # The question the policy decision actually turns on: would ENFORCING freshness have
+        # changed this entry's outcome? Only if a fallback was used AND the entry was otherwise
+        # going to be allowed. A fallback on an entry the cap already refuses changes nothing.
+        telemetry["decision_would_change"] = bool(fallbacks) and not over_cap
+    if over_cap:
         return None, "sector_cap"
 
     row = PortfolioExposureReservation(

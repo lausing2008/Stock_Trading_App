@@ -195,3 +195,45 @@ def test_crash_reclamation_cannot_free_capacity_mid_commit(pg):
     assert c["capacity_still_held"] == 14000.0
     assert c["new_entry_blocked"] == "sector_cap"
     assert "pg-commit" in c["surfaced_for_review"]
+
+
+# ── The crash boundary, as two distinct cases ─────────────────────────────────────────────────
+
+def test_an_internal_paper_entry_is_atomic_across_a_crash(pg):
+    """Reservation, trade and consumption are one transaction. A rollback must leave no trade
+    AND no stranded capacity — neither half may survive the other."""
+    c = pg["crash_internal_entry"]
+    assert c["trades"] == 0
+    assert c["reservations"] == 0
+    assert c["stranded_capacity"] == 0.0
+
+
+def test_committing_protects_capacity_by_ROW_LOCK_not_by_visibility(pg):
+    """WHAT THE EARLIER TEST DID NOT SHOW. Sweeping an already-persisted `committing` row proves
+    the expiry RULE. It does not prove `committing` is durably VISIBLE when a crash happens, and
+    measurement says it is NOT: a second worker reads the row as `reserved`, because
+    `begin_commit` runs inside the entry's own uncommitted transaction.
+
+    Capacity is still protected during the in-flight window — but by PostgreSQL's row lock,
+    which blocks the sweeper from touching the row at all, not by the state it can see. Those
+    are different mechanisms with different failure modes, and conflating them would mean
+    claiming a guarantee the implementation does not provide."""
+    b = pg["crash_broker_boundary"]
+    assert b["state_seen_by_other_worker"] == "reserved"
+    assert b["protected_by_visibility"] is False
+    assert b["protected_by_row_lock"] is True
+    assert b["swept_by_other_worker"] == 0
+
+
+def test_after_the_crash_the_reservation_reverts_and_will_expire(pg):
+    """The consequence, stated plainly. A rollback discards `begin_commit`, so the row returns
+    to `reserved` and its TTL will release the capacity.
+
+    For a PAPER entry that is correct — nothing was created. For a BROKER submission it is not:
+    the order is placed from inside the uncommitted transaction, so a crash after the broker
+    accepts leaves a real order with no local record and capacity that will be released. That is
+    pending-broker exposure, which remains OPEN, and is why M15's closure is scoped to the
+    paper-entry paths."""
+    b = pg["crash_broker_boundary"]
+    assert b["final_state"] == "reserved"
+    assert b["capacity_after_crash"] == 5000.0

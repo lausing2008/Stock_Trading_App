@@ -3,13 +3,54 @@
 **Found 2026-10-01** by synthetic-position testing (M15). **Fixed the same day.** No production
 deployment is implied by either; this was found and fixed in the repository.
 
+**CLOSURE IS SCOPED TO THE PAPER-ENTRY PATHS.** The broker-submission boundary is not closed
+and is tracked as pending broker exposure.
+
 | Item | Status |
 |---|---|
 | Atomic reservation primitive | Verified on PostgreSQL |
-| Organic / conditional integration | Verified: both production writers raced through their real paths |
-| Crash reclaim vs in-flight commit | Verified: `committing` is never swept |
+| Organic / conditional integration | Verified: both production writers raced through their real paths and both reached the reservation check |
+| Internal paper entry across a crash | Verified atomic: rollback leaves no trade and no stranded capacity |
+| In-flight capacity during an entry | Protected — **by PostgreSQL's row lock, not by `committing` visibility**. See below |
+| **Broker submission boundary** | **OPEN.** A crash after the broker accepts leaves a real order with no local record |
 | Fresh marks | **Open** — mechanism built, OFF, now measured in shadow |
 | Pending broker exposure, FX, assignment | **Open** |
+
+### What `committing` actually buys, measured rather than assumed
+
+An earlier test here swept an already-persisted `committing` row and concluded the state
+protects capacity. That proves the **expiry rule**; it does not prove the state is durably
+**visible** at the moment a crash happens, which is the only thing that would protect capacity.
+
+Measured on PostgreSQL: a second worker reads the row as **`reserved`**, not `committing`,
+because `begin_commit` runs inside the entry's own uncommitted transaction. Capacity is still
+protected during the in-flight window — the sweeper **blocks on the row lock** and cannot touch
+the row — but that is a different mechanism with different failure modes, and the distinction is
+now asserted directly (`protected_by_visibility` is False, `protected_by_row_lock` is True).
+
+After a rollback the row reverts to `reserved` and its TTL releases the capacity. For a **paper**
+entry that is correct: nothing was created. For a **broker** submission it is not.
+
+### The broker boundary — an open, pre-existing defect
+
+`_place_broker_entry` is called from inside `_open_paper_trade`, and **`_open_paper_trade`
+contains no `session.commit()`** — the caller commits afterwards. So the broker order is
+submitted from within an uncommitted transaction. A crash or rollback between broker acceptance
+and that commit leaves:
+
+- a **real broker order**, accepted;
+- **no local trade row** at all;
+- a reservation that reverts to `reserved` and expires, **releasing capacity for exposure that
+  exists at the broker**.
+
+`_place_broker_entry`'s own comment asserts the trade is "already committed by the caller before
+this function runs". That comment is **incorrect** for this call path.
+
+This predates the reservation work and is not caused by it — the reservation simply made the
+boundary visible. Closing it needs durable intent recorded and committed *before* submission,
+and reconciliation that resolves the unknown order before capacity is released: the same
+reserve→dispatch→unknown→reconcile shape the notification outbox already uses. It belongs with
+the broker-lifecycle work (M25), not with a competing mechanism invented here.
 
 ## The defect
 

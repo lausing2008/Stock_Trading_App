@@ -266,7 +266,7 @@ _espec = _ilu2.spec_from_file_location("common.exposure", ROOT / "shared" / "com
 _exp = _ilu2.module_from_spec(_espec); sys.modules["common.exposure"] = _exp
 _espec.loader.exec_module(_exp)
 
-_PRICE = lambda t: (float(t.entry_price), False)   # noqa: E731
+_PRICE = lambda t: (float(t.entry_price), None)    # noqa: E731  (None = live mark)
 T = datetime(2026, 10, 1, 12, 0, 0)
 
 with Session() as s:
@@ -407,15 +407,16 @@ with Session() as s:
 with Session() as s:
     none_price = _exp.reserve(s, portfolio_id=PF2, intent_id="fc-1", symbol="FC",
                               sector="Energy", value=1.0, equity=EQUITY, cap_pct=0.90,
-                              price_for=lambda t: (None, True), now=T)[1]
+                              price_for=lambda t: (None, "unvaluable"), now=T)[1]
     stale_ok = _exp.reserve(s, portfolio_id=PF2, intent_id="fc-2", symbol="FC2",
                             sector="Energy", value=1.0, equity=EQUITY, cap_pct=0.90,
-                            price_for=lambda t: (float(t.entry_price), True), now=T)[1]
+                            price_for=lambda t: (float(t.entry_price), "entry_price"),
+                            now=T)[1]
     s.rollback()
 with Session() as s:
     stale_refused = _exp.reserve(s, portfolio_id=PF2, intent_id="fc-3", symbol="FC3",
                                  sector="Energy", value=1.0, equity=EQUITY, cap_pct=0.90,
-                                 price_for=lambda t: (float(t.entry_price), True),
+                                 price_for=lambda t: (float(t.entry_price), "entry_price"),
                                  require_fresh_marks=True, now=T)[1]
     s.rollback()
 # Shadow telemetry: what a fresh-mark policy WOULD have done, without doing it.
@@ -423,22 +424,25 @@ with Session() as s:
     _tel_fallback, _tel_fresh = {}, {}
     _exp.reserve(s, portfolio_id=PF2, intent_id="tel-1", symbol="T1", sector="Energy",
                  value=1.0, equity=EQUITY, cap_pct=0.90,
-                 price_for=lambda t: (float(t.entry_price), True), telemetry=_tel_fallback,
-                 now=T)
+                 price_for=lambda t: (float(t.entry_price), "entry_price"),
+                 telemetry=_tel_fallback, now=T)
     s.rollback()
 with Session() as s:
     _exp.reserve(s, portfolio_id=PF2, intent_id="tel-2", symbol="T2", sector="Energy",
                  value=1.0, equity=EQUITY, cap_pct=0.90,
-                 price_for=lambda t: (float(t.entry_price), False), telemetry=_tel_fresh, now=T)
+                 price_for=lambda t: (float(t.entry_price), None), telemetry=_tel_fresh, now=T)
     s.rollback()
 
 R["fail_closed"] = {"unvaluable_position": none_price, "stale_mark_default": stale_ok,
                     "stale_mark_when_fresh_required": stale_refused}
 R["shadow_fresh_marks"] = {
     "with_fallback": {k: _tel_fallback.get(k) for k in
-                      ("fallback_marks", "would_block_on_fresh_marks")},
+                      ("fallback_marks", "fallback_value", "would_block_on_fresh_marks",
+                       "would_exceed_cap", "decision_would_change", "unvaluable")},
+    "fallback_provenance": sorted({f["provenance"]
+                                   for f in (_tel_fallback.get("fallback_detail") or [])}),
     "all_fresh": {k: _tel_fresh.get(k) for k in
-                  ("fallback_marks", "would_block_on_fresh_marks")},
+                  ("fallback_marks", "would_block_on_fresh_marks", "decision_would_change")},
     "entry_still_allowed_with_fallback": stale_ok,
 }
 

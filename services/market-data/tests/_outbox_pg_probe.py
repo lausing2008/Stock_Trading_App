@@ -223,7 +223,7 @@ _espec = _ilu.spec_from_file_location("common.exposure", _ROOT / "shared" / "com
 exposure = _ilu.module_from_spec(_espec); sys.modules["common.exposure"] = exposure
 _espec.loader.exec_module(exposure)
 
-_PRICE = lambda t: (float(t.entry_price), False)        # noqa: E731
+_PRICE = lambda t: (float(t.entry_price), None)          # noqa: E731
 TR = datetime(2026, 10, 1, 12, 0, 0)
 
 with Session() as s:
@@ -479,5 +479,85 @@ with Session() as s:
 
 # The real trading engine's structlog writes to stdout, so the result is delimited rather than
 # assumed to be the only thing on it.
+# ── 11. THE CRASH BOUNDARY — two distinct cases ───────────────────────────────────────────────
+#
+# Sweeping an already-persisted `committing` row proves the EXPIRY RULE. It does not prove that
+# `committing` is durably VISIBLE at the moment a crash happens, which is the only thing that
+# protects capacity. Those are different claims and are separated here.
+
+# (a) INTERNAL PAPER ENTRY — reservation, trade and consumption are one transaction.
+# A rollback must leave no trade AND no stranded capacity.
+with Session() as s:
+    s.query(PortfolioExposureReservation).filter_by(portfolio_id=PFID).delete()
+    s.commit()
+with Session() as s:
+    r, _ = exposure.reserve(s, portfolio_id=PFID, intent_id="pg-atomic", symbol="AT",
+                            sector="Energy", value=5_000.0, equity=100_000.0, cap_pct=0.15,
+                            price_for=_PRICE, now=TR)
+    exposure.begin_commit(s, r, now=TR)
+    st_at = Stock(symbol="ATOMIC", name="ATOMIC", sector="Energy", market="US",
+                  exchange="NASDAQ", currency="USD")
+    s.add(st_at); s.flush()
+    tr_at = PaperTrade(portfolio_id=PFID, symbol="ATOMIC", stock_id=st_at.id, shares=50,
+                       entry_price=100.0, current_stop=95.0, stop_loss=95.0, stage="open",
+                       trading_style="SWING", sector="Energy",
+                       entry_date=TR.date(), entry_time=TR)
+    s.add(tr_at); s.flush()
+    exposure.consume(s, tr_at and r, trade_id=tr_at.id, now=TR)
+    s.rollback()                                   # the crash
+with Session() as s:
+    R["crash_internal_entry"] = {
+        "trades": s.query(PaperTrade).filter_by(portfolio_id=PFID, symbol="ATOMIC").count(),
+        "reservations": s.query(PortfolioExposureReservation).filter_by(
+            intent_id="pg-atomic").count(),
+        "stranded_capacity": exposure.active_reserved_value(s, PFID, "Energy", now=TR),
+    }
+
+# (b) BROKER BOUNDARY — is `committing` visible to ANOTHER session before the transaction
+# commits? This is the case that actually decides whether capacity is protected across a crash
+# that happens after a broker has accepted an order.
+with Session() as s:
+    s.query(PortfolioExposureReservation).filter_by(portfolio_id=PFID).delete(); s.commit()
+with Session() as worker:
+    r2, _ = exposure.reserve(worker, portfolio_id=PFID, intent_id="pg-broker", symbol="BK",
+                             sector="Energy", value=5_000.0, equity=100_000.0, cap_pct=0.15,
+                             price_for=_PRICE, ttl_seconds=60, now=TR)
+    worker.commit()                                # the reservation itself IS durable
+    exposure.begin_commit(worker, r2, now=TR)      # ...but this is NOT yet committed
+    # A second worker sweeps while the first is mid-entry (e.g. awaiting a broker response).
+    #
+    # A `statement_timeout` is essential here: without one this BLOCKS indefinitely, because the
+    # uncommitted `begin_commit` UPDATE holds a row lock. That block is the real finding — the
+    # sweeper cannot steal the row — but an un-timed-out test just hangs instead of reporting it.
+    with Session() as sweeper:
+        sweeper.execute(text("SET LOCAL statement_timeout = '2s'"))
+        seen = sweeper.query(PortfolioExposureReservation).filter_by(
+            intent_id="pg-broker").one().state
+        try:
+            swept = exposure.expire_stale(sweeper, now=TR + timedelta(seconds=600))
+            sweeper.commit()
+            blocked = False
+        except Exception as exc:                      # noqa: BLE001
+            sweeper.rollback()
+            swept, blocked = 0, True
+            block_error = type(exc).__name__
+    worker.rollback()                              # the crash, after the broker accepted
+with Session() as s:
+    row = s.query(PortfolioExposureReservation).filter_by(intent_id="pg-broker").one()
+    R["crash_broker_boundary"] = {
+        "state_seen_by_other_worker": seen,
+        "swept_by_other_worker": swept,
+        "final_state": row.state,
+        "capacity_after_crash": exposure.active_reserved_value(s, PFID, "Energy", now=TR),
+        # If the sweeper saw `reserved` and expired it, `committing` protected nothing at this
+        # boundary: it was never durable when it mattered.
+        "sweeper_blocked_on_row_lock": blocked,
+        # Two different mechanisms could protect capacity here. Distinguish them:
+        #   visibility  — the sweeper READ `committing` and declined to sweep it
+        #   row lock    — the sweeper could not touch the row at all while the entry was open
+        "protected_by_visibility": seen == "committing" and swept == 0 and not blocked,
+        "protected_by_row_lock": blocked,
+    }
+
 print("===PROBE_JSON===")
 print(json.dumps(R, indent=2, default=str))

@@ -5386,14 +5386,29 @@ def _open_paper_trade(
         # Valuation stays this module's definition (`_best_price`'s live-mark-then-entry-price
         # rule); only the ROW SET is read fresh inside the lock. The flag reports whether a
         # fallback was used, which is what the separate stale-mark finding needs.
-        price_for=lambda t: (live_prices.get(t.symbol, t.entry_price),
-                             t.symbol not in live_prices),
+        # Provenance, not a boolean: "entry_price" names WHICH substitute was used, so a later
+        # reconciliation can recompute the same exposure against a mark that has since arrived.
+        price_for=lambda t: ((live_prices[t.symbol], None) if t.symbol in live_prices
+                             else (t.entry_price, "entry_price")),
         telemetry=_exposure_telemetry)
     if _exposure_telemetry.get("fallback_marks"):
-        log.info("paper.exposure_stale_mark_shadow", symbol=stock.symbol,
-                 sector=_sector or "unclassified",
+        # Everything needed to separate an over-strict freshness policy from a fallback hiding
+        # material exposure. Emitted per ATTEMPT; `symbol` plus the session date is what makes
+        # unique opportunities countable separately from repeated scans of the same name.
+        log.info("paper.exposure_stale_mark_shadow",
+                 symbol=stock.symbol, sector=_sector or "unclassified",
+                 market=cfg.get("market", "US"), horizon=style,
+                 session_date=_trading_date_for(cfg.get("market")).isoformat(),
+                 portfolio_id=portfolio.id,
                  fallback_marks=_exposure_telemetry["fallback_marks"],
-                 would_block=True, enforced=False,
+                 fallback_value=round(_exposure_telemetry.get("fallback_value", 0.0), 2),
+                 fallback_detail=_exposure_telemetry.get("fallback_detail"),
+                 committed=round(_exposure_telemetry.get("committed", 0.0), 2),
+                 projected_pct=round(_exposure_telemetry.get("projected_pct", 0.0), 4),
+                 cap_pct=_exposure_telemetry.get("cap_pct"),
+                 would_exceed_cap=_exposure_telemetry.get("would_exceed_cap"),
+                 decision_would_change=_exposure_telemetry.get("decision_would_change"),
+                 enforced=False,
                  note="a fallback price is a number, not current exposure; "
                       "require_fresh_marks is OFF")
     if _reservation is None:

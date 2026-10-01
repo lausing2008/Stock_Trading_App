@@ -1,0 +1,124 @@
+{
+  "stale_conviction": "Conviction gate failed: old signal failed \u2014 alert system would not have notified on this BUY",
+  "naive_signal_age": null,
+  "aware_signal_age": "Signal is 264.0h old, exceeds max age 72h \u2014 stale, discard thesis",
+  "hk_oct1_entry_gate": null,
+  "cooldown_without_send": {
+    "sent": [],
+    "seen": [
+      "c1"
+    ]
+  },
+  "cap_omitted_seen": {
+    "sent": [
+      [
+        "c1"
+      ]
+    ],
+    "seen": [
+      "c1",
+      "c2"
+    ]
+  },
+  "same_contract_order": {
+    "newest_first": "bearish",
+    "oldest_first": "bullish"
+  },
+  "negative_payoff_spread": {
+    "spread": {
+      "name": "Bull Call Spread",
+      "direction": "bullish",
+      "net": "debit",
+      "legs": [
+        {
+          "action": "buy",
+          "right": "call",
+          "strike": 100,
+          "price_per_share": 12.0,
+          "cost_per_contract": 1200.0,
+          "expiry": "2026-11-20",
+          "days_to_expiry": 50,
+          "iv": null,
+          "oi": null,
+          "spread_pct": 16.7
+        },
+        {
+          "action": "sell",
+          "right": "call",
+          "strike": 105,
+          "price_per_share": 2.0,
+          "cost_per_contract": 200.0,
+          "expiry": "2026-11-20",
+          "days_to_expiry": 50,
+          "iv": null,
+          "oi": null,
+          "spread_pct": 100.0
+        }
+      ],
+      "net_per_share": 10.0,
+      "net_per_contract": 1000.0,
+      "max_loss_per_contract": 1000.0,
+      "max_profit_per_contract": -500.0,
+      "breakeven": 110.0,
+      "breakeven_move_pct": 10.0,
+      "requires_shares": false,
+      "collateral_per_contract": 1000.0,
+      "reward_risk": -0.5,
+      "what_it_does": "Bullish to $105.00 for 83.33% of the outright call's cost.",
+      "use_when": "You are bullish but your own target is the cap anyway \u2014 so paying for upside beyond it is waste."
+    },
+    "recommendation": "bull_call_spread"
+  },
+  "different_expiry_collar": {
+    "name": "Collar",
+    "direction": "hedge",
+    "net": "debit",
+    "legs": [
+      {
+        "action": "buy",
+        "right": "put",
+        "strike": 95,
+        "price_per_share": 2.0,
+        "cost_per_contract": 200.0,
+        "expiry": "2026-11-20",
+        "days_to_expiry": 50,
+        "iv": null,
+        "oi": null,
+        "spread_pct": 0.0
+      },
+      {
+        "action": "sell",
+        "right": "call",
+        "strike": 110,
+        "price_per_share": 1.0,
+        "cost_per_contract": 100.0,
+        "expiry": "2026-10-16",
+        "days_to_expiry": 15,
+        "iv": null,
+        "oi": null,
+        "spread_pct": 0.0
+      }
+    ],
+    "net_per_share": 1.0,
+    "net_per_contract": 100.0,
+    "max_loss_per_contract": 600.0,
+    "max_profit_per_contract": 900.0,
+    "breakeven": 101.0,
+    "breakeven_move_pct": 1.0,
+    "requires_shares": true,
+    "collateral_per_contract": 10000,
+    "what_it_does": "Floors you near $95.00 and caps you near $110.00, for a net cost of $1.00/share.",
+    "use_when": "You own the shares and want the downside bounded without paying full price for the put \u2014 you are selling your upside to fund it."
+  },
+  "late_news_fresh_flag": {
+    "headline": "Old adverse story",
+    "sentiment_label": "negative",
+    "ts": "2026-10-01T03:00:00+00:00",
+    "published_at": "2026-09-01T00:00:00+00:00",
+    "ingested_at": "2026-10-01T03:00:00+00:00"
+  },
+  "source_hashes": {
+    "services/decision-engine/src/api/core/hard_rejects.py": "606d768e27f6562830e34d78cb5a1ca9802b7cbaf0fc8a1729a89c0e6476c645",
+    "services/market-data/src/services/scheduler.py": "7686421bdf621e630090422c8fb0d7f9e612fadf47fe1a4a5bdbafd2a6badf35"
+  }
+}

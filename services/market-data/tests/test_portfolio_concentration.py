@@ -164,6 +164,30 @@ def test_fresh_mark_enforcement_is_measured_in_shadow_before_being_enabled(probe
     assert sh["entry_still_allowed_with_fallback"] == "reserved"
 
 
+def test_the_shadow_record_names_which_exposure_was_uncertain(probe):
+    """A count of fallback positions cannot distinguish an over-strict freshness policy from a
+    fallback hiding material exposure. The record carries the VALUE priced from a substitute
+    source and the provenance naming which substitute, so the same exposure can be recomputed
+    later against a mark that has since arrived."""
+    sh = probe["shadow_fresh_marks"]
+    assert sh["with_fallback"]["fallback_value"] == 10000.0
+    assert sh["fallback_provenance"] == ["entry_price"]
+
+
+def test_the_shadow_record_says_whether_enforcing_would_change_the_decision(probe):
+    """The question the policy turns on. A fallback on an entry the cap already refuses changes
+    nothing; only a fallback on an otherwise-allowed entry would have been blocked."""
+    sh = probe["shadow_fresh_marks"]
+    assert sh["with_fallback"]["would_exceed_cap"] is False
+    assert sh["with_fallback"]["decision_would_change"] is True
+    assert sh["all_fresh"]["decision_would_change"] is False
+
+
+def test_unvaluable_is_reported_separately_from_fallback(probe):
+    """Two different kinds of not-knowing, carried as different fields rather than one flag."""
+    assert probe["shadow_fresh_marks"]["with_fallback"]["unvaluable"] is False
+
+
 def test_stale_mark_policy_is_built_but_not_switched_on(probe):
     """`require_fresh_marks` refuses an entry when any position in the sector was valued by
     fallback. It defaults to False, preserving today's behaviour — the mechanism exists and is
