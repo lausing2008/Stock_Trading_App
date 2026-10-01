@@ -301,10 +301,13 @@ REGISTER: tuple[WorkItem, ...] = (
              "Implement reliable delivery lifecycle, preferences, lease ownership, expiry and "
              "meaningful retry content.",
              "Provider acceptance measured separately from delivery.",
-             "market-data/notifications", Engineering.PROPOSED, Research.NOT_MEASURABLE,
+             "market-data/notifications", Engineering.REPORTED_DEPLOYED, Research.NOT_MEASURABLE,
              Decision.NO_ACTION,
-             _t(TriggerKind.IMPLEMENTATION, "transactional outbox with immutable event IDs "
-                                            "exists"),
+             _t(TriggerKind.IMPLEMENTATION, "a scheduler job calls the producer and worker, "
+                                            "and one alert family is cut over with the "
+                                            "rollout flag moved off `off`",
+                "schema, state machine and the earnings producer/worker are DEPLOYED (2026-10-01); "
+                "no job calls them and the flag is off"),
              notes="DELIVERY RELIABILITY ONLY. An earlier note here claimed this also closes "
                    "earnings_phase.KNOWN_UNRESOLVED_RISK (the in-window retrospective article). "
                    "That was wrong: an outbox delivers whatever event the classifier SELECTED, "
