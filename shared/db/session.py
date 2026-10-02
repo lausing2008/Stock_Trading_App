@@ -786,6 +786,26 @@ def _apply_isolated_ddl() -> None:
     `with`, so a failure rolls back nothing but itself.
     """
     statements = [
+        # M24/M25 (2026-10-02): the capability matrix caught this on its FIRST production run.
+        # `paper_trades` already existed, so `create_all()` never added the broker-submission
+        # columns and both `broker_submission` and `submission_reconciliation` reported
+        # not_ready — correctly, since the durable submission path genuinely could not work.
+        # Exactly the create_all()-only-creates-tables incident this list exists for, found by
+        # a readiness check rather than by a failure in production.
+        ("broker submission state columns",
+         "ALTER TABLE paper_trades "
+         "ADD COLUMN IF NOT EXISTS broker_submission_state VARCHAR(16), "
+         "ADD COLUMN IF NOT EXISTS broker_submit_attempts INTEGER NOT NULL DEFAULT 0, "
+         "ADD COLUMN IF NOT EXISTS broker_client_order_id VARCHAR(64), "
+         "ADD COLUMN IF NOT EXISTS broker_submission_path VARCHAR(16), "
+         "ADD COLUMN IF NOT EXISTS broker_submitted_at TIMESTAMP"),
+        # The identity's UNIQUENESS is the capability, not the column: without it a retry could
+        # mint a second id for the same intent and an `unknown` would match two orders.
+        # Separate statement so a pre-existing duplicate cannot block the columns above.
+        ("uq_paper_trades_broker_client_order_id",
+         "CREATE UNIQUE INDEX IF NOT EXISTS uq_paper_trades_broker_client_order_id "
+         "ON paper_trades (broker_client_order_id) "
+         "WHERE broker_client_order_id IS NOT NULL"),
         # R08: create_all() only creates MISSING TABLES, so a column added to an existing table
         # never appears from the model declaration alone.
         ("mark_evidence column",
