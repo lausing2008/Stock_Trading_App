@@ -51,6 +51,29 @@ def test_the_key_is_not_in_the_shared_env_example():
             assert "OPENROUTER_API_KEY" not in f.read_text(), candidate
 
 
+def test_near_miss_env_filenames_cannot_be_committed():
+    """A REAL NEAR MISS, 2026-10-02. A key was typed into `.env,jev` — a COMMA instead of a dot,
+    an easy slip next to the `.` key. It matched none of the ignore rules, so `git status`
+    listed a file containing a LIVE CREDENTIAL as untracked and ready to commit, and nothing
+    loaded it either, so the feature silently stayed unconfigured.
+
+    Both halves of that are worth preventing: the credential exposure, and the silent failure
+    that sends someone looking for a bug in the loader."""
+    import subprocess
+    for name in (".env,jev", ".envjev", ".env-jev", ".env.jev", ".env.local", ".env"):
+        r = subprocess.run(["git", "check-ignore", name], cwd=_ROOT, capture_output=True)
+        assert r.returncode == 0, f"{name!r} is NOT gitignored and could be committed"
+
+
+def test_the_committed_examples_survive_the_broader_rule():
+    """`.env*` is broad on purpose, so the negations must still let documentation through —
+    otherwise the fix for one problem silently creates another."""
+    import subprocess
+    for name in (".env.example", ".env.production.example", ".env.jev.example"):
+        r = subprocess.run(["git", "check-ignore", name], cwd=_ROOT, capture_output=True)
+        assert r.returncode != 0, f"{name!r} became ignored and can no longer be committed"
+
+
 def test_the_example_file_is_actually_COMMITTED_not_just_present_on_disk():
     """It was not, and the failure was silent. `.gitignore`'s `.env.*` rule matches
     `.env.jev.example` too, and the existing negations only cover the two older examples — so

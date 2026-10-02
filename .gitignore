@@ -41,6 +41,11 @@ models/artifacts/
 # `.env.*` above also swallows any NEW example file. A committed example carries a NAME and no
 # value — it is documentation, and it has to be in the repo to be useful to a fresh deployment.
 !.env.jev.example
+# A NEAR MISS, 2026-10-02: a key was typed into `.env,jev` — a COMMA, not a dot — which matches
+# none of the rules above, so `git status` listed a file containing a live credential as
+# untracked and ready to commit. `.env*` catches every near-miss spelling (.env,jev, .envjev,
+# .env-jev); the negations above keep the committed examples visible.
+.env*
 
 # IDE
 .idea/
