@@ -118,8 +118,9 @@ def test_a_datetime_object_is_accepted_too():
 def test_the_cooldown_key_includes_the_print_timestamp():
     """The old key was (user, symbol) only, so it could not tell two prints apart — it
     suppressed for 60 minutes and then let the SAME block through."""
-    i = SCHED_SRC.index("_cd_print_id = candidates[symbol].get")
-    block = SCHED_SRC[i:i + 500]
+    body = _dark_pool_body()
+    i = body.index("_cd_print_id = candidates[symbol].get")
+    block = body[i:i + 500]
     assert "{uid}:{symbol}:{_cd_print_id}" in block
 
 
@@ -132,19 +133,35 @@ def test_the_key_falls_back_when_a_print_has_no_timestamp():
     assert 'f"stockai:dark_pool_alert_cooldown:{uid}:{symbol}"' in block
 
 
+def _dark_pool_body() -> str:
+    """The DARK POOL function's own source.
+
+    These assertions used to search the whole file from `SCHED_SRC.index("cd_key = (")`, which
+    is the first match ANYWHERE — and SR-03 (2026-10-02) introduced a `cd_key = (` in
+    `check_options_flow_alerts`, which sits earlier in the file. The tests then read a
+    different function's cooldown and failed, while the code they were written to protect was
+    untouched. Scoping to the function under test is the fix; a whole-file index is an
+    assertion about file layout, not about behaviour.
+    """
+    start = SCHED_SRC.index("def check_dark_pool_alerts() -> None:")
+    return SCHED_SRC[start:SCHED_SRC.index("\n\ndef ", start + 10)]
+
+
 def test_the_cooldown_still_uses_nx_and_a_ttl():
     """The set must stay atomic (nx=True) so two concurrent runs cannot both send, and keep a
     TTL so per-print keys cannot grow without bound."""
-    i = SCHED_SRC.index("cd_key = (")
-    block = SCHED_SRC[i:i + 700]
+    body = _dark_pool_body()
+    i = body.index("cd_key = (")
+    block = body[i:i + 700]
     assert "nx=True" in block
     assert "ex=_DARK_POOL_ALERT_COOLDOWN_MINUTES * 60" in block
 
 
 def test_redis_failure_still_fails_open_for_delivery():
     """A Redis hiccup must not silently drop a real alert — the pre-existing behaviour, kept."""
-    i = SCHED_SRC.index("cd_key = (")
-    block = SCHED_SRC[i:i + 900]
+    body = _dark_pool_body()
+    i = body.index("cd_key = (")
+    block = body[i:i + 900]
     assert "cooldown_ok_symbols.append(symbol)" in block.split("except Exception")[1][:200]
 
 

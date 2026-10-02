@@ -2140,6 +2140,12 @@ export type OptionStrategyRecommendation = {
 export type OptionStrategyMatrix = {
   singles: Record<string, OptionStrategy>;
   combos: Record<string, OptionStrategy>;
+  /** SR-07 (2026-10-02): structures the chain COULD price but that must not be shown with a
+   *  payoff summary, each with the reason. A collar whose legs expire on different dates is
+   *  the common case — the put and call selection windows (25-60 and 14-45 DTE) routinely
+   *  disagree — and its floor, cap and breakeven are only defined when they match. Listing
+   *  the reason matters: silently omitting it would read as "the chain had nothing". */
+  unavailable?: Record<string, { name: string; reason: string }>;
   recommendation: OptionStrategyRecommendation;
   iv_rank: number | null;
   iv_regime: 'rich' | 'cheap' | 'normal' | 'unknown';
@@ -2733,6 +2739,23 @@ export type PaperPortfolioListItem = {
   // T264-ENTRYGATESOVERRIDE
   entry_gates_override_active: boolean;
   entry_gates_override_until: string | null;
+  // PI-04 (2026-10-02): durable scan activity, from paper_entry_scan_logs' 90-day history
+  // rather than the 4-hour Redis keys above.
+  //
+  // `candidates_seen` is NULL for `portfolio_blocked` on purpose: a portfolio-level gate
+  // returns before the candidate loop runs, so the universe was never evaluated. Rendering
+  // that as 0 would assert it was evaluated and came back empty — a different diagnosis
+  // pointing at a different fix.
+  scan_activity: {
+    state: 'portfolio_blocked' | 'candidates_rejected' | 'no_candidates';
+    last_scan_at: string | null;
+    candidates_seen: number | null;
+    binding_reason: string | null;
+    skip_tally: Record<string, number> | null;
+    // Counts repeat the same opportunity across scans — never a count of distinct lost trades.
+    counts_repeat_across_scans: boolean;
+  } | null;
+  last_entry_at: string | null;
 };
 
 export type PaperTradeParamResult = {

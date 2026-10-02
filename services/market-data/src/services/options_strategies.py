@@ -26,6 +26,8 @@ view you should take, and it is why a "bullish" view does not automatically mean
 """
 from __future__ import annotations
 
+import math
+
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -44,14 +46,49 @@ def _mid(contract: dict | None) -> float | None:
     Mid rather than bid or ask because these figures are shown as "what this would cost/pay",
     not as a fill you are guaranteed. The real fill lands somewhere in the spread, and a wide
     spread is itself reported (see `spread_pct`) so the reader can see how much that matters.
+
+    SR-06 (2026-10-02): A CROSSED QUOTE USED TO PRICE NORMALLY. `bid > 0 and ask > 0` admits
+    bid 12 / ask 2, whose "mid" of 7 is not a price of anything — a crossed or locked book
+    means the two sides are not describing the same market, and a structure priced from one
+    leg's crossed quote and another's clean quote is comparing two different moments. Such a
+    quote is now refused rather than averaged.
+
+    The last-price fallback is kept, because an illiquid leg with no live two-sided quote is
+    ordinary, but it is a different KIND of number: a trade that already happened, at an
+    unknown time, rather than a current market. `_leg` records which one was used so the
+    reader is not shown a stale print as if it were a quote.
     """
     if not contract:
         return None
     bid, ask = contract.get("bid") or 0.0, contract.get("ask") or 0.0
+    if not _finite_positive(bid) or not _finite_positive(ask):
+        bid = ask = 0.0
     if bid > 0 and ask > 0:
+        if bid > ask:
+            return None  # crossed book — not a price
         return (bid + ask) / 2.0
     last = contract.get("last_price") or 0.0
-    return float(last) if last > 0 else None
+    return float(last) if _finite_positive(last) else None
+
+
+def _finite_positive(value) -> bool:
+    """A price must be a real, finite, positive number. NaN and inf both survive `> 0`
+    comparisons in ways that produce payoff arithmetic nobody can read."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(v) and v > 0
+
+
+def _price_source(contract: dict | None) -> str:
+    """Which kind of number `_mid` returned — a live two-sided quote, or a stale print."""
+    if not contract:
+        return "none"
+    bid, ask = contract.get("bid") or 0.0, contract.get("ask") or 0.0
+    if _finite_positive(bid) and _finite_positive(ask) and bid <= ask:
+        return "quote_mid"
+    return "last_trade" if _finite_positive(contract.get("last_price")) else "none"
 
 
 def _spread_pct(contract: dict | None) -> float | None:
@@ -77,10 +114,18 @@ def _leg(contract: dict | None, action: str, expiry: str | None, dte: int | None
     price = _mid(contract)
     if contract is None or price is None or price <= 0:
         return None
+    # SR-06: a leg with no readable strike or expiry cannot be part of a payoff statement —
+    # the width of a vertical and the bounds of a collar are both functions of exactly these.
+    if not _finite_positive(contract.get("strike")) or not expiry:
+        return None
     return {
         "action": action,                      # "buy" | "sell"
         "right": contract.get("right", "?"),   # "call" | "put"
         "strike": contract["strike"],
+        # SR-06: says whether the number beside it is a live two-sided quote or a trade that
+        # already happened. Presenting the second as the first is how an "executable estimate"
+        # becomes fiction.
+        "price_source": _price_source(contract),
         "price_per_share": round(price, 2),
         "cost_per_contract": round(price * _CONTRACT_MULTIPLIER, 2),
         "expiry": expiry,
@@ -89,6 +134,30 @@ def _leg(contract: dict | None, action: str, expiry: str | None, dte: int | None
         "oi": contract.get("oi"),
         "spread_pct": _spread_pct(contract),
     }
+
+
+# SR-06: fees are not modelled per-contract anywhere in this module, so "after costs" is
+# expressed as a minimum edge the structure must clear before it is worth offering at all. A
+# debit within a cent of the width is arithmetically positive and economically pointless.
+_MIN_VERTICAL_EDGE_PER_SHARE = 0.05
+
+
+def _vertical_is_viable(debit: float, width: float, long_leg: dict, short_leg: dict) -> bool:
+    """Is this debit vertical an economically valid plan, not merely positive arithmetic?
+
+    A debit vertical's maximum payoff at expiry is `width - debit`. Four ways that fails:
+
+      * a non-positive debit (it is not a debit spread at all);
+      * a debit at or above the width, whose best case is a loss;
+      * a debit so close to the width that the remaining edge cannot survive costs;
+      * legs that do not share an expiry, which makes `width - debit` the payoff of a
+        structure nobody holds — the same defect SR-07 describes for the collar.
+    """
+    if not _finite_positive(debit) or not _finite_positive(width):
+        return False
+    if long_leg.get("expiry") != short_leg.get("expiry"):
+        return False
+    return (width - debit) >= _MIN_VERTICAL_EDGE_PER_SHARE
 
 
 def _dte(expiry: str | None, today: date) -> int | None:
@@ -143,6 +212,10 @@ def build_strategy_matrix(
 
     singles: dict = {}
     combos: dict = {}
+    # SR-06/SR-07: structures that COULD be built from the chain but must not be offered with
+    # a payoff summary, each with the reason. Omitting them silently would leave the reader to
+    # conclude the chain had nothing, which is a different and wrong answer.
+    unavailable: dict = {}
 
     # ── 1. BUY CALL — long call ────────────────────────────────────────────────────────
     # Defined risk, unlimited upside, and the whole premium is at risk if the stock simply
@@ -234,11 +307,35 @@ def build_strategy_matrix(
     # The natural pairing of the two legs this page already had. The short call PAYS for the
     # protective put, which is why a collar is the usual answer to "hedging is too expensive".
     pl, cl = _leg(stop_put, "buy", put_expiry, put_dte), _leg(target_call, "sell", call_expiry, call_dte)
-    if pl and cl:
+    # SR-07 (2026-10-02): A SINGLE-EXPIRY PAYOFF DIAGRAM DOES NOT DESCRIBE A STAGGERED COLLAR.
+    # The caller selects protective puts at 25-60 DTE and calls at 14-45 DTE, so the two legs
+    # routinely expire on different dates — and the block below reported one fixed max profit,
+    # max loss and breakeven regardless. The witness: stock 100, put 95 expiring Nov 20, call
+    # 110 expiring Oct 16, reported max profit $900 per 100 shares. If the short call expires
+    # worthless at 100 and the stock then reaches 120 by the put's expiry, the position earns
+    # $1,900 — there is no longer a call capping that upside. Every other path needs
+    # assignment and remaining-leg analysis that a common-expiry diagram cannot express.
+    #
+    # Matched expiry is therefore a precondition for offering the structure with bounds. An
+    # unmatched pair is not silently dropped: it is recorded as unavailable with the reason,
+    # so the page can say why rather than simply omitting a structure the reader expected.
+    if pl and cl and pl["expiry"] != cl["expiry"]:
+        unavailable["collar"] = {
+            "name": "Collar",
+            "reason": (f"The protective put expires {pl['expiry']} and the call "
+                       f"{cl['expiry']}. A collar's floor, cap and breakeven are only defined "
+                       f"when both legs expire together; with different dates the position "
+                       f"changes shape when the first leg expires, and a single payoff summary "
+                       f"would misstate it."),
+            "put_expiry": pl["expiry"], "call_expiry": cl["expiry"],
+        }
+    elif pl and cl:
         net = pl["price_per_share"] - cl["price_per_share"]   # >0 = net cost
         combos["collar"] = {
             "name": "Collar", "direction": "hedge", "net": "debit" if net > 0 else "credit",
             "legs": [pl, cl],
+            # SR-07: the bounds below are only meaningful because both legs share this date.
+            "expiry": pl["expiry"],
             "net_per_share": round(net, 2),
             "net_per_contract": round(net * _CONTRACT_MULTIPLIER, 2),
             "max_loss_per_contract": round((current_price - pl["strike"] + net) * _CONTRACT_MULTIPLIER, 2),
@@ -259,7 +356,14 @@ def build_strategy_matrix(
     if lo and hi and hi["strike"] > lo["strike"]:
         debit = lo["price_per_share"] - hi["price_per_share"]
         width = hi["strike"] - lo["strike"]
-        if debit > 0:
+        # SR-06 (2026-10-02): `debit > 0` IS NOT A VALIDITY TEST.
+        # A debit vertical's maximum payoff at expiry is the strike width LESS the debit, so a
+        # debit at or above the width is a structure whose best case is a loss. The witness:
+        # underlying 100, strikes 100/105, leg mids 12 and 2 -> debit 10 against width 5, and
+        # the module computed max profit -$500 while still offering it as the primary
+        # recommendation for a bullish request. The arithmetic was right; nothing asked
+        # whether the result made sense.
+        if _vertical_is_viable(debit, width, lo, hi):
             combos["bull_call_spread"] = {
                 "name": "Bull Call Spread", "direction": "bullish", "net": "debit",
                 "legs": [lo, hi],
@@ -286,7 +390,8 @@ def build_strategy_matrix(
         if hp and lp and lp["strike"] < hp["strike"]:
             debit = hp["price_per_share"] - lp["price_per_share"]
             width = hp["strike"] - lp["strike"]
-            if debit > 0:
+            # SR-06: same test as the bull call spread — see its own note.
+            if _vertical_is_viable(debit, width, hp, lp):
                 combos["bear_put_spread"] = {
                     "name": "Bear Put Spread", "direction": "bearish-hedge", "net": "debit",
                     "legs": [hp, lp],
@@ -306,6 +411,7 @@ def build_strategy_matrix(
     return {
         "singles": singles,
         "combos": combos,
+        "unavailable": unavailable,
         "recommendation": _recommend(
             singles=singles, combos=combos, signal=signal, iv_rank=iv_rank,
             holds_shares=bool(shares and shares > 0),
@@ -348,6 +454,25 @@ def _recommend(*, singles: dict, combos: dict, signal: str | None,
     available = {**singles, **combos}
     if not available:
         return {"primary": None, "reason": "No listed contracts priced well enough to build a structure."}
+
+    # SR-06 (2026-10-02): A STRUCTURE WHOSE BEST CASE IS A LOSS MUST NOT BE RECOMMENDED.
+    # This function picked the first structure that fit the constraints and never looked at
+    # what it was worth, so the bull call spread with max profit -$500 was offered as the
+    # primary plan for a bullish request. Construction-time validation (`_vertical_is_viable`)
+    # is the real fix; this is the backstop, and it covers every structure rather than the two
+    # the construction test knows about.
+    def _payoff_is_sane(entry: dict) -> bool:
+        mp = entry.get("max_profit_per_contract")
+        return not (isinstance(mp, (int, float)) and mp <= 0)
+
+    _unsound = sorted(k for k, v in available.items() if not _payoff_is_sane(v))
+    available = {k: v for k, v in available.items() if _payoff_is_sane(v)}
+    if not available:
+        return {"primary": None,
+                "reason": ("Every structure the current chain could price has a maximum payoff "
+                           "of zero or less — there is no valid plan here, which is itself the "
+                           "answer."),
+                "rejected_unsound": _unsound}
 
     def pick(key: str, why: str) -> dict | None:
         return {"primary": key, "name": available[key]["name"], "reason": why} if key in available else None
@@ -397,6 +522,7 @@ def _recommend(*, singles: dict, combos: dict, signal: str | None,
             alts = [{"key": k, "name": available[k]["name"], "reason": w}
                     for k, w in order if k != key and k in available]
             return {**got, "iv_regime": regime, "iv_note": iv_note, "alternatives": alts,
+                    "rejected_unsound": _unsound,
                     "constraint": ("You hold shares, so covered calls and collars are available."
                                    if holds_shares else
                                    "You hold no shares, so covered calls, collars and protective puts are not available — they all require the stock.")}

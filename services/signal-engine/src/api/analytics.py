@@ -970,7 +970,12 @@ def filter_audit(
         # "material_other" is logged-but-never-applied (signals.py:2470) and "none" is the default,
         # so scoring either as a suppression would dilute the very effect this is meant to expose.
         # See docs/audits/2026-09-22-news-llm-hmm-prediction-audit.md.
-        "hot_news_flag":       lambda v: v == "material_negative",
+        # SR-08 (2026-10-02): `material_negative_delayed` compresses too — at reduced
+        # strength, but it compresses, so it is a suppression and must be scored as one.
+        # Matching only the original value would have made every delayed-disclosure
+        # compression invisible to filter_audit, which is the exact blind spot
+        # AUD-NEWSGATE-UNMEASURED above exists to prevent.
+        "hot_news_flag":       lambda v: v in ("material_negative", "material_negative_delayed"),
     }
 
     # AUD-ALPHAEVAL: benchmark ids are loaded through the SAME price query and the SAME

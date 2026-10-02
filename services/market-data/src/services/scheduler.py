@@ -501,7 +501,13 @@ def _record_position_scaling_promotion_status(result: dict) -> None:
         log.warning("position_scaling_gate.promotion_status_write_failed", error=str(exc))
 
 
-def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed: list, signal: str, sent_at: str | None = None, conviction_tier: str | None = None) -> None:
+# SR-01: the stored conviction record's contract version — see shared/common/conviction_gate.py.
+from common.conviction_gate import CONTRACT_VERSION as _CONVICTION_CONTRACT_VERSION
+# SR-04: one canonical reading of a provider event time — see shared/common/signal_time.py.
+from common.signal_time import parse_signal_instant
+
+
+def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed: list, signal: str, sent_at: str | None = None, conviction_tier: str | None = None, signal_ts: str | None = None) -> None:
     try:
         r = _get_redis()
         now = datetime.now(timezone.utc).isoformat()
@@ -547,6 +553,17 @@ def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed:
                 "passed": passed,
                 "failed": failed,
                 "signal": signal,
+                # SR-01 (2026-10-02): WHAT WAS JUDGED, not just WHEN THE JUDGING HAPPENED.
+                # `ts` is evaluation time. A reader comparing it against a signal's own
+                # timestamp can only rule a record OUT ("this ran before the signal existed");
+                # it can never confirm the record judged THIS signal, because a later
+                # evaluation of an older signal still passes that test. Stamping the judged
+                # signal's own instant makes the record self-identifying, and
+                # `common.conviction_gate` prefers it over the timestamp floor whenever both
+                # sides have it. Absent for records written before this existed — which the
+                # contract handles as the legacy fallback rather than as a mismatch.
+                "signal_ts": signal_ts,
+                "contract_version": _CONVICTION_CONTRACT_VERSION,
                 "ts": now,
                 "sent_at": sent_at,
                 "conviction_tier": conviction_tier,  # "full" | "near" | "failed"
@@ -5619,6 +5636,10 @@ def check_options_flow_alerts() -> None:
             # own docstring for why a single underlying can legitimately fire more than once.
             candidates: dict[str, dict] = {}
             id_by_symbol: dict[str, int] = {}
+            # SR-04: rows dropped for an unreadable event time, and rows replaced by a newer
+            # event on the same contract. Reported on the job line so neither is silent.
+            _flow_quarantined = 0
+            _flow_superseded = 0
             for stock_id, symbol in symbols:
                 try:
                     live = _live_raw.get(symbol)
@@ -5665,7 +5686,48 @@ def check_options_flow_alerts() -> None:
                         ask_side_dominant = _side == "ask"
                         direction = _options_flow_alert_direction(row.option_type, ask_side_dominant)
                         cal = _cal_buckets.get(direction)
+
+                        # SR-04 (2026-10-02): DIRECTION USED TO DEPEND ON PROVIDER ROW ORDER.
+                        # This assignment overwrote any earlier event on the same contract, so
+                        # whichever row UW happened to send LAST decided the alert. The same
+                        # contract legitimately shows buying and selling at different times, so
+                        # the same two events produced "bearish" in one order and "bullish" in
+                        # the reverse — a verdict set by transport, not by evidence.
+                        #
+                        # Newest valid event wins, with a deterministic tie-break. A row whose
+                        # event time cannot be read is QUARANTINED rather than used: the 48h
+                        # feed window is a discovery lookback, and without a time there is no
+                        # way to tell a fresh print from a two-day-old one. Quarantined rows are
+                        # counted so a provider that stops sending `created_at` surfaces as a
+                        # visible zero rather than as silently reordered directions.
+                        _event_at = parse_signal_instant(row.created_at)
+                        if not _event_at.usable:
+                            _flow_quarantined += 1
+                            log.debug("options_flow.event_time_unusable", symbol=symbol,
+                                      chain=row.option_chain, created_at=row.created_at,
+                                      state=_event_at.state)
+                            continue
+                        _prior = candidates.get(row.option_chain)
+                        if _prior is not None:
+                            _prior_at = _prior["event_at"]
+                            if _prior_at > _event_at.at:
+                                _flow_superseded += 1
+                                continue
+                            if _prior_at == _event_at.at:
+                                # Same instant: break the tie on measured premium, then on the
+                                # contract's own imbalance, so the winner is a property of the
+                                # evidence rather than of arrival order. `<=` keeps the
+                                # incumbent on a total tie, which makes the result stable under
+                                # any permutation of identical rows.
+                                if ((row.total_premium or 0.0, abs(_imbalance or 0.0))
+                                        <= ((_prior.get("total_premium") or 0.0),
+                                            abs(_prior.get("side_imbalance") or 0.0))):
+                                    _flow_superseded += 1
+                                    continue
+                            _flow_superseded += 1
                         candidates[row.option_chain] = {
+                            # SR-04: the provider event this candidate actually represents.
+                            "event_at": _event_at.at,
                             "symbol": symbol,
                             "option_chain": row.option_chain,
                             "option_type": row.option_type,
@@ -5727,27 +5789,65 @@ def check_options_flow_alerts() -> None:
                     key=lambda c: candidates[c].get("total_premium") or 0.0,
                     reverse=True,
                 )
+                # SR-03 (2026-10-02): A CANDIDATE THAT WAS NEVER SENT USED TO BE MARKED SEEN.
+                #
+                # `send_ok` started True and the resync wrote `current_chains` whenever it was
+                # still True at the end. Two paths reached that line without an email:
+                #   * every candidate on cooldown — no sender call at all, yet all of them
+                #     became "seen" and stayed suppressed;
+                #   * the email cap — contracts omitted from the payload became "seen" too.
+                # Cooldowns were also CLAIMED before the cap, so an omitted contract's
+                # (symbol, direction) pair was suppressed for the whole cooldown window by an
+                # email that never carried it.
+                #
+                # The states are now distinct, and only one of them advances delivery
+                # identity: OBSERVED (a candidate this cycle) -> DEFERRED (inside an active
+                # cooldown) -> QUEUED (ranked into the payload) -> ACCEPTED (the sender
+                # returned success) or OMITTED (ranked out by the cap). Only ACCEPTED chains
+                # join the seen set; deferred and omitted work is retained and reconsidered
+                # next cycle, which is what "do not claim delivery you did not perform" means
+                # here. Cooldown is claimed AFTER a successful send, for the payload only.
                 send_ok = True
+                send_attempted = False
+                accepted_chains: set[str] = set()
                 # AUD-OPTIONSFLOW-FLOODED: a second, coarser dedup on top of the per-chain one
                 # above — a (symbol, direction) pairing that already emailed this user inside the
                 # cooldown window is skipped, regardless of whether its specific option_chain id
                 # looks "new" to the set-diff above (UW's own feed reshuffles which contract ids
                 # are currently hot far faster than a real trading decision should be re-alerted).
-                cooldown_ok_chains = []
-                # AUD-E09-COOLDOWNRELEASE: maps chain -> the cooldown key THIS attempt actually
-                # claimed via a real, successful nx=True SET (never the fail-open except branch
-                # below, which never touched Redis) — see the release step after the send call.
-                _claimed_cd_keys: dict[str, str] = {}
+                #
+                # SR-03: the pair dedup that the nx=True claim used to perform as a side effect
+                # is now done explicitly, in memory, by keeping the largest-premium contract per
+                # (symbol, direction). Doing it here rather than through a write means the
+                # cooldown key is only ever claimed for a contract actually delivered.
+                _best_per_pair: dict[tuple[str, str], str] = {}
                 for chain in newly_seen:
                     cand = candidates[chain]
-                    cd_key = f"stockai:options_flow_alert_cooldown:{uid}:{cand['symbol']}:{cand['direction']}"
+                    pair = (cand["symbol"], cand["direction"])
+                    incumbent = _best_per_pair.get(pair)
+                    if incumbent is None or ((candidates[chain].get("total_premium") or 0.0)
+                                             > (candidates[incumbent].get("total_premium") or 0.0)):
+                        _best_per_pair[pair] = chain
+                _pair_by_chain = {c: p for p, c in _best_per_pair.items()}
+
+                cooldown_ok_chains = []
+                deferred_chains = []
+                for chain in newly_seen:
+                    if chain not in _pair_by_chain:
+                        # A smaller-premium contract on a pair already represented this cycle.
+                        deferred_chains.append(chain)
+                        continue
+                    cd_key = (f"stockai:options_flow_alert_cooldown:{uid}:"
+                              f"{candidates[chain]['symbol']}:{candidates[chain]['direction']}")
                     try:
-                        if _rc.set(cd_key, "1", nx=True, ex=_OPTIONS_FLOW_ALERT_COOLDOWN_MINUTES * 60):
+                        if _rc.exists(cd_key):
+                            deferred_chains.append(chain)
+                        else:
                             cooldown_ok_chains.append(chain)
-                            _claimed_cd_keys[chain] = cd_key
                     except Exception:
                         cooldown_ok_chains.append(chain)  # fail open — a Redis hiccup must not silently drop a real alert
 
+                omitted_chains: list[str] = []
                 if cooldown_ok_chains:
                     # Largest premium first — the cap below keeps only the most genuinely
                     # "unusual" activity in the actual email; everything else still landed in
@@ -5758,8 +5858,10 @@ def check_options_flow_alerts() -> None:
                         reverse=True,
                     )
                     capped = ranked[:_OPTIONS_FLOW_ALERT_EMAIL_CAP]
-                    omitted = len(ranked) - len(capped)
+                    omitted_chains = ranked[len(capped):]
+                    omitted = len(omitted_chains)
                     payload = [candidates[chain] for chain in capped]
+                    send_attempted = True
                     try:
                         send_ok = send_options_flow_alert_email(user.email, payload, omitted_count=omitted)
                     except Exception as _send_exc:
@@ -5767,21 +5869,26 @@ def check_options_flow_alerts() -> None:
                         log.warning("options_flow_alert.recipient_send_error", user=uid, error=str(_send_exc))
                     if send_ok:
                         sent += 1
-                    elif _claimed_cd_keys:
-                        # AUD-E09-COOLDOWNRELEASE: the send failed — release every cooldown key
-                        # this attempt claimed so the NEXT cycle can retry, instead of silently
-                        # suppressing a real alert for the full cooldown window because delivery
-                        # failed (SMTP/SES error, disabled provider, etc.), not because it was
-                        # actually seen. Without this, the retry-via-seen-set logic below (which
-                        # DOES correctly exclude a failed send's chains from the resync) never
-                        # gets a chance to run — the cooldown claim above blocks the candidate
-                        # from ever reaching `newly_seen` again until its TTL expires on its own.
-                        for _cd_key in _claimed_cd_keys.values():
+                        accepted_chains = set(capped)
+                        # SR-03: claim the cooldown for what was actually DELIVERED, and only
+                        # then. The previous order claimed it before the cap, so a contract the
+                        # email never carried still suppressed its whole (symbol, direction)
+                        # pair. A claim that follows acceptance cannot suppress unsent work.
+                        for chain in capped:
+                            _cd_key = (f"stockai:options_flow_alert_cooldown:{uid}:"
+                                       f"{candidates[chain]['symbol']}:{candidates[chain]['direction']}")
                             try:
-                                _rc.delete(_cd_key)
+                                _rc.set(_cd_key, "1", nx=True,
+                                        ex=_OPTIONS_FLOW_ALERT_COOLDOWN_MINUTES * 60)
                             except Exception:
                                 pass
-                resync_set = current_chains if send_ok else (current_chains - set(newly_seen))
+
+                # SR-03: the seen set is DELIVERY identity, so it advances only for chains the
+                # sender accepted. Previously-seen chains that are still live stay suppressed;
+                # chains that have left the feed drop out (the original resync behaviour);
+                # deferred and omitted chains are retained as eligible work rather than
+                # silently consumed.
+                resync_set = (prev_seen & current_chains) | accepted_chains
                 try:
                     _rc.delete(state_key)
                     if resync_set:
@@ -5789,9 +5896,21 @@ def check_options_flow_alerts() -> None:
                     _rc.expire(state_key, 20 * 3600)
                 except Exception:
                     pass
+                if deferred_chains or omitted_chains or not send_attempted:
+                    log.info("options_flow_alert.recipient_accounting", user=uid,
+                             observed=len(current_chains), newly_seen=len(newly_seen),
+                             deferred_cooldown_or_pair=len(deferred_chains),
+                             queued=len(cooldown_ok_chains),
+                             omitted_by_cap=len(omitted_chains),
+                             accepted=len(accepted_chains),
+                             send_attempted=send_attempted, send_ok=send_ok,
+                             note="deferred and omitted work is retained, not marked delivered")
 
             _record_job_status("check_options_flow_alerts", "ok", time.monotonic() - _t0)
-            log.info("options_flow_alert.done", candidates=len(candidates), sent=sent, recipients=len(recipients))
+            log.info("options_flow_alert.done", candidates=len(candidates), sent=sent,
+                     recipients=len(recipients),
+                     quarantined_no_event_time=_flow_quarantined,
+                     superseded_by_newer_event=_flow_superseded)
     except Exception as exc:
         log.error("options_flow_alert.failed", error=str(exc), exc_info=True)
         _record_job_status("check_options_flow_alerts", "error", time.monotonic() - _t0, str(exc))
@@ -7934,7 +8053,9 @@ def check_signal_alerts() -> None:
                             sig_data, kscore=kscores.get(alert.symbol), rankings_api_ok=rankings_api_ok
                         )
                         db_sent_at = alert.last_sent_at.isoformat() if alert.last_sent_at else None
-                        _store_conviction(alert.symbol, style, all_pass, passed, failed, current, sent_at=db_sent_at)
+                        _store_conviction(alert.symbol, style, all_pass, passed, failed, current,
+                                          sent_at=db_sent_at,
+                                          signal_ts=(sig_data or {}).get("ts"))
                     continue
 
                 # Treat None→BUY as a bullish transition (stock was already at BUY
@@ -7950,7 +8071,8 @@ def check_signal_alerts() -> None:
                 if not is_bullish and not is_bearish:
                     # Neutral or unrecognised transition — just advance the stored state.
                     alert.last_signal = current
-                    _store_conviction(alert.symbol, style, False, [], [f"Signal is {current} — gate only runs on BUY transitions"], current)
+                    _store_conviction(alert.symbol, style, False, [], [f"Signal is {current} — gate only runs on BUY transitions"], current,
+                                      signal_ts=(signal_details.get(key) or {}).get("ts"))
                     continue
 
                 # Consensus gate: skip if fewer than 2 horizons agree on the new direction.
@@ -7989,7 +8111,9 @@ def check_signal_alerts() -> None:
                                 reason="conviction_layers_failed", failed=failed,
                                 regime=current_regime,
                             )
-                            _store_conviction(alert.symbol, style, False, passed, failed, current, conviction_tier=conviction_tier)
+                            _store_conviction(alert.symbol, style, False, passed, failed, current,
+                                              conviction_tier=conviction_tier,
+                                              signal_ts=(signal_details.get(key) or {}).get("ts"))
                             continue  # last_signal NOT updated — retried next run
                         conviction_passed = passed
                         near_conviction = conviction_tier == "near"
@@ -8235,7 +8359,8 @@ def check_signal_alerts() -> None:
                     if current == "BUY":
                         _incr_rolling_counter(_ALERT_FIRED_COUNTER_KEY)
                     _store_conviction(alert.symbol, style, True, conviction_passed or [], [], current,
-                                      sent_at=now_utc.isoformat(), conviction_tier=conviction_tier or "full")
+                                      sent_at=now_utc.isoformat(), conviction_tier=conviction_tier or "full",
+                                      signal_ts=(signal_details.get(key) or {}).get("ts"))
                     # T230-ALERTING-SLACK-DISCORD-FIX: also deliver via webhook if user has one
                     # configured. Previously used getattr(..., None) because
                     # User.notification_webhook didn't actually exist on the model — this

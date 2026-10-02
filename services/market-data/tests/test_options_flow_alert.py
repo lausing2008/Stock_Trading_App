@@ -318,27 +318,59 @@ def test_cooldown_is_per_recipient_per_symbol_per_direction_not_just_per_contrac
     body = _func_body("check_options_flow_alerts")
     assert "stockai:options_flow_alert_cooldown:" in body
     idx = body.index("stockai:options_flow_alert_cooldown:")
-    key_line = body[idx:idx + 120]
+    key_line = body[idx:idx + 160]
     assert "{uid}" in key_line
-    assert "cand['symbol']" in key_line or 'cand["symbol"]' in key_line
-    assert "cand['direction']" in key_line or 'cand["direction"]' in key_line
+    # SR-03 (2026-10-02): the key is now built from `candidates[chain]` rather than a `cand`
+    # local, because the cooldown filter runs before the per-candidate loop that bound `cand`.
+    # The KEY SHAPE — (uid, symbol, direction) — is what this test is about and is unchanged.
+    assert "['symbol']" in key_line and "['direction']" in key_line
 
 
 def test_cooldown_uses_the_real_named_minutes_constant_and_set_nx():
+    """SR-03 moved WHEN the claim happens, not WHETHER it is atomic.
+
+    The claim used to precede the email cap, so a contract the email never carried still
+    suppressed its whole (symbol, direction) pair for the cooldown window. It now follows a
+    successful send and covers only the delivered payload. The set is still `nx=True` with the
+    same named TTL — two concurrent runs still cannot both send."""
+    import ast as _ast
     body = _func_body("check_options_flow_alerts")
-    assert "_OPTIONS_FLOW_ALERT_COOLDOWN_MINUTES" in body
-    idx = body.index("_rc.set(cd_key")
-    assert "nx=True" in body[idx:idx + 120]
+    idx = body.index('_rc.set(_cd_key, "1", nx=True,')
+    assert idx > body.index("send_ok = send_options_flow_alert_email("), \
+        "a claim made before the send can suppress contracts that were never sent"
+
+    # T401: the TTL is asserted as a NUMBER parsed from the call, not as the text
+    # "ex=_OPTIONS_FLOW_ALERT_COOLDOWN_MINUTES * 60" — a source-text match survives the
+    # expression being changed to `* 60 - 3599`, which is the whole reason the ratchet exists.
+    tree = _ast.parse(_scheduler_source)
+    call = next(n for n in _ast.walk(tree)
+                if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Attribute)
+                and n.func.attr == "set"
+                and any(k.arg == "nx" for k in n.keywords)
+                and any(k.arg == "ex" for k in n.keywords)
+                and "_cd_key" in _ast.dump(n))
+    ex = next(k.value for k in call.keywords if k.arg == "ex")
+    assert isinstance(ex, _ast.BinOp) and isinstance(ex.op, _ast.Mult)
+    assert isinstance(ex.left, _ast.Name) \
+        and ex.left.id == "_OPTIONS_FLOW_ALERT_COOLDOWN_MINUTES", \
+        "the TTL must come from the named constant, not a literal"
+    assert _ast.literal_eval(ex.right) == 60, "minutes must be converted to seconds"
+    minutes = next(m for m in _ast.walk(tree)
+                   if isinstance(m, _ast.Assign)
+                   and any(isinstance(t, _ast.Name)
+                           and t.id == "_OPTIONS_FLOW_ALERT_COOLDOWN_MINUTES"
+                           for t in m.targets))
+    assert _ast.literal_eval(minutes.value) > 0, "the cooldown must be a real window"
 
 
 def test_cooldown_fails_open_on_a_redis_exception_never_silently_drops_a_real_alert():
     """A Redis hiccup on the cooldown check must never silently SUPPRESS a real, otherwise-
     qualifying alert — the except branch must still append the chain, not swallow it."""
     body = _func_body("check_options_flow_alerts")
-    idx = body.index("for chain in newly_seen:")
-    cooldown_block = body[idx:idx + 700]
+    idx = body.index("deferred_chains = []")
+    cooldown_block = body[idx:body.index("omitted_chains: list[str] = []", idx)]
     except_idx = cooldown_block.index("except Exception:")
-    assert "cooldown_ok_chains.append(chain)" in cooldown_block[except_idx:except_idx + 80]
+    assert "cooldown_ok_chains.append(chain)" in cooldown_block[except_idx:except_idx + 120]
 
 
 def test_email_payload_is_ranked_by_premium_size_descending_and_capped():
@@ -357,7 +389,11 @@ def test_omitted_count_is_threaded_into_the_email_call():
     tells the email how many additional real, already-recorded candidates didn't make the cut,
     never a claim that they were dropped from anywhere but this one email."""
     body = _func_body("check_options_flow_alerts")
-    assert "omitted = len(ranked) - len(capped)" in body
+    # SR-03: the omitted contracts are now a LIST, not just a count — they stay eligible for
+    # the next cycle instead of being marked seen. The count passed to the email is derived
+    # from it, so the email's claim is unchanged.
+    assert "omitted_chains = ranked[len(capped):]" in body
+    assert "omitted = len(omitted_chains)" in body
     idx = body.index("send_options_flow_alert_email(user.email, payload")
     assert "omitted_count=omitted" in body[idx:idx + 80]
 

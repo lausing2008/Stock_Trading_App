@@ -46,6 +46,14 @@ return 0
 """
 
 
+# SR-08: a story first seen more than this many hours after publication is DELAYED
+# DISCLOSURE, not a fresh catalyst. Set to the hot-news flag's own TTL window: inside it, the
+# market reaction is still plausibly unfolding; beyond it, the information has been public
+# longer than the flag would have survived, so treating it as just-released is a claim about
+# timing the arrival time does not support.
+_DELAYED_DISCLOSURE_HOURS = 2.0
+
+
 def _mark_hot(symbol: str, headline: str, sentiment_label: str | None,
               published_at=None) -> None:
     """Set (or refresh) the hot-news flag for a symbol.
@@ -82,6 +90,26 @@ def _mark_hot(symbol: str, headline: str, sentiment_label: str | None,
         except Exception:
             pub_iso = None
 
+    # SR-08 (2026-10-02): DELAYED ARRIVAL USED TO RESET PERCEIVED ECONOMIC AGE.
+    # The flag's `ts` is ingestion time and signal-engine's decay reads `ts`, so a story
+    # PUBLISHED on September 1 and first ingested on October 1 received an October 1 stamp and
+    # the full first-hour compression — a month-old fact treated as a just-released catalyst.
+    # Publication time was already stored (R05) but nothing consumed it for age.
+    #
+    # The two clocks are now stated separately AND the writer classifies the gap, so the
+    # consumer does not have to re-derive it from two fields it might read inconsistently.
+    # Delayed material information is not discarded — newly-disclosed risk is still risk —
+    # but it is labelled as delayed evidence rather than a fresh reaction.
+    _pub_age_h = None
+    if published_at is not None:
+        try:
+            _pub_dt = published_at if hasattr(published_at, "tzinfo") else datetime.fromisoformat(str(published_at))
+            if _pub_dt.tzinfo is None:
+                _pub_dt = _pub_dt.replace(tzinfo=timezone.utc)
+            _pub_age_h = (datetime.now(timezone.utc) - _pub_dt).total_seconds() / 3600.0
+        except Exception:
+            _pub_age_h = None
+
     payload = json.dumps({
         "headline": headline,
         "sentiment_label": incoming,
@@ -91,6 +119,14 @@ def _mark_hot(symbol: str, headline: str, sentiment_label: str | None,
         # R05: when the story was PUBLISHED, so a later comparison is like-for-like.
         "published_at": pub_iso,
         "ingested_at": now_iso,
+        # SR-08: how old the INFORMATION was when this platform first saw it. None means the
+        # source gave no publication time — unknown, which is not the same as zero.
+        "publication_age_hours_at_ingest": (
+            round(_pub_age_h, 3) if _pub_age_h is not None else None),
+        # SR-08: the explicit classification. A reader must not have to infer "is this a fresh
+        # catalyst or an old fact we just learned" from arithmetic it might get wrong.
+        "delayed_disclosure": (
+            None if _pub_age_h is None else bool(_pub_age_h > _DELAYED_DISCLOSURE_HOURS)),
     })
 
     try:

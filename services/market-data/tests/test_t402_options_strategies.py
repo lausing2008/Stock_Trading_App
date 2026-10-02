@@ -23,6 +23,18 @@ def _chain(strikes, bid, ask):
             for k in strikes]
 
 
+def _matched_matrix(**over):
+    """SR-07 (2026-10-02): a collar's bounds exist only when both legs share an expiry.
+
+    The default fixture below mirrors production's real selection windows — protective puts at
+    25-60 DTE, calls at 14-45 DTE — so its two legs expire on DIFFERENT dates, which is
+    precisely the case SR-07 found being reported with a single-expiry payoff. The collar is
+    now withheld there, so the collar's own arithmetic is asserted against a MATCHED pair,
+    which is the only configuration in which that arithmetic describes the position."""
+    over.setdefault("put_expiry", CALL_EXP)
+    return _matrix(**over)
+
+
 def _matrix(**over):
     calls = _chain([100, 105, 110, 115, 120], lambda k: max(0.5, 12 - (k - 100) * 0.9),
                    lambda k: max(0.7, 12.4 - (k - 100) * 0.9))
@@ -49,9 +61,21 @@ def test_all_four_single_legs_are_built():
 
 def test_combos_are_built_from_the_same_chains():
     c = _matrix()["combos"]
-    assert {"collar", "bull_call_spread", "bear_put_spread"} <= set(c)
-    assert len(c["collar"]["legs"]) == 2
-    assert {l["action"] for l in c["collar"]["legs"]} == {"buy", "sell"}
+    assert {"bull_call_spread", "bear_put_spread"} <= set(c)
+    # SR-07: the default fixture's legs expire on different dates, so the collar is withheld
+    # with a reason rather than offered with bounds that do not describe it.
+    assert "collar" not in c
+    matched = _matched_matrix()["combos"]
+    assert "collar" in matched
+    assert len(matched["collar"]["legs"]) == 2
+    assert {l["action"] for l in matched["collar"]["legs"]} == {"buy", "sell"}
+
+
+def test_a_staggered_collar_is_withheld_with_a_stated_reason():
+    """SR-07's witness, in this module's own fixture: the put and call expiries differ."""
+    m = _matrix()
+    assert "collar" in m["unavailable"]
+    assert m["unavailable"]["collar"]["put_expiry"] != m["unavailable"]["collar"]["call_expiry"]
 
 
 # ── payoff arithmetic ───────────────────────────────────────────────────────────────────
@@ -109,7 +133,7 @@ def test_spread_is_cheaper_than_the_outright_call_it_is_built_from():
 
 
 def test_collar_net_is_put_cost_minus_call_credit():
-    col = _matrix()["combos"]["collar"]
+    col = _matched_matrix()["combos"]["collar"]
     put_leg = next(l for l in col["legs"] if l["action"] == "buy")
     call_leg = next(l for l in col["legs"] if l["action"] == "sell")
     assert col["net_per_share"] == pytest.approx(
@@ -120,7 +144,7 @@ def test_collar_net_is_put_cost_minus_call_credit():
 
 def test_collar_costs_less_than_the_bare_protective_put():
     """The entire point of a collar: the short call funds the put."""
-    m = _matrix()
+    m = _matched_matrix()
     assert m["combos"]["collar"]["net_per_contract"] < m["singles"]["protective_put"]["net_per_contract"]
 
 

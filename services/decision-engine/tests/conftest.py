@@ -69,3 +69,20 @@ if _calendar_path.exists():
     _cal_spec.loader.exec_module(_calendar_mod)
     sys.modules["common.market_calendar"] = _calendar_mod
     setattr(sys.modules["common"], "market_calendar", _calendar_mod)
+
+# SR-01/SR-02: `common.signal_time` and `common.conviction_gate` must be REAL here for exactly
+# the reason market_calendar above must be. Both are pure decision logic over values, and under
+# the blanket "common" MagicMock every call returns a truthy Mock — so a test asserting that an
+# unreadable timestamp BLOCKS would pass against a module that approved it, and one asserting
+# that a stale conviction record no longer vetoes would pass against one that still did. Pure
+# stdlib, nothing to stub. Order matters: conviction_gate imports signal_time.
+for _sr_mod in ("signal_time", "conviction_gate"):
+    _sr_path = (
+        _pathlib.Path(__file__).resolve().parents[3] / "shared" / "common" / f"{_sr_mod}.py"
+    )
+    if _sr_path.exists():
+        _sr_spec = _ilu.spec_from_file_location(f"common.{_sr_mod}", _sr_path)
+        _sr_module = _ilu.module_from_spec(_sr_spec)
+        sys.modules[f"common.{_sr_mod}"] = _sr_module
+        _sr_spec.loader.exec_module(_sr_module)
+        setattr(sys.modules["common"], _sr_mod, _sr_module)

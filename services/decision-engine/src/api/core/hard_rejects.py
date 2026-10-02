@@ -1,7 +1,6 @@
 """Hard-reject checks — fire before scoring and return BLOCKED immediately."""
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 
 # AUD-ENTRY4-CHASEPARITY: 10-day rate-of-change ceiling for a BUY entry. MUST stay equal to
@@ -30,7 +29,9 @@ _MAX_ROC10_FOR_ENTRY = 10.0
 #
 # Its dates were verified identical to the shared module's before replacement, so this is a
 # pure de-duplication with no behaviour change today — it only removes the next divergence.
-from common.market_calendar import NYSE_HOLIDAYS as _NYSE_HOLIDAYS
+from common.market_calendar import is_trading_day as _is_trading_day
+from common.conviction_gate import evaluate_conviction_record
+from common.signal_time import parse_signal_instant
 
 
 # AUD-RR-REGIMEFLOOR-UNREACHABLE: the highest R:R THIS candidate can possibly produce.
@@ -221,8 +222,16 @@ def check_hard_rejects(
         _wd = _local.weekday()  # 0=Mon … 4=Fri, 5=Sat, 6=Sun
         if _wd >= 5:
             return f"Market closed: weekend ({_local.strftime('%A %H:%M')} local)"
-        if market.upper() != "HK" and _local.date() in _NYSE_HOLIDAYS:
-            return f"Market closed: NYSE holiday ({_local.strftime('%Y-%m-%d')})"
+        # SR-05 (2026-10-02): THE HOLIDAY CHECK SKIPPED HK ENTIRELY.
+        # `market.upper() != "HK"` meant an HK request was tested for weekday and session
+        # times only, so an otherwise eligible HK entry passed this gate at 11:00 HKT on
+        # 2026-10-01 — an HKEX securities holiday. The shared calendar already carries
+        # HK_HOLIDAYS and `_bar_is_incomplete` and the paper scheduler already use it; this
+        # consumer simply did not. Dispatching on the actual venue means every caller now
+        # answers "is this market open" the same way.
+        if not _is_trading_day(market, _local):
+            _mkt_label = "HKEX" if market.upper() == "HK" else "NYSE"
+            return f"Market closed: {_mkt_label} holiday ({_local.strftime('%Y-%m-%d')})"
         _mins = _local.hour * 60 + _local.minute
         if market.upper() == "HK":
             # HK: morning 9:30–12:00, afternoon 13:00–16:00
@@ -403,18 +412,38 @@ def check_hard_rejects(
     # earlier, HARD cutoff in the pipeline that decision-engine had no equivalent of at all,
     # making /decide/{symbol} silently accept an arbitrarily-stale signal that
     # paper_trading_engine would have filtered out entirely before ever reaching a scorer.
-    if sig_ts is not None:
-        try:
-            if isinstance(sig_ts, str):
-                _ts_aware = datetime.fromisoformat(sig_ts.replace("Z", "+00:00"))
-            else:
-                _ts_aware = sig_ts.replace(tzinfo=timezone.utc) if sig_ts.tzinfo is None else sig_ts
-            _sig_age_h = (datetime.now(timezone.utc) - _ts_aware).total_seconds() / 3600
-            _max_age_h = float(cfg.get("max_signal_age_hours", 72))
-            if _sig_age_h > _max_age_h:
-                return f"Signal is {_sig_age_h:.1f}h old, exceeds max age {_max_age_h:.0f}h — stale, discard thesis"
-        except Exception:
-            pass  # malformed ts → fail-open, matching every other gate in this function
+    #
+    # SR-02 (2026-10-02): THIS GATE USED TO ENFORCE ITSELF OR NOT DEPENDING ON STRING FORMAT.
+    # The old body normalised naive `datetime` OBJECTS to UTC but not naive ISO STRINGS;
+    # `fromisoformat("2026-09-20T15:00:00")` yields a naive value, subtracting it from an
+    # aware `now` raises TypeError, and the blanket `except Exception: pass` below then
+    # skipped the check entirely. The identical instant written with `+00:00` was correctly
+    # rejected as 264h old. `row.ts.isoformat()` over this platform's naive UTC columns
+    # produces exactly the bypassing form, so the gate was off for the common case.
+    #
+    # Parsing now happens once, in `common.signal_time`, shared with the route that displays
+    # the age — the displayed and enforced ages can no longer disagree. And unusable evidence
+    # is no longer approval: `absent` means the optional parameter was not supplied (gate not
+    # applicable, unchanged), while `invalid`/`future` mean freshness evidence WAS supplied
+    # and cannot be read, which blocks. Entry is a risk-INCREASING action; the house rule for
+    # those is that unknown blocks.
+    # The clock is passed explicitly rather than left to the shared module's own
+    # `datetime.now`: this function's tests freeze time by patching THIS module's `datetime`,
+    # and a time source reached through an import they do not patch is a time source they
+    # cannot control. Explicit beats ambient here for the same reason it does in the ledger.
+    _now_utc = datetime.now(timezone.utc)
+    _sig_instant = parse_signal_instant(sig_ts, now=_now_utc)
+    if _sig_instant.evidence_supplied:
+        _max_age_h = float(cfg.get("max_signal_age_hours", 72))
+        if _sig_instant.state == "invalid":
+            return (f"Signal timestamp could not be read ({_sig_instant.detail}) — freshness "
+                    f"cannot be established, so the entry is not approved")
+        if _sig_instant.state == "future":
+            return (f"Signal timestamp is in the future ({_sig_instant.detail}) — a clock or "
+                    f"data defect, not a fresh signal")
+        _sig_age_h = _sig_instant.age_hours(_now_utc)
+        if _sig_age_h is not None and _sig_age_h > _max_age_h:
+            return f"Signal is {_sig_age_h:.1f}h old, exceeds max age {_max_age_h:.0f}h — stale, discard thesis"
 
     # T232-DL-DUALSCORER-DEBT: K-Score floor HARD REJECT, ported from
     # paper_trading_engine.py's _scan_for_entries() (min_kscore, per-style default 48-52).
@@ -818,20 +847,36 @@ def check_hard_rejects(
     # and shares the same redis_url as every other service) rather than requiring the caller
     # to pre-compute and forward this — the whole point is that /decide/{symbol} must be
     # self-sufficient for callers other than paper_trading_engine (e.g. decide.tsx).
+    #
+    # SR-01 (2026-10-02): THIS READER DID NOT BIND THE RECORD TO THE SIGNAL.
+    # `paper_trading_engine` was fixed (AUD-CONVGATE-IDENTITY) to ignore a record that
+    # predates the signal under consideration and to prefer the explicit `gate_passed` field.
+    # This function — the AUTHORITATIVE gate, called by paper trading immediately afterwards —
+    # still read `signal == "BUY" and sent is False` with no identity check, so the local fix
+    # bought nothing end to end: a September 30 failed record still vetoed an October 1 signal
+    # here, reporting "old signal failed".
+    #
+    # Both consumers now call ONE contract, `common.conviction_gate`, which prefers the
+    # signal identity the producer stamps and falls back to the timestamp floor only for
+    # records written before that field existed. `no_information` falls through to the
+    # remaining gates — it is neither permission nor a veto, and collapsing it into either is
+    # how the original defect worked.
     if symbol and style:
         try:
             from common.redis_client import get_redis as _get_pool_redis
             _gate_redis = _get_pool_redis()
             _cgval = _gate_redis.get(f"conv_gate:{symbol}:{style}")
-            if _cgval:
-                _cgdata = json.loads(_cgval)
-                if _cgdata.get("signal") == "BUY" and _cgdata.get("sent") is False:
-                    _failed_layers = _cgdata.get("failed", [])
-                    return (
-                        f"Conviction gate failed: {', '.join(_failed_layers[:2]) or 'multiple layers'} "
-                        f"— alert system would not have notified on this BUY"
-                    )
+            _verdict = evaluate_conviction_record(
+                _cgval,
+                signal_ts=_sig_instant.at if _sig_instant.usable else sig_ts,
+                signal_id=(reasons or {}).get("signal_id"),
+            )
+            if _verdict.is_block:
+                return (
+                    f"Conviction gate failed: {_verdict.reason} "
+                    f"— alert system would not have notified on this BUY"
+                )
         except Exception:
-            pass  # Redis unavailable or parse error → allow entry (fail-open)
+            pass  # Redis unavailable → allow entry (fail-open on INFRASTRUCTURE, not on evidence)
 
     return None

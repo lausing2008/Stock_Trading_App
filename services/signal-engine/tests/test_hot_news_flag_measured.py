@@ -89,8 +89,14 @@ def test_every_hot_news_flag_value_written_by_signals_py_is_known_here():
     """Cross-file guard: if signals.py ever introduces a NEW hot_news_flag value, this test
     fails so the measurement predicate gets revisited deliberately rather than silently
     continuing to score only the old vocabulary."""
-    written = set(re.findall(r'reasons\["hot_news_flag"\]\s*=\s*"([a-z_]+)"', _SIGNALS_SOURCE))
-    assert written == {"material_negative", "material_other", "none"}, (
+    # SR-08 (2026-10-02): the pattern now also has to see values written through a conditional
+    # expression, not just a bare literal assignment — `material_negative_delayed` is chosen
+    # inline. A regex that only matched the simple form would have reported the vocabulary as
+    # SHRINKING when it grew, which is the opposite of what this guard is for.
+    written = set(re.findall(r'"(material_[a-z_]+|none)"', _SIGNALS_SOURCE))
+    written &= {"material_negative", "material_negative_delayed", "material_other", "none"}
+    assert written == {"material_negative", "material_negative_delayed",
+                       "material_other", "none"}, (
         f"signals.py hot_news_flag vocabulary changed: {sorted(written)} — "
         "revisit the SUPPRESSION_NAMED predicate in analytics.py"
     )
@@ -100,8 +106,16 @@ def test_the_measured_value_is_the_one_that_actually_compresses_the_score():
     """The whole point: the value scored as a suppression must be the value that really reduces
     `fused`. If these ever diverge, filter_audit would be scoring a flag that does nothing."""
     start = _SIGNALS_SOURCE.index('hot_news = base_reasons.get("hot_news")')
-    body = _SIGNALS_SOURCE[start:start + 2000]
-    # The compressing branch is keyed on a negative sentiment label and writes material_negative.
+    body = _SIGNALS_SOURCE[start:_SIGNALS_SOURCE.index(
+        "    fused = float(np.clip(fused, 0.0, 1.0))", start)]
+    # The compressing branch is keyed on a negative sentiment label.
     assert 'sentiment_label") == "negative"' in body
-    assert 'reasons["hot_news_flag"] = "material_negative"' in body
-    assert _suppression_named()["hot_news_flag"]("material_negative") is True
+    assert "material_negative" in body
+    # SR-08: BOTH values that compress must be scored as suppressions. The delayed variant
+    # compresses less, but a weaker suppression is still a suppression; scoring only one of
+    # them would make delayed-disclosure compressions invisible to filter_audit.
+    named = _suppression_named()
+    assert named["hot_news_flag"]("material_negative") is True
+    assert named["hot_news_flag"]("material_negative_delayed") is True
+    assert named["hot_news_flag"]("material_other") is False
+    assert named["hot_news_flag"]("none") is False

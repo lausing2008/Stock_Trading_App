@@ -1,0 +1,626 @@
+{
+  "portfolios": [
+    {
+      "id": 1,
+      "name": "GROWTH Paper Portfolio",
+      "is_active": true,
+      "market": "US",
+      "style": "GROWTH",
+      "enabled": "true",
+      "paused": "false"
+    },
+    {
+      "id": 2,
+      "name": "HK SWING Portfolio",
+      "is_active": true,
+      "market": "HK",
+      "style": "SWING",
+      "enabled": "true",
+      "paused": null
+    },
+    {
+      "id": 3,
+      "name": "US SWING Portfolio",
+      "is_active": true,
+      "market": "US",
+      "style": "SWING",
+      "enabled": "true",
+      "paused": null
+    },
+    {
+      "id": 4,
+      "name": "HK GROWTH Portfolio",
+      "is_active": true,
+      "market": "HK",
+      "style": "GROWTH",
+      "enabled": "true",
+      "paused": null
+    },
+    {
+      "id": 5,
+      "name": "ETrade Sandbox SWING",
+      "is_active": true,
+      "market": "US",
+      "style": "SWING",
+      "enabled": "true",
+      "paused": null
+    },
+    {
+      "id": 6,
+      "name": "US SWING After 09082026",
+      "is_active": true,
+      "market": "US",
+      "style": "SWING",
+      "enabled": "true",
+      "paused": null
+    },
+    {
+      "id": 7,
+      "name": "US GROWTH after 09082026",
+      "is_active": true,
+      "market": "US",
+      "style": "GROWTH",
+      "enabled": "true",
+      "paused": null
+    },
+    {
+      "id": 8,
+      "name": "US LONG after 09082026",
+      "is_active": true,
+      "market": "US",
+      "style": "LONG",
+      "enabled": "true",
+      "paused": null
+    },
+    {
+      "id": 9,
+      "name": "HK SWING after 09082026",
+      "is_active": true,
+      "market": "HK",
+      "style": "SWING",
+      "enabled": "true",
+      "paused": null
+    },
+    {
+      "id": 10,
+      "name": "HK GROWTH after 09082026",
+      "is_active": true,
+      "market": "HK",
+      "style": "GROWTH",
+      "enabled": "true",
+      "paused": null
+    },
+    {
+      "id": 891,
+      "name": "US SWING Wide-Stop A/B (T398)",
+      "is_active": true,
+      "market": "US",
+      "style": "SWING",
+      "enabled": "true",
+      "paused": null
+    }
+  ],
+  "signal_supply": [
+    {
+      "market": "US",
+      "horizon": "SHORT",
+      "signal": "BUY",
+      "n": 67,
+      "newest": "2026-10-01 21:08:41.973314"
+    },
+    {
+      "market": "US",
+      "horizon": "SHORT",
+      "signal": "SELL",
+      "n": 36,
+      "newest": "2026-10-01 20:37:01.601145"
+    },
+    {
+      "market": "US",
+      "horizon": "SHORT",
+      "signal": "HOLD",
+      "n": 155,
+      "newest": "2026-10-01 21:08:36.477451"
+    },
+    {
+      "market": "US",
+      "horizon": "SHORT",
+      "signal": "WAIT",
+      "n": 160,
+      "newest": "2026-10-01 20:37:52.250225"
+    },
+    {
+      "market": "US",
+      "horizon": "SWING",
+      "signal": "BUY",
+      "n": 9,
+      "newest": "2026-10-01 21:08:36.477451"
+    },
+    {
+      "market": "US",
+      "horizon": "SWING",
+      "signal": "SELL",
+      "n": 56,
+      "newest": "2026-10-01 20:37:52.250225"
+    },
+    {
+      "market": "US",
+      "horizon": "SWING",
+      "signal": "HOLD",
+      "n": 166,
+      "newest": "2026-10-01 21:08:41.973314"
+    },
+    {
+      "market": "US",
+      "horizon": "SWING",
+      "signal": "WAIT",
+      "n": 187,
+      "newest": "2026-10-01 20:37:50.384902"
+    },
+    {
+      "market": "US",
+      "horizon": "LONG",
+      "signal": "BUY",
+      "n": 84,
+      "newest": "2026-10-01 21:08:41.973314"
+    },
+    {
+      "market": "US",
+      "horizon": "LONG",
+      "signal": "SELL",
+      "n": 58,
+      "newest": "2026-10-01 20:37:52.250225"
+    },
+    {
+      "market": "US",
+      "horizon": "LONG",
+      "signal": "HOLD",
+      "n": 153,
+      "newest": "2026-10-01 20:37:50.384902"
+    },
+    {
+      "market": "US",
+      "horizon": "LONG",
+      "signal": "WAIT",
+      "n": 123,
+      "newest": "2026-10-01 20:37:42.768940"
+    },
+    {
+      "market": "US",
+      "horizon": "GROWTH",
+      "signal": "BUY",
+      "n": 39,
+      "newest": "2026-10-01 21:08:41.973314"
+    },
+    {
+      "market": "US",
+      "horizon": "GROWTH",
+      "signal": "SELL",
+      "n": 17,
+      "newest": "2026-10-01 20:36:20.372712"
+    },
+    {
+      "market": "US",
+      "horizon": "GROWTH",
+      "signal": "HOLD",
+      "n": 202,
+      "newest": "2026-10-01 20:37:50.384902"
+    },
+    {
+      "market": "US",
+      "horizon": "GROWTH",
+      "signal": "WAIT",
+      "n": 160,
+      "newest": "2026-10-01 20:37:52.250225"
+    },
+    {
+      "market": "HK",
+      "horizon": "SHORT",
+      "signal": "BUY",
+      "n": 13,
+      "newest": "2026-10-02 07:01:59.995489"
+    },
+    {
+      "market": "HK",
+      "horizon": "SHORT",
+      "signal": "HOLD",
+      "n": 34,
+      "newest": "2026-10-02 07:02:11.089125"
+    },
+    {
+      "market": "HK",
+      "horizon": "SHORT",
+      "signal": "WAIT",
+      "n": 79,
+      "newest": "2026-10-02 07:02:38.767971"
+    },
+    {
+      "market": "HK",
+      "horizon": "SWING",
+      "signal": "SELL",
+      "n": 26,
+      "newest": "2026-10-02 07:02:11.619621"
+    },
+    {
+      "market": "HK",
+      "horizon": "SWING",
+      "signal": "HOLD",
+      "n": 20,
+      "newest": "2026-10-02 07:01:59.995489"
+    },
+    {
+      "market": "HK",
+      "horizon": "SWING",
+      "signal": "WAIT",
+      "n": 80,
+      "newest": "2026-10-02 07:02:38.767971"
+    },
+    {
+      "market": "HK",
+      "horizon": "LONG",
+      "signal": "BUY",
+      "n": 14,
+      "newest": "2026-10-02 07:01:59.995489"
+    },
+    {
+      "market": "HK",
+      "horizon": "LONG",
+      "signal": "SELL",
+      "n": 30,
+      "newest": "2026-10-02 07:02:11.619621"
+    },
+    {
+      "market": "HK",
+      "horizon": "LONG",
+      "signal": "HOLD",
+      "n": 22,
+      "newest": "2026-10-02 07:01:49.311936"
+    },
+    {
+      "market": "HK",
+      "horizon": "LONG",
+      "signal": "WAIT",
+      "n": 60,
+      "newest": "2026-10-02 07:02:38.767971"
+    },
+    {
+      "market": "HK",
+      "horizon": "GROWTH",
+      "signal": "BUY",
+      "n": 4,
+      "newest": "2026-09-30 08:38:46.127374"
+    },
+    {
+      "market": "HK",
+      "horizon": "GROWTH",
+      "signal": "SELL",
+      "n": 9,
+      "newest": "2026-10-02 07:02:11.619621"
+    },
+    {
+      "market": "HK",
+      "horizon": "GROWTH",
+      "signal": "HOLD",
+      "n": 38,
+      "newest": "2026-10-02 07:01:59.995489"
+    },
+    {
+      "market": "HK",
+      "horizon": "GROWTH",
+      "signal": "WAIT",
+      "n": 75,
+      "newest": "2026-10-02 07:02:38.767971"
+    }
+  ],
+  "hk_universe": [
+    {
+      "live_hk_stocks": 46,
+      "all_hk_stocks": 46
+    }
+  ],
+  "hk_buy_signals": [
+    {
+      "horizon": "SHORT",
+      "buys": 13,
+      "symbols": 7,
+      "newest": "2026-10-02 07:01:59.995489"
+    },
+    {
+      "horizon": "LONG",
+      "buys": 14,
+      "symbols": 6,
+      "newest": "2026-10-02 07:01:59.995489"
+    },
+    {
+      "horizon": "GROWTH",
+      "buys": 4,
+      "symbols": 2,
+      "newest": "2026-09-30 08:38:46.127374"
+    }
+  ],
+  "scan_log_latest": [
+    {
+      "portfolio_id": 1,
+      "scanned_at": "2026-10-01 19:56:19.379394",
+      "portfolio_gate": "entry_throttle",
+      "portfolio_gate_reason": "Entry throttle \u2014 choppy regime limits 1 entry/day; already entered today",
+      "candidates_seen": null,
+      "skip_tally": null
+    },
+    {
+      "portfolio_id": 2,
+      "scanned_at": "2026-10-02 07:00:41.442353",
+      "portfolio_gate": "consecutive_losses",
+      "portfolio_gate_reason": "4 consecutive losses \u2014 recovery entry already used; no new entries until a winning trade",
+      "candidates_seen": null,
+      "skip_tally": null
+    },
+    {
+      "portfolio_id": 3,
+      "scanned_at": "2026-10-01 19:56:20.112278",
+      "portfolio_gate": null,
+      "portfolio_gate_reason": null,
+      "candidates_seen": 4,
+      "skip_tally": {
+        "not_on_watchlist": 2,
+        "conviction_gate": 1,
+        "kscore": 1
+      }
+    },
+    {
+      "portfolio_id": 4,
+      "scanned_at": "2026-10-02 07:00:40.778869",
+      "portfolio_gate": "index_trend",
+      "portfolio_gate_reason": "^HSI down 2.7% today \u2014 no new entries on bad index days",
+      "candidates_seen": null,
+      "skip_tally": null
+    },
+    {
+      "portfolio_id": 5,
+      "scanned_at": "2026-10-01 19:56:19.746931",
+      "portfolio_gate": "consecutive_losses",
+      "portfolio_gate_reason": "10 consecutive losses \u2014 recovery entry already used; no new entries until a winning trade",
+      "candidates_seen": null,
+      "skip_tally": null
+    },
+    {
+      "portfolio_id": 6,
+      "scanned_at": "2026-10-01 19:56:21.282554",
+      "portfolio_gate": null,
+      "portfolio_gate_reason": null,
+      "candidates_seen": 4,
+      "skip_tally": {
+        "not_on_watchlist": 2,
+        "conviction_gate": 1,
+        "kscore": 1
+      }
+    },
+    {
+      "portfolio_id": 7,
+      "scanned_at": "2026-10-01 19:56:24.385777",
+      "portfolio_gate": null,
+      "portfolio_gate_reason": null,
+      "candidates_seen": 11,
+      "skip_tally": {
+        "not_on_watchlist": 4,
+        "already_open_scale_in_only": 3,
+        "conviction_gate_stale_ignored": 1,
+        "entry_score_below_threshold": 1,
+        "price_drift": 1,
+        "conviction_gate": 1,
+        "kscore": 1
+      }
+    },
+    {
+      "portfolio_id": 8,
+      "scanned_at": "2026-10-01 19:56:34.505445",
+      "portfolio_gate": "entry_throttle",
+      "portfolio_gate_reason": "Entry throttle \u2014 choppy regime limits 1 entry/day; already entered today",
+      "candidates_seen": null,
+      "skip_tally": null
+    },
+    {
+      "portfolio_id": 9,
+      "scanned_at": "2026-10-02 07:00:41.045878",
+      "portfolio_gate": "index_trend",
+      "portfolio_gate_reason": "^HSI down 2.7% today \u2014 no new entries on bad index days",
+      "candidates_seen": null,
+      "skip_tally": null
+    },
+    {
+      "portfolio_id": 10,
+      "scanned_at": "2026-10-02 07:00:41.260955",
+      "portfolio_gate": "index_trend",
+      "portfolio_gate_reason": "^HSI down 2.7% today \u2014 no new entries on bad index days",
+      "candidates_seen": null,
+      "skip_tally": null
+    },
+    {
+      "portfolio_id": 891,
+      "scanned_at": "2026-10-01 19:56:18.413959",
+      "portfolio_gate": null,
+      "portfolio_gate_reason": null,
+      "candidates_seen": 4,
+      "skip_tally": {
+        "not_on_watchlist": 2,
+        "conviction_gate": 1,
+        "kscore": 1
+      }
+    }
+  ],
+  "scan_log_window": [
+    {
+      "portfolio_id": 1,
+      "scans": 634,
+      "blocked_scans": 77,
+      "zero_candidate_scans": 0,
+      "scans_with_candidates": 557,
+      "oldest": "2026-09-25 13:30:20.762341",
+      "newest": "2026-10-01 19:56:19.379394"
+    },
+    {
+      "portfolio_id": 2,
+      "scans": 482,
+      "blocked_scans": 481,
+      "zero_candidate_scans": 1,
+      "scans_with_candidates": 0,
+      "oldest": "2026-09-25 07:05:13.113232",
+      "newest": "2026-10-02 07:00:41.442353"
+    },
+    {
+      "portfolio_id": 3,
+      "scans": 636,
+      "blocked_scans": 0,
+      "zero_candidate_scans": 24,
+      "scans_with_candidates": 612,
+      "oldest": "2026-09-25 13:30:28.328181",
+      "newest": "2026-10-01 19:56:20.112278"
+    },
+    {
+      "portfolio_id": 4,
+      "scans": 482,
+      "blocked_scans": 99,
+      "zero_candidate_scans": 351,
+      "scans_with_candidates": 32,
+      "oldest": "2026-09-25 07:05:12.269628",
+      "newest": "2026-10-02 07:00:40.778869"
+    },
+    {
+      "portfolio_id": 5,
+      "scans": 636,
+      "blocked_scans": 635,
+      "zero_candidate_scans": 0,
+      "scans_with_candidates": 1,
+      "oldest": "2026-09-25 13:30:27.945338",
+      "newest": "2026-10-01 19:56:19.746931"
+    },
+    {
+      "portfolio_id": 6,
+      "scans": 636,
+      "blocked_scans": 0,
+      "zero_candidate_scans": 24,
+      "scans_with_candidates": 612,
+      "oldest": "2026-09-25 13:30:36.887314",
+      "newest": "2026-10-01 19:56:21.282554"
+    },
+    {
+      "portfolio_id": 7,
+      "scans": 636,
+      "blocked_scans": 0,
+      "zero_candidate_scans": 0,
+      "scans_with_candidates": 636,
+      "oldest": "2026-09-25 13:30:50.541978",
+      "newest": "2026-10-01 19:56:24.385777"
+    },
+    {
+      "portfolio_id": 8,
+      "scans": 634,
+      "blocked_scans": 24,
+      "zero_candidate_scans": 0,
+      "scans_with_candidates": 610,
+      "oldest": "2026-09-25 13:31:06.965673",
+      "newest": "2026-10-01 19:56:34.505445"
+    },
+    {
+      "portfolio_id": 9,
+      "scans": 482,
+      "blocked_scans": 99,
+      "zero_candidate_scans": 383,
+      "scans_with_candidates": 0,
+      "oldest": "2026-09-25 07:05:12.618369",
+      "newest": "2026-10-02 07:00:41.045878"
+    },
+    {
+      "portfolio_id": 10,
+      "scans": 482,
+      "blocked_scans": 99,
+      "zero_candidate_scans": 351,
+      "scans_with_candidates": 32,
+      "oldest": "2026-09-25 07:05:12.849802",
+      "newest": "2026-10-02 07:00:41.260955"
+    },
+    {
+      "portfolio_id": 891,
+      "scans": 636,
+      "blocked_scans": 0,
+      "zero_candidate_scans": 24,
+      "scans_with_candidates": 612,
+      "oldest": "2026-09-25 13:30:19.276496",
+      "newest": "2026-10-01 19:56:18.413959"
+    }
+  ],
+  "entries_since_sep8": [
+    {
+      "portfolio_id": 1,
+      "entries": 3,
+      "first_entry": "2026-09-11 14:02:04.502313",
+      "last_entry": "2026-10-01 14:21:33.149404"
+    },
+    {
+      "portfolio_id": 4,
+      "entries": 1,
+      "first_entry": "2026-09-17 02:05:28.690260",
+      "last_entry": "2026-09-17 02:05:28.690260"
+    },
+    {
+      "portfolio_id": 6,
+      "entries": 1,
+      "first_entry": "2026-09-23 14:01:25.256321",
+      "last_entry": "2026-09-23 14:01:25.256321"
+    },
+    {
+      "portfolio_id": 7,
+      "entries": 1,
+      "first_entry": "2026-09-15 14:17:15.931244",
+      "last_entry": "2026-09-15 14:17:15.931244"
+    },
+    {
+      "portfolio_id": 8,
+      "entries": 3,
+      "first_entry": "2026-09-09 18:26:39.947424",
+      "last_entry": "2026-10-01 17:26:32.981123"
+    }
+  ],
+  "last_entry_any": [
+    {
+      "portfolio_id": 1,
+      "last_entry": "2026-10-01 14:21:33.149404",
+      "total_trades": 50
+    },
+    {
+      "portfolio_id": 2,
+      "last_entry": "2026-06-25 01:55:23.987882",
+      "total_trades": 4
+    },
+    {
+      "portfolio_id": 3,
+      "last_entry": "2026-09-03 14:31:16.011451",
+      "total_trades": 43
+    },
+    {
+      "portfolio_id": 4,
+      "last_entry": "2026-09-17 02:05:28.690260",
+      "total_trades": 16
+    },
+    {
+      "portfolio_id": 5,
+      "last_entry": "2026-09-04 14:01:32.626778",
+      "total_trades": 15
+    },
+    {
+      "portfolio_id": 6,
+      "last_entry": "2026-09-23 14:01:25.256321",
+      "total_trades": 1
+    },
+    {
+      "portfolio_id": 7,
+      "last_entry": "2026-09-15 14:17:15.931244",
+      "total_trades": 1
+    },
+    {
+      "portfolio_id": 8,
+      "last_entry": "2026-10-01 17:26:32.981123",
+      "total_trades": 3
+    }
+  ]
+}

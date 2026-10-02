@@ -319,7 +319,7 @@ REGISTER: tuple[WorkItem, ...] = (
                                             "rollout flag moved off `off`",
                 "schema, state machine and the earnings producer/worker are DEPLOYED (2026-10-01); "
                 "no job calls them and the flag is off"),
-             notes="DELIVERY RELIABILITY ONLY. An earlier note here claimed this also closes "
+             notes="SR-03 (2026-10-02, docs/audits/2026-10-02-signal-decision-options-news-remediation.md): the OPTIONS-FLOW alert path had the same defect in miniature and is now fixed in place - `send_ok` started True, so a cycle where every candidate was on cooldown marked them all seen with no email attempted, and the email cap marked omitted contracts seen too. Delivery identity now advances only for the payload a sender accepted, with observed/deferred/queued/accepted/omitted counted separately and the cooldown claimed AFTER the send. This is NOT the outbox: there is still no durable row, no reconciliation and no exactly-once claim. It removes a false delivery record from one family; M20 remains open. DELIVERY RELIABILITY ONLY. An earlier note here claimed this also closes "
                    "earnings_phase.KNOWN_UNRESOLVED_RISK (the in-window retrospective article). "
                    "That was wrong: an outbox delivers whatever event the classifier SELECTED, "
                    "reliably, including a wrong selection. Event identification is M19/M23 and "
@@ -360,7 +360,7 @@ REGISTER: tuple[WorkItem, ...] = (
              "unresolved risk.", "A newer positive article cannot resolve an unrelated lawsuit.",
              "news/ML", Engineering.PROPOSED, Research.NOT_MEASURABLE, Decision.NO_ACTION,
              _t(TriggerKind.IMPLEMENTATION, "event-linked risk ledger exists"),
-             notes="storage.py::_mark_hot currently documents that an unrelated newer positive "
+             notes="SR-08 (2026-10-02): a story PUBLISHED Sept 1 and first ingested Oct 1 used to receive an Oct 1 stamp and the full first-hour compression, because the writer set ts=now and the decay read ts. Publication age is now recorded and classified (delayed_disclosure), and a delayed adverse story gets a reduced, separately-labelled compression - delayed EVIDENCE, not a fresh CATALYST - rather than being either ignored or treated as breaking. The new flag value is scored by filter_audit; matching only the original value would have made every delayed compression invisible. STILL OPEN and unchanged: nothing links a story to the event it resolves, so an unrelated newer positive story can still clear an unresolved negative flag. That needs the event table this item is about. storage.py::_mark_hot currently documents that an unrelated newer positive "
                    "story can clear a negative flag."),
     WorkItem("M24", "follow-up", "Per-job migration readiness improved, not universal",
              "Inventory prerequisites for outbox, intent uniqueness, mark evidence and metrics "

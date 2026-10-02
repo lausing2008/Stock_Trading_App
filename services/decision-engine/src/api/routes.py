@@ -9,6 +9,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
 from common.jwt_auth import get_current_username
+from common.signal_time import parse_signal_instant
 
 from .core.aggregator import (
     abuild_game_plan,
@@ -122,19 +123,19 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     cross_buys     = int(reasons.get("cross_style_buys", 0))
 
     # Compute signal age for Factors display
-    sig_age_h: float | None = None
-    sig_ts = (signal_data or {}).get("ts")
-    if sig_ts is not None:
-        try:
-            if isinstance(sig_ts, str):
-                ts_aware = datetime.fromisoformat(sig_ts.replace("Z", "+00:00"))
-                if ts_aware.tzinfo is None:
-                    ts_aware = ts_aware.replace(tzinfo=timezone.utc)
-            else:
-                ts_aware = sig_ts.replace(tzinfo=timezone.utc) if sig_ts.tzinfo is None else sig_ts
-            sig_age_h = (datetime.now(timezone.utc) - ts_aware).total_seconds() / 3600
-        except Exception as exc:
-            log.warning("decision.sig_ts_parse_failed", ts=sig_ts, error=str(exc))
+    # SR-02 (2026-10-02): PARSE ONCE, PASS THE CANONICAL INSTANT TO EVERY CONSUMER.
+    # This block normalised naive strings correctly while `check_hard_rejects` did not, and
+    # the raw `sig_ts` was handed to the gate — so the age DISPLAYED here could be right
+    # while the age ENFORCED there was never computed at all. Both now read the same
+    # `common.signal_time` result, and the gate receives the parsed instant rather than the
+    # wire form it has to re-interpret.
+    sig_ts_raw = (signal_data or {}).get("ts")
+    sig_instant = parse_signal_instant(sig_ts_raw)
+    sig_age_h: float | None = sig_instant.age_hours()
+    if sig_instant.state in ("invalid", "future"):
+        log.warning("decision.sig_ts_unusable", ts=sig_ts_raw,
+                    state=sig_instant.state, detail=sig_instant.detail)
+    sig_ts = sig_instant.at if sig_instant.usable else sig_ts_raw
 
     # 5. Resolve research fields
     research_rec   = None

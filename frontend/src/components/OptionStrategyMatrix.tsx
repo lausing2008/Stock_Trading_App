@@ -132,6 +132,8 @@ export default function OptionStrategyMatrixPanel({ matrix, spot }: { matrix: Op
   const all = { ...matrix.singles, ...matrix.combos };
   const singleKeys = ['long_call', 'covered_call', 'protective_put', 'cash_secured_put'].filter(k => matrix.singles[k]);
   const comboKeys = Object.keys(matrix.combos);
+  // SR-07: structures withheld because their payoff cannot honestly be summarised.
+  const unavailableKeys = Object.keys(matrix.unavailable ?? {});
 
   return (
     <div style={{ marginTop: 16 }}>
@@ -179,6 +181,29 @@ export default function OptionStrategyMatrixPanel({ matrix, spot }: { matrix: Op
           <div style={{ ...LABEL, margin: '18px 0 8px' }}>Combinations</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 12 }}>
             {comboKeys.map(k => <StrategyCard key={k} s={all[k]} spot={spot} highlight={rec.primary === k} />)}
+          </div>
+        </>
+      )}
+      {/* SR-07 (2026-10-02): a structure the chain could price but whose payoff cannot be
+          stated honestly. Shown WITH its reason rather than omitted: a reader who expects a
+          collar and sees nothing concludes the chain had no contracts, which is a different
+          and wrong diagnosis. The common case is a collar whose legs expire on different
+          dates — the put and call selection windows (25-60 and 14-45 DTE) routinely disagree,
+          and a floor, cap and breakeven are only defined when both legs expire together. */}
+      {!!unavailableKeys.length && (
+        <>
+          <div style={{ ...LABEL, margin: '18px 0 8px' }}>Not shown, and why</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 12 }}>
+            {unavailableKeys.map(k => (
+              <div key={k} style={{ ...CARD, borderStyle: 'dashed', opacity: 0.85 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8' }}>
+                  {matrix.unavailable![k].name}
+                </div>
+                <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6, lineHeight: 1.6 }}>
+                  {matrix.unavailable![k].reason}
+                </div>
+              </div>
+            ))}
           </div>
         </>
       )}

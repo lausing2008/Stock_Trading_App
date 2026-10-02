@@ -31,7 +31,7 @@ lands at collection time in files you did not touch.
 """
 import pathlib
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -57,10 +57,19 @@ def test_the_calendar_discriminates_both_ways():
 
 
 def test_hard_rejects_can_import_the_calendar():
-    """The import that broke. If this fails, the four sibling files are uncollectable again."""
+    """The import that broke. If this fails, the four sibling files are uncollectable again.
+
+    SR-05 (2026-10-02): this used to assert on `hr._NYSE_HOLIDAYS`, the raw US table. The
+    market-closed guard now dispatches on the actual venue through `is_trading_day`, because
+    the old form tested NYSE holidays for non-HK markets and nothing at all for HK — so an HK
+    entry passed on an HKEX holiday. The import under test is the same one; what it brings in
+    now answers for both venues."""
     from src.api.core import hard_rejects as hr
-    assert hr._NYSE_HOLIDAYS is not None
-    assert date(2026, 9, 7) in hr._NYSE_HOLIDAYS
+    assert hr._is_trading_day is not None
+    # The real NYSE table is still reachable through the module this imports from, and still
+    # carries real dates — a MagicMock calendar would answer True to any membership test.
+    assert hr._is_trading_day("US", datetime(2026, 9, 7, 15, 0, tzinfo=timezone.utc)) is False
+    assert hr._is_trading_day("HK", datetime(2026, 10, 1, 3, 0, tzinfo=timezone.utc)) is False
 
 
 # ── Both registration halves are present ────────────────────────────────────────────────

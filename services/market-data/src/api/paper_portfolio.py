@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from db import (
     PaperEquityCurve, PaperPortfolio, PaperTrade, SessionLocal, Signal, SignalHorizon, get_session,
-    RestrictedSymbol, PaperTradeDecisionLog,
+    RestrictedSymbol, PaperTradeDecisionLog, PaperEntryScanLog,
 )
 from db.models import User, Stock, Price, TimeFrame
 from .auth import get_current_user, get_admin_user
@@ -1661,6 +1661,63 @@ def list_portfolios(
     except Exception:
         pass  # Redis unavailable — omit gate_block from response
 
+    # ── PI-04: durable per-portfolio scan activity ──────────────────────────────────────
+    # The two fields above come from Redis keys with a 4-hour TTL, so "why is this portfolio
+    # not trading" became unanswerable a few hours after the fact — which is exactly the
+    # question the 2026-09-30 inactivity follow-up could not close for most portfolios.
+    # `paper_entry_scan_logs` keeps 90 days of the same information.
+    #
+    # THE DISTINCTION THAT MATTERS, and the one the follow-up explicitly warned about: a
+    # PORTFOLIO-LEVEL BLOCK returns before the candidate loop runs, so its candidate count is
+    # UNKNOWN, not zero. Rendering it as 0 would claim the universe was evaluated and came
+    # back empty — a different diagnosis pointing at a different fix. The three states are
+    # therefore kept apart, and a fourth, `unknown`, covers a portfolio with no retained scan
+    # rows at all rather than quietly reading as "nothing to report".
+    _scan_activity: dict[int, dict] = {}
+    try:
+        _latest_scan_ids = select(
+            func.max(PaperEntryScanLog.id).label("id")
+        ).group_by(PaperEntryScanLog.portfolio_id).scalar_subquery()
+        for row in session.execute(
+            select(PaperEntryScanLog).where(PaperEntryScanLog.id.in_(_latest_scan_ids))
+        ).scalars().all():
+            if row.portfolio_gate:
+                state, seen = "portfolio_blocked", None
+                binding = row.portfolio_gate_reason or row.portfolio_gate
+            elif row.candidates_seen:
+                state, seen = "candidates_rejected", int(row.candidates_seen)
+                tally = row.skip_tally or {}
+                top = max(tally.items(), key=lambda kv: kv[1])[0] if tally else None
+                binding = top
+            else:
+                state, seen = "no_candidates", 0
+                binding = None
+            _scan_activity[row.portfolio_id] = {
+                "state": state,
+                "last_scan_at": row.scanned_at.isoformat() if row.scanned_at else None,
+                # None where the universe was never evaluated. Never 0 in that case.
+                "candidates_seen": seen,
+                "binding_reason": binding,
+                # The complete tally, for a reader who wants more than the single top reason.
+                # These counts REPEAT the same opportunity across scans — they are not a count
+                # of distinct lost trades, and the UI says so.
+                "skip_tally": row.skip_tally or None,
+                "counts_repeat_across_scans": True,
+            }
+    except Exception:
+        pass  # scan-log table unavailable — omit rather than guess
+
+    _last_entry: dict[int, str] = {}
+    try:
+        for pid, ts in session.execute(
+            select(PaperTrade.portfolio_id, func.max(PaperTrade.entry_time))
+            .group_by(PaperTrade.portfolio_id)
+        ).all():
+            if ts is not None:
+                _last_entry[pid] = ts.isoformat()
+    except Exception:
+        pass
+
     result = []
     for p in portfolios:
         open_trades = session.execute(
@@ -1706,6 +1763,11 @@ def list_portfolios(
             # instead of the user having to guess whether their own POST actually took effect.
             "entry_gates_override_active": _entry_gates_override_active(p.config),
             "entry_gates_override_until": p.config.get("entry_gates_override_until"),
+            # PI-04: durable, and explicit about which of the three "no entry" situations this
+            # is. `None` means no scan row is retained for this portfolio — unknown, which is
+            # not the same as "nothing blocked it".
+            "scan_activity": _scan_activity.get(p.id),
+            "last_entry_at": _last_entry.get(p.id),
         })
 
     return result

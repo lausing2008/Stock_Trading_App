@@ -38,12 +38,23 @@ HR_SRC = DE_HR.read_text()
 def test_decision_engine_no_longer_defines_its_own_table():
     """THE FIX. A private frozenset here is a fourth copy by definition."""
     assert "_NYSE_HOLIDAYS: frozenset[date] = frozenset({" not in HR_SRC
-    assert "from common.market_calendar import NYSE_HOLIDAYS" in HR_SRC
+    assert "from common.market_calendar import" in HR_SRC
 
 
-def test_the_gate_still_reads_the_same_name():
-    """The consumer is unchanged — only where the data comes from moved."""
-    assert "_local.date() in _NYSE_HOLIDAYS" in HR_SRC
+def test_the_gate_reads_the_shared_calendar_for_every_venue():
+    """SR-05 (2026-10-02): THIS ASSERTION MOVED UP A LEVEL, and the reason is a second defect.
+
+    It used to pin `_local.date() in _NYSE_HOLIDAYS`, which was the right consumer for the
+    fix this file is named after — one shared table instead of four copies. But that line sat
+    behind `market.upper() != "HK"`, so HK requests were never holiday-checked at all: an
+    otherwise eligible HK entry passed at 11:00 HKT on 2026-10-01, an HKEX securities holiday.
+
+    Consolidating the table was necessary and insufficient. The gate now dispatches on the
+    actual venue through the shared `is_trading_day`, which this file's own point — one source
+    of truth, consulted by every consumer — only strengthens."""
+    assert "_is_trading_day(market" in HR_SRC
+    assert 'market.upper() != "HK" and _local.date()' not in HR_SRC, \
+        "the holiday check must not exclude HK again"
 
 
 def test_no_stray_hardcoded_holiday_dates_remain():

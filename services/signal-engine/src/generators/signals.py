@@ -1654,6 +1654,16 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
 #   LONG   — Fundamentals (K-Score) boost the signal. Ignores short-term noise
 #            (earnings in 10 days, daily news sentiment). Weekly alignment is the
 #            most important filter. ML weight capped (20d-trained, less useful).
+# SR-08: compression applied to a material-negative story that was PUBLISHED well before this
+# platform first saw it. Deliberately between the fresh-catalyst strengths (0.70 first hour,
+# 0.85 second) and no compression at all: the risk is real and newly known to us, but the
+# immediate reaction a fresh headline implies has already had its chance to occur, so treating
+# it at full strength asserts a timing claim the arrival time does not support. Not tuned
+# against outcomes — no delayed-disclosure cohort has been measured — so it is a stated policy,
+# not a calibrated parameter, and it must not be quoted as one.
+_HOT_NEWS_DELAYED_COMPRESS = 0.92
+
+
 _STYLE_PROFILES: dict[str, dict] = {
     "SHORT": {
         "ml_weight_cap": 0.30,
@@ -2517,16 +2527,37 @@ def _apply_style_signal(
         _hot_news_compress = 0.85  # second hour — half the first-hour compression strength
     else:
         _hot_news_compress = 0.70  # first hour, or age unknown (a pre-fix flag) — original strength
+
+    # SR-08 (2026-10-02): A STORY WE JUST RECEIVED IS NOT NECESSARILY A STORY THAT JUST HAPPENED.
+    # The decay above measures the flag's INGESTION age, so an adverse article published a
+    # month ago and first ingested a minute ago drew the full first-hour compression — the
+    # platform reacting to a month-old fact as though it were breaking.
+    #
+    # The writer now classifies the gap (`delayed_disclosure`). The response is deliberately
+    # NOT to ignore such a story: newly-disclosed risk is still risk, and discarding it would
+    # be the opposite error. It is treated as delayed EVIDENCE rather than a fresh CATALYST —
+    # a reduced, separately-labelled compression — because the sharp move a fresh headline
+    # implies has, by construction, already had its chance to happen.
+    _delayed = bool(hot_news.get("delayed_disclosure")) if hot_news else False
+    if _delayed:
+        _hot_news_compress = _HOT_NEWS_DELAYED_COMPRESS
+
     if hot_news and fused > 0.5 and style_key != "LONG":
         if hot_news.get("sentiment_label") == "negative":
             fused = 0.5 + (fused - 0.5) * _hot_news_compress
-            reasons["hot_news_flag"] = "material_negative"
+            reasons["hot_news_flag"] = (
+                "material_negative_delayed" if _delayed else "material_negative")
         else:
             reasons["hot_news_flag"] = "material_other"  # positive/neutral material news — logged, not applied
     elif hot_news:
         reasons["hot_news_flag"] = "material_other"
     else:
         reasons["hot_news_flag"] = "none"
+    # SR-08: carried so a reader can tell WHY the compression had the strength it did, and so
+    # "delayed" is auditable rather than invisible inside one multiplier.
+    if hot_news:
+        reasons["hot_news_publication_age_hours"] = hot_news.get("publication_age_hours_at_ingest")
+        reasons["hot_news_delayed_disclosure"] = hot_news.get("delayed_disclosure")
     fused = float(np.clip(fused, 0.0, 1.0))
 
     # ── Short interest: squeeze potential boost (SWING/GROWTH) ───────────────

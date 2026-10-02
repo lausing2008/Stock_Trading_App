@@ -74,6 +74,21 @@ _cal_spec.loader.exec_module(_calendar_mod)
 sys.modules["common.market_calendar"] = _calendar_mod
 setattr(sys.modules["common"], "market_calendar", _calendar_mod)
 
+# SR-01/SR-02: common.signal_time and common.conviction_gate must be REAL for the same reason
+# as the three above. Both are pure decision logic over values, and under the blanket "common"
+# MagicMock every call returns a truthy Mock — so a test asserting that a STALE conviction
+# record no longer vetoes an entry would pass against a module that still vetoed, and a test
+# asserting that an unreadable timestamp blocks would pass against one that approved. Pure
+# stdlib (datetime/json/dataclasses), so there is nothing to stub. Order matters:
+# conviction_gate imports signal_time, so signal_time is registered first.
+for _mod_name in ("signal_time", "conviction_gate"):
+    _p = _pathlib.Path(__file__).resolve().parents[3] / "shared" / "common" / f"{_mod_name}.py"
+    _sp = _ilu.spec_from_file_location(f"common.{_mod_name}", _p)
+    _m = _ilu.module_from_spec(_sp)
+    sys.modules[f"common.{_mod_name}"] = _m
+    _sp.loader.exec_module(_m)
+    setattr(sys.modules["common"], _mod_name, _m)
+
 # AUD-ALERTPREFS: common.alert_prefs must be REAL for the same reason as the two above — it is
 # all membership tests and an HMAC comparison. Under the blanket "common" MagicMock,
 # `is_manageable("price_alert")` returns a truthy Mock, so a test asserting that ESSENTIAL mail

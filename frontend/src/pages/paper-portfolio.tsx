@@ -547,6 +547,54 @@ function PortfolioCard({
           {portfolio.no_entry_summary.top_reasons.length > 1 ? ` +${portfolio.no_entry_summary.top_reasons.length - 1} more` : ''}
         </div>
       )}
+      {/* PI-04 (2026-10-02): the durable answer to "why is this portfolio not trading".
+          The Redis-backed badges above expire after 4 hours; this reads the 90-day scan log.
+
+          THE THREE STATES ARE RENDERED DIFFERENTLY ON PURPOSE. A portfolio-level block
+          returned before any candidate was evaluated, so its candidate count is UNKNOWN —
+          showing "0 candidates" there would claim the universe was searched and found empty,
+          which is a different problem with a different fix. "No candidates" means the
+          universe WAS evaluated and produced nothing. "Rejected" means candidates existed
+          and each failed its own check. */}
+      {portfolio.scan_activity && (
+        <div
+          title={[
+            portfolio.scan_activity.last_scan_at
+              ? `Last scan: ${new Date(portfolio.scan_activity.last_scan_at).toLocaleString()}`
+              : 'Last scan: unknown',
+            portfolio.last_entry_at
+              ? `Last entry: ${new Date(portfolio.last_entry_at).toLocaleString()}`
+              : 'Last entry: none on record',
+            portfolio.scan_activity.state === 'portfolio_blocked'
+              ? 'A portfolio-level gate stopped this scan before any candidate was evaluated, so the number of candidates is unknown — not zero.'
+              : portfolio.scan_activity.state === 'no_candidates'
+                ? 'The universe was evaluated and produced no BUY candidates at all.'
+                : `${portfolio.scan_activity.candidates_seen} candidate(s) were evaluated and each failed its own check.`,
+            portfolio.scan_activity.skip_tally
+              ? `Reasons: ${Object.entries(portfolio.scan_activity.skip_tally)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([r, n]) => `${r} (${n})`).join(' · ')}`
+              : '',
+            portfolio.scan_activity.counts_repeat_across_scans
+              ? 'These counts repeat the same opportunity across scans; they are not distinct lost trades.'
+              : '',
+          ].filter(Boolean).join('\n')}
+          style={{
+            marginBottom: 6, padding: '3px 7px', borderRadius: 5,
+            background: 'rgba(100,116,139,0.08)', border: '1px solid rgba(100,116,139,0.25)',
+            fontSize: 10, fontWeight: 600, color: '#94a3b8',
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+            cursor: 'help',
+          }}
+        >
+          {portfolio.scan_activity.state === 'portfolio_blocked'
+            ? `⛔ Scan blocked — candidates not evaluated`
+            : portfolio.scan_activity.state === 'no_candidates'
+              ? '○ No candidates in the universe'
+              : `✗ ${portfolio.scan_activity.candidates_seen} candidate(s) rejected`}
+          {portfolio.scan_activity.binding_reason ? `: ${portfolio.scan_activity.binding_reason}` : ''}
+        </div>
+      )}
       <div style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9', marginBottom: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {portfolio.name}
       </div>

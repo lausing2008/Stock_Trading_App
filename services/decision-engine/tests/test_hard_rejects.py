@@ -373,9 +373,42 @@ def test_no_staleness_check_when_sig_ts_absent():
     assert result is None
 
 
-def test_malformed_sig_ts_fails_open():
+def test_malformed_sig_ts_no_longer_fails_open():
+    """SR-02 (2026-10-02): THIS ASSERTION WAS UPDATED DELIBERATELY, and the reason matters.
+
+    It used to assert `result is None` — a malformed timestamp approved the entry. That is the
+    same shape as the defect it sits beside: unreadable freshness evidence reading as evidence
+    of freshness. An ABSENT `sig_ts` still fails open (the parameter is optional and older
+    callers do not send it), but a timestamp that was SUPPLIED and cannot be read is missing
+    evidence wearing the costume of present evidence. Entry is a risk-INCREASING action, and
+    the house rule for those is that unknown blocks."""
     result = hr.check_hard_rejects(**_base_kwargs(sig_ts="not-a-real-timestamp"))
-    assert result is None
+    assert result is not None and "could not be read" in result
+
+
+def test_an_absent_sig_ts_still_fails_open():
+    """The other half of the distinction. `None` means the caller did not supply the parameter
+    — the gate does not apply, which is not the same as the gate passing."""
+    assert hr.check_hard_rejects(**_base_kwargs(sig_ts=None)) is None
+
+
+def test_a_future_sig_ts_is_rejected_rather_than_treated_as_fresh():
+    """Its age is negative, so it passes any maximum-age comparison trivially."""
+    future = (_INSIDE_MARKET_HOURS_UTC + timedelta(hours=6)).isoformat()
+    result = hr.check_hard_rejects(**_base_kwargs(sig_ts=future))
+    assert result is not None and "future" in result.lower()
+
+
+def test_a_naive_iso_string_is_enforced_exactly_like_an_offset_one():
+    """SR-02's WITNESS, at the gate. `2026-07-10T13:00:00` and the identical instant written
+    `+00:00` used to produce opposite outcomes: the naive form raised inside the gate and was
+    swallowed into approval, while the offset form was correctly rejected as stale."""
+    stale_naive = (_INSIDE_MARKET_HOURS_UTC.replace(tzinfo=None) - timedelta(hours=100)).isoformat()
+    stale_offset = (_INSIDE_MARKET_HOURS_UTC - timedelta(hours=100)).isoformat()
+    naive_result = hr.check_hard_rejects(**_base_kwargs(sig_ts=stale_naive))
+    offset_result = hr.check_hard_rejects(**_base_kwargs(sig_ts=stale_offset))
+    assert naive_result is not None and "stale" in naive_result.lower()
+    assert offset_result is not None and "stale" in offset_result.lower()
 
 
 def test_stale_signal_accepts_a_real_datetime_object_not_just_a_string():
