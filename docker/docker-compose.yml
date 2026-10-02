@@ -141,6 +141,14 @@ services:
 
   news-intelligence:
     <<: *py-common
+    # M22/Jev: a WORKER-ONLY secret. The shared ../.env above reaches all twelve services, so
+    # OPENROUTER_API_KEY lives in its own file that only this service loads. `required: false`
+    # means the stack still starts when the file is absent, which is the normal state — Jev is
+    # off by default and nothing here makes a provider request without the flag.
+    env_file:
+      - ../.env
+      - path: ../.env.jev
+        required: false
     build:
       context: ..
       dockerfile: services/news-intelligence/Dockerfile

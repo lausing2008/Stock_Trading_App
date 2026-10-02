@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     # Event Intelligence
     fred_api_key: str = ""      # https://fred.stlouisfed.org/docs/api/api_key.html (free)
     fmp_api_key: str = ""       # https://site.financialmodelingprep.com (free tier)
+    # M22/Jev. DELIBERATELY NOT in the shared .env: the design calls for a worker-only secret,
+    # and `env_file: ../.env` would hand it to all twelve services. It is loaded from
+    # `.env.jev`, which only news-intelligence reads — see docker/docker-compose.yml. Empty
+    # here means "not configured", which is the correct default: no provider request can be
+    # made, and the Jev feature flag is independently off.
+    openrouter_api_key: str = ""
 
     # Paper trading — disabled by default in development; set ENABLE_PAPER_TRADING=true in production .env
     enable_paper_trading: bool = False
