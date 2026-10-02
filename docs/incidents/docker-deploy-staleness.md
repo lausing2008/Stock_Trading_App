@@ -613,3 +613,25 @@ docker run --rm --entrypoint sh $(docker inspect -f '{{.Config.Image}}' stockai-
 ```
 
 If that prints `0`, the fix is one recreation away from gone.
+
+---
+
+## AUD-REGISTER-POSTBUILD-DRIFT (2026-10-02) — editing `shared/` after the rebuild drifts all twelve
+
+**What happened.** The M13-BASE deploy rebuilt all 12 backends, confirmed 0 drift, and then
+I appended the first production measurement to `shared/metrics/register.py`'s M13 notes. The
+next drift check reported **12 of 12 drifted**. The running containers held a 3,338-character
+note; the working tree held 4,079.
+
+**Why it is worth a note despite being harmless in content.** The edit was prose inside a
+data structure — no behaviour depends on it. But `check_deploy_drift.sh` compares `/app/shared`
+against the local tree as ONE versioned unit and cannot distinguish a docstring from a model
+field, which is correct: the whole value of the check is that it does not need to judge. A
+fleet left in a drifted state teaches the next reader to ignore the check, and that is how a
+reverted hotfix goes unnoticed. So it was rebuilt a second time rather than waved through.
+
+**The sequencing rule.** Anything under `shared/` — including register notes, docstrings and
+comments — must be final *before* the rebuild. Findings discovered by probing the freshly
+deployed fleet are exactly the case that tempts a post-build edit, because the measurement
+only becomes possible once the code is live. Either batch the write-up before the rebuild and
+verify afterwards, or accept a second full rebuild. Do not leave the fleet drifted.
