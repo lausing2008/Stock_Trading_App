@@ -1,0 +1,150 @@
+{
+  "at": "2026-10-02T03:48:51.583524+00:00",
+  "artifacts": [
+    {
+      "name": "random_forest/CM_long.joblib",
+      "sha256": "5c8ac0b34aae58978d5ec42fea94079787794a2f905d95b0a24a7c92b4eb1c1a",
+      "metadata": {
+        "trained_at": "2026-09-28T09:13:58.808559+00:00",
+        "style": "LONG",
+        "horizon": null,
+        "oos_suppressed": false
+      },
+      "metrics": {
+        "auc": 1.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "cv_auc_mean": null,
+        "overfit_gap": null,
+        "n_train": 218,
+        "n_cal": 11,
+        "n_test": 12,
+        "n_features": 64,
+        "label_threshold": 0.022334706005433403,
+        "embargo_bars": {
+          "early_stop": 20,
+          "calibration": 20,
+          "test": 20
+        },
+        "embargo_target_bars": 20,
+        "embargo_shortfall": null,
+        "evaluation_valid": true,
+        "outcome_rows_dropped_after_cutoff": 26
+      }
+    },
+    {
+      "name": "xgboost/MU_swing.joblib",
+      "exists": false
+    },
+    {
+      "name": "xgboost/MU_growth.joblib",
+      "sha256": "799a0bc3eb53dcf3ce91999214c09618ec84017f136e1d50d59f2e9610ce0cd4",
+      "metadata": {
+        "trained_at": "2026-10-01T20:46:18.098106+00:00",
+        "style": "GROWTH",
+        "horizon": null,
+        "oos_suppressed": true
+      },
+      "metrics": {
+        "auc": 0.07692307692307693,
+        "precision": 0.9285714285714286,
+        "recall": 1.0,
+        "cv_auc_mean": 0.3519476238623244,
+        "overfit_gap": 0.275,
+        "n_train": 289,
+        "n_cal": 26,
+        "n_test": 27,
+        "n_features": 64,
+        "label_threshold": 0.03,
+        "embargo_bars": {
+          "early_stop": 15,
+          "calibration": 15,
+          "test": 15
+        },
+        "embargo_target_bars": 15,
+        "embargo_shortfall": null,
+        "evaluation_valid": true,
+        "calibration_status": "fitted_platt",
+        "calibration_rows": 26,
+        "calibration_min_rows": 20,
+        "threshold_evaluation_mode": "holdout",
+        "threshold_report_rows": 14,
+        "threshold_min_report_rows": 10,
+        "outcome_rows_dropped_after_cutoff": 0
+      }
+    },
+    {
+      "name": "xgboost/MU_long.joblib",
+      "sha256": "b967ade9cb91945647d566eaee7f89953d14de1ad57d214cc06dff2aad1b0f97",
+      "metadata": {
+        "trained_at": "2026-10-01T20:46:13.907961+00:00",
+        "style": "LONG",
+        "horizon": null,
+        "oos_suppressed": true
+      },
+      "metrics": {
+        "auc": 0.1,
+        "precision": 0.6666666666666666,
+        "recall": 0.2,
+        "cv_auc_mean": 0.5698212415072881,
+        "overfit_gap": 0.4698,
+        "n_train": 285,
+        "n_cal": 21,
+        "n_test": 21,
+        "n_features": 64,
+        "label_threshold": 0.03,
+        "embargo_bars": {
+          "early_stop": 20,
+          "calibration": 20,
+          "test": 20
+        },
+        "embargo_target_bars": 20,
+        "embargo_shortfall": null,
+        "evaluation_valid": true,
+        "calibration_status": "fitted_platt",
+        "calibration_rows": 21,
+        "calibration_min_rows": 20,
+        "threshold_evaluation_mode": "holdout",
+        "threshold_report_rows": 11,
+        "threshold_min_report_rows": 10,
+        "outcome_rows_dropped_after_cutoff": 0
+      }
+    },
+    {
+      "name": "lightgbm/MU.joblib",
+      "sha256": "2d6c31d092c28ea1a707dfd61afb1484f226554a045178a7c3641e7eb73cf874",
+      "metadata": {
+        "trained_at": "2026-09-07T20:56:52.843300+00:00",
+        "style": "SWING",
+        "horizon": null,
+        "oos_suppressed": false
+      },
+      "metrics": {
+        "auc": 0.59375,
+        "precision": 0.75,
+        "recall": 1.0,
+        "cv_auc_mean": 0.546129684442378,
+        "overfit_gap": -0.0476,
+        "n_train": 287,
+        "n_cal": 31,
+        "n_test": 32,
+        "n_features": 64,
+        "label_threshold": 0.03
+      }
+    }
+  ],
+  "stored_daily_prices": [
+    {
+      "symbol": "CM",
+      "rows": 755,
+      "first": "2023-09-28 00:00:00",
+      "last": "2026-10-01 00:00:00"
+    },
+    {
+      "symbol": "MU",
+      "rows": 755,
+      "first": "2023-09-28 00:00:00",
+      "last": "2026-10-01 00:00:00"
+    }
+  ]
+}

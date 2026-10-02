@@ -892,6 +892,10 @@ def train_model(
     # IC = Spearman rank correlation between predicted probability and actual
     # forward return — measures whether the model ranks returns correctly, not
     # just whether it classifies direction correctly.
+    # M13-TRACE: per-fold counts and CLASS SUPPORT. An absent cv_auc_mean can mean "CV never
+    # ran" or "every fold was single-class and skipped" — the code permits both, and the stored
+    # metrics could not tell them apart. Each fold now records what it had.
+    cv_folds: list[dict] = []
     cv_aucs: list[float] = []
     cv_accs: list[float] = []
     oos_precisions: list[float] = []
@@ -934,7 +938,18 @@ def train_model(
                 note="CV fold skipped: training slice had only one class",
                 only_class=int(np.unique(y_cv_tr)[0]), n_train_fold=len(tr_idx),
             )
+            cv_folds.append({"n_train": int(len(tr_idx)), "n_val": int(len(val_idx)),
+                             "train_classes": 1, "skipped": "single_class_training_slice"})
             continue
+
+        cv_folds.append({
+            "n_train": int(len(tr_idx)), "n_val": int(len(val_idx)),
+            "train_pos": int(np.sum(y_cv_tr == 1)), "train_neg": int(np.sum(y_cv_tr == 0)),
+            "val_pos": int(np.sum(y_cv_val == 1)), "val_neg": int(np.sum(y_cv_val == 0)),
+            # A fold whose VALIDATION slice is single-class contributes no AUC either, but it
+            # still trains — a different state from being skipped entirely.
+            "auc_usable": bool(len(np.unique(y_cv_val)) > 1), "skipped": None,
+        })
 
         sc = StandardScaler()
         X_cv_tr_s = sc.fit_transform(X_cv_tr)
@@ -1202,6 +1217,13 @@ def train_model(
     _thresh_split = max(1, len(X_test) // 2)
     y_test_thresh, y_test_report = y_test.iloc[:_thresh_split], y_test.iloc[_thresh_split:]
     preds_thresh, preds_report = preds[:_thresh_split], preds[_thresh_split:]
+    # M13-TRACE: `n_test` is len(X_test) BEFORE this subdivision, while the reported AUC,
+    # precision and recall are computed on `y_test_report` when holdout reporting is possible.
+    # Measured in production: MU GROWTH stored n_test 27 against 14 actual reporting rows, and
+    # MU LONG 21 against 11 — roughly half. Reading `n_test` as the metric denominator
+    # therefore overstates the evidence behind every figure beside it.
+    _n_threshold_rows = int(len(y_test_thresh))
+    _n_report_rows = int(len(y_test_report))
 
     # T228-HK-MODEL-SEPARATE: use tighter HK precision floor when applicable
     _hk_suffix = "_HK" if symbol.upper().endswith(".HK") else ""
@@ -1290,7 +1312,19 @@ def train_model(
         "overfit_gap": overfit_gap_val,
         "n_train": int(len(X_train)),
         "n_cal": int(len(X_cal)),
+        # LEGACY SEMANTICS PRESERVED: rows in the test block BEFORE the threshold/report
+        # subdivision. Existing consumers and stored artifacts depend on this meaning.
         "n_test": int(len(X_test)),
+        # The three counts that `n_test` alone could not express. `n_metric_rows` is the ACTUAL
+        # denominator of the auc/precision/recall stored in this same dict.
+        "n_threshold_rows": _n_threshold_rows,
+        "n_report_rows": _n_report_rows,
+        "n_metric_rows": int(len(y_test)),
+        "metric_class_support": {"pos": int(np.sum(y_test.values == 1)),
+                                 "neg": int(np.sum(y_test.values == 0))},
+        "cv_folds": cv_folds,
+        "cv_folds_skipped": sum(1 for f in cv_folds if f.get("skipped")),
+        "cv_folds_auc_usable": sum(1 for f in cv_folds if f.get("auc_usable")),
         "n_features": len(FEATURE_COLUMNS),
         "label_threshold": label_threshold,
         # DA-03: the ACTUAL gaps used, not the ones intended. A reader of this bundle can now

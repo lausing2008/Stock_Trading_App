@@ -229,19 +229,9 @@ REGISTER: tuple[WorkItem, ...] = (
                                             "a real retrain, AND purge/calibration/promotion "
                                             "exclusions get their own ledgers",
                 "ledger built and wired 2026-10-01; NOT deployed"),
-             notes="AttritionLedger records rows at loaded / min_sample / shared_features / "
-                   "dedup / min_after_dedup, each exclusion with a REASON, and reconciles: "
-                   "rows_in == rows_out + dropped, with an `unexplained` bucket rather than a "
-                   "silent balance. Emitted even when NOTHING survived - the 490-of-548 case "
-                   "the old single count could not explain. Reproduces the historical 43 -> 6 "
-                   "collapse and names the stage and reason. Read it after a retrain; a "
-                   "`reconciles: false` line is a defect in the instrumentation, not the data. "
-                   "An UNEXPLAINED bucket now DEGRADES reconciliation - naming a gap closes the "
-                   "arithmetic but must not pass for closing the gap. NOT FULLY CLOSED: the "
-                   "tooling is tested, fleet coverage and historical attrition are not "
-                   "explained. SCOPE is narrower than this item's wording - only the "
-                   "outcome-augmentation path is instrumented; purge, calibration and promotion "
-                   "exclusions are NOT measured and need their own ledgers."),
+             notes="AttritionLedger records the OUTCOME-AUGMENTATION path (loaded / min_sample / shared_features / dedup / min_after_dedup), each exclusion with a reason, reconciling rows_in == rows_out + dropped, with an UNEXPLAINED bucket that DEGRADES reconciliation. Emitted even when nothing survived. "
+                   "DENOMINATOR MISMATCH FOUND 2026-10-02 (docs/audits/2026-10-01-training-sample-size-trace.md): stored n_test is len(X_test) BEFORE the test block is split into threshold-selection and reporting halves, while the stored auc/precision/recall come from the reporting half. MU GROWTH 27 vs 14 actual; MU LONG 21 vs 11. Both symbols have 755 bars, so this is NOT missing history. Now records n_threshold_rows, n_report_rows, n_metric_rows and metric_class_support, plus per-CV-fold counts, class support and skip reasons - an absent cv_auc_mean could mean CV never ran OR every fold was single-class. n_test keeps its legacy meaning. "
+                   "STILL UNMEASURED: the base raw-price-to-final-evaluation funnel - warm-up, required-feature eligibility, label availability, dead-zone filtering, embargo loss per slice, and unique session/event counts. Historical per-stage losses for existing artifacts cannot be reconstructed from stored metadata. Do NOT loosen suppression to raise usable-model counts."),
     WorkItem("M14", "P1", "OOS-suppression rollout not independently settled",
              "Inventory active artifacts/consumers; verify invalid models cannot publish or be "
              "unsuppressed by resweeps.", "Versioned suppression reasons and coverage effects.",
