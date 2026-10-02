@@ -245,21 +245,12 @@ REGISTER: tuple[WorkItem, ...] = (
     WorkItem("M14", "P1", "OOS-suppression rollout not independently settled",
              "Inventory active artifacts/consumers; verify invalid models cannot publish or be "
              "unsuppressed by resweeps.", "Versioned suppression reasons and coverage effects.",
-             "ML/operations", Engineering.INDEPENDENTLY_VERIFIED, Research.SUPPORTED_FOR_DEFINED_SCOPE,
-             Decision.NO_ACTION,
+             "ML/operations", Engineering.INDEPENDENTLY_VERIFIED, Research.INCONCLUSIVE, Decision.NO_ACTION,
              _t(TriggerKind.IMPLEMENTATION, "decide whether an absent cv_auc_mean should "
                                             "suppress - 4 artifacts serve today with every "
                                             "quality condition unevaluable",
                 "inventory built and tested 2026-10-01; NOT yet run against production"),
-             notes="suppression_inventory.build_inventory() calls the REAL "
-                   "_compute_oos_suppression (injected, never reimplemented) and reports the "
-                   "populations separately: suppressed, invalid (evaluation_valid False), "
-                   "UNKNOWN validity (None - pre-R02 artifacts, a coverage gap and not a clean "
-                   "bill of health), invalid-but-unsuppressed, and - the safety net - any model "
-                   "a resweep would UNSUPPRESS despite being invalid, which is the R02 failure "
-                   "caught as data. Consumer chain verified: predict_latest returns a flat 0.5 "
-                   "and the ensemble zeroes the weight, so signal-engine's 40% shrink is a "
-                   "SECOND penalty, not a suppressed model leaking through at 60%."),
+             notes="build_inventory() calls the REAL _compute_oos_suppression (injected, never reimplemented) and separates suppressed / invalid / UNKNOWN validity / invalid-but-unsuppressed / would-unsuppress-an-invalid. RUN IN PRODUCTION 2026-10-01 and -10-02: 1,313 artifacts, 1,218 suppressed (92.8%), 0 read errors, coverage 97.0%, invariants hold, resweep would change NOTHING. THAT SHOWS CONSISTENCY WITH TODAY'S RULE, not that the rule detects every unsuitable model - CM_long is the counterexample: unsuppressed on auc 1.0 over 12 rows with cv_auc_mean AND overfit_gap both NULL, serving because every condition was unevaluable. THREE STATES now separated: validity (leakage-free) vs evidence SUFFICIENCY (enough observations and diagnostics) vs promotion ELIGIBILITY (beat a baseline); evaluation_valid answers only the first, and an insufficiency reason is NOT an accuracy claim. 1,311 of 1,313 have n_test < 50, but more rows may only add CORRELATED observations - history retrieval, feature attrition, label availability, split allocation and independent event counts are each unmeasured. 95 unsuppressed artifacts are a DIRECTORY COUNT, not 95 serving models. Two tooling defects found by review and fixed: _unique_constraint accepted composite keys, and unreadable artifacts inflated validity coverage. CLOSURE IS LIMITED to inventory execution and current-rule consistency; evidence sufficiency and forward predictive quality remain OPEN."),
     WorkItem("M15", "collecting", "Portfolio concentration sample limited",
              "Test limits now with synthetic positions; measure realised concentration as "
              "exposure accumulates.", "Limits demonstrably bind under synthetic exposure.",
