@@ -87,7 +87,10 @@ def new_client_order_id(portfolio_id: int, symbol: str) -> str:
     id this is the value to send; where it does not, it is still the local join key.
     """
     from uuid import uuid4
-    return f"pt-{portfolio_id}-{symbol}-{uuid4().hex[:16]}"[:64]
+    # <= 20 CHARACTERS. E*Trade truncates `clientOrderId` at 20, and a truncated id is not an
+    # id — two intents could collide after the cut, which is worse than having none. Keeping it
+    # short here means the SAME value reaches every broker intact.
+    return f"pt{portfolio_id}x{uuid4().hex[:14]}"[:20]
 
 
 def mark_pending(trade: PaperTrade, *, path: str = "deferred") -> None:
@@ -104,6 +107,16 @@ def mark_pending(trade: PaperTrade, *, path: str = "deferred") -> None:
     trade.broker_submission_path = path
     if not trade.broker_client_order_id:
         trade.broker_client_order_id = new_client_order_id(trade.portfolio_id, trade.symbol)
+
+
+def identity_is_transmittable(broker) -> bool:
+    """Can this adapter actually SEND the client order id?
+
+    Storing an identity locally helps only if the broker receives it — otherwise an `unknown`
+    is still unresolvable except by matching symbol, quantity and time. An adapter that cannot
+    transmit it must be recorded as such rather than assumed capable.
+    """
+    return bool(getattr(broker, "supports_client_order_id", False))
 
 
 def retains_reserved_exposure(trade: PaperTrade) -> bool:
@@ -201,6 +214,14 @@ def needs_reconciliation(session, *, limit: int = 100) -> list[PaperTrade]:
         .limit(limit)).scalars().all())
 
 
+#: A broker lookup that returns "not found" is NOT evidence the order does not exist. It can
+#: mean propagation delay, a wrong account scope, or a transient outage. Treating it as proof
+#: of absence would authorise a resubmission for an order that is simply not visible YET.
+NOT_FOUND_IS_NOT_ABSENCE = (
+    "a `not found` lookup is not evidence of non-existence; it may be propagation delay, the "
+    "wrong account scope, or a transient outage. Re-check before resolving.")
+
+
 def reconcile_submission(session, trade: PaperTrade, *, resolution: str, evidence: str,
                          actor: str, order_id: str | None = None,
                          now: datetime | None = None) -> None:
@@ -222,6 +243,14 @@ def reconcile_submission(session, trade: PaperTrade, *, resolution: str, evidenc
         raise ValueError("reconciliation requires evidence from the broker's own record")
     if not (actor or "").strip():
         raise ValueError("reconciliation requires an accountable actor")
+    # EVIDENCE APPROPRIATE TO THE VERDICT, not one rule for both.
+    #
+    # `submitted` asserts an order EXISTS, so it needs that order's identity — otherwise the
+    # claim cannot be checked against the broker's record afterwards.
+    #
+    # `rejected` asserts an order does NOT exist, and a definitive pre-submission failure
+    # legitimately has no order id. Demanding one would force a FABRICATED id to record a true
+    # fact, which is worse than the gap it closes.
     if resolution == SUBMITTED and not (order_id or trade.broker_order_id):
         raise ValueError(
             "resolving to `submitted` requires the broker's order id — without it the claim "

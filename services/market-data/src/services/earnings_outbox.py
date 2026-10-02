@@ -187,7 +187,9 @@ def deliver_batch(session, *, owner: str, send, is_subscribed, commit=None,
     commit = commit or session.commit
     out = {"quarantined": 0, "expired": 0, "claimed": 0, "accepted": 0, "failed": 0,
            "deferred": 0, "suppressed": 0, "expired_at_send": 0, "unknown": 0, "lost_lease": 0,
-           "deferred_unknown_marker": 0, "pre_activation_suppressed": 0}
+           "deferred_unknown_marker": 0, "pre_activation_suppressed": 0,
+           "pre_activation_suppressed_evidenced": 0,
+           "pre_activation_potentially_undelivered": 0}
 
     # NO WATERMARK, NO DELIVERY. Without it a shadow row — already delivered by the legacy
     # sender — cannot be told apart from one queued after the outbox took over. Delivering
@@ -210,10 +212,27 @@ def deliver_batch(session, *, owner: str, send, is_subscribed, commit=None,
         # have already been sent. Suppressed with a reason rather than dropped, so the cutover
         # leaves a record of exactly what it withheld and why.
         if row.created_at is not None and row.created_at < activated_at:
-            _ob.suppress(session, row,
-                         reason="queued in shadow before outbox activation; the legacy sender "
-                                "already delivered this event",
-                         now=now)
+            # CUTOVER SUPPRESSION, which is NOT the same as confirmed prior delivery.
+            #
+            # An earlier version of this called it "the legacy sender already delivered this
+            # event". That is too broad: the outbox has no acceptance record for a shadow row,
+            # so it does not know whether legacy actually delivered it. What is being decided
+            # is that the cutover will NOT send historical rows — a deliberate withholding.
+            #
+            # Where the legacy marker still exists, delivery IS evidenced; where it does not,
+            # the row is POTENTIALLY UNDELIVERED and is counted separately so the cutover can
+            # report what it may have dropped rather than claiming it was already handled.
+            evidenced = legacy_marker(row) if legacy_marker is not None else None
+            if evidenced is True:
+                reason = ("cutover suppression: queued before activation, and the legacy "
+                          "delivery marker for this event is present")
+                out["pre_activation_suppressed_evidenced"] += 1
+            else:
+                reason = ("cutover suppression: queued before activation. NO legacy delivery "
+                          "marker is present, so this event is POTENTIALLY UNDELIVERED and was "
+                          "withheld by the cutover rather than confirmed as sent")
+                out["pre_activation_potentially_undelivered"] += 1
+            _ob.suppress(session, row, reason=reason, now=now)
             out["pre_activation_suppressed"] += 1
             commit(); continue
 

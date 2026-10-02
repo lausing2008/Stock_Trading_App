@@ -435,8 +435,25 @@ def test_shadow_queued_rows_are_not_delivered_after_the_flip(probe):
     w = probe["activation_watermark"]
     assert w["batch"]["pre_activation_suppressed"] == 1
     assert w["shadow_row_state"] == "suppressed"
-    assert "already delivered" in w["shadow_row_reason"]
     assert [c.rsplit(":", 1)[1] for c in w["provider_calls"]] == ["results"]
+
+
+def test_cutover_suppression_is_not_labelled_as_confirmed_prior_delivery(probe):
+    """CORRECTED. This first said "the legacy sender already delivered this event", which is too
+    broad: the outbox holds NO acceptance record for a shadow row, so it does not know whether
+    legacy delivered it. What is being decided is that the cutover will not send historical
+    rows — a deliberate withholding, not a confirmation."""
+    w = probe["activation_watermark"]
+    assert "cutover suppression" in w["shadow_row_reason"]
+    assert "already delivered" not in w["shadow_row_reason"]
+
+
+def test_potentially_undelivered_rows_are_counted_separately(probe):
+    """Where the legacy marker is absent, delivery is NOT evidenced. Those rows are reported on
+    their own so a cutover can say what it may have dropped."""
+    b = probe["activation_watermark"]["batch"]
+    assert b["pre_activation_potentially_undelivered"] == 1
+    assert b["pre_activation_suppressed_evidenced"] == 0
 
 
 def test_a_row_queued_after_activation_is_delivered_normally(probe):

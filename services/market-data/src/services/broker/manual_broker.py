@@ -40,9 +40,13 @@ class ManualBroker(BrokerInterface):
     def __init__(self, config: dict):
         self._config = config
 
+    #: There is no counterparty to send an id TO — orders are recorded by a human.
+    supports_client_order_id = False
+
     def place_order(
         self, symbol, qty, side, order_type=OrderType.MARKET,
         limit_price=None, stop_price=None, time_in_force="day", account_id=None,
+        client_order_id=None,
     ) -> BrokerOrder:
         # Generate a synthetic order ID so the engine can reference this trade.
         order_id = f"manual-{uuid.uuid4().hex[:12]}"

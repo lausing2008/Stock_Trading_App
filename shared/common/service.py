@@ -83,6 +83,16 @@ def create_app(
 
         Enforcement belongs at the JOB that depends on the migration, which can skip precisely
         the affected work — see `migration_applied()` and check_price_alerts' own retry gate.
+
+        M24 adds `capabilities` beside it, and the distinction between the two is the point.
+        `migrations` answers "did this statement run"; `capabilities` answers "can this action
+        be performed" — which is not the same question, because a table can exist with its
+        uniqueness constraint missing, or exist and be unreadable by this role. Both report as
+        a successful migration.
+
+        `status` stays "ok" for exactly the same reason as above: a process with an unmet
+        prerequisite is healthy and DEGRADED, not unhealthy, and failing the healthcheck would
+        cascade through `depends_on: service_healthy`.
         """
         payload = {"status": "ok", "service": name, "version": version}
         try:
@@ -91,6 +101,25 @@ def create_app(
         except Exception:
             # A service that cannot import the DB layer at all (or has no database) is not
             # reporting a migration problem — it simply has nothing to say here.
+            pass
+        try:
+            from common.capabilities import report as _cap_report
+            from db.capability_checks import build_matrix
+            from db.session import engine as _engine
+            cap = _cap_report(build_matrix(_engine))
+            payload["capabilities"] = {
+                "all_ready": cap["all_ready"],
+                "checked_at": cap["checked_at"],
+                # Operator language, not table names.
+                "degraded": cap["degraded"],
+                "entry_blocked": cap["entry_blocked"],
+                # Expected EMPTY. A blocked exit or reconciliation is a far more serious
+                # condition than a blocked entry and must not be averaged in with one.
+                "exit_or_reconciliation_blocked": cap["exit_or_reconciliation_blocked"],
+            }
+        except Exception:
+            # Same reasoning as above: a service with no database has nothing to report, and a
+            # readiness probe that cannot run is not evidence of a missing capability.
             pass
         return payload
 

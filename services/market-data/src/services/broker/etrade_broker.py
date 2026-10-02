@@ -206,6 +206,8 @@ class EtradeBroker(BrokerInterface):
 
     # ── Orders ────────────────────────────────────────────────────────────────
 
+    supports_client_order_id = True
+
     def place_order(
         self, symbol, qty, side, order_type=OrderType.MARKET,
         limit_price=None, stop_price=None, time_in_force="day", account_id=None,
@@ -222,7 +224,11 @@ class EtradeBroker(BrokerInterface):
         payload = {
             "PlaceOrderRequest": {
                 "orderType": "EQ",
-                "clientOrderId": str(uuid.uuid4())[:20],
+                # The CALLER'S stable intent id when supplied. It used to be a fresh uuid4
+                # minted here, which E*Trade accepted and which was useless afterwards: nothing
+                # local held it, so it could not resolve an unrecorded acceptance. E*Trade caps
+                # this at 20 characters, which is why the generated id is kept short.
+                "clientOrderId": (client_order_id or str(uuid.uuid4()))[:20],
                 "Order": [{
                     "allOrNone": "false",
                     "priceType": price_type,

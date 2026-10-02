@@ -382,9 +382,20 @@ REGISTER: tuple[WorkItem, ...] = (
     WorkItem("M24", "follow-up", "Per-job migration readiness improved, not universal",
              "Inventory prerequisites for outbox, intent uniqueness, mark evidence and metrics "
              "workers.", "Missing/unknown prerequisites block dependent work precisely.",
-             "platform", Engineering.IMPLEMENTED, Research.NOT_MEASURABLE, Decision.NO_ACTION,
-             _t(TriggerKind.IMPLEMENTATION, "prerequisite inventory beyond the one job exists"),
-             notes="Keep liveness distinct from capability readiness."),
+             "platform", Engineering.TESTED, Research.NOT_MEASURABLE, Decision.NO_ACTION,
+             _t(TriggerKind.IMPLEMENTATION, "the matrix is run READ-ONLY against the production "
+                                            "schema, so real capability coverage is read "
+                                            "rather than inferred",
+                "matrix built and tested 2026-10-01; exposed on /health; NOT yet run in prod"),
+             notes="Capability matrix over outbox enqueue/drain, broker submission, exposure "
+                   "reservation and submission reconciliation. A LEDGER ENTRY IS NOT A "
+                   "CAPABILITY: a table can exist with its unique constraint missing - every "
+                   "insert succeeds, the migration reads as applied, idempotency is gone. "
+                   "Three states; `unknown` BLOCKS a risk-increasing action and does NOT block "
+                   "a risk-reducing one, so a degraded entry path can never trap a position or "
+                   "blind reconciliation. /health gains a `capabilities` block while `status` "
+                   "stays ok - a process with an unmet prerequisite is healthy and DEGRADED. "
+                   "Keep liveness distinct from capability readiness."),
     WorkItem("M25", "release prerequisite", "Deferred broker/order and options-accounting items",
              "Reconcile A01-A03 lifecycle scope and research-vs-executable options marks against "
              "current code.", "Reconciled before any live-capital proposal.",

@@ -378,8 +378,11 @@ with Session() as s:
     _enqueue(s, phase="results", redis_client=FakeRedis(), event_time=T0)
     s.commit()
 with Session() as s:
+    # No legacy marker for either row -> both are POTENTIALLY UNDELIVERED, which the cutover
+    # must report rather than claim as already sent.
     res_w = eo.deliver_batch(s, activated_at=ACTIVATED, owner="w", send=prov_w,
-                             is_subscribed=lambda r: True, now=T0)
+                             is_subscribed=lambda r: True,
+                             legacy_marker=lambda r: False, now=T0)
 with Session() as s:
     rows = {r.event_id.rsplit(":", 1)[1]: r for r in s.query(NotificationOutbox).all()}
     R["activation_watermark"] = {

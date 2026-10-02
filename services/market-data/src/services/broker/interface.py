@@ -127,8 +127,19 @@ class BrokerInterface(ABC):
         stop_price: float | None = None,
         time_in_force: str = "day",
         account_id: str | None = None,
+        client_order_id: str | None = None,
     ) -> BrokerOrder:
-        """Submit an order and return the broker's order record."""
+        """Submit an order and return the broker's order record.
+
+        `client_order_id` is the CALLER's stable identity for this intent, sent to the broker so
+        an order whose acceptance was never recorded locally can still be found in the broker's
+        own record. Without it, resolving an `unknown` submission means matching on symbol,
+        quantity and time — which is guessing, and guessing confirms the wrong order.
+
+        An adapter that cannot transmit it must say so via `supports_client_order_id`, so the
+        caller records that an `unknown` is NOT resolvable by identity there rather than
+        assuming it is.
+        """
 
     @abstractmethod
     def cancel_order(self, order_id: str, account_id: str | None = None) -> bool:

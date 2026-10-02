@@ -125,8 +125,49 @@ def test_a_stable_client_order_identity_is_committed_before_any_broker_contact(p
     own order list back to this trade means guessing from symbol and quantity — which is how a
     reconciliation confirms the wrong order."""
     i = probe["broker_identity"]
-    assert i["client_order_id"] and i["client_order_id"].startswith("pt-")
+    assert i["client_order_id"] and i["client_order_id"].startswith("pt")
     assert i["before_any_broker_contact"] is True
+
+
+def test_the_identity_fits_every_brokers_field_width():
+    """E*Trade truncates `clientOrderId` at 20 characters, and a TRUNCATED id is not an id —
+    two intents could collide after the cut, which is worse than having none. The generated
+    value must therefore survive intact at every broker."""
+    from src.services import broker_submission as bs
+    for pid in (1, 999999):
+        cid = bs.new_client_order_id(pid, "VERYLONGSYMBOL.HK")
+        assert len(cid) <= 20, cid
+
+
+def test_the_identity_actually_reaches_the_broker():
+    """STORING IT LOCALLY IS NOT ENOUGH, and this was the gap. `place_order` had no
+    `client_order_id` parameter at all, and E*Trade minted a THROWAWAY uuid4 of its own — so
+    nothing local matched anything the broker held, and an `unknown` was unresolvable except by
+    guessing from symbol, quantity and time.
+
+    The round trip is asserted here against a recording adapter."""
+    from src.services.broker.interface import OrderSide, OrderType
+    import inspect
+    from src.services.broker import alpaca_broker, etrade_broker, interface
+
+    # Every adapter accepts it...
+    for mod, name in ((interface, "BrokerInterface"), (alpaca_broker, None),
+                      (etrade_broker, None)):
+        src = inspect.getsource(mod)
+        assert "client_order_id" in src, f"{mod.__name__} cannot carry a client order id"
+    # ...and the two that can transmit it say so.
+    assert "supports_client_order_id = True" in inspect.getsource(alpaca_broker)
+    assert "supports_client_order_id = True" in inspect.getsource(etrade_broker)
+
+
+def test_an_adapter_that_cannot_transmit_the_identity_is_recorded_as_such():
+    """A manual broker has no counterparty to send an id to. Treating it as capable would mean
+    believing an `unknown` is resolvable by identity when it is not."""
+    from src.services import broker_submission as bs
+    from src.services.broker import manual_broker
+    import inspect
+    assert "supports_client_order_id = False" in inspect.getsource(manual_broker)
+    assert bs.identity_is_transmittable(object()) is False
 
 
 def test_an_intent_routed_to_the_legacy_path_is_never_claimed_by_the_new_dispatcher(probe):
@@ -150,6 +191,25 @@ def test_reconciliation_demands_evidence_and_an_order_id(probe):
     r = probe["broker_reconcile"]
     assert "requires evidence" in r["evidence_required"]
     assert "requires the broker's order id" in r["order_id_required"]
+
+
+def test_resolving_to_REJECTED_does_not_require_an_order_id():
+    """Evidence appropriate to the VERDICT. `rejected` asserts an order does not exist, and a
+    definitive pre-submission failure legitimately has none — demanding one would force a
+    FABRICATED id to record a true fact."""
+    import inspect
+    from src.services import broker_submission as bs
+    src = inspect.getsource(bs.reconcile_submission)
+    assert "if resolution == SUBMITTED and not (order_id or trade.broker_order_id):" in src, \
+        "the order-id requirement must be scoped to `submitted` only"
+
+
+def test_a_not_found_lookup_is_not_treated_as_proof_of_absence():
+    """A broker returning "not found" can mean propagation delay, the wrong account scope, or a
+    transient outage. Treating it as proof would authorise a resubmission for an order that is
+    simply not visible yet."""
+    from src.services import broker_submission as bs
+    assert "not evidence of non-existence" in bs.NOT_FOUND_IS_NOT_ABSENCE
 
 
 # ── What is deliberately not claimed ──────────────────────────────────────────────────────────

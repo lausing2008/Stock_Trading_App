@@ -245,6 +245,10 @@ def _place_broker_entry(session, trade: "PaperTrade", portfolio: "PaperPortfolio
             qty=int(trade.shares),
             side=OrderSide.BUY,
             order_type=OrderType.MARKET,
+            # M25: the stable intent identity, so an acceptance this process never recorded can
+            # still be found in the broker's own order list. None on the legacy path, where no
+            # intent row was minted.
+            client_order_id=getattr(trade, "broker_client_order_id", None),
         )
         trade.broker_order_id = order.order_id
         trade.broker_error = None  # a successful placement clears any prior failure on this leg

@@ -126,15 +126,21 @@ class AlpacaBroker(BrokerInterface):
 
     # ── Orders ────────────────────────────────────────────────────────────────
 
+    supports_client_order_id = True
+
     def place_order(
         self, symbol, qty, side, order_type=OrderType.MARKET,
         limit_price=None, stop_price=None, time_in_force="day", account_id=None,
+        client_order_id=None,
     ) -> BrokerOrder:
         order_type_map = {
             OrderType.MARKET: "market", OrderType.LIMIT: "limit",
             OrderType.STOP: "stop", OrderType.STOP_LIMIT: "stop_limit",
         }
         payload: dict = {
+            # The caller's stable intent identity, so an order whose acceptance was never
+            # recorded locally can still be found in Alpaca's own order list.
+            **({"client_order_id": client_order_id} if client_order_id else {}),
             "symbol": symbol,
             "qty": str(int(qty)),
             "side": "buy" if side == OrderSide.BUY else "sell",
