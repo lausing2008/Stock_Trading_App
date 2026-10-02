@@ -51,6 +51,19 @@ def test_the_key_is_not_in_the_shared_env_example():
             assert "OPENROUTER_API_KEY" not in f.read_text(), candidate
 
 
+def test_the_example_file_is_actually_COMMITTED_not_just_present_on_disk():
+    """It was not, and the failure was silent. `.gitignore`'s `.env.*` rule matches
+    `.env.jev.example` too, and the existing negations only cover the two older examples — so
+    `git add -A` skipped it without a word, the commit succeeded, and the file simply was not
+    on the server when the deploy tried to copy it.
+
+    An example that exists only on the author's machine documents nothing."""
+    import subprocess
+    r = subprocess.run(["git", "check-ignore", ".env.jev.example"],
+                       cwd=_ROOT, capture_output=True, text=True)
+    assert r.returncode != 0, ".env.jev.example is gitignored and will never reach a deployment"
+
+
 def test_the_example_file_is_present_and_carries_no_value():
     """A committed example must document the name and never a secret."""
     example = (_ROOT / ".env.jev.example").read_text()

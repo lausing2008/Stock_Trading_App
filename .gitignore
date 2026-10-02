@@ -38,6 +38,9 @@ models/artifacts/
 .env.*
 !.env.example
 !.env.production.example
+# `.env.*` above also swallows any NEW example file. A committed example carries a NAME and no
+# value — it is documentation, and it has to be in the repo to be useful to a fresh deployment.
+!.env.jev.example
 
 # IDE
 .idea/
