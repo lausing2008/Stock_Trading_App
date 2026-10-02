@@ -156,4 +156,8 @@ why masking is avoided.
 - `services/ml-prediction/src/features/builder.py` — the `trace` out-parameter.
 - `services/ml-prediction/src/training/trainer.py` — the stage wiring, and
   `metrics.base_ledger` on each artifact.
-- `services/ml-prediction/tests/test_m13_base_training_ledger.py` — 30 tests.
+- `services/ml-prediction/tests/test_m13_base_training_ledger.py` — 31 tests.
+- `docs/audits/evidence/2026-10-02-base-ledger-selection-probe.py` — a READ-ONLY probe that
+  runs the real selection stages against real production prices. It trains nothing and
+  writes nothing, and it exercises only the three selection stages and the cohort; the
+  later stages belong to a fit.
