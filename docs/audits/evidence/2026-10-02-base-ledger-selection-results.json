@@ -1,0 +1,572 @@
+{
+  "MU/GROWTH": {
+    "subject": "MU",
+    "style": "GROWTH",
+    "horizon": 15,
+    "model": "probe",
+    "outcome": "in_progress",
+    "abort_stage": null,
+    "abort_reason": null,
+    "stages": [
+      {
+        "stage": "loaded_bars",
+        "rows_in": 755,
+        "rows_out": 755,
+        "lost": 0,
+        "dropped": {},
+        "dropped_is_disjoint": true,
+        "diagnostics": {},
+        "diagnostics_overlap": true,
+        "unexplained": 0,
+        "reconciles": true,
+        "date_range": [
+          "2023-09-28",
+          "2026-10-01"
+        ],
+        "class_support": null,
+        "partition": null,
+        "unmeasured_reason": null,
+        "note": ""
+      },
+      {
+        "stage": "completed_unique_bars",
+        "rows_in": 755,
+        "rows_out": 755,
+        "lost": 0,
+        "dropped": {},
+        "dropped_is_disjoint": true,
+        "diagnostics": {},
+        "diagnostics_overlap": true,
+        "unexplained": 0,
+        "reconciles": true,
+        "date_range": [
+          "2023-09-28",
+          "2026-10-01"
+        ],
+        "class_support": null,
+        "partition": null,
+        "unmeasured_reason": null,
+        "note": ""
+      },
+      {
+        "stage": "required_features",
+        "rows_in": 755,
+        "rows_out": 503,
+        "lost": 252,
+        "dropped": {
+          "required_feature_missing": 252
+        },
+        "dropped_is_disjoint": true,
+        "diagnostics": {
+          "any_required_feature_missing": 252,
+          "any_forward_label_unavailable": 15,
+          "any_inside_dead_zone": 135,
+          "overlap_of_all_three": 0
+        },
+        "diagnostics_overlap": true,
+        "unexplained": 0,
+        "reconciles": true,
+        "date_range": [
+          "2024-09-30",
+          "2026-10-01"
+        ],
+        "class_support": null,
+        "partition": null,
+        "unmeasured_reason": null,
+        "note": ""
+      },
+      {
+        "stage": "available_labels",
+        "rows_in": 503,
+        "rows_out": 488,
+        "lost": 15,
+        "dropped": {
+          "forward_label_unavailable": 15
+        },
+        "dropped_is_disjoint": true,
+        "diagnostics": {},
+        "diagnostics_overlap": true,
+        "unexplained": 0,
+        "reconciles": true,
+        "date_range": [
+          "2024-09-30",
+          "2026-09-10"
+        ],
+        "class_support": null,
+        "partition": null,
+        "unmeasured_reason": null,
+        "note": "the last `horizon` bars can have no forward return yet; this is the price of the label, not a data defect"
+      },
+      {
+        "stage": "dead_zone_selection",
+        "rows_in": 488,
+        "rows_out": 415,
+        "lost": 73,
+        "dropped": {
+          "inside_dead_zone": 73
+        },
+        "dropped_is_disjoint": true,
+        "diagnostics": {},
+        "diagnostics_overlap": true,
+        "unexplained": 0,
+        "reconciles": true,
+        "date_range": [
+          "2024-09-30",
+          "2026-09-10"
+        ],
+        "class_support": {
+          "pos": 286,
+          "neg": 129
+        },
+        "partition": null,
+        "unmeasured_reason": null,
+        "note": "excluded for being too SMALL to label confidently, not for being invalid \u2014 see the eligible-opportunity cohort"
+      }
+    ],
+    "stages_recorded": [
+      "loaded_bars",
+      "completed_unique_bars",
+      "required_features",
+      "available_labels",
+      "dead_zone_selection"
+    ],
+    "stages_not_reached": [
+      "deduplication",
+      "split_allocation",
+      "embargo",
+      "threshold_report_sets"
+    ],
+    "survivors": 415,
+    "biggest_loss": "required_features",
+    "complete": true,
+    "reconciles": true,
+    "chain_breaks": [],
+    "augmentation": null,
+    "cohort": null,
+    "label_threshold": 0.03,
+    "selected_rows": 415,
+    "class_support_selected": {
+      "pos": 286,
+      "neg": 129
+    },
+    "cohort_full_series": {
+      "n_eligible": 488,
+      "n_selected_for_training": 415,
+      "n_eligible_excluded_from_training": 73,
+      "date_range": [
+        "2024-09-30",
+        "2026-09-10"
+      ],
+      "excluded_abs_move_max": 0.02981236021307687,
+      "class_support_eligible": {
+        "pos": 325,
+        "neg": 163
+      }
+    },
+    "cohort_tail_window": {
+      "definition": "features_complete AND forward_label_available; dead-zone rows INCLUDED",
+      "window": {
+        "start": "2026-07-02",
+        "end": "2026-09-10"
+      },
+      "scope": "test window only; the full-series counts beside it are for context",
+      "full_series": {
+        "n_eligible": 488,
+        "n_selected_for_training": 415,
+        "n_eligible_excluded_from_training": 73,
+        "date_range": [
+          "2024-09-30",
+          "2026-09-10"
+        ]
+      },
+      "unavailable_reason": null,
+      "n_eligible_in_window": 49,
+      "n_selected_in_window": 42,
+      "n_excluded_small_moves_in_window": 7,
+      "class_support_eligible_in_window": {
+        "pos": 33,
+        "neg": 16
+      }
+    }
+  },
+  "MU/LONG": {
+    "subject": "MU",
+    "style": "LONG",
+    "horizon": 20,
+    "model": "probe",
+    "outcome": "in_progress",
+    "abort_stage": null,
+    "abort_reason": null,
+    "stages": [
+      {
+        "stage": "loaded_bars",
+        "rows_in": 755,
+        "rows_out": 755,
+        "lost": 0,
+        "dropped": {},
+        "dropped_is_disjoint": true,
+        "diagnostics": {},
+        "diagnostics_overlap": true,
+        "unexplained": 0,
+        "reconciles": true,
+        "date_range": [
+          "2023-09-28",
+          "2026-10-01"
+        ],
+        "class_support": null,
+        "partition": null,
+        "unmeasured_reason": null,
+        "note": ""
+      },
+      {
+        "stage": "completed_unique_bars",
+        "rows_in": 755,
+        "rows_out": 755,
+        "lost": 0,
+        "dropped": {},
+        "dropped_is_disjoint": true,
+        "diagnostics": {},
+        "diagnostics_overlap": true,
+        "unexplained": 0,
+        "reconciles": true,
+        "date_range": [
+          "2023-09-28",
+          "2026-10-01"
+        ],
+        "class_support": null,
+        "partition": null,
+        "unmeasured_reason": null,
+        "note": ""
+      },
+      {
+        "stage": "required_features",
+        "rows_in": 755,
+        "rows_out": 503,
+        "lost": 252,
+        "dropped": {
+          "required_feature_missing": 252
+        },
+        "dropped_is_disjoint": true,
+        "diagnostics": {
+          "any_required_feature_missing": 252,
+          "any_forward_label_unavailable": 20,
+          "any_inside_dead_zone": 140,
+          "overlap_of_all_three": 0
+        },
+        "diagnostics_overlap": true,
+        "unexplained": 0,
+        "reconciles": true,
+        "date_range": [
+          "2024-09-30",
+          "2026-10-01"
+        ],
+        "class_support": null,
+        "partition": null,
+        "unmeasured_reason": null,
+        "note": ""
+      },
+      {
+        "stage": "available_labels",
+        "rows_in": 503,
+        "rows_out": 483,
+        "lost": 20,
+        "dropped": {
+          "forward_label_unavailable": 20
+        },
+        "dropped_is_disjoint": true,
+        "diagnostics": {},
+        "diagnostics_overlap": true,
+        "unexplained": 0,
+        "reconciles": true,
+        "date_range": [
+          "2024-09-30",
+          "2026-09-02"
+        ],
+        "class_support": null,
+        "partition": null,
+        "unmeasured_reason": null,
+        "note": "the last `horizon` bars can have no forward return yet; this is the price of the label, not a data defect"
+      },
+      {
+        "stage": "dead_zone_selection",
+        "rows_in": 483,
+        "rows_out": 409,
+        "lost": 74,
+        "dropped": {
+          "inside_dead_zone": 74
+        },
+        "dropped_is_disjoint": true,
+        "diagnostics": {},
+        "diagnostics_overlap": true,
+        "unexplained": 0,
+        "reconciles": true,
+        "date_range": [
+          "2024-10-01",
+          "2026-09-02"
+        ],
+        "class_support": {
+          "pos": 282,
+          "neg": 127
+        },
+        "partition": null,
+        "unmeasured_reason": null,
+        "note": "excluded for being too SMALL to label confidently, not for being invalid \u2014 see the eligible-opportunity cohort"
+      }
+    ],
+    "stages_recorded": [
+      "loaded_bars",
+      "completed_unique_bars",
+      "required_features",
+      "available_labels",
+      "dead_zone_selection"
+    ],
+    "stages_not_reached": [
+      "deduplication",
+      "split_allocation",
+      "embargo",
+      "threshold_report_sets"
+    ],
+    "survivors": 409,
+    "biggest_loss": "required_features",
+    "complete": true,
+    "reconciles": true,
+    "chain_breaks": [],
+    "augmentation": null,
+    "cohort": null,
+    "label_threshold": 0.03,
+    "selected_rows": 409,
+    "class_support_selected": {
+      "pos": 282,
+      "neg": 127
+    },
+    "cohort_full_series": {
+      "n_eligible": 483,
+      "n_selected_for_training": 409,
+      "n_eligible_excluded_from_training": 74,
+      "date_range": [
+        "2024-09-30",
+        "2026-09-02"
+      ],
+      "excluded_abs_move_max": 0.029903051550489113,
+      "class_support_eligible": {
+        "pos": 316,
+        "neg": 167
+      }
+    },
+    "cohort_tail_window": {
+      "definition": "features_complete AND forward_label_available; dead-zone rows INCLUDED",
+      "window": {
+        "start": "2026-06-25",
+        "end": "2026-09-02"
+      },
+      "scope": "test window only; the full-series counts beside it are for context",
+      "full_series": {
+        "n_eligible": 483,
+        "n_selected_for_training": 409,
+        "n_eligible_excluded_from_training": 74,
+        "date_range": [
+          "2024-09-30",
+          "2026-09-02"
+        ]
+      },
+      "unavailable_reason": null,
+      "n_eligible_in_window": 49,
+      "n_selected_in_window": 43,
+      "n_excluded_small_moves_in_window": 6,
+      "class_support_eligible_in_window": {
+        "pos": 30,
+        "neg": 19
+      }
+    }
+  },
+  "CM/LONG": {
+    "subject": "CM",
+    "style": "LONG",
+    "horizon": 20,
+    "model": "probe",
+    "outcome": "in_progress",
+    "abort_stage": null,
+    "abort_reason": null,
+    "stages": [
+      {
+        "stage": "loaded_bars",
+        "rows_in": 755,
+        "rows_out": 755,
+        "lost": 0,
+        "dropped": {},
+        "dropped_is_disjoint": true,
+        "diagnostics": {},
+        "diagnostics_overlap": true,
+        "unexplained": 0,
+        "reconciles": true,
+        "date_range": [
+          "2023-09-28",
+          "2026-10-01"
+        ],
+        "class_support": null,
+        "partition": null,
+        "unmeasured_reason": null,
+        "note": ""
+      },
+      {
+        "stage": "completed_unique_bars",
+        "rows_in": 755,
+        "rows_out": 755,
+        "lost": 0,
+        "dropped": {},
+        "dropped_is_disjoint": true,
+        "diagnostics": {},
+        "diagnostics_overlap": true,
+        "unexplained": 0,
+        "reconciles": true,
+        "date_range": [
+          "2023-09-28",
+          "2026-10-01"
+        ],
+        "class_support": null,
+        "partition": null,
+        "unmeasured_reason": null,
+        "note": ""
+      },
+      {
+        "stage": "required_features",
+        "rows_in": 755,
+        "rows_out": 503,
+        "lost": 252,
+        "dropped": {
+          "required_feature_missing": 252
+        },
+        "dropped_is_disjoint": true,
+        "diagnostics": {
+          "any_required_feature_missing": 252,
+          "any_forward_label_unavailable": 20,
+          "any_inside_dead_zone": 231,
+          "overlap_of_all_three": 0
+        },
+        "diagnostics_overlap": true,
+        "unexplained": 0,
+        "reconciles": true,
+        "date_range": [
+          "2024-09-30",
+          "2026-10-01"
+        ],
+        "class_support": null,
+        "partition": null,
+        "unmeasured_reason": null,
+        "note": ""
+      },
+      {
+        "stage": "available_labels",
+        "rows_in": 503,
+        "rows_out": 483,
+        "lost": 20,
+        "dropped": {
+          "forward_label_unavailable": 20
+        },
+        "dropped_is_disjoint": true,
+        "diagnostics": {},
+        "diagnostics_overlap": true,
+        "unexplained": 0,
+        "reconciles": true,
+        "date_range": [
+          "2024-09-30",
+          "2026-09-02"
+        ],
+        "class_support": null,
+        "partition": null,
+        "unmeasured_reason": null,
+        "note": "the last `horizon` bars can have no forward return yet; this is the price of the label, not a data defect"
+      },
+      {
+        "stage": "dead_zone_selection",
+        "rows_in": 483,
+        "rows_out": 332,
+        "lost": 151,
+        "dropped": {
+          "inside_dead_zone": 151
+        },
+        "dropped_is_disjoint": true,
+        "diagnostics": {},
+        "diagnostics_overlap": true,
+        "unexplained": 0,
+        "reconciles": true,
+        "date_range": [
+          "2024-09-30",
+          "2026-09-02"
+        ],
+        "class_support": {
+          "pos": 261,
+          "neg": 71
+        },
+        "partition": null,
+        "unmeasured_reason": null,
+        "note": "excluded for being too SMALL to label confidently, not for being invalid \u2014 see the eligible-opportunity cohort"
+      }
+    ],
+    "stages_recorded": [
+      "loaded_bars",
+      "completed_unique_bars",
+      "required_features",
+      "available_labels",
+      "dead_zone_selection"
+    ],
+    "stages_not_reached": [
+      "deduplication",
+      "split_allocation",
+      "embargo",
+      "threshold_report_sets"
+    ],
+    "survivors": 332,
+    "biggest_loss": "required_features",
+    "complete": true,
+    "reconciles": true,
+    "chain_breaks": [],
+    "augmentation": null,
+    "cohort": null,
+    "label_threshold": 0.02223515012945361,
+    "selected_rows": 332,
+    "class_support_selected": {
+      "pos": 261,
+      "neg": 71
+    },
+    "cohort_full_series": {
+      "n_eligible": 483,
+      "n_selected_for_training": 332,
+      "n_eligible_excluded_from_training": 151,
+      "date_range": [
+        "2024-09-30",
+        "2026-09-02"
+      ],
+      "excluded_abs_move_max": 0.021962331275385827,
+      "class_support_eligible": {
+        "pos": 335,
+        "neg": 148
+      }
+    },
+    "cohort_tail_window": {
+      "definition": "features_complete AND forward_label_available; dead-zone rows INCLUDED",
+      "window": {
+        "start": "2026-06-25",
+        "end": "2026-09-02"
+      },
+      "scope": "test window only; the full-series counts beside it are for context",
+      "full_series": {
+        "n_eligible": 483,
+        "n_selected_for_training": 332,
+        "n_eligible_excluded_from_training": 151,
+        "date_range": [
+          "2024-09-30",
+          "2026-09-02"
+        ]
+      },
+      "unavailable_reason": null,
+      "n_eligible_in_window": 49,
+      "n_selected_in_window": 25,
+      "n_excluded_small_moves_in_window": 24,
+      "class_support_eligible_in_window": {
+        "pos": 20,
+        "neg": 29
+      }
+    }
+  }
+}

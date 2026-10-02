@@ -1,9 +1,14 @@
 # The base training ledger
 
 Date: October 2, 2026. Built, tested and deployed. **No model was retrained, no threshold
-tuned, no history window or split proportion changed, and no flag flipped.** Every number
-in this document is a property of the instrumentation, not a production measurement — the
-first real measurement arrives with the next scheduled retrain.
+tuned, no history window or split proportion changed, and no flag flipped.**
+
+Two kinds of number appear below and they carry different weight. Most are properties of the
+instrumentation, established by tests. The table under "First production measurement" is
+different: it was measured read-only against live production prices, and it reconciles with
+a stored artifact to the row. No fit has run with the ledger attached — that arrives with
+the next scheduled retrain — so the four stages that only a fit can reach remain untested
+against production.
 
 ## What this answers that the previous ledger could not
 
@@ -113,10 +118,65 @@ training never fetches missing vendor history, and nothing stored says how many 
 existed, or were usable, at the time of any historical fit. The base ledger's `loaded_bars`
 stage records this per fit going forward; it cannot be reconstructed backwards.
 
+## First production measurement — and it reconciles with a stored artifact
+
+Run read-only against live production data the same day (no training, no writes), the three
+selection stages measure as follows. The three symbols were chosen because their stored
+artifacts are the ones the denominator finding was measured on.
+
+| Stage | MU/GROWTH (h=15) | MU/LONG (h=20) | CM/LONG (h=20) |
+|---|---:|---:|---:|
+| Loaded bars | 755 | 755 | 755 |
+| Completed / unique | 755 | 755 | 755 |
+| Required features | **503** (−252) | **503** (−252) | **503** (−252) |
+| Available labels | 488 (−15) | 483 (−20) | 483 (−20) |
+| Dead-zone selection | 415 (−73) | 409 (−74) | 332 (−151) |
+| Class support selected | 286 / 129 | 282 / 127 | 261 / 71 |
+
+Every stage reconciles, there are no chain breaks, and the ledger is complete for the
+stages a non-fit can reach.
+
+**252 bars — exactly one trading year — is the warm-up cost, and it is a third of all
+stored history.** Identical across all three because it is a property of the feature set,
+not of the symbol: `dist_52w_high`, `dist_52w_low` (`rolling(252)`) and `momentum_12_1`
+(`pct_change(252)`) cannot be computed until a year of bars exists. So a 755-bar symbol has
+503 feature-complete bars, and usable history begins 2024-09-30 rather than 2023-09-28.
+This is a deterministic cost, not missing data — but it is the concrete answer to "755 bars
+does not rule out insufficient history", and it was not previously measured anywhere.
+
+The label cost lands exactly where the design says it should: 15 rows at horizon 15, 20 at
+horizon 20 — the last `horizon` bars have no forward return yet.
+
+**The diagnostics overlap, as designed.** For MU/GROWTH the three criteria flag 252 + 15 +
+135 = 402 rows between them, against a real loss of 340. A ledger reconciling against that
+sum would report a 62-row shortfall nobody lost. `overlap_of_all_three` is 0, so the excess
+is entirely the dead-zone criterion overlapping the other two.
+
+**The stored artifact reproduces exactly.** MU/GROWTH stored `n_train` 289, `n_cal` 26,
+`n_test` 27 and 14 reporting rows. Feeding 414 base rows through the real split constants
+(70/80/90, `_MIN_SLICE_ROWS` 10, a full 15-bar embargo on each of the three boundaries)
+yields 289 / 26 / 27, a threshold half of 13 and a reporting half of **14** — all four
+figures, exactly. The probe measured **415** rows surviving the dead zone, which is the
+count *before* deduplication; the one-row difference is precisely the stage the probe does
+not execute. The denominator finding is therefore not an inference from stored metadata any
+more: the chain from 755 stored bars to 14 reporting rows is now accounted for, row by row.
+
+The excluded dead-zone rows behave as the cohort claims: the largest absolute move among
+them is 2.98% against MU's fitted 3.00% threshold, and 2.20% against CM's 2.22%. They were
+excluded for being small, not for being unusable.
+
 ## What this does not establish
 
-- **No fit has run with it.** The wiring is tested; the measurement is not yet made. The
-  first instrumented ledgers appear with the next scheduled retrain.
+- **No fit has run with it.** The five stages up to the dead zone are now measured on
+  production data; `deduplication`, `split_allocation`, `embargo` and `threshold_report_sets`
+  have been tested but never executed in production, and neither has the abort path. The
+  first complete ledgers appear with the next scheduled retrain.
+- **The reconciliation is arithmetic, not a replay.** Feeding 414 rows through the split
+  constants reproduces the stored artifact's four counts exactly, which is strong evidence
+  the chain is right — but it is not the same as having watched that fit record them.
+- **The probe omits the optional feature inputs** (macro, sector, fundamental, outcome,
+  options). Those columns are NaN-allowed and cannot drop rows, which the exact match
+  confirms; it does not establish that they were present or correct.
 - **Rows are not independent observations.** The ledger counts rows. Adjacent daily bars
   share overlapping feature windows and overlapping forward-return windows, so a larger row
   count is not proportionally more evidence. Unique session and event counts remain
@@ -157,6 +217,8 @@ why masking is avoided.
 - `services/ml-prediction/src/training/trainer.py` — the stage wiring, and
   `metrics.base_ledger` on each artifact.
 - `services/ml-prediction/tests/test_m13_base_training_ledger.py` — 31 tests.
+- `docs/audits/evidence/2026-10-02-base-ledger-selection-results.json` — the measured
+  output of that probe for the three symbols above, saved as evidence.
 - `docs/audits/evidence/2026-10-02-base-ledger-selection-probe.py` — a READ-ONLY probe that
   runs the real selection stages against real production prices. It trains nothing and
   writes nothing, and it exercises only the three selection stages and the cohort; the
