@@ -245,11 +245,11 @@ REGISTER: tuple[WorkItem, ...] = (
     WorkItem("M14", "P1", "OOS-suppression rollout not independently settled",
              "Inventory active artifacts/consumers; verify invalid models cannot publish or be "
              "unsuppressed by resweeps.", "Versioned suppression reasons and coverage effects.",
-             "ML/operations", Engineering.TESTED, Research.NOT_MEASURABLE, Decision.NO_ACTION,
-             _t(TriggerKind.IMPLEMENTATION, "run the READ-ONLY inventory against the "
-                                            "production model directory, recording artifact "
-                                            "hashes, rule version, unknown-validity counts and "
-                                            "read errors - no retrain required",
+             "ML/operations", Engineering.INDEPENDENTLY_VERIFIED, Research.SUPPORTED_FOR_DEFINED_SCOPE,
+             Decision.NO_ACTION,
+             _t(TriggerKind.IMPLEMENTATION, "decide whether an absent cv_auc_mean should "
+                                            "suppress - 4 artifacts serve today with every "
+                                            "quality condition unevaluable",
                 "inventory built and tested 2026-10-01; NOT yet run against production"),
              notes="suppression_inventory.build_inventory() calls the REAL "
                    "_compute_oos_suppression (injected, never reimplemented) and reports the "

@@ -209,3 +209,38 @@ def test_a_suppressed_model_is_neutralised_at_inference_not_merely_dampened():
     # And the ensemble zeroes the weight rather than blending a suppressed model at full AUC.
     assert 'if xgb.get("oos_suppressed"):' in trainer
     assert 'if rf.get("oos_suppressed"):' in trainer
+
+
+# ── Found by running it against production, 2026-10-02 ────────────────────────────────────────
+
+def test_a_model_with_no_quality_metrics_at_all_is_surfaced():
+    """FOUND IN PRODUCTION. `random_forest/CM_long.joblib` scored auc 1.0, recall 1.0 and
+    precision 1.0 on **12 test rows**, with `cv_auc_mean` and `overfit_gap` both absent and
+    `evaluation_valid` true — so it was unsuppressed and serving at live fusion weight.
+
+    It is not suppressed because every condition is unevaluable: `cv_auc < 0.52` cannot fire on
+    None, `abs(overfit_gap) > 0.10` cannot fire on None, dead recall is trivially passed by a
+    model that predicts every positive, and the evaluation is marked valid. It is serving
+    because nothing could measure it, not because it passed anything.
+
+    The rule is NOT changed here — that would stop four models contributing and is a decision
+    about live signal. This makes the population visible so the decision can be made on
+    evidence."""
+    bundle = {"oos_suppressed": False,
+              "metrics": {"auc": 1.0, "recall": 1.0, "precision": 1.0, "n_test": 12,
+                          "cv_auc_mean": None, "overfit_gap": None, "evaluation_valid": True}}
+    inv = si.build_inventory([("random_forest/CM_long.joblib", bundle)], decide=DECIDE)
+    assert inv.would_suppress == [], "today's rule genuinely does not catch it"
+    assert inv.unsuppressed_without_quality_evidence == ["random_forest/CM_long.joblib"]
+
+
+def test_a_model_with_real_metrics_is_not_flagged_as_evidence_free():
+    inv = si.build_inventory([("good", _bundle(suppressed=False))], decide=DECIDE)
+    assert inv.unsuppressed_without_quality_evidence == []
+
+
+def test_a_SUPPRESSED_model_with_no_metrics_is_not_flagged():
+    """The concern is a model SERVING without evidence. One already held back is not serving."""
+    b = _bundle(suppressed=True, cv_auc_mean=None, overfit_gap=None)
+    inv = si.build_inventory([("held", b)], decide=DECIDE)
+    assert inv.unsuppressed_without_quality_evidence == []

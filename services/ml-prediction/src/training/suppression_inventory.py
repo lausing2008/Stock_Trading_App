@@ -45,6 +45,11 @@ class Inventory:
     invalid_unsuppressed: list[str] = field(default_factory=list)
     #: DEFECT if non-empty: a resweep that would UNSUPPRESS an invalid model.
     resweep_would_unsuppress_invalid: list[str] = field(default_factory=list)
+    #: FOUND IN PRODUCTION 2026-10-02. Unsuppressed models for which EVERY quality condition was
+    #: unevaluable — `cv_auc_mean` and `overfit_gap` both absent. They are serving not because
+    #: they passed the bar but because nothing could measure them against it, which is the
+    #: opposite of what an unsuppressed flag is taken to mean.
+    unsuppressed_without_quality_evidence: list[str] = field(default_factory=list)
     would_suppress: list[str] = field(default_factory=list)
     would_unsuppress: list[str] = field(default_factory=list)
     by_reason: dict[str, int] = field(default_factory=dict)
@@ -72,6 +77,7 @@ class Inventory:
             "invalid": self.invalid, "unknown_validity": self.unknown_validity,
             "validity_coverage": self.coverage,
             "invalid_unsuppressed": self.invalid_unsuppressed,
+            "unsuppressed_without_quality_evidence": self.unsuppressed_without_quality_evidence,
             "resweep_would_unsuppress_invalid": self.resweep_would_unsuppress_invalid,
             "would_suppress": len(self.would_suppress),
             "would_unsuppress": len(self.would_unsuppress),
@@ -102,6 +108,12 @@ def build_inventory(bundles: Iterable[tuple[str, Mapping | None]], *, decide) ->
             inv.suppressed += 1
         else:
             inv.unsuppressed += 1
+            # Absence of evidence is not evidence of quality. `cv_auc_mean` is the PRIMARY
+            # gate and `overfit_gap` the symmetric trust check; with both absent, a model can
+            # only fail the dead-recall condition, and a model that predicts every positive on
+            # a tiny split passes that trivially.
+            if metrics.get("cv_auc_mean") is None and metrics.get("overfit_gap") is None:
+                inv.unsuppressed_without_quality_evidence.append(name)
         if validity is False:
             inv.invalid += 1
             if not stored:
