@@ -1,6 +1,7 @@
 """Trainer — walks the DB for price history, builds features, fits & persists."""
 from __future__ import annotations
 
+import functools as _functools
 import os
 import tempfile
 from datetime import date, datetime, timedelta, timezone
@@ -656,24 +657,152 @@ def _load_outcome_features(
 _MIN_SLICE_ROWS = 10
 
 
+def _ts_range(frame) -> tuple[str, str] | None:
+    """(first, last) bar date of a price frame, or None when it cannot be read.
+
+    None here means NOT KNOWN. It is never rendered as a date, and never as an empty range.
+    """
+    try:
+        if frame is None or len(frame) == 0:
+            return None
+        _ts = pd.to_datetime(frame["ts"])
+        return (str(_ts.min().date()), str(_ts.max().date()))
+    except Exception:
+        return None
+
+
+def _record_selection_stages(ledger, trace: dict, *, rows_in: int) -> None:
+    """Copy build_features' three selection stages into the ledger.
+
+    The builder computes them from the same boolean series its mask is built from; this
+    function only transcribes. If the builder reports that its stage chain does not match
+    the mask it actually applied, the stages are recorded as NOT MEASURED rather than as
+    three tidy numbers that do not describe the rows that came back.
+    """
+    stages = trace.get("stages") or []
+    if not stages or not trace.get("stage_chain_matches_mask", False):
+        ledger.record("required_features", rows_in=rows_in, rows_out=None,
+                      unmeasured_reason="build_features returned no usable trace, or its "
+                                        "stage chain disagreed with the mask it applied")
+        return
+    diagnostics = dict(trace.get("diagnostics") or {})
+    for i, st in enumerate(stages):
+        ledger.record(
+            st["stage"], rows_in=int(st["rows_in"]), rows_out=int(st["rows_out"]),
+            dropped={k: int(v) for k, v in (st.get("dropped") or {}).items() if v},
+            # The overlapping view is attached once, to the first of the three, because it
+            # describes the whole selection rather than any single stage of it.
+            diagnostics=diagnostics if i == 0 else {},
+            date_range=tuple(st["date_range"]) if st.get("date_range") else None,
+            class_support=st.get("class_support"),
+            note=st.get("note", ""),
+        )
+
+
+def _base_ledger_boundary(fn):
+    """M13-BASE: own the ledger's lifetime OUTSIDE the function it measures.
+
+    The ledger has to survive every way `train_model` can end, and two of those ways are
+    not returns: the single-class `raise ValueError`, and any exception from a model
+    library mid-fit. A ledger emitted only on the success path would answer "why did this
+    fit report 11 rows" and stay silent on "why is there no artifact at all" — which is the
+    larger half of the question that prompted it.
+
+    The mechanics live in `metrics.base_ledger.run_with_ledger`, which is importable
+    without the training stack so it can be tested without xgboost, lightgbm or optuna
+    installed. This wrapper is the adapter: it reads no training state and writes none, so
+    it cannot change which rows are selected.
+
+    `train_model` keeps its name here deliberately — a dozen existing tests resolve its AST
+    node by that name to assert on its body, and renaming it would silence them.
+    """
+    @_functools.wraps(fn)
+    def _wrapped(*args, **kwargs):
+        from metrics.base_ledger import run_with_ledger
+        return run_with_ledger(fn, args, kwargs, on_close=_log_base_ledger)
+    return _wrapped
+
+
+def _log_base_ledger(ledger) -> None:
+    """Emit one line per fit, artifact or not.
+
+    `complete` and `reconciles` are logged as their own fields rather than folded into a
+    single health flag: a ledger can reconcile perfectly over stages it never reached.
+    """
+    try:
+        d = ledger.to_dict()
+    except Exception as exc:  # a broken ledger must not break training
+        log.warning("train.base_ledger_failed", error=str(exc))
+        return
+    log.info(
+        "train.base_ledger", symbol=d["subject"], style=d["style"], outcome=d["outcome"],
+        abort_stage=d["abort_stage"], abort_reason=d["abort_reason"],
+        survivors=d["survivors"], biggest_loss=d["biggest_loss"],
+        complete=d["complete"], reconciles=d["reconciles"], chain_breaks=d["chain_breaks"],
+        stages=d["stages"], augmentation=d["augmentation"],
+        cohort={k: v for k, v in (d["cohort"] or {}).items() if k != "rows"},
+    )
+
+
+@_base_ledger_boundary
 def train_model(
     symbol: str,
     model_name: str = "xgboost",
     horizon: int = 5,
     hyperparams: dict | None = None,
     style: str = "SWING",
+    *,
+    _ledger: "object | None" = None,
 ) -> dict:
+    from metrics.base_ledger import (
+        BaseTrainingLedger as _BaseTrainingLedger,
+        SafeLedger as _SafeLedger,
+        eligible_cohort_for_window as _eligible_cohort_for_window,
+    )
+    # A ledger step may never cost a model: SafeLedger forwards, and on failure reports the
+    # step that failed and returns None. See its own docstring for why the ledger itself
+    # still validates hard.
+    _led = _SafeLedger(
+        _ledger if _ledger is not None else _BaseTrainingLedger(
+            subject=symbol, style=style, horizon=horizon, model=model_name),
+        on_error=lambda step, exc: log.warning(
+            "train.base_ledger_step_failed", symbol=symbol, step=step, error=str(exc)),
+    )
+
     try:
         df = _load_prices(symbol)
     except ValueError as exc:
+        # Loading nothing is a measured stage result, not a missing one: 0 rows in, 0 out.
+        _led.record("loaded_bars", rows_in=0, rows_out=0, note=str(exc))
+        _led.finish("skipped", reason=str(exc))
         log.warning("train.skipped", symbol=symbol, reason=str(exc))
         return {"symbol": symbol, "skipped": True, "reason": str(exc)}
+
+    _led.record(
+        "loaded_bars", rows_in=len(df), rows_out=len(df), date_range=_ts_range(df),
+        note="stored D1 rows returned by the five-year query. This is what the database "
+             "HELD at fit time — training never fetches missing vendor history, so a small "
+             "number here does not distinguish a short listing from an ingestion gap.")
 
     # Exclude any bar timestamped today — partially-observed intraday bars skew
     # rolling features (SMA, ATR, z-scores) even though their label is dropped.
     today = date.today()
+    _n_loaded = len(df)
     df = df[pd.to_datetime(df["ts"]).dt.date < today].copy()
+    # Bar timestamps are NOT deduplicated anywhere on this path, so a duplicate is reported
+    # as a diagnostic rather than as a stage loss. Recording a drop the code does not make
+    # would reconcile the ledger against a filter that never ran.
+    try:
+        _n_dupe_ts = int(pd.to_datetime(df["ts"]).duplicated().sum())
+    except Exception:
+        _n_dupe_ts = 0
+    _led.record(
+        "completed_unique_bars", rows_in=_n_loaded, rows_out=len(df),
+        dropped={"bar_dated_today_incomplete": _n_loaded - len(df)} if _n_loaded != len(df) else {},
+        diagnostics={"duplicate_bar_timestamps_present": _n_dupe_ts} if _n_dupe_ts else {},
+        date_range=_ts_range(df))
     if df.empty:
+        _led.finish("skipped", reason="no closed bars available")
         log.warning("train.skipped", symbol=symbol, reason="all bars are today (post-open ingest)")
         return {"symbol": symbol, "skipped": True, "reason": "no closed bars available"}
 
@@ -723,12 +852,18 @@ def train_model(
     except Exception as exc:
         log.warning("train.options_snapshots_load_failed", symbol=symbol, error=str(exc))
 
+    # M13-BASE: `trace` is an out-parameter. build_features fills it from the same boolean
+    # series its mask is built from and returns exactly what it returned before.
+    _bf_trace: dict = {}
     X, y_dir, y_ret = build_features(
         df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold,
         fund_data=fund_data, sector_df=sector_df, outcome_df=outcome_df,
         fund_snapshots=fund_snapshots, options_snapshots=options_snapshots,
+        trace=_bf_trace,
     )
+    _record_selection_stages(_led, _bf_trace, rows_in=len(df))
     if len(X) < 200:
+        _led.finish("skipped", reason=f"only {len(X)} clean samples")
         log.warning("train.skipped", symbol=symbol, reason=f"only {len(X)} clean samples")
         return {"symbol": symbol, "skipped": True, "reason": f"only {len(X)} clean samples"}
 
@@ -742,6 +877,10 @@ def train_model(
     # reports 2026-09-14 for a row whose real date is 2026-09-18. Every date the split depends
     # on was then wrong: the R01 training cutoff, and every range in slice_date_ranges.
     X_row_dates = pd.to_datetime(df["ts"]).dt.normalize().iloc[X.index].reset_index(drop=True)
+
+    # M13-BASE: the base population entering the dedup stage below. Captured before the
+    # outcome block because that block is the only thing that can remove rows from X.
+    _n_base_before_dedup = int(len(X))
 
     # Tier 87 / T229-C2 — Outcome-informed augmentation: append closed signal_outcomes as
     # additional rows in the FINAL MODEL FIT only (not in CV folds).
@@ -882,6 +1021,18 @@ def train_model(
                  survived=n_outcome_rows, survival_rate=_att["survival_rate"],
                  biggest_loss=_att["biggest_loss"], reconciles=_att["reconciles"],
                  unexplained=_att["unexplained"], stages=_att["stages"])
+
+    # M13-BASE: dedup's effect on the BASE lineage. The augmentation rows have their own
+    # ledger above; this records only what the main training set lost, which is the half
+    # the augmentation ledger cannot see.
+    _n_deduped = _n_base_before_dedup - int(len(X))
+    _led.record(
+        "deduplication", rows_in=_n_base_before_dedup, rows_out=int(len(X)),
+        dropped={"superseded_by_a_real_outcome_label": _n_deduped} if _n_deduped else {},
+        date_range=(str(X_row_dates.iloc[0].date()), str(X_row_dates.iloc[-1].date()))
+                   if len(X_row_dates) else None,
+        note="a dropped row was not bad data: its synthetic forward-return label was "
+             "replaced by the live-trade label for the same date")
 
     # --- Hyperparams: passed > saved tuned > defaults ---
     if hyperparams is None and model_name == "xgboost":
@@ -1056,7 +1207,34 @@ def train_model(
     y_cal   = y_dir.iloc[split_es + _embargo_es : split_cal]
     y_test  = y_dir.iloc[split_cal + _embargo_cal :]
 
+    # M13-BASE: allocation PARTITIONS, it does not filter — so rows_out equals rows_in and
+    # the four slices are recorded as a partition that must sum to it. The embargo that
+    # follows is the stage that actually loses rows.
+    _led.record(
+        "split_allocation", rows_in=int(len(X)), rows_out=int(len(X)),
+        partition={"train": int(split_train),
+                   "early_stop": int(split_es - split_train),
+                   "calibration": int(split_cal - split_es),
+                   "test": int(len(X) - split_cal)},
+        note="70/10/10/10 by POSITION in the surviving row order, before any embargo gap")
+    _led.record(
+        "embargo", rows_in=int(len(X)),
+        rows_out=int(len(X_train) + len(X_es) + len(X_cal) + len(X_test)),
+        dropped={k: int(v) for k, v in (
+            ("embargo_gap_before_early_stop", _embargo),
+            ("embargo_gap_before_calibration", _embargo_es),
+            ("embargo_gap_before_test", _embargo_cal)) if v},
+        # A shortfall is not a row loss — it is a gap that was NOT taken. Recording it as a
+        # diagnostic keeps it out of the reconciliation while still carrying the leak.
+        diagnostics={f"embargo_bars_short_of_target_{k}": int(v)
+                     for k, v in (_embargo_shortfall or {}).items()},
+        partition={"train": int(len(X_train)), "early_stop": int(len(X_es)),
+                   "calibration": int(len(X_cal)), "test": int(len(X_test))},
+        note=f"target gap {horizon} bars after each boundary; a shortfall means a label in "
+             f"the following slice was built from a price inside the preceding one")
+
     if len(np.unique(y_train)) < 2:
+        _led.finish("skipped", reason="degenerate labels after dead-zone filter")
         log.warning("train.skipped", symbol=symbol, reason="degenerate labels — all same class after dead-zone filter")
         return {"symbol": symbol, "skipped": True, "reason": "degenerate labels after dead-zone filter"}
 
@@ -1153,6 +1331,16 @@ def train_model(
         except Exception as _aug_err:
             log.warning("train.outcome_fit_augment_failed", symbol=symbol, error=str(_aug_err))
 
+    # M13-BASE: reported SEPARATELY from every row count above. These rows are real
+    # observations carrying double weight — not two observations each, and not part of the
+    # base lineage, which is why no stage above includes them.
+    _led.record_augmentation(
+        unique_base_observations=int(len(X_train)),
+        augmentation_rows=int(len(_fit_y) - len(y_train)),
+        weight_multiple=2.0,
+        note="closed live signal outcomes merged into the final fit only; CV folds never "
+             "see them, so cv_* metrics describe the base rows alone")
+
     # Early stopping on the dedicated early-stop set (X_es_s); LightGBM handles via its own
     # callbacks (AUD-M10). AUD-C2: X_cal_s is intentionally NOT passed here — keeping it clean
     # for probability calibration below.
@@ -1220,8 +1408,15 @@ def train_model(
     # M13-TRACE: `n_test` is len(X_test) BEFORE this subdivision, while the reported AUC,
     # precision and recall are computed on `y_test_report` when holdout reporting is possible.
     # Measured in production: MU GROWTH stored n_test 27 against 14 actual reporting rows, and
-    # MU LONG 21 against 11 — roughly half. Reading `n_test` as the metric denominator
-    # therefore overstates the evidence behind every figure beside it.
+    # MU LONG 21 against 11 — roughly half.
+    #
+    # NARROWED 2026-10-02. "Roughly half" is a property of THIS path only: the `holdout` branch
+    # below, where `y_test` is reassigned to the second half. On the `in_sample_fallback` branch
+    # the metrics are computed over the whole test slice, so `n_test` IS their denominator and
+    # there is no understatement to correct. It is also not a claim about artifacts produced by
+    # earlier versions of this file — an older bundle's `n_test` cannot be reinterpreted under
+    # today's split semantics without checking the code version that wrote it. The denominator
+    # a reader should use is `n_metric_rows`, which is recorded per artifact either way.
     _n_threshold_rows = int(len(y_test_thresh))
     _n_report_rows = int(len(y_test_report))
 
@@ -1248,6 +1443,31 @@ def train_model(
                     note="reported metrics are in-sample (same set used for threshold selection)")
         buy_threshold = _precision_threshold(y_test.values, preds, min_precision=min_prec, symbol=symbol)
         threshold_evaluation_mode = "in_sample_fallback"
+
+    # M13-BASE: the last stage, and the one that produces the denominator every headline
+    # metric in this bundle is computed over. The two modes are recorded differently on
+    # purpose — in the fallback the same rows do both jobs, so nothing is "lost" and the
+    # whole test slice IS the reporting set. Calling that a loss would make the two modes
+    # look comparable when they are not: one reports on held-out rows, the other on rows
+    # the threshold was fitted to.
+    _n_test_rows = int(len(X_test))
+    if threshold_evaluation_mode == "holdout":
+        _led.record(
+            "threshold_report_sets", rows_in=_n_test_rows, rows_out=_n_report_rows,
+            dropped={"consumed_selecting_the_threshold": _n_threshold_rows},
+            partition={"reporting": _n_report_rows},
+            class_support={"pos": int(np.sum(y_test.values == 1)),
+                           "neg": int(np.sum(y_test.values == 0))},
+            note="auc/precision/recall are computed over rows_out, not over n_test")
+    else:
+        _led.record(
+            "threshold_report_sets", rows_in=_n_test_rows, rows_out=_n_test_rows,
+            partition={"threshold_selection_and_reporting_same_rows": _n_test_rows},
+            class_support={"pos": int(np.sum(y_test.values == 1)),
+                           "neg": int(np.sum(y_test.values == 0))},
+            diagnostics={"rows_serving_both_roles": _n_test_rows},
+            note="in_sample_fallback: no rows were held back, so the reported metrics are "
+                 "optimistic by construction and the artifact loses evaluation validity")
 
     y_pred = (preds > buy_threshold).astype(int)
 
@@ -1292,6 +1512,13 @@ def train_model(
         "test": _range(split_cal + _embargo_cal, None),
     }
 
+    # M13-BASE: the full eligible-opportunity cohort for the test window — every row with
+    # complete features and a resolved forward label, INCLUDING the small moves the dead
+    # zone excluded from training. Recorded, not trained on.
+    _test_window = _slice_date_ranges.get("test") or {}
+    _led.record_cohort(_eligible_cohort_for_window(
+        _bf_trace, _test_window.get("start"), _test_window.get("end")))
+
     test_auc_val = float(roc_auc_score(y_test, preds)) if len(np.unique(y_test)) > 1 else None
     overfit_gap_val = round(cv_auc_mean - test_auc_val, 4) if (cv_auc_mean is not None and test_auc_val is not None) else None
     oos_acc_mean = float(np.mean(cv_accs)) if cv_accs else None
@@ -1327,6 +1554,10 @@ def train_model(
         "cv_folds_auc_usable": sum(1 for f in cv_folds if f.get("auc_usable")),
         "n_features": len(FEATURE_COLUMNS),
         "label_threshold": label_threshold,
+        # M13-BASE: the reconciled stage chain from stored bars to the rows above, plus the
+        # eligible-opportunity cohort. Stored on the artifact so a later reader does not
+        # have to replay a point-in-time fit to find out where the rows went.
+        "base_ledger": _led.snapshot(),
         # DA-03: the ACTUAL gaps used, not the ones intended. A reader of this bundle can now
         # tell a clean split from a compromised one without re-deriving it from row counts.
         "embargo_bars": {"early_stop": _embargo, "calibration": _embargo_es, "test": _embargo_cal},

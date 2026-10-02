@@ -359,7 +359,11 @@ def test_the_seven_inputs_match_what_the_main_path_actually_passes():
     to build_features cannot leave the augmentation silently behind again."""
     main = _SRC[_SRC.index("    X, y_dir, y_ret = build_features("):]
     main = main[:main.index(")\n")]
-    passed = set(re.findall(r"(\w+)=", main)) - {"horizon"}
+    # `trace` is an instrumentation OUT-parameter, not a feature input, and the augmentation
+    # loader must not be handed this one: the two calls build different populations, and a
+    # shared trace dict would have the second overwrite the first's stage counts. M13-BASE
+    # records the augmentation lineage in its own ledger instead.
+    passed = set(re.findall(r"(\w+)=", main)) - {"horizon", "trace"}
     call = _fn("train_model")
     call = call[call.index("feature_inputs={"):]
     call = call[:call.index("},")]

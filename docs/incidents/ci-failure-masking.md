@@ -198,3 +198,37 @@ Each instance has been one layer further out: the test runner (`make test`), the
 could only ever report success**. The check is always the same and always cheap: make it fail on
 purpose and confirm you can see it. And when you do check, make sure you are reading the exit
 code of the thing you are testing, not of the last command in your pipe.
+
+---
+
+## AUD-T401-SHIPPED-RED (2026-10-02) — a service-scoped suite cannot see a repo-wide guard
+
+**What happened.** Commit `13d89f1b` (M13-TRACE) was reported as green and pushed to `prod`
+on the strength of `pytest` in `services/ml-prediction` alone — 426 passing. The T401
+source-text ratchet lives in `services/market-data/tests/`, scans every test file in the
+repo, and had gone from 180 to 182 because two assertions in the new ml-prediction test
+file pinned numbers inside source-text matches. `make test` would have caught it. The
+service-scoped run could not, and nothing in the service's own output hinted that a guard
+elsewhere was watching.
+
+Found a day later only because the next change ran the full suite, by which point the red
+check had been on `prod` for a commit.
+
+**The shape, stated generally.** A repo-wide invariant enforced from inside one service's
+test directory is invisible to anyone running that service's siblings. The invariant was
+not wrong and the ratchet worked exactly as designed — the reporting was wrong: "the tests
+pass" was true of the suite I ran and false of the repo.
+
+**Rules this leaves.**
+
+1. A commit that adds or edits **test files** in any service must be validated with
+   `make test`, not the service's own suite. Source files can often be judged service-
+   locally; test files are what the repo-wide guards scan.
+2. "N tests passing" names a suite. When reporting green, name which one — and if it is not
+   the full suite, say so rather than letting the number imply it.
+3. A third offender was nearly added by the fix itself: a docstring **quoting** the
+   anti-pattern (`assert "<CONST> = 10" in source`) is indistinguishable from a real
+   offender to a scanner that reads the file as text. Explain the anti-pattern without
+   writing an example of it. This is the second occurrence of that exact shape — the first
+   was a credential test that matched its own explanation of why masking is avoided (tier
+   406), which is enough recurrences to treat as a class rather than a slip.

@@ -610,6 +610,140 @@ def _compute_piotroski(fund_data: dict) -> float:
     return float(score) if any(v is not None for v in [roe, fcf, gross_margin]) else float("nan")
 
 
+def _trace_selection(
+    trace: dict, *, df, X, fwd_ret, y_dir, mask,
+    features_complete, label_available, outside_deadzone,
+    inference_mode: bool, label_threshold: float,
+) -> None:
+    """Fill `trace` with the row accounting for the three selection stages. OBSERVATIONAL.
+
+    This function reads the boolean series the caller already built and writes counts into
+    the caller's dict. It must not touch X, y, df or the mask — the returned frames are
+    produced from `mask` alone, exactly as they were before this existed.
+
+    Two decompositions are produced, and they are NOT the same number viewed twice:
+
+    * `stages` is a FIRST-MATCH attribution. A row missing a required feature is counted
+      only under required_features even if its label is also absent and its move also sits
+      in the dead zone. These counts are disjoint and reconcile by construction.
+    * `diagnostics` counts every row each criterion applies to, independently. These
+      overlap and must never be summed against a total.
+    """
+    import numpy as _np
+    import pandas as _pd
+
+    n_all = int(len(X))
+    fc = _np.asarray(features_complete, dtype=bool)
+    la = _np.asarray(label_available, dtype=bool) if label_available is not None else _np.ones(n_all, bool)
+    oz = _np.asarray(outside_deadzone, dtype=bool) if outside_deadzone is not None else _np.ones(n_all, bool)
+    keep = _np.asarray(mask, dtype=bool)
+
+    ts = None
+    try:
+        _ts_vals = _pd.to_datetime(df["ts"]).dt.normalize().to_numpy()
+        if len(_ts_vals) == n_all:
+            ts = _ts_vals
+    except Exception:
+        ts = None
+
+    def _range(sel) -> tuple[str, str] | None:
+        if ts is None or not sel.any():
+            return None
+        picked = ts[sel]
+        return (str(_pd.Timestamp(picked.min()).date()), str(_pd.Timestamp(picked.max()).date()))
+
+    after_feat = fc
+    after_label = fc & la
+    after_dz = fc & la & oz
+
+    trace["inference_mode"] = bool(inference_mode)
+    trace["label_threshold"] = float(label_threshold)
+    trace["rows_in"] = n_all
+    trace["stages"] = [
+        {
+            "stage": "required_features",
+            "rows_in": n_all, "rows_out": int(after_feat.sum()),
+            "dropped": {"required_feature_missing": int(n_all - after_feat.sum())},
+            "date_range": _range(after_feat),
+        },
+        {
+            "stage": "available_labels",
+            "rows_in": int(after_feat.sum()), "rows_out": int(after_label.sum()),
+            "dropped": {"forward_label_unavailable": int(after_feat.sum() - after_label.sum())},
+            "date_range": _range(after_label),
+            "note": "the last `horizon` bars can have no forward return yet; this is the "
+                    "price of the label, not a data defect",
+        },
+        {
+            "stage": "dead_zone_selection",
+            "rows_in": int(after_label.sum()), "rows_out": int(after_dz.sum()),
+            "dropped": {"inside_dead_zone": int(after_label.sum() - after_dz.sum())},
+            "date_range": _range(after_dz),
+            "class_support": {
+                "pos": int(_np.asarray(y_dir)[after_dz].sum()),
+                "neg": int(after_dz.sum() - _np.asarray(y_dir)[after_dz].sum()),
+            },
+            "note": "excluded for being too SMALL to label confidently, not for being "
+                    "invalid — see the eligible-opportunity cohort",
+        },
+    ]
+    # Overlapping. Every row each criterion rejects, counted independently of the others.
+    trace["diagnostics"] = {
+        "any_required_feature_missing": int((~fc).sum()),
+        "any_forward_label_unavailable": int((~la).sum()),
+        "any_inside_dead_zone": int((~oz).sum()),
+        "overlap_of_all_three": int(((~fc) & (~la) & (~oz)).sum()),
+    }
+    trace["diagnostics_overlap"] = True
+
+    # The selection the mask actually made, as a cross-check against the stage chain. If
+    # these disagree, the stage decomposition is wrong and the ledger should say so rather
+    # than report a tidy chain that does not describe the returned rows.
+    trace["selected_rows"] = int(keep.sum())
+    trace["stage_chain_matches_mask"] = bool(int(after_dz.sum()) == int(keep.sum()))
+
+    # --- Full eligible-opportunity cohort -------------------------------------------
+    # Every row with complete features and an available label, INCLUDING the dead-zone
+    # rows training drops. At serving time the model is asked about all of them, so an
+    # evaluation restricted to the training selection cannot speak for serving behaviour:
+    # it has been handed only the moves that were already large enough to be obvious.
+    if inference_mode:
+        # There is no training selection to contrast against — no label, no dead zone. A
+        # cohort built here would report every row as "selected", which reads as a measured
+        # zero exclusion rather than the inapplicable question it is.
+        trace["cohort"] = {
+            "definition": None,
+            "not_applicable_reason": "inference_mode: labels and the dead zone are skipped",
+            "rows": None,
+        }
+        return
+
+    eligible = after_label
+    cohort = {
+        "definition": "features_complete AND forward_label_available; dead-zone rows INCLUDED",
+        "n_eligible": int(eligible.sum()),
+        "n_selected_for_training": int(after_dz.sum()),
+        "n_eligible_excluded_from_training": int(eligible.sum() - after_dz.sum()),
+        "date_range": _range(eligible),
+        "rows": None,
+    }
+    if eligible.any():
+        _ret = _np.asarray(fwd_ret, dtype=float)[eligible]
+        _dir = _np.asarray(y_dir)[eligible]
+        _sel = after_dz[eligible]
+        cohort["rows"] = {
+            "date": [str(_pd.Timestamp(d).date()) for d in ts[eligible]] if ts is not None else None,
+            "fwd_ret": [float(v) for v in _ret],
+            "y_dir": [int(v) for v in _dir],
+            "selected_for_training": [bool(v) for v in _sel],
+        }
+        cohort["excluded_abs_move_max"] = float(_np.abs(_ret[~_sel]).max()) if (~_sel).any() else None
+        cohort["class_support_eligible"] = {
+            "pos": int(_dir.sum()), "neg": int(len(_dir) - _dir.sum()),
+        }
+    trace["cohort"] = cohort
+
+
 def build_features(
     df: pd.DataFrame,
     horizon: int = 5,
@@ -622,6 +756,7 @@ def build_features(
     up_to_date: str | None = None,
     fund_snapshots: "list[dict] | None" = None,
     options_snapshots: "list[dict] | None" = None,
+    trace: "dict | None" = None,
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """Return (X, y_direction, y_return).
 
@@ -1002,12 +1137,33 @@ def build_features(
     _nan_ok = set(FUNDAMENTAL_COLUMNS) | set(WEEKLY_COLUMNS) | set(SECTOR_COLUMNS) | set(OUTCOME_COLUMNS) | set(OPTIONS_COLUMNS)
     _required = [c for c in FEATURE_COLUMNS if c not in _nan_ok]
 
+    # M13-BASE: the three selection criteria are named here rather than inlined into `mask`
+    # so the ledger below reports on the SAME boolean series the mask is built from. A trace
+    # that recomputes its own version of a filter can disagree with the filter.
+    features_complete = X[_required].notna().all(axis=1)
     if inference_mode:
         # Keep all rows with valid features; label/dead-zone filtering skipped
-        mask = X[_required].notna().all(axis=1)
+        mask = features_complete
     else:
+        label_available = fwd_ret.notna()
         # Training: exclude dead-zone rows (|fwd_ret| < threshold) — only clear signals
         outside_deadzone = fwd_ret.abs() >= label_threshold
-        mask = X[_required].notna().all(axis=1) & fwd_ret.notna() & outside_deadzone
+        mask = features_complete & label_available & outside_deadzone
+
+    if trace is not None:
+        # Instrumentation may not fail a build. A trace that raises leaves `trace` holding
+        # its own failure, and the caller's ledger records the stage as NOT MEASURED rather
+        # than guessing — the returned X/y are unaffected either way.
+        try:
+            _trace_selection(
+                trace, df=df, X=X, fwd_ret=fwd_ret, y_dir=y_dir, mask=mask,
+                features_complete=features_complete,
+                label_available=None if inference_mode else label_available,
+                outside_deadzone=None if inference_mode else outside_deadzone,
+                inference_mode=inference_mode, label_threshold=label_threshold,
+            )
+        except Exception as _trace_err:
+            trace.clear()
+            trace["error"] = f"{type(_trace_err).__name__}: {_trace_err}"
 
     return X[mask], y_dir[mask], fwd_ret[mask]
