@@ -126,6 +126,37 @@ _nocheck = cap.Capability(
     requirements=[cap.Requirement("unimplemented", "no check supplied")])
 R["check_missing"] = {"state": _nocheck.evaluate()["state"]}
 
+# ── 4c. CONSTRAINT SHAPES — exact, composite and partial ─────────────────────────────────────
+# Review found `_unique_constraint` accepted any unique key CONTAINING the column. A unique
+# (event_id, other) permits many rows per event_id and reported READY. Production's constraints
+# are genuinely single-column, so nothing was mis-reported — the check simply could not tell.
+_DB4 = pathlib.Path(tempfile.mkdtemp()) / "shapes.db"
+engine4 = create_engine(f"sqlite:///{_DB4}")
+with engine4.begin() as c:
+    c.execute(text("CREATE TABLE notification_outbox (id INTEGER PRIMARY KEY, event_id TEXT, "
+                   "other TEXT, state TEXT, lease_owner TEXT, lease_expires_at TEXT, "
+                   "dispatch_started_at TEXT, attempts INTEGER)"))
+    # COMPOSITE only: many rows per event_id are permitted.
+    c.execute(text("CREATE UNIQUE INDEX uq_composite ON notification_outbox (event_id, other)"))
+m6 = checks.build_matrix(engine4)
+_enq6 = _state(m6, "outbox_enqueue")
+R["composite_only"] = {
+    "state": _enq6["state"],
+    "evidence": next(r["evidence"] for r in _enq6["requirements"]
+                     if r["requirement"] == "event_id uniqueness"),
+}
+
+# PARTIAL `WHERE col IS NOT NULL` — the shape production actually uses for the broker client id.
+_DB5 = pathlib.Path(tempfile.mkdtemp()) / "partial.db"
+engine5 = create_engine(f"sqlite:///{_DB5}")
+_models.Base.metadata.create_all(engine5)
+_bs = _state(checks.build_matrix(engine5), "broker_submission")
+R["partial_index"] = {
+    "state": _bs["state"],
+    "evidence": next(r["evidence"] for r in _bs["requirements"]
+                     if r["requirement"] == "client order id uniqueness"),
+}
+
 # ── 5. THE GATE: unknown blocks risk-INCREASING, never risk-REDUCING ──────────────────────────
 unknown_eval = _state(m3, "exposure_reservation")
 notready_eval = _state(checks.build_matrix(engine2), "exposure_reservation")

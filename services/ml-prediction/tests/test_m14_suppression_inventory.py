@@ -244,3 +244,69 @@ def test_a_SUPPRESSED_model_with_no_metrics_is_not_flagged():
     b = _bundle(suppressed=True, cv_auc_mean=None, overfit_gap=None)
     inv = si.build_inventory([("held", b)], decide=DECIDE)
     assert inv.unsuppressed_without_quality_evidence == []
+
+
+# ── Three questions, not one ──────────────────────────────────────────────────────────────────
+
+def test_evaluation_validity_does_not_establish_evidence_sufficiency():
+    """THE CORRECTION CM_LONG FORCED. `evaluation_valid: true` answers one question — was the
+    evaluation free of known leakage. Twelve test rows with no cross-validation metric cannot
+    answer the other two: was there enough evidence to judge, and did it pass a baseline.
+
+    "Not suppressed" is the ABSENCE OF A REASON TO REJECT, which is not the presence of a
+    reason to trust."""
+    metrics = {"auc": 1.0, "recall": 1.0, "precision": 1.0, "n_test": 12,
+               "cv_auc_mean": None, "overfit_gap": None, "evaluation_valid": True}
+    state, missing = si.evidence_sufficiency(metrics)
+    assert state == "insufficient"
+    assert "cv_auc_mean" in missing and "overfit_gap" in missing
+
+
+def test_a_small_test_split_alone_is_insufficient_even_with_every_diagnostic():
+    state, missing = si.evidence_sufficiency(
+        {"cv_auc_mean": 0.6, "overfit_gap": 0.02, "n_test": 12})
+    assert state == "insufficient"
+    assert any("n_test" in m for m in missing)
+
+
+def test_a_missing_n_test_is_UNKNOWN_not_insufficient():
+    """Not knowing how much evidence there was is a different state from knowing there was
+    little."""
+    state, _ = si.evidence_sufficiency({"cv_auc_mean": 0.6, "overfit_gap": 0.02})
+    assert state == "unknown"
+
+
+def test_a_well_evidenced_model_is_sufficient():
+    state, missing = si.evidence_sufficiency(
+        {"cv_auc_mean": 0.61, "overfit_gap": 0.02, "n_test": 400})
+    assert state == "sufficient" and missing == []
+
+
+def test_insufficient_evidence_is_not_a_claim_of_inaccuracy():
+    """The reason recorded must say what is MISSING, never that the model was shown to be
+    wrong — a production restriction carrying a false accuracy claim would be worse than none."""
+    inv = si.build_inventory([("cm", {"oos_suppressed": False, "metrics": {
+        "auc": 1.0, "recall": 1.0, "precision": 1.0, "n_test": 12,
+        "cv_auc_mean": None, "overfit_gap": None, "evaluation_valid": True}})], decide=DECIDE)
+    assert inv.serving_on_insufficient_evidence == ["cm"]
+    assert inv.insufficiency_reasons["cm"] == ["cv_auc_mean", "overfit_gap"]
+    assert inv.would_suppress == [], "sufficiency is reported, not enforced"
+
+
+# ── Coverage must not be inflated by unreadable artifacts ─────────────────────────────────────
+
+def test_an_unreadable_artifact_does_not_count_as_KNOWN_validity():
+    """FOUND BY REVIEW. The first version subtracted only `unknown_validity`, so a bundle that
+    could not be opened at all landed in the KNOWN numerator — a one-unreadable-artifact probe
+    reported coverage 1.0."""
+    inv = si.build_inventory([("broken", None), ("ok", _bundle())], decide=DECIDE)
+    assert inv.coverage == pytest.approx(0.5)
+    assert inv.failed_to_read == ["broken"]
+
+
+def test_inventory_completeness_is_reported_separately_from_the_invariants():
+    """The invariants can hold across the artifacts that WERE readable while the inventory is
+    incomplete. Conflating them would let an unreadable fleet report as sound."""
+    inv = si.build_inventory([("broken", None), ("ok", _bundle())], decide=DECIDE)
+    assert inv.holds is True
+    assert inv.complete is False

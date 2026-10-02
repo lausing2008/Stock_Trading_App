@@ -14,7 +14,7 @@ with engine.connect() as c:
   out['matrix']=report(build_matrix(c))
  except Exception as e: out['matrix_error']=type(e).__name__
  i=inspect(c); tables=set(i.get_table_names());out['schema']={}
- for table in ['notification_outbox','portfolio_exposure_reservations','paper_trades','options_income_positions']:
+ for table in ['notification_outbox','portfolio_exposure_reservations','paper_trades','options_income_positions','options_income_equity_curve']:
   if table not in tables:out['schema'][table]={'exists':False};continue
   out['schema'][table]={'exists':True,'columns':[x['name'] for x in i.get_columns(table)],'unique_constraints':i.get_unique_constraints(table),'unique_indexes':[x for x in i.get_indexes(table) if x.get('unique')]}
  c.rollback()

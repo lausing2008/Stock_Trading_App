@@ -45,9 +45,36 @@ def _unique_constraint(engine, table: str, column: str):
             indexes = [i for i in insp.get_indexes(table) if i.get("unique")]
         except Exception as exc:                        # noqa: BLE001
             return Readiness.UNKNOWN, f"could not inspect constraints: {type(exc).__name__}"[:200]
+        # EXACT KEY COLUMNS, not "contains". A unique (event_id, other_column) permits many
+        # rows per event_id and would have reported ready — a latent false-ready defect found
+        # by review on 2026-10-02. Production's constraints are genuinely single-column, so
+        # nothing was mis-reported; the check simply could not have told the difference.
+        partials = []
         for c in uniques + indexes:
-            if column in (c.get("column_names") or []):
-                return Readiness.READY, f"unique constraint on {table}.{column}"
+            cols = list(c.get("column_names") or [])
+            if cols != [column]:
+                if column in cols:
+                    partials.append(cols)
+                continue
+            # A PARTIAL index constrains only the rows its predicate admits. `WHERE col IS NOT
+            # NULL` is the intended shape here (uniqueness among assigned ids); any other
+            # predicate narrows the guarantee in a way this check cannot evaluate, so it is
+            # reported rather than accepted silently.
+            pred = (c.get("dialect_options") or {}).get("postgresql_where")
+            if pred is None:
+                return Readiness.READY, f"single-column unique constraint on {table}.{column}"
+            text_pred = str(pred).lower().replace(" ", "")
+            if "isnotnull" in text_pred:
+                return Readiness.READY, (
+                    f"unique on {table}.{column} for assigned (non-null) values; uniqueness is "
+                    f"NOT presence — a row may still carry no value")
+            return Readiness.UNKNOWN, (
+                f"{table}.{column} has a unique index with predicate {pred!r}; this check "
+                f"cannot establish which rows it covers")
+        if partials:
+            return Readiness.NOT_READY, (
+                f"{table}.{column} appears only in COMPOSITE unique keys {partials} — those "
+                f"permit many rows per {column}, so idempotency is not enforced")
         return Readiness.NOT_READY, (
             f"{table}.{column} has NO unique constraint — duplicate rows would be accepted, so "
             f"idempotency is not enforced even though the table exists")
