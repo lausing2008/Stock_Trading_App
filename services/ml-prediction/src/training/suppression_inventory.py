@@ -86,9 +86,12 @@ class Inventory:
     #: DEFECT if non-empty: a resweep that would UNSUPPRESS an invalid model.
     resweep_would_unsuppress_invalid: list[str] = field(default_factory=list)
     #: Unsuppressed models split by whether the evidence could support the judgement at all.
-    #: `serving_on_insufficient_evidence` is NOT a claim that a model is inaccurate — it is the
-    #: statement that nothing established it is accurate.
-    serving_on_insufficient_evidence: list[str] = field(default_factory=list)
+    #: NAMED FOR WHAT WAS ACTUALLY OBSERVED. An earlier name said `serving_`, which claims
+    #: runtime selection and ensemble contribution — neither of which this inventory looks at.
+    #: It reads artifacts on disk; which one a consumer selects at inference is a separate
+    #: question. And it is NOT a claim that a model is inaccurate: it is the statement that
+    #: nothing established it is accurate.
+    unsuppressed_with_insufficient_evidence: list[str] = field(default_factory=list)
     insufficiency_reasons: dict[str, list[str]] = field(default_factory=dict)
     #: FOUND IN PRODUCTION 2026-10-02. Unsuppressed models for which EVERY quality condition was
     #: unevaluable — `cv_auc_mean` and `overfit_gap` both absent. They are serving not because
@@ -139,7 +142,7 @@ class Inventory:
             "validity_coverage": self.coverage,
             "invalid_unsuppressed": self.invalid_unsuppressed,
             "unsuppressed_without_quality_evidence": self.unsuppressed_without_quality_evidence,
-            "serving_on_insufficient_evidence": len(self.serving_on_insufficient_evidence),
+            "unsuppressed_with_insufficient_evidence": len(self.unsuppressed_with_insufficient_evidence),
             "insufficiency_reasons_sample": dict(
                 list(self.insufficiency_reasons.items())[:5]),
             "resweep_would_unsuppress_invalid": self.resweep_would_unsuppress_invalid,
@@ -183,7 +186,7 @@ def build_inventory(bundles: Iterable[tuple[str, Mapping | None]], *, decide) ->
                 inv.unsuppressed_without_quality_evidence.append(name)
             state, missing = evidence_sufficiency(metrics)
             if state != "sufficient":
-                inv.serving_on_insufficient_evidence.append(name)
+                inv.unsuppressed_with_insufficient_evidence.append(name)
                 inv.insufficiency_reasons[name] = missing
         if validity is False:
             inv.invalid += 1

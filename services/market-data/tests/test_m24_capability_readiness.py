@@ -90,6 +90,49 @@ def test_capabilities_degrade_independently(probe):
     assert probe["constraint_missing"]["drain_state"] == "ready"
 
 
+# ── What a check actually establishes ────────────────────────────────────────────────────────
+
+def test_a_green_report_names_the_levels_it_did_NOT_test(probe):
+    """A capability whose only level is `schema` is structurally present, not ready to operate.
+    Saying so is what stops the first being read as the second."""
+    fleet = probe["levels"]["fleet_not_checked"]
+    assert "sandbox_write" in fleet
+    assert "consumer_enforcement" in fleet
+
+
+def test_sandbox_write_is_never_part_of_a_routine_probe(probe):
+    """It performs a REAL write. A health endpoint that writes on every scrape is a liability,
+    not a check — it belongs to an explicitly scoped lifecycle test."""
+    assert probe["levels"]["sandbox_write_is_passive"] is False
+    assert "sandbox_write" not in probe["levels"]["passive_levels"]
+
+
+def test_write_readiness_is_not_inferred_from_a_successful_read(probe):
+    """The connectivity check says so in its own evidence, because the inference is tempting
+    and wrong: a readable table says nothing about who may write to it."""
+    pc = probe["privilege_and_connectivity"]
+    assert pc["connectivity_level"] == "connectivity"
+    assert "NOT evidence of write readiness" in pc["connectivity_evidence"]
+
+
+def test_privileges_are_their_own_level_separate_from_schema(probe):
+    """A present table and a usable table are different facts, and the gap between them
+    surfaces at the worst moment — with an entry or a notification already in flight."""
+    pc = probe["privilege_and_connectivity"]
+    assert pc["privilege_level"] == "privilege"
+    assert probe["levels"]["per_capability"]["outbox_enqueue"]["checked"] == [
+        "connectivity", "privilege", "schema"]
+
+
+def test_a_dialect_with_no_privilege_layer_is_NOT_APPLICABLE_not_unverified(probe):
+    """SQLite has no GRANT system, so there is nothing to check — different from failing to
+    check something that exists. Reporting unknown would permanently degrade every SQLite
+    deployment for a property that cannot exist."""
+    pc = probe["privilege_and_connectivity"]
+    assert pc["privilege_state"] == "ready"
+    assert "no role-privilege layer" in pc["privilege_evidence"]
+
+
 # ── Entry readiness is not exit readiness ─────────────────────────────────────────────────────
 
 def test_unknown_blocks_a_risk_INCREASING_action(probe):

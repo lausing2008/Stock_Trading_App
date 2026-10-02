@@ -35,6 +35,28 @@ class Readiness(str, Enum):
     UNKNOWN = "unknown"
 
 
+class Level(str, Enum):
+    """WHAT a check establishes — because these are not interchangeable, and the most common
+    error is reading the cheapest one as the strongest.
+
+    A successful SELECT does not establish write readiness. A present table does not establish
+    that this role may write to it. A granted privilege does not establish that the intended
+    write and its recovery path actually work. Each level answers one question and leaves the
+    next one open.
+    """
+    SCHEMA = "schema"                 # required structures and constraints exist
+    PRIVILEGE = "privilege"           # this service account holds the declared permissions
+    CONNECTIVITY = "connectivity"     # read access works, at this moment
+    SANDBOX_WRITE = "sandbox_write"   # the intended write and recovery behaviour actually work
+    CONSUMER_ENFORCEMENT = "consumer_enforcement"  # a missing prerequisite blocks the action
+
+
+#: Levels a routine readiness probe may run. SANDBOX_WRITE is excluded on purpose: it performs a
+#: real write, and a health endpoint that writes on every scrape is a liability rather than a
+#: check. It belongs to an explicitly scoped lifecycle test.
+PASSIVE_LEVELS = (Level.SCHEMA, Level.PRIVILEGE, Level.CONNECTIVITY)
+
+
 class Impact(str, Enum):
     """What a capability gates. Kept explicit so an entry-only prerequisite cannot silently
     disable a protective exit."""
@@ -50,10 +72,16 @@ def utcnow() -> datetime:
 
 @dataclass(frozen=True)
 class Requirement:
-    """One checkable prerequisite. `check` returns (Readiness, evidence)."""
+    """One checkable prerequisite. `check` returns (Readiness, evidence).
+
+    `level` is what a pass actually establishes. It is recorded so a report can never imply
+    more than it tested — the difference between "the table is there" and "this account can
+    write to it" is the whole distance between a schema check and an outage.
+    """
     name: str
     description: str
     check: object = None
+    level: "Level" = None
 
     def evaluate(self) -> tuple[Readiness, str]:
         if self.check is None:
@@ -86,16 +114,23 @@ class Capability:
         for req in self.requirements:
             state, evidence = req.evaluate()
             results.append({"requirement": req.name, "state": state.value,
-                            "evidence": evidence, "description": req.description})
+                            "evidence": evidence, "description": req.description,
+                            "level": (req.level.value if req.level else "unspecified")})
             # NOT_READY dominates UNKNOWN dominates READY. A definite absence is more
             # informative than an unestablished one and should be reported as the reason.
             if state is Readiness.NOT_READY:
                 worst = Readiness.NOT_READY
             elif state is Readiness.UNKNOWN and worst is not Readiness.NOT_READY:
                 worst = Readiness.UNKNOWN
+        levels = sorted({r["level"] for r in results})
         return {
             "capability": self.name,
             "state": worst.value,
+            # WHAT WAS ACTUALLY ESTABLISHED. A capability whose only level is `schema` is not
+            # "ready to operate" — it is "structurally present". Naming the untested levels
+            # stops the first being read as the second.
+            "levels_checked": levels,
+            "levels_not_checked": [l.value for l in Level if l.value not in levels],
             "blocks": self.blocks if worst is not Readiness.READY else None,
             "impact": self.impact.value,
             "recovery": self.recovery,
@@ -137,6 +172,8 @@ def report(capabilities: list[Capability], *, now: datetime | None = None) -> di
         "degraded": [f"{e['capability']}: {e['blocks']}" for e in degraded],
         "entry_blocked": [e["capability"] for e in degraded
                           if e["impact"] == Impact.ENTRY.value],
+        # Every capability's untested levels, so a green report states its own limits.
+        "levels_not_checked": sorted({l for e in evals for l in e["levels_not_checked"]}),
         # Reported separately, and expected to be EMPTY: an exit or reconciliation blocked by a
         # prerequisite is a far more serious condition than a blocked entry.
         "exit_or_reconciliation_blocked": [

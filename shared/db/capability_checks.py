@@ -11,7 +11,69 @@ allowed to look), the second is NOT_READY (we looked, and it is absent).
 """
 from __future__ import annotations
 
-from common.capabilities import Capability, Impact, Readiness, Requirement
+from common.capabilities import Capability, Impact, Level, Readiness, Requirement
+
+
+def _role_privileges(engine, table: str, needed: tuple[str, ...]):
+    """Does THIS service account hold the declared privileges on the table?
+
+    A SUCCESSFUL SELECT DOES NOT ESTABLISH WRITE READINESS, and a present table says nothing
+    about who may write to it. The outbox and the reservation ledger are useless to a role that
+    can read them and not INSERT — and that failure surfaces at the worst moment, when an entry
+    or a notification is already in flight.
+
+    Read-only: `has_table_privilege` asks the catalogue, it does not attempt the write.
+    """
+    def _check():
+        from sqlalchemy import text
+        try:
+            with engine.connect() as conn:
+                if conn.dialect.name == "sqlite":
+                    # NOT APPLICABLE is not the same as NOT VERIFIED, and the difference is
+                    # real: SQLite has no GRANT system at all, so there is no privilege layer
+                    # to check — access is governed by file permissions. Reporting UNKNOWN here
+                    # would permanently degrade every SQLite deployment for a property that
+                    # cannot exist, which is a different error from assuming an unverified one.
+                    return Readiness.READY, (
+                        "sqlite has no role-privilege layer; table access is governed by file "
+                        "permissions, so there is nothing to grant")
+                if conn.dialect.name != "postgresql":
+                    # A dialect that DOES have privileges but which this checker cannot
+                    # introspect. Unknown, never ready: claiming a privilege nobody verified is
+                    # exactly the failure this level exists to prevent.
+                    return Readiness.UNKNOWN, (
+                        f"privilege introspection not implemented for dialect "
+                        f"{conn.dialect.name!r}; privileges are UNVERIFIED")
+                missing = []
+                for priv in needed:
+                    row = conn.execute(
+                        text("SELECT has_table_privilege(current_user, :t, :p)"),
+                        {"t": table, "p": priv}).scalar()
+                    if not row:
+                        missing.append(priv)
+        except Exception as exc:                        # noqa: BLE001
+            return Readiness.UNKNOWN, f"could not read privileges: {type(exc).__name__}"[:200]
+        if missing:
+            return Readiness.NOT_READY, (
+                f"current_user lacks {', '.join(missing)} on {table} — the structure exists but "
+                f"this account cannot use it")
+        return Readiness.READY, f"current_user holds {', '.join(needed)} on {table}"
+    return _check
+
+
+def _read_connectivity(engine, table: str):
+    """Can this process actually reach the table RIGHT NOW? Establishes read access only."""
+    def _check():
+        from sqlalchemy import text
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(f"SELECT 1 FROM {table} LIMIT 1"))
+        except Exception as exc:                        # noqa: BLE001
+            return Readiness.UNKNOWN, f"read failed: {type(exc).__name__}: {exc}"[:200]
+        return Readiness.READY, (
+            f"read access to {table} confirmed at this moment — this is NOT evidence of write "
+            f"readiness")
+    return _check
 
 
 def _table_exists(engine, table: str):
@@ -109,10 +171,19 @@ def build_matrix(engine) -> list[Capability]:
                       "delivery; enqueueing resumes when the table returns"),
             requirements=[
                 Requirement("notification_outbox table", "the durable queue itself",
-                            _table_exists(engine, "notification_outbox")),
+                            _table_exists(engine, "notification_outbox"), Level.SCHEMA),
                 Requirement("event_id uniqueness",
                             "the idempotency guarantee — without it duplicates are accepted",
-                            _unique_constraint(engine, "notification_outbox", "event_id")),
+                            _unique_constraint(engine, "notification_outbox", "event_id"),
+                            Level.SCHEMA),
+                Requirement("enqueue privileges",
+                            "this account may actually INSERT — a readable queue it cannot "
+                            "write to is not a queue",
+                            _role_privileges(engine, "notification_outbox",
+                                             ("SELECT", "INSERT", "UPDATE")), Level.PRIVILEGE),
+                Requirement("queue reachable now", "read access at this moment",
+                            _read_connectivity(engine, "notification_outbox"),
+                            Level.CONNECTIVITY),
             ],
         ),
         Capability(
@@ -125,7 +196,8 @@ def build_matrix(engine) -> list[Capability]:
                             "claiming, expiry and the acceptance/crash gap",
                             _columns_exist(engine, "notification_outbox",
                                            ("state", "lease_owner", "lease_expires_at",
-                                            "dispatch_started_at", "attempts"))),
+                                            "dispatch_started_at", "attempts")),
+                            Level.SCHEMA),
             ],
         ),
         Capability(
@@ -139,11 +211,12 @@ def build_matrix(engine) -> list[Capability]:
                             "intent identity and submission state BEFORE any broker side effect",
                             _columns_exist(engine, "paper_trades",
                                            ("broker_submission_state", "broker_client_order_id",
-                                            "broker_submission_path", "broker_submit_attempts"))),
+                                            "broker_submission_path", "broker_submit_attempts")),
+                            Level.SCHEMA),
                 Requirement("client order id uniqueness",
                             "one identity per intent, so a retry cannot mint a second",
                             _unique_constraint(engine, "paper_trades",
-                                               "broker_client_order_id")),
+                                               "broker_client_order_id"), Level.SCHEMA),
             ],
         ),
         Capability(
@@ -155,11 +228,16 @@ def build_matrix(engine) -> list[Capability]:
             requirements=[
                 Requirement("portfolio_exposure_reservations table",
                             "atomic reserve/consume for the concentration cap",
-                            _table_exists(engine, "portfolio_exposure_reservations")),
+                            _table_exists(engine, "portfolio_exposure_reservations"),
+                            Level.SCHEMA),
+                Requirement("reservation privileges",
+                            "reserving is a WRITE; a role that can only read cannot enforce a cap",
+                            _role_privileges(engine, "portfolio_exposure_reservations",
+                                             ("SELECT", "INSERT", "UPDATE")), Level.PRIVILEGE),
                 Requirement("intent_id uniqueness",
                             "one reservation per proposed entry",
                             _unique_constraint(engine, "portfolio_exposure_reservations",
-                                               "intent_id")),
+                                               "intent_id"), Level.SCHEMA),
             ],
         ),
         Capability(
@@ -177,7 +255,7 @@ def build_matrix(engine) -> list[Capability]:
                             "matching an unknown submission to the broker's own record",
                             _columns_exist(engine, "paper_trades",
                                            ("broker_order_id", "broker_client_order_id",
-                                            "broker_submitted_at"))),
+                                            "broker_submitted_at")), Level.SCHEMA),
             ],
         ),
     ]

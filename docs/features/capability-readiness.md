@@ -38,6 +38,32 @@ Entry readiness is therefore **not** exit readiness, and the report lists
 `exit_or_reconciliation_blocked` separately — it is expected to be empty, and a blocked exit is
 a far more serious condition than a blocked entry.
 
+## Five levels, because they are not interchangeable
+
+The most common error is reading the cheapest check as the strongest one.
+
+| Level | Establishes | Routine probe? |
+|---|---|---|
+| `schema` | Required structures and constraints exist | yes |
+| `privilege` | **This service account** holds the declared permissions | yes |
+| `connectivity` | Read access works, at this moment | yes |
+| `sandbox_write` | The intended write and its recovery path actually work | **no** |
+| `consumer_enforcement` | A missing prerequisite genuinely blocks the dependent action | **no** |
+
+**Write readiness is never inferred from a successful SELECT.** A readable table says nothing
+about who may write to it, and a present table says nothing about either. The connectivity
+check states that limit in its own evidence text, because the inference is tempting.
+
+`sandbox_write` is excluded from routine probes deliberately: it performs a real write, and a
+health endpoint that writes on every scrape is a liability rather than a check. It belongs to an
+explicitly scoped lifecycle test. Every report therefore names the levels it did **not** test,
+so a green result states its own limits.
+
+**Not applicable is not the same as not verified.** SQLite has no GRANT system, so there is no
+privilege layer to check — reported `ready` with that reason. A dialect that *has* privileges
+but cannot be introspected is `unknown`, never `ready`: claiming a privilege nobody verified is
+precisely the failure this level exists to prevent.
+
 ## The matrix
 
 | Capability | Blocks when unavailable | Impact |
@@ -70,8 +96,27 @@ Five sabotage runs. **Two survived initially and both became tests:** collapsing
 itself and the handler was unreachable — untested defence-in-depth for any future check that
 forgets to; and the missing-constraint check had no direct coverage.
 
+## Corrections from review
+
+- **`_unique_constraint` was too permissive** — it accepted any unique key *containing* the
+  column, so a unique `(event_id, other)` reported ready while permitting many rows per
+  `event_id`. Now exact-column, with composite-only reported as not ready and partial-index
+  predicates handled explicitly.
+- **PostgreSQL testing is valuable for the right reason.** SQLite *does* support and enforce
+  partial unique indexes — verified directly. What PostgreSQL adds is production-specific
+  **inspection** (the predicate surfaced as `dialect_options.postgresql_where`, which the
+  checker reads) plus real transaction behaviour. An earlier note here claimed SQLite could not
+  express them, which was simply wrong.
+
 ## Not done
 
-This has not been run against the production schema. The next milestone is a **read-only
+This has been run against the production schema at the `schema` level only, from eleven backend
+containers (see the 2026-10-01 baseline). `privilege` and `connectivity` have not yet run in
+production; `sandbox_write` and `consumer_enforcement` have not run anywhere.
+
+**API gateway did not evaluate the matrix** because `sqlalchemy` is absent there. That is
+recorded as *not evaluated from that service* — not "11 of 12 ready", and not automatically a
+defect: a gateway may legitimately delegate database-owned capabilities. Map responsibilities
+before adding a dependency solely to make every service run the same check. The next milestone is a **read-only
 production capability and model inventory**, plus sandbox lifecycle evidence for M25 — neither
 is closed by a passing unit-test count.

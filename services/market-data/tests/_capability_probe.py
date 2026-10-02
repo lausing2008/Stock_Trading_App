@@ -146,7 +146,11 @@ R["composite_only"] = {
                      if r["requirement"] == "event_id uniqueness"),
 }
 
-# PARTIAL `WHERE col IS NOT NULL` — the shape production actually uses for the broker client id.
+# PARTIAL `WHERE col IS NOT NULL` — the shape production uses for the broker client id.
+# SQLite supports and ENFORCES partial unique indexes (verified: two NULLs accepted, a
+# duplicate non-null rejected). What PostgreSQL adds is production-specific INSPECTION —
+# the predicate surfaced as `dialect_options.postgresql_where`, which is what the checker
+# reads — plus real transaction behaviour.
 _DB5 = pathlib.Path(tempfile.mkdtemp()) / "partial.db"
 engine5 = create_engine(f"sqlite:///{_DB5}")
 _models.Base.metadata.create_all(engine5)
@@ -155,6 +159,29 @@ R["partial_index"] = {
     "state": _bs["state"],
     "evidence": next(r["evidence"] for r in _bs["requirements"]
                      if r["requirement"] == "client order id uniqueness"),
+}
+
+# ── 4d. WHAT EACH CHECK ESTABLISHES ───────────────────────────────────────────────────────────
+_healthy = cap.report(checks.build_matrix(engine))
+R["levels"] = {
+    "per_capability": {e["capability"]: {"checked": e["levels_checked"],
+                                         "not_checked": e["levels_not_checked"]}
+                       for e in _healthy["capabilities"]},
+    "fleet_not_checked": _healthy["levels_not_checked"],
+    "passive_levels": [l.value for l in cap.PASSIVE_LEVELS],
+    "sandbox_write_is_passive": cap.Level.SANDBOX_WRITE in cap.PASSIVE_LEVELS,
+}
+
+# A dialect with NO privilege layer is not the same as one we failed to introspect.
+_priv = next(r for e in _healthy["capabilities"] if e["capability"] == "outbox_enqueue"
+             for r in e["requirements"] if r["requirement"] == "enqueue privileges")
+_conn = next(r for e in _healthy["capabilities"] if e["capability"] == "outbox_enqueue"
+             for r in e["requirements"] if r["requirement"] == "queue reachable now")
+R["privilege_and_connectivity"] = {
+    "privilege_state": _priv["state"], "privilege_evidence": _priv["evidence"],
+    "privilege_level": _priv["level"],
+    "connectivity_state": _conn["state"], "connectivity_evidence": _conn["evidence"],
+    "connectivity_level": _conn["level"],
 }
 
 # ── 5. THE GATE: unknown blocks risk-INCREASING, never risk-REDUCING ──────────────────────────

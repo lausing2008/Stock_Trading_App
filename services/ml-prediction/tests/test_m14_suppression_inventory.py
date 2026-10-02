@@ -288,7 +288,7 @@ def test_insufficient_evidence_is_not_a_claim_of_inaccuracy():
     inv = si.build_inventory([("cm", {"oos_suppressed": False, "metrics": {
         "auc": 1.0, "recall": 1.0, "precision": 1.0, "n_test": 12,
         "cv_auc_mean": None, "overfit_gap": None, "evaluation_valid": True}})], decide=DECIDE)
-    assert inv.serving_on_insufficient_evidence == ["cm"]
+    assert inv.unsuppressed_with_insufficient_evidence == ["cm"]
     assert inv.insufficiency_reasons["cm"] == ["cv_auc_mean", "overfit_gap"]
     assert inv.would_suppress == [], "sufficiency is reported, not enforced"
 
