@@ -117,6 +117,19 @@ def test_the_admin_page_has_no_input_field_for_the_key():
                 assert word not in window, f"an input field is bound to {word!r}"
 
 
+def test_the_status_is_fetched_through_the_AUTHENTICATED_api_helper():
+    """SHIPPED BROKEN FIRST TIME. A raw `fetch()` carries no Authorization header, and the
+    gateway answers 401 for every non-public route — so the status rendered "unknown" forever
+    while the endpoint itself was working fine. Verified against production before this fix:
+    the endpoint returned `configured: false` directly and 401 through the gateway."""
+    page = (_ROOT / "frontend" / "src" / "pages" / "admin-ai-features.tsx").read_text()
+    assert "api.jevCredentialStatus()" in page
+    assert "fetch('/api/news/jev/credential-status')" not in page, \
+        "a raw fetch cannot authenticate and will always render unknown"
+    helper = (_ROOT / "frontend" / "src" / "lib" / "api.ts").read_text()
+    assert "jevCredentialStatus" in helper
+
+
 def test_an_unreachable_probe_shows_unknown_not_not_configured():
     """Showing "not configured" because a probe failed would send someone to re-enter a key
     that is already there."""

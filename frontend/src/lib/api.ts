@@ -203,6 +203,13 @@ export const api = {
     request<{ status: string; tier: string }>(`/auth/users/${username}/tier`, {
       method: 'PUT', body: JSON.stringify({ tier }),
     }),
+  // M22: whether the OpenRouter credential exists on the server. A BOOLEAN, never the value —
+  // there is deliberately no input field for the key, because one typed into the browser would
+  // travel through the gateway and the request logs. Goes through `request()` like everything
+  // else: a raw fetch() carries no Authorization header and the gateway answers 401, which
+  // would render as "unknown" forever.
+  jevCredentialStatus: () =>
+    request<{ configured: boolean; source: string; note: string }>('/news/jev/credential-status'),
   pushConfig: (keys: {
     polygon_api_key?: string; alpha_vantage_api_key?: string;
     // AUD-ADMIN-PROVIDERKEY-NOCLEAR: these two data-provider keys were the only credentials

@@ -138,9 +138,8 @@ export default function AdminAiFeaturesPage() {
       setTradeCoachEnabled(f.trade_coach_email_enabled);
     }).catch(() => setJevError('Could not load the Jev setting. Reload to try again.'));
 
-    fetch('/api/news/jev/credential-status')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => setJevKey(d && typeof d.configured === 'boolean' ? d.configured : null))
+    api.jevCredentialStatus()
+      .then((d) => setJevKey(typeof d?.configured === 'boolean' ? d.configured : null))
       // Unknown stays unknown. Showing "not configured" because a probe failed would send
       // someone to re-enter a key that is already there.
       .catch(() => setJevKey(null));
