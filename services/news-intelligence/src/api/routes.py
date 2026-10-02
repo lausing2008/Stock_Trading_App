@@ -69,3 +69,34 @@ def hot_news(symbol: str):
         # AUD-HOTNEWS-TS-STRIPPED: the field the age-decay consumer actually gates on.
         ts=flag.get("ts"),
     )
+
+
+@router.get("/jev/credential-status")
+def jev_credential_status():
+    """Is the OpenRouter credential configured? A BOOLEAN, never the value.
+
+    WHY THERE IS NO INPUT BOX FOR THIS, and why this endpoint exists instead.
+
+    The Jev design is explicit: "Do not put keys in browser storage, public feature flags, task
+    payloads or logs." A key typed into the admin page would travel through the browser, the API
+    gateway and every request log on the way — so the credential is a server-side file
+    (`.env.jev`) that only this service loads, and the UI gets a read-only indicator rather than
+    a field.
+
+    That still leaves a real question the operator could not previously answer: *is it set?*
+    This answers exactly that and nothing more. It returns no prefix, no length and no masked
+    form — each of those leaks something about a secret, and none of them is needed to know
+    whether to go and set it.
+
+    `configured` is NOT `enabled`. The credential makes a request possible; `jev_enabled`
+    decides whether one is ever made, and it defaults off.
+    """
+    from common.config import get_settings
+    key = (get_settings().openrouter_api_key or "").strip()
+    return {
+        "configured": bool(key),
+        # Where to put it, so the answer travels with the question.
+        "source": ".env.jev on the server, loaded only by news-intelligence",
+        "note": ("configured is not enabled — the Jev feature flag is separate and defaults "
+                 "off, so a configured key alone makes no provider requests"),
+    }

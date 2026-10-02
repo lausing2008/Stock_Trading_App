@@ -78,3 +78,48 @@ def test_a_configured_key_does_not_by_itself_enable_jev():
     assert '_REDIS_JEV_ENABLED' in admin
     assert 'r.get(_REDIS_JEV_ENABLED) == "1"' in admin, \
         "absence of the flag must read as OFF, not as enabled"
+
+
+# ── The status endpoint: a boolean, never the secret ──────────────────────────────────────────
+
+_ROUTES = (_ROOT / "services" / "news-intelligence" / "src" / "api" / "routes.py").read_text()
+
+
+def test_the_status_endpoint_returns_only_a_boolean():
+    """No prefix, no length, no masked form. Each of those leaks something about a secret, and
+    none is needed to answer the only question an operator has: is it set?"""
+    import ast
+    tree = ast.parse(_ROUTES)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "jev_credential_status")
+    # Strip the docstring before scanning. It DESCRIBES the leaks being avoided, so a raw text
+    # scan matches its own prose — the test would fail on the explanation of why it passes.
+    body = fn.body[1:] if (fn.body and isinstance(fn.body[0], ast.Expr)
+                           and isinstance(fn.body[0].value, ast.Constant)) else fn.body
+    code = "\n".join(ast.unparse(n) for n in body)
+    assert '"configured": bool(key)' in code.replace("'", '"')
+    for leak in ("key[:", "key[-", "len(key)", "mask", "***"):
+        assert leak not in code, f"the status endpoint exposes {leak!r}"
+
+
+def test_the_admin_page_has_no_input_field_for_the_key():
+    """A key typed into the browser travels through the browser, the gateway and every request
+    log on the way. The page shows STATUS and tells you where the file is."""
+    page = (_ROOT / "frontend" / "src" / "pages" / "admin-ai-features.tsx").read_text()
+    assert ".env.jev" in page, "the page must say WHERE the key goes"
+    # The real contract is not "no input anywhere on the page" — this page has other controls.
+    # It is that NO input is bound to the credential.
+    lowered = page.lower()
+    for i, line in enumerate(lowered.split("\n")):
+        if "<input" in line:
+            window = "\n".join(lowered.split("\n")[max(0, i - 3):i + 4])
+            for word in ("openrouter", "api_key", "apikey", "credential", "secret"):
+                assert word not in window, f"an input field is bound to {word!r}"
+
+
+def test_an_unreachable_probe_shows_unknown_not_not_configured():
+    """Showing "not configured" because a probe failed would send someone to re-enter a key
+    that is already there."""
+    page = (_ROOT / "frontend" / "src" / "pages" / "admin-ai-features.tsx").read_text()
+    assert ".catch(() => setJevKey(null))" in page
+    assert "unknown — could not check" in page

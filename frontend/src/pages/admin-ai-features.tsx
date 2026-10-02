@@ -116,6 +116,10 @@ export default function AdminAiFeaturesPage() {
   const [jevEnabled, setJevEnabled] = useState<boolean | null>(null);
   const [jevSaving, setJevSaving] = useState(false);
   const [jevError, setJevError] = useState<string | null>(null);
+  // Read-only: whether the OpenRouter credential is present on the server. Never its value —
+  // there is deliberately no input box, because a key typed here would travel through the
+  // browser, the gateway and every request log on the way.
+  const [jevKey, setJevKey] = useState<boolean | null>(null);
   const [globalSaving, setGlobalSaving] = useState<string | null>(null);
 
   useEffect(() => {
@@ -133,6 +137,13 @@ export default function AdminAiFeaturesPage() {
       setThemeForecastEnabled(f.theme_forecast_email_enabled);
       setTradeCoachEnabled(f.trade_coach_email_enabled);
     }).catch(() => setJevError('Could not load the Jev setting. Reload to try again.'));
+
+    fetch('/api/news/jev/credential-status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setJevKey(d && typeof d.configured === 'boolean' ? d.configured : null))
+      // Unknown stays unknown. Showing "not configured" because a probe failed would send
+      // someone to re-enter a key that is already there.
+      .catch(() => setJevKey(null));
   }, [authed]);
 
   async function handleToggleJev() {
@@ -346,6 +357,20 @@ export default function AdminAiFeaturesPage() {
             Save the on/off preference for the planned Jev news enrichment integration.
             The integration is not connected yet: this setting currently makes no model requests
             and changes no alerts or trades. Future experiments will require separate configuration.
+          </p>
+          <p style={{ fontSize: 12, color: '#94a3b8', margin: '0 0 12px', lineHeight: 1.6 }}>
+            <strong style={{ color: '#e2e8f0' }}>OpenRouter credential:</strong>{' '}
+            {jevKey === null
+              ? <span style={{ color: '#94a3b8' }}>unknown — could not check</span>
+              : jevKey
+                ? <span style={{ color: '#4ade80' }}>configured</span>
+                : <span style={{ color: '#fbbf24' }}>not configured</span>}
+            <br />
+            There is no field for the key here by design — a secret typed into a browser travels
+            through the browser, the gateway and the request logs on the way. It lives in{' '}
+            <code style={{ color: '#e2e8f0' }}>.env.jev</code> on the server, read only by
+            news-intelligence. Set it there and restart that one service.
+            {' '}A configured key still makes no requests while this preference is off.
           </p>
           <button
             type="button" role="switch" aria-label="Jev enrichment preference"
