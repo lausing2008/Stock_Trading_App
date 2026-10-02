@@ -36,14 +36,24 @@ from sqlalchemy import select, update
 log = get_logger(__name__)
 
 NOT_REQUIRED = None
+NOT_ATTEMPTED = "not_attempted"
 PENDING = "pending"
 SUBMITTING = "submitting"
 SUBMITTED = "submitted"
+REJECTED = "rejected"
 UNKNOWN = "unknown"
-FAILED = "failed"
 
-#: Terminal for this process. `unknown` is terminal pending human/automated reconciliation.
+#: Retryable: definitely not accepted, so a fresh attempt cannot duplicate anything.
+RETRYABLE = (PENDING, NOT_ATTEMPTED, REJECTED)
+
+#: Terminal for this process. `unknown` is terminal pending RECONCILIATION — it may still be
+#: resolved later to a confirmed fill, rejection or cancellation. Terminal means "this process
+#: will not act on it again", NOT "no further fact about it can ever be recorded".
 TERMINAL = (SUBMITTED, UNKNOWN)
+
+#: States that may still correspond to a REAL order at the broker, so they must keep their
+#: reserved exposure and must never be reported as a confirmed broker fill.
+MAY_EXIST_AT_BROKER = (SUBMITTING, SUBMITTED, UNKNOWN)
 
 #: Admin flag. ABSENT = OFF = the historical inline behaviour, so deploying this module changes
 #: nothing. Switching it moves WHERE a real order is placed relative to the commit, which is a
@@ -68,22 +78,65 @@ def submit_after_commit_enabled(redis_client) -> bool:
         return False
 
 
-def mark_pending(trade: PaperTrade) -> None:
-    """Record the INTENT to submit. Called inside the entry transaction, so it commits with the
-    trade — which is the whole point: the local record exists before the broker hears anything."""
+def new_client_order_id(portfolio_id: int, symbol: str) -> str:
+    """A stable identity for ONE intent, minted before any broker contact.
+
+    Without it an `unknown` outcome is unresolvable: the broker's order list cannot be matched
+    back to this trade except by guessing from symbol and quantity, which is exactly how a
+    reconciliation ends up confirming the wrong order. Where the broker supports a client order
+    id this is the value to send; where it does not, it is still the local join key.
+    """
+    from uuid import uuid4
+    return f"pt-{portfolio_id}-{symbol}-{uuid4().hex[:16]}"[:64]
+
+
+def mark_pending(trade: PaperTrade, *, path: str = "deferred") -> None:
+    """Record the INTENT to submit, with its identity and its route.
+
+    Called inside the entry transaction so all three commit with the trade — which is the whole
+    point: the local record exists, with a stable identity, before the broker hears anything.
+
+    `path` is persisted rather than re-read from the flag at dispatch time. A flag change or a
+    restart between entry and submission must not be able to route the SAME intent through both
+    the legacy inline path and this one.
+    """
     trade.broker_submission_state = PENDING
+    trade.broker_submission_path = path
+    if not trade.broker_client_order_id:
+        trade.broker_client_order_id = new_client_order_id(trade.portfolio_id, trade.symbol)
+
+
+def retains_reserved_exposure(trade: PaperTrade) -> bool:
+    """Does this trade still hold exposure that may exist at the broker?
+
+    True for `submitting`, `submitted` and `unknown`. Capacity must not be released for any of
+    them, and none may be reported as a CONFIRMED broker fill — `broker_fill_confirmed` is the
+    only thing that says that.
+    """
+    return trade.broker_submission_state in MAY_EXIST_AT_BROKER
+
+
+def confirmed_broker_fill(trade: PaperTrade) -> bool:
+    """Only an observed fill counts. An `unknown` submission is NOT a fill, and must never be
+    folded into executed-trade statistics as though it were one."""
+    return bool(trade.broker_fill_confirmed) and bool(trade.broker_order_id)
 
 
 def claimable(session, *, portfolio_id: int | None = None, limit: int = 20) -> list[PaperTrade]:
     """Trades whose broker order has not been placed and may still be attempted.
 
-    `submitting` is deliberately EXCLUDED. A row left there means a worker died mid-call and the
-    order may exist; picking it up again would risk a duplicate. Those go to `needs_reconciliation`.
+    `submitting` and `unknown` are deliberately EXCLUDED. Either may correspond to a REAL order
+    at the broker, and picking one up again would place a duplicate. Those go to
+    `needs_reconciliation`, which requires external evidence to resolve.
     """
     stmt = select(PaperTrade).where(
-        PaperTrade.broker_submission_state.in_((PENDING, FAILED)),
+        PaperTrade.broker_submission_state.in_(RETRYABLE),
         PaperTrade.broker_order_id.is_(None),
         PaperTrade.stage == "open",
+        # ROUTE RESOLVED PER INTENT. Only intents this dispatcher owns are claimable, so an
+        # intent created under the legacy path can never be picked up here after a flag change
+        # or a restart — which would route one intent through both submission paths.
+        PaperTrade.broker_submission_path == "deferred",
         PaperTrade.broker_submit_attempts < MAX_SUBMIT_ATTEMPTS)
     if portfolio_id is not None:
         stmt = stmt.where(PaperTrade.portfolio_id == portfolio_id)
@@ -100,7 +153,7 @@ def begin_submission(session, trade: PaperTrade, *, now: datetime | None = None)
     result = session.execute(
         update(PaperTrade)
         .where(PaperTrade.id == trade.id,
-               PaperTrade.broker_submission_state.in_((PENDING, FAILED)))
+               PaperTrade.broker_submission_state.in_(RETRYABLE))
         .values(broker_submission_state=SUBMITTING,
                 broker_submit_attempts=PaperTrade.broker_submit_attempts + 1,
                 broker_submitted_at=now)
@@ -113,9 +166,16 @@ def begin_submission(session, trade: PaperTrade, *, now: datetime | None = None)
 
 def settle(session, trade: PaperTrade, *, outcome: str, error: str | None = None,
            now: datetime | None = None) -> None:
-    """Record the result of a submission attempt. `outcome` is one of SUBMITTED/FAILED/UNKNOWN."""
-    if outcome not in (SUBMITTED, FAILED, UNKNOWN):
-        raise ValueError(f"unknown submission outcome {outcome!r}")
+    """Record the result of a submission attempt.
+
+    `outcome` is SUBMITTED, REJECTED or UNKNOWN. There is deliberately no generic "failed":
+    the distinction between "definitely not accepted" and "might have been accepted" is the
+    whole safety property, and a single bucket erases it.
+    """
+    if outcome not in (SUBMITTED, REJECTED, UNKNOWN):
+        raise ValueError(
+            f"unknown submission outcome {outcome!r}. Use REJECTED only with explicit evidence "
+            f"of rejection; anything ambiguous is UNKNOWN.")
     trade.broker_submission_state = outcome
     if error:
         trade.broker_error = error[:512]
@@ -141,7 +201,41 @@ def needs_reconciliation(session, *, limit: int = 100) -> list[PaperTrade]:
         .limit(limit)).scalars().all())
 
 
-def submit_pending(session, *, place, commit, portfolio_id: int | None = None,
+def reconcile_submission(session, trade: PaperTrade, *, resolution: str, evidence: str,
+                         actor: str, order_id: str | None = None,
+                         now: datetime | None = None) -> None:
+    """Resolve an `unknown` or stuck `submitting` row against EXTERNAL evidence.
+
+    TERMINAL DOES NOT MEAN UNRECORDABLE. "Never automatically resubmit" is the safety property;
+    it must not prevent recording a fill, rejection or cancellation that is later confirmed by
+    the broker's own record. This is the only path that may change such a row, and it demands
+    an actor and evidence for the same reason the notification outbox does — a reconciliation
+    without evidence is a guess wearing a decision's clothes.
+    """
+    if trade.broker_submission_state not in (UNKNOWN, SUBMITTING):
+        raise ValueError(
+            f"only `unknown` or `submitting` rows are reconciled, not "
+            f"{trade.broker_submission_state!r}")
+    if resolution not in (SUBMITTED, REJECTED):
+        raise ValueError(f"resolution must be {SUBMITTED!r} or {REJECTED!r}")
+    if not (evidence or "").strip():
+        raise ValueError("reconciliation requires evidence from the broker's own record")
+    if not (actor or "").strip():
+        raise ValueError("reconciliation requires an accountable actor")
+    if resolution == SUBMITTED and not (order_id or trade.broker_order_id):
+        raise ValueError(
+            "resolving to `submitted` requires the broker's order id — without it the claim "
+            "cannot be checked against the broker's record later")
+    now = now or utcnow()
+    if order_id:
+        trade.broker_order_id = order_id
+    trade.broker_submission_state = resolution
+    trade.broker_submitted_at = trade.broker_submitted_at or now
+    trade.broker_error = f"reconciled as {resolution} by {actor}: {evidence}"[:512]
+
+
+def submit_pending(session, *, place, commit, classify=None,
+                   portfolio_id: int | None = None,
                    limit: int = 20, now: datetime | None = None) -> dict:
     """Submit every claimable entry. `place(session, trade, portfolio)` does the real call.
 
@@ -155,7 +249,7 @@ def submit_pending(session, *, place, commit, portfolio_id: int | None = None,
     `submitting` (may exist — reconcile), `submitted` or `failed`.
     """
     now = now or utcnow()
-    out = {"claimed": 0, "submitted": 0, "failed": 0, "unknown": 0, "lost_race": 0}
+    out = {"claimed": 0, "submitted": 0, "rejected": 0, "unknown": 0, "lost_race": 0}
     rows = claimable(session, portfolio_id=portfolio_id, limit=limit)
     out["claimed"] = len(rows)
     for trade in rows:
@@ -166,27 +260,33 @@ def submit_pending(session, *, place, commit, portfolio_id: int | None = None,
         portfolio = session.get(PaperPortfolio, trade.portfolio_id)
         try:
             place(session, trade, portfolio)
-        except TimeoutError as exc:
-            # The broker may already have accepted. Neither success nor failure is known.
-            settle(session, trade, outcome=UNKNOWN, error=str(exc) or "timeout", now=now)
-            out["unknown"] += 1
-            log.warning("broker.submission_unknown", trade_id=trade.id, symbol=trade.symbol,
-                        error=str(exc))
-            commit(); continue
         except Exception as exc:                        # noqa: BLE001
-            settle(session, trade, outcome=FAILED, error=str(exc), now=now)
-            out["failed"] += 1
+            # ANY escaping exception is UNKNOWN unless the caller can prove otherwise. A
+            # timeout, a parse failure, a connection reset — none of them establishes that the
+            # broker did not accept the order.
+            verdict = classify(trade, exc) if classify else None
+            outcome = REJECTED if verdict == REJECTED else UNKNOWN
+            settle(session, trade, outcome=outcome, error=str(exc), now=now)
+            out["rejected" if outcome == REJECTED else "unknown"] += 1
+            log.warning("broker.submission_%s" % outcome, trade_id=trade.id,
+                        symbol=trade.symbol, error=str(exc))
             commit(); continue
 
-        # `place` records broker_order_id on success. Its absence after a call that did not
-        # raise is NOT a success — the historical implementation swallows errors internally and
-        # falls back to the simulated entry, so a missing id means no order was placed.
+        # A MISSING ORDER ID IS `unknown`, NOT A FAILURE. The historical
+        # `_place_broker_entry` catches every exception from `place_order` and returns
+        # normally, so from here a swallowed timeout AFTER acceptance and a clean rejection are
+        # indistinguishable — both leave no order id. Calling that "failed" would license a
+        # REPLACEMENT ORDER for one that may already exist. Only explicit evidence, supplied by
+        # `classify`, may downgrade it to `rejected`.
         if trade.broker_order_id:
             settle(session, trade, outcome=SUBMITTED, now=now)
             out["submitted"] += 1
         else:
-            settle(session, trade, outcome=FAILED,
-                   error="broker call returned without an order id", now=now)
-            out["failed"] += 1
+            verdict = classify(trade, None) if classify else None
+            outcome = REJECTED if verdict == REJECTED else UNKNOWN
+            settle(session, trade, outcome=outcome,
+                   error=trade.broker_error or "no order id and no evidence of rejection",
+                   now=now)
+            out["rejected" if outcome == REJECTED else "unknown"] += 1
         commit()
     return out

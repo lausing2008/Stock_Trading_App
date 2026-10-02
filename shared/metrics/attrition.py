@@ -17,7 +17,14 @@ Those demand different responses, so they need different records.
 THE RULE, which this class enforces rather than documents: **every row that leaves a stage is
 either carried forward or dropped with a REASON.** `rows_in == rows_out + sum(dropped)`. A
 ledger that does not reconcile is reported as not reconciling — it is never quietly balanced,
-because a silent adjustment is how the original defect stayed invisible.
+because a silent adjustment is how the original defect stayed invisible. An `unexplained` bucket
+closes the arithmetic but DEGRADES `reconciles`, so naming a gap cannot pass for closing it.
+
+SCOPE, stated because it is narrower than the register's wording. This currently instruments the
+OUTCOME-AUGMENTATION path only: loaded, min_sample, shared_features, dedup, min_after_dedup.
+Label maturity is partly covered by the training-cutoff filter, and **purge, calibration and
+promotion exclusions are NOT measured here** — they happen in other code paths and need their
+own ledgers before M13's full claim can be made.
 """
 from __future__ import annotations
 
@@ -78,8 +85,15 @@ class AttritionLedger:
 
     @property
     def reconciles(self) -> bool:
-        """Every stage balances AND the chain composes: each stage receives what the previous
-        one passed on. A break in the chain means a stage was skipped or double-counted."""
+        """Every stage balances, the chain composes, AND nothing was unexplained.
+
+        THE UNEXPLAINED BUCKET MUST DEGRADE THIS. `record()` closes an unexplained gap by
+        naming it, which makes the arithmetic balance — so without this clause a ledger could
+        reconcile cleanly while concealing rows nobody can account for. Balancing the books by
+        inventing a line item is not reconciliation.
+        """
+        if self.unexplained:
+            return False
         if not all(s.reconciles for s in self.stages):
             return False
         for prev, nxt in zip(self.stages, self.stages[1:]):

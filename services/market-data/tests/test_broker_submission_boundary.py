@@ -57,7 +57,7 @@ def test_the_intent_is_recorded_and_committed_before_the_broker_is_contacted(pro
     assert i["claimable"] == 1
 
 
-def test_a_successful_submission_records_the_order_exactly_once(probe):
+def test_a_successful_submission_records_the_order_exactly_once(probe):  # noqa: D103
     s = probe["broker_submit_ok"]
     assert s["state"] == "submitted" and s["order_id"] is not None
     assert s["calls"] == 1 and s["attempts"] == 1
@@ -86,23 +86,70 @@ def test_a_worker_that_died_mid_call_is_reconciled_not_resubmitted(probe):
 
 # ── Definite failures stay retryable ──────────────────────────────────────────────────────────
 
-def test_a_definite_rejection_is_retryable_and_bounded(probe):
-    """A rejection is known not to have been accepted, so retrying it cannot duplicate anything
-    — but the attempt count still bounds it."""
+def test_an_exception_without_evidence_of_rejection_is_UNKNOWN(probe):
+    """CORRECTED. An escaping exception — timeout, parse error, connection reset — does not
+    establish that the broker refused the order. Only explicit evidence may downgrade it to
+    `rejected`; everything else is `unknown`."""
     r = probe["broker_reject"]
-    assert r["batch"]["failed"] == 1
-    assert r["failed_rows"] == 1
-    assert r["attempts"] == 1
+    assert r["batch"]["unknown"] == 1
+    assert r["batch"]["rejected"] == 0
 
 
-def test_a_call_that_returns_without_an_order_id_is_a_FAILURE_not_a_success(probe):
-    """THE SUBTLE ONE. The historical `_place_broker_entry` swallows its own errors and falls
-    back to the simulated entry, so returning cleanly does NOT mean an order was placed.
-    Treating that as success would mark a trade `submitted` with no order behind it."""
-    s = probe["broker_silent_fallback"]
-    assert s["state"] == "failed"
-    assert s["order_id"] is None
-    assert "without an order id" in s["error"]
+def test_a_call_that_returns_without_an_order_id_is_UNKNOWN_not_failed(probe):
+    """THE CORRECTION THAT MATTERS MOST HERE, and my original classification was wrong.
+
+    `_place_broker_entry` catches every exception from `place_order` and returns normally, so
+    from outside a swallowed timeout AFTER acceptance and a clean rejection are
+    indistinguishable — both leave no order id. I first recorded that as `failed`, which is
+    retryable, and a retry on an order that may already exist is a DUPLICATE REAL ORDER.
+
+    A missing id with no evidence of rejection is `unknown`."""
+    u = probe["broker_missing_id_is_unknown"]
+    assert u["state"] == "unknown"
+    assert u["reclaimed_for_replacement"] is False, \
+        "an unknown outcome must never license a replacement order"
+
+
+def test_an_unknown_submission_keeps_its_exposure_and_is_not_a_confirmed_fill(probe):
+    """It may correspond to a real order, so capacity must not be released — and it must not be
+    folded into executed-trade statistics as though a fill had been observed."""
+    u = probe["broker_missing_id_is_unknown"]
+    assert u["retains_exposure"] is True
+    assert u["counts_as_confirmed_fill"] is False
+
+
+# ── Identity and routing, before activation ───────────────────────────────────────────────────
+
+def test_a_stable_client_order_identity_is_committed_before_any_broker_contact(probe):
+    """What makes an `unknown` resolvable at all. Without an identity, matching the broker's
+    own order list back to this trade means guessing from symbol and quantity — which is how a
+    reconciliation confirms the wrong order."""
+    i = probe["broker_identity"]
+    assert i["client_order_id"] and i["client_order_id"].startswith("pt-")
+    assert i["before_any_broker_contact"] is True
+
+
+def test_an_intent_routed_to_the_legacy_path_is_never_claimed_by_the_new_dispatcher(probe):
+    """The route is resolved ONCE at entry and persisted. A flag change or a restart between
+    entry and submission must not hand the same intent to both paths."""
+    assert probe["broker_path_isolation"]["legacy_intent_claimable_by_deferred"] is False
+
+
+# ── Terminal is not unrecordable ──────────────────────────────────────────────────────────────
+
+def test_a_later_confirmed_fill_can_still_be_recorded_against_an_unknown(probe):
+    """"Never automatically resubmit" is the safety property. It must not prevent recording a
+    fill, rejection or cancellation that the broker's own record later confirms."""
+    r = probe["broker_reconcile"]
+    assert r["state"] == "submitted" and r["order_id"] == "ord-9"
+
+
+def test_reconciliation_demands_evidence_and_an_order_id(probe):
+    """Resolving to `submitted` without the broker's order id would make the claim
+    uncheckable against the broker's record afterwards."""
+    r = probe["broker_reconcile"]
+    assert "requires evidence" in r["evidence_required"]
+    assert "requires the broker's order id" in r["order_id_required"]
 
 
 # ── What is deliberately not claimed ──────────────────────────────────────────────────────────

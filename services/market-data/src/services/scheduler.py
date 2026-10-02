@@ -2615,9 +2615,17 @@ def drain_earnings_outbox() -> None:
 
             result = _eo.deliver_batch(session, owner=_worker_id, send=_send,
                                        is_subscribed=_subscribed,
-                                       legacy_marker=_legacy_marker)
+                                       legacy_marker=_legacy_marker,
+                                       activated_at=_eo.activation_watermark(_rc))
+        if result.get("no_activation_watermark"):
+            log.warning("earnings_outbox.no_activation_watermark", mode=mode,
+                        key=_eo.ACTIVATED_AT_KEY,
+                        note="mode is `outbox` but no activation instant is recorded; refusing "
+                             "to deliver, because shadow-queued rows cannot be told apart from "
+                             "live ones and legacy already sent them")
         if any(result.get(k) for k in ("accepted", "failed", "unknown", "deferred",
-                                       "suppressed", "quarantined")):
+                                       "suppressed", "quarantined",
+                                       "pre_activation_suppressed")):
             log.info("earnings_outbox.drained", mode=mode, **result)
         _record_job_status("drain_earnings_outbox", "ok", _time.time() - _started)
     except Exception as exc:

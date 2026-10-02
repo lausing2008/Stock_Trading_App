@@ -94,6 +94,18 @@ removes that dilemma** — a deferred notification is retried when the preferenc
 and sending on an unreadable preference is an unenforced opt-out that logging does not undo.
 Deferrals are counted separately from send attempts so an outage cannot dead-letter the backlog.
 
+### The activation watermark
+
+Rows queued during `shadow` were queued while the **legacy sender still owned delivery** — it
+already sent them. Draining them after the flag moves would re-send every notification
+accumulated during the shadow period, which is the single worst thing a cutover can do.
+
+`stockai:admin:feature:earnings_outbox_activated_at` records when the outbox took over. Rows
+created before it are **suppressed with a reason** rather than dropped, so the cutover leaves a
+record of what it withheld. **Without a watermark the drain refuses to deliver anything at
+all** — a shadow row cannot be told apart from a live one, and refusing is recoverable while
+duplicating is not.
+
 ### Confirmed suppression vs uncertainty
 
 An unreadable legacy marker was originally suppressed too, reasoning that withholding beats a

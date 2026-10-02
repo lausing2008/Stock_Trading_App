@@ -121,7 +121,7 @@ prov = FakeProvider("accept")
 with Session() as s:
     row, created, disp = _enqueue(s, redis_client=FakeRedis()); s.commit()
 with Session() as s:
-    res = eo.deliver_batch(s, owner="w1", send=prov, is_subscribed=lambda r: True, now=T0)
+    res = eo.deliver_batch(s, activated_at=T0 - timedelta(days=1), owner="w1", send=prov, is_subscribed=lambda r: True, now=T0)
 with Session() as s:
     row = s.query(NotificationOutbox).one()
     R["happy_path"] = {
@@ -139,7 +139,7 @@ def _broken_prefs(row):
 with Session() as s:
     _enqueue(s, redis_client=FakeRedis()); s.commit()
 with Session() as s:
-    res = eo.deliver_batch(s, owner="w1", send=prov, is_subscribed=_broken_prefs, now=T0)
+    res = eo.deliver_batch(s, activated_at=T0 - timedelta(days=1), owner="w1", send=prov, is_subscribed=_broken_prefs, now=T0)
 with Session() as s:
     row = s.query(NotificationOutbox).one()
     R["pref_error_defers"] = {
@@ -149,7 +149,7 @@ with Session() as s:
     }
 # ... and recovers once the preference source returns
 with Session() as s:
-    res2 = eo.deliver_batch(s, owner="w1", send=prov, is_subscribed=lambda r: True,
+    res2 = eo.deliver_batch(s, activated_at=T0 - timedelta(days=1), owner="w1", send=prov, is_subscribed=lambda r: True,
                             now=T0 + timedelta(hours=1))
 with Session() as s:
     row = s.query(NotificationOutbox).one()
@@ -166,7 +166,7 @@ with Session() as s:
 now = T0
 for _ in range(5):
     with Session() as s:
-        eo.deliver_batch(s, owner="w1", send=prov, is_subscribed=_broken_prefs, now=now)
+        eo.deliver_batch(s, activated_at=T0 - timedelta(days=1), owner="w1", send=prov, is_subscribed=_broken_prefs, now=now)
     now += timedelta(hours=4)
 with Session() as s:
     row = s.query(NotificationOutbox).one()
@@ -182,7 +182,7 @@ with Session() as s:
     s.commit()
 with Session() as s:
     # 90 minutes later the guidance row's 1h TTL has lapsed; results is still live.
-    res = eo.deliver_batch(s, owner="w1", send=prov,
+    res = eo.deliver_batch(s, activated_at=T0 - timedelta(days=1), owner="w1", send=prov,
                            is_subscribed=lambda r: r.event_id.endswith("guidance"),
                            now=T0 + timedelta(minutes=90))
 with Session() as s:
@@ -208,7 +208,7 @@ with Session() as s:
     # ...and the process dies here. Nothing settles the row.
 CRASH_LATER = T0 + timedelta(seconds=600)
 with Session() as s:
-    res = eo.deliver_batch(s, owner="w2", send=prov, is_subscribed=lambda r: True,
+    res = eo.deliver_batch(s, activated_at=T0 - timedelta(days=1), owner="w2", send=prov, is_subscribed=lambda r: True,
                            now=CRASH_LATER)
 with Session() as s:
     row = s.query(NotificationOutbox).one()
@@ -287,7 +287,7 @@ def _marker_unreadable(row):
 
 
 with Session() as s:
-    res = eo.deliver_batch(s, owner="w1", send=prov, is_subscribed=lambda r: True,
+    res = eo.deliver_batch(s, activated_at=T0 - timedelta(days=1), owner="w1", send=prov, is_subscribed=lambda r: True,
                            legacy_marker=_marker_unreadable, now=T0 + timedelta(minutes=5))
 with Session() as s:
     rows = {r.event_id.rsplit(":", 1)[1]: r for r in s.query(NotificationOutbox).all()}
@@ -325,7 +325,7 @@ with Session() as s:
     # got[1] and got[2] remain leased by the dead worker, never dispatched.
 RESUME = T0 + timedelta(seconds=600)
 with Session() as s:
-    res = eo.deliver_batch(s, owner="w2", send=prov, is_subscribed=lambda r: True, now=RESUME)
+    res = eo.deliver_batch(s, activated_at=T0 - timedelta(days=1), owner="w2", send=prov, is_subscribed=lambda r: True, now=RESUME)
 with Session() as s:
     states = sorted((r.event_id.rsplit(":", 1)[1], r.state) for r in s.query(NotificationOutbox))
     R["restart"] = {"batch": res, "states": states, "provider_calls": sorted(prov.sent),
@@ -336,7 +336,7 @@ _fresh()
 with Session() as s:
     _enqueue(s, phase="results", redis_client=FakeRedis()); s.commit()
 with Session() as s:
-    res_t = eo.deliver_batch(s, owner="w1", send=FakeProvider("timeout"),
+    res_t = eo.deliver_batch(s, activated_at=T0 - timedelta(days=1), owner="w1", send=FakeProvider("timeout"),
                              is_subscribed=lambda r: True, now=T0)
 with Session() as s:
     timeout_row = s.query(NotificationOutbox).one()
@@ -344,7 +344,7 @@ _fresh()
 with Session() as s:
     _enqueue(s, phase="results", redis_client=FakeRedis()); s.commit()
 with Session() as s:
-    res_r = eo.deliver_batch(s, owner="w1", send=FakeProvider("reject"),
+    res_r = eo.deliver_batch(s, activated_at=T0 - timedelta(days=1), owner="w1", send=FakeProvider("reject"),
                              is_subscribed=lambda r: True, now=T0)
 with Session() as s:
     reject_row = s.query(NotificationOutbox).one()
@@ -362,5 +362,42 @@ R["attribution"] = {
     "module_doc_disclaims": "makes no claim about whether the headline" in (eo.__doc__ or ""),
     "accepted_means": "the provider took this message",
 }
+
+# ── 12. ACTIVATION WATERMARK: shadow rows must not drain after the flip ───────────────────────
+_fresh()
+prov_w = FakeProvider("accept")
+SHADOW_T = T0 - timedelta(hours=6)
+ACTIVATED = T0 - timedelta(hours=1)
+with Session() as s:
+    row_shadow, _, _ = _enqueue(s, phase="preview", redis_client=FakeRedis(),
+                                event_time=SHADOW_T)
+    # `created_at` is when the ROW WAS WRITTEN, which is what the watermark compares against —
+    # set explicitly, because both rows are written now in a test.
+    row_shadow.created_at = SHADOW_T
+    row_shadow.available_at = SHADOW_T
+    _enqueue(s, phase="results", redis_client=FakeRedis(), event_time=T0)
+    s.commit()
+with Session() as s:
+    res_w = eo.deliver_batch(s, activated_at=ACTIVATED, owner="w", send=prov_w,
+                             is_subscribed=lambda r: True, now=T0)
+with Session() as s:
+    rows = {r.event_id.rsplit(":", 1)[1]: r for r in s.query(NotificationOutbox).all()}
+    R["activation_watermark"] = {
+        "batch": res_w,
+        "shadow_row_state": rows["preview"].state,
+        "shadow_row_reason": rows["preview"].terminal_reason,
+        "live_row_state": rows["results"].state,
+        "provider_calls": list(prov_w.sent),
+    }
+
+# Without a watermark the drain refuses to deliver at all.
+_fresh()
+prov_n = FakeProvider("accept")
+with Session() as s:
+    _enqueue(s, phase="results", redis_client=FakeRedis()); s.commit()
+with Session() as s:
+    res_n = eo.deliver_batch(s, activated_at=None, owner="w", send=prov_n,
+                             is_subscribed=lambda r: True, now=T0)
+R["no_watermark"] = {"batch": res_n, "provider_calls": list(prov_n.sent)}
 
 print(json.dumps(R, indent=2, default=str))

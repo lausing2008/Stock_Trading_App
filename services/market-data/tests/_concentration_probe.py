@@ -550,7 +550,7 @@ with Session() as s:
 def _pending_trade(s, symbol="BRK1"):
     st = s.query(Stock).filter_by(id=BST).one()
     t = _mk_open(s, s.query(PaperPortfolio).filter_by(id=BPF).one(), st, 10, 100.0, 95.0)
-    bs.mark_pending(t)
+    bs.mark_pending(t, path="deferred")
     s.flush()
     return t
 
@@ -618,5 +618,64 @@ with Session() as s:
         "reclaimed": STUCK in claim_ids,
         "surfaced_for_reconciliation": STUCK in recon_ids,
     }
+
+# (g) A MISSING ORDER ID IS UNKNOWN, not a failure — it may exist at the broker.
+rec_sf = BrokerRecorder("silent_fallback")
+with Session() as s:
+    t = _pending_trade(s); s.commit(); SILENT2 = t.id
+with Session() as s:
+    bs.submit_pending(s, place=rec_sf, commit=s.commit, portfolio_id=BPF, limit=50)
+with Session() as s:
+    t = s.query(PaperTrade).filter_by(id=SILENT2).one()
+    reclaim = [x.id for x in bs.claimable(s, portfolio_id=BPF, limit=50)]
+    R["broker_missing_id_is_unknown"] = {
+        "state": t.broker_submission_state,
+        "retains_exposure": bs.retains_reserved_exposure(t),
+        "counts_as_confirmed_fill": bs.confirmed_broker_fill(t),
+        "reclaimed_for_replacement": SILENT2 in reclaim,
+    }
+
+# (h) Stable client identity, minted and committed with the intent.
+with Session() as s:
+    t = _pending_trade(s); s.commit()
+    R["broker_identity"] = {"client_order_id": t.broker_client_order_id,
+                            "path": t.broker_submission_path,
+                            "before_any_broker_contact": t.broker_order_id is None}
+
+# (i) A legacy-routed intent is NEVER claimable by the deferred dispatcher.
+with Session() as s:
+    st = s.query(Stock).filter_by(id=BST).one()
+    t = _mk_open(s, s.query(PaperPortfolio).filter_by(id=BPF).one(), st, 10, 100.0, 95.0)
+    t.broker_submission_state = "pending"
+    t.broker_submission_path = "legacy"
+    s.commit(); LEGACY = t.id
+with Session() as s:
+    R["broker_path_isolation"] = {
+        "legacy_intent_claimable_by_deferred": LEGACY in
+        [x.id for x in bs.claimable(s, portfolio_id=BPF, limit=50)]}
+
+# (j) Terminal does not mean unrecordable: a later-confirmed fill can still be written.
+with Session() as s:
+    t = s.query(PaperTrade).filter_by(id=SILENT2).one()
+    try:
+        bs.reconcile_submission(s, t, resolution="submitted", evidence="", actor="ops")
+        no_ev = "accepted"
+    except ValueError as exc:
+        no_ev = str(exc)[:60]
+    try:
+        bs.reconcile_submission(s, t, resolution="submitted",
+                                evidence="broker order list shows it", actor="ops")
+        no_id = "accepted"
+    except ValueError as exc:
+        no_id = str(exc)[:60]
+    bs.reconcile_submission(s, t, resolution="submitted",
+                            evidence="broker order list shows ord-9 for this client id",
+                            actor="ops:sing", order_id="ord-9")
+    s.commit()
+with Session() as s:
+    t = s.query(PaperTrade).filter_by(id=SILENT2).one()
+    R["broker_reconcile"] = {"evidence_required": no_ev, "order_id_required": no_id,
+                             "state": t.broker_submission_state,
+                             "order_id": t.broker_order_id}
 
 print(json.dumps(R, indent=2, default=str))

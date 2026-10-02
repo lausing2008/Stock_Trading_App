@@ -30,6 +30,28 @@ def test_a_stage_that_loses_rows_without_a_reason_records_them_as_unexplained():
     assert led.unexplained == 34
 
 
+def test_an_unexplained_bucket_DEGRADES_reconciliation():
+    """CORRECTED. `record()` closes the gap by naming it, which makes the arithmetic balance —
+    so without this the ledger would reconcile cleanly while concealing rows nobody can account
+    for. Balancing the books by inventing a line item is not reconciliation."""
+    led = AttritionLedger("X")
+    led.record("dedup", rows_in=40, rows_out=6)
+    assert led.unexplained == 34
+    assert led.reconciles is False, "an unexplained loss must not read as reconciled"
+
+
+def test_the_module_states_which_exclusions_it_does_NOT_cover():
+    """The register names label maturity, purge, calibration and promotion. Only the
+    outcome-augmentation path is instrumented, and claiming otherwise would be the same kind of
+    overreach the ledger exists to catch."""
+    src = (pathlib.Path(__file__).resolve().parents[3] / "shared" / "metrics"
+           / "attrition.py").read_text()
+    # Whitespace-normalised: the sentence wraps, and a line break should not decide whether a
+    # documented limitation counts as documented.
+    flat = " ".join(src.split())
+    assert "purge, calibration and promotion exclusions are NOT measured here" in flat
+
+
 def test_a_reconciling_ledger_has_no_unexplained_rows():
     led = AttritionLedger("X")
     led.record("dedup", rows_in=40, rows_out=6, dropped={"overlaps_training_window": 34})

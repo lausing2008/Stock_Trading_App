@@ -1110,18 +1110,37 @@ class PaperTrade(Base):
     #: asserted the trade was "already committed by the caller before this function runs", which
     #: was simply not true of this path.
     #:
-    #: NULL      — no linked broker; nothing to submit (the overwhelming majority).
-    #: pending   — intent recorded and COMMITTED. Nothing has been sent yet.
-    #: submitting— about to contact the broker. Committed BEFORE the call, so a crash here is
-    #:             detectable: the order may or may not exist.
-    #: submitted — the broker accepted; `broker_order_id` is set.
-    #: unknown   — contacted and the outcome is not known. Terminal pending RECONCILIATION,
-    #:             never retried automatically, because a blind retry may duplicate a real order.
-    #: failed    — a definite rejection. Safe to retry.
+    #: NULL          — no linked broker; nothing to submit (the overwhelming majority).
+    #: not_attempted — intent recorded and definitely never dispatched.
+    #: pending       — intent recorded and COMMITTED. Nothing has been sent yet.
+    #: submitting    — about to contact the broker. Committed BEFORE the call, so a crash here
+    #:                 is detectable: the order may or may not exist.
+    #: submitted     — acceptance recorded, with `broker_order_id` as the order identity.
+    #: rejected      — an EXPLICIT broker rejection. Definitely not accepted, so safe to retry.
+    #: unknown       — the request may have reached the broker. Requires reconciliation; never
+    #:                 retried automatically, never releases reserved exposure, and never
+    #:                 becomes a simulated fill.
+    #:
+    #: A SWALLOWED ERROR OR MISSING ORDER ID IS `unknown`, NOT `rejected`. `_place_broker_entry`
+    #: catches every exception from `place_order` and returns normally, so from outside a
+    #: swallowed timeout after acceptance and a clean rejection look identical — both leave no
+    #: order id. Calling that "rejected" would license a REPLACEMENT ORDER for one that may
+    #: already exist. Only explicit evidence of rejection may set `rejected`.
     broker_submission_state: Mapped[str | None] = mapped_column(
         String(16), nullable=True, index=True)
     broker_submit_attempts: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0")
+    #: STABLE CLIENT ORDER IDENTITY, generated and committed with the intent, BEFORE any
+    #: broker contact. It is what makes an `unknown` outcome resolvable: without an identity
+    #: the broker's own order list cannot be matched back to this trade, and reconciliation
+    #: degenerates into guessing from symbol and quantity. Unique so a retry cannot mint a
+    #: second identity for the same intent.
+    broker_client_order_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, unique=True)
+    #: Which path this intent was routed through — resolved ONCE at entry and persisted, so a
+    #: flag change or a restart mid-flight cannot send the same intent through both the legacy
+    #: inline path and the deferred one. 'legacy' | 'deferred'.
+    broker_submission_path: Mapped[str | None] = mapped_column(String(16), nullable=True)
     broker_submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     broker_fill_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")

@@ -5542,10 +5542,15 @@ def _open_paper_trade(
     # commit, which is a live execution-ordering change and belongs to a person, not a deploy.
     if portfolio.broker_connection_id:
         if _broker_submission.submit_after_commit_enabled(_get_redis_safe()):
-            _broker_submission.mark_pending(trade)
+            _broker_submission.mark_pending(trade, path="deferred")
             log.info("broker.entry_intent_recorded", symbol=stock.symbol, trade_id=trade.id,
+                     client_order_id=trade.broker_client_order_id,
                      note="submission deferred until the trade row is committed")
         else:
+            # The route is persisted on the LEGACY branch too. Without it a restart between
+            # this call and the caller's commit, with the flag since flipped, could hand the
+            # same intent to the deferred dispatcher — routing one intent through both paths.
+            trade.broker_submission_path = "legacy"
             _place_broker_entry(session, trade, portfolio)
 
     log.info("paper.entry",

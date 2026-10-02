@@ -50,6 +50,35 @@ def rollout_mode(redis_client) -> str:
     return mode if mode in MODES else OFF
 
 
+#: When the outbox was ACTIVATED. Rows queued before this instant were queued in `shadow`,
+#: which means the LEGACY sender already delivered them — draining them now would send every
+#: one a second time.
+ACTIVATED_AT_KEY = "stockai:admin:feature:earnings_outbox_activated_at"
+
+
+def activation_watermark(redis_client) -> datetime | None:
+    """The instant the outbox took over delivery, or None if unknown/unset.
+
+    None is not "no restriction" — see `deliver_batch`, which refuses to deliver anything
+    without it. A mode flip with no watermark cannot distinguish a shadow row (already
+    delivered by legacy) from a live one, and guessing wrong duplicates real mail.
+    """
+    if redis_client is None:
+        return None
+    try:
+        raw = redis_client.get(ACTIVATED_AT_KEY)
+    except Exception:                                  # noqa: BLE001
+        return None
+    if not raw:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    try:
+        return datetime.fromisoformat(str(raw).strip().replace("Z", ""))
+    except Exception:                                  # noqa: BLE001
+        return None
+
+
 def legacy_should_send(mode: str) -> bool:
     return mode in (OFF, SHADOW)
 
@@ -142,7 +171,8 @@ def enqueue_phase_alert(session, *, user_id, recipient: str, symbol: str, event_
 
 
 def deliver_batch(session, *, owner: str, send, is_subscribed, commit=None,
-                  legacy_marker=None, now: datetime | None = None, limit: int = 20) -> dict:
+                  legacy_marker=None, activated_at: datetime | None = None,
+                  now: datetime | None = None, limit: int = 20) -> dict:
     """One worker pass: quarantine, expire, claim, recheck, dispatch, settle.
 
     `send(row) -> bool` is injected so the whole path can be exercised against a fake provider,
@@ -157,7 +187,15 @@ def deliver_batch(session, *, owner: str, send, is_subscribed, commit=None,
     commit = commit or session.commit
     out = {"quarantined": 0, "expired": 0, "claimed": 0, "accepted": 0, "failed": 0,
            "deferred": 0, "suppressed": 0, "expired_at_send": 0, "unknown": 0, "lost_lease": 0,
-           "deferred_unknown_marker": 0}
+           "deferred_unknown_marker": 0, "pre_activation_suppressed": 0}
+
+    # NO WATERMARK, NO DELIVERY. Without it a shadow row — already delivered by the legacy
+    # sender — cannot be told apart from one queued after the outbox took over. Delivering
+    # anyway would re-send every notification accumulated during the shadow period, which is
+    # the single worst thing a cutover can do.
+    if activated_at is None:
+        out["no_activation_watermark"] = True
+        return out
 
     out["quarantined"] = _ob.quarantine_uncertain(session, now=now)
     out["expired"] = _ob.expire_stale(session, now=now)
@@ -168,6 +206,17 @@ def deliver_batch(session, *, owner: str, send, is_subscribed, commit=None,
     out["claimed"] = len(rows)
 
     for row in rows:
+        # Rows queued BEFORE activation were queued while legacy still owned delivery, so they
+        # have already been sent. Suppressed with a reason rather than dropped, so the cutover
+        # leaves a record of exactly what it withheld and why.
+        if row.created_at is not None and row.created_at < activated_at:
+            _ob.suppress(session, row,
+                         reason="queued in shadow before outbox activation; the legacy sender "
+                                "already delivered this event",
+                         now=now)
+            out["pre_activation_suppressed"] += 1
+            commit(); continue
+
         # Re-check the legacy marker, for the same reason preferences are re-checked: the state
         # may have become readable (or become true) since enqueue. An unreadable marker DEFERS;
         # it never silently becomes "already delivered".

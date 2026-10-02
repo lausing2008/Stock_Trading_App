@@ -421,3 +421,33 @@ def test_the_rollout_flag_is_not_defaulted_on_anywhere_in_the_scheduler():
     """A cutover must be deliberate. Nothing in the scheduler may write the flag."""
     assert "earnings_outbox_rollout" not in _SCHED, \
         "the scheduler reads the mode through rollout_mode(); it must never set the flag"
+
+
+# ── The activation watermark ──────────────────────────────────────────────────────────────────
+
+def test_shadow_queued_rows_are_not_delivered_after_the_flip(probe):
+    """THE WORST THING A CUTOVER CAN DO. Rows queued during `shadow` were queued while the
+    LEGACY sender still owned delivery — it already sent them. Draining them after the flag
+    moves would re-send every notification accumulated during the shadow period.
+
+    They are suppressed with a reason rather than dropped, so the cutover leaves a record of
+    exactly what it withheld and why."""
+    w = probe["activation_watermark"]
+    assert w["batch"]["pre_activation_suppressed"] == 1
+    assert w["shadow_row_state"] == "suppressed"
+    assert "already delivered" in w["shadow_row_reason"]
+    assert [c.rsplit(":", 1)[1] for c in w["provider_calls"]] == ["results"]
+
+
+def test_a_row_queued_after_activation_is_delivered_normally(probe):
+    assert probe["activation_watermark"]["live_row_state"] == "accepted"
+
+
+def test_without_a_watermark_the_drain_refuses_to_deliver_anything(probe):
+    """Fail closed. Without the activation instant a shadow row cannot be told apart from a
+    live one, and guessing wrong duplicates real mail. Refusing is recoverable; duplicating is
+    not."""
+    n = probe["no_watermark"]
+    assert n["batch"]["no_activation_watermark"] is True
+    assert n["provider_calls"] == []
+    assert n["batch"]["accepted"] == 0

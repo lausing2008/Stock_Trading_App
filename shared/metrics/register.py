@@ -225,8 +225,9 @@ REGISTER: tuple[WorkItem, ...] = (
              "Record rows at join, feature availability, label maturity, dedup, purge, "
              "calibration and promotion stages.", "Every exclusion has a reason and reconciles.",
              "ML", Engineering.IMPLEMENTED, Research.NOT_MEASURABLE, Decision.NO_ACTION,
-             _t(TriggerKind.OCCURRENCE, "a retrain cycle runs with the ledger deployed, so real "
-                                       "attrition can be read instead of inferred",
+             _t(TriggerKind.IMPLEMENTATION, "an instrumented training report is produced from "
+                                            "a real retrain, AND purge/calibration/promotion "
+                                            "exclusions get their own ledgers",
                 "ledger built and wired 2026-10-01; NOT deployed"),
              notes="AttritionLedger records rows at loaded / min_sample / shared_features / "
                    "dedup / min_after_dedup, each exclusion with a REASON, and reconciles: "
@@ -234,14 +235,21 @@ REGISTER: tuple[WorkItem, ...] = (
                    "silent balance. Emitted even when NOTHING survived - the 490-of-548 case "
                    "the old single count could not explain. Reproduces the historical 43 -> 6 "
                    "collapse and names the stage and reason. Read it after a retrain; a "
-                   "`reconciles: false` line is a defect in the instrumentation, not the data."),
+                   "`reconciles: false` line is a defect in the instrumentation, not the data. "
+                   "An UNEXPLAINED bucket now DEGRADES reconciliation - naming a gap closes the "
+                   "arithmetic but must not pass for closing the gap. NOT FULLY CLOSED: the "
+                   "tooling is tested, fleet coverage and historical attrition are not "
+                   "explained. SCOPE is narrower than this item's wording - only the "
+                   "outcome-augmentation path is instrumented; purge, calibration and promotion "
+                   "exclusions are NOT measured and need their own ledgers."),
     WorkItem("M14", "P1", "OOS-suppression rollout not independently settled",
              "Inventory active artifacts/consumers; verify invalid models cannot publish or be "
              "unsuppressed by resweeps.", "Versioned suppression reasons and coverage effects.",
              "ML/operations", Engineering.TESTED, Research.NOT_MEASURABLE, Decision.NO_ACTION,
-             _t(TriggerKind.OCCURRENCE, "the inventory is run against the real model "
-                                       "directory, so fleet coverage is read rather than "
-                                       "inferred",
+             _t(TriggerKind.IMPLEMENTATION, "run the READ-ONLY inventory against the "
+                                            "production model directory, recording artifact "
+                                            "hashes, rule version, unknown-validity counts and "
+                                            "read errors - no retrain required",
                 "inventory built and tested 2026-10-01; NOT yet run against production"),
              notes="suppression_inventory.build_inventory() calls the REAL "
                    "_compute_oos_suppression (injected, never reimplemented) and reports the "
@@ -380,18 +388,26 @@ REGISTER: tuple[WorkItem, ...] = (
     WorkItem("M25", "release prerequisite", "Deferred broker/order and options-accounting items",
              "Reconcile A01-A03 lifecycle scope and research-vs-executable options marks against "
              "current code.", "Reconciled before any live-capital proposal.",
-             "execution/options/risk", Engineering.PROPOSED, Research.NOT_MEASURABLE,
+             "execution/options/risk", Engineering.IMPLEMENTED, Research.NOT_MEASURABLE,
              Decision.NO_ACTION,
              _t(TriggerKind.IMPLEMENTATION, "A01-A03 and options marks reconciled against "
                                             "current code"),
-             notes="BROKER COMMIT BOUNDARY ADDRESSED 2026-10-01, OFF BY DEFAULT. "
+             notes="BROKER COMMIT BOUNDARY: IMPLEMENTED BEHIND A DISABLED FLAG 2026-10-01. "
+                   "FLAG OFF PRESERVES THE EXISTING CRASH GAP - deploying alone does NOT "
+                   "close this. Awaiting sandbox lifecycle verification and activation; "
+                   "`strictly safer` is a claim that should FOLLOW that evidence. "
                    "_place_broker_entry ran inside _open_paper_trade, which never commits, so a "
                    "real order was submitted from an uncommitted transaction and a crash after "
                    "acceptance left an accepted order with no local row. broker_submission.py "
                    "records durable intent, commits, dispatches, and reconciles unknowns - "
                    "never auto-retrying one, since a blind retry is how a duplicate REAL order "
-                   "happens. A call returning without an order id is FAILED, not submitted, "
-                   "because the historical path swallows errors and falls back silently. The "
+                   "happens. CORRECTED: a call returning without an order id is UNKNOWN, not "
+                   "failed - the historical path swallows every exception from place_order, so "
+                   "a swallowed timeout after acceptance and a clean rejection are "
+                   "indistinguishable, and calling it failed would license a REPLACEMENT order. "
+                   "Only explicit evidence sets `rejected`. Stable client order id and the "
+                   "submission path are committed with the intent, so a flag change or restart "
+                   "cannot route one intent through both paths. The "
                    "flag moves WHERE an order is placed relative to the commit and is a "
                    "person's decision. STILL OPEN: A01-A03 reconciliation, research-vs-"
                    "executable options marks, pending-order exposure, FX, assignment. "
