@@ -238,9 +238,20 @@ REGISTER: tuple[WorkItem, ...] = (
     WorkItem("M14", "P1", "OOS-suppression rollout not independently settled",
              "Inventory active artifacts/consumers; verify invalid models cannot publish or be "
              "unsuppressed by resweeps.", "Versioned suppression reasons and coverage effects.",
-             "ML/operations", Engineering.REPORTED_DEPLOYED, Research.NOT_MEASURABLE,
-             Decision.NO_ACTION,
-             _t(TriggerKind.IMPLEMENTATION, "artifact/consumer inventory completed")),
+             "ML/operations", Engineering.TESTED, Research.NOT_MEASURABLE, Decision.NO_ACTION,
+             _t(TriggerKind.OCCURRENCE, "the inventory is run against the real model "
+                                       "directory, so fleet coverage is read rather than "
+                                       "inferred",
+                "inventory built and tested 2026-10-01; NOT yet run against production"),
+             notes="suppression_inventory.build_inventory() calls the REAL "
+                   "_compute_oos_suppression (injected, never reimplemented) and reports the "
+                   "populations separately: suppressed, invalid (evaluation_valid False), "
+                   "UNKNOWN validity (None - pre-R02 artifacts, a coverage gap and not a clean "
+                   "bill of health), invalid-but-unsuppressed, and - the safety net - any model "
+                   "a resweep would UNSUPPRESS despite being invalid, which is the R02 failure "
+                   "caught as data. Consumer chain verified: predict_latest returns a flat 0.5 "
+                   "and the ensemble zeroes the weight, so signal-engine's 40% shrink is a "
+                   "SECOND penalty, not a suppressed model leaking through at 60%."),
     WorkItem("M15", "collecting", "Portfolio concentration sample limited",
              "Test limits now with synthetic positions; measure realised concentration as "
              "exposure accumulates.", "Limits demonstrably bind under synthetic exposure.",
