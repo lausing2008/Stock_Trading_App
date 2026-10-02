@@ -198,9 +198,23 @@ per portfolio.
 
 Portfolio 2's suspected phantom recovery marker is left untouched. The follow-up itself
 records it as awaiting a separately pending approval, and marker deletion has not been
-authorised. The trace confirms the situation is unchanged and costly: **481 of portfolio 2's
-482 scans in the last 7 days were blocked by `consecutive_losses`**, and 635 of 636 for
-portfolio 5. Both remain a decision, not a defect to fix unilaterally.
+authorised.
+
+**481 of portfolio 2's 482 scans in the last 7 days were blocked by `consecutive_losses`**,
+and 635 of 636 for portfolio 5.
+
+CORRECTED 2026-10-02, and the correction matters. I first described this as the marker's
+"cost", now "measured rather than estimated". That is wrong. **These counts measure blocked
+SCANS — operational persistence — not lost profitable trades.** A blocked scan does not
+establish that a candidate existed, nor that one would have survived the conviction gate, the
+decision engine, watchlist membership, price-drift and sizing checks, nor that any surviving
+entry would have made money. The same opportunity also repeats across scans, so the figure is
+not even a count of distinct opportunities. What 481/482 establishes is that the brake has
+been continuously engaged; it establishes nothing about what it cost.
+
+The recommended sequence is therefore unchanged and is NOT "reset because the number is
+large": verify portfolio 2's historical grant and order evidence first, and only then consider
+a targeted reset. Portfolio 5's brake is retained pending its own recovery-strategy review.
 
 ## What this does not establish
 
@@ -209,10 +223,36 @@ portfolio 5. Both remain a decision, not a defect to fix unilaterally.
   measures impact.
 - The options findings concern **generated advice**. This work did not establish whether
   automated options-income execution consumes that strategy matrix.
-- SR-08's delayed-disclosure strength and SR-06's minimum-edge floor are stated policies, not
-  measured optima. Neither has a cohort behind it.
+- **Two POLICY CHANGES are bundled in this correctness work and must be tracked separately
+  from the bug fixes.** `_HOT_NEWS_DELAYED_COMPRESS = 0.92` (SR-08) and
+  `_MIN_VERTICAL_EDGE_PER_SHARE = 0.05` (SR-06) are chosen values, not corrections of wrong
+  arithmetic. Their tests establish that the code behaves as specified — they do not establish
+  that the specified values improve outcomes, and no cohort has been measured for either. A
+  passing suite is evidence of consistency, not of usefulness. See the policy register entry
+  below; neither value may be cited as calibrated.
 - The HK SWING zero-BUY finding explains the inactivity; it does not establish that zero is
   the right answer.
 - Items 2–8 of the review's own implementation order (M20 first-family wiring, Milestone A/B
   lineage, the paired prospective entry-timing experiment, one-at-a-time interventions) remain
   open. This covers items 1–4 of that table.
+
+
+## Policy changes introduced here, tracked separately from the corrections
+
+Seven of the eight fixes correct behaviour that was demonstrably wrong: a veto from the wrong
+signal, a gate that did not run, delivery recorded for an email never sent, a direction set by
+row order, a holiday not observed, a payoff summary that did not describe the position. Those
+are corrections, and a passing test is the right evidence for them.
+
+Two values are not corrections. They are choices, and they need outcome evidence that does not
+exist yet:
+
+| Constant | Value | What is established | What is NOT |
+|---|---|---|---|
+| `_HOT_NEWS_DELAYED_COMPRESS` | 0.92 | A delayed adverse story compresses less than a fresh one and more than not at all; the value sits between the fresh strengths and 1.0; the state is labelled and scored by `filter_audit` | That 0.92 is better than 0.85, 0.95 or no compression. No delayed-disclosure cohort has been measured. |
+| `_MIN_VERTICAL_EDGE_PER_SHARE` | 0.05 | A vertical whose maximum payoff cannot clear 5c/share is refused; the refusal is deterministic and tested | That 5c is the right floor, or that refusing those structures improves results. Fees are not modelled per contract anywhere in this module. |
+
+Both are documented at their definition as uncalibrated, and a test asserts the SR-08 one says
+so. Neither should be quoted as a tuned parameter, and neither should be adjusted without a
+measured cohort — adjusting an uncalibrated constant on intuition produces a second
+uncalibrated constant, not an improvement.

@@ -1,0 +1,66 @@
+{
+  "bar_choppy": 0.74,
+  "max_compress_ratio": 0.55,
+  "cap_floor_for_a_bar_clearing_signal": 0.632,
+  "n_signals": 211,
+  "provably_never_at_the_bar": 200,
+  "could_conceivably_have_been_suppressed": 11,
+  "candidates": [
+    {
+      "symbol": "0992.HK",
+      "final": 0.706,
+      "cap_applied": false
+    },
+    {
+      "symbol": "0992.HK",
+      "final": 0.706,
+      "cap_applied": false
+    },
+    {
+      "symbol": "0992.HK",
+      "final": 0.7033,
+      "cap_applied": false
+    },
+    {
+      "symbol": "6951.HK",
+      "final": 0.6872,
+      "cap_applied": false
+    },
+    {
+      "symbol": "6951.HK",
+      "final": 0.6872,
+      "cap_applied": false
+    },
+    {
+      "symbol": "0939.HK",
+      "final": 0.6858,
+      "cap_applied": false
+    },
+    {
+      "symbol": "0992.HK",
+      "final": 0.6843,
+      "cap_applied": false
+    },
+    {
+      "symbol": "6951.HK",
+      "final": 0.6798,
+      "cap_applied": false
+    },
+    {
+      "symbol": "0992.HK",
+      "final": 0.6767,
+      "cap_applied": false
+    },
+    {
+      "symbol": "0939.HK",
+      "final": 0.67,
+      "cap_applied": false
+    },
+    {
+      "symbol": "6809.HK",
+      "final": 0.6437,
+      "cap_applied": false
+    }
+  ],
+  "cap_fired_on": 108
+}

@@ -1,0 +1,246 @@
+{
+  "buy_threshold_by_regime": {
+    "bull": 0.72,
+    "high_vol": 0.74,
+    "bear": 0.76,
+    "unknown": 0.72,
+    "neutral": 0.72,
+    "choppy": 0.74,
+    "risk_off": 0.76
+  },
+  "hold_threshold_by_regime": {
+    "bull": 0.5,
+    "high_vol": 0.54,
+    "bear": 0.56,
+    "unknown": 0.5,
+    "neutral": 0.5,
+    "choppy": 0.54,
+    "risk_off": 0.56
+  },
+  "max_compress_ratio": 0.55,
+  "n_rows": 211,
+  "by_signal": {
+    "WAIT": 134,
+    "SELL": 48,
+    "HOLD": 29
+  },
+  "regimes": {
+    "choppy": 211
+  },
+  "fused_score": {
+    "n": 211,
+    "min": 0.1864,
+    "max": 0.706,
+    "median": 0.4394,
+    "mean": 0.4376,
+    "p90": 0.5561,
+    "n_above_0.5": 54
+  },
+  "closest_to_buy": [
+    {
+      "gap_to_bar": 0.034,
+      "symbol": "0992.HK",
+      "fused": 0.706,
+      "bar": 0.74
+    },
+    {
+      "gap_to_bar": 0.034,
+      "symbol": "0992.HK",
+      "fused": 0.706,
+      "bar": 0.74
+    },
+    {
+      "gap_to_bar": 0.0367,
+      "symbol": "0992.HK",
+      "fused": 0.7033,
+      "bar": 0.74
+    },
+    {
+      "gap_to_bar": 0.0528,
+      "symbol": "6951.HK",
+      "fused": 0.6872,
+      "bar": 0.74
+    },
+    {
+      "gap_to_bar": 0.0528,
+      "symbol": "6951.HK",
+      "fused": 0.6872,
+      "bar": 0.74
+    },
+    {
+      "gap_to_bar": 0.0542,
+      "symbol": "0939.HK",
+      "fused": 0.6858,
+      "bar": 0.74
+    },
+    {
+      "gap_to_bar": 0.0557,
+      "symbol": "0992.HK",
+      "fused": 0.6843,
+      "bar": 0.74
+    },
+    {
+      "gap_to_bar": 0.0602,
+      "symbol": "6951.HK",
+      "fused": 0.6798,
+      "bar": 0.74
+    },
+    {
+      "gap_to_bar": 0.0633,
+      "symbol": "0992.HK",
+      "fused": 0.6767,
+      "bar": 0.74
+    },
+    {
+      "gap_to_bar": 0.07,
+      "symbol": "0939.HK",
+      "fused": 0.67,
+      "bar": 0.74
+    }
+  ],
+  "n_within_0.02_of_bar": 0,
+  "n_within_0.05_of_bar": 3,
+  "would_buy_at_SHORT_bar_0.62": 12,
+  "would_buy_at_GROWTH_like_0.60": 16,
+  "would_buy_at_SWING_pre_SA32_0.67": 10,
+  "compression_evidence": {
+    "adx_below_min": 109,
+    "hsi_gate_field_present": 211,
+    "hk_low_liquidity": 25
+  },
+  "missing_inputs": {
+    "breadth_pct": 126
+  },
+  "ta_score": {
+    "n": 211,
+    "min": 0.069,
+    "max": 0.82,
+    "median": 0.34
+  },
+  "calibrated_ta_score": {
+    "n": 211,
+    "min": 0.461,
+    "max": 0.764,
+    "median": 0.542
+  },
+  "pillars": {
+    "bullish_pillars_3": 28,
+    "bearish_pillars_1": 35,
+    "bullish_pillars_2": 50,
+    "bearish_pillars_2": 70,
+    "bullish_pillars_0": 48,
+    "bearish_pillars_3": 69,
+    "bullish_pillars_1": 72,
+    "bearish_pillars_4": 19,
+    "bullish_pillars_4": 13,
+    "bearish_pillars_0": 18
+  },
+  "per_symbol_best": {
+    "0992.HK": {
+      "fused": 0.706,
+      "signal": "HOLD",
+      "regime": "choppy",
+      "ta": 0.7351023316062175,
+      "adx": 27.1
+    },
+    "6951.HK": {
+      "fused": 0.6872,
+      "signal": "HOLD",
+      "regime": "choppy",
+      "ta": 0.6902707253886011,
+      "adx": 35.2
+    },
+    "0939.HK": {
+      "fused": 0.6858,
+      "signal": "HOLD",
+      "regime": "choppy",
+      "ta": 0.8001628886010362,
+      "adx": 27.2
+    },
+    "6809.HK": {
+      "fused": 0.6437,
+      "signal": "HOLD",
+      "regime": "choppy",
+      "ta": 0.6389727979274611,
+      "adx": 13.9
+    },
+    "9992.HK": {
+      "fused": 0.5988,
+      "signal": "HOLD",
+      "regime": "choppy",
+      "ta": 0.6677882124352331,
+      "adx": 6.8
+    },
+    "1671.HK": {
+      "fused": 0.5758,
+      "signal": "HOLD",
+      "regime": "choppy",
+      "ta": 0.7503189766839378,
+      "adx": 28.7
+    },
+    "0001.HK": {
+      "fused": 0.5743,
+      "signal": "HOLD",
+      "regime": "choppy",
+      "ta": 0.7407661917098445,
+      "adx": 17.6
+    },
+    "6651.HK": {
+      "fused": 0.5561,
+      "signal": "HOLD",
+      "regime": "choppy",
+      "ta": 0.5069948186528497,
+      "adx": 12.5
+    },
+    "0117.HK": {
+      "fused": 0.5519,
+      "signal": "HOLD",
+      "regime": "choppy",
+      "ta": 0.6418562176165803,
+      "adx": 20.5
+    },
+    "0285.HK": {
+      "fused": 0.5486,
+      "signal": "HOLD",
+      "regime": "choppy",
+      "ta": 0.4778617227979274,
+      "adx": 13.1
+    },
+    "0669.HK": {
+      "fused": 0.5433,
+      "signal": "HOLD",
+      "regime": "choppy",
+      "ta": 0.5448180051813472,
+      "adx": 17.8
+    },
+    "0005.HK": {
+      "fused": 0.5359,
+      "signal": "WAIT",
+      "regime": "choppy",
+      "ta": 0.48910233160621763,
+      "adx": 15.1
+    },
+    "9698.HK": {
+      "fused": 0.5306,
+      "signal": "WAIT",
+      "regime": "choppy",
+      "ta": 0.6221794041450778,
+      "adx": 10.7
+    },
+    "3986.HK": {
+      "fused": 0.5118,
+      "signal": "WAIT",
+      "regime": "choppy",
+      "ta": 0.4613860103626942,
+      "adx": 9.9
+    },
+    "2382.HK": {
+      "fused": 0.5092,
+      "signal": "WAIT",
+      "regime": "choppy",
+      "ta": 0.4342597150259067,
+      "adx": 22.9
+    }
+  },
+  "n_symbols": 42
+}

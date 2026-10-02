@@ -2674,11 +2674,35 @@ def _apply_style_signal(
     # Measured before this fix: the cap fires on 1,129 of 4,120 signals (27% — a hot path), of
     # which 12 became BUY. The sign-flip subset is narrower still, so this is a small live
     # blast radius today that would widen immediately if any boost magnitude were increased.
+    # HK-SWING-TRACE (2026-10-02): THE THREE-WAY DISTINCTION, MADE MEASURABLE.
+    #
+    # Measuring why HK SWING converted ZERO signals to BUY in a 7-day window ran into a wall:
+    # the stored `reasons` carried the FINAL fused score and the gate flags, but never the
+    # score the compression chain started from. So "this signal was never near the bar" and
+    # "this signal cleared the bar and was compressed under it" are indistinguishable after
+    # the fact — and they call for opposite responses. The first is the generator correctly
+    # reporting no opportunity; the second is a gate deciding the outcome.
+    #
+    # `fused_before_filters` has existed here all along for the cap's own arithmetic. It is
+    # simply recorded now, with the post-chain value beside it, so the question can be
+    # answered from stored data instead of by replaying a point-in-time fit.
+    #
+    # OBSERVATIONAL ONLY: these three lines read values the cap already computed and write
+    # them to `reasons`. No score, threshold or branch changes.
+    reasons["fused_pre_compression"] = round(float(fused_before_filters), 6)
+    reasons["fused_post_compression"] = round(float(fused), 6)
+    reasons["compression_total_ratio"] = (
+        round(float(curr_dist / orig_dist), 6) if orig_dist else None)
+
     _sign_agrees = (curr_dist == 0) or (np.sign(curr_dist) == np.sign(orig_dist))
     if orig_dist != 0 and abs(curr_dist) < abs(orig_dist) * max_ratio and _sign_agrees:
         fused = 0.5 + float(np.sign(orig_dist)) * abs(orig_dist) * max_ratio
         fused = float(np.clip(fused, 0.0, 1.0))
         reasons["compression_cap_applied"] = True
+        # HK-SWING-TRACE: the value the cap restored TO, so the cap's own effect is separable
+        # from the chain's. Without it, `fused_post_compression` and the final score differ by
+        # an amount nobody can attribute.
+        reasons["fused_post_cap"] = round(float(fused), 6)
     else:
         reasons["compression_cap_applied"] = False
         # Observability: distinguish "cap didn't need to fire" from "cap was SUPPRESSED because

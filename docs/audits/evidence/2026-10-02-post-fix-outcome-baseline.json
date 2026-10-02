@@ -1,0 +1,327 @@
+{
+  "boundary_commit": "f9b6edb3",
+  "note": "counts as of the SR-01..SR-08 deploy",
+  "now_utc": "2026-10-02 14:03:28.137353+00:00",
+  "signals_30d_by_market_horizon_signal": [
+    {
+      "market": "US",
+      "horizon": "SHORT",
+      "signal": "BUY",
+      "n": 633
+    },
+    {
+      "market": "US",
+      "horizon": "SHORT",
+      "signal": "SELL",
+      "n": 299
+    },
+    {
+      "market": "US",
+      "horizon": "SHORT",
+      "signal": "HOLD",
+      "n": 1501
+    },
+    {
+      "market": "US",
+      "horizon": "SHORT",
+      "signal": "WAIT",
+      "n": 1233
+    },
+    {
+      "market": "US",
+      "horizon": "SWING",
+      "signal": "BUY",
+      "n": 423
+    },
+    {
+      "market": "US",
+      "horizon": "SWING",
+      "signal": "SELL",
+      "n": 286
+    },
+    {
+      "market": "US",
+      "horizon": "SWING",
+      "signal": "HOLD",
+      "n": 1396
+    },
+    {
+      "market": "US",
+      "horizon": "SWING",
+      "signal": "WAIT",
+      "n": 1561
+    },
+    {
+      "market": "US",
+      "horizon": "LONG",
+      "signal": "BUY",
+      "n": 1295
+    },
+    {
+      "market": "US",
+      "horizon": "LONG",
+      "signal": "SELL",
+      "n": 355
+    },
+    {
+      "market": "US",
+      "horizon": "LONG",
+      "signal": "HOLD",
+      "n": 1065
+    },
+    {
+      "market": "US",
+      "horizon": "LONG",
+      "signal": "WAIT",
+      "n": 951
+    },
+    {
+      "market": "US",
+      "horizon": "GROWTH",
+      "signal": "BUY",
+      "n": 584
+    },
+    {
+      "market": "US",
+      "horizon": "GROWTH",
+      "signal": "SELL",
+      "n": 94
+    },
+    {
+      "market": "US",
+      "horizon": "GROWTH",
+      "signal": "HOLD",
+      "n": 1928
+    },
+    {
+      "market": "US",
+      "horizon": "GROWTH",
+      "signal": "WAIT",
+      "n": 1060
+    },
+    {
+      "market": "HK",
+      "horizon": "SHORT",
+      "signal": "BUY",
+      "n": 134
+    },
+    {
+      "market": "HK",
+      "horizon": "SHORT",
+      "signal": "HOLD",
+      "n": 473
+    },
+    {
+      "market": "HK",
+      "horizon": "SHORT",
+      "signal": "WAIT",
+      "n": 444
+    },
+    {
+      "market": "HK",
+      "horizon": "SWING",
+      "signal": "BUY",
+      "n": 66
+    },
+    {
+      "market": "HK",
+      "horizon": "SWING",
+      "signal": "SELL",
+      "n": 172
+    },
+    {
+      "market": "HK",
+      "horizon": "SWING",
+      "signal": "HOLD",
+      "n": 203
+    },
+    {
+      "market": "HK",
+      "horizon": "SWING",
+      "signal": "WAIT",
+      "n": 610
+    },
+    {
+      "market": "HK",
+      "horizon": "LONG",
+      "signal": "BUY",
+      "n": 231
+    },
+    {
+      "market": "HK",
+      "horizon": "LONG",
+      "signal": "SELL",
+      "n": 198
+    },
+    {
+      "market": "HK",
+      "horizon": "LONG",
+      "signal": "HOLD",
+      "n": 176
+    },
+    {
+      "market": "HK",
+      "horizon": "LONG",
+      "signal": "WAIT",
+      "n": 446
+    },
+    {
+      "market": "HK",
+      "horizon": "GROWTH",
+      "signal": "BUY",
+      "n": 83
+    },
+    {
+      "market": "HK",
+      "horizon": "GROWTH",
+      "signal": "SELL",
+      "n": 95
+    },
+    {
+      "market": "HK",
+      "horizon": "GROWTH",
+      "signal": "HOLD",
+      "n": 376
+    },
+    {
+      "market": "HK",
+      "horizon": "GROWTH",
+      "signal": "WAIT",
+      "n": 497
+    }
+  ],
+  "signal_outcomes": [
+    {
+      "signal_direction": "BUY",
+      "horizon": "SHORT",
+      "n": 4118,
+      "resolved": 4118,
+      "avg_pct_return": "-0.0134"
+    },
+    {
+      "signal_direction": "BUY",
+      "horizon": "SWING",
+      "n": 3453,
+      "resolved": 3453,
+      "avg_pct_return": "-0.0257"
+    },
+    {
+      "signal_direction": "BUY",
+      "horizon": "LONG",
+      "n": 2343,
+      "resolved": 2343,
+      "avg_pct_return": "-0.0347"
+    },
+    {
+      "signal_direction": "BUY",
+      "horizon": "GROWTH",
+      "n": 3978,
+      "resolved": 3978,
+      "avg_pct_return": "-0.0268"
+    },
+    {
+      "signal_direction": "SELL",
+      "horizon": "SHORT",
+      "n": 1420,
+      "resolved": 1420,
+      "avg_pct_return": "0.0062"
+    },
+    {
+      "signal_direction": "SELL",
+      "horizon": "SWING",
+      "n": 1539,
+      "resolved": 1539,
+      "avg_pct_return": "0.0040"
+    },
+    {
+      "signal_direction": "SELL",
+      "horizon": "LONG",
+      "n": 1597,
+      "resolved": 1597,
+      "avg_pct_return": "0.0140"
+    },
+    {
+      "signal_direction": "SELL",
+      "horizon": "GROWTH",
+      "n": 1104,
+      "resolved": 1104,
+      "avg_pct_return": "0.0177"
+    }
+  ],
+  "paper_trades": [
+    {
+      "portfolio_id": 1,
+      "stage": "closed",
+      "n": 48,
+      "avg_pnl": "-36.26"
+    },
+    {
+      "portfolio_id": 1,
+      "stage": "open",
+      "n": 2,
+      "avg_pnl": null
+    },
+    {
+      "portfolio_id": 2,
+      "stage": "closed",
+      "n": 4,
+      "avg_pnl": "-1652.67"
+    },
+    {
+      "portfolio_id": 3,
+      "stage": "closed",
+      "n": 43,
+      "avg_pnl": "-20.62"
+    },
+    {
+      "portfolio_id": 4,
+      "stage": "closed",
+      "n": 16,
+      "avg_pnl": "131.66"
+    },
+    {
+      "portfolio_id": 5,
+      "stage": "closed",
+      "n": 15,
+      "avg_pnl": "-100.80"
+    },
+    {
+      "portfolio_id": 6,
+      "stage": "closed",
+      "n": 1,
+      "avg_pnl": "-389.13"
+    },
+    {
+      "portfolio_id": 7,
+      "stage": "closed",
+      "n": 1,
+      "avg_pnl": "-25.21"
+    },
+    {
+      "portfolio_id": 8,
+      "stage": "closed",
+      "n": 1,
+      "avg_pnl": "-136.76"
+    },
+    {
+      "portfolio_id": 8,
+      "stage": "open",
+      "n": 2,
+      "avg_pnl": null
+    }
+  ],
+  "options_flow_outcomes": [
+    {
+      "direction": "bearish",
+      "n": 1123,
+      "resolved_10d": 912,
+      "avg_return_10d": "0.0239"
+    },
+    {
+      "direction": "bullish",
+      "n": 1097,
+      "resolved_10d": 846,
+      "avg_return_10d": "0.0292"
+    }
+  ]
+}

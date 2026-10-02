@@ -1,0 +1,36 @@
+{
+  "scope": "local synthetic witnesses; no production access or writes",
+  "one_share_primary": {
+    "primary": "covered_call",
+    "name": "Covered Call",
+    "reason": "You own the shares and premium is expensive \u2014 selling a call against them is being paid above the usual rate for upside you have already said you would exit at.",
+    "iv_regime": "rich",
+    "iv_note": "IV is high in this symbol's own 1-year range, so premium is expensive \u2014 that favours SELLING it rather than buying.",
+    "alternatives": [],
+    "rejected_unsound": [],
+    "constraint": "You hold shares, so covered calls and collars are available."
+  },
+  "last_only_primary": "covered_call",
+  "last_only_leg": {
+    "action": "sell",
+    "right": "call",
+    "strike": 105.0,
+    "price_source": "last_trade",
+    "price_per_share": 2.1,
+    "cost_per_contract": 210.0,
+    "expiry": "2026-11-06",
+    "days_to_expiry": 35,
+    "iv": 0.4,
+    "oi": 100,
+    "spread_pct": null
+  },
+  "expired_primary": "covered_call",
+  "expired_dte": -1,
+  "crossed_quote_legacy_mid": 7.0,
+  "crossed_quote_matrix_mid": null,
+  "closed_trade_claim": {
+    "claimed": true,
+    "stage": "closed",
+    "state": "submitting"
+  }
+}
