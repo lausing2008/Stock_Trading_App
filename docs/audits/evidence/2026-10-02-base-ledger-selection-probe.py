@@ -15,14 +15,17 @@ Usage inside the ml-prediction container:
 import json
 import sys
 
-sys.path.insert(0, "/app/src")
+# `/app`, not `/app/src`: `src/training/__init__.py` reaches its sibling with `..features`,
+# which needs `src` to be the parent PACKAGE. Importing `training.trainer` directly raises
+# "attempted relative import beyond top-level package" — verified in the container.
+sys.path.insert(0, "/app")
 sys.path.insert(0, "/app/shared")
 
+# `eligible_cohort_for_window` comes from the shared module, NOT from the trainer: the
+# trainer binds it inside `train_model`'s body, so it is not a module attribute there.
 from metrics.base_ledger import BaseTrainingLedger, eligible_cohort_for_window  # noqa: E402
-from features.builder import build_features, compute_label_threshold  # noqa: E402
-# `eligible_cohort_for_window` is imported from the shared module above, NOT from the
-# trainer: the trainer binds it inside `train_model`'s body, so it is not a module attribute.
-from training.trainer import (  # noqa: E402
+from src.features.builder import build_features, compute_label_threshold  # noqa: E402
+from src.training.trainer import (  # noqa: E402
     _HORIZON_BY_STYLE, _load_prices, _record_selection_stages, _ts_range,
 )
 
