@@ -303,6 +303,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 - **`docs/features/mobile-responsive-design.md`** — Mobile Nav Drawer (T251-MOBILE-RESPONSIVE-DESIGN, Phase 1); T230-UX-MOBILE-RESPONSIVE (Phase 2 slice) — Stock Detail Page Grid Collapses on Mobile (Built 202...
 - **`docs/features/news-intelligence-service.md`** — T259-NEWS-INTELLIGENCE — New Service (port 8011), Real-Time Company Headline Ingestion + Hot-News Signal Gate (Built 2026-07-27)
+- **`docs/features/2026-10-03-earnings-coverage-discovery-and-repair.md`** — MU's Sept quarter was never ingested, and the pending-event loop structurally cannot find what was never created. Discovery + bounded repair; watermark is coverage, not processing time [earnings, coverage]
 - **`docs/features/2026-10-03-intelligence-reports-implementation.md`** — 4 report types, deterministic, versioned immutable snapshots. A frozen pre-earnings baseline survives a later consensus revision; a missing one is recorded, never reconstructed [reports, M-INTEL]
 - **`docs/features/data-provider-routing-and-schedule.md`** — ONE PAGE: which provider serves which market/timeframe, every ingest job's window and cadence, where the UW budget goes (option chains 89%), and what is metered. Read before touching ingest scheduling [routing, schedule, UW]
 - **`docs/features/ops-tooling.md`** — T270-DBSYNC-PROD-TO-LOCAL-WEEKLY Layer 2 — scripts/sync_prod_to_local.sh (Built 2026-08-17)
