@@ -69,6 +69,12 @@ _ROUTES = {
     # (route path unchanged — no frontend change needed).
     "portfolio-risk": _settings.portfolio_optimizer_url,
     "research": _settings.research_engine_url,
+    # Intelligence reports (market / stock / pre- and post-earnings), served by research-engine
+    # because report ORCHESTRATION is a research capability — the source-domain services keep
+    # owning their own data. A prefix absent from this table 404s at the gateway however
+    # complete the backend is; see docs/incidents/gateway-proxy-route-gaps.md, which this
+    # repo's own route-coverage test now guards.
+    "intel": _settings.research_engine_url,
     # T233-ARCH-AIPROXY-EXTRACT: ai_proxy.py moved to research-engine 2026-07-04 — was
     # previously served locally by this gateway's own ai_router, not proxied at all.
     "ai": _settings.research_engine_url,

@@ -145,6 +145,29 @@ export const api = {
   marketBreadth: (market: string = 'US') => request<MarketBreadth>(`/stocks/market_breadth?market=${market}`),
   hkConnectFlowLeaderboard: (days = 5, limit = 20) =>
     request<HkConnectFlowLeaderboardItem[]>(`/stocks/hk-connect-flow/leaderboard/top?days=${days}&limit=${limit}`),
+  // ── Intelligence reports ────────────────────────────────────────────────────
+  // Generation is a POST because it can write a new version; reads never create one.
+  intelContract: () => request<{ contract_version: number; report_types: string[] }>(`/intel/contract`),
+  generateIntelReport: (body: { report_type: string; symbol?: string; market?: string; event_id?: number }) =>
+    // Generation walks the whole covered universe for breadth and leadership, so it is slower
+    // than an ordinary read; the default 30s timeout is not enough on a cold cache.
+    request<IntelReport>(`/intel/generate`, { method: 'POST', body: JSON.stringify(body) }, 120_000),
+  listIntelReports: (params?: { report_type?: string; symbol?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.report_type) q.set('report_type', params.report_type);
+    if (params?.symbol) q.set('symbol', params.symbol);
+    if (params?.limit) q.set('limit', String(params.limit));
+    const qs = q.toString();
+    return request<{ reports: IntelReport[] }>(`/intel/reports${qs ? `?${qs}` : ''}`);
+  },
+  getIntelReport: (id: number) => request<IntelReport>(`/intel/reports/${id}`),
+  getIntelMarkdown: (id: number) => request<{ report_id: number; markdown: string }>(`/intel/reports/${id}/markdown`),
+  intelHistory: (subjectKey: string, limit = 20) =>
+    request<{ subject_key: string; reports: IntelReport[] }>(
+      `/intel/history?subject_key=${encodeURIComponent(subjectKey)}&limit=${limit}`),
+  compareIntelReports: (beforeId: number, afterId: number) =>
+    request<IntelCompare>(`/intel/compare?before_id=${beforeId}&after_id=${afterId}`),
+
   listWatchlists: () => request<WatchlistMeta[]>(`/watchlists`),
   createWatchlist: (name: string, trading_style?: string | null) => request<WatchlistMeta>(`/watchlists`, { method: 'POST', body: JSON.stringify({ name, trading_style }) }),
   renameWatchlist: (id: number, name: string, trading_style?: string | null) => request<WatchlistMeta>(`/watchlists/${id}`, { method: 'PUT', body: JSON.stringify({ name, trading_style }) }),
@@ -1273,6 +1296,50 @@ export type PortfolioWeights = {
 export type LatestPrice = { symbol: string; price: number; prev_close: number | null; change_pct: number | null; currency: string; volume: number | null; avg_volume: number | null };
 export type MarketIndex = { name: string; ticker: string; market: string; price: number | null; change_pct: number | null };
 export type WatchlistItem = { symbol: string; name: string; name_zh?: string | null; market: string; exchange: string; sector?: string; currency: string; added_at: string; note?: string | null; delisted?: boolean };
+/** One reported value, together with WHY it is missing when it is. `state` is never absent:
+ *  a blank cell and "we looked and the provider has nothing" are different reports. */
+export type IntelField = {
+  value: unknown;
+  state: 'OK' | 'UNKNOWN' | 'UNAVAILABLE' | 'STALE' | 'CONFLICTING' | 'NOT_APPLICABLE';
+  reason?: string | null;
+  units?: string | null;
+  evidence_ids?: string[];
+  statement: 'observed_fact' | 'deterministic_calculation' | 'interpretation'
+           | 'conditional_scenario' | 'model_forecast';
+};
+
+export type IntelReport = {
+  id: number;
+  report_type: 'market_outlook' | 'stock_outlook' | 'pre_earnings' | 'post_earnings';
+  subject_key: string;
+  symbol?: string | null;
+  market?: string | null;
+  version: number;
+  supersedes_id?: number | null;
+  pre_report_id?: number | null;
+  status: 'complete' | 'partial' | 'preliminary' | 'superseded';
+  stage?: string | null;
+  contract_version: number;
+  policy_version: string;
+  generated_at: string | null;
+  cutoff_at: string | null;
+  input_fingerprint: string;
+  coverage?: { by_state?: Record<string, number>; total?: number; ok?: number };
+  payload?: { fields: Record<string, IntelField>; meta: Record<string, unknown> };
+  created?: boolean;
+  changes_since_previous?: IntelDiff;
+};
+
+export type IntelDiff = {
+  first_report: boolean;
+  from_version?: number;
+  to_version?: number;
+  note?: string;
+  changed: { field: string; change: string; from?: unknown; to?: unknown }[];
+};
+
+export type IntelCompare = { before: IntelReport; after: IntelReport; diff: IntelDiff };
+
 export type WatchlistMeta = { id: number; name: string; item_count: number; trading_style: string | null; created_at: string };
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
 export type MarketPulse = { score: number; label: 'positive' | 'negative' | 'neutral'; source: 'claude' | 'vader'; themes: string[]; headlines: NewsItem[]; generated_at: number };

@@ -3422,3 +3422,79 @@ class PortfolioExposureReservation(Base):
     __table_args__ = (
         Index("ix_expres_active", "portfolio_id", "state", "sector"),
     )
+
+
+# ── Intelligence reports (market / stock / pre-earnings / post-earnings) ──────
+
+class IntelligenceReport(Base):
+    """An IMMUTABLE generated report snapshot. Never updated in place.
+
+    WHY IMMUTABLE. The earnings family only works if a pre-release report cannot change after
+    the results arrive — that is the whole accountability mechanism, and an UPDATE would destroy
+    it silently. So a revision is a NEW row that points at the one it supersedes, and the
+    original stays exactly as it was issued. The same rule gives the market and stock reports a
+    real "what changed since the previous report" rather than a diff against something that has
+    itself been edited.
+
+    WHY A NEW TABLE RATHER THAN research_report_cache. That table is a CACHE: one row per
+    symbol, unique on symbol, overwritten on each generation. It cannot hold history, cannot
+    hold a market-level or event-level subject, and its uniqueness constraint is the opposite of
+    what a versioned snapshot needs. Reusing it would mean deleting the property this feature is
+    for.
+
+    PRIVACY. `user_id` is NULL for public market/stock context, which is shared. A report that
+    embeds portfolio information is written with its owner's id and is never served to anyone
+    else — the two must not share a cache entry, so they do not share a row.
+    """
+    __tablename__ = "intelligence_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    #: market_outlook | stock_outlook | pre_earnings | post_earnings
+    report_type: Mapped[str] = mapped_column(String(32), index=True)
+    #: Canonical subject: "market:US", "stock:AAPL", "earnings:AAPL:2026Q3". One string so that
+    #: history for a subject is one query regardless of which family it belongs to.
+    subject_key: Mapped[str] = mapped_column(String(128), index=True)
+    symbol: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    market: Mapped[str | None] = mapped_column(String(8), nullable=True)
+
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    #: The report this one revises. NULL for the first version of a subject.
+    supersedes_id: Mapped[int | None] = mapped_column(
+        ForeignKey("intelligence_reports.id", ondelete="SET NULL"), nullable=True)
+    #: For a post-earnings report: the FROZEN pre-earnings report it is scored against. NULL
+    #: means no valid pre-report existed — recorded as an absence, never reconstructed after
+    #: the fact, because a reconstruction would contain information the original could not have.
+    pre_report_id: Mapped[int | None] = mapped_column(
+        ForeignKey("intelligence_reports.id", ondelete="SET NULL"), nullable=True)
+
+    status: Mapped[str] = mapped_column(String(16), default="partial")
+    #: pre/post earnings only: FIRST_FLASH | RECONCILED_RESULTS | CALL_UPDATE | SESSION_REVIEW
+    stage: Mapped[str | None] = mapped_column(String(24), nullable=True)
+
+    contract_version: Mapped[int] = mapped_column(Integer, default=1)
+    policy_version: Mapped[str] = mapped_column(String(32), default="1")
+
+    generated_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    #: "Information available through". Distinct from generated_at on purpose: a report built
+    #: at 09:05 from evidence complete only to the previous close must say so, or a reader
+    #: assumes it knows about this morning.
+    cutoff_at: Mapped[datetime] = mapped_column(DateTime)
+
+    #: Hash of the INPUTS. Idempotence runs on this, not on elapsed time — an unchanged snapshot
+    #: reuses the existing report instead of paying to regenerate identical content.
+    input_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+
+    payload: Mapped[dict] = mapped_column(JSON)
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+    coverage: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    #: NULL = public context. Non-null = contains portfolio information, owner-only.
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+
+    __table_args__ = (
+        Index("ix_intel_subject_version", "subject_key", "version"),
+        Index("ix_intel_type_generated", "report_type", "generated_at"),
+        Index("ix_intel_fingerprint_subject", "subject_key", "input_fingerprint"),
+    )

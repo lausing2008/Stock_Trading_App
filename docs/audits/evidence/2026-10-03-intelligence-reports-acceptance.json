@@ -1,0 +1,176 @@
+{
+  "t1_all_four_types_generate": {
+    "market_outlook": {
+      "id": 13,
+      "status": "partial",
+      "version": 1,
+      "coverage": {
+        "by_state": {
+          "OK": 13,
+          "UNAVAILABLE": 5
+        },
+        "total": 18,
+        "ok": 13
+      },
+      "fields": 18,
+      "markdown_lines": 48
+    },
+    "stock_outlook": {
+      "id": 14,
+      "status": "partial",
+      "version": 1,
+      "coverage": {
+        "by_state": {
+          "OK": 15,
+          "UNAVAILABLE": 5
+        },
+        "total": 20,
+        "ok": 15
+      },
+      "fields": 20,
+      "markdown_lines": 50
+    },
+    "pre_earnings": {
+      "id": 15,
+      "status": "partial",
+      "version": 1,
+      "coverage": {
+        "by_state": {
+          "OK": 12,
+          "UNKNOWN": 4,
+          "UNAVAILABLE": 3
+        },
+        "total": 19,
+        "ok": 12
+      },
+      "fields": 19,
+      "markdown_lines": 51
+    },
+    "post_earnings": {
+      "id": 16,
+      "status": "partial",
+      "coverage": {
+        "by_state": {
+          "OK": 14,
+          "UNKNOWN": 3,
+          "UNAVAILABLE": 4,
+          "NOT_APPLICABLE": 1
+        },
+        "total": 22,
+        "ok": 14
+      },
+      "fields": 22,
+      "markdown_lines": 55
+    },
+    "passes": true
+  },
+  "t2_identical_inputs_do_not_duplicate": {
+    "first_id": 17,
+    "second_id": 17,
+    "created": [
+      true,
+      false
+    ],
+    "rows": 1,
+    "same_fingerprint": true,
+    "passes": true
+  },
+  "t3_changed_inputs_create_a_linked_version": {
+    "v1": 18,
+    "v2": 19,
+    "v2_version": 2,
+    "supersedes": 18,
+    "v1_status": "superseded",
+    "changed_fields": 11,
+    "v1_payload_unchanged": true,
+    "passes": true
+  },
+  "t4_post_report_without_a_pre_report_says_so": {
+    "pre_report_id": null,
+    "link_state": "UNAVAILABLE",
+    "link_reason": "no frozen pre-earnings report exists for this event. It is NOT reconstructed: a baseline built now would contain information the original could not have had, and scoring against it would be hindsight wearing a forecast's clothes.",
+    "verdict_state": "NOT_APPLICABLE",
+    "passes": true
+  },
+  "t5_a_frozen_pre_report_survives_and_scores": {
+    "pre_id": 21,
+    "post_id": 22,
+    "post_pre_link": 21,
+    "frozen_payload_unchanged": true,
+    "verdict": {
+      "frozen_consensus_eps": 1.5,
+      "actual_eps": 1.72,
+      "result_vs_frozen": "above",
+      "first_session_reaction_pct": 3.4,
+      "verdict": "confirmed",
+      "note": "scored against the expectation FROZEN before the release, not against a consensus that may have been revised since"
+    },
+    "passes": true
+  },
+  "t6_a_report_written_after_the_release_is_not_a_pre_report": {
+    "late_report_id": 23,
+    "found": null,
+    "passes": true
+  },
+  "t7_partial_inputs_still_produce_a_useful_report": {
+    "status": "partial",
+    "missing_fields": 15,
+    "every_missing_field_has_a_reason": true,
+    "markdown_has_why_section": true,
+    "passes": true
+  },
+  "t8_fiscal_period_is_never_asserted_from_the_release_month": {
+    "state": "UNKNOWN",
+    "reason": "fiscal period on file is inferred from the period-end calendar month, which is incorrect for non-calendar fiscal years; no source-confirmed period is stored",
+    "value_is_absent": true,
+    "passes": true
+  },
+  "t9_zero_estimate_gives_no_percentage_surprise": {
+    "normal": {
+      "state": "OK",
+      "value": {
+        "pct": 14.67,
+        "absolute": 0.22
+      }
+    },
+    "zero_estimate": {
+      "state": "NOT_APPLICABLE",
+      "value": "eps: the estimate is zero, so a percentage surprise is undefined; the absolute difference is +0.2500"
+    },
+    "negative_estimate": {
+      "state": "OK",
+      "value": {
+        "pct": 60.0,
+        "absolute": 0.3
+      }
+    },
+    "missing_actual": {
+      "state": "UNAVAILABLE",
+      "value": "eps: needs both an estimate and an actual"
+    },
+    "passes": true
+  },
+  "t10_market_report_labels_its_proxies": {
+    "breadth_state": "OK",
+    "breadth_basis": "share of COVERED universe symbols above their own 20-session average; this is participation within an ingested watchlist, not index constituent breadth",
+    "benchmark_basis": "an ETF proxy for the market, not the index itself",
+    "volatility_state": "UNAVAILABLE",
+    "passes": true
+  },
+  "t11_no_forecast_probability_is_invented": {
+    "horizons": 3,
+    "probabilities": [
+      null,
+      null,
+      null
+    ],
+    "signal_is_model_forecast_class": "model_forecast",
+    "passes": true
+  },
+  "_meta": {
+    "engine": "postgresql",
+    "server": "127.0.0.1:55433/inteltest",
+    "postgresql": true,
+    "scope": "throwaway local database; no production access"
+  }
+}
