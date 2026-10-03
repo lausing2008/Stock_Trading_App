@@ -187,6 +187,55 @@ For stock and option portfolios, compute equity from cash plus consistently valu
 
 Recommended sequence: fix the confirmed boundary defects → validate one complete decision/outcome lineage → observe the first instrumented fit and post-fix cohort → run a bounded entry-timing experiment → add UW, Jev and calibration challengers separately. Existing operating fixes improve correctness; none of this review establishes an earned trading edge or guarantees better returns.
 
+## Remediation — all five findings fixed, 2026-10-02
+
+Each fix was written against this document's own witness, and each witness was reproduced
+from `evidence/2026-10-02-system-followup-probes.py` **before** the fix existed.
+
+| ID | Witness before | After |
+|---|---|---|
+| SF-01 | closed trade claimed: `claimed=True`, `stage='closed'`, `state='submitting'` | the atomic claim re-evaluates all five eligibility conditions in the same statement that writes it |
+| SF-02 | bid 12 / ask 2 → route `mid=7.0`, matrix `None` | both call `_mid`; an unusable quote yields an *unavailable reason*, never a payoff |
+| SF-03 | `shares=1` → `covered_call` primary, "You hold shares…" | `shares=1` → `long_call`; coverage is `shares // 100` |
+| SF-04 | last-trade price as primary, `spread_pct=None`, nothing rendered | `price_source` reaches the leg **and** the "Best fit right now" claim |
+| SF-05 | Oct-1 call primary on Oct-2 at DTE −1 | refused inside `_leg` |
+
+**SF-01 — one predicate, shared.** `claimable()` tested five conditions and `begin_submission()`
+re-tested two, so everything else was as old as the SELECT that found the row. The conditions
+now live in one `_eligibility()` used by both; a predicate that exists twice is one that will
+disagree with itself, which is precisely what happened.
+
+**SF-03 needed three states, not two.** The first version reported 99 shares as "You hold no
+shares", because `coverable == 0` cannot distinguish 0 from 99. Someone holding 99 shares told
+they hold none goes and checks the wrong thing. The text now separates *enough*, *some but not
+enough*, and *none*. Acceptance values 0, 1, 99, 100, 150, 200 are tested.
+
+**SF-05 deliberately still allows DTE 0.** A same-day expiry is tradeable until its last
+trading time, which is a session/venue question this pure module cannot answer; treating 0 as
+expired would silently drop same-day structures. Only negative DTE is refused.
+
+**The probe was NOT edited.** It asserts the defects are *present*, so it now fails at its
+first assertion — the correct signal that a witness no longer reproduces. It is a historical
+record, not a regression suite, as its own docstring says.
+
+### What is still NOT satisfied
+
+**SF-01's acceptance is not met.** This document asks for PostgreSQL race tests through the
+real dispatcher and the close/cancel paths, route-change and order-ID-arrival cases, and the
+attempt boundary. What exists is the missing predicate, closed, and proven against the
+sequential SQLite witness. **M25 must not be enabled on the strength of this fix**, which is
+what this document already said.
+
+Also untouched, and still as listed above: cancellation coordination with the dispatch
+transition (pending→cancelled may only succeed before dispatch owns the intent), intent expiry
+and maximum permissible price drift before submission, account-level covered-call eligibility
+(encumbered shares, adjusted deliverables, settlement state), and per-leg quote timestamps
+with buy-at-ask / sell-at-bid scenarios.
+
+Regression coverage: `services/market-data/tests/test_sf01_sf05_followup_audit.py` (36 tests,
+four sabotage cycles — claim narrowed back to id+state, coverage back to truthiness, expiry
+guard removed, legacy mid restored; all four caught).
+
 ## Verification record
 
 Executed successfully:

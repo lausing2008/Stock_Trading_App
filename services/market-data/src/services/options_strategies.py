@@ -118,6 +118,20 @@ def _leg(contract: dict | None, action: str, expiry: str | None, dte: int | None
     # the width of a vertical and the bounds of a collar are both functions of exactly these.
     if not _finite_positive(contract.get("strike")) or not expiry:
         return None
+    # SF-05 (2026-10-02): A NONEMPTY EXPIRY IS NOT A VALID ONE.
+    # The check above accepted any truthy string, so an already-expired contract became a
+    # priced leg. Witness: on October 2 an October 1 call was still the matrix's PRIMARY
+    # recommendation, with days_to_expiry = -1. The ordinary route happens to filter past
+    # expiries upstream, so this is a defensive gap for alternate callers, replay and stale
+    # caches rather than proof the normal endpoint serves expired options — but a payoff
+    # computed for a contract that no longer exists is not a plan under any caller.
+    #
+    # DTE ZERO IS DELIBERATELY STILL ALLOWED, and that is not an oversight: an expiry today is
+    # tradeable until its last trading time, which is a session/venue question this pure
+    # module cannot answer. Treating 0 as expired would silently drop same-day structures;
+    # treating it as fully tradeable is the existing assumption and is left to the caller.
+    if dte is not None and dte < 0:
+        return None
     return {
         "action": action,                      # "buy" | "sell"
         "right": contract.get("right", "?"),   # "call" | "put"
@@ -414,11 +428,61 @@ def build_strategy_matrix(
         "unavailable": unavailable,
         "recommendation": _recommend(
             singles=singles, combos=combos, signal=signal, iv_rank=iv_rank,
-            holds_shares=bool(shares and shares > 0),
+            # SF-03 (2026-10-02): ONE SHARE DOES NOT COVER A CALL.
+            # `bool(shares and shares > 0)` made a single share qualify the account for a
+            # covered call, and the recommendation then said "You hold shares, so covered
+            # calls and collars are available" — while every payoff beside it was quoted per
+            # standard 100-share contract, and the frontend separately told the reader 100
+            # shares were required. The advice and the warning disagreed on the same screen.
+            holds_shares=_coverable_contracts(shares) >= 1,
+            coverable_contracts=_coverable_contracts(shares),
+            holds_any_shares=bool(shares and float(shares) > 0),
         ),
         "iv_rank": iv_rank,
         "iv_regime": _iv_regime(iv_rank),
     }
+
+
+def _constraint_text(coverable: int, holds_any: bool) -> str:
+    """SF-03: say what the holding can actually do, including when it is close but short.
+
+    THREE STATES, not two. "You hold no shares" is wrong for someone holding 99 — they hold
+    shares, just not enough, and being told they hold none sends them to check the wrong
+    thing. `coverable == 0` alone cannot tell those apart, which is why `holds_any` is passed
+    separately rather than inferred from it.
+    """
+    if coverable >= 1:
+        return (f"You hold enough stock to cover {coverable} standard "
+                f"contract{'s' if coverable != 1 else ''}, so covered calls and collars are "
+                f"available.")
+    if holds_any:
+        return (f"You hold some stock, but not the {_CONTRACT_MULTIPLIER} shares a standard "
+                f"contract delivers — covered calls and collars need at least that much "
+                f"before they are available to you.")
+    return ("You hold no shares, so covered calls, collars and protective puts are not "
+            "available — they all require the stock.")
+
+
+def _coverable_contracts(shares: float | None) -> int:
+    """How many standard contracts this holding can actually cover.
+
+    SF-03: deliverable units, not a truthiness test. A standard equity option delivers
+    `_CONTRACT_MULTIPLIER` shares, so coverage is a floor division and 99 shares cover zero
+    calls — not "some". Fractional holdings floor the same way: a broker will not deliver
+    0.4 of a share against an assignment.
+
+    DELIBERATELY NOT MODELLED HERE, and named so nobody assumes otherwise: shares already
+    encumbered by existing short calls, adjusted deliverables after a corporate action, and
+    settlement state. Those need an account snapshot this pure module does not have, and
+    this function must not be mistaken for an account-level eligibility check.
+    """
+    try:
+        n = float(shares or 0)
+    except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(n) or n <= 0:
+        return 0
+    return int(n // _CONTRACT_MULTIPLIER)
 
 
 def _iv_regime(iv_rank: float | None) -> str:
@@ -432,7 +496,9 @@ def _iv_regime(iv_rank: float | None) -> str:
 
 
 def _recommend(*, singles: dict, combos: dict, signal: str | None,
-               iv_rank: float | None, holds_shares: bool) -> dict:
+               iv_rank: float | None, holds_shares: bool,
+               coverable_contracts: int | None = None,
+               holds_any_shares: bool = False) -> dict:
     """Pick a primary structure, and say WHY in terms the reader can check.
 
     Two inputs drive it, in this order:
@@ -523,9 +589,8 @@ def _recommend(*, singles: dict, combos: dict, signal: str | None,
                     for k, w in order if k != key and k in available]
             return {**got, "iv_regime": regime, "iv_note": iv_note, "alternatives": alts,
                     "rejected_unsound": _unsound,
-                    "constraint": ("You hold shares, so covered calls and collars are available."
-                                   if holds_shares else
-                                   "You hold no shares, so covered calls, collars and protective puts are not available — they all require the stock.")}
+                    "coverable_contracts": coverable_contracts,
+                    "constraint": _constraint_text(coverable_contracts or 0, holds_any_shares)}
 
     key = next(iter(available))
     return {"primary": key, "name": available[key]["name"],

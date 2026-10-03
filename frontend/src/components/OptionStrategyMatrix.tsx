@@ -114,6 +114,14 @@ function StrategyCard({ s, spot, highlight }: { s: OptionStrategy; spot: number;
               {l.spread_pct != null && l.spread_pct > 20 && (
                 <span style={{ color: '#f59e0b' }}> · wide spread {l.spread_pct}% — you will not fill at this price</span>
               )}
+              {/* SF-04: WHERE the number came from. A last-trade price has no spread, so the
+                  warning above cannot fire for it — absence of a warning was reading as
+                  reassurance on a price that may be hours old and may not be obtainable. */}
+              {l.price_source === 'last_trade' && (
+                <span style={{ color: '#f59e0b' }} title="No two-sided quote was available for this contract, so the figure shown is the last price it actually traded at — at an unknown time. There is no spread to report, which is why no spread warning appears.">
+                  {' '}· last traded price, not a live quote — no spread available
+                </span>
+              )}
             </div>
           ))}
           {s.requires_shares && (
@@ -143,6 +151,16 @@ export default function OptionStrategyMatrixPanel({ matrix, spot }: { matrix: Op
             ★ Best fit right now: {rec.name}
           </div>
           <div style={{ fontSize: 12, color: '#cbd5e1', marginTop: 6, lineHeight: 1.6 }}>{rec.reason}</div>
+          {/* SF-04: "Best fit RIGHT NOW" is the strongest claim on this page. If the structure
+              it names is priced from a trade that already happened rather than a live quote,
+              that qualifier belongs next to the claim, not only down in the leg detail. */}
+          {rec.primary && (all[rec.primary]?.legs ?? []).some(l => l.price_source === 'last_trade') && (
+            <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 8, lineHeight: 1.6 }}>
+              ⚠ At least one leg here is priced from its last traded price, not a live
+              two-sided quote — treat the figures as research estimates rather than a cost you
+              can obtain right now.
+            </div>
+          )}
           {rec.iv_note && (
             <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8, lineHeight: 1.6 }}>
               <strong style={{ color: '#64748b' }}>Volatility:</strong> {rec.iv_note}

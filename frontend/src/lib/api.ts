@@ -2107,6 +2107,13 @@ export type OptionStrategyLeg = {
   oi?: number | null;
   /** Bid-ask width as a % of mid. A large value means the quoted cost will not be the fill. */
   spread_pct?: number | null;
+  /** SF-04: WHERE this number came from.
+   *  `quote_mid` is a live two-sided quote; `last_trade` is a trade that already happened,
+   *  at an unknown time, with no spread to report. The backend has recorded this since
+   *  SR-06 but nothing rendered it — so a last-trade price appeared under "Best fit right
+   *  now" with a blank spread, and the spread warning could not fire because a MISSING
+   *  spread is not greater than the warning threshold. Absence read as reassurance. */
+  price_source?: 'quote_mid' | 'last_trade' | 'none' | string;
 };
 
 export type OptionStrategy = {

@@ -135,14 +135,25 @@ def confirmed_broker_fill(trade: PaperTrade) -> bool:
     return bool(trade.broker_fill_confirmed) and bool(trade.broker_order_id)
 
 
-def claimable(session, *, portfolio_id: int | None = None, limit: int = 20) -> list[PaperTrade]:
-    """Trades whose broker order has not been placed and may still be attempted.
+def _eligibility() -> list:
+    """SF-01: THE ONE eligibility predicate, shared by discovery and the atomic claim.
 
-    `submitting` and `unknown` are deliberately EXCLUDED. Either may correspond to a REAL order
-    at the broker, and picking one up again would place a duplicate. Those go to
-    `needs_reconciliation`, which requires external evidence to resolve.
+    `claimable()` tested five conditions; `begin_submission()` re-tested only two — the row id
+    and a retryable state. Everything else was established at SELECT time and never rechecked
+    inside the compare-and-set, so any of it could go stale in the window between them.
+
+    WITNESS (reproduced from this audit's own probe): select an open/pending intent, let
+    another session commit its closure, then call the real `begin_submission()` on the stale
+    object. It returns True, and the row it refreshes reads `stage='closed'` with
+    `broker_submission_state='submitting'`. `submit_pending()` then proceeds from a successful
+    claim straight to the provider callback with no further stage check — a closed position
+    claimed for a real broker order.
+
+    Returning the conditions as a list rather than duplicating them is the point: a predicate
+    that exists twice is a predicate that will disagree with itself, which is exactly what
+    happened here.
     """
-    stmt = select(PaperTrade).where(
+    return [
         PaperTrade.broker_submission_state.in_(RETRYABLE),
         PaperTrade.broker_order_id.is_(None),
         PaperTrade.stage == "open",
@@ -150,7 +161,18 @@ def claimable(session, *, portfolio_id: int | None = None, limit: int = 20) -> l
         # intent created under the legacy path can never be picked up here after a flag change
         # or a restart — which would route one intent through both submission paths.
         PaperTrade.broker_submission_path == "deferred",
-        PaperTrade.broker_submit_attempts < MAX_SUBMIT_ATTEMPTS)
+        PaperTrade.broker_submit_attempts < MAX_SUBMIT_ATTEMPTS,
+    ]
+
+
+def claimable(session, *, portfolio_id: int | None = None, limit: int = 20) -> list[PaperTrade]:
+    """Trades whose broker order has not been placed and may still be attempted.
+
+    `submitting` and `unknown` are deliberately EXCLUDED. Either may correspond to a REAL order
+    at the broker, and picking one up again would place a duplicate. Those go to
+    `needs_reconciliation`, which requires external evidence to resolve.
+    """
+    stmt = select(PaperTrade).where(*_eligibility())
     if portfolio_id is not None:
         stmt = stmt.where(PaperTrade.portfolio_id == portfolio_id)
     return list(session.execute(stmt.limit(limit)).scalars().all())
@@ -165,8 +187,10 @@ def begin_submission(session, trade: PaperTrade, *, now: datetime | None = None)
     now = now or utcnow()
     result = session.execute(
         update(PaperTrade)
-        .where(PaperTrade.id == trade.id,
-               PaperTrade.broker_submission_state.in_(RETRYABLE))
+        # SF-01: the FULL predicate, re-evaluated inside the same statement that writes the
+        # claim. Checking only id+state meant every other condition was as old as the SELECT
+        # that found this row — and a position closed in that window was still claimable.
+        .where(PaperTrade.id == trade.id, *_eligibility())
         .values(broker_submission_state=SUBMITTING,
                 broker_submit_attempts=PaperTrade.broker_submit_attempts + 1,
                 broker_submitted_at=now)

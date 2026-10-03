@@ -4577,6 +4577,9 @@ def compute_options_game_plan(
     convention (max-pain, GEX, squeeze alerts all explicitly disclaim prediction).
     """
     today = today or _today_et()  # AUD-T409-UTCDATEBOUNDARY
+    # SF-02: the SAME quote-validation the strategy matrix uses, so the two surfaces on this
+    # page cannot disagree about whether a quote is usable.
+    from ..services.options_strategies import _mid as _mid_shared
     result: dict = {"protective_put": None, "covered_call": None}
 
     if stop_loss and stop_loss > 0 and put_rows and put_expiries:
@@ -4586,7 +4589,23 @@ def compute_options_game_plan(
         if put_exp:
             contract = _nearest_strike(put_rows, stop_loss)
             if contract:
-                mid = (contract["bid"] + contract["ask"]) / 2.0 if (contract["bid"] or contract["ask"]) else contract["last_price"]
+                # SF-02 (2026-10-02): ONE QUOTE CONTRACT, SHARED WITH THE MATRIX.
+                # This expression accepted a CROSSED book: bid 12 / ask 2 produced a "mid" of
+                # 7, which the card then displayed as a credit, while the strategy matrix
+                # beside it refused the identical quote. Two surfaces on one page disagreed
+                # about whether a price existed. It also averaged a one-sided quote against
+                # zero and never checked for non-finite values. `_mid` is the same helper the
+                # matrix uses; None means no usable price, which is a different answer from a
+                # number and must not be rendered as one.
+                mid = _mid_shared(contract)
+            # SF-02: a refused quote yields an UNAVAILABLE REASON, never a payoff. The leg is
+            # left as None so no caller can read a number that does not exist.
+            if contract and mid is None:
+                result["protective_put_unavailable"] = (
+                    "The current quote for this put is not usable — its bid and ask are "
+                    "crossed, one-sided or non-numeric — so no cost can be stated for it "
+                    "right now.")
+            if contract and mid is not None:
                 dte = (datetime.strptime(put_exp, "%Y-%m-%d").date() - today).days
                 cost_pct = round(mid / current_price * 100, 2) if current_price > 0 else None
                 effective_floor = round(contract["strike"] - mid, 2)
@@ -4611,7 +4630,23 @@ def compute_options_game_plan(
         if call_exp:
             contract = _nearest_strike(call_rows, take_profit)
             if contract:
-                mid = (contract["bid"] + contract["ask"]) / 2.0 if (contract["bid"] or contract["ask"]) else contract["last_price"]
+                # SF-02 (2026-10-02): ONE QUOTE CONTRACT, SHARED WITH THE MATRIX.
+                # This expression accepted a CROSSED book: bid 12 / ask 2 produced a "mid" of
+                # 7, which the card then displayed as a credit, while the strategy matrix
+                # beside it refused the identical quote. Two surfaces on one page disagreed
+                # about whether a price existed. It also averaged a one-sided quote against
+                # zero and never checked for non-finite values. `_mid` is the same helper the
+                # matrix uses; None means no usable price, which is a different answer from a
+                # number and must not be rendered as one.
+                mid = _mid_shared(contract)
+            # SF-02: same contract as the put leg above — an unusable quote yields a reason,
+            # not a credit the reader could act on.
+            if contract and mid is None:
+                result["covered_call_unavailable"] = (
+                    "The current quote for this call is not usable — its bid and ask are "
+                    "crossed, one-sided or non-numeric — so no credit can be stated for it "
+                    "right now.")
+            if contract and mid is not None:
                 dte = (datetime.strptime(call_exp, "%Y-%m-%d").date() - today).days
                 credit_pct = round(mid / current_price * 100, 2) if current_price > 0 else None
                 result["covered_call"] = {
