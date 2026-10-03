@@ -1853,6 +1853,31 @@ def uw_usage(_: User = Depends(get_admin_user)):
     except Exception:
         failures_24h = {}
 
+    # AUD-UW429NOENDPOINT (2026-10-03): WHICH endpoint is being refused, not just how many.
+    #
+    # The 48h reading found 119 rate-limits, all inside the US session, while the account held
+    # daily AND per-minute headroom by UW's own response headers. `rate_limit_events_48h` above
+    # could not say which endpoint was refused — one global bucket covered everything, so a 429
+    # on the 67,607-call option-chains sweep and one on a 5-call max-pain lookup were the same
+    # number. The main client now counts by endpoint TEMPLATE and cause.
+    client_failures_24h: dict[tuple[str, str], int] = {}
+    try:
+        now_utc = _dt.datetime.now(_dt.timezone.utc)
+        for back in range(24):
+            bucket = (now_utc - _dt.timedelta(hours=back)).strftime("%Y%m%d%H")
+            for key in r.keys(f"stockai:metric:uw_failures:*:{bucket}"):
+                raw = r.get(key)
+                if not raw:
+                    continue
+                # {endpoint}:{cause}:{bucket} — the endpoint template contains "/" but no ":",
+                # so the cause is the last segment before the bucket.
+                body = key[len("stockai:metric:uw_failures:"):-len(f":{bucket}")]
+                endpoint, _, cause = body.rpartition(":")
+                client_failures_24h[(endpoint or "unlabelled", cause)] = (
+                    client_failures_24h.get((endpoint or "unlabelled", cause), 0) + int(raw))
+    except Exception:
+        client_failures_24h = {}
+
     return {
         "as_of": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "assumed_daily_budget": _UW_ASSUMED_DAILY_BUDGET,
@@ -1869,6 +1894,15 @@ def uw_usage(_: User = Depends(get_admin_user)):
             for k, v in sorted(failures_24h.items(), key=lambda kv: kv[1], reverse=True)
         ],
         "adapter_failures_24h_total": sum(failures_24h.values()),
+        # The main UW client's own failures, by endpoint template and cause. Separate from
+        # `adapter_failures_24h`, which covers only the bar/price adapter — pooling them would
+        # re-create exactly the ambiguity this was added to remove.
+        "client_failures_24h": [
+            {"endpoint": ep, "cause": cause, "count": n}
+            for (ep, cause), n in sorted(client_failures_24h.items(),
+                                         key=lambda kv: kv[1], reverse=True)
+        ],
+        "client_failures_24h_total": sum(client_failures_24h.values()),
     }
 
 

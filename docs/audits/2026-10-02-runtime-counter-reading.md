@@ -34,10 +34,17 @@ headroom while being refused.
 
 **What these counters cannot tell us is WHICH endpoint was refused.** `_incr_rate_limit_counter()`
 takes no path argument — it increments one global hourly bucket, so a 429 on the 67,607-call
-option-chains sweep and a 429 on a 5-call max-pain lookup are indistinguishable. Given that
-option-chains is 89% of the volume, that is the single most useful thing to know and the one
-thing not recorded. **Recommended next step: add the path to that counter.** Not done here — it
-is a change to a live metering path and belongs in its own commit with its own review.
+option-chains sweep and a 429 on a 5-call max-pain lookup are indistinguishable.
+
+option-chains being 89% of call VOLUME is a reason to look there first; it is **not** an
+attribution of 89% of the failures, and nothing in this reading apportions failures by endpoint
+at all. Nor does headroom on the daily and per-minute dimensions rule out burst, concurrency,
+entitlement or account-scoped limits — those are simply dimensions these counters do not observe.
+
+**DONE since this reading:** the main client now counts failures by endpoint template and cause
+(`stockai:metric:uw_failures:{endpoint}:{cause}:{YYYYMMDDHH}`), surfaced on the usage dashboard
+as `client_failures_24h`. Labels are bounded — the template, never the resolved path, because
+`/api/darkpool/MU` would mint one key per symbol per hour.
 
 ### The adapter's new failure counter says nothing yet, for two reasons
 
@@ -59,8 +66,10 @@ hours of history while the adapter is four hours old. Worth knowing before attri
 count to the adapter's work.
 
 Also noted: `stockai:metric:uw_rate_limit_count_48h`, the rolling key, is **empty** while its
-hourly buckets are populated. Harmless to the reading above (the buckets are the source of
-truth) but it means anything consuming the rolling key reads zero.
+hourly buckets are populated. Traced afterwards: it is a RETIRED sawtooth that the hourly
+buckets already replaced, and every consumer sums those buckets at read time — so nothing reads
+it and nothing misreports because of it. It has now been renamed to say so in the source, since
+this reading had to establish "retired" rather than "zero" from first principles.
 
 ## 2. Premarket ingestion — not yet measurable
 
@@ -85,11 +94,15 @@ grant was issued at:
 Both were issued ~3 days ago and lapse on their own in under 5 days. No other portfolio holds
 one.
 
-**Nothing was reset — M02 marker deletion remains unauthorised**, and this reading does not
-change the case for it either way. What the two values do show is that these are not stuck
-artefacts of a loop: they carry different streak lengths, were issued 12 hours apart, and are
-ageing out normally. Portfolio 5's streak of 10 is the one worth a second look, since the grant
-is keyed on streak length and a worse streak earns a fresh grant.
+**Nothing was reset — M02 marker deletion remains unauthorised.**
+
+**CORRECTION (lifecycle review, same day).** An earlier version of this section argued the two
+markers were "not stuck artefacts of a loop" because they carry different streak lengths, were
+issued 12 hours apart, and are ageing out normally. That inference does not hold: **a declining
+TTL establishes expiry behaviour, not whether the original recovery attempt was legitimately
+consumed.** Decay is what a marker does whether its grant was used well or wasted. The
+provenance question — what each grant was spent on — is unresolved and stays open; nothing here
+argues for or against a reset.
 
 ## What this leaves open
 

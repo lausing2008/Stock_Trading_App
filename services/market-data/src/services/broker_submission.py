@@ -27,6 +27,7 @@ how a duplicate real order gets placed.
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 
 from common.logging import get_logger
@@ -62,21 +63,30 @@ ROLLOUT_KEY = "stockai:admin:feature:broker_submit_after_commit"
 
 MAX_SUBMIT_ATTEMPTS = 3
 
-#: ── POLICY CONSTANTS. These are DECISIONS, not bug corrections. ───────────────────────────
-#: Both bound when a recorded intent may still become a REAL order, and both are prerequisites
-#: the lifecycle review named for activating M25. They are tracked separately from the
-#: correctness fixes in this module and await explicit sign-off; the values below are the
-#: conservative end of the defensible range, not a tuned result.
+#: ── PROVISIONAL SANDBOX SETTINGS — NOT VALIDATED PRODUCTION LIMITS ───────────────────────
 #:
-#: INTENT_MAX_AGE_SECONDS — the entry scan runs every 5 minutes, so an intent older than three
-#: cycles was not produced by the conditions now in front of us. A market order carrying a
-#: decision made hours ago is priced by the market at dispatch, not by anything anyone approved.
+#: Every value below is a CANDIDATE for a shadow/sandbox experiment. None is approved, none is
+#: calibrated, and none should be described as conservative: the lifecycle review's counter-
+#: examples are both correct — a 1% move can consume most of a tight stop's risk budget, and a
+#: 15-minute-old breakout may already be invalid. They exist so the controls have something to
+#: test against, not because these are the right numbers.
+#:
+#: What they are NOT a substitute for, and what a real policy has to bound instead: the earliest
+#: of intent TTL, signal/plan expiry, session rules and event invalidation; stop geometry,
+#: position size, buying power and exposure re-checked at the permitted execution price; and an
+#: order-price constraint, because a pre-submit check does not determine a fill price.
 INTENT_MAX_AGE_SECONDS = 900
 
-#: MAX_ENTRY_PRICE_DRIFT_PCT — the position was SIZED against `entry_price`; a fill far from it
-#: is a different position than the one the risk checks passed. Expressed against the intent's
-#: own entry price so it means the same thing for a $8 stock and an $800 one.
+#: Drift of the current quote from the price the position was SIZED against.
 MAX_ENTRY_PRICE_DRIFT_PCT = 1.0
+
+#: How old a quote may be and still count as evidence of the current price.
+MAX_QUOTE_AGE_SECONDS = 30
+
+#: Tolerated clock disagreement between whatever stamped a timestamp and this process. Beyond
+#: it, a timestamp in the future is not skew — it is an invalid timestamp, and invalid is not
+#: unknown. (The same distinction the malformed-expiry fix turned on.)
+MAX_CLOCK_SKEW_SECONDS = 5
 
 
 def utcnow() -> datetime:
@@ -230,6 +240,54 @@ def begin_submission(session, trade: PaperTrade, *, now: datetime | None = None)
     return False
 
 
+def _finite_positive(value) -> bool:
+    """A real, finite, strictly positive number.
+
+    NaN IS THE WHOLE REASON THIS EXISTS. Every comparison against NaN is False, so `abs(NaN) >
+    limit` does not block — a NaN quote sailed through the drift check and a NaN entry price
+    sailed through it from the other side. A control written as "block when the number is bad"
+    silently inverts to "allow" the moment the number is NaN. Validity is therefore established
+    FIRST, positively, and anything that is not a finite positive number never reaches a
+    comparison at all.
+    """
+    # TYPE FIRST, then value. `float("100")` succeeds, so a serialised price from a JSON body
+    # would reach the drift arithmetic untyped — and `float(True)` is 1.0, so a boolean would be
+    # accepted as a one-dollar price. A price arriving as a string or a bool means the caller's
+    # contract is wrong, and coercing it silently hides that at the one place it matters.
+    if isinstance(value, bool) or isinstance(value, (str, bytes, bytearray)):
+        return False
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(v) and v > 0
+
+
+def parse_quote(quoted) -> tuple[float | None, datetime | None, str | None]:
+    """Normalise a quote into `(price, as_of, error)`; `error` non-None means unusable.
+
+    THE CONTRACT IS A PAIR, NOT A NUMBER. A bare price carries no timestamp, and numeric
+    availability is not freshness — a cached figure from hours ago is a number too, and it would
+    pass a drift check against a market that has since moved. A caller with no timestamp must say
+    so by returning None rather than handing over a number whose age nobody can establish.
+    """
+    if quoted is None:
+        return None, None, "price_unverifiable: no current quote for the sized entry price"
+    if isinstance(quoted, (tuple, list)):
+        if len(quoted) != 2:
+            return None, None, f"quote_malformed: expected (price, as_of), got {len(quoted)} items"
+        price, as_of = quoted
+    else:
+        return None, None, (
+            "quote_freshness_unverifiable: a bare price carries no timestamp, and numeric "
+            "availability is not evidence of freshness")
+    if not _finite_positive(price):
+        return None, None, f"quote_invalid: {price!r} is not a finite positive price"
+    if not isinstance(as_of, datetime):
+        return None, None, f"quote_undated: as_of {as_of!r} is not a datetime"
+    return float(price), as_of, None
+
+
 def intent_age_seconds(trade: PaperTrade, now: datetime) -> float | None:
     """How long ago this intent was recorded, or None if that cannot be established.
 
@@ -255,38 +313,95 @@ def price_drift_pct(trade: PaperTrade, quoted: float | None) -> float | None:
     None means NOT MEASURED — no quote, or no entry price to compare against. It does not mean
     zero drift, and callers must not treat it as such.
     """
-    if quoted is None or not trade.entry_price:
+    # Both operands must be valid BEFORE any arithmetic. Returning NaN here would hand a
+    # poisoned value to a comparison that reads False and therefore allows the order.
+    if not _finite_positive(quoted) or not _finite_positive(trade.entry_price):
         return None
     entry = float(trade.entry_price)
-    if entry == 0:
-        return None
-    return (float(quoted) - entry) / entry * 100.0
+    drift = (float(quoted) - entry) / entry * 100.0
+    return drift if math.isfinite(drift) else None
 
 
-def dispatch_block_reason(trade: PaperTrade, *, now: datetime, quoted: float | None,
+def dispatch_block_reason(trade: PaperTrade, *, now: datetime, quoted,
                           max_age_seconds: float = INTENT_MAX_AGE_SECONDS,
-                          max_drift_pct: float = MAX_ENTRY_PRICE_DRIFT_PCT) -> str | None:
+                          max_drift_pct: float = MAX_ENTRY_PRICE_DRIFT_PCT,
+                          max_quote_age_seconds: float = MAX_QUOTE_AGE_SECONDS,
+                          max_clock_skew_seconds: float = MAX_CLOCK_SKEW_SECONDS) -> str | None:
     """Why this intent must NOT be sent to the broker right now, or None to proceed.
 
-    FAILS CLOSED, deliberately, and for the reason AUD-B01-PREFLIGHTFAILCLOSED already settled
-    on the buying-power check: a control that cannot be evaluated has not passed. An unmeasurable
-    age or an unavailable quote blocks the order rather than waving it through — nothing is lost
-    by waiting for the next cycle, whereas a real order placed on an unverified price cannot be
-    taken back.
+    FAILS CLOSED, on the reasoning AUD-B01-PREFLIGHTFAILCLOSED already settled for the
+    buying-power check: a control that cannot be evaluated has not passed. Nothing is lost by
+    waiting a cycle; a real order placed on an unverified price cannot be taken back.
+
+    EVERY CHECK ESTABLISHES VALIDITY BEFORE IT COMPARES. Written the other way round — compare,
+    and block if the comparison trips — each one inverts to "allow" on a NaN, because every
+    comparison against NaN is False. Two such holes were reported against the first version of
+    this function (a NaN quote and a NaN entry price both passed) and a third let an intent
+    dated in the FUTURE through, since a negative age does not exceed a maximum.
     """
+    # The policy values themselves. A limit that is NaN or non-positive disables the control it
+    # is supposed to enforce, and a misconfiguration must not read as permission.
+    for name, value in (("max_age_seconds", max_age_seconds),
+                        ("max_drift_pct", max_drift_pct),
+                        ("max_quote_age_seconds", max_quote_age_seconds)):
+        if not _finite_positive(value):
+            return f"policy_invalid: {name}={value!r} is not a finite positive limit"
+    if not (isinstance(max_clock_skew_seconds, (int, float))
+            and math.isfinite(max_clock_skew_seconds) and max_clock_skew_seconds >= 0):
+        return f"policy_invalid: max_clock_skew_seconds={max_clock_skew_seconds!r}"
+
     age = intent_age_seconds(trade, now)
     if age is None:
         return "intent_age_unverifiable: no entry_time to date this intent from"
+    if not math.isfinite(age):
+        return f"intent_age_invalid: age is {age!r}"
+    # A FUTURE-DATED INTENT IS INVALID, NOT YOUNG. Inside the skew bound it is two clocks
+    # disagreeing; beyond it, the timestamp is wrong, and an intent whose own age cannot be
+    # trusted cannot be shown to be within any age limit.
+    if age < -max_clock_skew_seconds:
+        return (f"intent_dated_in_the_future: entry_time is {-age / 60:.1f} min ahead of now, "
+                f"beyond the {max_clock_skew_seconds:.0f}s skew allowance")
     if age > max_age_seconds:
         return (f"intent_expired: recorded {age / 60:.1f} min ago, limit "
                 f"{max_age_seconds / 60:.0f} min")
-    drift = price_drift_pct(trade, quoted)
+
+    if not _finite_positive(trade.entry_price):
+        return (f"entry_price_invalid: {trade.entry_price!r} is not a finite positive price, so "
+                f"there is nothing to measure drift against")
+
+    price, as_of, error = parse_quote(quoted)
+    if error:
+        return error
+    quote_age = (_naive_utc(now) - _naive_utc(as_of)).total_seconds()
+    if not math.isfinite(quote_age):
+        return f"quote_age_invalid: {quote_age!r}"
+    if quote_age < -max_clock_skew_seconds:
+        return (f"quote_dated_in_the_future: as_of is {-quote_age:.0f}s ahead of now, beyond "
+                f"the {max_clock_skew_seconds:.0f}s skew allowance")
+    if quote_age > max_quote_age_seconds:
+        return (f"quote_stale: {quote_age:.0f}s old, limit {max_quote_age_seconds:.0f}s")
+
+    drift = price_drift_pct(trade, price)
     if drift is None:
-        return "price_unverifiable: no current quote to check the sized entry price against"
+        return "price_drift_unverifiable: the drift could not be computed from these two prices"
     if abs(drift) > max_drift_pct:
         return (f"price_drift: {drift:+.2f}% from the sized entry price "
                 f"{float(trade.entry_price):.4f}, limit {max_drift_pct:.2f}%")
     return None
+
+
+def read_quote(quote, trade) -> tuple[object, str | None]:
+    """Call a caller-supplied quote source without letting it take the batch down.
+
+    A quote source reaches out to a cache, a provider or a database, and any of those can raise.
+    An exception fetching ONE symbol's price must block that symbol and leave the rest of the
+    batch to be judged on their own evidence — not abort the loop, which would silently skip
+    every intent after the first bad one.
+    """
+    try:
+        return quote(trade), None
+    except Exception as exc:                            # noqa: BLE001
+        return None, f"quote_source_failed: {exc.__class__.__name__}: {exc}"
 
 
 def expired_intents(session, *, now: datetime | None = None,
@@ -351,6 +466,32 @@ def record_closure_disposition(trade: PaperTrade, *, actor: str,
     log.warning("broker.closed_with_open_intent", trade_id=trade.id, symbol=trade.symbol,
                 actor=actor, **{k: v for k, v in disposition.items() if k != "note"})
     return disposition
+
+
+def release_claim(session, trade: PaperTrade, *, reason: str) -> bool:
+    """Hand a claim back, for an intent that was claimed but PROVABLY never sent.
+
+    This is the one safe way out of `submitting`, and it is safe only here: this path runs
+    between the claim committing and the provider being contacted, so the code itself is the
+    evidence that no call was made. Anywhere else, `submitting` means "a call may be in flight"
+    and must go to reconciliation instead.
+
+    The attempt is given back with it. `broker_submit_attempts` counts attempts to CONTACT the
+    broker; a control that refused to contact anyone did not use one, and counting it would
+    let three blocked cycles exhaust an intent the broker never heard about.
+    """
+    result = session.execute(
+        update(PaperTrade)
+        .where(PaperTrade.id == trade.id, PaperTrade.broker_submission_state == SUBMITTING,
+               PaperTrade.broker_order_id.is_(None))
+        .values(broker_submission_state=PENDING,
+                broker_submit_attempts=PaperTrade.broker_submit_attempts - 1,
+                broker_error=f"claim released unsent: {reason}"[:512])
+        .execution_options(synchronize_session=False))
+    if result.rowcount == 1:
+        session.refresh(trade)
+        return True
+    return False
 
 
 def settle(session, trade: PaperTrade, *, outcome: str, error: str | None = None,
@@ -439,7 +580,7 @@ def reconcile_submission(session, trade: PaperTrade, *, resolution: str, evidenc
     trade.broker_error = f"reconciled as {resolution} by {actor}: {evidence}"[:512]
 
 
-def submit_pending(session, *, place, commit, quote, classify=None,
+def submit_pending(session, *, place, commit, quote, classify=None, clock=utcnow,
                    portfolio_id: int | None = None,
                    limit: int = 20, now: datetime | None = None) -> dict:
     """Submit every claimable entry. `place(session, trade, portfolio)` does the real call.
@@ -452,23 +593,28 @@ def submit_pending(session, *, place, commit, quote, classify=None,
         4. the broker call,
         5. settle + commit.
 
-    `quote(trade) -> float | None` is REQUIRED, not optional with a default. A caller with no
-    quote source must say so by passing one that returns None, which blocks every dispatch and
-    records why. The alternative — defaulting it — means forgetting the price check looks
-    exactly like having no prices, and one of those two should be a loud error.
+    `quote(trade) -> (price, as_of) | None` is REQUIRED, not optional with a default. A caller
+    with no quote source must say so by passing one that returns None, which blocks every
+    dispatch and records why. The alternative — defaulting it — means forgetting the price check
+    looks exactly like having no prices, and one of those two should be a loud error.
+
+    `clock()` supplies the CURRENT time for the post-claim re-check. It is separate from `now`
+    on purpose: `now` is the batch's reference instant, while the re-check needs a reading taken
+    after the claim has finished waiting.
 
     A crash at any point leaves a state that says what is known: `pending` (nothing sent),
     `submitting` (may exist — reconcile), `submitted` or `failed`.
     """
     now = now or utcnow()
     out = {"claimed": 0, "submitted": 0, "rejected": 0, "unknown": 0, "lost_race": 0,
-           "blocked": 0}
+           "blocked": 0, "blocked_after_claim": 0}
     rows = claimable(session, portfolio_id=portfolio_id, limit=limit)
     out["claimed"] = len(rows)
     for trade in rows:
         # BEFORE the claim: a control that blocks must not consume an attempt, or three blocked
         # cycles would exhaust the intent without the broker ever being contacted.
-        blocked = dispatch_block_reason(trade, now=now, quoted=quote(trade))
+        quoted, quote_error = read_quote(quote, trade)
+        blocked = quote_error or dispatch_block_reason(trade, now=now, quoted=quoted)
         if blocked:
             out["blocked"] += 1
             trade.broker_error = f"dispatch blocked: {blocked}"[:512]
@@ -480,6 +626,24 @@ def submit_pending(session, *, place, commit, quote, classify=None,
             out["lost_race"] += 1
             continue
         commit()                       # durable BEFORE the broker is contacted
+
+        # AND AGAIN, AFTER THE CLAIM. `begin_submission` is an UPDATE that can BLOCK on another
+        # transaction's row lock for as long as that transaction runs — measured at a full
+        # second in the PostgreSQL race probe, and unbounded in principle. The checks above were
+        # therefore evaluated against a clock and a quote from BEFORE that wait. Re-read both
+        # from a CURRENT clock, and if the intent no longer qualifies, hand the claim back
+        # unsent rather than submitting on evidence that has expired while we queued.
+        recheck_at = clock()
+        requoted, requote_error = read_quote(quote, trade)
+        stale = requote_error or dispatch_block_reason(trade, now=recheck_at, quoted=requoted)
+        if stale:
+            released = release_claim(session, trade, reason=stale)
+            commit()
+            out["blocked_after_claim"] += 1
+            log.info("broker.dispatch_blocked_after_claim", trade_id=trade.id,
+                     symbol=trade.symbol, reason=stale, released=released,
+                     waited_seconds=round((_naive_utc(recheck_at) - _naive_utc(now)).total_seconds(), 3))
+            continue
         portfolio = session.get(PaperPortfolio, trade.portfolio_id)
         try:
             place(session, trade, portfolio)

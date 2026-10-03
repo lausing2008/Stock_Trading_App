@@ -10,7 +10,8 @@
       "rejected": 0,
       "unknown": 0,
       "lost_race": 0,
-      "blocked": 0
+      "blocked": 0,
+      "blocked_after_claim": 0
     },
     "final_stage": "closed",
     "final_submission_state": "pending",
@@ -25,9 +26,10 @@
       "rejected": 0,
       "unknown": 0,
       "lost_race": 1,
-      "blocked": 0
+      "blocked": 0,
+      "blocked_after_claim": 0
     },
-    "blocked_seconds": 1.004053,
+    "blocked_seconds": 1.018777,
     "provider_calls": 0,
     "final_stage": "closed",
     "final_submission_state": "pending",
@@ -53,7 +55,7 @@
     "closure_recorded_broker_exposure": true,
     "closure_disposition": {
       "state": "submitting",
-      "client_order_id": "pt1x42c7c3d03f164b",
+      "client_order_id": "pt1xd81d776e840f49",
       "order_id": null,
       "confirmed_fill": false,
       "needs_reconciliation": true,
@@ -106,8 +108,40 @@
     },
     "no_quote": {
       "provider_calls": 0,
-      "reason": "dispatch blocked: price_unverifiable: no current quote to check the sized entry price against"
+      "reason": "dispatch blocked: price_unverifiable: no current quote for the sized entry price"
     },
+    "nan_quote": {
+      "provider_calls": 0,
+      "reason": "dispatch blocked: quote_invalid: nan is not a finite positive price"
+    },
+    "bare_number": {
+      "provider_calls": 0,
+      "reason": "dispatch blocked: quote_freshness_unverifiable: a bare price carries no timestamp, and numeric availability is not evidence of freshness"
+    },
+    "stale_quote": {
+      "provider_calls": 0,
+      "reason": "dispatch blocked: quote_stale: 300s old, limit 30s"
+    },
+    "raising_source": {
+      "provider_calls": 0,
+      "reason": "dispatch blocked: quote_source_failed: ConnectionError: down"
+    },
+    "passes": true
+  },
+  "r10_quote_ages_while_the_claim_waits": {
+    "result": {
+      "claimed": 1,
+      "submitted": 0,
+      "rejected": 0,
+      "unknown": 0,
+      "lost_race": 0,
+      "blocked": 0,
+      "blocked_after_claim": 1
+    },
+    "provider_calls": 0,
+    "final_submission_state": "pending",
+    "attempts_after_release": 0,
+    "reason": "claim released unsent: quote_stale: 300s old, limit 30s",
     "passes": true
   },
   "_meta": {

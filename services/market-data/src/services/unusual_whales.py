@@ -394,7 +394,11 @@ _RATE_LIMIT_COUNTER_WINDOW_HOURS = 48
 
 # Retained ONLY so any external reader of the old key during the rollout doesn't hard-fail —
 # no code in this module writes to it anymore.
-_RATE_LIMIT_COUNTER_KEY = "stockai:metric:uw_rate_limit_count_48h"
+# RETIRED. This single key was the SAWTOOTH the hourly buckets above replaced; every consumer
+# now sums those buckets at read time. It is left named, and unwritten, only so a reader who
+# finds the empty key in Redis learns that an absent value here means RETIRED, not "zero
+# failures" — the reading on 2026-10-03 had to establish that from the source.
+_RATE_LIMIT_COUNTER_KEY_RETIRED = "stockai:metric:uw_rate_limit_count_48h"
 
 
 def _incr_rate_limit_counter() -> None:
@@ -453,6 +457,52 @@ def _read_rate_limit_count_48h() -> int:
 # following day before expiring, comfortably covering any dashboard poll time.
 _CALL_COUNTER_PREFIX = "stockai:metric:uw_calls"
 _CALL_COUNTER_TTL_S = 49 * 3600
+
+
+#: PER-ENDPOINT, PER-CAUSE FAILURE COUNTS.
+#:
+#: WHY THIS EXISTS. The 48h reading on 2026-10-03 found 119 rate-limits, every one inside the US
+#: session, while the account held both daily headroom (63% of 120,000 used) and per-minute
+#: headroom by UW's own response headers. The counters could not say WHICH endpoint was being
+#: refused, because `_incr_rate_limit_counter` incremented one global bucket — so a 429 on the
+#: 67,607-call option-chains sweep and a 429 on a 5-call max-pain lookup were indistinguishable.
+#:
+#: LABELS ARE BOUNDED ON PURPOSE. The endpoint TEMPLATE ("/api/stock/{ticker}/option-chains") is
+#: the label, never the resolved path — `/api/darkpool/MU` would mint one Redis key per symbol
+#: per hour, which is how a metric becomes a memory leak. A call site that supplied no template
+#: is counted as "unlabelled" rather than guessed at: an honest gap points at the call site to
+#: fix, a guessed template quietly attributes failures to the wrong endpoint.
+_FAILURE_COUNTER_PREFIX = "stockai:metric:uw_failures"
+_FAILURE_COUNTER_TTL_S = 50 * 3600          # outlives its own 48h read window, as above
+_UNLABELLED = "unlabelled"
+
+
+def _failure_label(endpoint: str | None) -> str:
+    return endpoint if endpoint else _UNLABELLED
+
+
+def _classify_failure(exc: BaseException) -> str:
+    """A bounded cause label. Never the exception's message — that carries URLs and ids."""
+    name = exc.__class__.__name__.lower()
+    if "timeout" in name:
+        return "timeout"
+    if "connect" in name or "network" in name or "protocol" in name or "ssl" in name:
+        return "transport"
+    if "json" in name or "decode" in name:
+        return "parse"
+    return "other"
+
+
+def _incr_failure_counter(endpoint: str | None, cause: str) -> None:
+    """Count one FAILED call by endpoint template and cause. Never raises."""
+    try:
+        r = _get_redis()
+        bucket = datetime.now(timezone.utc).strftime("%Y%m%d%H")
+        key = f"{_FAILURE_COUNTER_PREFIX}:{_failure_label(endpoint)}:{cause}:{bucket}"
+        if r.incr(key) == 1:
+            r.expire(key, _FAILURE_COUNTER_TTL_S)
+    except Exception:
+        pass
 
 
 def _incr_call_counter(endpoint: str) -> None:
@@ -624,10 +674,12 @@ def _get(path: str, params: dict | None = None, *, endpoint: str | None = None) 
             if r.status_code == 429:
                 log.warning("unusual_whales.rate_limit", path=path)
                 _incr_rate_limit_counter()
+                _incr_failure_counter(endpoint, "rate_limited")
                 _record_call_status(False, "rate_limited", path)
                 raise UnusualWhalesRateLimitError(f"Unusual Whales rate limit on {path}")
             if r.status_code in (401, 403):
                 log.warning("unusual_whales.auth_error", path=path, status=r.status_code)
+                _incr_failure_counter(endpoint, "unauthorized")
                 _record_call_status(False, "unauthorized", path)
                 raise UnusualWhalesAuthError(f"Unusual Whales auth failed on {path} ({r.status_code})")
             if r.status_code == 404:
@@ -637,17 +689,25 @@ def _get(path: str, params: dict | None = None, *, endpoint: str | None = None) 
                 # answered; it just had nothing to say).
                 _record_call_status(True, "no_data", path)
                 return None
+            if r.status_code >= 400:
+                # Counted BEFORE raise_for_status so the status class is still in hand; the
+                # generic handler below would only see an HTTPStatusError.
+                _incr_failure_counter(endpoint, f"http_{r.status_code // 100}xx")
             r.raise_for_status()
             body = r.json()
             _record_call_status(True, "ok", path)
             return body.get("data") if isinstance(body, dict) else None
     except (UnusualWhalesRateLimitError, UnusualWhalesAuthError):
         raise
-    except Exception:
+    except Exception as _exc:
         # Any other failure (timeout, connection error, 5xx via raise_for_status(), a
         # malformed body) — tenacity retries these up to 3x per this function's own @retry
         # decorator; each attempt records its own outcome, so the LAST recorded status (after
         # retries exhaust) reflects the real final state, not a transient blip.
+        # An HTTPStatusError was already counted with its real status class just above; only
+        # the causes that never reached a status code are classified here.
+        if _exc.__class__.__name__ != "HTTPStatusError":
+            _incr_failure_counter(endpoint, _classify_failure(_exc))
         _record_call_status(False, "error", path)
         raise
 

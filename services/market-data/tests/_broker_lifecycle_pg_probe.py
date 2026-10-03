@@ -52,13 +52,15 @@ PF = 1
 
 #: The scenarios below are about the LIFECYCLE, so they hold the price still at the sized entry
 #: price; drift gets its own scenario (R9).
-AT_ENTRY = lambda t: float(t.entry_price)                            # noqa: E731
+#: Quotes are (price, as_of) pairs: a bare number carries no freshness evidence and is refused.
+AT_ENTRY = lambda t: (float(t.entry_price), AS_OF)                   # noqa: E731
 
 #: EVERY scenario that goes through `submit_pending` pins `now` to just after the fixture's
 #: entry_time. Without this the intent-expiry control blocks the dispatch on wall-clock age and
 #: every scenario reports zero provider calls — passing for a reason that has nothing to do with
 #: the property under test. A control doing the work of the assertion is a false green.
 AS_OF = datetime(2026, 10, 2, 13, 40)
+CLOCK = lambda: AS_OF                                                # noqa: E731
 
 
 def reset():
@@ -108,7 +110,7 @@ def r1_close_wins_before_claim():
         _close(tid)                                      # ...and the closure commits first
         out = bs.submit_pending(d, place=lambda s, t, p: calls.append(t.id),
                                 commit=d.commit, quote=AT_ENTRY, portfolio_id=PF,
-                                now=AS_OF)
+                                now=AS_OF, clock=CLOCK)
     with Session() as s:
         row = s.get(PaperTrade, tid)
         R["r1_close_wins_before_claim"] = {
@@ -142,7 +144,7 @@ def r2_claim_blocks_on_uncommitted_close():
             t0 = datetime.now(timezone.utc)
             verdict["result"] = bs.submit_pending(
                 d, place=lambda s, t, p: calls.append(t.id), commit=d.commit,
-                quote=AT_ENTRY, portfolio_id=PF, now=AS_OF)
+                quote=AT_ENTRY, portfolio_id=PF, now=AS_OF, clock=CLOCK)
             verdict["blocked_seconds"] = (datetime.now(timezone.utc) - t0).total_seconds()
 
     worker = threading.Thread(target=dispatch)
@@ -248,7 +250,7 @@ def r5_submitting_never_reclaimed():
     with Session() as d2:
         out = bs.submit_pending(d2, place=lambda s, t, p: calls.append(t.id),
                                 commit=d2.commit, quote=AT_ENTRY, portfolio_id=PF,
-                                now=AS_OF)
+                                now=AS_OF, clock=CLOCK)
     with Session() as s:
         R["r5_submitting_never_reclaimed"] = {
             "second_dispatcher_claimed": out["claimed"],
@@ -278,7 +280,7 @@ def r6_attempt_cap_under_concurrency():
                 row.broker_submission_state = bs.PENDING
                 d.commit()
             bs.submit_pending(d, place=boom, commit=d.commit, quote=AT_ENTRY,
-                              portfolio_id=PF, now=AS_OF)
+                              portfolio_id=PF, now=AS_OF, clock=CLOCK)
     with Session() as s:
         row = s.get(PaperTrade, tid)
         R["r6_attempt_cap_under_concurrency"] = {
@@ -304,7 +306,7 @@ def r7_stale_intent_dispatched():
         bs.submit_pending(d, place=lambda s, t, p: calls.append(
             {"id": t.id, "entry_price": float(t.entry_price)}),
             commit=d.commit, quote=AT_ENTRY, portfolio_id=PF,
-            now=datetime(2026, 10, 2, 13, 35))
+            now=datetime(2026, 10, 2, 13, 35), clock=lambda: datetime(2026, 10, 2, 13, 35))
     with Session() as s:
         row = s.get(PaperTrade, tid)
         R["r7_stale_intent_dispatched"] = {
@@ -332,7 +334,7 @@ def r8_unlinked_portfolio_still_dispatches():
         s.commit()
     with Session() as d:
         bs.submit_pending(d, place=lambda s, t, p: calls.append(t.id),
-                          commit=d.commit, quote=AT_ENTRY, portfolio_id=PF, now=AS_OF)
+                          commit=d.commit, quote=AT_ENTRY, portfolio_id=PF, now=AS_OF, clock=CLOCK)
     R["r8_unlinked_portfolio_still_dispatches"] = {
         "provider_calls": len(calls),
         # Checked against the COMPILED SQL, not the repr of the clause list: the repr of a
@@ -348,17 +350,21 @@ def r8_unlinked_portfolio_still_dispatches():
 # ─────────────────────────────────────────────────────────────────────────────
 def r9_price_drift_and_unverifiable_quote():
     out = {}
-    for label, q in (("at_entry", lambda t: 100.0),
-                     ("drift_up_2pct", lambda t: 102.0),
-                     ("drift_down_2pct", lambda t: 98.0),
-                     ("inside_tolerance", lambda t: 100.5),
-                     ("no_quote", lambda t: None)):
+    for label, q in (("at_entry", lambda t: (100.0, AS_OF)),
+                     ("drift_up_2pct", lambda t: (102.0, AS_OF)),
+                     ("drift_down_2pct", lambda t: (98.0, AS_OF)),
+                     ("inside_tolerance", lambda t: (100.5, AS_OF)),
+                     ("no_quote", lambda t: None),
+                     ("nan_quote", lambda t: (float("nan"), AS_OF)),
+                     ("bare_number", lambda t: 100.0),
+                     ("stale_quote", lambda t: (100.0, AS_OF - timedelta(minutes=5))),
+                     ("raising_source", lambda t: (_ for _ in ()).throw(ConnectionError("down")))):
         tid = reset()
         calls = []
         with Session() as d:
             bs.submit_pending(d, place=lambda s, t, p: calls.append(t.id),
                               commit=d.commit, quote=q, portfolio_id=PF,
-                              now=datetime(2026, 10, 2, 13, 40))
+                              now=datetime(2026, 10, 2, 13, 40), clock=CLOCK)
         with Session() as s:
             row = s.get(PaperTrade, tid)
             out[label] = {"provider_calls": len(calls), "reason": row.broker_error}
@@ -366,10 +372,62 @@ def r9_price_drift_and_unverifiable_quote():
         **out,
         "passes": (out["at_entry"]["provider_calls"] == 1
                    and out["inside_tolerance"]["provider_calls"] == 1
-                   and out["drift_up_2pct"]["provider_calls"] == 0
-                   and out["drift_down_2pct"]["provider_calls"] == 0
-                   and out["no_quote"]["provider_calls"] == 0),
+                   and all(out[k]["provider_calls"] == 0 for k in
+                           ("drift_up_2pct", "drift_down_2pct", "no_quote", "nan_quote",
+                            "bare_number", "stale_quote", "raising_source"))),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# R10 — the controls were checked BEFORE a claim that then blocked on a row lock.
+#       By the time the claim returns, the evidence they passed on has expired.
+# ─────────────────────────────────────────────────────────────────────────────
+def r10_quote_ages_while_the_claim_waits():
+    tid = reset()
+    calls = []
+    lock_taken, let_go = threading.Event(), threading.Event()
+
+    # A second session holds the row lock WITHOUT closing the trade, so the claim blocks and
+    # then SUCCEEDS — the case where the pre-claim checks stay valid-looking but go stale.
+    def hold():
+        with Session() as s:
+            s.execute(update(PaperTrade).where(PaperTrade.id == tid).values(symbol="AAPL"))
+            lock_taken.set()
+            let_go.wait(10)
+            s.commit()
+
+    holder = threading.Thread(target=hold); holder.start()
+    lock_taken.wait(10)
+    verdict = {}
+
+    def dispatch():
+        with Session() as d:
+            # The clock has advanced past the quote's freshness bound by the time the claim
+            # returns; the quote itself is still stamped at the batch's reference instant.
+            verdict["result"] = bs.submit_pending(
+                d, place=lambda s, t, p: calls.append(t.id), commit=d.commit,
+                quote=lambda t: (float(t.entry_price), AS_OF), portfolio_id=PF,
+                now=AS_OF, clock=lambda: AS_OF + timedelta(minutes=5))
+
+    worker = threading.Thread(target=dispatch); worker.start()
+    threading.Event().wait(0.8)
+    let_go.set(); holder.join(10); worker.join(15)
+
+    with Session() as s:
+        row = s.get(PaperTrade, tid)
+        R["r10_quote_ages_while_the_claim_waits"] = {
+            "result": verdict.get("result"),
+            "provider_calls": len(calls),
+            "final_submission_state": row.broker_submission_state,
+            "attempts_after_release": row.broker_submit_attempts,
+            "reason": row.broker_error,
+            # Claimed, then handed back UNSENT because the evidence expired while queued — and
+            # the attempt is returned, because nobody contacted the broker.
+            "passes": (len(calls) == 0
+                       and row.broker_submission_state == bs.PENDING
+                       and row.broker_submit_attempts == 0
+                       and (row.broker_error or "").startswith("claim released unsent")),
+        }
 
 
 def main():
@@ -377,7 +435,8 @@ def main():
                r3_two_dispatchers_one_row, r4_claim_wins_then_close,
                r5_submitting_never_reclaimed, r6_attempt_cap_under_concurrency,
                r7_stale_intent_dispatched, r8_unlinked_portfolio_still_dispatches,
-               r9_price_drift_and_unverifiable_quote):
+               r9_price_drift_and_unverifiable_quote,
+               r10_quote_ages_while_the_claim_waits):
         fn()
     R["_meta"] = {"engine": str(ENGINE.url).split("@")[-1],
                   "server_version": Session().execute(text("show server_version")).scalar(),

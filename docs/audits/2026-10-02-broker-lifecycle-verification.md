@@ -47,7 +47,7 @@ something to add as a side effect of a verification pass.
 | R1 | Close commits before the claim | **0 provider calls**; intent left `pending` |
 | R2 | Claim blocks on an UNCOMMITTED close, then re-evaluates | blocked 1.00 s on the row lock, then **lost the race; 0 provider calls** |
 | R3 | Two dispatchers, one row | exactly **1** provider call, one `lost_race`, attempts = 1 |
-| R4 | Claim wins, close lands mid-flight | closure now records the disposition (§3) |
+| R4 | Claim wins, close lands mid-flight | closure now records the disposition (§3) — see the scope note below |
 | R5 | A `submitting` row a dead worker left behind | never re-claimed; **0** calls; listed for reconciliation |
 | R6 | Attempt cap under repeated failure | **3** calls at a cap of 3 |
 | R7 | Six-hour-old intent | blocked, attempts **unburned** |
@@ -57,6 +57,15 @@ something to add as a side effect of a verification pass.
 **R2 is the acceptance.** It is also what finally gives SF-01 a behavioural lifecycle test:
 reverting `begin_submission`'s predicate to the pre-SF-01 `id + state` makes R2 fail — the stale
 claim succeeds and the provider is called on a closed position.
+
+**What R4 is and is not.** R4 calls `record_closure_disposition` and then closes the fixture; it
+establishes the disposition's content, not an end-to-end broker cancellation through all four
+close paths. Two tests in `test_liquidate_portfolio.py` do drive it through the REAL liquidation
+path, which covers one of the four. Cancellation is not covered anywhere: closure records that an
+order may be live, and does not cancel it. Likewise `retains_reserved_exposure=True` is a
+property of the trade row — it is **not** evidence that every exposure calculator retains a
+closed-but-unreconciled intent, which needs a subsequent entry exercised against the real
+reservation path.
 
 ## 3. Gaps found and closed
 
@@ -90,7 +99,11 @@ a crash in the dispatch loop rather than a refusal. Both sides are normalised.
 
 ## 4. Policy constants — these are decisions, not corrections
 
-Tracked separately from the bug fixes above, and **awaiting sign-off**:
+**Signed off 2026-10-03 as PROVISIONAL SANDBOX VALUES** — approved to proceed with, explicitly
+not validated production limits, and nothing activates on them while M25 is off. The lifecycle
+review's counter-examples stand and are the reason for that status: a 1% move can consume most
+of a tight stop's risk budget, and a 15-minute-old breakout may already be invalid. Neither is
+"conservative" in any absolute sense.
 
 | Constant | Value | Reasoning |
 |---|---|---|
