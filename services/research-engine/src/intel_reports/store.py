@@ -16,18 +16,22 @@ THREE PROPERTIES, AND WHY EACH IS A STORAGE CONCERN RATHER THAN A CALLER'S DISCI
 """
 from __future__ import annotations
 
+import random
+import time
 from datetime import datetime
 
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 
 from db import IntelligenceReport
-from intelligence.report_contract import CONTRACT_VERSION
+from intelligence.report_contract import CONTRACT_VERSION, EvidenceBook, validate_evidence
 
 
-def _payload(fields, evidence, meta) -> dict:
+def _payload(fields, records, meta) -> dict:
     return {
         "fields": {k: v.to_dict() for k, v in fields.items()},
         "meta": {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in meta.items()},
+        "evidence": records,
     }
 
 
@@ -71,8 +75,36 @@ def frozen_pre_report(session, *, subject_key: str, before: datetime):
         .order_by(IntelligenceReport.version.desc()).limit(1)).scalars().first()
 
 
+#: How many times a losing version race is retried before giving up.
+#:
+#: MEASURED, NOT GUESSED. Three was the first number here and four concurrent writers on one
+#: subject exhausted it — the constraint did its job and allocated 1, 2, 3, while the fourth
+#: thread collided on every attempt and raised. Retrying in lockstep is the problem: threads
+#: that collide once re-read the same maximum and collide again, so the budget is consumed by
+#: the contention it is meant to absorb.
+_VERSION_RACE_RETRIES = 8
+
+#: Jittered backoff so colliding writers SEPARATE instead of re-colliding. Milliseconds: enough
+#: to break the lockstep, far below anything a caller notices.
+_VERSION_RACE_BACKOFF_S = 0.02
+
+
 def save(session, fields, evidence, meta, coverage_counts, *, user_id: int | None = None):
-    """Insert a snapshot, or return the identical existing one. Returns (report, created)."""
+    """Insert a snapshot, or return the identical existing one. Returns (report, created).
+
+    CONCURRENCY. Version is derived by reading the current maximum and adding one, which two
+    requests can do simultaneously and both get the same answer — sharing a transaction does not
+    prevent that interleaving. A UNIQUE constraint on (subject, type, owner, version) is what
+    actually prevents it, and the loop below turns a lost race into a retry at the next version
+    rather than into a duplicate or an error the caller has to understand.
+    """
+    book = evidence if isinstance(evidence, EvidenceBook) else None
+    if book is not None:
+        # A report whose citations do not resolve must not reach storage; once stored it looks
+        # exactly like one whose citations were checked.
+        validate_evidence(fields, book)
+    records = book.records if book is not None else {"records": evidence}
+
     subject_key = meta["subject_key"]
     fingerprint = meta["fingerprint"]
 
@@ -81,6 +113,28 @@ def save(session, fields, evidence, meta, coverage_counts, *, user_id: int | Non
     if same is not None:
         return same, False
 
+    for attempt in range(_VERSION_RACE_RETRIES):
+        try:
+            return _insert(session, fields, records, meta, coverage_counts,
+                           user_id=user_id, fingerprint=fingerprint,
+                           subject_key=subject_key), True
+        except IntegrityError:
+            session.rollback()
+            # Someone else took this version. If they wrote the SAME inputs, their row is the
+            # answer; otherwise back off a little and try again at the next number.
+            same = existing_for_fingerprint(session, subject_key=subject_key,
+                                            fingerprint=fingerprint, user_id=user_id)
+            if same is not None:
+                return same, False
+            time.sleep(random.uniform(0, _VERSION_RACE_BACKOFF_S * (attempt + 1)))
+    raise RuntimeError(
+        f"could not allocate a version for {subject_key} after {_VERSION_RACE_RETRIES} "
+        f"attempts; this means sustained concurrent generation on one subject, which is worth "
+        f"investigating rather than retrying forever")
+
+
+def _insert(session, fields, records, meta, coverage_counts, *, user_id, fingerprint,
+            subject_key):
     prior = latest(session, subject_key=subject_key,
                    report_type=meta["report_type"], user_id=user_id)
     report = IntelligenceReport(
@@ -98,8 +152,8 @@ def save(session, fields, evidence, meta, coverage_counts, *, user_id: int | Non
         generated_at=datetime.utcnow(),
         cutoff_at=meta["cutoff_at"],
         input_fingerprint=fingerprint,
-        payload=_payload(fields, evidence, meta),
-        evidence={"records": evidence},
+        payload=_payload(fields, records, meta),
+        evidence={"records": records},
         coverage=coverage_counts,
         user_id=user_id,
     )
@@ -110,7 +164,7 @@ def save(session, fields, evidence, meta, coverage_counts, *, user_id: int | Non
     if prior is not None and prior.status != "superseded":
         prior.status = "superseded"
     session.commit()
-    return report, True
+    return report
 
 
 def history(session, *, subject_key: str, user_id: int | None = None, limit: int = 20):

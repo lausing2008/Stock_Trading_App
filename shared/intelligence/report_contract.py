@@ -25,7 +25,7 @@ from typing import Any
 #: statement class, a different horizon definition. Stored on every report so an old snapshot is
 #: still readable as what it meant when it was written, rather than reinterpreted under today's
 #: rules. A rendering change does not bump this; a semantic one does.
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
 
 
 class ReportType(str, Enum):
@@ -177,6 +177,47 @@ def interpreted(value: Any, **kw) -> Field:
                  statement=StatementClass.INTERPRETATION, **kw)
 
 
+class EvidenceBook:
+    """Collects the evidence records a report actually used, and proves the references resolve.
+
+    THE GAP THIS CLOSES. The contract declared an evidence record and the generators returned an
+    empty list, while fields carried ids like `price:3:2026-10-02` that matched nothing. A
+    citation that resolves to nothing is worse than no citation: it looks checkable and is not.
+
+    So an id is MINTED BY RECORDING the observation — `add()` returns the id it just stored —
+    and a report cannot be saved while any field references an id this book does not hold.
+    """
+
+    def __init__(self):
+        self._records: dict[str, dict] = {}
+
+    def add(self, ev: Evidence) -> str:
+        self._records[ev.evidence_id] = ev.to_dict()
+        return ev.evidence_id
+
+    @property
+    def records(self) -> dict[str, dict]:
+        return dict(self._records)
+
+    def dangling(self, fields: dict[str, "Field"]) -> list[str]:
+        """Every referenced id with no stored record, sorted. Empty means the report is citable."""
+        missing = set()
+        for f in fields.values():
+            for eid in f.evidence_ids or []:
+                if eid not in self._records:
+                    missing.add(eid)
+        return sorted(missing)
+
+
+def validate_evidence(fields: dict[str, "Field"], book: EvidenceBook) -> None:
+    """Raise rather than persist a report whose citations do not resolve."""
+    missing = book.dangling(fields)
+    if missing:
+        raise ValueError(
+            f"{len(missing)} evidence reference(s) resolve to no record: {missing[:8]}. A "
+            f"citation that cannot be looked up is not evidence.")
+
+
 def _jsonable(obj):
     if isinstance(obj, dict):
         return {k: _jsonable(v) for k, v in obj.items()}
@@ -189,16 +230,29 @@ def _jsonable(obj):
     return obj
 
 
-def input_fingerprint(inputs: dict) -> str:
-    """A stable hash of the INPUTS a report was built from.
+def fields_fingerprint(fields: dict[str, "Field"], *, policy_version: str,
+                       extra: dict | None = None) -> str:
+    """A stable hash of everything that gives a report its meaning.
 
-    Idempotence runs on this, not on wall-clock time: an unchanged input snapshot should reuse
-    the existing report rather than pay for a fresh generation, and a genuine input change
-    should produce a NEW version rather than overwrite the old one. Sorted keys so the hash does
-    not depend on dict ordering.
+    Idempotence runs on this, not on wall-clock time: an unchanged snapshot reuses the existing
+    report, a changed one produces a new version however little time passed.
+
+    HASHES STATE AND REASON, NOT ONLY VALUES. The first version hashed the values of OK fields
+    alone, so a dimension changing from UNAVAILABLE("provider down") to UNAVAILABLE("not joined
+    to this report") — a different report for a reader — produced the identical fingerprint and
+    was silently re-served as the same document. The contract and policy versions are included
+    for the same reason: the same inputs read under different rules are not the same report.
     """
+    payload = {
+        "contract_version": CONTRACT_VERSION,
+        "policy_version": policy_version,
+        "fields": {k: {"value": f.value, "state": f.state.value, "reason": f.reason,
+                       "statement": f.statement.value, "evidence_ids": sorted(f.evidence_ids or [])}
+                   for k, f in sorted(fields.items())},
+        "extra": extra or {},
+    }
     return hashlib.sha256(
-        json.dumps(_jsonable(inputs), sort_keys=True, default=str).encode()).hexdigest()[:32]
+        json.dumps(_jsonable(payload), sort_keys=True, default=str).encode()).hexdigest()[:32]
 
 
 def coverage(fields: dict[str, Field]) -> dict:

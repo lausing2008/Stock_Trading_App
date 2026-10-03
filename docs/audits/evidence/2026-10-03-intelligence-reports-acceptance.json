@@ -1,53 +1,53 @@
 {
   "t1_all_four_types_generate": {
     "market_outlook": {
-      "id": 13,
+      "id": 318,
+      "status": "partial",
+      "version": 1,
+      "coverage": {
+        "by_state": {
+          "OK": 11,
+          "UNAVAILABLE": 8
+        },
+        "total": 19,
+        "ok": 11
+      },
+      "fields": 19,
+      "markdown_lines": 81
+    },
+    "stock_outlook": {
+      "id": 319,
       "status": "partial",
       "version": 1,
       "coverage": {
         "by_state": {
           "OK": 13,
-          "UNAVAILABLE": 5
+          "UNAVAILABLE": 8
         },
-        "total": 18,
+        "total": 21,
         "ok": 13
       },
-      "fields": 18,
-      "markdown_lines": 48
-    },
-    "stock_outlook": {
-      "id": 14,
-      "status": "partial",
-      "version": 1,
-      "coverage": {
-        "by_state": {
-          "OK": 15,
-          "UNAVAILABLE": 5
-        },
-        "total": 20,
-        "ok": 15
-      },
-      "fields": 20,
-      "markdown_lines": 50
+      "fields": 21,
+      "markdown_lines": 85
     },
     "pre_earnings": {
-      "id": 15,
+      "id": 320,
       "status": "partial",
       "version": 1,
       "coverage": {
         "by_state": {
-          "OK": 12,
+          "OK": 13,
           "UNKNOWN": 4,
           "UNAVAILABLE": 3
         },
-        "total": 19,
-        "ok": 12
+        "total": 20,
+        "ok": 13
       },
-      "fields": 19,
-      "markdown_lines": 51
+      "fields": 20,
+      "markdown_lines": 82
     },
     "post_earnings": {
-      "id": 16,
+      "id": 321,
       "status": "partial",
       "coverage": {
         "by_state": {
@@ -60,13 +60,13 @@
         "ok": 14
       },
       "fields": 22,
-      "markdown_lines": 55
+      "markdown_lines": 84
     },
     "passes": true
   },
   "t2_identical_inputs_do_not_duplicate": {
-    "first_id": 17,
-    "second_id": 17,
+    "first_id": 322,
+    "second_id": 322,
     "created": [
       true,
       false
@@ -76,12 +76,12 @@
     "passes": true
   },
   "t3_changed_inputs_create_a_linked_version": {
-    "v1": 18,
-    "v2": 19,
+    "v1": 323,
+    "v2": 324,
     "v2_version": 2,
-    "supersedes": 18,
+    "supersedes": 323,
     "v1_status": "superseded",
-    "changed_fields": 11,
+    "changed_fields": 10,
     "v1_payload_unchanged": true,
     "passes": true
   },
@@ -93,28 +93,29 @@
     "passes": true
   },
   "t5_a_frozen_pre_report_survives_and_scores": {
-    "pre_id": 21,
-    "post_id": 22,
-    "post_pre_link": 21,
+    "pre_id": 326,
+    "post_id": 327,
+    "post_pre_link": 326,
     "frozen_payload_unchanged": true,
     "verdict": {
       "frozen_consensus_eps": 1.5,
       "actual_eps": 1.72,
       "result_vs_frozen": "above",
       "first_session_reaction_pct": 3.4,
-      "verdict": "confirmed",
-      "note": "scored against the expectation FROZEN before the release, not against a consensus that may have been revised since"
+      "thesis_evaluation": "not_evaluable",
+      "why_not_evaluable": "the frozen report recorded conditional scenarios rather than a directional prediction, so there is no claim to score; the comparison above is factual",
+      "note": "compared against the expectation FROZEN before the release, which is also what the surprise table above uses"
     },
     "passes": true
   },
   "t6_a_report_written_after_the_release_is_not_a_pre_report": {
-    "late_report_id": 23,
+    "late_report_id": 328,
     "found": null,
     "passes": true
   },
   "t7_partial_inputs_still_produce_a_useful_report": {
     "status": "partial",
-    "missing_fields": 15,
+    "missing_fields": 16,
     "every_missing_field_has_a_reason": true,
     "markdown_has_why_section": true,
     "passes": true
@@ -152,19 +153,103 @@
   },
   "t10_market_report_labels_its_proxies": {
     "breadth_state": "OK",
-    "breadth_basis": "share of COVERED universe symbols above their own 20-session average; this is participation within an ingested watchlist, not index constituent breadth",
+    "breadth_basis": "participation = share of COVERED symbols above their own 20-bar average; coverage = share of the active universe with enough bars to judge. This is an ingested watchlist, not an index constituent list.",
+    "both_denominators": true,
     "benchmark_basis": "an ETF proxy for the market, not the index itself",
     "volatility_state": "UNAVAILABLE",
     "passes": true
   },
-  "t11_no_forecast_probability_is_invented": {
-    "horizons": 3,
-    "probabilities": [
-      null,
-      null,
-      null
+  "t11_horizons_refuse_rather_than_repeat_one_heuristic": {
+    "horizon_states": {
+      "outlook_short": "UNAVAILABLE",
+      "outlook_medium": "UNAVAILABLE",
+      "outlook_long": "UNAVAILABLE"
+    },
+    "horizon_reasons_distinct": true,
+    "daily_structure_state": "OK",
+    "signal_field_name": true,
+    "passes": true
+  },
+  "t12_a_bearish_reading_is_invalidated_by_a_move_up": {
+    "reading": "close is below the 20-bar average",
+    "what_would_change_it": "a daily close above 124.475",
+    "passes": true
+  },
+  "t13_a_historical_cutoff_cannot_consume_later_prices": {
+    "cutoff": "2026-09-25T20:00:00",
+    "price_ts_used": "2026-09-25T20:00:00",
+    "evidence_records": 22,
+    "passes": true
+  },
+  "t14_every_citation_resolves": {
+    "market": {
+      "records": 22,
+      "cited": 22,
+      "dangling": [],
+      "load_bearing_without_citation": []
+    },
+    "stock": {
+      "records": 24,
+      "cited": 24,
+      "dangling": [],
+      "load_bearing_without_citation": []
+    },
+    "pre": {
+      "records": 23,
+      "cited": 23,
+      "dangling": [],
+      "load_bearing_without_citation": []
+    },
+    "passes": true
+  },
+  "t15_a_stale_price_degrades_what_is_derived_from_it": {
+    "price_state": "STALE",
+    "trend_state": "STALE",
+    "horizon_states": {
+      "outlook_short": "UNAVAILABLE",
+      "outlook_medium": "UNAVAILABLE",
+      "outlook_long": "UNAVAILABLE"
+    },
+    "passes": true
+  },
+  "t16_a_pre_report_cannot_be_written_once_the_release_is_known": {
+    "after_release": "no upcoming earnings event on file for TESTCO",
+    "on_release_day": "only a release DATE is stored for TESTCO (2026-10-07), not a time, so a report written on ",
+    "passes": true
+  },
+  "t17_the_surprise_table_uses_the_frozen_expectation": {
+    "surprise_pct": {
+      "pct": 14.67,
+      "absolute": 0.22
+    },
+    "expectation": {
+      "value": 1.5,
+      "source": "frozen pre-release baseline (report 330)",
+      "is_frozen": true
+    },
+    "revision_field_present": true,
+    "verdict": {
+      "frozen_consensus_eps": 1.5,
+      "actual_eps": 1.72,
+      "result_vs_frozen": "above",
+      "first_session_reaction_pct": 3.4,
+      "thesis_evaluation": "not_evaluable",
+      "why_not_evaluable": "the frozen report recorded conditional scenarios rather than a directional prediction, so there is no claim to score; the comparison above is factual",
+      "note": "compared against the expectation FROZEN before the release, which is also what the surprise table above uses"
+    },
+    "stage": "FIRST_FLASH",
+    "passes": true
+  },
+  "t18_concurrent_generation_allocates_one_version_each": {
+    "engine": "postgresql",
+    "versions": [
+      1,
+      2,
+      3,
+      4
     ],
-    "signal_is_model_forecast_class": "model_forecast",
+    "errors": [],
+    "unique_versions": true,
     "passes": true
   },
   "_meta": {

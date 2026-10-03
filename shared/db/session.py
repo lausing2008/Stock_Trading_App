@@ -146,6 +146,15 @@ def _run_migrations() -> None:  # noqa: C901
                 created_at   TIMESTAMP NOT NULL DEFAULT now()
             )
         """))
+        # ── Intelligence reports: version uniqueness ───────────────────────────
+        # create_all() only creates MISSING tables, so a table deployed yesterday never gains
+        # today's constraint without this. COALESCE because NULL user_id means public context
+        # and NULLs are distinct in a PostgreSQL unique index, which would leave the public
+        # reports — the common case — entirely unprotected.
+        conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_intel_subject_type_owner_version
+            ON intelligence_reports (subject_key, report_type, coalesce(user_id, -1), version)
+        """))
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_price_alerts_user ON price_alerts (user_id)"
         ))

@@ -88,13 +88,20 @@ def generate(req: GenerateRequest, _: str = Depends(get_current_username)):
                 elif req.report_type == ReportType.PRE_EARNINGS.value:
                     built, pre = G.pre_earnings(session, symbol=sym, now=now), None
                 else:
-                    # The frozen baseline is looked up, never reconstructed. Absent means
-                    # absent, and the report says so.
+                    # IR-01. The baseline must precede the RELEASE, not this report's own
+                    # generation time. Passing `cutoff_at` here — which is `now` — asked only
+                    # whether the baseline predates the moment we are writing the post-report,
+                    # which every report written after a release trivially satisfies. A
+                    # hindsight baseline sailed straight through the check meant to stop it.
+                    #
+                    # The generator returns the event's release boundary in its meta, derived
+                    # from the stored release date, and that is what the lookup is bound to.
                     probe = G.post_earnings(session, symbol=sym, event_id=req.event_id, now=now)
+                    boundary = probe[2]["release_boundary"]
+                    if isinstance(boundary, str):
+                        boundary = datetime.fromisoformat(boundary)
                     pre = S.frozen_pre_report(
-                        session, subject_key=probe[2]["subject_key"],
-                        before=datetime.fromisoformat(str(probe[2]["cutoff_at"]))
-                        if isinstance(probe[2]["cutoff_at"], str) else probe[2]["cutoff_at"])
+                        session, subject_key=probe[2]["subject_key"], before=boundary)
                     built = G.post_earnings(session, symbol=sym, event_id=req.event_id,
                                             pre_report=pre, now=now)
         except LookupError as exc:

@@ -10,54 +10,101 @@ Each generator returns (fields, evidence, meta). The caller persists; nothing he
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 from sqlalchemy import select
 
 from db import EarningsEvent, Stock
 from . import adapters as A
 from intelligence.report_contract import (
-    HORIZONS, EarningsStage, Field, FieldState, ReportType, StatementClass,
-    calculated, coverage, input_fingerprint, interpreted, not_applicable, observed,
-    status_from_coverage, unavailable, unknown,
+    HORIZONS, EarningsStage, EvidenceBook, Field, FieldState, ReportType, StatementClass,
+    calculated, coverage, fields_fingerprint, interpreted, not_applicable, observed,
+    status_from_coverage, unavailable, unknown, validate_evidence,
 )
 
-POLICY_VERSION = "1"
+#: Bumped with the IR-01..IR-04 corrections: cutoff-bounded inputs, populated evidence, horizon
+#: outlooks no longer copied from one daily heuristic, and earnings comparisons bound to the
+#: frozen baseline. Reports written under policy 1 meant something different.
+POLICY_VERSION = "2"
 
 
 def _naive_utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _outlook_by_horizon(trend: Field, signal: Field) -> dict[str, Field]:
-    """A CONDITIONAL outlook per horizon, with its condition stated.
+def release_boundary(event) -> datetime:
+    """The instant a frozen baseline must precede, given what this platform actually stores.
 
-    Deliberately not a direction with a probability attached. The platform has no model whose
-    label horizon matches these definitions and whose calibration has been demonstrated — the
-    2026-09-30 checkpoint measured confidence bands as flat — so asserting a probability here
-    would be inventing one. What IS available is the observed structure and the condition under
-    which it would stop holding, which is what the templates ask for.
+    ONLY A DATE IS STORED — no release time, no before-open/after-close marker, no timezone. The
+    release instant therefore cannot be established, and the template's rule is explicit: if
+    release timing cannot be established, do not certify a baseline as pre-release.
+
+    The conservative boundary is the START of the release date. A report written at any point on
+    the release day might have been written after the announcement, and nothing on file can rule
+    that out, so it does not qualify. This rejects some genuinely-early baselines; the
+    alternative admits hindsight, and between those two errors only one corrupts the record.
+    """
+    return datetime.combine(event.report_date, time.min)
+
+
+def release_has_happened(event, now: datetime) -> tuple[bool, str]:
+    """Whether the release is known to be behind us, and the evidence for saying so."""
+    if event.eps_actual is not None or event.revenue_actual is not None:
+        return True, "actual results are on file for this event"
+    if event.report_date < now.date():
+        return True, f"the release date {event.report_date.isoformat()} has passed"
+    return False, ""
+
+
+def _outlook_by_horizon(trend: Field, price: Field) -> dict[str, Field]:
+    """One DAILY structure reading, and an explicit refusal to dress it up as three horizons.
+
+    WHAT THIS USED TO DO, and why it was worse than reporting nothing: it rendered the same
+    latest-close-versus-20-bar-average sentence under all three horizons, changing only the
+    label and the session range. Three fields that look independently derived but restate one
+    daily heuristic are three times the confidence with none of the evidence — and the argument
+    it took for the signal was not even read.
+
+    There is no horizon-specific rule or dataset behind a 1-5 session view versus a 1-3 month
+    one here, so the honest output is the daily structure plus UNAVAILABLE for each horizon,
+    naming what would be needed. Reporting less is the correction, not a regression.
     """
     out: dict[str, Field] = {}
+    if trend.state is not FieldState.OK:
+        reason = f"no observed daily structure to describe: {trend.reason}"
+        for key in HORIZONS:
+            out[f"outlook_{key}"] = unavailable(reason)
+        out["observed_daily_structure"] = Field(
+            value=None, state=trend.state,
+            reason=trend.reason or "unavailable",
+            statement=StatementClass.OBSERVED_FACT)
+        return out
+
+    sma20 = trend.value.get("sma20")
+    above = bool(trend.value.get("above_sma20"))
+    # CONFIRMATION AND INVALIDATION FOLLOW THE DIRECTION. Previously both were written for the
+    # constructive case, so a below-average reading reported "a close below" as what would
+    # invalidate it — the very condition that already supported the description.
+    out["observed_daily_structure"] = Field(
+        value={
+            "basis": "latest daily close versus the 20-bar average",
+            "reading": ("close is above the 20-bar average" if above
+                        else "close is below the 20-bar average"),
+            "level": sma20,
+            "what_would_change_this_reading": (f"a daily close below {sma20}" if above
+                                               else f"a daily close above {sma20}"),
+            "scope": "this describes the daily bars only; it is not a forecast and carries no "
+                     "horizon",
+        },
+        state=FieldState.OK, statement=StatementClass.OBSERVED_FACT,
+        evidence_ids=list(trend.evidence_ids or []))
+
     for key, spec in HORIZONS.items():
-        if trend.state is not FieldState.OK:
-            out[f"outlook_{key}"] = unavailable(
-                f"no observed trend to condition on: {trend.reason}")
-            continue
-        s = trend.value
-        direction = ("constructive while it holds above the 20-session average"
-                     if s.get("above_sma20") else
-                     "unconstructive while it remains below the 20-session average")
-        out[f"outlook_{key}"] = Field(
-            value={"horizon": spec["label"],
-                   "sessions": [spec["min_sessions"], spec["max_sessions"]],
-                   "conditional_outlook": direction,
-                   "key_condition": f"close holds above {s.get('sma20')}",
-                   "invalidation": f"a close below {s.get('sma20')} on the daily bars",
-                   "forecast_probability": None,
-                   "probability_note": "omitted: no model on this platform has a demonstrated "
-                                       "calibration for this horizon definition"},
-            state=FieldState.OK, statement=StatementClass.CONDITIONAL_SCENARIO)
+        out[f"outlook_{key}"] = unavailable(
+            f"no horizon-specific rule or dataset exists for {spec['label']} "
+            f"({spec['min_sessions']}-{spec['max_sessions']} sessions). The daily structure "
+            f"above is one reading and is not re-labelled as three independent outlooks; a "
+            f"horizon view needs its own evidence and its own evaluation.")
     return out
 
 
@@ -93,7 +140,7 @@ def market_outlook(session, *, market: str = "US", now: datetime | None = None):
     ).scalars().first()
 
     fields: dict[str, Field] = {}
-    evidence: list[dict] = []
+    book = EvidenceBook()
 
     if benchmark is None:
         fields["benchmark"] = unavailable(
@@ -102,18 +149,19 @@ def market_outlook(session, *, market: str = "US", now: datetime | None = None):
         trend = unavailable("no benchmark symbol")
         fields["price_as_of"] = unavailable("no benchmark symbol")
     else:
-        bars = A.daily_bars(session, benchmark.id, limit=70)
+        bars = A.daily_bars(session, benchmark.id, limit=70, cutoff=now)
         fields["benchmark"] = observed(
             {"symbol": benchmark.symbol, "name": benchmark.name,
              "basis": "an ETF proxy for the market, not the index itself"})
-        fields["price_as_of"] = A.price_as_of(bars, now)
+        fields["price_as_of"] = A.price_as_of(bars, now, book=book)
         for n in (1, 5, 20, 63):
-            fields[f"return_{n}_sessions"] = A.session_return(bars, n, label=f"{n}-session return")
-        trend = A.trend_structure(bars)
+            fields[f"return_{n}_bars"] = A.session_return(
+                bars, n, label=f"{n}-bar return", book=book)
+        trend = A.trend_structure(bars, price_field=fields["price_as_of"], book=book)
         fields["trend_structure"] = trend
 
-    fields["breadth"] = A.breadth(session, market, today)
-    fields["sector_leadership"] = A.sector_leadership(session, market)
+    fields["breadth"] = A.breadth(session, market, today, cutoff=now)
+    fields["sector_leadership"] = A.sector_leadership(session, market, cutoff=now)
 
     # Dimensions the templates ask for that this platform cannot source TODAY. Named
     # individually rather than omitted, so a reader knows the report looked and came back empty.
@@ -122,15 +170,22 @@ def market_outlook(session, *, market: str = "US", now: datetime | None = None):
     fields["rates_credit_fx"] = unavailable(
         "no yield, credit-spread or FX series is ingested; a credit ETF proxy would be a proxy, "
         "not a measured spread, and is not substituted here")
+    # WORDED AS AN ADAPTER GAP, NOT A PLATFORM INVENTORY. event-intelligence does carry an
+    # economic calendar; what is missing is a join into this report with the frozen prior
+    # expectations the template requires. Claiming the platform has none would be false.
     fields["macro"] = unavailable(
-        "no macro release calendar with frozen prior expectations is ingested")
-    fields["liquidity"] = unavailable("no financial-conditions measure is ingested")
+        "not joined to this report: an economic calendar exists in event-intelligence, but "
+        "releases with their frozen prior expectations are not assembled here")
+    fields["liquidity"] = unavailable(
+        "not joined to this report: no financial-conditions measure is assembled here")
     fields["positioning"] = unavailable(
-        "options/GEX positioning is ingested per symbol, not aggregated to a market view")
+        "not joined to this report: options/GEX positioning is ingested per symbol and is not "
+        "aggregated to a market view here")
 
-    fields.update(_outlook_by_horizon(trend, unavailable("n/a")))
+    fields.update(_outlook_by_horizon(trend, fields.get("price_as_of", trend)))
     fields["scenarios"] = _scenarios(f"the {market} benchmark", trend)
 
+    validate_evidence(fields, book)
     cov = coverage(fields)
     meta = {
         "report_type": ReportType.MARKET_OUTLOOK.value,
@@ -140,10 +195,10 @@ def market_outlook(session, *, market: str = "US", now: datetime | None = None):
         "status": status_from_coverage(cov).value,
         "policy_version": POLICY_VERSION,
         "cutoff_at": now,
-        "fingerprint": input_fingerprint(
-            {k: v.value for k, v in fields.items() if v.state is FieldState.OK}),
+        "fingerprint": fields_fingerprint(fields, policy_version=POLICY_VERSION,
+                                          extra={"market": market}),
     }
-    return fields, evidence, meta, cov
+    return fields, book, meta, cov
 
 
 # ── 2. Stock outlook ──────────────────────────────────────────────────────────────────────
@@ -154,23 +209,26 @@ def stock_outlook(session, *, symbol: str, now: datetime | None = None):
     if stock is None:
         raise LookupError(f"{symbol} is not in the universe")
 
-    bars = A.daily_bars(session, stock.id, limit=70)
+    book = EvidenceBook()
+    bars = A.daily_bars(session, stock.id, limit=70, cutoff=now)
     fields: dict[str, Field] = {
         "issuer": observed({"symbol": stock.symbol, "name": stock.name,
                             "market": stock.market.value if hasattr(stock.market, "value") else str(stock.market),
                             "currency": stock.currency,
                             "sector": stock.sector or None,
                             "industry": stock.industry or None}),
-        "price_as_of": A.price_as_of(bars, now),
-        "trend_structure": A.trend_structure(bars),
-        "decision_engine_assessment": A.latest_signal(session, stock.id, now),
-        "next_catalyst": A.next_earnings_event(session, stock.id, now.date()),
+        "price_as_of": A.price_as_of(bars, now, book=book),
+        "next_catalyst": A.next_earnings_event(session, stock.id, now.date(), book=book),
     }
+    fields["trend_structure"] = A.trend_structure(
+        bars, price_field=fields["price_as_of"], book=book)
+    # Named for what it actually reads. It is the signals table, not a risk-checked decision.
+    fields["signal_engine_assessment"] = A.latest_signal(session, stock.id, now, book=book)
     for n in (1, 5, 20, 63):
-        fields[f"return_{n}_sessions"] = A.session_return(bars, n, label=f"{n}-session return")
+        fields[f"return_{n}_bars"] = A.session_return(bars, n, label=f"{n}-bar return", book=book)
 
     market = stock.market.value if hasattr(stock.market, "value") else str(stock.market)
-    fields["sector_context"] = A.sector_leadership(session, market)
+    fields["sector_context"] = A.sector_leadership(session, market, cutoff=now)
 
     fields["company_condition"] = unavailable(
         "no fundamentals time series (revenue, margins, cash flow, share count) is stored with "
@@ -184,10 +242,10 @@ def stock_outlook(session, *, symbol: str, now: datetime | None = None):
         "into this report; archived or last-trade prices are research context, not current "
         "executable quotes")
     fields["news"] = unavailable(
-        "headline ingestion exists but is not yet joined to this report with per-item source "
-        "times and first-availability")
+        "not joined to this report: headline ingestion exists, but per-item source times and "
+        "first-availability are not assembled here")
 
-    fields.update(_outlook_by_horizon(fields["trend_structure"], fields["decision_engine_assessment"]))
+    fields.update(_outlook_by_horizon(fields["trend_structure"], fields["price_as_of"]))
     fields["scenarios"] = _scenarios(stock.symbol, fields["trend_structure"])
     fields["execution_status"] = Field(
         value={"status": "information_only",
@@ -196,8 +254,9 @@ def stock_outlook(session, *, symbol: str, now: datetime | None = None):
                        "not consult; a constructive report is not an order authorisation."},
         state=FieldState.OK, statement=StatementClass.INTERPRETATION)
 
+    validate_evidence(fields, book)
     cov = coverage(fields)
-    return fields, [], {
+    return fields, book, {
         "report_type": ReportType.STOCK_OUTLOOK.value,
         "subject_key": f"stock:{stock.symbol}",
         "market": market,
@@ -205,8 +264,8 @@ def stock_outlook(session, *, symbol: str, now: datetime | None = None):
         "status": status_from_coverage(cov).value,
         "policy_version": POLICY_VERSION,
         "cutoff_at": now,
-        "fingerprint": input_fingerprint(
-            {k: v.value for k, v in fields.items() if v.state is FieldState.OK}),
+        "fingerprint": fields_fingerprint(fields, policy_version=POLICY_VERSION,
+                                          extra={"symbol": stock.symbol}),
     }, cov
 
 
@@ -224,7 +283,25 @@ def pre_earnings(session, *, symbol: str, now: datetime | None = None):
     if event is None:
         raise LookupError(f"no upcoming earnings event on file for {symbol}")
 
-    bars = A.daily_bars(session, stock.id, limit=70)
+    # A PRE-RELEASE REPORT CANNOT BE WRITTEN ONCE THE RELEASE IS KNOWN. `report_date >= today`
+    # alone admits an event that reported earlier the SAME DAY — actuals already on file — and
+    # would stamp it "pre_earnings". Generating one afterwards is a reconstruction; it is
+    # refused here rather than produced and labelled later.
+    happened, why = release_has_happened(event, now)
+    if happened:
+        raise LookupError(
+            f"the {symbol} release for {event.report_date.isoformat()} is already known "
+            f"({why}); a pre-release baseline cannot be generated after the fact. Generate a "
+            f"post-earnings report instead.")
+    if now >= release_boundary(event):
+        raise LookupError(
+            f"only a release DATE is stored for {symbol} ({event.report_date.isoformat()}), "
+            f"not a time, so a report written on the release day cannot be shown to precede "
+            f"the announcement and is not certified as a baseline.")
+
+    book = EvidenceBook()
+    A.record_event(book, event)
+    bars = A.daily_bars(session, stock.id, limit=70, cutoff=now)
     actuals = A.earnings_actuals(event)
     fields: dict[str, Field] = {
         "issuer": observed({"symbol": stock.symbol, "name": stock.name}),
@@ -237,24 +314,37 @@ def pre_earnings(session, *, symbol: str, now: datetime | None = None):
         "release_time_certainty": unknown(
             "only a report DATE is stored; whether the release is before the open or after the "
             "close is not recorded, and that determines which session reacts"),
-        "pre_event_reference_price": A.price_as_of(bars, now),
-        "consensus_eps": actuals["eps_estimate"],
-        "consensus_revenue": actuals["revenue_estimate"],
+        "pre_event_reference_price": A.price_as_of(bars, now, book=book),
+        # STORED AS A PLAIN NUMBER ON PURPOSE. This is the value the post-earnings report
+        # reads back as the frozen expectation, so its shape is part of the freeze contract and
+        # must not drift with the presentation of the comparison table.
+        "consensus_eps": (observed(float(event.eps_estimate),
+                                   evidence_ids=[f"earnings_event:{event.id}"])
+                          if event.eps_estimate is not None
+                          else unavailable("no EPS estimate on file to freeze")),
+        "consensus_revenue": (observed(float(event.revenue_estimate),
+                                       evidence_ids=[f"earnings_event:{event.id}"])
+                              if event.revenue_estimate is not None
+                              else unavailable("no revenue estimate on file to freeze")),
         "consensus_snapshot": unknown(
             "the stored estimate has no snapshot time, contributor count or dispersion, so it "
             "cannot be shown to be the consensus as of this cutoff"),
         "prior_guidance": unavailable("company guidance is not stored"),
         "accounting_basis": actuals["accounting_basis"],
-        "run_up_20_sessions": A.session_return(bars, 20, label="20-session run-up"),
-        "run_up_5_sessions": A.session_return(bars, 5, label="5-session run-up"),
-        "historical_reactions": _historical_reactions(session, stock.id, event.id),
+        "run_up_20_bars": A.session_return(bars, 20, label="20-bar run-up", book=book),
+        "run_up_5_bars": A.session_return(bars, 5, label="5-bar run-up", book=book),
+        "historical_reactions": _historical_reactions(session, stock.id, event.id, now),
         "options_expected_move": unavailable(
             "an expected move requires an option chain with a post-release expiry and its own "
             "quote timestamps; a straddle premium would be a premium-based proxy, not a "
             "calibrated interval, and none is assembled here"),
-        "trend_structure": A.trend_structure(bars),
-        "decision_engine_assessment": A.latest_signal(session, stock.id, now),
+        "release_boundary": observed(
+            {"baseline_must_precede": release_boundary(event).isoformat(),
+             "basis": "start of the stored release date; no release time is on file"}),
     }
+    fields["trend_structure"] = A.trend_structure(
+        bars, price_field=fields["pre_event_reference_price"], book=book)
+    fields["signal_engine_assessment"] = A.latest_signal(session, stock.id, now, book=book)
     fields["scenarios"] = Field(
         value=[
             {"scenario": "bull", "combination": "results above the stored estimate AND guidance raised",
@@ -281,8 +371,9 @@ def pre_earnings(session, *, symbol: str, now: datetime | None = None):
                "note": "no new position is recommended into an event by this report"},
         state=FieldState.OK, statement=StatementClass.INTERPRETATION)
 
+    validate_evidence(fields, book)
     cov = coverage(fields)
-    return fields, [], {
+    return fields, book, {
         "report_type": ReportType.PRE_EARNINGS.value,
         "subject_key": f"earnings:{stock.symbol}:{event.report_date.isoformat()}",
         "market": stock.market.value if hasattr(stock.market, "value") else str(stock.market),
@@ -291,15 +382,18 @@ def pre_earnings(session, *, symbol: str, now: datetime | None = None):
         "policy_version": POLICY_VERSION,
         "cutoff_at": now,
         "event_id": event.id,
-        "fingerprint": input_fingerprint(
-            {k: v.value for k, v in fields.items() if v.state is FieldState.OK}),
+        "release_boundary": release_boundary(event),
+        "fingerprint": fields_fingerprint(fields, policy_version=POLICY_VERSION,
+                                          extra={"event_id": event.id}),
     }, cov
 
 
-def _historical_reactions(session, stock_id: int, exclude_event_id: int) -> Field:
+def _historical_reactions(session, stock_id: int, exclude_event_id: int,
+                          cutoff: datetime) -> Field:
     rows = list(session.execute(
         select(EarningsEvent).where(EarningsEvent.stock_id == stock_id,
                                     EarningsEvent.id != exclude_event_id,
+                                    EarningsEvent.report_date < cutoff.date(),
                                     EarningsEvent.post_earnings_return_1d.is_not(None))
         .order_by(EarningsEvent.report_date.desc()).limit(12)).scalars().all())
     if not rows:
@@ -332,37 +426,53 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
     if event is None:
         raise LookupError(f"no released earnings event on file for {symbol}")
 
-    bars = A.daily_bars(session, stock.id, limit=70)
-    actuals = A.earnings_actuals(event)
+    book = EvidenceBook()
+    A.record_event(book, event)
+    bars = A.daily_bars(session, stock.id, limit=70, cutoff=now)
+
+    # IR-04: THE SURPRISE TABLE AND THE VERDICT MUST USE THE SAME EXPECTATION.
+    # `earnings_actuals(event)` reads the CURRENT stored estimate, which the provider revises —
+    # so with a frozen baseline present the report showed a -11.79% "miss" in its table beside a
+    # verdict of "above", from the same two numbers. Where a frozen baseline exists it is the
+    # expectation for both; the later estimate is still shown, separately and dated, because a
+    # revision is real information and hiding it is its own distortion.
+    frozen_eps, frozen_rev = _frozen_expectations(pre_report)
+    actuals = A.earnings_actuals(event, frozen_eps=frozen_eps, frozen_revenue=frozen_rev,
+                                 frozen_from=pre_report)
     reaction = A.post_event_reaction(event)
 
-    has_results = any(actuals[k].state is FieldState.OK
-                      for k in ("eps_actual", "revenue_actual"))
-    stage = EarningsStage.RECONCILED_RESULTS if has_results else EarningsStage.FIRST_FLASH
+    # "Reconciled" asserts a reconciliation was performed. Nothing here reconciles sources, so
+    # the stage stays FIRST_FLASH no matter how many actuals are present; claiming otherwise
+    # would promise a check that never ran.
+    stage = EarningsStage.FIRST_FLASH
 
     fields: dict[str, Field] = {
         "issuer": observed({"symbol": stock.symbol, "name": stock.name}),
         "event_identity": observed({"event_id": f"earnings_event:{event.id}",
                                     "report_date": event.report_date.isoformat()}),
         "fiscal_period": A.fiscal_period(event),
-        "stage": observed(stage.value),
+        "stage": observed({"stage": stage.value,
+                           "note": "no cross-source reconciliation is performed by this "
+                                   "report; RECONCILED_RESULTS is never claimed here"}),
         **actuals,
         **reaction,
         "guidance_change": unavailable(
-            "company guidance is not stored, so raised/maintained/lowered/withdrawn cannot be "
-            "classified from evidence"),
+            "not joined to this report: company guidance is not assembled here, so "
+            "raised/maintained/lowered/withdrawn cannot be classified from evidence"),
         "management_commentary": (
             observed(event.management_tone, evidence_ids=[f"earnings_event:{event.id}"])
             if getattr(event, "management_tone", None)
             else unavailable("no management commentary is stored for this event")),
-        "price_as_of": A.price_as_of(bars, now),
-        "trend_structure": A.trend_structure(bars),
-        "decision_engine_assessment": A.latest_signal(session, stock.id, now),
+        "price_as_of": A.price_as_of(bars, now, book=book),
         "options_reaction": unavailable(
             "fresh per-leg option quotes are required to state an option outcome; an unchanged "
             "quote after a move is not current P&L, and earnings IV decline can hurt a long "
             "option even on a favourable stock move"),
     }
+
+    fields["trend_structure"] = A.trend_structure(
+        bars, price_field=fields["price_as_of"], book=book)
+    fields["signal_engine_assessment"] = A.latest_signal(session, stock.id, now, book=book)
 
     # The accountability join — and the honest answer when there is nothing to join to.
     if pre_report is None:
@@ -377,7 +487,7 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
             {"report_id": pre_report.id, "version": pre_report.version,
              "cutoff_at": pre_report.cutoff_at.isoformat(),
              "generated_at": pre_report.generated_at.isoformat()})
-        fields["thesis_verdict"] = _verdict(pre_report, actuals, reaction)
+        fields["thesis_verdict"] = _verdict(pre_report, actuals, reaction, frozen_eps)
 
     fields["three_verdicts"] = interpreted({
         "business_result_vs_expectations": "see the surprise table; basis is unverified",
@@ -389,8 +499,9 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
                 "reaction routinely disagree and are not collapsed into one score",
     })
 
+    validate_evidence(fields, book)
     cov = coverage(fields)
-    return fields, [], {
+    return fields, book, {
         "report_type": ReportType.POST_EARNINGS.value,
         "subject_key": f"earnings:{stock.symbol}:{event.report_date.isoformat()}",
         "market": stock.market.value if hasattr(stock.market, "value") else str(stock.market),
@@ -401,29 +512,50 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
         "cutoff_at": now,
         "event_id": event.id,
         "pre_report_id": getattr(pre_report, "id", None),
-        "fingerprint": input_fingerprint(
-            {k: v.value for k, v in fields.items() if v.state is FieldState.OK}),
+        "release_boundary": release_boundary(event),
+        "fingerprint": fields_fingerprint(
+            fields, policy_version=POLICY_VERSION,
+            extra={"event_id": event.id, "pre_report_id": getattr(pre_report, "id", None)}),
     }, cov
 
 
-def _verdict(pre_report, actuals, reaction) -> Field:
-    """Compare the FROZEN expectations against what happened — never the other way round."""
+def _frozen_expectations(pre_report) -> tuple[float | None, float | None]:
+    if pre_report is None:
+        return None, None
     frozen = (pre_report.payload or {}).get("fields", {})
-    frozen_eps = (frozen.get("consensus_eps") or {}).get("value")
+    return ((frozen.get("consensus_eps") or {}).get("value"),
+            (frozen.get("consensus_revenue") or {}).get("value"))
+
+
+def _verdict(pre_report, actuals, reaction, frozen_eps) -> Field:
+    """Score the frozen report's own CLAIM — not a beat, which is a fact about the company.
+
+    WHAT THIS USED TO DO: call a beat plus a positive first session "confirmed", regardless of
+    what the frozen report actually said. A baseline that made no directional claim could be
+    awarded a confirmation it never earned. A thesis verdict has to evaluate a thesis.
+    """
     actual_eps = actuals["eps_actual"].value if actuals["eps_actual"].state is FieldState.OK else None
     if frozen_eps is None or actual_eps is None:
         return unknown(
             "the frozen report carried no EPS expectation, or no actual is on file, so the "
-            "thesis cannot be scored")
+            "comparison cannot be made")
+
+    frozen_fields = (pre_report.payload or {}).get("fields", {})
+    # The pre-earnings report records conditional scenarios, not a directional prediction, so
+    # there is no claim to confirm. Report the factual comparison and say so.
+    claim = (frozen_fields.get("directional_claim") or {}).get("value")
     beat = actual_eps > frozen_eps
     r1 = reaction["return_1d"].value if reaction["return_1d"].state is FieldState.OK else None
     return Field(
         value={"frozen_consensus_eps": frozen_eps, "actual_eps": actual_eps,
                "result_vs_frozen": "above" if beat else "at or below",
                "first_session_reaction_pct": r1,
-               "verdict": ("confirmed" if beat and (r1 or 0) > 0 else
-                           "contradicted" if not beat and (r1 or 0) < 0 else
-                           "mixed" if r1 is not None else "not_evaluable"),
-               "note": "scored against the expectation FROZEN before the release, not against "
-                       "a consensus that may have been revised since"},
+               "thesis_evaluation": ("not_evaluable" if claim is None else
+                                     "confirmed" if bool(claim) == beat else "contradicted"),
+               "why_not_evaluable": (None if claim is not None else
+                                     "the frozen report recorded conditional scenarios rather "
+                                     "than a directional prediction, so there is no claim to "
+                                     "score; the comparison above is factual"),
+               "note": "compared against the expectation FROZEN before the release, which is "
+                       "also what the surprise table above uses"},
         state=FieldState.OK, statement=StatementClass.DETERMINISTIC_CALCULATION)

@@ -66,10 +66,17 @@ year — MU's Q4 is stored as "Q3"
 require source-confirmed periods. Repeating the stored value would put a known-wrong label on the
 one field identifying *which* results these are.
 
-**No forecast probability is ever emitted.** No model on this platform has a demonstrated
-calibration for these horizon definitions — the 2026-09-30 checkpoint measured confidence bands
-flat at 36.5–43.9% over n=19,256. Each horizon carries a conditional outlook, its key condition
-and its invalidation instead, and `forecast_probability` is explicitly null with that reason.
+**No forecast probability is ever emitted, and no horizon outlook either.** No model here has a
+demonstrated calibration for these horizon definitions. (An earlier version of this doc cited a
+pooled "flat 36.5–43.9%" figure as justification; that statistic was withdrawn as a pooling
+artifact in the checkpoint review and is not restored here — the absence of demonstrated
+calibration for *these* horizons is the reason, and it stands on its own.)
+
+Stronger still after review: the three horizon fields originally restated one
+latest-close-versus-20-bar-average rule under three labels. Three fields that look independently
+derived but share one daily heuristic are three times the confidence with none of the evidence,
+so the report now gives **one** `observed_daily_structure` and marks each horizon UNAVAILABLE
+with what would be needed. Reporting less is the correction.
 
 **A missing pre-earnings baseline is recorded, never reconstructed.** A baseline built after the
 release would contain information the original could not have had; scoring against it is hindsight
@@ -88,9 +95,30 @@ to precede the release, so a late-written "pre" report cannot qualify.
   owner-only and is never served by the public read paths. They do not share a row, so they
   cannot share a cache entry.
 
+## Review corrections (2026-10-03)
+
+An implementation review found five correctness gaps, all reproduced here before fixing and all
+now closed — see [the review](../audits/2026-10-03-intelligence-report-implementation-review.md).
+
+| | Gap | Fix |
+|---|---|---|
+| IR-01 | The API compared the baseline against the **post-report's own generation time**, which every post-release report trivially satisfies | bound to the event's release boundary; a pre-report is refused once the release is known, and on the release day itself, since only a date is stored |
+| IR-02 | Evidence lists were empty and input selection ignored the cutoff — a 25 Sept report read the 2 Oct close | `cutoff` is a required argument; every observation used is recorded; a report whose citations do not resolve is refused at save; stale prices now degrade what is derived from them |
+| IR-03 | Three horizons restated one rule, and the bearish invalidation named its own supporting condition | one observed daily structure; horizons UNAVAILABLE; direction-aware invalidation |
+| IR-04 | The surprise table used the **mutable current** estimate while the verdict used the frozen one — a −11.79% "miss" beside a verdict of "above" | one frozen expectation drives both; the later revision is shown separately and dated; `RECONCILED_RESULTS` is never claimed, and a thesis with no directional claim scores `not_evaluable` |
+| IR-05 | Version allocation had no uniqueness or locking | unique index on (subject, type, owner, version) with COALESCE for public NULLs, plus bounded retry with jittered backoff |
+
+Other corrections accepted from the review: `decision_engine_assessment` renamed
+`signal_engine_assessment` (it reads the `signals` table, not a risk-checked decision); the
+macro/liquidity/news gaps reworded as *not joined to this report* rather than asserting
+platform-wide absence (event-intelligence does carry an economic calendar); breadth now reports
+**both** denominators, since participation (above/covered) and coverage (covered/universe) are
+different ratios; and bar-count fields renamed `return_N_bars`, because counting stored rows
+does not establish exchange sessions.
+
 ## Acceptance
 
-11 scenarios run end to end through the real generators and real persistence —
+18 scenarios run end to end through the real generators and real persistence —
 [evidence](../audits/evidence/2026-10-03-intelligence-reports-acceptance.json), captured on
 **PostgreSQL 15**, and the same scenarios also run on SQLite so `make test` needs no server
 (`_meta.engine` records which produced a given result). 12 pytest tests assert the verdicts.
@@ -99,9 +127,20 @@ The sharpest one: a pre-earnings report is frozen with consensus EPS 1.50, the r
 **the stored estimate is then revised to 1.95**, and the post-earnings verdict still scores
 against 1.50 with the frozen payload byte-identical.
 
-Four sabotages: the cutoff check removed from `frozen_pre_report` (a late report becomes the
-baseline), `save()` mutating instead of inserting (history destroyed), `fiscal_period` trusting
-the inferred label, and the zero-estimate guard removed (crashes with `ZeroDivisionError`).
+Ten sabotages across both rounds: the cutoff check removed from `frozen_pre_report`, `save()`
+mutating instead of inserting, `fiscal_period` trusting the inferred label, the zero-estimate
+guard removed, `daily_bars` ignoring its cutoff, the evidence book not recording, staleness not
+propagating, the post-release guard removed, the surprise table reverting to the mutable
+estimate, and the unique index dropped.
+
+**One sabotage found a gap in my own test rather than the code**: removing the price evidence
+record failed nothing, because checking only that no citation *dangles* is trivially satisfied by
+a field that cites nothing. The test now names the load-bearing fields that must carry evidence.
+
+**And the concurrency race found a limitation in my own fix**: four concurrent writers exhausted
+a three-attempt retry budget, because threads that collide once re-read the same maximum and
+collide again. Retries are now eight with jittered backoff — four writers, four unique versions,
+three consecutive runs.
 
 `make test: all services passed`; research-engine 81 → 93. Frontend 447, `tsc --noEmit` clean.
 
@@ -110,8 +149,9 @@ the inferred label, and the zero-estimate guard removed (crashes with `ZeroDivis
 - **No LLM narration.** Deterministic tables are the report; narration is a later optional layer.
 - **No scheduling and no email.** On-demand only. Pre-open/post-close briefings, pre-earnings
   refreshes and follow-through reviews are specified in the templates and not activated.
-- **Browser rendering not verified.** The page typechecks and its logic is covered, but no
-  browser check was performed — stated rather than implied.
+- **Browser rendering still not verified.** The page typechecks and its logic is covered, but no
+  browser check was performed — stated rather than implied, and it remains the review's
+  outstanding item 3.
 - **No outcome scoring beyond the pre/post join.** Forward evaluation needs matured horizons.
 - Guidance, consensus snapshots with contributor counts, per-leg option evidence and a news join
   are the highest-value next inputs; each is currently a named UNAVAILABLE.

@@ -25,6 +25,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -3494,6 +3495,17 @@ class IntelligenceReport(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
 
     __table_args__ = (
+        # VERSION UNIQUENESS IS THE CONSTRAINT, NOT THE READ. `save()` derives the next version
+        # by reading the current maximum, and two concurrent requests can read the same answer —
+        # sharing a transaction does not stop that interleaving. Only the database can, so a
+        # losing writer gets an IntegrityError and retries at the next number.
+        #
+        # COALESCE on user_id because NULL means "public context" and, in PostgreSQL, NULLs are
+        # DISTINCT in a unique index — a plain 4-column constraint would therefore never fire
+        # for exactly the public reports that are the common case.
+        Index("ux_intel_subject_type_owner_version",
+              "subject_key", "report_type", text("coalesce(user_id, -1)"), "version",
+              unique=True),
         Index("ix_intel_subject_version", "subject_key", "version"),
         Index("ix_intel_type_generated", "report_type", "generated_at"),
         Index("ix_intel_fingerprint_subject", "subject_key", "input_fingerprint"),

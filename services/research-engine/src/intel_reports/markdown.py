@@ -64,6 +64,19 @@ def to_markdown(report) -> str:
         klass = f.get("statement", "") if f.get("state") == "OK" else ""
         lines.append(f"| {key.replace('_', ' ')} | {klass} | {_render_value(f)} |")
 
+    records = p.get("evidence") or {}
+    if records:
+        lines += ["", "## Evidence", "",
+                  f"{len(records)} record(s) retained. Every citation above resolves to one of "
+                  f"these; a report whose references do not resolve is refused at save time.",
+                  "", "| ID | Source | Observed | Published |", "|---|---|---|---|"]
+        for eid in sorted(records)[:60]:
+            r = records[eid]
+            lines.append(f"| `{eid}` | {r.get('source', '')} | {r.get('observed_period') or '—'} "
+                         f"| {r.get('published_at') or '—'} |")
+        if len(records) > 60:
+            lines.append(f"| … | {len(records) - 60} more | | |")
+
     missing = {k: f for k, f in fields.items() if f.get("state") != "OK"}
     if missing:
         lines += ["", "## Not reported, and why", ""]

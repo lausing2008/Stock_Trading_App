@@ -1,0 +1,38 @@
+{
+  "engine": "sqlite",
+  "future_price": "2026-10-02T20:00:00",
+  "report_cutoff": "2026-09-25T20:00:00",
+  "evidence_records": 0,
+  "horizon_outlooks": [
+    "constructive while it holds above the 20-session average",
+    "constructive while it holds above the 20-session average",
+    "constructive while it holds above the 20-session average"
+  ],
+  "bearish_outlook": {
+    "horizon": "1-5 sessions",
+    "sessions": [
+      1,
+      5
+    ],
+    "conditional_outlook": "unconstructive while it remains below the 20-session average",
+    "key_condition": "close holds above 100.0",
+    "invalidation": "a close below 100.0 on the daily bars",
+    "forecast_probability": null,
+    "probability_note": "omitted: no model on this platform has a demonstrated calibration for this horizon definition"
+  },
+  "release": "2026-10-02T18:00:00",
+  "invalid_pre_generated_at": "2026-10-02T19:00:00",
+  "api_selected_pre_report_id": 1,
+  "current_estimate_surprise": {
+    "pct": -11.79,
+    "absolute": -0.23
+  },
+  "frozen_baseline_verdict": {
+    "frozen_consensus_eps": 1.5,
+    "actual_eps": 1.72,
+    "result_vs_frozen": "above",
+    "first_session_reaction_pct": 3.4,
+    "verdict": "confirmed",
+    "note": "scored against the expectation FROZEN before the release, not against a consensus that may have been revised since"
+  }
+}

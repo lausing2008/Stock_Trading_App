@@ -112,17 +112,85 @@ def test_a_negative_estimate_does_not_invert_the_surprise_sign(results):
 
 def test_proxies_are_labelled_as_proxies(results):
     r = _scenario(results, "t10_market_report_labels_its_proxies")
-    assert "not index constituent breadth" in r["breadth_basis"]
+    assert "not an index constituent list" in r["breadth_basis"]
+    assert r["both_denominators"], \
+        "participation and coverage are different ratios and must not share one percentage"
     assert "proxy" in r["benchmark_basis"]
     assert r["volatility_state"] == "UNAVAILABLE", \
         "an unsourced dimension must say so rather than be omitted"
 
 
-def test_no_forecast_probability_is_invented(results):
-    r = _scenario(results, "t11_no_forecast_probability_is_invented")
-    assert r["horizons"] == 3
-    assert all(p is None for p in r["probabilities"])
-    assert r["signal_is_model_forecast_class"] == "model_forecast"
+def test_horizons_refuse_rather_than_repeat_one_daily_heuristic(results):
+    """IR-03. Three fields that look independently derived but restate one daily rule are three
+    times the confidence with none of the evidence."""
+    r = _scenario(results, "t11_horizons_refuse_rather_than_repeat_one_heuristic")
+    assert set(r["horizon_states"].values()) == {"UNAVAILABLE"}
+    assert r["daily_structure_state"] == "OK", "the one real reading must still be reported"
+    assert r["signal_field_name"], "the signal field must name what it actually reads"
+
+
+def test_a_bearish_reading_is_invalidated_by_a_move_up(results):
+    """IR-03. Confirmation and invalidation were both written for the constructive case, so a
+    below-average reading named its own supporting condition as its invalidation."""
+    r = _scenario(results, "t12_a_bearish_reading_is_invalidated_by_a_move_up")
+    assert "below" in r["reading"]
+    assert r["what_would_change_it"].startswith("a daily close above")
+
+
+def test_a_historical_cutoff_cannot_consume_later_prices(results):
+    """IR-02. Input selection ignored the cutoff, so a 25 September report read the 2 October
+    close. Preventing look-ahead is an input-selection rule, not a schema."""
+    r = _scenario(results, "t13_a_historical_cutoff_cannot_consume_later_prices")
+    assert r["price_ts_used"] <= r["cutoff"]
+    assert r["evidence_records"] > 0
+
+
+def test_every_citation_resolves_and_load_bearing_fields_cite(results):
+    """IR-02. Fields carried ids matching no record — a citation that looks checkable and is
+    not. Checking only for dangling references is too weak: a field citing nothing passes it."""
+    r = _scenario(results, "t14_every_citation_resolves")
+    for kind in ("market", "stock", "pre"):
+        assert r[kind]["records"] > 0, f"{kind} report stored no evidence at all"
+        assert not r[kind]["dangling"], f"{kind} cites {r[kind]['dangling']}"
+        assert not r[kind]["load_bearing_without_citation"], \
+            f"{kind}: {r[kind]['load_bearing_without_citation']} carry no evidence"
+
+
+def test_a_stale_price_degrades_what_is_derived_from_it(results):
+    """IR-02. The trend read the same bars the price had just been flagged stale for."""
+    r = _scenario(results, "t15_a_stale_price_degrades_what_is_derived_from_it")
+    assert r["price_state"] == "STALE"
+    assert r["trend_state"] == "STALE"
+
+
+def test_a_pre_report_cannot_be_written_once_the_release_is_known(results):
+    """IR-01. `report_date >= today` admitted an event that reported earlier the same day."""
+    r = _scenario(results, "t16_a_pre_report_cannot_be_written_once_the_release_is_known")
+    assert r["after_release"] != "ALLOWED"
+    assert r["on_release_day"] != "ALLOWED", \
+        "only a date is stored, so a same-day report cannot be shown to precede the release"
+
+
+def test_the_surprise_table_and_the_verdict_use_the_same_expectation(results):
+    """IR-04. The table read the mutable current estimate while the verdict read the frozen
+    one, so one report showed a -11.79% miss beside a verdict of 'above'."""
+    r = _scenario(results, "t17_the_surprise_table_uses_the_frozen_expectation")
+    assert r["expectation"]["is_frozen"] is True
+    assert r["expectation"]["value"] == 1.50
+    assert r["surprise_pct"]["pct"] > 0, "the table must measure against the frozen 1.50"
+    assert r["revision_field_present"], "a later revision is information, shown separately"
+    assert r["verdict"]["thesis_evaluation"] == "not_evaluable", \
+        "a beat is a fact about the company, not confirmation of a claim nobody made"
+    assert r["stage"] == "FIRST_FLASH", "nothing here reconciles sources"
+
+
+def test_concurrent_generation_allocates_one_version_each(results):
+    """IR-05. save() reads the max version and adds one; two requests can read the same answer.
+    Only the database constraint prevents the duplicate."""
+    r = _scenario(results, "t18_concurrent_generation_allocates_one_version_each")
+    assert not r["errors"], r["errors"]
+    assert r["unique_versions"], f"duplicate versions allocated: {r['versions']}"
+    assert len(r["versions"]) == 4
 
 
 def test_an_absent_field_is_not_labelled_an_observed_fact():
