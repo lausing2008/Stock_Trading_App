@@ -286,3 +286,66 @@ Preserved verbatim. Formatting is unchanged from the index entry, including its 
 nothing is lost to a reflow.
 
 BUG-MONITORPOS-STALEPRICE — `_monitor_positions()` Could Run Exit Checks Against a Frozen Price Forever (Fixed 2026-07-21); BUG-TALEVELS-EMPTYPIVOTS-FLOATIDX... **AUD-VOLZ-PARTIALBAR (2026-09-09)** — the volume-z hard gate compared **TODAY's partial bar against a 20-day baseline of COMPLETED days**, so mid-session it is biased NEGATIVE by construction — and the gate only rejects on the negative side, so it **could only ever OVER-BLOCK**, which is why it hid. Measured: a 12:28 ET cycle gave mean `volume_z` **−1.84 with 64.3% below the −1.5 floor** vs **+0.50 / 3.1%** post-close the day before, with raw bars at **0.26×–0.51×** of their 20-day average (M5 curve confirms ~47.7% of session volume by 12:30 ET). **The FLOOR is CORRECT and was NOT retuned** — at 1.6–6.5% post-close it is sane selectivity; a sabotage test pins that. Both consumers now fail OPEN on an incomplete bar (authoritative `hard_rejects.py` AND the shadow `paper_trading_engine`, whose `paper.skip_low_volume` fired 128×/24h). **READ THIS BEFORE ASSUMING THE GATE STILL WORKS: both entry paths already require market hours, which is exactly when the bar is incomplete, so this gate can NO LONGER FIRE on a live entry decision** — intraday volume confirmation is ABSENT, not fixed. It still applies to settled-bar callers (backtests/replays). **Restoring it is ~5-6h and deliberately deferred**: the data exists (1.34M M5 rows) and the fix is to scale the mean by elapsed-session fraction, BUT `volume_z` also carries TA weight 0.05 and feeds `_vz` at `signals.py:1289`, so changing it **shifts every signal's TA score** — the AUD232 risk `docs/2026-09-05` warns about. Needs its own before/after score comparison.
+
+---
+
+## AUD-PAPER-PREMARKET (2026-10-02) — a trading DAY is not a trading HOUR
+
+**`_refresh_5m` gated only on the DATE.** `_is_us_trading_day()` / `_is_hk_trading_day()`
+answer "is the market open today", never "is it open right now". The job's cron fires from
+9:00 local — its minute list covers the whole hour and its hour list starts at 9 — so the
+paper-trading monitor ran at **9:00–9:25 for both markets**, before either exchange opened.
+`paper_trading_step` has no session gate of its own; its own docstring records
+`AUD-PT-CROSSMARKETSWEEP`, the same class of defect one layer out.
+
+**Measured, not hypothetical.** Two US exits fired at 09:00 ET:
+
+| Symbol | Exit (ET) | Exit price | That day's range | Verdict |
+|---|---|---:|---|---|
+| **SCHD** | 2026-09-16 09:00:58 | **$34.2955** | 33.44 – 34.03 | **above the high — a price it never traded**, booking +$96.30 on an impossible fill |
+| NATL | 2026-09-22 09:00:45 | $46.0329 | 45.93 – 46.45 | inside the range — premature, not impossible |
+
+The distinction is worth keeping: one is a wrong number, the other a right number at the wrong
+time. At 09:00 the freshest REGULAR-session price available is the prior day's close.
+
+**Fixed with a session predicate, not a schedule edit.** `common.market_calendar` gained
+`is_regular_session(market, dt)` — US 09:30–16:00 ET; HK 09:30–12:00 and 13:00–16:00 HKT, the
+lunch break being a real closure; close exclusive. The values are the ones already inlined in
+`hard_rejects.py`, so consolidating changed no behaviour.
+
+Narrowing the cron would have worked until someone edited the cron. Gating on the venue's
+actual session protects every caller of `_refresh_5m` including ones not yet written — **and
+it fixed HK in the same change**, which a schedule-shaped fix would have missed entirely: HK's
+own job fires 9:00–9:25 HKT and HKEX also opens at 9:30.
+
+**Ingestion is deliberately NOT gated.** Premarket bars are wanted and the premarket-gappers
+brief depends on them. Only the steps that move money are gated — `_run_paper_trading_step`
+and `_check_short_intraday_triggers`, the latter because an ATR cross computed against a
+premarket print is not a cross the session has made. A sabotage that gates the ingest too
+fails a test, because fixing the trading defect by breaking a feature is not a fix.
+
+---
+
+## AUD-PREMARKET-CADENCE (2026-10-02) — three times the calls for no extra data
+
+The premarket ingest ran every 5 minutes across 04:00–08:55 ET: 60 fires × 142 symbols =
+**8,520 provider calls per trading day, 44% of this platform's entire yfinance volume**,
+against an API measured refusing 6,566 requests in a 12-hour window — the refusals that broke
+"add stock" that same morning.
+
+**The cadence bought almost no information.** `fetch_ohlcv(symbol, start, end, "5m")` requests
+a whole-day RANGE with `prepost=True`, so **one call returns every 5-minute premarket bar of
+the session so far**. Running it three times as often re-downloads the same bars; the only
+thing gained is freshness.
+
+Reduced to every 15 minutes: **8,520 → 2,840 calls/day, with no bar lost.** The single
+consumer — the premarket-gappers section of the 08:00 ET brief — takes the LATEST PRE bar per
+stock (`row_number() ... ORDER BY ts DESC`), and a gap percentage from a bar up to 15 minutes
+old is the same number to the decimal place that matters. The `:45` tick lands fifteen minutes
+before the brief rather than racing it in the same minute, which the old `:00` tick did.
+
+Cadence near the open is untouched: `us_5m_intraday` still runs every 5 minutes from 09:00.
+
+**Not addressed here, and still open:** Unusual Whales' 13,131 adapter failures exceed
+yfinance's, and whether premarket ingestion is worth 2,840 calls/day for one email section
+remains a product question rather than a defect.

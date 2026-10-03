@@ -281,10 +281,15 @@ def test_the_premarket_window_is_ingested_with_no_gap_and_no_duplicate():
 
     dupes = {slot: ids for slot, ids in slots.items() if len(ids) > 1}
     assert not dupes, f"two US 5m jobs fire in the same slot: {dupes}"
-    # No gap: every five-minute slot from 04:00 to 09:25 is covered by exactly one job.
+    # No gap: the 04:00-08:55 window is covered on its own cadence by exactly one job.
+    # AUD-PREMARKET-CADENCE reduced that cadence from 5 to 15 minutes — each fetch returns the
+    # whole day's 5-minute bars, so the slower tick loses no bar and the brief that reads the
+    # LATEST bar is unaffected. What must hold is that every hour of the window is covered.
     for h in (4, 5, 6, 7, 8):
-        for m in range(0, 60, 5):
-            assert (h, m) in slots, f"premarket gap at {h:02d}:{m:02d}"
+        covered = sorted(m for (hh, m) in slots if hh == h)
+        assert covered, f"premarket hour {h:02d} is not ingested at all"
+        assert max(covered) - min(covered) >= 45, \
+            f"hour {h:02d} is only ingested at {covered} — the hour is not really covered"
     for m in (0, 5, 10, 15, 20, 25):
         assert (9, m) in slots, f"gap at 09:{m:02d} — the removed job's window is uncovered"
 

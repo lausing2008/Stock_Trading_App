@@ -253,6 +253,8 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 - **`docs/incidents/service-to-service-auth-headers.md`** — INT-7 Signal-Engine Research Divergence — Missing Auth Header; BUG-BROKERROUTE-STALEAUTH — broker.py Never Detected Expired E*Trade Tokens (Fixed 2026-07-28)...
 - **`docs/incidents/sqlalchemy-raw-sql-gotchas.md`** — SQLAlchemy text() Named Params with PostgreSQL ::type Casts (BUG-6)
+- **`docs/incidents/stale-price-and-data-bugs.md`** — AUD-PAPER-PREMARKET (2026-10-02): paper trading ran 9:00-9:25 pre-open (BOTH markets). SCHD exited ABOVE that day's high — a price it never traded. New shared `is_regular_session`; a trading DAY is not a trading HOUR [premarket, exits]
+- **`docs/incidents/stale-price-and-data-bugs.md`** — AUD-PREMARKET-CADENCE (2026-10-02): premarket ingest ran 5-minutely for no extra data — one fetch returns the whole day's bars. 8,520 -> 2,840 calls/day, zero bars lost [yfinance, cadence]
 - **`docs/incidents/stale-price-and-data-bugs.md`** — BUG-MONITORPOS-STALEPRICE — `_monitor_positions()` Could Run Exit Checks Against a Frozen Price Forever (Fixed 2026-07-21) … [backtest]
 
 - **`docs/incidents/inferred-fiscal-period-mislabels-non-calendar-years.md`** — `fiscal_quarter` is derived from the calendar month, so MU's Q4 is stored as "Q3 2026". Traced: not a predicate, not a key, not in prompts, emitted but unconsumed. Never match on it [earnings, fiscal]

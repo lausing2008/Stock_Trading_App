@@ -587,6 +587,8 @@ def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed:
 # three comparison sites below are unchanged.
 from common.market_calendar import HK_HOLIDAYS as _HK_HOLIDAY_DATES
 from common.market_calendar import NYSE_HOLIDAYS as _NYSE_HOLIDAY_DATES
+# AUD-PAPER-PREMARKET: the venue's REGULAR session, not merely its trading DAY.
+from common.market_calendar import is_regular_session as _is_regular_session
 
 _HK_HOLIDAYS: frozenset[tuple[int, int, int]] = frozenset(
     (d.year, d.month, d.day) for d in _HK_HOLIDAY_DATES
@@ -11609,19 +11611,42 @@ def _refresh_5m(market: str) -> None:
     except Exception as exc:
         log.error("scheduler.5m_ingest_failed", market=market, error=str(exc))
 
-    # PT-5M: paper trading position monitor runs after every 5m bar ingest.
-    # Entry scan reads the latest BUY signal from DB, refreshed by _refresh_market.
+    # AUD-PAPER-PREMARKET (2026-10-02): A TRADING DAY IS NOT A TRADING HOUR.
+    #
+    # This function's only gate was `_is_us_trading_day()` / `_is_hk_trading_day()` — a DATE
+    # check. Its cron fires from 9:00 local (the minute list covers the whole hour and the
+    # hour list starts at 9), so the paper-trading monitor ran at 9:00-9:25 for BOTH markets,
+    # before either exchange opened. `paper_trading_step` has no session gate of its own.
+    #
+    # MEASURED, not hypothetical. Two US exits fired at 09:00 ET, and one of them is the
+    # failure mode AUD-PT-CROSSMARKETSWEEP already documented: SCHD exited 2026-09-16 at
+    # 09:00:58 ET for $34.2955 when that day's range was 33.44-34.03 — above the high, a price
+    # the stock never traded, booking +$96.30 on a fill that could not have happened. At 09:00
+    # the freshest REGULAR-session price available is the prior day's close.
+    #
+    # INGESTION DELIBERATELY STAYS UNGATED above: premarket bars are wanted, and the
+    # premarket-gappers brief depends on them. Only the steps that MOVE MONEY are gated, and
+    # they are gated on the venue's actual session rather than on this job's schedule — a
+    # schedule can be edited by someone who has not read this, and the next caller of
+    # `_refresh_5m` inherits the protection for free.
     if market in ("US", "HK") and _settings.enable_paper_trading:
-        _pt0 = time.monotonic()
-        try:
-            _run_paper_trading_step(label="refresh_5m", market=market)
-            _record_job_status(f"paper_trading_5m_{market.lower()}", "ok", time.monotonic() - _pt0)
-        except Exception as _pte:
-            log.error("scheduler.paper_trading_5m_failed", market=market, error=str(_pte), exc_info=True)
-            _record_job_status(f"paper_trading_5m_{market.lower()}", "error", time.monotonic() - _pt0, str(_pte))
+        if not _is_regular_session(market):
+            log.info("scheduler.paper_trading_5m_outside_session", market=market,
+                     note="bars ingested; trading steps skipped until the regular session")
+        else:
+            _pt0 = time.monotonic()
+            try:
+                _run_paper_trading_step(label="refresh_5m", market=market)
+                _record_job_status(f"paper_trading_5m_{market.lower()}", "ok", time.monotonic() - _pt0)
+            except Exception as _pte:
+                log.error("scheduler.paper_trading_5m_failed", market=market, error=str(_pte), exc_info=True)
+                _record_job_status(f"paper_trading_5m_{market.lower()}", "error", time.monotonic() - _pt0, str(_pte))
 
-    # TIER83: check if any SHORT-style stocks have crossed the intraday ATR trigger
-    _check_short_intraday_triggers(market)
+    # TIER83: check if any SHORT-style stocks have crossed the intraday ATR trigger.
+    # Same gate: this arms real intraday entries off an ATR cross, and a cross computed
+    # against a premarket print is not a cross the session has made.
+    if _is_regular_session(market):
+        _check_short_intraday_triggers(market)
 
 
 def _refresh_premarket_5m() -> None:
@@ -13964,11 +13989,30 @@ def start_scheduler() -> None:
     # below. Covers 4:00-8:55 ET; from 9:00 onward us_5m_intraday already ingests the same 5m
     # bars every five minutes (its hour list starts at 9 and its minute list covers the whole
     # hour), so there is nothing left for this job to hand off to and no gap between them.
+    # AUD-PREMARKET-CADENCE (2026-10-02): EVERY FIVE MINUTES BOUGHT NOTHING HERE.
+    #
+    # This ran 12x/hour across five hours — 60 fires x 142 symbols = 8,520 provider calls per
+    # trading day, 44% of this platform's entire yfinance volume, against an API measured
+    # refusing 6,566 requests in a 12-hour window. The refusals are what broke "add stock".
+    #
+    # The cadence bought almost no information, because EACH CALL RETURNS A DATE RANGE, not a
+    # single bar: `fetch_ohlcv(symbol, start, end, "5m")` requests whole days with
+    # `prepost=True`, so one fetch brings back every 5-minute premarket bar of the session so
+    # far. Running it three times as often re-downloads the same bars and adds only freshness.
+    #
+    # 15 minutes keeps every bar and costs at most 15 minutes of staleness. Its one consumer,
+    # the premarket-gappers section of the 08:00 ET brief, takes the LATEST PRE bar per stock
+    # (`row_number() ... ORDER BY ts DESC`) — a gap percentage computed from a bar up to 15
+    # minutes old is the same number to the decimal place that matters. The :45 tick lands 15
+    # minutes before the brief, so it is never racing the job that reads it.
+    #
+    # Near the open stays at 5-minute cadence: us_5m_intraday covers 9:00 onward unchanged.
+    # 8,520 -> 2,840 calls/day, with no bar lost.
     _scheduler.add_job(
         _refresh_premarket_5m,
         CronTrigger(
             hour="4,5,6,7,8",
-            minute="0,5,10,15,20,25,30,35,40,45,50,55",
+            minute="0,15,30,45",
             day_of_week="mon-fri",
             timezone="America/New_York",
         ),

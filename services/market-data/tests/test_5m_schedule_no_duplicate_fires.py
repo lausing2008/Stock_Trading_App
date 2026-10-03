@@ -90,11 +90,19 @@ def test_no_two_us_5m_jobs_fire_in_the_same_slot():
 
 def test_the_premarket_job_still_covers_the_premarket_window():
     """Removing the duplicate must not leave a gap — the premarket-gappers email depends on
-    PRE-session rows existing from 4:00 ET."""
+    PRE-session rows existing from 4:00 ET.
+
+    AUD-PREMARKET-CADENCE (2026-10-02) changed the CADENCE within this window from 5 to 15
+    minutes, which this test originally pinned as "every five minutes". The granularity was
+    incidental; the property is that the window is covered end to end, which still holds.
+    One fetch returns the whole day's 5-minute bars, so a slower cadence loses no bar.
+    """
     slots = _fire_slots(TRIGGERS["us_premarket_5m_early"])
     hours = {h for _, h, _ in slots}
-    assert hours == {4, 5, 6, 7, 8}
-    assert len(slots) == 5 * 12, "every five minutes across the window"
+    assert hours == {4, 5, 6, 7, 8}, "the window itself must not shrink"
+    minutes = sorted({m for _, _, m in slots})
+    assert minutes == [0, 15, 30, 45]
+    assert len(slots) == 5 * 4, "20 fires/day across the window, down from 60"
 
 
 def test_the_intraday_job_still_covers_from_9am_so_no_gap_was_created():

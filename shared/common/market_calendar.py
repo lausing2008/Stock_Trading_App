@@ -155,6 +155,42 @@ def is_trading_day(market: str, dt: datetime | None = None) -> bool:
     return is_hk_trading_day(dt) if market.upper() == "HK" else is_us_trading_day(dt)
 
 
+# ── Regular trading session, per venue ─────────────────────────────────────────────────
+#
+# AUD-PAPER-PREMARKET (2026-10-02): this platform had NO shared "is the market open right
+# now" predicate — only "is today a trading day". So every consumer that needed session
+# hours wrote its own minute arithmetic, and the one that did not write any ran trading
+# logic before the opening bell. Measured consequence: a paper position exited at 09:00:58
+# ET on 2026-09-16 at $34.2955 when that day's range was 33.44-34.03 — a price the stock
+# never traded, booking +$96.30 on a fill that could not have happened.
+#
+# Minutes from local midnight, matching the values already used inline elsewhere in the
+# codebase so consolidating here changes no behaviour:
+#   US    09:30-16:00            -> 570 .. 960
+#   HK    09:30-12:00 (morning)  -> 570 .. 720
+#         13:00-16:00 (afternoon)-> 780 .. 960   (the lunch break is a real closure)
+_US_SESSION = ((570, 960),)
+_HK_SESSION = ((570, 720), (780, 960))
+
+
+def is_regular_session(market: str, dt: datetime | None = None) -> bool:
+    """True only during the venue's REGULAR cash session — never pre/post market.
+
+    A trading DAY is not a trading HOUR. Anything that moves money, exits a position or
+    sizes an entry wants this; a data ingest usually does not, and should keep running
+    outside it so the bars exist when the session opens.
+
+    The end of the session is exclusive: 16:00:00 is the close, not a tradeable minute.
+    """
+    now = dt or datetime.now(timezone.utc)
+    hk = market.upper() == "HK"
+    if not (is_hk_trading_day(now) if hk else is_us_trading_day(now)):
+        return False
+    local = now.astimezone(_HKT if hk else _NY)
+    mins = local.hour * 60 + local.minute
+    return any(lo <= mins < hi for lo, hi in (_HK_SESSION if hk else _US_SESSION))
+
+
 def calendar_coverage() -> dict[str, int]:
     """Latest year each calendar covers — for the DQ gauge and the coverage assertion."""
     return {
