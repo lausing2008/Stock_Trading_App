@@ -3510,3 +3510,112 @@ class IntelligenceReport(Base):
         Index("ix_intel_type_generated", "report_type", "generated_at"),
         Index("ix_intel_fingerprint_subject", "subject_key", "input_fingerprint"),
     )
+
+
+class IssuerDocument(Base):
+    """An official document from an issuer — a press release, a filing exhibit, a transcript.
+
+    WHY THIS IS NOT HUNG OFF `earnings_events`. The document join must not depend on an event
+    row that may itself be missing: MU's 30 September release exists in the world and has no
+    event row at all, and a schema that can only attach a document to an event can never record
+    that fact. So a document is keyed to the ISSUER and its own source-confirmed FISCAL PERIOD,
+    and `event_id` is an optional link filled in when a matching event exists.
+
+    That inversion is what lets a document CONFIRM a missing event: a release for a period with
+    no corresponding event row is dated authoritative evidence that the event is absent, which
+    is exactly the promotion from "suspected gap" (an inference from reporting cadence) to
+    "confirmed missing" that cadence alone can never justify.
+
+    REVISIONS ARE NEW ROWS. Issuers correct releases. `supersedes_id` links a correction to what
+    it corrects and the original keeps its content, because a frozen report may cite it and a
+    citation that silently changes underneath is not evidence.
+    """
+    __tablename__ = "issuer_documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(
+        ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+
+    #: press_release | sec_exhibit | transcript | presentation | other
+    document_type: Mapped[str] = mapped_column(String(32), index=True)
+    source_url: Mapped[str] = mapped_column(String(1024))
+    publisher: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    #: SOURCE-CONFIRMED fiscal identity, taken from the document itself — never inferred from
+    #: the publication month, which is the defect `EarningsEvent.fiscal_quarter` already has.
+    fiscal_period_end: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    fiscal_label: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: Where that label came from, so an unverified one is never mistaken for a confirmed one.
+    fiscal_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    #: Distinct times, never collapsed: when the issuer published, and when we first held it.
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime)
+    #: Identity of the bytes, so a silent edit at the source is detectable.
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    #: Extracted figures, each carrying its own basis/units/citation. Never a bare number.
+    facts: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    supersedes_id: Mapped[int | None] = mapped_column(
+        ForeignKey("issuer_documents.id", ondelete="SET NULL"), nullable=True)
+    #: Optional — present only when a matching event row exists to link to.
+    event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("earnings_events.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    __table_args__ = (
+        Index("ix_issuerdoc_stock_period", "stock_id", "fiscal_period_end"),
+        Index("ix_issuerdoc_stock_type_published", "stock_id", "document_type", "published_at"),
+        # One row per (issuer, document, source), so re-ingesting the same release is idempotent
+        # rather than accumulating near-duplicates nobody can reconcile.
+        Index("ux_issuerdoc_stock_url", "stock_id", "source_url", unique=True),
+    )
+
+
+class EarningsCoverageAttempt(Base):
+    """One recorded attempt to cover an issuer's earnings history — including the failures.
+
+    WHY A LEDGER AND NOT A LOG LINE. Asked why MU's September release was absent, the honest
+    answer was "the last historical sync was 6 August" — inferred from `fetched_at` on unrelated
+    rows, because nothing records what was ATTEMPTED. A fetch that returned rows which then
+    failed to map, and a fetch that was never made, are indistinguishable afterwards, and they
+    need completely different fixes.
+
+    So each attempt records what was asked for, what came back, what mapped, what was written,
+    and why anything was dropped. The watermark advances only after committed processing, so a
+    crash mid-run cannot mark a window covered.
+    """
+    __tablename__ = "earnings_coverage_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(
+        ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    #: calendar | history | reconciliation
+    mode: Mapped[str] = mapped_column(String(24), index=True)
+    source: Mapped[str] = mapped_column(String(64))
+
+    window_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    window_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    attempted_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    #: NULL means NOT MEASURED — the attempt did not get far enough to count. Zero means the
+    #: source genuinely returned nothing, which is a different fact entirely.
+    rows_returned: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rows_mapped: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rows_written: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    #: ok | retrieval_failed | mapping_failed | write_failed | partial
+    outcome: Mapped[str] = mapped_column(String(24), index=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Per-row drop reasons, so a silent discard becomes a countable one.
+    dropped: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    #: Only advanced after committed processing.
+    watermark: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    __table_args__ = (
+        Index("ix_coverage_stock_mode_attempted", "stock_id", "mode", "attempted_at"),
+    )

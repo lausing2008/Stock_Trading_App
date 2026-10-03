@@ -241,8 +241,10 @@ def test_fractional_returns_are_converted_once(results):
     assert abs(r["reported_1d"]["pct"] - 15.38) < 0.01
     assert abs(r["reported_5d"]["pct"] + 1.85) < 0.01
     assert r["units_1d"] == "pct"
-    assert "not normalised" in r["reported_1d"]["basis"], \
+    assert "not normalised" in r["reported_1d"]["note"], \
         "the window must be described, not claimed as a normalised release reaction"
+    assert " close to " in r["reported_1d"]["window"], \
+        "the window names its actual dates; a span word cannot be right for every release"
 
 
 def test_historical_reaction_summaries_use_the_same_unit(results):
@@ -284,9 +286,67 @@ def test_a_stale_newest_event_is_flagged_not_substituted(results):
     exactly the case it was built for; the issuer's own median gap does.
     """
     r = _scenario(results, "t24_a_stale_newest_event_is_flagged_not_substituted")
-    assert r["fresh_state"] == "OK", "days after a release, nothing is overdue"
+    # Within the median the state is UNKNOWN, not OK: nothing has been verified against the
+    # issuer's own calendar, so "no warning" must not read as "coverage confirmed".
+    assert r["fresh_state"] == "UNKNOWN"
     assert r["mu_state"] == "CONFLICTING"
     assert r["mu_detail"]["age_days"] == 101
     assert r["mu_detail"]["issuer_median_gap_days"] < r["mu_detail"]["age_days"], \
         "the warning must come from the issuer's own cadence, not a fixed calendar guess"
-    assert "due or overdue" in r["mu_reason"]
+    assert "POSSIBLE COVERAGE GAP" in r["mu_reason"]
+
+
+# ── Cadence semantics, exact windows, and the official release join ────────────────────────
+
+def test_cadence_is_an_interpretation_not_an_observed_fact(results):
+    """A median is not a deadline. Exceeding it suggests a gap worth checking; it does not
+    establish that a release happened — and the absence of a warning certifies nothing."""
+    r = _scenario(results, "t24_a_stale_newest_event_is_flagged_not_substituted")
+    assert r["mu_statement"] == "interpretation", \
+        "a cadence inference must never be classed as an observed fact"
+    assert r["mu_coverage_state"] == "suspected_gap"
+    assert "not proof" in r["mu_reason"]
+    assert r["fresh_coverage_state"] == "coverage_unknown", \
+        "within the median, coverage is unknown — not verified complete"
+
+
+def test_the_reaction_window_names_its_real_interval(results):
+    """`return_1d` runs from the last close BEFORE the report date to the day AFTER it — two
+    close-to-close intervals for a trading-day release, not one."""
+    r = _scenario(results, "t25_the_reaction_window_names_its_real_interval")
+    assert r["window_dates"]["baseline_date"] == "2026-09-29"
+    assert r["window_dates"]["endpoint_1d"] == "2026-10-01"
+    assert r["window_dates"]["intervals_1d"] == 2
+    assert abs(r["reported"]["pct"] - 21.0) < 0.01, "the legacy value is preserved exactly"
+    assert r["reported"]["window"] == "2026-09-29 close to 2026-10-01 close"
+
+
+def test_the_official_release_is_joined_and_keeps_both_margin_bases(results):
+    """Micron's own release distinguishes 86.8% GAAP from 87.0% non-GAAP gross margin.
+    Collapsing them loses a distinction the issuer itself drew."""
+    r = _scenario(results, "t26_the_official_release_is_joined_by_period")
+    assert r["release_state"] == "OK"
+    assert "source-confirmed" in r["matched_on"]
+    assert r["fiscal_state"] == "OK"
+    assert r["gaap_vs_non_gaap_both_present"]
+    assert r["cited"], "the release must be citable evidence, not an unreferenced attachment"
+
+
+def test_a_release_without_an_event_confirms_the_gap(results):
+    """The promotion cadence cannot make: a dated official release naming a period the event
+    table does not contain is evidence, not an inference about reporting rhythm."""
+    r = _scenario(results, "t27_a_release_without_an_event_confirms_the_gap")
+    assert r["coverage_state"] == "confirmed_missing_event"
+    assert r["statement"] == "observed_fact"
+    assert r["orphans"][0]["fiscal_period_end"] == "2026-09-03"
+    assert r["cited"]
+
+
+def test_a_document_join_never_depends_on_an_event_row(results):
+    """Resolving by issuer and period rather than event id is what makes the case above
+    expressible: MU's September release is real and has no event row."""
+    r = _scenario(results, "t28_a_document_join_never_depends_on_an_event_row")
+    assert r["event_rows"] == 0
+    assert r["document_event_id"] is None
+    assert r["found_by_period"] == r["found_by_report_date"]
+    assert len(r["found_by_period"]) == 1

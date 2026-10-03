@@ -1,7 +1,7 @@
 {
   "t1_all_four_types_generate": {
     "market_outlook": {
-      "id": 25,
+      "id": 1,
       "status": "partial",
       "version": 1,
       "coverage": {
@@ -16,7 +16,7 @@
       "markdown_lines": 81
     },
     "stock_outlook": {
-      "id": 26,
+      "id": 2,
       "status": "partial",
       "version": 1,
       "coverage": {
@@ -31,7 +31,7 @@
       "markdown_lines": 85
     },
     "pre_earnings": {
-      "id": 27,
+      "id": 3,
       "status": "partial",
       "version": 1,
       "coverage": {
@@ -47,26 +47,26 @@
       "markdown_lines": 82
     },
     "post_earnings": {
-      "id": 28,
+      "id": 4,
       "status": "partial",
       "coverage": {
         "by_state": {
-          "OK": 15,
-          "UNKNOWN": 3,
-          "UNAVAILABLE": 4,
+          "OK": 14,
+          "UNKNOWN": 4,
+          "UNAVAILABLE": 6,
           "NOT_APPLICABLE": 1
         },
-        "total": 23,
-        "ok": 15
+        "total": 25,
+        "ok": 14
       },
-      "fields": 23,
-      "markdown_lines": 85
+      "fields": 25,
+      "markdown_lines": 90
     },
     "passes": true
   },
   "t2_identical_inputs_do_not_duplicate": {
-    "first_id": 29,
-    "second_id": 29,
+    "first_id": 5,
+    "second_id": 5,
     "created": [
       true,
       false
@@ -76,10 +76,10 @@
     "passes": true
   },
   "t3_changed_inputs_create_a_linked_version": {
-    "v1": 30,
-    "v2": 31,
+    "v1": 6,
+    "v2": 7,
     "v2_version": 2,
-    "supersedes": 30,
+    "supersedes": 6,
     "v1_status": "superseded",
     "changed_fields": 10,
     "v1_payload_unchanged": true,
@@ -93,9 +93,9 @@
     "passes": true
   },
   "t5_a_frozen_pre_report_survives_and_scores": {
-    "pre_id": 33,
-    "post_id": 34,
-    "post_pre_link": 33,
+    "pre_id": 9,
+    "post_id": 10,
+    "post_pre_link": 9,
     "frozen_payload_unchanged": true,
     "verdict": {
       "frozen_consensus_eps": 1.5,
@@ -109,7 +109,7 @@
     "passes": true
   },
   "t6_a_report_written_after_the_release_is_not_a_pre_report": {
-    "late_report_id": 35,
+    "late_report_id": 11,
     "found": null,
     "passes": true
   },
@@ -224,7 +224,7 @@
     },
     "expectation": {
       "value": 1.5,
-      "source": "frozen pre-release baseline (report 37)",
+      "source": "frozen pre-release baseline (report 13)",
       "is_frozen": true
     },
     "revision_field_present": true,
@@ -256,14 +256,16 @@
     "stored_1d": 0.15382642030697258,
     "reported_1d": {
       "pct": 15.38,
-      "window": "1 session",
-      "basis": "measured close-to-close from the session before the stored report date; this is not normalised to the announcement instant, which is not on file"
+      "window": "2026-09-29 close to 2026-10-01 close",
+      "basis": "2 close-to-close interval(s) spanning the stored report date 2026-09-30",
+      "note": "baseline is the last close BEFORE the report date and the endpoint is indexed from the report date's own bar, so this is not normalised to the announcement instant, which is not on file"
     },
     "units_1d": "pct",
     "reported_5d": {
       "pct": -1.85,
-      "window": "5 sessions",
-      "basis": "measured close-to-close from the session before the stored report date; this is not normalised to the announcement instant, which is not on file"
+      "window": "UNRESOLVED",
+      "basis": "the bars this return was computed from are not on file, so its exact baseline and endpoint cannot be named",
+      "note": "baseline is the last close BEFORE the report date and the endpoint is indexed from the report date's own bar, so this is not normalised to the announcement instant, which is not on file"
     },
     "passes": true
   },
@@ -279,16 +281,16 @@
         "2026-03-18",
         "2025-12-17"
       ],
-      "limitation": "same 1-session window for every event; premarket, after-hours and intraday baselines are not normalised, and n is small"
+      "limitation": "each value is the stored return from the last close BEFORE its report date to the close 1 trading day after that date's own bar \u2014 for a trading-day release that spans TWO close-to-close intervals, not one. Not normalised to the announcement instant, and n is small."
     },
     "passes": true
   },
   "t21_a_reused_report_is_not_called_a_first_report": {
     "ids": [
-      46,
-      47,
-      47,
-      46
+      22,
+      23,
+      23,
+      22
     ],
     "created": [
       true,
@@ -314,7 +316,7 @@
     "passes": true
   },
   "t24_a_stale_newest_event_is_flagged_not_substituted": {
-    "fresh_state": "OK",
+    "fresh_state": "UNKNOWN",
     "fresh_age": 6,
     "mu_state": "CONFLICTING",
     "mu_detail": {
@@ -322,9 +324,71 @@
       "age_days": 101,
       "issuer_median_gap_days": 94,
       "gaps_measured": 4,
-      "next_scheduled": "2026-12-23"
+      "next_scheduled": "2026-12-23",
+      "coverage_state": "suspected_gap"
     },
-    "mu_reason": "the newest RELEASED event on file is 101 days old and this issuer's own median gap is 94 days (from 4 past gaps), so the next release is due or overdue and is not on file. This report may therefore describe an older quarter than the one you want \u2014 it is NOT substituted silently. Check the issuer's own release.",
+    "mu_reason": "POSSIBLE COVERAGE GAP, not a confirmed one: the newest stored release is 101 days old and this issuer's own median gap is 94 days (from 4 past gaps, which are themselves drawn from stored events and so cannot prove what is missing). That is a reason to check the issuer's own release calendar, not proof that a release happened. This report describes the newest event ON FILE and does not substitute one silently.",
+    "fresh_statement": "interpretation",
+    "mu_statement": "interpretation",
+    "fresh_coverage_state": "coverage_unknown",
+    "mu_coverage_state": "suspected_gap",
+    "passes": true
+  },
+  "t25_the_reaction_window_names_its_real_interval": {
+    "window_dates": {
+      "baseline_date": "2026-09-29",
+      "report_date": "2026-09-30",
+      "endpoint_1d": "2026-10-01",
+      "endpoint_5d": null,
+      "intervals_1d": 2
+    },
+    "reported": {
+      "pct": 21.0,
+      "window": "2026-09-29 close to 2026-10-01 close",
+      "basis": "2 close-to-close interval(s) spanning the stored report date 2026-09-30",
+      "note": "baseline is the last close BEFORE the report date and the endpoint is indexed from the report date's own bar, so this is not normalised to the announcement instant, which is not on file"
+    },
+    "passes": true
+  },
+  "t26_the_official_release_is_joined_by_period": {
+    "release_state": "OK",
+    "matched_on": "source-confirmed fiscal period end",
+    "fiscal_state": "OK",
+    "fiscal": {
+      "period_end": "2026-09-10",
+      "label": "FY2026 Q4",
+      "confirmed_by": "stated in the release headline"
+    },
+    "figures_state": "OK",
+    "gaap_vs_non_gaap_both_present": true,
+    "cited": true,
+    "passes": true
+  },
+  "t27_a_release_without_an_event_confirms_the_gap": {
+    "coverage_state": "confirmed_missing_event",
+    "statement": "observed_fact",
+    "orphans": [
+      {
+        "document_id": 2,
+        "fiscal_period_end": "2026-09-03",
+        "fiscal_label": "FY2026 Q4",
+        "published_at": "2026-09-30T20:05:00",
+        "url": "https://investors.example.invalid/fq4-2026"
+      }
+    ],
+    "reason": "1 official issuer document(s) describe a reporting period with no corresponding event row. This is not an inference from",
+    "cited": true,
+    "passes": true
+  },
+  "t28_a_document_join_never_depends_on_an_event_row": {
+    "event_rows": 0,
+    "document_event_id": null,
+    "found_by_period": [
+      3
+    ],
+    "found_by_report_date": [
+      3
+    ],
     "passes": true
   },
   "_meta": {

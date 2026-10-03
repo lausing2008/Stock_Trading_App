@@ -932,8 +932,21 @@ def _match_report_dates_to_history(
     return matched
 
 
-def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
-    """Fetch earnings history + calendar from yfinance and upsert to DB. Returns rows upserted."""
+def _fetch_earnings_for_symbol(symbol: str, stock_id: int, stats: dict | None = None) -> int:
+    """Fetch earnings history + calendar from yfinance and upsert to DB. Returns rows upserted.
+
+    `stats`, when supplied, is populated with what each STAGE produced — rows the provider
+    returned, rows that mapped, and why anything was dropped. A fetch that returned rows which
+    then failed to map and a fetch that was never made are otherwise indistinguishable after the
+    fact, and they need completely different fixes. The MU gap could not be diagnosed from
+    stored state for exactly this reason.
+    """
+    if stats is not None:
+        # None means NOT MEASURED — the attempt did not get this far. Zero means the provider
+        # genuinely returned nothing, which is a different fact.
+        stats.setdefault("rows_returned", None)
+        stats.setdefault("rows_mapped", None)
+        stats.setdefault("dropped", {})
     try:
         import yfinance as yf
         ticker = yf.Ticker(symbol)
@@ -956,6 +969,10 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                      latest_eps_actual=(None if hist is None or hist.empty
                                         else (float(hist.iloc[-1].get("epsActual"))
                                               if pd.notna(hist.iloc[-1].get("epsActual")) else None)))
+            if stats is not None:
+                stats["rows_returned"] = (0 if hist is None or hist.empty else int(len(hist)))
+                stats["latest_period_end"] = (None if hist is None or hist.empty
+                                              else str(hist.index[-1])[:10])
             if hist is not None and not hist.empty:
                 # AUD264-EARNINGS-FISCAL-QUARTER-FROM-ANNOUNCEMENT-MONTH: fetch earnings_dates
                 # too so real announcement dates (see _match_report_dates_to_history's own
@@ -1361,12 +1378,64 @@ async def sync_all_earnings() -> dict:
 
     loop = asyncio.get_running_loop()
     total = 0
+    outcomes: dict[str, int] = {}
     for stock_id, symbol in stocks:
-        n = await loop.run_in_executor(_executor, _fetch_earnings_for_symbol, symbol, stock_id)
+        stats: dict = {}
+        started = datetime.utcnow()
+        error = None
+        try:
+            n = await loop.run_in_executor(
+                _executor, _fetch_earnings_for_symbol, symbol, stock_id, stats)
+        except Exception as exc:                        # noqa: BLE001
+            n, error = 0, f"{type(exc).__name__}: {exc}"[:500]
         total += n
+        outcome = _coverage_outcome(stats, n, error)
+        outcomes[outcome] = outcomes.get(outcome, 0) + 1
+        _record_coverage_attempt(stock_id, symbol, stats, rows_written=n,
+                                 started=started, outcome=outcome, error=error)
         await asyncio.sleep(0.2)  # gentle rate limiting
 
-    return {"symbols_processed": len(stocks), "rows_upserted": total}
+    return {"symbols_processed": len(stocks), "rows_upserted": total, "outcomes": outcomes}
+
+
+def _coverage_outcome(stats: dict, written: int, error: str | None) -> str:
+    """Name the STAGE that failed, not just that something did.
+
+    "It didn't work" sends the next reader to the wrong place. A retrieval failure, rows that
+    came back and would not map, and rows that mapped and would not write are three different
+    repairs, and the ledger exists to tell them apart.
+    """
+    if error is not None:
+        return "retrieval_failed"
+    returned = stats.get("rows_returned")
+    if returned is None:
+        return "retrieval_failed"
+    if returned == 0:
+        return "ok"                       # the source genuinely had nothing to give
+    if written == 0:
+        return "mapping_failed"
+    return "ok"
+
+
+def _record_coverage_attempt(stock_id: int, symbol: str, stats: dict, *, rows_written: int,
+                             started, outcome: str, error: str | None) -> None:
+    """Persist one attempt. Never raises — a ledger that can break the sync is worse than none."""
+    try:
+        from db import EarningsCoverageAttempt
+        with SessionLocal() as s:
+            s.add(EarningsCoverageAttempt(
+                stock_id=stock_id, mode="history", source="yfinance",
+                attempted_at=started, completed_at=datetime.utcnow(),
+                rows_returned=stats.get("rows_returned"),
+                rows_mapped=stats.get("rows_mapped"),
+                rows_written=rows_written,
+                outcome=outcome, error=error, dropped=stats.get("dropped") or {},
+                # The watermark advances ONLY on a committed, successful pass, so a crashed or
+                # partial run can never mark a window covered.
+                watermark=(date.today() if outcome == "ok" else None)))
+            s.commit()
+    except Exception as exc:                            # noqa: BLE001
+        log.warning("earnings.coverage_ledger_write_failed", symbol=symbol, error=str(exc)[:200])
 
 
 async def sync_todays_earnings() -> dict:

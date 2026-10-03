@@ -337,27 +337,68 @@ def fraction_to_pct(value: float) -> float:
     return round(float(value) * 100.0, 2)
 
 
-#: What the stored window actually is. NOT "the release reaction": the producer measures from
-#: the close BEFORE the report date to a later close, which for an after-hours release spans
-#: the announcement and for a before-open release does not begin at it.
-_REACTION_WINDOW_NOTE = (
-    "measured close-to-close from the session before the stored report date; this is not "
-    "normalised to the announcement instant, which is not on file")
+def reaction_window_dates(session, stock_id: int, report_date) -> dict:
+    """The ACTUAL baseline and endpoint bars the stored returns were computed from.
+
+    WHY EXACT DATES AND NOT A SPAN LABEL. The producer takes the last close STRICTLY BEFORE the
+    report date as its baseline, and `after[1]` / `after[5]` as endpoints — where `after`
+    INCLUDES the report-date bar. So for a release on a trading day, `return_1d` spans the
+    baseline to the day AFTER the report date: TWO close-to-close intervals, not one. Labelling
+    it "1 session" understates the window it measures, and no span label is right for every
+    case anyway, because a release on a non-trading date shifts both ends.
+
+    The legacy values are preserved exactly; what changes is that the report now names the two
+    dates the number was computed between, so a reader can check it instead of inferring a
+    window from a word.
+    """
+    bars = list(session.execute(
+        select(Price.ts, Price.close).where(Price.stock_id == stock_id,
+                                            Price.timeframe == TimeFrame.D1)
+        .order_by(Price.ts.asc())).all())
+    before = [b for b in bars if b[0].date() < report_date]
+    after = [b for b in bars if b[0].date() >= report_date]
+    out = {"baseline_date": before[-1][0].date().isoformat() if before else None,
+           "report_date": report_date.isoformat()}
+    for key, idx in (("endpoint_1d", 1), ("endpoint_5d", 5)):
+        out[key] = after[idx][0].date().isoformat() if len(after) > idx else None
+    # How many close-to-close intervals the baseline->endpoint span actually covers.
+    if before and len(after) > 1:
+        out["intervals_1d"] = len([b for b in bars
+                                   if before[-1][0] < b[0] <= after[1][0]])
+    if before and len(after) > 5:
+        out["intervals_5d"] = len([b for b in bars
+                                   if before[-1][0] < b[0] <= after[5][0]])
+    return out
 
 
-def post_event_reaction(event: EarningsEvent) -> dict[str, Field]:
+def post_event_reaction(event: EarningsEvent, *, window_dates: dict | None = None
+                        ) -> dict[str, Field]:
+    wd = window_dates or {}
     out = {}
-    for label, value, window in (("return_1d", event.post_earnings_return_1d, "1 session"),
-                                 ("return_5d", event.post_earnings_return_5d, "5 sessions")):
+    for label, value, key, idx in (("return_1d", event.post_earnings_return_1d, "endpoint_1d", 1),
+                                   ("return_5d", event.post_earnings_return_5d, "endpoint_5d", 5)):
         if value is None:
             out[label] = unknown(
-                f"{window} after the release has not matured, or the outcome has not been "
-                f"recorded yet")
+                f"the endpoint {idx} trading day(s) after the report date has not matured, or "
+                f"the outcome has not been recorded yet")
+            continue
+        baseline, endpoint = wd.get("baseline_date"), wd.get(key)
+        intervals = wd.get(f"intervals_{label.split('_')[1]}")
+        if baseline and endpoint:
+            window = f"{baseline} close to {endpoint} close"
+            basis = (f"{intervals} close-to-close interval(s) spanning the stored report date "
+                     f"{wd.get('report_date')}" if intervals else
+                     f"spanning the stored report date {wd.get('report_date')}")
         else:
-            out[label] = observed(
-                {"pct": fraction_to_pct(value), "window": window,
-                 "basis": _REACTION_WINDOW_NOTE},
-                units="pct", evidence_ids=[f"earnings_event:{event.id}"])
+            window = "UNRESOLVED"
+            basis = ("the bars this return was computed from are not on file, so its exact "
+                     "baseline and endpoint cannot be named")
+        out[label] = observed(
+            {"pct": fraction_to_pct(value), "window": window, "basis": basis,
+             "note": "baseline is the last close BEFORE the report date and the endpoint is "
+                     "indexed from the report date's own bar, so this is not normalised to the "
+                     "announcement instant, which is not on file"},
+            units="pct", evidence_ids=[f"earnings_event:{event.id}"])
     return out
 
 

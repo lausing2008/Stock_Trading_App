@@ -40,13 +40,16 @@ common.config = _cfg
 
 from sqlalchemy import create_engine, text                           # noqa: E402
 from sqlalchemy.orm import sessionmaker                              # noqa: E402
-from db.models import (Base, EarningsEvent, IntelligenceReport,      # noqa: E402
+from db.models import (Base, EarningsCoverageAttempt, EarningsEvent,  # noqa: E402
+                       IntelligenceReport, IssuerDocument,
                        Price, Signal, Stock, TimeFrame)
 from db.models import Market, Exchange, SignalType, SignalHorizon    # noqa: E402
+from src.intel_reports import adapters as A
+from src.intel_reports import documents as D
 from src.intel_reports import generators as G                             # noqa: E402
 from src.intel_reports import store as S                                 # noqa: E402
 from src.intel_reports.markdown import to_markdown                        # noqa: E402
-from intelligence.report_contract import FieldState                  # noqa: E402
+from intelligence.report_contract import FieldState, StatementClass  # noqa: E402
 import threading                                                     # noqa: E402
 
 ENGINE = create_engine(_DB_URL)
@@ -60,7 +63,8 @@ def reset(*, bars=70, with_event=True, event_in_future=True, actuals=False):
     with Session() as s:
         # DELETE rather than TRUNCATE: the same statement works on both engines, and these
         # fixtures are small enough that the speed difference is irrelevant.
-        for table in ("intelligence_reports", "earnings_events", "signals", "prices", "stocks"):
+        for table in ("issuer_documents", "earnings_coverage_attempts",
+                      "intelligence_reports", "earnings_events", "signals", "prices", "stocks"):
             s.execute(text(f"DELETE FROM {table}"))
         stock = Stock(symbol="TESTCO", name="Test Company", market=Market.US,
                       exchange=Exchange.NASDAQ, sector="Technology", currency="USD")
@@ -549,7 +553,44 @@ def t19_fractional_returns_are_converted_once():
         "reported_5d": r5.value,
         "passes": (abs(r1.value["pct"] - 15.38) < 0.01 and r1.units == "pct"
                    and abs(r5.value["pct"] + 1.85) < 0.01
-                   and "not normalised" in r1.value["basis"]),
+                   and "not normalised" in r1.value["note"]
+                   # The window is named by its ACTUAL dates, not by a span word.
+                   and " close to " in r1.value["window"]
+                   and "1 session" not in r1.value["window"]),
+    }
+
+
+def t25_the_reaction_window_names_its_real_interval():
+    """The producer's `return_1d` runs from the last close BEFORE the report date to the day
+    AFTER it — two close-to-close intervals for a trading-day release. The review's own
+    execution: 29 Sept close 100, 30 Sept close 110, 1 Oct close 121 -> 0.21, which is 21%
+    across two intervals, not either one-session move of 10%."""
+    reset(with_event=False)
+    with Session() as s:
+        stock = s.query(Stock).filter_by(symbol="TESTCO").one()
+        s.execute(text("DELETE FROM prices"))
+        closes = {date(2026, 9, 29): 100.0, date(2026, 9, 30): 110.0, date(2026, 10, 1): 121.0,
+                  date(2026, 10, 2): 121.0, date(2026, 10, 5): 121.0}
+        for i, (d, c) in enumerate(closes.items()):
+            s.add(Price(id=700_000 + i, stock_id=stock.id,
+                        ts=datetime.combine(d, datetime.min.time()),
+                        timeframe=TimeFrame.D1, open=c, high=c, low=c, close=c, volume=1e6))
+        s.add(EarningsEvent(stock_id=stock.id, report_date=date(2026, 9, 30),
+                            eps_estimate=1.0, eps_actual=1.2,
+                            post_earnings_return_1d=0.21))
+        s.commit()
+        wd = A.reaction_window_dates(s, stock.id, date(2026, 9, 30))
+        f, _, _, _ = G.post_earnings(s, symbol="TESTCO", now=datetime(2026, 10, 6))
+    r1 = f["return_1d"]
+    R["t25_the_reaction_window_names_its_real_interval"] = {
+        "window_dates": wd,
+        "reported": r1.value,
+        "passes": (wd["baseline_date"] == "2026-09-29"
+                   and wd["endpoint_1d"] == "2026-10-01"
+                   and wd["intervals_1d"] == 2
+                   and abs(r1.value["pct"] - 21.0) < 0.01
+                   and "2026-09-29 close to 2026-10-01 close" == r1.value["window"]
+                   and "2 close-to-close interval" in r1.value["basis"]),
     }
 
 
@@ -670,10 +711,154 @@ def t24_a_stale_newest_event_is_flagged_not_substituted():
         "mu_state": mu_day["event_coverage"].state.value,
         "mu_detail": mu_day["event_coverage"].value,
         "mu_reason": mu_day["event_coverage"].reason,
-        "passes": (fresh["event_coverage"].state is FieldState.OK
-                   and mu_day["event_coverage"].state is FieldState.CONFLICTING
-                   and mu_day["event_coverage"].value["age_days"] == 101
-                   and "due or overdue" in (mu_day["event_coverage"].reason or "")),
+        "fresh_statement": fresh["event_coverage"].statement.value,
+        "mu_statement": mu_day["event_coverage"].statement.value,
+        "fresh_coverage_state": fresh["event_coverage"].value["coverage_state"],
+        "mu_coverage_state": mu_day["event_coverage"].value["coverage_state"],
+        "passes": (
+            # Within the median, the absence of a warning certifies nothing.
+            fresh["event_coverage"].state is FieldState.UNKNOWN
+            and fresh["event_coverage"].value["coverage_state"] == "coverage_unknown"
+            and "rules nothing out" in (fresh["event_coverage"].reason or "")
+            # Past it, a SUSPICION — classified as an inference, never as an observed fact.
+            and mu_day["event_coverage"].state is FieldState.CONFLICTING
+            and mu_day["event_coverage"].value["coverage_state"] == "suspected_gap"
+            and mu_day["event_coverage"].statement.value == "interpretation"
+            and mu_day["event_coverage"].value["age_days"] == 101
+            and "POSSIBLE COVERAGE GAP" in (mu_day["event_coverage"].reason or "")
+            and "not proof" in (mu_day["event_coverage"].reason or "")),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# t26-t28 — the official release joined to the report.
+# Figures are Micron's REAL fiscal Q4 2026 release (period end 2026-09-03).
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MU_RELEASE_FACTS = {
+    "revenue": {"value": 54.23e9, "units": "USD", "basis": "GAAP", "period": "fiscal Q4 2026"},
+    "eps_adjusted": {"value": 33.42, "units": "USD/share", "basis": "non-GAAP adjusted",
+                     "period": "fiscal Q4 2026"},
+    # BOTH margins, because they are different numbers and collapsing them loses the
+    # distinction the issuer itself drew.
+    "gross_margin_gaap": {"value": 86.8, "units": "pct", "basis": "GAAP"},
+    "gross_margin_non_gaap": {"value": 87.0, "units": "pct", "basis": "non-GAAP"},
+    "operating_cash_flow": {"value": 43.97e9, "units": "USD", "basis": "GAAP"},
+    "adjusted_free_cash_flow": {"value": 33.20e9, "units": "USD", "basis": "non-GAAP"},
+    "guidance_next_q_revenue": {"value": 61.5e9, "range": 1.5e9, "units": "USD",
+                                "basis": "company guidance", "period": "fiscal Q1 2027"},
+    "guidance_next_q_eps_adjusted": {"value": 38.15, "range": 1.00, "units": "USD/share",
+                                     "basis": "non-GAAP company guidance",
+                                     "period": "fiscal Q1 2027"},
+    # NOT described as cash: the $73.48B balance includes marketable investments and
+    # restricted cash, and calling it "cash" overstates what is actually available.
+    "cash_and_investments": {"value": 73.48e9, "units": "USD", "basis": "GAAP",
+                             "note": "includes marketable investments and restricted cash; "
+                                     "not all unrestricted cash"},
+}
+
+
+def _add_release(s, stock_id, *, period_end, published, url, facts=None, event_id=None):
+    doc = IssuerDocument(
+        stock_id=stock_id, document_type="press_release",
+        source_url=url, publisher="Micron Technology, Inc.",
+        title="Micron Technology, Inc. Reports Results",
+        fiscal_period_end=period_end, fiscal_label="FY2026 Q4",
+        fiscal_source="stated in the release headline",
+        published_at=published, retrieved_at=published + timedelta(hours=1),
+        content_hash="sha256:" + "0" * 16, facts=facts or {}, event_id=event_id)
+    s.add(doc); s.flush()
+    return doc
+
+
+def t26_the_official_release_is_joined_by_period():
+    reset(with_event=True, event_in_future=False, actuals=True)
+    with Session() as s:
+        stock = s.query(Stock).filter_by(symbol="TESTCO").one()
+        ev = s.query(EarningsEvent).one()
+        _add_release(s, stock.id, period_end=ev.report_date - timedelta(days=20),
+                     published=datetime.combine(ev.report_date, datetime.min.time()),
+                     url="https://investors.example.invalid/q4-2026",
+                     facts=_MU_RELEASE_FACTS)
+        s.commit()
+        f, book, _, _ = G.post_earnings(s, symbol="TESTCO", now=NOW)
+    rel, fiscal, figs = (f["official_release"], f["source_confirmed_fiscal_period"],
+                         f["official_figures"])
+    R["t26_the_official_release_is_joined_by_period"] = {
+        "release_state": rel.state.value,
+        "matched_on": (rel.value or {}).get("matched_on"),
+        "fiscal_state": fiscal.state.value,
+        "fiscal": fiscal.value,
+        "figures_state": figs.state.value,
+        "gaap_vs_non_gaap_both_present": all(
+            k in (figs.value or {}) for k in ("gross_margin_gaap", "gross_margin_non_gaap")),
+        "cited": bool(rel.evidence_ids) and not book.dangling(f),
+        "passes": (rel.state is FieldState.OK
+                   and "source-confirmed" in (rel.value or {}).get("matched_on", "")
+                   and fiscal.state is FieldState.OK
+                   and figs.state is FieldState.OK
+                   and (figs.value or {})["gross_margin_gaap"]["value"] == 86.8
+                   and (figs.value or {})["gross_margin_non_gaap"]["value"] == 87.0
+                   and not book.dangling(f)),
+    }
+
+
+def t27_a_release_without_an_event_confirms_the_gap():
+    """THE PROMOTION CADENCE CANNOT MAKE. A dated official release naming a period the event
+    table does not contain is evidence, not an inference about reporting rhythm."""
+    reset(with_event=False)
+    with Session() as s:
+        stock = s.query(Stock).filter_by(symbol="TESTCO").one()
+        # An old event exists (so a post-report can be built at all) ...
+        s.add(EarningsEvent(stock_id=stock.id, report_date=date(2026, 6, 24),
+                            eps_estimate=1.0, eps_actual=1.2, post_earnings_return_1d=0.05))
+        s.flush()
+        # ... and a release for a LATER period that has no event row — MU's real shape.
+        _add_release(s, stock.id, period_end=date(2026, 9, 3),
+                     published=datetime(2026, 9, 30, 20, 5),
+                     url="https://investors.example.invalid/fq4-2026",
+                     facts=_MU_RELEASE_FACTS)
+        s.commit()
+        f, book, _, _ = G.post_earnings(s, symbol="TESTCO", now=datetime(2026, 10, 3))
+    ec = f["event_coverage"]
+    R["t27_a_release_without_an_event_confirms_the_gap"] = {
+        "coverage_state": (ec.value or {}).get("coverage_state"),
+        "statement": ec.statement.value,
+        "orphans": (ec.value or {}).get("orphan_documents"),
+        "reason": (ec.reason or "")[:120],
+        "cited": bool(ec.evidence_ids),
+        "passes": ((ec.value or {}).get("coverage_state") == "confirmed_missing_event"
+                   and ec.statement is StatementClass.OBSERVED_FACT
+                   and len((ec.value or {}).get("orphan_documents") or []) == 1
+                   and (ec.value or {})["orphan_documents"][0]["fiscal_period_end"] == "2026-09-03"
+                   and bool(ec.evidence_ids)),
+    }
+
+
+def t28_a_document_join_never_depends_on_an_event_row():
+    """Resolving by issuer and period, not by event id, is what makes t27 expressible at all."""
+    reset(with_event=False)
+    with Session() as s:
+        stock = s.query(Stock).filter_by(symbol="TESTCO").one()
+        doc = _add_release(s, stock.id, period_end=date(2026, 9, 3),
+                           published=datetime(2026, 9, 30, 20, 5),
+                           url="https://investors.example.invalid/no-event",
+                           facts=_MU_RELEASE_FACTS)
+        s.commit()
+        found = D.documents_for_period(s, stock.id, period_end=date(2026, 9, 3),
+                                       report_date=None)
+        by_report_date_only = D.documents_for_period(s, stock.id, period_end=None,
+                                                     report_date=date(2026, 9, 30))
+        event_rows = s.query(EarningsEvent).count()
+        doc_id, doc_event = doc.id, doc.event_id
+    R["t28_a_document_join_never_depends_on_an_event_row"] = {
+        "event_rows": event_rows,
+        "document_event_id": doc_event,
+        "found_by_period": [d.id for d in found],
+        "found_by_report_date": [d.id for d in by_report_date_only],
+        "passes": (event_rows == 0 and doc_event is None
+                   and [d.id for d in found] == [doc_id]
+                   and [d.id for d in by_report_date_only] == [doc_id]),
     }
 
 
@@ -700,7 +885,11 @@ def main():
                t21_a_reused_report_is_not_called_a_first_report,
                t22_a_bar_date_is_not_an_availability_time,
                t23_the_release_boundary_uses_the_exchange_timezone,
-               t24_a_stale_newest_event_is_flagged_not_substituted):
+               t24_a_stale_newest_event_is_flagged_not_substituted,
+               t25_the_reaction_window_names_its_real_interval,
+               t26_the_official_release_is_joined_by_period,
+               t27_a_release_without_an_event_confirms_the_gap,
+               t28_a_document_join_never_depends_on_an_event_row):
         fn()
     R["_meta"] = {"engine": ENGINE.dialect.name,
                   "server": str(ENGINE.url).split("@")[-1],

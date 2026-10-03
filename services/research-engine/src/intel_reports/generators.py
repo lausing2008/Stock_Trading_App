@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from db import EarningsEvent, Stock
 from . import adapters as A
+from . import documents as D
 from intelligence.report_contract import (
     HORIZONS, EarningsStage, EvidenceBook, Field, FieldState, ReportType, StatementClass,
     calculated, coverage, fields_fingerprint, interpreted, not_applicable, observed,
@@ -426,8 +427,10 @@ def _historical_reactions(session, stock_id: int, exclude_event_id: int,
         {"events": len(vals), "median_1d_pct": round(mid, 2),
          "min_pct": round(vals[0], 2), "max_pct": round(vals[-1], 2),
          "dates": [r.report_date.isoformat() for r in rows],
-         "limitation": "same 1-session window for every event; premarket, after-hours and "
-                       "intraday baselines are not normalised, and n is small"},
+         "limitation": "each value is the stored return from the last close BEFORE its report "
+                       "date to the close 1 trading day after that date's own bar — for a "
+                       "trading-day release that spans TWO close-to-close intervals, not one. "
+                       "Not normalised to the announcement instant, and n is small."},
         units="pct")
 
 
@@ -448,7 +451,10 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
     if event is None:
         raise LookupError(f"no released earnings event on file for {symbol}")
     _market = stock.market.value if hasattr(stock.market, "value") else str(stock.market)
-    coverage_warning = _event_coverage_warning(session, stock.id, event, now)
+    # A DOCUMENT OUTRANKS CADENCE. If an official release names a period with no event row,
+    # that is evidence rather than an inference, so it replaces the cadence suspicion entirely.
+    confirmed = D.confirm_missing_event(session, stock.id, now=now)
+    coverage_warning = confirmed or _event_coverage_warning(session, stock.id, event, now)
 
     book = EvidenceBook()
     A.record_event(book, event)
@@ -463,7 +469,8 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
     frozen_eps, frozen_rev = _frozen_expectations(pre_report)
     actuals = A.earnings_actuals(event, frozen_eps=frozen_eps, frozen_revenue=frozen_rev,
                                  frozen_from=pre_report)
-    reaction = A.post_event_reaction(event)
+    reaction = A.post_event_reaction(
+        event, window_dates=A.reaction_window_dates(session, stock.id, event.report_date))
 
     # "Reconciled" asserts a reconciliation was performed. Nothing here reconciles sources, so
     # the stage stays FIRST_FLASH no matter how many actuals are present; claiming otherwise
@@ -500,6 +507,12 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
     fields["trend_structure"] = A.trend_structure(
         bars, price_field=fields["price_as_of"], book=book)
     fields["signal_engine_assessment"] = A.latest_signal(session, stock.id, now, book=book)
+
+    # The issuer's own release, joined by period rather than by event id.
+    _doc_period = None
+    _fiscal = fields.get("source_confirmed_fiscal_period")
+    fields.update(D.official_release(session, book, stock.id, period_end=_doc_period,
+                                     report_date=event.report_date))
 
     # The accountability join — and the honest answer when there is nothing to join to.
     if pre_report is None:
@@ -598,18 +611,40 @@ def _event_coverage_warning(session, stock_id: int, event, now: datetime) -> Fie
         "gaps_measured": samples,
         "next_scheduled": upcoming.report_date.isoformat() if upcoming else None,
     }
+    # A MEDIAN IS NOT A DEADLINE, and this field previously said it was: it returned
+    # OBSERVED_FACT and asserted the next release "is due or overdue and is not on file". The
+    # calculation cannot support that. Normal variation exceeds a median roughly half the time;
+    # the gaps are measured from STORED events, so a missing or duplicated row distorts the very
+    # number being used to detect missing rows; and with no history the cadence is an outright
+    # assumption. What the calculation supports is a SUSPICION worth checking.
+    #
+    # Three states, because "no warning" is not evidence of completeness either:
+    #   suspected_gap          — older than this issuer's own median; verify the release calendar
+    #   confirmed_missing_event— only when dated authoritative evidence names an absent release
+    #   coverage_unknown       — within the median, which rules nothing out
     if age_days > cadence:
-        measured = (f"this issuer's own median gap is {cadence} days (from {samples} past gaps)"
-                    if samples else
-                    f"no issuer history to measure, so a {cadence}-day quarter is assumed")
+        measured = (f"this issuer's own median gap is {cadence} days (from {samples} past gaps, "
+                    f"which are themselves drawn from stored events and so cannot prove what is "
+                    f"missing)" if samples else
+                    f"there is no issuer history to measure, so a {cadence}-day quarter is an "
+                    f"assumption, not a measurement")
+        detail["coverage_state"] = "suspected_gap"
         return Field(
             value=detail, state=FieldState.CONFLICTING,
-            reason=(f"the newest RELEASED event on file is {age_days} days old and {measured}, "
-                    f"so the next release is due or overdue and is not on file. This report may "
-                    f"therefore describe an older quarter than the one you want — it is NOT "
-                    f"substituted silently. Check the issuer's own release."),
-            statement=StatementClass.OBSERVED_FACT)
-    return observed(detail)
+            reason=(f"POSSIBLE COVERAGE GAP, not a confirmed one: the newest stored release is "
+                    f"{age_days} days old and {measured}. That is a reason to check the issuer's "
+                    f"own release calendar, not proof that a release happened. This report "
+                    f"describes the newest event ON FILE and does not substitute one silently."),
+            # An inference from cadence, not something observed.
+            statement=StatementClass.INTERPRETATION)
+    detail["coverage_state"] = "coverage_unknown"
+    return Field(
+        value=detail, state=FieldState.UNKNOWN,
+        reason=(f"the newest stored release is {age_days} days old, within this issuer's "
+                f"{cadence}-day median gap. That rules nothing out: coverage is not verified "
+                f"against the issuer's own calendar here, so the absence of a warning is not "
+                f"evidence that every release is on file."),
+        statement=StatementClass.INTERPRETATION)
 
 
 def _frozen_expectations(pre_report) -> tuple[float | None, float | None]:
