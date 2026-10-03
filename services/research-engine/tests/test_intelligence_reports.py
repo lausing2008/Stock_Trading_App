@@ -278,8 +278,15 @@ def test_the_release_boundary_uses_the_exchange_timezone(results):
 
 def test_a_stale_newest_event_is_flagged_not_substituted(results):
     """Asked for MU on 3 October, the report described 24 June — correctly by its own rule,
-    because the 30 September release is not ingested. The silence was the defect."""
+    because the 30 September release is not ingested. The silence was the defect.
+
+    Driven by MU's REAL release dates. A fixed 115-day threshold did not fire at 101 days, for
+    exactly the case it was built for; the issuer's own median gap does.
+    """
     r = _scenario(results, "t24_a_stale_newest_event_is_flagged_not_substituted")
-    assert r["fresh_state"] == "OK"
-    assert r["aged_state"] == "CONFLICTING"
-    assert "not ingested" in r["aged_reason"]
+    assert r["fresh_state"] == "OK", "days after a release, nothing is overdue"
+    assert r["mu_state"] == "CONFLICTING"
+    assert r["mu_detail"]["age_days"] == 101
+    assert r["mu_detail"]["issuer_median_gap_days"] < r["mu_detail"]["age_days"], \
+        "the warning must come from the issuer's own cadence, not a fixed calendar guess"
+    assert "due or overdue" in r["mu_reason"]

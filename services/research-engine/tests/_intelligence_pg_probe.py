@@ -649,23 +649,31 @@ def t24_a_stale_newest_event_is_flagged_not_substituted():
     """MU on 3 October analysed the 24 June event, correctly by its own rule, because the
     30 September release is not ingested. The rule was right; silence about it was not."""
     reset(with_event=False)
+    # MU's REAL release dates, which is the case this exists for: on 3 October the newest
+    # released event on file was 24 June — 101 days old — because 30 September was never
+    # ingested. A fixed 115-day threshold did not fire for it; the issuer's own median gap of
+    # 95 days does.
+    mu_dates = ["2025-05-31", "2025-09-23", "2025-12-17", "2026-03-18", "2026-06-24"]
     with Session() as s:
         stock = s.query(Stock).filter_by(symbol="TESTCO").one()
-        s.add(EarningsEvent(stock_id=stock.id, report_date=(NOW - timedelta(days=101)).date(),
-                            eps_estimate=1.0, eps_actual=1.2, post_earnings_return_1d=0.05))
-        s.add(EarningsEvent(stock_id=stock.id, report_date=(NOW + timedelta(days=81)).date(),
-                            eps_estimate=1.3))
+        for d in mu_dates:
+            s.add(EarningsEvent(stock_id=stock.id, report_date=date.fromisoformat(d),
+                                eps_estimate=1.0, eps_actual=1.2, post_earnings_return_1d=0.05))
+        s.add(EarningsEvent(stock_id=stock.id, report_date=date(2026, 12, 23), eps_estimate=1.3))
         s.commit()
-        fresh, _, _, _ = G.post_earnings(s, symbol="TESTCO", now=NOW)
-        stale_now = NOW + timedelta(days=40)       # the released event is now 141 days old
-        aged, _, _, _ = G.post_earnings(s, symbol="TESTCO", now=stale_now)
+        just_after = datetime(2026, 6, 30)          # 6 days after the newest release
+        fresh, _, _, _ = G.post_earnings(s, symbol="TESTCO", now=just_after)
+        mu_day, _, _, _ = G.post_earnings(s, symbol="TESTCO", now=datetime(2026, 10, 3))
     R["t24_a_stale_newest_event_is_flagged_not_substituted"] = {
         "fresh_state": fresh["event_coverage"].state.value,
-        "aged_state": aged["event_coverage"].state.value,
-        "aged_reason": aged["event_coverage"].reason,
+        "fresh_age": fresh["event_coverage"].value["age_days"],
+        "mu_state": mu_day["event_coverage"].state.value,
+        "mu_detail": mu_day["event_coverage"].value,
+        "mu_reason": mu_day["event_coverage"].reason,
         "passes": (fresh["event_coverage"].state is FieldState.OK
-                   and aged["event_coverage"].state is FieldState.CONFLICTING
-                   and "not ingested" in (aged["event_coverage"].reason or "")),
+                   and mu_day["event_coverage"].state is FieldState.CONFLICTING
+                   and mu_day["event_coverage"].value["age_days"] == 101
+                   and "due or overdue" in (mu_day["event_coverage"].reason or "")),
     }
 
 

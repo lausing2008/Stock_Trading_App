@@ -546,9 +546,34 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
     }, cov
 
 
-#: A quarterly reporter releases roughly every 91 days. Past this, the newest RELEASED event on
-#: file is old enough that a more recent release probably exists and simply was not ingested.
-_STALE_EVENT_DAYS = 115
+#: Fallback cadence when an issuer has too little history to measure its own: a quarter plus a
+#: few days of scheduling slack.
+_DEFAULT_CADENCE_DAYS = 95
+
+#: How many past events to measure an issuer's own reporting rhythm from.
+_CADENCE_SAMPLE = 6
+
+
+def _issuer_cadence_days(session, stock_id: int, before) -> tuple[int, int]:
+    """The issuer's OWN median gap between releases, and how many gaps that was measured from.
+
+    A FIXED THRESHOLD IS THE WRONG INSTRUMENT, and the first version proved it: 115 days was
+    picked as "a quarter plus slack", and MU's 24 June event was 101 days old on 3 October, so
+    the warning did not fire for precisely the case it was built for. MU's own gaps run 85-115
+    days with a median near 95 — by day 101 the next release was already due. Measuring the
+    issuer rather than assuming a calendar also handles semi-annual reporters, who would
+    otherwise be warned about four times a year for nothing.
+    """
+    dates = [r.report_date for r in session.execute(
+        select(EarningsEvent).where(EarningsEvent.stock_id == stock_id,
+                                    EarningsEvent.report_date <= before)
+        .order_by(EarningsEvent.report_date.desc()).limit(_CADENCE_SAMPLE)).scalars().all()]
+    gaps = sorted((dates[i] - dates[i + 1]).days for i in range(len(dates) - 1))
+    if not gaps:
+        return _DEFAULT_CADENCE_DAYS, 0
+    mid = (gaps[len(gaps) // 2] if len(gaps) % 2
+           else (gaps[len(gaps) // 2 - 1] + gaps[len(gaps) // 2]) // 2)
+    return mid, len(gaps)
 
 
 def _event_coverage_warning(session, stock_id: int, event, now: datetime) -> Field:
@@ -561,6 +586,7 @@ def _event_coverage_warning(session, stock_id: int, event, now: datetime) -> Fie
     unremarkable. Silently substituting an older quarter is the failure; naming the gap is not.
     """
     age_days = (now.date() - event.report_date).days
+    cadence, samples = _issuer_cadence_days(session, stock_id, event.report_date)
     upcoming = session.execute(
         select(EarningsEvent).where(EarningsEvent.stock_id == stock_id,
                                     EarningsEvent.report_date > now.date())
@@ -568,15 +594,20 @@ def _event_coverage_warning(session, stock_id: int, event, now: datetime) -> Fie
     detail = {
         "analysed_event_date": event.report_date.isoformat(),
         "age_days": age_days,
+        "issuer_median_gap_days": cadence,
+        "gaps_measured": samples,
         "next_scheduled": upcoming.report_date.isoformat() if upcoming else None,
     }
-    if age_days > _STALE_EVENT_DAYS:
+    if age_days > cadence:
+        measured = (f"this issuer's own median gap is {cadence} days (from {samples} past gaps)"
+                    if samples else
+                    f"no issuer history to measure, so a {cadence}-day quarter is assumed")
         return Field(
             value=detail, state=FieldState.CONFLICTING,
-            reason=(f"the newest RELEASED event on file is {age_days} days old, which is longer "
-                    f"than a reporting quarter. A more recent release very likely exists and is "
-                    f"not ingested, so this report may not describe the quarter you want. It is "
-                    f"NOT substituted silently: check the issuer's own release."),
+            reason=(f"the newest RELEASED event on file is {age_days} days old and {measured}, "
+                    f"so the next release is due or overdue and is not on file. This report may "
+                    f"therefore describe an older quarter than the one you want — it is NOT "
+                    f"substituted silently. Check the issuer's own release."),
             statement=StatementClass.OBSERVED_FACT)
     return observed(detail)
 

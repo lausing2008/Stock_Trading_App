@@ -1,7 +1,7 @@
 {
   "t1_all_four_types_generate": {
     "market_outlook": {
-      "id": 1,
+      "id": 25,
       "status": "partial",
       "version": 1,
       "coverage": {
@@ -16,7 +16,7 @@
       "markdown_lines": 81
     },
     "stock_outlook": {
-      "id": 2,
+      "id": 26,
       "status": "partial",
       "version": 1,
       "coverage": {
@@ -31,7 +31,7 @@
       "markdown_lines": 85
     },
     "pre_earnings": {
-      "id": 3,
+      "id": 27,
       "status": "partial",
       "version": 1,
       "coverage": {
@@ -47,7 +47,7 @@
       "markdown_lines": 82
     },
     "post_earnings": {
-      "id": 4,
+      "id": 28,
       "status": "partial",
       "coverage": {
         "by_state": {
@@ -65,8 +65,8 @@
     "passes": true
   },
   "t2_identical_inputs_do_not_duplicate": {
-    "first_id": 5,
-    "second_id": 5,
+    "first_id": 29,
+    "second_id": 29,
     "created": [
       true,
       false
@@ -76,10 +76,10 @@
     "passes": true
   },
   "t3_changed_inputs_create_a_linked_version": {
-    "v1": 6,
-    "v2": 7,
+    "v1": 30,
+    "v2": 31,
     "v2_version": 2,
-    "supersedes": 6,
+    "supersedes": 30,
     "v1_status": "superseded",
     "changed_fields": 10,
     "v1_payload_unchanged": true,
@@ -93,9 +93,9 @@
     "passes": true
   },
   "t5_a_frozen_pre_report_survives_and_scores": {
-    "pre_id": 9,
-    "post_id": 10,
-    "post_pre_link": 9,
+    "pre_id": 33,
+    "post_id": 34,
+    "post_pre_link": 33,
     "frozen_payload_unchanged": true,
     "verdict": {
       "frozen_consensus_eps": 1.5,
@@ -109,7 +109,7 @@
     "passes": true
   },
   "t6_a_report_written_after_the_release_is_not_a_pre_report": {
-    "late_report_id": 11,
+    "late_report_id": 35,
     "found": null,
     "passes": true
   },
@@ -224,7 +224,7 @@
     },
     "expectation": {
       "value": 1.5,
-      "source": "frozen pre-release baseline (report 13)",
+      "source": "frozen pre-release baseline (report 37)",
       "is_frozen": true
     },
     "revision_field_present": true,
@@ -285,10 +285,10 @@
   },
   "t21_a_reused_report_is_not_called_a_first_report": {
     "ids": [
-      23,
-      24,
-      24,
-      23
+      46,
+      47,
+      47,
+      46
     ],
     "created": [
       true,
@@ -315,8 +315,16 @@
   },
   "t24_a_stale_newest_event_is_flagged_not_substituted": {
     "fresh_state": "OK",
-    "aged_state": "CONFLICTING",
-    "aged_reason": "the newest RELEASED event on file is 141 days old, which is longer than a reporting quarter. A more recent release very likely exists and is not ingested, so this report may not describe the quarter you want. It is NOT substituted silently: check the issuer's own release.",
+    "fresh_age": 6,
+    "mu_state": "CONFLICTING",
+    "mu_detail": {
+      "analysed_event_date": "2026-06-24",
+      "age_days": 101,
+      "issuer_median_gap_days": 94,
+      "gaps_measured": 4,
+      "next_scheduled": "2026-12-23"
+    },
+    "mu_reason": "the newest RELEASED event on file is 101 days old and this issuer's own median gap is 94 days (from 4 past gaps), so the next release is due or overdue and is not on file. This report may therefore describe an older quarter than the one you want \u2014 it is NOT substituted silently. Check the issuer's own release.",
     "passes": true
   },
   "_meta": {
