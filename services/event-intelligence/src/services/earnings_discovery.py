@@ -24,6 +24,25 @@ from common.logging import get_logger
 log = get_logger("event-intelligence.discovery")
 
 
+def _resolve_stock(session, symbol: str):
+    """The stock row for a symbol, or None."""
+    _EV, _SL, Stock = _db()
+    return session.execute(select(Stock).where(Stock.symbol == symbol)).scalars().first()
+
+
+def _stored_report_dates(session, stock_id: int) -> list[date]:
+    """Every stored announcement date for this issuer, ascending.
+
+    Separated from the comparison so the rule being tested — which provider periods have no
+    stored event — can be exercised without a database or an ORM entity. The comparison is the
+    part with the defect potential; the query is not.
+    """
+    EarningsEvent, _SL, _ST = _db()
+    return list(session.execute(
+        select(EarningsEvent.report_date).where(EarningsEvent.stock_id == stock_id)
+        .order_by(EarningsEvent.report_date.asc())).scalars().all())
+
+
 def _db():
     """Imported at CALL time, not import time.
 
@@ -89,30 +108,38 @@ def discover(symbol: str) -> dict:
     absent.
     """
     sym = symbol.upper().strip()
-    EarningsEvent, SessionLocal, Stock = _db()
+    _EV, SessionLocal, _ST = _db()
     with SessionLocal() as s:
-        stock = s.execute(select(Stock).where(Stock.symbol == sym)).scalars().first()
+        stock = _resolve_stock(s, sym)
         if stock is None:
             return {"symbol": sym, "error": f"{sym} is not in the universe"}
-        stored = list(s.execute(
-            select(EarningsEvent).where(EarningsEvent.stock_id == stock.id)
-            .order_by(EarningsEvent.report_date.asc())).scalars().all())
-        stored_dates = [e.report_date for e in stored]
+        stored_dates = _stored_report_dates(s, stock.id)
 
         rows, error = _provider_rows(sym)
         if error:
             return {"symbol": sym, "provider_error": error, "rows_returned": None,
-                    "stage": "retrieval", "absent": [], "stored_events": len(stored)}
+                    "stage": "retrieval", "absent": [], "stored_events": len(stored_dates)}
 
         # Sorted period ends give each row its own upper bound: the next period's end.
         periods = sorted(r["period_end"] for r in rows if r["period_end"])
+        today = date.today()
         for r in rows:
             if r.get("outcome") == UNMAPPABLE:
                 continue
             pe = r["period_end"]
             later = [p for p in periods if p > pe]
             upper = later[0] if later else date(9999, 12, 31)
-            match = [d for d in stored_dates if pe <= d < upper]
+            # A RELEASED RESULT CANNOT HAVE BEEN ANNOUNCED BY AN EVENT THAT HAS NOT HAPPENED.
+            #
+            # Found by running this against production: MU's newest provider period has no next
+            # period, so its upper bound was open-ended and it matched the FUTURE scheduled
+            # event three months away — reporting a quarter that is genuinely missing as
+            # present. The bound that fixes it needs no lag constant, only the fact that a row
+            # carrying a reported EPS describes something that already happened.
+            candidates = stored_dates
+            if r.get("eps_actual") is not None:
+                candidates = [d for d in stored_dates if d <= today]
+            match = [d for d in candidates if pe <= d < upper]
             if match:
                 r["outcome"] = PRESENT
                 r["matched_report_date"] = match[0].isoformat()
@@ -125,7 +152,7 @@ def discover(symbol: str) -> dict:
             "symbol": sym,
             "stage": "compared",
             "rows_returned": len(rows),
-            "stored_events": len(stored),
+            "stored_events": len(stored_dates),
             "present": sum(1 for r in rows if r.get("outcome") == PRESENT),
             "absent": [{k: (v.isoformat() if isinstance(v, date) else v)
                         for k, v in r.items()} for r in absent],
@@ -167,9 +194,9 @@ def repair(symbol: str, *, commit: bool = False, actor: str = "discovery") -> di
         return plan
 
     written, failed = [], []
-    EarningsEvent, SessionLocal, Stock = _db()
+    EarningsEvent, SessionLocal, _ST = _db()
     with SessionLocal() as s:
-        stock = s.execute(select(Stock).where(Stock.symbol == plan["symbol"])).scalars().first()
+        stock = _resolve_stock(s, plan["symbol"])
         for r in planned:
             pe = date.fromisoformat(r["period_end"])
             try:
