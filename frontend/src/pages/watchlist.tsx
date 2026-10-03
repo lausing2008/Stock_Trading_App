@@ -238,6 +238,14 @@ function AddToListModal({ listId, currentSymbols, onClose, onAdded }: {
   const [query, setQuery] = useState('');
   const [adding, setAdding] = useState<string | null>(null);
   const [added, setAdded] = useState<Set<string>>(new Set());
+  // Multi-select in the browse list. Previously every symbol took its own click and its own
+  // round trip, so building a list of fifteen meant fifteen clicks — and the bulk tab beside
+  // it only accepted typed text, which is no help when you are browsing.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Per-symbol outcomes. The original bulk loop had NO error handling: one failed add threw
+  // out of the `for`, leaving a partial result with nothing on screen to say which symbols
+  // made it. Same lossy-reporting shape as the alert accounting fixed earlier today.
+  const [addFailures, setAddFailures] = useState<{ symbol: string; message: string }[]>([]);
   const [bulkText, setBulkText] = useState('');
   const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
   const [bulkDone, setBulkDone] = useState<number | null>(null);
@@ -260,9 +268,55 @@ function AddToListModal({ listId, currentSymbols, onClose, onAdded }: {
 
   async function addStock(symbol: string) {
     setAdding(symbol);
-    await api.addToWatchlist(symbol, listId);
-    setAdded(prev => new Set(prev).add(symbol));
-    setAdding(null);
+    try {
+      await api.addToWatchlist(symbol, listId);
+      setAdded(prev => new Set(prev).add(symbol));
+    } catch (err: unknown) {
+      setAddFailures([{ symbol, message: err instanceof Error ? err.message : String(err) }]);
+    } finally {
+      setAdding(null);
+    }
+    onAdded();
+  }
+
+  function toggleSelected(symbol: string) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(symbol)) next.delete(symbol); else next.add(symbol);
+      return next;
+    });
+    setBulkDone(null);
+    setAddFailures([]);
+  }
+
+  /** Add many, sequentially, and report EACH symbol's own result.
+   *
+   *  Sequential rather than Promise.all: these are writes against one list, and a burst of
+   *  parallel writes buys nothing a user can perceive while making the failure modes harder
+   *  to describe. A failure no longer aborts the rest — the whole point of adding fifteen at
+   *  once is lost if one bad symbol silently strands the other fourteen. */
+  async function addMany(symbols: string[]) {
+    const todo = symbols.filter(sym => !currentSymbols.has(sym) && !added.has(sym));
+    if (todo.length === 0) { setBulkDone(0); setAddFailures([]); return; }
+    setBulkDone(null);
+    setAddFailures([]);
+    setBulkProgress({ done: 0, total: todo.length });
+    const failures: { symbol: string; message: string }[] = [];
+    let ok = 0;
+    for (let i = 0; i < todo.length; i++) {
+      try {
+        await api.addToWatchlist(todo[i], listId);
+        ok += 1;
+        setAdded(prev => new Set(prev).add(todo[i]));
+      } catch (err: unknown) {
+        failures.push({ symbol: todo[i], message: err instanceof Error ? err.message : String(err) });
+      }
+      setBulkProgress({ done: i + 1, total: todo.length });
+    }
+    setBulkProgress(null);
+    setBulkDone(ok);
+    setAddFailures(failures);
+    setSelected(new Set());
     onAdded();
   }
 
@@ -271,17 +325,9 @@ function AddToListModal({ listId, currentSymbols, onClose, onAdded }: {
       .split(/[\s,\n]+/)
       .map(t => t.trim().toUpperCase())
       .filter(t => t.length > 0);
-    const unique = [...new Set(tokens)].filter(sym => !currentSymbols.has(sym));
-    if (unique.length === 0) { setBulkDone(0); return; }
-    setBulkDone(null);
-    setBulkProgress({ done: 0, total: unique.length });
-    for (let i = 0; i < unique.length; i++) {
-      await api.addToWatchlist(unique[i], listId);
-      setBulkProgress({ done: i + 1, total: unique.length });
-    }
-    setBulkProgress(null);
-    setBulkDone(unique.length);
-    onAdded();
+    // Shares `addMany`, so the pasted path gains the same per-symbol error reporting the
+    // click path now has. Two code paths that add symbols should not fail differently.
+    await addMany([...new Set(tokens)]);
   }
 
   const bulkRunning = bulkProgress !== null;
@@ -326,16 +372,57 @@ function AddToListModal({ listId, currentSymbols, onClose, onAdded }: {
               {filtered.map(stock => {
                 const inList = currentSymbols.has(stock.symbol) || added.has(stock.symbol);
                 const isAdding = adding === stock.symbol;
+                const isSel = selected.has(stock.symbol);
+                const failed = addFailures.find(f => f.symbol === stock.symbol);
                 return (
-                  <div key={stock.symbol} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 12px', borderRadius: '8px', background: inList ? 'rgba(99,102,241,0.06)' : 'rgba(255,255,255,0.02)', border: `1px solid ${inList ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.05)'}` }}>
-                    <div style={{ minWidth: 0 }}>
-                      <span style={{ fontWeight: 700, fontSize: '13px', color: '#f1f5f9', fontFamily: 'ui-monospace, monospace' }}>{stock.symbol}</span>
-                      <span style={{ fontSize: '12px', color: '#475569', marginLeft: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{stock.name}</span>
+                  <div
+                    key={stock.symbol}
+                    onClick={() => !inList && !bulkRunning && toggleSelected(stock.symbol)}
+                    role={inList ? undefined : 'checkbox'}
+                    aria-checked={inList ? undefined : isSel}
+                    tabIndex={inList ? undefined : 0}
+                    onKeyDown={e => {
+                      if (!inList && !bulkRunning && (e.key === ' ' || e.key === 'Enter')) {
+                        e.preventDefault(); toggleSelected(stock.symbol);
+                      }
+                    }}
+                    title={failed ? failed.message : undefined}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      padding: '9px 12px', borderRadius: '8px',
+                      cursor: inList ? 'default' : 'pointer',
+                      background: failed ? 'rgba(239,68,68,0.07)'
+                        : isSel ? 'rgba(99,102,241,0.16)'
+                        : inList ? 'rgba(99,102,241,0.06)' : 'rgba(255,255,255,0.02)',
+                      border: `1px solid ${failed ? 'rgba(239,68,68,0.35)'
+                        : isSel ? 'rgba(99,102,241,0.55)'
+                        : inList ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.05)'}`,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                      {/* Selection box. Hidden for rows already in the list — offering a tick
+                          that cannot do anything is worse than offering nothing. */}
+                      {!inList && (
+                        <span style={{
+                          width: '15px', height: '15px', borderRadius: '4px', flexShrink: 0,
+                          border: `1px solid ${isSel ? '#6366f1' : 'rgba(148,163,184,0.4)'}`,
+                          background: isSel ? '#6366f1' : 'transparent',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: '10px', color: '#fff', lineHeight: 1,
+                        }}>{isSel ? '✓' : ''}</span>
+                      )}
+                      <div style={{ minWidth: 0 }}>
+                        <span style={{ fontWeight: 700, fontSize: '13px', color: '#f1f5f9', fontFamily: 'ui-monospace, monospace' }}>{stock.symbol}</span>
+                        <span style={{ fontSize: '12px', color: '#475569', marginLeft: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{stock.name}</span>
+                        {failed && (
+                          <div style={{ fontSize: '11px', color: '#fca5a5', marginTop: '2px' }}>Not added — {failed.message}</div>
+                        )}
+                      </div>
                     </div>
                     <button
-                      onClick={() => !inList && addStock(stock.symbol)}
-                      disabled={inList || isAdding}
-                      style={{ flexShrink: 0, marginLeft: '8px', padding: '5px 12px', borderRadius: '6px', border: 'none', fontSize: '12px', fontWeight: 700, cursor: inList ? 'default' : 'pointer', background: inList ? 'rgba(34,197,94,0.1)' : 'linear-gradient(135deg,#4f46e5,#6366f1)', color: inList ? '#4ade80' : '#fff', opacity: isAdding ? 0.6 : 1 }}
+                      onClick={e => { e.stopPropagation(); if (!inList) addStock(stock.symbol); }}
+                      disabled={inList || isAdding || bulkRunning}
+                      style={{ flexShrink: 0, marginLeft: '8px', padding: '5px 12px', borderRadius: '6px', border: 'none', fontSize: '12px', fontWeight: 700, cursor: inList ? 'default' : 'pointer', background: inList ? 'rgba(34,197,94,0.1)' : 'linear-gradient(135deg,#4f46e5,#6366f1)', color: inList ? '#4ade80' : '#fff', opacity: isAdding || bulkRunning ? 0.6 : 1 }}
                     >
                       {isAdding ? '…' : inList ? '✓' : '+ Add'}
                     </button>
@@ -346,6 +433,75 @@ function AddToListModal({ listId, currentSymbols, onClose, onAdded }: {
                 <div style={{ color: '#475569', fontSize: '13px', padding: '16px 0', textAlign: 'center' }}>No tracked stocks match "{query}"</div>
               )}
             </div>
+            {/* Multi-select action bar. Sticky at the bottom so a selection made while
+                scrolling a long list stays actionable without scrolling back. */}
+            {(() => {
+              const selectable = filtered
+                .map(st => st.symbol)
+                .filter(sym => !currentSymbols.has(sym) && !added.has(sym));
+              const allSelected = selectable.length > 0 && selectable.every(sym => selected.has(sym));
+              if (!selectable.length && selected.size === 0 && bulkDone === null) return null;
+              return (
+                <div style={{
+                  borderTop: '1px solid rgba(148,163,184,0.12)', padding: '12px 20px',
+                  display: 'flex', flexDirection: 'column', gap: '8px',
+                  background: 'rgba(9,14,26,0.9)',
+                }}>
+                  {bulkDone !== null && (
+                    <div style={{ fontSize: '12px', color: addFailures.length ? '#fbbf24' : '#4ade80' }}>
+                      {bulkDone === 0 && addFailures.length === 0
+                        ? 'Nothing to add — everything selected is already in this list.'
+                        : `Added ${bulkDone}${addFailures.length ? ` · ${addFailures.length} failed (shown above)` : ''}`}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <button
+                      type="button"
+                      disabled={bulkRunning || selectable.length === 0}
+                      onClick={() => setSelected(prev => {
+                        if (allSelected) {
+                          const next = new Set(prev);
+                          selectable.forEach(sym => next.delete(sym));
+                          return next;
+                        }
+                        return new Set([...prev, ...selectable]);
+                      })}
+                      style={{
+                        padding: '7px 12px', borderRadius: '7px', fontSize: '12px', fontWeight: 600,
+                        border: '1px solid rgba(148,163,184,0.25)', background: 'transparent',
+                        color: '#94a3b8', cursor: bulkRunning || !selectable.length ? 'default' : 'pointer',
+                        opacity: bulkRunning || !selectable.length ? 0.5 : 1,
+                      }}
+                    >
+                      {allSelected ? 'Clear' : `Select all ${selectable.length}`}
+                    </button>
+                    {selected.size > 0 && !bulkRunning && (
+                      <span style={{ fontSize: '12px', color: '#818cf8', fontWeight: 600 }}>
+                        {selected.size} selected
+                      </span>
+                    )}
+                    <div style={{ flex: 1 }} />
+                    <button
+                      type="button"
+                      disabled={bulkRunning || selected.size === 0}
+                      onClick={() => addMany([...selected])}
+                      style={{
+                        padding: '8px 16px', borderRadius: '8px', border: 'none',
+                        fontSize: '13px', fontWeight: 700, color: '#fff',
+                        background: bulkRunning || selected.size === 0
+                          ? 'rgba(99,102,241,0.25)' : 'linear-gradient(135deg,#4f46e5,#6366f1)',
+                        cursor: bulkRunning || selected.size === 0 ? 'default' : 'pointer',
+                        opacity: bulkRunning || selected.size === 0 ? 0.6 : 1,
+                      }}
+                    >
+                      {bulkRunning
+                        ? `Adding ${bulkProgress!.done}/${bulkProgress!.total}…`
+                        : `Add ${selected.size || ''} selected`.replace('  ', ' ')}
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
           </>
         ) : (
           <div style={{ padding: '0 20px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -365,8 +521,24 @@ function AddToListModal({ listId, currentSymbols, onClose, onAdded }: {
               {bulkRunning ? `Adding ${bulkProgress!.done}/${bulkProgress!.total}…` : 'Add All'}
             </button>
             {bulkDone !== null && (
-              <div style={{ fontSize: '13px', color: '#4ade80', textAlign: 'center', padding: '4px 0' }}>
-                {bulkDone === 0 ? 'No new symbols to add (all already in list)' : `Done — added ${bulkDone} symbol${bulkDone === 1 ? '' : 's'}`}
+              <div style={{ fontSize: '13px', color: addFailures.length ? '#fbbf24' : '#4ade80', textAlign: 'center', padding: '4px 0' }}>
+                {bulkDone === 0 && addFailures.length === 0
+                  ? 'No new symbols to add (all already in list)'
+                  : `Done — added ${bulkDone} symbol${bulkDone === 1 ? '' : 's'}`}
+              </div>
+            )}
+            {/* The paste path reports failures too. It previously announced success
+                unconditionally, so a symbol that did not make it looked like one that did. */}
+            {addFailures.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {addFailures.map(f => (
+                  <div key={f.symbol} style={{
+                    fontSize: '12px', color: '#fca5a5', padding: '6px 10px', borderRadius: '6px',
+                    background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.2)',
+                  }}>
+                    <strong style={{ fontFamily: 'ui-monospace, monospace' }}>{f.symbol}</strong> — not added: {f.message}
+                  </div>
+                ))}
               </div>
             )}
           </div>

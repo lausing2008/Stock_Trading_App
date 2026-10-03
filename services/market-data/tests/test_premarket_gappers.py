@@ -226,26 +226,67 @@ def _premarket_brief_body() -> str:
 
 def test_premarket_5m_job_is_registered_as_scheduled_jobs():
     assert 'id="us_premarket_5m_early"' in _SCHEDULER_SOURCE
-    assert 'id="us_premarket_5m_9am"' in _SCHEDULER_SOURCE
     assert "_refresh_premarket_5m" in _SCHEDULER_SOURCE
 
 
 def test_premarket_5m_early_window_stops_before_9am_hour():
-    """The early-window job's own hour list must not include 9 — the 9am-hour job is a
-    SEPARATE registration specifically so it can stop at :25 instead of :55, handing off
-    cleanly to us_5m_intraday's own 9:30 start without a double-fire at 9:30."""
+    """The early-window job covers 4:00-8:55 ET. From 9:00 the intraday job is already
+    ingesting the same 5m bars every five minutes, so there is nothing for this one to do."""
     start = _SCHEDULER_SOURCE.index('id="us_premarket_5m_early"')
     preceding = _SCHEDULER_SOURCE[max(0, start - 400):start]
     hour_line = next(line for line in preceding.splitlines() if "hour=" in line)
     assert '"4,5,6,7,8"' in hour_line
 
 
-def test_premarket_5m_9am_window_stops_at_25_not_55():
-    start = _SCHEDULER_SOURCE.index('id="us_premarket_5m_9am"')
-    preceding = _SCHEDULER_SOURCE[max(0, start - 400):start]
-    minute_line = next(line for line in preceding.splitlines() if "minute=" in line)
-    assert '"0,5,10,15,20,25"' in minute_line
-    assert "30" not in minute_line
+def test_the_premarket_window_is_ingested_with_no_gap_and_no_duplicate():
+    """AUD-5M-DUPLICATE-9AM (2026-10-02): THIS REPLACED TWO TESTS THAT PINNED A REMOVED JOB.
+
+    They asserted that `us_premarket_5m_9am` existed and that its minute list stopped at :25,
+    protecting a real property — premarket ingest must cover 4:00 to the open, and must not
+    collide with the intraday job. The property survives; the mechanism did not.
+
+    That job turned out to be entirely redundant. Its justification was that it handed off to
+    the intraday job at 9:30, but the intraday job's hour list starts at 9 and its minute list
+    covers the whole hour — and a cron minute list applies to EVERY hour in the hour list — so
+    the intraday job was already firing at 9:00 through 9:25, the exact six slots the removed
+    job existed to cover. Both ingested the same symbols in the same minute.
+
+    So the property is now asserted directly against the expanded fire times of every job,
+    which is what would have caught the original defect. The detailed version of this check,
+    including a proof that it fails against the old schedule, lives in
+    tests/test_5m_schedule_no_duplicate_fires.py.
+    """
+    import ast as _ast
+
+    tree = _ast.parse(_SCHEDULER_SOURCE)
+    slots: dict[tuple[int, int], list[str]] = {}
+    for node in _ast.walk(tree):
+        if not (isinstance(node, _ast.Call) and isinstance(node.func, _ast.Attribute)
+                and node.func.attr == "add_job"):
+            continue
+        id_node = next((k.value for k in node.keywords if k.arg == "id"), None)
+        if not isinstance(id_node, _ast.Constant) or "5m" not in str(id_node.value):
+            continue
+        trig = next((a for a in node.args if isinstance(a, _ast.Call)
+                     and getattr(a.func, "id", "") == "CronTrigger"), None)
+        if trig is None:
+            continue
+        kw = {k.arg: (k.value.value if isinstance(k.value, _ast.Constant) else None)
+              for k in trig.keywords}
+        if kw.get("timezone") != "America/New_York":
+            continue
+        for h in [int(x) for x in str(kw.get("hour", "")).split(",") if x.strip().isdigit()]:
+            for m in [int(x) for x in str(kw.get("minute", "")).split(",") if x.strip().isdigit()]:
+                slots.setdefault((h, m), []).append(str(id_node.value))
+
+    dupes = {slot: ids for slot, ids in slots.items() if len(ids) > 1}
+    assert not dupes, f"two US 5m jobs fire in the same slot: {dupes}"
+    # No gap: every five-minute slot from 04:00 to 09:25 is covered by exactly one job.
+    for h in (4, 5, 6, 7, 8):
+        for m in range(0, 60, 5):
+            assert (h, m) in slots, f"premarket gap at {h:02d}:{m:02d}"
+    for m in (0, 5, 10, 15, 20, 25):
+        assert (9, m) in slots, f"gap at 09:{m:02d} — the removed job's window is uncovered"
 
 
 def test_refresh_premarket_5m_does_not_call_paper_trading_step():

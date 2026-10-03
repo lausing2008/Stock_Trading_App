@@ -13961,7 +13961,9 @@ def start_scheduler() -> None:
 
     # ── 5-minute bars — US premarket window (4:00–9:25 ET) ──────────────────
     # T257-OVERNIGHT-FLOW-BRIEF: feeds the premarket-gappers section of send_premarket_brief()
-    # below. Hands off cleanly to us_5m_intraday's own 9:30 start (last tick here is 9:25).
+    # below. Covers 4:00-8:55 ET; from 9:00 onward us_5m_intraday already ingests the same 5m
+    # bars every five minutes (its hour list starts at 9 and its minute list covers the whole
+    # hour), so there is nothing left for this job to hand off to and no gap between them.
     _scheduler.add_job(
         _refresh_premarket_5m,
         CronTrigger(
@@ -13972,18 +13974,27 @@ def start_scheduler() -> None:
         ),
         id="us_premarket_5m_early", replace_existing=True, **_JOB_DEFAULTS,
     )
-    # 9am hour needs its own trigger (stop at 9:25, not 9:55) so this job hands off cleanly
-    # to us_5m_intraday's own 9:30 start below, rather than double-firing at 9:30.
-    _scheduler.add_job(
-        _refresh_premarket_5m,
-        CronTrigger(
-            hour="9",
-            minute="0,5,10,15,20,25",
-            day_of_week="mon-fri",
-            timezone="America/New_York",
-        ),
-        id="us_premarket_5m_9am", replace_existing=True, **_JOB_DEFAULTS,
-    )
+    # AUD-5M-DUPLICATE-9AM (2026-10-02): THE 9AM PREMARKET TRIGGER WAS ENTIRELY REDUNDANT,
+    # AND THE COMMENT EXPLAINING IT WAS BASED ON A MISREADING OF ITS OWN SIBLING.
+    #
+    # It used to fire `_refresh_premarket_5m` at 9:00-9:25 ET, justified by a comment claiming
+    # it handed off to the intraday job at 9:30. There is no such handoff: that job's minute list
+    # is "30,...,55,0,...,25" and its hour list begins at 9, and a cron minute list applies to
+    # EVERY hour in the hour list. So it already fired at 9:00, 9:05, 9:10, 9:15, 9:20 and 9:25
+    # — the exact six slots this job existed to cover.
+    #
+    # Both jobs then called `ingest_universe(_symbols_for("US"), "5m")` within the same minute:
+    # 6 fires x 142 symbols = ~852 duplicate provider calls every trading day, against an API
+    # that was measured refusing 6,566 requests in a 12-hour window. They also raced each other
+    # on the same rows, the same shape as the close-burst race `_run_paper_trading_step`'s lock
+    # already exists for.
+    #
+    # REMOVED RATHER THAN NARROWING THE INTRADAY JOB, deliberately. Making us_5m_intraday
+    # actually start at 9:30 would match the documented intent, but it would also stop
+    # `_run_paper_trading_step()` running at 9:00-9:25 — a change to WHEN LIVE TRADING LOGIC
+    # RUNS, which is not a side effect to bundle into a de-duplication. The premarket PRE-session
+    # rows this job fed still get written, because _refresh_5m ingests the same bars in the same
+    # slots. See docs/incidents/ for the separate question that leaves open.
 
     # ── 5-minute intraday bars — US market hours ────────────────────────────
     _scheduler.add_job(

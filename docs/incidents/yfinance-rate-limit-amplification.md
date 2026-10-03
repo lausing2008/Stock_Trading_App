@@ -224,3 +224,58 @@ endpoint is sequential and capped at 25 for the same underlying reason.
 than yfinance's and are not addressed here at all. And nothing was done about the 5-minute
 ingest volume itself — reducing it, staggering it, or moving bars to a paid provider are all
 real options with different costs, and none is a bug fix.
+
+---
+
+## AUD-5M-DUPLICATE-9AM (2026-10-02) — a correct intent, defeated by cron semantics
+
+**Found by asking "where are those requests coming from?"** — the user's question after the
+add-stock incident above, which is the right question and had not been asked.
+
+**Where the yfinance volume comes from.** All of it is 5-minute bar ingestion, from two
+functions across what were four scheduled jobs, each fetching the whole universe:
+
+| Job | Window (local) | Fires/day | Symbols | Calls/day |
+|---|---|---:|---:|---:|
+| `us_premarket_5m_early` | 04:00–08:55 ET | 60 | 142 | 8,520 |
+| `us_premarket_5m_9am` *(removed)* | 09:00–09:25 ET | 6 | 142 | 852 |
+| `us_5m_intraday` | 09:00–15:55 ET | 84 | 142 | 11,928 |
+| `hk_5m_intraday` | 09:30–15:55 HKT | 72 | 42 | 3,024 |
+
+≈24,300 calls/day, consistent with the 25,601 measured over a window covering one US session
+plus its premarket. **Options chains did migrate to Unusual Whales; bar ingestion never did.**
+
+**THE DUPLICATION.** `us_premarket_5m_9am` fired at 9:00–9:25 ET, justified by a comment
+saying it handed off to the intraday job at 9:30. There was no such handoff. `us_5m_intraday`
+declares `hour="9,10,11,12,13,14,15"` and `minute="30,...,55,0,...,25"`, and **a cron minute
+list applies to every hour in the hour list** — so it already fired at 9:00, 9:05, 9:10, 9:15,
+9:20 and 9:25, the exact six slots the premarket job existed to cover. Both then called
+`ingest_universe(_symbols_for("US"), "5m")` within the same minute.
+
+Cost: ~852 duplicate calls per trading day against a provider measured refusing 6,566 requests
+in a 12-hour window, plus a same-row race of the shape `_run_paper_trading_step`'s lock
+already exists for.
+
+**This was not a careless comment.** The author split the 9am trigger out specifically to stop
+at 9:25 and avoid double-firing at 9:30 — the intent was exactly right, and cron's
+hour×minute cross-product defeated it. Reading the code cannot catch that; **expanding the
+trigger into its actual fire times can**, which is what the new test does.
+
+**Fixed by removing the redundant job, deliberately not by narrowing the intraday one.**
+Making `us_5m_intraday` genuinely start at 9:30 would match the documented intent, but it
+would also stop `_run_paper_trading_step()` running at 9:00–9:25 — a change to **when live
+trading logic runs**, which is not a side effect to bundle into a de-duplication. The
+premarket PRE-session rows the removed job fed are still written, because `_refresh_5m`
+ingests the same bars in the same slots.
+
+**TWO QUESTIONS THIS LEAVES OPEN, both for the owner, neither a defect to fix unilaterally:**
+
+1. **Paper trading runs premarket.** `_refresh_5m("US")` calls `_run_paper_trading_step()` at
+   9:00–9:25 ET. `paper_trading_step` has no market-hours gate of its own, and its own
+   docstring records `AUD-PT-CROSSMARKETSWEEP` — exits firing outside regular hours that
+   closed positions "at a price that never traded that day". Whether premarket monitoring is
+   wanted is a trading decision, not a cleanup.
+2. **44% of US calls happen before the open.** The premarket window costs 8,520 calls/day and
+   exists to populate `session="PRE"` rows for one section of one daily email. Reducing the
+   cadence, narrowing the symbol set, or accepting the cost are all legitimate; none is a bug
+   fix.

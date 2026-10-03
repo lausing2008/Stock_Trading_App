@@ -261,6 +261,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/incidents/tracker-status-staleness.md`** — Stale Tracker Entries Can Point Either Direction — Verify Before Trusting Severity/Status; Stale Tracker Entry — T171-RETURN-TARGET-ANALYSIS Was Already Full...
 - **`docs/incidents/wire-shape-mismatches.md`** — `/events/overview`'s Nested `top_buys` Is a DIFFERENT Shape Than the Standalone Leaderboard Endpoints — Reused the Wrong Type … [Polygon, Redis]
 
+- **`docs/incidents/yfinance-rate-limit-amplification.md`** — AUD-5M-DUPLICATE-9AM (2026-10-02): two jobs ingested the same bars at 9:00-9:25 ET (~852 dup calls/day). A cron minute list applies to EVERY hour in its hour list — expand triggers to real fire times [5m, cron, duplicate]
 - **`docs/incidents/yfinance-rate-limit-amplification.md`** — AUD-ADDSTOCK-MISATTRIBUTED (2026-10-02): the retry already existed — `grep -A` from a def hides decorators. A 2nd layer would be 9 calls. Real bug: 502-for-everything + "check the ticker" [add stock, 429]
 - **`docs/incidents/yfinance-rate-limit-amplification.md`** — BUG-YFCALLVOL2 — `_fetch_live_bulk()`'s Unconditional Per-Symbol Fallback Amplified a Real Yahoo Rate-Limit Event (2026-08-17)
 
