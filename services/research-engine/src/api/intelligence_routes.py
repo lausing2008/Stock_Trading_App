@@ -14,9 +14,9 @@ from pydantic import BaseModel
 from common.jwt_auth import get_current_username
 from common.logging import get_logger
 from db import SessionLocal, IntelligenceReport
-from intel_reports import generators as G
-from intel_reports import store as S
-from intel_reports.markdown import to_markdown
+from ..intel_reports import generators as G
+from ..intel_reports import store as S
+from ..intel_reports.markdown import to_markdown
 from intelligence.report_contract import CONTRACT_VERSION, ReportType
 
 log = get_logger("research-engine.intelligence")

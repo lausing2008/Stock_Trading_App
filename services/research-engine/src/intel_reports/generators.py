@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from db import EarningsEvent, Stock
-from intel_reports import adapters as A
+from . import adapters as A
 from intelligence.report_contract import (
     HORIZONS, EarningsStage, Field, FieldState, ReportType, StatementClass,
     calculated, coverage, input_fingerprint, interpreted, not_applicable, observed,

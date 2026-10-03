@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "shared"))
-sys.path.insert(0, str(ROOT / "services" / "research-engine" / "src"))
+sys.path.insert(0, str(ROOT / "services" / "research-engine"))
 
 for m in ["redis", "httpx", "structlog", "yfinance", "pandas"]:
     sys.modules.setdefault(m, MagicMock())
@@ -43,9 +43,9 @@ from sqlalchemy.orm import sessionmaker                              # noqa: E40
 from db.models import (Base, EarningsEvent, IntelligenceReport,      # noqa: E402
                        Price, Signal, Stock, TimeFrame)
 from db.models import Market, Exchange, SignalType, SignalHorizon    # noqa: E402
-from intel_reports import generators as G                             # noqa: E402
-from intel_reports import store as S                                 # noqa: E402
-from intel_reports.markdown import to_markdown                        # noqa: E402
+from src.intel_reports import generators as G                             # noqa: E402
+from src.intel_reports import store as S                                 # noqa: E402
+from src.intel_reports.markdown import to_markdown                        # noqa: E402
 from intelligence.report_contract import FieldState                  # noqa: E402
 
 ENGINE = create_engine(_DB_URL)
@@ -275,7 +275,7 @@ def t8_fiscal_period_is_never_asserted_from_the_release_month():
 
 
 def t9_zero_estimate_gives_no_percentage_surprise():
-    from intel_reports.adapters import surprise_pct
+    from src.intel_reports.adapters import surprise_pct
     cases = {
         "normal": surprise_pct(1.50, 1.72, label="eps"),
         "zero_estimate": surprise_pct(0.0, 0.25, label="eps"),
