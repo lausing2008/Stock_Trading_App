@@ -325,21 +325,22 @@ def test_the_official_release_is_joined_and_keeps_both_margin_bases(results):
     """Micron's own release distinguishes 86.8% GAAP from 87.0% non-GAAP gross margin.
     Collapsing them loses a distinction the issuer itself drew."""
     r = _scenario(results, "t26_the_official_release_is_joined_by_period")
+    assert r["state_without_association"] == "UNKNOWN", \
+        "proximity alone makes a document a candidate, never a source"
     assert r["release_state"] == "OK"
-    assert "source-confirmed" in r["matched_on"]
+    assert "explicitly recorded association" in r["matched_on"]
     assert r["fiscal_state"] == "OK"
     assert r["gaap_vs_non_gaap_both_present"]
     assert r["cited"], "the release must be citable evidence, not an unreferenced attachment"
 
 
-def test_a_release_without_an_event_confirms_the_gap(results):
-    """The promotion cadence cannot make: a dated official release naming a period the event
-    table does not contain is evidence, not an inference about reporting rhythm."""
+def test_an_unassociated_release_is_unresolved_not_confirmed_missing(results):
+    """A release with no recorded association means nobody has mapped it — NOT that an event is
+    absent. A real 55-day announcement lag makes date arithmetic useless as evidence here, so
+    the cadence suspicion is reported separately and neither one confirms."""
     r = _scenario(results, "t27_a_release_without_an_event_confirms_the_gap")
-    assert r["coverage_state"] == "confirmed_missing_event"
-    assert r["statement"] == "observed_fact"
-    assert r["orphans"][0]["fiscal_period_end"] == "2026-09-03"
-    assert r["cited"]
+    assert r["association_state"] == "unresolved_association"
+    assert r["coverage_state"] == "suspected_gap"
 
 
 def test_a_document_join_never_depends_on_an_event_row(results):
@@ -395,3 +396,33 @@ def test_a_corrected_release_at_the_same_url_is_storable(results):
     assert r["revision_id"] != r["original_id"], "a revision is a new immutable row"
     assert r["duplicate_refused"] is True, \
         "identical bytes at the same URL is a re-retrieval, not a new version"
+
+
+
+def test_a_different_fiscal_period_is_never_confirmed(results):
+    """Asking for the 30 April period returned the 31 March document as `confirmed_period`.
+    A proximity window is a guess dressed as a match; tuning it only moves which guesses go
+    unnoticed."""
+    r = _scenario(results, "t33_a_different_period_is_never_confirmed")
+    assert r["requested_2026_04_30"] == "candidate_only"
+    assert r["requested_2026_03_31"] == "confirmed_period"
+
+
+def test_a_long_announcement_lag_is_not_evidence_of_absence(results):
+    """31 March results announced 25 May, with the event correctly stored, came out
+    `confirmed_missing_event` because a 55-day lag exceeded the window."""
+    r = _scenario(results, "t34_a_long_announcement_lag_is_not_evidence_of_absence")
+    assert r["before_mapping"] == "unresolved_association"
+    assert r["before_statement"] == "interpretation"
+    assert r["after_mapping"] == "documents_associated", \
+        "an explicitly recorded association IS evidence, unlike a date difference"
+
+
+def test_the_ledger_records_each_stage_separately(results):
+    """The persisted history row carried a COMBINED write count, re-creating the conflation the
+    outcome classifier was fixed to avoid."""
+    r = _scenario(results, "t35_the_ledger_records_each_stage_separately")
+    assert r["history_outcome"] == "mapping_failed"
+    assert r["calendar_outcome"] == "ok", "the stages are judged on their own numbers"
+    assert r["history_row_uses_history_count"]
+    assert r["history_row_does_not_use_total"]

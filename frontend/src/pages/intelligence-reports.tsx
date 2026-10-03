@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Head from 'next/head';
-import { api, type IntelField, type IntelReport, type IntelDiff } from '@/lib/api';
+import { api, type IntelField, type IntelReport, type IntelDiff,
+         type IntelEvents } from '@/lib/api';
 import { renderKind, tableColumns, formatScalar } from '@/lib/intelReportView';
 import {
   groupFields, criticalLimitations, coverageBanner, fieldLabel, humaniseValue,
@@ -187,12 +188,31 @@ export default function IntelligenceReportsPage() {
   const [report, setReport] = useState<IntelReport | null>(null);
   const [history, setHistory] = useState<IntelReport[]>([]);
   const [markdown, setMarkdown] = useState<string | null>(null);
+  const [events, setEvents] = useState<IntelEvents | null>(null);
+  const [eventId, setEventId] = useState<number | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
   const spec = TABS.find(t => t.key === tab)!;
 
-  useEffect(() => { setReport(null); setHistory([]); setMarkdown(null); setErr(''); }, [tab]);
+  useEffect(() => {
+    setReport(null); setHistory([]); setMarkdown(null); setErr('');
+    setEvents(null); setEventId(undefined);
+  }, [tab]);
+
+  /* The event list is loaded for the earnings tabs so a specific quarter can be chosen rather
+     than silently taking the newest one on file. Built over KNOWN events, with the coverage
+     limitation shown beside it. */
+  const isEarnings = tab === 'pre_earnings' || tab === 'post_earnings';
+  useEffect(() => {
+    const sym = symbol.trim().toUpperCase();
+    if (!isEarnings || sym.length < 1) { setEvents(null); return; }
+    let cancelled = false;
+    api.intelEvents(sym)
+      .then(e => { if (!cancelled) setEvents(e); })
+      .catch(() => { if (!cancelled) setEvents(null); });
+    return () => { cancelled = true; };
+  }, [symbol, isEarnings]);
 
   const loadHistory = useCallback(async (subjectKey: string) => {
     try { setHistory((await api.intelHistory(subjectKey)).reports); }
@@ -206,6 +226,7 @@ export default function IntelligenceReportsPage() {
         report_type: tab,
         symbol: spec.needsSymbol ? symbol.trim().toUpperCase() : undefined,
         market: tab === 'market_outlook' ? market : undefined,
+        event_id: tab === 'post_earnings' ? eventId : undefined,
       });
       setReport(r);
       await loadHistory(r.subject_key);
@@ -297,6 +318,28 @@ export default function IntelligenceReportsPage() {
               <option value="HK">HK</option>
             </select>
           )}
+          {isEarnings && events && events.events.length > 0 && (
+            <select value={eventId ?? ''} onChange={e => setEventId(
+                       e.target.value ? Number(e.target.value) : undefined)}
+              disabled={tab === 'pre_earnings'}
+              title={tab === 'pre_earnings'
+                ? 'A pre-earnings report always describes the next scheduled event'
+                : events.coverage_note}
+              style={{ padding: '9px 12px', fontSize: '13px', color: '#f1f5f9',
+                       background: 'rgba(255,255,255,0.04)', borderRadius: '8px',
+                       border: '1px solid rgba(148,163,184,0.15)',
+                       opacity: tab === 'pre_earnings' ? 0.5 : 1 }}>
+              <option value="">
+                {tab === 'post_earnings' ? 'Newest released event' : 'Next scheduled event'}
+              </option>
+              {events.events.filter(e => tab === 'post_earnings' ? e.released : !e.released)
+                .map(e => (
+                  <option key={e.event_id} value={e.event_id}>
+                    {e.report_date}{e.has_actuals ? '' : ' (no figures on file)'}
+                  </option>
+                ))}
+            </select>
+          )}
           <button onClick={generate} disabled={busy || (spec.needsSymbol && !symbol.trim())}
             style={{ padding: '9px 18px', borderRadius: '8px', border: 'none',
                      cursor: busy || (spec.needsSymbol && !symbol.trim()) ? 'not-allowed' : 'pointer',
@@ -317,6 +360,14 @@ export default function IntelligenceReportsPage() {
           <div style={{ padding: '11px 14px', borderRadius: '9px', marginBottom: '16px',
                         background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.2)',
                         color: '#fca5a5', fontSize: '13px' }}>{err}</div>
+        )}
+
+        {isEarnings && events && (
+          <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '14px',
+                        maxWidth: '760px', lineHeight: 1.5 }}>
+            {events.events.length} event{events.events.length === 1 ? '' : 's'} on file.
+            {' '}{events.coverage_note}
+          </div>
         )}
 
         {report && banner && (

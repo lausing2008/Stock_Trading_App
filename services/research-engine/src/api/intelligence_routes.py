@@ -131,6 +131,53 @@ def generate(req: GenerateRequest, _: str = Depends(get_current_username)):
         return body
 
 
+@router.get("/events")
+def list_events(symbol: str, limit: int = Query(16, ge=1, le=60),
+                _: str = Depends(get_current_username)):
+    """The earnings events ON FILE for an issuer, so a report can be generated against a chosen
+    one instead of silently taking the newest.
+
+    BUILT OVER KNOWN EVENTS AND SAYS SO. Coverage is not verified against the issuer's own
+    calendar here, so this list may be missing releases — which is disclosed in the response
+    rather than left for a reader to discover when the wrong quarter appears. Waiting for
+    ingestion discovery before offering any choice at all would be worse: right now there is no
+    way to ask for a different quarter even when the right one IS on file.
+    """
+    from datetime import date as _date
+    from sqlalchemy import select as _select
+    from db import EarningsEvent, Stock
+    sym = symbol.upper().strip()
+    with SessionLocal() as session:
+        stock = session.execute(_select(Stock).where(Stock.symbol == sym)).scalars().first()
+        if stock is None:
+            raise HTTPException(404, f"{sym} is not in the universe")
+        rows = session.execute(
+            _select(EarningsEvent).where(EarningsEvent.stock_id == stock.id)
+            .order_by(EarningsEvent.report_date.desc()).limit(limit)).scalars().all()
+        today = _date.today()
+        events = [{
+            "event_id": r.id,
+            "report_date": r.report_date.isoformat(),
+            "released": r.report_date <= today,
+            "has_actuals": r.eps_actual is not None or r.revenue_actual is not None,
+            # Never presented as confirmed: the stored label is derived from the period-end
+            # calendar month and is wrong for every non-calendar fiscal year.
+            "stored_period_label": r.period,
+            "period_label_is_inferred": True,
+        } for r in rows]
+        released = [e for e in events if e["released"]]
+        return {
+            "symbol": sym,
+            "events": events,
+            "coverage_note": (
+                "these are the events stored on this platform. Coverage is NOT verified against "
+                "the issuer's own release calendar, so a release may be missing from this list; "
+                "the fiscal labels shown are inferred from the period-end month and are "
+                "incorrect for non-calendar fiscal years."),
+            "newest_released": released[0]["report_date"] if released else None,
+        }
+
+
 @router.get("/reports")
 def list_reports(report_type: str | None = None, symbol: str | None = None,
                  limit: int = Query(25, ge=1, le=100),

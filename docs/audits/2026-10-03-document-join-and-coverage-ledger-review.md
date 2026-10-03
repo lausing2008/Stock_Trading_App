@@ -50,3 +50,24 @@ Reproduction: inserting such a revision raises **`IntegrityError`**. This contra
 4. Verify the browser and then build the richer content/narration slice against these enforced contracts.
 
 `issuer_documents` being empty in production is reported by Claude, not independently verified here. If accurate, the document defects are latent until population; that makes this the right time to fix them. The coverage ledger already being wired is not equivalent to its measurements being correct. No profitability or signal-accuracy conclusion follows from these changes.
+
+## Follow-up on `a7bbd26c`
+
+The report suite now passes **35 tests** locally. The added publication/retrieval cutoff and results-type filter are present. The history outcome classifier no longer uses calendar writes as evidence of history success; `ok_empty` is separate. These are meaningful improvements. Production deployment and browser behavior were not independently verified.
+
+**DJ-01 and the identity part of DJ-02 remain open.** Reducing the window to 45 days does not establish fiscal identity. Two additional disposable-SQLite executions of the real functions demonstrate this:
+
+| Fixture | Current result | Required interpretation |
+|---|---|---|
+| Request exact period April 30; only a March 31 document exists | March 31 returned as `confirmed_period` | Exact identity is absent; do not substitute another period |
+| March 31 results published May 25, with a May 25 event already in the table | `confirmed_missing_event` | Event exists; failure of the 45-day heuristic cannot prove absence |
+
+The second fixture has a 55-day release lag. No assertion about its frequency is necessary: a confidence label must not convert a matching assumption into a fact. Both functions still use temporal proximity to establish or deny identity.
+
+Required correction: when a trusted period is supplied, require equality against the canonical issuer/period identity (including annual/quarterly distinctions where needed). When event identity is unconfirmed, keep date-window matches as candidates regardless of their distance. Establish an explicit, evidence-backed document/event association; unresolved mapping remains unknown. Do not fix this by tuning the window again. Add both fixtures as acceptance tests and exercise report saving with them.
+
+**The ledger repair is partial.** Source inspection shows `_record_coverage_attempt()` still persists the combined history/calendar `rows_written` into a row labelled `mode="history"`. The classifier ignores captured `history_error`, never returns `write_failed`, and a successful nonempty request still gets today's watermark without populated window bounds. Separate request success, committed row processing, and coverage through an explicitly measured interval. Persist history-only counts for history-mode rows and propagate the actual failed stage. The original masking defect is narrowed, but the ledger still cannot support the full coverage claim.
+
+**Presentation:** event/current grouping, prominent limitations and collapsed change history are appropriate. “AT EVENT” must mean facts *about* the event, not imply every value was available then: current mutable consensus and later revisions need their own availability labels. Browser verification remains a separate acceptance task. An event selector over known events can be built now with an explicit incomplete-coverage warning; missing-event discovery is not a technical prerequisite for selecting known events.
+
+Next: correct identity and ledger semantics, then enable source discovery and prepare the bounded repair preview. Document ingestion can be developed in parallel, but should not promote proximity matches to authoritative report content. Narration should follow validated inputs. Application and production state remain unchanged by this review.

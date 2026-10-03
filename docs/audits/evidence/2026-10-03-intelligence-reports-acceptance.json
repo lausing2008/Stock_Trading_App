@@ -287,10 +287,10 @@
   },
   "t21_a_reused_report_is_not_called_a_first_report": {
     "ids": [
-      22,
-      23,
-      23,
-      22
+      24,
+      25,
+      25,
+      24
     ],
     "created": [
       true,
@@ -351,8 +351,9 @@
     "passes": true
   },
   "t26_the_official_release_is_joined_by_period": {
+    "state_without_association": "UNKNOWN",
     "release_state": "OK",
-    "matched_on": "source-confirmed fiscal period end 2026-09-10, within 45 days before the event",
+    "matched_on": "an explicitly recorded association with this event",
     "fiscal_state": "OK",
     "fiscal": {
       "period_end": "2026-09-10",
@@ -365,19 +366,11 @@
     "passes": true
   },
   "t27_a_release_without_an_event_confirms_the_gap": {
-    "coverage_state": "confirmed_missing_event",
-    "statement": "observed_fact",
-    "orphans": [
-      {
-        "document_id": 2,
-        "fiscal_period_end": "2026-09-03",
-        "fiscal_label": "FY2026 Q4",
-        "published_at": "2026-09-30T20:05:00",
-        "url": "https://investors.example.invalid/fq4-2026"
-      }
-    ],
-    "reason": "1 official issuer document(s) describe a reporting period with no corresponding event row. This is not an inference from",
-    "cited": true,
+    "coverage_state": "suspected_gap",
+    "statement": "interpretation",
+    "reason": "POSSIBLE COVERAGE GAP, not a confirmed one: the newest stored release is 101 days old and there is no issuer history to ",
+    "cited": false,
+    "association_state": "unresolved_association",
     "passes": true
   },
   "t28_a_document_join_never_depends_on_an_event_row": {
@@ -390,7 +383,7 @@
     "found_by_report_date": [
       3
     ],
-    "quality_by_date": "confirmed_period",
+    "quality_by_date": "candidate_only",
     "passes": true
   },
   "t29_a_neighbouring_quarters_release_is_not_matched": {
@@ -401,7 +394,7 @@
       4
     ],
     "previous_quarter_doc_id": 5,
-    "previous_quarter_quality": "confirmed_period",
+    "previous_quarter_quality": "candidate_only",
     "passes": true
   },
   "t30_a_document_from_the_future_is_invisible": {
@@ -427,6 +420,24 @@
     "revision_id": 8,
     "duplicate_refused": true,
     "original_id": 7,
+    "passes": true
+  },
+  "t33_a_different_period_is_never_confirmed": {
+    "requested_2026_04_30": "candidate_only",
+    "requested_2026_03_31": "confirmed_period",
+    "passes": true
+  },
+  "t34_a_long_announcement_lag_is_not_evidence_of_absence": {
+    "before_mapping": "unresolved_association",
+    "before_statement": "interpretation",
+    "after_mapping": "documents_associated",
+    "passes": true
+  },
+  "t35_the_ledger_records_each_stage_separately": {
+    "history_outcome": "mapping_failed",
+    "calendar_outcome": "ok",
+    "history_row_uses_history_count": true,
+    "history_row_does_not_use_total": true,
     "passes": true
   },
   "_meta": {

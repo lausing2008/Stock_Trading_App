@@ -508,10 +508,12 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
         raise LookupError(f"no released earnings event on file for {symbol}")
     _market = stock.market.value if hasattr(stock.market, "value") else str(stock.market)
     book = EvidenceBook()
-    # A DOCUMENT OUTRANKS CADENCE. If an official release names a period with no event row,
-    # that is evidence rather than an inference, so it replaces the cadence suspicion entirely.
-    confirmed = D.confirm_missing_event(session, stock.id, now=now, book=book)
-    coverage_warning = confirmed or _event_coverage_warning(session, stock.id, event, now)
+    # DOCUMENT ASSOCIATION IS REPORTED SEPARATELY FROM CADENCE, and neither confirms a missing
+    # event from date arithmetic. An unassociated release says nobody has mapped it, not that an
+    # event is absent — a 55-day announcement lag is ordinary, and treating it as evidence of
+    # absence was how a correctly-stored event came to look missing.
+    document_association = D.assess_event_association(session, stock.id, now=now, book=book)
+    coverage_warning = _event_coverage_warning(session, stock.id, event, now)
 
     A.record_event(book, event)
     bars = A.daily_bars(session, stock.id, limit=70, cutoff=now)
@@ -568,7 +570,10 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
     _doc_period = None
     _fiscal = fields.get("source_confirmed_fiscal_period")
     fields.update(D.official_release(session, book, stock.id, period_end=_doc_period,
-                                     report_date=event.report_date, cutoff=now))
+                                     report_date=event.report_date, cutoff=now,
+                                     event_id=event.id))
+    if document_association is not None:
+        fields["document_association"] = document_association
 
     # The accountability join — and the honest answer when there is nothing to join to.
     if pre_report is None:
@@ -600,6 +605,8 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
         "issuer":            (TimeFrame.IDENTITY, Section.EVENT, "Company"),
         "event_identity":    (TimeFrame.IDENTITY, Section.EVENT, "Earnings event"),
         "event_coverage":    (TimeFrame.IDENTITY, Section.LIMITATIONS, "Coverage of this event"),
+        "document_association": (TimeFrame.IDENTITY, Section.LIMITATIONS,
+                                 "Release documents and their event mapping"),
         "fiscal_period":     (TimeFrame.IDENTITY, Section.EVENT, "Fiscal period"),
         "source_confirmed_fiscal_period": (TimeFrame.IDENTITY, Section.EVENT,
                                            "Fiscal period, confirmed by the issuer"),
@@ -608,8 +615,12 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
         "eps_actual":        (TimeFrame.AT_EVENT, Section.METRICS, "EPS reported"),
         "eps_expectation":   (TimeFrame.AT_EVENT, Section.METRICS, "EPS expected"),
         "eps_surprise_pct":  (TimeFrame.AT_EVENT, Section.METRICS, "EPS versus expectation"),
-        "eps_estimate_revised_since": (TimeFrame.CURRENT, Section.SOURCES,
-                                       "EPS estimate revised after the freeze"),
+        # ABOUT the event, so it sits with the event's figures — but it was NOT available
+        # beforehand, and the field's own value keeps saying so.
+        "eps_estimate_revised_since": (TimeFrame.AT_EVENT, Section.SOURCES,
+                                       "EPS estimate revised AFTER the freeze"),
+        "revenue_estimate_revised_since": (TimeFrame.AT_EVENT, Section.SOURCES,
+                                           "Revenue estimate revised AFTER the freeze"),
         "revenue_actual":    (TimeFrame.AT_EVENT, Section.METRICS, "Revenue reported"),
         "revenue_expectation": (TimeFrame.AT_EVENT, Section.METRICS, "Revenue expected"),
         "revenue_surprise_pct": (TimeFrame.AT_EVENT, Section.METRICS,

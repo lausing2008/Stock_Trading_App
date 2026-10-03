@@ -152,6 +152,8 @@ export const api = {
     // Generation walks the whole covered universe for breadth and leadership, so it is slower
     // than an ordinary read; the default 30s timeout is not enough on a cold cache.
     request<IntelReport>(`/intel/generate`, { method: 'POST', body: JSON.stringify(body) }, 120_000),
+  intelEvents: (symbol: string) =>
+    request<IntelEvents>(`/intel/events?symbol=${encodeURIComponent(symbol)}`),
   listIntelReports: (params?: { report_type?: string; symbol?: string; limit?: number }) => {
     const q = new URLSearchParams();
     if (params?.report_type) q.set('report_type', params.report_type);
@@ -1336,6 +1338,22 @@ export type IntelDiff = {
   to_version?: number;
   note?: string;
   changed: { field: string; change: string; from?: unknown; to?: unknown }[];
+};
+
+export type IntelEvent = {
+  event_id: number;
+  report_date: string;
+  released: boolean;
+  has_actuals: boolean;
+  stored_period_label?: string | null;
+  period_label_is_inferred: boolean;
+};
+
+export type IntelEvents = {
+  symbol: string;
+  events: IntelEvent[];
+  coverage_note: string;
+  newest_released: string | null;
 };
 
 export type IntelCompare = { before: IntelReport; after: IntelReport; diff: IntelDiff };

@@ -1154,8 +1154,11 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int, stats: dict | None = 
                 stats["history_error"] = f"{type(exc).__name__}: {exc}"[:300]
 
         # Upcoming earnings date (calendar)
+        _cal_before = upserted
         try:
             cal = ticker.calendar
+            if stats is not None:
+                stats["calendar_rows_returned"] = 0 if not cal else 1
             if cal is not None:
                 earnings_dt = cal.get("Earnings Date")
                 if earnings_dt is not None:
@@ -1233,6 +1236,12 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int, stats: dict | None = 
                         upserted += 1
         except Exception as exc:
             log.debug("earnings.calendar_skip", symbol=symbol, error=str(exc))
+            if stats is not None:
+                stats["calendar_error"] = f"{type(exc).__name__}: {exc}"[:300]
+        if stats is not None:
+            # Attributed to the CALENDAR stage by difference, so neither stage can borrow the
+            # other's writes.
+            stats["calendar_rows_written"] = upserted - _cal_before
 
         return upserted
     except Exception as exc:
@@ -1403,8 +1412,24 @@ async def sync_all_earnings() -> dict:
         total += n
         outcome = _coverage_outcome(stats, n, error)
         outcomes[outcome] = outcomes.get(outcome, 0) + 1
-        _record_coverage_attempt(stock_id, symbol, stats, rows_written=n,
-                                 started=started, outcome=outcome, error=error)
+        # ONE ROW PER STAGE. A single row carrying a combined write count re-creates the exact
+        # conflation the outcome classifier was fixed to avoid — the history ledger would record
+        # five rows written when four of them were calendar rows. The `mode` column exists for
+        # this, so each stage is recorded as what it is.
+        _record_coverage_attempt(stock_id, symbol, stats, mode="history",
+                                 rows_returned=stats.get("rows_returned"),
+                                 rows_mapped=stats.get("rows_mapped"),
+                                 rows_written=stats.get("history_rows_written"),
+                                 started=started, outcome=outcome,
+                                 error=error or stats.get("history_error"))
+        _record_coverage_attempt(stock_id, symbol, stats, mode="calendar",
+                                 rows_returned=stats.get("calendar_rows_returned"),
+                                 rows_mapped=None,
+                                 rows_written=stats.get("calendar_rows_written"),
+                                 started=started,
+                                 outcome=("retrieval_failed" if error
+                                          else _calendar_outcome(stats)),
+                                 error=error or stats.get("calendar_error"))
         await asyncio.sleep(0.2)  # gentle rate limiting
 
     return {"symbols_processed": len(stocks), "rows_upserted": total, "outcomes": outcomes}
@@ -1444,28 +1469,45 @@ def _coverage_outcome(stats: dict, written: int, error: str | None) -> str:
     return "ok"
 
 
-def _record_coverage_attempt(stock_id: int, symbol: str, stats: dict, *, rows_written: int,
+def _calendar_outcome(stats: dict) -> str:
+    """The calendar stage judged on its own numbers, never on the history stage's."""
+    returned = stats.get("calendar_rows_returned")
+    if returned is None:
+        return "retrieval_failed"
+    if returned == 0:
+        return "ok_empty"
+    return "ok" if (stats.get("calendar_rows_written") or 0) > 0 else "mapping_failed"
+
+
+def _record_coverage_attempt(stock_id: int, symbol: str, stats: dict, *, mode: str,
+                             rows_returned, rows_mapped, rows_written,
                              started, outcome: str, error: str | None) -> None:
-    """Persist one attempt. Never raises — a ledger that can break the sync is worse than none."""
+    """Persist ONE STAGE's attempt. Never raises — a ledger that can break the sync is worse
+    than no ledger at all."""
     try:
         from db import EarningsCoverageAttempt
         with SessionLocal() as s:
             s.add(EarningsCoverageAttempt(
-                stock_id=stock_id, mode="history", source="yfinance",
+                stock_id=stock_id, mode=mode, source="yfinance",
+                # THE WINDOW ASKED FOR. Without it a watermark claims "covered to here" with no
+                # record of what was requested — provider history depth is not the window we
+                # wanted, and the difference IS the coverage question.
+                window_start=stats.get(f"{mode}_window_start"),
+                window_end=stats.get(f"{mode}_window_end") or date.today(),
                 attempted_at=started, completed_at=datetime.utcnow(),
-                rows_returned=stats.get("rows_returned"),
-                rows_mapped=stats.get("rows_mapped"),
+                rows_returned=rows_returned,
+                rows_mapped=rows_mapped,
                 rows_written=rows_written,
-                outcome=outcome, error=error, dropped=stats.get("dropped") or {},
-                # The watermark advances ONLY on a committed, successful pass, so a crashed or
-                # partial run can never mark a window covered.
-                # ONLY a fully-mapped history pass may advance it. `ok_empty` means the request
-                # succeeded and returned nothing, which does not establish coverage through
-                # today; `partial` means some rows never landed. Neither is a covered window.
-                watermark=(date.today() if outcome == "ok" else None)))
+                outcome=outcome, error=error,
+                dropped=(stats.get("dropped") or {}) if mode == "history" else {},
+                # ONLY a fully-mapped HISTORY pass may advance a historical watermark. A
+                # calendar success says nothing about history; `ok_empty` is a successful
+                # request that found nothing; `partial` means rows never landed.
+                watermark=(date.today() if (mode == "history" and outcome == "ok") else None)))
             s.commit()
     except Exception as exc:                            # noqa: BLE001
-        log.warning("earnings.coverage_ledger_write_failed", symbol=symbol, error=str(exc)[:200])
+        log.warning("earnings.coverage_ledger_write_failed", symbol=symbol, mode=mode,
+                    error=str(exc)[:200])
 
 
 async def sync_todays_earnings() -> dict:

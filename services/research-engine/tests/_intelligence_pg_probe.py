@@ -49,7 +49,8 @@ from src.intel_reports import documents as D
 from src.intel_reports import generators as G                             # noqa: E402
 from src.intel_reports import store as S                                 # noqa: E402
 from src.intel_reports.markdown import to_markdown                        # noqa: E402
-from intelligence.report_contract import FieldState, StatementClass  # noqa: E402
+from intelligence.report_contract import (FieldState, StatementClass,  # noqa: E402
+                                          EvidenceBook as _BOOK)
 import threading                                                     # noqa: E402
 
 ENGINE = create_engine(_DB_URL)
@@ -776,15 +777,23 @@ def t26_the_official_release_is_joined_by_period():
     with Session() as s:
         stock = s.query(Stock).filter_by(symbol="TESTCO").one()
         ev = s.query(EarningsEvent).one()
-        _add_release(s, stock.id, period_end=ev.report_date - timedelta(days=20),
-                     published=datetime.combine(ev.report_date, datetime.min.time()),
-                     url="https://investors.example.invalid/q4-2026",
-                     facts=_MU_RELEASE_FACTS)
+        doc = _add_release(s, stock.id, period_end=ev.report_date - timedelta(days=20),
+                           published=datetime.combine(ev.report_date, datetime.min.time()),
+                           url="https://investors.example.invalid/q4-2026",
+                           facts=_MU_RELEASE_FACTS)
+        s.commit()
+        # WITHOUT an explicit association, a nearby document is a CANDIDATE and nothing more —
+        # proximity cannot establish that it describes THIS event.
+        before, _, _, _ = G.post_earnings(s, symbol="TESTCO", now=NOW)
+        unlinked_state = before["official_release"].state.value
+        # A mapping step records the association; now it is evidence.
+        doc.event_id = ev.id
         s.commit()
         f, book, _, _ = G.post_earnings(s, symbol="TESTCO", now=NOW)
     rel, fiscal, figs = (f["official_release"], f["source_confirmed_fiscal_period"],
                          f["official_figures"])
     R["t26_the_official_release_is_joined_by_period"] = {
+        "state_without_association": unlinked_state,
         "release_state": rel.state.value,
         "matched_on": (rel.value or {}).get("matched_on"),
         "fiscal_state": fiscal.state.value,
@@ -793,8 +802,9 @@ def t26_the_official_release_is_joined_by_period():
         "gaap_vs_non_gaap_both_present": all(
             k in (figs.value or {}) for k in ("gross_margin_gaap", "gross_margin_non_gaap")),
         "cited": bool(rel.evidence_ids) and not book.dangling(f),
-        "passes": (rel.state is FieldState.OK
-                   and "source-confirmed" in (rel.value or {}).get("matched_on", "")
+        "passes": (unlinked_state == "UNKNOWN"
+                   and rel.state is FieldState.OK
+                   and "explicitly recorded association" in (rel.value or {}).get("matched_on", "")
                    and fiscal.state is FieldState.OK
                    and figs.state is FieldState.OK
                    and (figs.value or {})["gross_margin_gaap"]["value"] == 86.8
@@ -824,14 +834,18 @@ def t27_a_release_without_an_event_confirms_the_gap():
     R["t27_a_release_without_an_event_confirms_the_gap"] = {
         "coverage_state": (ec.value or {}).get("coverage_state"),
         "statement": ec.statement.value,
-        "orphans": (ec.value or {}).get("orphan_documents"),
         "reason": (ec.reason or "")[:120],
         "cited": bool(ec.evidence_ids),
-        "passes": ((ec.value or {}).get("coverage_state") == "confirmed_missing_event"
-                   and ec.statement is StatementClass.OBSERVED_FACT
-                   and len((ec.value or {}).get("orphan_documents") or []) == 1
-                   and (ec.value or {})["orphan_documents"][0]["fiscal_period_end"] == "2026-09-03"
-                   and bool(ec.evidence_ids)),
+        "association_state": (f.get("document_association").value or {}).get("coverage_state")
+                             if "document_association" in f else None,
+        "passes": (
+            # A release with no recorded association is UNRESOLVED, never a confirmed absence:
+            # a real 55-day announcement lag makes date arithmetic useless as evidence.
+            "document_association" in f
+            and (f["document_association"].value or {})["coverage_state"] == "unresolved_association"
+            and f["document_association"].statement is StatementClass.INTERPRETATION
+            # ...and the cadence suspicion is still reported separately, as a suspicion.
+            and (ec.value or {}).get("coverage_state") == "suspected_gap"),
     }
 
 
@@ -932,15 +946,14 @@ def t30_a_document_from_the_future_is_invisible():
                      facts=_MU_RELEASE_FACTS)
         s.commit()
         from intelligence.report_contract import EvidenceBook as _EB
-        at_october = D.confirm_missing_event(s, stock.id, now=datetime(2026, 10, 3), book=_EB())
-        at_february = D.confirm_missing_event(s, stock.id, now=datetime(2027, 2, 1), book=_EB())
+        at_october = D.assess_event_association(s, stock.id, now=datetime(2026, 10, 3), book=_EB())
+        at_february = D.assess_event_association(s, stock.id, now=datetime(2027, 2, 1), book=_EB())
         f, _, _, _ = G.post_earnings(s, symbol="TESTCO", now=datetime(2026, 10, 3))
     R["t30_a_document_from_the_future_is_invisible"] = {
         "confirmed_at_october": at_october is not None,
         "confirmed_at_february": at_february is not None,
         "october_coverage_state": (f["event_coverage"].value or {}).get("coverage_state"),
-        # Invisible before it was published; visible afterwards. And in October the report falls
-        # back to the cadence SUSPICION rather than a confirmation it cannot support.
+        # Invisible before it was published; visible afterwards. Either way it never confirms.
         "passes": (at_october is None and at_february is not None
                    and (f["event_coverage"].value or {}).get("coverage_state") != "confirmed_missing_event"),
     }
@@ -1031,6 +1044,91 @@ def t32_a_corrected_release_at_the_same_url_is_storable():
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# t33-t35 — identity is exact, association is evidence, the ledger is per stage.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def t33_a_different_period_is_never_confirmed():
+    """Asking for the 30 April period returned the 31 March document as `confirmed_period`.
+    31 March does not describe the quarter ending 30 April, however close the dates are."""
+    reset(with_event=False)
+    with Session() as s:
+        stock = s.query(Stock).filter_by(symbol="TESTCO").one()
+        _add_release(s, stock.id, period_end=date(2026, 3, 31),
+                     published=datetime(2026, 4, 20, 20, 0),
+                     url="https://investors.example.invalid/mar", facts=_MU_RELEASE_FACTS)
+        s.commit()
+        wrong, q_wrong = D.documents_for_period(
+            s, stock.id, period_end=date(2026, 4, 30), report_date=None,
+            cutoff=datetime(2026, 6, 1))
+        exact, q_exact = D.documents_for_period(
+            s, stock.id, period_end=date(2026, 3, 31), report_date=None,
+            cutoff=datetime(2026, 6, 1))
+    R["t33_a_different_period_is_never_confirmed"] = {
+        "requested_2026_04_30": q_wrong, "requested_2026_03_31": q_exact,
+        "passes": (q_wrong == "candidate_only" and q_exact == "confirmed_period"
+                   and len(exact) == 1),
+    }
+
+
+def t34_a_long_announcement_lag_is_not_evidence_of_absence():
+    """31 March results announced 25 May — a 55-day lag — with the event correctly stored, came
+    out `confirmed_missing_event` because the lag exceeded the window."""
+    reset(with_event=False)
+    with Session() as s:
+        stock = s.query(Stock).filter_by(symbol="TESTCO").one()
+        s.add(EarningsEvent(stock_id=stock.id, report_date=date(2026, 5, 25),
+                            eps_estimate=1.0, eps_actual=1.1))
+        _add_release(s, stock.id, period_end=date(2026, 3, 31),
+                     published=datetime(2026, 5, 25, 20, 0),
+                     url="https://investors.example.invalid/q1-late",
+                     facts=_MU_RELEASE_FACTS)
+        s.commit()
+        unlinked = D.assess_event_association(s, stock.id, now=datetime(2026, 6, 10),
+                                              book=_BOOK())
+        # Once a mapping step records the association, it reads as associated.
+        doc = s.query(IssuerDocument).one()
+        ev = s.query(EarningsEvent).one()
+        doc.event_id = ev.id
+        s.commit()
+        linked = D.assess_event_association(s, stock.id, now=datetime(2026, 6, 10), book=_BOOK())
+    R["t34_a_long_announcement_lag_is_not_evidence_of_absence"] = {
+        "before_mapping": (unlinked.value or {}).get("coverage_state"),
+        "before_statement": unlinked.statement.value,
+        "after_mapping": (linked.value or {}).get("coverage_state"),
+        "passes": ((unlinked.value or {}).get("coverage_state") == "unresolved_association"
+                   and unlinked.statement is StatementClass.INTERPRETATION
+                   and (linked.value or {}).get("coverage_state") == "documents_associated"),
+    }
+
+
+def t35_the_ledger_records_each_stage_separately():
+    """The persisted history row recorded a COMBINED write count, re-creating the conflation
+    the outcome classifier was fixed to avoid."""
+    import ast as _ast, pathlib as _pl
+    src = _pl.Path(ROOT / "services/event-intelligence/src/services/earnings.py").read_text()
+    tree = _ast.parse(src)
+    ns = {}
+    for name in ("_coverage_outcome", "_calendar_outcome"):
+        fn = next(n for n in tree.body if isinstance(n, _ast.FunctionDef) and n.name == name)
+        exec(compile(_ast.Module(body=[fn], type_ignores=[]), "<x>", "exec"), ns)
+    stats = {"rows_returned": 4, "history_rows_written": 0,
+             "calendar_rows_returned": 1, "calendar_rows_written": 1}
+    # The call site must pass the HISTORY count to the history row, never the total.
+    call = src[src.index('_record_coverage_attempt(stock_id, symbol, stats, mode="history"'):]
+    call = call[:call.index("_record_coverage_attempt(stock_id, symbol, stats, mode=\"calendar\"")]
+    R["t35_the_ledger_records_each_stage_separately"] = {
+        "history_outcome": ns["_coverage_outcome"](stats, 99, None),
+        "calendar_outcome": ns["_calendar_outcome"](stats),
+        "history_row_uses_history_count": 'rows_written=stats.get("history_rows_written")' in call,
+        "history_row_does_not_use_total": "rows_written=n" not in call,
+        "passes": (ns["_coverage_outcome"](stats, 99, None) == "mapping_failed"
+                   and ns["_calendar_outcome"](stats) == "ok"
+                   and 'rows_written=stats.get("history_rows_written")' in call
+                   and "rows_written=n" not in call),
+    }
+
+
 def main():
     for fn in (t1_all_four_types_generate, t2_identical_inputs_do_not_duplicate,
                t3_changed_inputs_create_a_linked_version,
@@ -1062,7 +1160,10 @@ def main():
                t29_a_neighbouring_quarters_release_is_not_matched,
                t30_a_document_from_the_future_is_invisible,
                t31_history_failure_is_not_masked_by_calendar_success,
-               t32_a_corrected_release_at_the_same_url_is_storable):
+               t32_a_corrected_release_at_the_same_url_is_storable,
+               t33_a_different_period_is_never_confirmed,
+               t34_a_long_announcement_lag_is_not_evidence_of_absence,
+               t35_the_ledger_records_each_stage_separately):
         fn()
     R["_meta"] = {"engine": ENGINE.dialect.name,
                   "server": str(ENGINE.url).split("@")[-1],

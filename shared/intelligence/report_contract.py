@@ -65,7 +65,10 @@ class StatementClass(str, Enum):
 #: both true and describe different moments — printed in one undifferentiated list, today's BUY
 #: signal sits beside June's results and reads as a prediction made before them.
 class TimeFrame(str, Enum):
-    AT_EVENT = "at_event"            # measured at or around the event being reported on
+    #: ABOUT the event — not a claim that it was knowable at the time. A consensus revised
+    #: after the release is still about that event and belongs here; whether it was AVAILABLE
+    #: beforehand is a separate question the field's own state and reason must keep carrying.
+    AT_EVENT = "at_event"
     CURRENT = "current"              # as of the report's cutoff, NOT contemporaneous with it
     HISTORICAL = "historical"        # prior periods, for context
     IDENTITY = "identity"            # who and what this report is about

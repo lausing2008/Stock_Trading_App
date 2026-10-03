@@ -18,10 +18,21 @@ from intelligence.report_contract import (
     observed, unavailable, unknown,
 )
 
-#: A release follows its period end by days to a few weeks. 75 days was wide enough to reach
-#: the NEIGHBOURING quarter — it matched a Q2 release to a Q1 event while claiming fiscal-period
-#: identity. A quarter is ~91 days, so any window approaching that is ambiguous by construction.
-_RELEASE_LAG_DAYS = 45
+#: NO WINDOW. Identity is exact or it is not identity.
+#:
+#: This was 75 days, then 45, and both were wrong in the same way: a proximity window is a guess
+#: dressed as a match, and tuning it only moves which guesses go unnoticed. Two executed cases
+#: settled it — asking for the April 30 period returned the March 31 document as
+#: `confirmed_period`, and a genuine 55-day announcement lag made a correctly-stored event look
+#: like a missing one.
+#:
+#: So a CONFIRMED link now requires exact source-confirmed fiscal identity, or an explicit
+#: evidence-backed association. Everything else stays a candidate or stays unknown — which is
+#: less useful and the only thing that is true.
+
+#: How near a publication has to be to even be WORTH LISTING as a candidate. This bounds a
+#: listing, never a match — nothing confirmed is derived from it.
+_CANDIDATE_DAYS = 30
 
 #: Only these document types report results. A transcript or a slide deck accompanies a release;
 #: treating "the latest document" as the results release is how a presentation becomes the
@@ -45,6 +56,7 @@ def _visible(q, *, cutoff: datetime):
 
 def documents_for_period(session, stock_id: int, *, period_end: date | None,
                          report_date: date | None, cutoff: datetime,
+                         event_id: int | None = None,
                          limit: int = 10) -> tuple[list[IssuerDocument], str]:
     """Candidate results documents for one reporting period, and how confidently they matched.
 
@@ -54,37 +66,47 @@ def documents_for_period(session, stock_id: int, *, period_end: date | None,
     A proximity match on publication date alone is a CANDIDATE: it cannot populate authoritative
     period figures, because it cannot tell a late Q1 release from an early Q2 one.
 
-    Returns `(documents, match_quality)` where quality is "confirmed_period", "proximity_only"
-    or "none", so the caller never has to infer how much the match is worth.
+    Returns `(documents, match_quality)` where quality is "confirmed_period" (exact fiscal
+    identity), "confirmed_link" (an explicitly recorded association), "candidate_only" or
+    "none" — so the caller never has to infer how much a match is worth.
     """
     base = select(IssuerDocument).where(
         IssuerDocument.stock_id == stock_id,
         IssuerDocument.document_type.in_(_RESULTS_DOCUMENT_TYPES))
     base = _visible(base, cutoff=cutoff)
 
+    # CONFIRMED requires the document's own period to EQUAL the one asked for. A document
+    # describing 31 March does not describe the quarter ending 30 April, however close the two
+    # dates are.
+    if period_end is not None:
+        exact = list(session.execute(
+            base.where(IssuerDocument.fiscal_period_end == period_end)
+            .order_by(IssuerDocument.published_at.desc().nullslast())
+            .limit(limit)).scalars().all())
+        if exact:
+            return exact, "confirmed_period"
+
+    # CONFIRMED also when an association was recorded explicitly — a mapping step asserted this
+    # document belongs to this event, which is evidence rather than arithmetic on dates.
+    if event_id is not None:
+        linked = list(session.execute(
+            base.where(IssuerDocument.event_id == event_id)
+            .order_by(IssuerDocument.published_at.desc().nullslast())
+            .limit(limit)).scalars().all())
+        if linked:
+            return linked, "confirmed_link"
+
+    # Anything else is at best a CANDIDATE. Documents published near the report date are listed
+    # so a reader can see what exists, and they never populate period figures.
     anchor = period_end or report_date
     if anchor is None:
         return [], "none"
-
-    # Confirmed: the document names a period that this event could be reporting on.
-    confirmed = list(session.execute(
-        base.where(IssuerDocument.fiscal_period_end.is_not(None),
-                   IssuerDocument.fiscal_period_end <= anchor,
-                   IssuerDocument.fiscal_period_end >= anchor - timedelta(days=_RELEASE_LAG_DAYS))
-        .order_by(IssuerDocument.fiscal_period_end.desc(),
-                  IssuerDocument.published_at.desc().nullslast())
-        .limit(limit)).scalars().all())
-    if confirmed:
-        return confirmed, "confirmed_period"
-
-    # Candidate only: published near the report date, with no period of its own to check.
-    lo = datetime.combine(anchor - timedelta(days=7), datetime.min.time())
-    hi = datetime.combine(anchor + timedelta(days=7), datetime.max.time())
+    lo = datetime.combine(anchor - timedelta(days=_CANDIDATE_DAYS), datetime.min.time())
+    hi = datetime.combine(anchor + timedelta(days=_CANDIDATE_DAYS), datetime.max.time())
     nearby = list(session.execute(
-        base.where(IssuerDocument.fiscal_period_end.is_(None),
-                   IssuerDocument.published_at >= lo, IssuerDocument.published_at <= hi)
+        base.where(IssuerDocument.published_at >= lo, IssuerDocument.published_at <= hi)
         .order_by(IssuerDocument.published_at.desc()).limit(limit)).scalars().all())
-    return (nearby, "proximity_only") if nearby else ([], "none")
+    return (nearby, "candidate_only") if nearby else ([], "none")
 
 
 def record_document(book: EvidenceBook, doc: IssuerDocument) -> str:
@@ -106,10 +128,11 @@ def record_document(book: EvidenceBook, doc: IssuerDocument) -> str:
 
 def official_release(session, book: EvidenceBook, stock_id: int, *,
                      period_end: date | None, report_date: date | None,
-                     cutoff: datetime) -> dict[str, Field]:
+                     cutoff: datetime, event_id: int | None = None) -> dict[str, Field]:
     """The official release attached to a report, or a named reason there is none."""
     docs, quality = documents_for_period(session, stock_id, period_end=period_end,
-                                         report_date=report_date, cutoff=cutoff)
+                                         report_date=report_date, cutoff=cutoff,
+                                         event_id=event_id)
     if not docs:
         return {
             "official_release": unavailable(
@@ -121,7 +144,7 @@ def official_release(session, book: EvidenceBook, stock_id: int, *,
 
     primary = docs[0]
     out: dict[str, Field] = {}
-    if quality == "proximity_only":
+    if quality == "candidate_only":
         # A candidate, not a link. It is reported so a reader can see what exists, but it never
         # populates period figures or confirms a fiscal identity.
         return {
@@ -142,8 +165,9 @@ def official_release(session, book: EvidenceBook, stock_id: int, *,
          "retrieved_at": primary.retrieved_at.isoformat(),
          "content_hash": primary.content_hash,
          "other_documents": len(docs) - 1,
-         "matched_on": (f"source-confirmed fiscal period end {primary.fiscal_period_end}, "
-                        f"within {_RELEASE_LAG_DAYS} days before the event")},
+         "matched_on": ("exact source-confirmed fiscal period end "
+                        f"{primary.fiscal_period_end}" if quality == "confirmed_period"
+                        else "an explicitly recorded association with this event")},
         evidence_ids=[record_document(book, primary)])
 
     if primary.fiscal_period_end:
@@ -167,50 +191,64 @@ def official_release(session, book: EvidenceBook, stock_id: int, *,
     return out
 
 
-def confirm_missing_event(session, stock_id: int, *, now: datetime,
-                          book: EvidenceBook | None = None) -> Field | None:
-    """A document for a period with NO event row is dated evidence the event is absent.
+def assess_event_association(session, stock_id: int, *, now: datetime,
+                             book: EvidenceBook | None = None) -> Field | None:
+    """Whether each stored release is associated with an event — or whether that is unresolved.
 
-    THIS IS THE PROMOTION CADENCE CANNOT MAKE. Exceeding an issuer's median gap is an inference
-    about reporting rhythm; an official release for a period the event table does not contain is
-    a fact about coverage. Only this path may say `confirmed_missing_event`.
+    WHAT THIS NO LONGER DOES, AND WHY. It used to look for an event within N days after a
+    document's period end and call the absence of one a CONFIRMED missing event. A real
+    announcement lag of 55 days then made a correctly-stored event look missing — the arithmetic
+    was asserting a fact about coverage from nothing but a date difference.
+
+    An association is EVIDENCE: a mapping step recorded `event_id` on the document. Its absence
+    is not counter-evidence; it means nobody has mapped it yet. So the only honest states here
+    are `associated` and `unresolved_association`, and NEITHER confirms a missing event.
+
+    `confirmed_missing_event` is therefore not reachable from date arithmetic at all. It needs a
+    resolution step that attempted the association and recorded that no event exists — which is
+    the ingestion-discovery work, not this function. Until then a coverage gap stays a cadence
+    SUSPICION, which is what it is.
     """
-    # CUTOFF-BOUNDED, and results documents only. Without the cutoff a release published after
-    # the report's own cutoff certified a gap the report could not have known about.
     q = select(IssuerDocument).where(
         IssuerDocument.stock_id == stock_id,
-        IssuerDocument.fiscal_period_end.is_not(None),
         IssuerDocument.document_type.in_(_RESULTS_DOCUMENT_TYPES))
     docs = list(session.execute(
         _visible(q, cutoff=now)
-        .order_by(IssuerDocument.fiscal_period_end.desc()).limit(8)).scalars().all())
-    orphans = []
-    cited: list[str] = []
-    for doc in docs:
-        anchor = doc.fiscal_period_end
-        match = session.execute(
-            select(EarningsEvent).where(
-                EarningsEvent.stock_id == stock_id,
-                EarningsEvent.report_date >= anchor,
-                EarningsEvent.report_date <= anchor + timedelta(days=_RELEASE_LAG_DAYS))
-            .limit(1)).scalars().first()
-        if match is None:
-            # Recorded, not merely cited. The report refuses to save a citation that resolves
-            # to nothing, and it caught this exact omission.
-            if book is not None:
-                cited.append(record_document(book, doc))
-            orphans.append({
-                "document_id": doc.id, "fiscal_period_end": anchor.isoformat(),
-                "fiscal_label": doc.fiscal_label,
-                "published_at": doc.published_at.isoformat() if doc.published_at else None,
-                "url": doc.source_url})
-    if not orphans:
+        .order_by(IssuerDocument.published_at.desc().nullslast()).limit(8)).scalars().all())
+    if not docs:
         return None
+
+    unresolved, associated, cited = [], [], []
+    for doc in docs:
+        entry = {"document_id": doc.id,
+                 "fiscal_period_end": (doc.fiscal_period_end.isoformat()
+                                       if doc.fiscal_period_end else None),
+                 "published_at": doc.published_at.isoformat() if doc.published_at else None,
+                 "url": doc.source_url}
+        if doc.event_id is not None:
+            associated.append(entry | {"event_id": doc.event_id})
+            continue
+        if book is not None:
+            cited.append(record_document(book, doc))
+        unresolved.append(entry)
+
+    if not unresolved:
+        return Field(
+            value={"coverage_state": "documents_associated",
+                   "associated": associated},
+            state=FieldState.OK,
+            statement=StatementClass.OBSERVED_FACT,
+            label="Release documents")
+
     return Field(
-        value={"coverage_state": "confirmed_missing_event", "orphan_documents": orphans},
-        state=FieldState.CONFLICTING,
-        reason=(f"{len(orphans)} official issuer document(s) describe a reporting period with no "
-                f"corresponding event row. This is not an inference from reporting cadence — a "
-                f"dated release names the period, and the event table does not contain it."),
-        statement=StatementClass.OBSERVED_FACT,
-        evidence_ids=cited)
+        value={"coverage_state": "unresolved_association",
+               "unassociated_documents": unresolved, "associated": associated},
+        state=FieldState.UNKNOWN,
+        reason=(f"{len(unresolved)} stored release document(s) have no recorded association "
+                f"with an earnings event. That does NOT establish that the event is missing — "
+                f"nobody has mapped them yet, and a real announcement lag can put a correctly "
+                f"stored event well outside any date window. Resolving this needs an explicit "
+                f"mapping step, not arithmetic on dates."),
+        statement=StatementClass.INTERPRETATION,
+        evidence_ids=cited,
+        label="Release documents")

@@ -39,7 +39,9 @@ export const TIMEFRAME_ORDER: TimeFrame[] = ['identity', 'at_event', 'historical
 
 export const TIMEFRAME_TITLE: Record<TimeFrame, string> = {
   identity: '',
-  at_event: 'At the earnings event',
+  // ABOUT the event, which is not the same as known before it: a consensus revised afterwards
+  // is about this event and still carries its own availability warning.
+  at_event: 'About this earnings event',
   historical: 'Previous periods',
   current: 'Current market context — as of today, not at the event',
   timeless: 'Method and limits',
