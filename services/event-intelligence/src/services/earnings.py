@@ -1135,11 +1135,23 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int, stats: dict | None = 
                                 )
                                 result = s.execute(stmt)
                                 upserted += result.rowcount
-                        except Exception:
+                        except Exception as _row_exc:            # noqa: BLE001
+                            # COUNTED, NOT SWALLOWED. A row that silently `continue`d was
+                            # indistinguishable afterwards from one that never arrived.
+                            if stats is not None:
+                                key = type(_row_exc).__name__
+                                stats["dropped"][key] = stats["dropped"].get(key, 0) + 1
                             continue
                     s.commit()
+                    # Attributed to the HISTORY stage specifically: a calendar write must never
+                    # be able to evidence historical coverage.
+                    if stats is not None:
+                        stats["history_rows_written"] = upserted
+                        stats["rows_mapped"] = upserted + sum(stats["dropped"].values())
         except Exception as exc:
             log.debug("earnings.history_skip", symbol=symbol, error=str(exc))
+            if stats is not None:
+                stats["history_error"] = f"{type(exc).__name__}: {exc}"[:300]
 
         # Upcoming earnings date (calendar)
         try:
@@ -1399,21 +1411,36 @@ async def sync_all_earnings() -> dict:
 
 
 def _coverage_outcome(stats: dict, written: int, error: str | None) -> str:
-    """Name the STAGE that failed, not just that something did.
+    """Name the STAGE that failed, judged on the HISTORY stage alone.
 
-    "It didn't work" sends the next reader to the wrong place. A retrieval failure, rows that
-    came back and would not map, and rows that mapped and would not write are three different
-    repairs, and the ledger exists to tell them apart.
+    THE MASKING BUG THIS FIXES. The first version compared the provider's history row count
+    against the TOTAL rows written — so four history rows that failed to map, plus one calendar
+    row that wrote fine, came out as `ok` and made the attempt eligible for a watermark. A
+    calendar success cannot evidence historical coverage; they are different windows from
+    different endpoints, and pooling their counts hides exactly the failure this ledger exists
+    to expose.
+
+    "It didn't work" also sends the next reader to the wrong place: a retrieval failure, rows
+    that came back and would not map, and rows that mapped and would not write are three
+    different repairs.
     """
     if error is not None:
         return "retrieval_failed"
     returned = stats.get("rows_returned")
     if returned is None:
         return "retrieval_failed"
+    # Only writes attributed to the HISTORY stage count here.
+    hist_written = stats.get("history_rows_written")
     if returned == 0:
-        return "ok"                       # the source genuinely had nothing to give
-    if written == 0:
+        # A successful request that found nothing. NOT evidence of complete coverage through
+        # today — only that this call returned no rows.
+        return "ok_empty"
+    if hist_written is None:
+        return "partial"                  # history rows came back; nothing recorded writing them
+    if hist_written == 0:
         return "mapping_failed"
+    if hist_written < returned:
+        return "partial"
     return "ok"
 
 
@@ -1432,6 +1459,9 @@ def _record_coverage_attempt(stock_id: int, symbol: str, stats: dict, *, rows_wr
                 outcome=outcome, error=error, dropped=stats.get("dropped") or {},
                 # The watermark advances ONLY on a committed, successful pass, so a crashed or
                 # partial run can never mark a window covered.
+                # ONLY a fully-mapped history pass may advance it. `ok_empty` means the request
+                # succeeded and returned nothing, which does not establish coverage through
+                # today; `partial` means some rows never landed. Neither is a covered window.
                 watermark=(date.today() if outcome == "ok" else None)))
             s.commit()
     except Exception as exc:                            # noqa: BLE001

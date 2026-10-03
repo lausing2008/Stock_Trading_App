@@ -350,3 +350,48 @@ def test_a_document_join_never_depends_on_an_event_row(results):
     assert r["document_event_id"] is None
     assert r["found_by_period"] == r["found_by_report_date"]
     assert len(r["found_by_period"]) == 1
+
+
+# ── The document-join and coverage-ledger round ────────────────────────────────────────────
+
+def test_a_neighbouring_quarters_release_is_not_matched(results):
+    """±75 days reached the next quarter — a Q2 release matched a Q1 event while the report
+    claimed fiscal-period identity. A quarter is ~91 days, so a window near it is ambiguous."""
+    r = _scenario(results, "t29_a_neighbouring_quarters_release_is_not_matched")
+    assert r["matched_documents"] == [], "a later period cannot describe an earlier event"
+    assert r["quality"] == "none"
+    assert r["official_release_state"] == "UNAVAILABLE"
+    assert r["previous_quarter_doc_id"] not in r["previous_quarter_matched"], \
+        "the PREVIOUS quarter's release must not be admitted either"
+    assert len(r["previous_quarter_matched"]) == 1
+
+
+def test_a_document_from_the_future_is_invisible(results):
+    """A January 2027 release counted towards an October 2026 assessment."""
+    r = _scenario(results, "t30_a_document_from_the_future_is_invisible")
+    assert r["confirmed_at_october"] is False
+    assert r["confirmed_at_february"] is True, "visible once it has actually been published"
+    assert r["october_coverage_state"] != "confirmed_missing_event", \
+        "a document the report could not have held must not confirm anything"
+
+
+def test_history_failure_is_not_masked_by_calendar_success(results):
+    """Four history rows that failed to map plus one calendar write returned `ok`, making the
+    attempt eligible for a watermark. A calendar success cannot evidence historical coverage."""
+    r = _scenario(results, "t31_history_failure_is_not_masked_by_calendar_success")
+    assert r["review_witness_4_history_0_mapped_1_calendar"] == "mapping_failed"
+    assert r["partial_history"] == "partial"
+    assert r["provider_empty"] == "ok_empty", \
+        "an empty response is a successful request, not proven coverage through today"
+    assert r["history_branch_raised"] == "partial"
+    assert r["watermark_eligible"] == ["all_history_written"], \
+        "only a fully-mapped history pass may advance a coverage watermark"
+
+
+def test_a_corrected_release_at_the_same_url_is_storable(results):
+    """The unique-URL constraint rejected the very revision `supersedes_id` exists to record."""
+    r = _scenario(results, "t32_a_corrected_release_at_the_same_url_is_storable")
+    assert r["revision_stored"] is True, r.get("error")
+    assert r["revision_id"] != r["original_id"], "a revision is a new immutable row"
+    assert r["duplicate_refused"] is True, \
+        "identical bytes at the same URL is a re-retrieval, not a new version"

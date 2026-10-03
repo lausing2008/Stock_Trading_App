@@ -36,15 +36,15 @@
       "version": 1,
       "coverage": {
         "by_state": {
-          "OK": 13,
+          "OK": 14,
           "UNKNOWN": 4,
           "UNAVAILABLE": 3
         },
-        "total": 20,
-        "ok": 13
+        "total": 21,
+        "ok": 14
       },
-      "fields": 20,
-      "markdown_lines": 82
+      "fields": 21,
+      "markdown_lines": 83
     },
     "post_earnings": {
       "id": 4,
@@ -352,7 +352,7 @@
   },
   "t26_the_official_release_is_joined_by_period": {
     "release_state": "OK",
-    "matched_on": "source-confirmed fiscal period end",
+    "matched_on": "source-confirmed fiscal period end 2026-09-10, within 45 days before the event",
     "fiscal_state": "OK",
     "fiscal": {
       "period_end": "2026-09-10",
@@ -386,9 +386,47 @@
     "found_by_period": [
       3
     ],
+    "quality_by_period": "confirmed_period",
     "found_by_report_date": [
       3
     ],
+    "quality_by_date": "confirmed_period",
+    "passes": true
+  },
+  "t29_a_neighbouring_quarters_release_is_not_matched": {
+    "matched_documents": [],
+    "quality": "none",
+    "official_release_state": "UNAVAILABLE",
+    "previous_quarter_matched": [
+      4
+    ],
+    "previous_quarter_doc_id": 5,
+    "previous_quarter_quality": "confirmed_period",
+    "passes": true
+  },
+  "t30_a_document_from_the_future_is_invisible": {
+    "confirmed_at_october": false,
+    "confirmed_at_february": true,
+    "october_coverage_state": "suspected_gap",
+    "passes": true
+  },
+  "t31_history_failure_is_not_masked_by_calendar_success": {
+    "review_witness_4_history_0_mapped_1_calendar": "mapping_failed",
+    "all_history_written": "ok",
+    "partial_history": "partial",
+    "provider_empty": "ok_empty",
+    "history_branch_raised": "partial",
+    "fetch_raised": "retrieval_failed",
+    "watermark_eligible": [
+      "all_history_written"
+    ],
+    "passes": true
+  },
+  "t32_a_corrected_release_at_the_same_url_is_storable": {
+    "revision_stored": true,
+    "revision_id": 8,
+    "duplicate_refused": true,
+    "original_id": 7,
     "passes": true
   },
   "_meta": {

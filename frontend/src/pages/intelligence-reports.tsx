@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Head from 'next/head';
 import { api, type IntelField, type IntelReport, type IntelDiff } from '@/lib/api';
-import { orderFields, renderKind, tableColumns, formatScalar } from '@/lib/intelReportView';
+import { renderKind, tableColumns, formatScalar } from '@/lib/intelReportView';
+import {
+  groupFields, criticalLimitations, coverageBanner, fieldLabel, humaniseValue,
+  SECTION_TITLE, TIMEFRAME_TITLE, type LayoutField,
+} from '@/lib/intelReportLayout';
 
 type Tab = 'market_outlook' | 'stock_outlook' | 'pre_earnings' | 'post_earnings';
 
@@ -231,11 +235,22 @@ export default function IntelligenceReportsPage() {
      unavailable, so a reader is not walked past five UNAVAILABLE rows to reach the answer.
      Plain alphabetical put the return windows in the order 1, 20, 5, 63 and interleaved
      identity with conclusions. */
-  /* Ordering lives in @/lib/intelReportView so it can be tested without a DOM renderer. */
-  const fields = useMemo(
-    () => orderFields(Object.entries(report?.payload?.fields ?? {}) as [string, IntelField][]) as
-      [string, IntelField][],
-    [report]);
+  /* Grouping and reading order live in @/lib/intelReportLayout so they are testable without a
+     DOM renderer. Sections first (summary, limitations, then detail), and within a section the
+     evidence is separated by WHEN it describes — so June's results never sit beside today's
+     price in one undifferentiated list. */
+  const entries = useMemo(
+    () => Object.entries(report?.payload?.fields ?? {}) as [string, IntelField][], [report]);
+  const groups = useMemo(
+    () => groupFields(entries as unknown as [string, LayoutField][]), [entries]);
+  const limitations = useMemo(
+    () => criticalLimitations(entries as unknown as [string, LayoutField][]), [entries]);
+  const banner = useMemo(() => {
+    const ec = report?.payload?.fields?.event_coverage as unknown as LayoutField | undefined;
+    const ident = report?.payload?.fields?.event_identity?.value as
+      { report_date?: string } | undefined;
+    return coverageBanner(ec, ident?.report_date);
+  }, [report]);
 
   return (
     <>
@@ -304,6 +319,16 @@ export default function IntelligenceReportsPage() {
                         color: '#fca5a5', fontSize: '13px' }}>{err}</div>
         )}
 
+        {report && banner && (
+          <div style={{
+            padding: '13px 16px', borderRadius: '10px', marginBottom: '14px',
+            background: banner.tone === 'error' ? 'rgba(239,68,68,0.10)' : 'rgba(234,179,8,0.10)',
+            border: `1px solid ${banner.tone === 'error' ? 'rgba(239,68,68,0.4)' : 'rgba(234,179,8,0.4)'}`,
+            color: banner.tone === 'error' ? '#fca5a5' : '#fde047',
+            fontSize: '13px', fontWeight: 600,
+          }}>{banner.text}</div>
+        )}
+
         {report && (
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr)', gap: '16px' }}>
             <div style={{ padding: '14px 16px', borderRadius: '11px',
@@ -334,43 +359,93 @@ export default function IntelligenceReportsPage() {
               <Coverage r={report} />
             </div>
 
-            {report.changes_since_previous && (
+            {limitations.length > 0 && (
               <div style={{ padding: '14px 16px', borderRadius: '11px',
-                            background: 'rgba(255,255,255,0.025)',
-                            border: '1px solid rgba(255,255,255,0.07)' }}>
-                <div style={{ fontSize: '11px', fontWeight: 700, color: '#64748b',
+                            background: 'rgba(234,179,8,0.06)',
+                            border: '1px solid rgba(234,179,8,0.22)' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: '#fde047',
                               textTransform: 'uppercase', letterSpacing: '0.07em',
-                              marginBottom: '9px' }}>What changed since the previous report</div>
-                <Changes diff={report.changes_since_previous} />
+                              marginBottom: '9px' }}>
+                  Analysis limitations — {limitations.length} input{limitations.length === 1 ? '' : 's'} that
+                  {' '}constrain what this report can conclude
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+                  {limitations.map(([k, lf]) => (
+                    <div key={k} style={{ fontSize: '12px', color: '#cbd5e1' }}>
+                      <strong>{fieldLabel(k, lf)}</strong>
+                      <span style={{ color: '#94a3b8' }}> — {lf.reason}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
-            <div style={{ borderRadius: '11px', overflow: 'hidden',
-                          border: '1px solid rgba(255,255,255,0.07)' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <tbody>
-                  {fields.map(([key, f]) => (
-                    <tr key={key} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                      <td style={{ padding: '11px 14px', width: '230px', verticalAlign: 'top',
-                                   fontSize: '13px', color: '#cbd5e1', fontWeight: 600 }}>
-                        {titleise(key)}
-                        {/* Only a field that HAS a value makes a claim. Showing the default
-                            class beside UNAVAILABLE would label an absence an observed fact. */}
-                        {f.state === 'OK' && (
-                          <div style={{ fontSize: '10px', color: '#475569', fontWeight: 400,
-                                        marginTop: '2px' }}>
-                            {STATEMENT_LABEL[f.statement] ?? f.statement}
-                          </div>
-                        )}
-                      </td>
-                      <td style={{ padding: '11px 14px', verticalAlign: 'top' }}>
-                        <FieldValue f={f} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            {/* Collapsed by default: a 13-row change list dominated the first screen and
+                pushed the report itself below the fold. */}
+            {report.changes_since_previous && (
+              <details style={{ padding: '12px 16px', borderRadius: '11px',
+                                background: 'rgba(255,255,255,0.025)',
+                                border: '1px solid rgba(255,255,255,0.07)' }}>
+                <summary style={{ fontSize: '11px', fontWeight: 700, color: '#64748b',
+                                  textTransform: 'uppercase', letterSpacing: '0.07em',
+                                  cursor: 'pointer' }}>
+                  What changed since the previous report
+                  {report.changes_since_previous.changed?.length
+                    ? ` — ${report.changes_since_previous.changed.length} change(s)`
+                    : report.changes_since_previous.first_report ? ' — first report' : ' — none'}
+                </summary>
+                <div style={{ marginTop: '10px' }}>
+                  <Changes diff={report.changes_since_previous} />
+                </div>
+              </details>
+            )}
+
+            {groups.map(g => (
+              <div key={`${g.section}|${g.timeframe}`} style={{ display: 'flex',
+                   flexDirection: 'column', gap: '6px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: '#64748b',
+                              textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+                  {SECTION_TITLE[g.section]}
+                </div>
+                {TIMEFRAME_TITLE[g.timeframe] && (
+                  <div style={{ fontSize: '12px', color: g.timeframe === 'current'
+                                  ? '#fbbf24' : '#94a3b8', marginBottom: '2px' }}>
+                    {TIMEFRAME_TITLE[g.timeframe]}
+                  </div>
+                )}
+                <div style={{ borderRadius: '11px', overflow: 'hidden',
+                              border: '1px solid rgba(255,255,255,0.07)' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <tbody>
+                      {g.keys.map(key => {
+                        const f = report.payload!.fields[key];
+                        const humanised = humaniseValue(key, f.value);
+                        return (
+                          <tr key={key} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                            <td style={{ padding: '11px 14px', width: '230px',
+                                         verticalAlign: 'top', fontSize: '13px',
+                                         color: '#cbd5e1', fontWeight: 600 }}>
+                              {fieldLabel(key, f as unknown as LayoutField)}
+                              {f.state === 'OK' && (
+                                <div style={{ fontSize: '10px', color: '#475569',
+                                              fontWeight: 400, marginTop: '2px' }}>
+                                  {STATEMENT_LABEL[f.statement] ?? f.statement}
+                                </div>
+                              )}
+                            </td>
+                            <td style={{ padding: '11px 14px', verticalAlign: 'top' }}>
+                              {humanised
+                                ? <span style={{ fontSize: '13px', color: '#e2e8f0' }}>{humanised}</span>
+                                : <FieldValue f={f} />}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
 
             {history.length > 1 && (
               <div style={{ padding: '14px 16px', borderRadius: '11px',

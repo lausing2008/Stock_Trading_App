@@ -25,7 +25,7 @@ from typing import Any
 #: statement class, a different horizon definition. Stored on every report so an old snapshot is
 #: still readable as what it meant when it was written, rather than reinterpreted under today's
 #: rules. A rendering change does not bump this; a semantic one does.
-CONTRACT_VERSION = 2
+CONTRACT_VERSION = 3
 
 
 class ReportType(str, Enum):
@@ -59,6 +59,28 @@ class StatementClass(str, Enum):
     INTERPRETATION = "interpretation"
     CONDITIONAL_SCENARIO = "conditional_scenario"
     MODEL_FORECAST = "model_forecast"
+
+
+#: WHEN a field's evidence belongs to. A June earnings result and an October closing price are
+#: both true and describe different moments — printed in one undifferentiated list, today's BUY
+#: signal sits beside June's results and reads as a prediction made before them.
+class TimeFrame(str, Enum):
+    AT_EVENT = "at_event"            # measured at or around the event being reported on
+    CURRENT = "current"              # as of the report's cutoff, NOT contemporaneous with it
+    HISTORICAL = "historical"        # prior periods, for context
+    IDENTITY = "identity"            # who and what this report is about
+    TIMELESS = "timeless"            # method, policy, limitations
+
+
+#: The reading order a decision needs: what it shows, what is missing, then the detail.
+class Section(str, Enum):
+    SUMMARY = "summary"
+    LIMITATIONS = "limitations"
+    EVENT = "event"
+    METRICS = "metrics"
+    INTERPRETATION = "interpretation"
+    SCENARIOS = "scenarios"
+    SOURCES = "sources"
 
 
 class ReportStatus(str, Enum):
@@ -129,6 +151,12 @@ class Field:
     units: str | None = None
     evidence_ids: list[str] = field(default_factory=list)
     statement: StatementClass = StatementClass.OBSERVED_FACT
+    #: Which moment this value describes, and where it belongs in the reading order. Defaults
+    #: keep every existing construction valid; a generator states them where it matters.
+    timeframe: TimeFrame = TimeFrame.CURRENT
+    section: Section = Section.METRICS
+    #: A human label and unit, so a screen never has to render "Ts" or "Return 1 bars".
+    label: str | None = None
 
     def __post_init__(self):
         if self.state is FieldState.OK and self.value is None:

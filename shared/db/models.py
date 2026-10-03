@@ -3567,9 +3567,13 @@ class IssuerDocument(Base):
     __table_args__ = (
         Index("ix_issuerdoc_stock_period", "stock_id", "fiscal_period_end"),
         Index("ix_issuerdoc_stock_type_published", "stock_id", "document_type", "published_at"),
-        # One row per (issuer, document, source), so re-ingesting the same release is idempotent
-        # rather than accumulating near-duplicates nobody can reconcile.
-        Index("ux_issuerdoc_stock_url", "stock_id", "source_url", unique=True),
+        # IDENTITY IS URL + CONTENT, NOT URL ALONE. Keyed on the URL by itself, a corrected
+        # release published at the same address could not be stored at all — the constraint
+        # rejected the very revision the `supersedes_id` column exists to record. Same URL and
+        # same bytes is an idempotent re-retrieval; same URL and CHANGED bytes is a new
+        # immutable version, which is exactly what an issuer correction is.
+        Index("ux_issuerdoc_stock_url_hash", "stock_id", "source_url", "content_hash",
+              unique=True),
     )
 
 

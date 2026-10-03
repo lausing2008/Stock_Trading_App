@@ -845,20 +845,189 @@ def t28_a_document_join_never_depends_on_an_event_row():
                            url="https://investors.example.invalid/no-event",
                            facts=_MU_RELEASE_FACTS)
         s.commit()
-        found = D.documents_for_period(s, stock.id, period_end=date(2026, 9, 3),
-                                       report_date=None)
-        by_report_date_only = D.documents_for_period(s, stock.id, period_end=None,
-                                                     report_date=date(2026, 9, 30))
+        cutoff = datetime(2026, 10, 3)
+        found, q1 = D.documents_for_period(s, stock.id, period_end=date(2026, 9, 3),
+                                           report_date=None, cutoff=cutoff)
+        by_report_date_only, q2 = D.documents_for_period(
+            s, stock.id, period_end=None, report_date=date(2026, 9, 30), cutoff=cutoff)
         event_rows = s.query(EarningsEvent).count()
         doc_id, doc_event = doc.id, doc.event_id
     R["t28_a_document_join_never_depends_on_an_event_row"] = {
         "event_rows": event_rows,
         "document_event_id": doc_event,
-        "found_by_period": [d.id for d in found],
-        "found_by_report_date": [d.id for d in by_report_date_only],
+        "found_by_period": [d.id for d in found], "quality_by_period": q1,
+        "found_by_report_date": [d.id for d in by_report_date_only], "quality_by_date": q2,
         "passes": (event_rows == 0 and doc_event is None
                    and [d.id for d in found] == [doc_id]
                    and [d.id for d in by_report_date_only] == [doc_id]),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# t29-t32 — the document-join and coverage-ledger round.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def t29_a_neighbouring_quarters_release_is_not_matched():
+    """±75 days reached the NEXT quarter: a Q2 release matched a Q1 event while the report
+    claimed fiscal-period identity. A quarter is ~91 days, so any window near it is ambiguous
+    by construction."""
+    reset(with_event=False)
+    with Session() as s:
+        stock = s.query(Stock).filter_by(symbol="TESTCO").one()
+        # Q1 event (period ended 2026-03-01, reported 2026-03-20) ...
+        s.add(EarningsEvent(stock_id=stock.id, report_date=date(2026, 3, 20),
+                            eps_estimate=1.0, eps_actual=1.1, post_earnings_return_1d=0.02))
+        # ... and the Q2 release, 71 days later — inside the old window.
+        _add_release(s, stock.id, period_end=date(2026, 5, 30),
+                     published=datetime(2026, 6, 24, 20, 0),
+                     url="https://investors.example.invalid/q2", facts=_MU_RELEASE_FACTS)
+        s.commit()
+        docs, quality = D.documents_for_period(
+            s, stock.id, period_end=None, report_date=date(2026, 3, 20),
+            cutoff=datetime(2026, 10, 3))
+        f, _, _, _ = G.post_earnings(s, symbol="TESTCO", now=datetime(2026, 10, 3))
+
+        # THE WIDTH CASE, separate from the direction case above. A release for the PREVIOUS
+        # quarter sits before the event, so directionality alone admits it; only the window
+        # width keeps it out. Period end 2026-04-15 against an event reporting 2026-06-24 is
+        # 70 days back — inside the old 75-day reach, outside the corrected 45.
+        prev_doc = _add_release(s, stock.id, period_end=date(2026, 4, 15),
+                                published=datetime(2026, 5, 2, 20, 0),
+                                url="https://investors.example.invalid/prev-quarter",
+                                facts=_MU_RELEASE_FACTS)
+        prev_doc_id = prev_doc.id
+        s.add(EarningsEvent(stock_id=stock.id, report_date=date(2026, 6, 24),
+                            eps_estimate=1.0, eps_actual=1.3, post_earnings_return_1d=0.04))
+        s.commit()
+        prev_docs, prev_quality = D.documents_for_period(
+            s, stock.id, period_end=None, report_date=date(2026, 6, 24),
+            cutoff=datetime(2026, 10, 3))
+    R["t29_a_neighbouring_quarters_release_is_not_matched"] = {
+        "matched_documents": [d.id for d in docs], "quality": quality,
+        "official_release_state": f["official_release"].state.value,
+        "previous_quarter_matched": [d.id for d in prev_docs],
+        "previous_quarter_doc_id": prev_doc_id,
+        "previous_quarter_quality": prev_quality,
+        "passes": (docs == [] and quality == "none"
+                   and f["official_release"].state is FieldState.UNAVAILABLE
+                   # The event reporting 2026-06-24 legitimately matches the release whose
+                   # period ended 2026-05-30. What must NOT also be admitted is the PREVIOUS
+                   # quarter's release, 70 days back — inside the old 75-day reach.
+                   and prev_doc_id not in [d.id for d in prev_docs]
+                   and len(prev_docs) == 1),
+    }
+
+
+def t30_a_document_from_the_future_is_invisible():
+    """A January 2027 release counted towards an October 2026 assessment — a document from the
+    future certifying a gap in the past."""
+    reset(with_event=False)
+    with Session() as s:
+        stock = s.query(Stock).filter_by(symbol="TESTCO").one()
+        s.add(EarningsEvent(stock_id=stock.id, report_date=date(2026, 6, 24),
+                            eps_estimate=1.0, eps_actual=1.2, post_earnings_return_1d=0.05))
+        _add_release(s, stock.id, period_end=date(2026, 12, 1),
+                     published=datetime(2027, 1, 15, 20, 0),
+                     url="https://investors.example.invalid/fq1-2027",
+                     facts=_MU_RELEASE_FACTS)
+        s.commit()
+        from intelligence.report_contract import EvidenceBook as _EB
+        at_october = D.confirm_missing_event(s, stock.id, now=datetime(2026, 10, 3), book=_EB())
+        at_february = D.confirm_missing_event(s, stock.id, now=datetime(2027, 2, 1), book=_EB())
+        f, _, _, _ = G.post_earnings(s, symbol="TESTCO", now=datetime(2026, 10, 3))
+    R["t30_a_document_from_the_future_is_invisible"] = {
+        "confirmed_at_october": at_october is not None,
+        "confirmed_at_february": at_february is not None,
+        "october_coverage_state": (f["event_coverage"].value or {}).get("coverage_state"),
+        # Invisible before it was published; visible afterwards. And in October the report falls
+        # back to the cadence SUSPICION rather than a confirmation it cannot support.
+        "passes": (at_october is None and at_february is not None
+                   and (f["event_coverage"].value or {}).get("coverage_state") != "confirmed_missing_event"),
+    }
+
+
+def t31_history_failure_is_not_masked_by_calendar_success():
+    """Four history rows that failed to map, plus one calendar row that wrote fine, came out
+    `ok` and made the attempt eligible for a watermark."""
+    import ast as _ast, pathlib as _pl
+    src = _pl.Path(ROOT / "services/event-intelligence/src/services/earnings.py").read_text()
+    fn = next(n for n in _ast.parse(src).body
+              if isinstance(n, _ast.FunctionDef) and n.name == "_coverage_outcome")
+    ns = {}
+    exec(compile(_ast.Module(body=[fn], type_ignores=[]), "<x>", "exec"), ns)
+    outcome = ns["_coverage_outcome"]
+    cases = {
+        "review_witness_4_history_0_mapped_1_calendar":
+            outcome({"rows_returned": 4, "history_rows_written": 0}, 1, None),
+        "all_history_written": outcome({"rows_returned": 4, "history_rows_written": 4}, 5, None),
+        "partial_history": outcome({"rows_returned": 4, "history_rows_written": 2}, 3, None),
+        "provider_empty": outcome({"rows_returned": 0, "history_rows_written": 0}, 1, None),
+        "history_branch_raised": outcome({"rows_returned": 4}, 1, None),
+        "fetch_raised": outcome({}, 0, "TimeoutError: x"),
+    }
+    R["t31_history_failure_is_not_masked_by_calendar_success"] = {
+        **cases,
+        # Only a fully-mapped history pass may advance a watermark.
+        "watermark_eligible": [k for k, v in cases.items() if v == "ok"],
+        "passes": (cases["review_witness_4_history_0_mapped_1_calendar"] == "mapping_failed"
+                   and cases["partial_history"] == "partial"
+                   and cases["provider_empty"] == "ok_empty"
+                   and cases["history_branch_raised"] == "partial"
+                   and [k for k, v in cases.items() if v == "ok"] == ["all_history_written"]),
+    }
+
+
+def t32_a_corrected_release_at_the_same_url_is_storable():
+    """The unique URL constraint rejected the very revision `supersedes_id` exists to record."""
+    reset(with_event=False)
+    outcome = {}
+    with Session() as s:
+        stock = s.query(Stock).filter_by(symbol="TESTCO").one()
+        first = IssuerDocument(
+            stock_id=stock.id, document_type="press_release",
+            source_url="https://investors.example.invalid/fq4", publisher="X", title="Results",
+            fiscal_period_end=date(2026, 9, 3), fiscal_label="FY2026 Q4",
+            published_at=datetime(2026, 9, 30, 20, 5),
+            retrieved_at=datetime(2026, 9, 30, 21, 0),
+            content_hash="sha256:original", facts={"revenue": {"value": 54.23e9}})
+        s.add(first); s.commit()
+        first_id = first.id
+        # An issuer CORRECTION at the same address: changed bytes, new immutable version.
+        revision = IssuerDocument(
+            stock_id=stock.id, document_type="press_release",
+            source_url="https://investors.example.invalid/fq4", publisher="X",
+            title="Results (corrected)", fiscal_period_end=date(2026, 9, 3),
+            fiscal_label="FY2026 Q4", published_at=datetime(2026, 10, 1, 12, 0),
+            retrieved_at=datetime(2026, 10, 1, 12, 30),
+            content_hash="sha256:corrected", facts={"revenue": {"value": 54.25e9}},
+            supersedes_id=first_id)
+        s.add(revision)
+        try:
+            s.commit()
+            outcome["revision_stored"] = True
+            outcome["revision_id"] = revision.id
+        except Exception as exc:                       # noqa: BLE001
+            s.rollback()
+            outcome["revision_stored"] = False
+            outcome["error"] = f"{type(exc).__name__}"
+    # An identical re-retrieval must still be refused.
+    with Session() as s:
+        stock = s.query(Stock).filter_by(symbol="TESTCO").one()
+        s.add(IssuerDocument(
+            stock_id=stock.id, document_type="press_release",
+            source_url="https://investors.example.invalid/fq4", publisher="X", title="Results",
+            fiscal_period_end=date(2026, 9, 3), published_at=datetime(2026, 9, 30, 20, 5),
+            retrieved_at=datetime(2026, 10, 2, 9, 0), content_hash="sha256:original"))
+        try:
+            s.commit()
+            outcome["duplicate_refused"] = False
+        except Exception:                              # noqa: BLE001
+            s.rollback()
+            outcome["duplicate_refused"] = True
+    R["t32_a_corrected_release_at_the_same_url_is_storable"] = {
+        **outcome, "original_id": first_id,
+        "passes": outcome.get("revision_stored") is True
+                  and outcome.get("duplicate_refused") is True,
     }
 
 
@@ -889,7 +1058,11 @@ def main():
                t25_the_reaction_window_names_its_real_interval,
                t26_the_official_release_is_joined_by_period,
                t27_a_release_without_an_event_confirms_the_gap,
-               t28_a_document_join_never_depends_on_an_event_row):
+               t28_a_document_join_never_depends_on_an_event_row,
+               t29_a_neighbouring_quarters_release_is_not_matched,
+               t30_a_document_from_the_future_is_invisible,
+               t31_history_failure_is_not_masked_by_calendar_success,
+               t32_a_corrected_release_at_the_same_url_is_storable):
         fn()
     R["_meta"] = {"engine": ENGINE.dialect.name,
                   "server": str(ENGINE.url).split("@")[-1],

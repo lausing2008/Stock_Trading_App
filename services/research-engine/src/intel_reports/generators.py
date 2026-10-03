@@ -19,7 +19,8 @@ from db import EarningsEvent, Stock
 from . import adapters as A
 from . import documents as D
 from intelligence.report_contract import (
-    HORIZONS, EarningsStage, EvidenceBook, Field, FieldState, ReportType, StatementClass,
+    HORIZONS, EarningsStage, EvidenceBook, Field, FieldState, ReportType, Section,
+    StatementClass, TimeFrame,
     calculated, coverage, fields_fingerprint, interpreted, not_applicable, observed,
     status_from_coverage, unavailable, unknown, validate_evidence,
 )
@@ -27,7 +28,25 @@ from intelligence.report_contract import (
 #: Bumped with the IR-01..IR-04 corrections: cutoff-bounded inputs, populated evidence, horizon
 #: outlooks no longer copied from one daily heuristic, and earnings comparisons bound to the
 #: frozen baseline. Reports written under policy 1 meant something different.
-POLICY_VERSION = "2"
+POLICY_VERSION = "3"
+
+
+def _retime(fields: dict[str, Field], mapping: dict[str, tuple]) -> None:
+    """Tag fields with WHEN they describe and WHERE they belong in the reading order.
+
+    THE DEFECT THIS ADDRESSES. A post-earnings report listed June's results, October's closing
+    price and today's BUY signal in one flat sequence. Each is true; together, undifferentiated,
+    today's signal reads as a prediction made before June's results — and nothing on the screen
+    said otherwise. Separating "at the earnings event" from "current market context" is the
+    whole fix, and it belongs on the field rather than in a renderer that would have to guess.
+    """
+    for key, (timeframe, section, label) in mapping.items():
+        f = fields.get(key)
+        if f is None:
+            continue
+        f.timeframe, f.section = timeframe, section
+        if label:
+            f.label = label
 
 
 def _naive_utc_now() -> datetime:
@@ -391,6 +410,43 @@ def pre_earnings(session, *, symbol: str, now: datetime | None = None):
                "note": "no new position is recommended into an event by this report"},
         state=FieldState.OK, statement=StatementClass.INTERPRETATION)
 
+    _days_out = (event.report_date - now.date()).days
+    fields["snapshot_stage"] = Field(
+        value={"sessions_before_release": _days_out,
+               "stage": ("early_preparation" if _days_out > 10 else "immediate_pre_release"),
+               "note": ("prices and structure here are an EARLY PREPARATION snapshot taken "
+                        f"{_days_out} days before the release — not the immediate pre-release "
+                        "reference. Later snapshots are captured as their own versions and this "
+                        "one is preserved." if _days_out > 10 else
+                        f"taken {_days_out} days before the release")},
+        state=FieldState.OK, statement=StatementClass.OBSERVED_FACT,
+        timeframe=TimeFrame.IDENTITY, section=Section.EVENT, label="Snapshot timing")
+    _retime(fields, {
+        "issuer":            (TimeFrame.IDENTITY, Section.EVENT, "Company"),
+        "event_identity":    (TimeFrame.IDENTITY, Section.EVENT, "Earnings event"),
+        "fiscal_period":     (TimeFrame.IDENTITY, Section.EVENT, "Fiscal period"),
+        "release_boundary":  (TimeFrame.IDENTITY, Section.EVENT, "Baseline must precede"),
+        "release_time_certainty": (TimeFrame.IDENTITY, Section.LIMITATIONS, "Release timing"),
+        "consensus_eps":     (TimeFrame.AT_EVENT, Section.METRICS, "EPS expected"),
+        "consensus_revenue": (TimeFrame.AT_EVENT, Section.METRICS, "Revenue expected"),
+        "consensus_snapshot": (TimeFrame.AT_EVENT, Section.LIMITATIONS, "Consensus provenance"),
+        "prior_guidance":    (TimeFrame.AT_EVENT, Section.METRICS, "Prior company guidance"),
+        "accounting_basis":  (TimeFrame.AT_EVENT, Section.LIMITATIONS, "Accounting basis"),
+        "options_expected_move": (TimeFrame.CURRENT, Section.LIMITATIONS, "Options expected move"),
+        "historical_reactions": (TimeFrame.HISTORICAL, Section.METRICS,
+                                 "How the shares moved at past releases"),
+        "pre_event_reference_price": (TimeFrame.CURRENT, Section.METRICS, "Share price now"),
+        "run_up_5_bars":     (TimeFrame.CURRENT, Section.METRICS, "Share price, last 5 bars"),
+        "run_up_20_bars":    (TimeFrame.CURRENT, Section.METRICS, "Share price, last 20 bars"),
+        "trend_structure":   (TimeFrame.CURRENT, Section.METRICS, "Price structure now"),
+        "observed_daily_structure": (TimeFrame.CURRENT, Section.METRICS, "Daily structure now"),
+        "signal_engine_assessment": (TimeFrame.CURRENT, Section.INTERPRETATION,
+                                     "Signal engine, as of today"),
+        "scenarios":         (TimeFrame.TIMELESS, Section.SCENARIOS, "Conditional scenarios"),
+        "management_questions": (TimeFrame.TIMELESS, Section.INTERPRETATION,
+                                 "Questions for management"),
+        "execution_status":  (TimeFrame.TIMELESS, Section.LIMITATIONS, "Execution status"),
+    })
     validate_evidence(fields, book)
     cov = coverage(fields)
     return fields, book, {
@@ -451,12 +507,12 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
     if event is None:
         raise LookupError(f"no released earnings event on file for {symbol}")
     _market = stock.market.value if hasattr(stock.market, "value") else str(stock.market)
+    book = EvidenceBook()
     # A DOCUMENT OUTRANKS CADENCE. If an official release names a period with no event row,
     # that is evidence rather than an inference, so it replaces the cadence suspicion entirely.
-    confirmed = D.confirm_missing_event(session, stock.id, now=now)
+    confirmed = D.confirm_missing_event(session, stock.id, now=now, book=book)
     coverage_warning = confirmed or _event_coverage_warning(session, stock.id, event, now)
 
-    book = EvidenceBook()
     A.record_event(book, event)
     bars = A.daily_bars(session, stock.id, limit=70, cutoff=now)
 
@@ -512,7 +568,7 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
     _doc_period = None
     _fiscal = fields.get("source_confirmed_fiscal_period")
     fields.update(D.official_release(session, book, stock.id, period_end=_doc_period,
-                                     report_date=event.report_date))
+                                     report_date=event.report_date, cutoff=now))
 
     # The accountability join — and the honest answer when there is nothing to join to.
     if pre_report is None:
@@ -539,6 +595,44 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
                 "reaction routinely disagree and are not collapsed into one score",
     })
 
+    _retime(fields, {
+        # Identity — who and what.
+        "issuer":            (TimeFrame.IDENTITY, Section.EVENT, "Company"),
+        "event_identity":    (TimeFrame.IDENTITY, Section.EVENT, "Earnings event"),
+        "event_coverage":    (TimeFrame.IDENTITY, Section.LIMITATIONS, "Coverage of this event"),
+        "fiscal_period":     (TimeFrame.IDENTITY, Section.EVENT, "Fiscal period"),
+        "source_confirmed_fiscal_period": (TimeFrame.IDENTITY, Section.EVENT,
+                                           "Fiscal period, confirmed by the issuer"),
+        "stage":             (TimeFrame.IDENTITY, Section.EVENT, "Reporting stage"),
+        # AT THE EVENT — everything measured at or around the release itself.
+        "eps_actual":        (TimeFrame.AT_EVENT, Section.METRICS, "EPS reported"),
+        "eps_expectation":   (TimeFrame.AT_EVENT, Section.METRICS, "EPS expected"),
+        "eps_surprise_pct":  (TimeFrame.AT_EVENT, Section.METRICS, "EPS versus expectation"),
+        "eps_estimate_revised_since": (TimeFrame.CURRENT, Section.SOURCES,
+                                       "EPS estimate revised after the freeze"),
+        "revenue_actual":    (TimeFrame.AT_EVENT, Section.METRICS, "Revenue reported"),
+        "revenue_expectation": (TimeFrame.AT_EVENT, Section.METRICS, "Revenue expected"),
+        "revenue_surprise_pct": (TimeFrame.AT_EVENT, Section.METRICS,
+                                 "Revenue versus expectation"),
+        "accounting_basis":  (TimeFrame.AT_EVENT, Section.LIMITATIONS, "Accounting basis"),
+        "return_1d":         (TimeFrame.AT_EVENT, Section.METRICS, "Share price around the release"),
+        "return_5d":         (TimeFrame.AT_EVENT, Section.METRICS, "Share price, five sessions"),
+        "official_release":  (TimeFrame.AT_EVENT, Section.SOURCES, "Official release"),
+        "official_figures":  (TimeFrame.AT_EVENT, Section.METRICS, "Figures from the release"),
+        "guidance_change":   (TimeFrame.AT_EVENT, Section.METRICS, "Guidance change"),
+        "management_commentary": (TimeFrame.AT_EVENT, Section.INTERPRETATION,
+                                  "Management commentary"),
+        "pre_report_link":   (TimeFrame.AT_EVENT, Section.SOURCES, "Frozen pre-earnings report"),
+        "thesis_verdict":    (TimeFrame.AT_EVENT, Section.INTERPRETATION, "Thesis evaluation"),
+        "three_verdicts":    (TimeFrame.AT_EVENT, Section.INTERPRETATION, "Three separate verdicts"),
+        # CURRENT — today's market, which is NOT contemporaneous with the results above.
+        "price_as_of":       (TimeFrame.CURRENT, Section.METRICS, "Share price now"),
+        "trend_structure":   (TimeFrame.CURRENT, Section.METRICS, "Price structure now"),
+        "observed_daily_structure": (TimeFrame.CURRENT, Section.METRICS, "Daily structure now"),
+        "signal_engine_assessment": (TimeFrame.CURRENT, Section.INTERPRETATION,
+                                     "Signal engine, as of today"),
+        "options_reaction":  (TimeFrame.CURRENT, Section.LIMITATIONS, "Options evidence"),
+    })
     validate_evidence(fields, book)
     cov = coverage(fields)
     return fields, book, {
