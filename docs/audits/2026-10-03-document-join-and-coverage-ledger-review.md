@@ -71,3 +71,21 @@ Required correction: when a trusted period is supplied, require equality against
 **Presentation:** event/current grouping, prominent limitations and collapsed change history are appropriate. “AT EVENT” must mean facts *about* the event, not imply every value was available then: current mutable consensus and later revisions need their own availability labels. Browser verification remains a separate acceptance task. An event selector over known events can be built now with an explicit incomplete-coverage warning; missing-event discovery is not a technical prerequisite for selecting known events.
 
 Next: correct identity and ledger semantics, then enable source discovery and prepare the bounded repair preview. Document ingestion can be developed in parallel, but should not promote proximity matches to authoritative report content. Narration should follow validated inputs. Application and production state remain unchanged by this review.
+
+## Follow-up on `2ad9746b`
+
+Independently ran the report suite: **38 passed**. Source inspection confirms exact period equality, an explicit event-link alternative, and candidate-only fallback. `assess_event_association` replaces the date-window missing-event claim. These address the previous two witnesses at the matching-rule level. Recorded associations still depend on a trustworthy future mapping process; an ID by itself cannot establish the correctness of that process. If callers supply both a period and an event association, contradictory identities should abstain rather than let one silently override the other.
+
+The new event-list endpoint and “About this earnings event” wording are useful improvements. However, a production **401** establishes an unauthenticated rejection, not a working authenticated event-list response or picker. Browser acceptance should select at least two known events and confirm both header and payload change correctly, test a missing-event warning, and check mobile layout and the navigation overlay.
+
+### Ledger window claim remains unsupported
+
+History and calendar now persist separate counts. However, a search of the current event-intelligence implementation found **no assignments** to `history_window_start`, `history_window_end`, `calendar_window_start` or `calendar_window_end`. `_record_coverage_attempt()` reads those keys but defaults `window_end` to `date.today()` and leaves the start absent. A successful history result still sets the watermark to today.
+
+Therefore, “each stage records the window it asked for” is not yet true of this producer. The presence of nullable window columns is not evidence of a measured request. Preserve unknown bounds explicitly for provider-defined history, record actual returned period bounds separately, and distinguish successful processing time from a proven coverage watermark. The discovery implementation must not use the current date-based watermark to skip an unverified historical interval. Classifiers also still do not emit `write_failed`; captured stage errors require explicit classification if the ledger is to identify the failed operation reliably.
+
+### Deployment evidence and next action
+
+Claude reports an all-service rebuild and zero drift; this review did not independently access production. Rebuilding two services after a shared change was incomplete, and its correction is appropriate. Make deployment closure mechanically require the affected-service manifest plus expected/running code evidence for all consumers; report completion only after the build and checks finish.
+
+Proceed with bounded ingestion discovery, including the ledger-window correction, then a preview of the MU association/upsert and downstream effects. Preserve frozen baselines, suppress historical alert replay, and require repeat-run idempotence. Browser checks can run independently while ingestion is built. Narration still follows validated data. No production writes, sends, flags or application edits were performed by this review.

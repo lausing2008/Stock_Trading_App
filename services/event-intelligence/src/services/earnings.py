@@ -1101,6 +1101,12 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int, stats: dict | None = 
                                 existing_pending.fetched_at = _now
                                 s.flush()
                                 upserted += 1
+                                # The other history write path. Both must feed the watermark, or
+                                # a pass that only updated pending rows would report no coverage.
+                                if stats is not None:
+                                    prev = stats.get("history_newest_written")
+                                    if prev is None or report_date > prev:
+                                        stats["history_newest_written"] = report_date
                             else:
                                 # No prior pending row (and therefore no revenue_estimate ever
                                 # captured for this event) — revenue_surprise_pct correctly
@@ -1135,6 +1141,10 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int, stats: dict | None = 
                                 )
                                 result = s.execute(stmt)
                                 upserted += result.rowcount
+                                if result.rowcount and stats is not None:
+                                    prev = stats.get("history_newest_written")
+                                    if prev is None or report_date > prev:
+                                        stats["history_newest_written"] = report_date
                         except Exception as _row_exc:            # noqa: BLE001
                             # COUNTED, NOT SWALLOWED. A row that silently `continue`d was
                             # indistinguishable afterwards from one that never arrived.
@@ -1469,6 +1479,20 @@ def _coverage_outcome(stats: dict, written: int, error: str | None) -> str:
     return "ok"
 
 
+def _history_watermark(stats: dict, *, mode: str, outcome: str):
+    """The newest period this pass actually WROTE — never today's date.
+
+    `date.today()` recorded when the job RAN, not what it covered. A pass that succeeded while
+    writing nothing newer than last quarter would still mark coverage current, and a discovery
+    step trusting that watermark would skip exactly the periods nobody had fetched. Proven
+    coverage is the latest report date this pass committed, and nothing else; an `ok` pass that
+    wrote nothing proves no coverage and advances nothing.
+    """
+    if mode != "history" or outcome != "ok":
+        return None
+    return stats.get("history_newest_written")
+
+
 def _calendar_outcome(stats: dict) -> str:
     """The calendar stage judged on its own numbers, never on the history stage's."""
     returned = stats.get("calendar_rows_returned")
@@ -1489,21 +1513,20 @@ def _record_coverage_attempt(stock_id: int, symbol: str, stats: dict, *, mode: s
         with SessionLocal() as s:
             s.add(EarningsCoverageAttempt(
                 stock_id=stock_id, mode=mode, source="yfinance",
-                # THE WINDOW ASKED FOR. Without it a watermark claims "covered to here" with no
-                # record of what was requested — provider history depth is not the window we
-                # wanted, and the difference IS the coverage question.
+                # THE WINDOW ASKED FOR — and NULL when none was. `earnings_history` takes no
+                # window; the provider returns what it holds. Defaulting the end to today
+                # recorded the PROCESSING TIME and dressed it as a requested range, which is
+                # exactly the claim a watermark must not be built on. NULL means not measured,
+                # which is the contract's own rule and the truth here.
                 window_start=stats.get(f"{mode}_window_start"),
-                window_end=stats.get(f"{mode}_window_end") or date.today(),
+                window_end=stats.get(f"{mode}_window_end"),
                 attempted_at=started, completed_at=datetime.utcnow(),
                 rows_returned=rows_returned,
                 rows_mapped=rows_mapped,
                 rows_written=rows_written,
                 outcome=outcome, error=error,
                 dropped=(stats.get("dropped") or {}) if mode == "history" else {},
-                # ONLY a fully-mapped HISTORY pass may advance a historical watermark. A
-                # calendar success says nothing about history; `ok_empty` is a successful
-                # request that found nothing; `partial` means rows never landed.
-                watermark=(date.today() if (mode == "history" and outcome == "ok") else None)))
+                watermark=_history_watermark(stats, mode=mode, outcome=outcome)))
             s.commit()
     except Exception as exc:                            # noqa: BLE001
         log.warning("earnings.coverage_ledger_write_failed", symbol=symbol, mode=mode,
