@@ -366,6 +366,11 @@ class AddStockRequest(BaseModel):
     symbol: str
 
 
+class AddStocksRequest(BaseModel):
+    """Multi-symbol add. Bounded on purpose — see `add_stocks` for why."""
+    symbols: list[str]
+
+
 @router.post("/seed")
 def run_seed(_: User = Depends(get_admin_user)):
     count = seed()
@@ -424,6 +429,48 @@ def _fetch_yf_info(symbol: str) -> dict:
     return yf.Ticker(symbol).info or {}
 
 
+# AUD-ADDSTOCK-MISATTRIBUTED (2026-10-02): THE RETRY WAS ALREADY HERE. THE MESSAGE WAS THE BUG.
+#
+# A user reported "not able to add stock" after four 502s. My first reading was that
+# `_fetch_yf_info` had no retry — WRONG. BUG-ADDSTOCK-NORETRY (2026-08-07) had already given
+# it a 3-attempt tenacity policy with 1-8s exponential backoff, visible in the decorator
+# directly above it. I had grepped the function body and never looked at the line above the
+# `def`, then added a SECOND retry layer on top: 3 x 3 = up to nine calls into a live
+# rate-limit storm, which is precisely the amplification BUG-YFCALLVOL2 exists to warn about.
+# That layer was removed. The single tenacity policy above is the only retry, as intended.
+#
+# WHAT WAS ACTUALLY STILL BROKEN, after the retry had done its three attempts and failed:
+#
+#   1. Every failure became `HTTPException(502, "yfinance error: ...")`. A throttle is not a
+#      broken upstream; it is "come back shortly", and 503 + Retry-After says that.
+#   2. The exception was never LOGGED, only returned — so the four production 502s cannot now
+#      be proved to have been throttles, however likely 6,566 rate-limit errors in the same
+#      window makes it.
+#   3. The modal's fallback read "Failed to add — check the ticker symbol" for EVERY failure,
+#      sending the user to hunt for a typo in a symbol that was perfectly correct. That is the
+#      half of this incident that actually wasted someone's time.
+
+
+class RateLimited(Exception):
+    """The provider throttled us, and the existing retry policy already gave up on it.
+
+    Distinct from "symbol not found" on purpose: one is temporary and nothing the user can
+    fix, the other is permanent and entirely theirs to fix. Collapsing them into one message
+    is what sent a user looking for a typo that did not exist.
+    """
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    """Is this a provider THROTTLE rather than a bad symbol?
+
+    Checked by text because tenacity re-raises the provider's own exception type, and
+    yfinance's rate-limit class has moved between versions in this codebase's history.
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in text for marker in
+               ("429", "too many requests", "rate limit", "rate-limit", "ratelimit"))
+
+
 @router.post("/add_stock")
 def add_stock(req: AddStockRequest, tasks: BackgroundTasks, _: User = Depends(get_admin_user)):
     symbol = req.symbol.upper().strip()
@@ -437,10 +484,26 @@ def add_stock(req: AddStockRequest, tasks: BackgroundTasks, _: User = Depends(ge
             tasks.add_task(_trigger_new_stock_refresh, symbol, existing.market.value)
             return {"status": "exists", "symbol": symbol, "name": existing.name}
 
-    # Fetch metadata from yfinance
+    # Fetch metadata from yfinance. Already retried — see the tenacity policy on
+    # `_fetch_yf_info` above; reaching the handler means three attempts over up to ~8 seconds
+    # all failed. What is added here is the CLASSIFICATION of that final failure.
     try:
         info = _fetch_yf_info(symbol)
     except Exception as exc:
+        if _is_rate_limited(exc):
+            # 503 + Retry-After, not 502: this is "come back shortly", not "the upstream is
+            # broken", and the distinction is what lets the UI say something true.
+            log.warning("add_stock.rate_limited", symbol=symbol, error=str(exc)[:200])
+            raise HTTPException(
+                503,
+                f"Yahoo Finance is rate-limiting requests right now, so {symbol} could not be "
+                f"looked up. This is temporary and not a problem with the symbol — try again "
+                f"in a minute.",
+                headers={"Retry-After": "60"},
+            )
+        # Logged, not merely returned: the four production 502s that prompted this could not
+        # be diagnosed afterwards because the exception only ever reached the HTTP response.
+        log.warning("add_stock.provider_error", symbol=symbol, error=str(exc)[:200])
         raise HTTPException(502, f"yfinance error: {exc}")
 
     name = info.get("longName") or info.get("shortName") or symbol
@@ -468,6 +531,90 @@ def add_stock(req: AddStockRequest, tasks: BackgroundTasks, _: User = Depends(ge
     tasks.add_task(ingest_symbol, symbol, market_val)
     tasks.add_task(_trigger_new_stock_refresh, symbol, market_val)
     return {"status": "added", "symbol": symbol, "name": name, "sector": sector}
+
+
+# ── Multi-symbol add ──────────────────────────────────────────────────────────
+
+# Bounded because the provider is the constraint, not this endpoint. A user pasting 200
+# tickers during a rate-limit window would turn one person's bulk action into the amplifier
+# BUG-YFCALLVOL2 already describes. 25 is a usable paste and a survivable burst.
+_ADD_STOCKS_MAX = 25
+# Spacing between symbols. Small enough to stay interactive, non-zero because the whole point
+# is not to arrive as a burst.
+_ADD_STOCKS_SPACING_SECONDS = 0.25
+
+
+@router.post("/add_stocks")
+def add_stocks(req: AddStocksRequest, tasks: BackgroundTasks,
+               admin: User = Depends(get_admin_user)):
+    """Add several symbols, reporting EACH ONE'S OWN OUTCOME.
+
+    THE SHAPE MATTERS MORE THAN THE CONVENIENCE. Under rate limiting a batch of ten routinely
+    splits — six added, three throttled, one genuine typo — and a single pass/fail verdict for
+    the batch would be wrong for nine of them. Worse, it would hide which three are worth
+    retrying and which one needs correcting. So every symbol carries its own status and its
+    own sentence, and the caller is told what to retry rather than left to guess.
+
+    Statuses: `added`, `exists`, `not_found`, `rate_limited`, `error`. `rate_limited` is
+    explicitly retryable and says so; `not_found` is not.
+
+    SEQUENTIAL, NEVER CONCURRENT. Fanning out across symbols is exactly how this platform
+    previously amplified a live Yahoo rate-limit event (BUG-YFCALLVOL2). A bulk endpoint that
+    parallelises would make the condition it most often runs into worse.
+    """
+    import time as _time
+
+    raw = [sym.upper().strip() for sym in (req.symbols or [])]
+    # Preserve the caller's order while removing duplicates, so the report reads back in the
+    # order they typed and a repeated ticker is not counted twice.
+    seen: set[str] = set()
+    symbols = [s for s in raw if s and not (s in seen or seen.add(s))]
+    if not symbols:
+        raise HTTPException(400, "No symbols supplied.")
+    if len(symbols) > _ADD_STOCKS_MAX:
+        raise HTTPException(
+            400,
+            f"{len(symbols)} symbols requested; the limit is {_ADD_STOCKS_MAX} per request "
+            f"because the data provider rate-limits lookups. Split the list and retry.")
+
+    log.info("add_stocks.start", count=len(symbols), symbols=symbols[:25])
+    results: list[dict] = []
+    for i, symbol in enumerate(symbols):
+        if i:
+            _time.sleep(_ADD_STOCKS_SPACING_SECONDS)
+        try:
+            one = add_stock(AddStockRequest(symbol=symbol), tasks, admin)
+            results.append({"symbol": symbol, "status": one.get("status", "added"),
+                            "name": one.get("name"), "sector": one.get("sector"),
+                            "retryable": False,
+                            "message": ("Already in your universe."
+                                        if one.get("status") == "exists" else "Added.")})
+        except HTTPException as exc:
+            if exc.status_code == 503:
+                status, retryable = "rate_limited", True
+            elif exc.status_code == 404:
+                status, retryable = "not_found", False
+            else:
+                status, retryable = "error", True
+            results.append({"symbol": symbol, "status": status, "name": None,
+                            "sector": None, "retryable": retryable,
+                            "message": str(exc.detail)})
+        except Exception as exc:  # never let one symbol abort the rest of the batch
+            log.warning("add_stocks.symbol_failed", symbol=symbol, error=str(exc)[:200])
+            results.append({"symbol": symbol, "status": "error", "name": None,
+                            "sector": None, "retryable": True,
+                            "message": f"Unexpected error: {exc}"})
+
+    summary = {k: sum(1 for r in results if r["status"] == k)
+               for k in ("added", "exists", "not_found", "rate_limited", "error")}
+    log.info("add_stocks.done", **summary)
+    return {
+        "requested": len(symbols),
+        "results": results,
+        "summary": summary,
+        # The actionable subset, computed here so every caller does not re-derive it.
+        "retryable_symbols": [r["symbol"] for r in results if r["retryable"]],
+    }
 
 
 # ── SL-1: Admin signal log ────────────────────────────────────────────────────

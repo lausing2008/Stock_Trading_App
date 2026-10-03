@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import useSWR from 'swr';
-import { api, type WatchlistMeta, type Stock } from '@/lib/api';
+import { api, type WatchlistMeta, type Stock, type AddStockOutcome } from '@/lib/api';
 
 type Props = { onClose: () => void; onAdded: (symbol: string, listId?: number) => Promise<void>; lists?: WatchlistMeta[] };
 
@@ -15,12 +15,24 @@ const QUICK_ADD = [
   { symbol: 'COIN',    label: 'Coinbase',    flag: '🇺🇸' },
 ];
 
+// Split pasted input on the separators people actually use. Someone copying tickers out of a
+// spreadsheet, an article or a chat message gets commas, spaces, newlines or tabs, and being
+// told "one at a time" is the kind of friction that makes a feature go unused.
+const SYMBOL_SEPARATORS = /[\s,;]+/;
+
+function parseSymbols(text: string): string[] {
+  return text.toUpperCase().split(SYMBOL_SEPARATORS).map(t => t.trim()).filter(Boolean);
+}
+
+const MAX_SYMBOLS = 25;  // mirrors the server's own cap, which exists because the data
+                         // provider rate-limits lookups — see add_stocks' docstring.
+
 export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
-  const [symbol, setSymbol] = useState('');
+  const [symbols, setSymbols] = useState<string[]>([]);
+  const [outcomes, setOutcomes] = useState<AddStockOutcome[] | null>(null);
   const [query, setQuery] = useState('');
   const [dropOpen, setDropOpen] = useState(false);
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
-  const [result, setResult] = useState<{ name: string; sector?: string; sym: string } | null>(null);
   const [errMsg, setErrMsg]   = useState('');
   const [selectedListId, setSelectedListId] = useState<number | undefined>(undefined);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -37,6 +49,27 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
   }, [query, allStocks]);
 
   const multiList = lists.length > 1;
+  // Symbols that reached the universe — the ones a watchlist pick should apply to. A throttled
+  // or misspelled symbol is deliberately excluded: adding it to a list would assert it exists.
+  const landed = (outcomes ?? []).filter(o => o.status === 'added' || o.status === 'exists');
+  const retryable = (outcomes ?? []).filter(o => o.retryable).map(o => o.symbol);
+
+  function addSymbols(text: string) {
+    const parsed = parseSymbols(text);
+    if (!parsed.length) return;
+    setSymbols(prev => {
+      const merged = [...prev];
+      for (const p of parsed) if (!merged.includes(p)) merged.push(p);
+      return merged.slice(0, MAX_SYMBOLS);
+    });
+    setQuery('');
+    setStatus('idle'); setOutcomes(null); setErrMsg('');
+  }
+
+  function removeSymbol(sym: string) {
+    setSymbols(prev => prev.filter(s => s !== sym));
+    setStatus('idle'); setOutcomes(null); setErrMsg('');
+  }
 
   useEffect(() => { inputRef.current?.focus(); }, []);
   useEffect(() => {
@@ -56,32 +89,52 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const sym = symbol.trim().toUpperCase();
-    if (!sym) return;
+    // Whatever is still in the input counts too — nobody should lose a ticker because they
+    // did not press Enter before clicking Add.
+    const pending = parseSymbols(query);
+    const all = [...symbols];
+    for (const p of pending) if (!all.includes(p)) all.push(p);
+    if (!all.length) return;
+
     setStatus('loading');
-    setResult(null);
+    setOutcomes(null);
     setErrMsg('');
     try {
-      const res = await api.addStock(sym);
-      setResult({ name: res.name, sector: res.sector, sym });
-      if (!multiList) {
-        await onAdded(sym, lists[0]?.id);
+      const res = await api.addStocks(all);
+      setSymbols(all);
+      setQuery('');
+      setOutcomes(res.results);
+      const ok = res.results.filter(o => o.status === 'added' || o.status === 'exists');
+      // With a single list there is nothing to choose, so land them immediately. With several,
+      // the picker below applies to every symbol that made it.
+      if (!multiList && ok.length) {
+        for (const o of ok) await onAdded(o.symbol, lists[0]?.id);
       }
-      setStatus('success');
+      setStatus(ok.length ? 'success' : 'error');
+      if (!ok.length) {
+        setErrMsg(res.results.every(o => o.status === 'rate_limited')
+          ? 'Yahoo Finance is rate-limiting right now. Nothing is wrong with these symbols — retry in a minute.'
+          : 'None of these could be added. See the per-symbol reasons below.');
+      }
     } catch (err: unknown) {
       setStatus('error');
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('404')) setErrMsg(`"${sym}" not found on Yahoo Finance.`);
+      // AUD-ADDSTOCK-NORETRY: this used to fall through to "check the ticker symbol" for every
+      // failure including a provider throttle, sending the user to hunt for a typo that did
+      // not exist. A 503 is upstream and temporary; say so.
+      if (msg.includes('503')) setErrMsg('Yahoo Finance is rate-limiting requests right now. This is temporary and not a problem with your symbols — try again in a minute.');
+      else if (msg.includes('404')) setErrMsg('Not found on Yahoo Finance.');
       else if (msg.includes('401')) setErrMsg('Session expired — please log out and log in again.');
-      else setErrMsg('Failed to add — check the ticker symbol.');
+      else if (msg.includes('400')) setErrMsg(`Too many symbols at once — the limit is ${MAX_SYMBOLS} per request.`);
+      else setErrMsg('Failed to add. The symbols were not changed.');
     }
   }
 
   async function confirmList(listId: number) {
-    if (!result) return;
+    if (!landed.length) return;
     setSelectedListId(listId);
     try {
-      await onAdded(result.sym, listId);
+      for (const o of landed) await onAdded(o.symbol, listId);
     } catch (err: unknown) {
       setSelectedListId(undefined);
       const msg = err instanceof Error ? err.message : String(err);
@@ -89,11 +142,15 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
     }
   }
 
-  function pick(sym: string) {
-    setSymbol(sym);
+  function retryThrottled() {
+    setSymbols(retryable);
+    setOutcomes(null);
     setStatus('idle');
-    setResult(null);
     setErrMsg('');
+  }
+
+  function pick(sym: string) {
+    addSymbols(sym);
     inputRef.current?.focus();
   }
 
@@ -167,8 +224,43 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
           {/* Searchable combobox */}
           <form onSubmit={handleSubmit}>
             <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
-              Search by name or ticker
+              Search by name or ticker — add as many as you like
             </div>
+            {symbols.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
+                {symbols.map(sym => {
+                  const o = (outcomes ?? []).find(x => x.symbol === sym);
+                  const tone = !o ? { bg: 'rgba(99,102,241,0.12)', bd: 'rgba(99,102,241,0.35)', fg: '#a5b4fc' }
+                    : o.status === 'added' || o.status === 'exists'
+                      ? { bg: 'rgba(34,197,94,0.10)', bd: 'rgba(34,197,94,0.35)', fg: '#86efac' }
+                      : o.status === 'rate_limited'
+                        ? { bg: 'rgba(234,179,8,0.10)', bd: 'rgba(234,179,8,0.35)', fg: '#fde047' }
+                        : { bg: 'rgba(239,68,68,0.10)', bd: 'rgba(239,68,68,0.35)', fg: '#fca5a5' };
+                  return (
+                    <span key={sym} title={o?.message ?? ''} style={{
+                      display: 'inline-flex', alignItems: 'center', gap: '6px',
+                      padding: '4px 8px', borderRadius: '6px',
+                      background: tone.bg, border: `1px solid ${tone.bd}`,
+                      fontSize: '12px', fontWeight: 700, color: tone.fg,
+                      fontFamily: 'ui-monospace, monospace',
+                    }}>
+                      {sym}
+                      {o && (o.status === 'added' || o.status === 'exists') && <span>✓</span>}
+                      {o && o.status === 'rate_limited' && <span>⏳</span>}
+                      {o && (o.status === 'not_found' || o.status === 'error') && <span>✕</span>}
+                      <button type="button" onClick={() => removeSymbol(sym)} aria-label={`Remove ${sym}`}
+                        style={{ background: 'none', border: 'none', color: tone.fg, cursor: 'pointer',
+                                 fontSize: '13px', lineHeight: 1, padding: 0, opacity: 0.7 }}>×</button>
+                    </span>
+                  );
+                })}
+                {symbols.length >= MAX_SYMBOLS && (
+                  <span style={{ fontSize: '11px', color: '#eab308', alignSelf: 'center' }}>
+                    {MAX_SYMBOLS} is the per-request limit
+                  </span>
+                )}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: '8px' }}>
               <div ref={dropRef} style={{ position: 'relative', flex: 1 }}>
                 <input
@@ -176,13 +268,21 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
                   value={query}
                   onChange={e => {
                     const v = e.target.value;
+                    // A separator means the ticker before it is finished. Committing on the
+                    // separator is what makes pasting a whole list work without extra steps.
+                    if (SYMBOL_SEPARATORS.test(v)) { addSymbols(v); return; }
                     setQuery(v);
-                    setSymbol(v.toUpperCase());
                     setDropOpen(true);
-                    setStatus('idle'); setResult(null); setErrMsg('');
+                    setStatus('idle'); setOutcomes(null); setErrMsg('');
                   }}
-                  placeholder="Search: Apple, NVDA, 0700.HK…"
-                  maxLength={40}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && query.trim()) { e.preventDefault(); addSymbols(query); }
+                    else if (e.key === 'Backspace' && !query && symbols.length) {
+                      removeSymbol(symbols[symbols.length - 1]);
+                    }
+                  }}
+                  placeholder={symbols.length ? 'Add another…' : 'Search or paste: AAPL, NVDA, 0700.HK…'}
+                  maxLength={200}
                   autoComplete="off"
                   style={{
                     width: '100%', padding: '10px 12px',
@@ -207,10 +307,8 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
                         type="button"
                         onMouseDown={e => {
                           e.preventDefault();
-                          setQuery(`${s.symbol} – ${s.name}`);
-                          setSymbol(s.symbol);
+                          addSymbols(s.symbol);
                           setDropOpen(false);
-                          setStatus('idle'); setResult(null); setErrMsg('');
                         }}
                         style={{
                           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -241,16 +339,16 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
               </div>
               <button
                 type="submit"
-                disabled={!symbol.trim() || isLoading}
+                disabled={(!symbols.length && !query.trim()) || isLoading}
                 style={{
                   padding: '10px 20px', borderRadius: '8px', border: 'none',
-                  cursor: !symbol.trim() || isLoading ? 'not-allowed' : 'pointer',
+                  cursor: (!symbols.length && !query.trim()) || isLoading ? 'not-allowed' : 'pointer',
                   fontSize: '13px', fontWeight: 700, color: '#ffffff',
                   background: isLoading ? 'rgba(99,102,241,0.4)' : 'linear-gradient(135deg, #4f46e5, #6366f1)',
-                  opacity: !symbol.trim() || isLoading ? 0.5 : 1,
+                  opacity: (!symbols.length && !query.trim()) || isLoading ? 0.5 : 1,
                   transition: 'all 0.15s', whiteSpace: 'nowrap',
                   display: 'flex', alignItems: 'center', gap: '6px',
-                  boxShadow: !symbol.trim() || isLoading ? 'none' : '0 4px 12px rgba(99,102,241,0.35)',
+                  boxShadow: (!symbols.length && !query.trim()) || isLoading ? 'none' : '0 4px 12px rgba(99,102,241,0.35)',
                 }}
               >
                 {isLoading ? (
@@ -261,37 +359,64 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
                     </svg>
                     Adding
                   </>
-                ) : 'Add →'}
+                ) : symbols.length > 1 ? `Add ${symbols.length} →` : 'Add →'}
               </button>
             </div>
           </form>
 
           {/* Status feedback */}
-          {isSuccess && result && (
+          {/* Per-symbol outcomes. EVERY symbol gets its own line, because a batch routinely
+              splits under rate limiting and one verdict for the batch would be wrong for most
+              of them — and would hide which ones are worth retrying. */}
+          {outcomes && outcomes.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <div style={{
-                display: 'flex', alignItems: 'flex-start', gap: '12px',
-                padding: '12px 16px', borderRadius: '10px',
-                background: 'rgba(34,197,94,0.07)', border: '1px solid rgba(34,197,94,0.2)',
-              }}>
-                <div style={{
-                  width: '20px', height: '20px', borderRadius: '50%', flexShrink: 0,
-                  background: 'rgba(34,197,94,0.2)', display: 'flex', alignItems: 'center',
-                  justifyContent: 'center', fontSize: '11px', color: '#4ade80', marginTop: '1px',
-                }}>✓</div>
-                <div>
-                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#86efac' }}>{result.name}</div>
-                  <div style={{ fontSize: '11px', color: '#16a34a', marginTop: '3px' }}>
-                    {result.sector && <span>{result.sector} · </span>}Price data ingesting in background
-                  </div>
-                </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {outcomes.map(o => {
+                  const good = o.status === 'added' || o.status === 'exists';
+                  const warn = o.status === 'rate_limited';
+                  return (
+                    <div key={o.symbol} style={{
+                      display: 'flex', alignItems: 'flex-start', gap: '10px',
+                      padding: '9px 12px', borderRadius: '8px',
+                      background: good ? 'rgba(34,197,94,0.07)' : warn ? 'rgba(234,179,8,0.07)' : 'rgba(239,68,68,0.07)',
+                      border: `1px solid ${good ? 'rgba(34,197,94,0.2)' : warn ? 'rgba(234,179,8,0.22)' : 'rgba(239,68,68,0.2)'}`,
+                    }}>
+                      <span style={{ fontSize: '12px', color: good ? '#4ade80' : warn ? '#fde047' : '#f87171', marginTop: '1px' }}>
+                        {good ? '✓' : warn ? '⏳' : '✕'}
+                      </span>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: '12px', fontWeight: 700,
+                                      color: good ? '#86efac' : warn ? '#fde047' : '#fca5a5',
+                                      fontFamily: 'ui-monospace, monospace' }}>
+                          {o.symbol}{o.name && o.name !== o.symbol ? ` · ${o.name}` : ''}
+                        </div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                          {o.status === 'added' && (o.sector ? `${o.sector} · Price data ingesting in background` : 'Price data ingesting in background')}
+                          {o.status !== 'added' && o.message}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
 
+              {retryable.length > 0 && (
+                <button type="button" onClick={retryThrottled} style={{
+                  alignSelf: 'flex-start', padding: '7px 12px', borderRadius: '8px',
+                  border: '1px solid rgba(234,179,8,0.35)', background: 'rgba(234,179,8,0.10)',
+                  color: '#fde047', fontSize: '12px', fontWeight: 600, cursor: 'pointer',
+                }}>
+                  Retry {retryable.length} that {retryable.length === 1 ? 'was' : 'were'} throttled
+                </button>
+              )}
+
               {/* Watchlist picker — only shown when user has multiple lists */}
-              {multiList && (
+              {/* Only when something actually landed — a picker over zero symbols would invite a
+                  click that silently does nothing. */}
+              {multiList && landed.length > 0 && (
                 <div>
                   <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>
-                    Add to watchlist
+                    Add {landed.length > 1 ? `all ${landed.length}` : ''} to watchlist
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {lists.map(list => {
@@ -311,7 +436,7 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
                         >
                           <span>{list.name}</span>
                           <span style={{ fontSize: '11px', color: picked ? '#6366f1' : '#334155' }}>
-                            {picked ? '✓ Added' : `${list.item_count} stocks`}
+                            {picked ? `✓ Added ${landed.length > 1 ? landed.length : ''}`.trim() : `${list.item_count} stocks`}
                           </span>
                         </button>
                       );
@@ -347,7 +472,7 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
           {/* Quick-add grid */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
             {QUICK_ADD.map(({ symbol: sym, label, flag }) => {
-              const active = symbol === sym;
+              const active = symbols.includes(sym);
               return (
                 <button
                   key={sym}

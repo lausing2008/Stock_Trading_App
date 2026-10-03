@@ -135,6 +135,10 @@ export const api = {
   ingest: (symbols: string[], force = false) => request<{ status: string; symbols?: number }>(`/admin/ingest`, { method: 'POST', body: JSON.stringify({ symbols, force }) }),
   trainAll: () => request<{ status: string; count: number; symbols: string[] }>(`/ml/train_all`, { method: 'POST' }),
   addStock: (symbol: string) => request<{ status: string; symbol: string; name: string; sector?: string }>(`/admin/add_stock`, { method: 'POST', body: JSON.stringify({ symbol }) }),
+  /** Multi-symbol add. Every symbol carries its OWN outcome — under provider rate limiting a
+   *  batch routinely splits (some added, some throttled, one typo), and a single pass/fail
+   *  verdict would be wrong for most of them and would hide which ones are worth retrying. */
+  addStocks: (symbols: string[]) => request<AddStocksResult>(`/admin/add_stocks`, { method: 'POST', body: JSON.stringify({ symbols }) }),
   deleteStock: (symbol: string) => request<{ status: string; symbol: string }>(`/admin/stocks/${symbol}`, { method: 'DELETE' }),
   marketOverview: () => request<MarketIndex[]>(`/stocks/market_overview`),
   fearGreed: () => request<FearGreed>(`/stocks/fear_greed`),
@@ -2135,6 +2139,25 @@ export type OptionStrategyRecommendation = {
   iv_note?: string;
   constraint?: string;
   alternatives?: { key: string; name: string; reason: string }[];
+};
+
+export type AddStockOutcome = {
+  symbol: string;
+  /** `rate_limited` is temporary and nothing the user can fix; `not_found` is permanent and
+   *  entirely theirs to fix. Collapsing the two is what told a user to check a ticker that
+   *  was already correct. */
+  status: 'added' | 'exists' | 'not_found' | 'rate_limited' | 'error';
+  name: string | null;
+  sector: string | null;
+  retryable: boolean;
+  message: string;
+};
+
+export type AddStocksResult = {
+  requested: number;
+  results: AddStockOutcome[];
+  summary: Record<'added' | 'exists' | 'not_found' | 'rate_limited' | 'error', number>;
+  retryable_symbols: string[];
 };
 
 export type OptionStrategyMatrix = {

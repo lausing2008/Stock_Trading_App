@@ -122,3 +122,105 @@ GROUP BY w.id, w.name, w.trading_style;"
 
 ---
 
+
+---
+
+## AUD-ADDSTOCK-MISATTRIBUTED (2026-10-02) — "not able to add stock": two things I got wrong
+
+**Reported by the user**: adding a stock from the dashboard failed that morning.
+
+**What the logs establish.** `POST /admin/add_stock` returned **502** at 15:38, 15:39, 15:45
+and 17:23 UTC, then **200** at 23:44. market-data had been up since 07:15, so this was not a
+deploy artefact, and the handler's code path was untouched by that day's releases. Each
+failure logged `add_stock.start` and then nothing — no `add_stock.done` — with ~3 seconds in
+between.
+
+**THE DIAGNOSIS I GOT WRONG, AND WHY IT MATTERS.** I concluded `_fetch_yf_info` had no retry
+and added one. It already had one. `BUG-ADDSTOCK-NORETRY` (2026-08-07, above) had given it a
+3-attempt tenacity policy with 1–8s exponential backoff, sitting in a decorator directly above
+the `def`. I had run `grep -n "_fetch_yf_info" -A 16`, which showed the function BODY and
+nothing above it, and never checked.
+
+What I then shipped into my working tree was a second retry layer wrapping the first: 3 × 3 =
+**up to nine calls into a live rate-limit storm** — the exact amplification this file exists
+to warn about, introduced while citing BUG-YFCALLVOL2 as my reason for being careful. It was
+caught by this repo's own pre-existing test for the August fix, which my change broke; without
+that test it would have reached production as a worsening of the condition it was meant to
+fix.
+
+**The lesson is narrow and mechanical:** `grep -A` from a `def` shows the body, not the
+decorators. A function's retry, auth, caching and rate-limit policy all live in the lines
+*above* its name. Read the whole definition before concluding a behaviour is absent.
+
+So the handler's one source of 502 was not a bare call — it was an already-retried call whose
+final failure was misclassified:
+
+```python
+try:
+    info = _fetch_yf_info(symbol)      # 3 tenacity attempts, up to ~8s, since 2026-08-07
+except Exception as exc:
+    raise HTTPException(502, f"yfinance error: {exc}")   # ...then everything became 502
+```
+
+**A NUMBER I REPORTED AND HAD TO WITHDRAW.** I first said "44,016 rate-limit lines in 12
+hours" and attributed them to yfinance. That came from
+`grep -icE "429|rate.?limit|too many requests"` across the whole market-data log, which does
+not distinguish providers — and the first lines it returned were
+`{"adapter": "unusual_whales", "error": "Unusual Whales rate limit exceeded"}`. The user
+challenged it on exactly the right grounds: heavy options-chain traffic *had* been migrated to
+Unusual Whales, so a yfinance exhaustion claim did not fit what they knew about the system.
+
+The same session had already been bitten once by a loose grep matching `500` inside
+`limit=500`. Twice in one investigation is a pattern, not bad luck: **when counting provider
+errors, group by the provider field rather than by a text match across every line.**
+
+**The corrected figures, for the same 12-hour window:**
+
+| | Count |
+|---|---:|
+| `ingest.adapter_failed`, adapter `unusual_whales` | 13,131 |
+| `ingest.adapter_failed`, adapter `yfinance` | 6,986 |
+| — of which `"Too Many Requests. Rate limited."` | **6,566** |
+| `ingest.adapter_failed`, adapter `alpha_vantage` | 563 |
+
+So yfinance *is* genuinely rate-limited — the original conclusion survived — but the evidence
+for it is 6,566 provider-attributed errors, not the 44,016 mixed-provider lines first quoted.
+
+**Why yfinance is still exhausted after the UW migration.** The migration was real and it
+holds: options chains moved. What did not move is **intraday bar ingestion**.
+
+| yfinance calls, 12h | Count | Share |
+|---|---:|---:|
+| `tf: 5m` | **25,601** | 91.5% |
+| `tf: 1d` | 2,372 | 8.5% |
+
+183 active symbols on a 5-minute cycle is ~140 cycles per 12 hours — which is exactly 25,601
+calls. The 5-minute refresh, not the options work, is what consumes the budget.
+
+**What is still NOT established.** The handler never logged the exception, so the specific
+four 502s cannot be *proved* to have been rate-limit responses. 6,566 rate-limit errors in the
+same window makes it the overwhelmingly likely cause, and a successful manual fetch of ASTS,
+COIN and AAPL hours later is consistent with a transient window — but "likely" is where this
+stops. The fix adds `add_stock.rate_limited` / `add_stock.provider_error` logging precisely so
+the next occurrence is decided by evidence rather than inference.
+
+**The fixes that remain, after removing my duplicate retry.**
+
+1. A throttle returns **503 + `Retry-After`**, not 502. "Come back shortly" and "the upstream
+   is broken" are different facts, and only one of them is true here.
+2. The failure is **logged** (`add_stock.rate_limited` / `add_stock.provider_error`), not just
+   returned in the response body. That is why the four production 502s cannot be diagnosed
+   today, and why the next one will be.
+3. **The message no longer blames the user.** The modal's fallback read *"Failed to add —
+   check the ticker symbol"* for every failure including a throttle, sending someone to hunt
+   for a typo in a symbol that was correct. That is the half of this incident that actually
+   wasted the user's time, and it was a one-line default nobody had revisited.
+
+There is now **exactly one** retry policy on this path, pinned by a test that counts the
+decorators on `_fetch_yf_info` and fails if a second wrapper reappears. The new multi-symbol
+endpoint is sequential and capped at 25 for the same underlying reason.
+
+**Left open, and worth its own decision:** UW's 13,131 adapter failures are a larger number
+than yfinance's and are not addressed here at all. And nothing was done about the 5-minute
+ingest volume itself — reducing it, staggering it, or moving bars to a paid provider are all
+real options with different costs, and none is a bug fix.
