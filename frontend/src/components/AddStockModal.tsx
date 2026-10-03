@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import useSWR from 'swr';
 import { api, type WatchlistMeta, type Stock, type AddStockOutcome } from '@/lib/api';
+import { parseSymbols, mergeSymbols, MAX_SYMBOLS, SYMBOL_SEPARATORS } from '@/lib/symbolInput';
+import {
+  EMPTY_SELECTION, canPickList, beginPick, resolvePick, type ListSelection,
+} from '@/lib/watchlistSelection';
 
 type Props = { onClose: () => void; onAdded: (symbol: string, listId?: number) => Promise<void>; lists?: WatchlistMeta[] };
 
@@ -15,18 +19,6 @@ const QUICK_ADD = [
   { symbol: 'COIN',    label: 'Coinbase',    flag: '🇺🇸' },
 ];
 
-// Split pasted input on the separators people actually use. Someone copying tickers out of a
-// spreadsheet, an article or a chat message gets commas, spaces, newlines or tabs, and being
-// told "one at a time" is the kind of friction that makes a feature go unused.
-const SYMBOL_SEPARATORS = /[\s,;]+/;
-
-function parseSymbols(text: string): string[] {
-  return text.toUpperCase().split(SYMBOL_SEPARATORS).map(t => t.trim()).filter(Boolean);
-}
-
-const MAX_SYMBOLS = 25;  // mirrors the server's own cap, which exists because the data
-                         // provider rate-limits lookups — see add_stocks' docstring.
-
 export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
   const [symbols, setSymbols] = useState<string[]>([]);
   const [outcomes, setOutcomes] = useState<AddStockOutcome[] | null>(null);
@@ -34,7 +26,11 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
   const [dropOpen, setDropOpen] = useState(false);
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [errMsg, setErrMsg]   = useState('');
-  const [selectedListId, setSelectedListId] = useState<number | undefined>(undefined);
+  // A stock belongs to as many watchlists as you like, so this is the SET of lists these
+  // symbols have landed in — not one choice. The single-id version made a second pick look
+  // like it REPLACED the first (the earlier list's checkmark reverted to its stock count)
+  // while the server had in fact added to both.
+  const [listSel, setListSel] = useState<ListSelection>(EMPTY_SELECTION);
   const inputRef = useRef<HTMLInputElement>(null);
   const dropRef  = useRef<HTMLDivElement>(null);
 
@@ -57,18 +53,14 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
   function addSymbols(text: string) {
     const parsed = parseSymbols(text);
     if (!parsed.length) return;
-    setSymbols(prev => {
-      const merged = [...prev];
-      for (const p of parsed) if (!merged.includes(p)) merged.push(p);
-      return merged.slice(0, MAX_SYMBOLS);
-    });
+    setSymbols(prev => mergeSymbols(prev, parsed));
     setQuery('');
-    setStatus('idle'); setOutcomes(null); setErrMsg('');
+    setStatus('idle'); setOutcomes(null); setErrMsg(''); setListSel(EMPTY_SELECTION);
   }
 
   function removeSymbol(sym: string) {
     setSymbols(prev => prev.filter(s => s !== sym));
-    setStatus('idle'); setOutcomes(null); setErrMsg('');
+    setStatus('idle'); setOutcomes(null); setErrMsg(''); setListSel(EMPTY_SELECTION);
   }
 
   useEffect(() => { inputRef.current?.focus(); }, []);
@@ -91,14 +83,13 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
     e.preventDefault();
     // Whatever is still in the input counts too — nobody should lose a ticker because they
     // did not press Enter before clicking Add.
-    const pending = parseSymbols(query);
-    const all = [...symbols];
-    for (const p of pending) if (!all.includes(p)) all.push(p);
+    const all = mergeSymbols(symbols, parseSymbols(query));
     if (!all.length) return;
 
     setStatus('loading');
     setOutcomes(null);
     setErrMsg('');
+    setListSel(EMPTY_SELECTION);
     try {
       const res = await api.addStocks(all);
       setSymbols(all);
@@ -131,20 +122,25 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
   }
 
   async function confirmList(listId: number) {
-    if (!landed.length) return;
-    setSelectedListId(listId);
+    if (!canPickList(listSel, listId, landed.length)) return;
+    setListSel(prev => beginPick(prev, listId));
+    let ok = false;
     try {
       for (const o of landed) await onAdded(o.symbol, listId);
+      ok = true;
     } catch (err: unknown) {
-      setSelectedListId(undefined);
       const msg = err instanceof Error ? err.message : String(err);
       setErrMsg(msg.includes('401') ? 'Session expired — please log out and log in again.' : 'Failed to add to list.');
     }
+    // Ticked only once the write actually returned: the earlier version marked the list chosen
+    // BEFORE awaiting, so a failed add still showed as done.
+    setListSel(prev => resolvePick(prev, listId, ok));
   }
 
   function retryThrottled() {
     setSymbols(retryable);
     setOutcomes(null);
+    setListSel(EMPTY_SELECTION);
     setStatus('idle');
     setErrMsg('');
   }
@@ -178,7 +174,11 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
 
       {/* Card */}
       <div style={{
-        position: 'relative', zIndex: 10, width: '100%', maxWidth: '460px',
+        position: 'relative', zIndex: 10, width: '100%', maxWidth: '520px',
+        // Bound to the viewport (the overlay's own 16px padding on each side) and laid out as
+        // a column so the header stays put and the body is what scrolls. Without this the card
+        // simply grew past the screen edge and the ends were unreachable.
+        maxHeight: 'calc(100vh - 32px)', display: 'flex', flexDirection: 'column',
         borderRadius: '16px', overflow: 'hidden',
         background: 'linear-gradient(160deg, #0d1424 0%, #090e1a 100%)',
         border: '1px solid rgba(99,102,241,0.3)',
@@ -186,10 +186,10 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
       }}>
 
         {/* Top accent bar */}
-        <div style={{ height: '3px', background: 'linear-gradient(90deg, #4f46e5, #818cf8, #4f46e5)' }} />
+        <div style={{ height: '3px', flexShrink: 0, background: 'linear-gradient(90deg, #4f46e5, #818cf8, #4f46e5)' }} />
 
         {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px 16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px 16px', flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <div style={{
               width: '36px', height: '36px', borderRadius: '10px', display: 'flex',
@@ -219,7 +219,8 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
         </div>
 
         {/* Body */}
-        <div style={{ padding: '0 24px 24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        <div style={{ padding: '0 24px 24px', display: 'flex', flexDirection: 'column', gap: '20px',
+                      overflowY: 'auto', flex: 1, minHeight: 0 }}>
 
           {/* Searchable combobox */}
           <form onSubmit={handleSubmit}>
@@ -273,7 +274,7 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
                     if (SYMBOL_SEPARATORS.test(v)) { addSymbols(v); return; }
                     setQuery(v);
                     setDropOpen(true);
-                    setStatus('idle'); setOutcomes(null); setErrMsg('');
+                    setStatus('idle'); setOutcomes(null); setErrMsg(''); setListSel(EMPTY_SELECTION);
                   }}
                   onKeyDown={e => {
                     if (e.key === 'Enter' && query.trim()) { e.preventDefault(); addSymbols(query); }
@@ -416,32 +417,48 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
               {multiList && landed.length > 0 && (
                 <div>
                   <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>
-                    Add {landed.length > 1 ? `all ${landed.length}` : ''} to watchlist
+                    Add {landed.length > 1 ? `all ${landed.length}` : ''} to watchlists — pick as many as you like
                   </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {/* Two columns rather than one tall stack: with a dozen lists the single
+                      column pushed the rest of the modal off the screen. */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '6px' }}>
                     {lists.map(list => {
-                      const picked = selectedListId === list.id;
+                      const added = listSel.added.includes(list.id);
+                      const busy  = listSel.pending === list.id;
+                      const other = listSel.pending !== undefined && !busy;
                       return (
                         <button
                           key={list.id}
+                          type="button"
                           onClick={() => confirmList(list.id)}
-                          disabled={picked}
+                          disabled={added || listSel.pending !== undefined}
+                          title={`${list.name} · ${list.item_count} stocks`}
                           style={{
                             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                            padding: '9px 14px', borderRadius: '8px', border: `1px solid ${picked ? 'rgba(99,102,241,0.5)' : 'rgba(255,255,255,0.08)'}`,
-                            background: picked ? 'rgba(99,102,241,0.12)' : 'rgba(255,255,255,0.03)',
-                            color: picked ? '#818cf8' : '#94a3b8', cursor: picked ? 'default' : 'pointer',
-                            fontSize: '13px', fontWeight: picked ? 700 : 400, transition: 'all 0.15s',
+                            gap: '8px', minWidth: 0, textAlign: 'left',
+                            padding: '8px 11px', borderRadius: '8px',
+                            border: `1px solid ${added ? 'rgba(34,197,94,0.45)' : 'rgba(255,255,255,0.08)'}`,
+                            background: added ? 'rgba(34,197,94,0.10)' : 'rgba(255,255,255,0.03)',
+                            color: added ? '#86efac' : '#94a3b8',
+                            cursor: added ? 'default' : other ? 'wait' : 'pointer',
+                            opacity: other ? 0.5 : 1,
+                            fontSize: '12px', fontWeight: added ? 700 : 400, transition: 'all 0.15s',
                           }}
                         >
-                          <span>{list.name}</span>
-                          <span style={{ fontSize: '11px', color: picked ? '#6366f1' : '#334155' }}>
-                            {picked ? `✓ Added ${landed.length > 1 ? landed.length : ''}`.trim() : `${list.item_count} stocks`}
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{list.name}</span>
+                          <span style={{ fontSize: '10px', flexShrink: 0, color: added ? '#4ade80' : '#334155' }}>
+                            {busy ? '…' : added ? '✓' : list.item_count}
                           </span>
                         </button>
                       );
                     })}
                   </div>
+                  {listSel.added.length > 0 && (
+                    <div style={{ fontSize: '11px', color: '#4ade80', marginTop: '8px' }}>
+                      Added {landed.length > 1 ? `all ${landed.length}` : landed[0]?.symbol} to{' '}
+                      {listSel.added.length} {listSel.added.length === 1 ? 'list' : 'lists'} — pick more, or close.
+                    </div>
+                  )}
                 </div>
               )}
             </div>

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import MarketClosedBanner from '@/components/MarketClosedBanner';
 import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert, type RelPerfPoint, type SignalAlertItem, type DecisionResult, type OutcomesSummary } from '@/lib/api';
+import { parseSymbols } from '@/lib/symbolInput';
 import { storage } from '@/lib/storage';
 import { getSignalStyle } from '@/lib/settings';
 
@@ -321,10 +322,10 @@ function AddToListModal({ listId, currentSymbols, onClose, onAdded }: {
   }
 
   async function handleBulkAdd() {
-    const tokens = bulkText
-      .split(/[\s,\n]+/)
-      .map(t => t.trim().toUpperCase())
-      .filter(t => t.length > 0);
+    // Shared with the dashboard's add modal. These two screens had drifted to different
+    // separator sets, so the same pasted column parsed differently depending on where you
+    // pasted it.
+    const tokens = parseSymbols(bulkText);
     // Shares `addMany`, so the pasted path gains the same per-symbol error reporting the
     // click path now has. Two code paths that add symbols should not fail differently.
     await addMany([...new Set(tokens)]);
