@@ -318,10 +318,14 @@ export default function IntelligenceReportsPage() {
                       <td style={{ padding: '11px 14px', width: '230px', verticalAlign: 'top',
                                    fontSize: '13px', color: '#cbd5e1', fontWeight: 600 }}>
                         {titleise(key)}
-                        <div style={{ fontSize: '10px', color: '#475569', fontWeight: 400,
-                                      marginTop: '2px' }}>
-                          {STATEMENT_LABEL[f.statement] ?? f.statement}
-                        </div>
+                        {/* Only a field that HAS a value makes a claim. Showing the default
+                            class beside UNAVAILABLE would label an absence an observed fact. */}
+                        {f.state === 'OK' && (
+                          <div style={{ fontSize: '10px', color: '#475569', fontWeight: 400,
+                                        marginTop: '2px' }}>
+                            {STATEMENT_LABEL[f.statement] ?? f.statement}
+                          </div>
+                        )}
                       </td>
                       <td style={{ padding: '11px 14px', verticalAlign: 'top' }}>
                         <FieldValue f={f} />

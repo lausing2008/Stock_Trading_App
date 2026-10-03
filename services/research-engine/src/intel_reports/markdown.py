@@ -58,7 +58,11 @@ def to_markdown(report) -> str:
     lines += ["", "## Fields", "", "| Field | Class | Value |", "|---|---|---|"]
     for key in sorted(fields):
         f = fields[key]
-        lines.append(f"| {key.replace('_', ' ')} | {f.get('statement', '')} | {_render_value(f)} |")
+        # The statement class describes a CLAIM. A field with no value makes no claim, so
+        # printing its default class next to UNAVAILABLE labels an absence as an observed fact
+        # — the precise kind of mislabelling this contract exists to prevent.
+        klass = f.get("statement", "") if f.get("state") == "OK" else ""
+        lines.append(f"| {key.replace('_', ' ')} | {klass} | {_render_value(f)} |")
 
     missing = {k: f for k, f in fields.items() if f.get("state") != "OK"}
     if missing:

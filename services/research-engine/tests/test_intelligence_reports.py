@@ -123,3 +123,41 @@ def test_no_forecast_probability_is_invented(results):
     assert r["horizons"] == 3
     assert all(p is None for p in r["probabilities"])
     assert r["signal_is_model_forecast_class"] == "model_forecast"
+
+
+def test_an_absent_field_is_not_labelled_an_observed_fact():
+    """The statement class describes a CLAIM, and a field with no value makes none.
+
+    Caught on the first real production report: every UNAVAILABLE row rendered with the default
+    `observed_fact` class beside it, which labels an absence as something observed — the exact
+    mislabelling this contract exists to prevent.
+    """
+    import importlib.util, pathlib, sys
+    root = pathlib.Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root))
+    spec = importlib.util.spec_from_file_location(
+        "intel_md_under_test", root / "src" / "intel_reports" / "markdown.py")
+    md = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = md
+    spec.loader.exec_module(md)
+
+    class R:
+        id, version, supersedes_id, pre_report_id = 1, 1, None, None
+        report_type, subject_key, market, status = "market_outlook", "market:US", "US", "partial"
+        contract_version, policy_version = 1, "1"
+        generated_at = cutoff_at = "2026-10-03T07:38:12"
+        input_fingerprint, coverage = "abc", {"ok": 1, "total": 2}
+        payload = {"fields": {
+            "breadth": {"state": "OK", "value": 54.2, "units": "pct",
+                        "statement": "deterministic_calculation"},
+            "liquidity": {"state": "UNAVAILABLE", "value": None,
+                          "reason": "no financial-conditions measure is ingested",
+                          "statement": "observed_fact"},
+        }}
+
+    out = md.to_markdown(R())
+    liquidity_row = next(l for l in out.splitlines() if l.startswith("| liquidity "))
+    assert "observed_fact" not in liquidity_row, liquidity_row
+    assert "UNAVAILABLE" in liquidity_row
+    breadth_row = next(l for l in out.splitlines() if l.startswith("| breadth "))
+    assert "deterministic_calculation" in breadth_row, "a real claim keeps its class"
