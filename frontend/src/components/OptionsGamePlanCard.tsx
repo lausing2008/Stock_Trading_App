@@ -96,12 +96,29 @@ export default function OptionsGamePlanCard({
   // the case where the two original legs could not be priced but other structures could —
   // e.g. no stop-loss set, so there is nothing to anchor a protective put to, yet a long call
   // and a cash-secured put are both perfectly constructible.
-  if (!pp && !cc && !hasMatrix) return null;
+  // SF-02 RESIDUAL (2026-10-02): A REFUSED QUOTE IS NOT AN ABSENT CONTRACT.
+  // The route now declines to price a crossed/one-sided/non-numeric quote and says why. If
+  // this card still returned null on that, the fix would have replaced a wrong number with a
+  // blank space — and a reader cannot tell "no such contract" from "the quote is unusable
+  // right now", which are different situations with different next steps.
+  const ppWhy = plan.protective_put_unavailable;
+  const ccWhy = plan.covered_call_unavailable;
+  if (!pp && !cc && !hasMatrix && !ppWhy && !ccWhy) return null;
 
   return (
     <div style={{ background: '#1e293b', borderRadius: 10, padding: '14px 18px', border: '1px solid #334155', marginTop: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
         <span style={{ fontWeight: 600, color: '#f1f5f9', fontSize: 13 }}>Options Game Plan</span>
+        {(ppWhy || ccWhy) && (
+          <span
+            title={[ppWhy, ccWhy].filter(Boolean).join('\n')}
+            style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999,
+                     background: 'rgba(234,179,8,0.12)', border: '1px solid rgba(234,179,8,0.35)',
+                     color: '#fde047', cursor: 'help' }}
+          >
+            ⚠ quote unusable
+          </span>
+        )}
         <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: 'rgba(245,158,11,0.15)', color: '#f59e0b' }}>
           ⚡ Advanced
         </span>

@@ -132,6 +132,21 @@ def _leg(contract: dict | None, action: str, expiry: str | None, dte: int | None
     # treating it as fully tradeable is the existing assumption and is left to the caller.
     if dte is not None and dte < 0:
         return None
+    # SF-05 RESIDUAL (2026-10-02): "UNKNOWN IS NOT EXPIRED" DOES NOT MAKE UNKNOWN ELIGIBLE.
+    #
+    # The guard above rejects a negative DTE but accepted None with any nonempty expiry, and
+    # `_dte()` returns None for an unparseable date — so `expiry='not-a-date'` produced a
+    # priced leg with `days_to_expiry=None`, and the matrix recommended it. My own test
+    # asserting "unknown DTE still builds" could not tell an OMITTED CALCULATION apart from
+    # an UNPARSEABLE CONTRACT IDENTITY, and those are different facts.
+    #
+    # The expiry string is validated here, at the construction boundary, rather than trusting
+    # the caller's `dte`: a contract whose identity cannot be read is not a contract this
+    # module can price, whoever called it and whatever they computed.
+    try:
+        datetime.strptime(expiry, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return None
     return {
         "action": action,                      # "buy" | "sell"
         "right": contract.get("right", "?"),   # "call" | "put"
@@ -519,7 +534,11 @@ def _recommend(*, singles: dict, combos: dict, signal: str | None,
     bullish, bearish = sig in {"BUY", "STRONG_BUY"}, sig in {"SELL", "STRONG_SELL"}
     available = {**singles, **combos}
     if not available:
-        return {"primary": None, "reason": "No listed contracts priced well enough to build a structure."}
+        return {"primary": None,
+                "reason": "No listed contracts priced well enough to build a structure.",
+                "coverable_contracts": coverable_contracts,
+                "constraint": _constraint_text(coverable_contracts or 0, holds_any_shares),
+                "rejected_unsound": [], "ineligible_for_holding": []}
 
     # SR-06 (2026-10-02): A STRUCTURE WHOSE BEST CASE IS A LOSS MUST NOT BE RECOMMENDED.
     # This function picked the first structure that fit the constraints and never looked at
@@ -533,12 +552,53 @@ def _recommend(*, singles: dict, combos: dict, signal: str | None,
 
     _unsound = sorted(k for k, v in available.items() if not _payoff_is_sane(v))
     available = {k: v for k, v in available.items() if _payoff_is_sane(v)}
+
+    # SF-03 RESIDUAL (2026-10-02): ELIGIBILITY MUST CONSTRAIN EVERY PATH, NOT THE ORDERING.
+    #
+    # The first fix changed the PREFERENCE ORDER for an account without coverage but left
+    # ineligible structures in `available`, so the final `next(iter(available))` fallback
+    # handed them back anyway. Reviewer's executed witness: spot 100, one share, rich IV, no
+    # put chain, the ATM call crossed at 12/2 and the target call valid at 2/2.2. The long
+    # call cannot be built, no preferred alternative survives, and the fallback returned
+    # `covered_call` — for a holding of one share — with none of the coverage metadata the
+    # ordinary path carries.
+    #
+    # Pricing and eligibility are different questions. "The only structure we could price" is
+    # not "a structure this account can hold", and the fallback was answering the first while
+    # the reader hears the second. Filtering here, before ranking and before any fallback, is
+    # what makes that impossible rather than merely unlikely.
+    #
+    # Keyed off each structure's OWN `requires_shares` flag rather than a hardcoded list of
+    # names, so a structure added later inherits the rule without anyone remembering to.
+    def _is_eligible(entry: dict) -> bool:
+        return not (entry.get("requires_shares") and (coverable_contracts or 0) < 1)
+
+    _ineligible = sorted(k for k, v in available.items() if not _is_eligible(v))
+    available = {k: v for k, v in available.items() if _is_eligible(v)}
+
+    # Carried on EVERY return path below, including the empty ones — the reviewer found the
+    # fallback omitting exactly this, which left the reader with a recommendation and no
+    # statement of what their holding could actually support.
+    _coverage = {"coverable_contracts": coverable_contracts,
+                 "constraint": _constraint_text(coverable_contracts or 0, holds_any_shares),
+                 "rejected_unsound": _unsound,
+                 # Priced, but not something this holding can carry. Reported rather than
+                 # silently dropped: "we found nothing" and "we found something you cannot
+                 # use" are different answers and lead to different next steps.
+                 "ineligible_for_holding": _ineligible}
+
     if not available:
+        if _ineligible:
+            return {"primary": None,
+                    "reason": ("The only structures the current chain could price require stock "
+                               "you do not hold enough of, so there is no plan here you could "
+                               "actually put on."),
+                    **_coverage}
         return {"primary": None,
                 "reason": ("Every structure the current chain could price has a maximum payoff "
                            "of zero or less — there is no valid plan here, which is itself the "
                            "answer."),
-                "rejected_unsound": _unsound}
+                **_coverage}
 
     def pick(key: str, why: str) -> dict | None:
         return {"primary": key, "name": available[key]["name"], "reason": why} if key in available else None
@@ -588,11 +648,12 @@ def _recommend(*, singles: dict, combos: dict, signal: str | None,
             alts = [{"key": k, "name": available[k]["name"], "reason": w}
                     for k, w in order if k != key and k in available]
             return {**got, "iv_regime": regime, "iv_note": iv_note, "alternatives": alts,
-                    "rejected_unsound": _unsound,
-                    "coverable_contracts": coverable_contracts,
-                    "constraint": _constraint_text(coverable_contracts or 0, holds_any_shares)}
+                    **_coverage}
 
+    # SF-03 RESIDUAL: `available` is now eligibility-filtered above, so this fallback can only
+    # return something the holding can actually support. It still carries the coverage
+    # metadata, which it previously dropped.
     key = next(iter(available))
     return {"primary": key, "name": available[key]["name"],
             "reason": "The only structure that could be priced from the currently-listed chain.",
-            "iv_regime": regime, "iv_note": iv_note, "alternatives": []}
+            "iv_regime": regime, "iv_note": iv_note, "alternatives": [], **_coverage}

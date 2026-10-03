@@ -1,0 +1,57 @@
+{
+  "broker_sequential_acceptance": [
+    {
+      "change": {
+        "stage": "closed"
+      },
+      "claimed": false
+    },
+    {
+      "change": {
+        "broker_order_id": "existing"
+      },
+      "claimed": false
+    },
+    {
+      "change": {
+        "broker_submission_path": "inline"
+      },
+      "claimed": false
+    },
+    {
+      "change": {
+        "broker_submit_attempts": 3
+      },
+      "claimed": false
+    },
+    {
+      "change": {
+        "broker_submission_state": "unknown"
+      },
+      "claimed": false
+    }
+  ],
+  "normal_one_share": "long_call",
+  "expired_primary": null,
+  "fallback_residual": {
+    "primary": "covered_call",
+    "name": "Covered Call",
+    "reason": "The only structure that could be priced from the currently-listed chain.",
+    "iv_regime": "rich",
+    "iv_note": "IV is high in this symbol's own 1-year range, so premium is expensive \u2014 that favours SELLING it rather than buying.",
+    "alternatives": []
+  },
+  "malformed_expiry_residual": {
+    "action": "buy",
+    "right": "call",
+    "strike": 105.0,
+    "price_source": "quote_mid",
+    "price_per_share": 2.1,
+    "cost_per_contract": 210.0,
+    "expiry": "not-a-date",
+    "days_to_expiry": null,
+    "iv": null,
+    "oi": null,
+    "spread_pct": 9.5
+  }
+}

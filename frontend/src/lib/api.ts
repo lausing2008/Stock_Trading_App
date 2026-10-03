@@ -2193,6 +2193,11 @@ export type OptionsGamePlan = {
   shares?: number | null;
   signal?: string | null;
   protective_put: ProtectivePutLeg | null;
+  /** SF-02: WHY a leg is missing, when the reason is an unusable quote rather than an absent
+   *  contract. A crossed, one-sided or non-numeric quote yields no price at all — and
+   *  without this the card simply showed nothing, which reads as "no contract exists". */
+  protective_put_unavailable?: string | null;
+  covered_call_unavailable?: string | null;
   covered_call: CoveredCallLeg | null;
   /** T402: all four legs + combinations + a recommendation. Null if the matrix could not be
    *  built — the two legs above are the older contract and remain independent of it. */

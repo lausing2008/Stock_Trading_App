@@ -206,3 +206,123 @@ def test_an_unknown_dte_is_not_treated_as_expired():
     """None means 'not computed', which is not the same as 'in the past'."""
     assert osx._leg({"strike": 105.0, "bid": 2.0, "ask": 2.2, "right": "call"},
                     "sell", "2026-11-20", None) is not None
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════
+# RESIDUALS from the 2026-10-02 remediation review
+# (docs/audits/2026-10-02-sf-remediation-review.md)
+#
+# The reviewer found both original fixes incomplete and was right on both counts:
+#
+#   SF-03  the fix reordered PREFERENCES but left ineligible structures in `available`, so
+#          the final `next(iter(available))` fallback handed back a covered call for one
+#          share anyway — and without the coverage metadata the ordinary path carries.
+#   SF-05  `_dte()` returns None for an unparseable date and the guard only rejected
+#          NEGATIVE dte, so `expiry='not-a-date'` produced a priced leg with
+#          days_to_expiry=None. My own test asserting "unknown DTE still builds" could not
+#          distinguish an omitted calculation from an unreadable contract identity.
+#
+# These tests run the FULL BUILDER, because the reviewer's other point stands: a helper-only
+# `shares // 100` test cannot establish that no path recommends an ineligible structure.
+# ══════════════════════════════════════════════════════════════════════════════════════════
+
+def _reviewer_fixture(shares, *, call_expiry="2026-11-06"):
+    """The review's own witness: spot 100, target 105, rich IV, no put chain, ATM call
+    CROSSED at 12/2 (so the long call cannot be built) and the target call valid at 2/2.2
+    (so the covered call can be priced). Only an ineligible structure survives pricing."""
+    from datetime import date as _date
+    calls = [{"strike": 100.0, "bid": 12.0, "ask": 2.0, "last_price": 0.0, "iv": .4, "oi": 100},
+             {"strike": 105.0, "bid": 2.0, "ask": 2.2, "last_price": 0.0, "iv": .4, "oi": 100}]
+    return osx.build_strategy_matrix(
+        current_price=100., stop_loss=None, take_profit=105., signal="BUY",
+        put_rows=[], put_expiry=None, call_rows=calls, call_expiry=call_expiry,
+        shares=shares, iv_rank=80., today=_date(2026, 10, 2))
+
+
+@pytest.mark.parametrize("shares", [0, 1, 99])
+def test_the_fallback_cannot_recommend_a_structure_the_holding_cannot_carry(shares):
+    """THE REVIEWER'S WITNESS. The fallback previously returned `covered_call` here."""
+    rec = _reviewer_fixture(shares)["recommendation"]
+    assert rec["primary"] is None
+    assert "covered_call" not in [a["key"] for a in rec.get("alternatives", [])]
+
+
+@pytest.mark.parametrize("shares", [100, 200])
+def test_a_sufficient_holding_still_gets_the_covered_call(shares):
+    """The filter must not refuse a holder who genuinely qualifies."""
+    rec = _reviewer_fixture(shares)["recommendation"]
+    assert rec["primary"] == "covered_call"
+
+
+def test_an_ineligible_priced_structure_is_reported_not_silently_dropped():
+    """'We found nothing' and 'we found something you cannot use' lead to different next
+    steps, so they must not render identically."""
+    rec = _reviewer_fixture(1)["recommendation"]
+    assert rec["ineligible_for_holding"] == ["covered_call"]
+    assert "do not hold enough" in rec["reason"]
+
+
+@pytest.mark.parametrize("shares,expected", [(0, 0), (1, 0), (99, 0), (100, 1), (200, 2)])
+def test_coverage_metadata_is_present_on_every_return_path(shares, expected):
+    """The fallback dropped it entirely — a recommendation with no statement of what the
+    holding supports."""
+    rec = _reviewer_fixture(shares)["recommendation"]
+    assert rec["coverable_contracts"] == expected
+    assert rec["constraint"]
+
+
+def test_no_structures_at_all_still_carries_coverage_metadata():
+    from datetime import date as _date
+    rec = osx.build_strategy_matrix(
+        current_price=100., stop_loss=None, take_profit=105., signal="BUY",
+        put_rows=[], put_expiry=None, call_rows=[], call_expiry=None,
+        shares=1., iv_rank=80., today=_date(2026, 10, 2))["recommendation"]
+    assert rec["primary"] is None
+    assert rec["coverable_contracts"] == 0
+    assert "constraint" in rec
+
+
+# ── SF-05 residual: invalid identity is not unknown identity ────────────────────────────
+
+@pytest.mark.parametrize("bad", ["not-a-date", "2026-13-45", "20261106", "Nov 6 2026", ""])
+def test_a_malformed_expiry_produces_no_recommendation(bad):
+    """THE REVIEWER'S WITNESS: the full matrix recommended a long call with
+    expiry='not-a-date' and days_to_expiry=None."""
+    m = _reviewer_fixture(100, call_expiry=bad)
+    assert m["singles"] == {} and m["combos"] == {}
+    assert m["recommendation"]["primary"] is None
+
+
+def test_a_valid_expiry_still_builds():
+    """The guard must reject invalid identity, not all identity."""
+    assert "covered_call" in _reviewer_fixture(100)["singles"]
+
+
+def test_an_omitted_dte_calculation_is_not_the_same_as_an_unreadable_expiry():
+    """The distinction the first fix could not make: `dte=None` with a VALID expiry string is
+    a calculation nobody performed; `dte=None` with an unparseable one is a contract whose
+    identity cannot be read."""
+    c = {"strike": 105.0, "bid": 2.0, "ask": 2.2, "right": "call"}
+    assert osx._leg(c, "sell", "2026-11-20", None) is not None
+    assert osx._leg(c, "sell", "not-a-date", None) is None
+
+
+def test_same_day_expiry_remains_available_for_analysis():
+    """Agreed with the reviewer: DTE 0 may be priced, but this module does not assert current
+    tradability — last-trading-time rules belong to the execution consumer."""
+    c = {"strike": 105.0, "bid": 2.0, "ask": 2.2, "right": "call"}
+    assert osx._leg(c, "sell", "2026-10-02", 0) is not None
+
+
+# ── SF-02 residual: the legacy card must consume the unavailable reason ─────────────────
+
+_CARD_TSX = (pathlib.Path(__file__).resolve().parents[3]
+             / "frontend/src/components/OptionsGamePlanCard.tsx").read_text()
+
+
+def test_the_legacy_card_does_not_render_nothing_for_an_unusable_quote():
+    """Replacing a wrong number with a blank space is not a fix: the reader cannot tell
+    'no such contract' from 'the quote is unusable right now'."""
+    assert "protective_put_unavailable" in _CARD_TSX
+    assert "!ppWhy && !ccWhy" in _CARD_TSX, "the null-guard must account for the reasons"
+    assert "quote unusable" in _CARD_TSX
