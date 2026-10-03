@@ -1,7 +1,7 @@
 {
   "t1_all_four_types_generate": {
     "market_outlook": {
-      "id": 318,
+      "id": 1,
       "status": "partial",
       "version": 1,
       "coverage": {
@@ -16,7 +16,7 @@
       "markdown_lines": 81
     },
     "stock_outlook": {
-      "id": 319,
+      "id": 2,
       "status": "partial",
       "version": 1,
       "coverage": {
@@ -31,7 +31,7 @@
       "markdown_lines": 85
     },
     "pre_earnings": {
-      "id": 320,
+      "id": 3,
       "status": "partial",
       "version": 1,
       "coverage": {
@@ -47,26 +47,26 @@
       "markdown_lines": 82
     },
     "post_earnings": {
-      "id": 321,
+      "id": 4,
       "status": "partial",
       "coverage": {
         "by_state": {
-          "OK": 14,
+          "OK": 15,
           "UNKNOWN": 3,
           "UNAVAILABLE": 4,
           "NOT_APPLICABLE": 1
         },
-        "total": 22,
-        "ok": 14
+        "total": 23,
+        "ok": 15
       },
-      "fields": 22,
-      "markdown_lines": 84
+      "fields": 23,
+      "markdown_lines": 85
     },
     "passes": true
   },
   "t2_identical_inputs_do_not_duplicate": {
-    "first_id": 322,
-    "second_id": 322,
+    "first_id": 5,
+    "second_id": 5,
     "created": [
       true,
       false
@@ -76,10 +76,10 @@
     "passes": true
   },
   "t3_changed_inputs_create_a_linked_version": {
-    "v1": 323,
-    "v2": 324,
+    "v1": 6,
+    "v2": 7,
     "v2_version": 2,
-    "supersedes": 323,
+    "supersedes": 6,
     "v1_status": "superseded",
     "changed_fields": 10,
     "v1_payload_unchanged": true,
@@ -93,15 +93,15 @@
     "passes": true
   },
   "t5_a_frozen_pre_report_survives_and_scores": {
-    "pre_id": 326,
-    "post_id": 327,
-    "post_pre_link": 326,
+    "pre_id": 9,
+    "post_id": 10,
+    "post_pre_link": 9,
     "frozen_payload_unchanged": true,
     "verdict": {
       "frozen_consensus_eps": 1.5,
       "actual_eps": 1.72,
       "result_vs_frozen": "above",
-      "first_session_reaction_pct": 3.4,
+      "first_session_reaction_pct": 340.0,
       "thesis_evaluation": "not_evaluable",
       "why_not_evaluable": "the frozen report recorded conditional scenarios rather than a directional prediction, so there is no claim to score; the comparison above is factual",
       "note": "compared against the expectation FROZEN before the release, which is also what the surprise table above uses"
@@ -109,7 +109,7 @@
     "passes": true
   },
   "t6_a_report_written_after_the_release_is_not_a_pre_report": {
-    "late_report_id": 328,
+    "late_report_id": 11,
     "found": null,
     "passes": true
   },
@@ -224,7 +224,7 @@
     },
     "expectation": {
       "value": 1.5,
-      "source": "frozen pre-release baseline (report 330)",
+      "source": "frozen pre-release baseline (report 13)",
       "is_frozen": true
     },
     "revision_field_present": true,
@@ -232,7 +232,7 @@
       "frozen_consensus_eps": 1.5,
       "actual_eps": 1.72,
       "result_vs_frozen": "above",
-      "first_session_reaction_pct": 3.4,
+      "first_session_reaction_pct": 340.0,
       "thesis_evaluation": "not_evaluable",
       "why_not_evaluable": "the frozen report recorded conditional scenarios rather than a directional prediction, so there is no claim to score; the comparison above is factual",
       "note": "compared against the expectation FROZEN before the release, which is also what the surprise table above uses"
@@ -250,6 +250,73 @@
     ],
     "errors": [],
     "unique_versions": true,
+    "passes": true
+  },
+  "t19_fractional_returns_are_converted_once": {
+    "stored_1d": 0.15382642030697258,
+    "reported_1d": {
+      "pct": 15.38,
+      "window": "1 session",
+      "basis": "measured close-to-close from the session before the stored report date; this is not normalised to the announcement instant, which is not on file"
+    },
+    "units_1d": "pct",
+    "reported_5d": {
+      "pct": -1.85,
+      "window": "5 sessions",
+      "basis": "measured close-to-close from the session before the stored report date; this is not normalised to the announcement instant, which is not on file"
+    },
+    "passes": true
+  },
+  "t20_historical_reaction_summaries_use_the_same_unit": {
+    "state": "OK",
+    "value": {
+      "events": 3,
+      "median_1d_pct": 6.9,
+      "min_pct": -3.77,
+      "max_pct": 15.38,
+      "dates": [
+        "2026-06-24",
+        "2026-03-18",
+        "2025-12-17"
+      ],
+      "limitation": "same 1-session window for every event; premarket, after-hours and intraday baselines are not normalised, and n is small"
+    },
+    "passes": true
+  },
+  "t21_a_reused_report_is_not_called_a_first_report": {
+    "ids": [
+      23,
+      24,
+      24,
+      23
+    ],
+    "created": [
+      true,
+      false
+    ],
+    "reused_diff_first_report": false,
+    "changed_fields": 10,
+    "no_baseline_still_not_first": false,
+    "passes": true
+  },
+  "t22_a_bar_date_is_not_an_availability_time": {
+    "price_records": 22,
+    "first_available_at": null,
+    "published_at": null,
+    "state": "UNKNOWN",
+    "has_limitation_note": true,
+    "passes": true
+  },
+  "t23_the_release_boundary_uses_the_exchange_timezone": {
+    "naive_midnight": "2026-10-02T00:00:00",
+    "us_boundary_utc": "2026-10-02T04:00:00",
+    "hk_boundary_utc": "2026-10-01T16:00:00",
+    "passes": true
+  },
+  "t24_a_stale_newest_event_is_flagged_not_substituted": {
+    "fresh_state": "OK",
+    "aged_state": "CONFLICTING",
+    "aged_reason": "the newest RELEASED event on file is 141 days old, which is longer than a reporting quarter. A more recent release very likely exists and is not ingested, so this report may not describe the quarter you want. It is NOT substituted silently: check the issuer's own release.",
     "passes": true
   },
   "_meta": {

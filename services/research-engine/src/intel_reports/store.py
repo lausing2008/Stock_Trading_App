@@ -182,6 +182,14 @@ def diff(previous: IntelligenceReport | None, current: IntelligenceReport) -> di
     change a reader needs even though the number did not move.
     """
     if previous is None:
+        # "First report" is reserved for a genuine ABSENCE of history. A report that supersedes
+        # something has history even when nothing changed, and saying otherwise contradicts the
+        # version header sitting directly above it.
+        if getattr(current, "supersedes_id", None):
+            return {"first_report": False, "changed": [],
+                    "to_version": current.version,
+                    "note": f"unchanged since v{current.version}; its predecessor "
+                            f"(#{current.supersedes_id}) could not be loaded for comparison"}
         return {"first_report": True, "changed": [], "note": "no previous report for this subject"}
     before = (previous.payload or {}).get("fields", {})
     after = (current.payload or {}).get("fields", {})
@@ -199,4 +207,6 @@ def diff(previous: IntelligenceReport | None, current: IntelligenceReport) -> di
             changed.append({"field": key, "change": "value",
                             "from": b.get("value"), "to": a.get("value")})
     return {"first_report": False, "from_version": previous.version,
-            "to_version": current.version, "changed": changed}
+            "to_version": current.version, "changed": changed,
+            "note": (None if changed else
+                     f"no field changed between v{previous.version} and v{current.version}")}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Head from 'next/head';
 import { api, type IntelField, type IntelReport, type IntelDiff } from '@/lib/api';
+import { orderFields, renderKind, tableColumns, formatScalar } from '@/lib/intelReportView';
 
 type Tab = 'market_outlook' | 'stock_outlook' | 'pre_earnings' | 'post_earnings';
 
@@ -39,6 +40,70 @@ function titleise(key: string) {
   return key.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
 }
 
+/* Renders a value of ANY shape, including the nested ones.
+   The previous version called String() on each entry of an object, so a dict holding a list of
+   objects — exactly what sector leadership is — rendered as "[object Object]". Nesting is
+   handled by recursion, and a list of uniform objects becomes a real table rather than a pile
+   of key: value lines. */
+function Scalar({ v, units }: { v: unknown; units?: string | null }) {
+  if (v === null || v === undefined) return <span style={{ color: '#64748b' }}>—</span>;
+  return <span style={{ fontVariantNumeric: 'tabular-nums' }}>{formatScalar(v, units)}</span>;
+}
+
+function ObjectTable({ rows }: { rows: Record<string, unknown>[] }) {
+  const cols = tableColumns(rows);
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ borderCollapse: 'collapse', fontSize: '12px', minWidth: '100%' }}>
+        <thead>
+          <tr>
+            {cols.map(c => (
+              <th key={c} style={{ textAlign: 'left', padding: '4px 10px 4px 0',
+                                   color: '#64748b', fontWeight: 600,
+                                   borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                {titleise(c)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i}>
+              {cols.map(c => (
+                <td key={c} style={{ padding: '4px 10px 4px 0', color: '#cbd5e1',
+                                     verticalAlign: 'top' }}>
+                  <AnyValue v={r[c]} />
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function AnyValue({ v, units }: { v: unknown; units?: string | null }) {
+  const kind = renderKind(v);
+  if (kind === 'empty') return <span style={{ color: '#64748b' }}>—</span>;
+  if (kind === 'table') return <ObjectTable rows={v as Record<string, unknown>[]} />;
+  if (kind === 'list') return <span>{(v as unknown[]).map(i => String(i)).join(', ')}</span>;
+  if (kind === 'object') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+        {Object.entries(v as Record<string, unknown>).map(([k, vv]) => (
+          <div key={k} style={{ display: 'flex', gap: '6px', alignItems: 'baseline',
+                                flexWrap: 'wrap' }}>
+            <span style={{ color: '#64748b', flexShrink: 0 }}>{titleise(k)}:</span>
+            <AnyValue v={vv} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return <Scalar v={v} units={units} />;
+}
+
 function FieldValue({ f }: { f: IntelField }) {
   if (f.state !== 'OK') {
     const st = STATE_STYLE[f.state] ?? STATE_STYLE.UNKNOWN;
@@ -53,38 +118,9 @@ function FieldValue({ f }: { f: IntelField }) {
       </div>
     );
   }
-  const v = f.value;
-  if (v === null || v === undefined) return <span style={{ color: '#64748b' }}>—</span>;
-  if (Array.isArray(v)) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        {v.map((item, i) => (
-          <div key={i} style={{
-            padding: '7px 9px', borderRadius: '7px', background: 'rgba(255,255,255,0.03)',
-            border: '1px solid rgba(255,255,255,0.06)', fontSize: '12px', color: '#cbd5e1',
-          }}>
-            {typeof item === 'object' && item !== null
-              ? Object.entries(item as Record<string, unknown>).map(([k, vv]) => (
-                  <div key={k}><span style={{ color: '#64748b' }}>{titleise(k)}: </span>{String(vv)}</div>))
-              : String(item)}
-          </div>
-        ))}
-      </div>
-    );
-  }
-  if (typeof v === 'object') {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '12px' }}>
-        {Object.entries(v as Record<string, unknown>).map(([k, vv]) => (
-          <div key={k}>
-            <span style={{ color: '#64748b' }}>{titleise(k)}: </span>
-            <span style={{ color: '#cbd5e1' }}>{vv === null ? '—' : String(vv)}</span>
-          </div>
-        ))}
-      </div>
-    );
-  }
-  return <span style={{ color: '#e2e8f0', fontSize: '13px' }}>{String(v)}{f.units ? ` ${f.units}` : ''}</span>;
+  return <div style={{ fontSize: '13px', color: '#e2e8f0' }}>
+    <AnyValue v={f.value} units={f.units} />
+  </div>;
 }
 
 function Coverage({ r }: { r: IntelReport }) {
@@ -117,7 +153,7 @@ function Changes({ diff }: { diff: IntelDiff }) {
   }
   if (!diff.changed.length) {
     return <div style={{ fontSize: '12px', color: '#64748b' }}>
-      No field changed between v{diff.from_version} and v{diff.to_version}.
+      {diff.note ?? `No field changed between v${diff.from_version} and v${diff.to_version}.`}
     </div>;
   }
   return (
@@ -191,15 +227,15 @@ export default function IntelligenceReportsPage() {
     catch (e: unknown) { setErr(e instanceof Error ? e.message : String(e)); }
   }
 
-  const fields = useMemo(() => {
-    const f = report?.payload?.fields ?? {};
-    // Resolved fields first, then everything the report could not source — a reader scanning
-    // for the answer should not have to walk past five UNAVAILABLE rows to reach it.
-    return Object.entries(f).sort(([ak, av], [bk, bv]) => {
-      if ((av.state === 'OK') !== (bv.state === 'OK')) return av.state === 'OK' ? -1 : 1;
-      return ak.localeCompare(bk);
-    });
-  }, [report]);
+  /* Identity first, then conclusions, then the raw inputs they rest on — and resolved before
+     unavailable, so a reader is not walked past five UNAVAILABLE rows to reach the answer.
+     Plain alphabetical put the return windows in the order 1, 20, 5, 63 and interleaved
+     identity with conclusions. */
+  /* Ordering lives in @/lib/intelReportView so it can be tested without a DOM renderer. */
+  const fields = useMemo(
+    () => orderFields(Object.entries(report?.payload?.fields ?? {}) as [string, IntelField][]) as
+      [string, IntelField][],
+    [report]);
 
   return (
     <>

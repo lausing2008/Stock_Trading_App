@@ -4,6 +4,8 @@ Date: October 2, 2026. Status: design/templates, not implemented by this documen
 
 ## Recommended product
 
+Extension: [1/3/5/7/14-session tactical momentum templates and EMA21/OI monitoring tasks](2026-10-03-momentum-horizons-and-monitoring-tasks.md). These add optional conditional observation panels; they do not replace or silently redefine the broad report horizons below.
+
 Build three report families: **Market Outlook**, **Stock Outlook**, and **Earnings Before/After**. The earnings family contains a frozen pre-release report and independently versioned post-release updates. Each report starts with a short decision summary, followed by inspectable evidence. Full details belong below the summary, not in a wall of indicator values.
 
 Use the [companion Claude implementation prompt](2026-10-02-intelligence-reports-claude-prompt.md) from the existing repository root. Preserve the original two brainstorming documents as references rather than treating all their proposed infrastructure as requirements.

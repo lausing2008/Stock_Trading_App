@@ -113,8 +113,19 @@ def generate(req: GenerateRequest, _: str = Depends(get_current_username)):
         report, created = S.save(session, fields, evidence, meta, cov)
         body = _serialise(report)
         body["created"] = created
-        body["changes_since_previous"] = S.diff(
-            previous if (previous and previous.id != report.id) else None, report)
+        # WHAT "PREVIOUS" MEANS DEPENDS ON WHETHER WE JUST WROTE ANYTHING.
+        #
+        # When the inputs were unchanged, `save()` returns the EXISTING report — so `previous`
+        # is that same row, `previous.id == report.id`, and comparing it with None produced
+        # "first report" on a v2 whose own header said it superseded v1. A reused report's
+        # predecessor is the one it supersedes, not nothing.
+        if created:
+            baseline = previous if (previous and previous.id != report.id) else None
+        else:
+            baseline = (session.get(IntelligenceReport, report.supersedes_id)
+                        if report.supersedes_id else None)
+        body["changes_since_previous"] = S.diff(baseline, report)
+        body["reused_existing"] = not created
         log.info("intel.generated", report_type=report.report_type, subject=report.subject_key,
                  version=report.version, created=created, status=report.status)
         return body

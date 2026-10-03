@@ -229,3 +229,57 @@ def test_an_absent_field_is_not_labelled_an_observed_fact():
     assert "UNAVAILABLE" in liquidity_row
     breadth_row = next(l for l in out.splitlines() if l.startswith("| breadth "))
     assert "deterministic_calculation" in breadth_row, "a real claim keeps its class"
+
+
+# ── The screenshot round: units, history copy, availability, timezone, coverage ────────────
+
+def test_fractional_returns_are_converted_once(results):
+    """MU's stored 0.15382 means +15.38%. It rendered as "0.1538 pct" — a hundredfold error in
+    the most quotable number the report carries. The producer returns price/baseline-1 while
+    its own docstring calls it "% change", which is where the confusion starts."""
+    r = _scenario(results, "t19_fractional_returns_are_converted_once")
+    assert abs(r["reported_1d"]["pct"] - 15.38) < 0.01
+    assert abs(r["reported_5d"]["pct"] + 1.85) < 0.01
+    assert r["units_1d"] == "pct"
+    assert "not normalised" in r["reported_1d"]["basis"], \
+        "the window must be described, not claimed as a normalised release reaction"
+
+
+def test_historical_reaction_summaries_use_the_same_unit(results):
+    r = _scenario(results, "t20_historical_reaction_summaries_use_the_same_unit")
+    assert abs(r["value"]["median_1d_pct"] - 6.90) < 0.01
+    assert abs(r["value"]["max_pct"] - 15.38) < 0.01
+
+
+def test_a_reused_report_is_not_called_a_first_report(results):
+    """The card said "v2 · supersedes #1" while its own comparison said "first report"."""
+    r = _scenario(results, "t21_a_reused_report_is_not_called_a_first_report")
+    assert r["created"] == [True, False], "the second generation must reuse, not create"
+    assert r["reused_diff_first_report"] is False
+    assert r["no_baseline_still_not_first"] is False, \
+        "a report that supersedes something has history even when the baseline cannot be loaded"
+
+
+def test_a_bar_date_is_not_an_availability_time(results):
+    """A bar timestamped at midnight does not establish that its CLOSE was knowable then."""
+    r = _scenario(results, "t22_a_bar_date_is_not_an_availability_time")
+    assert r["price_records"] > 0
+    assert r["first_available_at"] is None
+    assert r["published_at"] is None
+    assert r["has_limitation_note"]
+
+
+def test_the_release_boundary_uses_the_exchange_timezone(results):
+    """Naive midnight read as UTC is not conservative in both directions: HK is UTC+8, so
+    20:00 UTC on the previous calendar day is already 04:00 on the HK release day."""
+    r = _scenario(results, "t23_the_release_boundary_uses_the_exchange_timezone")
+    assert r["hk_boundary_utc"] < r["naive_midnight"] < r["us_boundary_utc"]
+
+
+def test_a_stale_newest_event_is_flagged_not_substituted(results):
+    """Asked for MU on 3 October, the report described 24 June — correctly by its own rule,
+    because the 30 September release is not ingested. The silence was the defect."""
+    r = _scenario(results, "t24_a_stale_newest_event_is_flagged_not_substituted")
+    assert r["fresh_state"] == "OK"
+    assert r["aged_state"] == "CONFLICTING"
+    assert "not ingested" in r["aged_reason"]

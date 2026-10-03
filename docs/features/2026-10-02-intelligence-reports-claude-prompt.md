@@ -2,6 +2,8 @@
 
 Date: October 2, 2026. This is a prompt for a future implementation session, not authorization to deploy, send reports or trade from the document-writing session.
 
+October 3 extension: read [the tactical momentum and monitoring-task design](2026-10-03-momentum-horizons-and-monitoring-tasks.md) when implementing that follow-on scope. It specifies independent 1/3/5/7/14-session panels and EMA21/OI tasks; notification activation is separate from adding report templates.
+
 Run Claude Code from `/home/lausing/Documents/MyProjects/Stock_Trading_App`. Paste the prompt below. It prioritizes the requested reports over a second intelligence platform.
 
 ---

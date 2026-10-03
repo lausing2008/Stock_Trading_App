@@ -116,12 +116,59 @@ platform-wide absence (event-intelligence does carry an economic calendar); brea
 different ratios; and bar-count fields renamed `return_N_bars`, because counting stored rows
 does not establish exchange sessions.
 
+## Second review round — screenshots (2026-10-03)
+
+A review of the deployed screens found five more, all reproduced before fixing.
+
+**Returns were off by a factor of 100.** `_compute_post_earnings_returns` computes
+`price / baseline - 1` — a fraction — while its own docstring calls it "the % change". Those
+values were emitted with `units="pct"` and no conversion, so MU's stored `0.15382` rendered as
+"0.1538 pct" when it means **+15.38%**. The report's one return unit is now percent, converted
+once at the single boundary where a fractional source is read, and the stored window is
+described rather than claimed as a normalised release reaction (it is close-to-close from the
+session before the report date, which for an after-hours release spans the announcement and for
+a before-open release does not begin at it).
+
+**MU's October report described June — and the generator was right.** Traced read-only against
+production: MU's `earnings_events` rows jump from `2026-06-24` straight to `2026-12-23`. **The
+30 September release is not in the table at all.** The calendar sync ran on 3 October and
+captured the next scheduled event; the last historical sync was 6 August. September falls in the
+gap between a forward-looking calendar and a backward-looking backfill. The report selected the
+latest released event on file, exactly as specified, and said nothing about the gap — which is
+the defect. `event_coverage` now reports CONFLICTING when the newest released event is older
+than a reporting quarter, naming the likely ingestion gap. **No event row was written or
+inferred**; the ingestion gap is reported, not patched.
+
+**Sector rankings rendered as `[object Object]`.** A list of objects nested inside a dict was
+stringified. Nested values now render structurally, with a list of uniform objects becoming a
+real table. The ordering logic moved to `frontend/src/lib/intelReportView.ts` so it is testable
+without a DOM renderer, and return windows now sort 1, 5, 20, 63 rather than alphabetically as
+1, 20, 5, 63.
+
+**A reused v2 called itself a "first report"** while its own header said it superseded v1. When
+inputs are unchanged `save()` returns the existing row, so `previous.id == report.id` and the
+diff compared against nothing. A reused report is now compared against what it supersedes, and
+"first report" is reserved for a genuine absence of history.
+
+**A bar's date was standing in for its availability time.** A daily bar timestamped at midnight
+does not establish that its *closing* price was knowable at midnight, and a backfilled row
+cannot acquire historical availability from the date it describes. `first_available_at` and
+`published_at` are now absent with the limitation recorded on the evidence itself — so anything
+needing point-in-time availability must treat these inputs as unproven rather than assume a
+timestamp that was never measured.
+
+**The release boundary now uses the exchange's timezone.** Naive midnight read as UTC is not
+conservative in both directions: Hong Kong is UTC+8, so a baseline written at 20:00 UTC the
+previous calendar day is already 04:00 on the HK release day. The exchange-local start of day is
+converted to UTC, moving the HK boundary 8 hours earlier and the US boundary 4–5 hours later —
+each in the safe direction for its own market.
+
 ## Acceptance
 
-18 scenarios run end to end through the real generators and real persistence —
+24 scenarios run end to end through the real generators and real persistence —
 [evidence](../audits/evidence/2026-10-03-intelligence-reports-acceptance.json), captured on
 **PostgreSQL 15**, and the same scenarios also run on SQLite so `make test` needs no server
-(`_meta.engine` records which produced a given result). 12 pytest tests assert the verdicts.
+(`_meta.engine` records which produced a given result). 26 pytest tests assert the verdicts, plus 19 frontend tests for rendering and ordering.
 
 The sharpest one: a pre-earnings report is frozen with consensus EPS 1.50, the release lands,
 **the stored estimate is then revised to 1.95**, and the post-earnings verdict still scores

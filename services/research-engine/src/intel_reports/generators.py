@@ -11,6 +11,7 @@ Each generator returns (fields, evidence, meta). The caller persists; nothing he
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -32,19 +33,34 @@ def _naive_utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def release_boundary(event) -> datetime:
-    """The instant a frozen baseline must precede, given what this platform actually stores.
+#: The exchange whose local day defines a release date, per market.
+_MARKET_TZ = {"US": "America/New_York", "HK": "Asia/Hong_Kong"}
+
+
+def release_boundary(event, market: str | None = None) -> datetime:
+    """The UTC instant a frozen baseline must precede, given what this platform stores.
 
     ONLY A DATE IS STORED — no release time, no before-open/after-close marker, no timezone. The
-    release instant therefore cannot be established, and the template's rule is explicit: if
-    release timing cannot be established, do not certify a baseline as pre-release.
+    release instant cannot be established, and the rule is explicit: where release timing cannot
+    be established, do not certify a baseline as pre-release. The conservative boundary is the
+    START of the release date; a report written at any point on that day might have been written
+    after the announcement, and nothing on file rules it out.
 
-    The conservative boundary is the START of the release date. A report written at any point on
-    the release day might have been written after the announcement, and nothing on file can rule
-    that out, so it does not qualify. This rejects some genuinely-early baselines; the
-    alternative admits hindsight, and between those two errors only one corrupts the record.
+    THE DATE IS AN EXCHANGE-LOCAL DATE, NOT A UTC ONE. Reading naive midnight as UTC is not
+    conservative in both directions: Hong Kong is UTC+8, so a baseline written at 20:00 UTC the
+    previous calendar day is already 04:00 on the HK release day — past the real boundary while
+    appearing to precede it. The exchange-local start of day is converted to UTC instead, which
+    moves the HK boundary 8 hours EARLIER and the US boundary 4-5 hours LATER than naive
+    midnight, each in the safe direction for its own market.
     """
-    return datetime.combine(event.report_date, time.min)
+    local_start = datetime.combine(event.report_date, time.min)
+    tz_name = _MARKET_TZ.get((market or "US").upper())
+    if tz_name is None:
+        # An unrecognised market cannot be placed on a clock; keep the earliest possible reading
+        # rather than guessing a timezone that might move the boundary the wrong way.
+        return local_start - timedelta(hours=14)
+    tz = ZoneInfo(tz_name)
+    return local_start.replace(tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def release_has_happened(event, now: datetime) -> tuple[bool, str]:
@@ -293,7 +309,8 @@ def pre_earnings(session, *, symbol: str, now: datetime | None = None):
             f"the {symbol} release for {event.report_date.isoformat()} is already known "
             f"({why}); a pre-release baseline cannot be generated after the fact. Generate a "
             f"post-earnings report instead.")
-    if now >= release_boundary(event):
+    _market = stock.market.value if hasattr(stock.market, "value") else str(stock.market)
+    if now >= release_boundary(event, _market):
         raise LookupError(
             f"only a release DATE is stored for {symbol} ({event.report_date.isoformat()}), "
             f"not a time, so a report written on the release day cannot be shown to precede "
@@ -339,8 +356,10 @@ def pre_earnings(session, *, symbol: str, now: datetime | None = None):
             "quote timestamps; a straddle premium would be a premium-based proxy, not a "
             "calibrated interval, and none is assembled here"),
         "release_boundary": observed(
-            {"baseline_must_precede": release_boundary(event).isoformat(),
-             "basis": "start of the stored release date; no release time is on file"}),
+            {"baseline_must_precede_utc": release_boundary(event, _market).isoformat(),
+             "exchange": _market,
+             "basis": "start of the stored release DATE in the exchange's own timezone, "
+                      "converted to UTC; no release time is on file"}),
     }
     fields["trend_structure"] = A.trend_structure(
         bars, price_field=fields["pre_event_reference_price"], book=book)
@@ -382,7 +401,7 @@ def pre_earnings(session, *, symbol: str, now: datetime | None = None):
         "policy_version": POLICY_VERSION,
         "cutoff_at": now,
         "event_id": event.id,
-        "release_boundary": release_boundary(event),
+        "release_boundary": release_boundary(event, _market),
         "fingerprint": fields_fingerprint(fields, policy_version=POLICY_VERSION,
                                           extra={"event_id": event.id}),
     }, cov
@@ -398,7 +417,10 @@ def _historical_reactions(session, stock_id: int, exclude_event_id: int,
         .order_by(EarningsEvent.report_date.desc()).limit(12)).scalars().all())
     if not rows:
         return unavailable("no past earnings reactions with a recorded 1-session return")
-    vals = sorted(float(r.post_earnings_return_1d) for r in rows)
+    # SAME FRACTION->PERCENT CONVERSION as post_event_reaction. These summarised the raw
+    # fractions under percentage-named fields, so a median of 0.0690 read as 0.07% when it
+    # means 6.90%.
+    vals = sorted(A.fraction_to_pct(r.post_earnings_return_1d) for r in rows)
     mid = vals[len(vals) // 2] if len(vals) % 2 else (vals[len(vals) // 2 - 1] + vals[len(vals) // 2]) / 2
     return calculated(
         {"events": len(vals), "median_1d_pct": round(mid, 2),
@@ -425,6 +447,8 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
     event = session.execute(q.order_by(EarningsEvent.report_date.desc()).limit(1)).scalars().first()
     if event is None:
         raise LookupError(f"no released earnings event on file for {symbol}")
+    _market = stock.market.value if hasattr(stock.market, "value") else str(stock.market)
+    coverage_warning = _event_coverage_warning(session, stock.id, event, now)
 
     book = EvidenceBook()
     A.record_event(book, event)
@@ -449,7 +473,10 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
     fields: dict[str, Field] = {
         "issuer": observed({"symbol": stock.symbol, "name": stock.name}),
         "event_identity": observed({"event_id": f"earnings_event:{event.id}",
-                                    "report_date": event.report_date.isoformat()}),
+                                    "report_date": event.report_date.isoformat(),
+                                    "basis": "the most recent RELEASED event on file for this "
+                                             "issuer; see event_coverage"}),
+        "event_coverage": coverage_warning,
         "fiscal_period": A.fiscal_period(event),
         "stage": observed({"stage": stage.value,
                            "note": "no cross-source reconciliation is performed by this "
@@ -492,7 +519,7 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
     fields["three_verdicts"] = interpreted({
         "business_result_vs_expectations": "see the surprise table; basis is unverified",
         "forward_outlook": "guidance unavailable, so the forward verdict cannot be formed",
-        "market_reaction": (reaction["return_1d"].value
+        "market_reaction": ((reaction["return_1d"].value or {}).get("pct")
                             if reaction["return_1d"].state is FieldState.OK
                             else "not yet matured"),
         "note": "these are three separate verdicts; a beat, good guidance and a positive "
@@ -512,11 +539,46 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
         "cutoff_at": now,
         "event_id": event.id,
         "pre_report_id": getattr(pre_report, "id", None),
-        "release_boundary": release_boundary(event),
+        "release_boundary": release_boundary(event, _market),
         "fingerprint": fields_fingerprint(
             fields, policy_version=POLICY_VERSION,
             extra={"event_id": event.id, "pre_report_id": getattr(pre_report, "id", None)}),
     }, cov
+
+
+#: A quarterly reporter releases roughly every 91 days. Past this, the newest RELEASED event on
+#: file is old enough that a more recent release probably exists and simply was not ingested.
+_STALE_EVENT_DAYS = 115
+
+
+def _event_coverage_warning(session, stock_id: int, event, now: datetime) -> Field:
+    """Say so when the newest released event on file is probably not the newest release.
+
+    WHY THIS EXISTS. Asked for MU's post-earnings report on 3 October, the report described the
+    24 June event — correctly, by its own rule of "latest released event on file", because the
+    30 September release is not in `earnings_events` at all. The rule was right and the answer
+    was useless, because nothing told the reader the quarter they wanted was missing rather than
+    unremarkable. Silently substituting an older quarter is the failure; naming the gap is not.
+    """
+    age_days = (now.date() - event.report_date).days
+    upcoming = session.execute(
+        select(EarningsEvent).where(EarningsEvent.stock_id == stock_id,
+                                    EarningsEvent.report_date > now.date())
+        .order_by(EarningsEvent.report_date.asc()).limit(1)).scalars().first()
+    detail = {
+        "analysed_event_date": event.report_date.isoformat(),
+        "age_days": age_days,
+        "next_scheduled": upcoming.report_date.isoformat() if upcoming else None,
+    }
+    if age_days > _STALE_EVENT_DAYS:
+        return Field(
+            value=detail, state=FieldState.CONFLICTING,
+            reason=(f"the newest RELEASED event on file is {age_days} days old, which is longer "
+                    f"than a reporting quarter. A more recent release very likely exists and is "
+                    f"not ingested, so this report may not describe the quarter you want. It is "
+                    f"NOT substituted silently: check the issuer's own release."),
+            statement=StatementClass.OBSERVED_FACT)
+    return observed(detail)
 
 
 def _frozen_expectations(pre_report) -> tuple[float | None, float | None]:
@@ -545,7 +607,8 @@ def _verdict(pre_report, actuals, reaction, frozen_eps) -> Field:
     # there is no claim to confirm. Report the factual comparison and say so.
     claim = (frozen_fields.get("directional_claim") or {}).get("value")
     beat = actual_eps > frozen_eps
-    r1 = reaction["return_1d"].value if reaction["return_1d"].state is FieldState.OK else None
+    r1 = (reaction["return_1d"].value or {}).get("pct") \
+        if reaction["return_1d"].state is FieldState.OK else None
     return Field(
         value={"frozen_consensus_eps": frozen_eps, "actual_eps": actual_eps,
                "result_vs_frozen": "above" if beat else "at or below",

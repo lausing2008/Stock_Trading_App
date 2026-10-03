@@ -519,6 +519,156 @@ def t18_concurrent_generation_allocates_one_version_each():
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# t19-t23 — the screenshot round. Every witness below is MU's real stored data.
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: MU's actual stored values, read from production on 2026-10-03. The producer computes
+#: `price / baseline - 1`, so these are FRACTIONS while its own docstring calls them "% change".
+_MU_RETURNS = {
+    "2026-06-24": (0.15382642030697258, -0.01853060584867272),
+    "2026-03-18": (-0.03773093864746768, -0.17241002781816028),
+    "2025-12-17": (0.06898626640088268, 0.23297929400373185),
+}
+
+
+def t19_fractional_returns_are_converted_once():
+    """A stored 0.15382 means +15.38%, and was rendered "0.1538 pct" — a hundredfold error in
+    the most quotable number the report carries."""
+    reset(with_event=True, event_in_future=False, actuals=True)
+    with Session() as s:
+        ev = s.query(EarningsEvent).one()
+        ev.post_earnings_return_1d = _MU_RETURNS["2026-06-24"][0]
+        ev.post_earnings_return_5d = _MU_RETURNS["2026-06-24"][1]
+        s.commit()
+        f, _, _, _ = G.post_earnings(s, symbol="TESTCO", now=NOW)
+    r1, r5 = f["return_1d"], f["return_5d"]
+    R["t19_fractional_returns_are_converted_once"] = {
+        "stored_1d": _MU_RETURNS["2026-06-24"][0],
+        "reported_1d": r1.value, "units_1d": r1.units,
+        "reported_5d": r5.value,
+        "passes": (abs(r1.value["pct"] - 15.38) < 0.01 and r1.units == "pct"
+                   and abs(r5.value["pct"] + 1.85) < 0.01
+                   and "not normalised" in r1.value["basis"]),
+    }
+
+
+def t20_historical_reaction_summaries_use_the_same_unit():
+    reset(with_event=True, event_in_future=True)
+    with Session() as s:
+        stock = s.query(Stock).filter_by(symbol="TESTCO").one()
+        for i, (d, (r1, _)) in enumerate(_MU_RETURNS.items()):
+            s.add(EarningsEvent(stock_id=stock.id, report_date=date.fromisoformat(d),
+                                eps_estimate=1.0, eps_actual=1.1,
+                                post_earnings_return_1d=r1))
+        s.commit()
+        f, _, _, _ = G.pre_earnings(s, symbol="TESTCO", now=NOW)
+    hr = f["historical_reactions"]
+    R["t20_historical_reaction_summaries_use_the_same_unit"] = {
+        "state": hr.state.value,
+        "value": hr.value if hr.state is FieldState.OK else hr.reason,
+        # median of {15.38, -3.77, 6.90} is 6.90, not 0.069
+        "passes": (hr.state is FieldState.OK
+                   and abs(hr.value["median_1d_pct"] - 6.90) < 0.01
+                   and abs(hr.value["max_pct"] - 15.38) < 0.01),
+    }
+
+
+def t21_a_reused_report_is_not_called_a_first_report():
+    """The card said v2 supersedes #1 while its comparison said "first report"."""
+    reset()
+    with Session() as s:
+        f, b, m, c = G.stock_outlook(s, symbol="TESTCO", now=NOW)
+        v1, _ = S.save(s, f, b, m, c)
+        stock = s.query(Stock).filter_by(symbol="TESTCO").one()
+        s.add(Price(id=990_001, stock_id=stock.id, ts=NOW + timedelta(days=1),
+                    timeframe=TimeFrame.D1, open=200, high=201, low=199, close=200.0,
+                    volume=1e6))
+        s.commit()
+        later = NOW + timedelta(days=1)
+        f2, b2, m2, c2 = G.stock_outlook(s, symbol="TESTCO", now=later)
+        v2, created2 = S.save(s, f2, b2, m2, c2)
+        # Regenerate with the SAME inputs: save() returns the existing v2.
+        f3, b3, m3, c3 = G.stock_outlook(s, symbol="TESTCO", now=later)
+        v2_again, created3 = S.save(s, f3, b3, m3, c3)
+        predecessor = s.get(IntelligenceReport, v2_again.supersedes_id) \
+            if v2_again.supersedes_id else None
+        d_reused = S.diff(predecessor, v2_again)
+        d_no_baseline = S.diff(None, v2_again)
+        ids = (v1.id, v2.id, v2_again.id, v2_again.supersedes_id)
+    R["t21_a_reused_report_is_not_called_a_first_report"] = {
+        "ids": ids, "created": [created2, created3],
+        "reused_diff_first_report": d_reused["first_report"],
+        "changed_fields": len(d_reused["changed"]),
+        "no_baseline_still_not_first": d_no_baseline["first_report"],
+        "passes": (ids[1] == ids[2] and created2 and not created3
+                   and d_reused["first_report"] is False
+                   and d_no_baseline["first_report"] is False),
+    }
+
+
+def t22_a_bar_date_is_not_an_availability_time():
+    """A daily bar timestamped at midnight does not establish that its CLOSE was knowable
+    then — and a backfilled row cannot acquire availability from the date it describes."""
+    reset()
+    with Session() as s:
+        _, book, _, _ = G.stock_outlook(s, symbol="TESTCO", now=NOW)
+    price_records = [r for k, r in book.records.items() if k.startswith("price:")]
+    sample = price_records[0] if price_records else {}
+    R["t22_a_bar_date_is_not_an_availability_time"] = {
+        "price_records": len(price_records),
+        "first_available_at": sample.get("first_available_at"),
+        "published_at": sample.get("published_at"),
+        "state": sample.get("state"),
+        "has_limitation_note": "not established" in (sample.get("note") or ""),
+        "passes": (len(price_records) > 0
+                   and sample.get("first_available_at") is None
+                   and sample.get("published_at") is None
+                   and "not established" in (sample.get("note") or "")),
+    }
+
+
+def t23_the_release_boundary_uses_the_exchange_timezone():
+    """Naive midnight read as UTC is not conservative both ways: HK is UTC+8, so 20:00 UTC the
+    previous calendar day is already 04:00 on the HK release day."""
+    class _Ev:
+        report_date = date(2026, 10, 2)
+    us = G.release_boundary(_Ev(), "US")
+    hk = G.release_boundary(_Ev(), "HK")
+    naive = datetime(2026, 10, 2, 0, 0)
+    R["t23_the_release_boundary_uses_the_exchange_timezone"] = {
+        "naive_midnight": naive.isoformat(),
+        "us_boundary_utc": us.isoformat(),
+        "hk_boundary_utc": hk.isoformat(),
+        # HK must move EARLIER than naive midnight, US later.
+        "passes": hk < naive < us,
+    }
+
+
+def t24_a_stale_newest_event_is_flagged_not_substituted():
+    """MU on 3 October analysed the 24 June event, correctly by its own rule, because the
+    30 September release is not ingested. The rule was right; silence about it was not."""
+    reset(with_event=False)
+    with Session() as s:
+        stock = s.query(Stock).filter_by(symbol="TESTCO").one()
+        s.add(EarningsEvent(stock_id=stock.id, report_date=(NOW - timedelta(days=101)).date(),
+                            eps_estimate=1.0, eps_actual=1.2, post_earnings_return_1d=0.05))
+        s.add(EarningsEvent(stock_id=stock.id, report_date=(NOW + timedelta(days=81)).date(),
+                            eps_estimate=1.3))
+        s.commit()
+        fresh, _, _, _ = G.post_earnings(s, symbol="TESTCO", now=NOW)
+        stale_now = NOW + timedelta(days=40)       # the released event is now 141 days old
+        aged, _, _, _ = G.post_earnings(s, symbol="TESTCO", now=stale_now)
+    R["t24_a_stale_newest_event_is_flagged_not_substituted"] = {
+        "fresh_state": fresh["event_coverage"].state.value,
+        "aged_state": aged["event_coverage"].state.value,
+        "aged_reason": aged["event_coverage"].reason,
+        "passes": (fresh["event_coverage"].state is FieldState.OK
+                   and aged["event_coverage"].state is FieldState.CONFLICTING
+                   and "not ingested" in (aged["event_coverage"].reason or "")),
+    }
+
+
 def main():
     for fn in (t1_all_four_types_generate, t2_identical_inputs_do_not_duplicate,
                t3_changed_inputs_create_a_linked_version,
@@ -536,7 +686,13 @@ def main():
                t15_a_stale_price_degrades_what_is_derived_from_it,
                t16_a_pre_report_cannot_be_written_once_the_release_is_known,
                t17_the_surprise_table_uses_the_frozen_expectation,
-               t18_concurrent_generation_allocates_one_version_each):
+               t18_concurrent_generation_allocates_one_version_each,
+               t19_fractional_returns_are_converted_once,
+               t20_historical_reaction_summaries_use_the_same_unit,
+               t21_a_reused_report_is_not_called_a_first_report,
+               t22_a_bar_date_is_not_an_availability_time,
+               t23_the_release_boundary_uses_the_exchange_timezone,
+               t24_a_stale_newest_event_is_flagged_not_substituted):
         fn()
     R["_meta"] = {"engine": ENGINE.dialect.name,
                   "server": str(ENGINE.url).split("@")[-1],

@@ -53,7 +53,19 @@ def daily_bars(session, stock_id: int, limit: int = 70, *, cutoff: datetime) -> 
 
 
 def record_bar(book: EvidenceBook, bar: Price) -> str:
-    """Store the OBSERVATION, not just a pointer to a row that may later change."""
+    """Store the OBSERVATION, not just a pointer to a row that may later change.
+
+    `first_available_at` IS DELIBERATELY UNKNOWN. A daily bar timestamped at midnight does not
+    establish that its CLOSING price was knowable at midnight — the close is not known until the
+    session ends, and a revised or backfilled row cannot acquire historical availability merely
+    from the date it describes. This platform does not store an ingestion or publication time
+    for price rows, so the honest value is absent, with the limitation recorded on the evidence
+    itself rather than implied by an observation date standing in for it.
+
+    The consequence is deliberate: anything that needs point-in-time availability — a backtest,
+    or pre-event accountability — must treat these inputs as unproven rather than assume the
+    missing timestamp was measured.
+    """
     return book.add(Evidence(
         evidence_id=f"price:{bar.stock_id}:{bar.ts:%Y-%m-%dT%H:%M}",
         source=f"prices:{bar.id}",
@@ -61,8 +73,13 @@ def record_bar(book: EvidenceBook, bar: Price) -> str:
                "close": float(bar.close), "volume": float(bar.volume)},
         units="price", basis="unadjusted",
         observed_period=f"{bar.ts:%Y-%m-%d}",
-        published_at=_naive(bar.ts), first_available_at=_naive(bar.ts),
-        retrieved_at=_naive(datetime.now(timezone.utc))))
+        published_at=None,
+        first_available_at=None,
+        retrieved_at=_naive(datetime.now(timezone.utc)),
+        state=FieldState.UNKNOWN,
+        note="observation date only; no ingestion or publication time is stored, so the instant "
+             "this close became knowable is not established and point-in-time availability "
+             "cannot be claimed from this record"))
 
 
 def session_return(bars: list[Price], sessions: int, *, label: str,
@@ -304,6 +321,30 @@ def record_event(book: EvidenceBook, event: EarningsEvent) -> str:
         note="estimates on this row are mutable and may be revised after the release"))
 
 
+#: THE REPORT'S ONE RETURN UNIT IS PERCENT, and the conversion happens here, at the single
+#: boundary where a fractional source is read.
+#:
+#: THE DEFECT THIS FIXES. `_compute_post_earnings_returns` computes `price / baseline - 1` — a
+#: FRACTION — while its own docstring calls it "the % change". Those values were emitted with
+#: `units="pct"` and no conversion, so MU's stored 0.15382 rendered as "0.1538 pct" when it
+#: means +15.38%, and -0.01853 as "-0.0185 pct" when it means -1.85%. A hundredfold error in
+#: the most quotable number a report carries.
+#:
+#: Every other return in these reports (`session_return`) is already percent, so converting
+#: here makes one unit true everywhere and leaves the renderers with no unit logic to get wrong.
+def fraction_to_pct(value: float) -> float:
+    """0.15382 -> 15.38. The ONE place a stored fractional return becomes a reported percent."""
+    return round(float(value) * 100.0, 2)
+
+
+#: What the stored window actually is. NOT "the release reaction": the producer measures from
+#: the close BEFORE the report date to a later close, which for an after-hours release spans
+#: the announcement and for a before-open release does not begin at it.
+_REACTION_WINDOW_NOTE = (
+    "measured close-to-close from the session before the stored report date; this is not "
+    "normalised to the announcement instant, which is not on file")
+
+
 def post_event_reaction(event: EarningsEvent) -> dict[str, Field]:
     out = {}
     for label, value, window in (("return_1d", event.post_earnings_return_1d, "1 session"),
@@ -313,8 +354,10 @@ def post_event_reaction(event: EarningsEvent) -> dict[str, Field]:
                 f"{window} after the release has not matured, or the outcome has not been "
                 f"recorded yet")
         else:
-            out[label] = observed(round(float(value), 4), units="pct",
-                                  evidence_ids=[f"earnings_event:{event.id}"])
+            out[label] = observed(
+                {"pct": fraction_to_pct(value), "window": window,
+                 "basis": _REACTION_WINDOW_NOTE},
+                units="pct", evidence_ids=[f"earnings_event:{event.id}"])
     return out
 
 
