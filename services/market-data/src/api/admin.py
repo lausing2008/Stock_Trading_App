@@ -471,6 +471,37 @@ def _is_rate_limited(exc: Exception) -> bool:
                ("429", "too many requests", "rate limit", "rate-limit", "ratelimit"))
 
 
+#: AUD-ADDSTOCK-UNRESOLVED (2026-10-03): fields that CORROBORATE a real instrument.
+#:
+#: THE DEFECT. The not-found guard read `if name == symbol and not info`, and `not info` is
+#: almost never true. Measured directly against Yahoo: for COIIN, ASTA and NOTAREALTICKER123 the
+#: provider answers HTTP 404, yfinance swallows it, and `.info` comes back as
+#: `{"trailingPegRatio": None}` — a dict of length one, which is TRUTHY. So the 404 never fired
+#: and two typo'd tickers became universe rows with name == symbol, no sector and no prices,
+#: reported to the user as successfully added. (Found because the user asked for them to be
+#: removed; both were deactivated on 2026-10-03.)
+#:
+#: WHY NOT JUST DROP `and not info`. That would reject on `name == symbol` alone, which fails
+#: the other way: a legitimate instrument whose `longName`/`shortName` Yahoo does not carry
+#: would start being refused. The question is not "did we get a name" but "did the provider
+#: describe an instrument at all" — so ANY ONE of these fields is enough, and the junk payload
+#: above has none of them. Real symbols carry 103-176 keys including most of this list
+#: (verified live: COIN, 0700.HK, SPY).
+_IDENTITY_FIELDS = ("quoteType", "exchange", "currency", "regularMarketPrice",
+                    "previousClose", "marketCap", "longName", "shortName")
+
+
+def _resolved_identity(info) -> list[str]:
+    """Which identity fields the provider actually supplied. Empty means it described nothing.
+
+    An empty list is the evidence of non-existence; a non-empty one names what carried the
+    decision, so a later "why was this accepted" is answerable from the log rather than guessed.
+    """
+    if not isinstance(info, dict):
+        return []
+    return [f for f in _IDENTITY_FIELDS if info.get(f) not in (None, "")]
+
+
 @router.post("/add_stock")
 def add_stock(req: AddStockRequest, tasks: BackgroundTasks, _: User = Depends(get_admin_user)):
     symbol = req.symbol.upper().strip()
@@ -507,7 +538,13 @@ def add_stock(req: AddStockRequest, tasks: BackgroundTasks, _: User = Depends(ge
         raise HTTPException(502, f"yfinance error: {exc}")
 
     name = info.get("longName") or info.get("shortName") or symbol
-    if name == symbol and not info:
+    corroboration = _resolved_identity(info)
+    if not corroboration:
+        # The provider answered, and described nothing. See `_IDENTITY_FIELDS` for the measured
+        # payload this exists to reject. Logged with the keys it DID return, because the next
+        # shape of junk will not be this one.
+        log.info("add_stock.unresolved", symbol=symbol,
+                 provider_keys=sorted(info)[:8] if isinstance(info, dict) else None)
         raise HTTPException(404, f"Symbol not found: {symbol}")
 
     sector = info.get("sector")
@@ -526,7 +563,7 @@ def add_stock(req: AddStockRequest, tasks: BackgroundTasks, _: User = Depends(ge
         session.add(stock)
         session.commit()
 
-    log.info("add_stock.done", symbol=symbol, name=name)
+    log.info("add_stock.done", symbol=symbol, name=name, corroborated_by=corroboration)
     market_val = "HK" if symbol.endswith(".HK") else "US"
     tasks.add_task(ingest_symbol, symbol, market_val)
     tasks.add_task(_trigger_new_stock_refresh, symbol, market_val)

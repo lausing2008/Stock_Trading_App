@@ -35,7 +35,7 @@ _SRC = (pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "admin.py"
 def _load():
     """Exec just the pure helpers — admin.py as a whole pulls DB/auth/yfinance."""
     tree = ast.parse(_SRC)
-    wanted = {"_is_rate_limited", "RateLimited"}
+    wanted = {"_is_rate_limited", "RateLimited", "_resolved_identity", "_IDENTITY_FIELDS"}
     keep = [n for n in tree.body
             if (isinstance(n, (ast.FunctionDef, ast.ClassDef)) and n.name in wanted)
             or (isinstance(n, ast.Assign) and any(
@@ -200,3 +200,93 @@ def test_the_failure_is_logged_not_only_returned():
     body = _add_stock_body()
     assert "add_stock.rate_limited" in body
     assert "add_stock.provider_error" in body
+
+
+# ── AUD-ADDSTOCK-UNRESOLVED: a symbol the provider never described must not be added ───────
+#
+# Reported as "two junk rows in the universe" after COIIN and ASTA (typos for COIN and ASTS)
+# were accepted as real stocks: name == symbol, no sector, no prices, and both reported to the
+# user as successfully added.
+#
+# The guard read `if name == symbol and not info`, and `not info` is almost never true.
+# MEASURED LIVE against Yahoo on 2026-10-03 — this is the actual payload, not a constructed one:
+#
+#     COIIN             -> HTTP 404 from Yahoo, yfinance returns {"trailingPegRatio": None}
+#     ASTA              -> the same
+#     NOTAREALTICKER123 -> the same
+#     COIN              -> 176 keys, longName/quoteType/exchange/currency/regularMarketPrice
+#     0700.HK           -> 173 keys          SPY -> 103 keys
+#
+# A one-key dict is TRUTHY, so the 404 never fired.
+
+_JUNK = {"trailingPegRatio": None}          # verbatim, as the provider returns it
+
+
+def test_the_reported_witness_is_rejected():
+    assert NS["_resolved_identity"](_JUNK) == []
+
+
+@pytest.mark.parametrize("info", [
+    {}, _JUNK, {"trailingPegRatio": None, "maxAge": 1},
+    {"longName": None, "shortName": None, "quoteType": None},
+    {"longName": "", "exchange": ""},                      # present but empty is not evidence
+    None, "not-a-dict", [],
+])
+def test_nothing_that_describes_no_instrument_counts_as_corroboration(info):
+    assert NS["_resolved_identity"](info) == []
+
+
+def test_a_truthy_payload_is_not_itself_evidence():
+    """The exact inversion of the old guard: the junk payload is truthy, so `not info` was
+    False and the symbol was accepted. Truthiness is not identity."""
+    assert bool(_JUNK) is True
+    assert NS["_resolved_identity"](_JUNK) == []
+
+
+@pytest.mark.parametrize("info,expected", [
+    ({"longName": "Coinbase Global, Inc.", "quoteType": "EQUITY", "exchange": "NMS",
+      "currency": "USD", "regularMarketPrice": 320.0}, True),
+    ({"quoteType": "ETF", "exchange": "PCX"}, True),
+    ({"currency": "HKD"}, True),
+    ({"previousClose": 42.5}, True),
+    ({"marketCap": 1_000_000}, True),
+    ({"shortName": "TENCENT"}, True),
+])
+def test_a_described_instrument_is_accepted(info, expected):
+    assert bool(NS["_resolved_identity"](info)) is expected
+
+
+def test_an_instrument_with_no_name_is_still_accepted():
+    """THE REASON THE GUARD IS NOT SIMPLY `name == symbol`. Yahoo does not carry a name for
+    every listed instrument; refusing those would trade two junk rows for silently rejecting
+    real ones. The question is whether the provider described an instrument, not whether it
+    happened to name it."""
+    assert NS["_resolved_identity"]({"quoteType": "EQUITY", "exchange": "HKG"}) == [
+        "quoteType", "exchange"]
+
+
+def test_the_decision_names_what_carried_it():
+    """Returns the fields, not a bool, so 'why was this accepted' is answerable afterwards."""
+    got = NS["_resolved_identity"]({"quoteType": "EQUITY", "currency": "USD"})
+    assert got == ["quoteType", "currency"]
+
+
+def test_the_guard_actually_consults_the_corroboration():
+    """Pins the CALL SITE, not just the helper — a correct helper is worthless if the handler
+    still tests `not info`.
+
+    Checked against the parsed function, not the source text: the first version of this test
+    searched the file for "and not info" and failed on the COMMENT that explains the old guard.
+    A source-text assertion cannot tell code from prose about code.
+    """
+    fn = next(n for n in ast.walk(ast.parse(_SRC))
+              if isinstance(n, ast.FunctionDef) and n.name == "add_stock")
+    calls = [n.func.id for n in ast.walk(fn)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    assert "_resolved_identity" in calls
+
+    # ...and no surviving `not info` test anywhere in the handler's real code.
+    negations = [n for n in ast.walk(fn)
+                 if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not)
+                 and isinstance(n.operand, ast.Name) and n.operand.id == "info"]
+    assert negations == []
