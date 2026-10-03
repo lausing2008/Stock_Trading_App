@@ -46,6 +46,15 @@ ALL_SERVICES=(technical-analysis ml-prediction research-engine ranking-engine st
 if [ "$#" -ge 1 ]; then SERVICES=("$@"); else SERVICES=("${ALL_SERVICES[@]}"); fi
 
 cd "$REPO_ROOT"
+
+# ONE DEPLOYMENT OWNER AT A TIME. Two concurrent deploys recreating containers removed the
+# frontend and took the public site down on 2026-10-03; the only thing preventing a second run
+# was whoever was typing. Covers direct invocation too, not just the wrapper.
+# shellcheck source=scripts/deploy_lock.sh
+. "$REPO_ROOT/scripts/deploy_lock.sh"
+DEPLOY_WHAT="backends:${SERVICES[*]}"
+deploy_lock_acquire "$DEPLOY_WHAT" || exit 75   # EX_TEMPFAIL: refused, not broken
+
 echo "Rebuilding from $(git rev-parse --short HEAD) — ${#SERVICES[@]} service(s)"
 [ -n "$(git status --porcelain -- shared services)" ] && \
   echo "WARNING: working tree is dirty; the images will contain uncommitted changes."

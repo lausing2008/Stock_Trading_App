@@ -56,13 +56,15 @@ this split from regrowing back to 347k tokens within a few months:
 4. On EC2: `cd /home/ec2-user/Stock_Trading_App && git pull origin prod`
    - If there are local changes on EC2 blocking the pull: `git stash && git pull origin prod`
    - If there are untracked files blocking: move them to /tmp first, then pull
-5. **Frontend:** needs rebuild — use the legacy builder to bypass the BuildKit stale-cache bug,
-   but do NOT pass `--no-cache` (see `docs/incidents/ec2-disk-and-frontend-builds.md` — `--no-cache`
-   was fixed 2026-07-07 to be unnecessary overhead, not a required safety measure):
-   ```
-   DOCKER_BUILDKIT=0 docker build -f frontend/Dockerfile -t stockai-frontend:latest . && \
-   docker compose -f docker/docker-compose.yml up -d --force-recreate frontend
-   ```
+5. **Frontend:** `bash scripts/deploy_frontend.sh` on EC2.
+
+   **Do NOT paste the build/recreate commands by hand.** Both deploy scripts take a single
+   host-wide lock and a second deployment REFUSES to start (exit 75) while another owns the
+   host — `scripts/deploy_lock.sh`, added after two concurrent deploys removed the frontend
+   container and took the public site down on 2026-10-03. A pasted command sits outside that
+   guard, which is exactly how the race happened. `deploy_lock_status` answers "did it finish?"
+   The script also clears an orphaned `*_stockai-frontend-1` container left by an interrupted
+   recreate, and waits for health rather than reporting success on `docker compose` exiting 0.
    **WARNING:** `docker compose build frontend` (i.e. via `docker compose`, not `docker build`
    directly) uses BuildKit which silently serves cached layers even with `--no-cache`, producing a
    stale image. Always invoke `docker build` directly with `DOCKER_BUILDKIT=0` for frontend builds

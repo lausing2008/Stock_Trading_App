@@ -420,8 +420,11 @@ export default function IntelligenceReportsPage() {
                                          : 'rgba(234,179,8,0.12)',
                                color: report.status === 'complete' ? '#86efac' : '#fde047',
                                fontWeight: 700 }}>{report.status}</span>
-                <span style={{ fontSize: '12px', color: '#64748b' }}>v{report.version}
-                  {report.supersedes_id ? ` · supersedes #${report.supersedes_id}` : ''}</span>
+                {/* "Version 2" and "contract v2" are different numbers that happened to
+                    coincide, and printing both as "v2" made them indistinguishable — a reader
+                    comparing a screenshot against the database cannot tell which is which. */}
+                <span style={{ fontSize: '12px', color: '#64748b' }}>Version {report.version}
+                  {report.supersedes_id ? ` · supersedes report #${report.supersedes_id}` : ''}</span>
                 {report.created === false && (
                   <span style={{ fontSize: '11px', color: '#818cf8' }}>
                     inputs unchanged — existing report reused
@@ -432,7 +435,7 @@ export default function IntelligenceReportsPage() {
                             flexWrap: 'wrap', gap: '4px 18px', marginBottom: '10px' }}>
                 <span>Generated {report.generated_at}</span>
                 <span>Information available through {report.cutoff_at}</span>
-                <span>Contract v{report.contract_version} · policy {report.policy_version}</span>
+                <span>Report contract v{report.contract_version} · generation policy {report.policy_version}</span>
               </div>
               <Coverage r={report} />
             </div>
