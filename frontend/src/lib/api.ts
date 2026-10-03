@@ -1329,7 +1329,13 @@ export type IntelReport = {
   coverage?: { by_state?: Record<string, number>; total?: number; ok?: number };
   payload?: { fields: Record<string, IntelField>; meta: Record<string, unknown> };
   created?: boolean;
+  reused_existing?: boolean;
   changes_since_previous?: IntelDiff;
+  /** Resolved forward, so a superseded snapshot can announce its own correction. */
+  superseded_by?: { report_id: number; version: number; generated_at: string | null }[] | null;
+  contract_is_current?: boolean;
+  current_contract_version?: number;
+  contract_note?: string;
 };
 
 export type IntelDiff = {

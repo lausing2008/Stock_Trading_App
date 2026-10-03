@@ -1565,6 +1565,16 @@ class EarningsEvent(Base):
     #:                          pre-release prices and would publish them as the reaction.
     report_date_source: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
 
+    #: SUPPRESSED IS NOT SENT. A historical import must never enter a delivery path, and the
+    #: first attempt expressed that by stamping `impact_sent_at` — which is DELIVERY EVIDENCE.
+    #: Anything later auditing what was actually sent would have counted a notification that
+    #: never existed, and the row's own history would claim an event that did not happen.
+    #: Suppression gets its own fields, with the reason recorded, so the two can never be
+    #: mistaken for each other.
+    notification_suppressed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, index=True)
+    notification_suppressed_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
     fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     # T249-EARNINGS-LLM-IMPACT: LLM-generated impact read, mirroring EconomicEvent's
     # reaction_text/reaction_generated_at/reaction_sent_at + sectors_helped/sectors_hurt exactly

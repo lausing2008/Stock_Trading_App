@@ -163,6 +163,15 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_earnings_report_date_source "
             "ON earnings_events (report_date_source)"))
+        conn.execute(text(
+            "ALTER TABLE earnings_events ADD COLUMN IF NOT EXISTS "
+            "notification_suppressed_at TIMESTAMP"))
+        conn.execute(text(
+            "ALTER TABLE earnings_events ADD COLUMN IF NOT EXISTS "
+            "notification_suppressed_reason VARCHAR(128)"))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_earnings_notification_suppressed "
+            "ON earnings_events (notification_suppressed_at)"))
 
         conn.execute(text("""
             CREATE UNIQUE INDEX IF NOT EXISTS ux_intel_subject_type_owner_version

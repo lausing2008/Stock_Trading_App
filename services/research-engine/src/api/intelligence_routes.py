@@ -37,6 +37,39 @@ class GenerateRequest(BaseModel):
     event_id: int | None = None
 
 
+def _forward_links(session, r: IntelligenceReport) -> dict:
+    """What a reader of THIS snapshot needs to know about what came after it.
+
+    `supersedes_id` points backwards, which is no help to someone holding an older report: it
+    tells the NEW report what it replaced, and tells the old one nothing. A superseded snapshot
+    with no forward link is a document that cannot announce its own correction, so the link is
+    resolved here and the original's contents are never touched.
+    """
+    from sqlalchemy import select as _select
+    later = session.execute(
+        _select(IntelligenceReport.id, IntelligenceReport.version,
+                IntelligenceReport.generated_at)
+        .where(IntelligenceReport.supersedes_id == r.id)
+        .order_by(IntelligenceReport.version.asc())).all()
+    out = {
+        "superseded_by": ([{"report_id": x[0], "version": x[1],
+                            "generated_at": x[2].isoformat() if x[2] else None}
+                           for x in later] or None),
+        # A stored report written under an older contract genuinely does not contain today's
+        # fields — the reading order and the at-event/current split among them. The page cannot
+        # group what was never recorded, and saying so is better than looking broken.
+        "contract_is_current": r.contract_version == CONTRACT_VERSION,
+        "current_contract_version": CONTRACT_VERSION,
+    }
+    if not out["contract_is_current"]:
+        out["contract_note"] = (
+            f"this snapshot was written under report contract v{r.contract_version}; the current "
+            f"contract is v{CONTRACT_VERSION}. Fields it never recorded — including the "
+            f"at-event / current-context split and the section ordering — cannot be shown for "
+            f"it. Its contents are preserved exactly as issued; regenerate for a current report.")
+    return out
+
+
 def _serialise(r: IntelligenceReport, *, include_payload: bool = True) -> dict:
     out = {
         "id": r.id,
@@ -126,6 +159,7 @@ def generate(req: GenerateRequest, _: str = Depends(get_current_username)):
                         if report.supersedes_id else None)
         body["changes_since_previous"] = S.diff(baseline, report)
         body["reused_existing"] = not created
+        body.update(_forward_links(session, report))
         log.info("intel.generated", report_type=report.report_type, subject=report.subject_key,
                  version=report.version, created=created, status=report.status)
         return body
@@ -201,7 +235,7 @@ def get_report(report_id: int, _: str = Depends(get_current_username)):
         if r is None or r.user_id is not None:
             # A portfolio-bearing report is owner-only; this public path never serves one.
             raise HTTPException(404, "report not found")
-        return _serialise(r)
+        return _serialise(r) | _forward_links(session, r)
 
 
 @router.get("/reports/{report_id}/markdown")

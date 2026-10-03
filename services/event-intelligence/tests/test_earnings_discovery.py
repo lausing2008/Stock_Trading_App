@@ -84,7 +84,7 @@ def _patch_db(monkeypatch, dates):
     monkeypatch.setattr(D, "_stored_events", lambda session, stock_id: [
         d if isinstance(d, dict)
         else {"id": 1000 + i, "report_date": d, "has_result": True,
-              "report_date_source": None}
+              "report_date_source": None, "period_end": None}
         for i, d in enumerate(dates)])
 
 
@@ -104,28 +104,33 @@ def test_discovery_finds_the_quarter_the_polling_loop_cannot(mu):
     assert absent[0]["eps_actual"] == 33.42
 
 
-def test_every_stored_quarter_is_recognised_as_present(mu):
-    assert mu["present"] == 5
+def test_legacy_rows_without_a_period_end_are_ambiguous_not_present(mu):
+    """Position inside a date interval establishes nothing about WHICH period a row reports.
+    MU's stored rows carry no period_end, so none of them can be CONFIRMED to report the
+    quarter the provider is describing — and the honest answer is ambiguous, not present."""
+    assert mu["present"] == 0
     assert mu["rows_returned"] == 6
+    assert len(mu["ambiguous"]) == 5
+    assert all("cannot be shown to report THIS period" in a["reason"] for a in mu["ambiguous"])
 
 
-def test_a_long_announcement_lag_still_matches(mu):
-    """The provider indexes by PERIOD END and the table stores the ANNOUNCEMENT date; the two
-    differ by the lag, which is exactly the quantity that must not be guessed. The 2026-05-28
-    period matches the 2026-06-24 announcement — 27 days later — without a lag constant."""
-    rows = {r["period_end"]: r for r in mu["absent"]}
-    assert "2026-05-28" not in rows, "a 27-day lag must not read as a missing event"
+def test_a_long_announcement_lag_is_still_not_called_absent(mu):
+    """A row DOES sit in that window, so the quarter is not absent — it is unverified. The
+    distinction matters: absent invites a write, ambiguous forbids one."""
+    assert "2026-05-28" not in {r["period_end"] for r in mu["absent"]}
+    assert "2026-05-28" in {r["period_end"] for r in mu["ambiguous"]}
 
 
 def test_a_very_long_lag_does_not_create_a_false_absence(monkeypatch):
     """A 55-day lag is ordinary. Matching is bounded by the NEXT period, not by a day count."""
-    _patch_db(monkeypatch, [date(2026, 5, 25)])
+    _patch_db(monkeypatch, [{"id": 1, "report_date": date(2026, 5, 25), "has_result": True,
+                             "report_date_source": None, "period_end": date(2026, 3, 31)}])
     monkeypatch.setattr(D, "_provider_rows",
                         lambda sym: ([{"period_end": date(2026, 3, 31), "eps_actual": 1.1,
                                        "eps_estimate": 1.0, "outcome": None, "reason": None}], None))
     out = D.discover("X")
     assert out["absent"] == []
-    assert out["present"] == 1
+    assert out["present"] == 1, "a matching period_end verifies it despite the 55-day lag"
 
 
 def test_a_retrieval_failure_is_reported_as_retrieval_not_absence(monkeypatch):
@@ -231,7 +236,8 @@ def test_a_released_result_cannot_be_matched_to_a_future_scheduled_event(mu):
 def test_a_scheduled_period_may_still_match_a_future_event(monkeypatch):
     """The constraint applies only to RELEASED rows. A provider row with no reported EPS is a
     scheduled period, and a future event is exactly what should match it."""
-    _patch_db(monkeypatch, [date(2026, 12, 23)])
+    _patch_db(monkeypatch, [{"id": 3, "report_date": date(2026, 12, 23), "has_result": True,
+                             "report_date_source": None, "period_end": date(2026, 12, 1)}])
     monkeypatch.setattr(D, "_provider_rows",
                         lambda sym: ([{"period_end": date(2026, 12, 1), "eps_actual": None,
                                        "eps_estimate": 1.0, "outcome": None, "reason": None}], None))
@@ -263,13 +269,13 @@ def test_the_repair_suppresses_notification_replay_explicitly(monkeypatch):
     guarantee."""
     body = (_SRC / "services" / "earnings_discovery.py").read_text()
     body = body[body.index("def repair("):]
-    assert "impact_sent_at=now" in body
+    assert "notification_suppressed_at=now" in body
 
 
 def test_a_pending_placeholder_does_not_mark_a_result_present(monkeypatch):
     """A date range alone let a scheduled row with no figures mark a released quarter covered."""
     _patch_db(monkeypatch, [{"id": 7, "report_date": date(2026, 9, 20), "has_result": False,
-                             "report_date_source": None}])
+                             "report_date_source": None, "period_end": date(2026, 9, 3)}])
     monkeypatch.setattr(D, "_provider_rows",
                         lambda sym: ([{"period_end": date(2026, 9, 3), "eps_actual": 33.42,
                                        "eps_estimate": 31.82, "outcome": None,
@@ -284,7 +290,7 @@ def test_a_placeholder_is_filled_rather_than_duplicated(monkeypatch):
     """Inserting a second event for the same quarter creates exactly the ambiguity discovery
     exists to remove."""
     _patch_db(monkeypatch, [{"id": 7, "report_date": date(2026, 9, 20), "has_result": False,
-                             "report_date_source": None}])
+                             "report_date_source": None, "period_end": date(2026, 9, 3)}])
     monkeypatch.setattr(D, "_provider_rows",
                         lambda sym: ([{"period_end": date(2026, 9, 3), "eps_actual": 33.42,
                                        "eps_estimate": 31.82, "outcome": None,
@@ -296,7 +302,7 @@ def test_a_placeholder_is_filled_rather_than_duplicated(monkeypatch):
 
 def test_an_event_recording_a_result_still_counts_as_present(monkeypatch):
     _patch_db(monkeypatch, [{"id": 9, "report_date": date(2026, 9, 20), "has_result": True,
-                             "report_date_source": None}])
+                             "report_date_source": None, "period_end": date(2026, 9, 3)}])
     monkeypatch.setattr(D, "_provider_rows",
                         lambda sym: ([{"period_end": date(2026, 9, 3), "eps_actual": 33.42,
                                        "eps_estimate": 31.82, "outcome": None,
@@ -318,3 +324,61 @@ def test_the_return_backfill_refuses_a_substituted_anchor():
     body = ast.get_source_segment(src, fn)
     assert "report_date_source" in body, "the anchor's provenance must be part of the selection"
     assert "substituted_period_end" in body
+
+
+
+# ── Identity, and suppression that is not delivery ─────────────────────────────────────────
+
+def test_an_unverified_row_in_the_window_is_never_filled(monkeypatch):
+    """Filling on position alone writes EPS into whichever event happens to sit in the range —
+    which could be a different quarter entirely."""
+    _patch_db(monkeypatch, [{"id": 7, "report_date": date(2026, 9, 20), "has_result": False,
+                             "report_date_source": None, "period_end": None}])
+    monkeypatch.setattr(D, "_provider_rows",
+                        lambda sym: ([{"period_end": date(2026, 9, 3), "eps_actual": 33.42,
+                                       "eps_estimate": 31.82, "outcome": None,
+                                       "reason": None}], None))
+    out = D.discover("MU")
+    assert out["present"] == 0
+    assert out["pending_placeholder"] == []
+    assert len(out["ambiguous"]) == 1
+
+    plan = D.repair("MU")
+    assert plan["would_insert"] == [], "an ambiguous match must not become a new event either"
+    assert plan["would_fill_placeholder"] == []
+    assert len(plan["ambiguous_not_written"]) == 1
+
+
+def test_a_mismatched_period_end_is_ambiguous_not_a_match(monkeypatch):
+    """A stored period end that differs from the provider's is a DIFFERENT quarter, however
+    close the two dates are."""
+    _patch_db(monkeypatch, [{"id": 7, "report_date": date(2026, 9, 20), "has_result": False,
+                             "report_date_source": None, "period_end": date(2026, 8, 31)}])
+    monkeypatch.setattr(D, "_provider_rows",
+                        lambda sym: ([{"period_end": date(2026, 9, 3), "eps_actual": 33.42,
+                                       "eps_estimate": 31.82, "outcome": None,
+                                       "reason": None}], None))
+    out = D.discover("MU")
+    assert out["pending_placeholder"] == []
+    assert len(out["ambiguous"]) == 1
+
+
+def test_suppression_is_recorded_as_suppression_not_as_delivery():
+    """Stamping `impact_sent_at` recorded a delivery that never happened; any later audit of
+    what was actually sent would have counted it."""
+    body = (_SRC / "services" / "earnings_discovery.py").read_text()
+    body = body[body.index("def repair("):]
+    assert "notification_suppressed_at=now" in body
+    assert "notification_suppressed_reason=_SUPPRESSION_REASON" in body
+    assert "impact_sent_at=now" not in body, "delivery evidence must not be forged"
+
+
+def test_the_delivery_paths_check_suppression_explicitly():
+    """Relying on a lookback window happening not to reach a historical row is a property of
+    today's constants, not a guarantee."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[3]
+    sched = (root / "services/market-data/src/services/scheduler.py").read_text()
+    earn = (_SRC / "services" / "earnings.py").read_text()
+    assert sched.count("notification_suppressed_at.is_(None)") >= 2
+    assert "notification_suppressed_at.is_(None)" in earn

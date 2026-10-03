@@ -370,6 +370,33 @@ export default function IntelligenceReportsPage() {
           </div>
         )}
 
+        {report && report.superseded_by && report.superseded_by.length > 0 && (
+          <div style={{ padding: '12px 15px', borderRadius: '10px', marginBottom: '12px',
+                        background: 'rgba(99,102,241,0.10)',
+                        border: '1px solid rgba(99,102,241,0.35)', color: '#c7d2fe',
+                        fontSize: '13px' }}>
+            A later version of this report exists. This snapshot is preserved exactly as issued.
+            {' '}
+            {report.superseded_by.map(v => (
+              <button key={v.report_id} onClick={() => openVersion(v.report_id)} style={{
+                marginLeft: '6px', padding: '3px 9px', borderRadius: '6px', cursor: 'pointer',
+                fontSize: '12px', background: 'rgba(99,102,241,0.18)', color: '#a5b4fc',
+                border: '1px solid rgba(99,102,241,0.4)' }}>
+                Open v{v.version}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {report && report.contract_is_current === false && report.contract_note && (
+          <div style={{ padding: '12px 15px', borderRadius: '10px', marginBottom: '12px',
+                        background: 'rgba(100,116,139,0.12)',
+                        border: '1px solid rgba(148,163,184,0.3)', color: '#cbd5e1',
+                        fontSize: '12px', lineHeight: 1.5 }}>
+            {report.contract_note}
+          </div>
+        )}
+
         {report && banner && (
           <div style={{
             padding: '13px 16px', borderRadius: '10px', marginBottom: '14px',

@@ -44,12 +44,13 @@ def _stored_events(session, stock_id: int) -> list[dict]:
     EarningsEvent, _SL, _ST = _db()
     rows = session.execute(
         select(EarningsEvent.id, EarningsEvent.report_date, EarningsEvent.eps_actual,
-               EarningsEvent.revenue_actual, EarningsEvent.report_date_source)
+               EarningsEvent.revenue_actual, EarningsEvent.report_date_source,
+               EarningsEvent.period_end)
         .where(EarningsEvent.stock_id == stock_id)
         .order_by(EarningsEvent.report_date.asc())).all()
     return [{"id": r[0], "report_date": r[1],
              "has_result": r[2] is not None or r[3] is not None,
-             "report_date_source": r[4]} for r in rows]
+             "report_date_source": r[4], "period_end": r[5]} for r in rows]
 
 
 def _db():
@@ -69,10 +70,16 @@ def _db():
 PRESENT = "present"                       # already stored as an event
 ABSENT = "absent"                         # upstream has it, the event table does not
 UNMAPPABLE = "unmappable"                 # returned, but no usable date could be derived
-PENDING_PLACEHOLDER = "pending_placeholder"   # an event row exists but records no result
+PENDING_PLACEHOLDER = "pending_placeholder"   # an event row exists, records no result, AND its
+                                              # fiscal identity matches — safe to fill
+AMBIGUOUS = "ambiguous"                       # a row is in the window but its period is not
+                                              # confirmed; neither present nor absent
 
 #: Written to `EarningsEvent.report_date_source` when the provider gave only a period end.
 SUBSTITUTED_PERIOD_END = "substituted_period_end"
+
+#: Why a repaired row may never be delivered. Recorded on the row, not inferred from a window.
+_SUPPRESSION_REASON = "historical import: result predates ingestion; never eligible for delivery"
 
 
 def _provider_rows(symbol: str) -> tuple[list[dict], str | None]:
@@ -162,21 +169,41 @@ def discover(symbol: str) -> dict:
             # one of those mark a quarter covered that nobody holds the results for.
             if released:
                 candidates = [e for e in candidates if e["has_result"]]
-            if candidates:
+            # FISCAL IDENTITY, NOT POSITION IN AN INTERVAL. Picking the first event inside a
+            # date range establishes nothing about WHICH period it reports: the figures it
+            # already holds could belong to another quarter, and filling a placeholder on that
+            # basis writes EPS into the wrong event. A match is VERIFIED only when the stored
+            # row's own `period_end` equals the provider's. Anything else is ambiguous, and
+            # ambiguous is neither present nor absent.
+            verified = [e for e in candidates if e.get("period_end") == pe]
+            verified_in_window = [e for e in in_window if e.get("period_end") == pe]
+
+            if verified:
                 r["outcome"] = PRESENT
-                r["matched_report_date"] = candidates[0]["report_date"].isoformat()
-                r["matched_event_id"] = candidates[0]["id"]
-                src = candidates[0].get("report_date_source")
-                if src == SUBSTITUTED_PERIOD_END:
+                r["match_basis"] = "verified: stored period_end equals the provider's"
+                r["matched_report_date"] = verified[0]["report_date"].isoformat()
+                r["matched_event_id"] = verified[0]["id"]
+                if verified[0].get("report_date_source") == SUBSTITUTED_PERIOD_END:
                     r["matched_date_is_substituted"] = True
-            elif in_window:
-                # A row exists in the window but records nothing. Distinct from absent, because
-                # the repair should UPDATE it rather than insert a second event for the quarter.
+            elif verified_in_window:
+                # Same quarter, confirmed by its own period end, and it records nothing yet —
+                # the one case where filling is safe.
                 r["outcome"] = PENDING_PLACEHOLDER
+                r["matched_event_id"] = verified_in_window[0]["id"]
+                r["matched_report_date"] = verified_in_window[0]["report_date"].isoformat()
+                r["match_basis"] = "verified: stored period_end equals the provider's"
+                r["reason"] = ("an event row for THIS period records no reported result, so the "
+                               "quarter is scheduled rather than captured")
+            elif in_window:
+                r["outcome"] = AMBIGUOUS
                 r["matched_event_id"] = in_window[0]["id"]
                 r["matched_report_date"] = in_window[0]["report_date"].isoformat()
-                r["reason"] = ("an event row covers this period but records no reported result, "
-                               "so the quarter is scheduled rather than captured")
+                r["candidates_in_window"] = len(in_window)
+                r["reason"] = (
+                    "an event row falls in this period's date range but carries no period_end "
+                    "of its own, so it cannot be shown to report THIS period rather than a "
+                    "neighbouring one. Not counted as present, and NOT written to: filling it "
+                    "could put these figures on the wrong quarter.")
             else:
                 r["outcome"] = ABSENT
                 r["reason"] = ("the provider holds this period and no stored event falls "
@@ -191,6 +218,9 @@ def discover(symbol: str) -> dict:
             "pending_placeholder": [{k: (v.isoformat() if isinstance(v, date) else v)
                                      for k, v in r.items()}
                                     for r in rows if r.get("outcome") == PENDING_PLACEHOLDER],
+            "ambiguous": [{k: (v.isoformat() if isinstance(v, date) else v)
+                           for k, v in r.items()}
+                          for r in rows if r.get("outcome") == AMBIGUOUS],
             "absent": [{k: (v.isoformat() if isinstance(v, date) else v)
                         for k, v in r.items()} for r in absent],
             "unmappable": [r for r in rows if r.get("outcome") == UNMAPPABLE],
@@ -242,8 +272,11 @@ def repair(symbol: str, *, commit: bool = False, actor: str = "discovery") -> di
             "set to 'substituted_period_end' ON THE ROW, so the return calculation and every "
             "other consumer can refuse to treat it as an announcement date."),
         "notification_suppression": (
-            "repaired rows are stamped as already-notified, so a historical result cannot enter "
-            "any delivery path regardless of what the notification windows are set to."),
+            "repaired rows carry `notification_suppressed_at` with a reason — NOT a delivery "
+            "stamp. Suppression and delivery are different facts, and recording one as the "
+            "other would make any later audit of what was actually sent count a notification "
+            "that never existed."),
+        "ambiguous_not_written": found.get("ambiguous", []),
         "committed": False,
     }
     if not commit or not (planned or fill):
@@ -264,7 +297,8 @@ def repair(symbol: str, *, commit: bool = False, actor: str = "discovery") -> di
                     row.eps_estimate = r.get("eps_estimate")
                 row.period_end = date.fromisoformat(r["period_end"])
                 row.fetched_at = now
-                row.impact_sent_at = row.impact_sent_at or now
+                row.notification_suppressed_at = now
+                row.notification_suppressed_reason = _SUPPRESSION_REASON
                 s.commit()
                 filled.append({"event_id": row.id, "period_end": r["period_end"]})
             except Exception as exc:                    # noqa: BLE001
@@ -290,8 +324,11 @@ def repair(symbol: str, *, commit: bool = False, actor: str = "discovery") -> di
                     # The inferred fiscal columns are left NULL rather than computed from the
                     # period month — that label is wrong for every non-calendar fiscal year.
                     period=None, fiscal_year=None, fiscal_quarter=None,
-                    # Suppression, stated rather than inferred from a window.
-                    impact_sent_at=now,
+                    # SUPPRESSED, NOT SENT. Stamping `impact_sent_at` would have recorded a
+                    # delivery that never happened, and any later audit of what was actually
+                    # sent would have counted it.
+                    notification_suppressed_at=now,
+                    notification_suppressed_reason=_SUPPRESSION_REASON,
                     fetched_at=now))
                 s.commit()
                 inserted.append(r["period_end"])

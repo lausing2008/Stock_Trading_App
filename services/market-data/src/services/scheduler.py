@@ -2009,6 +2009,9 @@ def check_earnings_reactions() -> None:
                     Stock.symbol.in_(all_symbols),
                     EarningsEvent.report_date >= cutoff,
                     EarningsEvent.eps_actual.isnot(None),
+                    # A suppressed historical import must not have impact text generated for it
+                    # either: generating it is the step that makes it eligible to be sent.
+                    EarningsEvent.notification_suppressed_at.is_(None),
                 )
             ).all()
             if not rows:
@@ -2207,6 +2210,10 @@ def check_earnings_impact_alerts() -> None:
                     Stock.symbol.in_(all_symbols),
                     EarningsEvent.impact_text.isnot(None),
                     EarningsEvent.impact_sent_at.is_(None),
+                    # HISTORICAL IMPORTS NEVER ENTER A DELIVERY PATH. Expressed as its own
+                    # condition rather than relying on a lookback window happening not to reach
+                    # them — that is a property of today's constants, and constants change.
+                    EarningsEvent.notification_suppressed_at.is_(None),
                 )
             ).all()
             if not pending:

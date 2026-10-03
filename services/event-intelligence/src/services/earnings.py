@@ -762,6 +762,7 @@ async def check_earnings_impact_poll() -> dict:
                 EarningsEvent.report_date >= cutoff,
                 EarningsEvent.eps_actual.isnot(None),
                 EarningsEvent.impact_text.is_(None),
+                EarningsEvent.notification_suppressed_at.is_(None),
             )
         ).all()
         checked = len(rows)
