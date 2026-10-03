@@ -18,6 +18,7 @@ from db import (
 )
 from db.models import User, Stock, Price, TimeFrame
 from .auth import get_current_user, get_admin_user
+from ..services import broker_submission as _broker_submission
 from common.config import get_settings
 from common.logging import get_logger
 
@@ -486,6 +487,10 @@ def _close_one_paper_trade(
     pnl_pct = round((exit_p / trade.entry_price - 1) * 100, 2)
 
     now = datetime.utcnow()
+    # R4 (PostgreSQL race): a closure landing while a broker submission is in flight used to
+    # record nothing, leaving the position flat locally while a real order may be live. No-op
+    # unless this trade actually carries an open broker intent.
+    _broker_submission.record_closure_disposition(trade, actor="manual_exit", now=now)
     trade.stage = "closed"
     trade.hold_days = int(np.busday_count(trade.entry_date, now.date() + timedelta(days=1))) if trade.entry_date else 0
     trade.exit_time = now
@@ -1224,6 +1229,7 @@ def reset_portfolio(
     now = datetime.utcnow()
     for t in open_trades:
         exit_price = t.current_price or t.entry_price
+        _broker_submission.record_closure_disposition(t, actor="admin_reset", now=now)
         t.stage = "closed"
         t.hold_days = int(np.busday_count(t.entry_date, now.date() + timedelta(days=1))) if t.entry_date else 0
         t.exit_time = now

@@ -54,6 +54,9 @@ class _FakeHTTPException(Exception):
         super().__init__(detail)
 
 
+from src.services import broker_submission as _real_broker_submission   # noqa: E402
+
+
 def _extract_close_one_paper_trade():
     start = _ROUTES_SOURCE.index("def _close_one_paper_trade(")
     end = _ROUTES_SOURCE.index("\n\n\n@router.post(\"/trades/{trade_id}/exit\")", start)
@@ -86,6 +89,7 @@ def _extract_close_one_paper_trade():
             "np": __import__("numpy"),
             "datetime": datetime, "timedelta": timedelta,
             "Session": Session, "PaperPortfolio": PaperPortfolio, "PaperTrade": PaperTrade,
+            "_broker_submission": _real_broker_submission,
             "__name__": "src.api.paper_portfolio_extracted",
             "__package__": "src.api",
         }
@@ -127,6 +131,7 @@ def _extract_liquidate_portfolio():
         "_fetch_live_prices": _fake_fetch_live_prices,
         "_close_one_paper_trade": _close_one_paper_trade,
         "_place_broker_exit": _fake_place_broker_exit,
+        "_broker_submission": _real_broker_submission,
         "log": _FakeLog(),
     }
     exec(func_source, namespace)  # noqa: S102 — real source, not a duplicate
@@ -461,4 +466,56 @@ def test_multiple_broker_backed_trades_each_get_their_own_exit_call():
     finally:
         _fetch_live_prices_return = {}
         _place_broker_exit_calls = []
+        session.close()
+
+
+# ── Closing a position while a broker submission may be in flight ──────────────────────────
+#
+# PROBE SCENARIO R4, through the REAL liquidation path rather than the helper. Measured on a
+# real PostgreSQL (docs/audits/evidence/2026-10-02-broker-lifecycle-pg-races.json): when the
+# dispatcher wins the race the row commits to `submitting` and the provider call is in flight;
+# a closure landing immediately after recorded NOTHING, so the position read as flat locally
+# while a real order could be live at the broker.
+
+def test_liquidation_records_a_broker_intent_that_may_still_be_live():
+    global _fetch_live_prices_return
+    session = _make_session()
+    try:
+        p = _make_portfolio(session, current_cash=1_000.0)
+        t = _make_open_trade(session, p.id, symbol="AAPL", entry_price=100.0, shares=5.0)
+        t.broker_submission_state = "submitting"
+        t.broker_client_order_id = "pt1xdeadbeef"
+        session.commit()
+        _fetch_live_prices_return = {"AAPL": 110.0}
+        liquidate_portfolio(p.id, confirm=True, session=session)
+        closed = session.get(PaperTrade, t.id)
+        assert closed.stage == "closed"            # the liquidation still liquidates
+        assert closed.broker_error.startswith("closed_with_open_broker_intent")
+        assert "pt1xdeadbeef" in closed.broker_error
+        # `liquidate_portfolio` closes each position through `_close_one_paper_trade` — the same
+        # function the manual single-trade exit uses — so the actor recorded is `manual_exit`,
+        # not the bulk `admin_reset` loop further down the module. Asserting the actor keeps
+        # this honest about which path actually runs.
+        assert "manual_exit" in closed.broker_error
+    finally:
+        _fetch_live_prices_return = {}
+        session.close()
+
+
+def test_liquidation_leaves_an_ordinary_trade_unannotated():
+    """Every production trade today is in this state — M25 is off, so nothing reaches
+    `submitting`. The guard must be inert across the entire live book, or the first thing it
+    would do is stamp a broker note onto positions that never touched a broker."""
+    global _fetch_live_prices_return
+    session = _make_session()
+    try:
+        p = _make_portfolio(session, current_cash=1_000.0)
+        t = _make_open_trade(session, p.id, symbol="AAPL", entry_price=100.0, shares=5.0)
+        _fetch_live_prices_return = {"AAPL": 110.0}
+        liquidate_portfolio(p.id, confirm=True, session=session)
+        closed = session.get(PaperTrade, t.id)
+        assert closed.stage == "closed"
+        assert closed.broker_error is None
+    finally:
+        _fetch_live_prices_return = {}
         session.close()

@@ -1,0 +1,118 @@
+{
+  "r1_close_wins_before_claim": {
+    "selected_by_dispatcher": [
+      1
+    ],
+    "provider_calls": 0,
+    "result": {
+      "claimed": 0,
+      "submitted": 0,
+      "rejected": 0,
+      "unknown": 0,
+      "lost_race": 0,
+      "blocked": 0
+    },
+    "final_stage": "closed",
+    "final_submission_state": "pending",
+    "attempts": 0,
+    "passes": true
+  },
+  "r2_claim_blocks_on_uncommitted_close": {
+    "dispatcher_still_blocked_while_lock_held": true,
+    "result": {
+      "claimed": 1,
+      "submitted": 0,
+      "rejected": 0,
+      "unknown": 0,
+      "lost_race": 1,
+      "blocked": 0
+    },
+    "blocked_seconds": 1.004053,
+    "provider_calls": 0,
+    "final_stage": "closed",
+    "final_submission_state": "pending",
+    "passes": true
+  },
+  "r3_two_dispatchers_one_row": {
+    "provider_calls": 1,
+    "outcomes": [
+      "claimed",
+      "lost_race"
+    ],
+    "attempts": 1,
+    "final_submission_state": "submitted",
+    "passes": true
+  },
+  "r4_claim_wins_then_close": {
+    "claimed": true,
+    "final_stage": "closed",
+    "final_submission_state": "submitting",
+    "retains_reserved_exposure": true,
+    "confirmed_broker_fill": false,
+    "appears_in_needs_reconciliation": true,
+    "closure_recorded_broker_exposure": true,
+    "closure_disposition": {
+      "state": "submitting",
+      "client_order_id": "pt1x42c7c3d03f164b",
+      "order_id": null,
+      "confirmed_fill": false,
+      "needs_reconciliation": true,
+      "note": "closed locally while a real broker order may exist; exposure stays reserved and this trade needs reconciliation against the broker's own record"
+    },
+    "passes": true
+  },
+  "r5_submitting_never_reclaimed": {
+    "second_dispatcher_claimed": 0,
+    "provider_calls": 0,
+    "in_needs_reconciliation": true,
+    "passes": true
+  },
+  "r6_attempt_cap_under_concurrency": {
+    "provider_calls": 3,
+    "attempts_recorded": 3,
+    "cap": 3,
+    "passes": true
+  },
+  "r7_stale_intent_dispatched": {
+    "provider_calls": 0,
+    "intent_age_hours": 6.0,
+    "blocked_reason": "dispatch blocked: intent_expired: recorded 360.0 min ago, limit 15 min",
+    "still_pending": true,
+    "attempts_unburned": true,
+    "listed_as_expired": true,
+    "passes": true
+  },
+  "r8_unlinked_portfolio_still_dispatches": {
+    "provider_calls": 0,
+    "eligibility_consults_broker_link": true,
+    "passes": true
+  },
+  "r9_price_drift_and_unverifiable_quote": {
+    "at_entry": {
+      "provider_calls": 1,
+      "reason": "no order id and no evidence of rejection"
+    },
+    "drift_up_2pct": {
+      "provider_calls": 0,
+      "reason": "dispatch blocked: price_drift: +2.00% from the sized entry price 100.0000, limit 1.00%"
+    },
+    "drift_down_2pct": {
+      "provider_calls": 0,
+      "reason": "dispatch blocked: price_drift: -2.00% from the sized entry price 100.0000, limit 1.00%"
+    },
+    "inside_tolerance": {
+      "provider_calls": 1,
+      "reason": "no order id and no evidence of rejection"
+    },
+    "no_quote": {
+      "provider_calls": 0,
+      "reason": "dispatch blocked: price_unverifiable: no current quote to check the sized entry price against"
+    },
+    "passes": true
+  },
+  "_meta": {
+    "engine": "127.0.0.1:55432/racetest",
+    "server_version": "15.18 (Debian 15.18-1.pgdg13+1)",
+    "scope": "throwaway local database; no production access or writes"
+  }
+}

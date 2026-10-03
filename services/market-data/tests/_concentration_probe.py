@@ -42,7 +42,8 @@ common.config = _cfg_mod
 
 from sqlalchemy import create_engine                                  # noqa: E402
 from sqlalchemy.orm import sessionmaker                               # noqa: E402
-from db.models import Base, PaperPortfolio, PaperTrade, Signal, Stock   # noqa: E402
+from db.models import (Base, BrokerConnection, PaperPortfolio,          # noqa: E402
+                      PaperTrade, Signal, Stock, User)
 from datetime import date as _date                                    # noqa: E402
 from src.services import paper_trading_engine as pte                  # noqa: E402
 
@@ -541,10 +542,25 @@ R["broker_flag"] = {
 }
 
 with Session() as s:
+    # The portfolio must be genuinely broker-LINKED: eligibility now requires it (the dispatcher
+    # used to submit into an account the user had since disconnected).
+    _u = User(username="probe", email="probe@example.invalid", password_hash="x")
+    s.add(_u); s.flush()
+    _conn = BrokerConnection(user_id=_u.id, name="probe", broker_type="etrade_sandbox",
+                             config={}, is_active=True, is_authorized=True)
+    s.add(_conn); s.flush()
     bpf = PaperPortfolio(name="broker", initial_capital=EQUITY, current_cash=EQUITY,
-                         config={"market": "US"}); s.add(bpf); s.flush()
+                         config={"market": "US"}, broker_connection_id=_conn.id)
+    s.add(bpf); s.flush()
     bst = _mk_stock(s, "BRK1", "Financials"); s.commit()
     BPF, BST = bpf.id, bst.id
+
+#: The dispatch controls are exercised in their own probe and test file; these scenarios are
+#: about the SUBMISSION lifecycle, so they hold the quote at the sized entry price and date the
+#: clock to just after `_mk_open`'s fixed entry_time. Letting wall-clock age block every
+#: dispatch here would make each scenario below pass without testing anything.
+_AT_ENTRY = lambda t: float(t.entry_price)                               # noqa: E731
+_DISPATCH_AS_OF = datetime(2026, 9, 1, 14, 5, tzinfo=timezone.utc)
 
 
 def _pending_trade(s, symbol="BRK1"):
@@ -564,7 +580,8 @@ with Session() as s:
 # (b) Happy path: submitting -> submitted, exactly one call.
 rec = BrokerRecorder("accept")
 with Session() as s:
-    res = bs.submit_pending(s, place=rec, commit=s.commit, portfolio_id=BPF)
+    res = bs.submit_pending(s, place=rec, commit=s.commit, quote=_AT_ENTRY,
+                            portfolio_id=BPF, now=_DISPATCH_AS_OF)
 with Session() as s:
     t = s.query(PaperTrade).filter_by(portfolio_id=BPF).order_by(PaperTrade.id).first()
     R["broker_submit_ok"] = {"batch": res, "state": t.broker_submission_state,
@@ -576,9 +593,11 @@ rec_t = BrokerRecorder("timeout")
 with Session() as s:
     _pending_trade(s, "BRK1"); s.commit()
 with Session() as s:
-    res_t = bs.submit_pending(s, place=rec_t, commit=s.commit, portfolio_id=BPF)
+    res_t = bs.submit_pending(s, place=rec_t, commit=s.commit, quote=_AT_ENTRY,
+                            portfolio_id=BPF, now=_DISPATCH_AS_OF)
 with Session() as s:
-    again = bs.submit_pending(s, place=rec_t, commit=s.commit, portfolio_id=BPF)
+    again = bs.submit_pending(s, place=rec_t, commit=s.commit, quote=_AT_ENTRY,
+                            portfolio_id=BPF, now=_DISPATCH_AS_OF)
     unknown_rows = [t.id for t in bs.needs_reconciliation(s)]
     R["broker_timeout"] = {"batch": res_t, "retried": again["claimed"],
                            "calls": len(rec_t.calls), "awaiting_reconciliation": len(unknown_rows)}
@@ -588,7 +607,8 @@ rec_r = BrokerRecorder("reject")
 with Session() as s:
     _pending_trade(s); s.commit()
 with Session() as s:
-    first = bs.submit_pending(s, place=rec_r, commit=s.commit, portfolio_id=BPF)
+    first = bs.submit_pending(s, place=rec_r, commit=s.commit, quote=_AT_ENTRY,
+                            portfolio_id=BPF, now=_DISPATCH_AS_OF)
 with Session() as s:
     rows = [t for t in s.query(PaperTrade).filter_by(portfolio_id=BPF).all()
             if t.broker_submission_state == "failed"]
@@ -600,7 +620,8 @@ rec_s = BrokerRecorder("silent_fallback")
 with Session() as s:
     t = _pending_trade(s); s.commit(); SILENT = t.id
 with Session() as s:
-    res_s = bs.submit_pending(s, place=rec_s, commit=s.commit, portfolio_id=BPF, limit=50)
+    res_s = bs.submit_pending(s, place=rec_s, commit=s.commit, quote=_AT_ENTRY,
+                              portfolio_id=BPF, limit=50, now=_DISPATCH_AS_OF)
 with Session() as s:
     t = s.query(PaperTrade).filter_by(id=SILENT).one()
     R["broker_silent_fallback"] = {"state": t.broker_submission_state,
@@ -624,7 +645,8 @@ rec_sf = BrokerRecorder("silent_fallback")
 with Session() as s:
     t = _pending_trade(s); s.commit(); SILENT2 = t.id
 with Session() as s:
-    bs.submit_pending(s, place=rec_sf, commit=s.commit, portfolio_id=BPF, limit=50)
+    bs.submit_pending(s, place=rec_sf, commit=s.commit, quote=_AT_ENTRY,
+                              portfolio_id=BPF, limit=50, now=_DISPATCH_AS_OF)
 with Session() as s:
     t = s.query(PaperTrade).filter_by(id=SILENT2).one()
     reclaim = [x.id for x in bs.claimable(s, portfolio_id=BPF, limit=50)]

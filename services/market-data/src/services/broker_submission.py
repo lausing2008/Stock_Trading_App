@@ -62,9 +62,30 @@ ROLLOUT_KEY = "stockai:admin:feature:broker_submit_after_commit"
 
 MAX_SUBMIT_ATTEMPTS = 3
 
+#: ── POLICY CONSTANTS. These are DECISIONS, not bug corrections. ───────────────────────────
+#: Both bound when a recorded intent may still become a REAL order, and both are prerequisites
+#: the lifecycle review named for activating M25. They are tracked separately from the
+#: correctness fixes in this module and await explicit sign-off; the values below are the
+#: conservative end of the defensible range, not a tuned result.
+#:
+#: INTENT_MAX_AGE_SECONDS — the entry scan runs every 5 minutes, so an intent older than three
+#: cycles was not produced by the conditions now in front of us. A market order carrying a
+#: decision made hours ago is priced by the market at dispatch, not by anything anyone approved.
+INTENT_MAX_AGE_SECONDS = 900
+
+#: MAX_ENTRY_PRICE_DRIFT_PCT — the position was SIZED against `entry_price`; a fill far from it
+#: is a different position than the one the risk checks passed. Expressed against the intent's
+#: own entry price so it means the same thing for a $8 stock and an $800 one.
+MAX_ENTRY_PRICE_DRIFT_PCT = 1.0
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _naive_utc(dt: datetime) -> datetime:
+    """A tz-aware datetime converted to naive UTC; a naive one returned unchanged."""
+    return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo is not None else dt
 
 
 def submit_after_commit_enabled(redis_client) -> bool:
@@ -162,6 +183,14 @@ def _eligibility() -> list:
         # or a restart — which would route one intent through both submission paths.
         PaperTrade.broker_submission_path == "deferred",
         PaperTrade.broker_submit_attempts < MAX_SUBMIT_ATTEMPTS,
+        # THE PORTFOLIO MUST STILL BE BROKER-LINKED. Measured gap (scenario R8): an intent is
+        # recorded while a broker is connected; the connection is then removed; the dispatcher
+        # submitted anyway, because eligibility asked only about the TRADE. A real order placed
+        # into an account the user has since disconnected is the clearest possible case of
+        # acting on authority that was withdrawn. A correlated subquery rather than a join, so
+        # the same predicate still drops into the compare-and-set UPDATE unchanged.
+        PaperTrade.portfolio_id.in_(
+            select(PaperPortfolio.id).where(PaperPortfolio.broker_connection_id.is_not(None))),
     ]
 
 
@@ -199,6 +228,129 @@ def begin_submission(session, trade: PaperTrade, *, now: datetime | None = None)
         session.refresh(trade)
         return True
     return False
+
+
+def intent_age_seconds(trade: PaperTrade, now: datetime) -> float | None:
+    """How long ago this intent was recorded, or None if that cannot be established.
+
+    `entry_time` IS the intent time: `mark_pending` runs inside the entry transaction, so the
+    trade row and its intent become durable together. Reading it here rather than adding a
+    second timestamp keeps one fact in one column — two timestamps that should always agree are
+    two timestamps that will eventually disagree.
+    """
+    if trade.entry_time is None:
+        return None
+    # MIXED AWARENESS IS REAL HERE, not hypothetical: the column is naive `DateTime`, but
+    # `conditional_orders` builds its timestamps with `datetime.now(timezone.utc)` and an
+    # in-memory trade can therefore carry tzinfo before it has ever round-tripped through the
+    # database. Subtracting those two raises TypeError — which, in a control that BLOCKS real
+    # orders, would surface as a crash in the dispatch loop rather than as a refusal. Both sides
+    # are normalised to naive UTC instead.
+    return (_naive_utc(now) - _naive_utc(trade.entry_time)).total_seconds()
+
+
+def price_drift_pct(trade: PaperTrade, quoted: float | None) -> float | None:
+    """Signed drift of the current quote from the price this position was SIZED against.
+
+    None means NOT MEASURED — no quote, or no entry price to compare against. It does not mean
+    zero drift, and callers must not treat it as such.
+    """
+    if quoted is None or not trade.entry_price:
+        return None
+    entry = float(trade.entry_price)
+    if entry == 0:
+        return None
+    return (float(quoted) - entry) / entry * 100.0
+
+
+def dispatch_block_reason(trade: PaperTrade, *, now: datetime, quoted: float | None,
+                          max_age_seconds: float = INTENT_MAX_AGE_SECONDS,
+                          max_drift_pct: float = MAX_ENTRY_PRICE_DRIFT_PCT) -> str | None:
+    """Why this intent must NOT be sent to the broker right now, or None to proceed.
+
+    FAILS CLOSED, deliberately, and for the reason AUD-B01-PREFLIGHTFAILCLOSED already settled
+    on the buying-power check: a control that cannot be evaluated has not passed. An unmeasurable
+    age or an unavailable quote blocks the order rather than waving it through — nothing is lost
+    by waiting for the next cycle, whereas a real order placed on an unverified price cannot be
+    taken back.
+    """
+    age = intent_age_seconds(trade, now)
+    if age is None:
+        return "intent_age_unverifiable: no entry_time to date this intent from"
+    if age > max_age_seconds:
+        return (f"intent_expired: recorded {age / 60:.1f} min ago, limit "
+                f"{max_age_seconds / 60:.0f} min")
+    drift = price_drift_pct(trade, quoted)
+    if drift is None:
+        return "price_unverifiable: no current quote to check the sized entry price against"
+    if abs(drift) > max_drift_pct:
+        return (f"price_drift: {drift:+.2f}% from the sized entry price "
+                f"{float(trade.entry_price):.4f}, limit {max_drift_pct:.2f}%")
+    return None
+
+
+def expired_intents(session, *, now: datetime | None = None,
+                    max_age_seconds: float = INTENT_MAX_AGE_SECONDS,
+                    limit: int = 100) -> list[PaperTrade]:
+    """Recorded intents too old to dispatch, which therefore sit `pending` indefinitely.
+
+    They are deliberately NOT auto-settled. `rejected` would assert the broker refused them,
+    which is false — nothing was ever sent — and there is no state meaning "we declined to
+    send this", so inventing one by overloading an existing value would corrupt the very
+    distinction this module exists to preserve. They are listed instead, so that a person can
+    see intents the dispatcher is declining rather than discovering a silent backlog.
+    """
+    now = now or utcnow()
+    rows = session.execute(select(PaperTrade).where(*_eligibility()).limit(limit)).scalars().all()
+    return [t for t in rows
+            if (intent_age_seconds(t, now) or 0) > max_age_seconds]
+
+
+def closure_disposition(trade: PaperTrade) -> dict | None:
+    """What a CLOSURE must account for on this trade, or None when the broker is not involved.
+
+    THE GAP THIS CLOSES (measured on real PostgreSQL, scenario R4): when the dispatcher wins the
+    race, the row commits to `submitting` and the provider call is in flight; a closure landing
+    immediately after set `stage='closed'` and recorded NOTHING about it. The position then reads
+    as flat locally while a real order may be live at the broker — and the closure, which is the
+    last thing to touch the row, left no trace that anyone needed to look.
+
+    Returning a description rather than acting is deliberate: the disposition is the same
+    wherever a trade closes, but the scheduled exit, the manual exit, the liquidation and the
+    conditional-order path each record it in their own idiom.
+    """
+    if not retains_reserved_exposure(trade):
+        return None
+    return {
+        "state": trade.broker_submission_state,
+        "client_order_id": trade.broker_client_order_id,
+        "order_id": trade.broker_order_id,
+        "confirmed_fill": confirmed_broker_fill(trade),
+        "needs_reconciliation": trade.broker_order_id is None,
+        "note": ("closed locally while a real broker order may exist; exposure stays reserved "
+                 "and this trade needs reconciliation against the broker's own record"),
+    }
+
+
+def record_closure_disposition(trade: PaperTrade, *, actor: str,
+                               now: datetime | None = None) -> dict | None:
+    """Stamp the disposition onto the trade so the closure is not silent. No-op when None.
+
+    Written to `broker_error` — the existing free-text broker field — rather than a new column:
+    this must be recordable on every close path today, and a disposition nobody can read until a
+    migration lands is a disposition that does not exist.
+    """
+    disposition = closure_disposition(trade)
+    if disposition is None:
+        return None
+    stamp = (now or utcnow()).isoformat(timespec="seconds")
+    trade.broker_error = (
+        f"closed_with_open_broker_intent at {stamp} by {actor}: "
+        f"state={disposition['state']} client_order_id={disposition['client_order_id']} "
+        f"{disposition['note']}")[:512]
+    log.warning("broker.closed_with_open_intent", trade_id=trade.id, symbol=trade.symbol,
+                actor=actor, **{k: v for k, v in disposition.items() if k != "note"})
+    return disposition
 
 
 def settle(session, trade: PaperTrade, *, outcome: str, error: str | None = None,
@@ -287,25 +439,43 @@ def reconcile_submission(session, trade: PaperTrade, *, resolution: str, evidenc
     trade.broker_error = f"reconciled as {resolution} by {actor}: {evidence}"[:512]
 
 
-def submit_pending(session, *, place, commit, classify=None,
+def submit_pending(session, *, place, commit, quote, classify=None,
                    portfolio_id: int | None = None,
                    limit: int = 20, now: datetime | None = None) -> dict:
     """Submit every claimable entry. `place(session, trade, portfolio)` does the real call.
 
     THE ORDER IS THE DESIGN:
         1. the trade row is already committed (the caller did that),
-        2. `begin_submission` + COMMIT — durable evidence a call is about to happen,
-        3. the broker call,
-        4. settle + commit.
+        2. the dispatch controls — age and price drift — checked BEFORE the claim, so a blocked
+           intent does not burn one of its three attempts,
+        3. `begin_submission` + COMMIT — durable evidence a call is about to happen,
+        4. the broker call,
+        5. settle + commit.
+
+    `quote(trade) -> float | None` is REQUIRED, not optional with a default. A caller with no
+    quote source must say so by passing one that returns None, which blocks every dispatch and
+    records why. The alternative — defaulting it — means forgetting the price check looks
+    exactly like having no prices, and one of those two should be a loud error.
 
     A crash at any point leaves a state that says what is known: `pending` (nothing sent),
     `submitting` (may exist — reconcile), `submitted` or `failed`.
     """
     now = now or utcnow()
-    out = {"claimed": 0, "submitted": 0, "rejected": 0, "unknown": 0, "lost_race": 0}
+    out = {"claimed": 0, "submitted": 0, "rejected": 0, "unknown": 0, "lost_race": 0,
+           "blocked": 0}
     rows = claimable(session, portfolio_id=portfolio_id, limit=limit)
     out["claimed"] = len(rows)
     for trade in rows:
+        # BEFORE the claim: a control that blocks must not consume an attempt, or three blocked
+        # cycles would exhaust the intent without the broker ever being contacted.
+        blocked = dispatch_block_reason(trade, now=now, quoted=quote(trade))
+        if blocked:
+            out["blocked"] += 1
+            trade.broker_error = f"dispatch blocked: {blocked}"[:512]
+            commit()
+            log.info("broker.dispatch_blocked", trade_id=trade.id, symbol=trade.symbol,
+                     reason=blocked)
+            continue
         if not begin_submission(session, trade, now=now):
             out["lost_race"] += 1
             continue

@@ -3628,6 +3628,7 @@ def _monitor_positions(
             )
             _cost_basis = entry * (trade.entry_shares or trade.shares)
             total_pnl_pct = (total_pnl_dollar / _cost_basis) if _cost_basis else pnl_pct
+            _broker_submission.record_closure_disposition(trade, actor="scheduled_exit", now=now)
             trade.stage               = "closed"
             trade.exit_time           = now
             trade.exit_price          = exit_price

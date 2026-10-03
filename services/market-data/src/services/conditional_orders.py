@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from common.config import get_settings
 from common.logging import get_logger
+from . import broker_submission as _broker_submission
 from db import (
     ConditionalOrder, PaperPortfolio, PaperTrade, Signal, SignalType, Stock, Ranking,
 )
@@ -454,6 +455,11 @@ def _execute_close_position(order: ConditionalOrder, portfolio: PaperPortfolio, 
     total_pnl_pct = (total_pnl_dollar / cost_basis) if cost_basis else pnl_pct
 
     now = datetime.now(timezone.utc)
+    # R4 (PostgreSQL race): a closure landing while a broker submission is in flight used to
+    # record nothing, leaving the position flat locally while a real order may be live. No-op
+    # unless this trade actually carries an open broker intent.
+    _broker_submission.record_closure_disposition(
+        trade, actor="conditional_order", now=now.replace(tzinfo=None))
     trade.stage = "closed"
     trade.exit_time = now
     trade.exit_price = exit_price
