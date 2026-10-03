@@ -299,6 +299,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 - **`docs/features/mobile-responsive-design.md`** — Mobile Nav Drawer (T251-MOBILE-RESPONSIVE-DESIGN, Phase 1); T230-UX-MOBILE-RESPONSIVE (Phase 2 slice) — Stock Detail Page Grid Collapses on Mobile (Built 202...
 - **`docs/features/news-intelligence-service.md`** — T259-NEWS-INTELLIGENCE — New Service (port 8011), Real-Time Company Headline Ingestion + Hot-News Signal Gate (Built 2026-07-27)
+- **`docs/features/data-provider-routing-and-schedule.md`** — ONE PAGE: which provider serves which market/timeframe, every ingest job's window and cadence, where the UW budget goes (option chains 89%), and what is metered. Read before touching ingest scheduling [routing, schedule, UW]
 - **`docs/features/ops-tooling.md`** — T270-DBSYNC-PROD-TO-LOCAL-WEEKLY Layer 2 — scripts/sync_prod_to_local.sh (Built 2026-08-17)
 - **`docs/features/paper-trading-gates.md`** — Paper Portfolio Badges Are Two Independent Layers — layer-1 (portfolio/market-wide gates) vs … [holiday]
 

@@ -51,6 +51,40 @@ from .registry import register_adapter
 
 log = structlog.get_logger()
 
+# AUD-UW-ADAPTER-UNINSTRUMENTED (2026-10-02): THIS ADAPTER WAS INVISIBLE TO EVERY UW METRIC.
+#
+# It builds its own `httpx.Client`, so it never passed through `services/unusual_whales.py`'s
+# `_record_call_status()` / `_incr_rate_limit_counter()` / `uw_calls` counters. Two consequences
+# measured the day this was found:
+#
+#   * The UW usage dashboard read 75,811 calls for 2026-10-02 and listed no `ohlc` endpoint at
+#     all, while this adapter was making an estimated ~14,768 — true usage ~90.6k of a 120k
+#     budget, with 20% of it unaccounted.
+#   * The UW rate-limit gauge read 5-16/hour while this adapter's own 429s ran ~232/hour, a
+#     ~33x undercount. The gauge that exists to show UW throttling was blind to its largest
+#     source.
+#
+# So every call and every failure is now recorded under the SAME key shapes the service module
+# uses, and 429s feed the existing gauge. Reporting is fail-open: a Redis hiccup must never
+# turn a metric into a failed ingest.
+_CALL_COUNTER_PREFIX = "stockai:metric:uw_calls"
+_FAILURE_COUNTER_PREFIX = "stockai:metric:uw_adapter_failures"
+_COUNTER_TTL_S = 49 * 3600
+
+# AUD-UW-BURST: a throttled UW used to cost a failed call on EVERY symbol.
+#
+# `ingest_universe` walks ~142 US symbols in a tight loop every five minutes, and the registry
+# puts this adapter first. Once UW starts refusing, each of those 142 symbols still paid a full
+# round trip to be told 429 before falling through to yfinance — 142 wasted calls per burst,
+# against the very quota that was exhausted, and each one also delaying the fallback.
+#
+# A short cooldown turns that into ONE wasted call per window: the first 429 arms it, and
+# `supports()` then reports False so the registry routes straight to yfinance until it expires.
+# Deliberately short — this is a step-aside, not a circuit breaker with a long memory, and UW
+# must get a chance to come back on its own.
+_COOLDOWN_KEY = "stockai:uw_adapter:cooldown"
+_COOLDOWN_SECONDS = 120
+
 _BASE = "https://api.unusualwhales.com"
 # See note 2 above — a larger value silently returns an empty list.
 _MAX_LIMIT = 500
@@ -66,7 +100,43 @@ class UnusualWhalesAdapter(DataAdapter):
     supported_markets = ("US",)
 
     def supports(self, market: str, timeframe: str) -> bool:
-        return market == "US" and timeframe in _TF_CANDLE
+        if not (market == "US" and timeframe in _TF_CANDLE):
+            return False
+        # AUD-UW-BURST: step aside while cooling down so the registry picks yfinance without
+        # paying a round trip first. Fail-open on any Redis problem — an unavailable metric
+        # store must not remove a working data source.
+        try:
+            from common.redis_client import get_redis
+            if get_redis().get(_COOLDOWN_KEY):
+                return False
+        except Exception:
+            pass
+        return True
+
+    @staticmethod
+    def _note(kind: str, name: str) -> None:
+        """Record one call or one failure. Never raises."""
+        try:
+            from datetime import datetime, timezone
+            from common.redis_client import get_redis
+            now = datetime.now(timezone.utc)
+            if kind == "call":
+                key = f"{_CALL_COUNTER_PREFIX}:{name}:{now:%Y%m%d}"
+            else:
+                key = f"{_FAILURE_COUNTER_PREFIX}:{name}:{now:%Y%m%d%H}"
+            r = get_redis()
+            if r.incr(key) == 1:
+                r.expire(key, _COUNTER_TTL_S)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _arm_cooldown() -> None:
+        try:
+            from common.redis_client import get_redis
+            get_redis().setex(_COOLDOWN_KEY, _COOLDOWN_SECONDS, "1")
+        except Exception:
+            pass
 
     @staticmethod
     def _key() -> str | None:
@@ -82,22 +152,54 @@ class UnusualWhalesAdapter(DataAdapter):
     ) -> OHLCV:
         key = self._key()
         if not key:
+            self._note("fail", "no_key")
             raise RuntimeError("Unusual Whales key not configured or feature disabled")
         candle = _TF_CANDLE.get(timeframe)
         if candle is None:
+            self._note("fail", "unsupported_timeframe")
             raise ValueError(f"unsupported timeframe for Unusual Whales: {timeframe}")
 
         log.info("unusual_whales.fetch", symbol=symbol, tf=timeframe)
-        with httpx.Client(timeout=30) as client:
-            r = client.get(
-                f"{_BASE}/api/stock/{symbol}/ohlc/{candle}",
-                headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
-                params={"limit": _MAX_LIMIT},
-            )
-            if r.status_code == 429:
-                raise RuntimeError("Unusual Whales rate limit exceeded")
-            r.raise_for_status()
-            rows = (r.json() or {}).get("data") or []
+        # AUD-UW-ADAPTER-UNINSTRUMENTED: counted under the same endpoint-shaped key the service
+        # module uses, so the usage dashboard finally sees the bar path. The path template is
+        # written out rather than interpolated per symbol — one counter per endpoint, not one
+        # per ticker, matching how every other UW endpoint is tallied.
+        self._note("call", "/api/stock/{symbol}/ohlc/{candle}")
+        try:
+            with httpx.Client(timeout=30) as client:
+                r = client.get(
+                    f"{_BASE}/api/stock/{symbol}/ohlc/{candle}",
+                    headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+                    params={"limit": _MAX_LIMIT},
+                )
+                if r.status_code == 429:
+                    # Feed the EXISTING gauge, which this path never reached before, and step
+                    # aside so the next 141 symbols in this burst do not each pay for the same
+                    # refusal.
+                    self._note("fail", "rate_limited")
+                    self._arm_cooldown()
+                    try:
+                        from ..services.unusual_whales import _incr_rate_limit_counter
+                        _incr_rate_limit_counter()
+                    except Exception:
+                        pass
+                    raise RuntimeError("Unusual Whales rate limit exceeded")
+                if r.status_code >= 400:
+                    # Classified by STATUS, because "the other 10,342 failures" could not be
+                    # explained from logs that no longer existed. A counter survives a rebuild.
+                    self._note("fail", f"http_{r.status_code}")
+                r.raise_for_status()
+                rows = (r.json() or {}).get("data") or []
+        except httpx.TimeoutException:
+            self._note("fail", "timeout")
+            raise
+        except httpx.HTTPStatusError:
+            raise  # already classified by status above
+        except RuntimeError:
+            raise  # rate-limit, already counted
+        except Exception as exc:
+            self._note("fail", f"other_{type(exc).__name__}")
+            raise
 
         if not rows:
             return OHLCV(symbol, timeframe, pd.DataFrame(columns=["ts"]))

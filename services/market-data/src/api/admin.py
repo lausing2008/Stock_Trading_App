@@ -1828,6 +1828,31 @@ def uw_usage(_: User = Depends(get_admin_user)):
         for ep, n in sorted(today_by_endpoint.items(), key=lambda kv: kv[1], reverse=True)
     ]
 
+    # AUD-UW-ADAPTER-UNINSTRUMENTED (2026-10-02): WHY THE FAILURES, NOT JUST HOW MANY.
+    #
+    # `rate_limit_events_48h` above counts one failure mode. Asked "what's the failure from UW
+    # and why", the only honest answer was 13,131 ingest failures in 12 hours of which 2,789
+    # were confirmed 429s — and ~10,342 with no established cause, because the evidence lived
+    # in container logs that a rebuild had already erased.
+    #
+    # The adapter now classifies every failure into an hourly Redis counter, so the question is
+    # answerable from stored state rather than from logs that may not survive the day. Reported
+    # over a trailing 24 hours because the condition is bursty and a calendar-day figure hides
+    # a morning incident once the afternoon is quiet.
+    failures_24h: dict[str, int] = {}
+    try:
+        now_utc = _dt.datetime.now(_dt.timezone.utc)
+        for back in range(24):
+            bucket = (now_utc - _dt.timedelta(hours=back)).strftime("%Y%m%d%H")
+            for key in r.keys(f"stockai:metric:uw_adapter_failures:*:{bucket}"):
+                raw = r.get(key)
+                if not raw:
+                    continue
+                reason = key[len("stockai:metric:uw_adapter_failures:"):-len(f":{bucket}")]
+                failures_24h[reason] = failures_24h.get(reason, 0) + int(raw)
+    except Exception:
+        failures_24h = {}
+
     return {
         "as_of": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "assumed_daily_budget": _UW_ASSUMED_DAILY_BUDGET,
@@ -1836,6 +1861,14 @@ def uw_usage(_: User = Depends(get_admin_user)):
         "rate_limit_events_48h": rate_limit_48h,
         "breakdown": breakdown,
         "real_usage": real_usage,
+        # Bar-ingest failures by CAUSE. An empty dict means none recorded, which after a
+        # restart is genuinely different from "none happened" — the counters are hourly and
+        # expire after 49h, so a fresh container legitimately shows nothing for a while.
+        "adapter_failures_24h": [
+            {"reason": k, "count": v}
+            for k, v in sorted(failures_24h.items(), key=lambda kv: kv[1], reverse=True)
+        ],
+        "adapter_failures_24h_total": sum(failures_24h.values()),
     }
 
 

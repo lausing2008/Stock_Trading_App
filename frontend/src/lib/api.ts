@@ -3347,6 +3347,12 @@ export type UwUsageReport = {
   rate_limit_events_48h: number;
   breakdown: UwUsageBreakdownRow[];
   real_usage: UwRealUsageSnapshot | null;
+  /** AUD-UW-ADAPTER-UNINSTRUMENTED: bar-ingest failures by CAUSE over a trailing 24h.
+   *  `rate_limit_events_48h` above counts one failure mode; this says what the rest were.
+   *  An empty list after a restart means "none recorded yet", which is genuinely different
+   *  from "none happened" — the counters are hourly and expire after 49 hours. */
+  adapter_failures_24h: { reason: string; count: number }[];
+  adapter_failures_24h_total: number;
 };
 
 // SELFIMPROVE-PROMOTION-GATES-INCOMPLETE — see docs/DESIGN_MODEL_PROMOTION_GATES_2026-07-12.md

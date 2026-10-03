@@ -927,8 +927,42 @@ export default function AdminHealthPage() {
           so this shows request-volume headroom rather than a token/cost breakdown. Backed by
           Redis rolling counters (_incr_call_counter/_incr_rate_limit_counter), not a DB table. */}
       <div style={{ marginTop: '32px' }}>
+        {/* The header carries the error state so a problem is visible WITHOUT opening or
+            scrolling the panel. A dashboard that only shows trouble to someone already
+            looking for it is a dashboard that gets checked after the fact — which is exactly
+            how 13,131 ingest failures went unnoticed until someone asked why adding a stock
+            had stopped working. */}
         <div style={{ marginBottom: '12px' }}>
-          <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em', marginBottom: '4px' }}>UNUSUAL WHALES API USAGE</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+            <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>UNUSUAL WHALES API USAGE</div>
+            {(() => {
+              const errs = uwUsageData?.adapter_failures_24h_total ?? 0;
+              const rl = uwUsageData?.rate_limit_events_48h ?? 0;
+              if (!uwUsageData) return null;
+              if (errs === 0 && rl === 0) {
+                return (
+                  <span style={{ fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '999px', background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.3)', color: '#4ade80' }}>
+                    ● no errors
+                  </span>
+                );
+              }
+              const top = uwUsageData.adapter_failures_24h?.[0];
+              return (
+                <span
+                  title={[
+                    errs ? `${errs.toLocaleString()} bar-ingest failures in the last 24h` : '',
+                    top ? `largest cause: ${top.reason} (${top.count.toLocaleString()})` : '',
+                    rl ? `${rl.toLocaleString()} rate-limit events in 48h` : '',
+                    'Failures fall through to the next provider — data is not lost, but each one spends quota and delays the bar.',
+                  ].filter(Boolean).join('\n')}
+                  style={{ fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '999px', background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.4)', color: '#f87171', cursor: 'help' }}
+                >
+                  ▲ {errs > 0 ? `${errs.toLocaleString()} errors / 24h` : `${rl.toLocaleString()} rate-limited / 48h`}
+                  {top ? ` · ${top.reason}` : ''}
+                </span>
+              );
+            })()}
+          </div>
           <div style={{ fontSize: '11px', color: '#334155' }}>Rate-limited daily request budget, not billed per call — across all UW-backed features</div>
         </div>
 
@@ -1003,6 +1037,52 @@ export default function AdminHealthPage() {
                       ))}
                     </tbody>
                   </table>
+                </div>
+              )}
+            </div>
+
+            {/* AUD-UW-ADAPTER-UNINSTRUMENTED: bar-ingest failures BY CAUSE.
+                The "429s (48h)" figure above counts one failure mode. When this platform was
+                asked "what's the failure from UW and why", 13,131 ingest failures in 12 hours
+                were known but only 2,789 could be attributed — the rest lived in container
+                logs a rebuild had already erased. These counters are hourly and survive a
+                restart, so the question is answerable from stored state. */}
+            <div style={{ marginTop: '14px', padding: '14px 16px', borderRadius: '10px', background: '#0d1424', border: `1px solid ${(uwUsageData.adapter_failures_24h_total ?? 0) > 0 ? 'rgba(248,113,113,0.35)' : '#1e293b'}` }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '10px' }}>
+                <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', letterSpacing: '0.04em' }}>BAR-INGEST FAILURES BY CAUSE (24H)</div>
+                {(uwUsageData.adapter_failures_24h_total ?? 0) > 0 && (
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#f87171' }}>
+                    {uwUsageData.adapter_failures_24h_total.toLocaleString()} total
+                  </div>
+                )}
+              </div>
+              {(uwUsageData.adapter_failures_24h ?? []).length === 0 ? (
+                <div style={{ fontSize: '12px', color: '#334155' }}>
+                  None recorded in the last 24h. After a restart this is &quot;nothing recorded yet&quot;
+                  rather than &quot;nothing happened&quot; — the counters expire after 49 hours.
+                </div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', color: '#475569', fontWeight: 600, fontSize: '10px', letterSpacing: '0.03em' }}>Cause</th>
+                        <th style={{ textAlign: 'right', padding: '6px 8px', color: '#475569', fontWeight: 600, fontSize: '10px', letterSpacing: '0.03em' }}>Count</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {uwUsageData.adapter_failures_24h.map(row => (
+                        <tr key={row.reason} style={{ borderBottom: '1px solid #131b2e' }}>
+                          <td style={{ padding: '6px 8px', color: '#fca5a5', fontFamily: 'monospace' }}>{row.reason}</td>
+                          <td style={{ padding: '6px 8px', textAlign: 'right', color: '#fca5a5', fontFamily: 'monospace', fontWeight: 700 }}>{row.count.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div style={{ fontSize: '10px', color: '#334155', marginTop: '8px', lineHeight: 1.6 }}>
+                    A failure here is not lost data: the ingest falls through to the next provider.
+                    It costs a wasted request against the quota and delays the bar.
+                  </div>
                 </div>
               )}
             </div>
