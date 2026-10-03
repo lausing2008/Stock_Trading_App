@@ -864,6 +864,13 @@ async def backfill_post_earnings_returns(lookback_days: int = 45) -> dict:
                 EarningsEvent.report_date >= cutoff,
                 EarningsEvent.eps_actual.isnot(None),
                 EarningsEvent.post_earnings_return_1d.is_(None),
+                # A SUBSTITUTED PERIOD END IS NOT AN ANNOUNCEMENT DATE, and this calculation
+                # anchors its entire window on one. MU's fiscal Q4 ended 2026-08-31 and was
+                # announced 2026-09-30 — anchoring here would measure 28 Aug to 1 Sep and
+                # publish a pre-release move as the post-earnings reaction. Left NULL instead:
+                # a missing outcome is recoverable, a wrong one that looks computed is not.
+                (EarningsEvent.report_date_source.is_(None)
+                 | (EarningsEvent.report_date_source != "substituted_period_end")),
             )
         ).all()
         checked = len(rows)

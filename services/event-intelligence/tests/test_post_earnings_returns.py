@@ -105,6 +105,9 @@ class _FakeEventModel:
     report_date = _FakeColumn()
     eps_actual = _FakeColumn()
     post_earnings_return_1d = _FakeColumn()
+    #: The selection now excludes rows whose report_date is a SUBSTITUTED period end, because
+    #: this calculation anchors its entire window on that date.
+    report_date_source = _FakeColumn()
 
 
 class _FakeStockModel:

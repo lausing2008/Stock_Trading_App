@@ -30,17 +30,26 @@ def _resolve_stock(session, symbol: str):
     return session.execute(select(Stock).where(Stock.symbol == symbol)).scalars().first()
 
 
-def _stored_report_dates(session, stock_id: int) -> list[date]:
-    """Every stored announcement date for this issuer, ascending.
+def _stored_events(session, stock_id: int) -> list[dict]:
+    """Every stored event for this issuer with the facts the comparison needs.
 
-    Separated from the comparison so the rule being tested — which provider periods have no
-    stored event — can be exercised without a database or an ORM entity. The comparison is the
-    part with the defect potential; the query is not.
+    CARRIES WHETHER A RESULT IS RECORDED, not just a date. A date range alone let a PENDING
+    placeholder — an event row with no reported figures — mark a released provider result as
+    "present", so a quarter whose results nobody had could look covered because a scheduled
+    entry happened to sit in the window.
+
+    Separated from the comparison so the rule being tested can be exercised without a database
+    or an ORM entity. The comparison is the part with defect potential; the query is not.
     """
     EarningsEvent, _SL, _ST = _db()
-    return list(session.execute(
-        select(EarningsEvent.report_date).where(EarningsEvent.stock_id == stock_id)
-        .order_by(EarningsEvent.report_date.asc())).scalars().all())
+    rows = session.execute(
+        select(EarningsEvent.id, EarningsEvent.report_date, EarningsEvent.eps_actual,
+               EarningsEvent.revenue_actual, EarningsEvent.report_date_source)
+        .where(EarningsEvent.stock_id == stock_id)
+        .order_by(EarningsEvent.report_date.asc())).all()
+    return [{"id": r[0], "report_date": r[1],
+             "has_result": r[2] is not None or r[3] is not None,
+             "report_date_source": r[4]} for r in rows]
 
 
 def _db():
@@ -60,6 +69,10 @@ def _db():
 PRESENT = "present"                       # already stored as an event
 ABSENT = "absent"                         # upstream has it, the event table does not
 UNMAPPABLE = "unmappable"                 # returned, but no usable date could be derived
+PENDING_PLACEHOLDER = "pending_placeholder"   # an event row exists but records no result
+
+#: Written to `EarningsEvent.report_date_source` when the provider gave only a period end.
+SUBSTITUTED_PERIOD_END = "substituted_period_end"
 
 
 def _provider_rows(symbol: str) -> tuple[list[dict], str | None]:
@@ -113,7 +126,8 @@ def discover(symbol: str) -> dict:
         stock = _resolve_stock(s, sym)
         if stock is None:
             return {"symbol": sym, "error": f"{sym} is not in the universe"}
-        stored_dates = _stored_report_dates(s, stock.id)
+        stored = _stored_events(s, stock.id)
+        stored_dates = [e["report_date"] for e in stored]
 
         rows, error = _provider_rows(sym)
         if error:
@@ -136,13 +150,33 @@ def discover(symbol: str) -> dict:
             # event three months away — reporting a quarter that is genuinely missing as
             # present. The bound that fixes it needs no lag constant, only the fact that a row
             # carrying a reported EPS describes something that already happened.
-            candidates = stored_dates
-            if r.get("eps_actual") is not None:
-                candidates = [d for d in stored_dates if d <= today]
-            match = [d for d in candidates if pe <= d < upper]
-            if match:
+            released = r.get("eps_actual") is not None
+            candidates = [e for e in stored if pe <= e["report_date"] < upper]
+            if released:
+                # A released result cannot have been announced by an event that has not
+                # happened yet.
+                candidates = [e for e in candidates if e["report_date"] <= today]
+            in_window = candidates
+            # A RELEASED RESULT IS ONLY "PRESENT" IF A RESULT IS ACTUALLY RECORDED. An event row
+            # with no reported figures is a scheduled placeholder, and a date range alone let
+            # one of those mark a quarter covered that nobody holds the results for.
+            if released:
+                candidates = [e for e in candidates if e["has_result"]]
+            if candidates:
                 r["outcome"] = PRESENT
-                r["matched_report_date"] = match[0].isoformat()
+                r["matched_report_date"] = candidates[0]["report_date"].isoformat()
+                r["matched_event_id"] = candidates[0]["id"]
+                src = candidates[0].get("report_date_source")
+                if src == SUBSTITUTED_PERIOD_END:
+                    r["matched_date_is_substituted"] = True
+            elif in_window:
+                # A row exists in the window but records nothing. Distinct from absent, because
+                # the repair should UPDATE it rather than insert a second event for the quarter.
+                r["outcome"] = PENDING_PLACEHOLDER
+                r["matched_event_id"] = in_window[0]["id"]
+                r["matched_report_date"] = in_window[0]["report_date"].isoformat()
+                r["reason"] = ("an event row covers this period but records no reported result, "
+                               "so the quarter is scheduled rather than captured")
             else:
                 r["outcome"] = ABSENT
                 r["reason"] = ("the provider holds this period and no stored event falls "
@@ -154,6 +188,9 @@ def discover(symbol: str) -> dict:
             "rows_returned": len(rows),
             "stored_events": len(stored_dates),
             "present": sum(1 for r in rows if r.get("outcome") == PRESENT),
+            "pending_placeholder": [{k: (v.isoformat() if isinstance(v, date) else v)
+                                     for k, v in r.items()}
+                                    for r in rows if r.get("outcome") == PENDING_PLACEHOLDER],
             "absent": [{k: (v.isoformat() if isinstance(v, date) else v)
                         for k, v in r.items()} for r in absent],
             "unmappable": [r for r in rows if r.get("outcome") == UNMAPPABLE],
@@ -165,38 +202,75 @@ def discover(symbol: str) -> dict:
 
 
 def repair(symbol: str, *, commit: bool = False, actor: str = "discovery") -> dict:
-    """Write the absent events discovered above. PREVIEW unless `commit=True`.
+    """Record the absent results discovered above. PREVIEW unless `commit=True`.
 
-    WHAT THIS DELIBERATELY DOES NOT DO. It does not invent a report date: the provider gives a
-    PERIOD END, and the announcement date is a different fact. A repaired row therefore carries
-    the period end as its report date with that substitution recorded, so nothing downstream can
-    mistake it for a sourced announcement date. It does not touch frozen reports, does not send
-    anything, and does not fabricate figures the provider did not supply.
+    WHAT IT WRITES, AND WHAT IT REFUSES TO CLAIM. The provider supplies a PERIOD END; the
+    announcement date is a different fact, weeks later — MU's fiscal Q4 ended 2026-08-31 and was
+    announced 2026-09-30. So the period end goes in `period_end`, where it belongs, and
+    `report_date` carries it only as a STAND-IN with `report_date_source` recording that on the
+    row. The first version put the substitution warning in this function's return value, which
+    protects nobody: every consumer reads `report_date` as the announcement date, and the next
+    reader is a SQL query. The return-window calculation anchors on exactly that date, so an
+    unmarked substitution would have published pre-release prices as the post-earnings reaction.
+
+    NOTIFICATION REPLAY IS SUPPRESSED EXPLICITLY rather than left to window arithmetic. A
+    repaired row is stamped as already-notified so a historical result can never enter a
+    delivery path — "the window happens not to reach it" is a property of today's constants, not
+    a guarantee, and those constants change.
+
+    A PENDING PLACEHOLDER IS UPDATED, NOT DUPLICATED. An event row that covers the period but
+    records no result is the same quarter; inserting a second event for it would create exactly
+    the ambiguity discovery exists to remove.
     """
     found = discover(symbol)
     if found.get("error") or found.get("provider_error"):
         return found | {"committed": False}
 
     planned = [r for r in found["absent"] if r.get("eps_actual") is not None]
+    fill = [r for r in found.get("pending_placeholder", []) if r.get("eps_actual") is not None]
     skipped = [r for r in found["absent"] if r.get("eps_actual") is None]
     plan = {
         "symbol": found["symbol"],
-        "would_write": planned,
+        "would_insert": planned,
+        "would_fill_placeholder": fill,
         "skipped_no_actual": skipped,
         "skip_reason": ("no reported EPS, so this is a scheduled period rather than a released "
                         "result; the calendar sync owns those"),
-        "report_date_substitution": ("report_date is set to the provider's PERIOD END because no "
-                                     "announcement date is available; it is not a sourced "
-                                     "announcement date and must not be read as one"),
+        "report_date_substitution": (
+            "the provider gives a PERIOD END, not an announcement date. The period end is stored "
+            "in `period_end`; `report_date` carries it as a stand-in and `report_date_source` is "
+            "set to 'substituted_period_end' ON THE ROW, so the return calculation and every "
+            "other consumer can refuse to treat it as an announcement date."),
+        "notification_suppression": (
+            "repaired rows are stamped as already-notified, so a historical result cannot enter "
+            "any delivery path regardless of what the notification windows are set to."),
         "committed": False,
     }
-    if not commit or not planned:
+    if not commit or not (planned or fill):
         return plan
 
-    written, failed = [], []
     EarningsEvent, SessionLocal, _ST = _db()
+    inserted, filled, failed = [], [], []
+    now = datetime.utcnow()
     with SessionLocal() as s:
         stock = _resolve_stock(s, plan["symbol"])
+        for r in fill:
+            try:
+                row = s.get(EarningsEvent, r["matched_event_id"])
+                if row is None:
+                    continue
+                row.eps_actual = r.get("eps_actual")
+                if row.eps_estimate is None:
+                    row.eps_estimate = r.get("eps_estimate")
+                row.period_end = date.fromisoformat(r["period_end"])
+                row.fetched_at = now
+                row.impact_sent_at = row.impact_sent_at or now
+                s.commit()
+                filled.append({"event_id": row.id, "period_end": r["period_end"]})
+            except Exception as exc:                    # noqa: BLE001
+                s.rollback()
+                failed.append({"period_end": r["period_end"],
+                               "error": f"{type(exc).__name__}: {exc}"[:200]})
         for r in planned:
             pe = date.fromisoformat(r["period_end"])
             try:
@@ -208,19 +282,23 @@ def repair(symbol: str, *, commit: bool = False, actor: str = "discovery") -> di
                 if exists is not None:
                     continue
                 s.add(EarningsEvent(
-                    stock_id=stock.id, report_date=pe,
+                    stock_id=stock.id,
+                    report_date=pe,                     # a STAND-IN, marked as such below
+                    period_end=pe,                      # where this date actually belongs
+                    report_date_source=SUBSTITUTED_PERIOD_END,
                     eps_estimate=r.get("eps_estimate"), eps_actual=r.get("eps_actual"),
-                    # The inferred fiscal columns are deliberately left NULL rather than
-                    # computed from the period month — that label is wrong for every
-                    # non-calendar fiscal year and writing it would add a known-bad fact.
+                    # The inferred fiscal columns are left NULL rather than computed from the
+                    # period month — that label is wrong for every non-calendar fiscal year.
                     period=None, fiscal_year=None, fiscal_quarter=None,
-                    fetched_at=datetime.utcnow()))
+                    # Suppression, stated rather than inferred from a window.
+                    impact_sent_at=now,
+                    fetched_at=now))
                 s.commit()
-                written.append(r["period_end"])
+                inserted.append(r["period_end"])
             except Exception as exc:                    # noqa: BLE001
                 s.rollback()
                 failed.append({"period_end": r["period_end"],
                                "error": f"{type(exc).__name__}: {exc}"[:200]})
     log.info("earnings.discovery_repair", symbol=plan["symbol"], actor=actor,
-             written=len(written), failed=len(failed))
-    return plan | {"committed": True, "written": written, "failed": failed}
+             inserted=len(inserted), filled=len(filled), failed=len(failed))
+    return plan | {"committed": True, "inserted": inserted, "filled": filled, "failed": failed}

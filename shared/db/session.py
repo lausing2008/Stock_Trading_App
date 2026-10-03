@@ -151,6 +151,19 @@ def _run_migrations() -> None:  # noqa: C901
         # today's constraint without this. COALESCE because NULL user_id means public context
         # and NULLs are distinct in a PostgreSQL unique index, which would leave the public
         # reports — the common case — entirely unprotected.
+        # ── Earnings: period end and report-date provenance ────────────────────
+        # create_all() only creates MISSING tables, so an existing table never gains a new
+        # column without this. Required before any consumer can tell an announcement date from
+        # a substituted period end — and the return calculation anchors on exactly that.
+        conn.execute(text(
+            "ALTER TABLE earnings_events ADD COLUMN IF NOT EXISTS period_end DATE"))
+        conn.execute(text(
+            "ALTER TABLE earnings_events ADD COLUMN IF NOT EXISTS "
+            "report_date_source VARCHAR(32)"))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_earnings_report_date_source "
+            "ON earnings_events (report_date_source)"))
+
         conn.execute(text("""
             CREATE UNIQUE INDEX IF NOT EXISTS ux_intel_subject_type_owner_version
             ON intelligence_reports (subject_key, report_type, coalesce(user_id, -1), version)

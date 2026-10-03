@@ -81,7 +81,11 @@ def _patch_db(monkeypatch, dates):
     monkeypatch.setattr(D, "_db", lambda: (_entity(), _Session, _entity()))
     monkeypatch.setattr(D, "_resolve_stock",
                         lambda session, symbol: type("S", (), {"id": 1, "symbol": symbol})())
-    monkeypatch.setattr(D, "_stored_report_dates", lambda session, stock_id: list(dates))
+    monkeypatch.setattr(D, "_stored_events", lambda session, stock_id: [
+        d if isinstance(d, dict)
+        else {"id": 1000 + i, "report_date": d, "has_result": True,
+              "report_date_source": None}
+        for i, d in enumerate(dates)])
 
 
 @pytest.fixture
@@ -139,7 +143,7 @@ def test_repair_previews_by_default_and_writes_nothing(monkeypatch):
     monkeypatch.setattr(D, "_provider_rows", lambda sym: ([dict(r) for r in MU_PROVIDER], None))
     plan = D.repair("MU")
     assert plan["committed"] is False
-    assert [r["period_end"] for r in plan["would_write"]] == ["2026-09-03"]
+    assert [r["period_end"] for r in plan["would_insert"]] == ["2026-09-03"]
 
 
 def test_repair_skips_a_scheduled_period_with_no_reported_result(monkeypatch):
@@ -149,7 +153,7 @@ def test_repair_skips_a_scheduled_period_with_no_reported_result(monkeypatch):
                         lambda sym: ([{"period_end": date(2026, 12, 1), "eps_actual": None,
                                        "eps_estimate": 1.0, "outcome": None, "reason": None}], None))
     plan = D.repair("Z")
-    assert plan["would_write"] == []
+    assert plan["would_insert"] == []
     assert len(plan["skipped_no_actual"]) == 1
 
 
@@ -159,7 +163,9 @@ def test_the_plan_states_that_the_report_date_is_substituted(monkeypatch):
     _patch_db(monkeypatch, MU_STORED)
     monkeypatch.setattr(D, "_provider_rows", lambda sym: ([dict(r) for r in MU_PROVIDER], None))
     plan = D.repair("MU")
-    assert "not a sourced announcement date" in plan["report_date_substitution"]
+    assert "not an announcement date" in plan["report_date_substitution"]
+    assert "report_date_source" in plan["report_date_substitution"], \
+        "the plan must point at the marker that is persisted, not just warn in prose"
 
 
 def test_an_unusable_provider_index_is_reported_not_dropped(monkeypatch):
@@ -232,3 +238,83 @@ def test_a_scheduled_period_may_still_match_a_future_event(monkeypatch):
     out = D.discover("MU")
     assert out["absent"] == []
     assert out["present"] == 1
+
+
+
+# ── The semantic round: period end is not an announcement date ─────────────────────────────
+
+def test_the_substitution_is_persisted_on_the_row_not_only_in_the_plan(monkeypatch):
+    """The warning existed only in the returned plan. Every consumer reads `report_date` as the
+    announcement date, and the next reader is a SQL query — so the marker has to be on the row.
+    Without it the return window anchors on a period end and publishes pre-release prices as
+    the post-earnings reaction."""
+    import ast
+    src = (_SRC / "services" / "earnings_discovery.py").read_text()
+    tree = ast.parse(src)
+    fn = next(n for n in tree.walk(tree) if False) if False else None
+    body = src[src.index("def repair("):]
+    assert "report_date_source=SUBSTITUTED_PERIOD_END" in body, \
+        "the stand-in must be marked on the stored row"
+    assert "period_end=pe" in body, "the period end must be stored where it belongs"
+
+
+def test_the_repair_suppresses_notification_replay_explicitly(monkeypatch):
+    """"The window happens not to reach it" is a property of today's constants, not a
+    guarantee."""
+    body = (_SRC / "services" / "earnings_discovery.py").read_text()
+    body = body[body.index("def repair("):]
+    assert "impact_sent_at=now" in body
+
+
+def test_a_pending_placeholder_does_not_mark_a_result_present(monkeypatch):
+    """A date range alone let a scheduled row with no figures mark a released quarter covered."""
+    _patch_db(monkeypatch, [{"id": 7, "report_date": date(2026, 9, 20), "has_result": False,
+                             "report_date_source": None}])
+    monkeypatch.setattr(D, "_provider_rows",
+                        lambda sym: ([{"period_end": date(2026, 9, 3), "eps_actual": 33.42,
+                                       "eps_estimate": 31.82, "outcome": None,
+                                       "reason": None}], None))
+    out = D.discover("MU")
+    assert out["present"] == 0
+    assert len(out["pending_placeholder"]) == 1
+    assert out["pending_placeholder"][0]["matched_event_id"] == 7
+
+
+def test_a_placeholder_is_filled_rather_than_duplicated(monkeypatch):
+    """Inserting a second event for the same quarter creates exactly the ambiguity discovery
+    exists to remove."""
+    _patch_db(monkeypatch, [{"id": 7, "report_date": date(2026, 9, 20), "has_result": False,
+                             "report_date_source": None}])
+    monkeypatch.setattr(D, "_provider_rows",
+                        lambda sym: ([{"period_end": date(2026, 9, 3), "eps_actual": 33.42,
+                                       "eps_estimate": 31.82, "outcome": None,
+                                       "reason": None}], None))
+    plan = D.repair("MU")
+    assert plan["would_insert"] == []
+    assert [r["matched_event_id"] for r in plan["would_fill_placeholder"]] == [7]
+
+
+def test_an_event_recording_a_result_still_counts_as_present(monkeypatch):
+    _patch_db(monkeypatch, [{"id": 9, "report_date": date(2026, 9, 20), "has_result": True,
+                             "report_date_source": None}])
+    monkeypatch.setattr(D, "_provider_rows",
+                        lambda sym: ([{"period_end": date(2026, 9, 3), "eps_actual": 33.42,
+                                       "eps_estimate": 31.82, "outcome": None,
+                                       "reason": None}], None))
+    out = D.discover("MU")
+    assert out["present"] == 1
+    assert out["absent"] == []
+    assert out["pending_placeholder"] == []
+
+
+def test_the_return_backfill_refuses_a_substituted_anchor():
+    """The calculation anchors its whole window on `report_date`. A substituted period end
+    would measure the wrong weeks and publish them as the reaction."""
+    import ast
+    src = (_SRC / "services" / "earnings.py").read_text()
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+              and n.name == "backfill_post_earnings_returns")
+    body = ast.get_source_segment(src, fn)
+    assert "report_date_source" in body, "the anchor's provenance must be part of the selection"
+    assert "substituted_period_end" in body

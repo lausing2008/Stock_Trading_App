@@ -1547,6 +1547,24 @@ class EarningsEvent(Base):
     earnings_strength_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     post_earnings_return_1d: Mapped[float | None] = mapped_column(Float, nullable=True)
     post_earnings_return_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    #: THE FISCAL PERIOD END — a different fact from the announcement date, and the two are
+    #: weeks apart. MU's fiscal Q4 ended 2026-08-31 and was announced 2026-09-30. Storing only
+    #: one date forced a choice between losing the period and mislabelling the announcement.
+    period_end: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+
+    #: WHERE `report_date` CAME FROM. Every consumer reads it as the ANNOUNCEMENT date — alerts,
+    #: event selection and the post-earnings return window all anchor on it — so a row whose
+    #: date is a stand-in has to say so ON THE ROW. A caveat living only in the return value of
+    #: the function that wrote it protects nobody, because the next reader is a SQL query.
+    #:
+    #: NULL                   — legacy; provenance was never recorded
+    #: provider_announcement  — the provider supplied an announcement date
+    #: substituted_period_end — only a PERIOD END was available and it stands in. NOT an
+    #:                          announcement date: a return window anchored here measures
+    #:                          pre-release prices and would publish them as the reaction.
+    report_date_source: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+
     fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     # T249-EARNINGS-LLM-IMPACT: LLM-generated impact read, mirroring EconomicEvent's
     # reaction_text/reaction_generated_at/reaction_sent_at + sectors_helped/sectors_hurt exactly
