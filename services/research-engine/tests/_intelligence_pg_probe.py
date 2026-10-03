@@ -1129,6 +1129,59 @@ def t35_the_ledger_records_each_stage_separately():
     }
 
 
+def t36_a_substituted_date_is_never_presented_as_an_announcement():
+    """A repaired row carries the fiscal PERIOD END standing in for an announcement date. The
+    report must not render it as the announcement, must not age the event from it, and must not
+    call the missing reaction "not yet matured" — nothing is maturing."""
+    reset(with_event=True, event_in_future=False, actuals=True)
+    with Session() as s:
+        ev = s.query(EarningsEvent).one()
+        ev.period_end = ev.report_date
+        ev.report_date_source = "substituted_period_end"
+        ev.post_earnings_return_1d = None
+        s.commit()
+        f, _, _, _ = G.post_earnings(s, symbol="TESTCO", now=NOW)
+    ident, cov, r1 = f["event_identity"], f["event_coverage"], f["return_1d"]
+    R["t36_a_substituted_date_is_never_presented_as_an_announcement"] = {
+        "identity_state": ident.state.value,
+        "announcement_date": (ident.value or {}).get("announcement_date"),
+        "stored_date_is": (ident.value or {}).get("stored_date_is"),
+        "coverage_state": cov.state.value,
+        "coverage_reason": (cov.reason or "")[:90],
+        "reaction_state": r1.state.value,
+        "reaction_reason": (r1.reason or "")[:90],
+        "passes": (ident.state is FieldState.UNKNOWN
+                   and (ident.value or {}).get("announcement_date") is None
+                   and "PERIOD END" in ((ident.value or {}).get("stored_date_is") or "")
+                   # the age must not be computed from a period end
+                   and cov.state is FieldState.UNKNOWN
+                   and "cannot be measured" in (cov.reason or "")
+                   # and the reaction is "cannot determine", not "not yet matured"
+                   and r1.state is FieldState.UNKNOWN
+                   and "cannot determine" in (r1.reason or "")
+                   and "not an outcome awaiting maturity" in (r1.reason or "")),
+    }
+
+
+def t37_a_verified_date_still_reports_normally():
+    """The constraint applies ONLY to substituted rows; an ordinary event is unaffected."""
+    reset(with_event=True, event_in_future=False, actuals=True)
+    with Session() as s:
+        ev = s.query(EarningsEvent).one()
+        ev.post_earnings_return_1d = 0.034
+        s.commit()
+        f, _, _, _ = G.post_earnings(s, symbol="TESTCO", now=NOW)
+    ident, r1 = f["event_identity"], f["return_1d"]
+    R["t37_a_verified_date_still_reports_normally"] = {
+        "identity_state": ident.state.value,
+        "announcement_date": (ident.value or {}).get("announcement_date"),
+        "reaction_state": r1.state.value,
+        "passes": (ident.state is FieldState.OK
+                   and (ident.value or {}).get("announcement_date") is not None
+                   and r1.state is FieldState.OK),
+    }
+
+
 def main():
     for fn in (t1_all_four_types_generate, t2_identical_inputs_do_not_duplicate,
                t3_changed_inputs_create_a_linked_version,
@@ -1163,7 +1216,9 @@ def main():
                t32_a_corrected_release_at_the_same_url_is_storable,
                t33_a_different_period_is_never_confirmed,
                t34_a_long_announcement_lag_is_not_evidence_of_absence,
-               t35_the_ledger_records_each_stage_separately):
+               t35_the_ledger_records_each_stage_separately,
+               t36_a_substituted_date_is_never_presented_as_an_announcement,
+               t37_a_verified_date_still_reports_normally):
         fn()
     R["_meta"] = {"engine": ENGINE.dialect.name,
                   "server": str(ENGINE.url).split("@")[-1],

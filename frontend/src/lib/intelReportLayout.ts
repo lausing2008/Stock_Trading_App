@@ -59,13 +59,30 @@ export function fieldLabel(key: string, f?: LayoutField): string {
   return key.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
 }
 
-/** Technical values a screen should never print raw. */
+const STAGE_WORDS: Record<string, string> = {
+  // "First flash" on a months-old event is actively misleading.
+  FIRST_FLASH: 'Initial figures — no cross-source reconciliation performed',
+  RECONCILED_RESULTS: 'Reconciled against a second source',
+  CALL_UPDATE: 'Updated after the earnings call',
+  SESSION_REVIEW: 'Reviewed after the following session',
+};
+
+/** Technical values a screen should never print raw.
+ *
+ *  READS BOTH SHAPES ON PURPOSE. This compared against a bare string while the generator had
+ *  moved to `{stage, note}`, so the humaniser silently never fired and FIRST_FLASH kept
+ *  rendering raw — a mismatch invisible to both sides' own tests, since each was self-consistent.
+ */
 export function humaniseValue(key: string, v: unknown): string | null {
-  if (key === 'stage' && v === 'FIRST_FLASH') {
-    // "First flash" on a months-old event is actively misleading.
-    return 'Initial figures — no cross-source reconciliation performed';
-  }
-  return null;
+  if (key !== 'stage') return null;
+  const code = typeof v === 'string'
+    ? v
+    : (v && typeof v === 'object' ? (v as { stage?: unknown }).stage : undefined);
+  if (typeof code !== 'string') return null;
+  const words = STAGE_WORDS[code];
+  if (!words) return null;
+  const note = v && typeof v === 'object' ? (v as { note?: unknown }).note : undefined;
+  return typeof note === 'string' ? `${words}. ${note}` : words;
 }
 
 export type Group = { section: Section; timeframe: TimeFrame; keys: string[] };

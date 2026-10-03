@@ -371,10 +371,31 @@ def reaction_window_dates(session, stock_id: int, report_date) -> dict:
     return out
 
 
+def announcement_date_is_verified(event: EarningsEvent) -> bool:
+    """Whether `report_date` is an announcement date at all.
+
+    `substituted_period_end` means it is the fiscal PERIOD END standing in — weeks earlier than
+    the release. Anything anchored on it (a reaction window, an event age, a "not yet matured"
+    verdict) is measuring the wrong dates, so the honest answer downstream is "cannot determine",
+    not a number.
+    """
+    return getattr(event, "report_date_source", None) != "substituted_period_end"
+
+
 def post_event_reaction(event: EarningsEvent, *, window_dates: dict | None = None
                         ) -> dict[str, Field]:
     wd = window_dates or {}
     out = {}
+    if not announcement_date_is_verified(event):
+        # NOT "not yet matured" — that says the window is still running and an outcome is
+        # coming. Nothing is coming: there is no verified date to measure from, which is a
+        # different state and needs a different answer.
+        reason = (
+            "cannot determine: the announcement date is unverified. The stored date is the "
+            f"fiscal PERIOD END ({event.period_end or event.report_date}) standing in, and the "
+            "release followed it by an unknown interval — so no reaction window can be placed. "
+            "This is not an outcome awaiting maturity.")
+        return {"return_1d": unknown(reason), "return_5d": unknown(reason)}
     for label, value, key, idx in (("return_1d", event.post_earnings_return_1d, "endpoint_1d", 1),
                                    ("return_5d", event.post_earnings_return_5d, "endpoint_5d", 5)):
         if value is None:

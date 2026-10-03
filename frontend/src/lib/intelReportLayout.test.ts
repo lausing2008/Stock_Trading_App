@@ -126,3 +126,27 @@ describe('readable labels', () => {
     expect(humaniseValue('eps_actual', 25.11)).toBeNull();
   });
 });
+
+describe('stage rendering reads the shape the generator actually sends', () => {
+  it('humanises the object form, which is what the report emits', () => {
+    const out = humaniseValue('stage', {
+      stage: 'FIRST_FLASH',
+      note: 'no cross-source reconciliation is performed by this report',
+    });
+    expect(out).toBeTruthy();
+    expect(out).not.toContain('FIRST_FLASH');
+    expect(out).toContain('Initial figures');
+  });
+
+  it('still humanises the bare string form', () => {
+    expect(humaniseValue('stage', 'FIRST_FLASH')).toContain('Initial figures');
+  });
+
+  it('leaves an unknown stage code alone rather than inventing words for it', () => {
+    expect(humaniseValue('stage', { stage: 'SOMETHING_NEW' })).toBeNull();
+  });
+
+  it('ignores non-stage fields', () => {
+    expect(humaniseValue('eps_actual', { stage: 'FIRST_FLASH' })).toBeNull();
+  });
+});

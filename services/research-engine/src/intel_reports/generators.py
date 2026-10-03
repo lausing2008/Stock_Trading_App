@@ -412,10 +412,11 @@ def pre_earnings(session, *, symbol: str, now: datetime | None = None):
 
     _days_out = (event.report_date - now.date()).days
     fields["snapshot_stage"] = Field(
-        value={"sessions_before_release": _days_out,
+        value={"calendar_days_before_scheduled_release": _days_out,
                "stage": ("early_preparation" if _days_out > 10 else "immediate_pre_release"),
                "note": ("prices and structure here are an EARLY PREPARATION snapshot taken "
-                        f"{_days_out} days before the release — not the immediate pre-release "
+                        f"{_days_out} CALENDAR days before the scheduled release — not the "
+                        "immediate pre-release "
                         "reference. Later snapshots are captured as their own versions and this "
                         "one is preserved." if _days_out > 10 else
                         f"taken {_days_out} days before the release")},
@@ -537,10 +538,7 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
 
     fields: dict[str, Field] = {
         "issuer": observed({"symbol": stock.symbol, "name": stock.name}),
-        "event_identity": observed({"event_id": f"earnings_event:{event.id}",
-                                    "report_date": event.report_date.isoformat(),
-                                    "basis": "the most recent RELEASED event on file for this "
-                                             "issuer; see event_coverage"}),
+        "event_identity": _event_identity(event),
         "event_coverage": coverage_warning,
         "fiscal_period": A.fiscal_period(event),
         "stage": observed({"stage": stage.value,
@@ -703,6 +701,16 @@ def _event_coverage_warning(session, stock_id: int, event, now: datetime) -> Fie
     was useless, because nothing told the reader the quarter they wanted was missing rather than
     unremarkable. Silently substituting an older quarter is the failure; naming the gap is not.
     """
+    if not A.announcement_date_is_verified(event):
+        return Field(
+            value={"coverage_state": "coverage_unknown",
+                   "analysed_event_period_end": (event.period_end.isoformat()
+                                                 if event.period_end else None)},
+            state=FieldState.UNKNOWN,
+            reason=("the age of this event cannot be measured: its stored date is a substituted "
+                    "fiscal period end, not an announcement date, so neither its age nor any "
+                    "comparison against this issuer's reporting cadence is meaningful"),
+            statement=StatementClass.INTERPRETATION, label="Coverage of this event")
     age_days = (now.date() - event.report_date).days
     cadence, samples = _issuer_cadence_days(session, stock_id, event.report_date)
     upcoming = session.execute(
@@ -750,6 +758,34 @@ def _event_coverage_warning(session, stock_id: int, event, now: datetime) -> Fie
                 f"against the issuer's own calendar here, so the absence of a warning is not "
                 f"evidence that every release is on file."),
         statement=StatementClass.INTERPRETATION)
+
+
+def _event_identity(event) -> Field:
+    """Who and what, with the date presented as what it actually is.
+
+    A SUBSTITUTED PERIOD END IS NOT AN ANNOUNCEMENT DATE and must not be rendered as one, nor
+    used to compute how old the event is — "33 days old" measured from a period end is an age
+    for the wrong moment entirely.
+    """
+    verified = A.announcement_date_is_verified(event)
+    base = {"event_id": f"earnings_event:{event.id}",
+            "fiscal_period_end": event.period_end.isoformat() if event.period_end else None,
+            "basis": "the most recent RELEASED event on file for this issuer; see event_coverage"}
+    if verified:
+        return observed(base | {"announcement_date": event.report_date.isoformat()},
+                        label="Earnings event")
+    return Field(
+        value=base | {
+            "announcement_date": None,
+            "stored_date": event.report_date.isoformat(),
+            "stored_date_is": "the fiscal PERIOD END, standing in for an announcement date that "
+                              "is not on file",
+        },
+        state=FieldState.UNKNOWN,
+        reason=("the announcement date is unverified: this row carries a substituted period end, "
+                "so the event's date — and anything measured from it, including its age — "
+                "cannot be stated"),
+        statement=StatementClass.OBSERVED_FACT, label="Earnings event")
 
 
 def _frozen_expectations(pre_report) -> tuple[float | None, float | None]:

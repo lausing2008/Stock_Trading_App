@@ -426,3 +426,27 @@ def test_the_ledger_records_each_stage_separately(results):
     assert r["calendar_outcome"] == "ok", "the stages are judged on their own numbers"
     assert r["history_row_uses_history_count"]
     assert r["history_row_does_not_use_total"]
+
+
+# ── A substituted period end is not an announcement date ───────────────────────────────────
+
+def test_a_substituted_date_is_never_presented_as_an_announcement(results):
+    """A repaired row carries the fiscal PERIOD END standing in. The report must not render it
+    as the announcement date, must not age the event from it, and must not call the missing
+    reaction "not yet matured" — nothing is maturing, there is simply no date to measure from."""
+    r = _scenario(results, "t36_a_substituted_date_is_never_presented_as_an_announcement")
+    assert r["identity_state"] == "UNKNOWN"
+    assert r["announcement_date"] is None
+    assert "PERIOD END" in r["stored_date_is"]
+    assert r["coverage_state"] == "UNKNOWN"
+    assert "cannot be measured" in r["coverage_reason"]
+    assert r["reaction_state"] == "UNKNOWN"
+    assert "cannot determine" in r["reaction_reason"]
+
+
+def test_a_verified_date_still_reports_normally(results):
+    """The constraint applies only to substituted rows."""
+    r = _scenario(results, "t37_a_verified_date_still_reports_normally")
+    assert r["identity_state"] == "OK"
+    assert r["announcement_date"] is not None
+    assert r["reaction_state"] == "OK"
