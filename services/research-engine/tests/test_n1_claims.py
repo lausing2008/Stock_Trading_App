@@ -61,6 +61,14 @@ def _packet(fields=None, **kw):
     return build_packet(r, **kw)
 
 
+def _ev_packet(evidence):
+    r = SimpleNamespace(
+        id=12, version=1, subject_key="s", report_type="post_earnings", contract_version=3,
+        policy_version="3", cutoff_at=datetime(2026, 10, 4), generated_at=datetime(2026, 10, 4),
+        payload={"fields": _fields(), "evidence": evidence})
+    return build_packet(r)
+
+
 # ============================================================ N1-R01 metric/unit identity
 
 def test_n1r01_the_eps_value_cannot_be_published_as_revenue():
@@ -180,6 +188,8 @@ def test_n1r03_phrasing_cannot_create_a_comparison_the_evidence_does_not_support
 def test_n1r03_an_attribution_elsewhere_cannot_license_a_causal_claim_here():
     """The review's bypass: a safe phrase anywhere disarmed the guard for the whole draft."""
     p = _packet()
+    p = _ev_packet({"call:1": {"value": {"speaker": "management",
+                                         "statement": "demand improved"}}})
     out = narrate([
         Claim(kind=ClaimKind.ATTRIBUTED_INTERPRETATION, attributed_to="management",
               source_evidence_id="call:1", comment="demand improved"),
@@ -189,12 +199,17 @@ def test_n1r03_an_attribution_elsewhere_cannot_license_a_causal_claim_here():
     assert not out.accepted
     bad = [v for v in out.verdicts if not v.accepted]
     assert len(bad) == 1, "only the offending claim is at fault"
-    assert any("does not scope to this claim" in r for r in bad[0].reasons)
+    # Doubly refused now: the causal wording does not scope here, AND a factual claim carries
+    # no free prose at all, so the bypass has no surface left.
+    joined = " ".join(bad[0].reasons)
+    assert "does not scope to this claim" in joined
+    assert "carries no free comment" in joined
     assert out.text == DET
 
 
 def test_n1r03_an_attributed_interpretation_needs_a_named_source_that_resolves():
-    p = _packet()
+    p = _ev_packet({"call:1": {"value": {"speaker": "management",
+                                         "statement": "demand improved through the quarter"}}})
     assert not check_claim(Claim(kind=ClaimKind.ATTRIBUTED_INTERPRETATION,
                                  comment="demand improved"), p).accepted
     assert not check_claim(Claim(kind=ClaimKind.ATTRIBUTED_INTERPRETATION,
@@ -317,3 +332,138 @@ def test_n1r04_detachment_holds_for_a_leaf_the_freezer_has_no_rule_for():
     assert p.fields["revenue_actual"]["value"]["tags"] == {"audited"}, \
         "the packet must not see a mutation made through the report"
     assert p.verify()
+
+
+# ================================================ structured-claims follow-up findings
+
+def test_f1_an_estimate_cannot_be_published_as_a_reported_figure():
+    """It is correctly identified, correctly typed and entirely comparable — and the issuer
+    never reported it. A quantity's ROLE is a separate fact from what it measures."""
+    p = _packet()
+    out = narrate([Claim(kind=ClaimKind.REPORTED_FIGURE,
+                         quantity_ids=("eps_expectation",))], p, deterministic=DET)
+    assert not out.accepted and out.text == DET
+    assert any("EXPECTATION, not a reported result" in r
+               for v in out.verdicts for r in v.reasons)
+
+
+def test_f1_guidance_cannot_be_published_as_a_reported_figure_either():
+    p = _packet()
+    v = check_claim(Claim(kind=ClaimKind.REPORTED_FIGURE,
+                          quantity_ids=("guidance_current.guidance_q1_revenue",)), p)
+    assert not v.accepted
+    assert any("GUIDANCE, not a reported result" in r for r in v.reasons)
+
+
+def test_f1_an_actual_cannot_be_published_as_guidance():
+    p = _packet()
+    v = check_claim(Claim(kind=ClaimKind.GUIDANCE_LEVEL, quantity_ids=("revenue_actual",)), p)
+    assert not v.accepted
+    assert any("ACTUAL, not guidance" in r for r in v.reasons)
+
+
+def test_f2_a_factual_claim_carries_no_free_comment_at_all():
+    """"Revenue was fifty billion dollars" needs no digits to contradict the $54.23B rendered
+    immediately before it. Arbitrary prose is outside the deterministic guarantee."""
+    p = _packet()
+    out = narrate([Claim(kind=ClaimKind.REPORTED_FIGURE, quantity_ids=("revenue_actual",),
+                         comment="Revenue was fifty billion dollars.")], p, deterministic=DET)
+    assert not out.accepted and out.text == DET
+    assert any("carries no free comment" in r for v in out.verdicts for r in v.reasons)
+
+
+def test_f2_the_same_claim_without_a_comment_is_accepted_and_renders_only_our_text():
+    p = _packet()
+    out = narrate([Claim(kind=ClaimKind.REPORTED_FIGURE,
+                         quantity_ids=("revenue_actual",))], p, deterministic=DET)
+    assert out.accepted
+    assert out.text == "Reported revenue $54.23B (GAAP, fiscal Q4 2026)."
+
+
+def test_f2_every_factual_kind_refuses_a_comment():
+    p = _packet()
+    for kind, qids in ((ClaimKind.COMPARISON, ("eps_actual", "eps_expectation")),
+                       (ClaimKind.GUIDANCE_LEVEL,
+                        ("guidance_current.guidance_q1_revenue",)),
+                       (ClaimKind.PRICE_REACTION, ()),
+                       (ClaimKind.PERIOD_IDENTITY, ())):
+        v = check_claim(Claim(kind=kind, quantity_ids=qids, comment="and so it goes"), p)
+        assert any("carries no free comment" in r for r in v.reasons), kind
+
+
+def test_f3_an_attribution_needs_a_recorded_statement_not_just_a_resolvable_document():
+    """The probe: a chief-executive quotation citing a record containing no statement."""
+    p = _ev_packet({"doc:1": {"source": "sec.gov", "value": {"type": "press_release"}}})
+    out = narrate([Claim(kind=ClaimKind.ATTRIBUTED_INTERPRETATION,
+                         attributed_to="Chief executive", source_evidence_id="doc:1",
+                         comment="Demand caused the rally")], p, deterministic=DET)
+    assert not out.accepted and out.text == DET
+    joined = " ".join(r for v in out.verdicts for r in v.reasons)
+    assert "records no statement" in joined
+    assert "records no speaker" in joined
+
+
+def test_f3_the_speaker_must_match_the_record():
+    p = _ev_packet({"call:1": {"value": {"speaker": "Chief financial officer",
+                                         "statement": "Demand improved through the quarter."}}})
+    v = check_claim(Claim(kind=ClaimKind.ATTRIBUTED_INTERPRETATION,
+                          attributed_to="Chief executive", source_evidence_id="call:1",
+                          comment="Demand improved through the quarter."), p)
+    assert not v.accepted
+    assert any("while the record names" in r for r in v.reasons)
+
+
+def test_f3_a_paraphrase_that_adds_a_claim_is_refused():
+    """An attribution must quote what was said, not turn it into a new assertion — otherwise
+    it is the platform's own causal claim wearing someone else's name."""
+    p = _ev_packet({"call:1": {"value": {"speaker": "Chief executive",
+                                         "statement": "Demand improved through the quarter."}}})
+    v = check_claim(Claim(kind=ClaimKind.ATTRIBUTED_INTERPRETATION,
+                          attributed_to="Chief executive", source_evidence_id="call:1",
+                          comment="Demand caused the share rally"), p)
+    assert not v.accepted
+    assert any("not contained in the recorded statement" in r for r in v.reasons)
+
+
+def test_f3_a_genuine_quotation_is_accepted_and_marked_as_reported_speech():
+    p = _ev_packet({"call:1": {"value": {"speaker": "Chief executive",
+                                         "statement": "Demand improved through the quarter."}}})
+    out = narrate([Claim(kind=ClaimKind.ATTRIBUTED_INTERPRETATION,
+                         attributed_to="Chief executive", source_evidence_id="call:1",
+                         comment="Demand improved")], p, deterministic=DET)
+    assert out.accepted, [r for v in out.verdicts for r in v.reasons]
+    assert "stated:" in out.text
+    assert "not a finding of this report" in out.text
+
+
+def test_f4_a_set_leaf_is_frozen_not_merely_detached():
+    """The earlier test proved DETACHMENT and was read as proving immutability."""
+    fields = _fields()
+    fields["revenue_actual"]["value"]["tags"] = {"audited"}
+    r = SimpleNamespace(
+        id=12, version=1, subject_key="s", report_type="post_earnings", contract_version=3,
+        policy_version="3", cutoff_at=datetime(2026, 10, 4), generated_at=datetime(2026, 10, 4),
+        payload={"fields": fields, "evidence": {}})
+    p = build_packet(r)
+    tags = p.fields["revenue_actual"]["value"]["tags"]
+    assert isinstance(tags, frozenset)
+    try:
+        tags.add("MUTATED")
+        raise AssertionError("a frozen packet must not accept a mutation")
+    except AttributeError:
+        pass
+    assert p.verify()
+
+
+def test_f4_a_leaf_with_no_freezing_rule_is_refused_rather_than_passed_through():
+    class Weird:
+        pass
+    fields = _fields()
+    fields["revenue_actual"]["value"]["odd"] = Weird()
+    r = SimpleNamespace(
+        id=12, version=1, subject_key="s", report_type="post_earnings", contract_version=3,
+        policy_version="3", cutoff_at=datetime(2026, 10, 4), generated_at=datetime(2026, 10, 4),
+        payload={"fields": fields, "evidence": {}})
+    import pytest
+    with pytest.raises(TypeError, match="cannot freeze Weird"):
+        build_packet(r)

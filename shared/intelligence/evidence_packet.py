@@ -143,6 +143,10 @@ class EvidencePacket:
         return f"{claim.value} is not a recognised claim kind"
 
 
+#: Leaf types that are already immutable and need no rule.
+_IMMUTABLE_LEAVES = (str, bytes, int, float, bool, complex, type(None))
+
+
 def deep_freeze(obj):
     """A structure that cannot be edited after the fact, at any depth.
 
@@ -159,7 +163,19 @@ def deep_freeze(obj):
         return MappingProxyType({k: deep_freeze(v) for k, v in obj.items()})
     if isinstance(obj, (list, tuple)):
         return tuple(deep_freeze(x) for x in obj)
-    return obj
+    if isinstance(obj, (set, frozenset)):
+        return frozenset(deep_freeze(x) for x in obj)
+    if isinstance(obj, _IMMUTABLE_LEAVES):
+        return obj
+    # REFUSE RATHER THAN PASS THROUGH. A type with no freezing rule used to be returned as-is,
+    # so a `set` leaf landed in the packet detached but still mutable — the earlier test proved
+    # detachment and was read as proving immutability. Anything unsupported now stops the
+    # packet being built, because a packet that is immutable except where it is not is worse
+    # than one that is honestly neither.
+    raise TypeError(
+        f"cannot freeze {type(obj).__name__} in an evidence packet. Supported leaves are "
+        f"{', '.join(t.__name__ for t in _IMMUTABLE_LEAVES)}, plus mappings, sequences and "
+        f"sets. Add an explicit freezing rule rather than letting it through unfrozen.")
 
 
 def thaw(obj):
@@ -168,6 +184,8 @@ def thaw(obj):
         return {k: thaw(v) for k, v in obj.items()}
     if isinstance(obj, tuple):
         return [thaw(x) for x in obj]
+    if isinstance(obj, frozenset):
+        return sorted(thaw(x) for x in obj)
     return obj
 
 

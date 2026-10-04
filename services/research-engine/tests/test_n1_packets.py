@@ -221,14 +221,13 @@ def test_a_conflicting_field_does_not_license_a_clean_assertion():
                            "period": "fiscal Q4 2026",
                            "provider_value": 54000000000.0,
                            "conflict": "the provider and the issuer differ"}))))
-    settled = check_claim(_c(Kind.REPORTED_FIGURE, "This is confirmed by all sources.",
-                             quantity_ids=("revenue_actual",)), p)
-    assert not settled.accepted
-    assert any("overstates" in r for r in settled.reasons)
-
-    honest = check_claim(_c(Kind.REPORTED_FIGURE, "The issuer and the provider differ here.",
-                            quantity_ids=("revenue_actual",)), p)
-    assert honest.accepted, honest.reasons
+    # There is no prose to overstate it with any more, and the disagreement is rendered BY US
+    # rather than depending on a narrator choosing to mention it.
+    out = narrate([_c(Kind.REPORTED_FIGURE, quantity_ids=("revenue_actual",))], p,
+                  deterministic=DET)
+    assert out.accepted
+    assert "Sources disagree" in out.text
+    assert "the provider and the issuer differ" in out.text
 
 
 def test_a_revised_report_produces_a_different_packet_and_the_old_one_still_resolves():

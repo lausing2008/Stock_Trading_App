@@ -170,6 +170,49 @@ left all 42 tests green, because `deep_freeze` rebuilds dicts and lists and so d
 anyway — the copy only matters for a leaf type the freezer has no rule for. The detachment test
 was therefore not load-bearing. It now uses a `set` leaf and fails when the copy is removed.
 
+## Structured-claims follow-up: three more accepted outputs, and a test that proved the wrong thing
+
+`docs/audits/2026-10-04-n1-structured-claims-followup.md` probed the *new* `narrate()` interface
+and found three outputs it still accepted. All three reproduced; all three are closed. The
+extended [recheck](../audits/evidence/2026-10-04-n1-remediation-recheck.py) now refuses all
+seven probes across both rounds.
+
+**F1 — an estimate published as a reported result.** `"Reported EPS $31.82"` was accepted using
+the *expectation*, not the $33.42 actual. Identity and comparability were both satisfied: it is
+correctly typed as EPS, correctly carries units, basis and period, and is entirely comparable.
+What it is not is something the issuer reported. **A quantity's ROLE is a separate fact from
+what it measures**, and roles are now declared per claim kind — `reported_figure` requires an
+`actual`, `guidance_level` requires `guidance`, and each refusal names the role it found.
+
+**F2 — a contradictory comment appended to a correct rendering.** The claim rendered
+`$54.23B` correctly and then appended "Revenue was fifty billion dollars." No digits, so the
+figure check could not see it. The remedy is not a better scanner: **arbitrary prose is outside
+the deterministic guarantee**, so a factual claim now carries no free comment at all. Its
+sentence is wholly ours. Commentary exists only as an attributed interpretation bound to a
+recorded statement.
+
+One consequence worth stating: the conflict warning used to depend on a narrator choosing not to
+write "confirmed". With prose gone, a recorded source disagreement is now **rendered by us**,
+appended to the figure deterministically — the guarantee moved to where it can be kept.
+
+**F3 — an attribution with nothing behind it.** `"Chief executive: Demand caused the rally"` cited
+an evidence id that resolved to a press release containing no statement and no speaker. A
+resolvable citation is not a citation *of something said*. An attribution now requires the record
+to carry both a speaker and a passage, the claimed speaker to match the recorded one, and the
+attributed text to be contained in the recorded statement — a paraphrase that adds a claim is
+refused, because otherwise it is the platform's own causal assertion wearing someone else's
+name. Accepted attributions render as marked reported speech: *"X stated: '…' (reported
+statement, not a finding of this report; source …)"*.
+
+**F4 — the set-leaf test proved detachment, not immutability.** Correct, and a sharper reading
+than mine. `deep_freeze` had no rule for `set`, so it passed the leaf through: detached from the
+report by the copy, and still freely mutable inside the packet. Sets now freeze to `frozenset`,
+and **any type with no freezing rule raises** rather than being passed through — a packet that
+is immutable except where it is not is worse than one that is honestly neither.
+
+Six guards, each sabotage-verified: role enforcement, the no-free-comment rule, speaker
+matching, passage containment, set freezing, and the refusal of unsupported types.
+
 ## What this does NOT do
 
 No model is called. No flag changes. The next milestone is accurate, useful **interpretation** of

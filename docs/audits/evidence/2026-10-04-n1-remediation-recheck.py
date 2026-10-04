@@ -33,6 +33,30 @@ def prose(text, kind=ClaimKind.REPORTED_FIGURE, **kw):
     return check_claim(Claim(kind=kind, quantity_ids=("revenue_actual",), comment=text, **kw),
                        p).accepted
 
+# ---- structured-claims follow-up probes -------------------------------------------
+ev = {"doc:1": {"source": "sec.gov", "value": {"type": "press_release"}}}
+r3 = SimpleNamespace(**{**r.__dict__, "payload": {"fields": fields, "evidence": ev}})
+p3 = build_packet(r3)
+print("F1 estimate published as actual        accepted =",
+      narrate([Claim(kind=ClaimKind.REPORTED_FIGURE, quantity_ids=("eps_expectation",))],
+              p3, deterministic=D).accepted)
+print("F2 contradictory comment appended      accepted =",
+      narrate([Claim(kind=ClaimKind.REPORTED_FIGURE, quantity_ids=("revenue_actual",),
+                     comment="Revenue was fifty billion dollars.")],
+              p3, deterministic=D).accepted)
+print("F3 attribution with no recorded quote  accepted =",
+      narrate([Claim(kind=ClaimKind.ATTRIBUTED_INTERPRETATION, attributed_to="Chief executive",
+                     source_evidence_id="doc:1", comment="Demand caused the rally")],
+              p3, deterministic=D).accepted)
+f4 = {k: (dict(v) if isinstance(v, dict) else v) for k, v in fields.items()}
+f4["revenue_actual"] = {**f4["revenue_actual"], "value": {**f4["revenue_actual"]["value"], "tags": {"audited"}}}
+r4 = SimpleNamespace(**{**r.__dict__, "payload": {"fields": f4, "evidence": {}}})
+p4 = build_packet(r4)
+tags = p4.fields["revenue_actual"]["value"]["tags"]
+print("F4 set leaf mutable                           =",
+      hasattr(tags, "add"), "| type =", type(tags).__name__)
+
+print()
 print("N1-R01a  'Revenue was $33.42 billion.'   accepted =", prose("Revenue was $33.42 billion."))
 print("N1-R01b  'Revenue was $54.23 million.'   accepted =", prose("Revenue was $54.23 million."))
 print("N1-R03a  'Profits surpassed analyst forecasts.' accepted =",

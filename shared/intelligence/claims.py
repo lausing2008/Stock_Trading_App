@@ -41,6 +41,23 @@ _GUIDANCE_CHANGE = ("raised", "raise", "lifted", "lowered", "cut", "maintained",
                     "upgraded", "downgraded", "increased its", "reduced its")
 
 
+#: WHICH ROLE A QUANTITY MUST PLAY for each claim kind. Identity and comparability were not
+#: enough: an EPS *estimate* is correctly identified, correctly typed and entirely comparable —
+#: and publishing it as "Reported EPS $31.82" states a number the company never reported. A
+#: figure's role is a separate fact from what it measures.
+_REQUIRED_ROLE = {
+    "reported_figure": ("actual",),
+    "guidance_level": ("guidance",),
+}
+
+#: Claim kinds whose text is produced ENTIRELY by us. They carry no free comment at all: an
+#: arbitrary sentence appended to a correctly rendered figure inherits none of the rendering's
+#: guarantees, and "Revenue was fifty billion dollars" needs no digits to contradict the
+#: $54.23B printed immediately before it.
+_NO_FREE_COMMENT = {"reported_figure", "comparison", "guidance_level", "guidance_change",
+                    "price_reaction", "period_identity"}
+
+
 @dataclass(frozen=True)
 class Claim:
     """One structured assertion. The narrator produces these; it does not produce sentences."""
@@ -158,13 +175,24 @@ def check_claim(c: Claim, packet: EvidencePacket) -> ClaimVerdict:
         else:
             qs.append(q)
 
+    # FREE PROSE IS OUTSIDE THE DETERMINISTIC GUARANTEE, so it is not allowed inside a claim
+    # whose text we generate. Checked before anything else, because it applies regardless of
+    # whether the rest of the claim is sound.
+    if c.comment and c.kind.value in _NO_FREE_COMMENT:
+        reasons.append(
+            f"a {c.kind.value} claim carries no free comment: its sentence is rendered from the "
+            f"packet, and appended prose inherits none of that guarantee. Commentary belongs in "
+            f"an attributed_interpretation bound to a recorded statement.")
+
     if c.kind is ClaimKind.REPORTED_FIGURE:
         if not qs:
             reasons.append("a reported figure must name at least one quantity")
         for q in qs:
-            if q.kind == "guidance":
-                reasons.append(f"{q.qid} is GUIDANCE, a forecast — it cannot be stated as a "
-                               f"reported result")
+            roles = _REQUIRED_ROLE["reported_figure"]
+            if q.kind not in roles:
+                reasons.append(
+                    f"{q.qid} is an {q.kind.upper()}, not a reported result. Publishing it as "
+                    f"one states a figure the issuer never reported.")
             if not q.identified:
                 reasons.append(f"{q.qid} is missing {', '.join(q.missing_identity())}")
 
@@ -182,8 +210,8 @@ def check_claim(c: Claim, packet: EvidencePacket) -> ClaimVerdict:
         if not qs:
             reasons.append("a guidance level must name a guidance quantity")
         for q in qs:
-            if q.kind != "guidance":
-                reasons.append(f"{q.qid} is not guidance")
+            if q.kind not in _REQUIRED_ROLE["guidance_level"]:
+                reasons.append(f"{q.qid} is an {q.kind.upper()}, not guidance")
 
     elif c.kind is ClaimKind.GUIDANCE_CHANGE:
         if not packet.allows(ClaimKind.GUIDANCE_CHANGE):
@@ -201,13 +229,11 @@ def check_claim(c: Claim, packet: EvidencePacket) -> ClaimVerdict:
         reasons.append(packet.reason(ClaimKind.CAUSAL))
 
     elif c.kind is ClaimKind.ATTRIBUTED_INTERPRETATION:
-        # Permitted, and ONLY as someone else's stated view with a resolvable record of it.
-        if not c.attributed_to:
-            reasons.append("an attributed interpretation must name who said it")
-        if not c.source_evidence_id:
-            reasons.append("an attributed interpretation must cite the record of the statement")
-        elif c.source_evidence_id not in packet.evidence:
-            reasons.append(f"{c.source_evidence_id} does not resolve in this packet")
+        # AN ATTRIBUTION IS A QUOTATION, NOT A LABEL. A resolvable evidence id was not enough:
+        # "Chief executive: Demand caused the rally" cited a record containing no statement and
+        # no speaker, so the attribution was decoration over the platform's own assertion —
+        # which is exactly the causal claim that is never eligible.
+        reasons.extend(_check_attribution(c, packet))
     else:
         reasons.append(f"unrecognised claim kind {c.kind}")
 
@@ -217,11 +243,74 @@ def check_claim(c: Claim, packet: EvidencePacket) -> ClaimVerdict:
                         rendered=_render_claim(c, qs, packet) if not reasons else "")
 
 
+#: Where a recorded statement keeps its speaker and its words.
+_SPEAKER_KEYS = ("speaker", "attributed_to", "author")
+_PASSAGE_KEYS = ("statement", "quote", "passage", "text")
+
+
+def _normalise(t: str) -> str:
+    return re.sub(r"[^a-z0-9 ]+", " ", t.lower()).strip()
+
+
+def _dig(record, keys):
+    """Look for a key at the top of an evidence record or inside its `value`."""
+    for src in (record, record.get("value") if isinstance(record, Mapping) else None):
+        if isinstance(src, Mapping):
+            for k in keys:
+                if src.get(k):
+                    return str(src[k])
+    return None
+
+
+def _check_attribution(c: Claim, packet: EvidencePacket) -> list[str]:
+    out: list[str] = []
+    if not c.attributed_to:
+        out.append("an attributed interpretation must name who said it")
+    if not c.comment:
+        out.append("an attributed interpretation must carry the statement being attributed")
+    if not c.source_evidence_id:
+        out.append("an attributed interpretation must cite the record of the statement")
+        return out
+    record = packet.evidence.get(c.source_evidence_id)
+    if record is None:
+        out.append(f"{c.source_evidence_id} does not resolve in this packet")
+        return out
+
+    speaker = _dig(record, _SPEAKER_KEYS)
+    passage = _dig(record, _PASSAGE_KEYS)
+    if not passage:
+        out.append(f"{c.source_evidence_id} records no statement "
+                   f"({'/'.join(_PASSAGE_KEYS)}), so there is nothing to attribute. A citation "
+                   f"that resolves to a document is not a citation of something said in it.")
+    if not speaker:
+        out.append(f"{c.source_evidence_id} records no speaker "
+                   f"({'/'.join(_SPEAKER_KEYS)})")
+    if speaker and c.attributed_to and _normalise(c.attributed_to) not in _normalise(speaker) \
+            and _normalise(speaker) not in _normalise(c.attributed_to):
+        out.append(f"the claim attributes this to {c.attributed_to!r} while the record names "
+                   f"{speaker!r}")
+    if passage and c.comment and _normalise(c.comment) not in _normalise(passage):
+        out.append("the attributed text is not contained in the recorded statement; an "
+                   "attribution must quote what was said, not paraphrase it into a new claim")
+    return out
+
+
 def _render_claim(c: Claim, qs, packet: EvidencePacket) -> str:
     """THE FACTUAL CLAUSE IS OURS, not the model's."""
     if c.kind is ClaimKind.REPORTED_FIGURE:
         body = "; ".join(f"{q.metric.replace('_', ' ')} {render(q)}" for q in qs)
         out = f"Reported {body}."
+        # A RECORDED DISAGREEMENT TRAVELS WITH THE FIGURE, deterministically. Previously this
+        # depended on a narrator choosing not to write "confirmed" — which is the wrong place
+        # for the guarantee to live now that prose is gone.
+        notes = []
+        for q in qs:
+            f = packet.fields.get(q.source_field) or {}
+            val = f.get("value")
+            if isinstance(val, Mapping) and val.get("conflict"):
+                notes.append(f"{q.metric.replace('_', ' ')}: {val['conflict']}")
+        if notes:
+            out += " Sources disagree — " + "; ".join(notes) + "."
     elif c.kind is ClaimKind.COMPARISON:
         a, b = qs
         out = (f"{a.metric.replace('_', ' ')} {render(a, with_identity=False)} against "
@@ -238,11 +327,13 @@ def _render_claim(c: Claim, qs, packet: EvidencePacket) -> str:
         f = (packet.fields.get("fiscal_period") or {}).get("value") or {}
         out = f"These are {f.get('label')} results (period ended {f.get('period_end')})."
     elif c.kind is ClaimKind.ATTRIBUTED_INTERPRETATION:
-        out = f"{c.attributed_to}: {c.comment}"
-        return out
+        # Marked as reported speech. The platform is not making this claim and says so.
+        return (f"{c.attributed_to} stated: \u201c{c.comment}\u201d "
+                f"(reported statement, not a finding of this report; "
+                f"source {c.source_evidence_id}).")
     else:
         out = ""
-    return f"{out} {c.comment}".strip() if c.comment else out
+    return out
 
 
 def narrate(claims, packet: EvidencePacket, *, deterministic: str) -> NarrationResult:
