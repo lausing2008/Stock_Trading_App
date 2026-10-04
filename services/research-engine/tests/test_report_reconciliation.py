@@ -156,3 +156,71 @@ def test_the_result_verdict_reflects_a_stated_basis_when_one_exists():
     v = _result_verdict({"accounting_basis": observed({"stated_by_issuer_per_metric": {}})})
     assert "issuer states a basis" in v
     assert "not a verified beat" in v, "the ESTIMATE's basis is still unknown"
+
+
+# ---------------------------------------------------------------- the opening assessment
+
+def test_the_opening_read_says_what_is_available_and_what_is_not_established():
+    from intel_reports.verdicts import post_earnings_assessment
+    f = _fields()
+    D.reconcile_into_metrics(f, FACTS, document_id=7)
+    f["official_figures"] = observed(FACTS)
+    f["pre_report_link"] = unavailable("no frozen pre-earnings report exists")
+    f["return_1d"] = observed({"pct": 3.03, "window": "2026-09-29 close to 2026-10-01 close"},
+                              units="pct")
+    a = post_earnings_assessment(f)
+    t = a["read_this_first"]
+    assert "Official results are available" in t
+    assert "Current guidance is available" in t
+    assert "UNVERIFIED" in t, "the comparison with pre-release expectations is not established"
+    assert "2026-09-29 close to 2026-10-01 close" in t
+    assert "does NOT isolate the announcement" in t
+    assert "pre report link" in a["not_established"]
+
+
+def test_the_opening_read_cannot_contradict_the_body_it_summarises():
+    """It is derived, not written: with nothing available it must not claim anything is."""
+    from intel_reports.verdicts import post_earnings_assessment
+    a = post_earnings_assessment({})
+    t = a["read_this_first"]
+    assert "No official issuer release" in t
+    assert "No company guidance" in t
+    assert "No matured share-price reaction" in t
+    assert a["available"] == []
+
+
+def test_the_outlook_opening_leads_with_price_structure_and_participation():
+    from intel_reports.verdicts import outlook_assessment
+    f = {
+        "price_as_of": observed({"close": 769.64, "ts": "2026-10-02T00:00:00"}),
+        "trend_structure": observed({"structure": "above both moving averages"}),
+        "breadth": observed({"participation_pct": 54.2}),
+        "volatility": unavailable("no volatility series is ingested"),
+        "execution_status": observed({"status": "information_only"}),
+    }
+    t = outlook_assessment(f, subject="The US benchmark")["read_this_first"]
+    assert t.startswith("The US benchmark last closed at 769.64")
+    assert "above both moving averages" in t
+    assert "54.2% of covered symbols" in t
+    assert "volatility" in t, "missing inputs are NAMED, not counted"
+    assert "information_only" not in t, "the disclaimer is not the headline"
+
+
+# ---------------------------------------------------------------- completeness vs quality
+
+def test_coverage_counts_completeness_separately_from_provenance_and_conflicts():
+    from intelligence.report_contract import coverage
+    f = {
+        "cited": observed(1, evidence_ids=["issuer_document:7"]),
+        "uncited": observed(2),
+        "disagreeing": observed({"value": 3, "conflict": "provider and issuer differ"},
+                                evidence_ids=["issuer_document:7"]),
+        "basis_unknown": observed({"estimate_basis": "UNKNOWN"}),
+        "missing": unavailable("nothing on file"),
+    }
+    c = coverage(f)
+    assert c["ok"] == 4 and c["total"] == 5, "completeness"
+    assert c["sourced"] == 2, "a resolved field need not be a citable one"
+    assert c["conflicts"] == 1, "a resolved field is not a settled one"
+    assert c["comparability_unverified"] == 1
+    assert "COMPLETENESS only" in c["note"]

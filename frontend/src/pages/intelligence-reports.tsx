@@ -134,9 +134,27 @@ function Coverage({ r }: { r: IntelReport }) {
   const ok = r.coverage?.ok ?? 0;
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
-      <span style={{ fontSize: '12px', color: '#94a3b8' }}>
-        {ok} of {total} fields resolved
+      {/* COMPLETENESS IS ONE AXIS. A single rising number reads as quality improving, so the
+          other three are shown beside it and never summed into it. */}
+      <span style={{ fontSize: '12px', color: '#94a3b8' }}
+            title={r.coverage?.note ?? undefined}>
+        {ok} of {total} fields resolved <span style={{ color: '#64748b' }}>(completeness)</span>
       </span>
+      {typeof r.coverage?.sourced === 'number' && (
+        <span style={{ fontSize: '11px', color: '#64748b' }}>
+          · {r.coverage.sourced} cite evidence
+        </span>
+      )}
+      {!!r.coverage?.comparability_unverified && (
+        <span style={{ fontSize: '11px', color: '#fcd34d' }}>
+          · {r.coverage.comparability_unverified} comparability unverified
+        </span>
+      )}
+      {!!r.coverage?.conflicts && (
+        <span style={{ fontSize: '11px', color: '#fda4af' }}>
+          · {r.coverage.conflicts} with a recorded source conflict
+        </span>
+      )}
       {Object.entries(by).filter(([k]) => k !== 'OK').map(([k, n]) => {
         const st = STATE_STYLE[k] ?? STATE_STYLE.UNKNOWN;
         return (
@@ -391,30 +409,36 @@ export default function IntelligenceReportsPage() {
         {/* A CROSS-SUBJECT correction. Louder than the version banner on purpose: a later
             VERSION refines the same event, whereas this says the report in front of you is
             about the wrong event entirely. */}
-        {report && report.corrected_by && (
+        {report && report.corrected_by && (() => {
+          const coverage = report.corrected_by.kind === 'coverage';
+          const tone = coverage
+            ? { bg: 'rgba(251,191,36,0.10)', bd: 'rgba(251,191,36,0.40)', fg: '#fde68a',
+                btnBg: 'rgba(251,191,36,0.18)', btnFg: '#fcd34d' }
+            : { bg: 'rgba(244,63,94,0.10)', bd: 'rgba(244,63,94,0.40)', fg: '#fecdd3',
+                btnBg: 'rgba(244,63,94,0.18)', btnFg: '#fda4af' };
+          return (
           <div style={{ padding: '13px 16px', borderRadius: '10px', marginBottom: '12px',
-                        background: 'rgba(244,63,94,0.10)',
-                        border: '1px solid rgba(244,63,94,0.40)', color: '#fecdd3',
+                        background: tone.bg, border: `1px solid ${tone.bd}`, color: tone.fg,
                         fontSize: '13px', lineHeight: 1.55 }}>
-            <strong>This report describes a different event than the one now understood to be
-            current.</strong>{' '}
+            <strong>{report.corrected_by.note
+              ?? 'A later report supersedes this one in scope.'}</strong>{' '}
             {report.corrected_by.correction?.reason}
-            {' '}Its contents are preserved exactly as issued and have not been edited.
             <button onClick={() => openVersion(report.corrected_by!.report_id)} style={{
               marginLeft: '8px', padding: '3px 9px', borderRadius: '6px', cursor: 'pointer',
-              fontSize: '12px', background: 'rgba(244,63,94,0.18)', color: '#fda4af',
-              border: '1px solid rgba(244,63,94,0.45)' }}>
-              Open the corrected report #{report.corrected_by.report_id}
+              fontSize: '12px', background: tone.btnBg, color: tone.btnFg,
+              border: `1px solid ${tone.bd}` }}>
+              {coverage ? 'Open the later report' : 'Open the corrected report'} #{report.corrected_by.report_id}
             </button>
             {report.corrected_by.correction?.actor && (
-              <div style={{ marginTop: '6px', fontSize: '11px', color: '#fda4af' }}>
+              <div style={{ marginTop: '6px', fontSize: '11px', color: tone.btnFg }}>
                 Recorded by {report.corrected_by.correction.actor}
                 {report.corrected_by.correction.recorded_at
                   ? ` on ${report.corrected_by.correction.recorded_at.slice(0, 10)}` : ''}
               </div>
             )}
           </div>
-        )}
+          );
+        })()}
 
         {report && report.contract_is_current === false && report.contract_note && (
           <div style={{ padding: '12px 15px', borderRadius: '10px', marginBottom: '12px',
@@ -455,16 +479,29 @@ export default function IntelligenceReportsPage() {
                   {report.supersedes_id ? ` · supersedes report #${report.supersedes_id}` : ''}</span>
                 {report.created === false && (
                   <span style={{ fontSize: '11px', color: '#818cf8' }}>
-                    inputs unchanged — existing report reused
+                    inputs unchanged — existing snapshot reused
                   </span>
                 )}
               </div>
+              {/* FOUR DIFFERENT TIMES, NOT ONE. A reused snapshot shows the time it was
+                  GENERATED, which a reader reads as "when I asked" — over a weekend those are
+                  days apart, and the page looked stale when it was simply unchanged. */}
               <div style={{ fontSize: '12px', color: '#64748b', display: 'flex',
-                            flexWrap: 'wrap', gap: '4px 18px', marginBottom: '10px' }}>
-                <span>Generated {report.generated_at}</span>
+                            flexWrap: 'wrap', gap: '4px 18px', marginBottom: '6px' }}>
+                <span>Report generated {report.generated_at}</span>
+                {report.latest_input_session && (
+                  <span>Latest underlying session {report.latest_input_session}</span>
+                )}
+                {report.checked_at && <span>Last checked {report.checked_at}</span>}
                 <span>Information available through {report.cutoff_at}</span>
                 <span>Report contract v{report.contract_version} · generation policy {report.policy_version}</span>
               </div>
+              {report.reuse_note && (
+                <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '10px',
+                              maxWidth: '820px', lineHeight: 1.5 }}>
+                  Result: {report.reuse_note}.{report.freshness_note ? ` ${report.freshness_note}` : ''}
+                </div>
+              )}
               <Coverage r={report} />
             </div>
 

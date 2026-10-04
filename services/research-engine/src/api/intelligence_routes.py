@@ -72,9 +72,14 @@ def _forward_links(session, r: IntelligenceReport) -> dict:
             "generated_at": (newer.generated_at.isoformat()
                              if newer is not None and newer.generated_at else None),
             "correction": getattr(r, "correction", None),
-            "note": "this snapshot describes a different event than the one now understood to "
-                    "be current. Its contents are preserved exactly as issued and are NOT "
-                    "edited; the corrected report is linked above.",
+            # A COVERAGE correction is not a retraction. June's results really were reported;
+            # calling that "corrected" would quietly retract accurate history. Only the claim
+            # to be the latest available results was superseded.
+            "kind": (getattr(r, "correction", None) or {}).get("kind", "wrong_event"),
+            "note": (getattr(r, "correction", None) or {}).get("headline",
+                     "this snapshot describes a different event than the one now understood "
+                     "to be current.") + " Its contents are preserved exactly as issued and "
+                    "are NOT edited; the later report is linked above.",
         }
 
     if not out["contract_is_current"]:
@@ -175,7 +180,20 @@ def generate(req: GenerateRequest, _: str = Depends(get_current_username)):
             baseline = (session.get(IntelligenceReport, report.supersedes_id)
                         if report.supersedes_id else None)
         body["changes_since_previous"] = S.diff(baseline, report)
+        # WHAT A DATE ON THE PAGE MEANS. A reused snapshot shows its GENERATION time, which a
+        # reader naturally reads as "when I asked". Over a weekend those differ by days. The
+        # four are reported separately rather than collapsed into one date.
         body["reused_existing"] = not created
+        body["checked_at"] = now.isoformat()
+        body["reuse_note"] = (
+            "no input changes since the stored snapshot; it was reused rather than rewritten"
+            if not created else "inputs changed; a new snapshot was written")
+        _price = (report.payload or {}).get("fields", {}).get("price_as_of") or {}
+        _pv = _price.get("value") if isinstance(_price, dict) else None
+        body["latest_input_session"] = (_pv or {}).get("ts") if isinstance(_pv, dict) else None
+        body["freshness_note"] = (
+            "this reports what the stored snapshot used. It does NOT establish that every "
+            "upstream source refreshed successfully — ingestion status is a separate check.")
         body.update(_forward_links(session, report))
         log.info("intel.generated", report_type=report.report_type, subject=report.subject_key,
                  version=report.version, created=created, status=report.status)

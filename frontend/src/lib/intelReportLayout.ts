@@ -25,7 +25,7 @@ export const SECTION_ORDER: Section[] = [
 ];
 
 export const SECTION_TITLE: Record<Section, string> = {
-  summary: 'Summary',
+  summary: 'Read this first',
   limitations: 'Analysis limitations',
   event: 'What this report is about',
   metrics: 'Key figures',
@@ -43,7 +43,10 @@ export const TIMEFRAME_TITLE: Record<TimeFrame, string> = {
   // is about this event and still carries its own availability warning.
   at_event: 'About this earnings event',
   historical: 'Previous periods',
-  current: 'Current market context — as of today, not at the event',
+  // NOT "as of today". A reused snapshot is dated when it was GENERATED, which over a weekend
+  // is days before the reader is looking at it — "as of today" then asserts a freshness the
+  // report does not have.
+  current: "Market context at this snapshot's cutoff — not at the event",
   timeless: 'Method and limits',
 };
 

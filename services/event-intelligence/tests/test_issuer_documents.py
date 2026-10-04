@@ -266,3 +266,11 @@ def test_a_preview_persists_nothing(monkeypatch):
     assert doc.association is None
     assert doc.event_id is None
     assert ev.report_date == date(2026, 8, 31)
+
+
+def test_a_release_that_does_not_cross_the_boundary_was_already_correct(monkeypatch):
+    """The claim stays precise: 16:05 ET is 20:05 UTC the SAME day. This conversion changes
+    nothing here, and saying it fixed every after-close release would overstate it."""
+    _patch(monkeypatch, _Doc(published_at=datetime(2026, 9, 30, 20, 5)), _Event())
+    d = M.associate_with_event(1, 42694, actor="t", rationale="r")["announcement_dating"]
+    assert d["utc_calendar_date"] == d["announcement_date"] == "2026-09-30"

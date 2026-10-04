@@ -1326,7 +1326,9 @@ export type IntelReport = {
   generated_at: string | null;
   cutoff_at: string | null;
   input_fingerprint: string;
-  coverage?: { by_state?: Record<string, number>; total?: number; ok?: number };
+  coverage?: { by_state?: Record<string, number>; total?: number; ok?: number;
+               sourced?: number; conflicts?: number; comparability_unverified?: number;
+               note?: string };
   payload?: { fields: Record<string, IntelField>; meta: Record<string, unknown> };
   created?: boolean;
   reused_existing?: boolean;
@@ -1334,11 +1336,17 @@ export type IntelReport = {
   /** Resolved forward, so a superseded snapshot can announce its own correction. */
   superseded_by?: { report_id: number; version: number; generated_at: string | null }[] | null;
   corrected_by_id?: number | null;
+  checked_at?: string | null;
+  latest_input_session?: string | null;
+  reuse_note?: string | null;
+  freshness_note?: string | null;
   corrected_by?: {
     report_id: number;
     subject_key?: string | null;
     generated_at?: string | null;
-    correction?: { actor?: string; reason?: string; recorded_at?: string } | null;
+    correction?: { actor?: string; reason?: string; recorded_at?: string;
+                   kind?: string; headline?: string } | null;
+    kind?: string;
     note?: string;
   } | null;
   contract_is_current?: boolean;

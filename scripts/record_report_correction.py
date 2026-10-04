@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
-"""Point a report that described the WRONG EVENT at the report that describes the right one.
+"""Point a superseded-in-scope report at the report that describes the current event.
+
+TWO KINDS, AND THE DIFFERENCE MATTERS.
+
+  --kind wrong-event  The report analysed the wrong event. Its conclusions are about something
+                      other than what it claimed to be about.
+
+  --kind coverage     The report's CONTENTS remain a valid historical record. What was wrong is
+                      only its implicit claim to be the LATEST available results — a later
+                      release existed, or has since been ingested. Micron's June quarter really
+                      did report those figures; nothing about them was replaced or corrected.
+                      Saying "this report was corrected" would be false, and would quietly
+                      retract accurate history.
+
+Both write a forward pointer. Neither edits the superseded payload.
 
 WHY THIS IS A SEPARATE, EXPLICIT ACT. `supersedes_id` links versions of one subject. When a
 report turns out to describe a different event entirely — MU report #11 presented the June
@@ -27,6 +41,10 @@ def main() -> int:
     ap.add_argument("--corrected-by", type=int, required=True)
     ap.add_argument("--actor", required=True)
     ap.add_argument("--reason", required=True)
+    ap.add_argument("--kind", choices=("wrong-event", "coverage"), required=True,
+                    help="wrong-event: the analysis was of the wrong event. "
+                         "coverage: the contents stand; only the claim to be the latest "
+                         "available results was superseded.")
     ap.add_argument("--commit", action="store_true")
     a = ap.parse_args()
 
@@ -46,7 +64,16 @@ def main() -> int:
         if newer.generated_at and stale.generated_at and newer.generated_at < stale.generated_at:
             print("the correcting report is older than the one it corrects"); return 2
 
+        kind = a.kind.replace("-", "_")
         plan = {
+            "kind": kind,
+            "headline": ("This report analysed a different event than the one now understood "
+                         "to be current."
+                         if kind == "wrong_event" else
+                         "A later release has since been ingested. The results below remain a "
+                         "valid record of their own period — they were not replaced or found "
+                         "to be wrong. What no longer holds is this report's standing as the "
+                         "latest available results."),
             "stale": {"id": stale.id, "subject_key": stale.subject_key,
                       "generated_at": str(stale.generated_at)},
             "corrected_by": {"id": newer.id, "subject_key": newer.subject_key,

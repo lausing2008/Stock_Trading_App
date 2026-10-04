@@ -287,14 +287,48 @@ def fields_fingerprint(fields: dict[str, "Field"], *, policy_version: str,
 
 
 def coverage(fields: dict[str, Field]) -> dict:
-    """Count the report's own field states, so 'partial' is measured rather than asserted."""
+    """Count the report's own field states, so 'partial' is measured rather than asserted.
+
+    COVERAGE MEASURES COMPLETENESS AND NOTHING ELSE. "19 of 28 resolved" says 19 fields have a
+    value; it says nothing about whether those values are accurate, whether they came from a
+    source that can be checked, whether they are comparable with what they are compared against,
+    or whether two sources disagreed. A single number that rises as fields fill in reads like
+    quality improving, which is why the three other axes are counted SEPARATELY here rather than
+    folded in:
+
+      `sourced`      — fields carrying at least one evidence id. A value with no citation may
+                       be perfectly correct and cannot be verified by a reader.
+      `conflicts`    — fields in CONFLICTING state, or carrying a recorded provider/issuer
+                       disagreement. These are resolved fields and they are NOT settled ones.
+      `comparability`— fields whose own value flags a basis or unit that could not be
+                       established. A surprise computed across an unverified GAAP/adjusted
+                       boundary counts as covered and is not a validated beat.
+
+    None of these is a quality score either. They are four separate counts because collapsing
+    them loses exactly the distinction a reader needs.
+    """
     counts: dict[str, int] = {}
+    sourced = conflicts = comparability = 0
     for f in fields.values():
         counts[f.state.value] = counts.get(f.state.value, 0) + 1
+        if f.evidence_ids:
+            sourced += 1
+        v = f.value if isinstance(f.value, dict) else {}
+        if f.state is FieldState.CONFLICTING or "conflict" in v:
+            conflicts += 1
+        if v.get("estimate_basis") == "UNKNOWN" or "comparability" in v:
+            comparability += 1
     return {
         "by_state": counts,
         "total": len(fields),
         "ok": counts.get(FieldState.OK.value, 0),
+        # Completeness is one axis. These are the others, deliberately not summed with it.
+        "sourced": sourced,
+        "conflicts": conflicts,
+        "comparability_unverified": comparability,
+        "note": "`ok`/`total` measures COMPLETENESS only — not accuracy, provenance or "
+                "comparability. The counts beside it track those separately and are not "
+                "combined into a score.",
     }
 
 

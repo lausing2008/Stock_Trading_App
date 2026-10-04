@@ -222,6 +222,35 @@ def market_outlook(session, *, market: str = "US", now: datetime | None = None):
     fields.update(_outlook_by_horizon(trend, fields.get("price_as_of", trend)))
     fields["scenarios"] = _scenarios(f"the {market} benchmark", trend)
 
+    fields["headline_assessment"] = interpreted(
+        V.outlook_assessment(fields, subject=f"The {market} benchmark"),
+        label="Read this first")
+    # READING ORDER. Without a map every field defaulted to metrics/current, so the page opened
+    # on whatever sorted first — the execution disclaimer — and the latest price, the observed
+    # structure and the participation a reader came for sat below it among unavailable inputs.
+    _retime(fields, {
+        "headline_assessment": (TimeFrame.CURRENT, Section.SUMMARY, "Read this first"),
+        "benchmark":         (TimeFrame.IDENTITY, Section.EVENT, "Benchmark"),
+        "price_as_of":       (TimeFrame.CURRENT, Section.METRICS, "Latest close"),
+        "trend_structure":   (TimeFrame.CURRENT, Section.METRICS, "Observed structure"),
+        "observed_daily_structure": (TimeFrame.CURRENT, Section.METRICS,
+                                     "Observed daily structure"),
+        "breadth":           (TimeFrame.CURRENT, Section.METRICS, "Participation"),
+        "sector_leadership": (TimeFrame.CURRENT, Section.METRICS, "Sector leadership"),
+        "return_1_bars":     (TimeFrame.CURRENT, Section.METRICS, "Return over 1 daily bar"),
+        "return_5_bars":     (TimeFrame.CURRENT, Section.METRICS, "Return over 5 daily bars"),
+        "return_20_bars":    (TimeFrame.CURRENT, Section.METRICS, "Return over 20 daily bars"),
+        "return_63_bars":    (TimeFrame.CURRENT, Section.METRICS, "Return over 63 daily bars"),
+        "scenarios":         (TimeFrame.TIMELESS, Section.SCENARIOS, "Conditional scenarios"),
+        "volatility":        (TimeFrame.CURRENT, Section.LIMITATIONS, "Volatility"),
+        "macro":             (TimeFrame.CURRENT, Section.LIMITATIONS, "Macro"),
+        "liquidity":         (TimeFrame.CURRENT, Section.LIMITATIONS, "Liquidity"),
+        "positioning":       (TimeFrame.CURRENT, Section.LIMITATIONS, "Positioning"),
+        "rates_credit_fx":   (TimeFrame.CURRENT, Section.LIMITATIONS, "Rates, credit, FX"),
+        "outlook_short":     (TimeFrame.TIMELESS, Section.LIMITATIONS, "Outlook, short horizon"),
+        "outlook_medium":    (TimeFrame.TIMELESS, Section.LIMITATIONS, "Outlook, medium horizon"),
+        "outlook_long":      (TimeFrame.TIMELESS, Section.LIMITATIONS, "Outlook, long horizon"),
+    })
     validate_evidence(fields, book)
     cov = coverage(fields)
     meta = {
@@ -291,6 +320,35 @@ def stock_outlook(session, *, symbol: str, now: datetime | None = None):
                        "not consult; a constructive report is not an order authorisation."},
         state=FieldState.OK, statement=StatementClass.INTERPRETATION)
 
+    fields["headline_assessment"] = interpreted(
+        V.outlook_assessment(fields, subject=stock.symbol), label="Read this first")
+    _retime(fields, {
+        "headline_assessment": (TimeFrame.CURRENT, Section.SUMMARY, "Read this first"),
+        "issuer":            (TimeFrame.IDENTITY, Section.EVENT, "Issuer"),
+        "next_catalyst":     (TimeFrame.IDENTITY, Section.EVENT, "Next catalyst"),
+        "price_as_of":       (TimeFrame.CURRENT, Section.METRICS, "Latest close"),
+        "trend_structure":   (TimeFrame.CURRENT, Section.METRICS, "Observed structure"),
+        "observed_daily_structure": (TimeFrame.CURRENT, Section.METRICS,
+                                     "Observed daily structure"),
+        "sector_context":    (TimeFrame.CURRENT, Section.METRICS, "Sector context"),
+        "return_1_bars":     (TimeFrame.CURRENT, Section.METRICS, "Return over 1 daily bar"),
+        "return_5_bars":     (TimeFrame.CURRENT, Section.METRICS, "Return over 5 daily bars"),
+        "return_20_bars":    (TimeFrame.CURRENT, Section.METRICS, "Return over 20 daily bars"),
+        "return_63_bars":    (TimeFrame.CURRENT, Section.METRICS, "Return over 63 daily bars"),
+        "signal_engine_assessment": (TimeFrame.CURRENT, Section.INTERPRETATION,
+                                     "Signal engine, as of today"),
+        "scenarios":         (TimeFrame.TIMELESS, Section.SCENARIOS, "Conditional scenarios"),
+        "company_condition": (TimeFrame.CURRENT, Section.LIMITATIONS, "Company condition"),
+        "estimate_revisions": (TimeFrame.CURRENT, Section.LIMITATIONS, "Estimate revisions"),
+        "valuation":         (TimeFrame.CURRENT, Section.LIMITATIONS, "Valuation"),
+        "options_positioning": (TimeFrame.CURRENT, Section.LIMITATIONS, "Options positioning"),
+        "news":              (TimeFrame.CURRENT, Section.LIMITATIONS, "News"),
+        "outlook_short":     (TimeFrame.TIMELESS, Section.LIMITATIONS, "Outlook, short horizon"),
+        "outlook_medium":    (TimeFrame.TIMELESS, Section.LIMITATIONS, "Outlook, medium horizon"),
+        "outlook_long":      (TimeFrame.TIMELESS, Section.LIMITATIONS, "Outlook, long horizon"),
+        # The disclaimer is real and it is not the headline. It led the first screen before.
+        "execution_status":  (TimeFrame.TIMELESS, Section.SOURCES, "Execution status"),
+    })
     validate_evidence(fields, book)
     cov = coverage(fields)
     return fields, book, {
@@ -602,6 +660,11 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
              "generated_at": pre_report.generated_at.isoformat()})
         fields["thesis_verdict"] = _verdict(pre_report, actuals, reaction, frozen_eps)
 
+    # THE OPENING READ, before any of the detail. Derived from the fields themselves, so it
+    # cannot drift from the body it summarises — the first thing a narrator would get wrong.
+    fields["headline_assessment"] = interpreted(
+        V.post_earnings_assessment(fields), label="Read this first")
+
     fields["three_verdicts"] = interpreted({
         "business_result_vs_expectations": V.result_verdict(fields),
         "forward_outlook": V.forward_verdict(fields),
@@ -621,6 +684,7 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
 
     _retime(fields, {
         # Identity — who and what.
+        "headline_assessment": (TimeFrame.AT_EVENT, Section.SUMMARY, "Read this first"),
         "issuer":            (TimeFrame.IDENTITY, Section.EVENT, "Company"),
         "event_identity":    (TimeFrame.IDENTITY, Section.EVENT, "Earnings event"),
         "event_coverage":    (TimeFrame.IDENTITY, Section.LIMITATIONS, "Coverage of this event"),
@@ -633,7 +697,8 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
         # AT THE EVENT — everything measured at or around the release itself.
         "eps_actual":        (TimeFrame.AT_EVENT, Section.METRICS, "EPS reported"),
         "eps_expectation":   (TimeFrame.AT_EVENT, Section.METRICS, "EPS expected"),
-        "eps_surprise_pct":  (TimeFrame.AT_EVENT, Section.METRICS, "EPS versus expectation"),
+        "eps_surprise_pct":  (TimeFrame.AT_EVENT, Section.METRICS,
+                              "EPS vs provider estimate — accounting comparability unverified"),
         # ABOUT the event, so it sits with the event's figures — but it was NOT available
         # beforehand, and the field's own value keeps saying so.
         "eps_estimate_revised_since": (TimeFrame.AT_EVENT, Section.SOURCES,
@@ -643,7 +708,8 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
         "revenue_actual":    (TimeFrame.AT_EVENT, Section.METRICS, "Revenue reported"),
         "revenue_expectation": (TimeFrame.AT_EVENT, Section.METRICS, "Revenue expected"),
         "revenue_surprise_pct": (TimeFrame.AT_EVENT, Section.METRICS,
-                                 "Revenue versus expectation"),
+                                 "Revenue vs provider estimate — accounting comparability "
+                                 "unverified"),
         "accounting_basis":  (TimeFrame.AT_EVENT, Section.LIMITATIONS, "Accounting basis"),
         "return_1d":         (TimeFrame.AT_EVENT, Section.METRICS,
                               "Share price, close-to-close across the release"),
