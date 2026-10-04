@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from db import EarningsEvent, Stock
 from . import adapters as A
+from . import interpretation as I
 from . import verdicts as V
 from . import documents as D
 from intelligence.report_contract import (
@@ -222,9 +223,18 @@ def market_outlook(session, *, market: str = "US", now: datetime | None = None):
     fields.update(_outlook_by_horizon(trend, fields.get("price_as_of", trend)))
     fields["scenarios"] = _scenarios(f"the {market} benchmark", trend)
 
-    fields["headline_assessment"] = interpreted(
-        V.outlook_assessment(fields, subject=f"The {market} benchmark"),
-        label="Read this first")
+    # DIRECTION NEEDS A COMPARISON. Participation is a level; "broadening" is a claim about
+    # change, so an earlier reading is taken and the assessment says UNKNOWN without one.
+    _prior = None
+    try:
+        _earlier = A.breadth(session, market, today, cutoff=now - timedelta(days=7))
+        if _earlier.state is FieldState.OK and isinstance(_earlier.value, dict):
+            _prior = _earlier.value.get("participation_pct")
+    except Exception:
+        _prior = None
+    fields["headline_assessment"] = I.outlook_assessment(
+        fields, subject=f"The {market} benchmark", report_type="market_outlook",
+        prior_participation=_prior)
     # READING ORDER. Without a map every field defaulted to metrics/current, so the page opened
     # on whatever sorted first — the execution disclaimer — and the latest price, the observed
     # structure and the participation a reader came for sat below it among unavailable inputs.
@@ -320,8 +330,8 @@ def stock_outlook(session, *, symbol: str, now: datetime | None = None):
                        "not consult; a constructive report is not an order authorisation."},
         state=FieldState.OK, statement=StatementClass.INTERPRETATION)
 
-    fields["headline_assessment"] = interpreted(
-        V.outlook_assessment(fields, subject=stock.symbol), label="Read this first")
+    fields["headline_assessment"] = I.outlook_assessment(
+        fields, subject=stock.symbol, report_type="stock_outlook")
     _retime(fields, {
         "headline_assessment": (TimeFrame.CURRENT, Section.SUMMARY, "Read this first"),
         "issuer":            (TimeFrame.IDENTITY, Section.EVENT, "Issuer"),
@@ -336,7 +346,7 @@ def stock_outlook(session, *, symbol: str, now: datetime | None = None):
         "return_20_bars":    (TimeFrame.CURRENT, Section.METRICS, "Return over 20 daily bars"),
         "return_63_bars":    (TimeFrame.CURRENT, Section.METRICS, "Return over 63 daily bars"),
         "signal_engine_assessment": (TimeFrame.CURRENT, Section.INTERPRETATION,
-                                     "Signal engine, as of today"),
+                                     "Signal engine, at this snapshot's cutoff"),
         "scenarios":         (TimeFrame.TIMELESS, Section.SCENARIOS, "Conditional scenarios"),
         "company_condition": (TimeFrame.CURRENT, Section.LIMITATIONS, "Company condition"),
         "estimate_revisions": (TimeFrame.CURRENT, Section.LIMITATIONS, "Estimate revisions"),
@@ -501,7 +511,7 @@ def pre_earnings(session, *, symbol: str, now: datetime | None = None):
         "trend_structure":   (TimeFrame.CURRENT, Section.METRICS, "Price structure now"),
         "observed_daily_structure": (TimeFrame.CURRENT, Section.METRICS, "Daily structure now"),
         "signal_engine_assessment": (TimeFrame.CURRENT, Section.INTERPRETATION,
-                                     "Signal engine, as of today"),
+                                     "Signal engine, at this snapshot's cutoff"),
         "scenarios":         (TimeFrame.TIMELESS, Section.SCENARIOS, "Conditional scenarios"),
         "management_questions": (TimeFrame.TIMELESS, Section.INTERPRETATION,
                                  "Questions for management"),
@@ -662,8 +672,8 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
 
     # THE OPENING READ, before any of the detail. Derived from the fields themselves, so it
     # cannot drift from the body it summarises — the first thing a narrator would get wrong.
-    fields["headline_assessment"] = interpreted(
-        V.post_earnings_assessment(fields), label="Read this first")
+    fields["headline_assessment"] = I.post_earnings_assessment(
+        fields, subject=stock.symbol)
 
     fields["three_verdicts"] = interpreted({
         "business_result_vs_expectations": V.result_verdict(fields),
@@ -716,7 +726,8 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
         "return_5d":         (TimeFrame.AT_EVENT, Section.METRICS,
                               "Share price, five sessions across the release"),
         "official_release":  (TimeFrame.AT_EVENT, Section.SOURCES, "Official release"),
-        "official_figures":  (TimeFrame.AT_EVENT, Section.METRICS, "Figures from the release"),
+        "official_figures":  (TimeFrame.AT_EVENT, Section.SOURCES,
+                              "All figures from the release (full extract)"),
         "guidance_current":  (TimeFrame.AT_EVENT, Section.METRICS,
                               "Guidance issued with these results"),
         "guidance_change":   (TimeFrame.AT_EVENT, Section.INTERPRETATION, "Guidance change"),
@@ -730,7 +741,7 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
         "trend_structure":   (TimeFrame.CURRENT, Section.METRICS, "Price structure now"),
         "observed_daily_structure": (TimeFrame.CURRENT, Section.METRICS, "Daily structure now"),
         "signal_engine_assessment": (TimeFrame.CURRENT, Section.INTERPRETATION,
-                                     "Signal engine, as of today"),
+                                     "Signal engine, at this snapshot's cutoff"),
         "options_reaction":  (TimeFrame.CURRENT, Section.LIMITATIONS, "Options evidence"),
     })
     validate_evidence(fields, book)

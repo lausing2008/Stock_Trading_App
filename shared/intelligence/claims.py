@@ -249,7 +249,13 @@ _PASSAGE_KEYS = ("statement", "quote", "passage", "text")
 
 
 def _normalise(t: str) -> str:
-    return re.sub(r"[^a-z0-9 ]+", " ", t.lower()).strip()
+    """Lowercase, strip punctuation, and COLLAPSE whitespace.
+
+    The collapse is load-bearing: a sentence-ending period becomes a space, so joining two
+    sentences produced one space where normalising the same two together produced two, and an
+    exact multi-sentence quotation compared unequal to itself.
+    """
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", t.lower())).strip()
 
 
 def _dig(record, keys):
@@ -289,10 +295,41 @@ def _check_attribution(c: Claim, packet: EvidencePacket) -> list[str]:
             and _normalise(speaker) not in _normalise(c.attributed_to):
         out.append(f"the claim attributes this to {c.attributed_to!r} while the record names "
                    f"{speaker!r}")
-    if passage and c.comment and _normalise(c.comment) not in _normalise(passage):
-        out.append("the attributed text is not contained in the recorded statement; an "
-                   "attribution must quote what was said, not paraphrase it into a new claim")
+    if passage and c.comment and not _is_whole_sentences_of(c.comment, passage):
+        out.append(
+            "the attributed text is not a complete sentence (or run of consecutive sentences) "
+            "from the recorded statement. CONTAINMENT IS NOT FIDELITY: 'improve through the "
+            "quarter' is a substring of 'Demand did not improve through the quarter' and means "
+            "the opposite of it. Quote whole statements so negation and qualification travel "
+            "with the words.")
     return out
+
+
+def _sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[.!?])\s+|\n+", text.strip())
+    return [p for p in (x.strip() for x in parts) if p]
+
+
+def _is_whole_sentences_of(quote: str, passage: str) -> bool:
+    """True only when the quote is one or more CONSECUTIVE whole sentences of the passage.
+
+    A substring test cannot preserve meaning. Dropping a leading negation or a trailing
+    qualification reverses a statement while every word in it remains verbatim, so the unit of
+    quotation is the sentence, not the character range.
+    """
+    want = _normalise(quote)
+    if not want:
+        return False
+    sents = [_normalise(x) for x in _sentences(passage)]
+    for i in range(len(sents)):
+        run = ""
+        for j in range(i, len(sents)):
+            run = f"{run} {sents[j]}".strip()
+            if run == want:
+                return True
+            if len(run) > len(want):
+                break
+    return False
 
 
 def _render_claim(c: Claim, qs, packet: EvidencePacket) -> str:

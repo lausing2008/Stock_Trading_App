@@ -128,6 +128,101 @@ function FieldValue({ f }: { f: IntelField }) {
   </div>;
 }
 
+type AssessmentValue = {
+  assessment?: string; horizon?: string; counterargument?: string;
+  why_it_matters?: { finding?: string; supports?: string; contradicts?: string;
+                     invalidated_by?: string }[];
+  watch_next?: { watch?: string; trigger?: string; would_change?: string }[];
+  what_limits_this?: string[]; other_unavailable_inputs?: number;
+};
+
+/** Assessment, then why, then the case against, then what to watch.
+ *
+ *  The first screen used to be a data summary and a missing-input list. A reader should be able
+ *  to finish it and say what the assessment is and what they are watching for next. */
+function ReadThisFirst({ v }: { v: AssessmentValue }) {
+  const H = ({ children }: { children: React.ReactNode }) => (
+    <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em',
+                  textTransform: 'uppercase', color: '#64748b', marginBottom: '5px' }}>
+      {children}</div>);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+      <div>
+        <div style={{ fontSize: '15px', fontWeight: 600, color: '#e2e8f0', lineHeight: 1.5 }}>
+          {v.assessment}
+        </div>
+        {v.horizon && (
+          <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>{v.horizon}</div>
+        )}
+      </div>
+
+      {!!v.why_it_matters?.length && (
+        <div>
+          <H>Why</H>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {v.why_it_matters.map((f, i) => (
+              <div key={i} style={{ borderLeft: '2px solid rgba(99,102,241,0.45)',
+                                    paddingLeft: '10px' }}>
+                <div style={{ fontSize: '13px', color: '#c7d2fe', fontWeight: 600 }}>
+                  {f.finding}</div>
+                {f.supports && <div style={{ fontSize: '12.5px', color: '#cbd5e1',
+                                             lineHeight: 1.55, marginTop: '3px' }}>
+                  {f.supports}.</div>}
+                {f.contradicts && <div style={{ fontSize: '12.5px', color: '#fcd34d',
+                                                lineHeight: 1.55, marginTop: '3px' }}>
+                  Against: {f.contradicts}.</div>}
+                {f.invalidated_by && <div style={{ fontSize: '11.5px', color: '#94a3b8',
+                                                   marginTop: '3px' }}>
+                  Invalidated by {f.invalidated_by}.</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {v.counterargument && (
+        <div>
+          <H>Counterargument</H>
+          <div style={{ fontSize: '12.5px', color: '#cbd5e1', lineHeight: 1.55 }}>
+            {v.counterargument}</div>
+        </div>
+      )}
+
+      {!!v.watch_next?.length && (
+        <div>
+          <H>Watch next</H>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+            {v.watch_next.map((w, i) => (
+              <div key={i} style={{ fontSize: '12.5px', color: '#cbd5e1', lineHeight: 1.5 }}>
+                <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{w.watch}</span>
+                {w.trigger && <> — trigger: <span style={{ color: '#a5b4fc' }}>{w.trigger}</span></>}
+                {w.would_change && <div style={{ fontSize: '11.5px', color: '#94a3b8' }}>
+                  {w.would_change}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!!v.what_limits_this?.length && (
+        <div>
+          <H>What limits this</H>
+          <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '12.5px', color: '#cbd5e1',
+                       lineHeight: 1.55 }}>
+            {v.what_limits_this.map((l, i) => <li key={i}>{l}</li>)}
+          </ul>
+          {!!v.other_unavailable_inputs && (
+            <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
+              {v.other_unavailable_inputs} further input(s) are unresolved and do not change this
+              conclusion; they are listed in full further down.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Coverage({ r }: { r: IntelReport }) {
   const by = r.coverage?.by_state ?? {};
   const total = r.coverage?.total ?? 0;
@@ -591,7 +686,9 @@ export default function IntelligenceReportsPage() {
                             </td>
                             <td style={{ padding: '11px 14px', verticalAlign: 'top',
                                          overflowWrap: 'anywhere' }}>
-                              {humanised
+                              {key === 'headline_assessment' && f.value
+                                ? <ReadThisFirst v={f.value as AssessmentValue} />
+                                : humanised
                                 ? <span style={{ fontSize: '13px', color: '#e2e8f0' }}>{humanised}</span>
                                 : <FieldValue f={f} />}
                             </td>

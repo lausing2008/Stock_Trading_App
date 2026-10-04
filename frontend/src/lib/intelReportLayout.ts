@@ -20,13 +20,17 @@ export type LayoutField = {
 };
 
 /** Reading order: what it shows, what is missing, then the detail. */
+//  LIMITATIONS MOVED BELOW THE ANALYSIS. A full list of unavailable inputs occupied most of
+//  the first screen before anything useful, while the two or three gaps that actually constrain
+//  the conclusion are now named inside the assessment itself. The full list stays, collapsed,
+//  for a reader who wants it.
 export const SECTION_ORDER: Section[] = [
-  'summary', 'limitations', 'event', 'metrics', 'interpretation', 'scenarios', 'sources',
+  'summary', 'event', 'metrics', 'interpretation', 'scenarios', 'limitations', 'sources',
 ];
 
 export const SECTION_TITLE: Record<Section, string> = {
   summary: 'Read this first',
-  limitations: 'Analysis limitations',
+  limitations: 'Every input this report could not resolve',
   event: 'What this report is about',
   metrics: 'Key figures',
   interpretation: 'Interpretation',
@@ -49,6 +53,17 @@ export const TIMEFRAME_TITLE: Record<TimeFrame, string> = {
   current: "Market context at this snapshot's cutoff — not at the event",
   timeless: 'Method and limits',
 };
+
+/** The horizon a field describes, in bars, or null when it names no horizon.
+ *
+ *  Sorting these as text put 1, 20, 5, 63 next to each other — an ordering that looks like a
+ *  sequence and misleads about which window is longest. */
+export function horizonOf(key: string): number | null {
+  const m = /(?:^|_)(\d+)_(?:bars?|d)(?:$|_)/.exec(key)
+         ?? /^return_(\d+)d$/.exec(key)
+         ?? /_last_(\d+)_bars$/.exec(key);
+  return m ? Number(m[1]) : null;
+}
 
 /** A field's display label: the generator's own, or a readable fallback. */
 export function fieldLabel(key: string, f?: LayoutField): string {
@@ -112,6 +127,12 @@ export function groupFields(entries: [string, LayoutField][]): Group[] {
       keys: g.keys.sort((ak, bk) => {
         const av = byKey.get(ak)!, bv = byKey.get(bk)!;
         if ((av.state === 'OK') !== (bv.state === 'OK')) return av.state === 'OK' ? -1 : 1;
+        // HORIZONS SORT NUMERICALLY. Alphabetical ordering printed return windows 1, 20, 5, 63,
+        // which reads as a sequence and is not one.
+        const an = horizonOf(ak), bn = horizonOf(bk);
+        if (an !== null && bn !== null) return an - bn;
+        if (an !== null) return -1;
+        if (bn !== null) return 1;
         return fieldLabel(ak, av).localeCompare(fieldLabel(bk, bv));
       }),
     }));

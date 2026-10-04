@@ -209,15 +209,15 @@ def test_n1r03_an_attribution_elsewhere_cannot_license_a_causal_claim_here():
 
 def test_n1r03_an_attributed_interpretation_needs_a_named_source_that_resolves():
     p = _ev_packet({"call:1": {"value": {"speaker": "management",
-                                         "statement": "demand improved through the quarter"}}})
+                                         "statement": "Demand improved through the quarter."}}})
     assert not check_claim(Claim(kind=ClaimKind.ATTRIBUTED_INTERPRETATION,
-                                 comment="demand improved"), p).accepted
+                                 comment="Demand improved through the quarter."), p).accepted
     assert not check_claim(Claim(kind=ClaimKind.ATTRIBUTED_INTERPRETATION,
                                  attributed_to="management", source_evidence_id="call:999",
-                                 comment="demand improved"), p).accepted
+                                 comment="Demand improved through the quarter."), p).accepted
     assert check_claim(Claim(kind=ClaimKind.ATTRIBUTED_INTERPRETATION,
                              attributed_to="management", source_evidence_id="call:1",
-                             comment="demand improved"), p).accepted
+                             comment="Demand improved through the quarter."), p).accepted
 
 
 def test_n1r03_a_causal_claim_kind_is_refused_outright():
@@ -422,7 +422,7 @@ def test_f3_a_paraphrase_that_adds_a_claim_is_refused():
                           attributed_to="Chief executive", source_evidence_id="call:1",
                           comment="Demand caused the share rally"), p)
     assert not v.accepted
-    assert any("not contained in the recorded statement" in r for r in v.reasons)
+    assert any("not a complete sentence" in r for r in v.reasons)
 
 
 def test_f3_a_genuine_quotation_is_accepted_and_marked_as_reported_speech():
@@ -430,7 +430,8 @@ def test_f3_a_genuine_quotation_is_accepted_and_marked_as_reported_speech():
                                          "statement": "Demand improved through the quarter."}}})
     out = narrate([Claim(kind=ClaimKind.ATTRIBUTED_INTERPRETATION,
                          attributed_to="Chief executive", source_evidence_id="call:1",
-                         comment="Demand improved")], p, deterministic=DET)
+                         comment="Demand improved through the quarter.")], p,
+                  deterministic=DET)
     assert out.accepted, [r for v in out.verdicts for r in v.reasons]
     assert "stated:" in out.text
     assert "not a finding of this report" in out.text
@@ -467,3 +468,25 @@ def test_f4_a_leaf_with_no_freezing_rule_is_refused_rather_than_passed_through()
     import pytest
     with pytest.raises(TypeError, match="cannot freeze Weird"):
         build_packet(r)
+
+
+def test_a_quotation_must_be_whole_sentences_so_negation_travels_with_it():
+    """Containment is not fidelity: 'improve through the quarter' is a verbatim substring of
+    'Demand did not improve through the quarter' and means the opposite of it."""
+    p = _ev_packet({"call:1": {"value": {
+        "speaker": "Chief executive",
+        "statement": "Demand did not improve through the quarter. Margins remain "
+                     "under pressure."}}})
+
+    def q(text):
+        return check_claim(Claim(kind=ClaimKind.ATTRIBUTED_INTERPRETATION,
+                                 attributed_to="Chief executive", source_evidence_id="call:1",
+                                 comment=text), p)
+
+    assert not q("improve through the quarter").accepted, "drops the negation"
+    assert not q("Demand did not improve").accepted, "drops the qualification"
+    assert q("Demand did not improve through the quarter.").accepted
+    assert q("Demand did not improve through the quarter. Margins remain under "
+             "pressure.").accepted, "consecutive whole sentences are fine"
+    assert not q("Margins remain under pressure. Demand did not improve through the "
+                 "quarter.").accepted, "re-ordering is not quoting"
