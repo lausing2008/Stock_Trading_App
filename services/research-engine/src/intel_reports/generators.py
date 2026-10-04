@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from db import EarningsEvent, Stock
 from . import adapters as A
+from . import verdicts as V
 from . import documents as D
 from intelligence.report_contract import (
     HORIZONS, EarningsStage, EvidenceBook, Field, FieldState, ReportType, Section,
@@ -602,8 +603,8 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
         fields["thesis_verdict"] = _verdict(pre_report, actuals, reaction, frozen_eps)
 
     fields["three_verdicts"] = interpreted({
-        "business_result_vs_expectations": "see the surprise table; basis is unverified",
-        "forward_outlook": "guidance unavailable, so the forward verdict cannot be formed",
+        "business_result_vs_expectations": V.result_verdict(fields),
+        "forward_outlook": V.forward_verdict(fields),
         # The number alone invites being read as an isolated earnings reaction. It is a
         # close-to-close return over a window that can span more than one session and can
         # include trading BEFORE the announcement, so it travels with its window.

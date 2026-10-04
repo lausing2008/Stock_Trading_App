@@ -135,3 +135,24 @@ def test_an_unconfirmed_document_does_not_answer_the_fiscal_period_field():
     doc = SimpleNamespace(id=7, fiscal_period_end=None, fiscal_label=None,
                           fiscal_source=None, source_url="https://example/x")
     assert D.confirmed_fiscal_period({}, doc) is None
+
+
+def test_the_forward_verdict_does_not_deny_guidance_the_report_carries():
+    """The exact contradiction this round removes, reintroduced one field lower: a verdict
+    saying "guidance unavailable" directly beneath the guidance the issuer supplied."""
+    from intel_reports.verdicts import forward_verdict as _forward_verdict
+    with_guidance = {"guidance_current": observed({"guidance_q1_revenue": {"value": 1}})}
+    v = _forward_verdict(with_guidance)
+    assert "unavailable" not in v.lower()
+    assert "RAISE" in v, "it must still refuse to call available guidance a raise"
+    assert "cannot be formed" in _forward_verdict({})
+    assert "cannot be formed" in _forward_verdict(
+        {"guidance_current": unavailable("none joined")})
+
+
+def test_the_result_verdict_reflects_a_stated_basis_when_one_exists():
+    from intel_reports.verdicts import result_verdict as _result_verdict
+    assert "basis is unverified" in _result_verdict({})
+    v = _result_verdict({"accounting_basis": observed({"stated_by_issuer_per_metric": {}})})
+    assert "issuer states a basis" in v
+    assert "not a verified beat" in v, "the ESTIMATE's basis is still unknown"

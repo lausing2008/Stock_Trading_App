@@ -104,13 +104,52 @@ previews by default and refuses a self-correction, a different issuer, a same-su
 in a distinct, louder banner than the version banner — a later version refines the same event;
 this says the report in front of you is about the wrong event entirely.
 
+## 6. A contradiction my own fix left one field lower
+
+The freshly generated report exposed it: `three_verdicts.forward_outlook` still read
+"guidance unavailable, so the forward verdict cannot be formed" — written as an unconditional
+string — directly beneath the guidance the issuer supplied. Same defect class as the four above,
+reintroduced by the fix for them. The verdicts now derive from the fields the report holds, in
+`intel_reports/verdicts.py`.
+
+That module exists separately for a reason worth recording: the service conftest stubs `db` as a
+plain module, so anything importing `db.models` cannot be imported from a test at all. The first
+version of these guards lived in `generators.py` and had to assert on *source text*, which
+passes while the behaviour is broken — this repo's A17/T400 bug class. Pure functions in an
+ORM-free module can be asserted on directly. The guards passed standalone and failed under
+`make test`; both now pass under both.
+
 ## Tests
 
 - `services/research-engine/tests/test_report_reconciliation.py` — 11 new tests.
 - `services/event-intelligence/tests/test_issuer_documents.py` — 15 tests (6 new).
 - Sabotage-verified: disabling conflict preservation and widening the guidance filter each fail
   their owning test. The guidance test initially passed under sabotage and was tightened.
-- Full suites: event-intelligence 624 passed, research-engine 132 passed.
+- Full suites: event-intelligence 624 passed, research-engine 134 passed.
+- `make test: all services passed` (an earlier run was red on the test-isolation issue above;
+  naming which run is which is the point of the T401 rule).
+
+## Verified in production after deployment
+
+All 12 backends plus the frontend rebuilt (a `shared/` change is one versioned unit);
+`check_deploy_drift.sh`: 12 checked, 0 drifted. Five new columns present. A freshly generated
+MU post-earnings report returns:
+
+| Field | Before | Now |
+|---|---|---|
+| `revenue_actual` | UNAVAILABLE | OK — $54.23B USD GAAP, fiscal Q4 2026, `issuer_document:1` |
+| `fiscal_period` | UNKNOWN | OK — FY2026 Q4, period end 2026-09-03, confirmed by the issuer |
+| `accounting_basis` | UNKNOWN | OK — a basis per metric; estimate basis still UNKNOWN |
+| `guidance_current` | absent | OK — Q1 revenue $61.5B ±1.5B, adj. EPS $38.15 ±1.00 |
+| `guidance_change` | UNAVAILABLE | UNKNOWN — "current guidance available, comparison not established" |
+| `revenue_surprise_pct` | UNAVAILABLE | UNKNOWN — refuses to divide an unknown-unit estimate |
+| `eps_surprise_pct` | 5.03% | 5.03%, now naming `computed_against: 33.42` as the provider's actual |
+
+Coverage: 19 OK of 28 fields, up from 15 of 27.
+
+Document #1's hash relabelled to `sha256-facts:` with `source_bytes_hash` NULL — it was
+transcribed, not downloaded, so it has no source-edit detection and no longer implies it does.
+Report #11 now points forward to #12 with the recorded reason; #11's payload is unchanged.
 
 ## Still open
 
