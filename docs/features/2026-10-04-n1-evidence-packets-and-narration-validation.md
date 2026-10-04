@@ -125,7 +125,50 @@ as proving semantic safety. The packet needs detaching and deep-freezing (or aut
 serialized bytes with a verified digest), and the eligibility POLICY needs versioning, because
 content hashing does not preserve the rules that gave the content its meaning.
 
-**Status: all four open.** Narration stays off, and this slice is not grounds for turning it on.
+**Status: all four CLOSED**, and the review's own witness script now prints `False` on every
+line where it printed `True`: [recheck](../audits/evidence/2026-10-04-n1-remediation-recheck.py).
+Narration still stays off — closing these makes the gate sound, not the narrator proven.
+
+### What changed, per finding
+
+**N1-R01 — the narrator no longer writes numbers at all.** `quantities.py` extracts every figure
+once, with its metric, units, basis and period, keyed by a stable id. A claim NAMES a quantity
+and the clause is rendered deterministically (`$54.23B (GAAP, fiscal Q4 2026)`). There is no
+route by which the EPS value can be printed as revenue, because the name carries the measure —
+and no route to a magnitude error, because the model never types the magnitude. A figure typed
+into a comment is refused outright.
+
+**N1-R02 — comparability is decided pair by pair.** `comparable(a, b)` requires the same metric,
+the same accounting basis, the same period and a compatible unit family. A GAAP estimate against
+a non-GAAP actual is refused by basis; an eligible EPS pair no longer authorises a revenue one.
+The report-wide `accounting_basis.estimate_basis` check is gone.
+
+**N1-R03 — the ungated prose path was removed, not extended.** `narration_validator.validate`
+now raises `ImportError` explaining why. Grading undifferentiated text can only ask "does this
+contain a forbidden phrase", and both bypasses are properties of that shape, not of the
+particular phrases: "profits surpassed analyst forecasts" is not on any maintainable list, and
+an attribution in one sentence cannot be scoped to another. A comment now belongs to a claim and
+is checked against THAT claim's permissions, so neither bypass has anywhere to live. Causal
+language is permitted only in an `ATTRIBUTED_INTERPRETATION` carrying a named source and a
+resolvable evidence id.
+
+**N1-R04 — detached, deep-frozen, and verified before use.** The payload is deep-copied, then
+wrapped read-only at every level. `verify()` re-derives the hash, and `narrate()` refuses any
+packet that fails it. The hash now covers the eligibility REASONS, the pairwise comparison
+results, the quantity identities and an `ELIGIBILITY_POLICY_VERSION` — content hashing alone
+does not preserve the policy that gave the content its meaning.
+
+### Two things this round got wrong first
+
+**Deep-freezing silently disabled downstream checks.** `MappingProxyType` is not a `dict`
+subclass, so every `isinstance(x, dict)` on packet data became `False` and the checks behind
+them stopped running. Found because an existing test failed for the wrong reason. All such sites
+now test `collections.abc.Mapping`, with a regression that asserts the guarded checks fire.
+
+**A sabotage check passed when it should not have.** Removing the `deepcopy` from `build_packet`
+left all 42 tests green, because `deep_freeze` rebuilds dicts and lists and so detaches those
+anyway — the copy only matters for a leaf type the freezer has no rule for. The detachment test
+was therefore not load-bearing. It now uses a `set` leaf and fails when the copy is removed.
 
 ## What this does NOT do
 
