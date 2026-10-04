@@ -92,6 +92,41 @@ Sabotage-verified: allowing `CAUSAL`, disabling the comparison gate, treating an
 estimate basis as established, and returning the draft instead of the fallback each fail their
 owning tests.
 
+## Review of this slice: four P1 findings, all reproduced
+
+`docs/audits/2026-10-04-n1-packet-validation-review.md` reviewed commit `aa6d19a9`. I re-ran
+each finding against the real functions rather than accepting the report. **All four reproduce.**
+The verdict that matters: N1 is an offline prototype and **is not a reliable publication gate**.
+A finite set of hand-written drafts passing does not establish that arbitrary prose respects the
+structured permissions — and my 21 tests were exactly such a finite set.
+
+| # | Finding | Reproduced |
+|---|---|---|
+| N1-R01 | Numbers lose metric and unit identity. `_packet_values()` pools every number into one untyped set, so *"Revenue was $33.42 billion"* (the EPS figure) and *"Revenue was $54.23 million"* (wrong magnitude by 1000×) are both **accepted**. | yes, both |
+| N1-R02 | Comparison eligibility checks presence, not comparability. A **GAAP** estimate basis authorises a comparison against the **non-GAAP adjusted** actual, and permission is report-wide rather than attached to the specific pair. | yes |
+| N1-R03 | Enforcement is keyword-based and bypassable. *"Profits surpassed analyst forecasts"* evades the comparison list; a safe phrase **anywhere** in the draft disarms the causal guard for the whole text. | yes, both |
+| N1-R04 | The packet is only shallowly frozen. `@dataclass(frozen=True)` blocks attribute assignment, not nested mutation: `packet.fields[...]['value']['value'] = 999` succeeds, `packet_hash` is unchanged, **and the original report payload is mutated too** because the dicts are shared. | yes, all three |
+
+### What I got wrong, specifically
+
+The numeric-matching change earlier in this slice fixed a real false-reject ("54.0" vs "54") and
+in doing so made the opposite error worse: a bag of magnitudes with no metric, unit or period
+attached cannot tell revenue from EPS. I described it as support checking; it is weaker than
+that. And I called `@dataclass(frozen=True)` an immutable packet without testing nested
+mutation — the one property the whole design rests on.
+
+### The corrected direction
+
+The review's remedy is right and is a different interface, not a patch: the narrator should emit
+**typed, referenced claims** — metric, issuer, period, basis, units, evidence id — with factual
+clauses rendered deterministically server-side, each claim's eligibility enforced pair-by-pair.
+Free prose needs semantic review and stays fallible; a keyword validator must never be described
+as proving semantic safety. The packet needs detaching and deep-freezing (or authoritative
+serialized bytes with a verified digest), and the eligibility POLICY needs versioning, because
+content hashing does not preserve the rules that gave the content its meaning.
+
+**Status: all four open.** Narration stays off, and this slice is not grounds for turning it on.
+
 ## What this does NOT do
 
 No model is called. No flag changes. The next milestone is accurate, useful **interpretation** of
