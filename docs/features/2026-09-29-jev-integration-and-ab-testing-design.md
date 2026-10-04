@@ -4,6 +4,8 @@
 **Status:** proposed integration; admin preference implemented locally, default OFF.  
 **Review baseline:** `adc65cd8` plus the configuration changes described below. No deployment, paid provider requests, or trading changes were performed for this design.
 
+**October 3 reporting extension:** [LLM report narration](2026-10-03-evidence-grounded-report-narration-design.md) is a separate capability and experiment. Reuse approved provider infrastructure where appropriate, but do not treat Jev's structured classifier as a prose generator, copy its worker-scoped credentials, or couple `jev_enabled` to narration publication. Typed Jev interpretations can become versioned, attributed report evidence; narration quality and trading intervention outcomes remain separate evaluations.
+
 ## 1. Recommendation and scope
 
 Integrate Jev as an asynchronous, versioned text-classification service. Start with US company news: materiality, catalyst category and ticker-specific sentiment. Test whether an additional adverse-news veto improves the **existing platform strategy**, after costs and missed opportunities. Do not treat a text-classification probability as a probability of a profitable trade.

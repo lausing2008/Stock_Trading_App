@@ -2,6 +2,8 @@
 
 Date: October 2, 2026. This is a prompt for a future implementation session, not authorization to deploy, send reports or trade from the document-writing session.
 
+October 3 narration extension: [LLM architecture and acceptance plan](2026-10-03-evidence-grounded-report-narration-design.md). For a narration implementation task, follow phases N1–N4: reuse research-engine provider infrastructure; create immutable evidence packets and separately versioned narratives; validate claim support/units/basis; start with post-earnings shadow; retain deterministic fallback. Do not enable Jev trading influence, narration publication or notifications merely by building the feature. This extension does not enlarge the original deterministic first slice automatically.
+
 October 3 extension: read [the tactical momentum and monitoring-task design](2026-10-03-momentum-horizons-and-monitoring-tasks.md) when implementing that follow-on scope. It specifies independent 1/3/5/7/14-session panels and EMA21/OI tasks; notification activation is separate from adding report templates.
 
 Run Claude Code from `/home/lausing/Documents/MyProjects/Stock_Trading_App`. Paste the prompt below. It prioritizes the requested reports over a second intelligence platform.
@@ -11,6 +13,8 @@ Run Claude Code from `/home/lausing/Documents/MyProjects/Stock_Trading_App`. Pas
 You are extending this EXISTING AI Stock Trading Platform. Implement a report-first Market, Stock and Earnings Intelligence feature using existing services and data contracts.
 
 ## Product outcome
+
+Follow the [interpretation and decision-support requirements](2026-10-03-report-interpretation-and-decision-support-design.md) for the next report UX/analysis slice. Tables alone do not meet the product goal: provide a deterministic opening assessment, ranked evidence-backed drivers, scenarios, watch items and material limitations. Reuse existing report/evidence modules; optional LLM narration explains eligible findings and does not substitute for missing inputs or create trading authority.
 
 I must be able to generate, inspect, save and compare:
 

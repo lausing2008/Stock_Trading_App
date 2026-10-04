@@ -92,11 +92,40 @@ Minting a short-lived token on EC2 (secret never leaving the host) was refused b
 environment's credential policy, and I did not work around it. These stay **unverified**; the
 items above are verified by the methods named, which do not substitute for them.
 
+## Scope of the two browser conclusions
+
+Both results are narrower than "the page works".
+
+**The rendering evidence** is that the compiled layout module, over a real stored payload,
+groups and humanises correctly in a real DOM. It does **not** establish that the authenticated
+application's routing, data loading and interactions work together — that needs the live page.
+
+**The navigation result** is scoped to the tested setup: `position: sticky; top: 0` over tall
+content, captured full-page by this browser. It supports the capture-artifact reading and does
+not license a layout change from the screenshots alone. No layout change was made for it.
+
+## Deployment inventory, so "zero drift" has a denominator
+
+| Unit | Count | Drift-checked |
+|---|---|---|
+| Backend services with a docker-cp'able `/app/src` tree | 12 | yes |
+| Frontend (built Next.js image, no comparable `src/` tree) | 1 | no — verify by the **served** chunks under `/app/.next/static`, never `/app/.next/cache` |
+| postgres, redis (no application source) | 2 | no |
+
+A full deploy is **12 backends + frontend = 13**. "Checked 12, 0 drifted" has denominator 12,
+and `scripts/check_deploy_drift.sh` now prints that denominator and what it excludes, so the
+claim is checkable without reading the script.
+
 ## Two claims corrected rather than defended
 
 - The UTC-to-exchange conversion fixes publications that **cross** the local/UTC date boundary —
-  for the US roughly 19:00 ET onward — **not** every after-close release. A 16:05 ET release is
-  20:05 UTC the same day and was already dated correctly. Pinned by a test.
+  **not** every after-close release. US Eastern crosses UTC midnight at **20:00 during daylight
+  time** (UTC-4) and **19:00 during standard time** (UTC-5); Micron's 30 September release is
+  EDT, so 20:00 is the figure for it. My earlier "roughly 19:00 ET onward" was imprecise for the
+  October example. **No hour is hardcoded**: the offset is read from `zoneinfo` on the
+  publication instant, so it stays correct across both DST transitions and for any exchange. A
+  test covers an EDT crossing, an EST crossing one hour earlier in local time, and a 19:30 EDT
+  publication that does **not** cross — which the hour alone cannot decide.
 - `19 of 28 fields resolved` measures **completeness only**. Provenance (`sourced`), unresolved
   source conflicts (`conflicts`) and unverified comparability are now counted separately and are
   never summed into it, because one rising number reads as quality improving.

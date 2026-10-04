@@ -148,6 +148,12 @@ done
 
 echo
 echo "Checked $checked service(s), $drifted drifted/errored."
+# THE DENOMINATOR IS PART OF THE RESULT. "zero drift" over an unstated set is not a claim a
+# reader can check — and the deployable set is 13, not the 12 counted here.
+echo "Denominator: ${#ALL_SERVICES[@]} backend service(s) with a docker-cp'able /app/src tree."
+echo "NOT counted here: frontend (a built Next.js image with no comparable src/ tree — verify"
+echo "it by checking the SERVED chunks under /app/.next/static, never /app/.next/cache), and"
+echo "postgres/redis (no application source). A full deploy is ${#ALL_SERVICES[@]} backends + frontend = $(( ${#ALL_SERVICES[@]} + 1 ))."
 if [ "$drifted" -gt 0 ]; then
   echo
   echo "NOTE: this compares against LOCAL git HEAD, not EC2's git checkout — if EC2 hasn't"

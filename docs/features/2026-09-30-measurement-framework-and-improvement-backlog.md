@@ -4,6 +4,8 @@ As of: **2026-09-30**. Status: **proposed design and consolidated work register*
 
 ## 1. Objective and decisions
 
+**October 3 proposed extension — report narration evaluation:** see [the LLM report design](2026-10-03-evidence-grounded-report-narration-design.md). Engineering status `proposed`; research status `not_measurable`; activation `no_action`. Reuse the experiment registry for paired same-snapshot deterministic-versus-narrated report review. Measure factual support, numeric/period/basis correctness, contradiction retention, reviewer usefulness, abstention, cost and latency. Do not pool these with directional accuracy or trade returns, and do not imply M22/Jev or broker activation. This extension does not mark any existing M-item complete.
+
 Build a reproducible answer to: **does a change improve timely, executable, net portfolio outcomes within the same risk budget, and why?** More alerts, higher raw confidence, more trades and passing tests are useful diagnostics, not that answer.
 
 The operating rule is: **match population, decision authority, time window, outcome definition and weighting before reporting a rate.** Every metric must disclose these five dimensions. Separate operational correctness, prediction quality, execution quality and investment outcomes; one cannot certify the others.

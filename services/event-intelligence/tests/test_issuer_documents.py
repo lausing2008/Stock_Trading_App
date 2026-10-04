@@ -274,3 +274,22 @@ def test_a_release_that_does_not_cross_the_boundary_was_already_correct(monkeypa
     _patch(monkeypatch, _Doc(published_at=datetime(2026, 9, 30, 20, 5)), _Event())
     d = M.associate_with_event(1, 42694, actor="t", rationale="r")["announcement_dating"]
     assert d["utc_calendar_date"] == d["announcement_date"] == "2026-09-30"
+
+
+def test_the_boundary_hour_follows_dst_rather_than_being_fixed(monkeypatch):
+    """US Eastern crosses UTC midnight at 20:00 under EDT and 19:00 under EST. A hardcoded hour
+    would be right for half the year; the offset is taken on the publication instant."""
+    # 2026-10-01 00:30 UTC is 20:30 EDT on 09-30 — crosses, so the dates differ.
+    _patch(monkeypatch, _Doc(published_at=datetime(2026, 10, 1, 0, 30)), _Event())
+    edt = M.associate_with_event(1, 42694, actor="t", rationale="r")["announcement_dating"]
+    assert edt["announcement_date"] == "2026-09-30" != edt["utc_calendar_date"]
+
+    # 2026-01-16 00:30 UTC is 19:30 EST on 01-15 — also crosses, one hour earlier in local time.
+    _patch(monkeypatch, _Doc(published_at=datetime(2026, 1, 16, 0, 30)), _Event())
+    est = M.associate_with_event(1, 42694, actor="t", rationale="r")["announcement_dating"]
+    assert est["announcement_date"] == "2026-01-15" != est["utc_calendar_date"]
+
+    # 19:30 EDT does NOT cross (23:30 UTC the same day) — the hour alone cannot decide it.
+    _patch(monkeypatch, _Doc(published_at=datetime(2026, 9, 30, 23, 30)), _Event())
+    same = M.associate_with_event(1, 42694, actor="t", rationale="r")["announcement_dating"]
+    assert same["announcement_date"] == same["utc_calendar_date"] == "2026-09-30"

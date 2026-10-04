@@ -46,9 +46,14 @@ _REQUIRED_FACT_KEYS = ("value", "units", "basis", "period", "citation")
 #:
 #: PRECISELY WHAT THIS FIXES: publications that CROSS the local/UTC date boundary — not every
 #: after-close release. A US release at 16:05 ET is 20:05 UTC the SAME day and was already
-#: dated correctly; one at 20:05 ET is 00:05 UTC the NEXT day and was dated a day late. The
-#: window that goes wrong is roughly 19:00-23:59 ET (20:00-23:59 EDT), which covers a real part
-#: of the after-close reporting window without covering all of it. For HK the error runs the
+#: dated correctly; one at 20:05 EDT is 00:05 UTC the NEXT day and was dated a day late.
+#:
+#: WHERE THAT BOUNDARY SITS DEPENDS ON THE DATE, which is why no hour is hardcoded anywhere
+#: here. US Eastern crosses UTC midnight at 20:00 during DAYLIGHT time (UTC-4) and at 19:00
+#: during STANDARD time (UTC-5). Micron's 30 September release is EDT, so 20:00 is the relevant
+#: figure for it. The conversion below asks `zoneinfo` for the offset ON THE PUBLICATION
+#: INSTANT, so it stays correct across both DST transitions and for any other exchange; writing
+#: the hour into the code would be right for half the year. For HK (no DST) the error runs the
 #: other way, on morning publications.
 _MARKET_TZ = {"US": "America/New_York", "HK": "Asia/Hong_Kong"}
 
@@ -92,9 +97,11 @@ def _announcement_date(published_at: datetime, market: str) -> tuple[date, dict]
     """The exchange-local DATE of a publication instant, with the conversion shown.
 
     `published_at` is stored naive-UTC. `.date()` on it is the UTC calendar day, which differs
-    from the exchange-local day only for publications that CROSS the boundary — for the US,
-    those from about 19:00 ET onward. A 16:05 ET release was already dated correctly; a 20:05 ET
-    one was a session late, in the single field the reaction window is measured from. The
+    from the exchange-local day only for publications that CROSS the boundary — for US Eastern,
+    from 20:00 during daylight time and 19:00 during standard time, taken from the offset on the
+    publication instant rather than from any hour written here. A 16:05 ET release was already
+    dated correctly; a 20:05 EDT one was a session late, in the single field the reaction window
+    is measured from. The
     conversion is applied unconditionally because it is correct in both cases; the DEFECT it
     removes is the boundary-crossing one, and claiming it fixed every after-close release would
     overstate it.

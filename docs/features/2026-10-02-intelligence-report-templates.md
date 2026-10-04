@@ -4,6 +4,10 @@ Date: October 2, 2026. Status: design/templates, not implemented by this documen
 
 ## Recommended product
 
+October 3 product refinement: [interpretation and decision-support design](2026-10-03-report-interpretation-and-decision-support-design.md). Put the evidence-supported assessment, top drivers, conditional scenarios and what to monitor before the supporting statistics. It supplies distinct openings for all four report types, claim prerequisites and acceptance criteria; existing evidence and uncertainty requirements remain in force.
+
+Optional presentation layer: [evidence-grounded LLM narration design](2026-10-03-evidence-grounded-report-narration-design.md). Start with post-earnings analysis; keep deterministic facts, conditional interpretation and execution eligibility separate. Narration is independently flagged, versioned and validated, with the original report available on failure.
+
 Extension: [1/3/5/7/14-session tactical momentum templates and EMA21/OI monitoring tasks](2026-10-03-momentum-horizons-and-monitoring-tasks.md). These add optional conditional observation panels; they do not replace or silently redefine the broad report horizons below.
 
 Build three report families: **Market Outlook**, **Stock Outlook**, and **Earnings Before/After**. The earnings family contains a frozen pre-release report and independently versioned post-release updates. Each report starts with a short decision summary, followed by inspectable evidence. Full details belong below the summary, not in a wall of indicator values.
