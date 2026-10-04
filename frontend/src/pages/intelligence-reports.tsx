@@ -546,31 +546,41 @@ export default function IntelligenceReportsPage() {
               </details>
             )}
 
-            {groups.map(g => (
+            {/* THE SECTION HEADING PRINTS ONCE PER SECTION, not once per timeframe group.
+                A section with four timeframes repeated "ANALYSIS LIMITATIONS" four times down
+                the page, which reads as four separate sections of the same name. */}
+            {groups.map((g, i) => (
               <div key={`${g.section}|${g.timeframe}`} style={{ display: 'flex',
                    flexDirection: 'column', gap: '6px' }}>
-                <div style={{ fontSize: '11px', fontWeight: 700, color: '#64748b',
-                              textTransform: 'uppercase', letterSpacing: '0.07em' }}>
-                  {SECTION_TITLE[g.section]}
-                </div>
+                {(i === 0 || groups[i - 1].section !== g.section) && (
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#64748b',
+                                textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+                    {SECTION_TITLE[g.section]}
+                  </div>
+                )}
                 {TIMEFRAME_TITLE[g.timeframe] && (
                   <div style={{ fontSize: '12px', color: g.timeframe === 'current'
                                   ? '#fbbf24' : '#94a3b8', marginBottom: '2px' }}>
                     {TIMEFRAME_TITLE[g.timeframe]}
                   </div>
                 )}
-                <div style={{ borderRadius: '11px', overflow: 'hidden',
+                <div style={{ borderRadius: '11px', overflowX: 'auto',
                               border: '1px solid rgba(255,255,255,0.07)' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse',
+                                  tableLayout: 'fixed' }}>
                     <tbody>
                       {g.keys.map(key => {
                         const f = report.payload!.fields[key];
                         const humanised = humaniseValue(key, f.value);
                         return (
                           <tr key={key} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                            <td style={{ padding: '11px 14px', width: '230px',
+                            {/* Proportional, not a fixed 230px: at a 390px viewport a fixed
+                                label column plus the value column cannot fit, and the page
+                                scrolled sideways. */}
+                            <td style={{ padding: '11px 14px', width: '34%', minWidth: '110px',
                                          verticalAlign: 'top', fontSize: '13px',
-                                         color: '#cbd5e1', fontWeight: 600 }}>
+                                         color: '#cbd5e1', fontWeight: 600,
+                                         overflowWrap: 'anywhere' }}>
                               {fieldLabel(key, f as unknown as LayoutField)}
                               {f.state === 'OK' && (
                                 <div style={{ fontSize: '10px', color: '#475569',
@@ -579,7 +589,8 @@ export default function IntelligenceReportsPage() {
                                 </div>
                               )}
                             </td>
-                            <td style={{ padding: '11px 14px', verticalAlign: 'top' }}>
+                            <td style={{ padding: '11px 14px', verticalAlign: 'top',
+                                         overflowWrap: 'anywhere' }}>
                               {humanised
                                 ? <span style={{ fontSize: '13px', color: '#e2e8f0' }}>{humanised}</span>
                                 : <FieldValue f={f} />}
