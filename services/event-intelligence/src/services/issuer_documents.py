@@ -17,7 +17,8 @@ what finally makes a post-earnings reaction window measurable.
 from __future__ import annotations
 
 import hashlib
-from datetime import date, datetime
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -34,6 +35,19 @@ ISSUER_RELEASE = "issuer_release"
 MANUAL_TRANSCRIPTION = "manual_transcription"
 AUTOMATED_EXTRACTION = "automated_extraction"
 
+#: Every stored figure must carry these. A number without them is not usable evidence: $54.23B
+#: and 54230 are the same revenue in different units, a GAAP margin and a non-GAAP one are
+#: different values the issuer reported separately, and a figure for the wrong period is simply
+#: a different fact. `citation` locates the figure INSIDE the document, so a reader can check
+#: this one number rather than being handed the whole release and told to look.
+_REQUIRED_FACT_KEYS = ("value", "units", "basis", "period", "citation")
+
+#: Where an issuer's publication time is anchored when turning it into an announcement DATE.
+#: A release at 16:05 America/New_York is a UTC instant on the following day, so taking
+#: `.date()` off the UTC stamp moved MU's announcement forward by a day and would have measured
+#: the reaction window from the wrong session.
+_MARKET_TZ = {"US": "America/New_York", "HK": "Asia/Hong_Kong"}
+
 
 def _db():
     """Imported at call time — see earnings_discovery._db for why."""
@@ -41,17 +55,62 @@ def _db():
     return EarningsEvent, IssuerDocument, SessionLocal, Stock
 
 
-def content_hash(payload: dict | str) -> str:
-    """Identity of the bytes, so a silent edit at the source is detectable."""
+def _digest(raw: bytes | str, *, kind: str) -> str:
+    """A digest that says WHAT IT COVERS, because the two kinds support different claims.
+
+    `sha256-bytes:` is taken over the retrieved document and does detect the issuer silently
+    editing the release at the same URL. `sha256-facts:` is taken over our own extraction and
+    detects only that WE changed a number — it is blind to any edit at the source. The previous
+    single `sha256:` prefix was computed over the facts and documented as byte identity, so the
+    stronger claim was being made by a weaker value.
+    """
     import json
-    raw = payload if isinstance(payload, str) else json.dumps(payload, sort_keys=True, default=str)
-    return "sha256:" + hashlib.sha256(raw.encode()).hexdigest()[:48]
+    if isinstance(raw, bytes):
+        data = raw
+    else:
+        data = (raw if isinstance(raw, str)
+                else json.dumps(raw, sort_keys=True, default=str)).encode()
+    return f"sha256-{kind}:" + hashlib.sha256(data).hexdigest()[:48]
+
+
+def facts_digest(facts: dict) -> str:
+    """Identity of OUR EXTRACTION. Not evidence about the source document."""
+    import json
+    return _digest(json.dumps(facts, sort_keys=True, default=str), kind="facts")
+
+
+def bytes_digest(raw: bytes) -> str:
+    """Identity of the retrieved document itself."""
+    return _digest(raw, kind="bytes")
+
+
+def _announcement_date(published_at: datetime, market: str) -> tuple[date, dict]:
+    """The exchange-local DATE of a publication instant, with the conversion shown.
+
+    `published_at` is stored naive-UTC. `.date()` on it is the UTC calendar day, which for any
+    US after-close release is the NEXT day — one session off, in the single field the whole
+    reaction window is measured from.
+    """
+    tz_name = _MARKET_TZ.get(str(market).upper(), "America/New_York")
+    aware = published_at.replace(tzinfo=timezone.utc) if published_at.tzinfo is None else published_at
+    local = aware.astimezone(ZoneInfo(tz_name))
+    return local.date(), {
+        "published_at_utc": aware.astimezone(timezone.utc).isoformat(),
+        "exchange_timezone": tz_name,
+        "published_at_local": local.isoformat(),
+        "utc_calendar_date": aware.astimezone(timezone.utc).date().isoformat(),
+        "announcement_date": local.date().isoformat(),
+        "note": ("the announcement date is the EXCHANGE-LOCAL date of the publication instant. "
+                 "Where it differs from the UTC calendar date above, the UTC date is one "
+                 "session off and must not be used to place a reaction window."),
+    }
 
 
 def ingest_release(symbol: str, *, source_url: str, publisher: str, title: str,
                    fiscal_period_end: date, fiscal_label: str, fiscal_source: str,
                    published_at: datetime, facts: dict, extraction_method: str,
                    actor: str, document_type: str = "press_release",
+                   source_bytes: bytes | None = None,
                    commit: bool = False) -> dict:
     """Store one official release. PREVIEW unless `commit=True`.
 
@@ -59,20 +118,37 @@ def ingest_release(symbol: str, *, source_url: str, publisher: str, title: str,
     is not storable here, because a GAAP gross margin and a non-GAAP one are different values
     the issuer itself reported separately, and collapsing them loses the distinction.
     """
-    missing = [k for k, v in facts.items()
-               if not isinstance(v, dict) or "value" not in v or "basis" not in v]
-    if missing:
-        return {"error": "every fact needs a value and an accounting basis",
-                "offending_keys": sorted(missing), "committed": False}
+    offending = {}
+    for k, v in facts.items():
+        if not isinstance(v, dict):
+            offending[k] = ["not an object"]
+            continue
+        absent = [r for r in _REQUIRED_FACT_KEYS if v.get(r) in (None, "")]
+        if absent:
+            offending[k] = absent
+    if offending:
+        return {"error": "every stored figure needs a value, units, an accounting basis, the "
+                         "period it describes, and a citation locating it in the document",
+                "offending_keys": offending, "committed": False}
     if extraction_method not in (MANUAL_TRANSCRIPTION, AUTOMATED_EXTRACTION):
         return {"error": f"unknown extraction_method {extraction_method!r}", "committed": False}
 
-    digest = content_hash(facts)
+    f_digest = facts_digest(facts)
+    b_digest = bytes_digest(source_bytes) if source_bytes is not None else None
+    # The unique key is the strongest identity available. With the bytes in hand it is the
+    # document itself; without them it can only be our extraction, and the prefix says so.
+    digest = b_digest or f_digest
     plan = {
         "symbol": symbol.upper().strip(), "source_url": source_url,
         "fiscal_period_end": fiscal_period_end.isoformat(), "fiscal_label": fiscal_label,
         "published_at": published_at.isoformat(), "facts": len(facts),
-        "content_hash": digest, "extraction_method": extraction_method, "actor": actor,
+        "content_hash": digest, "facts_hash": f_digest, "source_bytes_hash": b_digest,
+        "extraction_method": extraction_method, "actor": actor,
+        "source_edit_detection": (
+            "available: the retrieved bytes are hashed, so an edit at this URL is detectable"
+            if b_digest else
+            "NOT AVAILABLE: no document bytes were supplied, so this row cannot detect the "
+            "issuer silently editing the release. Only our own extraction is hashed."),
         "committed": False,
     }
     if not commit:
@@ -98,7 +174,7 @@ def ingest_release(symbol: str, *, source_url: str, publisher: str, title: str,
             fiscal_period_end=fiscal_period_end, fiscal_label=fiscal_label,
             fiscal_source=fiscal_source,
             published_at=published_at, retrieved_at=datetime.utcnow(),
-            content_hash=digest,
+            content_hash=digest, facts_hash=f_digest, source_bytes_hash=b_digest,
             facts=facts | {"_provenance": {"extraction_method": extraction_method,
                                            "actor": actor, "source_url": source_url}})
         s.add(doc); s.commit()
@@ -119,7 +195,7 @@ def associate_with_event(document_id: int, event_id: int, *, actor: str, rationa
     become eligible for delivery because its date is now accurate; the suppression records that
     this result arrived through a historical import, which remains true however good the date is.
     """
-    EarningsEvent, IssuerDocument, SessionLocal, _ST = _db()
+    EarningsEvent, IssuerDocument, SessionLocal, Stock = _db()
     with SessionLocal() as s:
         doc = s.get(IssuerDocument, document_id)
         ev = s.get(EarningsEvent, event_id)
@@ -132,7 +208,10 @@ def associate_with_event(document_id: int, event_id: int, *, actor: str, rationa
             return {"error": "the document has no publication time, so it cannot establish an "
                              "announcement date", "committed": False}
 
-        announcement = doc.published_at.date()
+        stock = s.get(Stock, doc.stock_id)
+        market = getattr(getattr(stock, "market", None), "value", None) or \
+            str(getattr(stock, "market", "US"))
+        announcement, tz_trace = _announcement_date(doc.published_at, market)
         changes = {
             "period_end": {"from": ev.period_end.isoformat() if ev.period_end else None,
                            "to": doc.fiscal_period_end.isoformat() if doc.fiscal_period_end else None},
@@ -142,6 +221,7 @@ def associate_with_event(document_id: int, event_id: int, *, actor: str, rationa
         }
         plan = {"document_id": document_id, "event_id": event_id, "actor": actor,
                 "rationale": rationale, "changes": changes,
+                "announcement_dating": tz_trace,
                 "notification_suppression": (
                     "unchanged: a historical import stays ineligible for delivery however "
                     "accurate its date becomes"),
@@ -149,6 +229,19 @@ def associate_with_event(document_id: int, event_id: int, *, actor: str, rationa
         if not commit:
             return plan
 
+        # THE EVIDENCE IS WRITTEN WITH THE CHANGE, not emitted beside it. A log line is not
+        # queryable from the row that the association altered, so months later the event row
+        # asserted a corrected identity with no stored record of who asserted it or why.
+        doc.association = {
+            "actor": actor,
+            "rationale": rationale,
+            "associated_at": datetime.utcnow().isoformat() + "Z",
+            "event_id": event_id,
+            "before": {k: v["from"] for k, v in changes.items()},
+            "after": {k: v["to"] for k, v in changes.items()},
+            "announcement_dating": tz_trace,
+            "notification_suppression": "not lifted by this association",
+        }
         doc.event_id = event_id
         if doc.fiscal_period_end:
             ev.period_end = doc.fiscal_period_end

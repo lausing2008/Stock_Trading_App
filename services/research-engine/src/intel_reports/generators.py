@@ -567,9 +567,22 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
     # The issuer's own release, joined by period rather than by event id.
     _doc_period = None
     _fiscal = fields.get("source_confirmed_fiscal_period")
-    fields.update(D.official_release(session, book, stock.id, period_end=_doc_period,
-                                     report_date=event.report_date, cutoff=now,
-                                     event_id=event.id))
+    _release_fields, _primary_doc = D.official_release(
+        session, book, stock.id, period_end=_doc_period,
+        report_date=event.report_date, cutoff=now, event_id=event.id)
+    fields.update(_release_fields)
+
+    # RECONCILE, DO NOT MERELY ATTACH. Until this ran, the release sat in its own field while
+    # the report's primary metrics still said "no revenue actual on file" and "no confirmed
+    # fiscal period is stored" — one report, two answers, and a reader (or a narrator) left to
+    # choose between them.
+    if _primary_doc is not None:
+        _confirmed = D.confirmed_fiscal_period(fields, _primary_doc)
+        if _confirmed is not None:
+            fields["fiscal_period"] = _confirmed
+        if getattr(_primary_doc, "facts", None):
+            D.reconcile_into_metrics(fields, _primary_doc.facts,
+                                     document_id=_primary_doc.id)
     if document_association is not None:
         fields["document_association"] = document_association
 
@@ -591,9 +604,16 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
     fields["three_verdicts"] = interpreted({
         "business_result_vs_expectations": "see the surprise table; basis is unverified",
         "forward_outlook": "guidance unavailable, so the forward verdict cannot be formed",
-        "market_reaction": ((reaction["return_1d"].value or {}).get("pct")
-                            if reaction["return_1d"].state is FieldState.OK
-                            else "not yet matured"),
+        # The number alone invites being read as an isolated earnings reaction. It is a
+        # close-to-close return over a window that can span more than one session and can
+        # include trading BEFORE the announcement, so it travels with its window.
+        "market_reaction": (
+            {"pct": (reaction["return_1d"].value or {}).get("pct"),
+             "window": (reaction["return_1d"].value or {}).get("window"),
+             "caveat": "a close-to-close return over the window named, which may span more "
+                       "than one interval and include pre-announcement trading; it is not an "
+                       "isolated earnings reaction"}
+            if reaction["return_1d"].state is FieldState.OK else "not yet matured"),
         "note": "these are three separate verdicts; a beat, good guidance and a positive "
                 "reaction routinely disagree and are not collapsed into one score",
     })
@@ -624,11 +644,15 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
         "revenue_surprise_pct": (TimeFrame.AT_EVENT, Section.METRICS,
                                  "Revenue versus expectation"),
         "accounting_basis":  (TimeFrame.AT_EVENT, Section.LIMITATIONS, "Accounting basis"),
-        "return_1d":         (TimeFrame.AT_EVENT, Section.METRICS, "Share price around the release"),
-        "return_5d":         (TimeFrame.AT_EVENT, Section.METRICS, "Share price, five sessions"),
+        "return_1d":         (TimeFrame.AT_EVENT, Section.METRICS,
+                              "Share price, close-to-close across the release"),
+        "return_5d":         (TimeFrame.AT_EVENT, Section.METRICS,
+                              "Share price, five sessions across the release"),
         "official_release":  (TimeFrame.AT_EVENT, Section.SOURCES, "Official release"),
         "official_figures":  (TimeFrame.AT_EVENT, Section.METRICS, "Figures from the release"),
-        "guidance_change":   (TimeFrame.AT_EVENT, Section.METRICS, "Guidance change"),
+        "guidance_current":  (TimeFrame.AT_EVENT, Section.METRICS,
+                              "Guidance issued with these results"),
+        "guidance_change":   (TimeFrame.AT_EVENT, Section.INTERPRETATION, "Guidance change"),
         "management_commentary": (TimeFrame.AT_EVENT, Section.INTERPRETATION,
                                   "Management commentary"),
         "pre_report_link":   (TimeFrame.AT_EVENT, Section.SOURCES, "Frozen pre-earnings report"),

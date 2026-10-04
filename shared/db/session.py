@@ -173,6 +173,26 @@ def _run_migrations() -> None:  # noqa: C901
             "CREATE INDEX IF NOT EXISTS ix_earnings_notification_suppressed "
             "ON earnings_events (notification_suppressed_at)"))
 
+        # A cross-subject correction pointer. `supersedes_id` only links versions of one
+        # subject, so a report describing the WRONG EVENT could never point at its replacement.
+        conn.execute(text(
+            "ALTER TABLE intelligence_reports ADD COLUMN IF NOT EXISTS corrected_by_id INTEGER"))
+        conn.execute(text(
+            "ALTER TABLE intelligence_reports ADD COLUMN IF NOT EXISTS correction JSON"))
+
+        # Association evidence and the two separate hashes. `content_hash` widens because its
+        # value is now prefixed with WHAT it covers; a bare digest could not distinguish a
+        # transcription digest from a bytes digest, and the two support different claims.
+        conn.execute(text(
+            "ALTER TABLE issuer_documents ALTER COLUMN content_hash TYPE VARCHAR(80)"))
+        conn.execute(text(
+            "ALTER TABLE issuer_documents ADD COLUMN IF NOT EXISTS "
+            "source_bytes_hash VARCHAR(80)"))
+        conn.execute(text(
+            "ALTER TABLE issuer_documents ADD COLUMN IF NOT EXISTS facts_hash VARCHAR(80)"))
+        conn.execute(text(
+            "ALTER TABLE issuer_documents ADD COLUMN IF NOT EXISTS association JSON"))
+
         conn.execute(text("""
             CREATE UNIQUE INDEX IF NOT EXISTS ux_intel_subject_type_owner_version
             ON intelligence_reports (subject_key, report_type, coalesce(user_id, -1), version)

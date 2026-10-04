@@ -3497,6 +3497,20 @@ class IntelligenceReport(Base):
     pre_report_id: Mapped[int | None] = mapped_column(
         ForeignKey("intelligence_reports.id", ondelete="SET NULL"), nullable=True)
 
+    #: A CROSS-SUBJECT correction. `supersedes_id` can only link versions of the SAME subject,
+    #: so when a report turns out to describe the wrong event entirely, the newer report has a
+    #: different `subject_key` and the two can never be linked by it. Report #11 described MU's
+    #: June quarter as the latest results while the September release existed; #12 describes
+    #: September. Nothing connected them, so a reader of #11 had no way to learn it was wrong.
+    #:
+    #: This is METADATA, not a content change: the superseded snapshot's `payload` is never
+    #: touched, because a frozen report whose contents can change is not evidence. It is set by
+    #: an explicit act with a stated reason, never inferred.
+    corrected_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("intelligence_reports.id", ondelete="SET NULL"), nullable=True)
+    #: Why, and by whom — the same durable-evidence rule the issuer-document association follows.
+    correction: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     status: Mapped[str] = mapped_column(String(16), default="partial")
     #: pre/post earnings only: FIRST_FLASH | RECONCILED_RESULTS | CALL_UPDATE | SESSION_REVIEW
     stage: Mapped[str | None] = mapped_column(String(24), nullable=True)
@@ -3580,8 +3594,24 @@ class IssuerDocument(Base):
     #: Distinct times, never collapsed: when the issuer published, and when we first held it.
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     retrieved_at: Mapped[datetime] = mapped_column(DateTime)
-    #: Identity of the bytes, so a silent edit at the source is detectable.
-    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: WHAT WAS HASHED IS PART OF THE HASH. This column was documented as "identity of the
+    #: bytes, so a silent edit at the source is detectable" while it actually held a digest of
+    #: the EXTRACTED FACTS — which detects a change in our own transcription and is blind to the
+    #: issuer silently editing the release. The value is therefore prefixed with what it covers
+    #: (`sha256-bytes:` or `sha256-facts:`) so the two can never again be read as the same claim.
+    content_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    #: The retrieved document's own bytes. NULL when the document was transcribed rather than
+    #: downloaded — in which case no silent-edit detection is possible and nothing pretends it is.
+    source_bytes_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    #: The extracted figures, hashed separately. A re-extraction that changes a number changes
+    #: this and leaves `source_bytes_hash` alone, which is precisely the distinction that matters.
+    facts_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+    #: DURABLE ASSOCIATION EVIDENCE. Who linked this document to an event, why, when, and what
+    #: the event's values were BEFORE the link overwrote them. This used to exist only as a log
+    #: line and an `event_id`, so months later the row asserted an identity with no record of
+    #: who asserted it, on what grounds, or what it replaced — an unauditable correction.
+    association: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     #: Extracted figures, each carrying its own basis/units/citation. Never a bare number.
     facts: Mapped[dict] = mapped_column(JSON, default=dict)

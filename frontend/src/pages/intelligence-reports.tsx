@@ -388,6 +388,34 @@ export default function IntelligenceReportsPage() {
           </div>
         )}
 
+        {/* A CROSS-SUBJECT correction. Louder than the version banner on purpose: a later
+            VERSION refines the same event, whereas this says the report in front of you is
+            about the wrong event entirely. */}
+        {report && report.corrected_by && (
+          <div style={{ padding: '13px 16px', borderRadius: '10px', marginBottom: '12px',
+                        background: 'rgba(244,63,94,0.10)',
+                        border: '1px solid rgba(244,63,94,0.40)', color: '#fecdd3',
+                        fontSize: '13px', lineHeight: 1.55 }}>
+            <strong>This report describes a different event than the one now understood to be
+            current.</strong>{' '}
+            {report.corrected_by.correction?.reason}
+            {' '}Its contents are preserved exactly as issued and have not been edited.
+            <button onClick={() => openVersion(report.corrected_by!.report_id)} style={{
+              marginLeft: '8px', padding: '3px 9px', borderRadius: '6px', cursor: 'pointer',
+              fontSize: '12px', background: 'rgba(244,63,94,0.18)', color: '#fda4af',
+              border: '1px solid rgba(244,63,94,0.45)' }}>
+              Open the corrected report #{report.corrected_by.report_id}
+            </button>
+            {report.corrected_by.correction?.actor && (
+              <div style={{ marginTop: '6px', fontSize: '11px', color: '#fda4af' }}>
+                Recorded by {report.corrected_by.correction.actor}
+                {report.corrected_by.correction.recorded_at
+                  ? ` on ${report.corrected_by.correction.recorded_at.slice(0, 10)}` : ''}
+              </div>
+            )}
+          </div>
+        )}
+
         {report && report.contract_is_current === false && report.contract_note && (
           <div style={{ padding: '12px 15px', borderRadius: '10px', marginBottom: '12px',
                         background: 'rgba(100,116,139,0.12)',

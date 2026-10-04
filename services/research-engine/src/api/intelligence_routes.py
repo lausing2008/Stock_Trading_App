@@ -61,6 +61,22 @@ def _forward_links(session, r: IntelligenceReport) -> dict:
         "contract_is_current": r.contract_version == CONTRACT_VERSION,
         "current_contract_version": CONTRACT_VERSION,
     }
+    # A CROSS-SUBJECT correction cannot come through `supersedes_id`: the replacement describes
+    # a DIFFERENT event, so it has a different subject key and is a first version of its own.
+    # Without this, a report about the wrong quarter stays silently wrong forever.
+    if getattr(r, "corrected_by_id", None):
+        newer = session.get(IntelligenceReport, r.corrected_by_id)
+        out["corrected_by"] = {
+            "report_id": r.corrected_by_id,
+            "subject_key": getattr(newer, "subject_key", None),
+            "generated_at": (newer.generated_at.isoformat()
+                             if newer is not None and newer.generated_at else None),
+            "correction": getattr(r, "correction", None),
+            "note": "this snapshot describes a different event than the one now understood to "
+                    "be current. Its contents are preserved exactly as issued and are NOT "
+                    "edited; the corrected report is linked above.",
+        }
+
     if not out["contract_is_current"]:
         out["contract_note"] = (
             f"this snapshot was written under report contract v{r.contract_version}; the current "
@@ -80,6 +96,7 @@ def _serialise(r: IntelligenceReport, *, include_payload: bool = True) -> dict:
         "version": r.version,
         "supersedes_id": r.supersedes_id,
         "pre_report_id": r.pre_report_id,
+        "corrected_by_id": getattr(r, "corrected_by_id", None),
         "status": r.status,
         "stage": r.stage,
         "contract_version": r.contract_version,

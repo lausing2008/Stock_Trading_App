@@ -128,8 +128,14 @@ def record_document(book: EvidenceBook, doc: IssuerDocument) -> str:
 
 def official_release(session, book: EvidenceBook, stock_id: int, *,
                      period_end: date | None, report_date: date | None,
-                     cutoff: datetime, event_id: int | None = None) -> dict[str, Field]:
-    """The official release attached to a report, or a named reason there is none."""
+                     cutoff: datetime, event_id: int | None = None):
+    """The official release attached to a report, or a named reason there is none.
+
+    Returns (fields, primary_document_or_None). The document itself is returned, not just
+    rendered into fields, because the caller must reconcile its figures into the report's
+    primary metrics — a release that is displayed but not reconciled is how one report came
+    to say both "$54.23B" and "revenue unavailable".
+    """
     docs, quality = documents_for_period(session, stock_id, period_end=period_end,
                                          report_date=report_date, cutoff=cutoff,
                                          event_id=event_id)
@@ -140,7 +146,7 @@ def official_release(session, book: EvidenceBook, stock_id: int, *,
                 "the provider's earnings row, which is not the issuer's own release."),
             "source_confirmed_fiscal_period": unavailable(
                 "no issuer document is stored, so the fiscal period cannot be source-confirmed"),
-        }
+        }, None
 
     primary = docs[0]
     out: dict[str, Field] = {}
@@ -157,7 +163,7 @@ def official_release(session, book: EvidenceBook, stock_id: int, *,
                 "the candidate document carries no fiscal period end"),
             "official_figures": unavailable(
                 "no document is confirmed for this period, so no official figures are used"),
-        }
+        }, None
     out["official_release"] = observed(
         {"document_id": primary.id, "type": primary.document_type, "title": primary.title,
          "publisher": primary.publisher, "url": primary.source_url,
@@ -188,7 +194,135 @@ def official_release(session, book: EvidenceBook, stock_id: int, *,
     else:
         out["official_figures"] = unavailable(
             "the document is stored but no figures have been extracted from it")
-    return out
+    return out, primary
+
+
+#: Which document fact answers which report metric. Named explicitly rather than matched by
+#: string similarity: "revenue" and "guidance_q1_revenue" are both revenue and only one of them
+#: is the reported actual.
+_FACT_TO_METRIC = {
+    "revenue": "revenue_actual",
+    "eps_adjusted": "eps_actual",
+}
+
+
+def reconcile_into_metrics(fields: dict, doc_facts: dict, *, document_id: int) -> None:
+    """Promote source-backed figures into the report's PRIMARY metrics, in place.
+
+    THE DEFECT THIS CLOSES. The release was attached and the report still said
+    `revenue_actual: UNAVAILABLE` directly beneath `official_figures` showing revenue of
+    $54.23B. Two fields of one report answering the same question differently is worse than
+    either answer alone, and a narrator reading that report would have to pick one.
+
+    PROVENANCE TRAVELS WITH THE VALUE. A provider disagreement is preserved rather than
+    overwritten: where both exist and differ, both are shown with the issuer's marked
+    authoritative, because a silent overwrite destroys the evidence that they ever disagreed.
+
+    UNITS ARE NOT ASSUMED TO MATCH. The stored estimate carries no units at all. The issuer
+    reports revenue in dollars and states so; the provider's row may be in dollars, millions or
+    billions. Dividing one by the other across an unestablished unit boundary is how a 100x
+    error gets printed as a surprise percentage, so the surprise is NOT recomputed against the
+    issuer's figure — it keeps saying which actual produced it, and when that is no longer the
+    actual shown above, it says that too.
+    """
+    from intelligence.report_contract import (Field, FieldState, StatementClass, observed,
+                                              unknown)
+
+    for fact_key, metric in _FACT_TO_METRIC.items():
+        fact = doc_facts.get(fact_key)
+        if not isinstance(fact, dict) or fact.get("value") is None:
+            continue
+        prior = fields.get(metric)
+        provider = prior.value if prior is not None and prior.state is FieldState.OK else None
+        value = {"value": fact["value"], "units": fact.get("units"),
+                 "basis": fact.get("basis"), "period": fact.get("period"),
+                 "source": "the issuer's own release", "document_id": document_id}
+        if provider is not None and provider != fact["value"]:
+            value["provider_value"] = provider
+            value["conflict"] = ("the provider's row and the issuer's own release carry "
+                                 "different figures, possibly only different units. The "
+                                 "issuer's is authoritative here; the provider's is kept so "
+                                 "the disagreement stays visible rather than being overwritten")
+        fields[metric] = observed(
+            value, units=fact.get("units"),
+            evidence_ids=[f"issuer_document:{document_id}"],
+            label=getattr(prior, "label", None))
+
+        # The surprise was computed from the provider's actual against an estimate of unknown
+        # units and unknown basis. Say so, rather than letting it read as a surprise against
+        # the sourced figure now shown beside it.
+        name = metric.rsplit("_", 1)[0]
+        surprise = fields.get(f"{name}_surprise_pct")
+        if surprise is not None and surprise.state is FieldState.OK:
+            fields[f"{name}_surprise_pct"] = Field(
+                value={**(surprise.value if isinstance(surprise.value, dict) else
+                          {"value": surprise.value}),
+                       "computed_against": provider,
+                       "note": ("computed from the PROVIDER's actual, not the issuer figure "
+                                "shown above. The stored estimate carries neither units nor "
+                                "an accounting basis, so it cannot be divided into the "
+                                "issuer's figure without assuming both")},
+                state=FieldState.OK, statement=StatementClass.DETERMINISTIC_CALCULATION,
+                units=surprise.units, evidence_ids=list(surprise.evidence_ids),
+                label=surprise.label)
+        elif surprise is not None:
+            fields[f"{name}_surprise_pct"] = unknown(
+                "an issuer figure is available above, but the stored estimate carries no units "
+                "and no accounting basis, so a surprise against it would assume both",
+                label=surprise.label)
+
+    # Guidance: what the company said is AVAILABLE; whether it was RAISED is a different claim
+    # needing a comparable prior forecast for the same period on the same basis.
+    guidance = {k: v for k, v in doc_facts.items() if k.startswith("guidance")}
+    if guidance:
+        fields["guidance_current"] = observed(
+            guidance, evidence_ids=[f"issuer_document:{document_id}"],
+            label="Guidance issued with these results")
+        fields["guidance_change"] = Field(
+            value={"current_guidance_available": True, "comparison": "not established"},
+            state=FieldState.UNKNOWN,
+            reason=("the company's CURRENT guidance is shown above, from its own release. "
+                    "Whether it was RAISED, maintained, lowered or first-issued is a different "
+                    "claim: it needs the PRIOR guidance for the SAME target period on the SAME "
+                    "accounting basis, which is not stored. The previous quarter's guidance for "
+                    "a different quarter is not that comparison."),
+            statement=StatementClass.INTERPRETATION,
+            label="Guidance change")
+
+    # The accounting basis is no longer uniformly unknown: the issuer stated one per figure.
+    stated = {k: v.get("basis") for k, v in doc_facts.items()
+              if isinstance(v, dict) and v.get("basis")}
+    if stated:
+        fields["accounting_basis"] = Field(
+            value={"stated_by_issuer_per_metric": stated,
+                   "estimate_basis": "UNKNOWN",
+                   "note": "the issuer states a basis for each figure above. The basis of the "
+                           "stored ESTIMATE is still unknown, so a surprise computed against "
+                           "it remains a factual difference and NOT a verified beat."},
+            state=FieldState.OK, statement=StatementClass.OBSERVED_FACT,
+            evidence_ids=[f"issuer_document:{document_id}"], label="Accounting basis")
+
+
+def confirmed_fiscal_period(fields: dict, primary) -> "Field | None":
+    """The source-confirmed identity, as the answer to `fiscal_period` itself.
+
+    `A.fiscal_period()` correctly refuses the stored label, which is derived from the calendar
+    month and mislabels every non-calendar fiscal year. But once an issuer document confirms the
+    period, the report carried both the refusal AND the confirmation, in adjacent fields: "no
+    confirmed period is stored" directly above "FY2026 Q4, confirmed by the issuer". The refusal
+    is only correct while nothing confirms it.
+    """
+    from intelligence.report_contract import observed
+    if not getattr(primary, "fiscal_period_end", None):
+        return None
+    return observed(
+        {"label": primary.fiscal_label,
+         "period_end": primary.fiscal_period_end.isoformat(),
+         "confirmed_by": primary.fiscal_source or primary.source_url,
+         "note": "from the issuer's own release. The platform's stored fiscal_quarter is "
+                 "derived from the calendar month and is NOT used here."},
+        evidence_ids=[f"issuer_document:{primary.id}"],
+        label="Fiscal period")
 
 
 def assess_event_association(session, stock_id: int, *, now: datetime,

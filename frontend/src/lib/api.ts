@@ -1333,6 +1333,14 @@ export type IntelReport = {
   changes_since_previous?: IntelDiff;
   /** Resolved forward, so a superseded snapshot can announce its own correction. */
   superseded_by?: { report_id: number; version: number; generated_at: string | null }[] | null;
+  corrected_by_id?: number | null;
+  corrected_by?: {
+    report_id: number;
+    subject_key?: string | null;
+    generated_at?: string | null;
+    correction?: { actor?: string; reason?: string; recorded_at?: string } | null;
+    note?: string;
+  } | null;
   contract_is_current?: boolean;
   current_contract_version?: number;
   contract_note?: string;
