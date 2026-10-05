@@ -84,10 +84,10 @@ def test_the_structure_finding_carries_its_own_counterevidence_and_an_invalidati
     s = a["why_it_matters"][0]
     assert "above both the 20- and 50-bar averages" in s["supports"]
     assert "12.18%" in s["supports"]
-    assert "-2.05% over the latest bar" in s["contradicts"]
-    assert "-0.68% over five bars" in s["contradicts"]
+    assert "-2.05% over 1 bar" in s["contradicts"]
+    assert "-0.68% over 5 bars" in s["contradicts"]
     assert "does not establish whether the pullback reverses or deepens" in s["contradicts"]
-    assert s["invalidated_by"] == "a daily close below 1025.0"
+    assert "1025.0" in s["invalidated_by"]
 
 
 def test_a_structure_with_no_recent_weakness_does_not_invent_any():
@@ -239,3 +239,121 @@ def test_post_earnings_without_a_release_reports_insufficient_evidence():
                      eps_actual=unavailable("no eps actual on file"))
     a = post_earnings_assessment(f, subject="MU").value
     assert "insufficient evidence" in a["assessment"]
+
+
+# ================================================= screenshot-round corrections
+
+def test_the_headline_is_derived_from_returns_not_only_from_the_average_structure():
+    """The real US benchmark: above both averages with a 20-bar return of -0.46%. Calling that
+    "longer-window strength" asserts the opposite of the evidence."""
+    f = _market_fields()
+    f["return_20_bars"] = calculated({"pct": -0.46}, units="pct")
+    f["return_63_bars"] = calculated({"pct": 2.44}, units="pct")
+    f["return_1_bars"] = calculated({"pct": 0.74}, units="pct")
+    f["return_5_bars"] = calculated({"pct": -0.22}, units="pct")
+    a = outlook_assessment(f, subject="The US benchmark", report_type="market_outlook").value
+    assert "longer-window strength" not in a["assessment"]
+    assert "structure and returns disagree" in a["assessment"]
+
+
+def test_two_instruments_with_different_returns_get_different_headlines():
+    mkt = _market_fields()
+    mkt["return_20_bars"] = calculated({"pct": -0.46}, units="pct")
+    mkt["return_63_bars"] = calculated({"pct": 2.44}, units="pct")
+    a_mkt = outlook_assessment(mkt, subject="The US benchmark",
+                               report_type="market_outlook").value
+    a_mu = outlook_assessment(_mu_fields(), subject="MU", report_type="stock_outlook").value
+    assert a_mkt["assessment"] != a_mu["assessment"]
+    assert "longer-window strength" in a_mu["assessment"]
+
+
+def test_the_supporting_windows_are_always_shown_with_the_claim():
+    """A claim about a longer window that does not show the window's return is unsupported."""
+    for f, subject in ((_mu_fields(), "MU"), (_market_fields(), "The US benchmark")):
+        a = outlook_assessment(f, subject=subject, report_type="stock_outlook").value
+        assert "Over the longer windows:" in a["why_it_matters"][0]["supports"]
+        assert "over 20 bars" in a["why_it_matters"][0]["supports"]
+
+
+def test_the_invalidation_is_scoped_to_the_condition_it_ends():
+    """"Invalidated below 1025" read as though it ended every bullish case."""
+    a = outlook_assessment(_mu_fields(), subject="MU", report_type="stock_outlook").value
+    inv = a["why_it_matters"][0]["invalidated_by"]
+    assert "above-20-bar-average condition" in inv
+    assert "NOT every longer-term reading" in inv
+    assert "recomputed each session" in inv, "frozen level vs live average is stated"
+
+
+def test_a_data_gap_is_not_listed_as_a_market_trigger():
+    """Obtaining a volatility feed is not something the market does."""
+    a = outlook_assessment(_market_fields(), subject="The US benchmark",
+                           report_type="market_outlook").value
+    joined = " ".join(w["trigger"] for w in a["watch_next"])
+    assert "becoming available" not in joined
+    assert a["data_needed"], "gaps are listed separately as data to obtain"
+    assert "volatility" in a["data_needed"]
+
+
+def test_participation_refuses_a_direction_when_the_populations_differ():
+    """Different denominators make the difference partly a coverage change."""
+    a = outlook_assessment(_market_fields(), subject="X", report_type="market_outlook",
+                           prior_participation=55.6, prior_covered=120).value
+    p = [f for f in a["why_it_matters"] if "Participation" in f["finding"]][0]
+    assert "not like-for-like" in p["contradicts"]
+    assert "broadening" not in p["supports"] and "narrowing" not in p["supports"]
+
+
+def test_participation_reports_narrowing_when_the_populations_match():
+    a = outlook_assessment(_market_fields(), subject="X", report_type="market_outlook",
+                           prior_participation=55.6, prior_covered=144).value
+    p = [f for f in a["why_it_matters"] if "Participation" in f["finding"]][0]
+    assert "narrowing from 55.6%" in p["supports"] and "-1.4pp" in p["supports"]
+
+
+def test_the_lead_is_three_readable_lines():
+    a = outlook_assessment(_mu_fields(), subject="MU", report_type="stock_outlook").value
+    assert a["assessment"] and a["main_counterevidence"] and a["next_observation"]
+    assert len(a["main_counterevidence"]) <= 400
+    assert "1025.0" in a["next_observation"], "the next observation is specific"
+
+
+# ---------------------------------------------------------------- pre-earnings opening
+
+def _pre_fields(**over):
+    f = {
+        "consensus_eps": unavailable("no EPS estimate on file to freeze"),
+        "consensus_revenue": unavailable("no revenue estimate on file to freeze"),
+        "prior_guidance": unavailable("company guidance is not stored"),
+        "fiscal_period": unknown("inferred from the period-end calendar month"),
+        "accounting_basis": unknown("the platform does not store the basis"),
+        "options_expected_move": unavailable("no option chain with a post-release expiry"),
+        "snapshot_timing": observed({"calendar_days_before_scheduled_release": 80,
+                                     "stage": "early_preparation"}),
+    }
+    f.update(over)
+    return f
+
+
+def test_pre_earnings_states_that_the_setup_cannot_be_evaluated_yet():
+    from intel_reports.interpretation import pre_earnings_assessment
+    a = pre_earnings_assessment(_pre_fields(), subject="MU",
+                                event_date="2026-12-23", days_out=80).value
+    assert "CANNOT be evaluated yet" in a["assessment"]
+    assert "nothing a result could surprise against" in a["assessment"]
+    assert any("consensus estimate" in w["watch"] for w in a["watch_next"])
+
+
+def test_pre_earnings_flags_an_early_snapshot_as_not_the_pre_release_reference():
+    from intel_reports.interpretation import pre_earnings_assessment
+    a = pre_earnings_assessment(_pre_fields(), subject="MU", event_date="2026-12-23").value
+    early = [f for f in a["why_it_matters"] if "EARLY snapshot" in f["finding"]]
+    assert early, "an 80-day-out snapshot must say what it is not"
+    assert "NOT the immediate pre-release reference" in early[0]["contradicts"]
+
+
+def test_pre_earnings_changes_its_conclusion_once_expectations_exist():
+    from intel_reports.interpretation import pre_earnings_assessment
+    f = _pre_fields(consensus_eps=observed(2.5), consensus_revenue=observed(1e9))
+    a = pre_earnings_assessment(f, subject="MU", event_date="2026-12-23").value
+    assert "CANNOT be evaluated" not in a["assessment"]
+    assert "guidance change will not be measurable" in a["assessment"]

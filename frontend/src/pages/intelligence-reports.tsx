@@ -129,92 +129,128 @@ function FieldValue({ f }: { f: IntelField }) {
 }
 
 type AssessmentValue = {
-  assessment?: string; horizon?: string; counterargument?: string;
+  assessment?: string; main_counterevidence?: string; next_observation?: string;
+  horizon?: string; counterargument?: string;
   why_it_matters?: { finding?: string; supports?: string; contradicts?: string;
-                     invalidated_by?: string }[];
+                     invalidated_by?: string; evidence_ids?: string[] }[];
   watch_next?: { watch?: string; trigger?: string; would_change?: string }[];
-  what_limits_this?: string[]; other_unavailable_inputs?: number;
+  what_limits_this?: string[]; data_needed?: string[]; other_unavailable_inputs?: number;
 };
 
-/** Assessment, then why, then the case against, then what to watch.
+/** Three short lines first; the working behind them on request.
  *
- *  The first screen used to be a data summary and a missing-input list. A reader should be able
- *  to finish it and say what the assessment is and what they are watching for next. */
+ *  The opening table was denser than the fields it replaced, which defeats its purpose. A
+ *  reader should finish three lines able to state the assessment, the strongest thing against
+ *  it, and what to watch — and only then choose to open the reasoning. */
 function ReadThisFirst({ v }: { v: AssessmentValue }) {
+  const [open, setOpen] = useState(false);
   const H = ({ children }: { children: React.ReactNode }) => (
     <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em',
                   textTransform: 'uppercase', color: '#64748b', marginBottom: '5px' }}>
       {children}</div>);
+  const Line = ({ k, children }: { k: string; children: React.ReactNode }) => (
+    <div style={{ display: 'flex', gap: '10px', alignItems: 'baseline', flexWrap: 'wrap' }}>
+      <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.07em',
+                     textTransform: 'uppercase', color: '#64748b', minWidth: '118px' }}>{k}</span>
+      <span style={{ flex: '1 1 260px', fontSize: '13.5px', color: '#e2e8f0',
+                     lineHeight: 1.55 }}>{children}</span>
+    </div>);
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-      <div>
-        <div style={{ fontSize: '15px', fontWeight: 600, color: '#e2e8f0', lineHeight: 1.5 }}>
-          {v.assessment}
-        </div>
-        {v.horizon && (
-          <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>{v.horizon}</div>
-        )}
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <Line k="Assessment">{v.assessment}</Line>
+      {v.main_counterevidence && (
+        <Line k="Counterevidence"><span style={{ color: '#fcd34d' }}>
+          {v.main_counterevidence}</span></Line>)}
+      {v.next_observation && (
+        <Line k="Next observation"><span style={{ color: '#a5b4fc' }}>
+          {v.next_observation}</span></Line>)}
+      {v.horizon && (
+        <div style={{ fontSize: '11px', color: '#64748b' }}>{v.horizon}</div>)}
 
-      {!!v.why_it_matters?.length && (
-        <div>
-          <H>Why</H>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {v.why_it_matters.map((f, i) => (
-              <div key={i} style={{ borderLeft: '2px solid rgba(99,102,241,0.45)',
-                                    paddingLeft: '10px' }}>
-                <div style={{ fontSize: '13px', color: '#c7d2fe', fontWeight: 600 }}>
-                  {f.finding}</div>
-                {f.supports && <div style={{ fontSize: '12.5px', color: '#cbd5e1',
-                                             lineHeight: 1.55, marginTop: '3px' }}>
-                  {f.supports}.</div>}
-                {f.contradicts && <div style={{ fontSize: '12.5px', color: '#fcd34d',
-                                                lineHeight: 1.55, marginTop: '3px' }}>
-                  Against: {f.contradicts}.</div>}
-                {f.invalidated_by && <div style={{ fontSize: '11.5px', color: '#94a3b8',
-                                                   marginTop: '3px' }}>
-                  Invalidated by {f.invalidated_by}.</div>}
+      <button onClick={() => setOpen(o => !o)} style={{
+        alignSelf: 'flex-start', marginTop: '2px', padding: '3px 10px', borderRadius: '6px',
+        cursor: 'pointer', fontSize: '11.5px', background: 'rgba(99,102,241,0.14)',
+        color: '#a5b4fc', border: '1px solid rgba(99,102,241,0.32)' }}>
+        {open ? 'Hide the reasoning' : 'Show the reasoning'}
+      </button>
+
+      {open && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '15px',
+                      marginTop: '4px' }}>
+          {!!v.why_it_matters?.length && (
+            <div>
+              <H>Why</H>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {v.why_it_matters.map((f, i) => (
+                  <div key={i} style={{ borderLeft: '2px solid rgba(99,102,241,0.45)',
+                                        paddingLeft: '10px' }}>
+                    <div style={{ fontSize: '13px', color: '#c7d2fe', fontWeight: 600 }}>
+                      {f.finding}</div>
+                    {f.supports && <div style={{ fontSize: '12.5px', color: '#cbd5e1',
+                                                 lineHeight: 1.55, marginTop: '3px' }}>
+                      {f.supports}.</div>}
+                    {f.contradicts && <div style={{ fontSize: '12.5px', color: '#fcd34d',
+                                                    lineHeight: 1.55, marginTop: '3px' }}>
+                      Against: {f.contradicts}.</div>}
+                    {f.invalidated_by && <div style={{ fontSize: '11.5px', color: '#94a3b8',
+                                                       marginTop: '3px' }}>
+                      Invalidated by {f.invalidated_by}.</div>}
+                    {/* Raw ids are provenance, not reading material. */}
+                    {!!f.evidence_ids?.length && (
+                      <details style={{ marginTop: '3px' }}>
+                        <summary style={{ cursor: 'pointer', fontSize: '11px',
+                                          color: '#64748b' }}>
+                          {f.evidence_ids.length} source record(s)</summary>
+                        <div style={{ fontSize: '10.5px', color: '#475569', marginTop: '3px',
+                                      overflowWrap: 'anywhere' }}>
+                          {f.evidence_ids.join(', ')}</div>
+                      </details>
+                    )}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </div>
-      )}
+            </div>
+          )}
 
-      {v.counterargument && (
-        <div>
-          <H>Counterargument</H>
-          <div style={{ fontSize: '12.5px', color: '#cbd5e1', lineHeight: 1.55 }}>
-            {v.counterargument}</div>
-        </div>
-      )}
+          {v.counterargument && (
+            <div><H>Counterargument</H>
+              <div style={{ fontSize: '12.5px', color: '#cbd5e1', lineHeight: 1.55 }}>
+                {v.counterargument}</div></div>
+          )}
 
-      {!!v.watch_next?.length && (
-        <div>
-          <H>Watch next</H>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
-            {v.watch_next.map((w, i) => (
-              <div key={i} style={{ fontSize: '12.5px', color: '#cbd5e1', lineHeight: 1.5 }}>
-                <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{w.watch}</span>
-                {w.trigger && <> — trigger: <span style={{ color: '#a5b4fc' }}>{w.trigger}</span></>}
-                {w.would_change && <div style={{ fontSize: '11.5px', color: '#94a3b8' }}>
-                  {w.would_change}</div>}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+          {!!v.watch_next?.length && (
+            <div><H>Watch next — market developments</H>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+                {v.watch_next.map((w, i) => (
+                  <div key={i} style={{ fontSize: '12.5px', color: '#cbd5e1', lineHeight: 1.5 }}>
+                    <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{w.watch}</span>
+                    {w.trigger && <> — trigger: <span style={{ color: '#a5b4fc' }}>
+                      {w.trigger}</span></>}
+                    {w.would_change && <div style={{ fontSize: '11.5px', color: '#94a3b8' }}>
+                      {w.would_change}</div>}
+                  </div>
+                ))}
+              </div></div>
+          )}
 
-      {!!v.what_limits_this?.length && (
-        <div>
-          <H>What limits this</H>
-          <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '12.5px', color: '#cbd5e1',
-                       lineHeight: 1.55 }}>
-            {v.what_limits_this.map((l, i) => <li key={i}>{l}</li>)}
-          </ul>
-          {!!v.other_unavailable_inputs && (
-            <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
-              {v.other_unavailable_inputs} further input(s) are unresolved and do not change this
-              conclusion; they are listed in full further down.
+          {!!v.what_limits_this?.length && (
+            <div><H>What limits this</H>
+              <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '12.5px', color: '#cbd5e1',
+                           lineHeight: 1.55 }}>
+                {v.what_limits_this.map((l, i) => <li key={i}>{l}</li>)}
+              </ul>
+              {!!v.data_needed?.length && (
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '5px' }}>
+                  Data to obtain (not market triggers): {v.data_needed.join(', ')}.
+                </div>
+              )}
+              {!!v.other_unavailable_inputs && (
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '3px' }}>
+                  {v.other_unavailable_inputs} further input(s) are unresolved and do not change
+                  this conclusion; the full list is below.
+                </div>
+              )}
             </div>
           )}
         </div>

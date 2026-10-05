@@ -61,15 +61,30 @@ class Assessment:
     watch_next: list = dc_field(default_factory=list)
     material_limits: list = dc_field(default_factory=list)
     other_limits_count: int = 0
+    #: Inputs the report would need. NOT market triggers — obtaining a volatility feed is not
+    #: something the market does, and listing it beside a price level confuses what to monitor
+    #: with what to build.
+    data_needed: list = dc_field(default_factory=list)
+
+    def lead(self) -> dict:
+        """Three short lines, readable before any table."""
+        counter = (self.findings[0].contradicts.split(";")[0].strip()
+                   if self.findings else "no counterevidence is identified")
+        nxt = (f"{self.watch_next[0].observation} — {self.watch_next[0].trigger}"
+               if self.watch_next else "no specific next observation is defined")
+        return {"assessment": self.verdict,
+                "main_counterevidence": counter[:400],
+                "next_observation": nxt}
 
     def as_dict(self) -> dict:
         return {
-            "assessment": self.verdict,
+            **self.lead(),
             "horizon": self.horizon,
             "why_it_matters": [f.as_dict() for f in self.findings],
             "counterargument": self.counterargument,
             "watch_next": [w.as_dict() for w in self.watch_next],
             "what_limits_this": self.material_limits,
+            "data_needed": self.data_needed,
             "other_unavailable_inputs": self.other_limits_count,
         }
 
@@ -147,52 +162,83 @@ def _limits(fields, report_type: str, keep: int = 3) -> tuple[list[str], int]:
     return named, others
 
 
+def _window_reading(fields) -> dict:
+    """What the RETURN WINDOWS say, separately from where the close sits.
+
+    THE DEFECT THIS CLOSES. The headline was derived from the moving-average structure alone, so
+    the US benchmark — above both averages with a 20-bar return of -0.46% — was described as
+    "longer-window strength". Being above an average and having risen over the window are
+    different facts, and when they disagree that disagreement IS the finding.
+    """
+    r = {n: _pct(fields, f"return_{n}_bars") for n in (1, 5, 20, 63)}
+    longer = [r[n] for n in (20, 63) if r[n] is not None]
+    recent = [r[n] for n in (1, 5) if r[n] is not None]
+    return {
+        "returns": r,
+        "longer_positive": bool(longer) and all(x > 0 for x in longer),
+        "longer_negative": bool(longer) and all(x < 0 for x in longer),
+        "longer_mixed": len(longer) > 1 and not (all(x > 0 for x in longer)
+                                                 or all(x < 0 for x in longer)),
+        "recent_negative": bool(recent) and all(x < 0 for x in recent),
+        "recent_positive": bool(recent) and all(x > 0 for x in recent),
+        "has_longer": bool(longer), "has_recent": bool(recent),
+    }
+
+
+def _windows_text(r: dict, names) -> str:
+    bits = [f"{r['returns'][n]:+.2f}% over {n} bar{'s' if n != 1 else ''}"
+            for n in names if r["returns"].get(n) is not None]
+    return ", ".join(bits)
+
+
 def _structure_finding(fields, subject: str) -> Finding | None:
-    """What the moving-average structure supports, and what argues against it."""
+    """Where the close sits, what the windows say, and where the two disagree."""
     t = _v(fields, "trend_structure")
     if not isinstance(t, dict):
         return None
     above20, above50 = t.get("above_sma20"), t.get("above_sma50")
     sma20 = t.get("sma20")
     both = above20 and above50
-    r1, r5, r20 = (_pct(fields, "return_1_bars"), _pct(fields, "return_5_bars"),
-                   _pct(fields, "return_20_bars"))
-    recent = [x for x in (r1, r5) if x is not None]
-    recent_down = bool(recent) and all(x < 0 for x in recent)
+    w = _window_reading(fields)
 
-    if both:
-        supports = ("the close is above both the 20- and 50-bar averages, which describes a "
-                    "structure that has held over the longer window")
-        if r20 is not None and r20 > 0:
-            supports += f", and the 20-bar return is {r20:+.2f}%"
-    elif above20 or above50:
-        supports = ("the close is above one of its two averages and below the other, which is "
-                    "a structure in transition rather than an established one")
-    else:
-        supports = "the close is below both the 20- and 50-bar averages"
+    # SUPPORTS ALWAYS NAMES ITS WINDOWS. A claim about a longer window that does not show the
+    # window's return is unsupported on its face.
+    where = ("the close is above both the 20- and 50-bar averages" if both else
+             "the close is above one average and below the other" if (above20 or above50) else
+             "the close is below both the 20- and 50-bar averages")
+    longer_txt = _windows_text(w, (20, 63))
+    supports = where + (f". Over the longer windows: {longer_txt}" if longer_txt else "")
 
-    if recent_down and both:
-        contradicts = ("the most recent bars move the other way — " +
-                       ", ".join(filter(None, [f"{r1:+.2f}% over the latest bar" if r1 is not None else None,
-                                               f"{r5:+.2f}% over five bars" if r5 is not None else None])) +
-                       ". That is recent weakness inside a stronger longer-window structure, and "
-                       "it does not establish whether the pullback reverses or deepens")
-    elif both:
-        contradicts = ("a moving-average structure is a description of past bars. It carries no "
-                       "horizon and does not establish what the next bars do")
-    else:
-        contradicts = ("a structure reading alone does not establish direction; it describes "
-                       "where the close sits relative to two averages")
+    against = []
+    recent_txt = _windows_text(w, (1, 5))
+    if w["recent_negative"] and recent_txt:
+        against.append(f"the most recent bars move the other way ({recent_txt}), which is "
+                       f"recent weakness and does not establish whether the pullback reverses "
+                       f"or deepens")
+    if both and (w["longer_negative"] or w["longer_mixed"]):
+        against.append("being ABOVE an average and having RISEN over that window are different "
+                       "facts, and here they disagree — the structure is intact while the "
+                       "longer-window return is not positive")
+    if not against:
+        against.append("a moving-average structure describes past bars. It carries no horizon "
+                       "and does not establish what the next bars do")
 
-    inval = (f"a daily close below {sma20}" if sma20 is not None
-             else "a daily close below the 20-bar average")
+    # THE INVALIDATION IS SCOPED. "Invalidated below 1025" read as though it ended every
+    # bullish case; it ends ONE condition.
+    inval = (f"a completed daily close below the 20-bar average (currently {sma20}) would end "
+             f"the above-20-bar-average condition this finding rests on — NOT every longer-term "
+             f"reading. The average is recomputed each session, so monitor the live average "
+             f"rather than treating {sma20} as a fixed level"
+             if sma20 is not None else
+             "a completed daily close below the 20-bar average, which is recomputed each session")
     return Finding(
         headline=f"{subject}: {t.get('structure', 'structure unavailable')}",
-        supports=supports, contradicts=contradicts, invalidated_by=inval,
+        supports=supports, contradicts="; ".join(against), invalidated_by=inval,
         evidence_ids=tuple((fields.get("trend_structure").evidence_ids or [])[:4]))
 
 
-def _participation_finding(fields, prior_pct: float | None) -> Finding | None:
+def _participation_finding(fields, prior_pct: float | None,
+                           prior_covered: int | None = None) -> Finding | None:
     """Participation is a LEVEL. Direction needs a comparison, and says so when it lacks one."""
     b = _v(fields, "breadth")
     if not isinstance(b, dict):
@@ -206,6 +252,15 @@ def _participation_finding(fields, prior_pct: float | None) -> Finding | None:
                        "broadening or narrowing is UNKNOWN. A level alone cannot support a "
                        "claim that breadth is strengthening")
         inval = "an earlier reading, once available, that shows participation falling"
+    elif prior_covered is not None and covered is not None and prior_covered != covered:
+        # NOT LIKE FOR LIKE. A different number of covered symbols means the two percentages
+        # have different denominators, and their difference is partly a coverage change.
+        contradicts = (f"an earlier reading exists ({prior_pct}%) but covered {prior_covered} "
+                       f"symbols against {covered} now, so the change is not like-for-like and "
+                       f"no direction is claimed from it")
+        inval = "a comparable reading over the same symbol population"
+        return Finding(headline=f"Participation {pct}% of covered symbols",
+                       supports=supports, contradicts=contradicts, invalidated_by=inval)
     else:
         delta = pct - prior_pct
         direction = "broadening" if delta > 0 else ("narrowing" if delta < 0 else "flat")
@@ -242,29 +297,35 @@ def _leadership_finding(fields) -> Finding | None:
 
 
 def outlook_assessment(fields, *, subject: str, report_type: str,
-                       prior_participation: float | None = None) -> Field:
+                       prior_participation: float | None = None,
+                       prior_covered: int | None = None) -> Field:
     """The opening read for a market or stock outlook."""
     findings = [f for f in (_structure_finding(fields, subject),
-                            _participation_finding(fields, prior_participation),
+                            _participation_finding(fields, prior_participation, prior_covered),
                             _leadership_finding(fields)) if f is not None][:3]
     limits, others = _limits(fields, report_type)
 
     t = _v(fields, "trend_structure") or {}
-    r1, r5, r20 = (_pct(fields, "return_1_bars"), _pct(fields, "return_5_bars"),
-                   _pct(fields, "return_20_bars"))
+    w = _window_reading(fields)
     both = t.get("above_sma20") and t.get("above_sma50")
-    recent_down = any(x is not None and x < 0 for x in (r1, r5))
-    if both and recent_down:
+    if not t:
+        verdict = f"{subject}: insufficient evidence — no price structure is on file."
+    elif both and w["longer_positive"] and w["recent_negative"]:
         verdict = (f"{subject}: longer-window strength, recent weakness; near-term direction "
                    f"unresolved.")
+    elif both and w["longer_positive"]:
+        verdict = (f"{subject}: structure and longer-window returns agree; no horizon is "
+                   f"implied.")
+    elif both and w["has_longer"]:
+        # The case that was being mislabelled.
+        verdict = (f"{subject}: above both averages WITHOUT a positive longer-window return — "
+                   f"structure and returns disagree; direction unresolved.")
     elif both:
-        verdict = f"{subject}: structure holding above both averages; no horizon is implied."
+        verdict = f"{subject}: above both averages; no return windows are on file to corroborate."
     elif t.get("above_sma20") or t.get("above_sma50"):
         verdict = f"{subject}: structure in transition between its two averages."
-    elif t:
-        verdict = f"{subject}: below both averages."
     else:
-        verdict = f"{subject}: insufficient evidence — no price structure is on file."
+        verdict = f"{subject}: below both averages."
 
     counter = ("The strongest argument against this reading is that it rests entirely on price "
                "relative to its own averages. " +
@@ -288,17 +349,12 @@ def outlook_assessment(fields, *, subject: str, report_type: str,
                      "a second consecutive fall in participation"),
             would_change="a falling participation reading alongside a holding index would mean "
                          "the advance is narrowing"))
-    if limits:
-        watch.append(Watch(
-            observation=limits[0].split(" — ")[0],
-            trigger="the input becoming available",
-            would_change="it is the gap that most constrains this conclusion"))
-
     a = Assessment(verdict=verdict,
                    horizon=("no horizon is claimed: these are daily-bar observations, and no "
                             "horizon-specific evidence is joined to this report"),
                    findings=findings, counterargument=counter, watch_next=watch[:3],
-                   material_limits=limits, other_limits_count=others)
+                   material_limits=limits, other_limits_count=others,
+                   data_needed=[l.split(" — ")[0] for l in limits])
     return interpreted(a.as_dict(), label="Read this first")
 
 
@@ -379,5 +435,80 @@ def post_earnings_assessment(fields, *, subject: str) -> Field:
         verdict=verdict,
         horizon="at the event; the price observation spans the window named with it",
         findings=findings[:3], counterargument=counter, watch_next=watch[:3],
-        material_limits=limits, other_limits_count=others)
+        material_limits=limits, other_limits_count=others,
+        data_needed=[l.split(" — ")[0] for l in limits])
+    return interpreted(a.as_dict(), label="Read this first")
+
+
+def pre_earnings_assessment(fields, *, subject: str, event_date: str | None = None,
+                            days_out: int | None = None) -> Field:
+    """The early-preparation read: can this report evaluate the setup yet, and if not, what is
+    missing?
+
+    WHY IT EXISTS. The pre-earnings report had no opening at all, so a reader met a wall of
+    UNKNOWN fields with no statement of what the report could or could not yet conclude. "The
+    expectations are not on file" is a conclusion, and a useful one — it says the setup cannot
+    be evaluated and names the input that would change that.
+    """
+    have_eps = _ok(fields, "consensus_eps")
+    have_rev = _ok(fields, "consensus_revenue")
+    have_prior = _ok(fields, "prior_guidance")
+    have_period = _ok(fields, "fiscal_period")
+    findings, watch = [], []
+
+    if not (have_eps or have_rev):
+        verdict = (f"{subject}: the earnings setup CANNOT be evaluated yet — no expectation is "
+                   f"on file to freeze, so there is nothing a result could surprise against.")
+    elif not have_prior:
+        verdict = (f"{subject}: expectations are on file and can be frozen; company guidance is "
+                   f"not, so a guidance change will not be measurable afterwards.")
+    else:
+        verdict = (f"{subject}: expectations and prior guidance are on file; the setup can be "
+                   f"frozen and evaluated after the release.")
+
+    findings.append(Finding(
+        headline="What this report can freeze",
+        supports=("a frozen baseline is what makes 'were we right' answerable afterwards; "
+                  + ", ".join(filter(None, [
+                      "an EPS expectation is on file" if have_eps else None,
+                      "a revenue expectation is on file" if have_rev else None,
+                      "prior company guidance is on file" if have_prior else None]))
+                  or "nothing in the comparison set is on file"),
+        contradicts=("a frozen expectation is not a forecast and carries no probability; it "
+                     "records what was expected, nothing about what will happen"),
+        invalidated_by="the provider revising the estimate before the release, which the "
+                       "frozen copy deliberately does not follow"))
+
+    snap = _v(fields, "snapshot_timing")
+    if isinstance(snap, dict) and snap.get("stage") == "early_preparation":
+        findings.append(Finding(
+            headline=f"This is an EARLY snapshot, {snap.get('calendar_days_before_scheduled_release', days_out)} calendar days before the scheduled release",
+            supports="prices and structure here describe today, not the session before the "
+                     "release; later snapshots are captured as their own versions",
+            contradicts="an early snapshot is NOT the immediate pre-release reference, and a "
+                        "reaction measured against it would include weeks of unrelated trading",
+            invalidated_by="the immediate pre-release snapshot, which supersedes this one for "
+                           "reaction measurement"))
+
+    if not (have_eps or have_rev):
+        watch.append(Watch(
+            observation="the consensus estimate for this event",
+            trigger="an estimate being published and ingested before the release",
+            would_change="it is the single input that makes a surprise definable"))
+    if event_date:
+        watch.append(Watch(
+            observation=f"the release itself on {event_date}",
+            trigger="the issuer publishing results",
+            would_change="it converts every conditional here into a measured outcome"))
+
+    limits, others = _limits(fields, "pre_earnings")
+    counter = ("What most limits this reading: " + (limits[0] if limits else "no material gap") +
+               ". Until that is resolved the report can describe the setup but cannot say "
+               "whether a result would be a surprise.")
+    a = Assessment(verdict=verdict,
+                   horizon=(f"until the scheduled release"
+                            + (f" on {event_date}" if event_date else "")),
+                   findings=findings[:3], counterargument=counter, watch_next=watch[:3],
+                   material_limits=limits, other_limits_count=others,
+                   data_needed=[l.split(" — ")[0] for l in limits])
     return interpreted(a.as_dict(), label="Read this first")

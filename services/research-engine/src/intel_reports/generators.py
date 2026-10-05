@@ -225,16 +225,17 @@ def market_outlook(session, *, market: str = "US", now: datetime | None = None):
 
     # DIRECTION NEEDS A COMPARISON. Participation is a level; "broadening" is a claim about
     # change, so an earlier reading is taken and the assessment says UNKNOWN without one.
-    _prior = None
+    _prior = _prior_covered = None
     try:
         _earlier = A.breadth(session, market, today, cutoff=now - timedelta(days=7))
         if _earlier.state is FieldState.OK and isinstance(_earlier.value, dict):
             _prior = _earlier.value.get("participation_pct")
+            _prior_covered = _earlier.value.get("covered")
     except Exception:
-        _prior = None
+        _prior = _prior_covered = None
     fields["headline_assessment"] = I.outlook_assessment(
         fields, subject=f"The {market} benchmark", report_type="market_outlook",
-        prior_participation=_prior)
+        prior_participation=_prior, prior_covered=_prior_covered)
     # READING ORDER. Without a map every field defaulted to metrics/current, so the page opened
     # on whatever sorted first — the execution disclaimer — and the latest price, the observed
     # structure and the participation a reader came for sat below it among unavailable inputs.
@@ -491,7 +492,11 @@ def pre_earnings(session, *, symbol: str, now: datetime | None = None):
                         f"taken {_days_out} days before the release")},
         state=FieldState.OK, statement=StatementClass.OBSERVED_FACT,
         timeframe=TimeFrame.IDENTITY, section=Section.EVENT, label="Snapshot timing")
+    fields["headline_assessment"] = I.pre_earnings_assessment(
+        fields, subject=stock.symbol, event_date=event.report_date.isoformat(),
+        days_out=_days_out)
     _retime(fields, {
+        "headline_assessment": (TimeFrame.IDENTITY, Section.SUMMARY, "Read this first"),
         "issuer":            (TimeFrame.IDENTITY, Section.EVENT, "Company"),
         "event_identity":    (TimeFrame.IDENTITY, Section.EVENT, "Earnings event"),
         "fiscal_period":     (TimeFrame.IDENTITY, Section.EVENT, "Fiscal period"),
