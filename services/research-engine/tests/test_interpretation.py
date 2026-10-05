@@ -357,3 +357,23 @@ def test_pre_earnings_changes_its_conclusion_once_expectations_exist():
     a = pre_earnings_assessment(f, subject="MU", event_date="2026-12-23").value
     assert "CANNOT be evaluated" not in a["assessment"]
     assert "guidance change will not be measurable" in a["assessment"]
+
+
+def test_figures_named_in_an_assessment_use_the_same_scaling_as_the_report():
+    """A raw 54230000000 beside "$54.23B" elsewhere reads as two different figures."""
+    a = post_earnings_assessment(_post_fields(), subject="MU").value
+    s = a["why_it_matters"][0]["supports"]
+    assert "$54.23B" in s and "54,230,000,000" not in s
+    assert "$33.42 per share" in s
+
+
+def test_the_pre_earnings_support_line_has_no_dangling_separator():
+    from intel_reports.interpretation import pre_earnings_assessment
+    nothing = pre_earnings_assessment(_pre_fields(), subject="MU").value
+    s = nothing["why_it_matters"][0]["supports"]
+    assert s.endswith("Nothing in the comparison set is on file.")
+    assert not s.rstrip().endswith(";")
+
+    some = pre_earnings_assessment(_pre_fields(consensus_eps=observed(2.5)),
+                                   subject="MU").value["why_it_matters"][0]["supports"]
+    assert "On file: an EPS expectation." in some

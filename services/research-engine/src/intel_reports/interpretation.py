@@ -150,6 +150,21 @@ _LIMIT_WHY = {
 }
 
 
+def _money(v, units) -> str:
+    """One scaling rule for figures named in an assessment."""
+    if not isinstance(v, (int, float)):
+        return str(v)
+    u = (units or "").strip().lower()
+    if u in ("usd", "$"):
+        for scale, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M")):
+            if abs(v) >= scale:
+                return f"${v / scale:,.2f}{suffix}"
+        return f"${v:,.2f}"
+    if u == "usd/share":
+        return f"${v:,.2f} per share"
+    return f"{v:,.2f} {units}".strip()
+
+
 def _limits(fields, report_type: str, keep: int = 3) -> tuple[list[str], int]:
     """Name the few gaps that constrain THIS conclusion; count the rest."""
     ranked = _LIMIT_RANK.get(report_type, [])
@@ -365,11 +380,14 @@ def post_earnings_assessment(fields, *, subject: str) -> Field:
     rev, eps = _v(fields, "revenue_actual"), _v(fields, "eps_actual")
     if isinstance(figs, dict) and (rev or eps):
         named = []
+        # SCALED THE SAME WAY EVERYWHERE. A raw 54230000000 beside a "$54.23B" elsewhere in
+        # the same report reads as two different figures.
         if isinstance(rev, dict):
-            named.append(f"revenue {rev.get('value'):,.0f} {rev.get('units')} "
+            named.append(f"revenue {_money(rev.get('value'), rev.get('units'))} "
                          f"({rev.get('basis')})")
         if isinstance(eps, dict):
-            named.append(f"EPS {eps.get('value')} {eps.get('units')} ({eps.get('basis')})")
+            named.append(f"EPS {_money(eps.get('value'), eps.get('units'))} "
+                         f"({eps.get('basis')})")
         findings.append(Finding(
             headline="Results are sourced from the issuer's own release",
             supports="; ".join(named) + ", each carrying the basis the issuer stated",
@@ -468,12 +486,12 @@ def pre_earnings_assessment(fields, *, subject: str, event_date: str | None = No
 
     findings.append(Finding(
         headline="What this report can freeze",
-        supports=("a frozen baseline is what makes 'were we right' answerable afterwards; "
-                  + ", ".join(filter(None, [
-                      "an EPS expectation is on file" if have_eps else None,
-                      "a revenue expectation is on file" if have_rev else None,
-                      "prior company guidance is on file" if have_prior else None]))
-                  or "nothing in the comparison set is on file"),
+        supports=("a frozen baseline is what makes 'were we right' answerable afterwards. "
+                  + (("On file: " + ", ".join(_on_file) + ".") if (_on_file := [
+                      n for n, ok in (("an EPS expectation", have_eps),
+                                      ("a revenue expectation", have_rev),
+                                      ("prior company guidance", have_prior)) if ok])
+                     else "Nothing in the comparison set is on file.")),
         contradicts=("a frozen expectation is not a forecast and carries no probability; it "
                      "records what was expected, nothing about what will happen"),
         invalidated_by="the provider revising the estimate before the release, which the "
