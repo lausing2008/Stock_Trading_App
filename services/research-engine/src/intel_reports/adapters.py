@@ -423,6 +423,13 @@ def post_event_reaction(event: EarningsEvent, *, window_dates: dict | None = Non
     return out
 
 
+def _population_fingerprint(stock_ids) -> str:
+    """A stable identity for a set of covered symbols, so two readings can be shown comparable."""
+    import hashlib
+    joined = ",".join(str(i) for i in sorted(stock_ids))
+    return f"sha256-pop:{hashlib.sha256(joined.encode()).hexdigest()[:16]}"
+
+
 def breadth(session, market: str, today, *, cutoff: datetime) -> Field:
     """Share of covered symbols above their own 20-session average.
 
@@ -437,12 +444,14 @@ def breadth(session, market: str, today, *, cutoff: datetime) -> Field:
     if not stock_ids:
         return unavailable(f"no active {market} symbols in the universe")
     above = total = 0
+    covered_ids = []
     for sid in stock_ids:
         bars = daily_bars(session, sid, limit=21, cutoff=cutoff)
         if len(bars) < 21:
             continue
         closes = [float(b.close) for b in bars]
         total += 1
+        covered_ids.append(sid)
         if closes[0] > sum(closes[:20]) / 20:
             above += 1
     if total == 0:
@@ -452,6 +461,11 @@ def breadth(session, market: str, today, *, cutoff: datetime) -> Field:
     # the wrong reading: participation is above/covered, while coverage is covered/universe.
     return calculated(
         {"above_sma20": above, "covered": total, "universe": len(stock_ids),
+         # WHICH SYMBOLS, not just how many. Two readings with the same count can cover
+         # different companies — one symbol dropping out as another gains its 21st bar leaves
+         # the denominator unchanged while the population is not the same, and a difference
+         # between them is then partly a composition change rather than a market one.
+         "population_fingerprint": _population_fingerprint(covered_ids),
          "participation_pct": round(above / total * 100.0, 1),
          "coverage_pct": round(total / len(stock_ids) * 100.0, 1),
          "basis": "participation = share of COVERED symbols above their own 20-bar average; "

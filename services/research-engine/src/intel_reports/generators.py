@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from db import EarningsEvent, Stock
 from . import adapters as A
@@ -225,17 +225,19 @@ def market_outlook(session, *, market: str = "US", now: datetime | None = None):
 
     # DIRECTION NEEDS A COMPARISON. Participation is a level; "broadening" is a claim about
     # change, so an earlier reading is taken and the assessment says UNKNOWN without one.
-    _prior = _prior_covered = None
+    _prior = _prior_covered = _prior_pop = None
     try:
         _earlier = A.breadth(session, market, today, cutoff=now - timedelta(days=7))
         if _earlier.state is FieldState.OK and isinstance(_earlier.value, dict):
             _prior = _earlier.value.get("participation_pct")
             _prior_covered = _earlier.value.get("covered")
+            _prior_pop = _earlier.value.get("population_fingerprint")
     except Exception:
-        _prior = _prior_covered = None
+        _prior = _prior_covered = _prior_pop = None
     fields["headline_assessment"] = I.outlook_assessment(
         fields, subject=f"The {market} benchmark", report_type="market_outlook",
-        prior_participation=_prior, prior_covered=_prior_covered)
+        prior_participation=_prior, prior_covered=_prior_covered,
+        prior_population=_prior_pop)
     # READING ORDER. Without a map every field defaulted to metrics/current, so the page opened
     # on whatever sorted first — the execution disclaimer — and the latest price, the observed
     # structure and the participation a reader came for sat below it among unavailable inputs.
@@ -279,6 +281,55 @@ def market_outlook(session, *, market: str = "US", now: datetime | None = None):
 
 
 # ── 2. Stock outlook ──────────────────────────────────────────────────────────────────────
+
+def _latest_release_evidence(session, stock, now: datetime, book) -> dict:
+    """The issuer's most recent RELEASED results, joined into a non-earnings report.
+
+    SAME RULES AS THE EARNINGS REPORT, deliberately reused rather than reimplemented: the event
+    must be released and visible at this cutoff, the document must be associated by exact fiscal
+    identity or an explicit link, and every figure keeps the units, basis and period the issuer
+    gave it. A stock outlook that quietly used looser rules than the post-earnings report would
+    produce two different answers about the same quarter.
+    """
+    ev = session.execute(
+        select(EarningsEvent)
+        .where(EarningsEvent.stock_id == stock.id,
+               EarningsEvent.report_date <= now.date(),
+               or_(EarningsEvent.eps_actual.is_not(None),
+                   EarningsEvent.revenue_actual.is_not(None)))
+        .order_by(EarningsEvent.report_date.desc()).limit(1)).scalars().first()
+    if ev is None:
+        return {"latest_results": unavailable(
+            "no released earnings event is on file for this issuer at this cutoff")}
+
+    out: dict[str, Field] = {}
+    rel, doc = D.official_release(session, book, stock.id, period_end=None,
+                                  report_date=ev.report_date, cutoff=now, event_id=ev.id)
+    out["results_event"] = observed(
+        {"event_id": f"earnings_event:{ev.id}",
+         "announcement_date": ev.report_date.isoformat(),
+         "report_date_source": ev.report_date_source,
+         "basis": "the most recent RELEASED event on file for this issuer at this cutoff"},
+        label="Results joined to this report")
+    out["official_release"] = rel.get("official_release", unavailable("no document"))
+    out["source_confirmed_fiscal_period"] = rel.get(
+        "source_confirmed_fiscal_period", unknown("no document"))
+
+    if doc is not None:
+        confirmed = D.confirmed_fiscal_period(out, doc)
+        if confirmed is not None:
+            out["fiscal_period"] = confirmed
+        if getattr(doc, "facts", None):
+            # The SAME reconciliation the earnings report uses, so the figures, their units and
+            # their bases are identical in both places.
+            seed = {"revenue_actual": unavailable("no revenue actual on file"),
+                    "eps_actual": unavailable("no eps actual on file"),
+                    "accounting_basis": unknown("not established"),
+                    "guidance_change": unavailable("not joined")}
+            D.reconcile_into_metrics(seed, doc.facts, document_id=doc.id)
+            out.update(seed)
+    return out
+
 
 def stock_outlook(session, *, symbol: str, now: datetime | None = None):
     now = now or _naive_utc_now()
@@ -331,12 +382,28 @@ def stock_outlook(session, *, symbol: str, now: datetime | None = None):
                        "not consult; a constructive report is not an order authorisation."},
         state=FieldState.OK, statement=StatementClass.INTERPRETATION)
 
+    # DRIVERS: why the structure may have formed, not just what it looks like.
+    fields.update(_latest_release_evidence(session, stock, now, book))
+    fields["drivers"] = I.drivers_for_stock(fields, subject=stock.symbol)
     fields["headline_assessment"] = I.outlook_assessment(
         fields, subject=stock.symbol, report_type="stock_outlook")
     _retime(fields, {
         "headline_assessment": (TimeFrame.CURRENT, Section.SUMMARY, "Read this first"),
+        "drivers":           (TimeFrame.CURRENT, Section.SUMMARY, "What may be driving this"),
         "issuer":            (TimeFrame.IDENTITY, Section.EVENT, "Issuer"),
         "next_catalyst":     (TimeFrame.IDENTITY, Section.EVENT, "Next catalyst"),
+        "results_event":     (TimeFrame.AT_EVENT, Section.EVENT, "Results joined to this report"),
+        "fiscal_period":     (TimeFrame.AT_EVENT, Section.EVENT, "Fiscal period"),
+        "source_confirmed_fiscal_period": (TimeFrame.AT_EVENT, Section.EVENT,
+                                           "Fiscal period, confirmed by the issuer"),
+        "revenue_actual":    (TimeFrame.AT_EVENT, Section.METRICS, "Revenue reported"),
+        "eps_actual":        (TimeFrame.AT_EVENT, Section.METRICS, "EPS reported"),
+        "guidance_current":  (TimeFrame.AT_EVENT, Section.METRICS,
+                              "Guidance issued with those results"),
+        "guidance_change":   (TimeFrame.AT_EVENT, Section.INTERPRETATION, "Guidance change"),
+        "accounting_basis":  (TimeFrame.AT_EVENT, Section.LIMITATIONS, "Accounting basis"),
+        "official_release":  (TimeFrame.AT_EVENT, Section.SOURCES, "Official release"),
+        "latest_results":    (TimeFrame.AT_EVENT, Section.LIMITATIONS, "Latest results"),
         "price_as_of":       (TimeFrame.CURRENT, Section.METRICS, "Latest close"),
         "trend_structure":   (TimeFrame.CURRENT, Section.METRICS, "Observed structure"),
         "observed_daily_structure": (TimeFrame.CURRENT, Section.METRICS,

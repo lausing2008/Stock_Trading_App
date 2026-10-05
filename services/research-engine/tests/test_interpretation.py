@@ -167,7 +167,11 @@ def test_a_stock_report_ranks_different_gaps_than_a_market_one():
 def test_the_reader_is_given_a_specific_next_trigger_not_a_topic():
     a = outlook_assessment(_mu_fields(), subject="MU", report_type="stock_outlook").value
     w = a["watch_next"][0]
-    assert "1025.0" in w["watch"] and "1025.0" in w["trigger"]
+    # A RULE, with the snapshot value labelled as a reference rather than a fixed threshold.
+    assert "RECALCULATED 20-bar average" in w["watch"]
+    assert "1025.0" not in w["watch"], "the level does not belong in the rule"
+    assert "snapshot reference: 1025.0" in w["trigger"]
+    assert "as it stands that session" in w["trigger"]
     assert w["would_change"]
 
 
@@ -215,7 +219,9 @@ def test_post_earnings_separates_available_guidance_from_a_verified_raise():
     assert "issued with these results" in g["finding"]
     assert "NOT established" in g["contradicts"]
     assert "SAME target period" in g["contradicts"]
-    assert any("prior guidance" in w["watch"] for w in a["watch_next"])
+    # Obtaining the earlier forecast is EVIDENCE to acquire, not a market development.
+    assert not any("ingested" in w["trigger"] for w in a["watch_next"])
+    assert any("guidance change" in d for d in a["data_needed"])
 
 
 def test_post_earnings_states_the_price_window_and_attributes_no_cause():
@@ -253,7 +259,10 @@ def test_the_headline_is_derived_from_returns_not_only_from_the_average_structur
     f["return_5_bars"] = calculated({"pct": -0.22}, units="pct")
     a = outlook_assessment(f, subject="The US benchmark", report_type="market_outlook").value
     assert "longer-window strength" not in a["assessment"]
-    assert "structure and returns disagree" in a["assessment"]
+    # The WINDOW is named: 20 bars negative while 63 bars is still positive.
+    assert "the 20-bar return is negative" in a["assessment"]
+    assert "the 63-bar return remains positive" in a["assessment"]
+    assert "Direction unresolved" in a["assessment"]
 
 
 def test_two_instruments_with_different_returns_get_different_headlines():
@@ -265,6 +274,7 @@ def test_two_instruments_with_different_returns_get_different_headlines():
     a_mu = outlook_assessment(_mu_fields(), subject="MU", report_type="stock_outlook").value
     assert a_mkt["assessment"] != a_mu["assessment"]
     assert "longer-window strength" in a_mu["assessment"]
+    assert "20-bar return is negative" in a_mkt["assessment"]
 
 
 def test_the_supporting_windows_are_always_shown_with_the_claim():
@@ -340,7 +350,10 @@ def test_pre_earnings_states_that_the_setup_cannot_be_evaluated_yet():
                                 event_date="2026-12-23", days_out=80).value
     assert "CANNOT be evaluated yet" in a["assessment"]
     assert "nothing a result could surprise against" in a["assessment"]
-    assert any("consensus estimate" in w["watch"] for w in a["watch_next"])
+    assert not any("ingested" in w["trigger"] for w in a["watch_next"]), \
+        "an estimate arriving is evidence to obtain, not a market observation"
+    assert "consensus eps" in a["evidence_needed"]
+    assert any("the release itself" in w["watch"] for w in a["watch_next"])
 
 
 def test_pre_earnings_flags_an_early_snapshot_as_not_the_pre_release_reference():
@@ -377,3 +390,107 @@ def test_the_pre_earnings_support_line_has_no_dangling_separator():
     some = pre_earnings_assessment(_pre_fields(consensus_eps=observed(2.5)),
                                    subject="MU").value["why_it_matters"][0]["supports"]
     assert "On file: an EPS expectation." in some
+
+
+# ================================================= participation identity, and drivers
+
+def test_participation_refuses_a_direction_when_the_symbols_differ_at_equal_counts():
+    """Equal denominators are not the same companies: one symbol dropping out as another gains
+    its 21st bar leaves the count unchanged while the population is not the same."""
+    f = _market_fields()
+    f["breadth"] = calculated({"above_sma20": 78, "covered": 144, "universe": 145,
+                               "participation_pct": 54.2, "coverage_pct": 99.3,
+                               "population_fingerprint": "sha256-pop:aaaa"})
+    a = outlook_assessment(f, subject="X", report_type="market_outlook",
+                           prior_participation=55.6, prior_covered=144,
+                           prior_population="sha256-pop:bbbb").value
+    p = [x for x in a["why_it_matters"] if "Participation" in x["finding"]][0]
+    assert "SAME NUMBER of symbols" in p["contradicts"]
+    assert "not the same ones" in p["contradicts"]
+    assert "narrowing" not in p["supports"]
+
+
+def test_participation_compares_when_the_population_matches():
+    f = _market_fields()
+    f["breadth"] = calculated({"above_sma20": 78, "covered": 144, "universe": 145,
+                               "participation_pct": 54.2, "coverage_pct": 99.3,
+                               "population_fingerprint": "sha256-pop:aaaa"})
+    a = outlook_assessment(f, subject="X", report_type="market_outlook",
+                           prior_participation=55.6, prior_covered=144,
+                           prior_population="sha256-pop:aaaa").value
+    p = [x for x in a["why_it_matters"] if "Participation" in x["finding"]][0]
+    assert "narrowing from 55.6%" in p["supports"]
+
+
+def _driver_fields(**over):
+    f = _mu_fields()
+    f.update({
+        "issuer": observed({"symbol": "MU", "name": "Micron Technology, Inc.",
+                            "sector": "Technology"}),
+        "revenue_actual": observed({"value": 54230000000.0, "units": "USD", "basis": "GAAP",
+                                    "period": "fiscal Q4 2026"},
+                                   evidence_ids=["issuer_document:1"]),
+        "eps_actual": observed({"value": 33.42, "units": "USD/share",
+                                "basis": "non-GAAP adjusted", "period": "fiscal Q4 2026"}),
+        "fiscal_period": observed({"label": "FY2026 Q4", "period_end": "2026-09-03"}),
+        "guidance_current": observed({"guidance_q1_revenue": {
+            "value": 61500000000.0, "units": "USD", "basis": "company guidance",
+            "period": "fiscal Q1 2027"}}),
+        "pre_report_link": unavailable("no frozen pre-earnings report exists"),
+        "sector_context": calculated({"sessions": 20, "ranked": [
+            {"sector": "Technology", "mean_return_pct": 11.52, "symbols": 59}]}),
+    })
+    f.update(over)
+    return f
+
+
+def test_a_company_driver_names_its_figures_with_basis_period_and_mechanism():
+    from intel_reports.interpretation import drivers_for_stock
+    d = drivers_for_stock(_driver_fields(), subject="MU").value
+    co = [x for x in d["drivers"] if x["driver"] == "Company results"][0]
+    assert "$54.23B" in co["what_changed"] and "GAAP" in co["what_changed"]
+    assert "fiscal Q4 2026" in co["what_changed"]
+    assert "FY2026 Q4" in co["what_changed"]
+    assert "route by which results could matter" in co["why_it_may_matter"]
+    assert co["claim_type"].startswith("plausible mechanism")
+    assert "overlap in time is not evidence" in co["evidence_against"]
+
+
+def test_guidance_is_never_called_raised_without_a_comparable_prior():
+    from intel_reports.interpretation import drivers_for_stock
+    d = drivers_for_stock(_driver_fields(), subject="MU").value
+    g = [x for x in d["drivers"] if x["driver"] == "Company results"][0]["guidance"]
+    assert g["issued"] is True
+    assert "$61.50B" in g["detail"]
+    assert "NOT ESTABLISHED" in g["change"]
+    assert "SAME target period" in g["change"]
+    assert "raised" not in g["detail"].lower()
+
+
+def test_sector_relative_uses_identical_sessions_and_states_the_gap():
+    from intel_reports.interpretation import drivers_for_stock
+    d = drivers_for_stock(_driver_fields(), subject="MU").value
+    s = [x for x in d["drivers"] if "relative performance" in x["driver"]][0]
+    assert "+12.18%" in s["what_changed"] and "+11.52%" in s["what_changed"]
+    assert "+0.66pp relative" in s["what_changed"]
+    assert "identical window (20 sessions)" in s["compared_with"]
+    assert "same price convention" in s["compared_with"]
+    assert "not a sector index" in s["evidence_against"]
+    assert "not an independent driver" in s["evidence_against"]
+
+
+def test_a_report_with_no_joined_evidence_names_what_it_would_need():
+    from intel_reports.interpretation import drivers_for_stock
+    f = _mu_fields()
+    f["issuer"] = observed({"symbol": "MU", "sector": "Technology"})
+    d = drivers_for_stock(f, subject="MU")
+    assert d.state is FieldState.UNKNOWN
+    assert "material news" in d.reason and "estimate revisions" in d.reason
+
+
+def test_drivers_never_claim_a_cause():
+    from intel_reports.interpretation import drivers_for_stock
+    d = drivers_for_stock(_driver_fields(), subject="MU").value
+    assert "never a cause" in d["note"]
+    for x in d["drivers"]:
+        assert "NOT an established cause" in x["claim_type"]

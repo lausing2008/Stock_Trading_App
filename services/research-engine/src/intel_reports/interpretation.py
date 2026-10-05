@@ -23,7 +23,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
 
-from intelligence.report_contract import FieldState, Field, StatementClass, interpreted
+from intelligence.report_contract import (
+    FieldState, Field, StatementClass, interpreted, unknown)
 
 
 @dataclass
@@ -61,9 +62,10 @@ class Assessment:
     watch_next: list = dc_field(default_factory=list)
     material_limits: list = dc_field(default_factory=list)
     other_limits_count: int = 0
-    #: Inputs the report would need. NOT market triggers — obtaining a volatility feed is not
-    #: something the market does, and listing it beside a price level confuses what to monitor
-    #: with what to build.
+    #: Inputs the report would need. NOT market observations — an estimate being ingested is
+    #: something WE do, and listing it beside a price level confuses what to monitor with what
+    #: to obtain. Market watching is for releases, guidance, price behaviour and other external
+    #: developments.
     data_needed: list = dc_field(default_factory=list)
 
     def lead(self) -> dict:
@@ -74,7 +76,8 @@ class Assessment:
                if self.watch_next else "no specific next observation is defined")
         return {"assessment": self.verdict,
                 "main_counterevidence": counter[:400],
-                "next_observation": nxt}
+                "next_observation": nxt,
+                "evidence_needed": self.data_needed[:3]}
 
     def as_dict(self) -> dict:
         return {
@@ -253,7 +256,8 @@ def _structure_finding(fields, subject: str) -> Finding | None:
 
 
 def _participation_finding(fields, prior_pct: float | None,
-                           prior_covered: int | None = None) -> Finding | None:
+                           prior_covered: int | None = None,
+                           prior_population: str | None = None) -> Finding | None:
     """Participation is a LEVEL. Direction needs a comparison, and says so when it lacks one."""
     b = _v(fields, "breadth")
     if not isinstance(b, dict):
@@ -267,12 +271,20 @@ def _participation_finding(fields, prior_pct: float | None,
                        "broadening or narrowing is UNKNOWN. A level alone cannot support a "
                        "claim that breadth is strengthening")
         inval = "an earlier reading, once available, that shows participation falling"
-    elif prior_covered is not None and covered is not None and prior_covered != covered:
-        # NOT LIKE FOR LIKE. A different number of covered symbols means the two percentages
-        # have different denominators, and their difference is partly a coverage change.
-        contradicts = (f"an earlier reading exists ({prior_pct}%) but covered {prior_covered} "
-                       f"symbols against {covered} now, so the change is not like-for-like and "
-                       f"no direction is claimed from it")
+    elif (prior_covered is not None and covered is not None and prior_covered != covered) or (
+            prior_population is not None and b.get("population_fingerprint") is not None
+            and prior_population != b.get("population_fingerprint")):
+        # NOT LIKE FOR LIKE. Equal counts are not the same symbols: one company dropping out as
+        # another gains its 21st bar leaves the denominator unchanged while the population
+        # changes, and the difference is then partly composition rather than market.
+        same_count = prior_covered == covered
+        contradicts = (
+            (f"an earlier reading exists ({prior_pct}%) over the SAME NUMBER of symbols "
+             f"({covered}) but not the same ones, "
+             if same_count else
+             f"an earlier reading exists ({prior_pct}%) but covered {prior_covered} symbols "
+             f"against {covered} now, ")
+            + "so the change is not like-for-like and no direction is claimed from it")
         inval = "a comparable reading over the same symbol population"
         return Finding(headline=f"Participation {pct}% of covered symbols",
                        supports=supports, contradicts=contradicts, invalidated_by=inval)
@@ -313,10 +325,12 @@ def _leadership_finding(fields) -> Finding | None:
 
 def outlook_assessment(fields, *, subject: str, report_type: str,
                        prior_participation: float | None = None,
-                       prior_covered: int | None = None) -> Field:
+                       prior_covered: int | None = None,
+                       prior_population: str | None = None) -> Field:
     """The opening read for a market or stock outlook."""
     findings = [f for f in (_structure_finding(fields, subject),
-                            _participation_finding(fields, prior_participation, prior_covered),
+                            _participation_finding(fields, prior_participation, prior_covered,
+                                                   prior_population),
                             _leadership_finding(fields)) if f is not None][:3]
     limits, others = _limits(fields, report_type)
 
@@ -332,9 +346,19 @@ def outlook_assessment(fields, *, subject: str, report_type: str,
         verdict = (f"{subject}: structure and longer-window returns agree; no horizon is "
                    f"implied.")
     elif both and w["has_longer"]:
-        # The case that was being mislabelled.
-        verdict = (f"{subject}: above both averages WITHOUT a positive longer-window return — "
-                   f"structure and returns disagree; direction unresolved.")
+        # NAME THE WINDOW. "Without a positive longer-window return" is too broad when one of
+        # the two longer windows IS positive — here 20 bars is negative and 63 is +2.44%.
+        neg = [n for n in (20, 63) if (w["returns"].get(n) or 0) < 0]
+        pos = [n for n in (20, 63) if (w["returns"].get(n) or 0) > 0]
+        parts = []
+        if neg:
+            parts.append("the " + " and ".join(f"{n}-bar" for n in neg) +
+                         f" return is negative")
+        if pos:
+            parts.append("the " + " and ".join(f"{n}-bar" for n in pos) +
+                         f" return remains positive")
+        verdict = (f"{subject}: above both averages, but " + "; ".join(parts) +
+                   ". Direction unresolved.")
     elif both:
         verdict = f"{subject}: above both averages; no return windows are on file to corroborate."
     elif t.get("above_sma20") or t.get("above_sma50"):
@@ -351,10 +375,14 @@ def outlook_assessment(fields, *, subject: str, report_type: str,
     watch = []
     sma20 = t.get("sma20")
     if sma20 is not None:
+        # A RULE, NOT A LEVEL. Printing "a daily close below 764.83" made a recomputed average
+        # look like a fixed threshold that stays put while the market moves.
         watch.append(Watch(
-            observation=f"the daily close against {sma20} (the 20-bar average)",
-            trigger=f"a daily close below {sma20}",
-            would_change="it would remove the structure this assessment rests on"))
+            observation="the next completed daily close versus the RECALCULATED 20-bar average",
+            trigger=f"a completed close below the 20-bar average as it stands that session "
+                    f"(snapshot reference: {sma20})",
+            would_change="it would end the above-20-bar-average condition this assessment "
+                         "rests on"))
     b = _v(fields, "breadth")
     if isinstance(b, dict):
         watch.append(Watch(
@@ -408,11 +436,7 @@ def post_earnings_assessment(fields, *, subject: str) -> Field:
                          "stored — the previous quarter's guidance for a different quarter is "
                          "not that comparison"),
             invalidated_by="the prior guidance arriving and showing a maintained or lower range"))
-        watch.append(Watch(
-            observation="prior guidance for the same target period",
-            trigger="the earlier forecast being ingested",
-            would_change="it is the single input that converts 'guidance issued' into "
-                         "'guidance raised, maintained or lowered'"))
+
 
     r1 = _v(fields, "return_1d")
     if isinstance(r1, dict) and r1.get("pct") is not None:
@@ -508,11 +532,6 @@ def pre_earnings_assessment(fields, *, subject: str, event_date: str | None = No
             invalidated_by="the immediate pre-release snapshot, which supersedes this one for "
                            "reaction measurement"))
 
-    if not (have_eps or have_rev):
-        watch.append(Watch(
-            observation="the consensus estimate for this event",
-            trigger="an estimate being published and ingested before the release",
-            would_change="it is the single input that makes a surprise definable"))
     if event_date:
         watch.append(Watch(
             observation=f"the release itself on {event_date}",
@@ -530,3 +549,132 @@ def pre_earnings_assessment(fields, *, subject: str, event_date: str | None = No
                    material_limits=limits, other_limits_count=others,
                    data_needed=[l.split(" — ")[0] for l in limits])
     return interpreted(a.as_dict(), label="Read this first")
+
+
+# =====================================================================================
+# DRIVERS — why the structure may have formed, as opposed to what it looks like.
+#
+# EVERY DRIVER CARRIES THE SAME FIVE PARTS: what changed, what it is compared against, the
+# MECHANISM by which it could matter, the evidence against it, and what would change the
+# reading. A driver without a mechanism is a coincidence with a date on it, and a mechanism is
+# not a cause — it is a route by which something COULD matter, which is a different claim and
+# is labelled as one.
+# =====================================================================================
+
+def _driver(name, what_changed, compared_with, mechanism, against, watch, evidence=()) -> dict:
+    return {
+        "driver": name,
+        "what_changed": what_changed,
+        "compared_with": compared_with,
+        "why_it_may_matter": mechanism,
+        "evidence_against": against,
+        "what_to_watch": watch,
+        "claim_type": "plausible mechanism, NOT an established cause",
+        "evidence_ids": list(evidence),
+    }
+
+
+def earnings_driver(fields) -> dict | None:
+    """MU's own results and guidance, joined under the same cutoff and provenance rules."""
+    rev, eps = _v(fields, "revenue_actual"), _v(fields, "eps_actual")
+    g_now = _v(fields, "guidance_current")
+    period = _v(fields, "fiscal_period")
+    if not isinstance(rev, dict) and not isinstance(eps, dict):
+        return None
+
+    named = []
+    if isinstance(rev, dict):
+        named.append(f"revenue {_money(rev.get('value'), rev.get('units'))} "
+                     f"({rev.get('basis')}, {rev.get('period')})")
+    if isinstance(eps, dict):
+        named.append(f"EPS {_money(eps.get('value'), eps.get('units'))} "
+                     f"({eps.get('basis')}, {eps.get('period')})")
+    what = "the issuer reported " + "; ".join(named)
+    if isinstance(period, dict):
+        what += f", for {period.get('label')} ending {period.get('period_end')}"
+
+    compared = ("no frozen pre-release expectation exists for this event, and the stored "
+                "estimate carries neither units nor an accounting basis — so these figures are "
+                "reported, not measured against anything")
+    if _ok(fields, "pre_report_link"):
+        compared = "a frozen pre-release baseline exists and these are scored against it"
+
+    mech = ("reported revenue and earnings change what a share is a claim on, which is the "
+            "route by which results could matter to price. That route is NOT demonstrated "
+            "here: no link between these figures and the observed structure is established")
+    against = ("the price structure above was formed over 20 and 63 sessions, while these "
+               "figures were published on a single date — overlap in time is not evidence that "
+               "one produced the other")
+    watch = ("the next release, and any revision to these figures by the issuer")
+
+    out = _driver("Company results", what, compared, mech, against, watch,
+                  evidence=(fields.get("revenue_actual").evidence_ids
+                            if fields.get("revenue_actual") else ()))
+    if isinstance(g_now, dict):
+        out["guidance"] = {
+            "issued": True,
+            "detail": "; ".join(
+                f"{k.replace('guidance_', '').replace('_', ' ')} "
+                f"{_money(v.get('value'), v.get('units'))} ({v.get('basis')}, {v.get('period')})"
+                for k, v in g_now.items() if isinstance(v, dict)),
+            # NEVER "raised" without the comparable prior.
+            "change": ("NOT ESTABLISHED — a raise requires the PRIOR guidance for the SAME "
+                       "target period on the SAME accounting basis, which is not stored"),
+        }
+    return out
+
+
+def sector_relative_driver(fields, *, subject: str) -> dict | None:
+    """The stock against its own sector, over identical sessions and price conventions."""
+    sect = _v(fields, "sector_context") or _v(fields, "sector_leadership")
+    issuer = _v(fields, "issuer")
+    if not isinstance(sect, dict) or not sect.get("ranked") or not isinstance(issuer, dict):
+        return None
+    own = issuer.get("sector")
+    row = next((r for r in sect["ranked"] if r.get("sector") == own), None)
+    if row is None:
+        return None
+    sessions = sect.get("sessions")
+    stock_r = _pct(fields, f"return_{sessions}_bars")
+    if stock_r is None:
+        return None
+
+    peer = row.get("mean_return_pct")
+    rel = stock_r - peer
+    what = (f"over the same {sessions} sessions, {subject} returned {stock_r:+.2f}% against "
+            f"{peer:+.2f}% for the equal-weighted mean of {row.get('symbols')} covered "
+            f"{own} symbols — {rel:+.2f}pp relative")
+    compared = (f"identical window ({sessions} sessions) and the same price convention "
+                f"(unadjusted closes) on both sides")
+    mech = ("a stock outperforming its own sector is the part of its move not shared with the "
+            "sector, which is where company-specific explanations would have to act. This "
+            "locates where to look; it does not identify what acted")
+    against = (f"this peer figure is an equal-weighted mean of the {row.get('symbols')} covered "
+               f"{own} symbols, not a sector index, and it is not capitalisation-weighted. "
+               f"Relative strength is also not an independent driver — it is the same price "
+               f"series measured against a different baseline")
+    watch = (f"whether the {rel:+.2f}pp gap widens or closes over the next {sessions} sessions")
+    return _driver(f"{own} relative performance", what, compared, mech, against, watch)
+
+
+def drivers_for_stock(fields, *, subject: str) -> Field:
+    """The drivers a stock report can support, each with its mechanism and its counterevidence."""
+    found = [d for d in (earnings_driver(fields),
+                         sector_relative_driver(fields, subject=subject)) if d]
+    missing = []
+    if not _ok(fields, "news"):
+        missing.append("material news with per-item source times and first availability")
+    if not _ok(fields, "estimate_revisions"):
+        missing.append("estimate revisions, which would show the direction of expectations")
+    if not found:
+        return unknown(
+            "no driver is supported by the evidence joined to this report. "
+            + ("Needed: " + "; ".join(missing) if missing else ""),
+            label="What may be driving this")
+    return interpreted(
+        {"drivers": found,
+         "not_yet_joined": missing,
+         "note": ("each driver states a MECHANISM — a route by which it could matter — and "
+                  "never a cause. Nothing here establishes that any of these produced the "
+                  "observed price structure.")},
+        label="What may be driving this")

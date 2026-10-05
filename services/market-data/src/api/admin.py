@@ -502,6 +502,58 @@ def _resolved_identity(info) -> list[str]:
     return [f for f in _IDENTITY_FIELDS if info.get(f) not in (None, "")]
 
 
+#: A symbol that unquestionably exists, used to tell a PROVIDER FAILURE apart from a bad
+#: ticker. Without it, "the provider described nothing" is indistinguishable from "this symbol
+#: does not exist" — and on 2026-10-05 Yahoo's `info` endpoint returned 401/Invalid Crumb for
+#: EVERY symbol, so a real NASDAQ listing (CBRS, trading at $179) was reported to the user as
+#: "Symbol not found".
+_CONTROL_SYMBOL = "MU"
+
+
+def _corroborate_by_quote(symbol: str) -> dict:
+    """Identity evidence from the QUOTE endpoints, when `info` supplies none.
+
+    WHY THIS IS NOT A WEAKER CHECK. `info` is one endpoint and it fails independently of the
+    others. A symbol with real daily bars and a real last price on a named exchange is a real
+    instrument whatever `info` says, while a mistyped ticker has neither — measured: CBRS
+    returned 5 bars at $179.24 on NMS, while COIIN, ASTA and a nonsense symbol returned zero
+    bars and raised on `fast_info`. So this corroborates existence without reopening the
+    typo hole that `_IDENTITY_FIELDS` exists to close.
+    """
+    import yfinance as _yf
+    out: dict = {}
+    try:
+        t = _yf.Ticker(symbol)
+        fi = t.fast_info
+        last = fi.get("lastPrice") if hasattr(fi, "get") else None
+        exch = fi.get("exchange") if hasattr(fi, "get") else None
+        cur = fi.get("currency") if hasattr(fi, "get") else None
+        if last not in (None, ""):
+            out["regularMarketPrice"] = last
+        if exch:
+            out["exchange"] = exch
+        if cur:
+            out["currency"] = cur
+        if not out:
+            return {}
+        # Bars are the stronger evidence: a quote can be stale, a 20-session history cannot be
+        # fabricated by a lookup failure.
+        if len(t.history(period="5d")) == 0:
+            return {}
+    except Exception as exc:
+        log.info("add_stock.quote_corroboration_failed", symbol=symbol, error=str(exc)[:160])
+        return {}
+    return out
+
+
+def _provider_is_degraded() -> bool:
+    """Does a known-good symbol also come back empty? Then this is an outage, not a bad ticker."""
+    try:
+        return not _resolved_identity(_fetch_yf_info(_CONTROL_SYMBOL))
+    except Exception:
+        return True
+
+
 @router.post("/add_stock")
 def add_stock(req: AddStockRequest, tasks: BackgroundTasks, _: User = Depends(get_admin_user)):
     symbol = req.symbol.upper().strip()
@@ -540,9 +592,29 @@ def add_stock(req: AddStockRequest, tasks: BackgroundTasks, _: User = Depends(ge
     name = info.get("longName") or info.get("shortName") or symbol
     corroboration = _resolved_identity(info)
     if not corroboration:
-        # The provider answered, and described nothing. See `_IDENTITY_FIELDS` for the measured
-        # payload this exists to reject. Logged with the keys it DID return, because the next
-        # shape of junk will not be this one.
+        # SECOND OPINION BEFORE A VERDICT. `info` failing is not evidence about the symbol.
+        quoted = _corroborate_by_quote(symbol)
+        if quoted:
+            info = {**info, **quoted} if isinstance(info, dict) else dict(quoted)
+            corroboration = _resolved_identity(info)
+            log.info("add_stock.corroborated_by_quote", symbol=symbol,
+                     carried_by=corroboration)
+    if not corroboration:
+        # NOT FOUND, or NOT LOOKED UP? They need different answers, and only one of them is
+        # about the symbol. A control symbol settles it.
+        if _provider_is_degraded():
+            log.warning("add_stock.provider_degraded", symbol=symbol,
+                        control=_CONTROL_SYMBOL)
+            raise HTTPException(
+                503,
+                f"{symbol} could not be verified: the market-data provider is returning no "
+                f"company details for any symbol right now, including known-good ones. This "
+                f"is a provider problem, NOT evidence that {symbol} is invalid — try again "
+                f"shortly.",
+                headers={"Retry-After": "120"},
+            )
+        # The provider answered for others and described nothing for this one. See
+        # `_IDENTITY_FIELDS` for the measured payload this exists to reject.
         log.info("add_stock.unresolved", symbol=symbol,
                  provider_keys=sorted(info)[:8] if isinstance(info, dict) else None)
         raise HTTPException(404, f"Symbol not found: {symbol}")
