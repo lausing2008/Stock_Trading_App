@@ -259,6 +259,61 @@ function ReadThisFirst({ v }: { v: AssessmentValue }) {
   );
 }
 
+type DriversValue = {
+  drivers?: { driver?: string; what_changed?: string; compared_with?: string;
+              why_it_may_matter?: string; evidence_against?: string; what_to_watch?: string;
+              claim_type?: string; evidence_ids?: string[];
+              guidance?: { issued?: boolean; detail?: string; change?: string } }[];
+  not_yet_joined?: string[]; note?: string;
+};
+
+/** Drivers: what changed, why it may matter, and what argues against it.
+ *
+ *  Rendered rather than dumped, because this sits at the top of the first screen and a nested
+ *  JSON blob there would undo the point of having an opening at all. */
+function Drivers({ v }: { v: DriversValue }) {
+  if (!v?.drivers?.length) return null;
+  const Row = ({ k, children, color }: { k: string; children: React.ReactNode;
+                                         color?: string }) => (
+    <div style={{ display: 'flex', gap: '10px', marginTop: '3px' }}>
+      <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.05em',
+                     textTransform: 'uppercase', color: '#64748b', minWidth: '96px',
+                     flexShrink: 0 }}>{k}</span>
+      <span style={{ fontSize: '12.5px', color: color ?? '#cbd5e1', lineHeight: 1.55 }}>
+        {children}</span>
+    </div>);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      {v.drivers.map((d, i) => (
+        <div key={i} style={{ borderLeft: '2px solid rgba(56,189,248,0.45)',
+                              paddingLeft: '10px' }}>
+          <div style={{ fontSize: '13px', fontWeight: 600, color: '#7dd3fc' }}>{d.driver}</div>
+          {d.what_changed && <Row k="What changed">{d.what_changed}</Row>}
+          {d.compared_with && <Row k="Compared with">{d.compared_with}</Row>}
+          {d.why_it_may_matter && <Row k="May matter">{d.why_it_may_matter}</Row>}
+          {d.evidence_against && <Row k="Against" color="#fcd34d">{d.evidence_against}</Row>}
+          {d.what_to_watch && <Row k="Watch" color="#a5b4fc">{d.what_to_watch}</Row>}
+          {d.guidance && (
+            <Row k="Guidance">
+              {d.guidance.detail}
+              <div style={{ color: '#fcd34d', marginTop: '2px' }}>
+                Change: {d.guidance.change}</div>
+            </Row>)}
+          {d.claim_type && (
+            <div style={{ fontSize: '10.5px', color: '#64748b', marginTop: '4px' }}>
+              {d.claim_type}</div>)}
+        </div>
+      ))}
+      {!!v.not_yet_joined?.length && (
+        <div style={{ fontSize: '11.5px', color: '#64748b' }}>
+          Not yet joined: {v.not_yet_joined.join('; ')}.
+        </div>)}
+      {v.note && (
+        <div style={{ fontSize: '11px', color: '#64748b', lineHeight: 1.5 }}>{v.note}</div>)}
+    </div>
+  );
+}
+
 function Coverage({ r }: { r: IntelReport }) {
   const by = r.coverage?.by_state ?? {};
   const total = r.coverage?.total ?? 0;
@@ -722,7 +777,9 @@ export default function IntelligenceReportsPage() {
                             </td>
                             <td style={{ padding: '11px 14px', verticalAlign: 'top',
                                          overflowWrap: 'anywhere' }}>
-                              {key === 'headline_assessment' && f.value
+                              {key === 'drivers' && f.value
+                                ? <Drivers v={f.value as DriversValue} />
+                                : key === 'headline_assessment' && f.value
                                 ? <ReadThisFirst v={f.value as AssessmentValue} />
                                 : humanised
                                 ? <span style={{ fontSize: '13px', color: '#e2e8f0' }}>{humanised}</span>
