@@ -8,6 +8,22 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# The service conftest stubs `common` as a plain module, so the budget module it genuinely has
+# in production cannot be imported here. Registering a real-shaped stub keeps these tests about
+# BATCHING; enforcement has its own tests in test_llm_budget.py.
+if "common.llm_budget" not in sys.modules:
+    import types as _types
+    _bm = _types.ModuleType("common.llm_budget")
+    _bm.SCOPE_NEWS_CLASSIFY = "news_classify"
+    _bm.SCOPE_RESOLVER_FALLBACK = "news_classify_resolver_fallback"
+
+    class _Res:
+        allowed, scope, reserved, reason = True, "news_classify", 0, "test stub"
+        key, enforcement = "k", "none"
+    _bm.reserve = lambda est, scope="news_classify": _Res()
+    _bm.reconcile = lambda res, actual: None
+    sys.modules["common.llm_budget"] = _bm
+
 from src.services import classify  # noqa: E402
 
 
@@ -105,9 +121,11 @@ class TestClassifyInBatches:
     def test_chunks_into_batch_size_groups(self, monkeypatch):
         calls = []
 
-        def _fake_classify(headlines, api_key, **_kw):
+        def _fake_classify(headlines, api_key, *, return_usage=False, **_kw):
             calls.append(len(headlines))
-            return [None] * len(headlines)
+            out = [None] * len(headlines)
+            # The batcher reconciles against real usage, so it asks for it.
+            return (out, 100 * len(headlines)) if return_usage else out
 
         monkeypatch.setattr(classify, "classify_headlines", _fake_classify)
         headlines = [f"h{i}" for i in range(20)]
@@ -116,10 +134,13 @@ class TestClassifyInBatches:
         assert calls == [8, 8, 4]  # _BATCH_SIZE = 8
 
     def test_one_failed_batch_does_not_lose_a_successful_batch(self, monkeypatch):
-        def _fake_classify(headlines, api_key, **_kw):
+        def _fake_classify(headlines, api_key, *, return_usage=False, **_kw):
             if headlines[0] == "fail":
-                return [None] * len(headlines)
-            return [{"sentiment_score": 50, "sentiment_label": "neutral", "is_material": False, "category": "other"}] * len(headlines)
+                out = [None] * len(headlines)
+            else:
+                out = [{"sentiment_score": 50, "sentiment_label": "neutral",
+                        "is_material": False, "category": "other"}] * len(headlines)
+            return (out, 100 * len(headlines)) if return_usage else out
 
         monkeypatch.setattr(classify, "classify_headlines", _fake_classify)
         result = classify.classify_in_batches(["ok"], api_key="fake")

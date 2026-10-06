@@ -1896,6 +1896,8 @@ def llm_usage(hours: int = Query(24, ge=1, le=720), _: User = Depends(get_admin_
         _digests = [r[0] for r in digest_rows]
         _unique = len(set(_digests))
         relevance = {
+            "window": "rolling, matching the window_hours selector — NOT the UTC day used by "
+                      "the enforced budgets",
             "classified_articles": len(_digests),
             "unique_articles": _unique,
             # A REPEAT IS NOT PROOF OF WASTE but it is the number that was previously
@@ -1905,8 +1907,11 @@ def llm_usage(hours: int = Query(24, ge=1, le=720), _: User = Depends(get_admin_
             "market_context": sum(r[1] for r in relevance_rows),
             "out_of_scope": sum(r[2] for r in relevance_rows),
             "calls_with_relevance_data": len(relevance_rows),
-            "note": ("counted only over calls that recorded scope; calls made before this was "
-                     "instrumented carry none and are excluded rather than assumed"),
+            "note": ("AMONG INSTRUMENTED CALLS ONLY — calls made before this was added carry "
+                     "no context and are excluded, not assumed. A repeated article identity is "
+                     "also NOT the same as unnecessary reclassification: an updated article or "
+                     "a changed classifier policy can justify another pass, and the digest "
+                     "alone cannot tell those from waste."),
         }
 
         # DAILY BUDGET. A spike alert compares against a recent baseline, so a steady high
@@ -1920,6 +1925,15 @@ def llm_usage(hours: int = Query(24, ge=1, le=720), _: User = Depends(get_admin_
             """
         )).scalar() or 0
 
+    # ENFORCEMENT STATUS, distinct from the alert threshold below it. One refuses calls; the
+    # other emails when a platform-wide total is passed. They are different mechanisms with
+    # different scopes and both are reported as what they are.
+    try:
+        from common.llm_budget import (SCOPE_NEWS_CLASSIFY, SCOPE_RESOLVER_FALLBACK, status)
+        enforced = [status(SCOPE_NEWS_CLASSIFY), status(SCOPE_RESOLVER_FALLBACK)]
+    except Exception as _exc:
+        enforced = [{"error": str(_exc)[:200]}]
+
     budget = _daily_token_budget()
     return {
         "window_hours": hours,
@@ -1932,13 +1946,19 @@ def llm_usage(hours: int = Query(24, ge=1, le=720), _: User = Depends(get_admin_
         "hourly": hourly,
         "recent_errors": errors,
         "relevance": relevance,
-        "daily_budget": {
+        # THE ENFORCED CEILINGS. These refuse calls.
+        "enforced_budgets": enforced,
+        # THE ALERT THRESHOLD. This emails; it does not refuse. Named separately because
+        # calling it a budget was the thing that needed correcting.
+        "daily_alert_threshold": {
             "tokens_today": int(today_tokens),
-            "budget": budget,
+            "threshold": budget,
             "pct_used": round(int(today_tokens) / budget * 100, 1) if budget else None,
-            "over_budget": bool(budget and int(today_tokens) > budget),
-            "basis": ("a fixed daily ceiling, which catches a steady high baseline that a "
-                      "spike comparison against a recent average cannot"),
+            "over_threshold": bool(budget and int(today_tokens) > budget),
+            "scope": "ALL application LLM calls, every call site",
+            "day_basis": "the database server's calendar day",
+            "effect": ("sends an admin email once per day. It does NOT refuse calls — see "
+                       "enforced_budgets for the ceilings that do"),
         },
     }
 

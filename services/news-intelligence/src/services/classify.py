@@ -39,7 +39,25 @@ def _strip_markdown_fence(text: str) -> str:
 
 
 def classify_headlines(headlines: list[str], api_key: str, *,
-                       call_context: dict | None = None) -> list[dict | None]:
+                       call_context: dict | None = None,
+                       return_usage: bool = False):
+    """Wrapper that can also report ACTUAL token usage, for budget reconciliation.
+
+    A reservation is an estimate. Settling it needs what the API really charged, and the only
+    place that is known is the response body — so it is carried back rather than re-derived.
+    """
+    _usage: dict = {}
+    out = _classify_headlines_inner(headlines, api_key, call_context=call_context,
+                                    usage_out=_usage)
+    if not return_usage:
+        return out
+    total = _usage.get("input_tokens", 0) + _usage.get("output_tokens", 0)
+    return out, (total or None)
+
+
+def _classify_headlines_inner(headlines: list[str], api_key: str, *,
+                              call_context: dict | None = None,
+                              usage_out: dict | None = None) -> list[dict | None]:
     """Return one classification dict (or None on a per-item parse failure) per input headline,
     in the same order. Returns an all-None list of the same length if `api_key` is empty or the
     call fails outright — fail-open, matching every other Claude call site in this codebase; a
@@ -86,6 +104,8 @@ def classify_headlines(headlines: list[str], api_key: str, *,
             )
             return [None] * len(headlines)
         _resp_json = r.json()
+        if usage_out is not None and isinstance(_resp_json.get("usage"), dict):
+            usage_out.update(_resp_json["usage"])
         log_llm_call(
             service="news-intelligence", call_site=CALL_SITE_NEWS_CLASSIFY, model=_model,
             usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
@@ -155,17 +175,64 @@ def _coerce_bool(value) -> bool:
 
 def classify_in_batches(headlines: list[str], api_key: str, *,
                         scopes: list[str] | None = None,
-                        urls: list[str] | None = None) -> list[dict | None]:
+                        urls: list[str] | None = None,
+                        resolver_degraded: bool = False) -> list[dict | None]:
     """Chunk `headlines` into _BATCH_SIZE-sized calls to classify_headlines(). One failed batch
     degrades only that batch's items to None, not the whole list — a transient failure on one
     chunk shouldn't discard classifications that another chunk already succeeded at."""
+    from common.llm_budget import (SCOPE_NEWS_CLASSIFY, SCOPE_RESOLVER_FALLBACK,
+                                   reconcile, reserve)
+    budget_scope = SCOPE_RESOLVER_FALLBACK if resolver_degraded else SCOPE_NEWS_CLASSIFY
+
     results: list[dict | None] = []
     for i in range(0, len(headlines), _BATCH_SIZE):
         chunk = headlines[i:i + _BATCH_SIZE]
-        results.extend(classify_headlines(chunk, api_key,
-                                          call_context=_call_context(scopes, urls, i,
-                                                                     len(chunk))))
+        # RESERVE BEFORE CALLING. Checking a total after the fact cannot refuse anything, and
+        # N concurrent callers each reading "under budget" all proceed.
+        est = _estimate_tokens(chunk)
+        res = reserve(est, scope=budget_scope)
+        if not res.allowed:
+            # DEFERRED, not neutral. An unclassified headline is stored and carries no label;
+            # it must never be recorded as benign because a cost ceiling was reached.
+            log.warning("news_classify.deferred_over_budget", scope=budget_scope,
+                        headlines=len(chunk), reason=res.reason,
+                        enforcement=res.enforcement)
+            log_llm_call_deferred(len(chunk), res, _call_context(scopes, urls, i, len(chunk)))
+            results.extend([None] * len(chunk))
+            continue
+        out, actual = classify_headlines(
+            chunk, api_key, call_context=_call_context(scopes, urls, i, len(chunk)),
+            return_usage=True)
+        # RECONCILE IN BOTH DIRECTIONS: an unreturned over-estimate shrinks the day's real
+        # capacity; an uncharged under-estimate lets the ceiling be passed silently.
+        reconcile(res, actual if actual is not None else est)
+        results.extend(out)
     return results
+
+
+def _estimate_tokens(chunk: list[str]) -> int:
+    """A deliberately generous estimate: under-reserving is what lets a ceiling be passed.
+
+    Roughly four characters per token for the prompt, plus the per-headline output allowance
+    the request itself sets (`max_tokens = 200 * len(headlines)`), plus the fixed system
+    prompt. Reconciliation corrects it either way immediately afterwards.
+    """
+    prompt_chars = sum(len(h) for h in chunk) + len(_SYSTEM)
+    return int(prompt_chars / 4) + 200 * len(chunk) + 200
+
+
+def log_llm_call_deferred(count: int, res, ctx: dict) -> None:
+    """A deferral is recorded as a call row with zero tokens, so the accounting shows it.
+
+    Counting only issued calls would make a day of deferrals look like a quiet day.
+    """
+    from common.llm_usage import CALL_SITE_NEWS_CLASSIFY, log_llm_call
+    log_llm_call(
+        service="news-intelligence", call_site=CALL_SITE_NEWS_CLASSIFY,
+        model="(deferred)", status="deferred",
+        context={"headline_count": count, "deferred": True, "scope": res.scope,
+                 "reason": res.reason, "enforcement": res.enforcement, **ctx},
+    )
 
 
 def _call_context(scopes, urls, start: int, size: int) -> dict:

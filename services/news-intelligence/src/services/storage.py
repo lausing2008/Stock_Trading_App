@@ -416,6 +416,9 @@ def persist_news_items(
                 [_new_items[i]["headline"] for i in _to_classify], api_key,
                 scopes=[_in_scope[i] for i in _to_classify],
                 urls=[_new_items[i].get("url") for i in _to_classify],
+                # The fallback that classifies everything when the resolver is broken draws on
+                # its OWN, smaller allowance. Logging made that path visible; it did not bound it.
+                resolver_degraded=not _resolver_ok,
             )
             for _pos, _idx in enumerate(_to_classify):
                 if _pos < len(_results):

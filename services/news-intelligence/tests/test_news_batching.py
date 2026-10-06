@@ -174,3 +174,58 @@ def test_storage_passes_scope_and_urls_through_to_the_call_log():
     seg = seg[:seg.index("\n            )") + 14]   # the whole call, not up to the first ")"
     assert "scopes=[_in_scope[i] for i in _to_classify]" in seg
     assert 'urls=[_new_items[i].get("url") for i in _to_classify]' in seg
+
+
+# ---------------------------------------------------------------- budget enforcement wiring
+
+_CLASSIFY = (Path(__file__).resolve().parents[1] / "src" / "services"
+             / "classify.py").read_text()
+
+
+def test_capacity_is_reserved_before_each_call_not_totalled_after():
+    """Compared by AST node position, not by text index: the first version of this test
+    searched the unparsed source and matched the docstring's mention of classify_headlines()
+    rather than the call, so it compared a docstring against a reservation."""
+    import ast
+    fn = next(n for n in ast.walk(ast.parse(_CLASSIFY))
+              if isinstance(n, ast.FunctionDef) and n.name == "classify_in_batches")
+    calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
+    reserve_at = [c.lineno for c in calls
+                  if isinstance(c.func, ast.Name) and c.func.id == "reserve"]
+    classify_at = [c.lineno for c in calls
+                   if isinstance(c.func, ast.Name) and c.func.id == "classify_headlines"]
+    assert reserve_at and classify_at, "both calls exist in the batcher"
+    assert min(reserve_at) < min(classify_at), "a check after the call cannot refuse it"
+
+
+def test_an_exhausted_budget_defers_and_never_labels_the_headline():
+    """The headline is stored with NO label. It must never be recorded as neutral or not
+    material because a cost ceiling was reached, and no existing flag is cleared."""
+    import ast
+    fn = next(n for n in ast.walk(ast.parse(_CLASSIFY))
+              if isinstance(n, ast.FunctionDef) and n.name == "classify_in_batches")
+    body = ast.unparse(fn)
+    seg = body[body.index("if not res.allowed"):]
+    seg = seg[:seg.index("out, actual")]
+    assert "[None] * len(chunk)" in seg, "deferred items carry no classification at all"
+    for word in ("neutral", "is_material", "sentiment_label"):
+        assert word not in seg, f"a deferral must not synthesise {word!r}"
+
+
+def test_reconciliation_happens_against_actual_usage():
+    assert "return_usage=True" in _CLASSIFY
+    assert "reconcile(res, actual if actual is not None else est)" in _CLASSIFY
+
+
+def test_the_resolver_fallback_draws_on_its_own_scope():
+    assert "SCOPE_RESOLVER_FALLBACK if resolver_degraded else SCOPE_NEWS_CLASSIFY" in _CLASSIFY
+    storage = (Path(__file__).resolve().parents[1] / "src" / "services"
+               / "storage.py").read_text()
+    assert "resolver_degraded=not _resolver_ok" in storage
+
+
+def test_a_deferral_is_recorded_so_the_accounting_shows_it():
+    """Counting only issued calls would make a day of deferrals look like a quiet day."""
+    assert "def log_llm_call_deferred" in _CLASSIFY
+    assert 'status="deferred"' in _CLASSIFY
+    assert '"deferred": True' in _CLASSIFY

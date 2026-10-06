@@ -3391,10 +3391,15 @@ export type LlmUsageReport = {
     tracked: number; market_context: number; out_of_scope: number;
     calls_with_relevance_data: number; note?: string;
   } | null;
-  daily_budget?: {
-    tokens_today: number; budget: number; pct_used: number | null;
-    over_budget: boolean; basis?: string;
+  daily_alert_threshold?: {
+    tokens_today: number; threshold: number; pct_used: number | null;
+    over_threshold: boolean; scope?: string; day_basis?: string; effect?: string;
   } | null;
+  enforced_budgets?: {
+    scope?: string; budget?: number; reserved_or_used?: number | null;
+    remaining?: number | null; enforcement?: string; day_basis?: string;
+    note?: string; error?: string;
+  }[] | null;
   total_tokens: number;
   total_errors: number;
   breakdown: LlmUsageBreakdownRow[];

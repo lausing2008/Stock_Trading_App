@@ -838,15 +838,15 @@ export default function AdminHealthPage() {
               {/* A LEVEL gauge beside the volume counts. The hourly spike alert compares
                   against a rolling baseline, so a cost that is high every weekday never
                   departs from its own baseline and never shows up as a problem. */}
-              {llmUsageData.daily_budget && llmUsageData.daily_budget.budget > 0 && (
+              {llmUsageData.daily_alert_threshold && llmUsageData.daily_alert_threshold.threshold > 0 && (
                 <span style={{
                   padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700,
-                  color: llmUsageData.daily_budget.over_budget ? '#f87171' : '#94a3b8',
-                  background: llmUsageData.daily_budget.over_budget ? 'rgba(239,68,68,0.08)' : '#0d1424',
-                  border: `1px solid ${llmUsageData.daily_budget.over_budget ? 'rgba(239,68,68,0.2)' : '#1e293b'}`,
-                }} title={llmUsageData.daily_budget.basis ?? undefined}>
-                  today {llmUsageData.daily_budget.tokens_today.toLocaleString()} / {llmUsageData.daily_budget.budget.toLocaleString()}
-                  {llmUsageData.daily_budget.pct_used !== null ? ` (${llmUsageData.daily_budget.pct_used}% of daily budget)` : ''}
+                  color: llmUsageData.daily_alert_threshold.over_threshold ? '#f87171' : '#94a3b8',
+                  background: llmUsageData.daily_alert_threshold.over_threshold ? 'rgba(239,68,68,0.08)' : '#0d1424',
+                  border: `1px solid ${llmUsageData.daily_alert_threshold.over_threshold ? 'rgba(239,68,68,0.2)' : '#1e293b'}`,
+                }} title={llmUsageData.daily_alert_threshold.effect ?? undefined}>
+                  today {llmUsageData.daily_alert_threshold.tokens_today.toLocaleString()} / {llmUsageData.daily_alert_threshold.threshold.toLocaleString()}
+                  {llmUsageData.daily_alert_threshold.pct_used !== null ? ` (${llmUsageData.daily_alert_threshold.pct_used}% of alert threshold)` : ''}
                 </span>
               )}
             </div>
@@ -858,8 +858,24 @@ export default function AdminHealthPage() {
                             background: '#0d1424', border: '1px solid #1e293b' }}>
                 <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155',
                               letterSpacing: '0.06em', marginBottom: '6px' }}>
-                  NEWS CLASSIFICATION RELEVANCE
+                  NEWS CLASSIFICATION RELEVANCE <span style={{ fontWeight: 400, color: '#334155' }}>
+                    — among instrumented calls, rolling window</span>
                 </div>
+                {!!llmUsageData.enforced_budgets?.length && (
+                  <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap',
+                                fontSize: '11px', color: '#94a3b8', marginBottom: '8px' }}>
+                    {llmUsageData.enforced_budgets.filter(b => !b.error).map(b => (
+                      <span key={b.scope} title={b.note ?? undefined}>
+                        {b.scope}: <strong style={{
+                          color: (b.remaining ?? 1) <= 0 ? '#f87171' : '#e2e8f0' }}>
+                          {(b.reserved_or_used ?? 0).toLocaleString()} / {(b.budget ?? 0).toLocaleString()}
+                        </strong>{' '}
+                        <span style={{ color: '#334155' }}>
+                          ({b.enforcement} · {b.day_basis})</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap',
                               fontSize: '11px', color: '#94a3b8' }}>
                   <span>Unique articles: <strong style={{ color: '#e2e8f0' }}>
@@ -870,8 +886,8 @@ export default function AdminHealthPage() {
                     {llmUsageData.relevance.market_context.toLocaleString()}</strong></span>
                   <span>Out of scope: <strong style={{ color: '#94a3b8' }}>
                     {llmUsageData.relevance.out_of_scope.toLocaleString()}</strong></span>
-                  <span title="Classified more than once in this window — not proof of waste, but previously unanswerable">
-                    Repeat classifications: <strong style={{
+                  <span title="Same article identity classified more than once among instrumented calls. NOT proof of waste — an updated article or a changed classifier policy can justify another pass.">
+                    Repeat identities: <strong style={{
                       color: llmUsageData.relevance.repeat_classifications > 0 ? '#fbbf24' : '#94a3b8' }}>
                       {llmUsageData.relevance.repeat_classifications.toLocaleString()}</strong></span>
                 </div>

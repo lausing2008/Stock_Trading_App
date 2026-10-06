@@ -70,10 +70,18 @@ def test_it_is_scheduled_and_registered_for_liveness():
         "an alert nobody monitors can die silently"
 
 
-def test_the_endpoint_reports_the_days_usage_against_the_same_budget():
+def test_the_endpoint_distinguishes_the_alert_threshold_from_enforced_ceilings():
+    """Calling the alert a "budget" was the thing that needed correcting: it emails, it does
+    not refuse. The endpoint now reports both and labels which is which."""
     assert "_daily_token_budget" in _ADMIN
     assert "LLM_DAILY_TOKEN_BUDGET" in _ADMIN
-    assert '"over_budget"' in _ADMIN
+    assert '"daily_alert_threshold"' in _ADMIN
+    assert '"over_threshold"' in _ADMIN
+    assert '"enforced_budgets"' in _ADMIN
+    assert "It does NOT refuse calls" in _ADMIN
+    # Both previously-unstated properties are now explicit.
+    assert "ALL application LLM calls" in _ADMIN
+    assert "database server's calendar day" in _ADMIN
 
 
 def test_the_endpoint_reports_relevance_and_repeats():
