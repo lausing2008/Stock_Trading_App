@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime, timezone
 
 import structlog
@@ -28,7 +29,10 @@ import websockets
 
 from common.ai_keys import get_alpaca_credentials
 
+from .batching import MAX_BATCH, should_flush, wait_timeout
+from .scope import classification_scope
 from .storage import persist_news_items
+from .tickers import _load_universe
 
 log = structlog.get_logger()
 
@@ -88,13 +92,34 @@ async def _run_once(api_key: str, secret_key: str, stop_event: asyncio.Event) ->
         log.info("alpaca_source.subscribed")
 
         buffer: list[dict] = []
+        buffered_at: list[float] = []
+        has_urgent = False
+
+        def _flush(reason: str) -> None:
+            nonlocal has_urgent
+            if not buffer:
+                return
+            log.info("alpaca_source.flush", reason=reason, items=len(buffer),
+                     oldest_age_s=round(time.monotonic() - buffered_at[0], 2),
+                     urgent=has_urgent)
+            persist_news_items(buffer, source="alpaca", symbol_mode="tagged")
+            buffer.clear()
+            buffered_at.clear()
+            has_urgent = False
+
         while not stop_event.is_set():
+            # THE WAIT IS THE TIME REMAINING ON THE OLDEST ITEM, not a fixed idle timeout.
+            # `timeout=5.0` restarted on every message, so it measured SILENCE rather than how
+            # long a headline had waited — a lone item sat out five quiet seconds and was sent
+            # by itself, never having had the chance to find company.
+            _oldest = (time.monotonic() - buffered_at[0]) if buffered_at else None
+            _wait = wait_timeout(len(buffer), _oldest, has_urgent)
             try:
-                raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                raw = await asyncio.wait_for(ws.recv(), timeout=_wait)
             except asyncio.TimeoutError:
-                if buffer:
-                    persist_news_items(buffer, source="alpaca", symbol_mode="tagged")
-                    buffer.clear()
+                _oldest = (time.monotonic() - buffered_at[0]) if buffered_at else None
+                if should_flush(len(buffer), _oldest, has_urgent):
+                    _flush("deadline")
                 continue
             messages = json.loads(raw)
             for msg in messages if isinstance(messages, list) else [messages]:
@@ -103,9 +128,35 @@ async def _run_once(api_key: str, secret_key: str, stop_event: asyncio.Event) ->
                 item = _parse_news_message(msg)
                 if item:
                     buffer.append(item)
-            if len(buffer) >= 5:
-                persist_news_items(buffer, source="alpaca", symbol_mode="tagged")
-                buffer.clear()
+                    buffered_at.append(time.monotonic())
+                    # A tracked-stock headline feeds the hot-news gate that suppresses BUY
+                    # signals; it must not wait behind market-context chatter.
+                    if _is_urgent(item):
+                        has_urgent = True
+            _oldest = (time.monotonic() - buffered_at[0]) if buffered_at else None
+            if should_flush(len(buffer), _oldest, has_urgent):
+                _flush("full" if len(buffer) >= MAX_BATCH else "deadline")
+
+        _flush("shutdown")
+
+
+def _is_urgent(item: dict) -> bool:
+    """Does this headline name a stock the platform actively tracks?
+
+    Urgency is about the SIGNAL GATE, not about interest: a tracked-stock headline can suppress
+    a BUY, and holding it back to accumulate a cheaper batch would trade correctness for tokens.
+    Market-context news has no gate waiting on it and can wait longer.
+
+    A failure to resolve the universe returns True — an unknown is treated as urgent, because
+    the alternative is silently delaying exactly the headlines that matter.
+    """
+    try:
+        active = {sym for sym, _n, _m in _load_universe()}
+        if not active:
+            return True
+        return classification_scope(item.get("symbols"), active) == "tracked"
+    except Exception:
+        return True
 
 
 async def run_alpaca_stream(stop_event: asyncio.Event) -> None:
