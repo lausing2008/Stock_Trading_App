@@ -28,7 +28,23 @@ NO ORM IMPORT. This module is pure so it can be tested directly; the service con
 from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
+from datetime import datetime
 from enum import Enum
+
+
+def naive_utc(dt: datetime) -> datetime:
+    """Drop the offset so an age can be taken against this codebase's naive stored timestamps.
+
+    FOUND BY RUNNING THIS AGAINST PRODUCTION, not by a test: `FinancialStatement.fetched_at` is
+    a naive `DateTime`, and subtracting it from an aware `datetime.now(timezone.utc)` raises
+    TypeError — which would have made every call to this endpoint a 500. The report generators
+    already settled this convention (`_naive_utc_now()` in generators.py); this endpoint was
+    written against the aware one and did not match.
+
+    Normalising here rather than only at the caller means a future aware timestamp arriving
+    from anywhere cannot reintroduce it.
+    """
+    return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
 
 
 class GateStatus(str, Enum):

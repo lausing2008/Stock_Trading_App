@@ -272,3 +272,32 @@ def test_a_forming_bar_is_not_a_close():
 def test_no_average_yields_unknown_rather_than_a_pass_on_price_alone():
     assert entry_condition_gate({"recent_closes": [12.0, 11.5], "sma20": None}
                                 ).status is GateStatus.UNKNOWN
+
+
+# ---- the timezone shape of the stored timestamps -----------------------------------------
+# AUD-QV-NAIVEUTC. Found by running the evaluator against production, not by a test: statement
+# timestamps are stored naive, and subtracting one from an aware now() raises TypeError — which
+# would have made every call to the endpoint a 500. These pin the normalisation.
+
+from datetime import datetime, timezone, timedelta  # noqa: E402
+
+
+def test_an_aware_now_against_a_naive_stored_timestamp_does_not_raise():
+    from intel_reports.quality_value import naive_utc as _naive_utc
+    aware = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
+    naive = datetime(2026, 9, 7, 12, 0)
+    assert (_naive_utc(aware) - _naive_utc(naive)).days == 29
+
+
+def test_normalising_a_naive_datetime_leaves_it_unchanged():
+    from intel_reports.quality_value import naive_utc as _naive_utc
+    naive = datetime(2026, 9, 7, 12, 0)
+    assert _naive_utc(naive) is naive or _naive_utc(naive) == naive
+    assert _naive_utc(naive).tzinfo is None
+
+
+def test_the_age_is_the_same_whichever_side_carried_the_offset():
+    from intel_reports.quality_value import naive_utc as _naive_utc
+    a = datetime(2026, 10, 6, tzinfo=timezone.utc)
+    b = datetime(2026, 10, 6)
+    assert _naive_utc(a) == _naive_utc(b)

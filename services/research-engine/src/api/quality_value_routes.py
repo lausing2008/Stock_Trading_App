@@ -26,7 +26,7 @@ from db import SessionLocal, Stock, FinancialStatement, Price, TimeFrame
 from ..intel_reports.quality_value import (
     ALL_GATES, REQUIRED_FOR_ENTRY, GateStatus, State, compose,
     business_quality_gate, durability_gate, valuation_gate, value_trap_gate,
-    entry_condition_gate)
+    entry_condition_gate, naive_utc)
 
 log = get_logger("research-engine.quality_value")
 router = APIRouter(prefix="/quality-value", tags=["quality-value"])
@@ -38,6 +38,7 @@ MAX_SYMBOLS = 200
 
 
 def _statement_evidence(session, symbol: str, now: datetime) -> dict:
+    now = naive_utc(now)
     rows = list(session.execute(
         select(FinancialStatement)
         .where(FinancialStatement.symbol == symbol,
@@ -68,7 +69,7 @@ def _statement_evidence(session, symbol: str, now: datetime) -> dict:
         "free_cashflow_prior": prior_fcf,
         "net_debt_to_equity": nde,
         "reported_year_age_days": (now.date() - newest.period_end).days,
-        "retrieval_age_days": ((now - newest.fetched_at).days
+        "retrieval_age_days": ((now - naive_utc(newest.fetched_at)).days
                                if newest.fetched_at is not None else None),
     }
 
