@@ -221,6 +221,8 @@ def market_outlook(session, *, market: str = "US", now: datetime | None = None):
         "aggregated to a market view here")
 
     fields.update(_outlook_by_horizon(trend, fields.get("price_as_of", trend)))
+    fields["rates"] = A.rates(session, cutoff=now)
+    fields["drivers"] = I.drivers_for_market(fields)
     fields["scenarios"] = _scenarios(f"the {market} benchmark", trend)
 
     # DIRECTION NEEDS A COMPARISON. Participation is a level; "broadening" is a claim about
@@ -243,7 +245,9 @@ def market_outlook(session, *, market: str = "US", now: datetime | None = None):
     # structure and the participation a reader came for sat below it among unavailable inputs.
     _retime(fields, {
         "headline_assessment": (TimeFrame.CURRENT, Section.SUMMARY, "Read this first"),
+        "drivers":           (TimeFrame.CURRENT, Section.SUMMARY, "What may be driving this"),
         "benchmark":         (TimeFrame.IDENTITY, Section.EVENT, "Benchmark"),
+        "rates":             (TimeFrame.CURRENT, Section.METRICS, "Rates and credit"),
         "price_as_of":       (TimeFrame.CURRENT, Section.METRICS, "Latest close"),
         "trend_structure":   (TimeFrame.CURRENT, Section.METRICS, "Observed structure"),
         "observed_daily_structure": (TimeFrame.CURRENT, Section.METRICS,
@@ -259,7 +263,7 @@ def market_outlook(session, *, market: str = "US", now: datetime | None = None):
         "macro":             (TimeFrame.CURRENT, Section.LIMITATIONS, "Macro"),
         "liquidity":         (TimeFrame.CURRENT, Section.LIMITATIONS, "Liquidity"),
         "positioning":       (TimeFrame.CURRENT, Section.LIMITATIONS, "Positioning"),
-        "rates_credit_fx":   (TimeFrame.CURRENT, Section.LIMITATIONS, "Rates, credit, FX"),
+        "rates_credit_fx":   (TimeFrame.CURRENT, Section.LIMITATIONS, "FX and other series"),
         "outlook_short":     (TimeFrame.TIMELESS, Section.LIMITATIONS, "Outlook, short horizon"),
         "outlook_medium":    (TimeFrame.TIMELESS, Section.LIMITATIONS, "Outlook, medium horizon"),
         "outlook_long":      (TimeFrame.TIMELESS, Section.LIMITATIONS, "Outlook, long horizon"),

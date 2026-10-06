@@ -553,3 +553,37 @@ def peer_basket(session, stock, sessions: int = 20, *, cutoff: datetime) -> Fiel
                    f"capitalisation-weighted."),
          "price_convention": "unadjusted close"},
         units="pct")
+
+
+#: FRED series behind each rate reading. The NAME is part of the evidence: "rates rose" is not
+#: checkable, "DGS10 rose 5bp between two named observation dates" is.
+_RATE_SERIES = {
+    "yield_2y": ("DGS2", "2-year", "US Treasury constant-maturity yield", "pct"),
+    "yield_10y": ("DGS10", "10-year", "US Treasury constant-maturity yield", "pct"),
+    "yield_curve_2s10s": ("T10Y2Y", "10y minus 2y", "US Treasury term spread", "pct"),
+    "hy_spread": ("BAMLH0A0HYM2", "n/a", "ICE BofA US high-yield option-adjusted spread",
+                  "pct"),
+    "dxy": ("DTWEXBGS", "n/a", "broad trade-weighted US dollar index", "index"),
+}
+
+
+def rates(session, *, cutoff: datetime, lookback_days: int = 30) -> Field:
+    """Market-priced rates, each with its instrument, tenor, observation time and change.
+
+    The QUERY lives here; the reading logic lives in `rate_readings`, which touches no ORM and
+    can therefore be tested directly. The service conftest stubs `db` as a plain module, so
+    anything importing `db.models` cannot be imported from a test at all — a rule this codebase
+    has now learned three times.
+    """
+    from db import CrossAssetReading
+    from .rate_readings import build_readings
+
+    rows = list(session.execute(
+        select(CrossAssetReading)
+        .where(CrossAssetReading.as_of <= cutoff.date(),
+               CrossAssetReading.as_of >= (cutoff.date() - timedelta(days=lookback_days)))
+        .order_by(CrossAssetReading.as_of.desc())).scalars().all())
+    if not rows:
+        return unavailable(
+            f"no cross-asset reading is stored within {lookback_days} days of this cutoff")
+    return calculated(build_readings(rows, lookback_days=lookback_days))

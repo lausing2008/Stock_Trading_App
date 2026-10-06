@@ -572,3 +572,102 @@ def test_the_agreeing_case_names_the_windows_it_agrees_over():
     assert "remains above both moving averages with positive 20-session, 63-session returns" \
         in a["assessment"]
     assert "trails its Semiconductors peers" in a["assessment"]
+
+
+# ================================================= market drivers, by evidence requirement
+
+def _rates_field(**over):
+    r = {"readings": {
+        "yield_2y": {"series": "DGS2", "instrument": "US Treasury constant-maturity yield",
+                     "tenor": "2-year", "units": "pct", "latest": 4.78,
+                     "observation_date": "2026-10-01", "previous": 4.88,
+                     "previous_observation_date": "2026-09-30", "change": -0.10,
+                     "change_bp": -10.0},
+        "yield_10y": {"series": "DGS10", "instrument": "US Treasury constant-maturity yield",
+                      "tenor": "10-year", "units": "pct", "latest": 5.24,
+                      "observation_date": "2026-10-01", "previous": 5.29,
+                      "previous_observation_date": "2026-09-30", "change": -0.05,
+                      "change_bp": -5.0},
+        "yield_curve_2s10s": {"series": "T10Y2Y", "instrument": "US Treasury term spread",
+                              "tenor": "10y minus 2y", "units": "pct", "latest": 0.45,
+                              "observation_date": "2026-10-02", "previous": 0.46,
+                              "previous_observation_date": "2026-10-01", "change": -0.01,
+                              "change_bp": -1.0},
+        "hy_spread": {"series": "BAMLH0A0HYM2", "instrument": "ICE BofA US high-yield OAS",
+                      "tenor": "n/a", "units": "pct", "latest": 3.24,
+                      "observation_date": "2026-10-01", "previous": 3.12,
+                      "previous_observation_date": "2026-09-30", "change": 0.12,
+                      "change_bp": 12.0},
+        "dxy": {"series": "DTWEXBGS", "status": "NOT OBSERVED",
+                "note": "no non-null reading in the window"}},
+        "source": "FRED"}
+    r.update(over)
+    return calculated(r)
+
+
+def test_a_rate_reading_names_its_instrument_tenor_dates_and_change():
+    from intel_reports.interpretation import rates_driver
+    d = rates_driver({"rates": _rates_field()})
+    w = d["what_changed"]
+    assert "DGS10 (10-year) 5.24% on 2026-10-01" in w
+    assert "-5.0bp from 5.29% on 2026-09-30" in w
+    assert "BAMLH0A0HYM2" in w and "+12.0bp" in w
+
+
+def test_each_series_is_compared_with_its_own_previous_observation():
+    """The daily row is not uniformly populated — 2026-10-02 carried only the term spread."""
+    from intel_reports.interpretation import rates_driver
+    d = rates_driver({"rates": _rates_field()})
+    assert "T10Y2Y (10y minus 2y) 0.45% on 2026-10-02" in d["what_changed"]
+    assert "DGS10 (10-year) 5.24% on 2026-10-01" in d["what_changed"]
+    assert "its OWN previous non-null observation" in d["compared_with"]
+
+
+def test_a_series_with_no_observation_is_named_not_treated_as_unchanged():
+    from intel_reports.interpretation import rates_driver
+    d = rates_driver({"rates": _rates_field()})
+    assert "Not observed in this window: DTWEXBGS" in d["evidence_against"]
+
+
+def test_market_pricing_is_separated_from_policy():
+    from intel_reports.interpretation import rates_driver
+    d = rates_driver({"rates": _rates_field()})
+    assert "MARKET-PRICED yields, not policy decisions" in d["evidence_against"]
+    assert "weaker growth outlook argues the opposite way" in d["evidence_against"]
+    assert d["claim_type"].startswith("plausible mechanism")
+
+
+def test_earnings_revisions_refuses_and_states_its_requirement():
+    """A single mutable column cannot evidence a revision."""
+    from intel_reports.interpretation import earnings_revisions_driver
+    d = earnings_revisions_driver({})
+    assert d["status"] == "NOT FORMED"
+    assert "earlier and a later estimate for the SAME fiscal period" in d["minimum_requirement"]
+    assert "overwritten in place" in d["what_is_stored"]
+    assert "claiming a change that was never observed" in d["what_is_stored"]
+
+
+def test_macro_surprise_refuses_because_no_expectation_is_stored():
+    """Measured: 519 economic events, 411 actuals, 0 expected values."""
+    from intel_reports.interpretation import macro_surprise_driver
+    d = macro_surprise_driver({})
+    assert d["status"] == "NOT FORMED"
+    assert "captured BEFORE publication" in d["minimum_requirement"]
+    assert "NO expectation on any row" in d["what_is_stored"]
+    assert "revised actual cannot be told from its first print" in d["what_is_stored"]
+
+
+def test_the_market_driver_set_lists_what_it_could_not_form():
+    from intel_reports.interpretation import drivers_for_market
+    v = drivers_for_market({"rates": _rates_field()}).value
+    assert [x["driver"] for x in v["drivers"]] == ["Rates and credit (market-priced)"]
+    assert {x["driver"] for x in v["not_formed"]} == {"Earnings revisions", "Macro surprises"}
+    assert "never a cause" in v["note"]
+
+
+def test_with_no_rate_data_the_whole_set_reports_unknown_with_reasons():
+    from intel_reports.interpretation import drivers_for_market
+    d = drivers_for_market({})
+    assert d.state is FieldState.UNKNOWN
+    assert "no market driver meets its evidence requirement" in d.reason
+    assert "overwritten in place" in d.reason

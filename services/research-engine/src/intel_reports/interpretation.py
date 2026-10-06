@@ -775,3 +775,103 @@ def drivers_for_stock(fields, *, subject: str) -> Field:
                   "never a cause. Nothing here establishes that any of these produced the "
                   "observed price structure.")},
         label="What may be driving this")
+
+
+# =====================================================================================
+# MARKET DRIVERS. Each states its MINIMUM EVIDENCE REQUIREMENT and refuses when it is unmet,
+# because a driver assembled from inadequate provenance is worse than an absent one: it reads
+# as corroboration while resting on nothing.
+# =====================================================================================
+
+def rates_driver(fields) -> dict | None:
+    """Market-priced rates. Requires a named instrument, tenor, observation time and change."""
+    r = _v(fields, "rates")
+    if not isinstance(r, dict) or not r.get("readings"):
+        return None
+    read = r["readings"]
+    moved, absent = [], []
+    # EVERY series is checked for absence, not only the ones that get reported. Scanning a
+    # subset meant an unobserved series could go unnamed — which is the absence-as-unchanged
+    # error this field exists to avoid.
+    for key, e in read.items():
+        if (e or {}).get("status") == "NOT OBSERVED":
+            absent.append(e.get("series", key))
+    for key in ("yield_2y", "yield_10y", "yield_curve_2s10s", "hy_spread"):
+        e = read.get(key) or {}
+        if e.get("change") is None:
+            continue
+        bp = e.get("change_bp")
+        moved.append(
+            f"{e['series']} ({e['tenor']}) {e['latest']}% on {e['observation_date']}, "
+            f"{bp:+.1f}bp from {e['previous']}% on {e['previous_observation_date']}")
+    if not moved:
+        return None
+
+    what = "; ".join(moved)
+    compared = ("each series against its OWN previous non-null observation, with both dates "
+                "named — the daily row is not uniformly populated, so one date does not "
+                "describe every series")
+    mech = ("a discount rate applied to future cash flows, and a financing cost for leveraged "
+            "borrowers; a higher long yield lowers the present value of distant earnings, all "
+            "else equal. Which direction that points depends on WHY the yield moved, and this "
+            "evidence does not contain the why")
+    against = ("these are MARKET-PRICED yields, not policy decisions, and they move on policy "
+               "expectations, term premium and flows together. A falling yield driven by a "
+               "weaker growth outlook argues the opposite way from one driven by easing "
+               "inflation, and nothing here distinguishes them")
+    if absent:
+        against += f". Not observed in this window: {', '.join(absent)}"
+    watch = ("the next observation of each named series, and whether the 2s10s spread and the "
+             "high-yield spread move together or apart")
+    return _driver("Rates and credit (market-priced)", what, compared, mech, against, watch)
+
+
+def _unmet(name: str, requirement: str, found: str) -> dict:
+    """A driver that cannot be formed, stating its requirement and what is actually there."""
+    return {"driver": name, "status": "NOT FORMED",
+            "minimum_requirement": requirement,
+            "what_is_stored": found,
+            "why_it_is_not_estimated": (
+                "a driver assembled from inadequate provenance reads as corroboration while "
+                "resting on nothing, which is worse than its absence")}
+
+
+def earnings_revisions_driver(fields) -> dict:
+    """Requires an earlier AND a later estimate for the same fiscal period."""
+    return _unmet(
+        "Earnings revisions",
+        "an earlier and a later estimate for the SAME fiscal period, over a comparable universe "
+        "and accounting basis, each with the time it was captured",
+        "a single mutable estimate column per event, overwritten in place on each provider "
+        "refresh. No earlier value is retained anywhere, so a revision cannot be measured — "
+        "and the direction of expectations cannot be inferred from one snapshot without "
+        "claiming a change that was never observed")
+
+
+def macro_surprise_driver(fields) -> dict:
+    """Requires a released actual against an expectation captured BEFORE publication."""
+    return _unmet(
+        "Macro surprises",
+        "a released actual against an expectation captured BEFORE publication, with later "
+        "revisions to the actual identified separately from the original vintage",
+        "an economic calendar with released actuals but NO expectation on any row, so a "
+        "surprise has nothing to be a surprise against. Revision vintages are also not "
+        "distinguished, so a revised actual cannot be told from its first print")
+
+
+def drivers_for_market(fields) -> Field:
+    """Market drivers, in the order their evidence requirements are met."""
+    formed = [d for d in (rates_driver(fields),) if d]
+    unmet = [earnings_revisions_driver(fields), macro_surprise_driver(fields)]
+    if not formed:
+        return unknown(
+            "no market driver meets its evidence requirement. "
+            + "; ".join(f"{d['driver']}: {d['what_is_stored']}" for d in unmet),
+            label="What may be driving this")
+    return interpreted(
+        {"drivers": formed,
+         "not_formed": unmet,
+         "note": ("each driver states a MECHANISM — a route by which it could matter — and "
+                  "never a cause. Drivers whose minimum evidence is not stored are listed "
+                  "with that requirement rather than estimated from what is available.")},
+        label="What may be driving this")
