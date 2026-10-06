@@ -248,11 +248,16 @@ export default function AdminHealthPage() {
   );
 
   const [llmWindowHours, setLlmWindowHours] = useState(24);
-  const { data: llmUsageData } = useSWR<LlmUsageReport>(
+  // SWR's error is read, not discarded: without it a 500 renders as "Loading…" forever and a
+  // broken panel is indistinguishable from a slow one.
+  const { data: llmUsageData, error: llmUsageErr } = useSWR<LlmUsageReport>(
     authed ? `llm-usage-${llmWindowHours}` : null,
     () => api.llmUsage(llmWindowHours),
     { revalidateOnFocus: false, refreshInterval: 60_000 },
   );
+  const llmUsageError = llmUsageErr
+    ? (llmUsageErr instanceof Error ? llmUsageErr.message : String(llmUsageErr))
+    : null;
 
   const { data: uwUsageData } = useSWR<UwUsageReport>(
     authed ? 'uw-usage' : null,
@@ -819,7 +824,15 @@ export default function AdminHealthPage() {
           </div>
         </div>
 
-        {!llmUsageData ? (
+        {/* A FAILED REQUEST MUST NOT LOOK LIKE A SLOW ONE. This said "Loading…" forever when
+            the endpoint 500'd, so a broken panel was indistinguishable from a busy one. */}
+        {llmUsageError ? (
+          <div style={{ fontSize: '12px', color: '#f87171', padding: '10px 12px',
+                        borderRadius: '8px', background: 'rgba(239,68,68,0.08)',
+                        border: '1px solid rgba(239,68,68,0.2)' }}>
+            Could not load Claude API usage: {llmUsageError}
+          </div>
+        ) : !llmUsageData ? (
           <div style={{ fontSize: '12px', color: '#334155' }}>Loading…</div>
         ) : (
           <>

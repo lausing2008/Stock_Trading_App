@@ -1875,44 +1875,58 @@ def llm_usage(hours: int = Query(24, ge=1, le=720), _: User = Depends(get_admin_
         # RELEVANCE, NOT JUST VOLUME. Calls and tokens cannot answer the two questions that
         # matter: how much of the spend was on tracked stocks, and whether an article was ever
         # classified twice. Both come from the per-call `context` written by classify.py.
-        relevance_rows = session.execute(text(
-            """
-            SELECT COALESCE((context->'scope_counts'->>'tracked')::int, 0)          AS tracked,
-                   COALESCE((context->'scope_counts'->>'market_context')::int, 0)   AS ctx,
-                   COALESCE((context->'scope_counts'->>'out_of_scope')::int, 0)     AS oos,
-                   COALESCE(jsonb_array_length((context->'article_digests')::jsonb), 0) AS n_art,
-                   COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)           AS tokens
-            FROM llm_call_log
-            WHERE created_at >= :since AND context ? 'scope_counts'
-            """
-        ), {"since": since_dt}).all()
-        digest_rows = session.execute(text(
-            """
-            SELECT jsonb_array_elements_text((context->'article_digests')::jsonb) AS d
-            FROM llm_call_log
-            WHERE created_at >= :since AND context ? 'article_digests'
-            """
-        ), {"since": since_dt}).all()
-        _digests = [r[0] for r in digest_rows]
-        _unique = len(set(_digests))
-        relevance = {
-            "window": "rolling, matching the window_hours selector — NOT the UTC day used by "
-                      "the enforced budgets",
-            "classified_articles": len(_digests),
-            "unique_articles": _unique,
-            # A REPEAT IS NOT PROOF OF WASTE but it is the number that was previously
-            # unanswerable: the 2026-10-05 review could not rule repeats in or out at all.
-            "repeat_classifications": len(_digests) - _unique,
-            "tracked": sum(r[0] for r in relevance_rows),
-            "market_context": sum(r[1] for r in relevance_rows),
-            "out_of_scope": sum(r[2] for r in relevance_rows),
-            "calls_with_relevance_data": len(relevance_rows),
-            "note": ("AMONG INSTRUMENTED CALLS ONLY — calls made before this was added carry "
-                     "no context and are excluded, not assumed. A repeated article identity is "
-                     "also NOT the same as unnecessary reclassification: an updated article or "
-                     "a changed classifier policy can justify another pass, and the digest "
-                     "alone cannot tell those from waste."),
-        }
+        # A FAILURE HERE MUST NOT TAKE THE PANEL WITH IT. Calls, tokens and errors are the
+        # panel's reason to exist; relevance is an addition, and an addition that can blank
+        # the whole view when its query breaks is worse than one that is simply absent.
+        try:
+            # `context` is a json column, NOT jsonb. The key-exists operator and
+            # jsonb_array_length exist only for jsonb, so every row must be cast first — without
+            # the cast this query raises UndefinedFunction, the endpoint 500s, and the dashboard
+            # panel spins forever with no error.
+            relevance_rows = session.execute(text(
+                """
+                SELECT COALESCE((context::jsonb->'scope_counts'->>'tracked')::int, 0)        AS tracked,
+                       COALESCE((context::jsonb->'scope_counts'->>'market_context')::int, 0) AS ctx,
+                       COALESCE((context::jsonb->'scope_counts'->>'out_of_scope')::int, 0)   AS oos,
+                       COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)                AS tokens
+                FROM llm_call_log
+                WHERE created_at >= :since
+                  AND context IS NOT NULL
+                  AND context::jsonb ? 'scope_counts'
+                """
+            ), {"since": since_dt}).all()
+            digest_rows = session.execute(text(
+                """
+                SELECT jsonb_array_elements_text(context::jsonb->'article_digests') AS d
+                FROM llm_call_log
+                WHERE created_at >= :since
+                  AND context IS NOT NULL
+                  AND context::jsonb ? 'article_digests'
+                """
+            ), {"since": since_dt}).all()
+            _digests = [r[0] for r in digest_rows]
+            _unique = len(set(_digests))
+            relevance = {
+                "window": "rolling, matching the window_hours selector — NOT the UTC day used by "
+                          "the enforced budgets",
+                "classified_articles": len(_digests),
+                "unique_articles": _unique,
+                # A REPEAT IS NOT PROOF OF WASTE but it is the number that was previously
+                # unanswerable: the 2026-10-05 review could not rule repeats in or out at all.
+                "repeat_classifications": len(_digests) - _unique,
+                "tracked": sum(r[0] for r in relevance_rows),
+                "market_context": sum(r[1] for r in relevance_rows),
+                "out_of_scope": sum(r[2] for r in relevance_rows),
+                "calls_with_relevance_data": len(relevance_rows),
+                "note": ("AMONG INSTRUMENTED CALLS ONLY — calls made before this was added carry "
+                         "no context and are excluded, not assumed. A repeated article identity is "
+                         "also NOT the same as unnecessary reclassification: an updated article or "
+                         "a changed classifier policy can justify another pass, and the digest "
+                         "alone cannot tell those from waste."),
+            }
+        except Exception as _rel_exc:
+            log.warning("llm_usage.relevance_failed", error=str(_rel_exc)[:200])
+            relevance = {"error": str(_rel_exc)[:200], "calls_with_relevance_data": 0}
 
         # DAILY BUDGET. A spike alert compares against a recent baseline, so a steady high
         # baseline never trips it — which is exactly the shape the 2026-10-05 review found

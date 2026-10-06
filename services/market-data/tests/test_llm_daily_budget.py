@@ -92,3 +92,50 @@ def test_the_endpoint_reports_relevance_and_repeats():
         assert key in _ADMIN, key
     assert "calls_with_relevance_data" in _ADMIN, \
         "pre-instrumentation calls are excluded, not assumed"
+
+
+# ---------------------------------------------------------------------------------------
+# AUD-LLMUSAGE-JSONCAST — the usage panel spun on "Loading…" forever.
+#
+# `llm_call_log.context` is a `json` column. The key-exists operator `?` and
+# `jsonb_array_length` exist only for `jsonb`, so the relevance query raised
+# UndefinedFunction, /admin/llm-usage returned 500, and the panel — which renders "Loading…"
+# whenever its data is absent — was indistinguishable from a slow request.
+#
+# Two defects, fixed separately: the query needed the cast, and an ADDITION to the panel
+# should never be able to blank the panel.
+# ---------------------------------------------------------------------------------------
+
+def test_every_jsonb_operator_is_applied_to_a_cast_column():
+    """`context` is json, not jsonb."""
+    import re
+    seg = _ADMIN[_ADMIN.index("def llm_usage("):]
+    seg = seg[:seg.index("@router.get(\"/uw-usage\")")]
+    for m in re.finditer(r"(\w+)\s*\?\s*'", seg):
+        assert m.group(1) == "jsonb", f"key-exists applied to {m.group(1)!r}, not a jsonb cast"
+    for m in re.finditer(r"jsonb_array_elements_text\(([^)]*)\)", seg):
+        assert "::jsonb" in m.group(1), f"jsonb function on an uncast column: {m.group(1)}"
+    assert "context::jsonb" in seg
+
+
+def test_the_relevance_block_cannot_blank_the_whole_panel():
+    """Calls, tokens and errors are the panel's reason to exist; relevance is an addition."""
+    seg = _ADMIN[_ADMIN.index("def llm_usage("):]
+    i_try = seg.index("try:")
+    i_rel = seg.index("relevance_rows = session.execute")
+    i_exc = seg.index("llm_usage.relevance_failed")
+    assert i_try < i_rel < i_exc, "the relevance query must be inside a guarded block"
+    assert '"error": str(_rel_exc)' in seg, "the failure is reported, not swallowed silently"
+
+
+_HEALTH = (pathlib.Path(__file__).resolve().parents[3] / "frontend" / "src" / "pages"
+           / "admin-health.tsx").read_text()
+
+
+def test_the_dashboard_shows_a_failed_request_as_an_error_not_as_loading():
+    """A 500 rendered as "Loading…" forever, so a broken panel looked like a busy one."""
+    assert "error: llmUsageErr" in _HEALTH, "SWR's error state was being discarded"
+    assert "Could not load Claude API usage" in _HEALTH
+    i_err = _HEALTH.index("{llmUsageError ?")
+    i_loading = _HEALTH.index("Loading…", i_err)
+    assert i_err < i_loading, "the error branch must be checked before the loading branch"
