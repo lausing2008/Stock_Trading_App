@@ -119,16 +119,45 @@ def _res(tokens, scope=B.SCOPE_NEWS_CLASSIFY):
 
 # ============================================================ upper bound, not estimate
 
-def test_the_reservation_is_an_upper_bound_including_the_maximum_output():
-    """Charging a shortfall afterwards records an overshoot; it cannot prevent one."""
-    n = B.upper_bound_tokens(prompt_chars=1000, max_output_tokens=1600)
-    assert n >= 1000 / 4 + 1600, "the configured max output is reserved in full"
-    assert n > B.upper_bound_tokens(1000, 0), "output capacity is part of the bound"
+def test_the_reservation_includes_the_configured_maximum_output():
+    assert B.upper_bound_tokens("x" * 1000, 1600) == 1000 + 1600
+    assert B.upper_bound_tokens("x", 1600) > B.upper_bound_tokens("x", 0)
 
 
-def test_the_input_estimate_is_pessimistic_on_purpose():
-    """An underestimate here is the exact failure the upper bound exists to remove."""
-    assert B.upper_bound_tokens(1000, 0) > 1000 / 4, "more conservative than ~4 chars/token"
+@pytest.mark.parametrize("label,text", [
+    ("english prose", "Micron Technology reports record fourth quarter results"),
+    ("tickers and numbers", "MU NVDA $54.23B +12.18% Q4 FY2026 non-GAAP EPS 33.42"),
+    ("json formatting", '[{"i": 0, "headline": "x"}, {"i": 1, "headline": "y"}]'),
+    ("cjk", "美光科技公布創紀錄的第四季度和全年業績，營收達到五百四十二億美元"),
+    ("emoji", "📈📉🚀" * 20),
+    ("combining marks", "é" * 50 + "ā̈ŏ̃" * 20),
+    ("mathematical alphanumerics", "𝕄𝕚𝕔𝕣𝕠𝕟 𝐓𝐞𝐜𝐡𝐧𝐨𝐥𝐨𝐠𝐲" * 5),
+    ("base64 blob", "aGVsbG8gd29ybGQ=" * 20),
+])
+def test_the_input_bound_is_utf8_bytes_which_no_tokenisation_can_exceed(label, text):
+    """A byte-pair encoder builds every token from at least one byte, so a text can never
+    produce more tokens than it has bytes. That is a property of the encoding.
+
+    THE EARLIER VERSION DIVIDED CHARACTERS BY 2.5 and was described as an upper bound. It is
+    not: measured on these exact strings, CJK is 3.0 bytes per character and emoji 4.0, so a
+    Chinese headline would have been reserved at well under its true cost."""
+    n = B.upper_bound_tokens(text, 0)
+    assert n == len(text.encode("utf-8"))
+    assert n >= len(text) / 2.5 or len(text.encode()) > len(text), label
+    # The specific failure: the old formula under-reserves wherever bytes exceed characters.
+    old_formula = int(len(text) / 2.5)
+    if len(text.encode("utf-8")) > len(text):
+        assert n > old_formula, f"{label}: the old estimate was below the byte floor"
+
+
+def test_the_bound_covers_the_complete_submitted_request():
+    """The system prompt and the numbering format are sent too; a bound on the headlines alone
+    describes a request that is not the one submitted."""
+    src = (Path(__file__).resolve().parents[2] / "services" / "news-intelligence" / "src"
+           / "services" / "classify.py").read_text()
+    assert "reserve(_SYSTEM + _number(chunk)" in src
+    assert "numbered = _number(headlines)" in src, \
+        "the request body and the bound must come from one definition"
 
 
 # ============================================================ refusal and atomicity

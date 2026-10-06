@@ -96,19 +96,28 @@ def scope_chain(scope: str) -> list[str]:
     return chain
 
 
-def upper_bound_tokens(prompt_chars: int, max_output_tokens: int) -> int:
-    """The MOST a call could cost, not what it probably costs.
+def upper_bound_tokens(request_text: str, max_output_tokens: int) -> int:
+    """A PROVABLE upper bound on a request's token cost.
 
-    Reserving an estimate and charging the difference afterwards RECORDS an overshoot; it cannot
-    prevent one. So the reservation is an upper bound: a deliberately pessimistic input estimate
-    plus the maximum output the request itself permits (`max_tokens`), which is the hard ceiling
-    the provider will not exceed.
+    THE INPUT BOUND IS UTF-8 BYTES. A byte-pair encoder builds every token from at least one
+    byte, so a text can never tokenise to more tokens than it has bytes. That is a property of
+    the encoding, not an empirical guess.
 
-    The input divisor is 2.5 rather than the usual ~4 characters per token because an
-    underestimate here is exactly the failure this function exists to remove; dense or
-    non-English text tokenises worse than prose.
+    THE EARLIER VERSION WAS NOT A BOUND AND WAS DESCRIBED AS ONE. It divided characters by 2.5,
+    which holds for Latin prose and fails badly elsewhere — measured on the exact strings this
+    platform could receive: CJK is 3.0 bytes per character, emoji 4.0, mathematical alphanumerics
+    3.8. A Chinese-language headline would have been reserved at well under its true cost, which
+    is the one direction an admission check must never err in.
+
+    `request_text` must be the COMPLETE submitted request — system prompt, formatting and all —
+    because the bound is on what is sent, not on the part of it that is interesting.
+
+    IT OVER-RESERVES FOR LATIN TEXT, by roughly three to four times, since English prose
+    tokenises at about four bytes per token. That is deliberate: the reservation is held only
+    for the duration of the call and settled against actual usage immediately afterwards, so
+    the ceiling binds on real consumption while admission stays conservative.
     """
-    return int(prompt_chars / 2.5) + int(max_output_tokens) + 256
+    return len(request_text.encode("utf-8")) + int(max_output_tokens)
 
 
 def _redis():
@@ -167,6 +176,28 @@ def _seed_from_db_if_reset(r, scope: str, day: str) -> None:
         log.warning("llm_budget.reseed_check_failed", scope=scope, error=str(exc))
 
 
+def _mirror_to_durable(chain: list[str], n: int, day: str) -> None:
+    """Record a Redis-granted reservation in the durable counter, unconditionally.
+
+    Redis has already decided, so this does not re-check the ceiling — it keeps the durable
+    record complete so a database-fallback caller sees what Redis reserved, and so a Redis
+    reset is detectable.
+    """
+    try:
+        from sqlalchemy import text
+        from db import SessionLocal
+        with SessionLocal() as s:
+            for scope in chain:
+                s.execute(text(
+                    "INSERT INTO llm_budget_day (scope, day, reserved) VALUES (:sc, :d, :n)"
+                    " ON CONFLICT (scope, day) DO UPDATE"
+                    " SET reserved = llm_budget_day.reserved + :n"
+                ), {"sc": scope, "d": day, "n": n})
+            s.commit()
+    except Exception as exc:
+        log.warning("llm_budget.durable_mirror_failed", error=str(exc))
+
+
 def _db_reserve(chain: list[str], caps: list[int], n: int, day: str) -> tuple[bool, str, int]:
     """ATOMIC in the database: increment only if the result fits, in one statement per ceiling.
 
@@ -180,8 +211,13 @@ def _db_reserve(chain: list[str], caps: list[int], n: int, day: str) -> tuple[bo
     try:
         with SessionLocal() as s:
             for scope, cap in zip(chain, caps):
+                # THE INSERT BRANCH NEEDS THE CAP TOO. With the check only on DO UPDATE, the
+                # FIRST reservation of a day inserted unconditionally — a single call larger
+                # than the entire ceiling was admitted, because there was no row to conflict
+                # with. Found by running this against a real PostgreSQL; no fake reproduced it.
                 row = s.execute(text(
-                    "INSERT INTO llm_budget_day (scope, day, reserved) VALUES (:sc, :d, :n)"
+                    "INSERT INTO llm_budget_day (scope, day, reserved)"
+                    " SELECT :sc, :d, :n WHERE :n <= :cap"
                     " ON CONFLICT (scope, day) DO UPDATE SET reserved = llm_budget_day.reserved + :n"
                     "   WHERE llm_budget_day.reserved + :n <= :cap"
                     " RETURNING reserved"
@@ -201,15 +237,19 @@ def _db_reserve(chain: list[str], caps: list[int], n: int, day: str) -> tuple[bo
         raise
 
 
-def reserve(prompt_chars: int, max_output_tokens: int, *,
+def reserve(request_text: str, max_output_tokens: int, *,
             scope: str = SCOPE_NEWS_CLASSIFY) -> Reservation:
-    """Claim an UPPER BOUND on this call's cost, against every ceiling that applies."""
+    """Claim a PROVABLE upper bound on this call's cost, against every ceiling that applies.
+
+    `request_text` is the complete request as submitted, so the bound covers the system prompt
+    and formatting rather than only the headlines.
+    """
     import uuid
     chain = scope_chain(scope)
     caps = [budget_for(sc) for sc in chain]
     day = _day_str()
     rid = uuid.uuid4().hex[:32]
-    n = upper_bound_tokens(prompt_chars, max_output_tokens)
+    n = upper_bound_tokens(request_text, max_output_tokens)
 
     if all(c <= 0 for c in caps):
         return Reservation(True, scope, 0, "no ceiling configured for this scope", "none",
@@ -230,6 +270,11 @@ def reserve(prompt_chars: int, max_output_tokens: int, *,
                     f"ceiling reached on {blocked}: {int(res[2]):,} of its UTC-day allowance "
                     f"already reserved, and this call needs {n:,} more",
                     "redis", rid, day, tuple(keys))
+            # REDIS IS THE GATE; THE DATABASE IS THE RECORD. Without this the two counters are
+            # independent: a caller that still has Redis and one that has fallen back to the
+            # database each see a full ceiling and spend it, and a flushed Redis cannot be
+            # told from a quiet day. Both were reproduced against real stores.
+            _mirror_to_durable(chain, n, day)
             _record_reservation(rid, scope, day, n)
             return Reservation(True, scope, n, "reserved (upper bound)", "redis", rid, day,
                                tuple(keys))
@@ -367,6 +412,8 @@ def status(scope: str = SCOPE_NEWS_CLASSIFY) -> dict:
         "enforcement": enforcement,
         "day_basis": "UTC calendar day",
         "note": ("reservations are UPPER BOUNDS taken before each call and settled against the "
-                 "day they were taken from. A nested scope also charges every ceiling above it, "
-                 "so its spending is not additional to the parent's."),
+                 "day they were taken from. A nested scope also charges every ceiling above "
+                 "it, so its spending is not additional to the parent's. The input bound is "
+                 "UTF-8 BYTES, which no tokenisation can exceed, so admission is conservative "
+                 "and over-reserves Latin text roughly threefold until settlement returns it."),
     }

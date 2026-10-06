@@ -66,7 +66,16 @@ async def job_edgar():
     await _run_job("edgar", _poll_edgar())
 
 
-async def start_scheduler():
+async def job_retry_deferred() -> None:
+    """Classify headlines a budget ceiling deferred, once capacity has returned."""
+    try:
+        from .services.deferred_retry import retry_deferred
+        retry_deferred()
+    except Exception as exc:
+        log.warning("news_sched.deferred_retry_failed", error=str(exc))
+
+
+def start_scheduler():
     global _scheduler, _alpaca_task
     if _scheduler is not None:
         return
@@ -79,6 +88,13 @@ async def start_scheduler():
     _scheduler.add_job(job_pr_newswire, "interval", minutes=1, id="pr_newswire_poll", max_instances=1, coalesce=True)
     _scheduler.add_job(job_businesswire, "interval", minutes=1, id="businesswire_poll", max_instances=1, coalesce=True)
     _scheduler.add_job(job_edgar, "interval", minutes=2, id="edgar_poll", max_instances=1, coalesce=True)
+    # DRAIN WHAT A CEILING DEFERRED. Without this a budget deferral is permanent: ingestion
+    # skips URLs it has already stored, so a row saved without a classification is never
+    # offered to the classifier again. Every 10 minutes, a small batch, so it refills
+    # gradually as capacity frees rather than re-spending the ceiling the moment it resets.
+    _scheduler.add_job(job_retry_deferred, "interval", minutes=10,
+                       id="news_deferred_retry", max_instances=1, coalesce=True,
+                       misfire_grace_time=300)
     _scheduler.start()
 
     _alpaca_task = asyncio.create_task(run_alpaca_stream(_alpaca_stop))

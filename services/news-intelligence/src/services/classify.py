@@ -38,6 +38,15 @@ def _strip_markdown_fence(text: str) -> str:
     return re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.DOTALL).strip()
 
 
+def _number(headlines: list[str]) -> str:
+    """The exact user-message body sent to the model.
+
+    Shared with the budget reservation so the bound is computed over the request that is
+    actually submitted — formatting included — rather than over the headlines alone.
+    """
+    return "\n".join(f"{i + 1}. {h}" for i, h in enumerate(headlines))
+
+
 def classify_headlines(headlines: list[str], api_key: str, *,
                        call_context: dict | None = None,
                        return_usage: bool = False):
@@ -72,7 +81,7 @@ def _classify_headlines_inner(headlines: list[str], api_key: str, *,
     if not api_key:
         return [None] * len(headlines)
 
-    numbered = "\n".join(f"{i + 1}. {h}" for i, h in enumerate(headlines))
+    numbered = _number(headlines)
     # AUD-LLMUSAGE: this is the exact call site BUG-NEWSCLASSIFY-REPEATCOST's undetected
     # deploy-drift ran unlogged for six weeks (518x reclassification of one filing, confirmed
     # live) — see llm_usage.py's own module docstring for the full incident. Timed and logged
@@ -206,8 +215,9 @@ def classify_in_batches(headlines: list[str], api_key: str, *,
         # AN UPPER BOUND, not an estimate: the prompt plus the maximum output the request
         # itself allows. Charging a shortfall afterwards records an overshoot, it cannot
         # prevent one.
-        res = reserve(sum(len(h) for h in chunk) + len(_SYSTEM),
-                      200 * len(chunk), scope=budget_scope)
+        # THE COMPLETE SUBMITTED REQUEST, not just the headlines: the system prompt and the
+        # numbering format are sent too, and the bound is on what is sent.
+        res = reserve(_SYSTEM + _number(chunk), 200 * len(chunk), scope=budget_scope)
         if not res.allowed:
             # DEFERRED, not neutral. An unclassified headline is stored and carries no label;
             # it must never be recorded as benign because a cost ceiling was reached.

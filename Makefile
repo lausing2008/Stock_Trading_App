@@ -79,3 +79,18 @@ test-all: test test-frontend
 test-frontend:
 	@cd frontend && npx vitest run && npx tsc --noEmit -p tsconfig.json
 	@echo "make test-frontend: frontend tests + typecheck passed"
+
+# Budget and deferred-retry guarantees that only a REAL PostgreSQL and Redis can establish:
+# database UPSERT atomicity under concurrent transactions, Lua rollback across multiple keys,
+# and a deferred article actually resuming. Threads against a fake prove the fake.
+test-integration:
+	@docker rm -f stockai-budget-pg stockai-budget-redis >/dev/null 2>&1 || true
+	@docker run -d --name stockai-budget-pg -e POSTGRES_PASSWORD=probe \
+		-e POSTGRES_DB=budgetprobe -p 55433:5432 postgres:15 >/dev/null
+	@docker run -d --name stockai-budget-redis -p 56379:6379 redis:7 >/dev/null
+	@sleep 6
+	@BUDGET_PG_URL=postgresql+psycopg2://postgres:probe@localhost:55433/budgetprobe \
+	 BUDGET_REDIS_URL=redis://localhost:56379/0 \
+	 python3 -m pytest -q shared/tests/test_llm_budget_integration.py \
+		shared/tests/test_deferred_retry_integration.py; \
+	 rc=$$?; docker rm -f stockai-budget-pg stockai-budget-redis >/dev/null 2>&1; exit $$rc
