@@ -20,8 +20,10 @@ if "common.llm_budget" not in sys.modules:
     class _Res:
         allowed, scope, reserved, reason = True, "news_classify", 0, "test stub"
         key, enforcement = "k", "none"
-    _bm.reserve = lambda est, scope="news_classify": _Res()
-    _bm.reconcile = lambda res, actual: None
+    _bm.reserve = lambda chars, max_out, scope="news_classify": _Res()
+    _bm.reconcile = lambda res, actual, outcome="ok": None
+    _bm.OUTCOME_OK, _bm.OUTCOME_AMBIGUOUS, _bm.OUTCOME_FAILED = (
+        "ok", "ambiguous", "failed")
     sys.modules["common.llm_budget"] = _bm
 
 from src.services import classify  # noqa: E402
@@ -125,7 +127,7 @@ class TestClassifyInBatches:
             calls.append(len(headlines))
             out = [None] * len(headlines)
             # The batcher reconciles against real usage, so it asks for it.
-            return (out, 100 * len(headlines)) if return_usage else out
+            return (out, 100 * len(headlines), "ok") if return_usage else out
 
         monkeypatch.setattr(classify, "classify_headlines", _fake_classify)
         headlines = [f"h{i}" for i in range(20)]
@@ -140,7 +142,7 @@ class TestClassifyInBatches:
             else:
                 out = [{"sentiment_score": 50, "sentiment_label": "neutral",
                         "is_material": False, "category": "other"}] * len(headlines)
-            return (out, 100 * len(headlines)) if return_usage else out
+            return (out, 100 * len(headlines), "ok") if return_usage else out
 
         monkeypatch.setattr(classify, "classify_headlines", _fake_classify)
         result = classify.classify_in_batches(["ok"], api_key="fake")

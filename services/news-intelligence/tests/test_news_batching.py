@@ -212,9 +212,38 @@ def test_an_exhausted_budget_defers_and_never_labels_the_headline():
         assert word not in seg, f"a deferral must not synthesise {word!r}"
 
 
-def test_reconciliation_happens_against_actual_usage():
+def test_reconciliation_happens_against_actual_usage_and_outcome():
     assert "return_usage=True" in _CLASSIFY
-    assert "reconcile(res, actual if actual is not None else est)" in _CLASSIFY
+    assert "reconcile(res, actual, outcome=outcome)" in _CLASSIFY
+    # An ambiguous outcome must not refund: a timeout may still have been charged.
+    assert 'usage_out["_outcome"] = "ambiguous"' in _CLASSIFY
+
+
+def test_the_reservation_is_an_upper_bound_not_an_estimate():
+    """Charging a shortfall afterwards records an overshoot; it cannot prevent one."""
+    assert "200 * len(chunk), scope=budget_scope" in _CLASSIFY
+    assert "_estimate_tokens" not in _CLASSIFY.split("def _estimate_tokens")[0], \
+        "the old point estimate is no longer what gets reserved"
+
+
+def test_deferred_positions_are_returned_not_left_on_module_state():
+    """Module state would not survive two concurrent polls."""
+    assert "deferred_out: set | None = None" in _CLASSIFY
+    assert "deferred_out.update(range(i, i + len(chunk)))" in _CLASSIFY
+    storage = (Path(__file__).resolve().parents[1] / "src" / "services"
+               / "storage.py").read_text()
+    assert "deferred_out=_deferred_positions" in storage
+    assert "_last_deferred" not in storage
+
+
+def test_a_deferred_headline_records_why_so_a_retry_can_find_it():
+    """URL dedup skips already-stored URLs, so an unclassified row would otherwise never be
+    offered to the classifier again — a permanent, silent absence."""
+    storage = (Path(__file__).resolve().parents[1] / "src" / "services"
+               / "storage.py").read_text()
+    assert "classification_deferred_reason=" in storage
+    assert '"budget_exhausted"' in storage
+    assert '"out_of_scope"' in storage, "never eligible is not the same as deferred"
 
 
 def test_the_resolver_fallback_draws_on_its_own_scope():

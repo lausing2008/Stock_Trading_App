@@ -95,7 +95,8 @@ def test_tagged_mode_now_depends_on_the_universe_and_keeps_the_fail_open():
 def test_out_of_scope_headlines_are_still_stored():
     """Only the LABELLING is skipped. The insert loop runs over every new item."""
     seg = _STORAGE[_STORAGE.index("inserted = 0"):]
-    assert "for raw, cls, symbols in zip(_new_items, classifications, resolved_symbols):" in seg
+    assert "zip(_new_items, classifications, resolved_symbols)" in seg, \
+        "every new item is inserted, classified or not"
     assert "classifications: list = [None] * len(_new_items)" in _STORAGE, \
         "unclassified items carry None and still persist"
 

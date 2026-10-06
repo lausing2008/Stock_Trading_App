@@ -52,7 +52,11 @@ def classify_headlines(headlines: list[str], api_key: str, *,
     if not return_usage:
         return out
     total = _usage.get("input_tokens", 0) + _usage.get("output_tokens", 0)
-    return out, (total or None)
+    # THE OUTCOME DECIDES WHAT TO SETTLE. "ok" means the provider reported usage; "ambiguous"
+    # means a timeout or unknown error that may still have been charged; "failed" means the
+    # request was refused before any work.
+    outcome = _usage.get("_outcome") or ("ok" if total else "ambiguous")
+    return out, (total or None), outcome
 
 
 def _classify_headlines_inner(headlines: list[str], api_key: str, *,
@@ -102,6 +106,8 @@ def _classify_headlines_inner(headlines: list[str], api_key: str, *,
                 duration_ms=_duration_ms, status="http_error", http_status=r.status_code,
                 context={"headline_count": len(headlines), **(call_context or {})},
             )
+            if usage_out is not None:
+                usage_out["_outcome"] = "ambiguous"   # an HTTP error may still have been billed
             return [None] * len(headlines)
         _resp_json = r.json()
         if usage_out is not None and isinstance(_resp_json.get("usage"), dict):
@@ -112,6 +118,12 @@ def _classify_headlines_inner(headlines: list[str], api_key: str, *,
             context={"headline_count": len(headlines), **(call_context or {})},
         )
     except Exception as exc:
+        if usage_out is not None:
+            # A CONNECTION ERROR BEFORE SENDING IS A REFUSAL; anything later may have been
+            # served and charged, so it is ambiguous rather than free.
+            import httpx as _hx
+            usage_out["_outcome"] = (
+                "failed" if isinstance(exc, _hx.ConnectError) else "ambiguous")
         log.warning("news_classify.failed", error=str(exc))
         log_llm_call(
             service="news-intelligence", call_site=CALL_SITE_NEWS_CLASSIFY, model=_model,
@@ -176,11 +188,13 @@ def _coerce_bool(value) -> bool:
 def classify_in_batches(headlines: list[str], api_key: str, *,
                         scopes: list[str] | None = None,
                         urls: list[str] | None = None,
-                        resolver_degraded: bool = False) -> list[dict | None]:
+                        resolver_degraded: bool = False,
+                        deferred_out: set | None = None) -> list[dict | None]:
     """Chunk `headlines` into _BATCH_SIZE-sized calls to classify_headlines(). One failed batch
     degrades only that batch's items to None, not the whole list — a transient failure on one
     chunk shouldn't discard classifications that another chunk already succeeded at."""
-    from common.llm_budget import (SCOPE_NEWS_CLASSIFY, SCOPE_RESOLVER_FALLBACK,
+    from common.llm_budget import (OUTCOME_AMBIGUOUS, OUTCOME_FAILED, OUTCOME_OK,
+                                   SCOPE_NEWS_CLASSIFY, SCOPE_RESOLVER_FALLBACK,
                                    reconcile, reserve)
     budget_scope = SCOPE_RESOLVER_FALLBACK if resolver_degraded else SCOPE_NEWS_CLASSIFY
 
@@ -189,8 +203,11 @@ def classify_in_batches(headlines: list[str], api_key: str, *,
         chunk = headlines[i:i + _BATCH_SIZE]
         # RESERVE BEFORE CALLING. Checking a total after the fact cannot refuse anything, and
         # N concurrent callers each reading "under budget" all proceed.
-        est = _estimate_tokens(chunk)
-        res = reserve(est, scope=budget_scope)
+        # AN UPPER BOUND, not an estimate: the prompt plus the maximum output the request
+        # itself allows. Charging a shortfall afterwards records an overshoot, it cannot
+        # prevent one.
+        res = reserve(sum(len(h) for h in chunk) + len(_SYSTEM),
+                      200 * len(chunk), scope=budget_scope)
         if not res.allowed:
             # DEFERRED, not neutral. An unclassified headline is stored and carries no label;
             # it must never be recorded as benign because a cost ceiling was reached.
@@ -198,14 +215,20 @@ def classify_in_batches(headlines: list[str], api_key: str, *,
                         headlines=len(chunk), reason=res.reason,
                         enforcement=res.enforcement)
             log_llm_call_deferred(len(chunk), res, _call_context(scopes, urls, i, len(chunk)))
+            if deferred_out is not None:
+                # Positions WITHIN THE SUBMITTED LIST. The caller maps them back to its own
+                # items — passed explicitly rather than left on module state, which would not
+                # survive two concurrent polls.
+                deferred_out.update(range(i, i + len(chunk)))
             results.extend([None] * len(chunk))
             continue
-        out, actual = classify_headlines(
+        out, actual, outcome = classify_headlines(
             chunk, api_key, call_context=_call_context(scopes, urls, i, len(chunk)),
             return_usage=True)
-        # RECONCILE IN BOTH DIRECTIONS: an unreturned over-estimate shrinks the day's real
-        # capacity; an uncharged under-estimate lets the ceiling be passed silently.
-        reconcile(res, actual if actual is not None else est)
+        # AN AMBIGUOUS OUTCOME IS NOT A REFUND — a timed-out request may have been served and
+        # charged, so it settles at the full reservation rather than returning capacity that
+        # cannot be shown to be unspent.
+        reconcile(res, actual, outcome=outcome)
         results.extend(out)
     return results
 

@@ -411,6 +411,7 @@ def persist_news_items(
             if scope is not None or _classify_untracked or not _resolver_ok
         ]
         classifications: list = [None] * len(_new_items)
+        _deferred_positions: set[int] = set()
         if api_key and _to_classify:
             _results = classify_in_batches(
                 [_new_items[i]["headline"] for i in _to_classify], api_key,
@@ -419,6 +420,7 @@ def persist_news_items(
                 # The fallback that classifies everything when the resolver is broken draws on
                 # its OWN, smaller allowance. Logging made that path visible; it did not bound it.
                 resolver_degraded=not _resolver_ok,
+                deferred_out=_deferred_positions,
             )
             for _pos, _idx in enumerate(_to_classify):
                 if _pos < len(_results):
@@ -439,8 +441,21 @@ def persist_news_items(
             resolver_ok=_resolver_ok, classify_untracked=_classify_untracked,
         )
 
+        # Which indices were SENT but came back without a classification, and which were
+        # never sent because a ceiling refused them.
+        # `_deferred_positions` holds positions in the SUBMITTED list; map them back to item
+        # indices so the stored row records why its own classification is missing.
+        _deferred_idx = {_to_classify[p] for p in _deferred_positions
+                         if p < len(_to_classify)}
+
+        def _deferred_reason(idx: int) -> str | None:
+            if idx not in _to_classify:
+                return "out_of_scope"           # never eligible; not a deferral to retry
+            return "budget_exhausted" if idx in _deferred_idx else None
+
         inserted = 0
-        for raw, cls, symbols in zip(_new_items, classifications, resolved_symbols):
+        for idx, (raw, cls, symbols) in enumerate(
+                zip(_new_items, classifications, resolved_symbols)):
             headline = raw["headline"]
             symbols = symbols or [None]  # None = macro/market-wide, no ticker matched
             for sym in symbols:
@@ -453,6 +468,12 @@ def persist_news_items(
                     sentiment_label=cls["sentiment_label"] if cls else None,
                     is_material=bool(cls["is_material"]) if cls else False,
                     category=cls["category"] if cls else None,
+                    # A DEFERRAL IS RECORDED, NOT INFERRED. Without this, a headline stored
+                    # unclassified because a ceiling was reached is indistinguishable from one
+                    # that was classified and found unremarkable — and the URL dedup above
+                    # means it would never be offered to the classifier again.
+                    classification_deferred_reason=(
+                        _deferred_reason(idx) if cls is None else None),
                     published_at=raw["published_at"],
                 ).on_conflict_do_nothing(
                     index_elements=["source", "url", "symbol"]

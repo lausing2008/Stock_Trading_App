@@ -180,6 +180,22 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "ALTER TABLE intelligence_reports ADD COLUMN IF NOT EXISTS correction JSON"))
 
+        # Atomic token-budget counters. create_all() makes the tables; the unique key is the
+        # composite primary key, which is what makes the conditional UPSERT atomic.
+        conn.execute(text(
+            "ALTER TABLE realtime_news_items ADD COLUMN IF NOT EXISTS "
+            "classification_deferred_reason VARCHAR(128)"))
+        conn.execute(text(
+            "ALTER TABLE realtime_news_items ADD COLUMN IF NOT EXISTS "
+            "classification_attempts INTEGER NOT NULL DEFAULT 0"))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_realtime_news_deferred"
+            " ON realtime_news_items (classification_deferred_reason)"
+            " WHERE classification_deferred_reason IS NOT NULL"))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_llm_reservations_unsettled"
+            " ON llm_reservations (settled_at) WHERE settled_at IS NULL"))
+
         # Association evidence and the two separate hashes. `content_hash` widens because its
         # value is now prefixed with WHAT it covers; a bare digest could not distinguish a
         # transcription digest from a bytes digest, and the two support different claims.

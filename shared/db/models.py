@@ -2522,6 +2522,21 @@ class RealtimeNewsItem(Base):
     published_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     ingested_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
+    #: WHY this row carries no classification, and whether it can still get one.
+    #:
+    #: THE TRAP THIS CLOSES. Ingestion skips URLs already stored, so a headline stored WITHOUT a
+    #: classification — because a budget ceiling deferred it — would never be offered to the
+    #: classifier again: the next poll sees the URL, treats it as old, and moves on. The absence
+    #: would be permanent and silent, and nothing would distinguish it from a headline that was
+    #: classified and found unremarkable.
+    #:
+    #: NULL means classification ran (or was never applicable for this source). A value means it
+    #: did NOT run and names why, so a retry can find it. An existing risk flag is never cleared
+    #: by a deferral — the columns above simply stay as they were.
+    classification_deferred_reason: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True)
+    classification_attempts: Mapped[int] = mapped_column(Integer, default=0)
+
 
 class ResearchReportCache(Base):
     """Durable persistence for research-engine's AI research reports (fundamentals,
@@ -3633,6 +3648,55 @@ class IssuerDocument(Base):
         Index("ux_issuerdoc_stock_url_hash", "stock_id", "source_url", "content_hash",
               unique=True),
     )
+
+
+class LlmBudgetDay(Base):
+    """One atomic reservation counter per (scope, UTC day) — the DATABASE fallback for the
+    token ceiling when Redis is unavailable.
+
+    WHY A COUNTER AND NOT A SUM-WITH-MARGIN. The first fallback read today's logged usage and
+    allowed a call if it sat under 90% of the ceiling. That reduces risk; it does not bound
+    spending. With usage at 260,000 against 300,000, every concurrent caller reads "below
+    270,000" and every one proceeds — and in-flight calls are not logged yet, so the real gap is
+    larger than the one being measured. A margin cannot fix a race; only a reservation can.
+
+    The conditional UPSERT in `llm_budget.py` increments this row only when the increment fits
+    under the ceiling, in one statement, so two callers cannot both pass the same check.
+    """
+    __tablename__ = "llm_budget_day"
+
+    scope: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: The UTC calendar day, stated rather than inherited from a server setting.
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    reserved: Mapped[int] = mapped_column(BigInteger, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class LlmReservation(Base):
+    """One reservation, so reconciliation is idempotent and survives a restart.
+
+    WHY IDENTITY MATTERS. A reconciliation applied twice refunds capacity that was spent; one
+    applied to the wrong day corrupts a different day's ceiling. A reservation therefore records
+    WHICH day it was taken against, and settlement is recorded once — a second attempt is a
+    no-op rather than a second refund.
+
+    AN AMBIGUOUS OUTCOME IS NOT A REFUND. A timeout may still have been charged by the provider,
+    so a call that did not clearly fail settles at its full reserved amount rather than returning
+    capacity the platform cannot prove it kept.
+    """
+    __tablename__ = "llm_reservations"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(64), index=True)
+    #: The day the capacity was taken from. Reconciliation across UTC midnight must settle
+    #: against THIS day, not the day it happens to be when the response arrives.
+    day: Mapped[date] = mapped_column(Date, index=True)
+    reserved: Mapped[int] = mapped_column(Integer)
+    settled_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)  # ok|ambiguous|failed
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class EarningsCoverageAttempt(Base):
