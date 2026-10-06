@@ -202,3 +202,62 @@ def test_an_item_still_over_budget_stays_deferred_and_counts_an_attempt(db, monk
         r = s.execute(text("SELECT * FROM realtime_news_items")).mappings().one()
     assert r["classification_deferred_reason"] == "budget_exhausted", "it stays retryable"
     assert r["classification_attempts"] == 1, "a stuck row is visible"
+
+
+def test_two_workers_cannot_both_pay_for_the_same_article(db, monkeypatch):
+    """The duplicate spend this budget exists to prevent. Both workers run against the same
+    deferred row; exactly one may reach the provider."""
+    import threading
+    now = datetime.utcnow()
+    _insert(now, minutes_old=5, url="https://x/contended")
+
+    import services.deferred_retry as DR
+    import services.classify as C
+    paid, lock = [], threading.Lock()
+
+    def _charging_classifier(h, k, **kw):
+        with lock:
+            paid.append(len(h))
+        return [LABEL] * len(h)
+
+    monkeypatch.setattr(C, "classify_in_batches", _charging_classifier)
+
+    barrier = threading.Barrier(2)
+
+    def worker():
+        barrier.wait()
+        try:
+            DR.retry_deferred()
+        except Exception:
+            pass
+
+    ts = [threading.Thread(target=worker) for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+
+    assert sum(paid) == 1, f"the provider was called for {sum(paid)} copies of one article"
+    with _Session() as s:
+        rows = s.execute(text("SELECT * FROM realtime_news_items")).mappings().all()
+    assert len(rows) == 1 and rows[0]["classification_deferred_reason"] is None
+
+
+def test_a_claimed_row_that_stays_over_budget_returns_to_the_queue(db, monkeypatch):
+    """Otherwise a claim leaves it stranded in 'retrying' and it is never seen again."""
+    now = datetime.utcnow()
+    _insert(now, minutes_old=5, url="https://x/stuck")
+    import services.deferred_retry as DR
+    import services.classify as C
+
+    def _still_broke(h, k, **kw):
+        if kw.get("deferred_out") is not None:
+            kw["deferred_out"].update(range(len(h)))
+        return [None] * len(h)
+
+    monkeypatch.setattr(C, "classify_in_batches", _still_broke)
+    DR.retry_deferred()
+    with _Session() as s:
+        r = s.execute(text("SELECT * FROM realtime_news_items")).mappings().one()
+    assert r["classification_deferred_reason"] == "budget_exhausted", \
+        "a claimed row must return to the queue, not stay 'retrying'"

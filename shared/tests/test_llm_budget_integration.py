@@ -99,39 +99,120 @@ def _run_concurrently(fn, n):
     return out
 
 
-# ============================================================ real Redis, real Lua
+# ============================================================ one authority
 
-def test_the_lua_script_admits_exactly_the_capacity_that_fits(stores):
+def test_concurrent_reservations_admit_exactly_the_capacity_that_fits(stores):
+    """Twelve real transactions against one row. A read-then-write would over-admit."""
     allowed = _run_concurrently(lambda: _reserve(300).allowed, 12)
-    assert sum(allowed) == 3, f"exactly 3 x 300 fit under 1000, got {sum(allowed)}"
-    assert int(stores.get(B.utc_day_key(B.SCOPE_NEWS_CLASSIFY))) == 900
+    assert sum(allowed) == 3, f"admitted {sum(allowed)} x 300 under a 1000 ceiling"
+    with _Session() as s:
+        assert s.execute(text("SELECT reserved FROM llm_budget_day WHERE scope = :sc"),
+                         {"sc": B.SCOPE_NEWS_CLASSIFY}).scalar() == 900
 
 
-def test_a_child_refused_by_its_sublimit_leaves_the_parent_untouched_in_redis(stores):
-    """The rollback loop, executed by Redis rather than asserted as text."""
-    r = _reserve(250, scope=B.SCOPE_RESOLVER_FALLBACK)      # sublimit is 200
-    assert not r.allowed
-    parent = stores.get(B.utc_day_key(B.SCOPE_NEWS_CLASSIFY))
-    assert int(parent or 0) == 0, "the parent was charged by a call that was refused"
-
-
-def test_a_nested_reservation_charges_both_ceilings_in_redis(stores):
+def test_a_nested_reservation_charges_both_ceilings(stores):
     assert _reserve(150, scope=B.SCOPE_RESOLVER_FALLBACK).allowed
-    assert int(stores.get(B.utc_day_key(B.SCOPE_RESOLVER_FALLBACK))) == 150
-    assert int(stores.get(B.utc_day_key(B.SCOPE_NEWS_CLASSIFY))) == 150, \
+    with _Session() as s:
+        rows = dict(s.execute(text(
+            "SELECT scope, reserved FROM llm_budget_day")).all())
+    assert rows[B.SCOPE_RESOLVER_FALLBACK] == 150
+    assert rows[B.SCOPE_NEWS_CLASSIFY] == 150, \
         "independent allowances would permit the sum of both ceilings"
 
 
-def test_a_parent_at_its_ceiling_refuses_the_child_in_redis(stores):
+def test_a_parent_at_its_ceiling_refuses_the_child(stores):
     assert _reserve(1000).allowed
     assert not _reserve(50, scope=B.SCOPE_RESOLVER_FALLBACK).allowed
 
 
+def test_a_child_that_fits_its_sublimit_but_breaches_the_parent_charges_neither(stores):
+    """THE CASE THAT DISTINGUISHES a full rollback from undoing one ceiling: the child is
+    charged successfully and the PARENT then refuses."""
+    assert _reserve(950).allowed
+    assert not _reserve(100, scope=B.SCOPE_RESOLVER_FALLBACK).allowed
+    with _Session() as s:
+        child = s.execute(text(
+            "SELECT COALESCE(reserved,0) FROM llm_budget_day WHERE scope = :sc"),
+            {"sc": B.SCOPE_RESOLVER_FALLBACK}).scalar() or 0
+    assert child == 0, "the child ceiling kept capacity for a refused call"
+
+
+def test_the_first_reservation_of_a_day_is_still_subject_to_the_ceiling(stores):
+    """With the cap only on DO UPDATE, the first insert of a day had no row to conflict with
+    and was admitted unconditionally — a single call larger than the whole budget."""
+    assert not _reserve(5000).allowed
+    with _Session() as s:
+        assert (s.execute(text(
+            "SELECT COALESCE(reserved,0) FROM llm_budget_day WHERE scope = :sc"),
+            {"sc": B.SCOPE_NEWS_CLASSIFY}).scalar() or 0) == 0
+
+
+# ============================================================ the crash window
+
+def test_a_reservation_is_all_or_nothing_across_counter_and_ledger(stores):
+    """ONE TRANSACTION. The earlier design admitted in Redis and recorded in PostgreSQL, with
+    no answer to what was true between the two writes. Here a failure mid-reservation leaves
+    neither the counter charged nor a reservation row behind."""
+    import unittest.mock as _m
+    real_session = B.__dict__.get("_SessionForTest")
+
+    # Fail the LEDGER insert, after the ceilings have been incremented in the same transaction.
+    class _Boom(Exception):
+        pass
+
+    orig = _Session
+
+    def _failing_session():
+        s = orig()
+        real_execute = s.execute
+
+        def execute(stmt, params=None):
+            if "INSERT INTO llm_reservations" in str(stmt):
+                raise _Boom("crash after the counters, before the record")
+            return real_execute(stmt, params)
+        s.execute = execute
+        return s
+
+    import types
+    fake_db = types.ModuleType("db")
+    fake_db.SessionLocal = _failing_session
+    with _m.patch.dict(sys.modules, {"db": fake_db}):
+        r = _reserve(300)
+    assert not r.allowed, "a reservation that cannot be recorded must not be granted"
+
+    with _Session() as s:
+        charged = s.execute(text(
+            "SELECT COALESCE(reserved,0) FROM llm_budget_day WHERE scope = :sc"),
+            {"sc": B.SCOPE_NEWS_CLASSIFY}).scalar() or 0
+        rows = s.execute(text("SELECT count(*) FROM llm_reservations")).scalar()
+    assert charged == 0, "the ceiling kept capacity for a reservation that was never recorded"
+    assert rows == 0
+
+
+def test_admission_stops_when_the_ledger_cannot_be_reached(stores, monkeypatch):
+    """There is no second counter to fall back to: a fallback is a second authority."""
+    import types
+    broken = types.ModuleType("db")
+
+    def _explode():
+        raise RuntimeError("ledger unreachable")
+    broken.SessionLocal = _explode
+    monkeypatch.setitem(sys.modules, "db", broken)
+    r = _reserve(10)
+    assert not r.allowed and r.enforcement == "none"
+
+
+def test_redis_being_wrong_cannot_grant_capacity(stores):
+    """The advisory cache is deliberately powerless: corrupt it and admission is unchanged."""
+    assert _reserve(900).allowed
+    stores.flushdb()                      # the cache now says nothing is reserved
+    assert not _reserve(200).allowed, \
+        "the ledger, not the cache, decides — a flushed cache must not free capacity"
+
+
 # ============================================================ real PostgreSQL
 
-def test_the_database_upsert_is_atomic_under_concurrent_transactions(stores, monkeypatch):
-    """Twelve real transactions against one row. A read-then-write would over-admit."""
-    monkeypatch.setattr(B, "_redis", lambda: None)
+def test_the_upsert_is_atomic_under_concurrent_transactions(stores):
     allowed = _run_concurrently(lambda: _reserve(300).allowed, 12)
     assert sum(allowed) == 3, f"the database admitted {sum(allowed)} x 300 under 1000"
     with _Session() as s:
@@ -141,8 +222,7 @@ def test_the_database_upsert_is_atomic_under_concurrent_transactions(stores, mon
     assert total == 900
 
 
-def test_the_database_rolls_back_the_parent_when_the_child_refuses(stores, monkeypatch):
-    monkeypatch.setattr(B, "_redis", lambda: None)
+def test_the_ledger_rolls_back_the_parent_when_the_child_refuses(stores):
     assert not _reserve(250, scope=B.SCOPE_RESOLVER_FALLBACK).allowed
     with _Session() as s:
         parent = s.execute(text(
@@ -172,43 +252,13 @@ def test_concurrent_settlement_of_one_reservation_refunds_once(stores):
 
 # ============================================================ partial outage
 
-def test_redis_and_database_callers_cannot_spend_the_same_capacity(stores, monkeypatch):
-    """THE PARTIAL-OUTAGE CASE. One caller still sees Redis while another has fallen back to
-    the database. If the two counters were independent, each could admit a full ceiling."""
-    assert _reserve(600).allowed                     # via Redis
-    monkeypatch.setattr(B, "_redis", lambda: None)   # this caller lost Redis
-    second = _reserve(600)                           # via the database
-    assert not second.allowed, (
-        "the database admitted capacity Redis had already reserved — the two counters are "
-        "spending the same ceiling twice")
 
 
-def test_a_redis_reset_is_reseeded_from_the_durable_counter(stores):
-    """A flushed counter would otherwise admit a fresh ceiling's worth of calls."""
-    assert _reserve(900).allowed
-    stores.flushdb()                                  # Redis loses everything
-    assert not _reserve(200).allowed, (
-        "after a Redis reset the durable ledger must restore what was already reserved")
 
 
-def test_a_child_that_fits_its_sublimit_but_breaches_the_parent_rolls_back_both(stores):
-    """THE CASE THAT DISTINGUISHES the rollback loop from rolling back one key.
-
-    When the refusal happens on the FIRST key, undoing one and undoing all are the same thing —
-    a sabotage of the loop passed because every existing test refused there. Here the child is
-    charged successfully and the PARENT then refuses, so the child must be given back too.
-    """
-    assert _reserve(950).allowed                       # parent at 950 of 1000
-    before_child = int(stores.get(B.utc_day_key(B.SCOPE_RESOLVER_FALLBACK)) or 0)
-    r = _reserve(100, scope=B.SCOPE_RESOLVER_FALLBACK)  # 100 <= 200 sublimit, but 1050 > 1000
-    assert not r.allowed, "the parent has no room for this"
-    after_child = int(stores.get(B.utc_day_key(B.SCOPE_RESOLVER_FALLBACK)) or 0)
-    assert after_child == before_child, (
-        "the child ceiling kept capacity for a call that was refused by its parent")
 
 
-def test_the_same_rollback_holds_in_the_database_path(stores, monkeypatch):
-    monkeypatch.setattr(B, "_redis", lambda: None)
+def test_the_same_rollback_holds_for_a_later_day(stores):
     assert _reserve(950).allowed
     assert not _reserve(100, scope=B.SCOPE_RESOLVER_FALLBACK).allowed
     with _Session() as s:

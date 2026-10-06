@@ -96,31 +96,47 @@ def scope_chain(scope: str) -> list[str]:
     return chain
 
 
+#: Per-message framing the provider adds around the content this platform sends: role markers,
+#: message delimiters and the response preamble. Not published as an exact figure, so it is
+#: allowed for generously rather than assumed to be zero.
+_FRAMING_TOKENS_PER_MESSAGE = 16
+_MESSAGES_PER_CALL = 2          # system + user
+
+#: JSON serialisation adds quoting and escaping around the text itself.
+_SERIALISATION_FACTOR = 1.15
+
+
 def upper_bound_tokens(request_text: str, max_output_tokens: int) -> int:
-    """A PROVABLE upper bound on a request's token cost.
+    """A CONSERVATIVE admission estimate. Read what it does and does not cover.
 
-    THE INPUT BOUND IS UTF-8 BYTES. A byte-pair encoder builds every token from at least one
-    byte, so a text can never tokenise to more tokens than it has bytes. That is a property of
-    the encoding, not an empirical guess.
+    WHAT IT RESTS ON. A byte-pair encoder builds each token from at least one byte, so a text
+    cannot tokenise to more tokens than its UTF-8 byte count. That holds for the CONTENT this
+    platform sends, and it is why bytes rather than characters are used: measured on strings
+    this platform can actually receive, CJK is 3.0 bytes per character and emoji 4.0, so the
+    character-based estimate this replaced under-reserved exactly where it mattered.
 
-    THE EARLIER VERSION WAS NOT A BOUND AND WAS DESCRIBED AS ONE. It divided characters by 2.5,
-    which holds for Latin prose and fails badly elsewhere — measured on the exact strings this
-    platform could receive: CJK is 3.0 bytes per character, emoji 4.0, mathematical alphanumerics
-    3.8. A Chinese-language headline would have been reserved at well under its true cost, which
-    is the one direction an admission check must never err in.
+    WHAT IT DOES NOT ESTABLISH, stated because the previous version claimed an unconditional
+    hard ceiling and was not entitled to:
 
-    `request_text` must be the COMPLETE submitted request — system prompt, formatting and all —
-    because the bound is on what is sent, not on the part of it that is interesting.
+      * The provider's accounting covers the serialised REQUEST, not the raw text. JSON
+        quoting and escaping are allowed for by a factor, not derived.
+      * Per-message framing — role markers, delimiters, any preamble — is added by the provider
+        and is not published as an exact figure. A generous per-message allowance is included.
+      * The provider's tokenizer is not this code. A future model, or a change to how a request
+        is assembled, could in principle exceed this.
 
-    IT OVER-RESERVES FOR LATIN TEXT, by roughly three to four times, since English prose
-    tokenises at about four bytes per token. That is deliberate: the reservation is held only
-    for the duration of the call and settled against actual usage immediately afterwards, so
-    the ceiling binds on real consumption while admission stays conservative.
+    So this is ADMISSION CONTROL that is conservative by construction and by a wide margin, not
+    a proven provider-side ceiling. The ceiling that actually binds is on SETTLED usage, which
+    is the number the provider reports and which reconciliation applies immediately after every
+    call. A mis-estimate here affects how eagerly admission refuses, not what gets counted.
     """
-    return len(request_text.encode("utf-8")) + int(max_output_tokens)
+    content = int(len(request_text.encode("utf-8")) * _SERIALISATION_FACTOR)
+    framing = _FRAMING_TOKENS_PER_MESSAGE * _MESSAGES_PER_CALL
+    return content + framing + int(max_output_tokens)
 
 
 def _redis():
+    """Only for `status()` caching. NOT part of the reservation decision — see `reserve`."""
     try:
         from .redis_client import get_redis   # type: ignore
         return get_redis()
@@ -133,103 +149,52 @@ def _redis():
             return None
 
 
-#: Reserve against EVERY ceiling or none. Redis has no conditional multi-key increment, and
-#: doing it with separate commands leaves a window where a parent is charged and a child refuses.
-_RESERVE_LUA = """
-local n = tonumber(ARGV[1])
-for i = 1, #KEYS do
-  local cap = tonumber(ARGV[1 + i])
-  local v = redis.call('INCRBY', KEYS[i], n)
-  redis.call('EXPIRE', KEYS[i], 172800)
-  if v > cap then
-    for j = 1, i do redis.call('DECRBY', KEYS[j], n) end
-    return {0, KEYS[i], v - n}
-  end
-end
-return {1, '', 0}
-"""
-
-
 def _day_str(now: datetime | None = None) -> str:
     return (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date().isoformat()
 
 
-def _seed_from_db_if_reset(r, scope: str, day: str) -> None:
-    """A flushed or evicted Redis counter would admit a fresh ceiling's worth of calls.
+def _db_reserve(chain: list[str], caps: list[int], n: int, day: str,
+                rid: str, scope: str) -> tuple[bool, str, int]:
+    """Reserve against every ceiling AND record the reservation, in ONE transaction.
 
-    The database ledger is durable, so if it records more reserved capacity for this day than
-    Redis does, Redis lost state and is re-seeded before any new call is admitted.
-    """
-    try:
-        from sqlalchemy import text
-        from db import SessionLocal
-        with SessionLocal() as s:
-            durable = int(s.execute(text(
-                "SELECT COALESCE(reserved, 0) FROM llm_budget_day"
-                " WHERE scope = :sc AND day = :d"), {"sc": scope, "d": day}).scalar() or 0)
-        cur = int(r.get(utc_day_key(scope)) or 0)
-        if durable > cur:
-            r.set(utc_day_key(scope), durable, ex=172800)
-            log.warning("llm_budget.redis_reseeded_after_reset", scope=scope,
-                        redis=cur, durable=durable)
-    except Exception as exc:
-        log.warning("llm_budget.reseed_check_failed", scope=scope, error=str(exc))
+    THIS IS THE WHOLE DESIGN, and it replaces a Redis gate mirrored to a database record. That
+    arrangement had no answer to the question "what is true between the two writes": a crash
+    after Redis admitted but before the database recorded left capacity reserved in one store
+    and absent from the other, and a later Redis reset would restore the LOWER figure and leak
+    the difference. A caller on the Redis path and one on the database fallback could also
+    admit against counters that did not know about each other.
 
+    Rather than reconcile two authorities, there is now one. Every ceiling in the chain and the
+    reservation row are written in a single transaction: it commits entirely or not at all, so
+    there is no window in which part of it is true. The conditional UPSERT is what makes each
+    increment atomic against concurrent transactions; the shared transaction is what makes the
+    set of them atomic together.
 
-def _mirror_to_durable(chain: list[str], n: int, day: str) -> None:
-    """Record a Redis-granted reservation in the durable counter, unconditionally.
-
-    Redis has already decided, so this does not re-check the ceiling — it keeps the durable
-    record complete so a database-fallback caller sees what Redis reserved, and so a Redis
-    reset is detectable.
-    """
-    try:
-        from sqlalchemy import text
-        from db import SessionLocal
-        with SessionLocal() as s:
-            for scope in chain:
-                s.execute(text(
-                    "INSERT INTO llm_budget_day (scope, day, reserved) VALUES (:sc, :d, :n)"
-                    " ON CONFLICT (scope, day) DO UPDATE"
-                    " SET reserved = llm_budget_day.reserved + :n"
-                ), {"sc": scope, "d": day, "n": n})
-            s.commit()
-    except Exception as exc:
-        log.warning("llm_budget.durable_mirror_failed", error=str(exc))
-
-
-def _db_reserve(chain: list[str], caps: list[int], n: int, day: str) -> tuple[bool, str, int]:
-    """ATOMIC in the database: increment only if the result fits, in one statement per ceiling.
-
-    This replaces a sum-plus-margin check, which could not bound concurrent callers: with usage
-    at 260,000 of 300,000 every caller reads "below the margin" and every one proceeds, and
-    in-flight calls are not logged yet so the real gap is wider than the measured one.
+    Redis is still used — to serve `status()` without a query — but it decides nothing.
     """
     from sqlalchemy import text
     from db import SessionLocal
-    charged: list[str] = []
     try:
         with SessionLocal() as s:
-            for scope, cap in zip(chain, caps):
-                # THE INSERT BRANCH NEEDS THE CAP TOO. With the check only on DO UPDATE, the
-                # FIRST reservation of a day inserted unconditionally — a single call larger
-                # than the entire ceiling was admitted, because there was no row to conflict
-                # with. Found by running this against a real PostgreSQL; no fake reproduced it.
+            for scope_name, cap in zip(chain, caps):
                 row = s.execute(text(
+                    # THE INSERT BRANCH NEEDS THE CAP TOO: with the check only on DO UPDATE,
+                    # the FIRST reservation of a day inserted unconditionally, admitting a
+                    # single call larger than the entire ceiling.
                     "INSERT INTO llm_budget_day (scope, day, reserved)"
                     " SELECT :sc, :d, :n WHERE :n <= :cap"
-                    " ON CONFLICT (scope, day) DO UPDATE SET reserved = llm_budget_day.reserved + :n"
+                    " ON CONFLICT (scope, day) DO UPDATE"
+                    "   SET reserved = llm_budget_day.reserved + :n"
                     "   WHERE llm_budget_day.reserved + :n <= :cap"
                     " RETURNING reserved"
-                ), {"sc": scope, "d": day, "n": n, "cap": cap}).first()
+                ), {"sc": scope_name, "d": day, "n": n, "cap": cap}).first()
                 if row is None:
-                    for done in charged:          # all or nothing
-                        s.execute(text(
-                            "UPDATE llm_budget_day SET reserved = reserved - :n"
-                            " WHERE scope = :sc AND day = :d"), {"n": n, "sc": done, "d": day})
-                    s.commit()
-                    return False, scope, cap
-                charged.append(scope)
+                    s.rollback()          # nothing charged; the transaction never committed
+                    return False, scope_name, cap
+            s.execute(text(
+                "INSERT INTO llm_reservations (id, scope, day, reserved)"
+                " VALUES (:i, :sc, :d, :n) ON CONFLICT (id) DO NOTHING"),
+                {"i": rid, "sc": scope, "d": day, "n": n})
             s.commit()
         return True, "", 0
     except Exception as exc:
@@ -239,10 +204,12 @@ def _db_reserve(chain: list[str], caps: list[int], n: int, day: str) -> tuple[bo
 
 def reserve(request_text: str, max_output_tokens: int, *,
             scope: str = SCOPE_NEWS_CLASSIFY) -> Reservation:
-    """Claim a PROVABLE upper bound on this call's cost, against every ceiling that applies.
+    """Claim a conservative upper bound on this call's cost, against every ceiling that applies.
 
-    `request_text` is the complete request as submitted, so the bound covers the system prompt
-    and formatting rather than only the headlines.
+    ONE AUTHORITY. The ceilings and the reservation row are written in a single PostgreSQL
+    transaction, so a crash at any point leaves either all of it or none of it. Admission STOPS
+    when that transaction cannot be made — spending that cannot be recorded is not bounded,
+    and a cost control that fails open is not a control.
     """
     import uuid
     chain = scope_chain(scope)
@@ -254,51 +221,38 @@ def reserve(request_text: str, max_output_tokens: int, *,
     if all(c <= 0 for c in caps):
         return Reservation(True, scope, 0, "no ceiling configured for this scope", "none",
                            rid, day)
-
-    r = _redis()
-    if r is not None:
-        try:
-            for sc in chain:
-                _seed_from_db_if_reset(r, sc, day)
-            keys = [utc_day_key(sc, datetime.now(timezone.utc)) for sc in chain]
-            res = r.eval(_RESERVE_LUA, len(keys), *keys, n, *caps)
-            ok = int(res[0]) == 1
-            if not ok:
-                blocked = res[1].decode() if isinstance(res[1], bytes) else str(res[1])
-                return Reservation(
-                    False, scope, 0,
-                    f"ceiling reached on {blocked}: {int(res[2]):,} of its UTC-day allowance "
-                    f"already reserved, and this call needs {n:,} more",
-                    "redis", rid, day, tuple(keys))
-            # REDIS IS THE GATE; THE DATABASE IS THE RECORD. Without this the two counters are
-            # independent: a caller that still has Redis and one that has fallen back to the
-            # database each see a full ceiling and spend it, and a flushed Redis cannot be
-            # told from a quiet day. Both were reproduced against real stores.
-            _mirror_to_durable(chain, n, day)
-            _record_reservation(rid, scope, day, n)
-            return Reservation(True, scope, n, "reserved (upper bound)", "redis", rid, day,
-                               tuple(keys))
-        except Exception as exc:
-            log.warning("llm_budget.redis_failed", scope=scope, error=str(exc))
-
-    # REDIS UNAVAILABLE — the database reserves ATOMICALLY rather than estimating with a margin.
     try:
-        ok, blocked, cap = _db_reserve(chain, caps, n, day)
+        ok, blocked, cap = _db_reserve(chain, caps, n, day, rid, scope)
     except Exception:
-        # Neither counter can reserve. FAIL CLOSED: spending that cannot be bounded is deferred.
+        # FAIL CLOSED. There is no second counter to fall back to, by design: a fallback is a
+        # second authority, and two authorities cannot bound one ceiling.
         return Reservation(
             False, scope, 0,
-            "neither Redis nor the database could reserve capacity, so spending cannot be "
-            "bounded; classification is deferred rather than issued blind",
+            "the budget ledger is unavailable, so this call's capacity cannot be reserved or "
+            "recorded; classification is deferred rather than issued unbounded",
             "none", rid, day)
     if not ok:
         return Reservation(
             False, scope, 0,
-            f"ceiling reached on {blocked} under the database reservation: this call's upper "
-            f"bound of {n:,} does not fit under {cap:,}",
+            f"ceiling reached on {blocked}: this call's upper bound of {n:,} does not fit "
+            f"under its {cap:,} UTC-day allowance",
             "database", rid, day)
-    _record_reservation(rid, scope, day, n)
-    return Reservation(True, scope, n, "reserved (upper bound, database)", "database", rid, day)
+    _cache_status(chain, n, day)
+    return Reservation(True, scope, n, "reserved (conservative upper bound)", "database",
+                       rid, day)
+
+
+def _cache_status(chain: list[str], n: int, day: str) -> None:
+    """Mirror to Redis so `status()` is cheap. Advisory only — it decides nothing."""
+    r = _redis()
+    if r is None:
+        return
+    try:
+        for sc in chain:
+            r.incrby(f"llm:budget:{sc}:{day}", n)
+            r.expire(f"llm:budget:{sc}:{day}", 172800)
+    except Exception:
+        pass
 
 
 def _record_reservation(rid: str, scope: str, day: str, n: int) -> None:
@@ -323,7 +277,7 @@ OUTCOME_FAILED = "failed"      # refused before any work; the reservation return
 
 def reconcile(res: Reservation, actual_tokens: int | None, *,
               outcome: str = OUTCOME_OK) -> None:
-    """Settle ONCE, against the day the capacity came from.
+    """Settle ONCE, against the day the capacity came from, in the ledger that granted it.
 
     AN AMBIGUOUS OUTCOME DOES NOT REFUND. A timed-out request may have been served and charged,
     so returning its capacity would let the ceiling be passed by exactly the calls nobody can
@@ -338,18 +292,20 @@ def reconcile(res: Reservation, actual_tokens: int | None, *,
     else:
         settle = int(actual_tokens or 0)
 
-    # IDEMPOTENT: a second settlement would refund capacity that was spent.
     try:
         from sqlalchemy import text
         from db import SessionLocal
         with SessionLocal() as s:
+            # IDEMPOTENT AND ATOMIC WITH THE COUNTER ADJUSTMENT: claiming the row and returning
+            # the difference happen in one transaction, so a crash between them is impossible
+            # and a second settlement finds nothing to claim.
             row = s.execute(text(
                 "UPDATE llm_reservations SET settled_tokens = :t, outcome = :o,"
                 " settled_at = now() WHERE id = :i AND settled_at IS NULL"
-                " RETURNING reserved, day"), {"t": settle, "o": outcome, "i": res.reservation_id}
-            ).first()
+                " RETURNING reserved, day"), {"t": settle, "o": outcome,
+                                              "i": res.reservation_id}).first()
             if row is None:
-                return                      # already settled; do nothing
+                return
             reserved, day = int(row[0]), row[1].isoformat()
             delta = settle - reserved
             if delta:
@@ -360,60 +316,56 @@ def reconcile(res: Reservation, actual_tokens: int | None, *,
                         {"d": delta, "sc": sc, "day": day})
             s.commit()
     except Exception as exc:
-        log.warning("llm_budget.reconcile_db_failed", error=str(exc))
+        log.warning("llm_budget.reconcile_failed", error=str(exc))
         return
 
-    if delta and res.enforcement == "redis":
+    if delta:
         r = _redis()
         if r is None:
             return
         try:
-            # SETTLE AGAINST THE ORIGINAL DAY'S KEYS, not today's — a call started before UTC
-            # midnight must return its capacity to the day it took it from.
+            # ADVISORY CACHE, settled against the ORIGINAL day — a call started at 23:59:58
+            # must not credit the new day.
             for sc in scope_chain(res.scope):
                 key = f"llm:budget:{sc}:{day}"
                 r.incrby(key, delta) if delta > 0 else r.decrby(key, -delta)
-        except Exception as exc:
-            log.warning("llm_budget.reconcile_redis_failed", error=str(exc))
+        except Exception:
+            pass
 
 
 def status(scope: str = SCOPE_NEWS_CLASSIFY) -> dict:
-    """What the dashboard needs: used, remaining, and HOW the ceiling is being enforced."""
+    """What the dashboard needs. The LEDGER is authoritative; Redis only avoids a query."""
     budget = budget_for(scope)
     day = _day_str()
-    key = utc_day_key(scope)
-    r = _redis()
-    reserved = None
-    enforcement = "none"
-    if r is not None:
-        try:
-            raw = r.get(key)
-            reserved = int(raw) if raw is not None else 0
-            enforcement = "redis"
-        except Exception:
-            reserved = None
-    if reserved is None:
-        try:
-            from sqlalchemy import text
-            from db import SessionLocal
-            with SessionLocal() as s:
-                reserved = int(s.execute(text(
-                    "SELECT COALESCE(reserved,0) FROM llm_budget_day"
-                    " WHERE scope = :sc AND day = :d"), {"sc": scope, "d": day}).scalar() or 0)
-            enforcement = "database"
-        except Exception:
-            reserved = None
+    reserved, source = None, "none"
+    try:
+        from sqlalchemy import text
+        from db import SessionLocal
+        with SessionLocal() as s:
+            reserved = int(s.execute(text(
+                "SELECT COALESCE(reserved,0) FROM llm_budget_day"
+                " WHERE scope = :sc AND day = :d"), {"sc": scope, "d": day}).scalar() or 0)
+        source = "ledger"
+    except Exception:
+        r = _redis()
+        if r is not None:
+            try:
+                reserved = int(r.get(f"llm:budget:{scope}:{day}") or 0)
+                source = "redis cache (advisory — the ledger could not be read)"
+            except Exception:
+                reserved = None
     return {
         "scope": scope,
         "parent_scope": _PARENT.get(scope),
         "budget": budget,
         "reserved_or_used": reserved,
         "remaining": (max(0, budget - reserved) if reserved is not None else None),
-        "enforcement": enforcement,
+        "enforcement": "postgresql (single authority)",
+        "read_from": source,
         "day_basis": "UTC calendar day",
-        "note": ("reservations are UPPER BOUNDS taken before each call and settled against the "
-                 "day they were taken from. A nested scope also charges every ceiling above "
-                 "it, so its spending is not additional to the parent's. The input bound is "
-                 "UTF-8 BYTES, which no tokenisation can exceed, so admission is conservative "
-                 "and over-reserves Latin text roughly threefold until settlement returns it."),
+        "note": ("Ceilings and reservation rows are written in ONE PostgreSQL transaction, so "
+                 "there is no state in which part of a reservation is true. Redis holds an "
+                 "advisory copy for display and decides nothing. The input bound is a "
+                 "CONSERVATIVE admission estimate, not a proven provider-side ceiling — see "
+                 "upper_bound_tokens for what it does and does not cover."),
     }

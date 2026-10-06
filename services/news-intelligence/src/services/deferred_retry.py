@@ -20,7 +20,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from common.logging import get_logger
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 log = get_logger("news-intelligence.deferred_retry")
 
@@ -49,14 +49,28 @@ def retry_deferred(limit: int = _BATCH) -> dict:
         return {"attempted": 0, "reason": "no API key configured"}
 
     with SessionLocal() as session:
+        # CLAIM BEFORE PAYING. Two workers selecting the same row would both call the provider
+        # for one article — the duplicate spend this whole budget exists to prevent. The rows
+        # are claimed atomically by flipping their marker, so a second worker's SELECT cannot
+        # see them: an UPDATE ... RETURNING over a SKIP LOCKED subquery is one statement, and
+        # a crash before the work is done leaves them claimed-but-retryable rather than lost.
+        claimed = session.execute(text(
+            "UPDATE realtime_news_items SET classification_deferred_reason = 'retrying'"
+            " WHERE id IN ("
+            "   SELECT id FROM realtime_news_items"
+            "   WHERE classification_deferred_reason = 'budget_exhausted'"
+            "     AND ingested_at >= :cutoff"
+            "   ORDER BY published_at DESC LIMIT :lim"
+            "   FOR UPDATE SKIP LOCKED)"
+            " RETURNING id"
+        ), {"cutoff": cutoff, "lim": limit}).scalars().all()
+        session.commit()
+        if not claimed:
+            return {"attempted": 0, "reason": "nothing deferred within the age window"}
         rows = list(session.execute(
             select(RealtimeNewsItem)
-            .where(RealtimeNewsItem.classification_deferred_reason == "budget_exhausted",
-                   RealtimeNewsItem.ingested_at >= cutoff)
-            .order_by(RealtimeNewsItem.published_at.desc())
-            .limit(limit)).scalars().all())
-        if not rows:
-            return {"attempted": 0, "reason": "nothing deferred within the age window"}
+            .where(RealtimeNewsItem.id.in_(list(claimed)))
+            .order_by(RealtimeNewsItem.published_at.desc())).scalars().all())
 
         deferred_again: set[int] = set()
         results = classify_in_batches(
@@ -69,8 +83,11 @@ def retry_deferred(limit: int = _BATCH) -> dict:
         classified = stale = 0
         for pos, (row, cls) in enumerate(zip(rows, results)):
             if cls is None:
+                # Unclaim, so it is retried rather than stranded in 'retrying' forever.
+                row.classification_deferred_reason = "budget_exhausted"
                 if pos in deferred_again:
                     row.classification_attempts = (row.classification_attempts or 0) + 1
+                session.add(row)
                 continue
             # UPDATE IN PLACE. The row already exists; re-ingesting would duplicate the URL.
             row.sentiment_score = cls["sentiment_score"]

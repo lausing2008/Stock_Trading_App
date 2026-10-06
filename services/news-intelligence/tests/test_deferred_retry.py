@@ -25,9 +25,18 @@ def test_a_retry_worker_exists_and_is_scheduled():
 
 
 def test_it_selects_only_budget_deferrals_within_an_age_window():
-    assert 'classification_deferred_reason == "budget_exhausted"' in _SRC
-    assert "RealtimeNewsItem.ingested_at >= cutoff" in _SRC
+    assert "classification_deferred_reason = 'budget_exhausted'" in _SRC
+    assert "ingested_at >= :cutoff" in _SRC
     assert "_MAX_AGE_HOURS" in _SRC
+
+
+def test_rows_are_claimed_before_any_paid_call():
+    """Two workers selecting the same row would both call the provider for one article."""
+    body = _SRC[_SRC.index("def retry_deferred"):]
+    i_claim = body.index("UPDATE realtime_news_items SET classification_deferred_reason")
+    i_call = body.index("classify_in_batches(")
+    assert i_claim < i_call, "a claim after the call cannot prevent the duplicate spend"
+    assert "FOR UPDATE SKIP LOCKED" in body
 
 
 def test_out_of_scope_rows_are_never_retried():
@@ -52,11 +61,16 @@ def test_a_successful_retry_clears_the_deferral_marker():
 
 def test_a_stale_headline_is_labelled_but_does_not_arm_the_gate():
     """The hot-news gate suppresses a BUY on news the market has not absorbed. A day-old story
-    is not that, however correct its label."""
+    is not that, however correct its label.
+
+    The BEHAVIOUR is asserted against a real database in
+    shared/tests/test_deferred_retry_integration.py; this pins that the freshness branch
+    exists at all, so removing it is not silent."""
     body = _SRC[_SRC.index("def retry_deferred"):]
     i_fresh = body.index("if fresh:")
-    seg = body[i_fresh:body.index("session.add(row)")]
-    assert "row.is_material = bool(cls[\"is_material\"])" in seg
+    seg = body[i_fresh:]
+    seg = seg[:seg.index("session.commit()")]
+    assert 'row.is_material = bool(cls["is_material"])' in seg
     stale_branch = seg[seg.index("else:"):]
     assert "is_material" not in stale_branch, \
         "a stale item must not set the materiality that arms the gate"
