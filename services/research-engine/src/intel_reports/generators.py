@@ -362,9 +362,18 @@ def stock_outlook(session, *, symbol: str, now: datetime | None = None):
     market = stock.market.value if hasattr(stock.market, "value") else str(stock.market)
     fields["sector_context"] = A.sector_leadership(session, market, cutoff=now)
 
-    fields["company_condition"] = unavailable(
-        "no fundamentals time series (revenue, margins, cash flow, share count) is stored with "
-        "comparable periods and accounting basis")
+    # AUDITED FIRST: the platform already holds these statements, so this adds no ingestion.
+    # See docs/audits/2026-10-06-fundamentals-data-audit.md for coverage and the three limits.
+    fields["business_performance"] = A.business_performance(session, stock, cutoff=now)
+    fields["company_condition"] = (
+        interpreted(
+            {"findings": [f.as_dict() for f in
+                          I.business_performance_findings(fields, subject=stock.symbol)],
+             "cannot_conclude": I.business_performance_limits(fields)},
+            label="Business performance")
+        if fields["business_performance"].state is FieldState.OK
+        else unavailable(fields["business_performance"].reason or
+                         "no filed statements are stored for this issuer"))
     fields["estimate_revisions"] = unavailable(
         "only a single current consensus snapshot is stored; revision history cannot be derived "
         "from one snapshot without claiming changes that were never observed")
@@ -426,7 +435,9 @@ def stock_outlook(session, *, symbol: str, now: datetime | None = None):
         "signal_engine_assessment": (TimeFrame.CURRENT, Section.INTERPRETATION,
                                      "Signal engine, at this snapshot's cutoff"),
         "scenarios":         (TimeFrame.TIMELESS, Section.SCENARIOS, "Conditional scenarios"),
-        "company_condition": (TimeFrame.CURRENT, Section.LIMITATIONS, "Company condition"),
+        "company_condition": (TimeFrame.HISTORICAL, Section.METRICS, "Business performance"),
+        "business_performance": (TimeFrame.HISTORICAL, Section.SOURCES,
+                                 "Filed annual statements (full series)"),
         "estimate_revisions": (TimeFrame.CURRENT, Section.LIMITATIONS, "Estimate revisions"),
         "valuation":         (TimeFrame.CURRENT, Section.LIMITATIONS, "Valuation"),
         "options_positioning": (TimeFrame.CURRENT, Section.LIMITATIONS, "Options positioning"),

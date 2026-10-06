@@ -864,14 +864,30 @@ export default function AdminHealthPage() {
                 {!!llmUsageData.enforced_budgets?.length && (
                   <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap',
                                 fontSize: '11px', color: '#94a3b8', marginBottom: '8px' }}>
+                    {/* HELD is not SPENT. The ceiling counts settled usage plus capacity
+                        still reserved for calls in flight; printing their sum alone reads as
+                        tokens consumed. */}
                     {llmUsageData.enforced_budgets.filter(b => !b.error).map(b => (
                       <span key={b.scope} title={b.note ?? undefined}>
                         {b.scope}: <strong style={{
                           color: (b.remaining ?? 1) <= 0 ? '#f87171' : '#e2e8f0' }}>
-                          {(b.reserved_or_used ?? 0).toLocaleString()} / {(b.budget ?? 0).toLocaleString()}
+                          {(b.held_against_the_ceiling ?? 0).toLocaleString()} / {(b.budget ?? 0).toLocaleString()} held
                         </strong>{' '}
+                        <span style={{ color: '#94a3b8' }}>
+                          · {(b.settled_tokens ?? 0).toLocaleString()} settled
+                        </span>
+                        {!!b.calls_in_flight && (
+                          <span style={{ color: '#94a3b8' }}>
+                            {' '}· {b.outstanding_reservations?.toLocaleString()} reserved for{' '}
+                            {b.calls_in_flight} call(s) in flight</span>
+                        )}
+                        {!!b.actual_over_reservation && (
+                          <span style={{ color: '#fbbf24' }}>
+                            {' '}· {b.actual_over_reservation.toLocaleString()} actual over
+                            reservation</span>
+                        )}
                         <span style={{ color: '#334155' }}>
-                          ({b.enforcement} · {b.day_basis})</span>
+                          {' '}({b.enforcement} · {b.day_basis})</span>
                       </span>
                     ))}
                   </div>

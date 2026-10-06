@@ -3396,8 +3396,11 @@ export type LlmUsageReport = {
     over_threshold: boolean; scope?: string; day_basis?: string; effect?: string;
   } | null;
   enforced_budgets?: {
-    scope?: string; budget?: number; reserved_or_used?: number | null;
-    remaining?: number | null; enforcement?: string; day_basis?: string;
+    scope?: string; budget?: number; remaining?: number | null;
+    held_against_the_ceiling?: number | null; settled_tokens?: number | null;
+    outstanding_reservations?: number | null; calls_in_flight?: number | null;
+    actual_over_reservation?: number | null;
+    enforcement?: string; day_basis?: string; read_from?: string;
     note?: string; error?: string;
   }[] | null;
   total_tokens: number;

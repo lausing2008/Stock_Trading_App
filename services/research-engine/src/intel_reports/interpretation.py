@@ -911,3 +911,96 @@ def drivers_for_market(fields) -> Field:
                   "never a cause. Drivers whose minimum evidence is not stored are listed "
                   "with that requirement rather than estimated from what is available.")},
         label="What may be driving this")
+
+
+# =====================================================================================
+# BUSINESS PERFORMANCE — is the business improving, and what argues against that reading?
+#
+# CURRENT PERFORMANCE IS NOT A DURABLE ADVANTAGE. A strong year says what happened; whether it
+# persists is a separate question with separate evidence, and this section deliberately does not
+# answer it. Nothing here produces a moat rating.
+# =====================================================================================
+
+def _fmt_money(v) -> str:
+    return _money(v, "USD") if isinstance(v, (int, float)) else "unavailable"
+
+
+def business_performance_findings(fields, *, subject: str) -> list:
+    """Growth, margins and cash generation, each with the case against the reading."""
+    bp = _v(fields, "business_performance")
+    if not isinstance(bp, dict) or len(bp.get("periods") or []) < 2:
+        return []
+    periods = bp["periods"]
+    cur, prev = periods[0], periods[1]
+    stale = (f" These are filed statements through {bp['newest_period_end']}, "
+             f"{bp['newest_period_age_days']} days ago — a later fiscal year may have been "
+             f"reported since and is not in this series.")
+    found = []
+
+    # --- growth -------------------------------------------------------------------
+    g = cur.get("revenue_growth_pct")
+    if g is not None:
+        trend = [p["revenue_growth_pct"] for p in periods if p["revenue_growth_pct"] is not None]
+        direction = ("accelerating" if len(trend) > 1 and trend[0] > trend[1]
+                     else "decelerating" if len(trend) > 1 and trend[0] < trend[1]
+                     else "steady")
+        found.append(Finding(
+            headline=f"Revenue {'grew' if g > 0 else 'fell'} {abs(g):.1f}% in the latest "
+                     f"reported year",
+            supports=(f"{_fmt_money(cur['revenue'])} against {_fmt_money(prev['revenue'])} the "
+                      f"year before; the growth rate is {direction} across the "
+                      f"{len(trend)} comparable years on file" + stale),
+            contradicts=("a revenue change says nothing about why it happened — price, volume, "
+                         "mix, acquisitions and accounting changes all land in the same line, "
+                         "and this series separates none of them"),
+            invalidated_by="the next annual statement showing the direction reverse"))
+
+    # --- margins ------------------------------------------------------------------
+    gm, pgm = cur.get("gross_margin_pct"), prev.get("gross_margin_pct")
+    om, pom = cur.get("operating_margin_pct"), prev.get("operating_margin_pct")
+    if gm is not None and pgm is not None:
+        delta = gm - pgm
+        bits = [f"gross margin {gm:.1f}% against {pgm:.1f}% ({delta:+.1f}pp)"]
+        if om is not None and pom is not None:
+            bits.append(f"operating margin {om:.1f}% against {pom:.1f}% ({om - pom:+.1f}pp)")
+        found.append(Finding(
+            headline=f"Gross margin {'expanded' if delta > 0 else 'contracted'} "
+                     f"{abs(delta):.1f} points",
+            supports="; ".join(bits) + stale,
+            contradicts=("margin is an outcome, not a cause. Whether it came from pricing, "
+                         "cost, mix or utilisation is not in this data, and for a cyclical "
+                         "business a strong margin year is as consistent with the cycle as "
+                         "with a durable advantage"),
+            invalidated_by="margins reverting towards their multi-year range in the next "
+                           "reported year"))
+
+    # --- cash generation ----------------------------------------------------------
+    ocf, fcf, capex = cur.get("operating_cashflow"), cur.get("free_cashflow"), cur.get("capital_expenditure")
+    if ocf is not None:
+        conv = (round(fcf / ocf * 100, 1) if fcf is not None and ocf else None)
+        found.append(Finding(
+            headline=f"Operating cash flow of {_fmt_money(ocf)} against capital expenditure of "
+                     f"{_fmt_money(abs(capex) if isinstance(capex, (int, float)) else None)}",
+            supports=(f"free cash flow {_fmt_money(fcf)}"
+                      + (f", {conv:.1f}% of operating cash flow" if conv is not None else "")
+                      + ". Cash generation is harder to influence with accounting choices than "
+                        "reported earnings" + stale),
+            contradicts=("heavy capital expenditure suppresses free cash flow whether it is "
+                         "building a future advantage or merely sustaining the current one, and "
+                         "this data cannot tell maintenance capex from growth capex"),
+            invalidated_by="free cash flow turning negative while capital expenditure stays "
+                           "elevated"))
+    return found[:3]
+
+
+def business_performance_limits(fields) -> list:
+    """What the business section cannot conclude, from the audit rather than from guesswork."""
+    bp = _v(fields, "business_performance")
+    if not isinstance(bp, dict):
+        return ["no filed statements are stored for this issuer"]
+    out = [bp["dilution"], bp["accounting_basis"], bp["availability"]]
+    if (bp.get("newest_period_age_days") or 0) > 365:
+        out.insert(0, f"the newest filed statement on file ended "
+                      f"{bp['newest_period_end']} — more than a year ago, so a reported fiscal "
+                      f"year is missing from this series")
+    return out

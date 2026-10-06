@@ -593,3 +593,85 @@ def rates(session, *, cutoff: datetime, lookback_days: int = 30) -> Field:
             f"no cross-asset reading is stored within {lookback_days} days of this cutoff")
     return calculated(build_readings(rows, lookback_days=lookback_days,
                                      cutoff=cutoff))
+
+
+def business_performance(session, stock, *, cutoff: datetime, periods: int = 5) -> Field:
+    """Multi-period revenue, margins, cash generation and leverage from filed statements.
+
+    AUDITED BEFORE BUILT (docs/audits/2026-10-06-fundamentals-data-audit.md). The platform
+    already holds 1,424 statement rows over 156 symbols with 86-98% field completeness, so this
+    needs no new ingestion. It also found three limits that are reported rather than smoothed
+    over:
+
+      * THE TABLE IS STALE. `fetched_at` was a month old at the audit, and MU's newest stored
+        annual predates the fiscal year MU has since reported. The newest row is not the newest
+        reality, so the age of the data travels with it.
+      * NO SHARE COUNT EXISTS, so dilution is not computed. It is NOT derived from net income
+        and EPS, which would silently assume the EPS basis.
+      * NO ACCOUNTING BASIS AND NO FILING DATE are stored. These are reported history; they
+        cannot support a point-in-time claim, and comparing them with an issuer-release figure
+        crosses an unverified basis boundary.
+    """
+    from db import FinancialStatement
+    rows = list(session.execute(
+        select(FinancialStatement)
+        .where(FinancialStatement.symbol == stock.symbol,
+               FinancialStatement.period_type == "annual",
+               FinancialStatement.period_end <= cutoff.date())
+        .order_by(FinancialStatement.period_end.desc())
+        .limit(periods)).scalars().all())
+    if len(rows) < 2:
+        return unavailable(
+            f"fewer than two annual statements are stored for {stock.symbol}, so no change "
+            f"over comparable periods can be measured")
+
+    def _pct(now, before):
+        if now is None or before is None or not before:
+            return None
+        return round((now - before) / abs(before) * 100.0, 1)
+
+    def _margin(num, den):
+        if num is None or den is None or not den:
+            return None
+        return round(num / den * 100.0, 1)
+
+    out = []
+    for i, r in enumerate(rows):
+        prev = rows[i + 1] if i + 1 < len(rows) else None
+        fcf = r.free_cashflow
+        if fcf is None and r.operating_cashflow is not None and r.capital_expenditure is not None:
+            fcf = r.operating_cashflow + r.capital_expenditure   # capex is stored negative
+        out.append({
+            "period_end": r.period_end.isoformat(),
+            "revenue": r.total_revenue,
+            "revenue_growth_pct": _pct(r.total_revenue, prev.total_revenue) if prev else None,
+            "gross_margin_pct": _margin(r.gross_profit, r.total_revenue),
+            "operating_margin_pct": _margin(r.operating_income, r.total_revenue),
+            "operating_cashflow": r.operating_cashflow,
+            "capital_expenditure": r.capital_expenditure,
+            "free_cashflow": fcf,
+            "net_debt": (None if r.total_debt is None or r.cash_and_equivalents is None
+                         else r.total_debt - r.cash_and_equivalents),
+            "total_equity": r.total_equity,
+        })
+
+    newest = rows[0]
+    age_days = (cutoff.date() - newest.period_end).days
+    fetch_age_days = ((cutoff - newest.fetched_at).days
+                      if newest.fetched_at is not None else None)
+    return calculated(
+        {"periods": out,
+         "period_type": "annual",
+         "newest_period_end": newest.period_end.isoformat(),
+         "newest_period_age_days": age_days,
+         "retrieved_age_days": fetch_age_days,
+         "source": "filed annual statements as retrieved by the data provider",
+         "dilution": "NOT COMPUTED — no share count is stored anywhere in this platform, and "
+                     "deriving one from net income and EPS would assume the EPS accounting "
+                     "basis, which is also not stored",
+         "accounting_basis": "NOT STORED. These figures cannot be shown to be GAAP or adjusted, "
+                             "so a comparison against an issuer-release figure crosses an "
+                             "unverified basis boundary",
+         "availability": "filing dates are not stored, only retrieval. These are reported "
+                         "history and cannot support a point-in-time claim"},
+        units="mixed")

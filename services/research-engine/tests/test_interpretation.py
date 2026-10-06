@@ -680,3 +680,103 @@ def test_with_no_rate_data_the_whole_set_reports_unknown_with_reasons():
     assert d.state is FieldState.UNKNOWN
     assert "no market driver meets its evidence requirement" in d.reason
     assert "overwritten in place" in d.reason
+
+
+# ================================================= business performance
+
+def _bp_fields(**over):
+    """MU's real stored annuals, from the production audit on 2026-10-06."""
+    f = _driver_fields()
+    f["business_performance"] = calculated({
+        "period_type": "annual",
+        "newest_period_end": "2025-08-31",
+        "newest_period_age_days": 401,
+        "retrieved_age_days": 29,
+        "periods": [
+            {"period_end": "2025-08-31", "revenue": 37378000000.0,
+             "revenue_growth_pct": 48.9, "gross_margin_pct": 39.8,
+             "operating_margin_pct": 27.1, "operating_cashflow": 17525000000.0,
+             "capital_expenditure": -15857000000.0, "free_cashflow": 1668000000.0,
+             "net_debt": 1000000000.0, "total_equity": 45000000000.0},
+            {"period_end": "2024-08-31", "revenue": 25111000000.0,
+             "revenue_growth_pct": 61.6, "gross_margin_pct": 22.4,
+             "operating_margin_pct": 7.2, "operating_cashflow": 8507000000.0,
+             "capital_expenditure": -8386000000.0, "free_cashflow": 121000000.0,
+             "net_debt": 2000000000.0, "total_equity": 44000000000.0},
+            {"period_end": "2023-08-31", "revenue": 15540000000.0,
+             "revenue_growth_pct": -49.0, "gross_margin_pct": -9.1,
+             "operating_margin_pct": -33.9, "operating_cashflow": 1559000000.0,
+             "capital_expenditure": -7676000000.0, "free_cashflow": -6117000000.0,
+             "net_debt": 3000000000.0, "total_equity": 43000000000.0}],
+        "dilution": "NOT COMPUTED — no share count is stored anywhere in this platform, and "
+                    "deriving one from net income and EPS would assume the EPS accounting "
+                    "basis, which is also not stored",
+        "accounting_basis": "NOT STORED. These figures cannot be shown to be GAAP or adjusted",
+        "availability": "filing dates are not stored, only retrieval",
+    })
+    f.update(over)
+    return f
+
+
+def test_growth_margins_and_cash_each_become_a_finding():
+    from intel_reports.interpretation import business_performance_findings
+    fs = business_performance_findings(_bp_fields(), subject="MU")
+    heads = " | ".join(f.headline for f in fs)
+    assert "Revenue grew 48.9%" in heads
+    assert "Gross margin expanded 17.4 points" in heads
+    assert "Operating cash flow" in heads
+
+
+def test_a_growth_rate_does_not_claim_to_know_why():
+    from intel_reports.interpretation import business_performance_findings
+    f = business_performance_findings(_bp_fields(), subject="MU")[0]
+    assert "price, volume, mix, acquisitions and accounting changes all land in the same line" \
+        in f.contradicts
+
+
+def test_a_strong_margin_year_is_not_read_as_a_durable_advantage():
+    """Current performance and durability are different claims with different evidence."""
+    from intel_reports.interpretation import business_performance_findings
+    f = [x for x in business_performance_findings(_bp_fields(), subject="MU")
+         if "margin" in x.headline][0]
+    assert "cyclical" in f.contradicts
+    assert "as consistent with the cycle as with a durable advantage" in f.contradicts
+    for x in business_performance_findings(_bp_fields(), subject="MU"):
+        assert "moat" not in (x.headline + x.supports).lower(), \
+            "this section must not produce a moat claim"
+
+
+def test_cash_generation_states_what_capex_hides():
+    from intel_reports.interpretation import business_performance_findings
+    f = [x for x in business_performance_findings(_bp_fields(), subject="MU")
+         if "cash flow" in x.headline][0]
+    assert "cannot tell maintenance capex from growth capex" in f.contradicts
+
+
+def test_every_finding_carries_the_age_of_the_data():
+    """The newest row is not the newest reality — MU reported a later fiscal year since."""
+    from intel_reports.interpretation import business_performance_findings
+    for f in business_performance_findings(_bp_fields(), subject="MU"):
+        assert "2025-08-31" in f.supports and "401 days ago" in f.supports
+
+
+def test_the_limits_name_dilution_basis_and_availability():
+    from intel_reports.interpretation import business_performance_limits
+    limits = " ".join(business_performance_limits(_bp_fields()))
+    assert "no share count is stored" in limits
+    assert "cannot be shown to be GAAP or adjusted" in limits
+    assert "filing dates are not stored" in limits
+    assert "more than a year ago" in limits, "a missing fiscal year is stated first"
+
+
+def test_dilution_is_never_derived_from_eps():
+    from intel_reports.interpretation import business_performance_limits
+    limits = " ".join(business_performance_limits(_bp_fields()))
+    assert "would assume the EPS accounting basis" in limits
+
+
+def test_a_single_period_yields_no_findings_rather_than_a_one_sided_read():
+    from intel_reports.interpretation import business_performance_findings
+    f = _bp_fields()
+    f["business_performance"] = calculated({"periods": [{"period_end": "2025-08-31"}]})
+    assert business_performance_findings(f, subject="MU") == []

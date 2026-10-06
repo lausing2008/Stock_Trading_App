@@ -334,38 +334,61 @@ def reconcile(res: Reservation, actual_tokens: int | None, *,
 
 
 def status(scope: str = SCOPE_NEWS_CLASSIFY) -> dict:
-    """What the dashboard needs. The LEDGER is authoritative; Redis only avoids a query."""
+    """Outstanding reservations and SETTLED usage, reported separately.
+
+    THEY ARE NOT THE SAME NUMBER and the earlier version printed only their sum, which reads as
+    "237 tokens spent" when it may be 237 tokens held for calls still in flight. A reservation
+    is capacity withheld; settled usage is what the provider reported consuming.
+
+    AND SETTLED USAGE ENFORCES NOTHING. It measures what was consumed — it cannot retroactively
+    refuse a call that already happened. The only thing that refuses is admission, which is
+    conservative by construction. Where actual usage EXCEEDED its reservation, that difference
+    is surfaced rather than absorbed: it is the measure of how good the admission estimate is.
+    """
     budget = budget_for(scope)
     day = _day_str()
-    reserved, source = None, "none"
+    out = {
+        "scope": scope,
+        "parent_scope": _PARENT.get(scope),
+        "budget": budget,
+        "day_basis": "UTC calendar day",
+        "enforcement": "postgresql (single authority)",
+    }
     try:
         from sqlalchemy import text
         from db import SessionLocal
         with SessionLocal() as s:
-            reserved = int(s.execute(text(
+            held = int(s.execute(text(
                 "SELECT COALESCE(reserved,0) FROM llm_budget_day"
                 " WHERE scope = :sc AND day = :d"), {"sc": scope, "d": day}).scalar() or 0)
-        source = "ledger"
+            row = s.execute(text(
+                "SELECT COALESCE(SUM(settled_tokens),0),"
+                "       COALESCE(SUM(CASE WHEN settled_at IS NULL THEN reserved ELSE 0 END),0),"
+                "       COUNT(*) FILTER (WHERE settled_at IS NULL),"
+                "       COALESCE(SUM(GREATEST(0, settled_tokens - reserved)),0)"
+                " FROM llm_reservations WHERE scope = :sc AND day = :d"),
+                {"sc": scope, "d": day}).first()
+        settled, outstanding, in_flight, over = (int(row[0]), int(row[1]), int(row[2]),
+                                                 int(row[3]))
+        out.update({
+            "held_against_the_ceiling": held,
+            "settled_tokens": settled,
+            "outstanding_reservations": outstanding,
+            "calls_in_flight": in_flight,
+            "actual_over_reservation": over,
+            "remaining": max(0, budget - held),
+            "read_from": "ledger",
+        })
     except Exception:
-        r = _redis()
-        if r is not None:
-            try:
-                reserved = int(r.get(f"llm:budget:{scope}:{day}") or 0)
-                source = "redis cache (advisory — the ledger could not be read)"
-            except Exception:
-                reserved = None
-    return {
-        "scope": scope,
-        "parent_scope": _PARENT.get(scope),
-        "budget": budget,
-        "reserved_or_used": reserved,
-        "remaining": (max(0, budget - reserved) if reserved is not None else None),
-        "enforcement": "postgresql (single authority)",
-        "read_from": source,
-        "day_basis": "UTC calendar day",
-        "note": ("Ceilings and reservation rows are written in ONE PostgreSQL transaction, so "
-                 "there is no state in which part of a reservation is true. Redis holds an "
-                 "advisory copy for display and decides nothing. The input bound is a "
-                 "CONSERVATIVE admission estimate, not a proven provider-side ceiling — see "
-                 "upper_bound_tokens for what it does and does not cover."),
-    }
+        out.update({"held_against_the_ceiling": None, "settled_tokens": None,
+                    "outstanding_reservations": None, "calls_in_flight": None,
+                    "actual_over_reservation": None, "remaining": None,
+                    "read_from": "unavailable"})
+    out["note"] = (
+        "`held_against_the_ceiling` is what the ceiling currently counts: settled usage plus "
+        "capacity still reserved for calls in flight. `settled_tokens` is what the provider "
+        "reported consuming. Settled usage MEASURES; it does not enforce — only admission "
+        "refuses, and it is deliberately conservative. `actual_over_reservation` is how often "
+        "the admission estimate was too low, which is the number that would show it needs "
+        "raising.")
+    return out
