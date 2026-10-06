@@ -232,3 +232,31 @@ pass" was true of the suite I ran and false of the repo.
    writing an example of it. This is the second occurrence of that exact shape — the first
    was a credential test that matched its own explanation of why masking is avoided (tier
    406), which is enough recurrences to treat as a class rather than a slip.
+
+## AUD-FRONTEND-SHIPPED-RED (2026-10-06) — the frontend suite was red on `prod` for days, in three places, all mine
+
+Found by chance: a new test failed, and checking whether the failure pre-existed (`git stash`,
+re-run) showed the suite was ALREADY red on the deployed branch. `npx vitest run` reported
+**3 failed | 493 passed**.
+
+Same shape as `AUD-T401-SHIPPED-RED`, one layer over: that one was a commit validated with a
+single service's pytest instead of `make test`. This one is `make test` itself — it runs the
+**backend** suites only. `make test-frontend` (vitest + `tsc --noEmit`) is a separate target,
+and `make test-all` is the one that runs both. Every commit in that window ran `make test`,
+saw "all services passed", and shipped over a red frontend.
+
+What was actually broken, and only one of the three was cosmetic:
+
+1. `intelReportLayout.test.ts` — a stale assertion. Commit `7476aa6e` deliberately moved the
+   `limitations` SECTION below `metrics` (its material entries are hoisted into a banner above
+   everything by `criticalLimitations`), and the old test still demanded the section itself be
+   above. Rewritten to assert what actually protects the reader.
+2. and 3. `tierLabelCoverage.test.ts` — **real**. Tiers 419, 420, 421 and 422 had tracker items
+   but no `TIER_LABEL` and no `TIER_COLOR`, so the improvements page's loop never visited them:
+   four entries rendered **nothing at all**. The test's own message said so
+   ("these tiers render NOTHING — items exist but the loop never visits them") and nobody read
+   it, because nobody ran it.
+
+**The rule:** a change touching `frontend/` is not validated by `make test`. Run `make test-all`,
+or run `make test-frontend` alongside, and name which one you ran. A test that prints the exact
+defect is worth nothing if the suite it lives in is never executed.
