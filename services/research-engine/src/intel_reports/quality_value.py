@@ -320,36 +320,74 @@ def business_quality_gate(evidence=None) -> Gate:
     return Gate(BUSINESS_QUALITY, GateStatus.PASS, (), ctx)
 
 
-def value_trap_gate(evidence=None) -> Gate:
-    """Disqualifying risk. UNKNOWN whenever a CRITICAL class of risk is simply not observed.
+#: Business models where net debt against equity is not a solvency reading at all. For a bank
+#: or insurer, deposits and reserves are liabilities of the operating model, so the ratio is a
+#: category error rather than a high number — the plan already requires dedicated templates for
+#: them before eligibility.
+LEVERAGE_NOT_APPLICABLE_INDUSTRIES = (
+    "bank", "insurance", "insurer", "capital markets", "credit services",
+    "mortgage", "asset management", "financial conglomerate", "reit")
 
-    THE DIRECTION THAT MATTERS. It would be easy to compute leverage and cash burn from the
-    statements, find them fine, and return PASS — and that reads as "no value trap" when what
-    was actually established is "no value trap of the two kinds we can see". Structural demand
-    decline, customer concentration, restatements and accounting issues are not stored anywhere
-    in this platform, so an unobserved critical risk is reported as unobserved.
+
+def value_trap_gate(evidence=None) -> Gate:
+    """Disqualifying risk. UNKNOWN, with the two observable figures reported as observations.
+
+    WHY THIS NO LONGER BLOCKS ON A RATIO — measured against production, 2026-10-06. An earlier
+    version of this gate returned BLOCKED on net debt above 2x equity or two consecutive
+    negative free-cash-flow years, and flagged 48 of 200 companies as a thesis at risk. Reading
+    the list is what refuted it:
+
+      * LMT — net debt 2.62x equity with free cash flow of $6.9bn, up from $5.3bn. Buybacks
+        shrink equity, so the ratio rises as the company returns money it is plainly earning.
+      * CM — a bank. Net debt against equity is not a solvency reading for a bank at all.
+      * VST, CWEN, NATL — power and utilities, where high structural leverage against positive
+        free cash flow is the capital model, not a warning.
+      * ORCL — free cash flow negative two years running because operating cash flow is being
+        spent on capacity. The statements cannot separate that from distress.
+
+    So the thresholds were not measuring a value trap; they were measuring capital intensity and
+    buybacks. BLOCKED is reserved for EVIDENCE OF A DISQUALIFYING CONDITION, and a ratio
+    crossing a number chosen without validation is not that. The plan says it directly: do not
+    ship an arbitrary threshold as empirically proven, and freeze provisional ones in shadow
+    mode before prospective evaluation.
+
+    The figures are still computed and still shown — as observations, labelled unvalidated. What
+    changed is that they no longer render a verdict.
     """
     ev = evidence or {}
-    observed, unobserved = [], []
-    for name, key in (("leverage", "net_debt_to_equity"), ("cash burn", "free_cashflow")):
-        (observed if ev.get(key) is not None else unobserved).append(name)
+    industry = (ev.get("industry") or "").lower()
+    leverage_applies = not any(k in industry for k in LEVERAGE_NOT_APPLICABLE_INDUSTRIES)
 
-    hard = []
-    nde, fcf = ev.get("net_debt_to_equity"), ev.get("free_cashflow")
-    if nde is not None and nde > 2.0:
-        hard.append(f"net debt is {nde:.1f}x equity")
-    if fcf is not None and fcf < 0 and (ev.get("free_cashflow_prior") or 0) < 0:
-        hard.append("free cash flow is negative in both of the two newest stored years")
-    if hard:
-        return Gate(VALUE_TRAP_RISK, GateStatus.BLOCKED, tuple(hard), ev)
+    # The one route to BLOCKED: a disqualifying finding supplied by something that actually
+    # established one. Nothing in the platform supplies these yet, and the path stays live so
+    # that when a source does, it is not a new mechanism.
+    disqualifying = tuple(ev.get("disqualifying") or ())
+    if disqualifying:
+        return Gate(VALUE_TRAP_RISK, GateStatus.BLOCKED, disqualifying, ev)
 
-    missing = ["structural demand decline", "customer concentration", "restatements and "
-               "accounting issues", "refinancing schedule"] + unobserved
-    return Gate(VALUE_TRAP_RISK, GateStatus.UNKNOWN, (
-        "no evidence is stored for these critical risk classes: " + ", ".join(missing),
-        f"the {len(observed)} class(es) that could be checked from the statements "
-        f"({', '.join(observed) or 'none'}) showed nothing disqualifying — which establishes "
-        "only that, not the absence of a value trap",), ev)
+    observations = []
+    nde, fcf, prior = (ev.get("net_debt_to_equity"), ev.get("free_cashflow"),
+                       ev.get("free_cashflow_prior"))
+    if nde is not None and leverage_applies:
+        observations.append(f"net debt is {nde:.2f}x equity (an observation; no threshold on "
+                            f"this ratio has been validated, and buybacks raise it by shrinking "
+                            f"the denominator)")
+    elif nde is not None:
+        observations.append(f"net debt against equity is not a solvency reading for a "
+                            f"{ev.get('industry')}, so it is not interpreted here")
+    if fcf is not None and fcf < 0 and (prior or 0) < 0:
+        observations.append("free cash flow is negative in both of the two newest stored years "
+                            "(an observation; these statements cannot separate heavy investment "
+                            "from distress)")
+
+    reasons = [
+        "no evidence is stored for these critical risk classes: structural demand decline, "
+        "customer concentration, restatements and accounting issues, refinancing schedule",
+        "the figures that CAN be computed from the statements are reported as observations "
+        "below, not as a verdict — none of them has a validated threshold",
+    ]
+    return Gate(VALUE_TRAP_RISK, GateStatus.UNKNOWN,
+                tuple(reasons + observations), {**ev, "observations": observations})
 
 
 def entry_condition_gate(evidence=None) -> Gate:

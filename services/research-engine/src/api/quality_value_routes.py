@@ -110,6 +110,8 @@ def evaluations(symbols: str | None = Query(None, description="comma-separated; 
 
         for stock in stocks:
             fin = _statement_evidence(session, stock.symbol, now)
+            # Industry decides whether leverage is even a solvency reading.
+            fin["industry"] = stock.industry
             px = _price_evidence(session, stock, now)
             gates = [business_quality_gate(fin), durability_gate(), valuation_gate(),
                      entry_condition_gate(px), value_trap_gate(fin)]

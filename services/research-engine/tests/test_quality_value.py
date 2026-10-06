@@ -237,20 +237,55 @@ def test_value_trap_is_unknown_even_when_what_can_be_checked_looks_fine():
     assert gate.status is GateStatus.UNKNOWN
     joined = " ".join(gate.reasons)
     assert "structural demand decline" in joined and "customer concentration" in joined
-    assert "establishes only that, not the absence of a value trap" in joined
+    assert "not as a verdict" in joined
 
 
-def test_an_observed_disqualifying_risk_blocks_rather_than_reporting_a_gap():
-    gate = value_trap_gate({"net_debt_to_equity": 3.4, "free_cashflow": 1.0e9})
+# AUD-QV-UNVALIDATEDTHRESHOLD. The first version blocked on net debt > 2x equity or two
+# negative free-cash-flow years and flagged 48 of 200 production companies as a thesis at risk.
+# The list refuted it: LMT (FCF $6.9bn and rising, ratio raised by buybacks), CM (a bank),
+# VST/CWEN/NATL (utilities), ORCL (capex). These pin the retraction.
+
+def test_a_profitable_company_is_not_blocked_by_a_leverage_ratio():
+    """LMT's real figures: the ratio rises because buybacks shrink the denominator."""
+    gate = value_trap_gate({"net_debt_to_equity": 2.62, "free_cashflow": 6.908e9,
+                            "free_cashflow_prior": 5.287e9, "industry": "Aerospace & Defense"})
+    assert gate.status is GateStatus.UNKNOWN
+    assert "no threshold on this ratio has been validated" in " ".join(gate.reasons)
+
+
+def test_leverage_is_not_interpreted_at_all_for_a_bank():
+    gate = value_trap_gate({"net_debt_to_equity": 2.68, "industry": "Banks - Diversified"})
+    assert gate.status is GateStatus.UNKNOWN
+    joined = " ".join(gate.reasons)
+    assert "not a solvency reading" in joined
+    assert "no threshold on this ratio has been validated" not in joined
+
+
+def test_two_negative_cash_flow_years_are_an_observation_not_a_verdict():
+    """ORCL's real shape: operating cash flow spent on capacity, not distress."""
+    gate = value_trap_gate({"free_cashflow": -2.3686e10, "free_cashflow_prior": -3.94e8,
+                            "industry": "Software - Infrastructure"})
+    assert gate.status is GateStatus.UNKNOWN
+    assert "cannot separate heavy investment from distress" in " ".join(gate.reasons)
+
+
+def test_the_computed_figures_are_still_reported():
+    """Retracting the verdict must not also hide the evidence."""
+    gate = value_trap_gate({"net_debt_to_equity": 2.62, "free_cashflow": -1.0,
+                            "free_cashflow_prior": -1.0, "industry": "Aerospace & Defense"})
+    assert len(gate.evidence["observations"]) == 2
+
+
+def test_only_a_supplied_disqualifying_finding_can_block():
+    gate = value_trap_gate({"net_debt_to_equity": 99.0,
+                            "disqualifying": ("auditor resigned citing accounting concerns",)})
     assert gate.status is GateStatus.BLOCKED
-    assert "3.4x equity" in " ".join(gate.reasons)
+    assert "auditor resigned" in " ".join(gate.reasons)
 
 
-def test_two_consecutive_negative_cash_flow_years_block_but_one_does_not():
-    assert value_trap_gate({"free_cashflow": -1.0, "free_cashflow_prior": -1.0}
-                           ).status is GateStatus.BLOCKED
-    assert value_trap_gate({"free_cashflow": -1.0, "free_cashflow_prior": 5.0}
-                           ).status is GateStatus.UNKNOWN
+def test_no_ratio_however_extreme_blocks_on_its_own():
+    assert value_trap_gate({"net_debt_to_equity": 1000.0, "free_cashflow": -1.0,
+                            "free_cashflow_prior": -1.0}).status is GateStatus.UNKNOWN
 
 
 def test_entry_requires_both_closes_above_the_average():
