@@ -384,6 +384,9 @@ def stock_outlook(session, *, symbol: str, now: datetime | None = None):
 
     # DRIVERS: why the structure may have formed, not just what it looks like.
     fields.update(_latest_release_evidence(session, stock, now, book))
+    # The subject's OWN industry, excluding the subject — the planned peer comparison. The
+    # sector mean stays as broader context and is labelled as the wider group it is.
+    fields["peer_basket"] = A.peer_basket(session, stock, cutoff=now)
     fields["drivers"] = I.drivers_for_stock(fields, subject=stock.symbol)
     fields["headline_assessment"] = I.outlook_assessment(
         fields, subject=stock.symbol, report_type="stock_outlook")
@@ -408,7 +411,10 @@ def stock_outlook(session, *, symbol: str, now: datetime | None = None):
         "trend_structure":   (TimeFrame.CURRENT, Section.METRICS, "Observed structure"),
         "observed_daily_structure": (TimeFrame.CURRENT, Section.METRICS,
                                      "Observed daily structure"),
-        "sector_context":    (TimeFrame.CURRENT, Section.METRICS, "Sector context"),
+        "peer_basket":       (TimeFrame.CURRENT, Section.METRICS,
+                              "Industry peer basket (subject excluded)"),
+        "sector_context":    (TimeFrame.CURRENT, Section.METRICS,
+                              "Broader sector context (wider group)"),
         "return_1_bars":     (TimeFrame.CURRENT, Section.METRICS, "Return over 1 daily bar"),
         "return_5_bars":     (TimeFrame.CURRENT, Section.METRICS, "Return over 5 daily bars"),
         "return_20_bars":    (TimeFrame.CURRENT, Section.METRICS, "Return over 20 daily bars"),

@@ -499,3 +499,57 @@ def sector_leadership(session, market: str, sessions: int = 20, *, cutoff: datet
          "ranked": [{"sector": s, "mean_return_pct": r, "symbols": n} for s, r, n in ranked],
          "basis": "equal-weighted mean of covered symbols per sector, not a sector index"},
         units="pct")
+
+
+def peer_basket(session, stock, sessions: int = 20, *, cutoff: datetime) -> Field:
+    """The subject's own INDUSTRY peers, with the basket's membership fully disclosed.
+
+    WHY THE SECTOR MEAN WAS NOT THIS. MU was compared against 59 covered "Technology" symbols —
+    a sector that holds software, hardware and services alongside semiconductors — and the
+    basket INCLUDED MU ITSELF, so the stock was partly being compared with its own return. Both
+    facts were invisible in the output.
+
+    This returns the narrower industry basket, EXCLUDES the subject, and states membership,
+    weighting and window, because a relative figure whose basket is unknown is not checkable.
+    The sector figure stays available as broader context and is labelled as such.
+    """
+    industry = getattr(stock, "industry", None)
+    if not industry:
+        return unavailable(
+            "no industry classification is stored for this issuer, so an industry peer basket "
+            "cannot be assembled; the broader sector mean is the only comparison available")
+    rows = list(session.execute(
+        select(Stock.id, Stock.symbol).where(
+            Stock.active.is_(True), Stock.market == stock.market,
+            Stock.delisted.is_(False), Stock.industry == industry,
+            Stock.id != stock.id)).all())
+    if not rows:
+        return unavailable(
+            f"no other covered symbol carries the industry {industry!r}, so no peer basket "
+            f"can be formed. A one-member basket is the subject itself.")
+
+    members, returns = [], []
+    for sid, sym in rows:
+        bars = daily_bars(session, sid, limit=sessions + 1, cutoff=cutoff)
+        if len(bars) < sessions + 1 or not bars[sessions].close:
+            continue
+        base = float(bars[sessions].close)
+        members.append(sym)
+        returns.append((float(bars[0].close) - base) / base * 100)
+    if not returns:
+        return unavailable(
+            f"no {industry} peer has {sessions + 1} daily bars ingested at this cutoff")
+    return calculated(
+        {"industry": industry,
+         "sessions": sessions,
+         "mean_return_pct": round(sum(returns) / len(returns), 2),
+         "members": sorted(members),
+         "member_count": len(members),
+         "subject_included": False,
+         "weighting": "equal-weighted",
+         "basis": (f"equal-weighted mean of {len(members)} covered {industry} symbols over "
+                   f"{sessions} sessions on unadjusted closes. The subject is EXCLUDED. This is "
+                   f"an ingested watchlist, NOT an industry index, and is not "
+                   f"capitalisation-weighted."),
+         "price_convention": "unadjusted close"},
+        units="pct")

@@ -209,6 +209,10 @@ def _windows_text(r: dict, names) -> str:
     return ", ".join(bits)
 
 
+def _results_context(fields) -> bool:
+    return _ok(fields, "revenue_actual") or _ok(fields, "eps_actual")
+
+
 def _structure_finding(fields, subject: str) -> Finding | None:
     """Where the close sits, what the windows say, and where the two disagree."""
     t = _v(fields, "trend_structure")
@@ -237,9 +241,19 @@ def _structure_finding(fields, subject: str) -> Finding | None:
         against.append("being ABOVE an average and having RISEN over that window are different "
                        "facts, and here they disagree — the structure is intact while the "
                        "longer-window return is not positive")
-    if not against:
-        against.append("a moving-average structure describes past bars. It carries no horizon "
-                       "and does not establish what the next bars do")
+    # ACTUAL counterevidence before the methodological caveat. A negative latest bar and a
+    # peer lag are things that HAPPENED; "averages describe past bars" is a limitation of the
+    # method, and leading with it buried the evidence.
+    r1_only = w["returns"].get(1)
+    if not w["recent_negative"] and r1_only is not None and r1_only < 0:
+        against.append(f"the latest bar is {r1_only:+.2f}%")
+    rel = _relative_gap(fields, subject=subject)
+    if rel is not None and rel["gap"] < 0:
+        against.append(f"over the same {rel['sessions']} sessions the stock trails its "
+                       f"{rel['industry']} peers by {abs(rel['gap']):.2f}pp "
+                       f"({rel['own']:+.2f}% against {rel['peer']:+.2f}%)")
+    against.append("separately, as a method limit: a moving-average structure describes past "
+                   "bars, carries no horizon, and does not establish what the next bars do")
 
     # THE INVALIDATION IS SCOPED. "Invalidated below 1025" read as though it ended every
     # bullish case; it ends ONE condition.
@@ -300,6 +314,27 @@ def _participation_finding(fields, prior_pct: float | None,
                    supports=supports, contradicts=contradicts, invalidated_by=inval)
 
 
+def _peer_relative_finding(fields, *, subject: str) -> Finding | None:
+    """The stock against its own industry peers — the company-specific part of the move."""
+    r = _relative_gap(fields, subject=subject)
+    if r is None:
+        return None
+    direction = "trails" if r["gap"] < 0 else "leads"
+    return Finding(
+        headline=(f"{subject} {direction} its {r['industry']} peers by "
+                  f"{abs(r['gap']):.2f}pp over {r['sessions']} sessions"),
+        supports=(f"{subject} returned {r['own']:+.2f}% against {r['peer']:+.2f}% for an "
+                  f"{r['weighting']} basket of {r['members']} covered {r['industry']} symbols, "
+                  f"{'including' if r['subject_included'] else 'excluding'} {subject} itself, "
+                  f"over an identical window on {r['convention']}s"),
+        contradicts=(f"the basket is {r['members']} covered symbols, not an industry index, and "
+                     f"is not capitalisation-weighted. A gap locates the company-specific part "
+                     f"of the move; it does not say what produced it"),
+        invalidated_by=(f"the gap closing to zero over the same {r['sessions']}-session window"),
+        evidence_ids=tuple((fields.get("peer_basket").evidence_ids or [])[:2]
+                           if fields.get("peer_basket") else ()))
+
+
 def _leadership_finding(fields) -> Finding | None:
     s = _v(fields, "sector_leadership") or _v(fields, "sector_context")
     if not isinstance(s, dict) or not s.get("ranked"):
@@ -329,6 +364,7 @@ def outlook_assessment(fields, *, subject: str, report_type: str,
                        prior_population: str | None = None) -> Field:
     """The opening read for a market or stock outlook."""
     findings = [f for f in (_structure_finding(fields, subject),
+                            _peer_relative_finding(fields, subject=subject),
                             _participation_finding(fields, prior_participation, prior_covered,
                                                    prior_population),
                             _leadership_finding(fields)) if f is not None][:3]
@@ -383,6 +419,23 @@ def outlook_assessment(fields, *, subject: str, report_type: str,
                     f"(snapshot reference: {sma20})",
             would_change="it would end the above-20-bar-average condition this assessment "
                          "rests on"))
+    # EACH FINDING GETS ITS OWN. A close below the average changes the technical condition and
+    # resolves nothing about peer performance or guidance; one trigger cannot stand for three.
+    _r = _relative_gap(fields, subject=subject)
+    if _r is not None:
+        watch.append(Watch(
+            observation=(f"the {_r['sessions']}-session return gap against the "
+                         f"{_r['industry']} peer basket (currently {_r['gap']:+.2f}pp)"),
+            trigger="the gap narrowing towards zero, or widening further",
+            would_change="it is the company-specific part of the move, and it is independent "
+                         "of where the close sits relative to its averages"))
+    if _ok(fields, "guidance_current") and not _ok(fields, "guidance_change"):
+        watch.append(Watch(
+            observation="a comparable prior forecast for the same fiscal period",
+            trigger="the issuer's earlier guidance for that period becoming comparable",
+            would_change="only then can current guidance be called raised, maintained or "
+                         "lowered; until then it is guidance ISSUED and nothing more"))
+
     b = _v(fields, "breadth")
     if isinstance(b, dict):
         watch.append(Watch(
@@ -392,10 +445,22 @@ def outlook_assessment(fields, *, subject: str, report_type: str,
                      "a second consecutive fall in participation"),
             would_change="a falling participation reading alongside a holding index would mean "
                          "the advance is narrowing"))
+    # RELATIVE WEAKNESS BELONGS IN THE OPENING. "Structure and returns agree" is true and hides
+    # the newest thing the report knows — that the stock is trailing its own peers.
+    _rel = _relative_gap(fields, subject=subject)
+    if _rel is not None and t:
+        _dir = "trails" if _rel["gap"] < 0 else "leads"
+        verdict = verdict.rstrip(".") + (
+            f", but {_dir} its {_rel['industry']} peers by {abs(_rel['gap']):.2f}pp over the "
+            f"same {_rel['sessions']} sessions.")
+    if _results_context(fields):
+        verdict += (" Official results and current guidance provide company context; they do "
+                    "not establish what caused the price move.")
+
     a = Assessment(verdict=verdict,
                    horizon=("no horizon is claimed: these are daily-bar observations, and no "
                             "horizon-specific evidence is joined to this report"),
-                   findings=findings, counterargument=counter, watch_next=watch[:3],
+                   findings=findings, counterargument=counter, watch_next=watch[:4],
                    material_limits=limits, other_limits_count=others,
                    data_needed=[l.split(" — ")[0] for l in limits])
     return interpreted(a.as_dict(), label="Read this first")
@@ -624,37 +689,61 @@ def earnings_driver(fields) -> dict | None:
     return out
 
 
-def sector_relative_driver(fields, *, subject: str) -> dict | None:
-    """The stock against its own sector, over identical sessions and price conventions."""
-    sect = _v(fields, "sector_context") or _v(fields, "sector_leadership")
-    issuer = _v(fields, "issuer")
-    if not isinstance(sect, dict) or not sect.get("ranked") or not isinstance(issuer, dict):
-        return None
-    own = issuer.get("sector")
-    row = next((r for r in sect["ranked"] if r.get("sector") == own), None)
-    if row is None:
-        return None
-    sessions = sect.get("sessions")
-    stock_r = _pct(fields, f"return_{sessions}_bars")
-    if stock_r is None:
-        return None
+def _relative_gap(fields, *, subject: str) -> dict | None:
+    """MU against its own INDUSTRY peers, and separately against the broader sector.
 
-    peer = row.get("mean_return_pct")
-    rel = stock_r - peer
-    what = (f"over the same {sessions} sessions, {subject} returned {stock_r:+.2f}% against "
-            f"{peer:+.2f}% for the equal-weighted mean of {row.get('symbols')} covered "
-            f"{own} symbols — {rel:+.2f}pp relative")
-    compared = (f"identical window ({sessions} sessions) and the same price convention "
-                f"(unadjusted closes) on both sides")
-    mech = ("a stock outperforming its own sector is the part of its move not shared with the "
-            "sector, which is where company-specific explanations would have to act. This "
-            "locates where to look; it does not identify what acted")
-    against = (f"this peer figure is an equal-weighted mean of the {row.get('symbols')} covered "
-               f"{own} symbols, not a sector index, and it is not capitalisation-weighted. "
-               f"Relative strength is also not an independent driver — it is the same price "
-               f"series measured against a different baseline")
-    watch = (f"whether the {rel:+.2f}pp gap widens or closes over the next {sessions} sessions")
-    return _driver(f"{own} relative performance", what, compared, mech, against, watch)
+    TWO BASKETS, NAMED SEPARATELY. The industry basket is the planned comparison and excludes
+    the subject; the sector mean is broader context and (as published) includes it. Reporting
+    one as the other is how "trails its peers" became a claim about 59 unrelated companies.
+    """
+    peers = _v(fields, "peer_basket")
+    if not isinstance(peers, dict):
+        return None
+    sessions = peers.get("sessions")
+    own = _pct(fields, f"return_{sessions}_bars")
+    if own is None:
+        return None
+    gap = own - peers["mean_return_pct"]
+    return {"sessions": sessions, "own": own, "peer": peers["mean_return_pct"], "gap": gap,
+            "industry": peers.get("industry"), "members": peers.get("member_count"),
+            "weighting": peers.get("weighting"), "subject_included": peers.get("subject_included"),
+            "convention": peers.get("price_convention")}
+
+
+def sector_relative_driver(fields, *, subject: str) -> dict | None:
+    """The stock against its industry peers, over identical sessions and price conventions."""
+    r = _relative_gap(fields, subject=subject)
+    if r is None:
+        return None
+    direction = "ahead of" if r["gap"] > 0 else "behind"
+    what = (f"over the same {r['sessions']} sessions, {subject} returned {r['own']:+.2f}% "
+            f"against {r['peer']:+.2f}% for its {r['industry']} peers — {r['gap']:+.2f}pp "
+            f"{direction} the basket")
+    compared = (f"an {r['weighting']} basket of {r['members']} covered {r['industry']} symbols, "
+                f"{'INCLUDING' if r['subject_included'] else 'EXCLUDING'} {subject} itself, over "
+                f"an identical {r['sessions']}-session window on {r['convention']}s")
+
+    sect = _v(fields, "sector_context") or _v(fields, "sector_leadership")
+    issuer = _v(fields, "issuer") or {}
+    broader = ""
+    if isinstance(sect, dict) and sect.get("ranked"):
+        row = next((x for x in sect["ranked"] if x.get("sector") == issuer.get("sector")), None)
+        if row:
+            broader = (f". Broader context: the {row.get('sector')} sector mean over the same "
+                       f"window is {row.get('mean_return_pct'):+.2f}% across "
+                       f"{row.get('symbols')} covered symbols — a WIDER group than "
+                       f"{r['industry']}, published including the subject")
+    mech = ("the part of a move not shared with its peers is where company-specific "
+            "explanations would have to act. This locates where to look; it does not identify "
+            "what acted" + broader)
+    against = (f"this basket is {r['members']} covered {r['industry']} symbols, "
+               f"{r['weighting']} — not an industry index and not capitalisation-weighted. "
+               f"Relative return is also not an independent driver: it is the same price series "
+               f"measured against a different baseline")
+    watch = (f"whether the {r['gap']:+.2f}pp gap against the {r['industry']} basket narrows or "
+             f"widens over the next {r['sessions']} sessions, measured over the same window")
+    return _driver(f"{r['industry']} peer-relative performance", what, compared, mech,
+                   against, watch)
 
 
 def drivers_for_stock(fields, *, subject: str) -> Field:

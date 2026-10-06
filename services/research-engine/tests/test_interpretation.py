@@ -439,6 +439,12 @@ def _driver_fields(**over):
         "pre_report_link": unavailable("no frozen pre-earnings report exists"),
         "sector_context": calculated({"sessions": 20, "ranked": [
             {"sector": "Technology", "mean_return_pct": 11.52, "symbols": 59}]}),
+        "peer_basket": calculated({
+            "industry": "Semiconductors", "sessions": 20, "mean_return_pct": 16.60,
+            "members": ["AMD", "AVGO", "INTC", "NVDA"], "member_count": 4,
+            "subject_included": False, "weighting": "equal-weighted",
+            "price_convention": "unadjusted close",
+            "basis": "equal-weighted mean of 4 covered Semiconductors symbols"}),
     })
     f.update(over)
     return f
@@ -467,16 +473,31 @@ def test_guidance_is_never_called_raised_without_a_comparable_prior():
     assert "raised" not in g["detail"].lower()
 
 
-def test_sector_relative_uses_identical_sessions_and_states_the_gap():
+def test_the_peer_comparison_uses_the_industry_not_the_whole_sector():
+    """MU was compared against 59 "Technology" symbols — software and services included — and
+    the basket contained MU itself."""
     from intel_reports.interpretation import drivers_for_stock
     d = drivers_for_stock(_driver_fields(), subject="MU").value
-    s = [x for x in d["drivers"] if "relative performance" in x["driver"]][0]
-    assert "+12.18%" in s["what_changed"] and "+11.52%" in s["what_changed"]
-    assert "+0.66pp relative" in s["what_changed"]
-    assert "identical window (20 sessions)" in s["compared_with"]
-    assert "same price convention" in s["compared_with"]
-    assert "not a sector index" in s["evidence_against"]
+    s = [x for x in d["drivers"] if "peer-relative" in x["driver"]][0]
+    assert s["driver"].startswith("Semiconductors")
+    assert "+12.18%" in s["what_changed"] and "+16.60%" in s["what_changed"]
+    assert "-4.42pp behind the basket" in s["what_changed"]
+    assert "EXCLUDING MU itself" in s["compared_with"]
+    assert "4 covered Semiconductors symbols" in s["compared_with"]
+    assert "equal-weighted" in s["compared_with"]
+    assert "unadjusted close" in s["compared_with"]
+    assert "not an industry index" in s["evidence_against"]
     assert "not an independent driver" in s["evidence_against"]
+
+
+def test_the_broader_sector_mean_is_kept_but_labelled_as_the_wider_group():
+    from intel_reports.interpretation import drivers_for_stock
+    d = drivers_for_stock(_driver_fields(), subject="MU").value
+    s = [x for x in d["drivers"] if "peer-relative" in x["driver"]][0]
+    assert "Broader context" in s["why_it_may_matter"]
+    assert "+11.52%" in s["why_it_may_matter"]
+    assert "WIDER group than Semiconductors" in s["why_it_may_matter"]
+    assert "including the subject" in s["why_it_may_matter"]
 
 
 def test_a_report_with_no_joined_evidence_names_what_it_would_need():
@@ -494,3 +515,41 @@ def test_drivers_never_claim_a_cause():
     assert "never a cause" in d["note"]
     for x in d["drivers"]:
         assert "NOT an established cause" in x["claim_type"]
+
+
+def test_the_opening_states_the_peer_lag_rather_than_hiding_it():
+    """"Structure and longer-window returns agree" is true and buries the newest finding."""
+    a = outlook_assessment(_driver_fields(), subject="MU", report_type="stock_outlook").value
+    assert "trails its Semiconductors peers by 4.42pp" in a["assessment"]
+    assert "over the same 20 sessions" in a["assessment"]
+    assert "do not establish what caused the price move" in a["assessment"]
+
+
+def test_counterevidence_leads_with_what_happened_not_with_method():
+    a = outlook_assessment(_driver_fields(), subject="MU", report_type="stock_outlook").value
+    against = a["why_it_matters"][0]["contradicts"]
+    i_real = against.index("most recent bars")
+    i_method = against.index("as a method limit")
+    assert i_real < i_method, "actual counterevidence precedes the methodological caveat"
+    assert "trails its Semiconductors peers" in against
+
+
+def test_each_finding_has_its_own_next_observation():
+    """A close below the average changes the technical condition and resolves nothing about
+    peer performance or guidance."""
+    a = outlook_assessment(_driver_fields(), subject="MU", report_type="stock_outlook").value
+    watches = " | ".join(w["watch"] for w in a["watch_next"])
+    assert "RECALCULATED 20-bar average" in watches
+    assert "peer basket" in watches
+    assert "comparable prior forecast for the same fiscal period" in watches
+    gap = [w for w in a["watch_next"] if "peer basket" in w["watch"]][0]
+    assert "independent of where the close sits" in gap["would_change"]
+
+
+def test_the_peer_gap_appears_as_a_finding_with_its_basket_disclosed():
+    a = outlook_assessment(_driver_fields(), subject="MU", report_type="stock_outlook").value
+    f = [x for x in a["why_it_matters"] if "peers" in x["finding"]][0]
+    assert "trails its Semiconductors peers by 4.42pp" in f["finding"]
+    assert "excluding MU itself" in f["supports"]
+    assert "4 covered Semiconductors symbols" in f["supports"]
+    assert "not an industry index" in f["contradicts"]
