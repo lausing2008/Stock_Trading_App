@@ -77,6 +77,7 @@ const NAV_GROUPS: NavGroupDef[] = [
     label: 'Reports',
     items: [
       { label: 'Intelligence Reports', href: '/intelligence-reports', color: '#a78bfa', tag: 'new' },
+      { label: 'Quality & Value', href: '/quality-value', color: '#38bdf8', tag: 'new' },
       { label: 'Market Trend',   href: '/reports?tab=trend',  color: '#6d28d9', tag: 'new' },
       { label: 'Key Assets',     href: '/reports?tab=assets', color: '#6d28d9', tag: 'new' },
       { label: 'Top Stocks',     href: '/reports?tab=top',    color: '#6d28d9', tag: 'new' },

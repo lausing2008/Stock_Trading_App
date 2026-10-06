@@ -3,6 +3,7 @@ from db import init_db
 
 from .api.ai_proxy import router as ai_router
 from .api.intelligence_routes import router as intelligence_router
+from .api.quality_value_routes import router as quality_value_router
 from .api.routes import router
 
 
@@ -14,5 +15,5 @@ async def on_startup():
     init_db()
 
 
-app = create_app("research-engine", routers=[router, ai_router, intelligence_router],
+app = create_app("research-engine", routers=[router, ai_router, intelligence_router, quality_value_router],
                  on_startup=on_startup)

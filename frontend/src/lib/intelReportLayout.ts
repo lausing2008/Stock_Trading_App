@@ -168,3 +168,69 @@ export function coverageBanner(
   }
   return null;
 }
+
+/* ========================= how much of a value to show at once =========================
+ *
+ * The reports grew long again. The cause is not any one section: it is that a field's whole
+ * value is rendered inline, so a five-year statement series, every per-series rate observation
+ * and the same methodology sentence repeated under each finding all land on the first screen,
+ * and the reader scrolls past evidence to reach the next conclusion.
+ *
+ * THE LINE THESE DRAW. Bulk — a repeating series of rows the reader consults to check a figure
+ * — goes behind a drilldown. A LIMITATION NEVER DOES: what the report cannot conclude is the
+ * part a reader would be harmed by missing, so prose entries stay inline whatever their length,
+ * and `splitBulk` only ever moves list-shaped entries.
+ */
+
+/** True for a value that is a repeating series worth consulting but not worth reading. */
+export function isBulkSeries(v: unknown): boolean {
+  return Array.isArray(v) && v.length > 2
+    && v.every(r => r !== null && typeof r === 'object' && !Array.isArray(r));
+}
+
+/** Split an object value into what stays inline and what moves behind a drilldown.
+ *
+ *  Only list-shaped entries move. Every scalar and every string — which is where this
+ *  platform's limitation text lives — stays inline by construction, so no future value shape
+ *  can push a limitation into a collapsed section by accident. */
+export function splitBulk(v: unknown): {
+  inline: Record<string, unknown>; bulk: Record<string, unknown[]>;
+} {
+  const inline: Record<string, unknown> = {};
+  const bulk: Record<string, unknown[]> = {};
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return { inline, bulk };
+  for (const [k, vv] of Object.entries(v as Record<string, unknown>)) {
+    if (isBulkSeries(vv)) bulk[k] = vv as unknown[]; else inline[k] = vv;
+  }
+  return { inline, bulk };
+}
+
+/** The sentences every one of these texts ends with, and each text with that tail removed.
+ *
+ *  The age of the data and the basis caveat are attached to EVERY finding on purpose — a
+ *  finding quoted on its own must still carry them. Shown three times down one page they read
+ *  as padding, so the renderer states the shared tail once and leaves each finding its own
+ *  words. The data is unchanged; only the repetition is. */
+export function commonTail(texts: string[]): { tail: string; rest: string[] } {
+  const usable = texts.filter(t => typeof t === 'string' && t.trim());
+  if (usable.length < 2) return { tail: '', rest: texts };
+  const split = (t: string) => (t.match(/[^.]+\.(?:\s|$)|[^.]+$/g) ?? []).map(s => s.trim());
+  const parts = usable.map(split);
+  const tail: string[] = [];
+  for (let i = 1; i <= Math.min(...parts.map(p => p.length)) - 1; i++) {
+    const candidate = parts[0][parts[0].length - i];
+    if (parts.every(p => p[p.length - i] === candidate)) tail.unshift(candidate);
+    else break;
+  }
+  if (!tail.length) return { tail: '', rest: texts };
+  const tailText = tail.join(' ');
+  return {
+    tail: tailText,
+    rest: texts.map(t => {
+      if (typeof t !== 'string') return t;
+      const trimmed = t.trim();
+      return trimmed.endsWith(tailText)
+        ? trimmed.slice(0, trimmed.length - tailText.length).trim() : t;
+    }),
+  };
+}

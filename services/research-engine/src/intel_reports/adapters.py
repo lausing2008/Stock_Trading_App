@@ -603,14 +603,30 @@ def business_performance(session, stock, *, cutoff: datetime, periods: int = 5) 
     needs no new ingestion. It also found three limits that are reported rather than smoothed
     over:
 
-      * THE TABLE IS STALE. `fetched_at` was a month old at the audit, and MU's newest stored
-        annual predates the fiscal year MU has since reported. The newest row is not the newest
-        reality, so the age of the data travels with it.
+      * THE NEWEST ROW IS NOT THE NEWEST REALITY, so the age of the data travels with it. Two
+        separate ages, measured against production on 2026-10-06 and NOT the same claim:
+        RETRIEVAL is uniformly one month old — `max(fetched_at)` is 2026-09-07 across all 1,424
+        rows — while the REPORTED-YEAR gap is narrow: 3 of 156 symbols have no annual within
+        400 days (9992.HK, ZS, MU), and all three have non-calendar fiscal years whose latest
+        year was reported after that last fetch. CORRECTION TO AN EARLIER FRAMING OF MINE: I
+        generalised MU's missing year into "the table is stale". For the 153 calendar-year
+        filers the stored series is current; what is uniformly old is when it was fetched.
       * NO SHARE COUNT EXISTS, so dilution is not computed. It is NOT derived from net income
         and EPS, which would silently assume the EPS basis.
       * NO ACCOUNTING BASIS AND NO FILING DATE are stored. These are reported history; they
         cannot support a point-in-time claim, and comparing them with an issuer-release figure
-        crosses an unverified basis boundary.
+        crosses an unverified basis boundary. THE SAME GAP REACHES INSIDE THE SERIES: a growth
+        rate or a margin change is a comparison of two stored rows, and without a basis for
+        either row there is no evidence they were prepared on the same one. A basis change
+        between two stored years moves both figures with no change in the business. So every
+        derived change here is labelled a calculation from the stored provider series with
+        comparability unverified — not a reported growth rate.
+
+      * THE PERIOD LABEL IS THE PROVIDER'S, NOT A CONFIRMED FISCAL END. `period_end` is what the
+        provider returned. No issuer filing or SEC submission has been read to confirm that the
+        issuer's fiscal year ended on that date, so the label travels as a provider label and
+        the section says "latest stored year", never "latest reported year" — what the issuer
+        has reported is exactly what this table cannot see.
     """
     from db import FinancialStatement
     rows = list(session.execute(
@@ -665,13 +681,24 @@ def business_performance(session, stock, *, cutoff: datetime, periods: int = 5) 
          "newest_period_end": newest.period_end.isoformat(),
          "newest_period_age_days": age_days,
          "retrieved_age_days": fetch_age_days,
-         "source": "filed annual statements as retrieved by the data provider",
+         "source": "annual statements as retrieved by the data provider",
+         "period_label": "PROVIDER LABEL. period_end is the date the provider returned for this "
+                         "annual period. No issuer filing or SEC submission has been read to "
+                         "confirm the issuer's fiscal year ended then, so this is the latest "
+                         "STORED year, not the latest reported one",
+         "derived_figures": "CALCULATED HERE from the stored provider series — growth rates and "
+                            "margin changes are not provider-reported figures. Each compares "
+                            "two stored rows whose accounting basis is unknown, so their "
+                            "comparability is unverified",
          "dilution": "NOT COMPUTED — no share count is stored anywhere in this platform, and "
                      "deriving one from net income and EPS would assume the EPS accounting "
                      "basis, which is also not stored",
          "accounting_basis": "NOT STORED. These figures cannot be shown to be GAAP or adjusted, "
                              "so a comparison against an issuer-release figure crosses an "
-                             "unverified basis boundary",
+                             "unverified basis boundary — and so does a comparison between two "
+                             "rows of this same series, because neither row's basis is known. A "
+                             "basis change between stored years would move growth and margin "
+                             "with no change in the business",
          "availability": "filing dates are not stored, only retrieval. These are reported "
                          "history and cannot support a point-in-time claim"},
         units="mixed")

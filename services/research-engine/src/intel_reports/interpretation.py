@@ -29,17 +29,54 @@ from intelligence.report_contract import (
 
 @dataclass
 class Finding:
-    """One thing that matters, with the case against it attached."""
+    """One thing that matters, with the case against it attached.
+
+    `kind` names WHAT CLASS OF CLAIM this is. A section declares the kinds it is allowed to
+    produce and the evidence each kind requires, and `permit()` refuses anything else — so the
+    limit on a section is a property of the code rather than of a reviewer noticing a word.
+    """
     headline: str
     supports: str
     contradicts: str
     invalidated_by: str
     evidence_ids: tuple = ()
+    kind: str = ""
 
     def as_dict(self) -> dict:
         return {"finding": self.headline, "supports": self.supports,
                 "contradicts": self.contradicts, "invalidated_by": self.invalidated_by,
-                "evidence_ids": list(self.evidence_ids)}
+                "evidence_ids": list(self.evidence_ids), "kind": self.kind}
+
+
+class FindingNotPermitted(Exception):
+    """A section tried to emit a claim class it has no evidence standard for."""
+
+
+def permit(findings: list, *, permitted: dict, section: str) -> list:
+    """Refuse any finding whose kind the section does not permit, or whose evidence is absent.
+
+    WHY THIS EXISTS RATHER THAN A FORBIDDEN-WORD CHECK. Excluding the word "moat" does not stop
+    the claim: "durable pricing power", "a sustainable competitive advantage" and "structurally
+    higher returns than peers" all assert the same thing without it, and any list of phrases is
+    one paraphrase behind. The claim classes a section may make are finite and can be
+    enumerated; the sentences expressing them cannot. So the enumeration is the gate — a kind
+    absent from `permitted` cannot be emitted at all, whatever words it would have used.
+
+    `permitted` maps kind -> tuple of evidence keys that must be present and non-None on the
+    finding's own evidence mapping. A kind with no evidence is not a weaker finding; it is an
+    unsupported one.
+    """
+    out = []
+    for f, evidence in findings:
+        if f.kind not in permitted:
+            raise FindingNotPermitted(
+                f"{section} may not produce a '{f.kind}' finding — permitted kinds are "
+                f"{sorted(permitted)}")
+        missing = [k for k in permitted[f.kind] if evidence.get(k) is None]
+        if missing:
+            continue        # prerequisites absent: no finding, not a hedged one
+        out.append(f)
+    return out
 
 
 @dataclass
@@ -925,16 +962,40 @@ def _fmt_money(v) -> str:
     return _money(v, "USD") if isinstance(v, (int, float)) else "unavailable"
 
 
+#: THE CLAIM CLASSES THIS SECTION MAY MAKE, and what each one requires to be made at all.
+#: Durability, pricing power, competitive advantage and valuation are ABSENT ON PURPOSE: the
+#: evidence for them is not in a statement series, so there is no entry here that could carry
+#: them and `permit()` refuses them by name rather than by vocabulary.
+BUSINESS_FINDING_KINDS = {
+    "revenue_change":  ("revenue", "prior_revenue", "revenue_growth_pct"),
+    "margin_change":   ("gross_margin_pct", "prior_gross_margin_pct"),
+    "cash_generation": ("operating_cashflow",),
+}
+
+
 def business_performance_findings(fields, *, subject: str) -> list:
-    """Growth, margins and cash generation, each with the case against the reading."""
+    """Growth, margins and cash generation, each with the case against the reading.
+
+    Three claim classes, declared in BUSINESS_FINDING_KINDS and enforced by `permit()`. Each
+    one is a reading of the STORED provider series: the period labels are the provider's, the
+    growth and margin changes are calculated here, and no row's accounting basis is known.
+    """
     bp = _v(fields, "business_performance")
     if not isinstance(bp, dict) or len(bp.get("periods") or []) < 2:
         return []
     periods = bp["periods"]
     cur, prev = periods[0], periods[1]
-    stale = (f" These are filed statements through {bp['newest_period_end']}, "
-             f"{bp['newest_period_age_days']} days ago — a later fiscal year may have been "
-             f"reported since and is not in this series.")
+    # THE PROVIDER'S LABEL, NOT A CONFIRMED FISCAL END. What the issuer has actually reported is
+    # precisely what this table cannot see, so the series is "stored", never "reported".
+    stored = (f" These are stored annual statements through the provider's period label "
+              f"{bp['newest_period_end']}, {bp['newest_period_age_days']} days ago; no issuer "
+              f"or SEC filing has been read to confirm that fiscal end, and a later fiscal year "
+              f"may have been reported since and is not in this series.")
+    # A COMPARISON NEEDS A SHARED BASIS. Neither row states one, so every change below is a
+    # calculation over the stored series whose comparability is unverified.
+    calc = (" Calculated from the stored provider series, not a provider-reported figure: "
+            "neither year's accounting basis is stored, so the two rows are not shown to be "
+            "comparable.")
     found = []
 
     # --- growth -------------------------------------------------------------------
@@ -944,16 +1005,19 @@ def business_performance_findings(fields, *, subject: str) -> list:
         direction = ("accelerating" if len(trend) > 1 and trend[0] > trend[1]
                      else "decelerating" if len(trend) > 1 and trend[0] < trend[1]
                      else "steady")
-        found.append(Finding(
+        found.append((Finding(
+            kind="revenue_change",
             headline=f"Revenue {'grew' if g > 0 else 'fell'} {abs(g):.1f}% in the latest "
-                     f"reported year",
+                     f"stored year",
             supports=(f"{_fmt_money(cur['revenue'])} against {_fmt_money(prev['revenue'])} the "
                       f"year before; the growth rate is {direction} across the "
-                      f"{len(trend)} comparable years on file" + stale),
+                      f"{len(trend)} years on file" + calc + stored),
             contradicts=("a revenue change says nothing about why it happened — price, volume, "
                          "mix, acquisitions and accounting changes all land in the same line, "
                          "and this series separates none of them"),
-            invalidated_by="the next annual statement showing the direction reverse"))
+            invalidated_by="the next annual statement showing the direction reverse"),
+            {"revenue": cur.get("revenue"), "prior_revenue": prev.get("revenue"),
+             "revenue_growth_pct": g}))
 
     # --- margins ------------------------------------------------------------------
     gm, pgm = cur.get("gross_margin_pct"), prev.get("gross_margin_pct")
@@ -963,34 +1027,40 @@ def business_performance_findings(fields, *, subject: str) -> list:
         bits = [f"gross margin {gm:.1f}% against {pgm:.1f}% ({delta:+.1f}pp)"]
         if om is not None and pom is not None:
             bits.append(f"operating margin {om:.1f}% against {pom:.1f}% ({om - pom:+.1f}pp)")
-        found.append(Finding(
+        found.append((Finding(
+            kind="margin_change",
             headline=f"Gross margin {'expanded' if delta > 0 else 'contracted'} "
                      f"{abs(delta):.1f} points",
-            supports="; ".join(bits) + stale,
+            supports="; ".join(bits) + calc + stored,
             contradicts=("margin is an outcome, not a cause. Whether it came from pricing, "
                          "cost, mix or utilisation is not in this data, and for a cyclical "
                          "business a strong margin year is as consistent with the cycle as "
                          "with a durable advantage"),
             invalidated_by="margins reverting towards their multi-year range in the next "
-                           "reported year"))
+                           "stored year"),
+            {"gross_margin_pct": gm, "prior_gross_margin_pct": pgm}))
 
     # --- cash generation ----------------------------------------------------------
     ocf, fcf, capex = cur.get("operating_cashflow"), cur.get("free_cashflow"), cur.get("capital_expenditure")
     if ocf is not None:
         conv = (round(fcf / ocf * 100, 1) if fcf is not None and ocf else None)
-        found.append(Finding(
+        found.append((Finding(
+            kind="cash_generation",
             headline=f"Operating cash flow of {_fmt_money(ocf)} against capital expenditure of "
                      f"{_fmt_money(abs(capex) if isinstance(capex, (int, float)) else None)}",
             supports=(f"free cash flow {_fmt_money(fcf)}"
                       + (f", {conv:.1f}% of operating cash flow" if conv is not None else "")
                       + ". Cash generation is harder to influence with accounting choices than "
-                        "reported earnings" + stale),
+                        "reported earnings" + stored),
             contradicts=("heavy capital expenditure suppresses free cash flow whether it is "
                          "building a future advantage or merely sustaining the current one, and "
                          "this data cannot tell maintenance capex from growth capex"),
             invalidated_by="free cash flow turning negative while capital expenditure stays "
-                           "elevated"))
-    return found[:3]
+                           "elevated"),
+            {"operating_cashflow": ocf}))
+
+    return permit(found, permitted=BUSINESS_FINDING_KINDS,
+                  section="business performance")[:3]
 
 
 def business_performance_limits(fields) -> list:
@@ -998,9 +1068,11 @@ def business_performance_limits(fields) -> list:
     bp = _v(fields, "business_performance")
     if not isinstance(bp, dict):
         return ["no filed statements are stored for this issuer"]
-    out = [bp["dilution"], bp["accounting_basis"], bp["availability"]]
+    out = [bp[k] for k in ("dilution", "accounting_basis", "availability",
+                           "period_label", "derived_figures") if bp.get(k)]
     if (bp.get("newest_period_age_days") or 0) > 365:
-        out.insert(0, f"the newest filed statement on file ended "
-                      f"{bp['newest_period_end']} — more than a year ago, so a reported fiscal "
-                      f"year is missing from this series")
+        out.insert(0, f"the newest annual statement stored ended "
+                      f"{bp['newest_period_end']} by the provider's own label — more than a "
+                      f"year ago, so a later fiscal year has almost certainly been reported and "
+                      f"is absent from this series")
     return out

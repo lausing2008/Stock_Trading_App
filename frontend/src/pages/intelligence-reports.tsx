@@ -5,7 +5,7 @@ import { api, type IntelField, type IntelReport, type IntelDiff,
 import { renderKind, tableColumns, formatScalar } from '@/lib/intelReportView';
 import {
   groupFields, criticalLimitations, coverageBanner, fieldLabel, humaniseValue,
-  SECTION_TITLE, TIMEFRAME_TITLE, type LayoutField,
+  SECTION_TITLE, TIMEFRAME_TITLE, splitBulk, commonTail, type LayoutField,
 } from '@/lib/intelReportLayout';
 
 type Tab = 'market_outlook' | 'stock_outlook' | 'pre_earnings' | 'post_earnings';
@@ -94,14 +94,29 @@ function AnyValue({ v, units }: { v: unknown; units?: string | null }) {
   if (kind === 'table') return <ObjectTable rows={v as Record<string, unknown>[]} />;
   if (kind === 'list') return <span>{(v as unknown[]).map(i => String(i)).join(', ')}</span>;
   if (kind === 'object') {
+    /* A five-year statement series and every per-series rate observation were rendered inline,
+       so the reader scrolled past evidence to reach the next conclusion. `splitBulk` moves
+       ONLY list-shaped entries; every string stays inline by construction, which is what keeps
+       a limitation from ever landing inside a collapsed section. */
+    const { inline, bulk } = splitBulk(v);
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-        {Object.entries(v as Record<string, unknown>).map(([k, vv]) => (
+        {Object.entries(inline).map(([k, vv]) => (
           <div key={k} style={{ display: 'flex', gap: '6px', alignItems: 'baseline',
                                 flexWrap: 'wrap' }}>
             <span style={{ color: '#64748b', flexShrink: 0 }}>{titleise(k)}:</span>
             <AnyValue v={vv} />
           </div>
+        ))}
+        {Object.entries(bulk).map(([k, rows]) => (
+          <details key={k} style={{ marginTop: '4px' }}>
+            <summary style={{ cursor: 'pointer', fontSize: '11.5px', color: '#7c8aa0' }}>
+              {titleise(k)} — {rows.length} rows of evidence
+            </summary>
+            <div style={{ marginTop: '6px' }}>
+              <AnyValue v={rows} />
+            </div>
+          </details>
         ))}
       </div>
     );
@@ -144,6 +159,9 @@ type AssessmentValue = {
  *  it, and what to watch — and only then choose to open the reasoning. */
 function ReadThisFirst({ v }: { v: AssessmentValue }) {
   const [open, setOpen] = useState(false);
+  const whySupports = useMemo(
+    () => commonTail((v.why_it_matters ?? []).map(f => f.supports ?? '')),
+    [v.why_it_matters]);
   const H = ({ children }: { children: React.ReactNode }) => (
     <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em',
                   textTransform: 'uppercase', color: '#64748b', marginBottom: '5px' }}>
@@ -182,14 +200,16 @@ function ReadThisFirst({ v }: { v: AssessmentValue }) {
             <div>
               <H>Why</H>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {v.why_it_matters.map((f, i) => (
+                {whySupports.rest.map((support, i) => {
+                  const f = v.why_it_matters![i];
+                  return (
                   <div key={i} style={{ borderLeft: '2px solid rgba(99,102,241,0.45)',
                                         paddingLeft: '10px' }}>
                     <div style={{ fontSize: '13px', color: '#c7d2fe', fontWeight: 600 }}>
                       {f.finding}</div>
-                    {f.supports && <div style={{ fontSize: '12.5px', color: '#cbd5e1',
+                    {support && <div style={{ fontSize: '12.5px', color: '#cbd5e1',
                                                  lineHeight: 1.55, marginTop: '3px' }}>
-                      {f.supports}.</div>}
+                      {support}</div>}
                     {f.contradicts && <div style={{ fontSize: '12.5px', color: '#fcd34d',
                                                     lineHeight: 1.55, marginTop: '3px' }}>
                       Against: {f.contradicts}.</div>}
@@ -207,9 +227,23 @@ function ReadThisFirst({ v }: { v: AssessmentValue }) {
                           {f.evidence_ids.join(', ')}</div>
                       </details>
                     )}
-                  </div>
-                ))}
+                  </div>);
+                })}
               </div>
+              {/* STATED ONCE, NOT THREE TIMES. The age of the data and the basis caveat are
+                  attached to every finding on purpose — one quoted alone must still carry
+                  them — but repeated down a page they read as padding. Visible, not
+                  collapsed: this is a limitation, and limitations do not go behind a
+                  drilldown. */}
+              {whySupports.tail && (
+                <div style={{ marginTop: '9px', padding: '8px 11px', borderRadius: '8px',
+                              fontSize: '11.5px', color: '#cbd5e1', lineHeight: 1.5,
+                              background: 'rgba(234,179,8,0.06)',
+                              border: '1px solid rgba(234,179,8,0.18)' }}>
+                  <span style={{ color: '#fde047', fontWeight: 700 }}>Applies to every finding
+                  above: </span>{whySupports.tail}
+                </div>
+              )}
             </div>
           )}
 

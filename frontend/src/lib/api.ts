@@ -1,3 +1,19 @@
+
+export type QvGateStatus = 'pass' | 'fail' | 'unknown' | 'blocked' | 'not_applicable';
+export type QvGate = { gate: string; status: QvGateStatus; reasons: string[];
+                       evidence: Record<string, unknown> };
+export type QvEvaluation = {
+  symbol: string; name?: string | null; sector?: string | null;
+  state: string; gates: QvGate[]; explanation: string[]; blocking: string[];
+};
+export type QualityValueReport = {
+  mode: string; as_of: string; evaluated: number;
+  states: Record<string, number>;
+  gate_coverage: Record<string, Record<QvGateStatus, number>>;
+  required_for_entry: string[];
+  evaluations: QvEvaluation[];
+  notes: string[];
+};
 // T411-IVHV: the IV/HV point and response shapes live beside the chart geometry that
 // consumes them (lib/ivHvChart.ts), and are re-exported below so callers can keep
 // importing every API type from this one module.
@@ -147,6 +163,12 @@ export const api = {
     request<HkConnectFlowLeaderboardItem[]>(`/stocks/hk-connect-flow/leaderboard/top?days=${days}&limit=${limit}`),
   // ── Intelligence reports ────────────────────────────────────────────────────
   // Generation is a POST because it can write a new version; reads never create one.
+  // Quality & Value SHADOW dashboard. Read-only: this endpoint persists nothing and can send
+  // nothing. See docs/features/2026-10-06-quality-value-opportunities-dashboard-and-alerts.md.
+  qualityValue: (symbols?: string) =>
+    request<QualityValueReport>(
+      `/quality-value/evaluations${symbols ? `?symbols=${encodeURIComponent(symbols)}` : ''}`,
+      undefined, 60_000),
   intelContract: () => request<{ contract_version: number; report_types: string[] }>(`/intel/contract`),
   generateIntelReport: (body: { report_type: string; symbol?: string; market?: string; event_id?: number }) =>
     // Generation walks the whole covered universe for breadth and leadership, so it is slower

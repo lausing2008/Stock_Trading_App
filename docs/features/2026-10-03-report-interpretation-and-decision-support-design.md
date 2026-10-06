@@ -4,6 +4,8 @@ Date: October 3, 2026. **Status: proposed product requirements and implementatio
 
 Companions: [report templates](2026-10-02-intelligence-report-templates.md), [LLM narration architecture](2026-10-03-evidence-grounded-report-narration-design.md), [momentum horizons and monitoring](2026-10-03-momentum-horizons-and-monitoring-tasks.md), [measurement framework](2026-09-30-measurement-framework-and-improvement-backlog.md).
 
+Implementation companion: [fundamentals, competitive durability and external research integration plan](2026-10-05-fundamentals-moat-and-external-research-integration-plan.md). Covers source access, reuse of existing fundamentals, attributed analyst views, phased implementation and acceptance.
+
 ## 1. Problem and intended outcome
 
 The user's feedback: the reports show statistics and numbers but do not identify what deserves attention, what could happen next, or what may affect market and stock direction. Accurate tables are necessary but insufficient. The reader should not have to assemble an investment thesis from dozens of disconnected fields.

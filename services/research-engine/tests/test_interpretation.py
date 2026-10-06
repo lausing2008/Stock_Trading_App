@@ -4,6 +4,7 @@ The bar these tests hold the code to is the product one: after reading the asses
 reader state the conclusion, the strongest thing against it, and the specific next observation
 that would change it? A test that only checks another field appeared would not measure that.
 """
+import pytest
 import sys
 from pathlib import Path
 
@@ -713,6 +714,9 @@ def _bp_fields(**over):
                     "basis, which is also not stored",
         "accounting_basis": "NOT STORED. These figures cannot be shown to be GAAP or adjusted",
         "availability": "filing dates are not stored, only retrieval",
+        "period_label": "PROVIDER LABEL. No issuer filing confirms the fiscal end",
+        "derived_figures": "CALCULATED HERE from the stored provider series; comparability "
+                           "is unverified",
     })
     f.update(over)
     return f
@@ -722,7 +726,7 @@ def test_growth_margins_and_cash_each_become_a_finding():
     from intel_reports.interpretation import business_performance_findings
     fs = business_performance_findings(_bp_fields(), subject="MU")
     heads = " | ".join(f.headline for f in fs)
-    assert "Revenue grew 48.9%" in heads
+    assert "Revenue grew 48.9% in the latest stored year" in heads
     assert "Gross margin expanded 17.4 points" in heads
     assert "Operating cash flow" in heads
 
@@ -741,9 +745,64 @@ def test_a_strong_margin_year_is_not_read_as_a_durable_advantage():
          if "margin" in x.headline][0]
     assert "cyclical" in f.contradicts
     assert "as consistent with the cycle as with a durable advantage" in f.contradicts
-    for x in business_performance_findings(_bp_fields(), subject="MU"):
-        assert "moat" not in (x.headline + x.supports).lower(), \
-            "this section must not produce a moat claim"
+
+
+# ---- what the section may claim at all ------------------------------------------------
+# NOT a forbidden-word check. Excluding "moat" leaves "durable pricing power" and "sustainable
+# competitive advantage" saying the same thing; the phrases are unbounded, the claim CLASSES
+# are not. So the tests below pin the enumeration and the evidence each entry requires.
+
+def test_the_section_declares_exactly_three_permitted_claim_classes():
+    from intel_reports.interpretation import BUSINESS_FINDING_KINDS
+    assert set(BUSINESS_FINDING_KINDS) == {
+        "revenue_change", "margin_change", "cash_generation"}
+
+
+def test_no_durability_or_valuation_class_exists_to_be_emitted():
+    """A statement series cannot evidence these, so no entry carries them — whatever the words."""
+    from intel_reports.interpretation import BUSINESS_FINDING_KINDS
+    for forbidden in ("moat", "durability", "pricing_power", "competitive_advantage",
+                      "valuation", "fair_value", "quality_rating"):
+        assert forbidden not in BUSINESS_FINDING_KINDS
+
+
+def test_every_emitted_finding_declares_a_permitted_kind():
+    from intel_reports.interpretation import (
+        business_performance_findings, BUSINESS_FINDING_KINDS)
+    fs = business_performance_findings(_bp_fields(), subject="MU")
+    assert fs and all(f.kind in BUSINESS_FINDING_KINDS for f in fs)
+    assert len({f.kind for f in fs}) == len(fs), "each class appears at most once"
+
+
+def test_an_unpermitted_kind_is_refused_rather_than_rendered():
+    from intel_reports.interpretation import Finding, permit, FindingNotPermitted
+    claim = Finding(kind="pricing_power", headline="MU has durable pricing power",
+                    supports="margins rose", contradicts="", invalidated_by="")
+    with pytest.raises(FindingNotPermitted) as e:
+        permit([(claim, {})], permitted={"revenue_change": ()}, section="business performance")
+    assert "may not produce a 'pricing_power' finding" in str(e.value)
+
+
+@pytest.mark.parametrize("kind,evidence_key,drop", [
+    ("revenue_change", "revenue", "revenue"),
+    ("revenue_change", "prior_revenue", None),
+    ("margin_change", "gross_margin_pct", "gross_margin_pct"),
+    ("cash_generation", "operating_cashflow", "operating_cashflow"),
+])
+def test_each_class_requires_its_evidence_and_is_dropped_without_it(kind, evidence_key, drop):
+    """Absent evidence yields NO finding — never a hedged one."""
+    from intel_reports.interpretation import (
+        business_performance_findings, BUSINESS_FINDING_KINDS)
+    assert evidence_key in BUSINESS_FINDING_KINDS[kind]
+    f = _bp_fields()
+    bp = dict(f["business_performance"].value)
+    bp["periods"] = [dict(p) for p in bp["periods"]]
+    if drop:
+        bp["periods"][0][drop] = None
+    else:
+        bp["periods"][1]["revenue"] = None      # the prior year, not the current one
+    f["business_performance"] = calculated(bp)
+    assert kind not in {x.kind for x in business_performance_findings(f, subject="MU")}
 
 
 def test_cash_generation_states_what_capex_hides():
@@ -758,6 +817,30 @@ def test_every_finding_carries_the_age_of_the_data():
     from intel_reports.interpretation import business_performance_findings
     for f in business_performance_findings(_bp_fields(), subject="MU"):
         assert "2025-08-31" in f.supports and "401 days ago" in f.supports
+        assert "provider's period label" in f.supports, \
+            "the period end is the provider's label, not a confirmed fiscal end"
+        assert "no issuer or SEC filing has been read to confirm that fiscal end" in f.supports
+
+
+def test_growth_and_margin_are_labelled_calculations_over_the_stored_series():
+    """A basis change between two stored years moves both with no change in the business."""
+    from intel_reports.interpretation import business_performance_findings
+    for f in business_performance_findings(_bp_fields(), subject="MU"):
+        if f.kind not in ("revenue_change", "margin_change"):
+            continue
+        assert "Calculated from the stored provider series" in f.supports
+        assert "not a provider-reported figure" in f.supports
+        assert "neither year's accounting basis is stored" in f.supports
+
+
+def test_nothing_in_the_section_calls_the_series_the_latest_reported_year():
+    from intel_reports.interpretation import (
+        business_performance_findings, business_performance_limits)
+    text = " ".join(f.headline + f.supports
+                    for f in business_performance_findings(_bp_fields(), subject="MU"))
+    text += " ".join(business_performance_limits(_bp_fields()))
+    assert "latest reported year" not in text
+    assert "latest stored year" in text
 
 
 def test_the_limits_name_dilution_basis_and_availability():
@@ -767,6 +850,8 @@ def test_the_limits_name_dilution_basis_and_availability():
     assert "cannot be shown to be GAAP or adjusted" in limits
     assert "filing dates are not stored" in limits
     assert "more than a year ago" in limits, "a missing fiscal year is stated first"
+    assert "comparability is unverified" in limits
+    assert "No issuer filing confirms the fiscal end" in limits
 
 
 def test_dilution_is_never_derived_from_eps():
