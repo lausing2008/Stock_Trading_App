@@ -478,26 +478,26 @@ def test_the_peer_comparison_uses_the_industry_not_the_whole_sector():
     the basket contained MU itself."""
     from intel_reports.interpretation import drivers_for_stock
     d = drivers_for_stock(_driver_fields(), subject="MU").value
-    s = [x for x in d["drivers"] if "peer-relative" in x["driver"]][0]
-    assert s["driver"].startswith("Semiconductors")
+    s = [x for x in d["drivers"] if "relative performance" in x["driver"]][0]
+    assert s["driver"] == "4 covered Semiconductors peers, relative performance", \
+        "named for what it is — the covered peers, not a complete industry benchmark"
     assert "+12.18%" in s["what_changed"] and "+16.60%" in s["what_changed"]
     assert "-4.42pp behind the basket" in s["what_changed"]
     assert "EXCLUDING MU itself" in s["compared_with"]
     assert "4 covered Semiconductors symbols" in s["compared_with"]
     assert "equal-weighted" in s["compared_with"]
     assert "unadjusted close" in s["compared_with"]
-    assert "not an industry index" in s["evidence_against"]
     assert "not an independent driver" in s["evidence_against"]
 
 
-def test_the_broader_sector_mean_is_kept_but_labelled_as_the_wider_group():
+def test_the_sector_mean_is_a_different_question_not_a_worse_answer():
+    """Technology did not mismeasure semiconductors — it measured a broader basket."""
     from intel_reports.interpretation import drivers_for_stock
     d = drivers_for_stock(_driver_fields(), subject="MU").value
-    s = [x for x in d["drivers"] if "peer-relative" in x["driver"]][0]
-    assert "Broader context" in s["why_it_may_matter"]
+    s = [x for x in d["drivers"] if "relative performance" in x["driver"]][0]
     assert "+11.52%" in s["why_it_may_matter"]
-    assert "WIDER group than Semiconductors" in s["why_it_may_matter"]
-    assert "including the subject" in s["why_it_may_matter"]
+    assert "DIFFERENT QUESTION, not a worse answer" in s["why_it_may_matter"]
+    assert "both comparisons are reported" in s["why_it_may_matter"]
 
 
 def test_a_report_with_no_joined_evidence_names_what_it_would_need():
@@ -541,7 +541,10 @@ def test_each_finding_has_its_own_next_observation():
     watches = " | ".join(w["watch"] for w in a["watch_next"])
     assert "RECALCULATED 20-bar average" in watches
     assert "peer basket" in watches
-    assert "comparable prior forecast for the same fiscal period" in watches
+    # A prior forecast is EVIDENCE TO OBTAIN. Its ingestion is not a market development.
+    assert "prior forecast" not in watches
+    assert any("comparable prior forecast for the same fiscal period" in e
+               for e in a["evidence_needed"] + a["data_needed"])
     gap = [w for w in a["watch_next"] if "peer basket" in w["watch"]][0]
     assert "independent of where the close sits" in gap["would_change"]
 
@@ -549,10 +552,10 @@ def test_each_finding_has_its_own_next_observation():
 def test_the_peer_gap_appears_as_a_finding_with_its_basket_disclosed():
     a = outlook_assessment(_driver_fields(), subject="MU", report_type="stock_outlook").value
     f = [x for x in a["why_it_matters"] if "peers" in x["finding"]][0]
-    assert "trails its Semiconductors peers by 4.42pp" in f["finding"]
+    assert "trails the 4 covered Semiconductors peers by 4.42pp" in f["finding"]
     assert "excluding MU itself" in f["supports"]
     assert "4 covered Semiconductors symbols" in f["supports"]
-    assert "not an industry index" in f["contradicts"]
+    assert "not a complete industry benchmark" in f["contradicts"]
 
 
 def test_the_lead_counterevidence_keeps_the_peer_lag_not_just_the_first_clause():
@@ -633,7 +636,13 @@ def test_market_pricing_is_separated_from_policy():
     from intel_reports.interpretation import rates_driver
     d = rates_driver({"rates": _rates_field()})
     assert "MARKET-PRICED yields, not policy decisions" in d["evidence_against"]
-    assert "weaker growth outlook argues the opposite way" in d["evidence_against"]
+    # The mechanism states BOTH alternatives and what would distinguish them.
+    assert "EASING INFLATION" in d["why_it_may_matter"]
+    assert "WEAKER GROWTH" in d["why_it_may_matter"]
+    assert "neither mechanism is asserted" in d["why_it_may_matter"]
+    assert "inflation releases against expectations captured before publication" \
+        in d["why_it_may_matter"]
+    assert "earnings estimate revisions" in d["why_it_may_matter"]
     assert d["claim_type"].startswith("plausible mechanism")
 
 

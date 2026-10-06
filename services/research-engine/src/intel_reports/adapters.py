@@ -581,9 +581,15 @@ def rates(session, *, cutoff: datetime, lookback_days: int = 30) -> Field:
     rows = list(session.execute(
         select(CrossAssetReading)
         .where(CrossAssetReading.as_of <= cutoff.date(),
-               CrossAssetReading.as_of >= (cutoff.date() - timedelta(days=lookback_days)))
+               CrossAssetReading.as_of >= (cutoff.date() - timedelta(days=lookback_days)),
+               # AVAILABILITY, NOT JUST OBSERVATION. An observation date before the cutoff does
+               # not mean the value existed then — FRED publishes a day's yield the following
+               # morning. Retrieval time is the only availability evidence stored, so it bounds
+               # the query too.
+               CrossAssetReading.fetched_at <= cutoff)
         .order_by(CrossAssetReading.as_of.desc())).scalars().all())
     if not rows:
         return unavailable(
             f"no cross-asset reading is stored within {lookback_days} days of this cutoff")
-    return calculated(build_readings(rows, lookback_days=lookback_days))
+    return calculated(build_readings(rows, lookback_days=lookback_days,
+                                     cutoff=cutoff))

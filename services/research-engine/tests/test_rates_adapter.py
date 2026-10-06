@@ -26,9 +26,10 @@ def _row(d, **kw):
         yield_curve_2s10s=kw.get("s"), hy_spread=kw.get("hy"), dxy=kw.get("dxy"))
 
 
-def rates_value(rows):
+def rates_value(rows, cutoff=None):
     """What the adapter produces once its query has run."""
-    return build_readings(rows, lookback_days=30)
+    return build_readings(rows, lookback_days=30,
+                          cutoff=cutoff or datetime(2026, 10, 5))
 
 
 #: Exactly production's shape: a partial newest row above fully-populated earlier ones.
@@ -110,3 +111,64 @@ def test_the_field_states_that_these_are_market_prices_not_policy():
     v = rates_value(PROD)
     assert "MARKET-PRICED" in v["scope"]
     assert "NOT a policy decision" in v["scope"]
+
+
+# ---------------------------------------------------------------- reconciliation and dates
+
+def test_the_curve_reconciles_when_all_three_share_an_observation_date():
+    """10y minus 2y on the SAME date must equal the reported spread for that date."""
+    same = [_row(date(2026, 10, 1), y2=4.78, y10=5.24, s=0.46, hy=3.24)]
+    r = rates_value(same)["curve_reconciliation"]
+    assert r["status"] == "RECONCILED"
+    assert r["on_date"] == "2026-10-01"
+    assert r["implied_10y_minus_2y"] == 0.46 and r["reported_spread"] == 0.46
+
+
+def test_a_spread_from_a_later_date_is_not_subtracted_across_dates():
+    """Production's shape: the 2 October spread has no 2 October yields behind it. Combining
+    them would produce a number describing no single moment."""
+    r = rates_value(PROD)["curve_reconciliation"]
+    assert r["status"] == "NOT COMPARABLE"
+    assert r["spread_date"] == "2026-10-02" and r["yield_date"] == "2026-10-01"
+    assert "describes no single moment" in r["reason"]
+
+
+def test_a_disagreeing_curve_is_reported_rather_than_smoothed():
+    bad = [_row(date(2026, 10, 1), y2=4.78, y10=5.24, s=0.90, hy=3.0)]
+    assert rates_value(bad)["curve_reconciliation"]["status"] == "DISAGREES"
+
+
+def test_divergent_observation_dates_are_flagged_with_each_series_date():
+    v = rates_value(PROD)
+    assert v["dates_diverge"] is True
+    assert v["observation_dates"]["yield_curve_2s10s"] == "2026-10-02"
+    assert v["observation_dates"]["yield_10y"] == "2026-10-01"
+
+
+def test_dates_do_not_diverge_when_every_series_shares_one():
+    same = [_row(date(2026, 10, 1), y2=4.78, y10=5.24, s=0.46, hy=3.24)]
+    assert rates_value(same)["dates_diverge"] is False
+
+
+def test_each_reading_carries_its_observation_age():
+    v = rates_value(PROD, cutoff=datetime(2026, 10, 5))["readings"]
+    assert v["yield_10y"]["observation_age_days"] == 4
+    assert v["yield_curve_2s10s"]["observation_age_days"] == 3
+
+
+def test_availability_is_disclosed_as_retrieval_only():
+    """An observation date before a cutoff does not mean the value existed at that cutoff."""
+    v = rates_value(PROD)["readings"]["yield_10y"]
+    assert "retrieval time only" in v["availability_evidence"]
+    assert "publication timestamp" in v["availability_evidence"]
+    assert v["revision_vintage"] == "NOT STORED"
+
+
+def test_the_query_bounds_on_retrieval_not_only_observation_date():
+    """FRED publishes a day's yield the following morning, so an observation date that
+    precedes a cutoff is not evidence the value was available then."""
+    src = (Path(__file__).resolve().parents[1] / "src" / "intel_reports"
+           / "adapters.py").read_text()
+    seg = src[src.index("def rates(session"):]
+    seg = seg[:seg.index("if not rows:")]
+    assert "CrossAssetReading.fetched_at <= cutoff" in seg

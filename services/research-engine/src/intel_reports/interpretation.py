@@ -215,6 +215,20 @@ def _windows_text(r: dict, names) -> str:
     return ", ".join(bits)
 
 
+def _evidence_needed(fields, limits) -> list:
+    """Inputs to OBTAIN. Never market observations — ingesting a forecast is something we do.
+
+    A prior forecast sat under "Watch next" beside a price level, which confuses what to
+    monitor with what to acquire. It belongs here.
+    """
+    needed = [l.split(" — ")[0] for l in limits]
+    if _ok(fields, "guidance_current") and not _ok(fields, "guidance_change"):
+        needed.insert(0, "a comparable prior forecast for the same fiscal period, without "
+                         "which current guidance cannot be called raised, maintained or "
+                         "lowered")
+    return needed
+
+
 def _results_context(fields) -> bool:
     return _ok(fields, "revenue_actual") or _ok(fields, "eps_actual")
 
@@ -327,15 +341,16 @@ def _peer_relative_finding(fields, *, subject: str) -> Finding | None:
         return None
     direction = "trails" if r["gap"] < 0 else "leads"
     return Finding(
-        headline=(f"{subject} {direction} its {r['industry']} peers by "
-                  f"{abs(r['gap']):.2f}pp over {r['sessions']} sessions"),
+        headline=(f"{subject} {direction} the {r['members']} covered {r['industry']} peers "
+                  f"by {abs(r['gap']):.2f}pp over {r['sessions']} sessions"),
         supports=(f"{subject} returned {r['own']:+.2f}% against {r['peer']:+.2f}% for an "
                   f"{r['weighting']} basket of {r['members']} covered {r['industry']} symbols, "
                   f"{'including' if r['subject_included'] else 'excluding'} {subject} itself, "
                   f"over an identical window on {r['convention']}s"),
-        contradicts=(f"the basket is {r['members']} covered symbols, not an industry index, and "
-                     f"is not capitalisation-weighted. A gap locates the company-specific part "
-                     f"of the move; it does not say what produced it"),
+        contradicts=(f"this is the {r['members']} {r['industry']} symbols THIS PLATFORM "
+                     f"covers, not a complete industry benchmark, and it is not "
+                     f"capitalisation-weighted. A gap locates the company-specific part of the "
+                     f"move; it does not say what produced it"),
         invalidated_by=(f"the gap closing to zero over the same {r['sessions']}-session window"),
         evidence_ids=tuple((fields.get("peer_basket").evidence_ids or [])[:2]
                            if fields.get("peer_basket") else ()))
@@ -437,13 +452,6 @@ def outlook_assessment(fields, *, subject: str, report_type: str,
             trigger="the gap narrowing towards zero, or widening further",
             would_change="it is the company-specific part of the move, and it is independent "
                          "of where the close sits relative to its averages"))
-    if _ok(fields, "guidance_current") and not _ok(fields, "guidance_change"):
-        watch.append(Watch(
-            observation="a comparable prior forecast for the same fiscal period",
-            trigger="the issuer's earlier guidance for that period becoming comparable",
-            would_change="only then can current guidance be called raised, maintained or "
-                         "lowered; until then it is guidance ISSUED and nothing more"))
-
     b = _v(fields, "breadth")
     if isinstance(b, dict):
         watch.append(Watch(
@@ -470,7 +478,7 @@ def outlook_assessment(fields, *, subject: str, report_type: str,
                             "horizon-specific evidence is joined to this report"),
                    findings=findings, counterargument=counter, watch_next=watch[:4],
                    material_limits=limits, other_limits_count=others,
-                   data_needed=[l.split(" — ")[0] for l in limits])
+                   data_needed=_evidence_needed(fields, limits))
     return interpreted(a.as_dict(), label="Read this first")
 
 
@@ -737,10 +745,14 @@ def sector_relative_driver(fields, *, subject: str) -> dict | None:
     if isinstance(sect, dict) and sect.get("ranked"):
         row = next((x for x in sect["ranked"] if x.get("sector") == issuer.get("sector")), None)
         if row:
-            broader = (f". Broader context: the {row.get('sector')} sector mean over the same "
-                       f"window is {row.get('mean_return_pct'):+.2f}% across "
-                       f"{row.get('symbols')} covered symbols — a WIDER group than "
-                       f"{r['industry']}, published including the subject")
+            # THE TWO COMPARISONS ANSWER DIFFERENT QUESTIONS. The sector mean did not
+            # mismeasure semiconductor performance — it measured a broader basket. Both are
+            # reported rather than one replacing the other.
+            broader = (f". The {row.get('sector')} sector mean over the same window is "
+                       f"{row.get('mean_return_pct'):+.2f}% across {row.get('symbols')} "
+                       f"covered symbols, published including the subject. That is a "
+                       f"DIFFERENT QUESTION, not a worse answer: it measures a broader basket "
+                       f"than {r['industry']}, and both comparisons are reported")
     mech = ("the part of a move not shared with its peers is where company-specific "
             "explanations would have to act. This locates where to look; it does not identify "
             "what acted" + broader)
@@ -750,8 +762,8 @@ def sector_relative_driver(fields, *, subject: str) -> dict | None:
                f"measured against a different baseline")
     watch = (f"whether the {r['gap']:+.2f}pp gap against the {r['industry']} basket narrows or "
              f"widens over the next {r['sessions']} sessions, measured over the same window")
-    return _driver(f"{r['industry']} peer-relative performance", what, compared, mech,
-                   against, watch)
+    return _driver(f"{r['members']} covered {r['industry']} peers, relative performance",
+                   what, compared, mech, against, watch)
 
 
 def drivers_for_stock(fields, *, subject: str) -> Field:
@@ -811,16 +823,40 @@ def rates_driver(fields) -> dict | None:
     compared = ("each series against its OWN previous non-null observation, with both dates "
                 "named — the daily row is not uniformly populated, so one date does not "
                 "describe every series")
+    recon = r.get("curve_reconciliation") or {}
+    if recon.get("status") == "RECONCILED":
+        compared += (f". On {recon['on_date']} the reported spread "
+                     f"{recon['reported_spread']}% equals 10y minus 2y "
+                     f"({recon['implied_10y_minus_2y']}%) on that same date")
+    elif recon.get("status") == "NOT COMPARABLE":
+        compared += f". {recon['reason']}"
     mech = ("a discount rate applied to future cash flows, and a financing cost for leveraged "
             "borrowers; a higher long yield lowers the present value of distant earnings, all "
-            "else equal. Which direction that points depends on WHY the yield moved, and this "
-            "evidence does not contain the why")
+            "else equal. WHICH WAY THAT POINTS DEPENDS ON WHY THE YIELD MOVED, and these "
+            "readings do not contain the why. Two alternatives fit falling yields equally "
+            "well here: (a) EASING INFLATION — a lower discount rate with earnings "
+            "expectations intact, which is supportive; (b) WEAKER GROWTH — a lower discount "
+            "rate alongside deteriorating earnings expectations, which is not. To tell them "
+            "apart this report would need inflation releases against expectations captured "
+            "before publication, and the direction of earnings estimate revisions. Neither is "
+            "stored, so neither mechanism is asserted")
     against = ("these are MARKET-PRICED yields, not policy decisions, and they move on policy "
-               "expectations, term premium and flows together. A falling yield driven by a "
-               "weaker growth outlook argues the opposite way from one driven by easing "
-               "inflation, and nothing here distinguishes them")
+               "expectations, term premium and flows together. What is supported is the "
+               "OBSERVATION over the windows named — yields fell, the high-yield spread "
+               "widened — and not any account of why")
     if absent:
         against += f". Not observed in this window: {', '.join(absent)}"
+    if r.get("dates_diverge"):
+        _ages = ", ".join(
+            f"{e['series']} {e['observation_date']}"
+            + (f" ({e['observation_age_days']}d old)" if e.get("observation_age_days")
+               is not None else "")
+            for e in read.values() if e.get("observation_date"))
+        against += (f". These series are NOT all observed on the same date — {_ages} — so they "
+                    f"describe different moments and are not one market reading")
+    against += (". Availability is evidenced by retrieval time only; the source's publication "
+                "timestamp and revision vintage are not stored, so no value here can be shown "
+                "to have been available earlier than it was retrieved")
     watch = ("the next observation of each named series, and whether the 2s10s spread and the "
              "high-yield spread move together or apart")
     return _driver("Rates and credit (market-priced)", what, compared, mech, against, watch)
