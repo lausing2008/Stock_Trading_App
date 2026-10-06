@@ -66,8 +66,12 @@ async def job_edgar():
     await _run_job("edgar", _poll_edgar())
 
 
-async def job_retry_deferred() -> None:
-    """Classify headlines a budget ceiling deferred, once capacity has returned."""
+def job_retry_deferred() -> None:
+    """Classify headlines a budget ceiling deferred, once capacity has returned.
+
+    Synchronous on purpose: it does blocking database and HTTP work, and APScheduler runs a
+    plain callable in a worker thread rather than on the event loop.
+    """
     try:
         from .services.deferred_retry import retry_deferred
         retry_deferred()
@@ -75,7 +79,7 @@ async def job_retry_deferred() -> None:
         log.warning("news_sched.deferred_retry_failed", error=str(exc))
 
 
-def start_scheduler():
+async def start_scheduler():
     global _scheduler, _alpaca_task
     if _scheduler is not None:
         return

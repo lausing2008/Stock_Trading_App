@@ -77,3 +77,21 @@ def test_an_item_still_over_budget_is_counted_not_lost():
 def test_the_worker_reports_what_it_did():
     for key in ("attempted", "classified_fresh", "classified_stale_no_gate", "still_deferred"):
         assert f'"{key}"' in _SRC, key
+
+
+def test_the_startup_hook_is_still_a_coroutine():
+    """A LIVE OUTAGE OF MINE. Inserting the retry job by text index split `async def
+    start_scheduler` — the keyword attached to the new function and the startup hook became a
+    plain function. FastAPI awaited its None return and news-intelligence restart-looped:
+    "object NoneType can't be used in 'await' expression".
+
+    Asserted against the AST, because the text `async def start_scheduler` existing somewhere
+    in the file is exactly what was true while it was broken."""
+    import ast
+    tree = ast.parse(_SCHED)
+    defs = {n.name: type(n).__name__ for n in tree.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    assert defs.get("start_scheduler") == "AsyncFunctionDef", \
+        "the FastAPI startup hook is awaited and must be a coroutine"
+    assert defs.get("job_retry_deferred") == "FunctionDef", \
+        "APScheduler runs a plain callable in a worker thread; this does blocking work"
