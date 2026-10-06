@@ -105,7 +105,7 @@ class TestClassifyInBatches:
     def test_chunks_into_batch_size_groups(self, monkeypatch):
         calls = []
 
-        def _fake_classify(headlines, api_key):
+        def _fake_classify(headlines, api_key, **_kw):
             calls.append(len(headlines))
             return [None] * len(headlines)
 
@@ -116,7 +116,7 @@ class TestClassifyInBatches:
         assert calls == [8, 8, 4]  # _BATCH_SIZE = 8
 
     def test_one_failed_batch_does_not_lose_a_successful_batch(self, monkeypatch):
-        def _fake_classify(headlines, api_key):
+        def _fake_classify(headlines, api_key, **_kw):
             if headlines[0] == "fail":
                 return [None] * len(headlines)
             return [{"sentiment_score": 50, "sentiment_label": "neutral", "is_material": False, "category": "other"}] * len(headlines)

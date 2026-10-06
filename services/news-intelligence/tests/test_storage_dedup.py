@@ -111,7 +111,9 @@ class TestPersistNewsItemsDedup:
                 [_item("Old headline", "https://x/2"), _item("Brand new headline", "https://x/3")],
                 source="pr_newswire",
             )
-            mock_classify.assert_called_once_with(["Brand new headline"], "fake-key")
+            assert mock_classify.call_count == 1
+            assert mock_classify.call_args[0][0] == ["Brand new headline"]
+            assert mock_classify.call_args[0][1] == "fake-key"
 
     def test_same_url_different_source_is_treated_as_new(self):
         """Dedup must be scoped per-source — the same URL appearing under a different source
@@ -131,7 +133,9 @@ class TestPersistNewsItemsDedup:
                 {"sentiment_score": 50, "sentiment_label": "neutral", "is_material": False, "category": "other"},
             ]
             storage.persist_news_items([_item("Shared url headline", "https://shared/1")], source="businesswire")
-            mock_classify.assert_called_once_with(["Shared url headline"], "fake-key")
+            assert mock_classify.call_count == 1
+            assert mock_classify.call_args[0][0] == ["Shared url headline"]
+            assert mock_classify.call_args[0][1] == "fake-key"
 
     def test_items_with_no_url_are_always_classified(self):
         """A rare edge case (no url) can't be deduped by URL — must still be classified every
@@ -144,7 +148,9 @@ class TestPersistNewsItemsDedup:
                 {"sentiment_score": 50, "sentiment_label": "neutral", "is_material": False, "category": "other"},
             ]
             storage.persist_news_items([_item("No-url headline", None)], source="sec_edgar")
-            mock_classify.assert_called_once_with(["No-url headline"], "fake-key")
+            assert mock_classify.call_count == 1
+            assert mock_classify.call_args[0][0] == ["No-url headline"]
+            assert mock_classify.call_args[0][1] == "fake-key"
 
 
 class TestClassifyOnlyTrackedSymbols:

@@ -413,7 +413,9 @@ def persist_news_items(
         classifications: list = [None] * len(_new_items)
         if api_key and _to_classify:
             _results = classify_in_batches(
-                [_new_items[i]["headline"] for i in _to_classify], api_key
+                [_new_items[i]["headline"] for i in _to_classify], api_key,
+                scopes=[_in_scope[i] for i in _to_classify],
+                urls=[_new_items[i].get("url") for i in _to_classify],
             )
             for _pos, _idx in enumerate(_to_classify):
                 if _pos < len(_results):

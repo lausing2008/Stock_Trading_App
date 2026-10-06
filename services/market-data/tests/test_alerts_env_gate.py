@@ -193,6 +193,9 @@ _ALERT_JOB_IDS = {
     "trade_coach_weekly",
     "signal_alert_startup",
     "llm_usage_spike_check",
+    # Sends a real admin email like the spike check above, so it belongs on the GATED side:
+    # a local dev stack must not mail out a cost alert.
+    "llm_daily_budget_check",
     # T371-FLOW-DIGEST: all three send a real email, so they belong on the GATED side — a local
     # dev stack must not mail out. This parity test caught them the moment they were registered,
     # which is exactly its job (BUG-LOCALDEV-ALERTS-UNGATED).

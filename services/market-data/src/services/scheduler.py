@@ -10570,6 +10570,86 @@ _LLM_USAGE_MIN_TOKENS_TO_EVALUATE = 5_000
 _LLM_USAGE_ALERT_COOLDOWN_HOURS = 6  # don't re-page every hour while still elevated
 
 
+def check_llm_daily_budget() -> None:
+    """Alert when the DAY's token total crosses a fixed ceiling.
+
+    WHY A SPIKE ALERT IS NOT ENOUGH, and why this does not replace it. `check_llm_usage_spike`
+    compares the latest hour against a rolling baseline, so it fires on CHANGE. A cost that is
+    high every weekday and has been for weeks never departs from its own baseline and never
+    fires — exactly the shape measured on 2026-10-05: roughly 215,000-256,000 classification
+    tokens every weekday against 7,000-9,000 at weekends, steady enough to be invisible to a
+    spike comparison. The two alerts answer different questions: one asks "did something
+    change", this asks "is the level acceptable".
+
+    Fires at most once per calendar day. A budget stays crossed for the rest of the day by
+    definition, and re-alerting every half hour would teach the reader to ignore it.
+    """
+    import os
+    _t0 = time.monotonic()
+    try:
+        budget = max(0, int(os.getenv("LLM_DAILY_TOKEN_BUDGET", "400000")))
+    except ValueError:
+        budget = 400000
+    if not budget:
+        _record_job_status("llm_daily_budget_check", "ok", time.monotonic() - _t0)
+        return
+    try:
+        with SessionLocal() as session:
+            used = int(session.execute(text(
+                "SELECT COALESCE(SUM(COALESCE(input_tokens,0) + COALESCE(output_tokens,0)), 0)"
+                " FROM llm_call_log WHERE created_at >= date_trunc('day', now())"
+            )).scalar() or 0)
+            if used <= budget:
+                _record_job_status("llm_daily_budget_check", "ok", time.monotonic() - _t0)
+                return
+
+            by_call_site = [
+                {"service": r[0], "call_site": r[1], "model": r[2] or "-",
+                 "tokens": int(r[3] or 0), "calls": int(r[4] or 0)}
+                for r in session.execute(text(
+                    "SELECT service, call_site, max(model),"
+                    "       SUM(COALESCE(input_tokens,0) + COALESCE(output_tokens,0)) AS t,"
+                    "       COUNT(*)"
+                    " FROM llm_call_log WHERE created_at >= date_trunc('day', now())"
+                    " GROUP BY service, call_site ORDER BY t DESC LIMIT 5"
+                )).all()
+            ]
+
+            # ONE ALERT PER DAY, claimed atomically so two scheduler ticks cannot both send.
+            day_key = f"llm:daily_budget_alerted:{datetime.now(timezone.utc).date().isoformat()}"
+            try:
+                _rc = _get_redis()
+                if _rc is not None and not _rc.set(day_key, "1", nx=True, ex=172800):
+                    _record_job_status("llm_daily_budget_check", "ok",
+                                       time.monotonic() - _t0)
+                    return
+            except Exception:
+                pass   # Redis unavailable: alert rather than go silent about a cost breach.
+
+            recipients = session.execute(
+                select(User).where(User.role == UserRole.ADMIN, User.email.is_not(None))
+            ).scalars().all()
+            sent = 0
+            for user in recipients:
+                try:
+                    # Reuses the spike email's shape; `used / budget` is the multiple, and the
+                    # period is a day rather than an hour.
+                    if send_llm_usage_spike_email(
+                        user.email, used, budget, round(used / budget, 2), "day (fixed budget)",
+                        by_call_site,
+                    ):
+                        sent += 1
+                except Exception as _exc:
+                    log.warning("llm_daily_budget.recipient_send_error",
+                                user=user.id, error=str(_exc))
+            log.warning("llm_daily_budget.exceeded", used=used, budget=budget, sent=sent)
+    except Exception as exc:
+        log.warning("llm_daily_budget.failed", error=str(exc))
+        _record_job_status("llm_daily_budget_check", "error", time.monotonic() - _t0)
+        return
+    _record_job_status("llm_daily_budget_check", "ok", time.monotonic() - _t0)
+
+
 def check_llm_usage_spike() -> None:
     """AUD-LLMUSAGE: alerts when total Anthropic token usage in the most recent hour is a large
     multiple of the recent per-hour baseline, broken down by (service, call_site, model) so the
@@ -12850,6 +12930,7 @@ _DQ_CHECKS: list[dict] = [
         "job_name": "llm_usage_spike_check", "source": "job_status",
         "max_age_hours": 1, "is_date": False,
     },
+        {"name": "check_llm_daily_budget", "description": "Claude daily token-ceiling alert liveness (30-min interval) — a LEVEL check, distinct from the spike check's change check"},
     {
         "name": "check_early_earnings_news_alerts", "description": "Early (pre-EDGAR) earnings-surprise news alert liveness (per-minute cron)",
         "job_name": "check_early_earnings_news_alerts", "source": "job_status",
@@ -14677,6 +14758,18 @@ def start_scheduler() -> None:
             id="llm_usage_spike_check",
             replace_existing=True,
             max_instances=1, coalesce=True, misfire_grace_time=120,
+        )
+
+        # ── Daily token CEILING, distinct from the spike check above ────────────────────
+        # The spike alert fires on change; a cost that is high every weekday never changes
+        # against its own baseline and so never fires. See check_llm_daily_budget().
+        _scheduler.add_job(
+            check_llm_daily_budget,
+            "interval",
+            minutes=30,
+            id="llm_daily_budget_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True, misfire_grace_time=300,
         )
 
         # ── T257-TOP3-CONVICTION-ALERT: measured-win-rate-gated top-3 scan — every minute ──

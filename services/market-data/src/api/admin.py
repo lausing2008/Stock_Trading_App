@@ -1780,6 +1780,21 @@ def data_quality_status(_: User = Depends(get_admin_user)):
     return {"checks": checks}
 
 
+#: Daily Claude token ceiling. Set deliberately above the measured weekday baseline
+#: (215k-256k on 2026-10-05) so it flags a genuine step up rather than normal operation, and
+#: overridable without a deploy.
+_DEFAULT_DAILY_TOKEN_BUDGET = 400_000
+
+
+def _daily_token_budget() -> int:
+    import os
+    try:
+        return max(0, int(os.getenv("LLM_DAILY_TOKEN_BUDGET",
+                                    _DEFAULT_DAILY_TOKEN_BUDGET)))
+    except ValueError:
+        return _DEFAULT_DAILY_TOKEN_BUDGET
+
+
 @router.get("/llm-usage")
 def llm_usage(hours: int = Query(24, ge=1, le=720), _: User = Depends(get_admin_user)):
     """AUD-LLMUSAGE dashboard data: real Claude/Anthropic API call volume over the trailing
@@ -1857,6 +1872,55 @@ def llm_usage(hours: int = Query(24, ge=1, le=720), _: User = Depends(get_admin_
             for e in recent_errors
         ]
 
+        # RELEVANCE, NOT JUST VOLUME. Calls and tokens cannot answer the two questions that
+        # matter: how much of the spend was on tracked stocks, and whether an article was ever
+        # classified twice. Both come from the per-call `context` written by classify.py.
+        relevance_rows = session.execute(text(
+            """
+            SELECT COALESCE((context->'scope_counts'->>'tracked')::int, 0)          AS tracked,
+                   COALESCE((context->'scope_counts'->>'market_context')::int, 0)   AS ctx,
+                   COALESCE((context->'scope_counts'->>'out_of_scope')::int, 0)     AS oos,
+                   COALESCE(jsonb_array_length((context->'article_digests')::jsonb), 0) AS n_art,
+                   COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)           AS tokens
+            FROM llm_call_log
+            WHERE created_at >= :since AND context ? 'scope_counts'
+            """
+        ), {"since": since_dt}).all()
+        digest_rows = session.execute(text(
+            """
+            SELECT jsonb_array_elements_text((context->'article_digests')::jsonb) AS d
+            FROM llm_call_log
+            WHERE created_at >= :since AND context ? 'article_digests'
+            """
+        ), {"since": since_dt}).all()
+        _digests = [r[0] for r in digest_rows]
+        _unique = len(set(_digests))
+        relevance = {
+            "classified_articles": len(_digests),
+            "unique_articles": _unique,
+            # A REPEAT IS NOT PROOF OF WASTE but it is the number that was previously
+            # unanswerable: the 2026-10-05 review could not rule repeats in or out at all.
+            "repeat_classifications": len(_digests) - _unique,
+            "tracked": sum(r[0] for r in relevance_rows),
+            "market_context": sum(r[1] for r in relevance_rows),
+            "out_of_scope": sum(r[2] for r in relevance_rows),
+            "calls_with_relevance_data": len(relevance_rows),
+            "note": ("counted only over calls that recorded scope; calls made before this was "
+                     "instrumented carry none and are excluded rather than assumed"),
+        }
+
+        # DAILY BUDGET. A spike alert compares against a recent baseline, so a steady high
+        # baseline never trips it — which is exactly the shape the 2026-10-05 review found
+        # (215k-256k tokens every weekday against 7k-9k at weekends). A fixed ceiling catches
+        # the level, not the change.
+        today_tokens = session.execute(text(
+            """
+            SELECT COALESCE(SUM(COALESCE(input_tokens,0) + COALESCE(output_tokens,0)), 0)
+            FROM llm_call_log WHERE created_at >= date_trunc('day', now())
+            """
+        )).scalar() or 0
+
+    budget = _daily_token_budget()
     return {
         "window_hours": hours,
         "total_calls": total_calls or 0,
@@ -1867,6 +1931,15 @@ def llm_usage(hours: int = Query(24, ge=1, le=720), _: User = Depends(get_admin_
         "breakdown": breakdown,
         "hourly": hourly,
         "recent_errors": errors,
+        "relevance": relevance,
+        "daily_budget": {
+            "tokens_today": int(today_tokens),
+            "budget": budget,
+            "pct_used": round(int(today_tokens) / budget * 100, 1) if budget else None,
+            "over_budget": bool(budget and int(today_tokens) > budget),
+            "basis": ("a fixed daily ceiling, which catches a steady high baseline that a "
+                      "spike comparison against a recent average cannot"),
+        },
     }
 
 

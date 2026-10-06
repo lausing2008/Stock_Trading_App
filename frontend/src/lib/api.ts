@@ -3386,6 +3386,15 @@ export type LlmUsageReport = {
   total_calls: number;
   total_input_tokens: number;
   total_output_tokens: number;
+  relevance?: {
+    classified_articles: number; unique_articles: number; repeat_classifications: number;
+    tracked: number; market_context: number; out_of_scope: number;
+    calls_with_relevance_data: number; note?: string;
+  } | null;
+  daily_budget?: {
+    tokens_today: number; budget: number; pct_used: number | null;
+    over_budget: boolean; basis?: string;
+  } | null;
   total_tokens: number;
   total_errors: number;
   breakdown: LlmUsageBreakdownRow[];

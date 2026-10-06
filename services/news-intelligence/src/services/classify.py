@@ -38,7 +38,8 @@ def _strip_markdown_fence(text: str) -> str:
     return re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.DOTALL).strip()
 
 
-def classify_headlines(headlines: list[str], api_key: str) -> list[dict | None]:
+def classify_headlines(headlines: list[str], api_key: str, *,
+                       call_context: dict | None = None) -> list[dict | None]:
     """Return one classification dict (or None on a per-item parse failure) per input headline,
     in the same order. Returns an all-None list of the same length if `api_key` is empty or the
     call fails outright — fail-open, matching every other Claude call site in this codebase; a
@@ -81,21 +82,21 @@ def classify_headlines(headlines: list[str], api_key: str) -> list[dict | None]:
             log_llm_call(
                 service="news-intelligence", call_site=CALL_SITE_NEWS_CLASSIFY, model=_model,
                 duration_ms=_duration_ms, status="http_error", http_status=r.status_code,
-                context={"headline_count": len(headlines)},
+                context={"headline_count": len(headlines), **(call_context or {})},
             )
             return [None] * len(headlines)
         _resp_json = r.json()
         log_llm_call(
             service="news-intelligence", call_site=CALL_SITE_NEWS_CLASSIFY, model=_model,
             usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
-            context={"headline_count": len(headlines)},
+            context={"headline_count": len(headlines), **(call_context or {})},
         )
     except Exception as exc:
         log.warning("news_classify.failed", error=str(exc))
         log_llm_call(
             service="news-intelligence", call_site=CALL_SITE_NEWS_CLASSIFY, model=_model,
             duration_ms=int((_time.monotonic() - _t0) * 1000), status="error",
-            error=str(exc), context={"headline_count": len(headlines)},
+            error=str(exc), context={"headline_count": len(headlines), **(call_context or {})},
         )
         return [None] * len(headlines)
 
@@ -152,12 +153,42 @@ def _coerce_bool(value) -> bool:
     return False
 
 
-def classify_in_batches(headlines: list[str], api_key: str) -> list[dict | None]:
+def classify_in_batches(headlines: list[str], api_key: str, *,
+                        scopes: list[str] | None = None,
+                        urls: list[str] | None = None) -> list[dict | None]:
     """Chunk `headlines` into _BATCH_SIZE-sized calls to classify_headlines(). One failed batch
     degrades only that batch's items to None, not the whole list — a transient failure on one
     chunk shouldn't discard classifications that another chunk already succeeded at."""
     results: list[dict | None] = []
     for i in range(0, len(headlines), _BATCH_SIZE):
         chunk = headlines[i:i + _BATCH_SIZE]
-        results.extend(classify_headlines(chunk, api_key))
+        results.extend(classify_headlines(chunk, api_key,
+                                          call_context=_call_context(scopes, urls, i,
+                                                                     len(chunk))))
     return results
+
+
+def _call_context(scopes, urls, start: int, size: int) -> dict:
+    """WHY this call was made and WHICH articles it covered.
+
+    Without these, usage is callable-and-token counts with no way to ask the two questions that
+    actually matter: how much of the spend was on tracked stocks, and whether the same article
+    was ever classified twice. The 2026-10-05 review could not rule out repeat classification
+    precisely because call rows carried no article identity.
+
+    URLs are stored as short digests, not in full: enough to detect a repeat, small enough to
+    sit in a log row, and not a second copy of the article index.
+    """
+    import hashlib
+    ctx: dict = {}
+    if scopes is not None:
+        window = scopes[start:start + size]
+        counts: dict[str, int] = {}
+        for sc in window:
+            counts[sc or "out_of_scope"] = counts.get(sc or "out_of_scope", 0) + 1
+        ctx["scope_counts"] = counts
+    if urls is not None:
+        window = [u for u in urls[start:start + size] if u]
+        ctx["article_digests"] = [
+            hashlib.sha256(u.encode()).hexdigest()[:12] for u in window]
+    return ctx

@@ -123,3 +123,54 @@ def test_an_unresolvable_universe_treats_news_as_urgent():
     seg = seg[:seg.index("\n\n\n")] if "\n\n\n" in seg else seg
     assert "if not active:\n            return True" in seg
     assert "except Exception:\n        return True" in seg
+
+
+# ---------------------------------------------------------------- per-call relevance context
+
+def test_a_call_records_which_scopes_it_covered_and_which_articles():
+    """Volume alone could not answer "how much of this was tracked stocks" or "was an article
+    classified twice" — the 2026-10-05 review could not rule repeats in or out at all."""
+    from services.classify import _call_context
+    ctx = _call_context(["tracked", "market_context", "tracked"],
+                        ["https://a/1", "https://a/2", "https://a/3"], 0, 3)
+    assert ctx["scope_counts"] == {"tracked": 2, "market_context": 1}
+    assert len(ctx["article_digests"]) == 3
+    assert all(len(d) == 12 for d in ctx["article_digests"]), \
+        "short digests: enough to detect a repeat, not a second copy of the index"
+
+
+def test_the_context_covers_only_this_batch_not_the_whole_run():
+    from services.classify import _call_context
+    scopes = ["tracked"] * 8 + ["market_context"] * 4
+    urls = [f"https://a/{i}" for i in range(12)]
+    second = _call_context(scopes, urls, 8, 4)
+    assert second["scope_counts"] == {"market_context": 4}
+    assert len(second["article_digests"]) == 4
+
+
+def test_the_same_url_digests_identically_from_any_batch_position():
+    """A repeat is only detectable if the digest depends on the URL ALONE. The first version
+    of this test compared the same URL at the same batch position, so it passed even when the
+    position was mixed into the hash — and a repeat in a later batch would have gone unseen."""
+    from services.classify import _call_context
+    first = _call_context(None, ["https://a/1"], 0, 1)["article_digests"]
+    urls = [f"https://a/{i}" for i in range(12)]
+    urls[9] = "https://a/1"                       # the same article, in a later batch
+    later = _call_context(None, urls, 8, 4)["article_digests"]
+    assert first[0] in later, "the same URL must digest the same wherever it appears"
+
+
+def test_missing_scope_is_counted_as_out_of_scope_not_dropped():
+    from services.classify import _call_context
+    ctx = _call_context([None, "tracked"], None, 0, 2)
+    assert ctx["scope_counts"] == {"out_of_scope": 1, "tracked": 1}
+    assert "article_digests" not in ctx
+
+
+def test_storage_passes_scope_and_urls_through_to_the_call_log():
+    src = (Path(__file__).resolve().parents[1] / "src" / "services"
+           / "storage.py").read_text()
+    seg = src[src.index("_results = classify_in_batches"):]
+    seg = seg[:seg.index("\n            )") + 14]   # the whole call, not up to the first ")"
+    assert "scopes=[_in_scope[i] for i in _to_classify]" in seg
+    assert 'urls=[_new_items[i].get("url") for i in _to_classify]' in seg
