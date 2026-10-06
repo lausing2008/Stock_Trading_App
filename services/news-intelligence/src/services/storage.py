@@ -18,6 +18,7 @@ from common.redis_client import get_redis
 from db import SessionLocal, RealtimeNewsItem
 
 from .classify import classify_in_batches
+from .scope import classification_scope as _classification_scope
 from .tickers import _load_cik_map, _load_universe, extract_symbols, symbol_for_cik
 
 log = structlog.get_logger()
@@ -355,7 +356,19 @@ def persist_news_items(
         import os as _os
         _classify_untracked = _os.getenv("CLASSIFY_UNTRACKED_HEADLINES") == "1"
 
+        # TAGGED IDENTITY IS NOT RELEVANCE. Alpaca subscribes to `news: ["*"]` and ships a
+        # symbols list on every article, and this took that list as-is — so an article about
+        # any listed company in the world counted as "resolved" and was paid to classify.
+        # Measured over 24h on 2026-10-05: 834 of 968 classified Alpaca articles (86.2%)
+        # mentioned no active tracked stock, and single-headline calls alone burned 219,247
+        # tokens. See docs/audits/2026-10-05-news-classification-volume-review.md.
+        #
+        # The tags are still kept — they are what the article is ABOUT. They just no longer
+        # decide, by themselves, whether this platform pays to label it.
+        _active = {sym for sym, _n, _m in _load_universe()}
+
         resolved_symbols: list[list | None] = []
+        _in_scope: list[str | None] = []   # why each item is (or is not) worth classifying
         for it in _new_items:
             if symbol_mode == "tagged":
                 _syms = it.get("symbols")
@@ -365,6 +378,7 @@ def persist_news_items(
             else:
                 _syms = extract_symbols(it["headline"])
             resolved_symbols.append(_syms)
+            _in_scope.append(_classification_scope(_syms, _active))
 
         # FAIL OPEN, VISIBLY, WHEN THE RESOLVER ITSELF IS BROKEN. Skipping classification
         # because a headline genuinely maps to no tracked symbol is the intended saving.
@@ -377,10 +391,13 @@ def persist_news_items(
         # so, rather than quietly saving money by disabling a gate.
         if symbol_mode == "cik":
             _resolver_ok = bool(_load_cik_map())
-        elif symbol_mode == "extract":
-            _resolver_ok = bool(_load_universe())
-        else:  # "tagged" — the source supplies symbols directly, nothing to load
-            _resolver_ok = True
+        else:
+            # "tagged" NOW DEPENDS ON THE UNIVERSE TOO. It previously needed no resolver —
+            # the source supplied symbols — so it was exempt from this guard. Scoping those
+            # tags against the active universe makes it depend on the universe loading, and
+            # an empty universe would otherwise classify NOTHING from the busiest source
+            # while looking like a saving. Same fail-open rule as the others.
+            _resolver_ok = bool(_active)
         if not _resolver_ok:
             log.warning(
                 "news_storage.resolver_unavailable_classifying_all",
@@ -390,8 +407,8 @@ def persist_news_items(
 
         api_key = get_admin_ai_key("claude")
         _to_classify = [
-            i for i, syms in enumerate(resolved_symbols)
-            if syms or _classify_untracked or not _resolver_ok
+            i for i, scope in enumerate(_in_scope)
+            if scope is not None or _classify_untracked or not _resolver_ok
         ]
         classifications: list = [None] * len(_new_items)
         if api_key and _to_classify:
@@ -402,10 +419,19 @@ def persist_news_items(
                 if _pos < len(_results):
                     classifications[_idx] = _results[_pos]
 
+        # COUNTED BY REASON, not just totals — the dashboard needs to show relevance, and
+        # "how many did we skip" cannot be answered from a single number.
+        _by_scope: dict[str, int] = {}
+        for _s in _in_scope:
+            _by_scope[_s or "out_of_scope"] = _by_scope.get(_s or "out_of_scope", 0) + 1
         log.info(
             "news_storage.classify_scoped",
             source=source, new_items=len(_new_items), classified=len(_to_classify),
             skipped_untracked=len(_new_items) - len(_to_classify),
+            tracked=_by_scope.get("tracked", 0),
+            market_context=_by_scope.get("market_context", 0),
+            out_of_scope=_by_scope.get("out_of_scope", 0),
+            resolver_ok=_resolver_ok, classify_untracked=_classify_untracked,
         )
 
         inserted = 0
