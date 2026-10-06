@@ -70,8 +70,14 @@ class Assessment:
 
     def lead(self) -> dict:
         """Three short lines, readable before any table."""
-        counter = (self.findings[0].contradicts.split(";")[0].strip()
-                   if self.findings else "no counterevidence is identified")
+        # EVERY REAL CLAUSE, not just the first. Taking one dropped the peer lag — the most
+        # substantive counterevidence the report has — after the latest bar's return.
+        if self.findings:
+            clauses = [c.strip() for c in self.findings[0].contradicts.split(";")]
+            real = [c for c in clauses if "as a method limit" not in c]
+            counter = "; ".join(real) or clauses[0]
+        else:
+            counter = "no counterevidence is identified"
         nxt = (f"{self.watch_next[0].observation} — {self.watch_next[0].trigger}"
                if self.watch_next else "no specific next observation is defined")
         return {"assessment": self.verdict,
@@ -379,8 +385,10 @@ def outlook_assessment(fields, *, subject: str, report_type: str,
         verdict = (f"{subject}: longer-window strength, recent weakness; near-term direction "
                    f"unresolved.")
     elif both and w["longer_positive"]:
-        verdict = (f"{subject}: structure and longer-window returns agree; no horizon is "
-                   f"implied.")
+        _pos = ", ".join(f"{n}-session" for n in (20, 63)
+                         if (w["returns"].get(n) or 0) > 0)
+        verdict = (f"{subject}: remains above both moving averages with positive {_pos} "
+                   f"returns.")
     elif both and w["has_longer"]:
         # NAME THE WINDOW. "Without a positive longer-window return" is too broad when one of
         # the two longer windows IS positive — here 20 bars is negative and 63 is +2.44%.

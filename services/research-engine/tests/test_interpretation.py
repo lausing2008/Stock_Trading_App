@@ -553,3 +553,22 @@ def test_the_peer_gap_appears_as_a_finding_with_its_basket_disclosed():
     assert "excluding MU itself" in f["supports"]
     assert "4 covered Semiconductors symbols" in f["supports"]
     assert "not an industry index" in f["contradicts"]
+
+
+def test_the_lead_counterevidence_keeps_the_peer_lag_not_just_the_first_clause():
+    """Taking one clause dropped the peer lag — the most substantive counterevidence there is —
+    after the latest bar's return."""
+    a = outlook_assessment(_driver_fields(), subject="MU", report_type="stock_outlook").value
+    c = a["main_counterevidence"]
+    assert "trails its Semiconductors peers" in c
+    assert "as a method limit" not in c, "the method caveat stays out of the lead"
+
+
+def test_the_agreeing_case_names_the_windows_it_agrees_over():
+    f = _driver_fields()
+    f["return_1_bars"] = calculated({"pct": 0.4}, units="pct")
+    f["return_5_bars"] = calculated({"pct": 0.9}, units="pct")
+    a = outlook_assessment(f, subject="MU", report_type="stock_outlook").value
+    assert "remains above both moving averages with positive 20-session, 63-session returns" \
+        in a["assessment"]
+    assert "trails its Semiconductors peers" in a["assessment"]
