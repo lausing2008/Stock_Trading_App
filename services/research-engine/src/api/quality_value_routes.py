@@ -111,7 +111,7 @@ def evaluations(symbols: str | None = Query(None, description="comma-separated; 
     cutoff = now.replace(second=0, microsecond=0)
     out, coverage = [], {n: {s.value: 0 for s in GateStatus} for n in ALL_GATES}
     states = {s.value: 0 for s in State}
-    stored, persist_errors = 0, []
+    stored, persist_errors, reused = 0, [], []
 
     with SessionLocal() as session:
         q = select(Stock).where(Stock.delisted.is_(False)).order_by(Stock.symbol)
@@ -177,8 +177,39 @@ def evaluations(symbols: str | None = Query(None, description="comma-separated; 
             out.append({**ev.as_dict(), "name": stock.name, "sector": stock.sector,
                         "persisted": persisted})
 
+    # THE EXPLANATION IS GENERATED FROM THE RESULTS, not written once and left behind. The
+    # previous banner was a fixed string saying assessments "are not connected" — true when it
+    # was written and false the moment MU and CRDO were connected, while the table beside it
+    # showed their verdicts.
+    with_assessment = sorted({e["symbol"] for e in out
+                              if any((g.get("evidence") or {}).get("verdict")
+                                     for g in e["gates"])})
+    without = len(out) - len(with_assessment)
+    eligible = states.get(State.ENTRY_REVIEW_READY.value, 0)
+    if eligible:
+        headline = (f"{eligible} company(ies) reached entry review at this cutoff.")
+    elif with_assessment and len(with_assessment) <= 6:
+        headline = (
+            f"No entry-review candidates. {', '.join(with_assessment)} "
+            f"{'has' if len(with_assessment) == 1 else 'have'} stored assessments, but required "
+            f"evidence remains insufficient."
+            + (f" Assessments are missing for the other {without} companies." if without else ""))
+    elif with_assessment:
+        headline = (
+            f"No entry-review candidates. {len(with_assessment)} companies have stored "
+            f"assessments with required evidence still insufficient"
+            + (f"; assessments are missing for the other {without}." if without else "."))
+    else:
+        headline = ("No entry-review candidates. No company has a stored durability, valuation "
+                    "or risk assessment yet, so the empty list reflects unfinished research "
+                    "rather than a judgement about any company.")
+
     return {
         "mode": "shadow",
+        "headline": headline,
+        "assessment_coverage": {"with_assessment": with_assessment,
+                                "without_assessment": without},
+        "reused_evaluations": reused,
         "as_of": now.isoformat(),
         "cutoff": cutoff.isoformat(),
         "policy_version": POLICY_VERSION,
@@ -198,8 +229,9 @@ def evaluations(symbols: str | None = Query(None, description="comma-separated; 
             "measured, but no alert type is registered and no email can be sent from here.",
             "Each verdict is stored under a fingerprint of the rules that produced it. Change "
             "any threshold and new rows land BESIDE the old ones — nothing is rewritten.",
-            "An empty eligible list is a valid result, not a defect. Competitive durability and "
-            "valuation have no stored evidence, and both are required for entry research.",
+            "An empty eligible list is a valid result, not a defect. A gate reading a stored "
+            "assessment that concluded 'insufficient' is finished work AND a reason to stay "
+            "ineligible — those are not in tension.",
             "A research state is not an order recommendation, and 'entry review ready' names a "
             "point at which to research further.",
             "Read each gate with its `does_not_establish`: a fundamentals PASS means the stored "

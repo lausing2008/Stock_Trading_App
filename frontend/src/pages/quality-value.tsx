@@ -12,7 +12,8 @@
 import { useMemo, useState } from 'react';
 import Head from 'next/head';
 import useSWR from 'swr';
-import { api, type QualityValueReport, type QvEvaluation, type QvGateStatus } from '@/lib/api';
+import { api, type QualityValueReport, type QvEvaluation, type QvGateStatus,
+         type QvAssessment } from '@/lib/api';
 import { coverageRows, statusColumns, badgeLabel, badgeRemedy,
          type StatusCatalog } from '@/lib/qualityValueCoverage';
 
@@ -80,6 +81,69 @@ function Remedy({ s, catalog, own }: { s: string; catalog?: Catalog; own?: strin
     What would close it: {r}</div>;
 }
 
+/* THE RESEARCH, SHOWN AS RESEARCH. A badge says a gate did not pass; it cannot say what was
+   found, what argues against it, or what would change the answer. Where an assessment is
+   connected, all of that exists and belongs on the page rather than in a document beside it. */
+function Assessment({ a }: { a: QvAssessment }) {
+  const L = ({ k, children }: { k: string; children: React.ReactNode }) => (
+    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '4px' }}>
+      <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.06em',
+                     textTransform: 'uppercase', color: '#64748b', minWidth: '104px' }}>{k}</span>
+      <span style={{ flex: '1 1 300px', fontSize: '12px', color: '#cbd5e1',
+                     lineHeight: 1.5 }}>{children}</span>
+    </div>);
+  return (
+    <div style={{ marginTop: '7px', padding: '9px 11px', borderRadius: '8px',
+                  background: 'rgba(255,255,255,0.025)',
+                  border: '1px solid rgba(255,255,255,0.07)' }}>
+      <div style={{ fontSize: '10.5px', color: '#64748b' }}>
+        Assessment v{a.version} · verdict <strong style={{ color: '#e2e8f0' }}>{a.verdict}</strong>
+        {a.cutoff && <> · cutoff {String(a.cutoff).slice(0, 10)}</>}
+        {a.author && <> · {a.author}</>}
+        {a.evidence_digest && <> · evidence {String(a.evidence_digest).slice(0, 12)}…</>}
+      </div>
+      {a.unresolved && (
+        <L k="Unresolved"><span style={{ color: '#fcd34d' }}>{a.unresolved}</span></L>)}
+      {!!a.findings?.length && (
+        <L k="Findings">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {a.findings.map((f, i) => (
+              <div key={i}>
+                <div style={{ color: '#e2e8f0' }}>{f.claim}</div>
+                {f.source && (
+                  <div style={{ fontSize: '11px', color: '#7dd3fc' }}>
+                    Source: {f.source}{f.source_ref ? ` — ${f.source_ref}` : ''}</div>)}
+                {f.counterevidence && (
+                  <div style={{ fontSize: '11.5px', color: '#fcd34d' }}>
+                    Against: {f.counterevidence}</div>)}
+              </div>
+            ))}
+          </div>
+        </L>
+      )}
+      {!!a.assumptions?.length && (
+        <L k="Assumptions">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+            {a.assumptions.map((k, i) => (
+              <div key={i}>
+                <span style={{ color: '#e2e8f0' }}>{k.name}: {String(k.value)}
+                  {k.units ? ` ${k.units}` : ''}</span>
+                {k.basis && <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                  Basis: {k.basis}</div>}
+                {k.sensitivity && <div style={{ fontSize: '11px', color: '#fdba74' }}>
+                  Sensitivity: {k.sensitivity}</div>}
+              </div>
+            ))}
+          </div>
+        </L>
+      )}
+      {!!a.not_assessed?.length && (
+        <L k="Not assessed">
+          <span style={{ color: '#94a3b8' }}>{a.not_assessed.join('; ')}</span></L>)}
+    </div>
+  );
+}
+
 function Row({ e, catalog }: { e: QvEvaluation; catalog?: Catalog }) {
   const [open, setOpen] = useState(false);
   return (
@@ -121,6 +185,7 @@ function Row({ e, catalog }: { e: QvEvaluation; catalog?: Catalog }) {
                   Does not establish: {g.does_not_establish}
                 </div>
               )}
+              {g.evidence?.verdict && <Assessment a={g.evidence} />}
             </div>
           ))}
           {e.gates.filter(g => g.status !== 'pass').map(g => (
@@ -139,6 +204,7 @@ function Row({ e, catalog }: { e: QvEvaluation; catalog?: Catalog }) {
                 </div>
               )}
               <Remedy s={g.status} catalog={catalog} own={g.remedy} />
+              {g.evidence?.verdict && <Assessment a={g.evidence} />}
             </div>
           ))}
         </div>
@@ -279,16 +345,33 @@ export default function QualityValuePage() {
               ))}
             </div>
 
-            {(data.states.entry_review_ready ?? 0) === 0 && (
+            {data.headline && (
               <div style={{ marginTop: '12px', padding: '13px 15px', borderRadius: '10px',
                             fontSize: '12.5px', color: '#cbd5e1', lineHeight: 1.6,
                             background: 'rgba(234,179,8,0.06)',
                             border: '1px solid rgba(234,179,8,0.22)' }}>
-                <strong style={{ color: '#fde047' }}>No entry-review candidates yet. Durability,
-                valuation and risk assessments are not connected to this evaluator.</strong>{' '}
-                All three are required, and none of them reads a stored assessment today — so
-                the empty list reflects unfinished work here, not a judgement about any company.
-                The coverage table above says which gate is in which state.
+                {/* GENERATED FROM THE RESULTS. A fixed sentence here was still saying
+                    assessments "are not connected" while the table beside it showed their
+                    verdicts. */}
+                <strong style={{ color: '#fde047' }}>{data.headline}</strong>
+                {!!data.assessment_coverage?.with_assessment?.length && (
+                  <div style={{ marginTop: '5px', color: '#94a3b8' }}>
+                    Assessed: {data.assessment_coverage.with_assessment.join(', ')}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!!data.reused_evaluations?.length && (
+              <div style={{ marginTop: '9px', fontSize: '11.5px', color: '#7dd3fc',
+                            lineHeight: 1.5 }}>
+                {/* "0 new stored" left a reader unable to tell a preserved result from a
+                    dropped write. Name the row that was reused. */}
+                Reused {data.reused_evaluations.length} existing evaluation(s) — identical rules
+                and cutoff, so nothing was rewritten:{' '}
+                {data.reused_evaluations.slice(0, 6).map(r =>
+                  `${r.symbol} #${r.id} (cutoff ${new Date(r.cutoff).toLocaleString()})`
+                ).join(', ')}
               </div>
             )}
 

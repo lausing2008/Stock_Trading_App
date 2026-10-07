@@ -598,9 +598,12 @@ def test_an_unrecognised_verdict_is_never_silently_a_pass():
     assert "NOT treated as a pass" in " ".join(g.reasons)
 
 
-def test_no_assessment_connected_reports_not_implemented():
+def test_no_assessment_connected_reports_not_collected():
+    """SUPERSEDED: this asserted NOT_IMPLEMENTED. Once the gate can read a stored assessment,
+    a company without one has an evidence gap, not a software gap — see the dedicated test
+    below for why that distinction matters to a reader."""
     g = from_assessment(VALUATION, None, absent_reasons=("nothing is connected",))
-    assert g.status is GateStatus.NOT_IMPLEMENTED
+    assert g.status is GateStatus.NOT_COLLECTED
 
 
 def test_a_connected_finding_carries_its_source_and_counterevidence():
@@ -721,3 +724,46 @@ def test_every_seeded_assessment_produces_an_actionable_remedy():
     for a in ASSESSMENTS:
         g = from_assessment(a["dimension"], a, absent_reasons=())
         assert "Assess what this review did not" in g.remedy, (a["symbol"], a["dimension"])
+
+
+# ---- a missing RECORD is not a missing CAPABILITY -----------------------------------------
+# Once the gate reads a stored assessment, a company without one has an evidence gap. Reporting
+# it as NOT_IMPLEMENTED described a coverage backlog as an engineering backlog, and would send a
+# reader to build something that already exists.
+
+def test_a_company_without_an_assessment_is_not_collected_not_unimplemented():
+    g = from_assessment(VALUATION, None, absent_reasons=())
+    assert g.status is GateStatus.NOT_COLLECTED
+    assert g.status is not GateStatus.NOT_IMPLEMENTED
+    joined = " ".join(g.reasons)
+    assert "The assessment capability exists" in joined
+    assert "what is missing is the research for this company" in joined
+
+
+def test_not_implemented_stays_reserved_for_an_absent_capability():
+    """Still the right state where no assessment path exists at all — it must not become a
+    synonym for 'this company has not been researched'."""
+    assert REMEDY[GateStatus.NOT_IMPLEMENTED] != REMEDY[GateStatus.NOT_COLLECTED]
+    assert "implemented assessment" in REMEDY[GateStatus.NOT_IMPLEMENTED]
+    assert "for this issuer" in REMEDY[GateStatus.NOT_COLLECTED]
+
+
+# ---- the unresolved question, which is what actually blocks the gate -----------------------
+
+def test_an_assessment_states_the_one_question_blocking_its_gate():
+    g = from_assessment(COMPETITIVE_DURABILITY,
+                        _asmt(unresolved="are the two >10% customers locked in?"),
+                        absent_reasons=())
+    assert "UNRESOLVED: are the two >10% customers locked in?" in " ".join(g.reasons)
+
+
+def test_every_seeded_assessment_names_its_unresolved_question():
+    for a in ASSESSMENTS:
+        q = a.get("unresolved") or ""
+        assert q.endswith("?") or "?" in q, (a["symbol"], a["dimension"], q)
+        assert len(q) > 40, (a["symbol"], a["dimension"])
+
+
+def test_the_unresolved_question_differs_per_company_and_dimension():
+    qs = [a["unresolved"] for a in ASSESSMENTS]
+    assert len(set(qs)) == len(qs), "a shared question would be a template, not a finding"

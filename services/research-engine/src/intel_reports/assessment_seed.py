@@ -34,6 +34,7 @@ ASSESSMENTS = [
     {
         "symbol": "MU", "dimension": "competitive_durability", "version": 1,
         "verdict": "insufficient",
+        "unresolved": "Do the Strategic Customer Agreements contain terms — duration, volume, pricing — that would make MU's position defensible through a downcycle? The agreements are referenced by management but not disclosed.",
         "summary": "The reviewed evidence does not establish a durable advantage. It does not "
                    "establish the absence of one either — no search was made for switching "
                    "costs in HBM qualification, customer design cycles, or the Strategic "
@@ -74,6 +75,7 @@ ASSESSMENTS = [
     {
         "symbol": "MU", "dimension": "valuation", "version": 1,
         "verdict": "context_only",
+        "unresolved": 'Which earnings level is sustainable? At $1,201.6bn the stock is 70.0x the six-year mean and 6.9x the guided quarter annualised; nothing collected distinguishes them.',
         "summary": "Valuation CONTEXT only, not a value estimate. At a $1,201.6bn market "
                    "capitalisation dated 2026-10-06, MU trades at 70.0x its six-year mean "
                    "earnings, 14.1x announced FY2026, and 6.9x its guided quarter annualised. "
@@ -116,6 +118,7 @@ ASSESSMENTS = [
     {
         "symbol": "MU", "dimension": "value_trap_risk", "version": 1,
         "verdict": "insufficient",
+        "unresolved": "What is MU's FY2025 customer concentration? The only located disclosure covers 2023, and six further risk classes were not examined.",
         "summary": "Bounded risk review: 5 of 12 classes complete, 1 partial, 6 not assessed. "
                    "No critical issue identified WITHIN THIS REVIEW — which is a different "
                    "claim from the company being safe, and only the first is supported.",
@@ -144,6 +147,7 @@ ASSESSMENTS = [
     {
         "symbol": "CRDO", "dimension": "competitive_durability", "version": 1,
         "verdict": "insufficient",
+        "unresolved": 'Are the two >10% customers locked in by design-cycle switching costs, or merely large? Concentration alone does not distinguish deep integration from fragility.',
         "summary": "The reviewed evidence does not establish a durable advantage, and does not "
                    "establish its absence. A 68.0% gross margin sustained for one year at this "
                    "scale is consistent with a strong position and with a favourable product "
@@ -179,6 +183,7 @@ ASSESSMENTS = [
     {
         "symbol": "CRDO", "dimension": "valuation", "version": 1,
         "verdict": "insufficient",
+        "unresolved": 'Does applying 8%/yr dilution on top of GAAP earnings double-count stock compensation? The answer moves the bull case from -10.9% to +12.3%, and no cost of equity was computed either.',
         "summary": "Three scenarios with stated horizons, discounted and reported under two "
                    "dilution treatments. Bear and base sit below the market under every "
                    "treatment; the bull case lands between -10.9% and +12.3% depending on an "
@@ -230,6 +235,7 @@ ASSESSMENTS = [
     {
         "symbol": "CRDO", "dimension": "value_trap_risk", "version": 1,
         "verdict": "insufficient",
+        "unresolved": 'Do the five unexamined classes — restatements, related-party, auditor opinion, litigation, supplier concentration — contain anything disqualifying?',
         "summary": "Bounded risk review: 6 of 12 classes complete, 1 not applicable, 5 not "
                    "assessed. Severe customer concentration is identified and is a finding "
                    "about the company; the five unassessed classes are a statement about this "

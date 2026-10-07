@@ -3,20 +3,37 @@
 // would make a new state a compile error in a build that never ships, while the running
 // page silently mislabelled it.
 export type QvGateStatus = string;
+export type QvAssessment = Record<string, unknown> & {
+  verdict?: string; version?: number; cutoff?: string; summary?: string; unresolved?: string;
+  evidence_digest?: string; author?: string;
+  findings?: { claim?: string; source?: string; source_ref?: string;
+               counterevidence?: string }[];
+  assumptions?: { name?: string; value?: unknown; units?: string;
+                  basis?: string; sensitivity?: string }[];
+  not_assessed?: string[];
+};
+
 export type QvGate = { gate: string; status: QvGateStatus; reasons: string[];
-                       evidence: Record<string, unknown>;
                        // What a PASS establishes, and what it does NOT. Rendered beside every
                        // verdict: a label that overstates is the same defect as a number that does.
                        label?: string; establishes?: string | null;
                        does_not_establish?: string;
                        // Specific to this gate; overrides the status catalog's generic one.
-                       remedy?: string | null };
+                       remedy?: string | null;
+                       // The connected assessment, where one exists. Rendered as the research
+                       // it is, not summarised into a badge.
+                       evidence?: QvAssessment };
 export type QvEvaluation = {
   symbol: string; name?: string | null; sector?: string | null;
   state: string; gates: QvGate[]; explanation: string[]; blocking: string[];
+  persisted?: { id: number | null; created: boolean; reused?: boolean;
+                original_cutoff?: string | null } | null;
 };
 export type QualityValueReport = {
   mode: string; as_of: string; cutoff?: string; evaluated: number;
+  headline?: string;
+  assessment_coverage?: { with_assessment: string[]; without_assessment: number };
+  reused_evaluations?: { symbol: string; id: number; cutoff: string }[];
   policy_version?: string; policy_fingerprint?: string;
   stored_new?: number; persist_errors?: string[];
   gate_claims?: Record<string, { label: string; establishes: string;

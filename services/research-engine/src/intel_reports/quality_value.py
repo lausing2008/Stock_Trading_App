@@ -427,7 +427,16 @@ def from_assessment(gate_name: str, assessment: dict | None, *, absent_reasons: 
     verdict named, never a silent pass — the same rule the status catalog follows for the page.
     """
     if not assessment:
-        return Gate(gate_name, GateStatus.NOT_IMPLEMENTED, absent_reasons)
+        # NOT_COLLECTED, NOT NOT_IMPLEMENTED. Once the gate can read a stored assessment, a
+        # company without one has an evidence gap, not a software gap — and reporting it as
+        # the latter describes a coverage backlog as an engineering backlog, sending a reader
+        # to build something that already exists. NOT_IMPLEMENTED is reserved for a capability
+        # that genuinely does not exist.
+        return Gate(gate_name, GateStatus.NOT_COLLECTED,
+                    absent_reasons or (
+                        "no assessment record is stored for this issuer. The assessment "
+                        "capability exists and this gate reads it — what is missing is the "
+                        "research for this company",))
 
     verdict = (assessment.get("verdict") or "").strip().lower()
     status = VERDICT_STATUS.get(verdict)
@@ -439,6 +448,8 @@ def from_assessment(gate_name: str, assessment: dict | None, *, absent_reasons: 
     reasons = []
     if assessment.get("summary"):
         reasons.append(assessment["summary"])
+    if assessment.get("unresolved"):
+        reasons.append(f"UNRESOLVED: {assessment['unresolved']}")
     for f in (assessment.get("findings") or []):
         claim, src = f.get("claim"), f.get("source")
         against = f.get("counterevidence")
