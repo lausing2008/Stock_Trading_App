@@ -32,8 +32,11 @@ describe('the page renders states from the served catalog', () => {
     expect(PAGE).not.toMatch(/entry\s*\?\s*entry\.label\s*:/);
   });
 
-  it('takes the remedy from the shared model', () => {
-    expect(PAGE).toContain('const r = badgeRemedy(s, catalog);');
+  it('prefers a connected assessment’s own remedy over the status default', () => {
+    // A completed durability review knows what IT left unassessed; the catalog only knows the
+    // status. The gate's own remedy must win where one exists.
+    expect(PAGE).toContain('const r = own || badgeRemedy(s, catalog);');
+    expect(PAGE).toContain('own={g.remedy}');
   });
 
   it('never hardcodes the coverage columns', () => {
@@ -54,7 +57,7 @@ describe('the page renders states from the served catalog', () => {
 
   it('shows the remedy for a non-passing gate', () => {
     expect(PAGE).toContain('What would close it:');
-    expect(PAGE).toContain('<Remedy s={g.status} catalog={catalog} />');
+    expect(PAGE).toContain('<Remedy s={g.status} catalog={catalog} own={g.remedy} />');
   });
 
   it('does not tell the reader nothing is stored when evaluations are', () => {

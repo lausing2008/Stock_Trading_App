@@ -8,7 +8,9 @@ export type QvGate = { gate: string; status: QvGateStatus; reasons: string[];
                        // What a PASS establishes, and what it does NOT. Rendered beside every
                        // verdict: a label that overstates is the same defect as a number that does.
                        label?: string; establishes?: string | null;
-                       does_not_establish?: string };
+                       does_not_establish?: string;
+                       // Specific to this gate; overrides the status catalog's generic one.
+                       remedy?: string | null };
 export type QvEvaluation = {
   symbol: string; name?: string | null; sector?: string | null;
   state: string; gates: QvGate[]; explanation: string[]; blocking: string[];

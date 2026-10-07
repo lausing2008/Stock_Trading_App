@@ -70,8 +70,11 @@ function Pill({ s, catalog }: { s: string; catalog?: Catalog }) {
     {label}</span>;
 }
 
-function Remedy({ s, catalog }: { s: string; catalog?: Catalog }) {
-  const r = badgeRemedy(s, catalog);
+function Remedy({ s, catalog, own }: { s: string; catalog?: Catalog; own?: string | null }) {
+  // A CONNECTED ASSESSMENT KNOWS BETTER THAN THE STATUS DOES. The catalog's remedy is keyed by
+  // status, which is right until a real assessment is attached — then it should say what THAT
+  // review left outstanding, not the generic sentence for its status.
+  const r = own || badgeRemedy(s, catalog);
   if (!r) return null;
   return <div style={{ fontSize: '11.5px', color: '#7dd3fc', marginTop: '3px' }}>
     What would close it: {r}</div>;
@@ -135,7 +138,7 @@ function Row({ e, catalog }: { e: QvEvaluation; catalog?: Catalog }) {
                   Does not establish: {g.does_not_establish}
                 </div>
               )}
-              <Remedy s={g.status} catalog={catalog} />
+              <Remedy s={g.status} catalog={catalog} own={g.remedy} />
             </div>
           ))}
         </div>

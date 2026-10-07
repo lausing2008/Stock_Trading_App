@@ -685,3 +685,39 @@ def test_the_risk_reviews_account_for_every_declared_class():
                  + e.get("not_applicable", 0) + e.get("not_assessed", 0))
         assert e["classes_total"] == expect == len(RISK_CLASSES)
         assert total == expect, f"{sym}: {total} of {expect}"
+
+
+def test_a_connected_assessment_supplies_its_own_remedy():
+    """A completed durability review must not be told "more periods are needed" — the generic
+    remedy for its status. It should name what IT left unassessed."""
+    g = from_assessment(COMPETITIVE_DURABILITY,
+                        _asmt(not_assessed=["switching costs", "patent strength"]),
+                        absent_reasons=())
+    assert "Assess what this review did not" in g.remedy
+    assert "switching costs" in g.remedy
+    assert g.as_dict()["remedy"] == g.remedy
+    assert REMEDY[g.status] not in g.remedy
+
+
+def test_a_long_outstanding_list_is_summarised_not_truncated_silently():
+    g = from_assessment(VALUE_TRAP_RISK,
+                        _asmt(not_assessed=["a", "b", "c", "d", "e"]), absent_reasons=())
+    assert "(+2 more)" in g.remedy
+
+
+def test_an_assessment_naming_nothing_outstanding_says_so_rather_than_inventing_one():
+    g = from_assessment(VALUATION, _asmt(not_assessed=[]), absent_reasons=())
+    assert "names nothing outstanding" in g.remedy
+
+
+def test_a_passing_gate_carries_no_remedy():
+    g = from_assessment(VALUATION, _asmt(verdict="supported"), absent_reasons=())
+    assert g.status is GateStatus.PASS and g.remedy == ""
+    assert g.as_dict()["remedy"] is None
+
+
+def test_every_seeded_assessment_produces_an_actionable_remedy():
+    from intel_reports.quality_value import COMPETITIVE_DURABILITY as _d
+    for a in ASSESSMENTS:
+        g = from_assessment(a["dimension"], a, absent_reasons=())
+        assert "Assess what this review did not" in g.remedy, (a["symbol"], a["dimension"])

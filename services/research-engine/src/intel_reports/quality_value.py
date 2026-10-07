@@ -281,6 +281,14 @@ class Gate:
     status: GateStatus
     reasons: tuple = ()
     evidence: dict = dc_field(default_factory=dict)
+    #: A remedy specific to THIS gate, overriding the status's generic one.
+    #:
+    #: WHY AN OVERRIDE EXISTS. The catalog's remedy is keyed by status, which is right when the
+    #: status is all we know. Once a real assessment is connected it knows better: a completed
+    #: durability review that returned `insufficient` should not tell a reader "more periods or
+    #: a different measure are needed" — it should name what IT left unassessed. A remedy that
+    #: is merely grammatical is worse than none, because it looks like guidance.
+    remedy: str = ""
 
     def __post_init__(self):
         if self.name not in ALL_GATES:
@@ -292,6 +300,7 @@ class Gate:
         claim = GATE_CLAIM[self.name]
         return {"gate": self.name, "status": self.status.value,
                 "label": claim["label"],
+                "remedy": self.remedy or None,
                 # Carried on EVERY gate, passing or not, so no renderer can show a verdict
                 # without the sentence that bounds it.
                 "establishes": claim["establishes"] if self.status is GateStatus.PASS else None,
@@ -442,11 +451,21 @@ def from_assessment(gate_name: str, assessment: dict | None, *, absent_reasons: 
             reasons.append(line)
     for n in (assessment.get("not_assessed") or []):
         reasons.append(f"NOT ASSESSED: {n}")
+    # THE REMEDY COMES FROM THE ASSESSMENT, not from the status. It knows what it did not do.
+    outstanding = list(assessment.get("not_assessed") or [])
     if status is GateStatus.PASS:
-        reasons = ()                     # a Gate that passes carries no reasons, by contract
+        reasons, remedy = (), ""         # a Gate that passes carries no reasons, by contract
+    elif outstanding:
+        shown = "; ".join(outstanding[:3])
+        more = f" (+{len(outstanding) - 3} more)" if len(outstanding) > 3 else ""
+        remedy = (f"Assess what this review did not: {shown}{more}")
+    else:
+        remedy = (f"Revise the assessment — it concluded '{verdict}' and names nothing "
+                  f"outstanding, so what would change it is not recorded")
     return Gate(gate_name, status, tuple(reasons) or ("the stored assessment states no reason",),
                 {**assessment, "assessment_version": assessment.get("version"),
-                 "assessment_cutoff": assessment.get("cutoff")})
+                 "assessment_cutoff": assessment.get("cutoff")},
+                remedy=remedy)
 
 
 def durability_gate(evidence=None, assessment=None) -> Gate:
