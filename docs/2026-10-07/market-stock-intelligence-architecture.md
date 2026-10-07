@@ -87,11 +87,20 @@ So a bucket **never aggregates into a number**. Composition rules, carried over 
      confidence as flat across its whole range over n=19,256 — a number that moves with nothing
      is worse than an absent one, because it looks like information.
 
-   **Contradictions are weighed, not counted.** A count treats one fatal objection and three
-   trivial ones as "three beats one", and double-counts objections that share a source. Each
-   contradiction therefore carries `materiality` (would it change the direction, or only its
-   strength?) and `source_ref`, and contradictions sharing a `source_ref` collapse to one for
-   any aggregate reading.
+   **Contradictions are weighed, not counted — and never discarded.** A count treats one fatal
+   objection and three trivial ones as "three beats one". Each contradiction therefore carries
+   `materiality` (would it change the direction, or only its strength?) alongside `source_ref`
+   and a `source_group`.
+
+   **Grouping is for independence only; every finding is preserved.** An earlier draft of this
+   design said contradictions sharing a source "collapse to one", which would have thrown away
+   distinct findings — one 10-K legitimately contains several independently relevant risks, and
+   MU's does exactly that (competitor consolidation, new entrants, government assistance to
+   competitors, the May 2023 CAC decision, shortening product life cycles — five separate
+   objections from one filing). All of them are stored and all of them render. What the group
+   affects is **independence**: five objections from one filing are five findings backed by one
+   source, so they count once toward "do independent sources agree", and `support_quality` must
+   not read as HIGH merely because one document said five things.
 
 ---
 
@@ -115,23 +124,55 @@ evidence_buckets          one row per (subject, bucket, as_of, policy_fingerprin
   policy_fingerprint      digest of the rules that produced it
   UNIQUE (subject_key, bucket, as_of, policy_fingerprint)   -- immutable, additive
 
-intelligence_predictions  what the system believed, and when            (§36)
-  subject_key, as_of, horizon (1-5d | 1-4w | 1-3m)
-  direction, confidence, trade_status
-  entry, stop, target_1, target_2, risk_reward
-  bucket_ids              JSON — the exact rows this rested on
-  frozen_inputs_digest
-  UNIQUE (subject_key, as_of, horizon, policy_fingerprint)
+intelligence_predictions  what the system believed, when, and HOW IT WILL BE SCORED   (§36)
+  subject_key, observed_at           -- the instant the conclusion was formed, not the day
+  horizon_sessions                   -- TRADING SESSIONS, not calendar days
+  horizon_label                      -- "1-5d" | "1-4w" | "1-3m", display only
+  direction, support_quality, trade_status
+  reference_price, reference_price_as_of, reference_price_source
+  confirmation_rule, invalidation_rule     -- the exact observable conditions, as text + params
+  benchmark_symbol                   -- what the excess return is measured against
+  resolution_policy                  -- see below; frozen WITH the prediction
+  policy_fingerprint                 -- digest of the rules that produced the direction
+  bucket_ids              JSON — the exact evidence rows this rested on
+  frozen_inputs, frozen_inputs_digest
+  UNIQUE (subject_key, observed_at, horizon_sessions, policy_fingerprint)
 
 prediction_outcomes       what actually happened                        (§36/§37)
-  prediction_id, horizon_days (1|5|10|20|60)
+  prediction_id, horizon_sessions
   forward_return, benchmark_return, excess_return
-  resolved_at, resolution_basis
+  resolution_state        RESOLVED | UNRESOLVED_INSUFFICIENT_SESSIONS |
+                          UNRESOLVED_PRICE_MISSING | VOIDED_DELISTED |
+                          VOIDED_CORPORATE_ACTION
+  resolved_at, sessions_elapsed, resolution_basis
 ```
 
 `intelligence_predictions` deliberately mirrors `signal_outcome_horizons`, which already holds
 24,128 rows across four horizons and has a working resolution job. The new table is for
 *intelligence* verdicts rather than *signals*; the resolution mechanics are reused, not rebuilt.
+
+**One deliberate difference from the existing table.** `signal_outcome_horizons.horizon_unit`
+defaults to `calendar_days`. This one counts **trading sessions**, because a calendar horizon
+silently shortens across a holiday week and differs between US and HK — two markets this
+platform already serves, with different holiday calendars and an HK lunch break the session
+helper already models.
+
+### The resolution policy is frozen with the prediction, before any result exists
+
+Deciding how to handle a gap, a missing price or an unresolved horizon **after** seeing outcomes
+is a bias vector, and the convenient choice is always available in hindsight. So the policy is a
+field on the prediction, written at observation time:
+
+| Case | Rule, fixed in advance |
+|---|---|
+| Fewer than `horizon_sessions` have elapsed | `UNRESOLVED_INSUFFICIENT_SESSIONS`. **Not** a partial return, and excluded from every aggregate rather than counted as flat |
+| The closing price for the resolution session is missing | `UNRESOLVED_PRICE_MISSING`, retried; never substituted with a neighbouring session |
+| The symbol is delisted inside the window | `VOIDED_DELISTED`, and **retained** in the denominator of any coverage statistic, because dropping it is survivorship bias |
+| A split or other corporate action falls inside the window | `VOIDED_CORPORATE_ACTION` unless an adjusted series covers both endpoints on the same basis |
+| The benchmark is missing | The absolute return resolves; `excess_return` stays NULL. One missing input does not void the other measure |
+| An intervening policy change | Irrelevant to resolution. The prediction is scored under the `policy_fingerprint` it was made with — a later rule change files a new prediction, never a re-score of an old one |
+
+A prediction whose resolution policy cannot be stated is not ready to be stored.
 
 ---
 
@@ -237,6 +278,33 @@ constraint the Quality & Value company summary already operates under.
 And the row is written to `intelligence_predictions` at the moment it is rendered, with its
 horizon, rules fingerprint and outcome definition. That is what makes the next twelve months of
 this work measurable rather than retrospective.
+
+## 6c. First delivery: one stock, end to end
+
+Coverage is not the first milestone; a complete chain is. The first delivery takes **one stock**
+from source inputs to a resolved outcome, and nothing is called done until the last link exists:
+
+```
+  source inputs            EDGAR facts + stored statements + completed daily sessions
+        ↓                  each with source_ref and as_of
+  evidence buckets         13 rows, each a verdict or an explicit gap with a remedy
+        ↓                  contradictions preserved, grouped by source for independence
+  stock summary            direction · horizon · 3 factors · strongest counterevidence
+        ↓                  confirmation / invalidation levels · frozen-input digest
+  stored prediction        observed_at, horizon_sessions, reference_price, benchmark,
+        ↓                  resolution_policy, policy_fingerprint, bucket_ids
+  resolved outcome         forward + excess return, or an explicit UNRESOLVED/VOIDED state
+```
+
+MU and CRDO already have the left-hand side — issuer-verified financials, versioned assessments
+with sourced findings and counterevidence, frozen inputs that verify against their digest. What
+neither has is a stored prediction or any resolution. That is the gap the first delivery closes,
+on one name, before coverage grows.
+
+Expanding to more companies then does not wait on resolving every research uncertainty in the
+first one. MU's Strategic Customer Agreement terms are **not publicly disclosed** and may never
+be; a pipeline that blocks until that closes never ships. The chain has to work with permanent
+unknowns in it, which is why `not_publicly_disclosed` is a distinct state from `not_examined`.
 
 ## 7. Acceptance, restated measurably
 

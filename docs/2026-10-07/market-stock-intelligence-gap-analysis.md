@@ -177,10 +177,20 @@ collapsed them:
 |---|---|---|
 | **Implementation** | Does the code path exist and run? | Yes — `/quality-value/setups`, 189 listings scanned |
 | **Coverage** | Over how much of the intended population, with what inputs? | US 147 + HK 42; daily completed sessions only; ETFs not yet excluded |
-| **Behavioural verification** | Has its output been shown to do what the section claims? | **No.** It does not establish a suitable entry, position risk, or any probability that a breakout succeeds |
+| **Software correctness** | Does the rule do what it says, on the paths exercised? | Partly — unit tests over the classifier and the adapter; **not** every path (gaps, halts, corporate actions, HK lunch break) |
+| **Predictive performance** | Do its outputs lead anywhere useful? | **Unmeasured.** No stored prediction, no resolved outcome |
 
-Every row marked IMPLEMENTED above should be read as *implementation* established, *coverage*
-stated where known, and *behavioural verification* **absent unless the evidence column says
-otherwise**. Two rows do carry it: §21 short interest (the squeeze alert was measured
-anti-predictive, 13.3% win, n=15) and §37 performance measurement (alpha and expectancy measured
-per direction × horizon).
+**The last two are different questions and an earlier version of this document ran them
+together as "behavioural verification".** A correctly implemented rule can have poor investment
+results, and an outcome study showing good results verifies neither the paths it never
+exercised nor the cases it never encountered. They fail independently and are recorded
+independently:
+
+- §21 short interest has **predictive performance measured** — and the result was negative
+  (squeeze alert 13.3% win, n=15, anti-predictive). That says nothing about whether its code is
+  correct on every path.
+- §38 walk-forward has **software correctness evidenced** — look-ahead and fee/slippage tests
+  with 8 engine sabotages caught — and no out-of-sample performance reported.
+
+Every row marked IMPLEMENTED should be read as *implementation* established, *coverage* stated
+where known, and **both** verification axes absent unless named.
