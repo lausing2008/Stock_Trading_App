@@ -159,6 +159,27 @@ main() {
      2026-09-10 and made the instance unreachable for ~50 minutes."
   fi
 
+  # A RED FRONTEND SUITE MUST NOT REACH PRODUCTION.
+  # AUD-FRONTEND-SHIPPED-RED (2026-10-06): the vitest suite sat red on `prod` for days because
+  # `make test` runs the BACKEND suites only, so every commit in that window saw "all services
+  # passed" and shipped anyway. Two of the three failures were real — four tracker entries had
+  # no label or colour and rendered nothing at all. A documented rule did not hold; a gate at
+  # the moment of deployment does. Set SKIP_FRONTEND_TESTS=1 to override deliberately.
+  if (( wants_frontend )) && [[ "${SKIP_FRONTEND_TESTS:-0}" != "1" ]]; then
+    say "── frontend suite (must be green before building) ──"
+    if ! ( cd "$(git rev-parse --show-toplevel)/frontend" && npx vitest run >/tmp/fe_test.log 2>&1 ); then
+      tail -25 /tmp/fe_test.log >&2
+      die "REFUSING frontend build: the vitest suite is red (see output above).
+     This is the gate AUD-FRONTEND-SHIPPED-RED added. \`make test\` does not cover the
+     frontend. Fix the suite, or set SKIP_FRONTEND_TESTS=1 if you intend to ship over it."
+    fi
+    if ! ( cd "$(git rev-parse --show-toplevel)/frontend" && npx tsc --noEmit -p tsconfig.json >/tmp/fe_tsc.log 2>&1 ); then
+      tail -25 /tmp/fe_tsc.log >&2
+      die "REFUSING frontend build: typecheck failed (see output above)."
+    fi
+    say "  frontend suite green"
+  fi
+
   ssh_ec2 "cd $REMOTE_DIR && git pull origin prod 2>&1 | tail -3"
   for svc in "$@"; do deploy_service "$svc"; done
   verify "$@" || warn "one or more services are not healthy — check before declaring success"

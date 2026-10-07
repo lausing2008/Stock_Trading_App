@@ -3745,3 +3745,152 @@ class EarningsCoverageAttempt(Base):
     __table_args__ = (
         Index("ix_coverage_stock_mode_attempted", "stock_id", "mode", "attempted_at"),
     )
+
+
+# =====================================================================================
+# PROSPECTIVE CAPTURE — what was expected BEFORE the fact, recorded as it was expected.
+#
+# THE RULE THESE TWO TABLES EXIST TO ENFORCE: do not reconstruct a past expectation from
+# today's values. A consensus estimate is overwritten in place by every provider the platform
+# uses, so "what did analysts expect for this quarter, as of the day before the release" is not
+# recoverable later by any amount of querying — it is only recoverable by having written it
+# down at the time. The same is true of a macro forecast: once the actual prints, the surprise
+# is the difference between two things, and only one of them survives.
+#
+# Both tables are therefore APPEND-ONLY SNAPSHOTS, never current-value rows. A revision is a new
+# row, not an update, and the pair (what was expected, when we captured it) is the unit of
+# evidence. Nothing here is backfilled: a row that did not exist on the day cannot be created
+# afterwards, and the absence is itself the honest record.
+# =====================================================================================
+
+
+class EstimateSnapshot(Base):
+    """One provider's estimate for one metric and target period, as observed at one moment.
+
+    IMMUTABLE BY CONSTRUCTION. The unique constraint spans everything that identifies the
+    observation INCLUDING `captured_at`, so a later capture of a revised figure inserts a new
+    row beside the old one. There is no update path and no "current" flag — the newest row for
+    a key IS the current estimate, and every earlier one remains exactly as captured.
+
+    EVERY FIELD THAT MAKES A NUMBER COMPARABLE IS REQUIRED TO BE RECORDED, even as NULL:
+    `units` and `accounting_basis` nullable but always written, because a stored estimate whose
+    basis is unknown cannot be compared with a reported actual, and the platform has already
+    shipped that mistake — an estimate with no units was nearly divided into an issuer figure.
+    A NULL here means "the provider did not say", which is a different and recoverable fact
+    from the column not existing.
+    """
+    __tablename__ = "estimate_snapshots"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    #: The period the estimate is ABOUT, as the provider labels it (e.g. "FY2027", "Q1 2027").
+    #: A provider label, not a confirmed fiscal identity — the same distinction the
+    #: business-performance section keeps.
+    target_period: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: "eps" | "revenue" | ... Kept as a plain string, matching this file's convention.
+    metric: Mapped[str] = mapped_column(String(40), nullable=False)
+    units: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    #: "gaap" | "adjusted" | "non_gaap" | NULL when the provider does not state one.
+    accounting_basis: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    analyst_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: When the PROVIDER says the figure was current, where it says so at all. Distinct from
+    #: captured_at: a provider can serve a week-old consensus, and treating our fetch time as
+    #: the estimate's time would date it wrongly in the one direction that matters.
+    source_as_of: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: When WE observed it. Never inferred, never backdated.
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "target_period", "metric", "provider", "captured_at",
+                         name="uq_estimate_snapshot_observation"),
+        Index("ix_estimate_snapshot_symbol_metric_captured",
+              "symbol", "metric", "captured_at"),
+    )
+
+
+class MacroExpectation(Base):
+    """A scheduled macro release: what was expected before it, and what it first printed.
+
+    THE FIRST PRINT AND LATER REVISIONS ARE DIFFERENT FACTS, and this is the whole reason the
+    actual is split across two columns. A market reacts to the number that was published on the
+    day; a statistical agency may revise it twice afterwards. Storing one "actual" that silently
+    becomes the revised figure would make every historical surprise wrong, in the direction of
+    looking more predictable than it was.
+
+    `expectation` must be captured BEFORE `published_at`. Nothing in this table may be written
+    from a post-release source — a consensus read after the print is contaminated by it.
+    """
+    __tablename__ = "macro_expectations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: Stable identity of the release series, e.g. "US_CPI_YOY", "US_NFP".
+    release_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    release_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    #: The period the data DESCRIBES (September 2026), not when it is published.
+    reference_period: Mapped[str] = mapped_column(String(32), nullable=False)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    units: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    expectation: Mapped[float | None] = mapped_column(Float, nullable=True)
+    expectation_source: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    #: When the expectation was captured. Compared against published_at to prove it preceded
+    #: the release; a row that cannot prove that is not evidence of an expectation.
+    expectation_captured_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: The number as FIRST published. Never overwritten by a revision.
+    first_actual: Mapped[float | None] = mapped_column(Float, nullable=True)
+    first_actual_captured_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: Appended list of {value, captured_at, note}. Separate from first_actual on purpose.
+    revisions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("release_key", "reference_period", name="uq_macro_expectation_period"),
+        Index("ix_macro_expectation_scheduled", "scheduled_at"),
+    )
+
+
+class QualityValueEvaluation(Base):
+    """One immutable Quality & Value verdict, with the rules that produced it.
+
+    WHY THIS IS PERSISTED RATHER THAN RECOMPUTED. A screen that recomputes on every page view
+    cannot be measured: the inputs move underneath it, so three months later there is no way to
+    say what it concluded on any given day, and therefore no way to say whether it was useful.
+    A stored evaluation is the only thing that makes a prospective shadow trial possible rather
+    than a preview.
+
+    IMMUTABLE, AND THE KEY IS WHY. The unique constraint spans (symbol, cutoff,
+    policy_fingerprint). A re-run under identical rules over identical evidence is idempotent —
+    it conflicts and does nothing. A re-run after ANY rule changes carries a different
+    fingerprint and lands as a NEW row beside the old one. Nothing is ever updated in place, so
+    a later threshold adjustment cannot retroactively rewrite what the screen said.
+    """
+    __tablename__ = "quality_value_evaluations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    #: The moment the evidence was read as of. Naive UTC, matching every other cutoff here.
+    cutoff: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    policy_version: Mapped[str] = mapped_column(String(24), nullable=False)
+    #: Digest of every rule that can change a verdict. See quality_value.policy_fingerprint().
+    policy_fingerprint: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    #: Full gate results including each gate's reasons and the claim bounds it was rendered
+    #: under — so a stored row explains itself without the code that produced it.
+    gates: Mapped[dict] = mapped_column(JSON, nullable=False)
+    #: Which stored records the verdict was computed from, by table and key. NOT the values:
+    #: the point is to be able to find what was read, including when it has since changed.
+    evidence_refs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    blocking: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    explanation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False,
+                                                 server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "cutoff", "policy_fingerprint",
+                         name="uq_qv_evaluation_symbol_cutoff_policy"),
+        Index("ix_qv_eval_state_cutoff", "state", "cutoff"),
+    )

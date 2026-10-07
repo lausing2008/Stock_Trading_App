@@ -1907,6 +1907,7 @@ def llm_usage(hours: int = Query(24, ge=1, le=720), _: User = Depends(get_admin_
             _digests = [r[0] for r in digest_rows]
             _unique = len(set(_digests))
             relevance = {
+                "available": True,
                 "window": "rolling, matching the window_hours selector — NOT the UTC day used by "
                           "the enforced budgets",
                 "classified_articles": len(_digests),
@@ -1925,8 +1926,24 @@ def llm_usage(hours: int = Query(24, ge=1, le=720), _: User = Depends(get_admin_
                          "alone cannot tell those from waste."),
             }
         except Exception as _rel_exc:
-            log.warning("llm_usage.relevance_failed", error=str(_rel_exc)[:200])
-            relevance = {"error": str(_rel_exc)[:200], "calls_with_relevance_data": 0}
+            # A FAILED QUERY IS NOT A MEASUREMENT OF ZERO. The first version of this fallback
+            # returned `calls_with_relevance_data: 0`, which a reader and any downstream
+            # aggregation would take as "measured, and there were none" — the identical
+            # falsy-zero mistake this codebase has fixed repeatedly elsewhere. Every metric is
+            # None and `available` is False, so a renderer that shows a number has nothing to
+            # show, and the error travels with it.
+            log.warning("llm_usage.relevance_failed", error=str(_rel_exc)[:200],
+                        exc_type=type(_rel_exc).__name__)
+            relevance = {
+                "available": False,
+                "error": f"{type(_rel_exc).__name__}: {str(_rel_exc)[:200]}",
+                "classified_articles": None, "unique_articles": None,
+                "repeat_classifications": None, "tracked": None,
+                "market_context": None, "out_of_scope": None,
+                "calls_with_relevance_data": None,
+                "note": "RELEVANCE IS UNAVAILABLE, not zero. The query failed and no count "
+                        "below was measured. Calls, tokens and errors above are unaffected.",
+            }
 
         # DAILY BUDGET. A spike alert compares against a recent baseline, so a steady high
         # baseline never trips it — which is exactly the shape the 2026-10-05 review found

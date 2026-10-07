@@ -10570,6 +10570,33 @@ _LLM_USAGE_MIN_TOKENS_TO_EVALUATE = 5_000
 _LLM_USAGE_ALERT_COOLDOWN_HOURS = 6  # don't re-page every hour while still elevated
 
 
+def capture_prospective_estimates() -> None:
+    """Snapshot today's consensus for every scheduled earnings release, once per day.
+
+    WHY A SCHEDULED JOB AND NOT AN ON-DEMAND CALL. `earnings_events.eps_estimate` is a current
+    value that every refresh overwrites in place, so the consensus as it stood a week before a
+    release is not recoverable by any later query — it is only recoverable by having copied it
+    out on the day. Running this daily turns a mutable column into an immutable series; running
+    the same code once, afterwards, recovers nothing.
+
+    It spends no provider budget: it reads rows another job already fetched and appends them to
+    `estimate_snapshots`. A failure is logged and NOT retried within the day — a second capture
+    would simply write the same values under a later timestamp and inflate the series.
+    """
+    import requests
+    try:
+        r = requests.post(
+            f"{_settings.research_engine_url}/quality-value/capture/estimates",
+            headers={"Authorization": f"Bearer {_service_token()}"}, timeout=120)
+        r.raise_for_status()
+        body = r.json()
+        log.info("prospective_capture.done", captured=body.get("captured"),
+                 events=body.get("events_in_horizon"),
+                 skipped=body.get("skipped_no_estimate"))
+    except Exception as exc:
+        log.error("prospective_capture.failed", error=str(exc)[:300])
+
+
 def check_llm_daily_budget() -> None:
     """Alert when the DAY's token total crosses a fixed ceiling.
 
@@ -12931,6 +12958,7 @@ _DQ_CHECKS: list[dict] = [
         "max_age_hours": 1, "is_date": False,
     },
         {"name": "check_llm_daily_budget", "description": "Claude daily token-ceiling alert liveness (30-min interval) — a LEVEL check, distinct from the spike check's change check"},
+    {"name": "capture_prospective_estimates", "description": "Daily consensus snapshot into estimate_snapshots (11:00 UTC). A MISSED DAY IS UNRECOVERABLE — the upstream value is overwritten in place, so a gap here is permanent"},
     {
         "name": "check_early_earnings_news_alerts", "description": "Early (pre-EDGAR) earnings-surprise news alert liveness (per-minute cron)",
         "job_name": "check_early_earnings_news_alerts", "source": "job_status",
@@ -14772,6 +14800,7 @@ def start_scheduler() -> None:
             max_instances=1, coalesce=True, misfire_grace_time=300,
         )
 
+
         # ── T257-TOP3-CONVICTION-ALERT: measured-win-rate-gated top-3 scan — every minute ──
         # Cheap (a handful of bulk HTTP calls, no per-symbol requests); only emails when the
         # qualifying set actually changes — see check_top3_conviction()'s own docstring.
@@ -15091,6 +15120,22 @@ def start_scheduler() -> None:
         _snapshot_fundamentals,
         CronTrigger(day_of_week="sun", hour=16, minute=30, timezone="America/New_York"),
         id="fundamentals_snapshot_weekly", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── PROSPECTIVE ESTIMATE CAPTURE — once daily, before the US open ──
+    # 11:00 UTC is 06:00/07:00 ET, ahead of the session and of the estimate refresh jobs,
+    # so the figure captured is the one that stood going into the day.
+    # `misfire_grace_time` is generous (2h) ON PURPOSE: a brief outage must not make the
+    # day uncapturable, because unlike most jobs this one has no second chance — the value
+    # it would have recorded is overwritten upstream and gone. That is the same shape as
+    # AUD-T398-MISFIREGAP, where a 60s grace silently discarded a delayed job and the day
+    # became permanently unrecoverable.
+    _scheduler.add_job(
+        capture_prospective_estimates,
+        "cron", hour=11, minute=0, timezone="UTC",
+        id="prospective_estimate_capture",
+        replace_existing=True,
+        max_instances=1, coalesce=True, misfire_grace_time=7200,
     )
 
     # ── wsz-analyst-accuracy-weighting: daily, off-hours (no ordering dependency on any

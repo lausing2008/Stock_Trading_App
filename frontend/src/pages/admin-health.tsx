@@ -866,7 +866,31 @@ export default function AdminHealthPage() {
 
             {/* RELEVANCE, NOT JUST VOLUME. Calls and tokens cannot say how much of the spend
                 was on tracked stocks, nor whether an article was classified twice. */}
-            {llmUsageData.relevance && llmUsageData.relevance.calls_with_relevance_data > 0 && (
+            {/* UNAVAILABLE IS NOT ABSENT. When the relevance query fails the panel keeps its
+                calls, tokens and errors and says so here, rather than silently dropping the
+                section — a reader cannot distinguish a missing section from a quiet period. */}
+            {llmUsageData.relevance && llmUsageData.relevance.available === false && (
+              <div style={{ marginBottom: '14px', padding: '10px 12px', borderRadius: '8px',
+                            background: 'rgba(234,179,8,0.06)',
+                            border: '1px solid rgba(234,179,8,0.25)' }}>
+                <div style={{ fontSize: '10px', fontWeight: 700, color: '#fde047',
+                              letterSpacing: '0.06em', marginBottom: '5px' }}>
+                  NEWS CLASSIFICATION RELEVANCE — UNAVAILABLE, NOT ZERO
+                </div>
+                <div style={{ fontSize: '11.5px', color: '#cbd5e1', lineHeight: 1.5 }}>
+                  {llmUsageData.relevance.note}
+                </div>
+                {llmUsageData.relevance.error && (
+                  <div style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '5px',
+                                overflowWrap: 'anywhere' }}>
+                    {llmUsageData.relevance.error}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {llmUsageData.relevance && llmUsageData.relevance.available !== false
+              && (llmUsageData.relevance.calls_with_relevance_data ?? 0) > 0 && (
               <div style={{ marginBottom: '14px', padding: '10px 12px', borderRadius: '8px',
                             background: '#0d1424', border: '1px solid #1e293b' }}>
                 <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155',
@@ -908,17 +932,17 @@ export default function AdminHealthPage() {
                 <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap',
                               fontSize: '11px', color: '#94a3b8' }}>
                   <span>Unique articles: <strong style={{ color: '#e2e8f0' }}>
-                    {llmUsageData.relevance.unique_articles.toLocaleString()}</strong></span>
+                    {(llmUsageData.relevance.unique_articles ?? 0).toLocaleString()}</strong></span>
                   <span>Tracked: <strong style={{ color: '#4ade80' }}>
-                    {llmUsageData.relevance.tracked.toLocaleString()}</strong></span>
+                    {(llmUsageData.relevance.tracked ?? 0).toLocaleString()}</strong></span>
                   <span>Market context: <strong style={{ color: '#60a5fa' }}>
-                    {llmUsageData.relevance.market_context.toLocaleString()}</strong></span>
+                    {(llmUsageData.relevance.market_context ?? 0).toLocaleString()}</strong></span>
                   <span>Out of scope: <strong style={{ color: '#94a3b8' }}>
-                    {llmUsageData.relevance.out_of_scope.toLocaleString()}</strong></span>
+                    {(llmUsageData.relevance.out_of_scope ?? 0).toLocaleString()}</strong></span>
                   <span title="Same article identity classified more than once among instrumented calls. NOT proof of waste — an updated article or a changed classifier policy can justify another pass.">
                     Repeat identities: <strong style={{
-                      color: llmUsageData.relevance.repeat_classifications > 0 ? '#fbbf24' : '#94a3b8' }}>
-                      {llmUsageData.relevance.repeat_classifications.toLocaleString()}</strong></span>
+                      color: (llmUsageData.relevance.repeat_classifications ?? 0) > 0 ? '#fbbf24' : '#94a3b8' }}>
+                      {(llmUsageData.relevance.repeat_classifications ?? 0).toLocaleString()}</strong></span>
                 </div>
                 {llmUsageData.relevance.note && (
                   <div style={{ fontSize: '10px', color: '#334155', marginTop: '5px' }}>

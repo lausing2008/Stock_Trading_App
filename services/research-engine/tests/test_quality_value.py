@@ -12,7 +12,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from intel_reports.quality_value import (  # noqa: E402
-    Gate, GateStatus, State, compose, discount, upside,
+    Gate, GateStatus, State, compose, equity_discount, ValuationMisaligned,
+    MAX_VALUATION_ALIGNMENT_DAYS, GATE_CLAIM,
     durability_gate, valuation_gate,
     ALL_GATES, REQUIRED_FOR_ENTRY, QUALITY_GATES,
     BUSINESS_QUALITY, COMPETITIVE_DURABILITY, VALUATION, ENTRY_CONDITION,
@@ -167,25 +168,105 @@ def test_todays_evidence_cannot_reach_entry_review_for_any_symbol():
     assert {b.name for b in e.blocking()} == {COMPETITIVE_DURABILITY, VALUATION}
 
 
-# ---- the two denominators --------------------------------------------------------------
+# ---- the two denominators, and the alignment the comparison needs ------------------------
+
+from datetime import datetime as _dt  # noqa: E402
+
+_V = _dt(2026, 10, 6)
+_C = _dt(2026, 10, 6)
+
 
 def test_discount_and_upside_are_different_numbers_from_the_same_gap():
-    d, u = discount(1.25e11, 1.0e11), upside(1.25e11, 1.0e11)
-    assert round(d, 4) == 0.2 and round(u, 4) == 0.25
-    assert d != u, "the same gap is 20% off the value and 25% of upside"
+    r = equity_discount(1.25e11, 1.0e11, value_as_of=_V, cap_as_of=_C)
+    assert r["available"] is True
+    assert round(r["discount_to_value"], 4) == 0.2
+    assert round(r["upside_to_price"], 4) == 0.25
+    assert r["discount_denominator"] != r["upside_denominator"]
 
 
-def test_neither_denominator_divides_by_zero_or_a_negative_value():
-    assert discount(0, 1.0e11) is None
-    assert discount(-5.0e10, 1.0e11) is None
-    assert upside(1.0e11, 0) is None
-    assert upside(1.0e11, -1.0) is None
+def test_both_timestamps_travel_with_the_result():
+    r = equity_discount(1.25e11, 1.0e11, value_as_of=_V, cap_as_of=_C)
+    assert r["value_as_of"].startswith("2026-10-06")
+    assert r["cap_as_of"].startswith("2026-10-06")
+    assert r["alignment_days"] == 0
 
 
-def test_a_missing_input_yields_none_rather_than_a_zero_discount():
-    """A zero discount sorts as 'fairly valued'; None sorts as unknown. They are not the same."""
-    assert discount(1.0e11, None) is None
-    assert upside(None, 1.0e11) is None
+def test_a_cap_observed_too_long_after_the_valuation_refuses():
+    """25-day-old caps are what production actually holds; the gap is not valuation."""
+    r = equity_discount(1.25e11, 1.0e11, value_as_of=_V,
+                        cap_as_of=_dt(2026, 9, 11))
+    assert r["available"] is False and r["discount_to_value"] is None
+    assert "alignment limit" in r["reason"]
+    assert r["alignment_days"] == 25
+
+
+def test_the_alignment_limit_is_inclusive_at_its_boundary():
+    at = equity_discount(1.25e11, 1.0e11, value_as_of=_V,
+                         cap_as_of=_dt(2026, 10, 6) - __import__("datetime").timedelta(
+                             days=MAX_VALUATION_ALIGNMENT_DAYS))
+    assert at["available"] is True
+
+
+def test_an_untimestamped_side_refuses_rather_than_assuming_now():
+    assert equity_discount(1.25e11, 1.0e11, value_as_of=_V, cap_as_of=None)["available"] is False
+    assert equity_discount(1.25e11, 1.0e11)["available"] is False
+
+
+def test_an_enterprise_value_is_refused_not_silently_compared():
+    with pytest.raises(ValuationMisaligned, match="sourced debt, cash and other-claims bridge"):
+        equity_discount(1.25e11, 1.0e11, value_as_of=_V, cap_as_of=_C, basis="enterprise")
+
+
+def test_no_per_share_figure_is_offered_anywhere_in_the_result():
+    r = equity_discount(1.25e11, 1.0e11, value_as_of=_V, cap_as_of=_C)
+    assert "NOT PROVIDED" in r["per_share"]
+    assert not any("per_share" in k and isinstance(v, (int, float))
+                   for k, v in r.items()), "no numeric per-share value may be returned"
+
+
+def test_a_non_positive_valuation_refuses_rather_than_reading_as_a_full_discount():
+    r = equity_discount(-5.0e10, 1.0e11, value_as_of=_V, cap_as_of=_C)
+    assert r["available"] is False and r["discount_to_value"] is None
+    assert "not a 100% discount" in r["reason"]
+    assert equity_discount(0, 1.0e11, value_as_of=_V, cap_as_of=_C)["available"] is False
+
+
+def test_a_missing_input_yields_unavailable_rather_than_a_zero_discount():
+    """A zero discount sorts as 'fairly valued'; unavailable must not sort at all."""
+    r = equity_discount(None, 1.0e11, value_as_of=_V, cap_as_of=_C)
+    assert r["available"] is False and r["discount_to_value"] is None
+    assert "not a zero discount" in r["reason"]
+
+
+# ---- what a gate verdict is allowed to mean ----------------------------------------------
+
+def test_every_gate_declares_what_a_pass_does_not_establish():
+    for name in ALL_GATES:
+        assert GATE_CLAIM[name]["does_not_establish"], name
+
+
+def test_a_fundamentals_pass_is_not_a_quality_endorsement():
+    d = Gate(BUSINESS_QUALITY, GateStatus.PASS).as_dict()
+    assert d["label"] == "Fundamental checks"
+    assert "passed the configured completeness and freshness checks" in d["establishes"]
+    assert "that this is a high-quality business" in d["does_not_establish"]
+
+
+def test_an_entry_condition_pass_is_not_a_suitable_entry():
+    d = Gate(ENTRY_CONDITION, GateStatus.PASS).as_dict()
+    assert d["label"] == "Price-stabilization rule"
+    assert "that the stock is a suitable entry" in d["does_not_establish"]
+
+
+def test_a_non_passing_gate_establishes_nothing():
+    d = Gate(VALUATION, GateStatus.UNKNOWN, ("nothing stored",)).as_dict()
+    assert d["establishes"] is None
+    assert d["does_not_establish"]
+
+
+def test_reaching_entry_review_says_what_it_is_not():
+    e = compose("MU", all_passing())
+    assert "NOT that this is a suitable investment" in " ".join(e.explanation)
 
 
 # ---- the gates the statement series can decide ------------------------------------------

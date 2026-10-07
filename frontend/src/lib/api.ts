@@ -1,13 +1,21 @@
 
 export type QvGateStatus = 'pass' | 'fail' | 'unknown' | 'blocked' | 'not_applicable';
 export type QvGate = { gate: string; status: QvGateStatus; reasons: string[];
-                       evidence: Record<string, unknown> };
+                       evidence: Record<string, unknown>;
+                       // What a PASS establishes, and what it does NOT. Rendered beside every
+                       // verdict: a label that overstates is the same defect as a number that does.
+                       label?: string; establishes?: string | null;
+                       does_not_establish?: string };
 export type QvEvaluation = {
   symbol: string; name?: string | null; sector?: string | null;
   state: string; gates: QvGate[]; explanation: string[]; blocking: string[];
 };
 export type QualityValueReport = {
-  mode: string; as_of: string; evaluated: number;
+  mode: string; as_of: string; cutoff?: string; evaluated: number;
+  policy_version?: string; policy_fingerprint?: string;
+  stored_new?: number; persist_errors?: string[];
+  gate_claims?: Record<string, { label: string; establishes: string;
+                                 does_not_establish: string }>;
   states: Record<string, number>;
   gate_coverage: Record<string, Record<QvGateStatus, number>>;
   required_for_entry: string[];
@@ -3408,10 +3416,14 @@ export type LlmUsageReport = {
   total_calls: number;
   total_input_tokens: number;
   total_output_tokens: number;
+  // Every count is nullable BY DESIGN. A failed relevance query reports unavailable, never
+  // zero — a zero here would read as "measured, and there were none".
   relevance?: {
-    classified_articles: number; unique_articles: number; repeat_classifications: number;
-    tracked: number; market_context: number; out_of_scope: number;
-    calls_with_relevance_data: number; note?: string;
+    available?: boolean; error?: string;
+    classified_articles: number | null; unique_articles: number | null;
+    repeat_classifications: number | null; tracked: number | null;
+    market_context: number | null; out_of_scope: number | null;
+    calls_with_relevance_data: number | null; note?: string;
   } | null;
   daily_alert_threshold?: {
     tokens_today: number; threshold: number; pct_used: number | null;

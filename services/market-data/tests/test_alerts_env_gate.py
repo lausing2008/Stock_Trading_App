@@ -238,6 +238,12 @@ _NON_ALERT_JOB_IDS = {
     "position_scaling_shadow_daily_resolve", "position_scaling_gate_weekly_drift_check",
     "edgar_8k_ingest_daily", "hk_connect_flows_daily", "sector_rotation_weekly",
     "fundamentals_snapshot_weekly", "watchlist_auto_rotation_weekly",
+    # NON-ALERTING ON PURPOSE. This copies rows another job already fetched into an
+    # append-only table; it sends nothing and spends no provider budget. Gating it behind
+    # _is_alerting_enabled() would make a development stack silently stop capturing, and a
+    # day it fails to capture is permanently unrecoverable — the upstream consensus is
+    # overwritten in place.
+    "prospective_estimate_capture",
 }
 
 

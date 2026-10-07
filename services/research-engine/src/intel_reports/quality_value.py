@@ -27,6 +27,8 @@ NO ORM IMPORT. This module is pure so it can be tested directly; the service con
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field as dc_field
 from datetime import datetime
 from enum import Enum
@@ -81,6 +83,63 @@ PORTFOLIO_FIT = "portfolio_fit"
 ALL_GATES = (BUSINESS_QUALITY, COMPETITIVE_DURABILITY, VALUATION, ENTRY_CONDITION,
              VALUE_TRAP_RISK, CATALYSTS, PORTFOLIO_FIT)
 
+#: WHAT A PASS ON EACH GATE ACTUALLY ESTABLISHES, and what it does not.
+#:
+#: This exists because the gate NAMES overclaim and the constant names cannot be changed without
+#: churn. "business_quality: pass" reads as "this is a quality business"; what was established is
+#: that the fundamentals the platform happens to hold cleared the configured checks — with the
+#: accounting basis unknown and four classes of critical risk unobserved, that is a readiness
+#: statement, not a judgement about the business. "entry_condition: pass" reads as "ready to
+#: buy"; what was established is that a price rule was satisfied on completed sessions.
+#:
+#: Every surface that renders a gate renders `establishes` beside it. A label that overstates is
+#: the same defect as a number that overstates, and it is cheaper to fix here than in prose.
+GATE_CLAIM = {
+    BUSINESS_QUALITY: {
+        "label": "Fundamental checks",
+        "establishes": "the stored fundamentals passed the configured completeness and "
+                       "freshness checks",
+        "does_not_establish": "that this is a high-quality business. No accounting basis is "
+                              "stored, so the periods are not shown to be comparable, and "
+                              "nothing here measures returns on capital or reinvestment",
+    },
+    COMPETITIVE_DURABILITY: {
+        "label": "Competitive durability",
+        "establishes": "nothing yet — no sourced evidence of durability is stored",
+        "does_not_establish": "durability from margin or return persistence, which for a "
+                              "cyclical business is equally consistent with the cycle",
+    },
+    VALUATION: {
+        "label": "Valuation discount",
+        "establishes": "nothing yet — no equity value has been computed under a frozen policy",
+        "does_not_establish": "that a price below any model estimate is cheap. That is a "
+                              "hypothesis about the model, not a fact about intrinsic value",
+    },
+    ENTRY_CONDITION: {
+        "label": "Price-stabilization rule",
+        "establishes": "a versioned price rule was satisfied on completed sessions",
+        "does_not_establish": "that the stock is a suitable entry. A timing rule says nothing "
+                              "about the business, the price paid, or this holder's situation",
+    },
+    VALUE_TRAP_RISK: {
+        "label": "Value-trap risk",
+        "establishes": "nothing yet — four critical risk classes are unobserved, and the two "
+                       "computable figures carry no validated threshold",
+        "does_not_establish": "the absence of a value trap. Leverage and cash burn looking "
+                              "ordinary establishes only that, not safety",
+    },
+    CATALYSTS: {
+        "label": "Catalysts",
+        "establishes": "scheduled events are on file",
+        "does_not_establish": "that any of them will move the price, or when",
+    },
+    PORTFOLIO_FIT: {
+        "label": "Portfolio fit",
+        "establishes": "nothing — this requires an authorized holdings read, out of pilot scope",
+        "does_not_establish": "any position size or concentration judgement",
+    },
+}
+
 #: Every gate that must explicitly PASS before entry research is a state this can reach.
 #: CATALYSTS and PORTFOLIO_FIT are absent on purpose: a catalyst is optional context and
 #: inventing a deadline for price convergence is worse than having none, and portfolio fit needs
@@ -91,6 +150,39 @@ REQUIRED_FOR_ENTRY = (BUSINESS_QUALITY, COMPETITIVE_DURABILITY, VALUATION,
 #: The subset whose failure is about the BUSINESS rather than its price. Passing these without a
 #: valuation discount is a real, nameable state — a good company you would not buy here.
 QUALITY_GATES = (BUSINESS_QUALITY, COMPETITIVE_DURABILITY, VALUE_TRAP_RISK)
+
+
+#: The policy's human name. Bump when the SHAPE changes (a new gate, a new state); the
+#: fingerprint below catches everything else on its own.
+POLICY_VERSION = "qv-1"
+
+
+def policy_fingerprint() -> str:
+    """A digest of every rule that can change a verdict.
+
+    WHY A FINGERPRINT AND NOT JUST A VERSION STRING. A stored evaluation is only evidence of
+    what the screen concluded if the rules that produced it are recoverable. A hand-maintained
+    version number drifts the first time someone adjusts a threshold without remembering to
+    bump it — and then two rows that say `qv-1` were produced by different screens, which is
+    worse than no version at all because it looks trustworthy.
+
+    So the identity is computed from the rules themselves: the required set, the quality subset,
+    every claim sentence and every threshold. Change any of them and new evaluations land under
+    a new fingerprint beside the old rows rather than on top of them. Nothing is ever updated in
+    place, so "what did this screen conclude on that date, under which rules" stays answerable.
+    """
+    payload = json.dumps({
+        "version": POLICY_VERSION,
+        "all_gates": list(ALL_GATES),
+        "required_for_entry": list(REQUIRED_FOR_ENTRY),
+        "quality_gates": list(QUALITY_GATES),
+        "gate_claim": GATE_CLAIM,
+        "max_retrieval_age_days": MAX_RETRIEVAL_AGE_DAYS,
+        "max_reported_year_age_days": MAX_REPORTED_YEAR_AGE_DAYS,
+        "max_valuation_alignment_days": MAX_VALUATION_ALIGNMENT_DAYS,
+        "leverage_not_applicable": list(LEVERAGE_NOT_APPLICABLE_INDUSTRIES),
+    }, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -112,7 +204,13 @@ class Gate:
             raise ValueError(f"gate {self.name!r} is {self.status.value} with no reason given")
 
     def as_dict(self) -> dict:
+        claim = GATE_CLAIM[self.name]
         return {"gate": self.name, "status": self.status.value,
+                "label": claim["label"],
+                # Carried on EVERY gate, passing or not, so no renderer can show a verdict
+                # without the sentence that bounds it.
+                "establishes": claim["establishes"] if self.status is GateStatus.PASS else None,
+                "does_not_establish": claim["does_not_establish"],
                 "reasons": list(self.reasons), "evidence": self.evidence}
 
 
@@ -199,7 +297,8 @@ def compose(symbol: str, gates, *, entry_zone_held: bool = True) -> Evaluation:
                           ("every gate passed at the cutoff, but the price has since moved "
                            "outside the entry zone, so the setup is expired rather than ready",))
 
-    why.append("every required gate passed at this evaluation's cutoff")
+    why.append("every required gate passed at this evaluation's cutoff — which establishes "
+               "that the configured checks were met, NOT that this is a suitable investment")
     return Evaluation(symbol, State.ENTRY_REVIEW_READY, gates, tuple(why))
 
 
@@ -259,23 +358,91 @@ def valuation_gate(evidence=None) -> Gate:
         "discount is how a screen is fitted to its own sample",))
 
 
-def discount(equity_value: float, market_cap: float) -> float | None:
-    """Aggregate discount to equity value. Never per-share, and never over a zero denominator."""
-    if not equity_value or equity_value <= 0 or market_cap is None:
-        return None
-    return (equity_value - market_cap) / equity_value
+#: How far apart the valuation's own cutoff and the market-cap observation may be before the
+#: discount stops being a comparison of two things at the same moment. Deliberately short: the
+#: stored caps range over 25 days, which is long enough for a buyback or an issuance.
+MAX_VALUATION_ALIGNMENT_DAYS = 3
 
 
-def upside(equity_value: float, market_cap: float) -> float | None:
-    """Potential upside from market capitalisation. A DIFFERENT denominator from `discount`.
+class ValuationMisaligned(Exception):
+    """The two sides of the comparison do not describe the same moment or the same claim."""
 
-    Shown alongside the discount with both denominators named: the same gap reads as 20% off the
-    value and 25% of upside, and presenting one number as if it were the other overstates by
-    exactly the amount the reader is trying to judge.
+
+def equity_discount(equity_value, market_cap, *, value_as_of=None, cap_as_of=None,
+                    basis="equity") -> dict:
+    """Aggregate discount of market capitalisation to an estimated EQUITY value.
+
+    THREE ALIGNMENT RULES, each of which can refuse rather than return a number.
+
+    1. EQUITY AGAINST EQUITY, NEVER ENTERPRISE VALUE. An enterprise valuation is a claim about
+       the whole capital structure and needs a sourced bridge — debt, cash, leases, pensions,
+       minorities, preferred — to become a claim about the equity. None of those is stored with
+       a source here, so an EV compared against market capitalisation is comparing a different
+       quantity, and the difference is whatever the unbuilt bridge would have been. `basis`
+       must say `equity`, and anything else raises instead of silently converting.
+    2. THE TWO SIDES MUST DESCRIBE THE SAME MOMENT. A value computed from statements and a cap
+       observed weeks later differ by every intervening buyback, issuance and price move, all
+       of which land in the discount as if they were valuation. Both timestamps travel with the
+       result and a gap beyond MAX_VALUATION_ALIGNMENT_DAYS refuses.
+    3. NEVER PER SHARE. There is no reliable share count (see the readiness inventory), so this
+       returns an aggregate and deliberately provides no route to a per-share entry target.
+
+    Returns both denominators, named. The same gap is 20% off the value and 25% of upside, and
+    quoting one as the other overstates by exactly the amount the reader is judging.
     """
-    if not market_cap or market_cap <= 0 or equity_value is None:
-        return None
-    return (equity_value - market_cap) / market_cap
+    if basis != "equity":
+        raise ValuationMisaligned(
+            f"basis is {basis!r}: an enterprise value needs a sourced debt, cash and other-claims "
+            f"bridge before it can be compared with market capitalisation, and none is stored")
+    if equity_value is None or market_cap is None:
+        return {"available": False,
+                "reason": "equity value or market capitalisation is missing; a missing input is "
+                          "not a zero discount",
+                "discount_to_value": None, "upside_to_price": None}
+    if equity_value <= 0:
+        return {"available": False,
+                "reason": f"the equity value is {equity_value}, so a discount against it has no "
+                          f"meaning; a non-positive valuation is a refusal, not a 100% discount",
+                "discount_to_value": None, "upside_to_price": None}
+    if market_cap <= 0:
+        return {"available": False,
+                "reason": "market capitalisation is not positive, so there is no price to "
+                          "compare against",
+                "discount_to_value": None, "upside_to_price": None}
+
+    alignment_days = None
+    if value_as_of is not None and cap_as_of is not None:
+        alignment_days = abs((naive_utc(value_as_of) - naive_utc(cap_as_of)).days)
+        if alignment_days > MAX_VALUATION_ALIGNMENT_DAYS:
+            return {"available": False,
+                    "reason": f"the valuation and the market capitalisation are "
+                              f"{alignment_days} days apart, beyond the "
+                              f"{MAX_VALUATION_ALIGNMENT_DAYS}-day alignment limit; the gap "
+                              f"between them would absorb any buyback, issuance or price move "
+                              f"in between",
+                    "discount_to_value": None, "upside_to_price": None,
+                    "alignment_days": alignment_days}
+    else:
+        return {"available": False,
+                "reason": "one or both sides carry no timestamp, so the comparison cannot be "
+                          "shown to describe the same moment",
+                "discount_to_value": None, "upside_to_price": None}
+
+    return {
+        "available": True,
+        "basis": "equity value against market capitalisation — NOT enterprise value",
+        "discount_to_value": (equity_value - market_cap) / equity_value,
+        "discount_denominator": "the estimated equity value",
+        "upside_to_price": (equity_value - market_cap) / market_cap,
+        "upside_denominator": "the current market capitalisation",
+        "equity_value": equity_value, "market_cap": market_cap,
+        "value_as_of": naive_utc(value_as_of).isoformat(),
+        "cap_as_of": naive_utc(cap_as_of).isoformat(),
+        "alignment_days": alignment_days,
+        "per_share": "NOT PROVIDED. No reliable share count is stored, so this aggregate "
+                     "cannot be converted into a per-share entry target, and is not comparable "
+                     "across a share issuance.",
+    }
 
 
 #: A statement series older than this in RETRIEVAL cannot support an actionable entry state.

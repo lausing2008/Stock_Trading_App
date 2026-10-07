@@ -74,15 +74,40 @@ function Row({ e }: { e: QvEvaluation }) {
       </div>
       {open && (
         <div style={{ marginTop: '9px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          {/* PASSING GATES ARE SHOWN TOO. A reader who only sees the failures takes the
+              passes as endorsements, which is exactly what the labels exist to prevent. */}
+          {e.gates.filter(g => g.status === 'pass').map(g => (
+            <div key={g.gate} style={{ borderLeft: '2px solid rgba(52,211,153,0.35)',
+                                       paddingLeft: '10px' }}>
+              <div style={{ fontSize: '12px', color: '#e2e8f0', fontWeight: 600 }}>
+                {g.label ?? GATE_TITLE[g.gate] ?? g.gate} <Pill s={g.status} /></div>
+              {g.establishes && (
+                <div style={{ fontSize: '12px', color: '#cbd5e1', lineHeight: 1.5,
+                              marginTop: '3px' }}>Establishes: {g.establishes}</div>
+              )}
+              {g.does_not_establish && (
+                <div style={{ fontSize: '11.5px', color: '#fcd34d', lineHeight: 1.5,
+                              marginTop: '4px' }}>
+                  Does not establish: {g.does_not_establish}
+                </div>
+              )}
+            </div>
+          ))}
           {e.gates.filter(g => g.status !== 'pass').map(g => (
             <div key={g.gate} style={{ borderLeft: '2px solid rgba(234,179,8,0.35)',
                                        paddingLeft: '10px' }}>
               <div style={{ fontSize: '12px', color: '#e2e8f0', fontWeight: 600 }}>
-                {GATE_TITLE[g.gate] ?? g.gate} <Pill s={g.status} /></div>
+                {g.label ?? GATE_TITLE[g.gate] ?? g.gate} <Pill s={g.status} /></div>
               {g.reasons.map((r, i) => (
                 <div key={i} style={{ fontSize: '12px', color: '#cbd5e1', lineHeight: 1.5,
                                       marginTop: '3px' }}>{r}</div>
               ))}
+              {g.does_not_establish && (
+                <div style={{ fontSize: '11.5px', color: '#fcd34d', lineHeight: 1.5,
+                              marginTop: '4px' }}>
+                  Does not establish: {g.does_not_establish}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -167,7 +192,7 @@ export default function QualityValuePage() {
                   {Object.entries(data.gate_coverage).map(([gate, c]) => (
                     <tr key={gate} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
                       <td style={{ padding: '9px 12px', color: '#e2e8f0', fontWeight: 600 }}>
-                        {GATE_TITLE[gate] ?? gate}</td>
+                        {data.gate_claims?.[gate]?.label ?? GATE_TITLE[gate] ?? gate}</td>
                       {(['pass', 'fail', 'unknown', 'blocked'] as QvGateStatus[]).map(s => (
                         <td key={s} style={{ padding: '9px 12px', textAlign: 'right',
                                              color: c[s] ? STATUS_STYLE[s].fg : '#475569',
@@ -217,8 +242,17 @@ export default function QualityValuePage() {
                                       lineHeight: 1.5 }}>{n}</div>
               ))}
               <div style={{ fontSize: '11.5px', color: '#475569' }}>
-                Evaluated at {new Date(data.as_of).toLocaleString()} · mode: {data.mode}
+                Cutoff {data.cutoff ? new Date(data.cutoff).toLocaleString() : '—'} · mode{' '}
+                {data.mode} · policy {data.policy_version} ({data.policy_fingerprint})
+                {typeof data.stored_new === 'number' && <> · {data.stored_new} new evaluation(s)
+                  stored</>}
               </div>
+              {!!data.persist_errors?.length && (
+                <div style={{ fontSize: '11.5px', color: '#fca5a5' }}>
+                  {data.persist_errors.length} evaluation(s) could not be stored — this run is
+                  not a complete record: {data.persist_errors.slice(0, 5).join('; ')}
+                </div>
+              )}
             </div>
           </>
         )}

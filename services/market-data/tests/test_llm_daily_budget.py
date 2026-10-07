@@ -125,7 +125,47 @@ def test_the_relevance_block_cannot_blank_the_whole_panel():
     i_rel = seg.index("relevance_rows = session.execute")
     i_exc = seg.index("llm_usage.relevance_failed")
     assert i_try < i_rel < i_exc, "the relevance query must be inside a guarded block"
-    assert '"error": str(_rel_exc)' in seg, "the failure is reported, not swallowed silently"
+    assert '"error": f"{type(_rel_exc).__name__}' in seg, \
+        "the failure is reported with its type, not swallowed silently"
+
+
+def test_a_failed_relevance_query_reports_unavailable_rather_than_zero():
+    """A ZERO IS A MEASUREMENT. The first version of this fallback returned
+    `calls_with_relevance_data: 0`, which a reader — and any aggregation over it — takes as
+    "measured, and there were none". That is the falsy-zero mistake this codebase has fixed
+    repeatedly elsewhere. Every count must be None, and `available` must say so."""
+    seg = _ADMIN[_ADMIN.index("except Exception as _rel_exc:"):]
+    seg = seg[:seg.index("# DAILY BUDGET")]
+    assert '"available": False' in seg
+    for key in ("classified_articles", "unique_articles", "repeat_classifications",
+                "tracked", "market_context", "out_of_scope", "calls_with_relevance_data"):
+        assert f'"{key}": None' in seg, f"{key} must be None on failure, never a number"
+    # COMMENTS STRIPPED FIRST. The previous form of this check matched the explanatory
+    # comment directly above the fallback, which quotes the old `calls_with_relevance_data: 0`
+    # — a test passing on its own prose, for the fourth time in this codebase.
+    import re
+    code = "\n".join(ln for ln in seg.splitlines() if not ln.strip().startswith("#"))
+    numeric = re.findall(r'"(\w+)":\s*(-?\d+(?:\.\d+)?)\s*[,}]', code)
+    assert not numeric, f"no count in the failure path may be a numeric literal: {numeric}"
+    assert "not zero" in seg, "the note must say unavailable, not absent"
+
+
+def test_the_successful_path_marks_itself_available():
+    """Without this, the renderer cannot tell a real result from the failure shape."""
+    seg = _ADMIN[_ADMIN.index("relevance = {"):]
+    assert seg[:seg.index("}")].count('"available": True') == 1
+
+
+def test_the_dashboard_renders_unavailable_relevance_instead_of_hiding_it():
+    """Hiding the section makes a broken query indistinguishable from a quiet period."""
+    health = (pathlib.Path(__file__).resolve().parents[3] / "frontend" / "src" / "pages"
+              / "admin-health.tsx").read_text()
+    assert "relevance.available === false" in health, \
+        "the unavailable state must have its own branch"
+    assert "UNAVAILABLE, NOT ZERO" in health
+    i_unavail = health.index("relevance.available === false")
+    i_counts = health.index("relevance.available !== false")
+    assert i_unavail < i_counts, "the unavailable branch must precede the counts branch"
 
 
 _HEALTH = (pathlib.Path(__file__).resolve().parents[3] / "frontend" / "src" / "pages"
