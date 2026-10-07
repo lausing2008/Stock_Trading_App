@@ -58,13 +58,21 @@ def setups(market: str = Query("ALL", pattern="^(ALL|US|HK)$"),
     No quality evaluation is created or reused by this endpoint.
     """
     from zoneinfo import ZoneInfo
-    from ..intel_reports.direction_screen import assess, select_setups, POLICY
+    from ..intel_reports.direction_screen import (assess, select_setups, POLICY,
+                                                  classify_instrument)
+    from db import FinancialStatement
     now = datetime.now(timezone.utc)
     wanted = {s.strip().upper() for s in (symbols or "").split(",") if s.strip()}
     output, session_dates = [], {}
     with SessionLocal() as session:
         stocks = session.execute(select(Stock).where(
             Stock.active.is_(True), Stock.delisted.is_(False))).scalars().all()
+        # ONE batched lookup, not a query per row. Statements are the only signal with no
+        # observed counterexample (0 of 189 carry them without a sector), so they lead the
+        # precedence in classify_instrument().
+        with_statements = {r[0] for r in session.execute(
+            select(FinancialStatement.symbol)
+            .where(FinancialStatement.period_type == "annual").distinct()).all()}
         for venue, tz in (("US", "America/New_York"), ("HK", "Asia/Hong_Kong")):
             if market not in ("ALL", venue):
                 continue
@@ -107,6 +115,12 @@ def setups(market: str = Query("ALL", pattern="^(ALL|US|HK)$"),
                 output.append({"symbol": stock.symbol, "name": stock.name,
                                "market": venue, "sector": stock.sector,
                                "currency": stock.currency,
+                               # A fund's break is a statement about its basket, and a
+                               # leveraged fund's about a daily-reset multiple of one.
+                               "instrument": classify_instrument(
+                                   symbol=stock.symbol, name=stock.name,
+                                   sector=stock.sector, industry=stock.industry,
+                                   has_annual_statements=stock.symbol in with_statements),
                                "setup": assess(grouped.get(stock.id, []), days)})
     filtered = [r for r in output if (direction == "all" or r["setup"]["direction"] == direction)
                 and (not sector or r["sector"] == sector)]
@@ -114,9 +128,13 @@ def setups(market: str = Query("ALL", pattern="^(ALL|US|HK)$"),
             "scanned": len(output), "matching": len(filtered),
             "calendar_available": now.year <= MIN_COVERAGE_YEAR,
             "sectors": sorted({r["sector"] for r in output if r["sector"]}),
+            "instrument_counts": {t: sum(1 for r in output if r["instrument"]["type"] == t)
+                                  for t in ("operating_company", "fund", "unverified")},
             "rows": select_setups(output, market, direction, limit, sector),
             "note": "Up to the selected limit PER market among active platform listings, not the whole exchange. "
-                    "Includes funds where instrument type is unverified. Latest local day excluded. "
+                    "Each row carries its instrument type and the basis for it: operating "
+                    "company, fund, or unverified where the platform cannot establish either. "
+                    "Latest local day excluded. "
                     "Order: observed range breaks, boundary watches, inside range, unknown; "
                     "then relative volume descending and boundary distance ascending. "
                     "Rules are uncalibrated: no high-chance claim or probability. "

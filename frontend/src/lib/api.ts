@@ -6,7 +6,12 @@ export type QvGateStatus = string;
 export type DirectionScreen = {
   policy: string; as_of: string; scanned: number; matching: number; note: string;
   calendar_available: boolean; sectors: string[]; session_dates: Record<string, string>;
+  instrument_counts?: Record<string, number>;
   rows: { symbol: string; name: string; market: string; sector?: string; currency: string;
+    // There is no is_etf column; the type is INFERRED and travels with the evidence that
+    // produced it. "unverified" is a real answer, not a default.
+    instrument?: { type: 'operating_company' | 'fund' | 'unverified';
+                   leveraged?: boolean; basis?: string };
     setup: { direction: string; label: string; strategy: string; factors: string[];
       close?: number; support?: number; resistance?: number; session?: string;
       volume_ratio?: number | null; limitations?: string[] } }[];

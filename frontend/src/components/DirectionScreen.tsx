@@ -1,11 +1,35 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import useSWR from 'swr';
-import { api } from '@/lib/api';
+import { api, type DirectionScreen as DirectionScreenData } from '@/lib/api';
+type DirectionScreenRow = DirectionScreenData['rows'][number];
 
 const control = { background: '#111827', color: '#e2e8f0', border: '1px solid #334155',
   borderRadius: 6, padding: '7px 9px' };
 
+const GUIDE_KEY = 'qv.directionScreen.guideOpen';
+
+/** Open the first time, then remember what the reader chose.
+ *
+ *  localStorage can be absent or throw — a private window, blocked site data — so every read
+ *  and write is guarded and the fallback is OPEN. Defaulting closed on a storage error would
+ *  hide the guide from exactly the readers whose browser told us least about them.
+ */
+function readGuideOpen(): boolean {
+  try {
+    const v = window.localStorage.getItem(GUIDE_KEY);
+    return v === null ? true : v === '1';
+  } catch { return true; }
+}
+
 function SetupGuide() {
+  const [open, setOpen] = useState(true);
+  // Read after mount: the server render has no localStorage, and reading during render would
+  // produce markup that disagrees with the client.
+  useEffect(() => { setOpen(readGuideOpen()); }, []);
+  const remember = (next: boolean) => {
+    setOpen(next);
+    try { window.localStorage.setItem(GUIDE_KEY, next ? '1' : '0'); } catch { /* not fatal */ }
+  };
   const rows = [
     ['Breakout watch', 'Upward setup — awaiting break',
       'The close is still inside the range, within 2% of resistance and above the prior 20-close average.',
@@ -28,7 +52,8 @@ function SetupGuide() {
   ];
   const cell = { padding: '9px 10px', textAlign: 'left' as const,
     verticalAlign: 'top', borderBottom: '1px solid #253047' };
-  return <details open style={{ border: '1px solid #334155', borderRadius: 8,
+  return <details open={open} onToggle={e => remember((e.currentTarget as HTMLDetailsElement).open)}
+    style={{ border: '1px solid #334155', borderRadius: 8,
     padding: 12, marginBottom: 16, fontSize: 12, lineHeight: 1.55 }}>
     <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 14 }}>
       What is a setup? How to read these labels
@@ -62,6 +87,29 @@ function SetupGuide() {
       today’s local session is excluded. The 5–20-session horizon is a research window, not a
       deadline for a move. Company quality, valuation and event risk still need separate review.</p>
   </details>;
+}
+
+/* INSTRUMENT TYPE BESIDE THE SYMBOL. The shortlist is not all operating companies — QQQM and
+   QLD appear in it — and a fund's range break is a statement about its basket, not a business.
+   A leveraged fund's is a statement about a daily-reset multiple of one, which §30 of the
+   intelligence spec says must not be read like an ordinary 1x ETF. The basis travels in the
+   tooltip because the type is inferred, not looked up. */
+const TAG: Record<string, { text: string; fg: string; bg: string }> = {
+  operating_company: { text: 'Company', fg: '#94a3b8', bg: 'rgba(148,163,184,0.12)' },
+  fund:              { text: 'Fund',    fg: '#7dd3fc', bg: 'rgba(56,189,248,0.14)' },
+  unverified:        { text: 'Type unverified', fg: '#fdba74', bg: 'rgba(251,146,60,0.14)' },
+};
+
+function InstrumentTag({ i }: { i: NonNullable<DirectionScreenRow['instrument']> }) {
+  const t = TAG[i.type] ?? TAG.unverified;
+  const pill = { marginLeft: 6, padding: '1px 6px', borderRadius: 4, fontSize: 10,
+    fontWeight: 700, letterSpacing: '0.04em', whiteSpace: 'nowrap' as const };
+  return <>
+    <span title={i.basis} style={{ ...pill, color: t.fg, background: t.bg }}>{t.text}</span>
+    {i.leveraged && <span title="Daily-reset leveraged or inverse fund — its return is a
+ multiple of a daily move, not of the period." style={{ ...pill, color: '#fca5a5',
+      background: 'rgba(248,113,113,0.16)' }}>Leveraged</span>}
+  </>;
 }
 
 export default function DirectionScreen({ symbols }: { symbols: string }) {
@@ -114,6 +162,7 @@ export default function DirectionScreen({ symbols }: { symbols: string }) {
         borderRadius: 8, padding: 12, marginBottom: 8 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
           <strong>{r.symbol} · {r.name} <small>({r.market})</small></strong>
+          {r.instrument && <InstrumentTag i={r.instrument} />}
           <strong style={{ color: r.setup.direction.startsWith('breakout') ? '#6ee7b7'
             : r.setup.direction.startsWith('breakdown') ? '#fca5a5' : '#cbd5e1' }}>{r.setup.label}</strong>
         </div>

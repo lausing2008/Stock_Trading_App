@@ -42,9 +42,16 @@ def test_endpoint_excludes_forming_bars_and_ranks_full_population(monkeypatch):
         market = Column(String)
         name = Column(String)
         sector = Column(String)
+        industry = Column(String)
         currency = Column(String)
         active = Column(Boolean)
         delisted = Column(Boolean)
+
+    class FinancialStatement(Base):
+        __tablename__ = "financial_statements"
+        id = Column(Integer, primary_key=True)
+        symbol = Column(String)
+        period_type = Column(String)
 
     class Price(Base):
         __tablename__ = "prices"
@@ -64,6 +71,10 @@ def test_endpoint_excludes_forming_bars_and_ranks_full_population(monkeypatch):
     monkeypatch.setattr(routes, "SessionLocal", factory)
     monkeypatch.setattr(routes, "Stock", Stock)
     monkeypatch.setattr(routes, "Price", Price)
+    # The route imports FinancialStatement from `db` at call time for the instrument-type
+    # lookup; the conftest stubs `db` as a MagicMock, so supply the real SQLite model.
+    monkeypatch.setitem(sys.modules, "db",
+                        SimpleNamespace(FinancialStatement=FinancialStatement))
     monkeypatch.setattr(routes, "TimeFrame", SimpleNamespace(D1="1d"))
     monkeypatch.setattr(routes, "datetime", Clock)
     monkeypatch.setattr(routes, "is_trading_day", calendar.is_trading_day)
@@ -72,7 +83,8 @@ def test_endpoint_excludes_forming_bars_and_ranks_full_population(monkeypatch):
         for i in range(206):
             venue = "HK" if i == 205 else "US"
             session.add(Stock(id=i + 1, symbol=f"S{i:03}", market=venue, name="Test",
-                              sector="Tech", currency="HKD" if venue == "HK" else "USD",
+                              sector="Tech", industry="Semis",
+                              currency="HKD" if venue == "HK" else "USD",
                               active=i != 0, delisted=False))
             days, day = [], datetime(2026, 10, 5, 12, tzinfo=timezone.utc)
             while len(days) < 21:
@@ -93,6 +105,11 @@ def test_endpoint_excludes_forming_bars_and_ranks_full_population(monkeypatch):
     assert len(result["rows"]) == 21  # 20 US plus one HK
     assert result["rows"][0]["symbol"] == "S204"  # ranked before truncating
     assert all(r["setup"]["direction"] == "breakout" for r in result["rows"])
+    # Every row declares what kind of instrument it is, and why. A sector is present here, so
+    # these classify as operating companies on that basis rather than on statements.
+    assert all(r["instrument"]["type"] == "operating_company" for r in result["rows"])
+    assert all(r["instrument"]["basis"] for r in result["rows"])
+    assert result["instrument_counts"]["operating_company"] == 205
     assert all(r["setup"]["close"] == 106 for r in result["rows"])
     assert all(r["setup"]["resistance"] == 105 for r in result["rows"])
     engine.dispose()

@@ -84,3 +84,65 @@ def select_setups(rows: list[dict], market="ALL", direction="all", limit=20, sec
                     r["symbol"])
         selected.extend(sorted(candidates, key=key)[:limit])
     return selected
+
+
+# =====================================================================================
+# Instrument type — because this shortlist is not all operating companies.
+#
+# The screen visibly returns QQQM and QLD. A reader scanning "Up — range break observed"
+# down a list has no way to tell a single company from an index fund, and the two warrant
+# different reading: a fund's break is a statement about its basket, and a LEVERAGED fund's
+# is a statement about a daily-reset multiple of one.
+#
+# THERE IS NO is_etf COLUMN, so the type is inferred — and the inference is reported with the
+# basis that produced it rather than asserted. Measured against the 189 active listings on
+# 2026-10-07, which is what fixes the precedence below:
+#
+#   * 0 symbols have annual statements but no sector/industry. Statements are therefore a
+#     SUFFICIENT signal for an operating company, with no observed counterexample.
+#   * 7 symbols have NO statements but DO carry sector/industry — AMD, AMGN, ASTS, COHR,
+#     COIN, MXL, TXN. All are plainly operating companies, so "no statements" alone would
+#     have mislabelled seven of them as funds.
+#   * 27 have neither. Those split into real funds (DIA, GDX, GLD, QLD, QQQ, QQQM...) and
+#     companies whose identity was never resolved (AAOI, CBRS, HOOD, MUU...). Name matching
+#     separates them where it can, and where it cannot the answer is UNVERIFIED — not a
+#     guess in either direction.
+# =====================================================================================
+
+#: Name fragments that identify a pooled vehicle. Matched case-insensitively on whole words
+#: where ambiguity would otherwise bite: "trust" appears in REIT names, so it only counts
+#: alongside another fund marker.
+_FUND_WORDS = ("etf", "fund", "tracker", "index", "shares", "spdr", "ishares",
+               "invesco", "vaneck", "proshares", "direxion", "schwab u.s.", "amplify")
+#: A daily-reset leveraged or inverse vehicle. §30 of the intelligence spec is explicit that
+#: SOXL must not be treated like an ordinary 1x ETF; the same applies to QLD and TQQQ.
+_LEVERAGE_WORDS = ("ultrapro", "ultra ", "2x", "3x", "leveraged", "daily semiconductor",
+                   "bull 3", "bear 3", "inverse")
+
+
+def classify_instrument(*, symbol: str, name: str | None, sector: str | None,
+                        industry: str | None, has_annual_statements: bool) -> dict:
+    """What kind of thing this row is, and on what basis. Pure.
+
+    Returns `type` in {operating_company, fund, unverified}, a `basis` naming the evidence,
+    and `leveraged` where the name indicates a daily-reset multiple. `unverified` is a real
+    answer and must render as one — it is not a quiet default for "probably a company".
+    """
+    n = (name or "").strip()
+    nl = n.lower()
+    leveraged = any(w in nl for w in _LEVERAGE_WORDS)
+
+    if has_annual_statements:
+        return {"type": "operating_company", "leveraged": False,
+                "basis": "annual financial statements are stored for this issuer"}
+    if sector or industry:
+        return {"type": "operating_company", "leveraged": False,
+                "basis": f"classified under sector/industry ({sector or industry}); no "
+                         f"statements stored yet"}
+    if nl and nl != symbol.lower() and any(w in nl for w in _FUND_WORDS):
+        return {"type": "fund", "leveraged": leveraged,
+                "basis": f"name identifies a pooled vehicle{' with a daily-reset multiple'
+                          if leveraged else ''}; no statements and no sector"}
+    return {"type": "unverified", "leveraged": leveraged,
+            "basis": "no statements, no sector or industry, and the name does not identify "
+                     "a fund — the instrument type is not established either way"}
