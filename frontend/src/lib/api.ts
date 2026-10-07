@@ -3,6 +3,14 @@
 // would make a new state a compile error in a build that never ships, while the running
 // page silently mislabelled it.
 export type QvGateStatus = string;
+export type DirectionScreen = {
+  policy: string; as_of: string; scanned: number; matching: number; note: string;
+  calendar_available: boolean; sectors: string[]; session_dates: Record<string, string>;
+  rows: { symbol: string; name: string; market: string; sector?: string; currency: string;
+    setup: { direction: string; label: string; strategy: string; factors: string[];
+      close?: number; support?: number; resistance?: number; session?: string;
+      volume_ratio?: number | null; limitations?: string[] } }[];
+};
 export type QvAssessment = Record<string, unknown> & {
   verdict?: string; version?: number; cutoff?: string; summary?: string; unresolved?: string;
   evidence_digest?: string; author?: string;
@@ -213,6 +221,8 @@ export const api = {
     request<QualityValueReport>(
       `/quality-value/evaluations${symbols ? `?symbols=${encodeURIComponent(symbols)}` : ''}`,
       undefined, 60_000),
+  directionScreen: (params: string) =>
+    request<DirectionScreen>(`/quality-value/setups?${params}`, undefined, 60_000),
   intelContract: () => request<{ contract_version: number; report_types: string[] }>(`/intel/contract`),
   generateIntelReport: (body: { report_type: string; symbol?: string; market?: string; event_id?: number }) =>
     // Generation walks the whole covered universe for breadth and leadership, so it is slower

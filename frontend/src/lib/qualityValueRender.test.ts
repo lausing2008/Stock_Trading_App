@@ -76,18 +76,15 @@ describe('the status type does not close a set the backend owns', () => {
 
 describe('reading order: the conclusion sits above the audit detail', () => {
   it('renders the summary before the gate detail', () => {
-    const iSummary = PAGE.indexOf('{e.summary && <Summary s={e.summary} />}');
+    const iSummary = PAGE.indexOf('{open && e.summary && <Summary s={e.summary} />}');
     const iDetail = PAGE.indexOf("{e.gates.filter(g => g.status === 'pass')");
     expect(iSummary).toBeGreaterThan(-1);
     expect(iSummary).toBeLessThan(iDetail);
   });
 
-  it('shows the summary without requiring the row to be expanded', () => {
-    // It must sit OUTSIDE the `open &&` block, or the conclusion is still behind a click.
-    const before = PAGE.slice(0, PAGE.indexOf('{e.summary && <Summary'));
-    const opens = (before.match(/\{open && \(/g) || []).length;
-    const closes = (before.match(/\)\}\s*<\/div>\s*\);\s*\}/g) || []).length;
-    expect(opens).toBe(0);
+  it('leads with compact price setups and keeps the lengthy research behind expansion', () => {
+    expect(PAGE).toContain('<DirectionScreen symbols={query} />');
+    expect(PAGE).toContain('{open && e.summary && <Summary s={e.summary} />}');
   });
 
   it('does not render a connected assessment twice', () => {

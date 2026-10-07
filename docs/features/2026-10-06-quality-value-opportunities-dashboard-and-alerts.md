@@ -141,6 +141,11 @@ Compare quality-only, quality+value, and quality+value+entry versions on the sam
 
 ## 10. Research basis and open decisions
 
+The requested US/HK filters, per-market shortlists and concise breakout/breakdown summaries
+are specified in [Direction screen and market shortlists](2026-10-06-direction-screen-and-market-shortlists.md).
+That local implementation is a separate technical research screen; it does not relax the
+quality/value gates or enable email.
+
 This is our proposed design, not a reproduction of a vendor rating. Morningstar's methodology separates competitive advantage, fair value and uncertainty; its discussion supports keeping those dimensions distinct, not importing its proprietary ratings without permission: [economic moat methodology](https://www.morningstar.com/business/insights/blog/equity-economic-moat-ratings), [uncertainty](https://www.morningstar.com/stocks/an-introduction-morningstar-uncertainty-rating).
 
 Portfolio context should respect differing horizons/risk tolerance and concentration: [Investor.gov asset allocation and diversification](https://www.investor.gov/introduction-investing/getting-started/asset-allocation). Diversification is not a guarantee against losses.

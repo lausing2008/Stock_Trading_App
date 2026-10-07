@@ -12,6 +12,7 @@
 import { useMemo, useState } from 'react';
 import Head from 'next/head';
 import useSWR from 'swr';
+import DirectionScreen from '@/components/DirectionScreen';
 import { api, type QualityValueReport, type QvEvaluation, type QvGateStatus,
          type QvAssessment, type QvSummary } from '@/lib/api';
 import { coverageRows, statusColumns, badgeLabel, badgeRemedy,
@@ -240,7 +241,7 @@ function Row({ e, catalog }: { e: QvEvaluation; catalog?: Catalog }) {
           {open ? 'Hide evidence' : 'Show evidence'}
         </button>
       </div>
-      {e.summary && <Summary s={e.summary} />}
+      {open && e.summary && <Summary s={e.summary} />}
       {open && (
         <div style={{ marginTop: '9px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {/* PASSING GATES ARE SHOWN TOO. A reader who only sees the failures takes the
@@ -343,6 +344,8 @@ export default function QualityValuePage() {
             background: 'linear-gradient(135deg, #4f46e5, #6366f1)' }}>Evaluate</button>
         </div>
 
+        <DirectionScreen symbols={query} />
+
         {err && (
           <div style={{ padding: '13px 15px', borderRadius: '10px', fontSize: '13px',
                         background: 'rgba(248,113,113,0.08)', color: '#fca5a5',
@@ -354,7 +357,10 @@ export default function QualityValuePage() {
           <div style={{ fontSize: '13px', color: '#64748b' }}>Evaluating…</div>)}
 
         {data && (
-          <>
+          <details>
+            <summary style={{ color: '#a5b4fc', cursor: 'pointer', padding: '12px 0' }}>
+              Company quality &amp; value evidence ({data.evaluated} evaluated; separate from price setups)
+            </summary>
             <H>Evidence coverage — which gates the stored data can actually decide</H>
             <div style={{ borderRadius: '11px', border: '1px solid rgba(255,255,255,0.07)',
                           overflowX: 'auto' }}>
@@ -475,7 +481,7 @@ export default function QualityValuePage() {
                 </div>
               )}
             </div>
-          </>
+          </details>
         )}
       </div>
     </>

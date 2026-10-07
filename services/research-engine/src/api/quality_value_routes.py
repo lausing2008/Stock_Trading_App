@@ -21,6 +21,7 @@ from sqlalchemy import select, func
 
 from common.jwt_auth import get_current_username
 from common.logging import get_logger
+from common.market_calendar import is_trading_day, MIN_COVERAGE_YEAR
 from db import SessionLocal, Stock, FinancialStatement, Price, TimeFrame
 
 from ..intel_reports.quality_value import (
@@ -42,6 +43,84 @@ router = APIRouter(prefix="/quality-value", tags=["quality-value"])
 #: symbols' price history on a page view is a cost nobody asked for while every result is
 #: `insufficient_evidence`.
 MAX_SYMBOLS = 200
+
+
+@router.get("/setups")
+def setups(market: str = Query("ALL", pattern="^(ALL|US|HK)$"),
+           direction: str = Query("all", pattern="^(all|breakout|breakdown|breakout_watch|breakdown_watch|range|unknown)$"),
+           limit: int = Query(20, ge=1, le=100), sector: str | None = None,
+           symbols: str | None = None,
+           _user: str = Depends(get_current_username)) -> dict:
+    """Read-only technical screen over ALL active listings, before per-market ranking.
+
+    Conservatively exclude today's local session even after close: intraday ingest can
+    overwrite a daily bar. This intentionally trades freshness for a consistent EOD screen.
+    No quality evaluation is created or reused by this endpoint.
+    """
+    from zoneinfo import ZoneInfo
+    from ..intel_reports.direction_screen import assess, select_setups, POLICY
+    now = datetime.now(timezone.utc)
+    wanted = {s.strip().upper() for s in (symbols or "").split(",") if s.strip()}
+    output, session_dates = [], {}
+    with SessionLocal() as session:
+        stocks = session.execute(select(Stock).where(
+            Stock.active.is_(True), Stock.delisted.is_(False))).scalars().all()
+        for venue, tz in (("US", "America/New_York"), ("HK", "Asia/Hong_Kong")):
+            if market not in ("ALL", venue):
+                continue
+            local = now.astimezone(ZoneInfo(tz))
+            # Calendar exhaustion must not manufacture a completed-session decision.
+            if local.year > MIN_COVERAGE_YEAR:
+                continue
+            day = local.replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=1)
+            days = []
+            while len(days) < 21:
+                if is_trading_day(venue, day):
+                    days.append(day.date().isoformat())
+                day -= timedelta(days=1)
+            days.reverse()
+            session_dates[venue] = days[-1]
+            members = [s for s in stocks if getattr(s.market, "value", s.market) == venue
+                       and (not wanted or s.symbol in wanted)]
+            if not members:
+                continue
+            # Daily ts dates are stored session labels, not intraday instants. Window rank
+            # bounds data per issuer while avoiding an alphabetical universe truncation.
+            ranked = select(
+                Price.stock_id, Price.ts, Price.high, Price.low, Price.close,
+                Price.volume, Price.adj_close,
+                func.row_number().over(partition_by=Price.stock_id,
+                                       order_by=Price.ts.desc()).label("rn")
+            ).where(Price.stock_id.in_([s.id for s in members]),
+                    Price.timeframe == TimeFrame.D1,
+                    Price.ts >= datetime.fromisoformat(days[0]),
+                    Price.ts < datetime.fromisoformat(days[-1]) + timedelta(days=1)
+                    ).subquery()
+            prices = session.execute(select(ranked).where(ranked.c.rn <= 21)
+                                     .order_by(ranked.c.ts)).mappings().all()
+            grouped = {}
+            for r in prices:
+                grouped.setdefault(r["stock_id"], []).append({
+                    "date": r["ts"].date().isoformat(),
+                    **{k: r[k] for k in ("high", "low", "close", "volume", "adj_close")}})
+            for stock in members:
+                output.append({"symbol": stock.symbol, "name": stock.name,
+                               "market": venue, "sector": stock.sector,
+                               "currency": stock.currency,
+                               "setup": assess(grouped.get(stock.id, []), days)})
+    filtered = [r for r in output if (direction == "all" or r["setup"]["direction"] == direction)
+                and (not sector or r["sector"] == sector)]
+    return {"policy": POLICY, "as_of": now.isoformat(), "session_dates": session_dates,
+            "scanned": len(output), "matching": len(filtered),
+            "calendar_available": now.year <= MIN_COVERAGE_YEAR,
+            "sectors": sorted({r["sector"] for r in output if r["sector"]}),
+            "rows": select_setups(output, market, direction, limit, sector),
+            "note": "Up to the selected limit PER market among active platform listings, not the whole exchange. "
+                    "Includes funds where instrument type is unverified. Latest local day excluded. "
+                    "Order: observed range breaks, boundary watches, inside range, unknown; "
+                    "then relative volume descending and boundary distance ascending. "
+                    "Rules are uncalibrated: no high-chance claim or probability. "
+                    "This screen does not change Quality & Value eligibility."}
 
 
 def _statement_evidence(session, symbol: str, now: datetime) -> dict:
