@@ -30,6 +30,31 @@ log = get_logger("research-engine.prospective_capture")
 HORIZON_DAYS = 120
 
 
+#: Forward-looking analyst quantities that `fundamentals` refreshes IN PLACE.
+#:
+#: MEASURED AGAINST PRODUCTION, 2026-10-06, and this is why they are here. The obvious source
+#: for a forward consensus — `earnings_events.eps_estimate` — turned out to hold 676 rows for
+#: events that have ALREADY REPORTED and ZERO for all 129 scheduled ones, so it is written at or
+#: after the release and there is nothing prospective in it. `fundamentals_snapshot.eps_estimate`
+#: exists as a column and is populated in 0 of 2,476 rows.
+#:
+#: What IS both forward-looking and populated is the analyst target price (164 of 189 symbols)
+#: and the forward P/E (161 of 189) — and both are overwritten by every refresh, so today's
+#: values are unrecoverable tomorrow. That is exactly the property this module exists for.
+ANALYST_FORWARD_METRICS = {
+    # metric -> (column, units, what the number is and is not)
+    "analyst_target_price": (
+        "target_price", "currency_per_share",
+        "the provider's aggregated analyst price target. NO horizon is stored — the usual "
+        "convention is twelve months, but the provider does not say so here, and assuming it "
+        "would invent the one field that makes the number comparable over time"),
+    "forward_pe": (
+        "forward_pe", "ratio",
+        "price divided by a forward earnings estimate. The estimate itself is NOT stored, so "
+        "the denominator cannot be recovered, and neither its period nor its accounting basis "
+        "is known"),
+}
+
 #: What each metric is measured in, per the source. Declared rather than inferred: a number
 #: whose units are not recorded cannot later be compared with anything, and this platform has
 #: already come within one step of dividing an unlabelled estimate into an issuer figure.
@@ -85,6 +110,62 @@ def estimates_to_capture(event_rows, *, now: datetime, horizon_days: int = HORIZ
             "note": "accounting_basis is NULL for every row: the upstream source does not "
                     "record one. These estimates therefore cannot be compared with an "
                     "issuer-reported actual without crossing an unverified basis boundary."}
+
+
+def analyst_forwards_to_capture(rows, *, now: datetime) -> list:
+    """Snapshot rows for the forward analyst quantities. PURE — takes (symbol, fundamental).
+
+    These carry `accounting_basis=None` and no target period for the same reason as everywhere
+    else here: the provider does not state one, and writing a plausible value would fabricate
+    the field that decides whether the number can later be compared with anything.
+    """
+    now = naive_utc(now)
+    out = []
+    for symbol, f in rows:
+        for metric, (column, units, note) in ANALYST_FORWARD_METRICS.items():
+            value = getattr(f, column, None)
+            if value is None:
+                continue
+            out.append({
+                "symbol": symbol,
+                # NOT a fiscal period. These describe no reporting period at all, and labelling
+                # one would be the same mistake as calling a provider label a fiscal quarter.
+                "target_period": "no_stated_period",
+                "metric": metric, "units": units, "accounting_basis": None,
+                "provider": "fundamentals", "value": float(value),
+                "source_as_of": getattr(f, "fetched_at", None),
+                "captured_at": now,
+                "raw": {"column": column, "caveat": note},
+            })
+    return out
+
+
+def capture_analyst_forwards(session, *, now: datetime | None = None) -> dict:
+    """Snapshot today's analyst target price and forward P/E for every covered symbol."""
+    from db import Fundamental, Stock
+
+    now = naive_utc(now or datetime.now(timezone.utc))
+    rows = list(session.execute(
+        select(Stock.symbol, Fundamental)
+        .join(Fundamental, Fundamental.stock_id == Stock.id)
+        .where(Stock.delisted.is_(False))
+        .order_by(Stock.symbol, Fundamental.fetched_at.desc())
+        .distinct(Stock.symbol)).all())
+
+    plan = analyst_forwards_to_capture(rows, now=now)
+    captured = already = 0
+    for row in plan:
+        _id, created = capture_estimate(session, **row)
+        captured += 1 if created else 0
+        already += 0 if created else 1
+    out = {"symbols": len(rows), "captured": captured,
+           "already_captured_this_moment": already, "as_of": now.isoformat(),
+           "note": "No accounting basis and no horizon are stored for either metric, because "
+                   "the provider states neither. A target price with no horizon cannot be "
+                   "scored against an outcome date that was never declared."}
+    log.info("prospective_capture.analyst_forwards",
+             **{k: v for k, v in out.items() if k != "note"})
+    return out
 
 
 def capture_earnings_estimates(session, *, now: datetime | None = None,

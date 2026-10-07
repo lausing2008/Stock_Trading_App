@@ -97,6 +97,34 @@ revisions. Two refusals, both raising rather than skipping silently:
 The first print is never overwritten. A market reacted to the number published on the day; a
 later revision is a different fact, appended to `revisions` with what it supersedes.
 
+### The earnings arm captures nothing, and that is a finding, not a bug
+
+Running the job against production is what established this. Of 845 stored earnings events,
+676 carry an `eps_estimate` — and **every one of them has already reported**. All 129 scheduled
+events have none, and `revenue_estimate` is populated in 0 of 845. The column is therefore
+written at or after the release: there is no forward consensus in it to capture.
+`fundamentals_snapshot.eps_estimate` is populated in **0 of 2,476 rows**.
+
+So the platform holds no forward EPS or revenue consensus anywhere. The earnings arm is kept —
+it costs nothing and begins capturing the moment an upstream job writes one — but it currently
+returns `captured: 0`, and the endpoint says so rather than letting a zero look like success.
+
+### What the platform does hold forward, and is losing daily
+
+`fundamentals.target_price` (164 of 189 symbols) and `fundamentals.forward_pe` (161 of 189) are
+genuinely forward-looking, populated, and **overwritten by every refresh** — the same
+unrecoverability, on data that actually exists. `capture_analyst_forwards` snapshots both with
+the same discipline:
+
+- `target_period` is `"no_stated_period"`. A target price describes no reporting period, and
+  labelling one would repeat the fiscal-quarter mistake.
+- The target price carries its missing horizon as a caveat: twelve months is the convention, the
+  provider does not say so, and assuming it invents the field that makes the number comparable
+  over time.
+- The forward P/E records that **its denominator cannot be recovered** — the earnings estimate
+  behind it is not stored, so neither its period nor its basis is knowable.
+- A provider zero is captured, not dropped as missing.
+
 **Scheduling.** `capture_prospective_estimates` runs daily at 11:00 UTC, before the US open and
 ahead of the estimate-refresh jobs. `misfire_grace_time` is 2 hours, deliberately generous:
 unlike most jobs this one has no second chance, because the value it would have recorded is

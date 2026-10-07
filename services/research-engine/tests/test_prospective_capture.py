@@ -104,3 +104,74 @@ def test_the_result_states_why_these_cannot_be_compared_with_an_actual():
 
 def test_the_horizon_is_bounded_and_declared():
     assert _plan()["horizon_days"] == HORIZON_DAYS and HORIZON_DAYS > 0
+
+
+# ---- the forward quantities that actually exist -------------------------------------------
+# MEASURED 2026-10-06: `earnings_events.eps_estimate` holds 676 rows for ALREADY-REPORTED events
+# and 0 for all 129 scheduled ones, and `fundamentals_snapshot.eps_estimate` is populated in 0
+# of 2,476 rows. The analyst target price (164/189) and forward P/E (161/189) are the forward
+# quantities this platform really has — and they are overwritten by every refresh.
+
+from intel_reports.prospective_capture import (  # noqa: E402
+    analyst_forwards_to_capture, ANALYST_FORWARD_METRICS)
+
+
+class _F:
+    def __init__(self, target_price=None, forward_pe=None, fetched_at=None):
+        self.target_price, self.forward_pe, self.fetched_at = target_price, forward_pe, fetched_at
+
+
+def test_both_forward_metrics_are_captured_when_present():
+    out = analyst_forwards_to_capture([("MU", _F(target_price=220.0, forward_pe=11.4))], now=NOW)
+    assert {w["metric"] for w in out} == set(ANALYST_FORWARD_METRICS)
+
+
+def test_a_missing_metric_is_skipped_not_written_as_zero():
+    out = analyst_forwards_to_capture([("MU", _F(target_price=220.0))], now=NOW)
+    assert [w["metric"] for w in out] == ["analyst_target_price"]
+
+
+def test_no_fiscal_period_is_invented_for_a_quantity_that_has_none():
+    """A target price describes no reporting period; labelling one would fabricate it."""
+    w = analyst_forwards_to_capture([("MU", _F(target_price=220.0))], now=NOW)[0]
+    assert w["target_period"] == "no_stated_period"
+    assert "Q" not in w["target_period"] and "FY" not in w["target_period"]
+
+
+def test_the_missing_horizon_travels_with_the_target_price():
+    """Twelve months is the convention; the provider does not say so, and assuming it would
+    invent the field that makes the number comparable over time."""
+    w = analyst_forwards_to_capture([("MU", _F(target_price=220.0))], now=NOW)[0]
+    assert "NO horizon is stored" in w["raw"]["caveat"]
+
+
+def test_the_forward_pe_says_its_denominator_cannot_be_recovered():
+    w = [x for x in analyst_forwards_to_capture([("MU", _F(forward_pe=11.4))], now=NOW)][0]
+    assert "denominator cannot be recovered" in w["raw"]["caveat"]
+
+
+def test_neither_metric_claims_an_accounting_basis():
+    out = analyst_forwards_to_capture([("MU", _F(target_price=220.0, forward_pe=11.4))], now=NOW)
+    assert all(w["accounting_basis"] is None for w in out)
+    assert all("accounting_basis" in w for w in out)
+
+
+def test_the_two_metrics_have_different_units():
+    out = analyst_forwards_to_capture([("MU", _F(target_price=220.0, forward_pe=11.4))], now=NOW)
+    units = {w["metric"]: w["units"] for w in out}
+    assert units["analyst_target_price"] != units["forward_pe"]
+
+
+def test_the_providers_fetch_time_is_carried_as_source_as_of():
+    w = analyst_forwards_to_capture(
+        [("MU", _F(target_price=220.0, fetched_at=datetime(2026, 10, 5)))], now=NOW)[0]
+    assert w["source_as_of"] == datetime(2026, 10, 5)
+    assert w["captured_at"] == NOW and w["source_as_of"] != w["captured_at"]
+
+
+def test_a_zero_forward_value_is_captured_because_falsy_is_not_absent():
+    """A forward P/E of 0 is a real (if odd) provider value; absent is a different fact, and
+    conflating them is the falsy-zero bug class this codebase has fixed repeatedly."""
+    out = analyst_forwards_to_capture([("MU", _F(target_price=0.0, forward_pe=0.0))], now=NOW)
+    assert len(out) == 2, "a provider zero must be recorded, not dropped as missing"
+    assert all(w["value"] == 0.0 for w in out)

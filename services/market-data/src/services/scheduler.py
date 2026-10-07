@@ -10590,9 +10590,12 @@ def capture_prospective_estimates() -> None:
             headers={"Authorization": f"Bearer {_service_token()}"}, timeout=120)
         r.raise_for_status()
         body = r.json()
-        log.info("prospective_capture.done", captured=body.get("captured"),
-                 events=body.get("events_in_horizon"),
-                 skipped=body.get("skipped_no_estimate"))
+        ea, fw = body.get("earnings_estimates", {}), body.get("analyst_forwards", {})
+        log.info("prospective_capture.done",
+                 earnings_captured=ea.get("captured"),
+                 earnings_events=ea.get("events_in_horizon"),
+                 earnings_skipped=ea.get("skipped_no_estimate"),
+                 forwards_captured=fw.get("captured"), forward_symbols=fw.get("symbols"))
     except Exception as exc:
         log.error("prospective_capture.failed", error=str(exc)[:300])
 

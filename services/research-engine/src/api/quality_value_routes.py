@@ -29,7 +29,8 @@ from ..intel_reports.quality_value import (
     entry_condition_gate, naive_utc, policy_fingerprint)
 from ..intel_reports.quality_value_store import (
     record_evaluation, latest_evaluations, evaluation_history)
-from ..intel_reports.prospective_capture import capture_earnings_estimates
+from ..intel_reports.prospective_capture import (
+    capture_earnings_estimates, capture_analyst_forwards)
 
 log = get_logger("research-engine.quality_value")
 router = APIRouter(prefix="/quality-value", tags=["quality-value"])
@@ -217,4 +218,17 @@ def capture_estimates(_user: str = Depends(get_current_username)) -> dict:
     consensus as it stood today remains recoverable tomorrow.
     """
     with SessionLocal() as session:
-        return capture_earnings_estimates(session)
+        earnings = capture_earnings_estimates(session)
+        forwards = capture_analyst_forwards(session)
+        return {
+            "earnings_estimates": earnings,
+            "analyst_forwards": forwards,
+            "note": (
+                "MEASURED 2026-10-06: earnings_events.eps_estimate holds values only for "
+                "events that have ALREADY REPORTED (676 rows) and none for the 129 scheduled "
+                "ones, so the earnings arm will capture nothing until an upstream job writes "
+                "a forward consensus. It is left in place because it costs nothing and will "
+                "begin capturing the moment one does. The analyst arm captures what this "
+                "platform genuinely holds forward: target price and forward P/E, both "
+                "overwritten in place by every refresh."),
+        }
