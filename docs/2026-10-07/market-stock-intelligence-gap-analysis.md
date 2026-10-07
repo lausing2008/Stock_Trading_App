@@ -8,8 +8,14 @@ implementation". This document is the analysis and the architecture only. **No c
 commit implements any gap below.** Every status is evidence-backed: a claim of IMPLEMENTED
 names the file or the table and, where possible, the measured row count.
 
-**Headline:** of the spec's ~44 capability sections, **17 are implemented**, **16 are partial**,
-**6 are not implemented**, and **5 are blocked on data the platform cannot currently obtain**.
+**Headline:** of the 40 capability sections assessed, **17 are implemented**, **17 are partial**
+and **6 are not implemented** — 40, which reconciles. Separately, **5 data constraints** block
+specific sections; they are *not* added to those totals, because a blocker is a property of an
+input and cuts across several capabilities at once (the absent VIX series constrains §6 and §7;
+the absent bar timeframes constrain §17, §18 and §19).
+
+*(Corrected 2026-10-07 after review: the first version listed 17 sections under a "16 partial"
+heading and folded the five blockers into the capability totals, double-counting them.)*
 The platform is much further along than the spec assumes on provenance, options, earnings and
 risk — and further behind on market-level macro/liquidity and on the two things the spec calls
 "high-priority" and "especially important": estimate revisions (§14) and the memory/HBM module
@@ -50,7 +56,7 @@ risk — and further behind on market-level macro/liquidity and on the two thing
 | 6 | Volatility regime | VIX participates in position sizing (`vix_mult`) | **No VIX series is stored.** No VIX9D, VVIX, term structure or SKEW. No `LOW/NORMAL/ELEVATED/EXTREME` or `RISK_ON/RISK_OFF` state |
 | 7 | Macro | `cross_asset_readings` (57 rows, current to 2026-10-06) carrying 2Y, 10Y, 2s10s, DXY, HY spread; `economic_events`; Fed Watch deriving FOMC odds from CBOT futures | CPI / PCE / GDP / unemployment / NFP / claims / ISM / retail sales as **series**. No `growth_trend`, `inflation_trend`, `fed_stance`, `macro_equity_effect` classification |
 | 9 | Sector rotation | `sector_rotation_snapshots` (96 rows); sector leadership in Market Outlook | Leaders / improving / neutral / weakening / laggards ranking; `RISK_ON_ROTATION` vs `DEFENSIVE_ROTATION` label |
-| 14 | **Estimate revisions** | `estimate_snapshots` 324 rows / 164 symbols, captured daily and append-only | **These are analyst price targets and forward P/E — not earnings estimates.** §14 says explicitly: "Do not substitute analyst price targets for earnings revisions." That is exactly the substitution currently in place. See *Data gaps* |
+| 14 | **Estimate revisions** | `estimate_snapshots` 324 rows / 164 symbols, captured daily and append-only, under the metric names `analyst_target_price` and `forward_pe` | **Forward EPS and revenue consensus history.** The gap is the missing input, *not* a substitution — see the correction below |
 | 17 | Technical engine | RSI, MACD, ADX, ATR, OBV, VWAP, volume profile, FVG, support/resistance, 52-week levels | **Only `M5` and `D1` bars are stored.** `W1` and `H1` exist in the `TimeFrame` enum but were never ingested, and 4H does not exist at all |
 | 18 | Multi-timeframe | Independent horizon resolution for outcomes (5-day outcomes without waiting for 14–28 day primaries) | The spec's W/D/4H/1H composition into `WAIT_FOR_PULLBACK_CONFIRMATION` — blocked by the bar-timeframe gap above |
 | 19 | Relative strength | Industry peer basket excluding the subject ("13 covered semiconductor peers"); RS vs benchmark in places | Systematic 5/20/63-day RS vs SPY, QQQ, sector ETF and peer basket with `OUTPERFORMING` × `IMPROVING` states |
@@ -87,8 +93,16 @@ These are the real constraints. Five of them, and they govern what is worth buil
    events have none, and `revenue_estimate` is populated in 0 of 845. `fundamentals_snapshot.eps_estimate`
    is populated in **0 of 2,476 rows**. So the platform has no forward EPS or revenue consensus
    anywhere, and §14 — which the spec calls high-priority — cannot be built from current sources.
-   What exists is the analyst **price target** and forward P/E, which §14 explicitly forbids
-   substituting. **Required:** a provider with dated consensus history.
+   **Required:** a provider with dated consensus history.
+
+   **A correction to the first version of this document.** It stated that capturing analyst
+   price targets *was* the substitution §14 forbids. That was wrong, and alleging a substitution
+   requires naming a consumer that reads those metrics as EPS revisions. Checked, and there is
+   none: the capture stores them under `analyst_target_price` and `forward_pe` with their own
+   caveats; `earnings_revisions_driver()` still returns an explicit refusal naming what it would
+   need; `forward_pe` is consumed only as a **valuation** input; and `EstimateSnapshot` has no
+   consumer outside its own store. The gap is a missing input, and the capture is the right
+   thing to be doing with the forward-looking data that does exist.
 2. **Memory contract pricing (DRAM/NAND/HBM).** No source. TrendForce/DRAMeXchange are paid.
 3. **Macro series.** `economic_events` carries release *dates*, not *values* or *consensus*.
    `macro_expectations` has **0 rows** — the capture exists and correctly refuses to record an
@@ -132,16 +146,41 @@ Worth recording so it is not discarded in a rewrite:
 
 ## 7. Status summary, in the format §52 requires
 
-**IMPLEMENTED (17):** §3, §12, §13, §16(gates), §20, §21, §23, §27, §28, §29, §30, §36, §37,
+**IMPLEMENTED — 17:** §3, §12, §13, §16(gates), §20, §21, §23, §27, §28, §29, §30, §36, §37,
 §40, §43, §46, §47
 
-**PARTIALLY IMPLEMENTED (16):** §4, §5, §6, §7, §9, §14, §17, §18, §19, §22, §24, §25, §26,
+**PARTIALLY IMPLEMENTED — 17:** §4, §5, §6, §7, §9, §14, §17, §18, §19, §22, §24, §25, §26,
 §31, §33, §35, §38
 
-**NOT IMPLEMENTED (6):** §8, §10, §11, §15, §39, §42
+**NOT IMPLEMENTED — 6:** §8, §10, §11, §15, §39, §42
 
-**BLOCKED (5 data constraints):** analyst earnings-estimate history; memory contract pricing;
-macro series values and consensus; 1H/4H/W1 bars; the VIX complex
+**Total 40.**
 
-For every PARTIAL and BLOCKED item the missing input, the reason and the recommended next step
-are named in §2–§4 above.
+**DATA CONSTRAINTS — 5, counted separately.** Each cuts across several sections, so adding them
+to the totals above would double-count:
+
+| Constraint | Sections it blocks |
+|---|---|
+| No historical analyst **earnings** consensus | §14 |
+| No memory contract pricing (DRAM/NAND/HBM) | §11 |
+| No macro series *values* or pre-release consensus | §7, §8 |
+| No 1H / 4H / W1 bars (only `M5`, `D1` stored) | §17, §18, §19 |
+| No VIX complex stored | §6, §7 |
+
+### What "implemented" does and does not assert
+
+A populated table or a working adapter establishes **availability**, not conformance to the
+section's full text. These are three separate questions and the first version of this document
+collapsed them:
+
+| Axis | Question | Example — §27 direction screen |
+|---|---|---|
+| **Implementation** | Does the code path exist and run? | Yes — `/quality-value/setups`, 189 listings scanned |
+| **Coverage** | Over how much of the intended population, with what inputs? | US 147 + HK 42; daily completed sessions only; ETFs not yet excluded |
+| **Behavioural verification** | Has its output been shown to do what the section claims? | **No.** It does not establish a suitable entry, position risk, or any probability that a breakout succeeds |
+
+Every row marked IMPLEMENTED above should be read as *implementation* established, *coverage*
+stated where known, and *behavioural verification* **absent unless the evidence column says
+otherwise**. Two rows do carry it: §21 short interest (the squeeze alert was measured
+anti-predictive, 13.3% win, n=15) and §37 performance measurement (alpha and expectancy measured
+per direction × horizon).

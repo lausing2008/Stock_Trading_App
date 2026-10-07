@@ -75,8 +75,23 @@ So a bucket **never aggregates into a number**. Composition rules, carried over 
 3. **Contradictions are first-class and never dropped.** Every bucket stores them; the summary
    layer is forbidden from rendering a claim without its counterevidence. This is already
    enforced for `Finding` and `issuer_assessments`.
-4. **Confidence is derived, not asserted** — from data completeness, freshness, independent
-   agreement and contradiction count (§25). Never a free-floating percentage.
+4. **Support quality is not predictive confidence, and they are stored as different fields.**
+   Data completeness, freshness and source independence establish *how well evidenced a reading
+   is*. They say nothing about how likely it is to be right — a perfectly sourced, perfectly
+   fresh reading of a weak signal is well supported and still wrong. So:
+
+   - `support_quality` (LOW / MEDIUM / HIGH) is derived from completeness, freshness and source
+     independence. It is computable today and asserts only what it measures.
+   - `predictive_confidence` is **left null until it is calibrated against resolved outcomes**
+     (`prediction_outcomes`, below). The platform has already measured its existing signal
+     confidence as flat across its whole range over n=19,256 — a number that moves with nothing
+     is worse than an absent one, because it looks like information.
+
+   **Contradictions are weighed, not counted.** A count treats one fatal objection and three
+   trivial ones as "three beats one", and double-counts objections that share a source. Each
+   contradiction therefore carries `materiality` (would it change the direction, or only its
+   strength?) and `source_ref`, and contradictions sharing a `source_ref` collapse to one for
+   any aggregate reading.
 
 ---
 
@@ -147,17 +162,25 @@ the data-blocked sections last.
 
 | Phase | Work | Unblocks | Blocked on |
 |---|---|---|---|
-| **1** | Evidence bucket layer: schema, composition rules, the 13 buckets wired to **existing** adapters only | §25, §26, §32, §35 | nothing |
+| **1** | Evidence bucket layer **plus `intelligence_predictions` and outcome resolution from day one** — see below | §25, §26, §32, §35, §36, §37 | nothing |
 | **2** | Bar coverage: derive `W1` and `H1` from `D1`/`M5`; decide a 4H convention | §17, §18, §19 | nothing |
 | **3** | Multi-horizon regime (additive); breadth ratios and divergence; sector rotation labels | §4, §5, §9 | nothing |
 | **4** | Relative strength matrix; semiconductor subgroup taxonomy (a mapping table) | §10, §19 | nothing |
 | **5** | FRED ingest: macro series, liquidity (balance sheet, TGA, RRP, M2); VIX complex | §6, §7, §8 | FRED key — free |
-| **6** | `intelligence_predictions` + outcome resolution; confidence calibration against it | §25, §36, §37 | needs Phase 1 and time |
+| **6** | Calibrate `predictive_confidence` against the outcomes Phase 1 has been accumulating | §25 | elapsed time, not code |
 | **7** | Scenario engine; trade status; Market & Stock Intelligence dashboards | §26, §32, §33 | Phases 1–4 |
 | **8** | Company status engine (structured events from `sec_filings`, `insider_transactions`) | §15 | nothing |
 | **9** | Estimate revisions | §14 | **a consensus-history provider** |
 | **10** | Memory/HBM module | §11 | **a memory-pricing provider** |
 | **11** | AI learning loop | §39 | needs Phase 6 outcome data |
+
+**Prediction capture belongs in the first delivery, not phase 6.** The first version of this
+plan deferred it, which would have thrown away every month of measurement history between the
+first directional conclusion and the phase that started recording. A conclusion that is rendered
+but not stored is unmeasurable forever after — the inputs move, and no later work recovers what
+the screen concluded on a date it was not written down. So the moment any bucket emits a
+direction, the row is written with its horizon, its rules fingerprint, its frozen input values
+and its outcome definition. Calibration can wait for data; *capture* cannot.
 
 Phases 1–4 and 8 need **no new data source**. Phase 5 needs one free key. Phases 9 and 10 cannot
 start until a purchasing decision is made, and the spec's own rule governs the interim: do not
@@ -181,19 +204,59 @@ infer memory pricing without data, and do not substitute price targets for earni
 
 ---
 
+## 6b. Phase 1 shape: one complete stock-summary flow
+
+Thirteen buckets are the substrate, not the deliverable. A reader should not have to compose
+thirteen conclusions themselves — that is the same reading-order mistake the Quality & Value
+page already made and fixed, where each gate rendered its assessment as prose and again as a
+structured box, leaving the answer below two copies of the working.
+
+So Phase 1 delivers **one stock-summary flow end to end, over existing data only**, with the
+buckets underneath it:
+
+```
+STOCK SUMMARY — {TICKER}, as of {cutoff}
+  Direction        {direction} over {horizon}        support: {support_quality}
+                   (predictive confidence: not calibrated)
+  Three factors    the three highest-materiality supporting findings, each with its source
+  Strongest        the single highest-materiality contradiction, named — not a count
+    counterevidence
+  Confirms if      {observable level or event}
+  Invalidates if   {observable level or event}
+  Frozen inputs    {digest} · {n} source references
+  ──────────────────────────────────────────────────────────────────────
+  ▸ Evidence buckets (13)                                    [collapsed]
+```
+
+Everything in that block exists today or is derivable without a new provider: direction and
+levels from the direction screen, factors and counterevidence from `issuer_assessments` and the
+interpretation layer, frozen inputs from `freeze_inputs()`. The summary is **assembled from the
+buckets**, never written separately, so it cannot drift from the detail below it — the same
+constraint the Quality & Value company summary already operates under.
+
+And the row is written to `intelligence_predictions` at the moment it is rendered, with its
+horizon, rules fingerprint and outcome definition. That is what makes the next twelve months of
+this work measurable rather than retrospective.
+
 ## 7. Acceptance, restated measurably
 
 §50 asks that selecting a ticker returns a full report. That is not a single acceptance test, so
 it decomposes into conditions that can each fail individually:
 
-1. For a named ticker, **all 13 buckets return a row** — each either a verdict or an explicit
+0. For a named ticker, the **stock summary renders above the buckets** — direction, horizon,
+   three factors, strongest counterevidence, confirmation and invalidation levels, frozen-input
+   digest — and a prediction row is stored for it.
+1. For the same ticker, **all 13 buckets return a row** — each either a verdict or an explicit
    `not_collected` / `not_implemented` with a remedy. No bucket is silently absent.
 2. **Every conclusion traces to a timestamped source.** Spot-checkable: each evidence entry
    carries `source`, `source_ref` and `as_of`, and the frozen inputs verify against their digest.
 3. **The three horizons may disagree**, and a test asserts they are not forced into agreement.
 4. **Contradictions are present wherever they exist**, and a supporting claim cannot render
    without its counterevidence.
-5. **A prediction is stored with its bucket ids**, and its outcome resolves at 1/5/10/20/60 days.
+5. **A prediction is stored with its bucket ids from the first rendered conclusion**, and its
+   outcome resolves at 1/5/10/20/60 days. No `predictive_confidence` is published until it has
+   been calibrated against those resolutions; `support_quality` may be published immediately,
+   because it asserts only what it measures.
 6. The data-quality header (§3) names every stale and missing source **before** any conclusion.
 
 Condition 5 is the one that makes the rest falsifiable: without stored predictions and resolved
