@@ -331,6 +331,53 @@ class Evaluation:
                 "blocking": [g.name for g in self.blocking()]}
 
 
+def company_summary(evaluation, gates) -> dict:
+    """Four lines a reader needs before any audit detail.
+
+    THE READING ORDER WAS BACKWARDS. Each gate rendered its assessment as prose and then again
+    as structured evidence, so the substantive conclusion sat below two copies of the working.
+    This is the conclusion: what supports the case, what is unresolved, why it is not entry
+    ready, and what to do next — assembled from the SAME assessments, never written separately,
+    so it cannot drift from what the detail says.
+    """
+    supports, unresolved, next_research, permanent = [], [], [], []
+    for g in gates:
+        a = g.evidence or {}
+        if not a.get("verdict"):
+            continue
+        for f in (a.get("findings") or []):
+            claim = f.get("claim")
+            # The SUPPORTING half of a finding: its claim, not the case against it.
+            if claim and f.get("source"):
+                supports.append({"claim": claim, "source": f.get("source"),
+                                 "against": f.get("counterevidence"), "gate": g.name})
+        if a.get("unresolved"):
+            unresolved.append({"gate": g.name, "question": a["unresolved"]})
+        for gap in normalise_gaps(a.get("not_assessed")):
+            (permanent if gap["status"] == NOT_PUBLICLY_DISCLOSED
+             else next_research).append({"gate": g.name, "item": gap["item"],
+                                         "note": gap.get("note")})
+
+    blocking = evaluation.blocking()
+    if blocking:
+        why = "Not entry ready: " + "; ".join(
+            f"{GATE_CLAIM[g.name]['label'].lower()} is {g.status.value.replace('_', ' ')}"
+            for g in blocking)
+    else:
+        why = "Every required gate passed at this cutoff."
+
+    return {
+        # Deliberately capped. A summary that lists everything is the detail again.
+        "supports": supports[:3],
+        "unresolved": unresolved,
+        "why_not_entry_ready": why,
+        "next_research": next_research[:4],
+        "not_closable_by_research": permanent,
+        "note": "assembled from the stored assessments below — it cannot say anything the "
+                "detail does not, and a claim here always carries its counterevidence",
+    }
+
+
 def compose(symbol: str, gates, *, entry_zone_held: bool = True) -> Evaluation:
     """Reduce gate verdicts to one state. No score, no weights, no compensation.
 
@@ -419,6 +466,35 @@ VERDICT_STATUS = {
 }
 
 
+#: Why something was not assessed. THESE NEED DIFFERENT REMEDIES AND MUST NOT SHARE A LABEL.
+#: An auditor's opinion sitting unread is unfinished research — someone can go and read it. The
+#: terms of MU's Strategic Customer Agreements are not published anywhere; no amount of effort
+#: closes that, and listing both as "not assessed" sends a reader to look for something that
+#: cannot be found.
+NOT_EXAMINED = "not_examined"
+NOT_PUBLICLY_DISCLOSED = "not_publicly_disclosed"
+GAP_LABEL = {NOT_EXAMINED: "not yet examined",
+             NOT_PUBLICLY_DISCLOSED: "not publicly disclosed"}
+
+
+def normalise_gaps(items) -> list:
+    """Accept a plain string or {item, status, note}; always return the structured form.
+
+    Plain strings default to NOT_EXAMINED, which is the safer default: it says work remains
+    rather than asserting something is unknowable.
+    """
+    out = []
+    for it in (items or []):
+        if isinstance(it, str):
+            out.append({"item": it, "status": NOT_EXAMINED,
+                        "label": GAP_LABEL[NOT_EXAMINED], "note": None})
+        else:
+            st = it.get("status") or NOT_EXAMINED
+            out.append({"item": it.get("item"), "status": st,
+                        "label": GAP_LABEL.get(st, st), "note": it.get("note")})
+    return out
+
+
 def from_assessment(gate_name: str, assessment: dict | None, *, absent_reasons: tuple) -> Gate:
     """Build a gate from a stored assessment, or report that none is connected.
 
@@ -460,21 +536,34 @@ def from_assessment(gate_name: str, assessment: dict | None, *, absent_reasons: 
             line += f"  — against: {against}"
         if line:
             reasons.append(line)
-    for n in (assessment.get("not_assessed") or []):
-        reasons.append(f"NOT ASSESSED: {n}")
+    gaps = normalise_gaps(assessment.get("not_assessed"))
+    for g in gaps:
+        note = f" — {g['note']}" if g.get("note") else ""
+        reasons.append(f"{g['label'].upper()}: {g['item']}{note}")
     # THE REMEDY COMES FROM THE ASSESSMENT, not from the status. It knows what it did not do.
-    outstanding = list(assessment.get("not_assessed") or [])
+    # THE REMEDY POINTS ONLY AT WHAT CAN BE FOUND. Sending a reader to "assess" an undisclosed
+    # contract term is advice that cannot be taken; those are listed separately as limits.
+    examinable = [g["item"] for g in gaps if g["status"] == NOT_EXAMINED]
+    undisclosed = [g["item"] for g in gaps if g["status"] == NOT_PUBLICLY_DISCLOSED]
     if status is GateStatus.PASS:
         reasons, remedy = (), ""         # a Gate that passes carries no reasons, by contract
-    elif outstanding:
-        shown = "; ".join(outstanding[:3])
-        more = f" (+{len(outstanding) - 3} more)" if len(outstanding) > 3 else ""
-        remedy = (f"Assess what this review did not: {shown}{more}")
+    elif examinable:
+        shown = "; ".join(examinable[:3])
+        more = f" (+{len(examinable) - 3} more)" if len(examinable) > 3 else ""
+        remedy = f"Examine: {shown}{more}"
+        if undisclosed:
+            remedy += (f". Not closable by research: {'; '.join(undisclosed[:2])}"
+                       f"{' (+%d more)' % (len(undisclosed) - 2) if len(undisclosed) > 2 else ''}")
+    elif undisclosed:
+        remedy = (f"Nothing here is closable by research — {'; '.join(undisclosed[:3])} "
+                  f"{'is' if len(undisclosed) == 1 else 'are'} not publicly disclosed. This "
+                  f"limitation is permanent unless the issuer discloses more")
     else:
         remedy = (f"Revise the assessment — it concluded '{verdict}' and names nothing "
                   f"outstanding, so what would change it is not recorded")
     return Gate(gate_name, status, tuple(reasons) or ("the stored assessment states no reason",),
-                {**assessment, "assessment_version": assessment.get("version"),
+                {**assessment, "not_assessed": gaps,
+                 "assessment_version": assessment.get("version"),
                  "assessment_cutoff": assessment.get("cutoff")},
                 remedy=remedy)
 

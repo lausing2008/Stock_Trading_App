@@ -109,7 +109,7 @@ def t1_all_four_types_generate():
             ("pre_earnings", G.pre_earnings(s, symbol="TESTCO", now=NOW)),
         ):
             fields, ev, meta, cov = built
-            report, created = S.save(s, fields, ev, meta, cov)
+            report, created = S.save(s, fields, ev, meta, cov, generated_at=NOW)
             out[name] = {"id": report.id, "status": report.status, "version": report.version,
                          "coverage": cov, "fields": len(fields),
                          "markdown_lines": len(to_markdown(report).splitlines())}
@@ -117,7 +117,7 @@ def t1_all_four_types_generate():
     reset(with_event=True, event_in_future=False, actuals=True)
     with Session() as s:
         fields, ev, meta, cov = G.post_earnings(s, symbol="TESTCO", now=NOW)
-        report, _ = S.save(s, fields, ev, meta, cov)
+        report, _ = S.save(s, fields, ev, meta, cov, generated_at=NOW)
         out["post_earnings"] = {"id": report.id, "status": report.status,
                                 "coverage": cov, "fields": len(fields),
                                 "markdown_lines": len(to_markdown(report).splitlines())}
@@ -132,9 +132,9 @@ def t2_identical_inputs_do_not_duplicate():
     reset()
     with Session() as s:
         a_fields, a_ev, a_meta, a_cov = G.stock_outlook(s, symbol="TESTCO", now=NOW)
-        first, created_a = S.save(s, a_fields, a_ev, a_meta, a_cov)
+        first, created_a = S.save(s, a_fields, a_ev, a_meta, a_cov, generated_at=NOW)
         b_fields, b_ev, b_meta, b_cov = G.stock_outlook(s, symbol="TESTCO", now=NOW)
-        second, created_b = S.save(s, b_fields, b_ev, b_meta, b_cov)
+        second, created_b = S.save(s, b_fields, b_ev, b_meta, b_cov, generated_at=NOW)
         total = s.query(IntelligenceReport).count()
         first_id, second_id = first.id, second.id
     R["t2_identical_inputs_do_not_duplicate"] = {
@@ -149,7 +149,7 @@ def t3_changed_inputs_create_a_linked_version():
     reset()
     with Session() as s:
         f, e, m, c = G.stock_outlook(s, symbol="TESTCO", now=NOW)
-        v1, _ = S.save(s, f, e, m, c)
+        v1, _ = S.save(s, f, e, m, c, generated_at=NOW)
         v1_payload = json.dumps(v1.payload, sort_keys=True)
         stock = s.query(Stock).filter_by(symbol="TESTCO").one()
         s.add(Price(id=999_999, stock_id=stock.id, ts=NOW + timedelta(days=1),
@@ -157,7 +157,7 @@ def t3_changed_inputs_create_a_linked_version():
                     close=200.0, volume=5_000_000))
         s.commit()
         f2, e2, m2, c2 = G.stock_outlook(s, symbol="TESTCO", now=NOW + timedelta(days=1))
-        v2, created = S.save(s, f2, e2, m2, c2)
+        v2, created = S.save(s, f2, e2, m2, c2, generated_at=NOW + timedelta(days=1))
         s.refresh(v1)
         diff = S.diff(v1, v2)
         R["t3_changed_inputs_create_a_linked_version"] = {
@@ -176,7 +176,7 @@ def t4_post_report_without_a_pre_report_says_so():
     reset(with_event=True, event_in_future=False, actuals=True)
     with Session() as s:
         f, e, m, c = G.post_earnings(s, symbol="TESTCO", now=NOW)
-        report, _ = S.save(s, f, e, m, c)
+        report, _ = S.save(s, f, e, m, c, generated_at=NOW)
         link = f["pre_report_link"]
         verdict = f["thesis_verdict"]
         pre_report_id = report.pre_report_id
@@ -195,7 +195,7 @@ def t5_a_frozen_pre_report_survives_and_scores():
     reset(with_event=True, event_in_future=True)
     with Session() as s:
         f, e, m, c = G.pre_earnings(s, symbol="TESTCO", now=NOW)
-        pre, _ = S.save(s, f, e, m, c)
+        pre, _ = S.save(s, f, e, m, c, generated_at=NOW)
         frozen = json.dumps(pre.payload, sort_keys=True)
         subject = m["subject_key"]
         # The release lands: actuals arrive and consensus is revised afterwards.
@@ -210,7 +210,7 @@ def t5_a_frozen_pre_report_survives_and_scores():
         _, _, m_probe, _ = G.post_earnings(s, symbol="TESTCO", now=later)
         found = S.frozen_pre_report(s, subject_key=subject, before=m_probe["release_boundary"])
         f2, e2, m2, c2 = G.post_earnings(s, symbol="TESTCO", pre_report=found, now=later)
-        post, _ = S.save(s, f2, e2, m2, c2)
+        post, _ = S.save(s, f2, e2, m2, c2, generated_at=later)
         s.refresh(pre)
         verdict = f2["thesis_verdict"]
         pre_id, post_id, link_id = pre.id, post.id, post.pre_report_id
@@ -252,7 +252,7 @@ def t7_partial_inputs_still_produce_a_useful_report():
     reset(bars=3, with_event=False)
     with Session() as s:
         f, e, m, c = G.stock_outlook(s, symbol="TESTCO", now=NOW)
-        report, _ = S.save(s, f, e, m, c)
+        report, _ = S.save(s, f, e, m, c, generated_at=NOW)
         states = _states(f)
         md = to_markdown(report)
         status = report.status
@@ -463,7 +463,7 @@ def t17_the_surprise_table_uses_the_frozen_expectation():
     reset(with_event=True, event_in_future=True)
     with Session() as s:
         f, book, m, c = G.pre_earnings(s, symbol="TESTCO", now=NOW)
-        pre, _ = S.save(s, f, book, m, c)
+        pre, _ = S.save(s, f, book, m, c, generated_at=NOW)
         ev = s.query(EarningsEvent).one()
         ev.eps_actual, ev.post_earnings_return_1d = 1.72, 3.4
         ev.eps_estimate = 1.95                      # revised AFTER the freeze
@@ -505,7 +505,7 @@ def t18_concurrent_generation_allocates_one_version_each():
                 f, book, m, c = G.stock_outlook(s, symbol="TESTCO", now=NOW)
                 m = dict(m); m["fingerprint"] = f"race-{tag}"
                 barrier.wait(10)
-                r, created = S.save(s, f, book, m, c)
+                r, created = S.save(s, f, book, m, c, generated_at=NOW)
                 with lock:
                     results.append((r.version, created))
         except Exception as exc:                       # noqa: BLE001
@@ -621,7 +621,7 @@ def t21_a_reused_report_is_not_called_a_first_report():
     reset()
     with Session() as s:
         f, b, m, c = G.stock_outlook(s, symbol="TESTCO", now=NOW)
-        v1, _ = S.save(s, f, b, m, c)
+        v1, _ = S.save(s, f, b, m, c, generated_at=NOW)
         stock = s.query(Stock).filter_by(symbol="TESTCO").one()
         s.add(Price(id=990_001, stock_id=stock.id, ts=NOW + timedelta(days=1),
                     timeframe=TimeFrame.D1, open=200, high=201, low=199, close=200.0,
@@ -629,10 +629,10 @@ def t21_a_reused_report_is_not_called_a_first_report():
         s.commit()
         later = NOW + timedelta(days=1)
         f2, b2, m2, c2 = G.stock_outlook(s, symbol="TESTCO", now=later)
-        v2, created2 = S.save(s, f2, b2, m2, c2)
+        v2, created2 = S.save(s, f2, b2, m2, c2, generated_at=later)
         # Regenerate with the SAME inputs: save() returns the existing v2.
         f3, b3, m3, c3 = G.stock_outlook(s, symbol="TESTCO", now=later)
-        v2_again, created3 = S.save(s, f3, b3, m3, c3)
+        v2_again, created3 = S.save(s, f3, b3, m3, c3, generated_at=later)
         predecessor = s.get(IntelligenceReport, v2_again.supersedes_id) \
             if v2_again.supersedes_id else None
         d_reused = S.diff(predecessor, v2_again)

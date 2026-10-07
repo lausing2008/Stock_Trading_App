@@ -450,3 +450,33 @@ def test_a_verified_date_still_reports_normally(results):
     assert r["identity_state"] == "OK"
     assert r["announcement_date"] is not None
     assert r["reaction_state"] == "OK"
+
+
+# ---- AUD-INTEL-CLOCKDRIFT -------------------------------------------------------------------
+# This suite began failing on 2026-10-07 with no code change. The probe freezes its own `now` at
+# 2026-10-02 and places the release five days later, but `save()` stamped `generated_at` from
+# the REAL clock — so `generated_at < release_boundary` held only until the real date caught up
+# with the fixture's event date. A fixture that controls one of two timestamps controls neither.
+# Same class as the real-clock drift already recorded in docs/incidents/.
+
+def test_save_lets_a_caller_pin_the_generation_time():
+    """Asserted against the SOURCE: the conftest stubs `db`, so importing store here fails —
+    the same test-isolation trap this service has hit repeatedly."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "intel_reports"
+           / "store.py").read_text()
+    assert "generated_at: datetime | None = None" in src, \
+        "save() must let a caller pin the generation time"
+    assert "generated_at=generated_at or datetime.utcnow()" in src, \
+        "production must still default to the real clock"
+
+
+def test_the_probe_pins_every_save_to_its_simulated_clock():
+    """If any probe save reverts to the real clock, this suite becomes date-dependent again."""
+    import pathlib
+    import re
+    src = (pathlib.Path(__file__).parent / "_intelligence_pg_probe.py").read_text()
+    saves = re.findall(r"S\.save\([^)]*\)", src)
+    assert saves, "no saves found — the probe shape changed"
+    unpinned = [c for c in saves if "generated_at=" not in c]
+    assert not unpinned, f"these saves use the real clock: {unpinned}"

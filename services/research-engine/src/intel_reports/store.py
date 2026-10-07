@@ -89,7 +89,8 @@ _VERSION_RACE_RETRIES = 8
 _VERSION_RACE_BACKOFF_S = 0.02
 
 
-def save(session, fields, evidence, meta, coverage_counts, *, user_id: int | None = None):
+def save(session, fields, evidence, meta, coverage_counts, *, user_id: int | None = None,
+         generated_at: datetime | None = None):
     """Insert a snapshot, or return the identical existing one. Returns (report, created).
 
     CONCURRENCY. Version is derived by reading the current maximum and adding one, which two
@@ -117,7 +118,7 @@ def save(session, fields, evidence, meta, coverage_counts, *, user_id: int | Non
         try:
             return _insert(session, fields, records, meta, coverage_counts,
                            user_id=user_id, fingerprint=fingerprint,
-                           subject_key=subject_key), True
+                           subject_key=subject_key, generated_at=generated_at), True
         except IntegrityError:
             session.rollback()
             # Someone else took this version. If they wrote the SAME inputs, their row is the
@@ -134,7 +135,7 @@ def save(session, fields, evidence, meta, coverage_counts, *, user_id: int | Non
 
 
 def _insert(session, fields, records, meta, coverage_counts, *, user_id, fingerprint,
-            subject_key):
+            subject_key, generated_at=None):
     prior = latest(session, subject_key=subject_key,
                    report_type=meta["report_type"], user_id=user_id)
     report = IntelligenceReport(
@@ -149,7 +150,12 @@ def _insert(session, fields, records, meta, coverage_counts, *, user_id, fingerp
         stage=meta.get("stage"),
         contract_version=CONTRACT_VERSION,
         policy_version=meta.get("policy_version", "1"),
-        generated_at=datetime.utcnow(),
+        # DEFAULTS TO THE REAL CLOCK, but a caller simulating a timeline must be able to set
+        # it. AUD-INTEL-CLOCKDRIFT: the probe froze its own `now` at 2026-10-02 with the
+        # release five days later, while this used `utcnow()` — so `generated_at < before` held
+        # only until the real date reached 2026-10-07, when the test began failing with no code
+        # change. A fixture that controls one of two timestamps controls neither.
+        generated_at=generated_at or datetime.utcnow(),
         cutoff_at=meta["cutoff_at"],
         input_fingerprint=fingerprint,
         payload=_payload(fields, records, meta),

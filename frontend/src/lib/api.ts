@@ -8,9 +8,19 @@ export type QvAssessment = Record<string, unknown> & {
   evidence_digest?: string; author?: string;
   findings?: { claim?: string; source?: string; source_ref?: string;
                counterevidence?: string }[];
-  assumptions?: { name?: string; value?: unknown; units?: string;
+  assumptions?: { name?: string; value?: unknown; units?: string; kind?: string;
                   basis?: string; sensitivity?: string }[];
-  not_assessed?: string[];
+  not_assessed?: ({ item: string; status: string; label: string;
+                    note?: string | null } | string)[];
+};
+
+export type QvSummary = {
+  supports: { claim: string; source: string; against?: string; gate: string }[];
+  unresolved: { gate: string; question: string }[];
+  why_not_entry_ready: string;
+  next_research: { gate: string; item: string; note?: string | null }[];
+  not_closable_by_research: { gate: string; item: string; note?: string | null }[];
+  note?: string;
 };
 
 export type QvGate = { gate: string; status: QvGateStatus; reasons: string[];
@@ -28,6 +38,7 @@ export type QvEvaluation = {
   state: string; gates: QvGate[]; explanation: string[]; blocking: string[];
   persisted?: { id: number | null; created: boolean; reused?: boolean;
                 original_cutoff?: string | null } | null;
+  summary?: QvSummary;
 };
 export type QualityValueReport = {
   mode: string; as_of: string; cutoff?: string; evaluated: number;

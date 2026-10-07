@@ -66,9 +66,15 @@ ASSESSMENTS = [
              "counterevidence": "these argue against durability; they are listed because the "
                                 "filing supplies the strongest case against its own moat"},
         ],
-        "not_assessed": ["HBM qualification switching costs", "customer design-cycle lock-in",
-                         "Strategic Customer Agreement terms (not disclosed)",
-                         "patent portfolio strength"],
+        "not_assessed": [
+            {"item": "HBM qualification switching costs", "status": "not_examined"},
+            {"item": "customer design-cycle lock-in", "status": "not_examined"},
+            {"item": "Strategic Customer Agreement terms",
+             "status": "not_publicly_disclosed",
+             "note": "management references them in the 8-K; no duration, volume or pricing "
+                     "is filed anywhere. This may never become knowable"},
+            {"item": "patent portfolio strength", "status": "not_examined"},
+        ],
         "evidence": {"segments": 4, "capex_usd": 15_857_000_000, "revenue_usd": 37_378_000_000},
     },
     # ---------------------------------------------------------------- MU valuation
@@ -101,14 +107,20 @@ ASSESSMENTS = [
         ],
         "assumptions": [
             {"name": "market capitalisation", "value": 1_201_629_036_544, "units": "USD",
+             "kind": "observed",
              "basis": "provider fundamentals, fetched 2026-10-06",
              "sensitivity": "dated; the issuer share counts are as of fiscal year end, a "
                             "different date, so no per-share conversion is performed"},
         ],
-        "not_assessed": ["a defensible sustainable-earnings estimate",
-                         "any company-specific historical multiple series",
-                         "FY2026 capital expenditure (absent from the 8-K highlights), so free "
-                         "cash flow is not computable"],
+        "not_assessed": [
+            {"item": "a defensible sustainable-earnings estimate", "status": "not_examined",
+             "note": "irreducible in part — a cyclical's mid-cycle earnings are a judgement, "
+                     "not a disclosure. More evidence narrows it; nothing settles it"},
+            {"item": "any company-specific historical multiple series", "status": "not_examined"},
+            {"item": "FY2026 capital expenditure", "status": "not_examined",
+             "note": "absent from the 8-K highlights, so free cash flow is not computable — "
+                     "the FY2026 10-K would close it"},
+        ],
         "evidence": {"market_cap_usd": 1_201_629_036_544, "market_cap_as_of": "2026-10-06",
                      "close_usd": 1045.56, "close_as_of": "2026-10-06",
                      "six_year_mean_net_income_usd": 17_170_000_000,
@@ -206,26 +218,43 @@ ASSESSMENTS = [
                                 "and neither endpoint resolves that"},
         ],
         "assumptions": [
-            {"name": "discount rate", "value": 12.0, "units": "percent",
+            {"name": "discount rate", "value": 12.0, "units": "percent", "kind": "modelled",
              "basis": "A JUDGEMENT ANCHORED ON NOTHING COMPANY-SPECIFIC. No beta, risk-free "
                       "rate or equity risk premium was collected for CRDO",
              "sensitivity": "dominant. Dilution-adjusted the bull case runs -0.6% at 8%, -5.9% "
                             "at 10%, -10.9% at 12%, -17.7% at 15%; un-adjusted +25.2%, +18.5%, "
                             "+12.3%, +3.7%"},
-            {"name": "dilution", "value": 8.0, "units": "percent per year",
-             "basis": "OBSERVED, not assumed: 171.2m to 185.4m shares outstanding FY2025 to "
-                      "FY2026 (+8.3%); the prior year was +4.2%",
+            {"name": "dilution, historical", "value": 8.3, "units": "percent",
+             "kind": "observed",
+             "basis": "171.2m to 185.4m shares outstanding, FY2025 to FY2026, from the 10-K. "
+                      "The prior year was +4.2%",
+             "sensitivity": "none — this is what happened"},
+            {"name": "dilution, projected", "value": 8.0, "units": "percent per year",
+             "kind": "modelled",
+             "basis": "EXTENDING the observed FY2026 rate forward. The past rate is observed; "
+                      "that it CONTINUES is an assumption, and the earlier version labelled "
+                      "the whole thing 'observed, not assumed', which conflated them",
              "sensitivity": "whether it should be applied AT ALL is unresolved — GAAP earnings "
                             "already expense stock compensation"},
             {"name": "exit multiples", "value": "25x / 30x / 35x", "units": "earnings",
+             "kind": "modelled",
              "basis": "judgement; no company-specific historical multiple series was collected",
              "sensitivity": "any evidence of where comparable businesses traded through a cycle"},
             {"name": "market capitalisation", "value": 39_936_024_576, "units": "USD",
+             "kind": "observed",
              "basis": "provider fundamentals, fetched 2026-10-06",
              "sensitivity": "dated; no per-share conversion is performed"},
         ],
-        "not_assessed": ["a company-specific cost of equity", "comparable-company multiples",
-                         "whether the dilution adjustment double-counts SBC"],
+        "not_assessed": [
+            {"item": "a company-specific cost of equity", "status": "not_examined",
+             "note": "beta, risk-free rate and equity risk premium are all collectable"},
+            {"item": "comparable-company multiples", "status": "not_examined"},
+            {"item": "whether the dilution adjustment double-counts stock compensation",
+             "status": "not_examined",
+             "note": "a MODELLING question, not a disclosure gap — it is settled by choosing a "
+                     "consistent treatment of earnings, issuance and financing, not by finding "
+                     "another document"},
+        ],
         "evidence": {"market_cap_usd": 39_936_024_576, "market_cap_as_of": "2026-10-06",
                      "close_usd": 220.83, "close_as_of": "2026-10-06",
                      "ev_usd": 38_493_000_000, "ev_revenue_x": 28.8, "ev_fcf_x": 94.6,

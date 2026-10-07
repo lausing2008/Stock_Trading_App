@@ -27,7 +27,8 @@ from ..intel_reports.quality_value import (
     ALL_GATES, REQUIRED_FOR_ENTRY, GATE_CLAIM, GateStatus, POLICY_VERSION, State, compose,
     COMPETITIVE_DURABILITY, VALUATION, VALUE_TRAP_RISK,
     business_quality_gate, durability_gate, valuation_gate, value_trap_gate,
-    entry_condition_gate, naive_utc, policy_fingerprint, status_catalog)
+    entry_condition_gate, naive_utc, policy_fingerprint, status_catalog,
+    company_summary)
 from ..intel_reports.quality_value_store import (
     record_evaluation, latest_evaluations, evaluation_history, freeze_inputs,
     latest_assessments, record_assessment)
@@ -108,7 +109,11 @@ def evaluations(symbols: str | None = Query(None, description="comma-separated; 
     # ONE CUTOFF FOR THE WHOLE RUN, truncated to the minute. Every row in a run must share it,
     # or the same evaluation re-read a second later becomes a different stored row and the
     # idempotency the unique constraint provides is lost.
-    cutoff = now.replace(second=0, microsecond=0)
+    # DAILY, NOT PER-MINUTE. At minute granularity every re-run wrote a new row, so the reuse
+    # path never ran and 200 companies accumulated a verdict a minute. The gates read completed
+    # daily sessions and once-fetched fundamentals, so a day is the resolution the inputs
+    # actually have — and re-running within one now genuinely reuses.
+    cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
     out, coverage = [], {n: {s.value: 0 for s in GateStatus} for n in ALL_GATES}
     states = {s.value: 0 for s in State}
     stored, persist_errors, reused = 0, [], []
@@ -175,7 +180,9 @@ def evaluations(symbols: str | None = Query(None, description="comma-separated; 
                             error=str(exc)[:200])
 
             out.append({**ev.as_dict(), "name": stock.name, "sector": stock.sector,
-                        "persisted": persisted})
+                        "persisted": persisted,
+                        # THE CONCLUSION, ABOVE THE AUDIT DETAIL.
+                        "summary": company_summary(ev, gates)})
 
     # THE EXPLANATION IS GENERATED FROM THE RESULTS, not written once and left behind. The
     # previous banner was a fixed string saying assessments "are not connected" — true when it

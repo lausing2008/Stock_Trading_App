@@ -13,7 +13,7 @@ import { useMemo, useState } from 'react';
 import Head from 'next/head';
 import useSWR from 'swr';
 import { api, type QualityValueReport, type QvEvaluation, type QvGateStatus,
-         type QvAssessment } from '@/lib/api';
+         type QvAssessment, type QvSummary } from '@/lib/api';
 import { coverageRows, statusColumns, badgeLabel, badgeRemedy,
          type StatusCatalog } from '@/lib/qualityValueCoverage';
 
@@ -128,6 +128,14 @@ function Assessment({ a }: { a: QvAssessment }) {
               <div key={i}>
                 <span style={{ color: '#e2e8f0' }}>{k.name}: {String(k.value)}
                   {k.units ? ` ${k.units}` : ''}</span>
+                {/* OBSERVED IS NOT MODELLED. A past share count is what happened; extending it
+                    forward is an assumption, and the two must not share a label. */}
+                {k.kind && <span style={{ marginLeft: '6px', padding: '1px 6px',
+                    borderRadius: '4px', fontSize: '9.5px', fontWeight: 700,
+                    letterSpacing: '0.05em', textTransform: 'uppercase',
+                    background: k.kind === 'observed' ? 'rgba(52,211,153,0.12)'
+                                                      : 'rgba(192,132,252,0.14)',
+                    color: k.kind === 'observed' ? '#6ee7b7' : '#d8b4fe' }}>{k.kind}</span>}
                 {k.basis && <div style={{ fontSize: '11px', color: '#94a3b8' }}>
                   Basis: {k.basis}</div>}
                 {k.sensitivity && <div style={{ fontSize: '11px', color: '#fdba74' }}>
@@ -138,8 +146,74 @@ function Assessment({ a }: { a: QvAssessment }) {
         </L>
       )}
       {!!a.not_assessed?.length && (
-        <L k="Not assessed">
-          <span style={{ color: '#94a3b8' }}>{a.not_assessed.join('; ')}</span></L>)}
+        <L k="Gaps">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+            {a.not_assessed.map((x, i) => {
+              const o = typeof x === 'string'
+                ? { item: x, label: 'not yet examined', note: null } : x;
+              const permanent = o.label === 'not publicly disclosed';
+              return (
+                <div key={i}>
+                  <span style={{ color: permanent ? '#94a3b8' : '#cbd5e1' }}>{o.item}</span>
+                  <span style={{ color: permanent ? '#f0abfc' : '#7dd3fc', fontSize: '11px' }}>
+                    {' '}— {o.label}</span>
+                  {o.note && <div style={{ fontSize: '11px', color: '#64748b' }}>{o.note}</div>}
+                </div>);
+            })}
+          </div>
+        </L>)}
+    </div>
+  );
+}
+
+/* THE CONCLUSION, ABOVE THE AUDIT DETAIL. Each gate used to render its assessment as prose and
+   then again as a structured box, so the substantive answer sat below two copies of the
+   working. This is assembled server-side from the same assessments, so it cannot drift from
+   the detail beneath it. */
+function Summary({ s }: { s: QvSummary }) {
+  const Box = ({ title, tone, children }: { title: string; tone: string;
+                                            children: React.ReactNode }) => (
+    <div style={{ flex: '1 1 260px', minWidth: 0 }}>
+      <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.07em',
+                    textTransform: 'uppercase', color: tone, marginBottom: '4px' }}>{title}</div>
+      <div style={{ fontSize: '12px', color: '#cbd5e1', lineHeight: 1.5 }}>{children}</div>
+    </div>);
+  return (
+    <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap', marginTop: '8px',
+                  padding: '11px 13px', borderRadius: '9px',
+                  background: 'rgba(99,102,241,0.06)',
+                  border: '1px solid rgba(99,102,241,0.22)' }}>
+      <Box title="What supports it" tone="#6ee7b7">
+        {s.supports.length ? (
+          <ul style={{ margin: 0, paddingLeft: '15px' }}>
+            {s.supports.map((x, i) => (
+              <li key={i} style={{ marginBottom: '3px' }}>{x.claim}
+                {/* A SUPPORTING CLAIM NEVER TRAVELS ALONE. */}
+                {x.against && <div style={{ color: '#fcd34d', fontSize: '11px' }}>
+                  Against: {x.against}</div>}
+              </li>))}
+          </ul>) : <span style={{ color: '#64748b' }}>No assessment stored.</span>}
+      </Box>
+      <Box title="What remains unresolved" tone="#fde047">
+        {s.unresolved.length ? (
+          <ul style={{ margin: 0, paddingLeft: '15px' }}>
+            {s.unresolved.map((x, i) => <li key={i} style={{ marginBottom: '3px' }}>
+              {x.question}</li>)}
+          </ul>) : <span style={{ color: '#64748b' }}>—</span>}
+      </Box>
+      <Box title="Why it is not entry ready" tone="#fca5a5">{s.why_not_entry_ready}</Box>
+      <Box title="Next research task" tone="#7dd3fc">
+        {s.next_research.length ? (
+          <ul style={{ margin: 0, paddingLeft: '15px' }}>
+            {s.next_research.map((x, i) => <li key={i}>{x.item}
+              {x.note && <span style={{ color: '#94a3b8' }}> — {x.note}</span>}</li>)}
+          </ul>) : <span style={{ color: '#64748b' }}>—</span>}
+        {!!s.not_closable_by_research?.length && (
+          <div style={{ marginTop: '6px', color: '#94a3b8', fontSize: '11px' }}>
+            {/* Not a task: no amount of effort closes an undisclosed term. */}
+            Not closable by research: {s.not_closable_by_research.map(x => x.item).join('; ')}
+          </div>)}
+      </Box>
     </div>
   );
 }
@@ -163,9 +237,10 @@ function Row({ e, catalog }: { e: QvEvaluation; catalog?: Catalog }) {
           padding: '2px 9px', borderRadius: '6px', cursor: 'pointer', fontSize: '11px',
           background: 'rgba(99,102,241,0.14)', color: '#a5b4fc',
           border: '1px solid rgba(99,102,241,0.3)' }}>
-          {open ? 'Hide' : 'Why not eligible'}
+          {open ? 'Hide evidence' : 'Show evidence'}
         </button>
       </div>
+      {e.summary && <Summary s={e.summary} />}
       {open && (
         <div style={{ marginTop: '9px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {/* PASSING GATES ARE SHOWN TOO. A reader who only sees the failures takes the
@@ -193,7 +268,10 @@ function Row({ e, catalog }: { e: QvEvaluation; catalog?: Catalog }) {
                                        paddingLeft: '10px' }}>
               <div style={{ fontSize: '12px', color: '#e2e8f0', fontWeight: 600 }}>
                 {g.label ?? GATE_TITLE[g.gate] ?? g.gate} <Pill s={g.status} catalog={catalog} /></div>
-              {g.reasons.map((r, i) => (
+              {/* THE PROSE AND THE BOX SAID THE SAME THING TWICE. Where an assessment is
+                  connected its structured form is the single rendering; the flattened reason
+                  lines are only for gates that have no assessment to show. */}
+              {!g.evidence?.verdict && g.reasons.map((r, i) => (
                 <div key={i} style={{ fontSize: '12px', color: '#cbd5e1', lineHeight: 1.5,
                                       marginTop: '3px' }}>{r}</div>
               ))}

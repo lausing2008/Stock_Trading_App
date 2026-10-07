@@ -621,7 +621,7 @@ def test_a_connected_finding_carries_its_source_and_counterevidence():
 
 def test_what_was_not_assessed_travels_with_the_verdict():
     g = from_assessment(VALUE_TRAP_RISK, _asmt(), absent_reasons=())
-    assert "NOT ASSESSED: litigation" in " ".join(g.reasons)
+    assert "NOT YET EXAMINED: litigation" in " ".join(g.reasons)
 
 
 def test_the_assessment_version_and_cutoff_reach_the_gate_evidence():
@@ -703,8 +703,7 @@ def test_a_connected_assessment_supplies_its_own_remedy():
     g = from_assessment(COMPETITIVE_DURABILITY,
                         _asmt(not_assessed=["switching costs", "patent strength"]),
                         absent_reasons=())
-    assert "Assess what this review did not" in g.remedy
-    assert "switching costs" in g.remedy
+    assert "Examine: switching costs" in g.remedy
     assert g.as_dict()["remedy"] == g.remedy
     assert REMEDY[g.status] not in g.remedy
 
@@ -727,10 +726,9 @@ def test_a_passing_gate_carries_no_remedy():
 
 
 def test_every_seeded_assessment_produces_an_actionable_remedy():
-    from intel_reports.quality_value import COMPETITIVE_DURABILITY as _d
     for a in ASSESSMENTS:
         g = from_assessment(a["dimension"], a, absent_reasons=())
-        assert "Assess what this review did not" in g.remedy, (a["symbol"], a["dimension"])
+        assert g.remedy.startswith("Examine:"), (a["symbol"], a["dimension"], g.remedy)
 
 
 # ---- a missing RECORD is not a missing CAPABILITY -----------------------------------------
@@ -792,3 +790,127 @@ def test_the_legacy_not_implemented_wording_is_unreachable_from_these_gates():
                {"net_debt_to_equity": 0.1, "free_cashflow": 1.0}):
         for fn in (durability_gate, valuation_gate, value_trap_gate):
             assert fn(ev).status is not GateStatus.NOT_IMPLEMENTED, (fn.__name__, ev)
+
+
+# ---- a gap that cannot be closed by research is not a research task -----------------------
+
+from intel_reports.quality_value import (  # noqa: E402
+    normalise_gaps, company_summary, NOT_EXAMINED, NOT_PUBLICLY_DISCLOSED)
+
+
+def test_a_plain_string_gap_defaults_to_not_yet_examined():
+    """The safer default: it says work remains rather than asserting something is unknowable."""
+    g = normalise_gaps(["litigation"])[0]
+    assert g["status"] == NOT_EXAMINED and g["label"] == "not yet examined"
+
+
+def test_an_undisclosed_item_is_labelled_differently_from_an_unexamined_one():
+    gaps = normalise_gaps([{"item": "contract terms", "status": NOT_PUBLICLY_DISCLOSED},
+                           {"item": "auditor opinion"}])
+    assert gaps[0]["label"] == "not publicly disclosed"
+    assert gaps[1]["label"] == "not yet examined"
+    assert gaps[0]["label"] != gaps[1]["label"]
+
+
+def test_the_remedy_never_sends_a_reader_after_an_undisclosed_term():
+    """Advice that cannot be taken is worse than none. MU's Strategic Customer Agreement terms
+    are referenced by management and filed nowhere; no amount of effort closes that."""
+    g = from_assessment(COMPETITIVE_DURABILITY, _asmt(not_assessed=[
+        {"item": "Strategic Customer Agreement terms", "status": NOT_PUBLICLY_DISCLOSED}]),
+        absent_reasons=())
+    assert "Nothing here is closable by research" in g.remedy
+    assert "not publicly disclosed" in g.remedy
+    assert not g.remedy.startswith("Examine:")
+
+
+def test_a_mixed_gap_list_separates_the_two():
+    g = from_assessment(VALUE_TRAP_RISK, _asmt(not_assessed=[
+        {"item": "litigation"},
+        {"item": "contract terms", "status": NOT_PUBLICLY_DISCLOSED}]), absent_reasons=())
+    assert "Examine: litigation" in g.remedy
+    assert "Not closable by research: contract terms" in g.remedy
+
+
+def test_mu_durability_records_the_agreement_terms_as_undisclosed():
+    a = next(x for x in ASSESSMENTS
+             if x["symbol"] == "MU" and x["dimension"] == COMPETITIVE_DURABILITY)
+    gaps = {g["item"]: g["status"] for g in normalise_gaps(a["not_assessed"])}
+    assert gaps["Strategic Customer Agreement terms"] == NOT_PUBLICLY_DISCLOSED
+    assert gaps["HBM qualification switching costs"] == NOT_EXAMINED
+
+
+# ---- observed is not modelled --------------------------------------------------------------
+
+def test_every_assumption_declares_whether_it_is_observed_or_modelled():
+    for a in ASSESSMENTS:
+        for k in (a.get("assumptions") or []):
+            assert k.get("kind") in ("observed", "modelled"), (a["symbol"], k.get("name"))
+
+
+def test_crdos_dilution_is_split_into_what_happened_and_what_is_projected():
+    """The past share-count growth is observed; extending it forward is an assumption, and an
+    earlier version labelled the whole thing 'OBSERVED, not assumed'."""
+    val = next(a for a in ASSESSMENTS
+               if a["symbol"] == "CRDO" and a["dimension"] == VALUATION)
+    by = {k["name"]: k for k in val["assumptions"]}
+    assert by["dilution, historical"]["kind"] == "observed"
+    assert by["dilution, projected"]["kind"] == "modelled"
+    assert "that it CONTINUES is an assumption" in by["dilution, projected"]["basis"]
+
+
+# ---- the conclusion, above the detail ------------------------------------------------------
+
+def _connected_gates():
+    by = {(a["symbol"], a["dimension"]): a for a in ASSESSMENTS}
+    return [Gate(BUSINESS_QUALITY, GateStatus.PASS),
+            from_assessment(COMPETITIVE_DURABILITY, by[("MU", COMPETITIVE_DURABILITY)],
+                            absent_reasons=()),
+            from_assessment(VALUATION, by[("MU", VALUATION)], absent_reasons=()),
+            Gate(ENTRY_CONDITION, GateStatus.PASS),
+            from_assessment(VALUE_TRAP_RISK, by[("MU", VALUE_TRAP_RISK)], absent_reasons=())]
+
+
+def test_the_summary_answers_the_four_questions():
+    gates = _connected_gates()
+    sm = company_summary(compose("MU", gates), gates)
+    assert sm["supports"] and all(x["claim"] and x["source"] for x in sm["supports"])
+    assert sm["unresolved"] and all(x["question"].endswith("?") or "?" in x["question"]
+                                   for x in sm["unresolved"])
+    assert sm["why_not_entry_ready"].startswith("Not entry ready:")
+    assert sm["next_research"]
+
+
+def test_a_supporting_claim_always_carries_its_counterevidence():
+    gates = _connected_gates()
+    sm = company_summary(compose("MU", gates), gates)
+    assert all(x.get("against") for x in sm["supports"]), \
+        "a summary that drops the case against is the overclaim this layer exists to prevent"
+
+
+def test_the_summary_separates_research_tasks_from_permanent_limits():
+    gates = _connected_gates()
+    sm = company_summary(compose("MU", gates), gates)
+    items = {x["item"] for x in sm["not_closable_by_research"]}
+    assert "Strategic Customer Agreement terms" in items
+    assert "Strategic Customer Agreement terms" not in {x["item"] for x in sm["next_research"]}
+
+
+def test_the_summary_names_which_gates_block_and_in_what_state():
+    gates = _connected_gates()
+    sm = company_summary(compose("MU", gates), gates)
+    for word in ("competitive durability", "valuation discount", "value-trap risk"):
+        assert word in sm["why_not_entry_ready"].lower(), word
+    assert "insufficient" in sm["why_not_entry_ready"]
+
+
+def test_the_summary_is_bounded_so_it_does_not_become_the_detail_again():
+    gates = _connected_gates()
+    sm = company_summary(compose("MU", gates), gates)
+    assert len(sm["supports"]) <= 3 and len(sm["next_research"]) <= 4
+
+
+def test_a_company_with_no_assessment_gets_a_summary_that_says_so():
+    gates = all_passing(**{VALUATION: g(VALUATION, GateStatus.NOT_COLLECTED, ("none stored",))})
+    sm = company_summary(compose("X", gates), gates)
+    assert sm["supports"] == [] and sm["unresolved"] == []
+    assert "not collected" in sm["why_not_entry_ready"]
