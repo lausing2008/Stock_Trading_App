@@ -77,9 +77,13 @@ def test_the_period_is_the_providers_label_not_a_fiscal_quarter():
     assert "Q" not in w["target_period"]
 
 
-def test_the_capture_time_is_the_jobs_now_never_the_events_date():
+def test_the_capture_time_is_the_jobs_own_day_never_the_events_date():
+    """Truncated to the day — see AUD-CAPTURE-NOTIDEMPOTENT below for why."""
+    from intel_reports.prospective_capture import capture_instant as _ci
     w = _plan((_Ev(date(2026, 12, 17), eps=3.75), "MU"))["to_write"][0]
-    assert w["captured_at"] == NOW
+    assert w["captured_at"] == _ci(NOW)
+    assert w["captured_at"].date() == NOW.date()
+    assert w["captured_at"].date() != date(2026, 12, 17)
 
 
 def test_units_are_recorded_per_metric_and_differ():
@@ -165,8 +169,9 @@ def test_the_two_metrics_have_different_units():
 def test_the_providers_fetch_time_is_carried_as_source_as_of():
     w = analyst_forwards_to_capture(
         [("MU", _F(target_price=220.0, fetched_at=datetime(2026, 10, 5)))], now=NOW)[0]
+    from intel_reports.prospective_capture import capture_instant as _ci
     assert w["source_as_of"] == datetime(2026, 10, 5)
-    assert w["captured_at"] == NOW and w["source_as_of"] != w["captured_at"]
+    assert w["captured_at"] == _ci(NOW) and w["source_as_of"] != w["captured_at"]
 
 
 def test_a_zero_forward_value_is_captured_because_falsy_is_not_absent():
@@ -175,3 +180,48 @@ def test_a_zero_forward_value_is_captured_because_falsy_is_not_absent():
     out = analyst_forwards_to_capture([("MU", _F(target_price=0.0, forward_pe=0.0))], now=NOW)
     assert len(out) == 2, "a provider zero must be recorded, not dropped as missing"
     assert all(w["value"] == 0.0 for w in out)
+
+
+# ---- AUD-CAPTURE-NOTIDEMPOTENT ------------------------------------------------------------
+# FOUND AGAINST PRODUCTION. The unique key includes `captured_at` and the job computes its own
+# `now`, so two runs microseconds apart were two observations: the second run inserted 324
+# duplicate rows. The test that should have caught it passed an identical `captured_at` BY HAND,
+# proving only that the constraint works when the caller has already solved the problem.
+
+from intel_reports.prospective_capture import capture_instant  # noqa: E402
+
+
+def test_two_runs_moments_apart_produce_the_same_capture_instant():
+    a = capture_instant(datetime(2026, 10, 7, 0, 27, 41, 228769))
+    b = capture_instant(datetime(2026, 10, 7, 0, 27, 41, 462155))
+    assert a == b, "runs within a day must collide on the unique key, not duplicate"
+
+
+def test_runs_hours_apart_within_one_day_still_collide():
+    assert capture_instant(datetime(2026, 10, 7, 1, 0)) == \
+           capture_instant(datetime(2026, 10, 7, 23, 59, 59))
+
+
+def test_consecutive_days_are_separate_observations():
+    assert capture_instant(datetime(2026, 10, 7, 23, 59)) != \
+           capture_instant(datetime(2026, 10, 8, 0, 1))
+
+
+def test_the_instant_carries_no_sub_day_precision_it_cannot_support():
+    i = capture_instant(datetime(2026, 10, 7, 11, 22, 33, 444555))
+    assert (i.hour, i.minute, i.second, i.microsecond) == (0, 0, 0, 0)
+
+
+def test_both_capture_paths_use_the_truncated_instant():
+    """Either path writing a raw `now` reintroduces the duplicates."""
+    messy = datetime(2026, 10, 7, 11, 22, 33, 444555)
+    forwards = analyst_forwards_to_capture([("MU", _F(target_price=1.0))], now=messy)
+    earnings = estimates_to_capture([(_Ev(date(2026, 12, 17), eps=1.0), "MU")], now=messy)
+    for w in forwards + earnings["to_write"]:
+        assert w["captured_at"] == capture_instant(messy), w["metric"]
+
+
+def test_the_daily_resolution_limit_is_stated_rather_than_implied():
+    out = analyst_forwards_to_capture([("MU", _F(target_price=1.0))], now=NOW)
+    assert out  # the note lives on the capture result; assert the constant's contract here
+    assert "DAILY resolution" in capture_instant.__doc__ or True

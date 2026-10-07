@@ -151,7 +151,27 @@ test — the fourth time that trap has needed this treatment.
   deliberately). `AUD-FRONTEND-SHIPPED-RED` happened because a documented rule did not hold; a
   gate at the moment of deployment does.
 
-## 6. Two defects this round found in my own tests
+## 6. The capture was not idempotent, and only production showed it
+
+The first live run wrote 324 rows; the second, moments later, wrote 324 more. `captured_at` is
+part of the unique key and the job computes its own `now`, so two runs microseconds apart were
+two different observations.
+
+**The unit test that should have caught this passed an identical `captured_at` by hand** — it
+proved the constraint works when the caller has already solved the problem, which is not the
+situation the job is in. `capture_instant()` now truncates to the day, giving the series a
+declared resolution: one observation per source, symbol, period and metric per day. The cost is
+stated rather than hidden — a revision published within the same day is not captured separately,
+and a row means "as of that day", which is the honest granularity for a once-daily job.
+
+Two real-PostgreSQL tests now drive the actual capture path twice over one day and across two
+days, and the sabotage that restores the raw `now` fails them.
+
+Also checked rather than assumed: MU's captured target price of 1535.57 against a close of
+1045.56 is a 47% premium and stable across days — a real provider value, not a parsing defect.
+MSFT reads 582.60 against 529.30, a 10% premium.
+
+## 7. Two defects this round found in my own tests
 
 - `test_latest_is_scoped_to_the_current_policy` **passed under sabotage**: it stored both rows
   under `MU`, and `latest_evaluations` dedupes by symbol, so it returned 1 whether or not the

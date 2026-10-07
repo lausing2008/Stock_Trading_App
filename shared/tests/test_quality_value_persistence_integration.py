@@ -249,3 +249,47 @@ def test_an_actual_with_no_captured_expectation_is_refused_not_invented(session)
     with pytest.raises(BackdatedCapture, match="cannot be reconstructed from the result"):
         record_first_actual(session, release_key="US_CPI_YOY", reference_period="2026-09",
                             actual=3.0)
+
+
+# ---- AUD-CAPTURE-NOTIDEMPOTENT -------------------------------------------------------------
+# The unit test for idempotency passed an identical `captured_at` BY HAND, so it proved only
+# that the constraint works when the caller has already solved the problem. In production the
+# job computes its own `now`, two runs were microseconds apart, and the second inserted 324
+# duplicate rows. This drives the REAL capture path end to end instead.
+
+def test_two_capture_runs_in_one_day_do_not_duplicate(session):
+    from intel_reports.prospective_capture import analyst_forwards_to_capture
+    from intel_reports.quality_value_store import capture_estimate
+    from db import EstimateSnapshot
+
+    class F:
+        target_price, forward_pe, fetched_at = 1535.57, 5.15, datetime(2026, 10, 6)
+
+    for moment in (datetime(2026, 10, 7, 0, 27, 41, 228769),
+                   datetime(2026, 10, 7, 11, 3, 9, 462155)):
+        for row in analyst_forwards_to_capture([("MU", F())], now=moment):
+            capture_estimate(session, **row)
+
+    rows = session.execute(select(EstimateSnapshot)).scalars().all()
+    assert len(rows) == 2, \
+        f"one observation per metric per day; got {len(rows)} from two runs"
+    assert {r.metric for r in rows} == {"analyst_target_price", "forward_pe"}
+
+
+def test_the_next_day_is_a_new_observation_not_a_duplicate(session):
+    from intel_reports.prospective_capture import analyst_forwards_to_capture
+    from intel_reports.quality_value_store import capture_estimate
+    from db import EstimateSnapshot
+
+    class F:
+        target_price, forward_pe, fetched_at = 1535.57, 5.15, datetime(2026, 10, 6)
+
+    for day in (datetime(2026, 10, 7, 9, 0), datetime(2026, 10, 8, 9, 0)):
+        for row in analyst_forwards_to_capture([("MU", F())], now=day):
+            capture_estimate(session, **row)
+
+    targets = session.execute(
+        select(EstimateSnapshot).where(EstimateSnapshot.metric == "analyst_target_price")
+        .order_by(EstimateSnapshot.captured_at)).scalars().all()
+    assert len(targets) == 2, "consecutive days must each be recorded"
+    assert targets[0].captured_at.date() != targets[1].captured_at.date()

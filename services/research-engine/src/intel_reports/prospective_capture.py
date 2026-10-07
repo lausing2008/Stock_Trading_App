@@ -30,6 +30,24 @@ log = get_logger("research-engine.prospective_capture")
 HORIZON_DAYS = 120
 
 
+def capture_instant(now: datetime) -> datetime:
+    """Truncate a capture time to the day. THIS IS WHAT MAKES A RE-RUN IDEMPOTENT.
+
+    FOUND AGAINST PRODUCTION, not by a test. `estimate_snapshots`'s unique key includes
+    `captured_at`, and the job computes its own `now` — so two runs microseconds apart are two
+    different observations and the second inserted 324 duplicate rows. The unit test that was
+    supposed to cover this passed an identical `captured_at` by hand, which only proved the
+    constraint works when the caller already avoids the problem.
+
+    Truncating to the day gives the series a declared resolution: ONE observation per source,
+    symbol, period and metric per day. The cost is real and stated — a revision published
+    within the same day is not captured separately, and the row means "as of that day" rather
+    than "at that instant". For a once-daily job that is the honest granularity; a finer one
+    would promise a precision the capture cadence does not have.
+    """
+    return naive_utc(now).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
 #: Forward-looking analyst quantities that `fundamentals` refreshes IN PLACE.
 #:
 #: MEASURED AGAINST PRODUCTION, 2026-10-06, and this is why they are here. The obvious source
@@ -100,7 +118,7 @@ def estimates_to_capture(event_rows, *, now: datetime, horizon_days: int = HORIZ
                 "accounting_basis": None,
                 "provider": "earnings_events",
                 "value": float(value),
-                "captured_at": now,
+                "captured_at": capture_instant(now),
                 "raw": {"report_date": ev.report_date.isoformat(), "event_id": ev.id},
             })
 
@@ -134,7 +152,7 @@ def analyst_forwards_to_capture(rows, *, now: datetime) -> list:
                 "metric": metric, "units": units, "accounting_basis": None,
                 "provider": "fundamentals", "value": float(value),
                 "source_as_of": getattr(f, "fetched_at", None),
-                "captured_at": now,
+                "captured_at": capture_instant(now),
                 "raw": {"column": column, "caveat": note},
             })
     return out
@@ -162,7 +180,9 @@ def capture_analyst_forwards(session, *, now: datetime | None = None) -> dict:
            "already_captured_this_moment": already, "as_of": now.isoformat(),
            "note": "No accounting basis and no horizon are stored for either metric, because "
                    "the provider states neither. A target price with no horizon cannot be "
-                   "scored against an outcome date that was never declared."}
+                   "scored against an outcome date that was never declared. The series has "
+                   "DAILY resolution: one observation per metric per day, so a revision "
+                   "published within the same day is not captured separately."}
     log.info("prospective_capture.analyst_forwards",
              **{k: v for k, v in out.items() if k != "note"})
     return out
