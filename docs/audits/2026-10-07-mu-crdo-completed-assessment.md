@@ -1,8 +1,21 @@
 # MU and CRDO: completed assessments from issuer evidence
 
 Two companies taken end to end, 2026-10-07. Every financial figure below is from the issuer's
-own SEC filing, cited by accession number. Market capitalisations are dated. **Neither company
-reaches "entry review ready", and the reasons are economic, not missing implementation.**
+own SEC filing, cited by accession number. Market capitalisations are dated.
+
+**Revised 2026-10-07 after review.** An earlier version of this document said both companies
+were "rejected on economics". That was too categorical, and the document contradicted it two
+sections later. The outcomes are three different things and are now reported separately:
+
+| Dimension | MU | CRDO |
+|---|---|---|
+| **Valuation** | **Fails under the assumptions selected below** — every scenario sits below the market price | **Fails under the assumptions selected below** — all three scenarios do, once discounted |
+| **Durability** | **Incomplete.** The reviewed evidence does not establish a durable advantage. It does not establish the absence of one either | **Incomplete**, same sense |
+| **Risk review** | **Incomplete** — 6 of 12 classes not assessed | **Incomplete** — 5 of 12 classes not assessed |
+
+A valuation failing under assumptions *I selected* is not the same as a company being
+unattractive, and neither is the same as an unfinished review. Only the first is a conclusion
+about price; none is a conclusion about the business.
 
 Standing limits: no email, no alert type, no order. This is research.
 
@@ -10,8 +23,19 @@ Standing limits: no email, no alert type, no order. This is research.
 
 ## 1. Issuer-verified financials
 
-Source: SEC XBRL company facts (`us-gaap` taxonomy, so the basis is US GAAP **by construction**
-rather than by assumption — which no provider row in this platform can say about itself).
+Source: SEC XBRL company facts, `us-gaap` taxonomy.
+
+**What the taxonomy establishes, and what it does not.** `us-gaap` identifies the accounting
+*concept*. On its own it does not establish that a selected fact has the right duration,
+consolidation scope, units or amendment vintage — four separate checks, each now enforced or
+disclosed rather than assumed:
+
+| Check | Status |
+|---|---|
+| **Duration** | **Enforced, and this found a real defect.** A 10-K reports its quarters as well as its year: of MU's `NetIncomeLoss` facts carrying form `10-K`, **77 span 90 days and 3 span 97, against 45 spanning a year**. The first extractor accepted all of them. Duration facts must now span 340–400 days (tolerating 52/53-week calendars). Re-running after the fix changed **no figure in this document** — the annual facts had been selected by sort order, not by design |
+| **Units** | Enforced. Each quantity accepts one unit; `USD` and `USD-per-shares` are never mixed under one concept |
+| **Consolidation scope** | Disclosed, not filtered. The companyfacts endpoint returns only undimensioned facts — the observed key set is `accn/end/filed/form/fp/frame/fy/start/val`, with no segment or member axis — so these are consolidated figures. That is a property of the endpoint and would need re-checking if the API changed |
+| **Amendment vintage** | Enforced. Where a period is reported more than once the latest-filed value wins, so a `10-K/A` supersedes the original, and the superseded value is retained |
 
 | | MU | CRDO |
 |---|---|---|
@@ -30,7 +54,33 @@ rather than by assumption — which no provider row in this platform can say abo
 | Cash (+ ST investments) | $9.642bn | $1.165bn (+$0.278bn) |
 | Long-term debt | Senior notes due 2035, 2041, 2051 | **None reported** |
 | R&D | $3.798bn | $279.4m |
-| Shares outstanding / diluted | 1,122m / 1,125m | 185.4m / 188.2m |
+| **Shares — three different measures** | see below | see below |
+
+### Share counts are three different numbers, and the earlier version conflated them
+
+An earlier draft reported "1,122m / 1,125m" as "shares outstanding / diluted" without stating
+the type or the measurement date. They are not interchangeable:
+
+| Measure | Type | MU | as of | CRDO | as of |
+|---|---|---|---|---|---|
+| `us-gaap:CommonStockSharesOutstanding` | **instant**, balance-sheet date | 1,122.0m | 2025-08-28 | 185.4m | 2026-05-02 |
+| `us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding` | **duration** average over the year; the EPS denominator | 1,125.0m | 2024-08-30 → 2025-08-28 | 188.2m | 2025-05-04 → 2026-05-02 |
+| `dei:EntityCommonStockSharesOutstanding` | **instant**, cover page — a date *after* the fiscal year end | 1,122.5m | **2025-09-26** | 186.5m | **2026-06-08** |
+
+The cover-page count is the most recent, and is the one closest in time to a market
+capitalisation — but it still predates the 2026-10-06 capitalisation used here by over a year
+for MU. **No per-share conversion is performed anywhere in this document**, and that is why.
+
+### Filing dates cannot order events within a day
+
+`filed` is a calendar date. The acceptance timestamp is not the same thing, and the difference
+is not academic: **CRDO's FY2026 10-K is dated 2026-06-15 but was accepted at
+2026-06-16T01:09:27Z** — the following day in UTC. MU's FY2025 10-K: filed 2025-10-03, accepted
+2025-10-03T18:42:25Z. MU's FY2026 8-K: filed 2026-09-30, accepted 2026-09-30T20:02:22Z, i.e.
+after the US close.
+
+Every extracted fact now carries `accepted` alongside `filed`, because any cutoff finer than a
+day must use the former.
 
 ### Two reconciliation findings
 
@@ -40,12 +90,15 @@ revenue value reconciles exactly ($37,378,000,000 in both), so the figures agree
 do not. This is precisely why the business-performance section says "latest stored year" and
 names the label as the provider's.
 
-**MU's FY2026 is announced but NOT filed, and this corrects an earlier claim of mine.** The
+**MU's FY2026 is announced, with no FY2026 10-K located — and this corrects an earlier claim
+of mine.** The
 Quality & Value gate reported MU's stored annual as 401 days old and said "a later fiscal year
 has almost certainly been reported and is absent". The first half is right and the second half
 was imprecise: MU's most recent **10-K** is still FY2025. What exists is an **8-K dated
-2026-09-30** (`0000723125-26-000018`) announcing FY2026 results. So the stored series is current
-to the newest *filed* annual report; what it is missing is an announced, unaudited fiscal year.
+2026-09-30** (`0000723125-26-000018`) announcing FY2026 results. So the stored series is current to the
+newest 10-K located; what it is missing is an announced, unaudited fiscal year. "No FY2026 10-K
+located" is the accurate claim — a search of the issuer's recent filings found none, which is
+not the same as establishing that none has been filed.
 
 ### MU FY2026 as announced (8-K, unaudited — not a 10-K)
 
@@ -56,7 +109,7 @@ Fiscal year **ended 2026-09-03**:
 - Non-GAAP net income $86.76bn, $75.52 per diluted share
 - Operating cash flow **$89.68bn** against $17.53bn
 - Q4 alone: revenue $54.23bn, GAAP net income $37.70bn
-- Q1 FY2027 guidance: revenue **$61.5bn ± $1.x bn**
+- FQ1-27 guidance: revenue **$61.5bn ± $1.5bn**, GAAP diluted EPS **$37.84 ± $1.00**, GAAP gross margin ~85.95%
 
 Capital expenditure for FY2026 is **not stated in the highlights**, so free cash flow cannot be
 computed from this release — and for MU capex is the decisive swing (FY2025: $15.86bn against
@@ -70,14 +123,14 @@ Both capitalisations fetched **2026-10-06**; both closing prices are the **2026-
 Aggregate equity value against market capitalisation — never per share, because the issuer-filed
 share count is as of its fiscal year end, which is not the market cap's date.
 
-### MU — the cheap-looking multiple is the warning
+### MU — which multiple you are paying depends on which earnings level persists
 
 | Measure | Value |
 |---|---|
 | Market capitalisation (2026-10-06) | **$1,201.6bn** |
 | Close (2026-10-06) | $1,045.56 |
 | P/E on FY2026 announced GAAP earnings | **14.1×** |
-| P/E on the **six-year mean** of net income | **70.0×** |
+| P/E on the **six-year mean** of net income (a reference case, not a forecast) | **70.0×** |
 | Price / FY2026 operating cash flow | 13.4× |
 
 Net income by fiscal year, from the 10-Ks and the FY2026 8-K:
@@ -86,31 +139,47 @@ Net income by fiscal year, from the 10-Ks and the FY2026 8-K:
 |---|---|---|---|---|---|
 | $5.86bn | $8.69bn | **−$5.83bn** | $0.78bn | $8.54bn | **$84.97bn** |
 
-FY2026 earnings are **4.95× the six-year mean of $17.17bn**, and the cycle contains a real loss
-year three years ago. This is the structural trap a low P/E hides on a cyclical: the multiple is
-at its lowest exactly when the denominator is at its most extreme. 14.1× and 70.0× are both
-arithmetically correct and they are answers to different questions.
+FY2026 is **the highest net income in the six years examined** — 4.95× the arithmetic mean of
+$17.17bn — and the series contains a real loss three years ago.
 
-**Scenarios** (assumptions recorded; these are arithmetic consequences, not probabilities):
+**The mean is a reference case, not normalized earnings.** It demonstrates that this business's
+earnings vary by an enormous factor; it does not establish a sustainable level, because MU's
+scale and mix changed over the period (revenue went from $15.5bn to $133.2bn and the segment
+structure was reorganised in FY2025). Calling FY2026 "the cycle peak" would also claim more than
+the evidence supports — it is the highest figure in the examined series, and whether a higher
+one follows is exactly what is unknown. 14.1× and 70.0× are both arithmetically correct and are
+answers to different questions.
 
-| Scenario | Sustainable earnings | Multiple | Equity value | Upside to price* |
-|---|---|---|---|---|
-| Bear | $17.2bn (six-year mean) | 12× | $206bn | −83% |
-| Base | $60bn (≈70% of FY2026 retained) | 14× | $840bn | **−30%** |
-| Bull | $100bn (FY2027 guidance run-rate) | 15× | $1,500bn | +25% |
+**Earnings levels, and what each implies you are paying.** These are not scenarios with
+probabilities. They are three anchors drawn from the record, with the multiple each produces:
 
-\* **Upside to price** — denominator is the $1,201.6bn market capitalisation, so it reads as the
-return from here. It is NOT the discount to value, whose denominator is the scenario's own
-equity value and which is a larger number for every case below the price. The base case is −30%
-of the price and −43% of the value; quoting one as the other overstates by that gap.
+| Earnings anchor | Source | Amount | Multiple at $1,201.6bn |
+|---|---|---|---|
+| Six-year mean | FY2021–FY2026 net income, 10-Ks + the FY2026 8-K | $17.17bn | **70.0×** |
+| FY2026 as announced | 8-K `0000723125-26-000018` | $84.97bn | **14.1×** |
+| FQ1-27 guidance, annualised | Guidance EPS $37.84 × 1,143.1m implied diluted shares × 4 | $173.0bn | **6.9×** |
 
-Sensitivity around the base, ±15% and ±30% on each axis, gives **$0.41tn to $1.42tn**. The
-both-fall corner is not a remote tail for a cyclical — the multiple compresses as the earnings
-peak, so those two moves are correlated.
+**The annualisation is an extrapolation of one guided quarter, not a forecast**, and MU's
+guidance is for FQ1-27 only. It is included because it is the one forward figure the issuer
+itself published, and because leaving it out would understate what the market may be pricing.
 
-**Reading:** the base case sits roughly 30% below the market. MU is not obviously cheap; it is
-priced for most of a record year persisting. That is a defensible view, but it is a *forecast*,
-and nothing in this platform evidences it.
+**No equity value is asserted here, and the earlier version of this table should not have
+asserted one.** It carried a "base case" of $60bn sustainable earnings at a 14× multiple with no
+stated rationale for either number — and the result, $840bn, then read as a fair value. Neither
+input was supported: nothing in this platform establishes what MU's sustainable earnings are,
+and no company-specific historical multiple series was collected to justify 14×. The table above
+reports what the market price implies at each anchor, which is a measurement. A fair value would
+be a claim, and the evidence for it has not been assembled.
+
+**What is fair to conclude:** at $1,201.6bn, MU is priced at 6.9× its own guided quarter
+annualised and 70.0× its six-year mean. Which of those you are actually paying depends entirely
+on an earnings durability question this review did not answer.
+
+**Sensitivity.** Taking $60bn × 14× purely as an illustrative midpoint — not as a claim — and
+moving each axis ±15% and ±30% spans **$0.41tn to $1.42tn**, against a $1,201.6bn market
+capitalisation. The both-fall corner is not a remote tail for a business like this: a multiple
+compresses as earnings peak, so the two moves are correlated. The width of that range is the
+finding — the answer is governed by assumptions, not by the arithmetic.
 
 ### CRDO — priced for continuation, with concentration against it
 
@@ -125,22 +194,42 @@ and nothing in this platform evidences it.
 | EV / free cash flow | **94.6×** |
 | Revenue growth FY2025 → FY2026 | $0.440bn → $1.335bn, **+203%** |
 
-FY2026 net income is **5.16× the five-year mean of $91.5m**, and three of the five years were losses (FY2022 −$22m, FY2023 −$17m, FY2024 −$28m, FY2025 +$52m).
+FY2026 net income is **the highest in the five years examined**, 5.16× the arithmetic mean of $91.5m (a reference case, not a sustainable level), and three of the five years were losses (FY2022 −$22m, FY2023 −$17m, FY2024 −$28m, FY2025 +$52m).
 
-| Scenario | Assumption | Equity value | Upside to price* |
+**Each scenario now states its horizon, is discounted to today, and is adjusted for dilution.**
+The earlier version compared a value reached in three years directly against today's market
+capitalisation, which overstates it twice over — once for time, once for the shares issued along
+the way.
+
+Discount rate **12%** and dilution **8%/yr** are assumptions, justified below and sensitive.
+
+| Scenario | Assumption | Horizon | Terminal value | PV at 12% | After 8%/yr dilution | vs $39.94bn |
+|---|---|---|---|---|---|---|
+| Bear | growth stalls, earnings revert to $150m, 25× | 1 yr | $3.75bn | $3.35bn | **$3.10bn** | **−92%** |
+| Base | revenue doubles once more then +20%, $900m, 30× | 2 yr | $27.0bn | $21.52bn | **$18.45bn** | **−54%** |
+| Bull | hyper-growth persists, $1.8bn earnings, 35× | 3 yr | $63.0bn | $44.84bn | **$35.60bn** | **−11%** |
+
+**The bull case changes sign.** Undiscounted it read +58%; discounted and dilution-adjusted it is
+−11%. All three scenarios now sit below the market price, and that is a consequence of stating
+horizons rather than of changing any view about the company.
+
+Assumptions and their sensitivity:
+
+| Assumption | Value | Basis | What would change it |
 |---|---|---|---|
-| Bear | growth stalls; earnings revert to $150m, 25× | $3.75bn | −91% |
-| Base | revenue doubles once more then grows 20%; $900m earnings, 30× | $27.0bn | **−32%** |
-| Bull | hyper-growth persists three years; $1.8bn earnings, 35× | $63.0bn | +58% |
+| Discount rate | 12% | A cost of equity for a single-segment, pre-scale semiconductor business. **No company-specific cost of capital was computed** | At 8% the bull case is $39.9bn — level with the market. At 15%, $32.3bn |
+| Dilution | 8%/yr | Observed: 171.2m → 185.4m shares, FY2025 → FY2026 (+8.3%) | Buybacks, or stock compensation falling as revenue scales |
+| Exit multiples (25/30/35×) | assumption | **No company-specific historical multiple series was collected.** These are judgement | Any evidence of where comparable businesses have traded through a cycle |
 
-\* Same denominator as MU's table: the $39.94bn market capitalisation. **A draft of this table
-quoted the base case as −48%, which is its discount to value — the other denominator.** Caught
-by recomputing both; it is exactly the error `equity_discount()` returns two named figures to
-prevent, and prose is evidently no safer from it than code was.
+\* The "vs $39.94bn" column is **upside to price** — denominator is the market capitalisation.
+A draft quoted the base case as −48%, which is its discount to *value*, beside bear and bull
+quoted as upside to price. Caught by recomputing; exactly the error `equity_discount()` returns
+two named figures to prevent, and prose is evidently no safer from it than code was.
 
-**Reading:** CRDO requires sustained hyper-growth to justify the price. The balance sheet is
-genuinely strong — no debt, $1.44bn net cash, 68% gross margin — and the valuation leaves no
-room for the concentration risk below to materialise.
+**Reading:** under these assumptions, even sustained hyper-growth for three years does not
+reach today's price once time and dilution are accounted for. The balance sheet is genuinely
+strong — no debt, $1.44bn net cash, 68.0% gross margin. The conclusion is about the price under
+stated assumptions, not about the business.
 
 ---
 
@@ -163,8 +252,12 @@ consolidation of competitors, new entrants, government assistance to competitors
 infrastructure operators from purchasing Micron products** (which the filing says had an adverse
 impact), and rapid technological change shortening product life cycles.
 
-**Verdict: not established.** Memory is a commodity with a documented price cycle and a loss
-three years ago. Nothing located shows a mechanism that would prevent the next one.
+**Verdict: the reviewed evidence does not establish a durable advantage.** It does not
+establish the absence of one either, and the distinction matters: no search was made for
+switching costs in MU's HBM qualification process, for customer-specific design cycles, or for
+the Strategic Customer Agreement terms, because none is disclosed in the documents reviewed.
+What the reviewed evidence does show is a documented price cycle and a loss three years ago,
+with no located mechanism that would prevent the next one.
 
 ### CRDO
 
@@ -181,8 +274,23 @@ risk factors add that its market "is an emerging market that will depend on the 
 generative AI technologies, and this market may not develop as we currently expect", and that it
 has an accumulated deficit and "may incur additional net losses".
 
-**Verdict: not established.** High margins with 90% of revenue in ten customers describe a
-supplier whose position depends on a small number of relationships, not one protected from them.
+**Verdict: the reviewed evidence does not establish a durable advantage.**
+
+Two claims the earlier version made that the evidence does not support, and which are withdrawn:
+
+- **Customer concentration is a risk; it is not proof that switching costs are absent.** A
+  supplier embedded in a handful of customers' designs may be very hard to replace — high
+  concentration is equally consistent with deep integration and with fragility, and nothing
+  reviewed distinguishes them. The right statement is that concentration raises the consequence
+  of losing a relationship, not that no relationship is protected.
+- **A single reportable segment is not a single revenue stream.** Segment reporting follows how
+  the chief operating decision-maker allocates resources, which CRDO's own filing says
+  explicitly. One reportable segment can contain several products and end markets. The earlier
+  phrasing "there is no second business to absorb a shock in the first" asserted a business fact
+  from an accounting disclosure.
+
+A 68.0% gross margin sustained for one year at this scale is consistent with a strong position
+and with a favourable product cycle; one year does not separate them.
 
 ---
 
@@ -206,30 +314,41 @@ different claim from "the company is safe", and only the first is supported.
 | Litigation | **No** | Not checked | Not checked |
 | Supplier concentration | **No** | Not checked | Not checked |
 
-**Seven of thirteen classes were not checked.** Under the Quality & Value contract an unchecked
-critical class leaves the value-trap gate unable to pass — which is correct, and is a statement
-about the completeness of this review rather than about either company.
+**Counts, per company, over the twelve classes in the table above** (an earlier version said
+"seven of thirteen", which matched neither the table nor either company):
+
+| | Complete | Partial | Not applicable | Not assessed |
+|---|---|---|---|---|
+| **MU** | 5 | 1 (debt maturity: note titles located, the maturity table not parsed) | 0 | **6** (FY2025 customer concentration, restatements, related-party, auditor opinion, litigation, supplier concentration) |
+| **CRDO** | 6 | 0 | 1 (debt maturity — no debt reported) | **5** (restatements, related-party, auditor opinion, litigation, supplier concentration) |
+
+Under the Quality & Value contract an unassessed critical class leaves the value-trap gate
+unable to pass — which is correct, and is a statement about the completeness of this review
+rather than about either company.
 
 ---
 
 ## 5. Where this leaves each company
 
-**Neither reaches entry review, and now for economic reasons.**
+**Neither reaches entry review.** The valuation gate fails under the assumptions selected in
+section 2; the durability and risk gates are incomplete. Those are different statements and the
+summary table at the top of this document keeps them apart.
 
-**MU** — Fundamental checks: the filed series is current to the newest 10-K, but the business is
-3.6× larger than that record and the gap is an unaudited 8-K. Durability: not established;
-the filing's own risk factors describe the cycle mechanism. Valuation: 14.1× peak earnings is
-70.0× the six-year mean, and the base scenario sits ~30% below the market. Risk: concentration
+**MU** — Fundamental checks: the stored series is current to the newest 10-K located, but the business is
+3.6× larger than that record and the gap is an unaudited 8-K. Durability: the reviewed evidence does not establish one;
+the filing's own risk factors describe the cycle mechanism. Valuation: 6.9× the guided quarter annualised,
+14.1× FY2026, 70.0× the six-year mean — which you are paying is the open question. Risk: concentration
 unestablished for FY2025, seven classes unchecked.
 
-**CRDO** — Fundamental checks: pass, FY2026 filed four months ago. Durability: not established;
-90% of revenue in ten customers is the counterevidence. Valuation: 28.8× EV/revenue and 94.6×
-EV/FCF require hyper-growth to persist; the base scenario is ~32% below the market. Risk: severe
+**CRDO** — Fundamental checks: pass, FY2026 filed four months ago. Durability: the reviewed evidence does not
+establish one; 90% of revenue in ten customers raises the consequence of losing a relationship. Valuation: all three scenarios fall below the
+market once discounted and dilution-adjusted, including the bull case at −11%. Risk: severe
 customer concentration, single segment, 8.3% annual dilution, accumulated deficit.
 
-**What would change each verdict.** For MU: the FY2026 10-K (due within days, given FY2025's was
-filed 2025-10-03), disclosed Strategic Customer Agreement terms, and a capex figure that makes
-free cash flow computable. For CRDO: customer concentration falling materially, or a second
+**What would change each verdict.** For MU: an FY2026 10-K, whenever it appears — the previous
+year's 10-K was filed 2025-10-03, but one year's filing date does not establish when the next is
+due, and no deadline was checked. Also: disclosed Strategic Customer Agreement terms, and a
+capex figure that makes free cash flow computable. For CRDO: customer concentration falling materially, or a second
 revenue stream, plus evidence the 68% gross margin survives a demand pause.
 
 ---

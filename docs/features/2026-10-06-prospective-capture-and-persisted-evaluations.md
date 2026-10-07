@@ -151,6 +151,29 @@ test — the fourth time that trap has needed this treatment.
   deliberately). `AUD-FRONTEND-SHIPPED-RED` happened because a documented rule did not hold; a
   gate at the moment of deployment does.
 
+## 5b. Frozen rules were not enough — the inputs are frozen too
+
+The review's point: *"A rules fingerprint and cutoff alone cannot reproduce an evaluation if its
+underlying records later change."* Correct, and the first version stored only references.
+`financial_statements` is refreshed in place and a market capitalisation is refetched, so a
+reference locates what a row has **become**, not what was read.
+
+`freeze_inputs()` now stores the resolved **values** alongside a `sha256` digest, with the
+references kept separately:
+
+```
+{"frozen_inputs": {...the values the gates were computed from...},
+ "input_digest": "<32 hex>",
+ "refs": {"financial_statements": [814, 815, 816, 817], "stock_id": 42}}
+```
+
+`verify_inputs()` recomputes the digest. The distinction it draws is the useful one: **premises
+moving on is normal** — that is what comparing `refs` against `frozen_inputs` detects — whereas
+**the stored copy itself being edited is not**, and only the digest catches that. A row holding
+references only reports `verifiable: false` rather than appearing sound.
+
+Six integration tests against real PostgreSQL, three sabotages verified.
+
 ## 6. The capture was not idempotent, and only production showed it
 
 The first live run wrote 324 rows; the second, moments later, wrote 324 more. `captured_at` is

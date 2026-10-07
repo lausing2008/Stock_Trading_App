@@ -191,3 +191,79 @@ def test_the_sensitivity_grid_says_the_two_axes_are_correlated_for_a_cyclical():
     lows = [c["equity_value"] for row in g["grid"] for c in row]
     assert round(min(lows) / 1e12, 2) == 0.41 and round(max(lows) / 1e12, 2) == 1.42
     assert "correlated" in g["note"]
+
+
+# ---- context validation: us-gaap names the CONCEPT, not the context ----------------------
+# The review's point 4, and it found a real defect: of MU's NetIncomeLoss facts carrying form
+# "10-K", 77 span 90 days and 3 span 97, against 45 spanning a year. The form does not identify
+# an annual figure, and the first version of this module accepted all of them.
+
+from intel_reports.issuer_facts import (  # noqa: E402
+    MIN_ANNUAL_DAYS, MAX_ANNUAL_DAYS, EXPECTED_UNITS, _is_annual_duration)
+
+
+def test_a_quarterly_duration_inside_a_ten_k_is_not_an_annual_figure():
+    f = extract(_facts(Revenues=[
+        _e(37_378e6, "2024-08-30", "2025-08-28"),
+        _e(11_320e6, "2025-05-30", "2025-08-28")]), cik="x")   # Q4, same period_end
+    assert [x.value for x in f.annual_series["revenue"]] == [37_378e6]
+
+
+def test_the_duration_window_tolerates_a_fifty_three_week_year():
+    assert _is_annual_duration("2024-08-30", "2025-08-28") is True       # 363d
+    assert _is_annual_duration("2019-08-30", "2020-09-03") is True       # 370d, 53-week
+    assert _is_annual_duration("2025-05-30", "2025-08-28") is False      # 90d
+    assert _is_annual_duration("2024-01-01", "2026-01-01") is False      # 731d
+    assert MIN_ANNUAL_DAYS < 365 < MAX_ANNUAL_DAYS
+
+
+def test_an_instant_fact_is_kept_because_it_has_no_duration_to_check():
+    assert _is_annual_duration(None, "2025-08-28") is True
+
+
+def test_units_are_never_mixed_within_one_quantity():
+    """A concept carrying USD and USD/shares must not contribute both to one series."""
+    # The per-share fact is filed LATER on purpose. Both units share a (start, end) key, so
+    # without the unit filter the restatement rule prefers the later filing and the EPS value
+    # silently becomes "revenue". An earlier version of this test gave them the same filing
+    # date, which made the two paths tie and the sabotage pass.
+    facts = {"entityName": "X", "facts": {"us-gaap": {"Revenues": {"units": {
+        "USD": [_e(37_378e6, "2024-08-30", "2025-08-28", filed="2025-10-03")],
+        "USD-per-shares": [_e(33.42, "2024-08-30", "2025-08-28", filed="2026-10-02")]}}}}}
+    f = extract(facts, cik="x")
+    assert [x.value for x in f.annual_series["revenue"]] == [37_378e6]
+    assert f.latest_annual["revenue"].unit == "USD"
+
+
+def test_share_quantities_are_read_in_shares_not_dollars():
+    assert EXPECTED_UNITS["diluted_shares"] == "shares"
+    assert EXPECTED_UNITS["shares_outstanding"] == "shares"
+
+
+def test_a_fact_declares_whether_it_is_a_flow_or_a_stock():
+    """MU FY2025: diluted 1,125.0m is a DURATION average, outstanding 1,122.0m an INSTANT.
+    Reporting both as 'shares' with no type was what let them read as interchangeable."""
+    f = extract(_facts(Revenues=[_e(1.0, "2024-08-30", "2025-08-28")]), cik="x")
+    rev = f.latest_annual["revenue"]
+    assert rev.measure == "duration" and rev.duration_days == 363
+    inst = Fact(concept="CommonStockSharesOutstanding", value=1122e6, unit="shares",
+                period_start=None, period_end="2025-08-28", fiscal_year=2025,
+                fiscal_period="FY", form="10-K", filed="2025-10-03")
+    assert inst.measure == "instant" and inst.duration_days is None
+
+
+def test_acceptance_time_is_carried_because_a_filing_date_cannot_order_a_day():
+    """Measured: CRDO's FY2026 10-K is dated 2026-06-15, accepted 2026-06-16T01:09:27Z."""
+    fact = Fact(concept="Revenues", value=1.0, unit="USD", period_start="2025-05-04",
+                period_end="2026-05-02", fiscal_year=2026, fiscal_period="FY",
+                form="10-K", filed="2026-06-15", accepted="2026-06-16T01:09:27.000Z")
+    d = fact.as_dict()
+    assert d["accepted"][:10] != d["filed"], "acceptance can fall on the next UTC day"
+
+
+def test_the_record_states_what_the_taxonomy_alone_does_not_establish():
+    f = extract(_facts(Revenues=[_e(1.0, "2024-08-30", "2025-08-28")]), cik="x")
+    c = f.as_dict()["context_checks"]
+    for k in ("duration", "units", "consolidation", "amendment_vintage", "intraday_ordering"):
+        assert c[k]
+    assert "property of the endpoint, not a filter applied here" in c["consolidation"]

@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import urllib.request
 from dataclasses import dataclass, field as dc_field
+from datetime import date
 
 #: SEC requires a declaring User-Agent. Theirs is a fair-access policy, not an obstacle.
 USER_AGENT = "StockAI research (r_lau@learcapital.com)"
@@ -55,6 +56,13 @@ CONCEPTS = {
                            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment",
               "PaymentsToAcquireProductiveAssets"],
+    # THREE DIFFERENT SHARE MEASURES, kept apart because they are not interchangeable and the
+    # first version of this module reported one of them as "shares" with no type.
+    # Measured on MU's FY2025 10-K: 1,125.0m / 1,122.0m / 1,122.5m — three dates, three meanings.
+    #   diluted_shares     a DURATION average over the year; the EPS denominator
+    #   shares_outstanding an INSTANT at the balance-sheet date
+    #   (cover-page count lives in the `dei` taxonomy and is fetched separately — it is an
+    #    instant at a date AFTER the fiscal year end, 2025-09-26 for MU)
     "diluted_shares": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
     "basic_shares": ["WeightedAverageNumberOfSharesOutstandingBasic",
                      "WeightedAverageNumberOfSharesOutstanding"],
@@ -67,10 +75,26 @@ CONCEPTS = {
 #: the "these are US GAAP by construction" guarantee above.
 ANNUAL_FORMS = ("10-K", "10-K/A")
 
+#: A fiscal year's length, in days, with tolerance for 52/53-week calendars.
+#:
+#: MEASURED, AND THIS IS A REAL DEFECT THE FIRST VERSION HAD. A 10-K reports the fiscal year AND
+#: its quarters, so the form alone does not identify an annual figure: of MU's NetIncomeLoss
+#: facts carrying form "10-K", 77 span 90 days and 3 span 97, against 45 spanning a year. Taking
+#: them all meant a Q4 figure could be selected as a fiscal year — it did not corrupt MU's or
+#: CRDO's latest year by luck of sort order, not by design.
+MIN_ANNUAL_DAYS, MAX_ANNUAL_DAYS = 340, 400
+
+#: The unit each quantity must be reported in. A concept can carry several (USD and USD/shares),
+#: and mixing them silently produces a figure that is arithmetically fine and economically
+#: meaningless.
+EXPECTED_UNITS = {"diluted_shares": "shares", "basic_shares": "shares",
+                  "shares_outstanding": "shares"}
+DEFAULT_UNIT = "USD"
+
 
 @dataclass
 class Fact:
-    """One reported figure, with the filing that reported it."""
+    """One reported figure, with the filing that reported it and the context that bounds it."""
     concept: str
     value: float
     unit: str
@@ -82,11 +106,36 @@ class Fact:
     filed: str
     accession: str | None = None
     frame: str | None = None
+    #: When the SEC ACCEPTED the submission. A filing DATE is a calendar day and cannot order
+    #: anything within it — measured: CRDO's FY2026 10-K is dated 2026-06-15 but was accepted
+    #: 2026-06-16T01:09:27Z, which is the following day in UTC. Any cutoff finer than a day must
+    #: use this, not `filed`.
+    accepted: str | None = None
+
+    @property
+    def duration_days(self) -> int | None:
+        if not self.period_start:
+            return None
+        return (date.fromisoformat(self.period_end)
+                - date.fromisoformat(self.period_start)).days
+
+    @property
+    def measure(self) -> str:
+        """DURATION (a flow over a period) or INSTANT (a stock at a point).
+
+        Not decoration: a weighted-average diluted share count is a duration average and a
+        balance-sheet share count is an instant, and dividing by the wrong one is a different
+        number. The first version of this module reported both as "shares".
+        """
+        return "instant" if self.period_start is None else "duration"
 
     def as_dict(self) -> dict:
-        return {k: getattr(self, k) for k in
-                ("concept", "value", "unit", "period_start", "period_end", "fiscal_year",
-                 "fiscal_period", "form", "filed", "accession", "frame")}
+        d = {k: getattr(self, k) for k in
+             ("concept", "value", "unit", "period_start", "period_end", "fiscal_year",
+              "fiscal_period", "form", "filed", "accession", "frame", "accepted")}
+        d["measure"] = self.measure
+        d["duration_days"] = self.duration_days
+        return d
 
 
 @dataclass
@@ -116,6 +165,25 @@ class IssuerFacts:
             "basis_evidence": "drawn from the us-gaap XBRL taxonomy in the issuer's own 10-K, "
                               "so the basis is a property of the source rather than an "
                               "assumption about it",
+            # WHAT THE TAXONOMY ALONE DOES NOT ESTABLISH, stated so it is not read as more than
+            # it is. The taxonomy names the accounting CONCEPT; these four are separate checks,
+            # and each is now enforced or disclosed rather than assumed:
+            "context_checks": {
+                "duration": f"duration facts are required to span {MIN_ANNUAL_DAYS}-"
+                            f"{MAX_ANNUAL_DAYS} days, because a 10-K reports its quarters too "
+                            f"and the form alone does not identify an annual figure",
+                "units": "each quantity accepts ONE unit; USD and USD/shares are never mixed",
+                "consolidation": "the companyfacts API returns only undimensioned facts — "
+                                 "observed key set is accn/end/filed/form/fp/frame/fy/start/val "
+                                 "with no segment or member axis — so these are consolidated "
+                                 "figures. This is a property of the endpoint, not a filter "
+                                 "applied here, and would need re-checking if the API changed",
+                "amendment_vintage": "where a period is reported more than once the LATEST-FILED "
+                                     "value wins, so a 10-K/A supersedes the original",
+                "intraday_ordering": "`filed` is a calendar day and cannot order events within "
+                                     "it; `accepted` carries the SEC acceptance timestamp and is "
+                                     "what any cutoff finer than a day must use",
+            },
             "latest_annual": {k: v.as_dict() for k, v in self.latest_annual.items()},
             "not_found": list(self.not_found),
         }
@@ -132,7 +200,18 @@ def _get(url: str, timeout: int = 30) -> dict:
         return json.loads(raw)
 
 
-def _annual_facts(units: dict, concept: str) -> list:
+def _is_annual_duration(start, end) -> bool:
+    """A duration fact spans a fiscal year; an instant fact has no duration to check."""
+    if not start:
+        return True                      # instant (balance-sheet) facts are point-in-time
+    try:
+        n = (date.fromisoformat(end) - date.fromisoformat(start)).days
+    except ValueError:
+        return False
+    return MIN_ANNUAL_DAYS <= n <= MAX_ANNUAL_DAYS
+
+
+def _annual_facts(units: dict, concept: str, *, expected_unit: str = DEFAULT_UNIT) -> list:
     """Every fiscal-year fact for one concept, newest period first, deduplicated.
 
     A FIGURE CAN BE REPORTED MANY TIMES — in its own 10-K, then as a comparative in the next
@@ -143,14 +222,16 @@ def _annual_facts(units: dict, concept: str) -> list:
     """
     by_period: dict = {}
     for unit, entries in units.items():
+        if unit != expected_unit:
+            continue                     # never mix USD with USD/shares under one quantity
         for e in entries:
             if e.get("form") not in ANNUAL_FORMS:
                 continue
-            if not e.get("start"):
-                # Instant facts (balance-sheet items) have no start; keep them.
-                pass
             end = e.get("end")
             if not end:
+                continue
+            # THE FORM DOES NOT IDENTIFY AN ANNUAL FIGURE. A 10-K reports its quarters too.
+            if not _is_annual_duration(e.get("start"), end):
                 continue
             key = (e.get("start"), end)
             prev = by_period.get(key)
@@ -164,7 +245,8 @@ def _annual_facts(units: dict, concept: str) -> list:
                         period_start=start, period_end=end,
                         fiscal_year=e.get("fy"), fiscal_period=e.get("fp"),
                         form=e.get("form"), filed=e.get("filed"),
-                        accession=e.get("accn"), frame=e.get("frame")))
+                        accession=e.get("accn"), frame=e.get("frame"),
+                        accepted=e.get("accepted")))
     out.sort(key=lambda f: (f.period_end, f.filed or ""), reverse=True)
     return out
 
@@ -181,7 +263,8 @@ def extract(facts_json: dict, *, cik: str, fiscal_year_end: str | None = None) -
             node = gaap.get(concept)
             if not node:
                 continue
-            series = _annual_facts(node.get("units") or {}, concept)
+            series = _annual_facts(node.get("units") or {}, concept,
+                                   expected_unit=EXPECTED_UNITS.get(quantity, DEFAULT_UNIT))
             if series:
                 break                      # FIRST FOUND, and the Fact records which
         if series:

@@ -293,3 +293,62 @@ def test_the_next_day_is_a_new_observation_not_a_duplicate(session):
         .order_by(EstimateSnapshot.captured_at)).scalars().all()
     assert len(targets) == 2, "consecutive days must each be recorded"
     assert targets[0].captured_at.date() != targets[1].captured_at.date()
+
+
+# ---- frozen RULES are not enough; the INPUTS must be frozen too ---------------------------
+# The review's point: "A rules fingerprint and cutoff alone cannot reproduce an evaluation if
+# its underlying records later change." financial_statements is refreshed in place and a market
+# capitalisation is refetched, so a reference locates what a row has BECOME, not what was read.
+
+def test_a_stored_evaluation_carries_the_values_it_was_computed_from(session):
+    from intel_reports.quality_value_store import record_evaluation, freeze_inputs
+    row, _ = record_evaluation(
+        session, _evaluation(), cutoff=datetime(2026, 10, 7),
+        evidence_refs=freeze_inputs(
+            {"fundamentals": {"revenue": 37_378_000_000.0, "annual_periods": 4,
+                              "retrieval_age_days": 29},
+             "prices": {"sma20": 1012.4, "recent_closes": [1045.56, 1063.96]}},
+            refs={"financial_statements": [814, 815, 816, 817]}))
+    frozen = row.evidence_refs["frozen_inputs"]
+    assert frozen["fundamentals"]["revenue"] == 37_378_000_000.0
+    assert frozen["prices"]["sma20"] == 1012.4
+    assert row.evidence_refs["refs"]["financial_statements"] == [814, 815, 816, 817]
+    assert len(row.evidence_refs["input_digest"]) == 32
+
+
+def test_the_frozen_inputs_verify_against_their_own_digest(session):
+    from intel_reports.quality_value_store import record_evaluation, freeze_inputs, verify_inputs
+    row, _ = record_evaluation(session, _evaluation(), cutoff=datetime(2026, 10, 7),
+                               evidence_refs=freeze_inputs({"fundamentals": {"revenue": 1.0}}))
+    v = verify_inputs(row.evidence_refs)
+    assert v["verifiable"] is True and v["intact"] is True
+
+
+def test_an_altered_frozen_input_fails_verification(session):
+    """Premises moving on is normal. The stored copy being edited is not."""
+    from intel_reports.quality_value_store import freeze_inputs, verify_inputs
+    stored = freeze_inputs({"fundamentals": {"revenue": 1.0}})
+    stored["frozen_inputs"]["fundamentals"]["revenue"] = 999.0
+    v = verify_inputs(stored)
+    assert v["verifiable"] is True and v["intact"] is False
+    assert v["expected"] != v["recomputed"]
+
+
+def test_a_references_only_row_declares_itself_unreproducible(session):
+    from intel_reports.quality_value_store import verify_inputs
+    v = verify_inputs({"financial_statements": [1, 2]})
+    assert v["verifiable"] is False
+    assert "cannot be reproduced" in v["reason"]
+
+
+def test_the_digest_is_order_independent_so_a_rekey_is_not_a_change(session):
+    from intel_reports.quality_value_store import freeze_inputs
+    a = freeze_inputs({"b": 2, "a": 1})
+    b = freeze_inputs({"a": 1, "b": 2})
+    assert a["input_digest"] == b["input_digest"]
+
+
+def test_a_changed_value_changes_the_digest(session):
+    from intel_reports.quality_value_store import freeze_inputs
+    assert (freeze_inputs({"revenue": 1.0})["input_digest"]
+            != freeze_inputs({"revenue": 1.01})["input_digest"])

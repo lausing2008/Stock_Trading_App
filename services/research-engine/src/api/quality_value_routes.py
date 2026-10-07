@@ -28,7 +28,7 @@ from ..intel_reports.quality_value import (
     business_quality_gate, durability_gate, valuation_gate, value_trap_gate,
     entry_condition_gate, naive_utc, policy_fingerprint)
 from ..intel_reports.quality_value_store import (
-    record_evaluation, latest_evaluations, evaluation_history)
+    record_evaluation, latest_evaluations, evaluation_history, freeze_inputs)
 from ..intel_reports.prospective_capture import (
     capture_earnings_estimates, capture_analyst_forwards)
 
@@ -138,13 +138,19 @@ def evaluations(symbols: str | None = Query(None, description="comma-separated; 
             # over it. A storage failure must not take the view down.
             persisted = None
             try:
+                # THE VALUES, NOT ONLY THE POINTERS. financial_statements is refreshed in
+                # place and a market cap is refetched, so references alone cannot reproduce
+                # this verdict later — see freeze_inputs().
                 row, created = record_evaluation(
                     session, ev, cutoff=cutoff,
-                    evidence_refs={
-                        "financial_statements": fin.get("statement_ids") or [],
-                        "prices": {"latest_session": px.get("latest_session"),
-                                   "sessions_read": px.get("sessions_read")},
-                        "stock_id": stock.id})
+                    evidence_refs=freeze_inputs(
+                        {"fundamentals": {k: v for k, v in fin.items() if k != "industry"},
+                         "industry": fin.get("industry"),
+                         "prices": {k: px.get(k) for k in
+                                    ("recent_closes", "sma20", "session_complete",
+                                     "latest_session", "sessions_read")}},
+                        refs={"financial_statements": fin.get("statement_ids") or [],
+                              "stock_id": stock.id}))
                 persisted = {"id": row.id if row else None, "created": created}
                 stored += 1 if created else 0
             except Exception as exc:          # noqa: BLE001

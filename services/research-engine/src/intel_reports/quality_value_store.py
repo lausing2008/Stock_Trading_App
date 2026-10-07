@@ -11,12 +11,56 @@ application code, which is the race this codebase has already paid for twice.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .quality_value import POLICY_VERSION, policy_fingerprint, naive_utc
+
+
+def freeze_inputs(values: dict, *, refs: dict | None = None) -> dict:
+    """Package the resolved input VALUES with a digest, not just pointers to them.
+
+    WHY VALUES AND NOT ONLY REFERENCES. A fingerprint of the rules plus a cutoff cannot
+    reproduce an evaluation: the rows it read can change afterwards. `financial_statements` is
+    refreshed in place, a provider revises a figure, a market capitalisation is refetched — and
+    then the stored verdict is a conclusion whose premises no longer exist. References alone
+    only locate what WAS read if the thing they point at is itself immutable, and most of these
+    are not.
+
+    So the resolved values travel with the verdict, and `input_digest` makes a later change to
+    them detectable rather than invisible. The references are kept too: they answer "what has
+    this become since", which the frozen copy deliberately cannot.
+    """
+    canonical = json.dumps(values, sort_keys=True, separators=(",", ":"), default=str)
+    return {
+        "frozen_inputs": values,
+        "input_digest": hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32],
+        "refs": refs or {},
+        "note": "frozen_inputs are the VALUES the gates were computed from, copied at the "
+                "cutoff. refs locate the source rows, which may have changed since — comparing "
+                "the two is how a changed premise is detected rather than silently adopted.",
+    }
+
+
+def verify_inputs(stored: dict) -> dict:
+    """Recompute the digest of a stored evaluation's frozen inputs.
+
+    A stored row that cannot reproduce its own digest has been altered after the fact, which is
+    a different and more serious problem than its premises having moved on.
+    """
+    if not isinstance(stored, dict) or "frozen_inputs" not in stored:
+        return {"verifiable": False,
+                "reason": "this row stores references only, with no frozen input values, so the "
+                          "evaluation cannot be reproduced from it"}
+    canonical = json.dumps(stored["frozen_inputs"], sort_keys=True,
+                           separators=(",", ":"), default=str)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+    return {"verifiable": True, "intact": digest == stored.get("input_digest"),
+            "expected": stored.get("input_digest"), "recomputed": digest}
 
 
 def record_evaluation(session, evaluation, *, cutoff: datetime,
