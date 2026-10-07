@@ -487,8 +487,16 @@ def durability_gate(evidence=None, assessment=None) -> Gate:
     network effects, intangibles or distribution. So this gate reports a data gap, which is what
     it is, rather than reading durability out of the numbers that happen to be present.
     """
-    if assessment is not None:
-        return from_assessment(COMPETITIVE_DURABILITY, assessment, absent_reasons=())
+    # ALWAYS THROUGH from_assessment, INCLUDING WHEN THERE IS NONE. Routing only when one
+    # existed left the NOT_COLLECTED branch unreachable: 198 companies with no record kept
+    # reporting NOT_IMPLEMENTED from the legacy path below, which is the exact defect the
+    # branch was added to fix. Found by reading the deployed payload, not by a test.
+    return from_assessment(COMPETITIVE_DURABILITY, assessment, absent_reasons=(
+        "no durability assessment is stored for this issuer. The assessment capability exists "
+        "and this gate reads it — what is missing is the research for this company",
+        "margin or return persistence in the statement series is NOT evidence of durability — "
+        "for a cyclical business it is equally consistent with the cycle",
+    ))
     sources = (evidence or {}).get("sources") or []
     if not sources:
         return Gate(COMPETITIVE_DURABILITY, GateStatus.NOT_IMPLEMENTED, (
@@ -511,8 +519,12 @@ def valuation_gate(evidence=None, assessment=None) -> Gate:
     figure — removing a quantity there is no evidence for from the arithmetic, at the stated
     cost that an aggregate discount cannot become a per-share target.
     """
-    if assessment is not None:
-        return from_assessment(VALUATION, assessment, absent_reasons=())
+    return from_assessment(VALUATION, assessment, absent_reasons=(
+        "no valuation assessment is stored for this issuer. The assessment capability exists "
+        "and this gate reads it — what is missing is the research for this company",
+        "a price below any model estimate would be a hypothesis about that model, not a fact "
+        "about intrinsic value",
+    ))
     ev = evidence or {}
     cap, value = ev.get("market_cap"), ev.get("equity_value")
     if value is None:
@@ -707,19 +719,20 @@ def value_trap_gate(evidence=None, assessment=None) -> Gate:
     The figures are still computed and still shown — as observations, labelled unvalidated. What
     changed is that they no longer render a verdict.
     """
-    if assessment is not None:
-        return from_assessment(VALUE_TRAP_RISK, assessment, absent_reasons=())
     ev = evidence or {}
     industry = (ev.get("industry") or "").lower()
     leverage_applies = not any(k in industry for k in LEVERAGE_NOT_APPLICABLE_INDUSTRIES)
 
     # The one route to BLOCKED: a disqualifying finding supplied by something that actually
-    # established one. Nothing in the platform supplies these yet, and the path stays live so
-    # that when a source does, it is not a new mechanism.
+    # established one. Checked before the assessment, because evidence of a disqualifying
+    # condition outranks the state of our paperwork.
     disqualifying = tuple(ev.get("disqualifying") or ())
     if disqualifying:
         return Gate(VALUE_TRAP_RISK, GateStatus.BLOCKED, disqualifying, ev)
 
+    # THE COMPUTED FIGURES SURVIVE EITHER ROUTE. They are observations, never a verdict — no
+    # threshold on any of them has been validated (see the retraction in the module docstring
+    # for why the first version's thresholds were wrong).
     observations = []
     nde, fcf, prior = (ev.get("net_debt_to_equity"), ev.get("free_cashflow"),
                        ev.get("free_cashflow_prior"))
@@ -735,14 +748,19 @@ def value_trap_gate(evidence=None, assessment=None) -> Gate:
                             "(an observation; these statements cannot separate heavy investment "
                             "from distress)")
 
-    reasons = [
-        "no evidence is stored for these critical risk classes: structural demand decline, "
-        "customer concentration, restatements and accounting issues, refinancing schedule",
-        "the figures that CAN be computed from the statements are reported as observations "
-        "below, not as a verdict — none of them has a validated threshold",
-    ]
-    return Gate(VALUE_TRAP_RISK, GateStatus.NOT_IMPLEMENTED,
-                tuple(reasons + observations), {**ev, "observations": observations})
+    # ALWAYS THROUGH from_assessment. Guarding this on `assessment is not None or not evidence`
+    # left a third path to the legacy NOT_IMPLEMENTED branch — any company WITH statement
+    # figures and WITHOUT an assessment. Found by a test written for the first two paths.
+    gate = from_assessment(VALUE_TRAP_RISK, assessment, absent_reasons=tuple(
+        ["no risk assessment is stored for this issuer. The assessment capability exists and "
+         "this gate reads it — what is missing is the research for this company",
+         "the figures that CAN be computed from the statements are reported as observations "
+         "below, not as a verdict — none of them has a validated threshold"] + observations))
+    if observations:
+        gate = Gate(gate.name, gate.status, gate.reasons,
+                    {**(gate.evidence or {}), "observations": observations},
+                    remedy=gate.remedy)
+    return gate
 
 
 def entry_condition_gate(evidence=None) -> Gate:

@@ -142,25 +142,27 @@ def test_catalysts_and_portfolio_fit_are_deliberately_not_required():
 
 # ---- what today's stored evidence actually produces ------------------------------------
 
-def test_durability_is_unknown_and_says_persistence_is_not_proof():
+def test_durability_is_not_collected_and_still_says_persistence_is_not_proof():
+    """The state changed from NOT_IMPLEMENTED; the warning it carries must not be lost with it —
+    margin persistence must never start reading as durability just because the branch moved."""
     gate = durability_gate()
-    assert gate.status in WORK_REMAINING
+    assert gate.status is GateStatus.NOT_COLLECTED
     joined = " ".join(gate.reasons)
     assert "equally consistent with the cycle" in joined
-    assert "no sourced evidence" in joined
+    assert "no durability assessment is stored" in joined
 
 
 def test_an_attached_source_is_not_a_durability_assessment():
+    """A source on file is not an assessment of it — the gate reads the ASSESSMENT."""
     gate = durability_gate({"sources": ["10-K item 1"]})
     assert gate.status in WORK_REMAINING
-    assert "attaching a source is not the same as reading it" in " ".join(gate.reasons)
+    assert gate.status is GateStatus.NOT_COLLECTED
 
 
-def test_valuation_is_unknown_without_a_frozen_discount_policy():
+def test_valuation_without_a_stored_assessment_stays_in_work_remaining():
     gate = valuation_gate({"market_cap": 1.0e11, "equity_value": 1.5e11})
     assert gate.status in WORK_REMAINING
-    assert "has not been frozen" in " ".join(gate.reasons)
-    assert "fitted to its own sample" in " ".join(gate.reasons)
+    assert gate.status is GateStatus.NOT_COLLECTED
 
 
 def test_todays_evidence_cannot_reach_entry_review_for_any_symbol():
@@ -316,13 +318,14 @@ def test_an_absent_retrieval_time_is_not_treated_as_fresh():
     assert gate.status in WORK_REMAINING
 
 
-def test_value_trap_is_unknown_even_when_what_can_be_checked_looks_fine():
+def test_value_trap_is_never_a_pass_when_only_two_classes_were_observable():
     """PASS here would read as 'no value trap' when only two classes were observable."""
     gate = value_trap_gate({"net_debt_to_equity": 0.1, "free_cashflow": 1.0e9})
-    assert gate.status in WORK_REMAINING
+    assert gate.status in WORK_REMAINING and gate.status is not GateStatus.PASS
     joined = " ".join(gate.reasons)
-    assert "structural demand decline" in joined and "customer concentration" in joined
     assert "not as a verdict" in joined
+    # The computed figures survive the routing change — they are observations, not a verdict.
+    assert "net debt is 0.10x equity" in joined
 
 
 # AUD-QV-UNVALIDATEDTHRESHOLD. The first version blocked on net debt > 2x equity or two
@@ -442,14 +445,15 @@ def test_a_finding_about_the_company_is_not_listed_as_work_remaining():
         assert st not in WORK_REMAINING
 
 
-def test_stale_data_and_an_unbuilt_assessment_are_different_states():
-    """MU's real shape: 401 days since the newest stored annual period."""
+def test_stale_data_and_an_unresearched_company_are_different_states():
+    """MU's real shape: 401 days since the newest stored annual period. UPDATED: durability
+    with no stored assessment is NOT_COLLECTED, not NOT_IMPLEMENTED — the capability exists."""
     stale = business_quality_gate(_bq(reported_year_age_days=500))
-    unbuilt = durability_gate()
+    unresearched = durability_gate()
     assert stale.status is GateStatus.STALE
-    assert unbuilt.status is GateStatus.NOT_IMPLEMENTED
-    assert stale.status is not unbuilt.status
-    assert REMEDY[stale.status] != REMEDY[unbuilt.status]
+    assert unresearched.status is GateStatus.NOT_COLLECTED
+    assert stale.status is not unresearched.status
+    assert REMEDY[stale.status] != REMEDY[unresearched.status]
 
 
 def test_stale_says_refresh_and_unbuilt_names_both_halves():
@@ -489,10 +493,13 @@ def test_a_forming_bar_is_insufficient_now_not_permanently_missing():
     assert gate.status is GateStatus.INSUFFICIENT
 
 
-def test_valuation_separates_an_unbuilt_model_from_an_uncollected_market_cap():
-    """One needs a model written; the other needs a number fetched."""
-    assert valuation_gate({}).status is GateStatus.NOT_IMPLEMENTED
-    assert valuation_gate({"equity_value": 1.0e11}).status is GateStatus.NOT_COLLECTED
+def test_valuation_with_no_stored_assessment_is_not_collected():
+    """SUPERSEDED. This separated an unbuilt model from an uncollected market cap, which was
+    the right distinction while the gate computed its own value. The gate now READS a stored
+    assessment, so the question is whether one exists for this issuer — an evidence gap."""
+    g = valuation_gate({})
+    assert g.status is GateStatus.NOT_COLLECTED
+    assert "what is missing is the research for this company" in " ".join(g.reasons)
 
 
 # ---- the catalog the page renders from ----------------------------------------------------
@@ -767,3 +774,21 @@ def test_every_seeded_assessment_names_its_unresolved_question():
 def test_the_unresolved_question_differs_per_company_and_dimension():
     qs = [a["unresolved"] for a in ASSESSMENTS]
     assert len(set(qs)) == len(qs), "a shared question would be a template, not a finding"
+
+
+def test_a_gate_with_no_assessment_never_reaches_the_legacy_branch():
+    """AUD-QV-UNREACHABLE. The NOT_COLLECTED branch was added inside `if assessment is not
+    None`, so it could only run when one EXISTED — and the 198 companies without a record kept
+    falling through to the legacy path reporting NOT_IMPLEMENTED. The defect survived a full
+    test run and was found by reading the deployed payload. These pin the routing."""
+    for gate in (durability_gate(), valuation_gate(), value_trap_gate()):
+        assert gate.status is GateStatus.NOT_COLLECTED, gate.name
+        assert "what is missing is the research for this company" in " ".join(gate.reasons)
+
+
+def test_the_legacy_not_implemented_wording_is_unreachable_from_these_gates():
+    """If any of them can still report NOT_IMPLEMENTED, the routing regressed."""
+    for ev in ({}, {"sources": ["x"]}, {"market_cap": 1.0, "equity_value": 2.0},
+               {"net_debt_to_equity": 0.1, "free_cashflow": 1.0}):
+        for fn in (durability_gate, valuation_gate, value_trap_gate):
+            assert fn(ev).status is not GateStatus.NOT_IMPLEMENTED, (fn.__name__, ev)

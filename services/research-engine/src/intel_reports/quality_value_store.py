@@ -258,7 +258,10 @@ def _assessment_dict(row) -> dict:
     return {"symbol": row.symbol, "dimension": row.dimension, "version": row.version,
             "verdict": row.verdict, "summary": row.summary,
             "findings": row.findings or [], "assumptions": row.assumptions or [],
-            "not_assessed": row.not_assessed or [], "evidence": row.evidence or {},
+            "unresolved": (row.evidence or {}).get("__unresolved__"),
+            "not_assessed": row.not_assessed or [],
+            "evidence": {k: v for k, v in (row.evidence or {}).items()
+                         if k != "__unresolved__"},
             "evidence_digest": row.evidence_digest,
             "cutoff": row.cutoff.isoformat() if row.cutoff else None,
             "author": row.author}
@@ -291,7 +294,14 @@ def record_assessment(session, spec: dict, *, cutoff: datetime, author: str) -> 
     """
     from db import IssuerAssessment
 
-    evidence = spec.get("evidence") or {}
+    # `unresolved` TRAVELS INSIDE `evidence` rather than in its own column. It was being
+    # silently dropped — the model has no such field — and adding one means an ALTER on a
+    # populated table plus rebuilding all twelve backends for a string. Inside `evidence` it is
+    # additive, needs no migration, and is covered by the digest, so a later edit is detectable.
+    # `_assessment_dict` lifts it back to the top level so every consumer sees it as a field.
+    evidence = dict(spec.get("evidence") or {})
+    if spec.get("unresolved"):
+        evidence["__unresolved__"] = spec["unresolved"]
     canonical = json.dumps(evidence, sort_keys=True, separators=(",", ":"), default=str)
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
     stmt = (pg_insert(IssuerAssessment)
