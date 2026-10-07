@@ -130,6 +130,8 @@ intelligence_predictions  what the system believed, when, and HOW IT WILL BE SCO
   horizon_label                      -- "1-5d" | "1-4w" | "1-3m", display only
   direction, support_quality, trade_status
   reference_price, reference_price_as_of, reference_price_source
+  reference_price_basis              -- formed_at_close | next_tradeable_open
+  return_basis                       -- price_return | total_return; benchmark uses the SAME
   confirmation_rule, invalidation_rule     -- the exact observable conditions, as text + params
   benchmark_symbol                   -- what the excess return is measured against
   resolution_policy                  -- see below; frozen WITH the prediction
@@ -141,9 +143,13 @@ intelligence_predictions  what the system believed, when, and HOW IT WILL BE SCO
 prediction_outcomes       what actually happened                        (§36/§37)
   prediction_id, horizon_sessions
   forward_return, benchmark_return, excess_return
-  resolution_state        RESOLVED | UNRESOLVED_INSUFFICIENT_SESSIONS |
-                          UNRESOLVED_PRICE_MISSING | VOIDED_DELISTED |
-                          VOIDED_CORPORATE_ACTION
+  descriptive_return      from reference_price — "was the reading right?"
+  executable_return       from the next tradeable price — the only tradeable measure
+  delisting_cause         acquisition | bankruptcy | exchange_transfer | NULL
+  resolution_state        RESOLVED | RESOLVED_ACQUISITION | RESOLVED_BANKRUPTCY |
+                          UNRESOLVED_INSUFFICIENT_SESSIONS | UNRESOLVED_PRICE_MISSING |
+                          UNRESOLVED_DELISTED_NO_TERMINAL_PRICE |
+                          UNRESOLVED_ADJUSTMENT_MISSING
   resolved_at, sessions_elapsed, resolution_basis
 ```
 
@@ -167,12 +173,60 @@ field on the prediction, written at observation time:
 |---|---|
 | Fewer than `horizon_sessions` have elapsed | `UNRESOLVED_INSUFFICIENT_SESSIONS`. **Not** a partial return, and excluded from every aggregate rather than counted as flat |
 | The closing price for the resolution session is missing | `UNRESOLVED_PRICE_MISSING`, retried; never substituted with a neighbouring session |
-| The symbol is delisted inside the window | `VOIDED_DELISTED`, and **retained** in the denominator of any coverage statistic, because dropping it is survivorship bias |
-| A split or other corporate action falls inside the window | `VOIDED_CORPORATE_ACTION` unless an adjusted series covers both endpoints on the same basis |
+| **Delisting** | **Never an automatic void — see below** |
+| **Split or dividend** | **Not a void at all — an adjustment. See below** |
 | The benchmark is missing | The absolute return resolves; `excess_return` stays NULL. One missing input does not void the other measure |
 | An intervening policy change | Irrelevant to resolution. The prediction is scored under the `policy_fingerprint` it was made with — a later rule change files a new prediction, never a re-score of an old one |
 
 A prediction whose resolution policy cannot be stated is not ready to be stored.
+
+#### Delisting is four different events, and voiding all of them is itself a bias
+
+An earlier draft of this design had a single `VOIDED_DELISTED` state, retained in the coverage
+denominator. Keeping the row visible helps, but **excluding its return still biases the
+results** — a position that went to zero in bankruptcy and one acquired at a 40% premium are
+not the same outcome, and dropping both removes the tails in opposite directions. So the cause
+is recorded and resolution is attempted before anything is voided:
+
+| Cause | Resolution |
+|---|---|
+| **Acquisition / merger** | Resolve at the documented cash consideration, or the cash-equivalent value of share consideration on the effective date. This is a real, knowable return |
+| **Bankruptcy / liquidation** | Resolve at the terminal traded price, or at zero where the equity was documented as cancelled. A −100% is a result, not a missing value |
+| **Exchange transfer or re-listing** | **Not a delisting at all.** The security continues under a new venue or symbol; follow the identifier and resolve normally |
+| **Terminal pricing unavailable** | `UNRESOLVED_DELISTED_NO_TERMINAL_PRICE` — the only remaining void. The row stays in the coverage denominator **and** every return statistic computed from the set must disclose how many rows were excluded this way and why |
+
+The last row is the honest residue: it is still a bias, it is just a *disclosed* one. A
+performance table that does not state its unresolved count is not reportable.
+
+#### Splits and dividends are an adjustment basis, not a void
+
+They are accounting events, not reasons to discard a prediction. What matters is that both
+endpoints are measured on the **same** basis, and that the basis is declared:
+
+- `return_basis` is stored on the prediction: `price_return` (split-adjusted, dividends
+  excluded) or `total_return` (split- and dividend-adjusted). The first delivery uses
+  `price_return` because that is what the stored daily series supports, and says so.
+- The benchmark is measured on the **same basis**. Comparing a price return against a
+  total-return benchmark understates excess return by roughly the dividend yield, every time.
+- **Missing adjustment data stays unresolved** — `UNRESOLVED_ADJUSTMENT_MISSING`. The direction
+  screen already refuses a setup when the adjustment factor changes across its window rather
+  than silently combining raw highs across a split; resolution applies the same rule.
+
+#### A conclusion formed after the close cannot execute at that close
+
+Two different measurements, and conflating them is how a backtest flatters itself:
+
+- **Descriptive forward return** — from the `reference_price` the conclusion was formed
+  against, for answering *"was the reading directionally right?"*. Honest, and not a tradeable
+  result.
+- **Executable strategy return** — from the **next price a participant could actually have
+  traded at**, given `observed_at`. A conclusion formed at 21:00 after a 16:00 close references
+  that close but could only have been acted on at the next session's open.
+
+The prediction stores `reference_price` with `reference_price_as_of` and
+`reference_price_basis` (`formed_at_close` | `next_tradeable_open`), and **both returns are
+reported, separately labelled**. This platform has already recorded the cost of not doing
+this — three datasets measured returns from a date nobody could act on.
 
 ---
 
@@ -303,8 +357,21 @@ on one name, before coverage grows.
 
 Expanding to more companies then does not wait on resolving every research uncertainty in the
 first one. MU's Strategic Customer Agreement terms are **not publicly disclosed** and may never
-be; a pipeline that blocks until that closes never ships. The chain has to work with permanent
-unknowns in it, which is why `not_publicly_disclosed` is a distinct state from `not_examined`.
+be; a pipeline that blocks until that closes never ships.
+
+**A permanent unknown blocks only the conclusions that need it — nothing else.** Specifically it
+does not block storage, price observation or outcome measurement:
+
+| Still runs with a permanent unknown present | Blocked by it |
+|---|---|
+| Storing the bucket, with the gap named | A durability verdict that rests on the undisclosed terms |
+| Observing prices and resolving outcomes | Entry-review eligibility, where that bucket is required |
+| Publishing `support_quality` | `predictive_confidence`, until calibrated — for unrelated reasons |
+| Rendering the summary, with the gap visible in it | — |
+
+So MU accumulates price observations and resolved outcomes from day one while its durability
+bucket stays `insufficient` indefinitely. The unknown is visible in the summary the whole time;
+it just does not stop the clock.
 
 ## 7. Acceptance, restated measurably
 
@@ -322,9 +389,17 @@ it decomposes into conditions that can each fail individually:
 4. **Contradictions are present wherever they exist**, and a supporting claim cannot render
    without its counterevidence.
 5. **A prediction is stored with its bucket ids from the first rendered conclusion**, and its
-   outcome resolves at 1/5/10/20/60 days. No `predictive_confidence` is published until it has
-   been calibrated against those resolutions; `support_quality` may be published immediately,
-   because it asserts only what it measures.
+   outcome resolves at 1/5/10/20/60 sessions. No `predictive_confidence` is published until it
+   has been calibrated against those resolutions; `support_quality` may be published
+   immediately, because it asserts only what it measures.
+6. **Two acceptance runs, labelled separately and never merged:**
+   - a **historical replay** over a past window, which exercises every resolution branch —
+     insufficient sessions, missing price, each delisting cause, a split inside the window, a
+     missing benchmark. This proves *the machinery works*. It is **not** evidence of predictive
+     performance, because the rules were written with the outcomes already in existence.
+   - a **newly captured prospective prediction**, resolved only once the sessions elapse. This
+     is the only one that can ever speak to predictive performance, and at the first delivery
+     it will have none — which is the correct state to ship in.
 6. The data-quality header (§3) names every stale and missing source **before** any conclusion.
 
 Condition 5 is the one that makes the rest falsifiable: without stored predictions and resolved
