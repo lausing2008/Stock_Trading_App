@@ -5,6 +5,65 @@ import { api } from '@/lib/api';
 const control = { background: '#111827', color: '#e2e8f0', border: '1px solid #334155',
   borderRadius: 6, padding: '7px 9px' };
 
+function SetupGuide() {
+  const rows = [
+    ['Breakout watch', 'Upward setup — awaiting break',
+      'The close is still inside the range, within 2% of resistance and above the prior 20-close average.',
+      'An upward break has not happened yet. Watch for a completed close above resistance.'],
+    ['Range break up', 'Up — range break observed',
+      'The tested daily close is above the highest high of the preceding 20 sessions.',
+      'The break has happened. Watch whether price holds above the level; a close back below invalidates this break.'],
+    ['Breakdown watch', 'Downward setup — awaiting break',
+      'The close is still inside the range, within 2% of support and below the prior 20-close average.',
+      'A downward break has not happened yet. Watch for a completed close below support.'],
+    ['Range break down', 'Down — range break observed',
+      'The tested daily close is below the lowest low of the preceding 20 sessions.',
+      'The break has happened. Watch whether price reclaims support; review downside exposure.'],
+    ['Inside range', 'Inside range — no directional setup',
+      'The close is inside the range and meets neither watch rule.',
+      'No setup under these rules. This does not predict that the price will stay the same.'],
+    ['Unknown / data gaps', 'Unknown',
+      'The required price or volume history is missing, stale, invalid, or needs corporate-action reconciliation.',
+      'Wait for usable data. Unknown is not a neutral or sideways signal.'],
+  ];
+  const cell = { padding: '9px 10px', textAlign: 'left' as const,
+    verticalAlign: 'top', borderBottom: '1px solid #253047' };
+  return <details open style={{ border: '1px solid #334155', borderRadius: 8,
+    padding: 12, marginBottom: 16, fontSize: 12, lineHeight: 1.55 }}>
+    <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 14 }}>
+      What is a setup? How to read these labels
+    </summary>
+    <p>A setup is a price pattern worth watching, based on completed daily sessions. It describes
+      where the close sits relative to recent price levels; it is not a buy/sell instruction or
+      a probability. <strong>Watch = a possible break ahead. Observed = a break already happened.</strong></p>
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 580 }}>
+        <caption style={{ textAlign: 'left', color: '#94a3b8', marginBottom: 6 }}>
+          Setup filter names and the matching labels on each stock card
+        </caption>
+        <thead><tr>{['Setup / card label', 'What it means', 'What to watch next'].map(t =>
+          <th key={t} scope="col" style={cell}>{t}</th>)}</tr></thead>
+        <tbody>{rows.map(([name, label, meaning, next]) => <tr key={name}>
+          <th scope="row" style={{ ...cell, minWidth: 155 }}>
+            {name}<div style={{ color: '#94a3b8', fontWeight: 400 }}>{label}</div>
+          </th><td style={cell}>{meaning}</td><td style={cell}>{next}</td>
+        </tr>)}</tbody>
+      </table>
+    </div>
+    <p><strong>Support / downside trigger:</strong> the lowest low of the prior 20 sessions.
+      {' '}<strong>Resistance / upside trigger:</strong> the highest high over those sessions.
+      The tested session is excluded from both levels. A trigger is a level to monitor, not an order;
+      on an observed-break card, one trigger has already been crossed.</p>
+    <p><strong>Volume 2×:</strong> twice the prior 20-session average daily volume.
+      {' '}<strong>Retest:</strong> price returns to the broken level to see whether it holds.
+      {' '}<strong>Invalidation:</strong> the condition that makes the setup no longer hold.</p>
+    <p style={{ color: '#94a3b8', marginBottom: 0 }}>All setups shows every category. Top 20 means up to
+      20 ranked listings per selected market, not the 20 safest stocks. Read the session date:
+      today’s local session is excluded. The 5–20-session horizon is a research window, not a
+      deadline for a move. Company quality, valuation and event risk still need separate review.</p>
+  </details>;
+}
+
 export default function DirectionScreen({ symbols }: { symbols: string }) {
   const [market, setMarket] = useState('ALL');
   const [direction, setDirection] = useState('all');
@@ -42,6 +101,7 @@ export default function DirectionScreen({ symbols }: { symbols: string }) {
       </select></label>
       <button style={control} onClick={() => mutate()}>Refresh setups</button>
     </div>
+    <SetupGuide />
     {error && <p role="alert">Could not load price setups. {String(error)}</p>}
     {isLoading && <p>Reading completed sessions…</p>}
     {data && <>
