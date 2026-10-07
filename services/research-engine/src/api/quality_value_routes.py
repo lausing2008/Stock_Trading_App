@@ -171,8 +171,17 @@ def evaluations(symbols: str | None = Query(None, description="comma-separated; 
                                      "latest_session", "sessions_read")}},
                         refs={"financial_statements": fin.get("statement_ids") or [],
                               "stock_id": stock.id}))
-                persisted = {"id": row.id if row else None, "created": created}
+                # A REUSE IS NOT A SILENCE. "0 new evaluations stored" left a reader unable
+                # to tell a preserved result from a dropped write, so the existing row's id and
+                # its ORIGINAL cutoff travel with it.
+                persisted = {"id": row.id if row else None, "created": created,
+                             "reused": (not created),
+                             "original_cutoff": (row.cutoff.isoformat()
+                                                 if row is not None and not created else None)}
                 stored += 1 if created else 0
+                if row is not None and not created:
+                    reused.append({"symbol": stock.symbol, "id": row.id,
+                                   "cutoff": row.cutoff.isoformat()})
             except Exception as exc:          # noqa: BLE001
                 session.rollback()
                 persist_errors.append(f"{stock.symbol}: {type(exc).__name__}")

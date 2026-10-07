@@ -914,3 +914,29 @@ def test_a_company_with_no_assessment_gets_a_summary_that_says_so():
     sm = company_summary(compose("X", gates), gates)
     assert sm["supports"] == [] and sm["unresolved"] == []
     assert "not collected" in sm["why_not_entry_ready"]
+
+
+# ---- AUD-QV-REUSEUNREPORTED -----------------------------------------------------------------
+# I claimed a previous commit made a reused evaluation name its id and original cutoff, and
+# quoted an example of the rendering. The edit had silently failed to apply — I used a string
+# replacement without asserting it matched, then described the result rather than checking it.
+# The reviewer caught it from a screenshot. These pin the shape so the claim is testable.
+
+def test_the_route_reports_a_reused_evaluation_with_its_id_and_original_cutoff():
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "api"
+           / "quality_value_routes.py").read_text()
+    seg = src[src.index("persisted = {"):src.index("except Exception as exc:")]
+    for key in ('"reused"', '"original_cutoff"'):
+        assert key in seg, f"{key} missing from the persisted payload"
+    assert "reused.append(" in src, "a reused row must be collected for the response"
+    assert '"reused_evaluations": reused' in src, "and returned to the page"
+
+
+def test_the_page_renders_the_reused_evaluation_details():
+    import pathlib
+    page = (pathlib.Path(__file__).resolve().parents[3] / "frontend" / "src" / "pages"
+            / "quality-value.tsx").read_text()
+    assert "data.reused_evaluations" in page
+    assert "nothing was rewritten" in page
+    assert "r.id" in page and "r.cutoff" in page
