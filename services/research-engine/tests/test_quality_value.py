@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from intel_reports.quality_value import (  # noqa: E402
     Gate, GateStatus, State, compose, equity_discount, ValuationMisaligned,
+    REMEDY, WORK_REMAINING,
     MAX_VALUATION_ALIGNMENT_DAYS, GATE_CLAIM,
     durability_gate, valuation_gate,
     ALL_GATES, REQUIRED_FOR_ENTRY, QUALITY_GATES,
@@ -38,17 +39,19 @@ def test_every_required_gate_passing_reaches_entry_review():
     assert e.blocking() == ()
 
 
-def test_an_unknown_required_gate_is_never_read_as_a_pass():
-    """The recurring defect this platform has: a check that never fires on a missing number."""
+def test_no_work_remaining_state_is_ever_read_as_a_pass():
+    """The recurring defect this platform has: a check that never fires on a missing number.
+    Every state that means "we have not finished the work" must block, not just one."""
     for name in REQUIRED_FOR_ENTRY:
-        e = compose("MU", all_passing(**{name: g(name, GateStatus.UNKNOWN)}))
-        assert e.state is not State.ENTRY_REVIEW_READY, f"{name} unknown reached entry review"
+      for st in WORK_REMAINING:
+        e = compose("MU", all_passing(**{name: g(name, st)}))
+        assert e.state is not State.ENTRY_REVIEW_READY, f"{name}/{st.value} reached entry review"
         assert name in {b.name for b in e.blocking()}
 
 
 def test_a_strong_gate_cannot_compensate_for_a_missing_one():
     """There is no score to outvote with, and this proves there is no back door either."""
-    gates = all_passing(**{COMPETITIVE_DURABILITY: g(COMPETITIVE_DURABILITY, GateStatus.UNKNOWN)})
+    gates = all_passing(**{COMPETITIVE_DURABILITY: g(COMPETITIVE_DURABILITY, GateStatus.NOT_IMPLEMENTED)})
     gates += [Gate(CATALYSTS, GateStatus.PASS), Gate(PORTFOLIO_FIT, GateStatus.PASS)]
     assert compose("MU", gates).state is State.INSUFFICIENT_EVIDENCE
 
@@ -76,7 +79,7 @@ def test_a_data_gap_is_ranked_ahead_of_a_failure_judged_on_it():
     """A gate failed on incomplete evidence may not survive the missing input."""
     e = compose("MU", all_passing(**{
         VALUATION: g(VALUATION, GateStatus.FAIL, ("trades above value",)),
-        COMPETITIVE_DURABILITY: g(COMPETITIVE_DURABILITY, GateStatus.UNKNOWN, ("nothing stored",))}))
+        COMPETITIVE_DURABILITY: g(COMPETITIVE_DURABILITY, GateStatus.NOT_IMPLEMENTED, ("nothing stored",))}))
     assert e.state is State.INSUFFICIENT_EVIDENCE
 
 
@@ -121,7 +124,7 @@ def test_the_same_gate_twice_is_an_error_not_a_last_one_wins():
 
 def test_a_non_passing_gate_must_say_why():
     with pytest.raises(ValueError, match="no reason given"):
-        Gate(VALUATION, GateStatus.UNKNOWN, ())
+        Gate(VALUATION, GateStatus.NOT_IMPLEMENTED, ())
 
 
 def test_an_undeclared_gate_name_is_refused():
@@ -141,7 +144,7 @@ def test_catalysts_and_portfolio_fit_are_deliberately_not_required():
 
 def test_durability_is_unknown_and_says_persistence_is_not_proof():
     gate = durability_gate()
-    assert gate.status is GateStatus.UNKNOWN
+    assert gate.status in WORK_REMAINING
     joined = " ".join(gate.reasons)
     assert "equally consistent with the cycle" in joined
     assert "no sourced evidence" in joined
@@ -149,13 +152,13 @@ def test_durability_is_unknown_and_says_persistence_is_not_proof():
 
 def test_an_attached_source_is_not_a_durability_assessment():
     gate = durability_gate({"sources": ["10-K item 1"]})
-    assert gate.status is GateStatus.UNKNOWN
+    assert gate.status in WORK_REMAINING
     assert "attaching a source is not the same as reading it" in " ".join(gate.reasons)
 
 
 def test_valuation_is_unknown_without_a_frozen_discount_policy():
     gate = valuation_gate({"market_cap": 1.0e11, "equity_value": 1.5e11})
-    assert gate.status is GateStatus.UNKNOWN
+    assert gate.status in WORK_REMAINING
     assert "has not been frozen" in " ".join(gate.reasons)
     assert "fitted to its own sample" in " ".join(gate.reasons)
 
@@ -259,7 +262,7 @@ def test_an_entry_condition_pass_is_not_a_suitable_entry():
 
 
 def test_a_non_passing_gate_establishes_nothing():
-    d = Gate(VALUATION, GateStatus.UNKNOWN, ("nothing stored",)).as_dict()
+    d = Gate(VALUATION, GateStatus.NOT_IMPLEMENTED, ("nothing stored",)).as_dict()
     assert d["establishes"] is None
     assert d["does_not_establish"]
 
@@ -289,33 +292,33 @@ def test_business_quality_passes_on_a_current_multi_year_series():
 
 def test_one_annual_period_cannot_measure_a_change():
     gate = business_quality_gate(_bq(annual_periods=1))
-    assert gate.status is GateStatus.UNKNOWN
+    assert gate.status in WORK_REMAINING
     assert "at least two are needed" in " ".join(gate.reasons)
 
 
 def test_a_stale_retrieval_blocks_even_though_the_reported_year_is_current():
     """MU's two ages are different facts; this is the one a refetch closes."""
     gate = business_quality_gate(_bq(retrieval_age_days=MAX_RETRIEVAL_AGE_DAYS + 1))
-    assert gate.status is GateStatus.UNKNOWN
+    assert gate.status in WORK_REMAINING
     assert "last retrieved" in " ".join(gate.reasons)
 
 
 def test_a_missing_reported_year_blocks_even_though_retrieval_is_fresh():
     """And this is the one only the issuer closes."""
     gate = business_quality_gate(_bq(reported_year_age_days=MAX_REPORTED_YEAR_AGE_DAYS + 1))
-    assert gate.status is GateStatus.UNKNOWN
+    assert gate.status in WORK_REMAINING
     assert "later fiscal year has almost certainly been reported" in " ".join(gate.reasons)
 
 
 def test_an_absent_retrieval_time_is_not_treated_as_fresh():
     gate = business_quality_gate(_bq(retrieval_age_days=None))
-    assert gate.status is GateStatus.UNKNOWN
+    assert gate.status in WORK_REMAINING
 
 
 def test_value_trap_is_unknown_even_when_what_can_be_checked_looks_fine():
     """PASS here would read as 'no value trap' when only two classes were observable."""
     gate = value_trap_gate({"net_debt_to_equity": 0.1, "free_cashflow": 1.0e9})
-    assert gate.status is GateStatus.UNKNOWN
+    assert gate.status in WORK_REMAINING
     joined = " ".join(gate.reasons)
     assert "structural demand decline" in joined and "customer concentration" in joined
     assert "not as a verdict" in joined
@@ -330,13 +333,13 @@ def test_a_profitable_company_is_not_blocked_by_a_leverage_ratio():
     """LMT's real figures: the ratio rises because buybacks shrink the denominator."""
     gate = value_trap_gate({"net_debt_to_equity": 2.62, "free_cashflow": 6.908e9,
                             "free_cashflow_prior": 5.287e9, "industry": "Aerospace & Defense"})
-    assert gate.status is GateStatus.UNKNOWN
+    assert gate.status in WORK_REMAINING
     assert "no threshold on this ratio has been validated" in " ".join(gate.reasons)
 
 
 def test_leverage_is_not_interpreted_at_all_for_a_bank():
     gate = value_trap_gate({"net_debt_to_equity": 2.68, "industry": "Banks - Diversified"})
-    assert gate.status is GateStatus.UNKNOWN
+    assert gate.status in WORK_REMAINING
     joined = " ".join(gate.reasons)
     assert "not a solvency reading" in joined
     assert "no threshold on this ratio has been validated" not in joined
@@ -346,7 +349,7 @@ def test_two_negative_cash_flow_years_are_an_observation_not_a_verdict():
     """ORCL's real shape: operating cash flow spent on capacity, not distress."""
     gate = value_trap_gate({"free_cashflow": -2.3686e10, "free_cashflow_prior": -3.94e8,
                             "industry": "Software - Infrastructure"})
-    assert gate.status is GateStatus.UNKNOWN
+    assert gate.status in WORK_REMAINING
     assert "cannot separate heavy investment from distress" in " ".join(gate.reasons)
 
 
@@ -366,7 +369,7 @@ def test_only_a_supplied_disqualifying_finding_can_block():
 
 def test_no_ratio_however_extreme_blocks_on_its_own():
     assert value_trap_gate({"net_debt_to_equity": 1000.0, "free_cashflow": -1.0,
-                            "free_cashflow_prior": -1.0}).status is GateStatus.UNKNOWN
+                            "free_cashflow_prior": -1.0}).status in WORK_REMAINING
 
 
 def test_entry_requires_both_closes_above_the_average():
@@ -381,13 +384,13 @@ def test_entry_requires_both_closes_above_the_average():
 def test_a_forming_bar_is_not_a_close():
     gate = entry_condition_gate({"recent_closes": [12.0, 11.5], "sma20": 10.0,
                                  "session_complete": False})
-    assert gate.status is GateStatus.UNKNOWN
+    assert gate.status in WORK_REMAINING
     assert "a forming bar is not a close" in " ".join(gate.reasons)
 
 
 def test_no_average_yields_unknown_rather_than_a_pass_on_price_alone():
     assert entry_condition_gate({"recent_closes": [12.0, 11.5], "sma20": None}
-                                ).status is GateStatus.UNKNOWN
+                                ).status in WORK_REMAINING
 
 
 # ---- the timezone shape of the stored timestamps -----------------------------------------
@@ -417,3 +420,61 @@ def test_the_age_is_the_same_whichever_side_carried_the_offset():
     a = datetime(2026, 10, 6, tzinfo=timezone.utc)
     b = datetime(2026, 10, 6)
     assert _naive_utc(a) == _naive_utc(b)
+
+
+# ---- "No evidence" was hiding five different problems ------------------------------------
+# The review's point: MU's stale annual history and a durability assessment that has never been
+# built rendered as the identical yellow badge, so a reader could not tell "refresh a job" from
+# "build an analysis" — nor could either be read as "no relevant information exists".
+
+def test_every_state_declares_what_would_close_it():
+    for st in GateStatus:
+        assert st in REMEDY
+        if st is not GateStatus.PASS:
+            assert REMEDY[st], st
+
+
+def test_a_finding_about_the_company_is_not_listed_as_work_remaining():
+    """BLOCKED, FAIL and NOT_APPLICABLE are conclusions; counting them as gaps would
+    misreport an unfinished pipeline as a universe of poor businesses, or the reverse."""
+    for st in (GateStatus.BLOCKED, GateStatus.FAIL, GateStatus.NOT_APPLICABLE, GateStatus.PASS):
+        assert st not in WORK_REMAINING
+
+
+def test_stale_data_and_an_unbuilt_assessment_are_different_states():
+    """MU's real shape: 401 days since the newest stored annual period."""
+    stale = business_quality_gate(_bq(reported_year_age_days=500))
+    unbuilt = durability_gate()
+    assert stale.status is GateStatus.STALE
+    assert unbuilt.status is GateStatus.NOT_IMPLEMENTED
+    assert stale.status is not unbuilt.status
+    assert REMEDY[stale.status] != REMEDY[unbuilt.status]
+
+
+def test_stale_says_refresh_and_unbuilt_says_build():
+    assert "Refresh" in REMEDY[GateStatus.STALE]
+    assert "Build the assessment" in REMEDY[GateStatus.NOT_IMPLEMENTED]
+    assert "no ingestion closes this" in REMEDY[GateStatus.NOT_IMPLEMENTED]
+
+
+def test_a_missing_figure_is_not_collected_rather_than_stale():
+    """Different remedies: one is a refresh job, the other is collecting a field at all."""
+    gate = business_quality_gate(_bq(revenue=None))
+    assert gate.status is GateStatus.NOT_COLLECTED
+
+
+def test_too_few_periods_is_insufficient_not_a_data_gap():
+    """Two annuals is a real, current dataset that cannot answer the question asked of it."""
+    assert business_quality_gate(_bq(annual_periods=1)).status is GateStatus.INSUFFICIENT
+
+
+def test_a_forming_bar_is_insufficient_now_not_permanently_missing():
+    gate = entry_condition_gate({"recent_closes": [12.0, 11.5], "sma20": 10.0,
+                                 "session_complete": False})
+    assert gate.status is GateStatus.INSUFFICIENT
+
+
+def test_valuation_separates_an_unbuilt_model_from_an_uncollected_market_cap():
+    """One needs a model written; the other needs a number fetched."""
+    assert valuation_gate({}).status is GateStatus.NOT_IMPLEMENTED
+    assert valuation_gate({"equity_value": 1.0e11}).status is GateStatus.NOT_COLLECTED

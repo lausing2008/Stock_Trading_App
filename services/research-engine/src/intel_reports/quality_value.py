@@ -50,14 +50,56 @@ def naive_utc(dt: datetime) -> datetime:
 
 
 class GateStatus(str, Enum):
+    """Why a gate did not pass — because "no evidence" was hiding five different problems.
+
+    The first version reported every non-passing gate as UNKNOWN, so a company whose statements
+    are one year stale and a dimension the platform has never implemented rendered as the same
+    yellow badge. They are not the same: one is closed by a refresh job, one by building an
+    assessment, and reading either as "no relevant information exists in the world" is simply
+    wrong. A reader cannot prioritise work they cannot distinguish.
+
+    Every member below except PASS blocks eligibility. What differs is WHO closes it and HOW,
+    which is what `REMEDY` names.
+    """
     PASS = "pass"
     FAIL = "fail"
-    #: No evidence either way. Blocks eligibility; closed by acquiring data.
-    UNKNOWN = "unknown"
+    #: The assessment does not exist as a capability yet. Nothing about this issuer is at fault
+    #: and no amount of ingestion closes it — someone has to build the analysis.
+    NOT_IMPLEMENTED = "not_implemented"
+    #: The capability exists; no data has been gathered for THIS issuer.
+    NOT_COLLECTED = "not_collected"
+    #: Data exists and is too old to support the conclusion. Closed by a refresh, not research.
+    STALE = "stale"
+    #: Sources disagree, and resolving which is right is its own work. NOT an average.
+    CONFLICTING = "conflicting"
+    #: Data is present and current and still cannot settle the question — too few periods, or
+    #: a measure that does not bear on what is being asked.
+    INSUFFICIENT = "insufficient"
     #: Evidence of a disqualifying condition. Blocks eligibility; NOT a data gap.
     BLOCKED = "blocked"
-    #: Outside this company's applicable template (a bank's valuation, say).
+    #: The template does not apply to this instrument at all — an ETF has no gross margin, and
+    #: net debt against equity is not a solvency reading for a bank.
     NOT_APPLICABLE = "not_applicable"
+
+
+#: What would close each state, in the reader's terms. Rendered beside the badge so the page
+#: says what work remains rather than only that something is missing.
+REMEDY = {
+    GateStatus.NOT_IMPLEMENTED: "Build the assessment — no ingestion closes this",
+    GateStatus.NOT_COLLECTED: "Collect the evidence for this issuer",
+    GateStatus.STALE: "Refresh the stored data",
+    GateStatus.CONFLICTING: "Reconcile the disagreeing sources",
+    GateStatus.INSUFFICIENT: "More periods or a different measure are needed",
+    GateStatus.BLOCKED: "Nothing — this is a finding about the company, not a gap",
+    GateStatus.NOT_APPLICABLE: "Nothing — a different template is needed for this instrument",
+    GateStatus.FAIL: "Nothing — the condition is simply not met today",
+    GateStatus.PASS: "",
+}
+
+#: Every state that is a GAP in our work rather than a finding about the company. Counting these
+#: separately is what distinguishes an unfinished pipeline from a universe of poor businesses.
+WORK_REMAINING = (GateStatus.NOT_IMPLEMENTED, GateStatus.NOT_COLLECTED, GateStatus.STALE,
+                  GateStatus.CONFLICTING, GateStatus.INSUFFICIENT)
 
 
 class State(str, Enum):
@@ -266,7 +308,7 @@ def compose(symbol: str, gates, *, entry_zone_held: bool = True) -> Evaluation:
         return Evaluation(symbol, State.INSUFFICIENT_EVIDENCE, gates, tuple(why))
 
     unknown = [g for g in gates
-               if g.name in REQUIRED_FOR_ENTRY and g.status is GateStatus.UNKNOWN]
+               if g.name in REQUIRED_FOR_ENTRY and g.status in WORK_REMAINING]
     failed = [g for g in gates
               if g.name in REQUIRED_FOR_ENTRY and g.status is GateStatus.FAIL]
 
@@ -320,13 +362,13 @@ def durability_gate(evidence=None) -> Gate:
     """
     sources = (evidence or {}).get("sources") or []
     if not sources:
-        return Gate(COMPETITIVE_DURABILITY, GateStatus.UNKNOWN, (
+        return Gate(COMPETITIVE_DURABILITY, GateStatus.NOT_IMPLEMENTED, (
             "no sourced evidence of switching costs, cost advantage, network effects, "
             "intangibles or distribution is stored for this issuer",
             "margin or return persistence in the statement series is NOT evidence of "
             "durability — for a cyclical business it is equally consistent with the cycle",
         ))
-    return Gate(COMPETITIVE_DURABILITY, GateStatus.UNKNOWN, (
+    return Gate(COMPETITIVE_DURABILITY, GateStatus.NOT_IMPLEMENTED, (
         f"{len(sources)} source(s) are attached but no durability assessment has been made "
         "from them; attaching a source is not the same as reading it",))
 
@@ -343,16 +385,16 @@ def valuation_gate(evidence=None) -> Gate:
     ev = evidence or {}
     cap, value = ev.get("market_cap"), ev.get("equity_value")
     if value is None:
-        return Gate(VALUATION, GateStatus.UNKNOWN, (
+        return Gate(VALUATION, GateStatus.NOT_IMPLEMENTED, (
             "no equity value has been computed: the normalized-earnings and cash-flow "
             "assumptions a defensible value needs are not yet specified or frozen",
             "a price below any model estimate would be a hypothesis about that model, not a "
             "fact about intrinsic value",))
     if cap is None:
-        return Gate(VALUATION, GateStatus.UNKNOWN, (
+        return Gate(VALUATION, GateStatus.NOT_COLLECTED, (
             "no market capitalisation is stored for this issuer, so there is nothing to "
             "compare the equity value against",))
-    return Gate(VALUATION, GateStatus.UNKNOWN, (
+    return Gate(VALUATION, GateStatus.NOT_IMPLEMENTED, (
         "an equity value and a market capitalisation are both present, but the required "
         "discount policy has not been frozen, and selecting a threshold after seeing the "
         "discount is how a screen is fitted to its own sample",))
@@ -464,17 +506,20 @@ def business_quality_gate(evidence=None) -> Gate:
     ev = evidence or {}
     periods = ev.get("annual_periods") or 0
     if periods < 2:
-        return Gate(BUSINESS_QUALITY, GateStatus.UNKNOWN,
+        return Gate(BUSINESS_QUALITY, GateStatus.INSUFFICIENT,
                     (f"{periods} annual statement(s) stored; at least two are needed before any "
                      f"change over comparable periods can be measured",), {"periods": periods})
 
     reasons, retrieval, reported = [], ev.get("retrieval_age_days"), ev.get("reported_year_age_days")
+    stale_retrieval = stale_reported = False
     if retrieval is None:
         reasons.append("the series carries no retrieval time, so its age cannot be established")
     elif retrieval > MAX_RETRIEVAL_AGE_DAYS:
+        stale_retrieval = True
         reasons.append(f"the series was last retrieved {retrieval} days ago, beyond the "
                        f"{MAX_RETRIEVAL_AGE_DAYS}-day limit for an actionable state")
     if reported is not None and reported > MAX_REPORTED_YEAR_AGE_DAYS:
+        stale_reported = True
         reasons.append(f"the newest stored annual period ended {reported} days ago, so a later "
                        f"fiscal year has almost certainly been reported and is absent")
     if ev.get("revenue") is None:
@@ -483,7 +528,11 @@ def business_quality_gate(evidence=None) -> Gate:
     ctx = {"periods": periods, "retrieval_age_days": retrieval,
            "reported_year_age_days": reported}
     if reasons:
-        return Gate(BUSINESS_QUALITY, GateStatus.UNKNOWN, tuple(reasons), ctx)
+        # THE STATE NAMES WHO CLOSES IT. Age is closed by a refresh job; an absent figure by
+        # collecting it. Reporting both as "no evidence" told a reader neither.
+        state = (GateStatus.STALE if (stale_retrieval or stale_reported)
+                 else GateStatus.NOT_COLLECTED)
+        return Gate(BUSINESS_QUALITY, state, tuple(reasons), ctx)
     return Gate(BUSINESS_QUALITY, GateStatus.PASS, (), ctx)
 
 
@@ -553,7 +602,7 @@ def value_trap_gate(evidence=None) -> Gate:
         "the figures that CAN be computed from the statements are reported as observations "
         "below, not as a verdict — none of them has a validated threshold",
     ]
-    return Gate(VALUE_TRAP_RISK, GateStatus.UNKNOWN,
+    return Gate(VALUE_TRAP_RISK, GateStatus.NOT_IMPLEMENTED,
                 tuple(reasons + observations), {**ev, "observations": observations})
 
 
@@ -568,11 +617,11 @@ def entry_condition_gate(evidence=None) -> Gate:
     ev = evidence or {}
     closes, avg = ev.get("recent_closes") or [], ev.get("sma20")
     if avg is None or len(closes) < 2:
-        return Gate(ENTRY_CONDITION, GateStatus.UNKNOWN, (
+        return Gate(ENTRY_CONDITION, GateStatus.INSUFFICIENT, (
             "fewer than two completed sessions or no 20-session average is available, so the "
             "stabilization rule cannot be evaluated",), ev)
     if ev.get("session_complete") is False:
-        return Gate(ENTRY_CONDITION, GateStatus.UNKNOWN, (
+        return Gate(ENTRY_CONDITION, GateStatus.INSUFFICIENT, (
             "the latest session has not completed; a forming bar is not a close",), ev)
     above = [c for c in closes[:2] if c > avg]
     if len(above) < 2:
