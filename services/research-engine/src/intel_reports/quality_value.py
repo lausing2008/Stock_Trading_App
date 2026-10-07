@@ -96,6 +96,37 @@ REMEDY = {
     GateStatus.PASS: "",
 }
 
+#: How each state should READ, for every surface that renders one.
+#:
+#: SERVED TO THE FRONTEND RATHER THAN DUPLICATED THERE. The first version hardcoded five
+#: statuses in the page and defaulted anything else to "No evidence" — so adding four states to
+#: this enum silently relabelled all of them as the one thing they were introduced to stop
+#: saying. A mapping that lives in two places drifts the moment one of them grows.
+STATUS_LABEL = {
+    GateStatus.PASS: "Pass",
+    GateStatus.FAIL: "Fail",
+    GateStatus.NOT_IMPLEMENTED: "Not implemented",
+    GateStatus.NOT_COLLECTED: "Not collected",
+    GateStatus.STALE: "Stale",
+    GateStatus.CONFLICTING: "Conflicting",
+    GateStatus.INSUFFICIENT: "Insufficient",
+    GateStatus.BLOCKED: "Blocked",
+    GateStatus.NOT_APPLICABLE: "Not applicable",
+}
+
+
+def status_catalog() -> dict:
+    """Every state, its label, its remedy and whether it counts as work remaining.
+
+    Exhaustive over the enum BY CONSTRUCTION — it iterates GateStatus — so a state added later
+    appears on every surface without anyone remembering to add it.
+    """
+    return {st.value: {"label": STATUS_LABEL[st], "remedy": REMEDY[st],
+                       "is_work_remaining": st in WORK_REMAINING,
+                       "is_pass": st is GateStatus.PASS}
+            for st in GateStatus}
+
+
 #: Every state that is a GAP in our work rather than a finding about the company. Counting these
 #: separately is what distinguishes an unfinished pipeline from a universe of poor businesses.
 WORK_REMAINING = (GateStatus.NOT_IMPLEMENTED, GateStatus.NOT_COLLECTED, GateStatus.STALE,
@@ -520,8 +551,14 @@ def business_quality_gate(evidence=None) -> Gate:
                        f"{MAX_RETRIEVAL_AGE_DAYS}-day limit for an actionable state")
     if reported is not None and reported > MAX_REPORTED_YEAR_AGE_DAYS:
         stale_reported = True
-        reasons.append(f"the newest stored annual period ended {reported} days ago, so a later "
-                       f"fiscal year has almost certainly been reported and is absent")
+        # WORDING WITHDRAWN. This used to say a later fiscal year "has almost certainly been
+        # reported and is absent". Checked against EDGAR for MU: its newest 10-K is still
+        # FY2025, so no later ANNUAL REPORT had been filed — what existed was an unaudited 8-K.
+        # The age is a fact; what the issuer has since filed is a separate question this gate
+        # does not look at.
+        reasons.append(f"the newest stored annual period ended {reported} days ago, which is "
+                       f"beyond one reporting year — whether a later annual report has since "
+                       f"been filed is not checked here")
     if ev.get("revenue") is None:
         reasons.append("no revenue figure is stored for the newest period")
 

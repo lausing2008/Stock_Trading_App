@@ -26,7 +26,7 @@ from db import SessionLocal, Stock, FinancialStatement, Price, TimeFrame
 from ..intel_reports.quality_value import (
     ALL_GATES, REQUIRED_FOR_ENTRY, GATE_CLAIM, GateStatus, POLICY_VERSION, State, compose,
     business_quality_gate, durability_gate, valuation_gate, value_trap_gate,
-    entry_condition_gate, naive_utc, policy_fingerprint)
+    entry_condition_gate, naive_utc, policy_fingerprint, status_catalog)
 from ..intel_reports.quality_value_store import (
     record_evaluation, latest_evaluations, evaluation_history, freeze_inputs)
 from ..intel_reports.prospective_capture import (
@@ -174,6 +174,8 @@ def evaluations(symbols: str | None = Query(None, description="comma-separated; 
         "states": states,
         "gate_coverage": coverage,
         "gate_claims": GATE_CLAIM,
+        # ONE MAPPING, SERVED. The page must not keep its own copy — see status_catalog().
+        "status_catalog": status_catalog(),
         "required_for_entry": list(REQUIRED_FOR_ENTRY),
         "evaluations": out,
         "notes": [

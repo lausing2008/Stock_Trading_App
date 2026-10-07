@@ -1,5 +1,8 @@
 
-export type QvGateStatus = 'pass' | 'fail' | 'unknown' | 'blocked' | 'not_applicable';
+// A STRING, not a closed union: the backend owns the set and may grow it. A union here
+// would make a new state a compile error in a build that never ships, while the running
+// page silently mislabelled it.
+export type QvGateStatus = string;
 export type QvGate = { gate: string; status: QvGateStatus; reasons: string[];
                        evidence: Record<string, unknown>;
                        // What a PASS establishes, and what it does NOT. Rendered beside every
@@ -16,6 +19,9 @@ export type QualityValueReport = {
   stored_new?: number; persist_errors?: string[];
   gate_claims?: Record<string, { label: string; establishes: string;
                                  does_not_establish: string }>;
+  // Served, never duplicated client-side: derived from the backend enum itself.
+  status_catalog?: Record<string, { label: string; remedy: string;
+                                    is_work_remaining: boolean; is_pass: boolean }>;
   states: Record<string, number>;
   gate_coverage: Record<string, Record<QvGateStatus, number>>;
   required_for_entry: string[];

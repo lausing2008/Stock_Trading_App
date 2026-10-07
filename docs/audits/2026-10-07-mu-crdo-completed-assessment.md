@@ -157,11 +157,20 @@ probabilities. They are three anchors drawn from the record, with the multiple e
 |---|---|---|---|
 | Six-year mean | FY2021–FY2026 net income, 10-Ks + the FY2026 8-K | $17.17bn | **70.0×** |
 | FY2026 as announced | 8-K `0000723125-26-000018` | $84.97bn | **14.1×** |
-| FQ1-27 guidance, annualised | Guidance EPS $37.84 × 1,143.1m implied diluted shares × 4 | $173.0bn | **6.9×** |
+| FQ1-27 guided quarter × 4 | Guidance EPS $37.84 × 1,143.1m implied diluted shares × 4 | $173.0bn | **6.9×** |
 
-**The annualisation is an extrapolation of one guided quarter, not a forecast**, and MU's
-guidance is for FQ1-27 only. It is included because it is the one forward figure the issuer
-itself published, and because leaving it out would understate what the market may be pricing.
+**The last row is a mechanical run-rate illustration, not a forecast.** It multiplies one guided
+quarter by four. MU guides one quarter at a time, memory revenue is seasonal and cyclical, and
+nothing about four identical quarters follows from one guided one. It appears because it is the
+only forward figure the issuer itself published, and because omitting it would understate what
+the market may be pricing — not because anyone should expect it.
+
+**THIS TABLE IS VALUATION CONTEXT, NOT A VALUATION ASSESSMENT.** It reports the multiple implied
+at three earnings anchors. It does not produce a defensible value estimate, and the Quality &
+Value valuation gate therefore stays `not_implemented` for MU — it would be wrong for this
+section to close that gate, because a range of multiples is not an answer to "what is this
+worth". Closing it needs an earnings level with evidence behind it, which this review did not
+assemble.
 
 **No equity value is asserted here, and the earlier version of this table should not have
 asserted one.** It carried a "base case" of $60bn sustainable earnings at a 14× multiple with no
@@ -207,18 +216,31 @@ Discount rate **12%** and dilution **8%/yr** are assumptions, justified below an
 |---|---|---|---|---|---|---|
 | Bear | growth stalls, earnings revert to $150m, 25× | 1 yr | $3.75bn | $3.35bn | **$3.10bn** | **−92%** |
 | Base | revenue doubles once more then +20%, $900m, 30× | 2 yr | $27.0bn | $21.52bn | **$18.45bn** | **−54%** |
-| Bull | hyper-growth persists, $1.8bn earnings, 35× | 3 yr | $63.0bn | $44.84bn | **$35.60bn** | **−11%** |
+| Bull | hyper-growth persists, $1.8bn earnings, 35× | 3 yr | $63.0bn | $44.84bn (**+12.3%**) | **$35.60bn** | **−11%** |
 
-**The bull case changes sign.** Undiscounted it read +58%; discounted and dilution-adjusted it is
-−11%. All three scenarios now sit below the market price, and that is a consequence of stating
-horizons rather than of changing any view about the company.
+**The bull case changes sign — and then straddles zero, because the dilution treatment is
+genuinely ambiguous.** Undiscounted it read +58%. Discounted at 12% it is **+12.3%**. Applying a
+further 8%/yr share-count dilution on top takes it to **−10.9%**.
+
+**Both of those may double-count, and the review flagged exactly this.** The projected earnings
+are GAAP, so stock-based compensation is *already expensed* inside the $1.8bn — charging the
+claim a second time for the share count arguably counts the same economic cost twice. Against
+that, an expense reduces earnings while an issuance reduces the fraction a current holder owns,
+and those are different mechanisms. The honest position is that this review cannot settle it, so
+**both figures are reported and the bull case brackets zero at −10.9% to +12.3%.** The scenarios
+below carry the dilution-adjusted number, and the undiscounted and un-adjusted figures are shown
+beside it so the choice is visible rather than embedded.
+
+The bear and base cases are below the market on either treatment, so the ambiguity changes
+nothing for them.
 
 Assumptions and their sensitivity:
 
 | Assumption | Value | Basis | What would change it |
 |---|---|---|---|
-| Discount rate | 12% | A cost of equity for a single-segment, pre-scale semiconductor business. **No company-specific cost of capital was computed** | At 8% the bull case is $39.9bn — level with the market. At 15%, $32.3bn |
-| Dilution | 8%/yr | Observed: 171.2m → 185.4m shares, FY2025 → FY2026 (+8.3%) | Buybacks, or stock compensation falling as revenue scales |
+| Discount rate | 12% | **A judgement, anchored on nothing company-specific.** No cost of equity was computed for CRDO — no beta, no risk-free rate and no equity risk premium were collected. It is set in the range usually applied to a single-segment, pre-scale business, and that is the whole of its justification | Dominant. Dilution-adjusted, the bull case runs −0.6% at 8%, −5.9% at 10%, −10.9% at 12%, −17.7% at 15%. Un-adjusted: +25.2%, +18.5%, +12.3%, +3.7% |
+| Dilution | 8%/yr | Observed, not assumed: 171.2m → 185.4m shares outstanding, FY2025 → FY2026 (+8.3%); the prior year was +4.2% | Buybacks, or stock compensation falling as a share of revenue at scale. **And see the double-counting question above** — whether it should be applied at all is unresolved |
+| Earnings measure | GAAP | As filed. SBC is already an expense within it | If a pre-SBC or cash measure were used, the dilution adjustment would be clearly required rather than arguable |
 | Exit multiples (25/30/35×) | assumption | **No company-specific historical multiple series was collected.** These are judgement | Any evidence of where comparable businesses have traded through a cycle |
 
 \* The "vs $39.94bn" column is **upside to price** — denominator is the market capitalisation.
@@ -226,8 +248,10 @@ A draft quoted the base case as −48%, which is its discount to *value*, beside
 quoted as upside to price. Caught by recomputing; exactly the error `equity_discount()` returns
 two named figures to prevent, and prose is evidently no safer from it than code was.
 
-**Reading:** under these assumptions, even sustained hyper-growth for three years does not
-reach today's price once time and dilution are accounted for. The balance sheet is genuinely
+**Reading:** the bear and base cases are below the market under every treatment examined. The
+bull case — sustained hyper-growth for three years — lands between −11% and +12% depending on a
+dilution question this review could not settle, which is to say it is roughly fair value if
+everything goes right. The balance sheet is genuinely
 strong — no debt, $1.44bn net cash, 68.0% gross margin. The conclusion is about the price under
 stated assumptions, not about the business.
 
@@ -341,8 +365,9 @@ the filing's own risk factors describe the cycle mechanism. Valuation: 6.9× the
 unestablished for FY2025, seven classes unchecked.
 
 **CRDO** — Fundamental checks: pass, FY2026 filed four months ago. Durability: the reviewed evidence does not
-establish one; 90% of revenue in ten customers raises the consequence of losing a relationship. Valuation: all three scenarios fall below the
-market once discounted and dilution-adjusted, including the bull case at −11%. Risk: severe
+establish one; 90% of revenue in ten customers raises the consequence of losing a relationship. Valuation: bear and base fall below the market
+under every treatment; the bull case brackets zero (−11% to +12.3%) on an unresolved
+dilution question. Risk: severe
 customer concentration, single segment, 8.3% annual dilution, accumulated deficit.
 
 **What would change each verdict.** For MU: an FY2026 10-K, whenever it appears — the previous

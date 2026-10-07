@@ -307,7 +307,8 @@ def test_a_missing_reported_year_blocks_even_though_retrieval_is_fresh():
     """And this is the one only the issuer closes."""
     gate = business_quality_gate(_bq(reported_year_age_days=MAX_REPORTED_YEAR_AGE_DAYS + 1))
     assert gate.status in WORK_REMAINING
-    assert "later fiscal year has almost certainly been reported" in " ".join(gate.reasons)
+    # Wording withdrawn after checking EDGAR; see the dedicated test at the end of this file.
+    assert "beyond one reporting year" in " ".join(gate.reasons)
 
 
 def test_an_absent_retrieval_time_is_not_treated_as_fresh():
@@ -478,3 +479,55 @@ def test_valuation_separates_an_unbuilt_model_from_an_uncollected_market_cap():
     """One needs a model written; the other needs a number fetched."""
     assert valuation_gate({}).status is GateStatus.NOT_IMPLEMENTED
     assert valuation_gate({"equity_value": 1.0e11}).status is GateStatus.NOT_COLLECTED
+
+
+# ---- the catalog the page renders from ----------------------------------------------------
+# AUD-QV-FRONTENDSTATES. The page kept its own five-entry status map and defaulted anything
+# else to "No evidence". When this enum grew to nine, all four new states rendered as the one
+# label they were introduced to stop saying, and the coverage columns — a hardcoded four —
+# summed to zero for every gate reporting a new state. One served mapping, exhaustive over the
+# enum, is the fix; these pin it.
+
+def test_the_catalog_covers_every_state_with_no_gaps():
+    from intel_reports.quality_value import status_catalog
+    cat = status_catalog()
+    assert set(cat) == {s.value for s in GateStatus}
+    for st in GateStatus:
+        e = cat[st.value]
+        assert e["label"] and isinstance(e["label"], str)
+        assert e["is_pass"] is (st is GateStatus.PASS)
+        assert e["is_work_remaining"] is (st in WORK_REMAINING)
+
+
+def test_every_state_has_a_distinct_label():
+    """Two states sharing a label is the defect restated, just at a different layer."""
+    from intel_reports.quality_value import status_catalog
+    labels = [e["label"] for e in status_catalog().values()]
+    assert len(set(labels)) == len(labels), f"duplicate labels: {labels}"
+
+
+def test_no_state_is_labelled_no_evidence():
+    """The phrase that was hiding five different problems must not reappear as a label."""
+    from intel_reports.quality_value import status_catalog
+    for v in status_catalog().values():
+        assert "no evidence" not in v["label"].lower()
+
+
+def test_the_catalog_is_derived_from_the_enum_so_a_new_state_cannot_be_missed():
+    """Exhaustive BY CONSTRUCTION: adding a member must not require editing the catalog."""
+    import inspect
+    from intel_reports import quality_value as qv
+    src = inspect.getsource(qv.status_catalog)
+    assert "for st in GateStatus" in src, \
+        "the catalog must iterate the enum, not enumerate states by hand"
+
+
+def test_the_stale_reason_no_longer_claims_what_the_issuer_has_filed():
+    """WITHDRAWN: 'a later fiscal year has almost certainly been reported and is absent'.
+    Checked against EDGAR — MU's newest 10-K is still FY2025, so no later ANNUAL REPORT had
+    been filed. The age is a fact; what has since been filed is a different question."""
+    gate = business_quality_gate(_bq(reported_year_age_days=402))
+    joined = " ".join(gate.reasons)
+    assert "almost certainly" not in joined
+    assert "402 days ago" in joined
+    assert "is not checked here" in joined
