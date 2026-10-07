@@ -3894,3 +3894,58 @@ class QualityValueEvaluation(Base):
                          name="uq_qv_evaluation_symbol_cutoff_policy"),
         Index("ix_qv_eval_state_cutoff", "state", "cutoff"),
     )
+
+
+class IssuerAssessment(Base):
+    """One versioned, sourced assessment of one gate dimension for one issuer.
+
+    THE GAP THIS CLOSES. The MU and CRDO research existed only in a document beside the
+    dashboard, so the evaluator reported `not_implemented` for durability, valuation and risk
+    however much work had been done. A finding that cannot be read by the thing that decides is
+    not connected to the product.
+
+    IMMUTABLE AND VERSIONED, for the same reason the evaluations are: `(symbol, dimension,
+    version)` is unique and nothing is updated in place, so a revised assessment lands beside
+    its predecessor and "what did we conclude in October, on what evidence" stays answerable
+    after the conclusion changes.
+
+    `verdict` IS THE ASSESSMENT'S OWN RESULT, NOT A GATE STATUS SHORTCUT. Connecting an
+    assessment must not mean the gate automatically passes: a completed durability review that
+    found insufficient evidence is a real result, and it still blocks eligibility. The gate maps
+    this verdict to a status; it never infers one from the row merely existing.
+    """
+    __tablename__ = "issuer_assessments"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    #: Which gate this assessment answers: "competitive_durability" | "valuation" |
+    #: "value_trap_risk". Matches the gate constants in quality_value.py.
+    dimension: Mapped[str] = mapped_column(String(40), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    #: The assessment's OWN conclusion: "supported" | "insufficient" | "contradicted" |
+    #: "context_only". Deliberately not a GateStatus — see the class docstring.
+    verdict: Mapped[str] = mapped_column(String(24), nullable=False)
+    #: One line a reader can act on. Never a rating.
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    #: [{claim, source, source_ref, counterevidence}] — every claim carries what argues against
+    #: it, which is the rule the interpretation layer already enforces elsewhere.
+    findings: Mapped[dict] = mapped_column(JSON, nullable=False, default=list)
+    #: [{name, value, units, basis, sensitivity}] for anything computed.
+    assumptions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    #: What was NOT checked. An assessment that does not state its boundary cannot be read as
+    #: bounded, and "no issue found" would then be mistaken for "no issue exists".
+    not_assessed: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    #: The evidence as read, with its digest — same contract as a frozen evaluation input.
+    evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    evidence_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: The moment the evidence was read as of. Naive UTC.
+    cutoff: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    author: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False,
+                                                 server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "dimension", "version",
+                         name="uq_issuer_assessment_symbol_dimension_version"),
+        Index("ix_issuer_assessment_symbol_dimension", "symbol", "dimension"),
+    )

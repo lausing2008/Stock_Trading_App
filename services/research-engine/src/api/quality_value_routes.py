@@ -25,10 +25,12 @@ from db import SessionLocal, Stock, FinancialStatement, Price, TimeFrame
 
 from ..intel_reports.quality_value import (
     ALL_GATES, REQUIRED_FOR_ENTRY, GATE_CLAIM, GateStatus, POLICY_VERSION, State, compose,
+    COMPETITIVE_DURABILITY, VALUATION, VALUE_TRAP_RISK,
     business_quality_gate, durability_gate, valuation_gate, value_trap_gate,
     entry_condition_gate, naive_utc, policy_fingerprint, status_catalog)
 from ..intel_reports.quality_value_store import (
-    record_evaluation, latest_evaluations, evaluation_history, freeze_inputs)
+    record_evaluation, latest_evaluations, evaluation_history, freeze_inputs,
+    latest_assessments, record_assessment)
 from ..intel_reports.prospective_capture import (
     capture_earnings_estimates, capture_analyst_forwards)
 
@@ -123,11 +125,24 @@ def evaluations(symbols: str | None = Query(None, description="comma-separated; 
             # Industry decides whether leverage is even a solvency reading.
             fin["industry"] = stock.industry
             px = _price_evidence(session, stock, now)
-            gates = [business_quality_gate(fin), durability_gate(), valuation_gate(),
-                     entry_condition_gate(px), value_trap_gate(fin)]
+            # CONNECTED RESEARCH, where it exists. An assessment maps to its OWN verdict —
+            # a completed review that found the evidence insufficient still blocks.
+            found = latest_assessments(session, stock.symbol)
+            gates = [business_quality_gate(fin),
+                     durability_gate(assessment=found.get(COMPETITIVE_DURABILITY)),
+                     valuation_gate(assessment=found.get(VALUATION)),
+                     entry_condition_gate(px),
+                     value_trap_gate(fin, assessment=found.get(VALUE_TRAP_RISK))]
             ev = compose(stock.symbol, gates)
+            evaluated_here = {g.name for g in gates}
             for g in gates:
                 coverage[g.name][g.status.value] += 1
+            # EVERY ROW ACCOUNTS FOR EVERY COMPANY. A gate this run does not evaluate is
+            # counted as not_assessed rather than left at zero, so the row reconciles and the
+            # absence is stated rather than looking like 200 companies went missing.
+            for name in ALL_GATES:
+                if name not in evaluated_here:
+                    coverage[name][GateStatus.NOT_ASSESSED.value] += 1
             states[ev.state.value] += 1
 
             # PERSIST, OR THIS IS A PREVIEW RATHER THAN A SHADOW TRIAL. A screen that only
@@ -215,6 +230,28 @@ def history(symbol: str, _user: str = Depends(get_current_username)) -> dict:
                      "blocking": r.blocking, "evidence_refs": r.evidence_refs,
                      "recorded_at": r.created_at.isoformat() if r.created_at else None}
                     for r in rows]}
+
+
+@router.post("/assessments/seed")
+def seed_assessments(_user: str = Depends(get_current_username)) -> dict:
+    """Write the reviewed MU and CRDO assessments as versioned rows. Idempotent per version."""
+    from ..intel_reports.assessment_seed import ASSESSMENTS, CUTOFF, AUTHOR
+    written, existing = [], []
+    with SessionLocal() as session:
+        for spec in ASSESSMENTS:
+            _id, created = record_assessment(session, spec, cutoff=CUTOFF, author=AUTHOR)
+            (written if created else existing).append(
+                f"{spec['symbol']}/{spec['dimension']}/v{spec.get('version', 1)}")
+    return {"written": written, "already_present": existing,
+            "note": "a revision must arrive as a new version; nothing here updates a row."}
+
+
+@router.get("/assessments/{symbol}")
+def assessments(symbol: str, _user: str = Depends(get_current_username)) -> dict:
+    """Every connected assessment for one issuer, newest version per dimension."""
+    with SessionLocal() as session:
+        return {"symbol": symbol.strip().upper(),
+                "assessments": latest_assessments(session, symbol.strip().upper())}
 
 
 @router.post("/capture/estimates")

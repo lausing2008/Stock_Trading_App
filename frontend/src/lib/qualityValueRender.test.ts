@@ -23,31 +23,32 @@ describe('the page renders states from the served catalog', () => {
     expect(tone).not.toMatch(/\blabel\s*:/);
   });
 
-  it('takes every badge label from the catalog', () => {
-    expect(PAGE).toContain('const entry = catalog?.[s];');
-    expect(PAGE).toContain('entry ? entry.label :');
+  /* THESE NOW ASSERT DELEGATION, NOT BEHAVIOUR. The row model and the badge labelling moved
+     into qualityValueCoverage.ts, where they are exercised against real payload shapes —
+     including the optional unassessed rows that produced "0 ≠ 200". A source test cannot check
+     arithmetic; its remaining job is that the page has no SECOND copy of that logic. */
+  it('takes badge labels from the shared model, not its own branch', () => {
+    expect(PAGE).toContain("const label = badgeLabel(s, catalog);");
+    expect(PAGE).not.toMatch(/entry\s*\?\s*entry\.label\s*:/);
   });
 
-  it('shows an unknown state loudly instead of defaulting it', () => {
-    expect(PAGE).toContain('UNKNOWN STATE:');
-    expect(PAGE).not.toMatch(/\?\?\s*STATUS_STYLE\.unknown/);
+  it('takes the remedy from the shared model', () => {
+    expect(PAGE).toContain('const r = badgeRemedy(s, catalog);');
   });
 
   it('never hardcodes the coverage columns', () => {
     expect(PAGE).not.toContain("['pass', 'fail', 'unknown', 'blocked']");
-    expect(PAGE).toContain('statusCols');
+    expect(PAGE).toContain('statusColumns(data)');
   });
 
-  it('derives the columns from the data and keeps unknown states visible in them', () => {
-    const block = PAGE.slice(PAGE.indexOf('const statusCols'), PAGE.indexOf('}, [data]);'));
-    expect(block).toContain('data.gate_coverage');
-    expect(block).toContain('status_catalog');
-    // States the catalog does not know must still be columns, not dropped from the sums.
-    expect(block).toMatch(/unknown\s*=\s*\[\.\.\.present\].*!\(data\.status_catalog/s);
+  it('builds its rows from the shared model rather than inline', () => {
+    expect(PAGE).toContain('coverageRows(data)');
+    // No second pass over gate_coverage in the page: that was the duplicate.
+    expect(PAGE).not.toContain('Object.entries(data.gate_coverage)');
   });
 
-  it('reconciles each gate row against the evaluated population', () => {
-    expect(PAGE).toContain('const reconciles = total === data.evaluated;');
+  it('renders the reconciliation the model computes', () => {
+    expect(PAGE).toContain('r.reconciles');
     expect(PAGE).toMatch(/≠ \$\{data\.evaluated\}/);
   });
 

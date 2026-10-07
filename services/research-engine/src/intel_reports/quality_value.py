@@ -80,18 +80,29 @@ class GateStatus(str, Enum):
     #: The template does not apply to this instrument at all — an ETF has no gross margin, and
     #: net debt against equity is not a solvency reading for a bank.
     NOT_APPLICABLE = "not_applicable"
+    #: The gate was not evaluated for this company at all.
+    #:
+    #: A DECLARED ABSENCE, NOT A MISSING RESULT. Catalysts and portfolio fit are optional and
+    #: this run does not evaluate them, so their coverage row was all zeros and the
+    #: reconciliation check flagged "0 ≠ 200" as though 200 companies had gone missing. They had
+    #: not: the gate simply did not run for them. Counting that explicitly is what lets the row
+    #: reconcile while still saying, truthfully, that nothing was assessed.
+    NOT_ASSESSED = "not_assessed"
 
 
 #: What would close each state, in the reader's terms. Rendered beside the badge so the page
 #: says what work remains rather than only that something is missing.
 REMEDY = {
-    GateStatus.NOT_IMPLEMENTED: "Build the assessment — no ingestion closes this",
+    # "no ingestion closes this" was half the story: these need sourced evidence AND an
+    # assessment that reads it. Ingestion alone is insufficient, not irrelevant.
+    GateStatus.NOT_IMPLEMENTED: "Requires sourced evidence and an implemented assessment",
     GateStatus.NOT_COLLECTED: "Collect the evidence for this issuer",
     GateStatus.STALE: "Refresh the stored data",
     GateStatus.CONFLICTING: "Reconcile the disagreeing sources",
     GateStatus.INSUFFICIENT: "More periods or a different measure are needed",
     GateStatus.BLOCKED: "Nothing — this is a finding about the company, not a gap",
     GateStatus.NOT_APPLICABLE: "Nothing — a different template is needed for this instrument",
+    GateStatus.NOT_ASSESSED: "Evaluate this gate — it is optional and was not run",
     GateStatus.FAIL: "Nothing — the condition is simply not met today",
     GateStatus.PASS: "",
 }
@@ -112,6 +123,7 @@ STATUS_LABEL = {
     GateStatus.INSUFFICIENT: "Insufficient",
     GateStatus.BLOCKED: "Blocked",
     GateStatus.NOT_APPLICABLE: "Not applicable",
+    GateStatus.NOT_ASSESSED: "Not assessed",
 }
 
 
@@ -383,7 +395,61 @@ def compose(symbol: str, gates, *, entry_zone_held: bool = True) -> Evaluation:
 # valuation — are not. These functions return that honestly rather than approximating it.
 # =====================================================================================
 
-def durability_gate(evidence=None) -> Gate:
+#: How an assessment's OWN verdict maps to a gate status.
+#:
+#: CONNECTING AN ASSESSMENT MUST NOT MEAN THE GATE PASSES. A completed durability review that
+#: found the evidence insufficient is a real, finished piece of work AND a reason to stay
+#: ineligible — those are not in tension. Only `supported` passes; `insufficient` reports
+#: INSUFFICIENT (the work is done, the answer is "not enough"), `contradicted` FAILS, and
+#: `context_only` also reports INSUFFICIENT because context is not a conclusion.
+VERDICT_STATUS = {
+    "supported": GateStatus.PASS,
+    "insufficient": GateStatus.INSUFFICIENT,
+    "contradicted": GateStatus.FAIL,
+    "context_only": GateStatus.INSUFFICIENT,
+}
+
+
+def from_assessment(gate_name: str, assessment: dict | None, *, absent_reasons: tuple) -> Gate:
+    """Build a gate from a stored assessment, or report that none is connected.
+
+    `assessment` is the serialised IssuerAssessment row. Its `verdict` decides the status; the
+    row merely existing decides nothing. An unrecognised verdict is INSUFFICIENT with the
+    verdict named, never a silent pass — the same rule the status catalog follows for the page.
+    """
+    if not assessment:
+        return Gate(gate_name, GateStatus.NOT_IMPLEMENTED, absent_reasons)
+
+    verdict = (assessment.get("verdict") or "").strip().lower()
+    status = VERDICT_STATUS.get(verdict)
+    if status is None:
+        return Gate(gate_name, GateStatus.INSUFFICIENT, (
+            f"the stored assessment carries an unrecognised verdict {verdict!r}, so what it "
+            f"concluded cannot be read; it is NOT treated as a pass",), assessment)
+
+    reasons = []
+    if assessment.get("summary"):
+        reasons.append(assessment["summary"])
+    for f in (assessment.get("findings") or []):
+        claim, src = f.get("claim"), f.get("source")
+        against = f.get("counterevidence")
+        line = claim or ""
+        if src:
+            line += f"  [source: {src}]"
+        if against:
+            line += f"  — against: {against}"
+        if line:
+            reasons.append(line)
+    for n in (assessment.get("not_assessed") or []):
+        reasons.append(f"NOT ASSESSED: {n}")
+    if status is GateStatus.PASS:
+        reasons = ()                     # a Gate that passes carries no reasons, by contract
+    return Gate(gate_name, status, tuple(reasons) or ("the stored assessment states no reason",),
+                {**assessment, "assessment_version": assessment.get("version"),
+                 "assessment_cutoff": assessment.get("cutoff")})
+
+
+def durability_gate(evidence=None, assessment=None) -> Gate:
     """Competitive durability. UNKNOWN until sourced evidence exists — never inferred.
 
     A statement series cannot evidence a moat. Persistently high margins are equally consistent
@@ -391,6 +457,8 @@ def durability_gate(evidence=None) -> Gate:
     network effects, intangibles or distribution. So this gate reports a data gap, which is what
     it is, rather than reading durability out of the numbers that happen to be present.
     """
+    if assessment is not None:
+        return from_assessment(COMPETITIVE_DURABILITY, assessment, absent_reasons=())
     sources = (evidence or {}).get("sources") or []
     if not sources:
         return Gate(COMPETITIVE_DURABILITY, GateStatus.NOT_IMPLEMENTED, (
@@ -404,7 +472,7 @@ def durability_gate(evidence=None) -> Gate:
         "from them; attaching a source is not the same as reading it",))
 
 
-def valuation_gate(evidence=None) -> Gate:
+def valuation_gate(evidence=None, assessment=None) -> Gate:
     """Valuation discount. UNKNOWN until an aggregate equity value is computed and frozen.
 
     THE PER-SHARE ROUTE IS CLOSED, and this is a measured fact rather than a design preference:
@@ -413,6 +481,8 @@ def valuation_gate(evidence=None) -> Gate:
     figure — removing a quantity there is no evidence for from the arithmetic, at the stated
     cost that an aggregate discount cannot become a per-share target.
     """
+    if assessment is not None:
+        return from_assessment(VALUATION, assessment, absent_reasons=())
     ev = evidence or {}
     cap, value = ev.get("market_cap"), ev.get("equity_value")
     if value is None:
@@ -582,7 +652,7 @@ LEVERAGE_NOT_APPLICABLE_INDUSTRIES = (
     "mortgage", "asset management", "financial conglomerate", "reit")
 
 
-def value_trap_gate(evidence=None) -> Gate:
+def value_trap_gate(evidence=None, assessment=None) -> Gate:
     """Disqualifying risk. UNKNOWN, with the two observable figures reported as observations.
 
     WHY THIS NO LONGER BLOCKS ON A RATIO — measured against production, 2026-10-06. An earlier
@@ -607,6 +677,8 @@ def value_trap_gate(evidence=None) -> Gate:
     The figures are still computed and still shown — as observations, labelled unvalidated. What
     changed is that they no longer render a verdict.
     """
+    if assessment is not None:
+        return from_assessment(VALUE_TRAP_RISK, assessment, absent_reasons=())
     ev = evidence or {}
     industry = (ev.get("industry") or "").lower()
     leverage_applies = not any(k in industry for k in LEVERAGE_NOT_APPLICABLE_INDUSTRIES)

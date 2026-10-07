@@ -13,6 +13,8 @@ import { useMemo, useState } from 'react';
 import Head from 'next/head';
 import useSWR from 'swr';
 import { api, type QualityValueReport, type QvEvaluation, type QvGateStatus } from '@/lib/api';
+import { coverageRows, statusColumns, badgeLabel, badgeRemedy,
+         type StatusCatalog } from '@/lib/qualityValueCoverage';
 
 const GATE_TITLE: Record<string, string> = {
   business_quality: 'Business quality',
@@ -44,6 +46,7 @@ const STATUS_TONE: Record<string, { bg: string; bd: string; fg: string }> = {
   fail:            { bg: 'rgba(248,113,113,0.1)', bd: 'rgba(248,113,113,0.35)', fg: '#fca5a5' },
   blocked:         { bg: 'rgba(244,63,94,0.14)',  bd: 'rgba(244,63,94,0.45)',  fg: '#fda4af' },
   not_applicable:  { bg: 'rgba(148,163,184,0.1)', bd: 'rgba(148,163,184,0.3)', fg: '#94a3b8' },
+  not_assessed:    { bg: 'rgba(100,116,139,0.12)', bd: 'rgba(100,116,139,0.32)', fg: '#cbd5e1' },
   not_implemented: { bg: 'rgba(192,132,252,0.12)', bd: 'rgba(192,132,252,0.38)', fg: '#d8b4fe' },
   not_collected:   { bg: 'rgba(56,189,248,0.1)',  bd: 'rgba(56,189,248,0.32)', fg: '#7dd3fc' },
   stale:           { bg: 'rgba(251,146,60,0.12)', bd: 'rgba(251,146,60,0.38)', fg: '#fdba74' },
@@ -52,15 +55,14 @@ const STATUS_TONE: Record<string, { bg: string; bd: string; fg: string }> = {
 };
 const UNKNOWN_TONE = { bg: 'rgba(239,68,68,0.18)', bd: '#ef4444', fg: '#fecaca' };
 
-type Catalog = Record<string, { label: string; remedy: string;
-                                is_work_remaining: boolean; is_pass: boolean }>;
+type Catalog = StatusCatalog;
 
 function Pill({ s, catalog }: { s: string; catalog?: Catalog }) {
-  const entry = catalog?.[s];
   const tone = STATUS_TONE[s] ?? UNKNOWN_TONE;
   // A STATE THIS BUILD DOES NOT KNOW IS AN ERROR, NOT A DEFAULT. Falling back to a neutral
   // label is how four distinct states all read as "No evidence" for a day.
-  const label = entry ? entry.label : `UNKNOWN STATE: ${s}`;
+  const label = badgeLabel(s, catalog);
+  const entry = catalog?.[s];
   return <span title={entry?.remedy || undefined}
     style={{ padding: '2px 7px', borderRadius: '5px', background: tone.bg,
              border: `1px solid ${tone.bd}`, color: tone.fg, fontSize: '10px',
@@ -69,7 +71,7 @@ function Pill({ s, catalog }: { s: string; catalog?: Catalog }) {
 }
 
 function Remedy({ s, catalog }: { s: string; catalog?: Catalog }) {
-  const r = catalog?.[s]?.remedy;
+  const r = badgeRemedy(s, catalog);
   if (!r) return null;
   return <div style={{ fontSize: '11.5px', color: '#7dd3fc', marginTop: '3px' }}>
     What would close it: {r}</div>;
@@ -153,15 +155,8 @@ export default function QualityValuePage() {
   // COLUMNS FROM THE DATA, not a hardcoded list: every state any gate actually reports, in the
   // server's catalog order, plus any state the catalog does not know (which must still appear,
   // loudly, rather than vanish from the sums).
-  const statusCols = useMemo(() => {
-    if (!data) return [] as string[];
-    const present = new Set<string>();
-    Object.values(data.gate_coverage).forEach(c =>
-      Object.entries(c).forEach(([s, n]) => { if ((n ?? 0) > 0) present.add(s); }));
-    const ordered = Object.keys(data.status_catalog ?? {}).filter(s => present.has(s));
-    const unknown = [...present].filter(s => !(data.status_catalog ?? {})[s]);
-    return [...ordered, ...unknown];
-  }, [data]);
+  const statusCols = useMemo(() => (data ? statusColumns(data) : []), [data]);
+  const rows = useMemo(() => (data ? coverageRows(data) : []), [data]);
 
   const H = ({ children }: { children: React.ReactNode }) => (
     <div style={{ fontSize: '11px', fontWeight: 700, color: '#64748b', letterSpacing: '0.07em',
@@ -240,34 +235,29 @@ export default function QualityValuePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {Object.entries(data.gate_coverage).map(([gate, c]) => {
-                    const total = statusCols.reduce((n, s) => n + (c[s] ?? 0), 0);
-                    // EVERY ROW MUST ACCOUNT FOR EVERY COMPANY. A gate whose counts do not sum
-                    // to the evaluated population is hiding a state this build cannot render —
-                    // which is exactly what happened when the backend grew four states and the
-                    // columns were a hardcoded four.
-                    const reconciles = total === data.evaluated;
-                    return (
-                    <tr key={gate} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                  {rows.map(r => (
+                    <tr key={r.gate} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
                       <td style={{ padding: '9px 12px', color: '#e2e8f0', fontWeight: 600 }}>
-                        {data.gate_claims?.[gate]?.label ?? GATE_TITLE[gate] ?? gate}</td>
+                        {r.label !== r.gate ? r.label
+                          : (GATE_TITLE[r.gate] ?? r.gate)}</td>
                       {statusCols.map(s => (
                         <td key={s} style={{ padding: '9px 12px', textAlign: 'right',
-                                             color: c[s] ? (STATUS_TONE[s]?.fg ?? '#fecaca')
-                                                         : '#475569',
-                                             fontVariantNumeric: 'tabular-nums' }}>{c[s] ?? 0}</td>
+                                             color: r.counts[s] ? (STATUS_TONE[s]?.fg ?? '#fecaca')
+                                                                : '#475569',
+                                             fontVariantNumeric: 'tabular-nums' }}>
+                          {r.counts[s] ?? 0}</td>
                       ))}
-                      <td title={reconciles ? undefined
-                                 : `does not reconcile: ${total} of ${data.evaluated}`}
+                      <td title={r.reconciles ? undefined
+                                 : `does not reconcile: ${r.total} of ${data.evaluated}`}
                           style={{ padding: '9px 12px', textAlign: 'right',
                                    fontVariantNumeric: 'tabular-nums',
-                                   color: reconciles ? '#94a3b8' : '#fecaca',
-                                   fontWeight: reconciles ? 400 : 700 }}>
-                        {total}{reconciles ? '' : ` ≠ ${data.evaluated}`}</td>
+                                   color: r.reconciles ? '#94a3b8' : '#fecaca',
+                                   fontWeight: r.reconciles ? 400 : 700 }}>
+                        {r.total}{r.reconciles ? '' : ` ≠ ${data.evaluated}`}</td>
                       <td style={{ padding: '9px 12px', textAlign: 'right', color: '#94a3b8' }}>
-                        {data.required_for_entry.includes(gate) ? 'yes' : '—'}</td>
-                    </tr>);
-                  })}
+                        {r.required ? 'yes' : '—'}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -291,10 +281,11 @@ export default function QualityValuePage() {
                             fontSize: '12.5px', color: '#cbd5e1', lineHeight: 1.6,
                             background: 'rgba(234,179,8,0.06)',
                             border: '1px solid rgba(234,179,8,0.22)' }}>
-                <strong style={{ color: '#fde047' }}>No company is eligible, and that is a
-                result rather than a fault.</strong> Competitive durability and valuation are both
-                required, and neither has stored evidence for any company in the universe. The
-                coverage table above is what would have to change for this list to be non-empty.
+                <strong style={{ color: '#fde047' }}>No entry-review candidates yet. Durability,
+                valuation and risk assessments are not connected to this evaluator.</strong>{' '}
+                All three are required, and none of them reads a stored assessment today — so
+                the empty list reflects unfinished work here, not a judgement about any company.
+                The coverage table above says which gate is in which state.
               </div>
             )}
 

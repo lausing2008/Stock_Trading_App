@@ -452,10 +452,24 @@ def test_stale_data_and_an_unbuilt_assessment_are_different_states():
     assert REMEDY[stale.status] != REMEDY[unbuilt.status]
 
 
-def test_stale_says_refresh_and_unbuilt_says_build():
+def test_stale_says_refresh_and_unbuilt_names_both_halves():
+    """WITHDRAWN: "Build the assessment — no ingestion closes this". That was half the story.
+    These gates need sourced evidence AND an assessment that reads it; ingestion alone is
+    insufficient, not irrelevant, and the remedy must not send a reader looking for only one."""
     assert "Refresh" in REMEDY[GateStatus.STALE]
-    assert "Build the assessment" in REMEDY[GateStatus.NOT_IMPLEMENTED]
-    assert "no ingestion closes this" in REMEDY[GateStatus.NOT_IMPLEMENTED]
+    r = REMEDY[GateStatus.NOT_IMPLEMENTED]
+    assert "sourced evidence" in r and "implemented assessment" in r
+    assert "no ingestion closes this" not in r
+
+
+def test_an_optional_gate_that_did_not_run_has_its_own_state():
+    """Catalysts and portfolio fit showed "0 ≠ 200": the row read as 200 missing companies when
+    the gate simply had not run. A declared absence is not a missing result."""
+    assert GateStatus.NOT_ASSESSED.value == "not_assessed"
+    from intel_reports.quality_value import status_catalog
+    e = status_catalog()["not_assessed"]
+    assert e["label"] == "Not assessed"
+    assert e["is_pass"] is False
 
 
 def test_a_missing_figure_is_not_collected_rather_than_stale():
@@ -531,3 +545,143 @@ def test_the_stale_reason_no_longer_claims_what_the_issuer_has_filed():
     assert "almost certainly" not in joined
     assert "402 days ago" in joined
     assert "is not checked here" in joined
+
+
+# ---- connected assessments: the research the evaluator reads -------------------------------
+# The gap this closes: the MU/CRDO findings lived in a document beside the dashboard, so the
+# evaluator said `not_implemented` however much work had been done. The rule that matters is
+# that connecting one must NOT mean the gate passes.
+
+from intel_reports.quality_value import from_assessment, VERDICT_STATUS  # noqa: E402
+from intel_reports.assessment_seed import ASSESSMENTS, RISK_CLASSES  # noqa: E402
+
+
+def _asmt(**over):
+    a = {"verdict": "insufficient", "summary": "a summary",
+         "findings": [{"claim": "a claim", "source": "a 10-K",
+                       "counterevidence": "the case against"}],
+         "not_assessed": ["litigation"], "version": 1, "cutoff": "2026-10-07T00:00:00"}
+    a.update(over)
+    return a
+
+
+def test_a_completed_assessment_that_found_insufficient_evidence_still_blocks():
+    """Finished work and an unmet gate are not in tension — this is the central rule."""
+    g = from_assessment(COMPETITIVE_DURABILITY, _asmt(verdict="insufficient"), absent_reasons=())
+    assert g.status is GateStatus.INSUFFICIENT
+    assert g.status is not GateStatus.PASS
+    e = compose("X", all_passing(**{COMPETITIVE_DURABILITY: g}))
+    assert e.state is State.INSUFFICIENT_EVIDENCE
+
+
+def test_only_a_supported_verdict_passes():
+    for verdict, expected in VERDICT_STATUS.items():
+        g = from_assessment(VALUATION, _asmt(verdict=verdict), absent_reasons=())
+        assert g.status is expected, verdict
+    assert sum(1 for v in VERDICT_STATUS.values() if v is GateStatus.PASS) == 1
+
+
+def test_context_only_does_not_pass_because_context_is_not_a_conclusion():
+    """MU's valuation: three multiples at three anchors is not a value estimate."""
+    assert VERDICT_STATUS["context_only"] is GateStatus.INSUFFICIENT
+
+
+def test_a_contradicted_verdict_fails_rather_than_reading_as_a_gap():
+    g = from_assessment(VALUE_TRAP_RISK, _asmt(verdict="contradicted"), absent_reasons=())
+    assert g.status is GateStatus.FAIL
+
+
+def test_an_unrecognised_verdict_is_never_silently_a_pass():
+    g = from_assessment(VALUATION, _asmt(verdict="looks_great"), absent_reasons=())
+    assert g.status is GateStatus.INSUFFICIENT
+    assert "unrecognised verdict" in " ".join(g.reasons)
+    assert "NOT treated as a pass" in " ".join(g.reasons)
+
+
+def test_no_assessment_connected_reports_not_implemented():
+    g = from_assessment(VALUATION, None, absent_reasons=("nothing is connected",))
+    assert g.status is GateStatus.NOT_IMPLEMENTED
+
+
+def test_a_connected_finding_carries_its_source_and_counterevidence():
+    g = from_assessment(COMPETITIVE_DURABILITY, _asmt(), absent_reasons=())
+    joined = " ".join(g.reasons)
+    assert "[source: a 10-K]" in joined and "against: the case against" in joined
+
+
+def test_what_was_not_assessed_travels_with_the_verdict():
+    g = from_assessment(VALUE_TRAP_RISK, _asmt(), absent_reasons=())
+    assert "NOT ASSESSED: litigation" in " ".join(g.reasons)
+
+
+def test_the_assessment_version_and_cutoff_reach_the_gate_evidence():
+    g = from_assessment(VALUATION, _asmt(version=3), absent_reasons=())
+    assert g.evidence["assessment_version"] == 3
+    assert g.evidence["assessment_cutoff"] == "2026-10-07T00:00:00"
+
+
+# ---- the seeded MU and CRDO research -------------------------------------------------------
+
+def test_every_seeded_assessment_has_a_recognised_verdict():
+    for a in ASSESSMENTS:
+        assert a["verdict"] in VERDICT_STATUS, (a["symbol"], a["dimension"], a["verdict"])
+
+
+def test_no_seeded_assessment_passes_its_gate():
+    """All six are completed work whose answer is still 'not enough'. If one ever passes, that
+    must be a deliberate change, not a side effect of editing prose."""
+    for a in ASSESSMENTS:
+        assert VERDICT_STATUS[a["verdict"]] is not GateStatus.PASS, a["dimension"]
+
+
+def test_both_companies_cover_all_three_disconnected_dimensions():
+    by = {(a["symbol"], a["dimension"]) for a in ASSESSMENTS}
+    for sym in ("MU", "CRDO"):
+        for dim in (COMPETITIVE_DURABILITY, VALUATION, VALUE_TRAP_RISK):
+            assert (sym, dim) in by, (sym, dim)
+
+
+def test_every_finding_cites_a_source_and_states_its_counterevidence():
+    for a in ASSESSMENTS:
+        for f in a["findings"]:
+            assert f.get("source"), (a["symbol"], a["dimension"], f.get("claim"))
+            assert f.get("counterevidence"), (a["symbol"], a["dimension"], f.get("claim"))
+
+
+def test_every_assessment_declares_what_it_did_not_assess():
+    for a in ASSESSMENTS:
+        assert a.get("not_assessed"), (a["symbol"], a["dimension"])
+
+
+def test_every_computed_assumption_states_its_basis_and_sensitivity():
+    for a in ASSESSMENTS:
+        for k in (a.get("assumptions") or []):
+            assert k.get("basis"), (a["symbol"], k.get("name"))
+            assert k.get("sensitivity"), (a["symbol"], k.get("name"))
+
+
+def test_crdo_dilution_endpoints_are_labelled_treatments_not_an_interval():
+    """They do not resolve whether dilution double-counts GAAP stock compensation."""
+    val = next(a for a in ASSESSMENTS
+               if a["symbol"] == "CRDO" and a["dimension"] == VALUATION)
+    joined = " ".join(f.get("counterevidence", "") for f in val["findings"])
+    assert "NOT A CONFIDENCE INTERVAL" in joined
+    assert "SEPARATE MODELLING TREATMENTS" in joined
+
+
+def test_mu_valuation_is_context_only_and_says_the_run_rate_is_not_a_forecast():
+    val = next(a for a in ASSESSMENTS if a["symbol"] == "MU" and a["dimension"] == VALUATION)
+    assert val["verdict"] == "context_only"
+    joined = " ".join(f.get("counterevidence", "") for f in val["findings"])
+    assert "MECHANICAL RUN-RATE ILLUSTRATION, not a forecast" in joined
+
+
+def test_the_risk_reviews_account_for_every_declared_class():
+    for sym, expect in (("MU", 12), ("CRDO", 12)):
+        a = next(x for x in ASSESSMENTS
+                 if x["symbol"] == sym and x["dimension"] == VALUE_TRAP_RISK)
+        e = a["evidence"]
+        total = (e.get("complete", 0) + e.get("partial", 0)
+                 + e.get("not_applicable", 0) + e.get("not_assessed", 0))
+        assert e["classes_total"] == expect == len(RISK_CLASSES)
+        assert total == expect, f"{sym}: {total} of {expect}"

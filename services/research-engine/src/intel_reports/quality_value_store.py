@@ -248,3 +248,63 @@ def record_first_actual(session, *, release_key: str, reference_period: str, act
         outcome = "revision"
     session.commit()
     return outcome
+
+
+# =====================================================================================
+# Issuer assessments — the research the evaluator reads.
+# =====================================================================================
+
+def _assessment_dict(row) -> dict:
+    return {"symbol": row.symbol, "dimension": row.dimension, "version": row.version,
+            "verdict": row.verdict, "summary": row.summary,
+            "findings": row.findings or [], "assumptions": row.assumptions or [],
+            "not_assessed": row.not_assessed or [], "evidence": row.evidence or {},
+            "evidence_digest": row.evidence_digest,
+            "cutoff": row.cutoff.isoformat() if row.cutoff else None,
+            "author": row.author}
+
+
+def latest_assessments(session, symbol: str) -> dict:
+    """The newest version of each dimension's assessment for one issuer.
+
+    NEWEST VERSION, NOT NEWEST ROW. Versions are explicit so a revision is a new row and the
+    predecessor stays readable; taking max(version) is what makes the history additive rather
+    than the current value being whatever was written last.
+    """
+    from db import IssuerAssessment
+
+    rows = session.execute(
+        select(IssuerAssessment).where(IssuerAssessment.symbol == symbol)
+        .order_by(IssuerAssessment.dimension, IssuerAssessment.version.desc())).scalars().all()
+    out: dict = {}
+    for r in rows:
+        if r.dimension not in out:
+            out[r.dimension] = _assessment_dict(r)
+    return out
+
+
+def record_assessment(session, spec: dict, *, cutoff: datetime, author: str) -> tuple:
+    """Store one assessment immutably. A revision must arrive as a new `version`.
+
+    The digest covers the evidence the assessment was built from, so a later edit to the stored
+    copy is detectable — the same contract `freeze_inputs` applies to an evaluation.
+    """
+    from db import IssuerAssessment
+
+    evidence = spec.get("evidence") or {}
+    canonical = json.dumps(evidence, sort_keys=True, separators=(",", ":"), default=str)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+    stmt = (pg_insert(IssuerAssessment)
+            .values(symbol=spec["symbol"], dimension=spec["dimension"],
+                    version=spec.get("version", 1), verdict=spec["verdict"],
+                    summary=spec["summary"], findings=spec.get("findings") or [],
+                    assumptions=spec.get("assumptions"),
+                    not_assessed=spec.get("not_assessed"),
+                    evidence=evidence, evidence_digest=digest,
+                    cutoff=naive_utc(cutoff), author=author)
+            .on_conflict_do_nothing(
+                index_elements=["symbol", "dimension", "version"])
+            .returning(IssuerAssessment.id))
+    new_id = session.execute(stmt).scalar()
+    session.commit()
+    return new_id, new_id is not None
