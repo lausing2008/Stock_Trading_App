@@ -240,6 +240,11 @@ def publishable_outcomes(session, *, origin: str, symbol: str | None = None):
         invalid observation under the current resolver would walk it straight back into
         publication.
 
+    UNRESOLVED ROWS ARE RETURNED ON PURPOSE. They belong in the COVERAGE denominator — the
+    frozen policy requires any statistic over this set to disclose how many rows carry no
+    return and why — but their return columns are NULL. A caller that averages without
+    excluding them silently reports a different population than the one it counted.
+
     The caller must still separate by `return_basis`, which varies per row and so cannot be
     fixed here.
     """

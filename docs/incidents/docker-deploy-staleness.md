@@ -725,3 +725,72 @@ because the old rows had put the ENTRY-window benchmark in the same-window field
    filters on the current resolver AND supersession AND origin; a sabotage run found the
    supersession condition caught nothing on its own, which corrected the claim rather than the
    filter — it earns its place only on a rollback.
+
+---
+
+## AUD-OBS-SESSIONBOUNDS / AUD-OBS-ADJWINDOW / AUD-OBS-CONTRACT (2026-10-08) — three defects that decided publishability
+
+Reported by the user against the versioned-resolver work above. All three confirmed.
+
+### 1. The session walk never established session COMPLETION, and got ELIGIBILITY wrong too
+
+The walk admitted a date once 12:00 UTC had passed. For a US session that is 08:00 ET — before
+the market OPENS, let alone closes — so a horizon could resolve against a bar that was forming
+or did not exist. Measured: 2026-06-01 opens 13:30 UTC and closes 20:00 UTC; the old rule
+admitted it 90 minutes before the bell.
+
+Separately, it always started at the next CALENDAR day, so a midnight cutoff on 2026-06-01
+skipped the whole of 2026-06-01 and entered on 06-02 — a one-session delayed entry nobody had
+declared. The resolver's own basis string said "the first completed session after the
+observation", which was not what the code did.
+
+Root cause: the calendar had `is_trading_day` ("is today a session") and `is_regular_session`
+("is it open right now") but NO way to ask when a DATED session opens or closes, so every
+consumer needing that wrote a proxy. Added `session_bounds/session_open/session_close`. A
+session is now ELIGIBLE if it opens strictly after the observation instant, and COMPLETE if it
+has closed by the cap; `sessions_back` likewise requires the close to have happened.
+
+### 2. Adjustment verification was bypassed by the caller — twice over
+
+The replay route passed `adjustment_consistent=True` citing the direction screen's check. That
+check covers the 21-session SETUP window BEFORE the cutoff and says nothing about the 5/20/63
+sessions the return is measured over. Worse, the screen's check is
+`if factors and max/min > 1.001` — with no `adj_close` the list is empty and it passes
+VACUOUSLY, which the screen honestly discloses as "corporate-action verification is
+incomplete". The route converted that disclosure into an assertion.
+
+`adjustment_evidence()` now checks the real outcome window, spanning the REFERENCE session (an
+action between the reference close and the first measured session corrupts the descriptive
+return just as badly), on the stock AND the benchmark, and stays tri-state.
+
+**MEASURED CONSEQUENCE, and it is a data gap, not a code gap.** Across 136,942 daily bars only
+2,211 (1.61%) carry an `adj_close` at all — though 721 of those DO carry a real factor, so the
+column is meaningful where present. For MU it is NULL on 749 of 754 bars and for SPY on 515 of
+591, including every session of this window. So MU's replay now resolves to
+UNRESOLVED_ADJUSTMENT_UNVERIFIED and is **not publishable**. That is the correct answer: the
+evidence to establish the basis does not exist, and the previous RESOLVED figures asserted it.
+
+### 3. The fingerprint omitted outcome-changing dependencies
+
+It hashed `resolve` plus two constants — not session construction, price selection or
+adjustment verification. Correcting defects 1 or 2 could therefore have left the fingerprint
+unchanged, and since a resolved row is immutable within its resolver the corrected figures
+would silently never have been written. The omission defeated the mechanism it belonged to.
+`outcome_contract()` now names every dependency, including session hours and the holiday
+calendars (adding a holiday changes PAST windows, not only future ones), with a test that
+fails when a known one is missing and a second that proves each key is actually digested.
+
+### Publication safeguard: `invalidated_reason` on the observation
+
+MU's observations 1–3 sit at a Saturday cutoff produced by the session-walk bug fixed in
+`aa48c5d4`. They were excluded only by their outcome's old resolver fingerprint — a property of
+the SCORING — so re-resolving them would have walked them back into publication, because the
+defect is in the CAPTURE and no re-scoring repairs it. The reason is now recorded in words on
+the observation, and `publishable_outcomes()` filters on it.
+
+### The lasting lesson
+
+A versioning mechanism is only as wide as the contract it hashes. Defect 3 is the dangerous
+one: it would have made defects 1 and 2 **invisible after they were fixed**, presenting a
+successful deploy over frozen, stale figures. When adding anything to a resolution path, add it
+to `outcome_contract()` in the same commit.

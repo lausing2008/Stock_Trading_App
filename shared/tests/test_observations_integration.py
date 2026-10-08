@@ -495,3 +495,17 @@ def test_a_resolved_basis_states_the_entry_convention_it_actually_applied(sessio
                       adjustment_basis="the adjustment factor is flat across every session")
     assert "OPENED after the observation instant and has since closed" in out.resolution_basis
     assert "flat across every session" in out.resolution_basis
+
+
+def test_an_unresolved_row_is_returned_for_coverage_but_carries_no_return(session):
+    """The frozen policy keeps it in the denominator; it must not become a zero in a mean."""
+    from intel_reports.observations import publishable_outcomes, PROSPECTIVE
+    row, _ = _obs(session, horizon_sessions=3)
+    _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0},
+             adjustment_consistent=None)
+    got = publishable_outcomes(session, origin=PROSPECTIVE)
+    assert len(got) == 1, "it counts towards coverage"
+    out = got[0][0]
+    assert out.resolution_state == "UNRESOLVED_ADJUSTMENT_UNVERIFIED"
+    assert out.descriptive_return is None and out.excess_return is None, \
+        "an unverified window has no return, not a zero return"
