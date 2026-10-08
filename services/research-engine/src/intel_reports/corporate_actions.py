@@ -78,17 +78,44 @@ def as_dated_map(series) -> dict:
     return out
 
 
+class SymbolNotResolved(Exception):
+    """The provider never identified the symbol, so it returned nothing ABOUT NOTHING.
+
+    AUD-OBS-UNRESOLVEDSYMBOL (2026-10-08). yfinance answers an unknown ticker with `None` for
+    `.splits` and `.dividends` and logs a 404 it does not raise. The shaping helper turned that
+    `None` into `{}`, and the run wrote a coverage row claiming "no corporate actions in this
+    span" — a positive evidential claim, on a lookup that failed. Seen live on 100.HK and 2476
+    during the universe run.
+
+    An empty result and a failed lookup are different states. Only the first can support a
+    coverage claim, however weak.
+    """
+
+
 def fetch(symbol: str, *, ticker=None) -> tuple[dict, dict, dict]:
     """(splits, dividends, meta) from the provider. Network-bound; isolated for that reason.
+
+    Raises `SymbolNotResolved` unless the provider POSITIVELY identified the symbol. The signal
+    is `history_metadata`, which carries the resolved symbol and currency and stays empty when
+    the lookup failed — absence of actions is not evidence the symbol exists.
 
     `ticker` is injectable so the shaping around the call can be exercised without a network.
     """
     if ticker is None:
         import yfinance as yf
         ticker = yf.Ticker(symbol)
-    return (as_dated_map(getattr(ticker, "splits", None)),
-            as_dated_map(getattr(ticker, "dividends", None)),
-            {"provider": SOURCE, "symbol": symbol})
+    raw_splits = getattr(ticker, "splits", None)
+    raw_divs = getattr(ticker, "dividends", None)
+    meta = getattr(ticker, "history_metadata", None) or {}
+    resolved = bool(meta.get("symbol") or meta.get("currency")) and not (
+        raw_splits is None and raw_divs is None)
+    if not resolved:
+        raise SymbolNotResolved(
+            f"{SOURCE} did not resolve {symbol!r}: no history metadata returned. A failed "
+            f"lookup is not an empty action history and cannot support a coverage claim")
+    return (as_dated_map(raw_splits), as_dated_map(raw_divs),
+            {"provider": SOURCE, "symbol": symbol,
+             "resolved_symbol": meta.get("symbol"), "currency": meta.get("currency")})
 
 
 #: What an empty response is allowed to establish. yfinance publishes no completeness guarantee,
@@ -180,8 +207,7 @@ def store(session, symbol: str, actions: list, *, covers_from: date, covers_to: 
             "retrieved_at": retrieved_at.isoformat()}
 
 
-def ingest(session, symbol: str, *, covers_from: date, covers_to: date,
-           ticker=None) -> dict:
+def ingest(session, symbol: str, *, covers_from: date, covers_to: date, ticker=None) -> dict:
     """Fetch, shape and store one symbol's action history for a bounded span."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     splits, dividends, meta = fetch(symbol, ticker=ticker)

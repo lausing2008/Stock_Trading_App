@@ -3,7 +3,7 @@
 The network call lives alone in `fetch` so everything that decides a FIGURE can be tested.
 """
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -78,7 +78,11 @@ class _Stamp:
 
 
 class _FakeTicker:
-    def __init__(self, splits, dividends): self.splits, self.dividends = splits, dividends
+    """A RESOLVED ticker: it carries history metadata, which is the positive signal that the
+    provider actually identified the symbol."""
+    def __init__(self, splits, dividends):
+        self.splits, self.dividends = splits, dividends
+        self.history_metadata = {"symbol": "MU", "currency": "USD"}
 
 
 def test_a_provider_series_is_shaped_without_testing_its_truthiness():
@@ -103,8 +107,72 @@ def test_fetch_shapes_both_series_without_a_network():
     assert meta["provider"] == SOURCE
 
 
-def test_a_ticker_missing_the_attributes_entirely_is_tolerated():
-    """Not every symbol carries both series; an ETF with no splits must not raise."""
+def test_a_ticker_carrying_nothing_at_all_is_treated_as_unresolved():
+    """An object with neither series nor metadata is indistinguishable from a failed lookup,
+    and must not be reported as a symbol with no corporate actions."""
+    from intel_reports.corporate_actions import fetch, SymbolNotResolved
+    import pytest
+    with pytest.raises(SymbolNotResolved):
+        fetch("SPY", ticker=object())
+
+
+def test_a_resolved_etf_with_no_splits_but_dividends_is_fine():
+    """The real case that test used to stand for: an ETF genuinely has no splits."""
     from intel_reports.corporate_actions import fetch
-    splits, divs, _ = fetch("SPY", ticker=object())
+    t = _FakeTicker(_FakeSeries([]), _FakeSeries([(_Stamp(date(2026, 6, 18)), 1.904)]))
+    splits, divs, _ = fetch("SPY", ticker=t)
+    assert splits == {} and divs == {"2026-06-18": 1.904}
+
+
+# ---- a FAILED LOOKUP is not an empty history -------------------------------------------------
+#
+# AUD-OBS-UNRESOLVEDSYMBOL. yfinance answers an unknown ticker with `None` for both series and
+# logs a 404 it does not raise. The shaping helper turned that into `{}`, and the universe run
+# wrote a coverage row claiming "no corporate actions in this span" — a positive evidential
+# claim produced by a lookup that failed. Seen live on 100.HK and 2476.
+
+class _Unresolved:
+    """What yfinance actually hands back for a symbol it cannot find."""
+    splits = None
+    dividends = None
+    history_metadata = {}
+
+
+class _Resolved:
+    def __init__(self, splits, dividends):
+        self.splits, self.dividends = splits, dividends
+        self.history_metadata = {"symbol": "MU", "currency": "USD"}
+
+
+def test_an_unresolved_symbol_raises_rather_than_reporting_no_actions():
+    from intel_reports.corporate_actions import fetch, SymbolNotResolved
+    import pytest
+    with pytest.raises(SymbolNotResolved) as e:
+        fetch("100.HK", ticker=_Unresolved())
+    assert "did not resolve" in str(e.value)
+
+
+def test_a_resolved_symbol_with_genuinely_no_actions_is_fine():
+    """The distinction only matters if the benign case still works: an empty history from a
+    symbol the provider DID identify is a real, usable answer."""
+    from intel_reports.corporate_actions import fetch
+    splits, divs, meta = fetch("MU", ticker=_Resolved(_FakeSeries([]), _FakeSeries([])))
     assert splits == {} and divs == {}
+    assert meta["resolved_symbol"] == "MU"
+
+
+def test_ingest_writes_no_coverage_row_for_an_unresolved_symbol():
+    """The whole point: no coverage claim may be written on a failed lookup."""
+    from intel_reports.corporate_actions import ingest, SymbolNotResolved
+    import pytest
+    calls = []
+
+    class _Session:
+        def execute(self, *a, **k): calls.append("execute"); raise AssertionError("no DB work")
+        def add(self, *a, **k): calls.append("add")
+        def commit(self): calls.append("commit")
+
+    with pytest.raises(SymbolNotResolved):
+        ingest(_Session(), "100.HK", covers_from=date(2025, 1, 1), covers_to=date(2026, 1, 1),
+               ticker=_Unresolved())
+    assert calls == [], "nothing was written for a symbol that does not resolve"

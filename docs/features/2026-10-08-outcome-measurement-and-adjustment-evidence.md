@@ -210,3 +210,80 @@ justify `source_guarantee`.
 
 The return figures in this document are **reported results, not independently verified**. The
 adjustment pilot covers MU and SPY only.
+
+---
+
+## Third round — three statuses, not one
+
+`"Otherwise dividend payers would remain unresolvable"` was an argument from **inconvenience**,
+not evidence of completeness. It is gone from the code, and the thing it was standing in for is
+now three separate recorded answers:
+
+| | Question | Field | Values |
+|---|---|---|---|
+| 1 | **Calculation** — was there enough *returned* data to compute a figure? | `resolution_state` | `RESOLVED` / `UNRESOLVED_*` |
+| 2 | **Evidence** — is the adjustment basis verified, or merely consistent with what a source happened to return? | `evidence_status` | `verified` / `provisional` / `unverified` |
+| 3 | **Eligibility** — which performance pool may this enter? | `performance_eligibility` | `verified` / `provisional` / `ineligible` |
+
+A source returning no corporate actions establishes what it **returned**. `response_only`
+coverage therefore yields `provisional`, labelled exactly:
+
+> **Provisional — based on returned corporate actions; completeness unverified**
+
+carrying its remedy: *a source that documents completeness for the span, or corroboration from a
+second independent source*. Not acceptance.
+
+A flat provider adjustment factor is likewise corroboration, not proof. The **weakest instrument
+decides**: a verified stock basis beside a provisional benchmark basis is provisional, because
+the comparison is only as sound as its weaker half.
+
+`publishable_outcomes()` now **requires** a pool and has no `"all"`. A provisional figure is a
+different population, not a lower-quality verified one; averaging the two produces a number
+describing neither. `coverage_counts()` supplies the denominator a verified aggregate must
+disclose beside itself.
+
+Existing rows are left NULL rather than guessed — they were computed before the distinction
+existed, and claiming either value for them is the exact conflation these columns prevent.
+
+### MU after re-resolution
+
+| Horizon | Calculation | Evidence | Eligibility | Descriptive | Excess |
+|---|---|---|---|---|---|
+| 1-5d | RESOLVED | provisional | provisional | −11.02% | −8.52% |
+| 1-4w | RESOLVED | provisional | provisional | +17.95% | +19.74% |
+| 1-3m | RESOLVED | provisional | provisional | −3.91% | −5.88% |
+
+**Verified pool: 0.** Provisional: 3. Invalidated captures: 3, disclosed.
+
+### The behavioural test the name check could not replace
+
+A global-name check catches a missing import; it never executes the route. `tests/
+test_quality_value_evaluations_request.py` calls the real handler against real models, covering
+**MU** (operating company with statements), **GLD** (fund by name, no statements, no sector) and
+the **default universe** with no `symbols` argument — the path a page load actually takes, and
+the one the `NameError` shipped on. It catches the original missing import, a fund classified as
+a company, and a persistence failure taking down a read.
+
+### Two more defects of the same shape
+
+* **A model rename left `_coverage_for` producing keys nobody consumes** (`covers_from` after
+  the reader moved to `evidenced_from`). Every replay raised `AttributeError`; no test touched
+  it. A test now reads both sides from source, so neither can be renamed alone.
+* **Self-inflicted:** I used `git checkout --` to undo a sabotage on a file with uncommitted
+  work and discarded it. The backup copy was the right tool. Reapplied and re-verified.
+
+---
+
+## AUD-EVENTINTEL-BLOCKEDLOOP — a daily sync held the event loop (unrelated, found while deploying)
+
+event-intelligence went unhealthy at **07:30:13** with CPU at **0.02%** — not busy, unavailable.
+py-spy caught the main thread inside `sync_congress_trades`: `async def`, one awaited HTTP
+fetch, then a few thousand **synchronous** per-row upserts inline. For the whole of that loop
+uvicorn could answer nothing, so `/health` timed out and Docker marked the container unhealthy.
+
+It fires daily at 07:30 on a cron, so **this had been happening every day**. The service's own
+logs were clean throughout — nothing errored, it simply could not reply.
+
+It surfaced only because `scripts/deploy.sh` refuses to report success over an unhealthy
+container. The DB half is now a plain synchronous function run via `asyncio.to_thread`, matching
+the sibling `job_sync_insider` which already had the right shape.
