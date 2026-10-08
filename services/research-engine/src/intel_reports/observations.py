@@ -137,73 +137,152 @@ def record_buckets(session, *, subject_key, as_of, buckets) -> list:
     return ids
 
 
-def resolve(session, observation, *, closes: list, benchmark_closes: list | None = None,
-            delisting_cause: str | None = None, adjustment_consistent: bool = True,
+#: Resolution-policy versions this resolver can execute. A stored observation carrying an
+#: unknown version is NOT scored under today's code — the policy frozen with it is the one it
+#: must be scored by, and silently applying a different one is the bias the freezing prevents.
+SUPPORTED_POLICY_VERSIONS = ("res-1",)
+
+
+def resolve(session, observation, *, session_closes: dict, expected_sessions: list,
+            benchmark_reference: float | None = None,
+            benchmark_closes: dict | None = None,
+            delisting: dict | None = None,
+            adjustment_consistent: bool | None = None,
             now: datetime | None = None) -> tuple:
     """Score one observation under ITS OWN frozen policy. Returns (outcome_row, created).
 
-    `closes` are the completed sessions strictly AFTER `observed_at`, ascending. The caller
-    supplies them so this stays testable; the policy below decides what they mean.
+    `expected_sessions` are the trading-session dates CONSTRUCTED for this horizon, and
+    `session_closes` maps date -> close (or None where the row is missing). A date absent from
+    the map is a missing bar, not a reason to reach further forward.
+
+    `delisting` is `{"cause": ..., "proceeds_per_share": ..., "evidence": ...}`. A cause alone
+    never resolves: an acquisition without documented consideration has no computable return,
+    and marking it RESOLVED would invent one.
+
+    `adjustment_consistent` is TRI-STATE. `None` means nobody checked, which is not the same as
+    checked-and-fine; it resolves to UNRESOLVED_ADJUSTMENT_UNVERIFIED rather than defaulting to
+    True as an earlier version did.
     """
     from db import ObservationOutcome
 
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)
     need = observation.horizon_sessions
-    state, descriptive, executable, bench_ret, excess, basis = None, None, None, None, None, ""
+    policy = (observation.resolution_policy or {}).get("version")
+    state = descriptive = executable = bench_ret = excess = None
+    bench_entry_ret = None
+    basis = ""
 
-    if not adjustment_consistent:
-        state = "UNRESOLVED_ADJUSTMENT_MISSING"
-        basis = ("a split or dividend adjustment could not be applied consistently across both "
-                 "endpoints; splits are an adjustment basis, not a reason to void")
-    elif delisting_cause == "acquisition":
-        state, basis = "RESOLVED_ACQUISITION", "resolved at documented consideration"
-    elif delisting_cause == "bankruptcy":
-        state, basis = "RESOLVED_BANKRUPTCY", "resolved at the terminal traded price"
-    elif delisting_cause == "no_terminal_price":
-        state = "UNRESOLVED_DELISTED_NO_TERMINAL_PRICE"
-        basis = ("delisted with no terminal price. The row stays in the coverage denominator "
-                 "and any statistic over this set must disclose the exclusion")
-    elif len(closes) < need:
-        state = "UNRESOLVED_INSUFFICIENT_SESSIONS"
-        basis = (f"{len(closes)} of {need} trading sessions elapsed. Not a partial return, and "
-                 f"excluded from every aggregate rather than counted as flat")
+    def _finish(st, why):
+        return st, why
+
+    if policy not in SUPPORTED_POLICY_VERSIONS:
+        state, basis = "UNRESOLVED_POLICY_UNSUPPORTED", (
+            f"the observation was frozen under resolution policy {policy!r}, which this "
+            f"resolver does not implement. Scoring it under today's rules would discard the "
+            f"freezing entirely")
+    elif adjustment_consistent is None:
+        state, basis = "UNRESOLVED_ADJUSTMENT_UNVERIFIED", (
+            "no split/dividend adjustment check was performed. Unchecked is not the same as "
+            "consistent, and defaulting it to consistent would assert something nobody verified")
+    elif adjustment_consistent is False:
+        state, basis = "UNRESOLVED_ADJUSTMENT_MISSING", (
+            "the adjustment basis could not be applied consistently across both endpoints; a "
+            "split is an adjustment basis, not a reason to void")
+    elif delisting:
+        cause = delisting.get("cause")
+        proceeds = delisting.get("proceeds_per_share")
+        if cause == "exchange_transfer":
+            state, basis = "UNRESOLVED_IDENTIFIER_FOLLOW_REQUIRED", (
+                "an exchange transfer is not a delisting; the security continues under a new "
+                "venue or symbol and must be followed rather than scored here")
+        elif cause in ("acquisition", "bankruptcy") and proceeds is not None \
+                and observation.reference_price:
+            state = "RESOLVED_ACQUISITION" if cause == "acquisition" else "RESOLVED_BANKRUPTCY"
+            descriptive = (proceeds - observation.reference_price) / observation.reference_price
+            basis = (f"{cause} resolved at documented consideration of {proceeds} per share "
+                     f"({delisting.get('evidence') or 'evidence reference not supplied'})")
+        else:
+            state, basis = "UNRESOLVED_DELISTED_NO_TERMINAL_PRICE", (
+                f"delisted ({cause or 'cause unrecorded'}) with no documented terminal value. "
+                f"A cause alone does not produce a return. The row stays in the coverage "
+                f"denominator and any statistic over this set must disclose the exclusion")
+    elif len(expected_sessions) < need:
+        state, basis = "UNRESOLVED_INSUFFICIENT_SESSIONS", (
+            f"{len(expected_sessions)} of {need} trading sessions have completed. Not a partial "
+            f"return, and excluded from every aggregate rather than counted as flat")
     elif observation.reference_price in (None, 0):
         state, basis = "UNRESOLVED_PRICE_MISSING", "no reference price on the observation"
-    elif closes[need - 1] is None:
-        state = "UNRESOLVED_PRICE_MISSING"
-        basis = "the close for the resolution session is missing; never substituted"
     else:
-        state = "RESOLVED"
-        end = closes[need - 1]
-        descriptive = (end - observation.reference_price) / observation.reference_price
-        # The next tradeable price, given the conclusion was formed after a completed close.
-        entry = closes[0] if closes and closes[0] else None
-        if entry:
+        wanted = expected_sessions[:need]
+        missing = [d for d in wanted if session_closes.get(d) is None]
+        if missing:
+            state, basis = "UNRESOLVED_PRICE_MISSING", (
+                f"{len(missing)} of {need} expected session close(s) are absent "
+                f"({', '.join(missing[:3])}). The endpoint is NEVER moved forward to the next "
+                f"stored row — that would measure a different horizon")
+        else:
+            state = "RESOLVED"
+            end = session_closes[wanted[-1]]
+            entry = session_closes[wanted[0]]
+            descriptive = (end - observation.reference_price) / observation.reference_price
             executable = (end - entry) / entry
-        basis = (f"descriptive from the reference price; simulated executable from the next "
-                 f"session's close ({'available' if entry else 'unavailable'})")
-        if benchmark_closes and len(benchmark_closes) >= need and benchmark_closes[0]:
-            b0, b1 = benchmark_closes[0], benchmark_closes[need - 1]
-            if b0 and b1:
-                bench_ret = (b1 - b0) / b0
-                if descriptive is not None:
+            basis = (f"descriptive from the reference close; simulated entry at the close of "
+                     f"{wanted[0]}, the first completed session after the observation")
+            if benchmark_closes:
+                b_end = benchmark_closes.get(wanted[-1])
+                b_entry = benchmark_closes.get(wanted[0])
+                # SAME WINDOW ON BOTH SIDES. An earlier version measured the stock from its
+                # reference close and the benchmark from the first subsequent close, then
+                # subtracted them — two different windows, so the difference was not an excess.
+                if b_end and benchmark_reference:
+                    bench_ret = (b_end - benchmark_reference) / benchmark_reference
                     excess = descriptive - bench_ret
+                if b_end and b_entry:
+                    bench_entry_ret = (b_end - b_entry) / b_entry
 
-    stmt = (pg_insert(ObservationOutcome)
-            .values(observation_id=observation.id, horizon_sessions=need,
-                    descriptive_return=descriptive,
-                    simulated_executable_return=executable,
-                    benchmark_return=bench_ret, excess_return=excess,
-                    return_basis=observation.return_basis,
-                    delisting_cause=delisting_cause, resolution_state=state,
-                    sessions_elapsed=len(closes), resolution_basis=basis,
-                    resolved_at=now if state.startswith("RESOLVED") else None)
-            .on_conflict_do_nothing(
-                index_elements=["observation_id", "horizon_sessions"])
-            .returning(ObservationOutcome.id))
-    new_id = session.execute(stmt).scalar()
-    session.commit()
-    row = session.execute(select(ObservationOutcome).where(
+    resolved = state.startswith("RESOLVED")
+    attempt = {"at": now.isoformat(), "state": state, "basis": basis}
+
+    existing = session.execute(select(ObservationOutcome).where(
         ObservationOutcome.observation_id == observation.id,
         ObservationOutcome.horizon_sessions == need)).scalars().first()
-    return row, new_id is not None
+
+    if existing is None:
+        row = ObservationOutcome(
+            observation_id=observation.id, horizon_sessions=need,
+            descriptive_return=descriptive, simulated_executable_return=executable,
+            benchmark_return=bench_ret, excess_return=excess,
+            return_basis=observation.return_basis,
+            delisting_cause=(delisting or {}).get("cause"), resolution_state=state,
+            sessions_elapsed=len(expected_sessions), resolution_basis=basis,
+            resolved_at=now if resolved else None,
+            attempts=[attempt], benchmark_entry_return=bench_entry_ret)
+        session.add(row)
+        session.commit()
+        return row, True
+
+    # A GUARDED TRANSITION. An earlier version used ON CONFLICT DO NOTHING, so the first
+    # pending insert became permanent and a horizon could never resolve once its sessions
+    # elapsed. A pending row may advance; a RESOLVED one is immutable, and every attempt is
+    # appended so the supersession is visible rather than silent.
+    if existing.resolution_state.startswith("RESOLVED"):
+        existing.attempts = list(existing.attempts or []) + [
+            {**attempt, "ignored": "already resolved; a resolved outcome is never rewritten"}]
+        session.commit()
+        return existing, False
+
+    previous = existing.resolution_state
+    existing.attempts = list(existing.attempts or []) + [attempt]
+    if resolved or state != previous:
+        existing.descriptive_return = descriptive
+        existing.simulated_executable_return = executable
+        existing.benchmark_return = bench_ret
+        existing.excess_return = excess
+        existing.benchmark_entry_return = bench_entry_ret
+        existing.resolution_state = state
+        existing.sessions_elapsed = len(expected_sessions)
+        existing.resolution_basis = basis
+        existing.superseded_state = previous
+        existing.resolved_at = now if resolved else None
+    session.commit()
+    return existing, False

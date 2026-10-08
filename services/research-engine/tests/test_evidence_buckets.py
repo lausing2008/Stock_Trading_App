@@ -121,8 +121,9 @@ def test_an_insufficient_assessment_is_finished_work_and_still_unmeasured():
                                                   "counterevidence": "a reference case"}]},
                         absent="none")
     assert b.status == INSUFFICIENT and b.direction is UNKNOWN
-    assert any(c.materiality == "decisive" for c in b.contradictions), \
-        "the open question is why the direction is unknown"
+    # The open question is a LIMITATION on this bucket, not counterevidence against another.
+    assert any(c.materiality == "limitation" for c in b.limitations)
+    assert not any(c.materiality == "decisive" for c in b.contradictions)
 
 
 def test_no_assessment_is_not_collected_and_names_the_gap():
@@ -185,3 +186,52 @@ def test_the_policy_fingerprint_changes_when_a_rule_changes():
     a = policy_fingerprint()
     assert len(a) == 32 and a == policy_fingerprint()
     assert digest({"x": 1}) != digest({"x": 2})
+
+
+# ---- an open question is a research limitation, not counterevidence -------------------------
+# An unresolved valuation question explains why the VALUATION bucket has no direction. It is
+# not evidence against a price reading in the technical bucket, and treating it as a
+# contradiction made it surface as the "strongest counterevidence" to a direction it does not
+# address.
+
+def test_an_unresolved_question_is_a_limitation_not_a_contradiction():
+    b = from_assessment(VALUATION, {"verdict": "insufficient", "version": 3,
+                                    "unresolved": "which earnings level is sustainable?",
+                                    "findings": []}, absent="none")
+    assert [c.claim for c in b.limitations] == ["which earnings level is sustainable?"]
+    assert b.contradictions == []
+    assert "limitations" in b.as_dict()
+
+
+def test_the_strongest_counterevidence_comes_from_a_measured_bucket():
+    """An objection inside an unmeasured bucket is a reason THAT bucket is unmeasured."""
+    measured = technical_bucket({"direction": "breakout", "label": "Up — range break observed",
+                                 "factors": [], "limitations": []})
+    unmeasured_val = from_assessment(
+        VALUATION, {"verdict": "insufficient", "version": 3,
+                    "unresolved": "which earnings level is sustainable?",
+                    "findings": [{"claim": "70x the mean", "source": "10-K",
+                                  "counterevidence": "a reference case, not a level"}]},
+        absent="none")
+    s = summarise("stock:MU", [measured, unmeasured_val], horizon_label="1-4w",
+                  horizon_sessions=20)
+    assert s["strongest_counterevidence"]["bucket"] == "technical"
+    assert "reference case" not in s["strongest_counterevidence"]["claim"]
+
+
+def test_research_limitations_are_reported_separately_and_not_lost():
+    measured = technical_bucket({"direction": "breakout", "label": "Up", "factors": [],
+                                 "limitations": []})
+    val = from_assessment(VALUATION, {"verdict": "insufficient", "version": 3,
+                                      "unresolved": "which earnings level is sustainable?",
+                                      "findings": []}, absent="none")
+    s = summarise("stock:MU", [measured, val], horizon_label="1-4w", horizon_sessions=20)
+    claims = [x["claim"] for x in s["research_limitations"]]
+    assert "which earnings level is sustainable?" in claims
+    assert s["research_limitations"][0]["bucket"] == "valuation"
+
+
+def test_a_summary_with_no_measured_bucket_has_no_counterevidence_to_offer():
+    s = summarise("stock:X", [unmeasured(VALUATION, NOT_COLLECTED, "none")],
+                  horizon_label="1-4w", horizon_sessions=20)
+    assert s["strongest_counterevidence"] is None

@@ -81,6 +81,10 @@ class Bucket:
     status: str
     evidence: list = dc_field(default_factory=list)
     contradictions: list = dc_field(default_factory=list)
+    #: What this bucket could not settle. SEPARATE from contradictions: an open question about
+    #: valuation explains why the valuation bucket has no direction — it is not evidence
+    #: against a price reading in another bucket.
+    limitations: list = dc_field(default_factory=list)
     strength: str | None = None
     inputs: dict = dc_field(default_factory=dict)
 
@@ -132,6 +136,7 @@ class Bucket:
             "independent_sources": self.independent_sources,
             "evidence": [c.as_dict() for c in self.evidence],
             "contradictions": [c.as_dict() for c in self.contradictions],
+            "limitations": [c.as_dict() for c in self.limitations],
             "inputs": self.inputs,
             "inputs_digest": digest(self.inputs),
         }
@@ -174,6 +179,30 @@ def sessions_back(venue: str, anchor: datetime, n: int, *, is_trading_day) -> li
             out.append(day.date().isoformat())
         day -= timedelta(days=1)
     return list(reversed(out))
+
+
+def sessions_forward(venue: str, anchor: datetime, n: int, *, is_trading_day,
+                     not_after: datetime) -> list:
+    """The n trading sessions strictly AFTER `anchor`, capped at `not_after`.
+
+    CONSTRUCTED, NOT COUNTED. Taking "the next n stored rows" lets a missing daily bar pull the
+    endpoint forward onto a later session — a 20-session return quietly measured over 21 — and
+    the horizon then differs per symbol according to which rows happen to be present. Building
+    the expected dates makes a gap visible as a gap.
+
+    `not_after` excludes sessions that have not completed, so a horizon cannot resolve against
+    a forming or future bar.
+    """
+    from datetime import timedelta, timezone
+    out: list = []
+    day = (anchor.replace(hour=12, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+           + timedelta(days=1))
+    cap = not_after.replace(tzinfo=timezone.utc) if not_after.tzinfo is None else not_after
+    while len(out) < n and day <= cap:
+        if is_trading_day(venue, day):
+            out.append(day.date().isoformat())
+        day += timedelta(days=1)
+    return out
 
 
 def unmeasured(name: str, status: str, why: str, *, source: str = "platform") -> Bucket:
@@ -250,21 +279,25 @@ def from_assessment(name: str, assessment: dict | None, *, absent: str) -> Bucke
                                  source_ref=f.get("source_ref"),
                                  as_of=assessment.get("cutoff"),
                                  materiality="material", source_group=grp))
+    limitations = []
     if assessment.get("unresolved"):
-        against.append(Claim(claim=assessment["unresolved"], source=src,
-                             as_of=assessment.get("cutoff"),
-                             # The open question IS the reason the direction is unknown.
-                             materiality="decisive", source_group=src))
+        # A LIMITATION, NOT COUNTEREVIDENCE. An open valuation question explains why THIS
+        # bucket has no direction; it is not evidence against a price reading in another
+        # bucket. Treating it as a contradiction made it the "strongest counterevidence" to a
+        # technical direction it has no bearing on.
+        limitations.append(Claim(claim=assessment["unresolved"], source=src,
+                                 as_of=assessment.get("cutoff"),
+                                 materiality="limitation", source_group=src))
+    inputs = {"verdict": verdict, "version": assessment.get("version"),
+              "cutoff": assessment.get("cutoff")}
     if status is INSUFFICIENT:
         # Direction must be UNKNOWN: the assessment did not reach one.
         return Bucket(name=name, direction=UNKNOWN, status=INSUFFICIENT,
-                      evidence=ev, contradictions=against,
-                      inputs={"verdict": verdict, "version": assessment.get("version"),
-                              "cutoff": assessment.get("cutoff")})
+                      evidence=ev, contradictions=against, limitations=limitations,
+                      inputs=inputs)
     return Bucket(name=name, direction=BULLISH if status is PASS else BEARISH,
-                  status=status, evidence=ev, contradictions=against, strength="MODERATE",
-                  inputs={"verdict": verdict, "version": assessment.get("version"),
-                          "cutoff": assessment.get("cutoff")})
+                  status=status, evidence=ev, contradictions=against,
+                  limitations=limitations, strength="MODERATE", inputs=inputs)
 
 
 def fundamentals_bucket(fin: dict | None) -> Bucket:
@@ -344,10 +377,15 @@ def summarise(subject: str, buckets: list, *, horizon_label: str,
         ((b, c) for b in buckets for c in b.evidence if b.status not in WORK_REMAINING),
         key=lambda bc: order.get(bc[1].materiality, 3))[:3]
 
-    # The single strongest counterevidence — named, never counted.
-    against = sorted(((b, c) for b in buckets for c in b.contradictions),
+    # THE STRONGEST COUNTEREVIDENCE COMES FROM A MEASURED BUCKET. A contradiction inside a
+    # bucket that reached no direction is a reason that bucket is unmeasured — presenting it
+    # as the case against a price reading attributes it to a conclusion it does not address.
+    against = sorted(((b, c) for b in buckets if b.status not in WORK_REMAINING
+                      for c in b.contradictions),
                      key=lambda bc: order.get(bc[1].materiality, 3))
     strongest = against[0] if against else None
+    research_limits = [{"bucket": b.name, **c.as_dict()}
+                       for b in buckets for c in b.limitations]
 
     unmeasured_names = [b.name for b in buckets if b.status in WORK_REMAINING]
     return {
@@ -364,6 +402,9 @@ def summarise(subject: str, buckets: list, *, horizon_label: str,
         "three_factors": [{"bucket": b.name, **c.as_dict()} for b, c in factors],
         "strongest_counterevidence": ({"bucket": strongest[0].name, **strongest[1].as_dict()}
                                       if strongest else None),
+        # Open questions from every bucket, measured or not. These say what the research could
+        # not settle; they are not arguments against the direction above.
+        "research_limitations": research_limits,
         "unmeasured_buckets": unmeasured_names,
         "unmeasured_note": f"{len(unmeasured_names)} of {len(buckets)} buckets have nothing "
                            f"measured. They do not block price observation or outcome "

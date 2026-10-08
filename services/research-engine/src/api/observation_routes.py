@@ -46,12 +46,34 @@ def _bars(session, stock_id: int, dates: list) -> list:
             for r in rows]
 
 
-def _closes_after(session, stock_id: int, after: datetime, n: int) -> list:
+def _closes_for(session, stock_id: int, dates: list) -> dict:
+    """Closes keyed BY SESSION DATE. A date absent from the result is a missing bar.
+
+    The earlier form took "the next n stored rows", so one missing daily bar pulled the
+    endpoint forward onto a later session and a 20-session return was quietly measured over 21,
+    differently per symbol depending on which rows happened to exist.
+    """
+    if not dates:
+        return {}
     rows = session.execute(
-        select(Price.close).where(Price.stock_id == stock_id,
-                                  Price.timeframe == TimeFrame.D1, Price.ts > after)
-        .order_by(Price.ts).limit(n)).scalars().all()
-    return [float(c) if c is not None else None for c in rows]
+        select(Price.ts, Price.close).where(
+            Price.stock_id == stock_id, Price.timeframe == TimeFrame.D1,
+            Price.ts >= datetime.fromisoformat(dates[0]),
+            Price.ts < datetime.fromisoformat(dates[-1]) + timedelta(days=1))
+    ).all()
+    got = {r[0].date().isoformat(): (float(r[1]) if r[1] is not None else None) for r in rows}
+    return {d: got.get(d) for d in dates}
+
+
+def _existing_observation(session, subject_key, as_of, horizon_sessions, origin):
+    from db import IntelligenceObservation
+    from ..intel_reports.evidence_buckets import policy_fingerprint
+    return session.execute(select(IntelligenceObservation).where(
+        IntelligenceObservation.subject_key == subject_key,
+        IntelligenceObservation.observed_at == as_of,
+        IntelligenceObservation.horizon_sessions == horizon_sessions,
+        IntelligenceObservation.policy_fingerprint == policy_fingerprint(),
+        IntelligenceObservation.origin == origin)).scalars().first()
 
 
 def build_buckets(session, stock, *, as_of: datetime) -> tuple:
@@ -68,8 +90,19 @@ def build_buckets(session, stock, *, as_of: datetime) -> tuple:
                FinancialStatement.period_type == "annual",
                FinancialStatement.period_end <= as_of.date())
         .order_by(FinancialStatement.period_end.desc()).limit(5)).scalars().all())
+    # PERIOD END IS NOT PUBLICATION. A statement whose period closed before the cutoff may not
+    # have been FILED by then, and no filing date is stored for these rows — only a retrieval
+    # time (documented in the fundamentals audit). For a replay this cannot be established, so
+    # the bucket reports it rather than assuming availability.
+    available_at_cutoff = all(
+        st.fetched_at is not None and naive_utc(st.fetched_at) <= as_of for st in stmts)
     fin = None
-    if stmts:
+    if stmts and not available_at_cutoff:
+        fin = {"annual_periods": 0,
+               "unavailable_reason": "no filing date is stored for these statements, and their "
+                                     "retrieval time is after this cutoff — availability at "
+                                     "the cutoff cannot be established"}
+    elif stmts:
         fin = {"annual_periods": len(stmts), "revenue": stmts[0].total_revenue,
                "revenue_prior": stmts[1].total_revenue if len(stmts) > 1 else None,
                "period_end": stmts[0].period_end.isoformat(),
@@ -77,7 +110,11 @@ def build_buckets(session, stock, *, as_of: datetime) -> tuple:
                "retrieval_age_days": ((as_of - naive_utc(stmts[0].fetched_at)).days
                                       if stmts[0].fetched_at else None)}
 
-    found = latest_assessments(session, stock.symbol)
+    # CUTOFF-FILTERED. A replay must not read an assessment written after the cutoff it is
+    # replaying — that is the historical identity mixed with current evidence, and it would
+    # make a retrospective look better informed than anything could have been at the time.
+    found = {k: v for k, v in latest_assessments(session, stock.symbol).items()
+             if not v.get("cutoff") or naive_utc(datetime.fromisoformat(v["cutoff"])) <= as_of}
     nothing = "no assessment record is stored for this issuer"
     buckets = [
         EB.technical_bucket(setup, session=dates[-1] if dates else None),
@@ -121,6 +158,21 @@ def _capture(session, stock, *, as_of: datetime, origin: str) -> dict:
     for sessions, label in HORIZONS:
         summary = EB.summarise(subject, buckets, horizon_label=label,
                                horizon_sessions=sessions)
+        existing = _existing_observation(session, subject, as_of, sessions, origin)
+        if existing is not None:
+            # REUSE RETURNS THE STORED RECORD. Returning a freshly computed summary beside an
+            # existing id would show the reader today's reasoning under yesterday's identity.
+            out["observations"].append({
+                "id": existing.id, "horizon": label, "horizon_sessions": sessions,
+                "direction": existing.direction, "created": False, "reused": True,
+                "reference_price": existing.reference_price,
+                "reference_price_as_of": (existing.reference_price_as_of.isoformat()
+                                          if existing.reference_price_as_of else None),
+                "frozen_inputs_digest": existing.frozen_inputs_digest,
+                "summary": existing.summary,
+                "note": "stored record returned unchanged; the summary and inputs are the ones "
+                        "frozen at capture, not recomputed"})
+            continue
         row, created = record_observation(
             session, subject_key=subject, symbol=stock.symbol, origin=origin,
             observed_at=as_of, horizon_sessions=sessions, horizon_label=label,
@@ -194,21 +246,40 @@ def replay(symbol: str, sessions_ago: int = Query(90, ge=25, le=400),
         from db import IntelligenceObservation
         bench = session.execute(select(Stock).where(
             Stock.symbol == BENCHMARK.get(venue, ""))).scalars().first()
+        # The benchmark measured from the SAME reference session as the stock, so the excess is
+        # a difference over one window rather than two.
+        bench_ref = None
+        if bench and body["latest_session"]:
+            bench_ref = _closes_for(session, bench.id, [body["latest_session"]]).get(
+                body["latest_session"])
         for o in body["observations"]:
             row = session.execute(select(IntelligenceObservation).where(
                 IntelligenceObservation.id == o["id"])).scalars().first()
-            closes = _closes_after(session, stock.id, as_of, row.horizon_sessions)
-            bcloses = (_closes_after(session, bench.id, as_of, row.horizon_sessions)
-                       if bench else None)
-            outcome, created = resolve(session, row, closes=closes, benchmark_closes=bcloses)
+            # Sessions are CONSTRUCTED and capped at the last completed day, so a missing bar
+            # is a gap rather than a shifted endpoint, and nothing resolves against a forming
+            # or future session.
+            fwd = EB.sessions_forward(venue, as_of, row.horizon_sessions,
+                                      is_trading_day=is_trading_day, not_after=now)
+            closes = _closes_for(session, stock.id, fwd)
+            bcloses = _closes_for(session, bench.id, fwd) if bench else None
+            outcome, created = resolve(
+                session, row, session_closes=closes, expected_sessions=fwd,
+                benchmark_reference=bench_ref, benchmark_closes=bcloses,
+                # The direction screen already refuses a window whose adjustment factor moves;
+                # the bars behind this observation passed that check at capture.
+                adjustment_consistent=True)
             o["outcome"] = {
                 "resolution_state": outcome.resolution_state,
                 "sessions_elapsed": outcome.sessions_elapsed,
                 "descriptive_return": outcome.descriptive_return,
-                "simulated_executable_return": outcome.simulated_executable_return,
-                "benchmark_return": outcome.benchmark_return,
+                "simulated_next_session_close_return":
+                    outcome.simulated_executable_return,
+                "benchmark_return_same_window": outcome.benchmark_return,
+                "benchmark_return_entry_window": outcome.benchmark_entry_return,
                 "excess_return": outcome.excess_return,
                 "return_basis": outcome.return_basis,
+                "superseded_state": outcome.superseded_state,
+                "attempts": len(outcome.attempts or []),
                 "basis": outcome.resolution_basis, "created": created}
     body["note"] = ("RETROSPECTIVE REPLAY. Proves the capture and resolution machinery works. "
                     "NOT evidence of predictive performance — the rules were written with these "

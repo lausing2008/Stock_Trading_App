@@ -4093,6 +4093,15 @@ class ObservationOutcome(Base):
     resolution_state: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
     sessions_elapsed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     resolution_basis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The benchmark measured over the SIMULATED-ENTRY window, so a like-for-like comparison
+    #: exists for both the descriptive and the entry return rather than one excess computed
+    #: across two different windows.
+    benchmark_entry_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: Every resolution attempt, appended. A pending outcome may later advance to RESOLVED;
+    #: this makes the transition visible instead of silently replacing the row.
+    attempts: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    #: The state this row held before the most recent transition, where one occurred.
+    superseded_state: Mapped[str | None] = mapped_column(String(48), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
