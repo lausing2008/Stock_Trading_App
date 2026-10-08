@@ -368,3 +368,67 @@ def test_every_attempt_records_which_resolver_made_it(session, monkeypatch):
     row, _ = _obs(session, horizon_sessions=3)
     out, _ = _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0})
     assert out.attempts[0]["resolver"] == "resolver-A"
+
+
+# ---- what a published performance figure may read -------------------------------------------
+
+def test_publishable_excludes_a_superseded_row(session, monkeypatch):
+    from intel_reports.observations import publishable_outcomes, PROSPECTIVE
+    row, _ = _obs(session, horizon_sessions=3)
+    _force_fingerprint(monkeypatch, "resolver-A")
+    _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0})
+    assert len(publishable_outcomes(session, origin=PROSPECTIVE)) == 1
+    _force_fingerprint(monkeypatch, "resolver-B")
+    _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 120.0})
+    got = publishable_outcomes(session, origin=PROSPECTIVE)
+    assert len(got) == 1, "the superseded original must not be pooled with its replacement"
+    assert round(got[0][0].descriptive_return, 4) == 0.20
+
+
+def test_publishable_excludes_a_stale_row_that_was_never_re_resolved(session, monkeypatch):
+    """`superseded_by IS NULL` alone is not enough. An old row nobody has re-resolved has no
+    successor to point at — it was produced by a resolver whose defects are the reason the
+    current one exists, and it would pass a supersession-only filter."""
+    from intel_reports.observations import (publishable_outcomes, resolver_fingerprint,
+                                            PROSPECTIVE, UNFINGERPRINTED)
+    row, _ = _obs(session, horizon_sessions=3)
+    _force_fingerprint(monkeypatch, "resolver-OLD")
+    old, _ = _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0})
+    old.resolver_fingerprint = UNFINGERPRINTED
+    session.commit()
+    monkeypatch.undo()
+    assert old.superseded_by_id is None, "nothing re-resolved it, so nothing points at it"
+    assert resolver_fingerprint() != UNFINGERPRINTED
+    assert publishable_outcomes(session, origin=PROSPECTIVE) == []
+
+
+def test_publishable_never_pools_replay_with_prospective(session):
+    from intel_reports.observations import publishable_outcomes, PROSPECTIVE, REPLAY
+    pro, _ = _obs(session, horizon_sessions=3)
+    rep, _ = _obs(session, horizon_sessions=3, origin=REPLAY,
+                  observed_at=OBSERVED - timedelta(days=1))
+    _resolve(session, pro, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0})
+    _resolve(session, rep, {D[0]: 101.0, D[1]: 103.0, D[2]: 120.0})
+    assert len(publishable_outcomes(session, origin=PROSPECTIVE)) == 1
+    assert len(publishable_outcomes(session, origin=REPLAY)) == 1
+
+
+def test_publishable_excludes_a_replaced_row_after_a_resolver_rollback(session, monkeypatch):
+    """The case that makes the supersession filter independently necessary.
+
+    Revert the resolver and its fingerprint returns to an earlier value, which again matches a
+    row that was explicitly replaced. Reading it would publish a figure a correction had
+    already withdrawn.
+    """
+    from intel_reports.observations import publishable_outcomes, PROSPECTIVE
+    row, _ = _obs(session, horizon_sessions=3)
+    _force_fingerprint(monkeypatch, "resolver-A")
+    old, _ = _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0})
+    _force_fingerprint(monkeypatch, "resolver-B")
+    _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 120.0})
+    session.expire_all()
+    assert session.get(type(old), old.id).superseded_by_id is not None
+
+    _force_fingerprint(monkeypatch, "resolver-A")  # rolled back
+    assert publishable_outcomes(session, origin=PROSPECTIVE) == [], \
+        "a withdrawn figure must not return to publication because the code was reverted"

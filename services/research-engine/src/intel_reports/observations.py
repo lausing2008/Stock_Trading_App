@@ -174,6 +174,41 @@ def resolver_fingerprint() -> str:
                    "resolve": body})
 
 
+def publishable_outcomes(session, *, origin: str, symbol: str | None = None):
+    """The ONLY selector a published performance figure may be computed from.
+
+    THREE conditions, and dropping any one of them pools readings that must not be pooled:
+
+      * `resolver_fingerprint == resolver_fingerprint()` — scored by the resolver running now.
+        A row written by an earlier resolver is not merely old: the six corrected defects each
+        changed a figure, so mixing them measures two different definitions of excess return.
+        This also excludes `UNFINGERPRINTED` rows, whose resolver no longer exists and
+        therefore cannot be shown to agree with anything.
+      * `superseded_by_id IS NULL` — not already replaced. Mostly redundant beside the test
+        above, since the unique constraint allows one row per resolver per horizon, so a
+        superseded row normally carries a different fingerprint. It earns its place on a
+        ROLLBACK: revert the resolver and its fingerprint returns to an earlier value, which
+        again matches a row that was explicitly replaced. (A sabotage run found the first two
+        conditions caught everything and this one caught nothing — the claim, not the filter,
+        was what needed correcting.)
+      * one `origin` — a retrospective replay and a prospective capture are never pooled. The
+        replay's rules were written with its outcomes already in existence.
+
+    The caller must still separate by `return_basis`, which varies per row and so cannot be
+    fixed here.
+    """
+    from db import IntelligenceObservation, ObservationOutcome
+    q = (select(ObservationOutcome, IntelligenceObservation)
+         .join(IntelligenceObservation,
+               IntelligenceObservation.id == ObservationOutcome.observation_id)
+         .where(ObservationOutcome.resolver_fingerprint == resolver_fingerprint(),
+                ObservationOutcome.superseded_by_id.is_(None),
+                IntelligenceObservation.origin == origin))
+    if symbol:
+        q = q.where(IntelligenceObservation.symbol == symbol)
+    return session.execute(q.order_by(ObservationOutcome.id)).all()
+
+
 def resolve(session, observation, *, session_closes: dict, expected_sessions: list,
             benchmark_reference: float | None = None,
             benchmark_closes: dict | None = None,
