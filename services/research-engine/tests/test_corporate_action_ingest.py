@@ -56,3 +56,55 @@ def test_the_provider_adjusted_close_is_not_imported_as_a_basis():
                      (mod.normalise, mod.fetch, mod.store, mod.ingest))
     assert "adj_close" not in code, "an adjusted close must not stand in for a chosen basis"
     assert "auto_adjust" not in code
+
+
+# ---- the shaping around the network call, which the pilot run broke on ----------------------
+
+class _FakeSeries:
+    """Stands in for a pandas Series: iterable `.items()`, and TRUTHINESS THAT RAISES.
+
+    `if series:` on a real Series raises ValueError, which is what the first pilot run hit —
+    in `fetch`, the one function left untested because it touches the network. A stub that
+    merely returned a dict would have let the same bug through.
+    """
+    def __init__(self, pairs): self._pairs = pairs
+    def items(self): return iter(self._pairs)
+    def __bool__(self): raise ValueError("The truth value of a Series is ambiguous.")
+
+
+class _Stamp:
+    def __init__(self, d): self._d = d
+    def date(self): return self._d
+
+
+class _FakeTicker:
+    def __init__(self, splits, dividends): self.splits, self.dividends = splits, dividends
+
+
+def test_a_provider_series_is_shaped_without_testing_its_truthiness():
+    from datetime import date as _date
+    from intel_reports.corporate_actions import as_dated_map
+    got = as_dated_map(_FakeSeries([(_Stamp(_date(2026, 6, 3)), 2.0)]))
+    assert got == {"2026-06-03": 2.0}
+
+
+def test_an_absent_series_is_an_empty_map_not_an_error():
+    from intel_reports.corporate_actions import as_dated_map
+    assert as_dated_map(None) == {}
+
+
+def test_fetch_shapes_both_series_without_a_network():
+    from datetime import date as _date
+    from intel_reports.corporate_actions import fetch
+    splits, divs, meta = fetch("MU", ticker=_FakeTicker(
+        _FakeSeries([(_Stamp(_date(2026, 6, 3)), 2.0)]),
+        _FakeSeries([(_Stamp(_date(2026, 6, 10)), 0.75)])))
+    assert splits == {"2026-06-03": 2.0} and divs == {"2026-06-10": 0.75}
+    assert meta["provider"] == SOURCE
+
+
+def test_a_ticker_missing_the_attributes_entirely_is_tolerated():
+    """Not every symbol carries both series; an ETF with no splits must not raise."""
+    from intel_reports.corporate_actions import fetch
+    splits, divs, _ = fetch("SPY", ticker=object())
+    assert splits == {} and divs == {}

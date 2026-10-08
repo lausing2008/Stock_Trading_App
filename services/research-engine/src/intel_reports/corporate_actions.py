@@ -57,13 +57,38 @@ def normalise(splits: dict, dividends: dict, *, symbol: str, retrieved_at: datet
     return sorted(out, key=lambda a: (a["ex_date"], a["action_type"]))
 
 
-def fetch(symbol: str) -> tuple[dict, dict, dict]:
-    """(splits, dividends, meta) from the provider. Network-bound; isolated for that reason."""
-    import yfinance as yf
-    t = yf.Ticker(symbol)
-    splits = {k.date().isoformat(): float(v) for k, v in (t.splits or {}).items()}
-    dividends = {k.date().isoformat(): float(v) for k, v in (t.dividends or {}).items()}
-    return splits, dividends, {"provider": SOURCE, "symbol": symbol}
+def as_dated_map(series) -> dict:
+    """A provider series -> {ISO date: float}. PURE, and tested, because `fetch` is not.
+
+    `series` is a pandas Series whose index is timestamps. The obvious `series or {}` raises
+    `ValueError: The truth value of a Series is ambiguous` — which is exactly what the first
+    pilot run hit, in the one function that had been left untested because it touches the
+    network. The network call is now the ONLY thing in `fetch`; every shaping decision lives
+    here where a test can reach it.
+    """
+    if series is None:
+        return {}
+    items = series.items() if hasattr(series, "items") else series
+    out = {}
+    for k, v in items:
+        if v is None:
+            continue
+        key = k.date().isoformat() if hasattr(k, "date") else str(k)[:10]
+        out[key] = float(v)
+    return out
+
+
+def fetch(symbol: str, *, ticker=None) -> tuple[dict, dict, dict]:
+    """(splits, dividends, meta) from the provider. Network-bound; isolated for that reason.
+
+    `ticker` is injectable so the shaping around the call can be exercised without a network.
+    """
+    if ticker is None:
+        import yfinance as yf
+        ticker = yf.Ticker(symbol)
+    return (as_dated_map(getattr(ticker, "splits", None)),
+            as_dated_map(getattr(ticker, "dividends", None)),
+            {"provider": SOURCE, "symbol": symbol})
 
 
 def store(session, symbol: str, actions: list, *, covers_from: date, covers_to: date,
@@ -117,10 +142,11 @@ def store(session, symbol: str, actions: list, *, covers_from: date, covers_to: 
             "retrieved_at": retrieved_at.isoformat()}
 
 
-def ingest(session, symbol: str, *, covers_from: date, covers_to: date) -> dict:
+def ingest(session, symbol: str, *, covers_from: date, covers_to: date,
+           ticker=None) -> dict:
     """Fetch, shape and store one symbol's action history for a bounded span."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    splits, dividends, meta = fetch(symbol)
+    splits, dividends, meta = fetch(symbol, ticker=ticker)
     actions = normalise(splits, dividends, symbol=symbol, retrieved_at=now)
     inside = [a for a in actions
               if covers_from.isoformat() <= a["ex_date"] <= covers_to.isoformat()]
