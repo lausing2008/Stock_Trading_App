@@ -79,6 +79,9 @@ _ROUTES = {
     # the gateway however complete the backend is — see
     # docs/incidents/gateway-proxy-route-gaps.md for the three real occurrences.
     "quality-value": _settings.research_engine_url,
+    # Stock summary, observation capture and replay. A new APIRouter prefix absent from
+    # this map 404s at the gateway however complete the backend is.
+    "intelligence": _settings.research_engine_url,
     # T233-ARCH-AIPROXY-EXTRACT: ai_proxy.py moved to research-engine 2026-07-04 — was
     # previously served locally by this gateway's own ai_router, not proxied at all.
     "ai": _settings.research_engine_url,

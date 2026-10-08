@@ -3949,3 +3949,154 @@ class IssuerAssessment(Base):
                          name="uq_issuer_assessment_symbol_dimension_version"),
         Index("ix_issuer_assessment_symbol_dimension", "symbol", "dimension"),
     )
+
+
+# =====================================================================================
+# INTELLIGENCE OBSERVATIONS — what the system concluded, on what, and how it will be scored.
+#
+# Design: docs/2026-10-07/market-stock-intelligence-architecture.md. Three tables, all additive
+# and all append-only. The rule they exist to serve: a conclusion that is rendered but not
+# stored is unmeasurable forever after, because the inputs move and no later work recovers what
+# the screen concluded on a date it was not written down.
+# =====================================================================================
+
+
+class EvidenceBucket(Base):
+    """One dimension's reading for one subject, with its contradictions preserved.
+
+    THIRTEEN BUCKETS, NEVER ONE SCORE. A bucket is not averaged or weighted into anything —
+    a reader sees thirteen directions and the disagreements between them. This platform has
+    already measured the cost of the alternative: a pooled win-rate badge mixed BUY with SELL,
+    which point opposite ways.
+
+    `support_quality` and `predictive_confidence` are DIFFERENT QUESTIONS and different columns.
+    Completeness, freshness and source independence establish how well evidenced a reading is;
+    they say nothing about whether it is right. `predictive_confidence` stays NULL until it is
+    calibrated against resolved outcomes.
+    """
+    __tablename__ = "evidence_buckets"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: "stock:MU" | "market:US" | "sector:XLK"
+    subject_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    bucket: Mapped[str] = mapped_column(String(32), nullable=False)
+    as_of: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    #: STRONG_BULLISH | BULLISH | NEUTRAL | BEARISH | STRONG_BEARISH | UNKNOWN
+    direction: Mapped[str] = mapped_column(String(20), nullable=False)
+    strength: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    #: LOW | MEDIUM | HIGH — completeness, freshness and source independence ONLY.
+    support_quality: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    #: NULL until calibrated against resolved outcomes. Never asserted.
+    predictive_confidence: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    #: Reuses the Quality & Value GateStatus vocabulary, which already separates "refresh a
+    #: job" from "build an analysis" from "this issuer has not been researched".
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    #: Each carries `materiality` and `source_ref`. Grouping by source affects INDEPENDENCE
+    #: only — every finding is preserved, because one filing legitimately contains several
+    #: independently relevant risks.
+    contradictions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    inputs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    inputs_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    policy_fingerprint: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("subject_key", "bucket", "as_of", "policy_fingerprint",
+                         name="uq_evidence_bucket_subject_bucket_asof_policy"),
+        Index("ix_evidence_bucket_subject_asof", "subject_key", "as_of"),
+    )
+
+
+class IntelligenceObservation(Base):
+    """A directional conclusion, with the rules by which it will be scored, frozen at capture.
+
+    THE RESOLUTION POLICY IS WRITTEN BEFORE ANY RESULT EXISTS. Deciding how to treat a gap, a
+    missing price or a delisting after seeing outcomes is a bias vector, and the convenient
+    choice is always available in hindsight.
+
+    `origin` separates a RETROSPECTIVE replay — which proves the machinery and cannot speak to
+    predictive performance, because the rules were written with the outcomes already in
+    existence — from a PROSPECTIVE capture, which is the only thing that ever can.
+    """
+    __tablename__ = "intelligence_observations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    subject_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    #: "prospective" | "replay". Performance is NEVER reported across both together.
+    origin: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    #: The instant the conclusion was formed. Not a day: a day cannot order events within it.
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    #: TRADING SESSIONS, not calendar days — a calendar horizon silently shortens across a
+    #: holiday week and differs between the US and HK, both of which this platform serves.
+    horizon_sessions: Mapped[int] = mapped_column(Integer, nullable=False)
+    horizon_label: Mapped[str] = mapped_column(String(16), nullable=False)
+    direction: Mapped[str] = mapped_column(String(20), nullable=False)
+    support_quality: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    #: Deliberately nullable and deliberately unset at capture.
+    predictive_confidence: Mapped[str | None] = mapped_column(String(8), nullable=True)
+
+    reference_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reference_price_as_of: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reference_price_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: formed_at_close | next_tradeable_open
+    reference_price_basis: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: price_return | total_return. The benchmark is measured on the SAME basis — comparing a
+    #: price return against a total-return benchmark understates excess by the dividend yield.
+    return_basis: Mapped[str] = mapped_column(String(16), nullable=False, default="price_return")
+    benchmark_symbol: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    confirmation_rule: Mapped[str | None] = mapped_column(Text, nullable=True)
+    invalidation_rule: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolution_policy: Mapped[dict] = mapped_column(JSON, nullable=False)
+    execution_assumptions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    policy_fingerprint: Mapped[str] = mapped_column(String(32), nullable=False)
+    bucket_ids: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    frozen_inputs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    frozen_inputs_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("subject_key", "observed_at", "horizon_sessions",
+                         "policy_fingerprint", "origin",
+                         name="uq_observation_subject_when_horizon_policy_origin"),
+        Index("ix_observation_symbol_origin_when", "symbol", "origin", "observed_at"),
+    )
+
+
+class ObservationOutcome(Base):
+    """What actually happened, scored under the policy frozen with the observation.
+
+    TWO RETURNS, NEVER ONE. `descriptive_return` answers "was the reading directionally right"
+    from the reference price and is not tradeable. `simulated_executable_return` starts from the
+    next plausibly tradeable price — and is SIMULATED, because spread, slippage, order timing,
+    liquidity and halts are unmodelled, each of which can move it.
+    """
+    __tablename__ = "observation_outcomes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    observation_id: Mapped[int] = mapped_column(
+        ForeignKey("intelligence_observations.id", ondelete="CASCADE"), index=True)
+    horizon_sessions: Mapped[int] = mapped_column(Integer, nullable=False)
+    descriptive_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    simulated_executable_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    benchmark_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    excess_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_basis: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: acquisition | bankruptcy | exchange_transfer | NULL. A delisting is never an automatic
+    #: void: voiding an acquisition premium and a bankruptcy together removes the tails in
+    #: opposite directions.
+    delisting_cause: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    resolution_state: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    sessions_elapsed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resolution_basis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("observation_id", "horizon_sessions",
+                         name="uq_outcome_observation_horizon"),
+    )

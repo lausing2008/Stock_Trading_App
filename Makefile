@@ -94,5 +94,6 @@ test-integration:
 	 python3 -m pytest -q shared/tests/test_llm_budget_integration.py \
 		shared/tests/test_deferred_retry_integration.py \
 		shared/tests/test_llm_usage_relevance_integration.py \
-		shared/tests/test_quality_value_persistence_integration.py; \
+		shared/tests/test_quality_value_persistence_integration.py \
+		shared/tests/test_observations_integration.py; \
 	 rc=$$?; docker rm -f stockai-budget-pg stockai-budget-redis >/dev/null 2>&1; exit $$rc
