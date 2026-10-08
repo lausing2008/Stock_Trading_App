@@ -30,8 +30,25 @@ BENCHMARK = {"US": "SPY", "HK": "2800.HK"}
 
 
 def _sessions_back(venue: str, anchor: datetime, n: int) -> list:
-    """The n completed trading sessions ending strictly before `anchor`'s local day."""
-    out, day = [], anchor - timedelta(days=1)
+    """The n completed trading sessions ending strictly before `anchor`'s local day.
+
+    ANCHORED AT MIDDAY, NOT MIDNIGHT. `is_trading_day` resolves the instant into the venue's
+    local calendar, and a naive midnight lands on the previous local day once converted —
+    so walking back from midnight shifted the whole window by one and returned Saturdays as
+    sessions. Caught by comparing the requested dates against the stored bars: 2026-09-12,
+    09-19, 09-26 and 10-03 were all weekends, and the four real sessions were missing.
+    `direction_screen`'s own caller already anchors at `hour=12` for exactly this reason;
+    this is the same UTC-vs-local date-boundary class recorded in
+    docs/incidents/utc-vs-et-date-boundary.md.
+    """
+    # MIDDAY AND TIMEZONE-AWARE. Two separate traps, both hit here:
+    #   * midnight — `is_trading_day` resolves the instant into the venue's local calendar, so
+    #     a midnight anchor lands on the previous local day and shifts the whole window by one.
+    #   * naive — `is_hk_trading_day` calls `.astimezone()`, which interprets a NAIVE datetime
+    #     as HOST LOCAL TIME. On a UTC-8 host, naive Sunday 12:00 became Monday in Hong Kong and
+    #     weekends were returned as sessions. The answer must not depend on the machine.
+    day = (anchor.replace(hour=12, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+           - timedelta(days=1))
     while len(out) < n:
         if is_trading_day(venue, day):
             out.append(day.date().isoformat())
@@ -162,6 +179,8 @@ def stock_summary(symbol: str, _user: str = Depends(get_current_username)) -> di
     """The summary above, the thirteen buckets below. Captures a PROSPECTIVE observation."""
     now = naive_utc(datetime.now(timezone.utc)).replace(hour=0, minute=0, second=0,
                                                         microsecond=0)
+    # as_of stays NAIVE for storage (every timestamp in this schema is); _sessions_back makes
+    # its own aware copy for the calendar question.
     with SessionLocal() as session:
         stock = session.execute(
             select(Stock).where(Stock.symbol == symbol.strip().upper())).scalars().first()
