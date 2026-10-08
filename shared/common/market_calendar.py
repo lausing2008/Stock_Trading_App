@@ -36,6 +36,9 @@ __all__ = [
     "is_trading_day",
     "calendar_coverage",
     "assert_calendar_coverage",
+    "session_bounds",
+    "session_open",
+    "session_close",
 ]
 
 # NYSE. Observance rules: a holiday on Saturday is observed the preceding Friday, on Sunday the
@@ -189,6 +192,42 @@ def is_regular_session(market: str, dt: datetime | None = None) -> bool:
     local = now.astimezone(_HKT if hk else _NY)
     mins = local.hour * 60 + local.minute
     return any(lo <= mins < hi for lo, hi in (_HK_SESSION if hk else _US_SESSION))
+
+
+def session_bounds(market: str, d: date) -> tuple[datetime, datetime] | None:
+    """(open, close) of `d`'s REGULAR session as timezone-aware instants, or None if `d` is
+    not a trading day for this venue.
+
+    AUD-OBS-SESSIONBOUNDS (2026-10-08). The platform had `is_trading_day` and
+    `is_regular_session` ("is it open right now") but no way to ask WHEN a given dated session
+    opens or closes. Anything needing that wrote a proxy, and the intelligence layer's session
+    walk used "12:00 UTC on that date has passed" — which is 08:00 ET, before the US market
+    OPENS, so a date was admitted as a completed session while its daily bar did not yet
+    exist. A horizon could then resolve against a forming or absent bar.
+
+    HK's lunch break is a real closure but not a session boundary: the day opens at 09:30 and
+    closes at 16:00 with a gap in between, and these are the outer bounds.
+    """
+    hk = market.upper() == "HK"
+    probe = datetime(d.year, d.month, d.day, 12, tzinfo=timezone.utc)
+    if not (is_hk_trading_day(probe) if hk else is_us_trading_day(probe)):
+        return None
+    tz = _HKT if hk else _NY
+    spans = _HK_SESSION if hk else _US_SESSION
+    lo, hi = spans[0][0], spans[-1][1]
+    start = datetime(d.year, d.month, d.day, lo // 60, lo % 60, tzinfo=tz)
+    end = datetime(d.year, d.month, d.day, hi // 60, hi % 60, tzinfo=tz)
+    return start, end
+
+
+def session_open(market: str, d: date) -> datetime | None:
+    b = session_bounds(market, d)
+    return b[0] if b else None
+
+
+def session_close(market: str, d: date) -> datetime | None:
+    b = session_bounds(market, d)
+    return b[1] if b else None
 
 
 def calendar_coverage() -> dict[str, int]:

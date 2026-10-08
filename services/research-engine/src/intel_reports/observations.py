@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from . import evidence_buckets as EB
 from .evidence_buckets import digest, policy_fingerprint, POLICY_VERSION
 
 REPLAY, PROSPECTIVE = "replay", "prospective"
@@ -148,30 +149,70 @@ SUPPORTED_POLICY_VERSIONS = ("res-1",)
 UNFINGERPRINTED = "unrecorded-pre-fingerprint"
 
 
-def resolver_fingerprint() -> str:
-    """Digest of the RESOLVER'S OWN RULES, derived from them rather than maintained by hand.
+def _canonical_source(fn) -> str:
+    """A function's BEHAVIOUR as text: AST-normalised, comments and docstrings removed.
 
-    Same principle as `policy_fingerprint`: a version string someone has to remember to bump
-    is a version string that silently goes stale. This covers the frozen policy, the stated
-    execution assumptions, and the body of `resolve` itself.
-
-    Normalised through the AST, with comments and docstrings removed, so that PROSE does not
-    mint a new resolver: a reworded comment would otherwise re-score the whole corpus and fill
-    the supersession log with changes that altered nothing. Any change to what the code
-    actually does always moves it. (`ast.unparse` drops comments on its own; a docstring is a
-    real expression node and has to be removed deliberately — a test caught that.)
+    Prose must not mint a new resolver — a reworded comment would re-score the whole corpus
+    and fill the supersession log with changes that altered nothing. `ast.unparse` drops `#`
+    comments on its own; a docstring is a real expression node and has to be removed
+    deliberately, which a test caught.
     """
     import ast
     import inspect
     import textwrap
-    tree = ast.parse(textwrap.dedent(inspect.getsource(resolve)))
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)) \
                 and ast.get_docstring(node) is not None:
             node.body = node.body[1:]
-    body = ast.unparse(tree)
-    return digest({"policy": RESOLUTION_POLICY, "execution": EXECUTION_ASSUMPTIONS,
-                   "resolve": body})
+    return ast.unparse(tree)
+
+
+def outcome_contract() -> dict:
+    """EVERY input that can change a resolved figure, named explicitly.
+
+    The first version of the fingerprint hashed `resolve` and two constants. That is not the
+    calculation: an outcome also depends on WHICH SESSIONS are selected, WHICH PRICES are read
+    for them, and HOW the adjustment basis is verified. A correction to any of those could
+    therefore land with the fingerprint unchanged — and because a resolved row is immutable
+    within its resolver, the corrected figures would silently never be written. That is the
+    exact failure this versioning exists to prevent, so the omission defeated it.
+
+    Session boundaries and the holiday calendars are in here too: moving a market's hours, or
+    adding a holiday, changes which dates are sessions and therefore changes past windows, not
+    only future ones.
+
+    ADDING A DEPENDENCY TO THE RESOLUTION PATH MEANS ADDING IT HERE. `test_the_contract_covers
+    _every_outcome_changing_dependency` fails when a known one is missing, so the omission
+    surfaces as a red test rather than as frozen stale rows.
+    """
+    from common import market_calendar as cal
+    return {
+        "policy": RESOLUTION_POLICY,
+        "execution": EXECUTION_ASSUMPTIONS,
+        "resolve": _canonical_source(resolve),
+        # Session selection — which dates the return is measured across.
+        "sessions_forward": _canonical_source(EB.sessions_forward),
+        "sessions_back": _canonical_source(EB.sessions_back),
+        "session_bounds": _canonical_source(cal.session_bounds),
+        "session_hours": {"US": cal._US_SESSION, "HK": cal._HK_SESSION},
+        "holidays": {"US": sorted(d.isoformat() for d in cal.NYSE_HOLIDAYS),
+                     "HK": sorted(d.isoformat() for d in cal.HK_HOLIDAYS)},
+        # Price selection — which number is read for each of those dates.
+        "closes_by_date": _canonical_source(EB.closes_by_date),
+        # Adjustment verification — whether both endpoints share one basis.
+        "adjustment_evidence": _canonical_source(EB.adjustment_evidence),
+        "adjustment_tolerance": EB.ADJUSTMENT_TOLERANCE,
+    }
+
+
+def resolver_fingerprint() -> str:
+    """Digest of the whole calculation contract, derived from it rather than maintained by hand.
+
+    Same principle as `policy_fingerprint`: a version string someone has to remember to bump is
+    a version string that silently goes stale.
+    """
+    return digest(outcome_contract())
 
 
 def publishable_outcomes(session, *, origin: str, symbol: str | None = None):
@@ -193,6 +234,11 @@ def publishable_outcomes(session, *, origin: str, symbol: str | None = None):
         was what needed correcting.)
       * one `origin` — a retrospective replay and a prospective capture are never pooled. The
         replay's rules were written with its outcomes already in existence.
+      * `invalidated_reason IS NULL` — the CAPTURE itself is sound. The three above are all
+        properties of the scoring; this one is not, and no amount of re-resolution can repair a
+        capture whose inputs were produced by defective code. Without it, re-resolving an
+        invalid observation under the current resolver would walk it straight back into
+        publication.
 
     The caller must still separate by `return_basis`, which varies per row and so cannot be
     fixed here.
@@ -203,7 +249,8 @@ def publishable_outcomes(session, *, origin: str, symbol: str | None = None):
                IntelligenceObservation.id == ObservationOutcome.observation_id)
          .where(ObservationOutcome.resolver_fingerprint == resolver_fingerprint(),
                 ObservationOutcome.superseded_by_id.is_(None),
-                IntelligenceObservation.origin == origin))
+                IntelligenceObservation.origin == origin,
+                IntelligenceObservation.invalidated_reason.is_(None)))
     if symbol:
         q = q.where(IntelligenceObservation.symbol == symbol)
     return session.execute(q.order_by(ObservationOutcome.id)).all()
@@ -214,6 +261,7 @@ def resolve(session, observation, *, session_closes: dict, expected_sessions: li
             benchmark_closes: dict | None = None,
             delisting: dict | None = None,
             adjustment_consistent: bool | None = None,
+            adjustment_basis: str | None = None,
             now: datetime | None = None) -> tuple:
     """Score one observation under ITS OWN frozen policy. Returns (outcome_row, created).
 
@@ -248,12 +296,14 @@ def resolve(session, observation, *, session_closes: dict, expected_sessions: li
             f"freezing entirely")
     elif adjustment_consistent is None:
         state, basis = "UNRESOLVED_ADJUSTMENT_UNVERIFIED", (
+            adjustment_basis or
             "no split/dividend adjustment check was performed. Unchecked is not the same as "
             "consistent, and defaulting it to consistent would assert something nobody verified")
     elif adjustment_consistent is False:
         state, basis = "UNRESOLVED_ADJUSTMENT_MISSING", (
-            "the adjustment basis could not be applied consistently across both endpoints; a "
-            "split is an adjustment basis, not a reason to void")
+            (adjustment_basis + " — " if adjustment_basis else "") +
+            "a split is an adjustment basis, not a reason to void: the observation resolves "
+            "once adjusted closes are supplied for both endpoints")
     elif delisting:
         cause = delisting.get("cause")
         proceeds = delisting.get("proceeds_per_share")
@@ -293,7 +343,9 @@ def resolve(session, observation, *, session_closes: dict, expected_sessions: li
             descriptive = (end - observation.reference_price) / observation.reference_price
             executable = (end - entry) / entry
             basis = (f"descriptive from the reference close; simulated entry at the close of "
-                     f"{wanted[0]}, the first completed session after the observation")
+                     f"{wanted[0]}, the first session that OPENED after the observation "
+                     f"instant and has since closed"
+                     + (f". {adjustment_basis}" if adjustment_basis else ""))
             if benchmark_closes:
                 b_end = benchmark_closes.get(wanted[-1])
                 b_entry = benchmark_closes.get(wanted[0])

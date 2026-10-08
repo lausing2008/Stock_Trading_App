@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from common.jwt_auth import get_current_username
 from common.logging import get_logger
-from common.market_calendar import is_trading_day
+from common.market_calendar import is_trading_day, session_bounds
 from db import SessionLocal, Stock, Price, TimeFrame
 
 from ..intel_reports import evidence_buckets as EB
@@ -31,7 +31,8 @@ BENCHMARK = {"US": "SPY", "HK": "2800.HK"}
 
 def _sessions_back(venue: str, anchor: datetime, n: int) -> list:
     """Thin adapter over the ORM-free implementation, which the tests import directly."""
-    return EB.sessions_back(venue, anchor, n, is_trading_day=is_trading_day)
+    return EB.sessions_back(venue, anchor, n, is_trading_day=is_trading_day,
+                            session_bounds=session_bounds)
 
 
 def _bars(session, stock_id: int, dates: list) -> list:
@@ -47,12 +48,9 @@ def _bars(session, stock_id: int, dates: list) -> list:
 
 
 def _closes_for(session, stock_id: int, dates: list) -> dict:
-    """Closes keyed BY SESSION DATE. A date absent from the result is a missing bar.
-
-    The earlier form took "the next n stored rows", so one missing daily bar pulled the
-    endpoint forward onto a later session and a 20-session return was quietly measured over 21,
-    differently per symbol depending on which rows happened to exist.
-    """
+    """Read the stored closes for exactly these session dates. Selection logic is in
+    `EB.closes_by_date`, which is pure, tested, and inside the fingerprinted contract —
+    price selection changes outcome figures, so it may not sit outside it."""
     if not dates:
         return {}
     rows = session.execute(
@@ -61,8 +59,28 @@ def _closes_for(session, stock_id: int, dates: list) -> dict:
             Price.ts >= datetime.fromisoformat(dates[0]),
             Price.ts < datetime.fromisoformat(dates[-1]) + timedelta(days=1))
     ).all()
-    got = {r[0].date().isoformat(): (float(r[1]) if r[1] is not None else None) for r in rows}
-    return {d: got.get(d) for d in dates}
+    return EB.closes_by_date(
+        [{"date": r[0].date().isoformat(), "close": r[1]} for r in rows], dates)
+
+
+def _adjustment_bars(session, stock_id: int, dates: list) -> list:
+    """Close AND adj_close for every date, so a corporate action inside the window is visible."""
+    if not dates:
+        return []
+    rows = session.execute(
+        select(Price.ts, Price.close, Price.adj_close).where(
+            Price.stock_id == stock_id, Price.timeframe == TimeFrame.D1,
+            Price.ts >= datetime.fromisoformat(dates[0]),
+            Price.ts < datetime.fromisoformat(dates[-1]) + timedelta(days=1))
+    ).all()
+    got = {r[0].date().isoformat(): r for r in rows}
+    out = []
+    for d in dates:
+        r = got.get(d)
+        out.append({"date": d,
+                    "close": float(r[1]) if r is not None and r[1] is not None else None,
+                    "adj_close": float(r[2]) if r is not None and r[2] is not None else None})
+    return out
 
 
 def _existing_observation(session, subject_key, as_of, horizon_sessions, origin):
@@ -259,15 +277,27 @@ def replay(symbol: str, sessions_ago: int = Query(90, ge=25, le=400),
             # is a gap rather than a shifted endpoint, and nothing resolves against a forming
             # or future session.
             fwd = EB.sessions_forward(venue, as_of, row.horizon_sessions,
-                                      is_trading_day=is_trading_day, not_after=now)
+                                      is_trading_day=is_trading_day, not_after=now,
+                                      session_bounds=session_bounds)
             closes = _closes_for(session, stock.id, fwd)
             bcloses = _closes_for(session, bench.id, fwd) if bench else None
+            # ADJUSTMENT VERIFIED OVER THE OUTCOME WINDOW, NOT ASSERTED. This used to pass
+            # `adjustment_consistent=True` on the strength of the direction screen's check —
+            # but that check covers the 21-session SETUP window BEFORE the cutoff, and says
+            # nothing about a split or distribution during the 5/20/63 sessions the return is
+            # actually measured over, for the stock or for the benchmark. The window spans the
+            # REFERENCE session too: an action between the reference close and the first
+            # measured session corrupts the descriptive return just as badly as one in the
+            # middle.
+            window = ([body["latest_session"]] if body["latest_session"] else []) + fwd
+            series = {"stock": _adjustment_bars(session, stock.id, window)}
+            if bench:
+                series["benchmark"] = _adjustment_bars(session, bench.id, window)
+            adj = EB.adjustment_evidence(series)
             outcome, created = resolve(
                 session, row, session_closes=closes, expected_sessions=fwd,
                 benchmark_reference=bench_ref, benchmark_closes=bcloses,
-                # The direction screen already refuses a window whose adjustment factor moves;
-                # the bars behind this observation passed that check at capture.
-                adjustment_consistent=True)
+                adjustment_consistent=adj["consistent"], adjustment_basis=adj["reason"])
             o["outcome"] = {
                 "resolution_state": outcome.resolution_state,
                 "sessions_elapsed": outcome.sessions_elapsed,
@@ -284,6 +314,7 @@ def replay(symbol: str, sessions_ago: int = Query(90, ge=25, le=400),
                 # it pools a corrected reading with the defective one it replaced.
                 "resolver_fingerprint": outcome.resolver_fingerprint,
                 "superseded_by": outcome.superseded_by_id,
+                "adjustment_evidence": adj,
                 "attempts": len(outcome.attempts or []),
                 "basis": outcome.resolution_basis, "created": created}
     body["note"] = ("RETROSPECTIVE REPLAY. Proves the capture and resolution machinery works. "

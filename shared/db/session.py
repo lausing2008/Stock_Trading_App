@@ -89,6 +89,16 @@ def _run_migrations() -> None:  # noqa: C901
             "CREATE INDEX IF NOT EXISTS ix_observation_outcomes_resolver_fingerprint "
             "ON observation_outcomes (resolver_fingerprint)"))
 
+        # AUD-OBS-INVALIDCAPTURE (2026-10-08): a capture produced by defective code must be
+        # excluded on its own record, not by relying on the outcome's resolver fingerprint —
+        # re-resolving it would otherwise make it eligible again.
+        conn.execute(text(
+            "ALTER TABLE IF EXISTS intelligence_observations "
+            "ADD COLUMN IF NOT EXISTS invalidated_reason TEXT"))
+        conn.execute(text(
+            "ALTER TABLE IF EXISTS intelligence_observations "
+            "ADD COLUMN IF NOT EXISTS invalidated_at TIMESTAMP"))
+
         # Add Chinese name column and backfill known HK stocks
         conn.execute(text(
             "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS name_zh VARCHAR(256)"

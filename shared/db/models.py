@@ -4057,6 +4057,14 @@ class IntelligenceObservation(Base):
     frozen_inputs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     frozen_inputs_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    #: WHY THIS CAPTURE MAY NEVER BE PUBLISHED, in words, where it may not. A capture produced
+    #: by defective code is not merely old: it cannot be reproduced and its inputs were never
+    #: what they claim. Relying on the outcome's resolver fingerprint to exclude it is not
+    #: enough — re-resolving it under the current resolver would make it eligible again, since
+    #: the defect is in the CAPTURE, not the scoring. The reason travels on the observation so
+    #: the exclusion survives any amount of re-resolution.
+    invalidated_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    invalidated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (

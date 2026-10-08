@@ -432,3 +432,66 @@ def test_publishable_excludes_a_replaced_row_after_a_resolver_rollback(session, 
     _force_fingerprint(monkeypatch, "resolver-A")  # rolled back
     assert publishable_outcomes(session, origin=PROSPECTIVE) == [], \
         "a withdrawn figure must not return to publication because the code was reverted"
+
+
+# ---- an INVALID CAPTURE stays excluded however often it is re-resolved -----------------------
+#
+# AUD-OBS-INVALIDCAPTURE. MU's observations 1-3 sit at a weekend cutoff produced by the
+# session-walk bug fixed in aa48c5d4. They were excluded only because their outcome carried an
+# old resolver fingerprint — which is a property of the SCORING. Re-resolving them under the
+# current resolver would have walked them straight back into publication, because the defect is
+# in the CAPTURE and no amount of re-scoring repairs it.
+
+def test_an_invalidated_capture_is_excluded_even_after_re_resolution(session, monkeypatch):
+    from db.models import IntelligenceObservation
+    from intel_reports.observations import publishable_outcomes, PROSPECTIVE
+    row, _ = _obs(session, horizon_sessions=3)
+    _force_fingerprint(monkeypatch, "resolver-A")
+    _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0})
+    assert len(publishable_outcomes(session, origin=PROSPECTIVE)) == 1
+
+    obs = session.get(IntelligenceObservation, row.id)
+    obs.invalidated_reason = ("captured at a non-trading-day cutoff produced by the session-"
+                             "walk defect fixed in aa48c5d4; the inputs cannot be reproduced")
+    obs.invalidated_at = OBSERVED
+    session.commit()
+    assert publishable_outcomes(session, origin=PROSPECTIVE) == []
+
+    # The decisive step: re-resolve under the CURRENT resolver, which is exactly what would
+    # make it eligible again if exclusion rested on the outcome's fingerprint.
+    monkeypatch.undo()
+    out, created = _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0})
+    assert created is True, "a fresh resolver did write a new outcome row"
+    assert out.resolution_state == "RESOLVED"
+    assert publishable_outcomes(session, origin=PROSPECTIVE) == [], \
+        "a defective CAPTURE cannot be repaired by re-scoring it"
+
+
+def test_the_invalidation_reason_is_recorded_in_words_not_a_flag(session):
+    from db.models import IntelligenceObservation
+    row, _ = _obs(session)
+    obs = session.get(IntelligenceObservation, row.id)
+    obs.invalidated_reason = "x" * 400  # a sentence, not a boolean
+    session.commit()
+    session.expire_all()
+    assert len(session.get(IntelligenceObservation, row.id).invalidated_reason) == 400
+
+
+def test_resolve_records_the_adjustment_finding_rather_than_only_a_verdict(session):
+    """An UNRESOLVED_ADJUSTMENT_MISSING that does not say WHAT moved is unactionable."""
+    row, _ = _obs(session, horizon_sessions=3)
+    out, _ = _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0},
+                      adjustment_consistent=False,
+                      adjustment_basis="the adjustment factor moves inside the outcome window "
+                                       "(1 change(s), first on 2026-09-03 for stock)")
+    assert out.resolution_state == "UNRESOLVED_ADJUSTMENT_MISSING"
+    assert "2026-09-03" in out.resolution_basis
+    assert "not a reason to void" in out.resolution_basis
+
+
+def test_a_resolved_basis_states_the_entry_convention_it_actually_applied(session):
+    row, _ = _obs(session, horizon_sessions=3)
+    out, _ = _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0},
+                      adjustment_basis="the adjustment factor is flat across every session")
+    assert "OPENED after the observation instant and has since closed" in out.resolution_basis
+    assert "flat across every session" in out.resolution_basis

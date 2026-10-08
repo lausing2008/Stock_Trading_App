@@ -156,53 +156,188 @@ def policy_fingerprint() -> str:
                    "work_remaining": list(WORK_REMAINING)})
 
 
-def sessions_back(venue: str, anchor: datetime, n: int, *, is_trading_day) -> list:
-    """The n completed trading sessions ending strictly before `anchor`'s local day.
+def _aware(dt: datetime):
+    """Naive timestamps in this schema are UTC. Never let the HOST's zone decide.
+
+    `is_hk_trading_day` calls `.astimezone()`, which reads a NAIVE datetime as HOST LOCAL
+    TIME. On a UTC-8 host naive Sunday 12:00 became Monday in Hong Kong and weekends came back
+    as sessions. The answer must not depend on the machine asking.
+    """
+    from datetime import timezone
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def sessions_back(venue: str, anchor: datetime, n: int, *, is_trading_day,
+                  session_bounds=None) -> list:
+    """The n trading sessions whose CLOSE is at or before `anchor`.
 
     LIVES HERE, ORM-FREE, SO A TEST CAN IMPORT THE REAL FUNCTION. It first lived in the route
     module, where the service conftest's `db` stub makes it unimportable — so its test
     re-implemented it, and then could not catch an edit that deleted a line from the original.
 
-    MIDDAY AND TIMEZONE-AWARE. Two separate traps:
-      * midnight — `is_trading_day` resolves the instant into the venue's local calendar, so a
-        midnight anchor lands on the previous local day and shifts the whole window by one.
-      * naive — `is_hk_trading_day` calls `.astimezone()`, which interprets a NAIVE datetime as
-        HOST LOCAL TIME. On a UTC-8 host, naive Sunday 12:00 became Monday in Hong Kong and
-        weekends came back as sessions. The answer must not depend on the machine asking.
+    COMPLETION, NOT CALENDAR DISTANCE. The earlier form took "trading days strictly before the
+    anchor's day", which answers a different question: on an anchor at 10:00 ET the previous
+    day qualified, but so did a day whose close had not happened if the anchor fell earlier.
+    Asking the venue when the session actually closed removes the proxy. `session_bounds` is
+    injected so this module stays importable without the ORM; omitting it falls back to the
+    old day-granular rule, which is why every caller passes it and a test asserts they do.
     """
-    from datetime import timedelta, timezone
+    from datetime import timedelta
+    cutoff = _aware(anchor)
     out: list = []
-    day = (anchor.replace(hour=12, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
-           - timedelta(days=1))
+    day = cutoff
+    guard = 0
     while len(out) < n:
-        if is_trading_day(venue, day):
-            out.append(day.date().isoformat())
+        guard += 1
+        if guard > 4000:  # ~11 years of calendar days; a calendar gap, not a horizon
+            raise RuntimeError(f"no {n} completed {venue} sessions found before {anchor}")
+        probe = day.replace(hour=12, minute=0, second=0, microsecond=0)
+        if is_trading_day(venue, probe):
+            d = probe.date()
+            bounds = session_bounds(venue, d) if session_bounds else None
+            closed = bounds[1] <= cutoff if bounds else probe.date() < cutoff.date()
+            if closed:
+                out.append(d.isoformat())
         day -= timedelta(days=1)
     return list(reversed(out))
 
 
 def sessions_forward(venue: str, anchor: datetime, n: int, *, is_trading_day,
-                     not_after: datetime) -> list:
-    """The n trading sessions strictly AFTER `anchor`, capped at `not_after`.
+                     not_after: datetime, session_bounds=None) -> list:
+    """The n trading sessions an observation made at `anchor` could be measured over.
 
     CONSTRUCTED, NOT COUNTED. Taking "the next n stored rows" lets a missing daily bar pull the
     endpoint forward onto a later session — a 20-session return quietly measured over 21 — and
     the horizon then differs per symbol according to which rows happen to be present. Building
     the expected dates makes a gap visible as a gap.
 
-    `not_after` excludes sessions that have not completed, so a horizon cannot resolve against
-    a forming or future bar.
+    TWO BOUNDARIES, AND THE EARLIER VERSION HAD NEITHER RIGHT:
+
+      * ELIGIBLE — a session counts only if it OPENS strictly after `anchor`, because a session
+        already under way when the observation was formed could not have been entered from its
+        open. The old rule started at the next CALENDAR day, so a midnight cutoff on June 1
+        skipped the whole of June 1 — a full session that began 13.5 hours after the cutoff —
+        and silently imposed a one-session delayed entry nobody had stated.
+      * COMPLETE — a session counts only if it has CLOSED by `not_after`. The old rule admitted
+        a date once 12:00 UTC had passed, which is 08:00 ET: before the US market opens, let
+        alone closes. A horizon could resolve against a forming or entirely absent bar.
+
+    Both are now asked of the venue rather than approximated, so the convention a reader is
+    told about is the one the code applies.
     """
-    from datetime import timedelta, timezone
+    from datetime import timedelta
+    start = _aware(anchor)
+    cap = _aware(not_after)
     out: list = []
-    day = (anchor.replace(hour=12, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
-           + timedelta(days=1))
-    cap = not_after.replace(tzinfo=timezone.utc) if not_after.tzinfo is None else not_after
-    while len(out) < n and day <= cap:
-        if is_trading_day(venue, day):
-            out.append(day.date().isoformat())
+    day = start
+    guard = 0
+    while len(out) < n:
+        guard += 1
+        if guard > 4000:
+            break
+        probe = day.replace(hour=12, minute=0, second=0, microsecond=0)
         day += timedelta(days=1)
+        if not is_trading_day(venue, probe):
+            continue
+        d = probe.date()
+        bounds = session_bounds(venue, d) if session_bounds else None
+        if bounds is None:
+            # Day-granular fallback, retained only so the function stays callable without the
+            # calendar; every production caller injects `session_bounds`.
+            if d <= start.date() or d > cap.date():
+                continue
+            out.append(d.isoformat())
+            continue
+        opens, closes = bounds
+        if opens <= start:
+            continue  # already trading when the observation was formed
+        if closes > cap:
+            break  # not complete; no later session is either
+        out.append(d.isoformat())
     return out
+
+
+#: Relative tolerance on the adjustment factor. A split or dividend moves `adj_close/close` by
+#: far more than this; float noise and vendor rounding move it by far less.
+ADJUSTMENT_TOLERANCE = 1e-4
+
+
+def adjustment_evidence(series: dict) -> dict:
+    """Did a corporate action occur inside this window, and can both endpoints share one basis?
+
+    `series` maps a label ("stock", "benchmark") to an ordered list of
+    `{"date", "close", "adj_close"}` covering EVERY session the return is measured across,
+    INCLUDING the reference session — a split between the reference close and the first
+    measured session corrupts the descriptive return just as surely as one in the middle.
+
+    Returns `{"consistent": True|False|None, "reason": ..., "events": [...]}`.
+
+      * `None` — NOT CHECKED, which is not the same as checked-and-fine. Any bar missing an
+        `adj_close` (or a `close`) makes the question unanswerable, and the resolver treats
+        that as UNRESOLVED_ADJUSTMENT_UNVERIFIED rather than assuming the benign case.
+      * `False` — the adjustment factor MOVES inside the window, so a corporate action
+        occurred and an unadjusted close-to-close return spans two different bases. It is not
+        a reason to void the observation; it is a reason to require adjusted evidence.
+      * `True` — the factor is flat across the whole window for every instrument, so no action
+        occurred and unadjusted closes share one basis.
+
+    The benchmark is checked on the same footing as the stock: an excess return built from a
+    stock whose basis is sound and a benchmark whose basis is not is still wrong.
+    """
+    events, unverifiable = [], []
+    for label, bars in series.items():
+        if not bars:
+            unverifiable.append(f"{label}: no bars supplied")
+            continue
+        factors = []
+        for b in bars:
+            close, adj = b.get("close"), b.get("adj_close")
+            if close in (None, 0) or adj is None:
+                unverifiable.append(
+                    f"{label}: {b.get('date')} has no usable close/adj_close pair")
+                continue
+            factors.append((b.get("date"), adj / close))
+        if len(factors) < 2:
+            unverifiable.append(f"{label}: fewer than two comparable sessions")
+            continue
+        base = factors[0][1]
+        for d, f in factors[1:]:
+            if base == 0 or abs(f - base) / abs(base) > ADJUSTMENT_TOLERANCE:
+                events.append({"instrument": label, "date": d,
+                               "factor_from": base, "factor_to": f})
+                base = f
+    if unverifiable:
+        return {"consistent": None, "events": events,
+                "reason": "the adjustment basis could not be checked across the outcome "
+                          "window — " + "; ".join(unverifiable[:3])}
+    if events:
+        return {"consistent": False, "events": events,
+                "reason": f"the adjustment factor moves inside the outcome window "
+                          f"({len(events)} change(s), first on "
+                          f"{events[0]['date']} for {events[0]['instrument']}), so an "
+                          f"unadjusted close-to-close return spans two different bases"}
+    return {"consistent": True, "events": [],
+            "reason": "the adjustment factor is flat across every session of the outcome "
+                      "window for every instrument, so both endpoints share one basis"}
+
+
+def closes_by_date(rows, dates: list) -> dict:
+    """Closes keyed BY SESSION DATE, with every expected date present.
+
+    A date absent from `rows` maps to None — a MISSING BAR, not a reason to reach further
+    forward. The earlier form took "the next n stored rows", so one missing daily bar pulled
+    the endpoint onto a later session and a 20-session return was quietly measured over 21,
+    differently per symbol depending on which rows happened to exist.
+
+    Pure and ORM-free so it can be fingerprinted and tested: price selection changes outcome
+    figures, so it belongs inside the calculation contract.
+    """
+    got = {}
+    for r in rows:
+        d = r["date"] if isinstance(r, dict) else r[0]
+        v = r["close"] if isinstance(r, dict) else r[1]
+        got[d] = float(v) if v is not None else None
+    return {d: got.get(d) for d in dates}
 
 
 def unmeasured(name: str, status: str, why: str, *, source: str = "platform") -> Bucket:
