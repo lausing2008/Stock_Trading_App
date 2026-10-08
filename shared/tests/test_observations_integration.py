@@ -102,9 +102,21 @@ def test_replay_and_prospective_are_separate_rows_not_one(session):
 D = ["2026-09-02", "2026-09-03", "2026-09-04"]
 
 
+#: A VERIFIED adjustment basis, as a source that guarantees completeness would give. Tests that
+#: care about pooling say which kind they mean rather than inheriting one.
+_VERIFIED_ADJ = {"consistent": True, "evidence": {
+    "stock": {"verified_by": "sourced_action_history",
+              "completeness_basis": "source_guarantee"}}}
+#: The same window, from a source that returned actions but guarantees nothing.
+_PROVISIONAL_ADJ = {"consistent": True, "evidence": {
+    "stock": {"verified_by": "sourced_action_history",
+              "completeness_basis": "response_only"}}}
+
+
 def _resolve(session, row, closes, **kw):
     from intel_reports.observations import resolve
     kw.setdefault("adjustment_consistent", True)
+    kw.setdefault("adjustment", _VERIFIED_ADJ)
     return resolve(session, row, session_closes=closes,
                    expected_sessions=kw.pop("expected", D[:len(closes)]), **kw)
 
@@ -499,18 +511,97 @@ def test_a_resolved_basis_states_the_entry_convention_it_actually_applied(sessio
     assert "flat across every session" in out.resolution_basis
 
 
-def test_an_unresolved_row_is_returned_for_coverage_but_carries_no_return(session):
-    """The frozen policy keeps it in the denominator; it must not become a zero in a mean."""
-    from intel_reports.observations import publishable_outcomes, PROSPECTIVE
+def test_an_unresolved_row_is_ineligible_but_still_counted(session):
+    """It must never become a zero in a mean, and must still be answerable as a denominator."""
+    from intel_reports.observations import (publishable_outcomes, coverage_counts, PROSPECTIVE)
     row, _ = _obs(session, horizon_sessions=3)
     _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0},
-             adjustment_consistent=None)
-    got = publishable_outcomes(session, origin=PROSPECTIVE)
-    assert len(got) == 1, "it counts towards coverage"
+             adjustment_consistent=None, adjustment=None)
+    assert publishable_outcomes(session, origin=PROSPECTIVE, eligibility="verified") == []
+    assert publishable_outcomes(session, origin=PROSPECTIVE, eligibility="provisional") == []
+    got = publishable_outcomes(session, origin=PROSPECTIVE, eligibility="ineligible")
+    assert len(got) == 1, "it is still answerable as a denominator"
     out = got[0][0]
     assert out.resolution_state == "UNRESOLVED_ADJUSTMENT_UNVERIFIED"
+    assert out.evidence_status == "unverified"
     assert out.descriptive_return is None and out.excess_return is None, \
         "an unverified window has no return, not a zero return"
+    assert coverage_counts(session, origin=PROSPECTIVE)["pools"]["ineligible"]["total"] == 1
+
+
+# ---- the three questions are separate, and a provisional figure is a different population ----
+
+def test_a_returned_but_unguaranteed_history_is_PROVISIONAL_not_verified(session):
+    """A source returning no further actions establishes what it RETURNED. It does not establish
+    that none occurred, and keeping the calculation usable is not a reason to call it verified —
+    that is an argument from inconvenience, not evidence."""
+    from intel_reports.observations import publishable_outcomes, PROSPECTIVE
+    row, _ = _obs(session, horizon_sessions=3)
+    out, _ = _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0},
+                      adjustment=_PROVISIONAL_ADJ)
+    assert out.resolution_state == "RESOLVED", "the figure WAS calculable"
+    assert out.descriptive_return is not None
+    assert out.evidence_status == "provisional"
+    assert out.performance_eligibility == "provisional"
+    assert publishable_outcomes(session, origin=PROSPECTIVE, eligibility="verified") == [], \
+        "a provisional figure must never reach a verified aggregate"
+    assert len(publishable_outcomes(session, origin=PROSPECTIVE,
+                                    eligibility="provisional")) == 1
+
+
+def test_a_guaranteed_history_is_verified_and_eligible(session):
+    from intel_reports.observations import publishable_outcomes, PROSPECTIVE
+    row, _ = _obs(session, horizon_sessions=3)
+    out, _ = _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0})
+    assert (out.evidence_status, out.performance_eligibility) == ("verified", "verified")
+    assert len(publishable_outcomes(session, origin=PROSPECTIVE, eligibility="verified")) == 1
+
+
+def test_the_weakest_instrument_decides_the_evidence_status(session):
+    """An excess return resting on a verified stock basis and a provisional benchmark basis is
+    provisional: the comparison is only as sound as its weaker half."""
+    from intel_reports.evidence_buckets import evidence_status
+    mixed = {"consistent": True, "evidence": {
+        "stock": {"verified_by": "sourced_action_history",
+                  "completeness_basis": "source_guarantee"},
+        "benchmark": {"verified_by": "sourced_action_history",
+                      "completeness_basis": "response_only"}}}
+    assert evidence_status(mixed) == "provisional"
+
+
+def test_a_flat_provider_factor_is_corroboration_not_proof(session):
+    """It rules out an action the provider recognised; it does not describe the provider's
+    methodology, so it cannot establish a chosen basis outright."""
+    from intel_reports.evidence_buckets import evidence_status
+    assert evidence_status({"consistent": True, "evidence": {
+        "stock": {"verified_by": "provider_adjustment_factor"}}}) == "provisional"
+
+
+def test_the_provisional_label_says_what_it_rests_on_and_how_to_close_it(session):
+    from intel_reports.evidence_buckets import EVIDENCE_LABEL, PROVISIONAL_REMEDY
+    assert EVIDENCE_LABEL["provisional"] == (
+        "Provisional — based on returned corporate actions; completeness unverified")
+    # The remedy is stronger evidence, NOT acceptance.
+    assert "documents completeness" in PROVISIONAL_REMEDY
+    assert "second independent source" in PROVISIONAL_REMEDY
+
+
+def test_coverage_counts_disclose_what_an_aggregate_excluded(session):
+    """A 100% win rate over two eligible rows reads like a result unless the denominator is
+    beside it."""
+    from intel_reports.observations import coverage_counts, PROSPECTIVE
+    good, _ = _obs(session, horizon_sessions=3)
+    _resolve(session, good, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0})
+    prov, _ = _obs(session, horizon_sessions=3, observed_at=OBSERVED - timedelta(days=1))
+    _resolve(session, prov, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0},
+             adjustment=_PROVISIONAL_ADJ)
+    blocked, _ = _obs(session, horizon_sessions=3, observed_at=OBSERVED - timedelta(days=2))
+    _resolve(session, blocked, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0},
+             adjustment_consistent=None, adjustment=None)
+    pools = coverage_counts(session, origin=PROSPECTIVE)["pools"]
+    assert pools["verified"]["total"] == 1
+    assert pools["provisional"]["total"] == 1
+    assert pools["ineligible"]["total"] == 1
 
 
 # ---- corporate-action storage and the coverage claim -----------------------------------------

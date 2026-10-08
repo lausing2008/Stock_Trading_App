@@ -4198,6 +4198,21 @@ class ObservationOutcome(Base):
     #: Every resolution attempt, appended. A pending outcome may later advance to RESOLVED;
     #: this makes the transition visible instead of silently replacing the row.
     attempts: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    #: THREE SEPARATE QUESTIONS, and conflating them is how a provisional number becomes a
+    #: verified one. `resolution_state` above answers only the FIRST:
+    #:   1. CALCULATION — was there enough returned data to compute a figure at all?
+    #:   2. EVIDENCE    — is the adjustment basis VERIFIED, or merely consistent with what a
+    #:                    source happened to return? `evidence_status` answers this.
+    #:   3. ELIGIBILITY — may this figure enter a performance aggregate, and which one?
+    #: A source returning no corporate actions establishes that it returned none. It does not
+    #: establish that none occurred, and no amount of "otherwise everything would be
+    #: unresolvable" turns the first into the second — that is an argument from inconvenience.
+    #: verified | provisional | unverified
+    evidence_status: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    #: verified | provisional | ineligible. Derived, stored so a reader never has to re-derive
+    #: it and a query can filter on it directly.
+    performance_eligibility: Mapped[str | None] = mapped_column(String(16), nullable=True,
+                                                                index=True)
     #: The state this row held before the most recent transition, where one occurred.
     superseded_state: Mapped[str | None] = mapped_column(String(48), nullable=True)
     #: WHICH RESOLVER WROTE THIS ROW — a digest of the resolver's own rules, not a string

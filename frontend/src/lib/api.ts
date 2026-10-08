@@ -180,6 +180,11 @@ export interface OutcomeRow {
   descriptive_return?: number | null; simulated_next_session_close_return?: number | null;
   benchmark_return_same_window?: number | null; benchmark_return_entry_window?: number | null;
   excess_return?: number | null; return_basis?: string | null; reason?: string | null;
+  /* THREE SEPARATE QUESTIONS, and collapsing them is how a provisional number becomes a
+     verified one. `state` answers only whether a figure could be CALCULATED. */
+  evidence_status?: 'verified' | 'provisional' | 'unverified' | null;
+  evidence_label?: string | null;
+  performance_eligibility?: 'verified' | 'provisional' | 'ineligible' | null;
 }
 export interface SupersededRow {
   id: number; resolver?: string | null; superseded_by?: number | null; state: string;
@@ -200,6 +205,13 @@ export interface StockOutcomes {
   /* SERVED, NEVER COPIED. A frontend keeping its own state->label map is how four backend
      states once all rendered as the single thing they were added to stop saying. */
   reason_labels: Record<string, string>;
+  evidence_labels?: Record<string, string>;
+  provisional_remedy?: string;
+  /* How many rows each pool holds, and why the others were excluded. A verified figure without
+     this beside it is a numerator with no denominator. */
+  coverage?: Record<string, { origin: string; invalidated_captures: number; note: string;
+                              pools: Record<string, { total: number;
+                                                      by_reason: Record<string, number> }> }>;
   note?: string;
 }
 

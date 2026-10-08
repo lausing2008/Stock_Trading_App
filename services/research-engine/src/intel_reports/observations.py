@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from . import evidence_buckets as EB
@@ -225,6 +225,8 @@ def outcome_contract() -> dict:
         "split_factors": _canonical_source(EB.split_factors),
         "apply_adjustment": _canonical_source(EB.apply_adjustment),
         "adjustment_method": EB.ADJUSTMENT_METHOD,
+        "evidence_status": _canonical_source(EB.evidence_status),
+        "performance_eligibility": _canonical_source(EB.performance_eligibility),
         "return_bases": list(EB.RETURN_BASES),
         "share_count_actions": list(EB.SHARE_COUNT_ACTIONS),
         "distribution_actions": list(EB.DISTRIBUTION_ACTIONS),
@@ -240,7 +242,8 @@ def resolver_fingerprint() -> str:
     return digest(outcome_contract())
 
 
-def publishable_outcomes(session, *, origin: str, symbol: str | None = None):
+def publishable_outcomes(session, *, origin: str, eligibility: str = "verified",
+                         symbol: str | None = None):
     """The ONLY selector a published performance figure may be computed from.
 
     THREE conditions, and dropping any one of them pools readings that must not be pooled:
@@ -259,16 +262,26 @@ def publishable_outcomes(session, *, origin: str, symbol: str | None = None):
         was what needed correcting.)
       * one `origin` — a retrospective replay and a prospective capture are never pooled. The
         replay's rules were written with its outcomes already in existence.
+      * `performance_eligibility == eligibility` — one POOL. This is the third of the three
+        separate questions an outcome answers: whether a figure could be calculated, whether its
+        adjustment evidence is verified, and which aggregate it may enter. Mixing pools is the
+        failure this parameter exists to make impossible to do by accident.
       * `invalidated_reason IS NULL` — the CAPTURE itself is sound. The three above are all
         properties of the scoring; this one is not, and no amount of re-resolution can repair a
         capture whose inputs were produced by defective code. Without it, re-resolving an
         invalid observation under the current resolver would walk it straight back into
         publication.
 
-    UNRESOLVED ROWS ARE RETURNED ON PURPOSE. They belong in the COVERAGE denominator — the
-    frozen policy requires any statistic over this set to disclose how many rows carry no
-    return and why — but their return columns are NULL. A caller that averages without
-    excluding them silently reports a different population than the one it counted.
+    UNRESOLVED ROWS ARE NOT IN ANY POOL — they are `ineligible`, which is itself a selectable
+    value so the coverage denominator stays answerable. The frozen policy requires any statistic
+    over this set to disclose how many rows carry no return and why; `coverage_counts()` below
+    produces exactly that breakdown without ever handing an unresolved row to a mean.
+
+    `eligibility` SELECTS THE POOL, and there is no "all". A provisional figure is not a worse
+    verified figure: its adjustment basis rests on what a source happened to return rather than
+    on a guarantee that the list was complete, so it describes a different population. Averaging
+    the two produces a number describing neither. Pass "verified" for a headline result and
+    "provisional" for the separately-labelled one; read both, never added together.
 
     The caller must still separate by `return_basis`, which varies per row and so cannot be
     fixed here.
@@ -279,11 +292,52 @@ def publishable_outcomes(session, *, origin: str, symbol: str | None = None):
                IntelligenceObservation.id == ObservationOutcome.observation_id)
          .where(ObservationOutcome.resolver_fingerprint == resolver_fingerprint(),
                 ObservationOutcome.superseded_by_id.is_(None),
+                ObservationOutcome.performance_eligibility == eligibility,
                 IntelligenceObservation.origin == origin,
                 IntelligenceObservation.invalidated_reason.is_(None)))
     if symbol:
         q = q.where(IntelligenceObservation.symbol == symbol)
     return session.execute(q.order_by(ObservationOutcome.id)).all()
+
+
+def coverage_counts(session, *, origin: str, symbol: str | None = None) -> dict:
+    """How many rows sit in each pool, which is what a statistic must disclose beside itself.
+
+    A performance figure computed over the `verified` pool is incomplete without this: the
+    reader needs to know how many observations it EXCLUDED and why, or a 100% win rate over two
+    eligible rows reads like a result.
+    """
+    from db import IntelligenceObservation, ObservationOutcome
+    q = (select(ObservationOutcome.performance_eligibility,
+                ObservationOutcome.evidence_status,
+                ObservationOutcome.resolution_state,
+                func.count())
+         .join(IntelligenceObservation,
+               IntelligenceObservation.id == ObservationOutcome.observation_id)
+         .where(ObservationOutcome.resolver_fingerprint == resolver_fingerprint(),
+                ObservationOutcome.superseded_by_id.is_(None),
+                IntelligenceObservation.origin == origin)
+         .group_by(ObservationOutcome.performance_eligibility,
+                   ObservationOutcome.evidence_status,
+                   ObservationOutcome.resolution_state))
+    if symbol:
+        q = q.where(IntelligenceObservation.symbol == symbol)
+    pools: dict = {}
+    for eligibility, ev, state, n in session.execute(q).all():
+        key = eligibility or "ineligible"
+        pools.setdefault(key, {"total": 0, "by_reason": {}})
+        pools[key]["total"] += n
+        reason = f"{ev or 'unclassified'} / {state}"
+        pools[key]["by_reason"][reason] = pools[key]["by_reason"].get(reason, 0) + n
+    iq = select(func.count()).select_from(IntelligenceObservation).where(
+        IntelligenceObservation.origin == origin,
+        IntelligenceObservation.invalidated_reason.isnot(None))
+    if symbol:
+        iq = iq.where(IntelligenceObservation.symbol == symbol)
+    return {"origin": origin, "pools": pools,
+            "invalidated_captures": session.execute(iq).scalar(),
+            "note": "A verified aggregate must disclose these counts beside it. A provisional "
+                    "figure is a different population, not a lower-quality verified one."}
 
 
 def resolve(session, observation, *, session_closes: dict, expected_sessions: list,
@@ -293,6 +347,7 @@ def resolve(session, observation, *, session_closes: dict, expected_sessions: li
             adjustment_consistent: bool | None = None,
             adjustment_basis: str | None = None,
             adjustment_factors: dict | None = None,
+            adjustment: dict | None = None,
             return_basis: str | None = None,
             now: datetime | None = None) -> tuple:
     """Score one observation under ITS OWN frozen policy. Returns (outcome_row, created).
@@ -406,7 +461,13 @@ def resolve(session, observation, *, session_closes: dict, expected_sessions: li
                     bench_entry_ret = (b_end - b_entry) / b_entry
 
     resolved = state.startswith("RESOLVED")
-    attempt = {"at": now.isoformat(), "state": state, "basis": basis}
+    # THREE SEPARATE QUESTIONS. `state` answered only whether a figure could be CALCULATED.
+    ev_status = EB.evidence_status(adjustment)
+    eligibility = EB.performance_eligibility(
+        state, ev_status,
+        capture_invalidated=getattr(observation, "invalidated_reason", None) is not None)
+    attempt = {"at": now.isoformat(), "state": state, "basis": basis,
+               "evidence_status": ev_status, "performance_eligibility": eligibility}
 
     fingerprint = resolver_fingerprint()
     attempt["resolver"] = fingerprint
@@ -429,6 +490,7 @@ def resolve(session, observation, *, session_closes: dict, expected_sessions: li
             delisting_cause=(delisting or {}).get("cause"), resolution_state=state,
             sessions_elapsed=len(expected_sessions), resolution_basis=basis,
             resolved_at=now if resolved else None, resolver_fingerprint=fingerprint,
+            evidence_status=ev_status, performance_eligibility=eligibility,
             attempts=[attempt], benchmark_entry_return=bench_entry_ret)
         session.add(row)
         session.flush()  # needs row.id to point the superseded originals at it
@@ -469,6 +531,8 @@ def resolve(session, observation, *, session_closes: dict, expected_sessions: li
         existing.excess_return = excess
         existing.benchmark_entry_return = bench_entry_ret
         existing.resolution_state = state
+        existing.evidence_status = ev_status
+        existing.performance_eligibility = eligibility
         existing.sessions_elapsed = len(expected_sessions)
         existing.resolution_basis = basis
         existing.superseded_state = previous

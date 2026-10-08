@@ -34,6 +34,14 @@ const LABELS = {
 const OUTCOMES = {
   symbol: 'MU', resolver_fingerprint: 'abc123', reason_labels: LABELS,
   note: 'Superseded outcomes are retained as audit records and are excluded from every performance reading.',
+  evidence_labels: {
+    verified: 'Verified — corporate-action coverage is guaranteed exhaustive for this window',
+    provisional: 'Provisional — based on returned corporate actions; completeness unverified',
+    unverified: 'Unverified — no adjustment basis could be established for this window' },
+  provisional_remedy: 'A source that documents completeness for the span, or corroboration from a second independent source, would make this verified. Until then the figure is usable and labelled, and is never pooled with verified results.',
+  coverage: { replay: { origin: 'replay', invalidated_captures: 3, note: '',
+                        pools: { provisional: { total: 1, by_reason: {} },
+                                 ineligible: { total: 1, by_reason: {} } } } },
   state_counts: { UNRESOLVED_ADJUSTMENT_UNVERIFIED: 1, UNRESOLVED_INSUFFICIENT_SESSIONS: 1,
                   INVALID_CAPTURE: 1, RESOLVED: 1 },
   observations: [
@@ -57,6 +65,9 @@ const OUTCOMES = {
       reference_price_as_of: '2026-05-29T00:00:00', invalidated_reason: null, publishable: true,
       outcome: { id: 11, state: 'RESOLVED', sessions_elapsed: 20, descriptive_return: 0.18876,
                  excess_return: 0.19906, return_basis: 'split_adjusted_price',
+                 evidence_status: 'provisional',
+                 evidence_label: 'Provisional — based on returned corporate actions; completeness unverified',
+                 performance_eligibility: 'provisional',
                  reason: 'descriptive from the reference close' },
       superseded: [] },
     { observation_id: 4, origin: 'prospective', observed_at: '2026-10-08T00:00:00',
@@ -189,5 +200,37 @@ describe('test files never live under src/pages', () => {
     };
     walk(join(process.cwd(), 'src', 'pages'));
     expect(offenders).toEqual([]);
+  });
+});
+
+
+describe('calculation, evidence and eligibility are three separate answers', () => {
+  it('never lets a calculable figure imply a verified one', () => {
+    swr.byKey = { 'stock-outcomes': OUTCOMES, 'stock-intel': INTEL };
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="MU" />);
+    // All three columns exist, and the figure that WAS calculable is still labelled provisional.
+    for (const h of ['Calculation', 'Evidence', 'Eligibility']) expect(html).toContain(h);
+    expect(html).toContain('Resolved');
+    expect(html).toContain('provisional');
+    expect(html).toContain(
+      'Provisional — based on returned corporate actions; completeness unverified');
+  });
+
+  it('states the remedy as stronger evidence, not as acceptance', () => {
+    swr.byKey = { 'stock-outcomes': OUTCOMES, 'stock-intel': INTEL };
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="MU" />);
+    expect(html).toContain('documents completeness');
+    expect(html).toContain('second independent source');
+    // The argument from inconvenience must appear nowhere on the page.
+    expect(html).not.toContain('would remain unresolvable');
+    expect(html).not.toContain('otherwise');
+  });
+
+  it('shows the denominator beside the figures', () => {
+    swr.byKey = { 'stock-outcomes': OUTCOMES, 'stock-intel': INTEL };
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="MU" />);
+    expect(html).toContain('provisional: 1');
+    expect(html).toContain('ineligible: 1');
+    expect(html).toContain('invalid captures: 3');
   });
 });

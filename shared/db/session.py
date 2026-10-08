@@ -150,6 +150,17 @@ def _run_migrations() -> None:  # noqa: C901
                 "UPDATE corporate_action_coverage SET completeness_basis = 'response_only' "
                 "WHERE completeness_basis IS NULL"))
 
+        # AUD-OBS-PROVISIONAL (2026-10-08): calculation, evidence and eligibility are three
+        # separate questions. Existing rows are left NULL rather than guessed: they were
+        # computed before the distinction existed, so claiming either value for them would be
+        # the exact conflation these columns were added to prevent.
+        conn.execute(text(
+            "ALTER TABLE IF EXISTS observation_outcomes "
+            "ADD COLUMN IF NOT EXISTS evidence_status VARCHAR(16)"))
+        conn.execute(text(
+            "ALTER TABLE IF EXISTS observation_outcomes "
+            "ADD COLUMN IF NOT EXISTS performance_eligibility VARCHAR(16)"))
+
         # Add Chinese name column and backfill known HK stocks
         conn.execute(text(
             "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS name_zh VARCHAR(256)"

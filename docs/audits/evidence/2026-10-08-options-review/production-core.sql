@@ -1,0 +1,10 @@
+BEGIN READ ONLY;
+SET LOCAL statement_timeout='30s';
+SELECT 'squeeze' AS family,alert_type,count(*) AS n,count(return_5d) AS resolved_5d,round(100.0*avg(is_correct_5d::int),2) AS stock_hurdle_rate_5d,round((100*avg(return_5d))::numeric,3) AS raw_stock_return_5d,min(fired_date),max(fired_date) FROM squeeze_alert_outcomes GROUP BY alert_type ORDER BY 2;
+SELECT direction,count(*) AS n,count(return_5d) AS resolved_5d,round(100.0*avg(is_correct_5d::int),2) AS stock_hurdle_rate_5d,round((100*avg(return_5d))::numeric,3) AS raw_stock_return_5d,count(*) FILTER (WHERE expiry<entry_date) AS expired_before_entry FROM options_flow_alert_outcomes GROUP BY direction;
+SELECT count(*) AS n,count(return_5d) AS resolved_5d,round(100.0*avg(is_correct_5d::int),2) AS absolute_move_hurdle_rate_5d,min(fired_date),max(fired_date) FROM dark_pool_alert_outcomes;
+SELECT 'flow' AS series,count(*),count(DISTINCT stock_id),max(as_of),max(computed_at) FROM options_flow_snapshots UNION ALL SELECT 'game_plan',count(*),count(DISTINCT stock_id),max(as_of),max(computed_at) FROM options_game_plan_snapshots UNION ALL SELECT 'gex',count(*),count(DISTINCT stock_id),max(as_of),max(computed_at) FROM gex_snapshots;
+SELECT count(*) AS chain_rows,count(DISTINCT symbol) AS symbols,min(as_of),max(as_of),count(*) FILTER (WHERE nbbo_bid>nbbo_ask AND nbbo_ask>0) AS crossed,count(*) FILTER(WHERE nbbo_ask IS NULL OR nbbo_ask<=0) AS no_ask FROM option_chain_history;
+SELECT stage,strategy,count(*),min(entry_date),max(entry_date),count(pnl),round(sum(pnl)::numeric,2) AS pnl FROM options_income_positions GROUP BY stage,strategy;
+SELECT symbol,max(as_of) AS latest,count(*) FILTER (WHERE as_of>=CURRENT_DATE-7) AS rows_last_week FROM option_chain_history GROUP BY symbol ORDER BY latest,symbol;
+COMMIT;

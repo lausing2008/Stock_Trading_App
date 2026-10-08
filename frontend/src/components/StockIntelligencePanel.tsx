@@ -57,6 +57,17 @@ const KIND_TONE = {
   none:     { fg: '#94a3b8', bg: 'rgba(148,163,184,0.08)', bd: 'rgba(148,163,184,0.25)' },
 };
 
+/* THE SECOND AND THIRD QUESTIONS, which the resolution state does not answer. A figure that
+   could be CALCULATED is not thereby VERIFIED: a source returning no corporate actions
+   establishes what it returned, not that none occurred. A provisional figure is a different
+   population from a verified one, not a lower-quality version of it, so the two are shown in
+   separate columns and the page never adds them together. */
+const EVIDENCE_TONE: Record<string, { fg: string; bg: string; bd: string }> = {
+  verified:    { fg: '#6ee7b7', bg: 'rgba(52,211,153,0.10)', bd: 'rgba(52,211,153,0.35)' },
+  provisional: { fg: '#fde047', bg: 'rgba(234,179,8,0.10)',  bd: 'rgba(234,179,8,0.4)' },
+  unverified:  { fg: '#fdba74', bg: 'rgba(251,146,60,0.10)', bd: 'rgba(251,146,60,0.38)' },
+};
+
 const label: React.CSSProperties = {
   fontSize: 11, letterSpacing: '0.09em', textTransform: 'uppercase', color: '#94a3b8',
 };
@@ -250,8 +261,8 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
                               minWidth: 720 }}>
                 <thead>
                   <tr style={{ textAlign: 'left', color: '#94a3b8' }}>
-                    {['Origin', 'Cutoff', 'Horizon', 'Status', 'Descriptive', 'Excess',
-                      'Basis'].map(h => (
+                    {['Origin', 'Cutoff', 'Horizon', 'Calculation', 'Evidence', 'Eligibility',
+                      'Descriptive', 'Excess', 'Basis'].map(h => (
                       <th key={h} style={{ padding: '7px 9px', fontWeight: 600, fontSize: 11,
                                            letterSpacing: '0.07em', textTransform: 'uppercase',
                                            borderBottom: '1px solid rgba(148,163,184,0.2)' }}>
@@ -270,8 +281,24 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
                       <td style={{ padding: '9px', color: '#cbd5e1' }}>
                         {r.horizon}<span style={{ color: '#64748b' }}> · {r.horizon_sessions}s</span>
                       </td>
-                      <td style={{ padding: '9px', minWidth: 220 }}>
+                      <td style={{ padding: '9px', minWidth: 210 }}>
                         <OutcomeRowCell row={r} labels={labels} /></td>
+                      <td style={{ padding: '9px', minWidth: 150 }}>
+                        {r.outcome?.evidence_status ? (
+                          <span title={r.outcome.evidence_label ?? ''}>
+                            <Pill text={r.outcome.evidence_status}
+                                  t={EVIDENCE_TONE[r.outcome.evidence_status]
+                                     ?? EVIDENCE_TONE.unverified} />
+                          </span>) : <span style={{ color: '#64748b' }}>—</span>}
+                        {r.outcome?.evidence_status === 'provisional' && (
+                          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 3,
+                                        lineHeight: 1.4 }}>
+                            {outcomes?.evidence_labels?.provisional
+                             ?? 'Provisional — based on returned corporate actions; completeness unverified'}
+                          </div>)}
+                      </td>
+                      <td style={{ padding: '9px', color: '#94a3b8', fontSize: 12 }}>
+                        {r.outcome?.performance_eligibility ?? '—'}</td>
                       <td style={{ padding: '9px', color: '#e2e8f0',
                                    fontVariantNumeric: 'tabular-nums' }}>
                         {PCT(r.outcome?.descriptive_return)}</td>
@@ -285,6 +312,27 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
                 </tbody>
               </table>
             </div>
+            {/* THE DENOMINATOR, beside the numerator. A verified result over two eligible
+                rows reads like a finding unless what it EXCLUDED is visible. */}
+            {outcomes?.coverage && (
+              <div style={{ marginTop: 12, display: 'grid', gap: 6 }}>
+                {Object.entries(outcomes.coverage).map(([origin, c]) => (
+                  <div key={origin} style={{ fontSize: 12, color: '#94a3b8' }}>
+                    <span style={{ ...label, fontSize: 10 }}>{origin}</span>{' '}
+                    {Object.entries(c.pools ?? {}).map(([pool, v]) =>
+                      `${pool}: ${v.total}`).join(' · ') || 'no outcomes'}
+                    {c.invalidated_captures > 0 &&
+                      ` · invalid captures: ${c.invalidated_captures}`}
+                  </div>
+                ))}
+              </div>
+            )}
+            {outcomes?.provisional_remedy && rows.some(
+                r => r.outcome?.evidence_status === 'provisional') && (
+              <p style={{ margin: '8px 0 0', fontSize: 12, color: '#fde047', lineHeight: 1.5 }}>
+                {outcomes.provisional_remedy}
+              </p>
+            )}
             <p style={{ margin: '10px 0 0', fontSize: 12, color: '#64748b', lineHeight: 1.5 }}>
               {outcomes?.note}
             </p>

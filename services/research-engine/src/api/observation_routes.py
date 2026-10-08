@@ -18,8 +18,8 @@ from db import SessionLocal, Stock, Price, TimeFrame
 from ..intel_reports import evidence_buckets as EB
 from ..intel_reports.direction_screen import assess
 from ..intel_reports.observations import (HORIZONS, PROSPECTIVE, REPLAY, UNRESOLVED_LABEL,
-                                          record_buckets, record_observation, resolve,
-                                          resolver_fingerprint)
+                                          coverage_counts, record_buckets, record_observation,
+                                          resolve, resolver_fingerprint)
 from ..intel_reports.quality_value_store import latest_assessments
 from ..intel_reports.quality_value import (COMPETITIVE_DURABILITY, VALUATION as QV_VALUATION,
                                            VALUE_TRAP_RISK, naive_utc)
@@ -338,7 +338,7 @@ def replay(symbol: str, sessions_ago: int = Query(90, ge=25, le=400),
                 session, row, session_closes=closes, expected_sessions=fwd,
                 benchmark_reference=bench_ref, benchmark_closes=bcloses,
                 adjustment_consistent=adj["consistent"], adjustment_basis=adj["reason"],
-                adjustment_factors=adj["factors"],
+                adjustment_factors=adj["factors"], adjustment=adj,
                 return_basis=adj["basis"] if adj["consistent"] else None)
             o["outcome"] = {
                 "resolution_state": outcome.resolution_state,
@@ -356,6 +356,10 @@ def replay(symbol: str, sessions_ago: int = Query(90, ge=25, le=400),
                 # it pools a corrected reading with the defective one it replaced.
                 "resolver_fingerprint": outcome.resolver_fingerprint,
                 "superseded_by": outcome.superseded_by_id,
+                # THREE SEPARATE ANSWERS, never collapsed into one.
+                "evidence_status": outcome.evidence_status,
+                "evidence_label": EB.EVIDENCE_LABEL.get(outcome.evidence_status or ""),
+                "performance_eligibility": outcome.performance_eligibility,
                 "adjustment_evidence": adj,
                 "attempts": len(outcome.attempts or []),
                 "basis": outcome.resolution_basis, "created": created}
@@ -412,6 +416,9 @@ def outcomes(symbol: str, _user: str = Depends(get_current_username)) -> dict:
                     "benchmark_return_entry_window": current.benchmark_entry_return,
                     "excess_return": current.excess_return,
                     "return_basis": current.return_basis,
+                    "evidence_status": current.evidence_status,
+                    "evidence_label": EB.EVIDENCE_LABEL.get(current.evidence_status or ""),
+                    "performance_eligibility": current.performance_eligibility,
                     "reason": current.resolution_basis},
                 # RETAINED, NOT SHOWN AS RESULTS. Earlier versions stay auditable and are
                 # explicitly excluded from any performance reading.
@@ -427,9 +434,15 @@ def outcomes(symbol: str, _user: str = Depends(get_current_username)) -> dict:
             if r["invalidated_reason"]:
                 key = "INVALID_CAPTURE"
             counts[key] = counts.get(key, 0) + 1
+        pools = coverage_counts(session, origin=REPLAY, symbol=sym)
+        pools_prospective = coverage_counts(session, origin=PROSPECTIVE, symbol=sym)
     return {"symbol": sym, "resolver_fingerprint": current_fp, "observations": rows,
             "state_counts": counts,
             "reason_labels": UNRESOLVED_LABEL,
+            # SERVED, NEVER COPIED client-side.
+            "evidence_labels": EB.EVIDENCE_LABEL,
+            "provisional_remedy": EB.PROVISIONAL_REMEDY,
+            "coverage": {"replay": pools, "prospective": pools_prospective},
             "note": ("Superseded outcomes are retained as audit records and are excluded from "
                      "every performance reading. Replay and prospective origins are never "
                      "pooled, and neither are two different return bases.")}

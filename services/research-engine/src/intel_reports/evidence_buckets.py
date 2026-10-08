@@ -372,9 +372,9 @@ def adjustment_evidence(series: dict, *, basis: str = SPLIT_ADJUSTED_PRICE,
                 "actions_in_window": len(acts)}
             if not acts and completeness != "source_guarantee":
                 out["disclosures"].append(
-                    f"{label}: no corporate action was RETURNED for this window by "
-                    f"{cov.get('source')}, which publishes no completeness guarantee — that is "
-                    f"weaker than a statement that none occurred")
+                    f"{label}: {cov.get('source')} returned no corporate action for this "
+                    f"window and publishes no completeness guarantee. That establishes what was "
+                    f"RETURNED, not that none occurred")
             share = [a for a in acts if a.get("action_type") in SHARE_COUNT_ACTIONS]
             dist = [a for a in acts if a.get("action_type") in DISTRIBUTION_ACTIONS]
             if basis == RAW_PRICE and (share or dist):
@@ -457,6 +457,67 @@ def adjustment_evidence(series: dict, *, basis: str = SPLIT_ADJUSTED_PRICE,
     out["consistent"] = verdict
     out["reason"] = reason
     return out
+
+
+#: What the adjustment evidence ESTABLISHES, which is a different question from whether a
+#: figure could be computed from it.
+EVIDENCE_VERIFIED = "verified"        # a source that guarantees an exhaustive list for the span
+EVIDENCE_PROVISIONAL = "provisional"  # a source returned actions; completeness is not established
+EVIDENCE_UNVERIFIED = "unverified"    # the basis could not be established at all
+
+EVIDENCE_LABEL = {
+    EVIDENCE_VERIFIED:
+        "Verified — corporate-action coverage is guaranteed exhaustive for this window",
+    EVIDENCE_PROVISIONAL:
+        "Provisional — based on returned corporate actions; completeness unverified",
+    EVIDENCE_UNVERIFIED:
+        "Unverified — no adjustment basis could be established for this window",
+}
+
+#: HOW TO CLOSE IT. Not "accept it because the alternative is inconvenient": the remedy is a
+#: source that documents exhaustiveness, or a second independent source agreeing.
+PROVISIONAL_REMEDY = ("A source that documents completeness for the span, or corroboration from "
+                      "a second independent source, would make this verified. Until then the "
+                      "figure is usable and labelled, and is never pooled with verified results.")
+
+
+def evidence_status(adjustment: dict | None) -> str:
+    """Classify what the adjustment evidence ESTABLISHES — never what was convenient.
+
+    A source returning no corporate actions establishes that it RETURNED none. It does not
+    establish that none occurred, and keeping the calculation available is not a reason to call
+    it verified. These are separate judgements and are recorded separately.
+    """
+    if not adjustment or adjustment.get("consistent") is not True:
+        return EVIDENCE_UNVERIFIED
+    ev = adjustment.get("evidence") or {}
+    if not ev:
+        return EVIDENCE_UNVERIFIED
+    # The WEAKEST instrument decides: an excess return resting on a verified stock basis and a
+    # provisional benchmark basis is provisional.
+    for e in ev.values():
+        if e.get("verified_by") != "sourced_action_history":
+            return EVIDENCE_PROVISIONAL      # a flat provider factor is corroboration, not proof
+        if e.get("completeness_basis") != "source_guarantee":
+            return EVIDENCE_PROVISIONAL
+    return EVIDENCE_VERIFIED
+
+
+def performance_eligibility(resolution_state: str | None, evidence: str | None,
+                            *, capture_invalidated: bool = False) -> str:
+    """Which performance pool this figure may enter, if any.
+
+    THE THIRD QUESTION, and the one a reader of an aggregate depends on. A provisional figure is
+    not a worse verified figure; it belongs to a different population, and averaging the two
+    produces a number describing neither.
+    """
+    if capture_invalidated or not (resolution_state or "").startswith("RESOLVED"):
+        return "ineligible"
+    if evidence == EVIDENCE_VERIFIED:
+        return "verified"
+    if evidence == EVIDENCE_PROVISIONAL:
+        return "provisional"
+    return "ineligible"
 
 
 def apply_adjustment(closes: dict, factors: dict | None) -> dict:

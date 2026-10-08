@@ -1,0 +1,4 @@
+{"signal": "SELL", "primary": "cash_secured_put", "available_combos": ["collar", "bull_call_spread", "bear_put_spread"]}
+{"signal": "HOLD", "primary": "cash_secured_put", "available_combos": ["collar", "bull_call_spread", "bear_put_spread"]}
+{"signal": "BUY", "primary": "cash_secured_put", "available_combos": ["collar", "bull_call_spread", "bear_put_spread"]}
+{"undated_last_trade_leg": {"action": "buy", "right": "call", "strike": 100, "price_source": "last_trade", "price_per_share": 3.0, "cost_per_contract": 300.0, "expiry": "2026-11-20", "days_to_expiry": 43, "iv": null, "oi": null, "spread_pct": null}}
