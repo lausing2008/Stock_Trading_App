@@ -4165,7 +4165,11 @@ class ObservationOutcome(Base):
     simulated_executable_return: Mapped[float | None] = mapped_column(Float, nullable=True)
     benchmark_return: Mapped[float | None] = mapped_column(Float, nullable=True)
     excess_return: Mapped[float | None] = mapped_column(Float, nullable=True)
-    return_basis: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: WHICH MEASUREMENT this is: raw_price | split_adjusted_price | total_return. Sized from
+    #: the declared bases, not guessed — the first version was VARCHAR(16) and
+    #: `split_adjusted_price` is 20 characters, so the outcome resolved correctly and then
+    #: failed to store. A test now reads the longest declared basis against this length.
+    return_basis: Mapped[str | None] = mapped_column(String(48), nullable=True)
     #: acquisition | bankruptcy | exchange_transfer | NULL. A delisting is never an automatic
     #: void: voiding an acquisition premium and a bankruptcy together removes the tails in
     #: opposite directions.

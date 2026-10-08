@@ -462,3 +462,23 @@ def test_changing_any_contributing_function_moves_the_fingerprint(real_calendar)
         mutated = copy.deepcopy(base)
         mutated[key] = str(mutated[key]) + "  # changed"
         assert digest(mutated) != digest(base), f"{key} is carried but not digested"
+
+
+def test_the_return_basis_column_fits_every_declared_basis():
+    """It did not. `return_basis` was VARCHAR(16) and `split_adjusted_price` is 20 characters,
+    so the first pilot resolve computed a correct outcome and then raised
+    StringDataRightTruncation on INSERT — a failure mode no unit test sees, because the test
+    database is built from the model and the value only overflows once a basis is long enough.
+    """
+    import re
+    models = (_ROOT / "shared/db/models.py").read_text()
+    block = models[models.index("class ObservationOutcome"):]
+    m = re.search(r"return_basis:.*?String\((\d+)\)", block, re.S)
+    assert m, "return_basis column not found"
+    longest = max(len(b) for b in _EB.RETURN_BASES)
+    assert int(m.group(1)) >= longest, (
+        f"the longest declared basis is {longest} characters and the column holds "
+        f"{m.group(1)}")
+    session_py = (_ROOT / "shared/db/session.py").read_text()
+    assert "ALTER COLUMN return_basis TYPE" in session_py, \
+        "widening a column on an existing table needs a migration, like adding one"

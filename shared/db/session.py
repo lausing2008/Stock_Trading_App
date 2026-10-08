@@ -107,6 +107,10 @@ def _run_migrations() -> None:  # noqa: C901
             "CREATE INDEX IF NOT EXISTS ix_corporate_actions_symbol_exdate "
             "ON corporate_actions (symbol, ex_date)"))
 
+        conn.execute(text(
+            "ALTER TABLE IF EXISTS observation_outcomes "
+            "ALTER COLUMN return_basis TYPE VARCHAR(48)"))
+
         # Add Chinese name column and backfill known HK stocks
         conn.execute(text(
             "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS name_zh VARCHAR(256)"
