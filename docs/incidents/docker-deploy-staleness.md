@@ -672,3 +672,56 @@ tore the gateway down, and across a twelve-service loop it was never brought bac
 is not evidence the stack is intact. Ask the compose file what should exist, not the deploy
 list. And a 200 from the public domain is not evidence the application works when a reverse
 proxy serves static assets in front of it.
+
+---
+
+## AUD-OBS-ADDCOLUMN / AUD-OBS-RESOLVERVERSION (2026-10-08) — the same bug class, then a second one hiding behind it
+
+**Symptom.** Every read of `observation_outcomes` raised
+`UndefinedColumn: column observation_outcomes.benchmark_entry_return does not exist`, blocking
+the MU replay rerun entirely.
+
+**Cause 1 — columns.** Exactly the issue this file opens with. `observation_outcomes` was
+created by `create_all()` in an earlier deploy. `create_all()` creates MISSING TABLES; it never
+adds a column to a table that already exists. `benchmark_entry_return`, `attempts` and
+`superseded_state` were added to the model when the six resolver defects were fixed, shipped,
+and never reached the database. Fixed with three `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` in
+`_run_migrations()`, beside the 61 already there.
+
+**Cause 2 — constraints.** `create_all()` does not alter an existing table's CONSTRAINTS either,
+which matters as soon as a fix changes a unique key rather than only adding columns. Changing
+`UniqueConstraint` in the model is invisible in production; the swap has to be written as
+`DROP CONSTRAINT IF EXISTS` + `CREATE UNIQUE INDEX IF NOT EXISTS`. This is easy to miss because
+the integration suite builds its tables fresh from the model, so the new constraint is always
+present there and always absent in production.
+
+**What the first cause was hiding.** With the columns added, the rerun succeeded — and changed
+nothing. All six stored outcomes kept the figures the DEFECTIVE resolver had written, because
+`resolve()` said *"already resolved; a resolved outcome is never rewritten"*. The rule was right
+for the wrong scope: re-running the SAME resolver must never rewrite, but a CORRECTED resolver
+is a different question, and refusing it leaves stale figures in place with nothing on the row
+saying so. `benchmark_entry_return` being NULL on all six rows was the tell — that field only
+exists in the corrected code.
+
+Outcomes are now keyed by `resolver_fingerprint`, a digest of the resolver's own rules (frozen
+policy + execution assumptions + the body of `resolve`, normalised through the AST with comments
+AND docstrings removed so prose does not mint a new resolver). A corrected resolver INSERTS
+beside the original; the original keeps every figure it was written with and gains a
+`superseded_by_id` pointer plus an appended note. Rows predating the column are backfilled
+`unrecorded-pre-fingerprint` — the code that wrote them is gone, so its fingerprint cannot be
+recomputed and is not guessed.
+
+**Measured on MU, obs #7/#8/#9 (cutoff 2026-06-01).** The defect was real and was being
+published. 1-5d excess went 0.442% → 0.045%, 1-4w 20.308% → 19.906%, 1-3m −2.493% → −2.907%,
+because the old rows had put the ENTRY-window benchmark in the same-window field.
+
+**Two traps worth carrying forward.**
+1. A test that asserts "a resolved outcome is never rewritten" passes identically whether the
+   scope is one resolver or all of them. The regression it could not see is a *correction that
+   silently does nothing* — which looks exactly like a successful deploy.
+2. `superseded_by_id IS NULL` alone is not a safe filter for publication. MU's observations
+   1–3 sit at a weekend cutoff produced by the session-walk bug fixed in `aa48c5d4`, were
+   scored by the defective resolver, and have no successor to point at. `publishable_outcomes()`
+   filters on the current resolver AND supersession AND origin; a sabotage run found the
+   supersession condition caught nothing on its own, which corrected the claim rather than the
+   filter — it earns its place only on a rollback.
