@@ -1,3 +1,10 @@
+/* Lives in src/__tests__/, NOT beside the page.
+ *
+ * Next.js treats every `.tsx` under `src/pages/` as a ROUTE, so a co-located test file is
+ * built as a page — `next build` tried to collect page data for `/stock-intelligence.test`,
+ * vitest's `expect` ran outside a vitest worker, and the FRONTEND DEPLOY FAILED. The unit
+ * suite passed throughout, because vitest does not care where the file sits.
+ */
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, it, expect, vi } from 'vitest';
@@ -12,7 +19,7 @@ vi.mock('swr', () => ({
 }));
 vi.mock('next/router', () => ({ useRouter: () => ({ query: { symbol: 'MU' }, push: vi.fn() }) }));
 
-import StockIntelligencePage from './stock-intelligence';
+import StockIntelligencePage from '@/pages/stock-intelligence';
 
 /* SERVED LABELS, exactly as the backend's UNRESOLVED_LABEL sends them. The page must not keep
    its own copy — that is how four backend states once all rendered as the single thing they
@@ -144,5 +151,25 @@ describe('stock intelligence dashboard', () => {
     const html = renderToStaticMarkup(<StockIntelligencePage />);
     expect(html).toContain('Loading…');
     expect(html).not.toContain('Could not load intelligence');
+  });
+});
+
+describe('test files never live under src/pages', () => {
+  it('because next build treats every .tsx there as a route', () => {
+    /* This is a DEPLOY-BLOCKING mistake the unit suite cannot see on its own: vitest happily
+       runs a test wherever it sits, and only `next build` fails — after the backend has
+       already gone out. */
+    const { readdirSync, statSync } = require('fs') as typeof import('fs');
+    const { join } = require('path') as typeof import('path');
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir)) {
+        const p = join(dir, e);
+        if (statSync(p).isDirectory()) walk(p);
+        else if (/\.(test|spec)\.(t|j)sx?$/.test(e)) offenders.push(p);
+      }
+    };
+    walk(join(process.cwd(), 'src', 'pages'));
+    expect(offenders).toEqual([]);
   });
 });
