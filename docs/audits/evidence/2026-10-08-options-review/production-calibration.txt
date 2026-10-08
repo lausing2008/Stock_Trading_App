@@ -1,0 +1,9 @@
+BEGIN
+SET
+ direction | calibration_rows | expired_before_alert_in_calibration | calibration_dates 
+-----------+------------------+-------------------------------------+-------------------
+ bearish   |             1015 |                                 586 |                19
+ bullish   |              983 |                                 516 |                19
+(2 rows)
+
+COMMIT

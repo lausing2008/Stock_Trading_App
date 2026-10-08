@@ -178,6 +178,23 @@ async def sync_congress_trades(lookback_days: int = 365) -> dict:
                 log.warning("congress.fetch_error", error=str(exc), url=_KADOA_URL)
                 return {"rows_upserted": 0}
 
+    # AUD-EVENTINTEL-BLOCKEDLOOP (2026-10-08): this loop used to run ON THE EVENT LOOP. It is
+    # a few thousand synchronous per-row upserts with no await in it, so for its whole duration
+    # uvicorn could not answer anything — /health timed out, Docker marked the container
+    # unhealthy, and CPU sat near zero because the process was not busy so much as unavailable.
+    # It fires daily at 07:30, so this happened every day. Found by py-spy while a deploy guard
+    # reported the container unhealthy; the sibling `job_sync_insider` already had the right
+    # shape (`asyncio.to_thread`), which is what this now matches.
+    return await asyncio.to_thread(_upsert_congress_trades, trades, cutoff, source_label,
+                                   ticker_map, _roster)
+
+
+def _upsert_congress_trades(trades, cutoff, source_label, ticker_map, _roster) -> dict:
+    """The DB half, SYNCHRONOUS and run in a worker thread. Pure of the event loop.
+
+    Split out rather than sprinkling awaits through the loop: there is nothing to await here —
+    it is CPU and blocking-driver work — so the only correct place for it is off the loop.
+    """
     total = 0
     with SessionLocal() as s:
         for t in trades:

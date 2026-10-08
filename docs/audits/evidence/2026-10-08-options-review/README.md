@@ -7,6 +7,7 @@ Collected 2026-10-08, production query timestamp 07:11 UTC in `production-follow
 - `production-core.sql` / `.txt`: family counts and legacy 5d metrics; snapshot coverage. The all-history chain aggregate hit the 30-second statement timeout. PostgreSQL aborted that transaction, subsequent statements did not run, and the output ends in ROLLBACK. Earlier SELECT outputs remain valid observations. The timeout errors were on stderr and are recorded here rather than hidden.
 - `production-followup.sql` / `.txt`: expired-contract counts, income positions, approximate table statistics and bounded recent chain coverage. Read-only defaults and 12-second statement timeouts.
 - `production-recent.sql` / `.txt`: October alert validity, GEX nulls, chain-date/500-row distribution and open-position expiry checks.
+- `production-calibration.sql` / `.txt`: exact overlap between expired-before-alert candidates and non-null 10d flags selected by the calibration query (1,102 of 1,998).
 - `strategy-witness.py` / `.txt`: imports and calls the **actual** pure strategy module, without stubs, network or orders. Records the bearish/no-shares→CSP behavior and acceptance of an undated last-trade leg. This is a witness, not a test endorsing the behavior.
 - `source-digests.json`: SHA-256 of the reviewed source files. Local HEAD was `4d3f4997` when recorded; another worker changed HEAD during the audit. The digests identify the source actually reviewed. Other workers' dirty files were not modified by this task.
 

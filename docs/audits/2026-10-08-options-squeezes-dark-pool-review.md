@@ -102,7 +102,7 @@ Replacing zero with midpoint would produce a *marked turnover estimate*, not act
 
 ### O03 — High: historical invalid contracts still feed calibration
 
-**Measured + source-confirmed.** `scheduler._build_options_flow_alert_calibration` (~5502) selects all non-null 10d hit flags for a direction, without contract-validity, resolver-version or supersession filters. The 1,102 expired-before-alert records remain in the table. Current event parsing/dedup improvements do not repair historical eligibility. Recent clean dates do not prove the full calibration is clean.
+**Measured + source-confirmed.** `scheduler._build_options_flow_alert_calibration` (~5502) selects all non-null 10d hit flags for a direction, without contract-validity, resolver-version or supersession filters. A follow-up query confirms the overlap: **1,102 of 1,998 rows selected by the 10d calibration query (55.16%) are expired-before-alert records**—516 of 983 bullish and 586 of 1,015 bearish. Each direction spans 19 resolved alert dates. Current event parsing/dedup improvements do not repair historical eligibility. Recent clean dates do not prove the full calibration is clean.
 
 **Fix plan:** immutable eligibility verdicts and corrected outcome versions; keep old records visible but exclude invalid cohorts from performance. Freeze expiry/last-trading-instant checks at capture. Separate same-day event research from an actual intraday contract simulation. Preserve counts for invalid, unresolved, expired, suppressed and delivered states. Do not overwrite old rows to make the history look better.
 
