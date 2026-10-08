@@ -176,3 +176,38 @@ def test_ingest_writes_no_coverage_row_for_an_unresolved_symbol():
         ingest(_Session(), "100.HK", covers_from=date(2025, 1, 1), covers_to=date(2026, 1, 1),
                ticker=_Unresolved())
     assert calls == [], "nothing was written for a symbol that does not resolve"
+
+
+# ---- an unresolved identifier is QUARANTINED, not concluded about ---------------------------
+
+def test_quarantine_asserts_nothing_beyond_what_was_observed():
+    """The tempting conclusion — "dead or mistyped" — is not established by a provider failing
+    to resolve an identifier: that is a fact about the provider's coverage as much as about the
+    symbol. Zero stored bars corroborates; it does not prove."""
+    import inspect
+    from intel_reports.corporate_actions import quarantine
+    doc = inspect.getdoc(quarantine)
+    assert "hypothesis, not a finding" in doc
+    for forbidden in ("delete", "rename", "mark delisted"):
+        assert forbidden in doc, "the doc must name what this deliberately does NOT do"
+
+
+def test_the_quarantine_row_keeps_the_question_open_until_someone_checks():
+    from pathlib import Path as _P
+    import re
+    models = (_P(__file__).resolve().parents[3] / "shared/db/models.py").read_text()
+    block = models[models.index("class IdentifierQuarantine"):]
+    block = block[:block.index("\n\nclass ")]
+    assert "checked_at" in block and "resolution" in block
+    assert re.search(r"checked_at.*nullable=True", block), \
+        "unchecked must be representable, and must be the default"
+    assert "not deleted, not renamed and not marked delisted" in block
+
+
+def test_the_evidence_field_is_prose_not_a_code():
+    """A quarantine that records only a reason code cannot say what was seen or what it fails to
+    establish, which is the whole content of the finding."""
+    from pathlib import Path as _P
+    models = (_P(__file__).resolve().parents[3] / "shared/db/models.py").read_text()
+    block = models[models.index("class IdentifierQuarantine"):]
+    assert "evidence: Mapped[str] = mapped_column(Text, nullable=False)" in block

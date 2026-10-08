@@ -182,9 +182,15 @@ async def sync_congress_trades(lookback_days: int = 365) -> dict:
     # a few thousand synchronous per-row upserts with no await in it, so for its whole duration
     # uvicorn could not answer anything — /health timed out, Docker marked the container
     # unhealthy, and CPU sat near zero because the process was not busy so much as unavailable.
-    # It fires daily at 07:30, so this happened every day. Found by py-spy while a deploy guard
-    # reported the container unhealthy; the sibling `job_sync_insider` already had the right
-    # shape (`asyncio.to_thread`), which is what this now matches.
+    #
+    # WHAT IS ESTABLISHED, AND WHAT IS NOT. One stall was observed directly (py-spy, 2026-10-08)
+    # while a deploy guard reported the container unhealthy. The job is scheduled daily at
+    # 07:30, so a daily recurrence is PLAUSIBLE — but it is not established: Docker retains only
+    # five health-check entries, the container has since restarted, and there is no job-run
+    # ledger in this service, so no historical evidence exists either way. The fix stands on the
+    # single observed stall and on the shape of the code, not on a frequency nobody measured.
+    #
+    # The sibling `job_sync_insider` already had the right shape (`asyncio.to_thread`).
     return await asyncio.to_thread(_upsert_congress_trades, trades, cutoff, source_label,
                                    ticker_map, _roster)
 
@@ -194,6 +200,11 @@ def _upsert_congress_trades(trades, cutoff, source_label, ticker_map, _roster) -
 
     Split out rather than sprinkling awaits through the loop: there is nothing to await here —
     it is CPU and blocking-driver work — so the only correct place for it is off the loop.
+
+    THE SESSION IS OPENED AND CLOSED INSIDE THIS FUNCTION, therefore inside the worker thread.
+    `SessionLocal` is a plain `sessionmaker`, not a `scoped_session`, so a session created on
+    the event loop and used here would be a connection crossing threads; the `with` block below
+    keeps its whole lifetime on the thread that uses it.
     """
     total = 0
     with SessionLocal() as s:

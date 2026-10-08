@@ -195,6 +195,10 @@ export interface OutcomeObservation {
   horizon_sessions: number; direction: string; support_quality?: string | null;
   reference_price?: number | null; reference_price_as_of?: string | null;
   confirmation_rule?: string | null; invalidation_rule?: string | null;
+  /* The full oriented record, including the non-directional case where neither boundary
+     confirms anything and attaching one would invent a thesis. */
+  triggers?: { direction?: string; confirms?: string | null; invalidates?: string | null;
+               establishes?: string[] | null; basis?: string } | null;
   summary?: IntelSummary | null;
   invalidated_reason?: string | null; publishable: boolean;
   outcome: OutcomeRow | null; superseded: SupersededRow[];

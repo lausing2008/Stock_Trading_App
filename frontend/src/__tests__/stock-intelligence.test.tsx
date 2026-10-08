@@ -40,8 +40,11 @@ const OUTCOMES = {
     unverified: 'Unverified — no adjustment basis could be established for this window' },
   provisional_remedy: 'A source that documents completeness for the span, or corroboration from a second independent source, would make this verified. Until then the figure is usable and labelled, and is never pooled with verified results.',
   coverage: { replay: { origin: 'replay', invalidated_captures: 3, note: '',
-                        pools: { provisional: { total: 1, by_reason: {} },
-                                 ineligible: { total: 1, by_reason: {} } } } },
+                        pools: { verified: { total: 0, by_reason: {} },
+                                 provisional: { total: 1, by_reason: {} },
+                                 ineligible: { total: 1, by_reason: {} } } },
+              prospective: { origin: 'prospective', invalidated_captures: 0, note: '',
+                             pools: {} } },
   state_counts: { UNRESOLVED_ADJUSTMENT_UNVERIFIED: 1, UNRESOLVED_INSUFFICIENT_SESSIONS: 1,
                   INVALID_CAPTURE: 1, RESOLVED: 1 },
   observations: [
@@ -55,6 +58,9 @@ const OUTCOMES = {
       reference_price_as_of: '2026-05-29T00:00:00', invalidated_reason: null, publishable: true,
       confirmation_rule: 'a completed close above 1108.72',
       invalidation_rule: 'a completed close below 902.60',
+      triggers: { direction: 'BULLISH', confirms: 'a completed close above 1108.72',
+                  invalidates: 'a completed close below 902.60', establishes: null,
+                  basis: 'a bullish reading is confirmed by a break UP through resistance' },
       outcome: { id: 10, state: 'UNRESOLVED_ADJUSTMENT_UNVERIFIED', sessions_elapsed: 5,
                  descriptive_return: null, excess_return: null, return_basis: null,
                  reason: 'the adjustment basis could not be established — stock: no corporate-action history covers this window' },
@@ -114,10 +120,11 @@ describe('stock intelligence panel', () => {
 
     // THE REASON THE USER ASKED FOR, verbatim and visible.
     expect(html).toContain('Corporate-action adjustment evidence unavailable');
-    // Every distinct state renders its OWN label; none collapses into another.
-    expect(html).toContain('Pending — the horizon has not elapsed');
+    // Each distinct state is still DISTINGUISHED in the compact summary — pending (time will
+    // fix it) and invalidated (nothing will) must never collapse into one another.
+    expect(html).toContain('pending');
+    expect(html).toContain('3 invalidated');
     expect(html).toContain('Invalid capture — excluded from publication');
-    expect(html).toContain('Resolved');
 
     // The research product renders even though two of four outcomes have no return.
     expect(html).toContain('revenue grew 48.9% in the latest stored year');
@@ -130,9 +137,9 @@ describe('stock intelligence panel', () => {
     expect(html).toContain('establishes no skill by itself');
 
 
-    // A resolved row shows its basis; an unresolved one shows no fabricated number.
-    expect(html).toContain('split_adjusted_price');
-    expect(html).toContain('18.88%');
+    // The LEDGER is folded by default; what shows is the compact pool summary.
+    expect(html).toContain('Outcome ledger');
+    expect(html).not.toContain('18.88%');
   });
 
   it('puts conclusions first and folds the working away', () => {
@@ -209,8 +216,6 @@ describe('calculation, evidence and eligibility are three separate answers', () 
     swr.byKey = { 'stock-outcomes': OUTCOMES, 'stock-intel': INTEL };
     const html = renderToStaticMarkup(<StockIntelligencePanel symbol="MU" />);
     // All three columns exist, and the figure that WAS calculable is still labelled provisional.
-    for (const h of ['Calculation', 'Evidence', 'Eligibility']) expect(html).toContain(h);
-    expect(html).toContain('Resolved');
     expect(html).toContain('provisional');
     expect(html).toContain(
       'Provisional — based on returned corporate actions; completeness unverified');
@@ -226,11 +231,53 @@ describe('calculation, evidence and eligibility are three separate answers', () 
     expect(html).not.toContain('otherwise');
   });
 
-  it('shows the denominator beside the figures', () => {
+  it('shows a compact pool summary rather than the whole ledger', () => {
     swr.byKey = { 'stock-outcomes': OUTCOMES, 'stock-intel': INTEL };
     const html = renderToStaticMarkup(<StockIntelligencePanel symbol="MU" />);
-    expect(html).toContain('provisional: 1');
-    expect(html).toContain('ineligible: 1');
-    expect(html).toContain('invalid captures: 3');
+    expect(html).toContain('0 verified');
+    expect(html).toContain('1 provisional');
+    expect(html).toContain('3 invalidated');
+    expect(html).toContain('replay');
+    // Prospective is counted SEPARATELY and never added to replay.
+    expect(html).toContain('prospective');
+    expect(html).toContain('Outcome ledger');
+  });
+});
+
+
+describe('triggers are oriented by the reading', () => {
+  const bearish = {
+    ...OUTCOMES,
+    observations: [{ ...OUTCOMES.observations[1],
+      direction: 'BEARISH',
+      confirmation_rule: 'a completed close below 376.88',
+      invalidation_rule: 'a completed close above 406.56',
+      triggers: { direction: 'BEARISH', confirms: 'a completed close below 376.88',
+                  invalidates: 'a completed close above 406.56', establishes: null,
+                  basis: 'a bearish reading is confirmed by a break DOWN through support' } }],
+  };
+
+  it('confirms a bearish reading with a break DOWN, not up', () => {
+    /* THE REPORTED DEFECT: GLD was BEARISH and the panel said a close ABOVE 406.56 would
+       confirm it. The boundaries are symmetric; the claim decides which one confirms. */
+    swr.byKey = { 'stock-outcomes': bearish, 'stock-intel': INTEL };
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="GLD" />);
+    const confirms = html.indexOf('Confirms: ');
+    const invalidates = html.indexOf('Invalidates: ');
+    expect(html.slice(confirms, confirms + 60)).toContain('below 376.88');
+    expect(html.slice(invalidates, invalidates + 60)).toContain('above 406.56');
+  });
+
+  it('attaches no thesis to a non-directional reading', () => {
+    const neutral = { ...OUTCOMES, observations: [{ ...OUTCOMES.observations[1],
+      direction: 'NEUTRAL', confirmation_rule: null, invalidation_rule: null,
+      triggers: { direction: 'NEUTRAL', confirms: null, invalidates: null,
+                  establishes: ['a completed close above 120', 'a completed close below 100'],
+                  basis: 'no directional reading is being made' } }] };
+    swr.byKey = { 'stock-outcomes': neutral, 'stock-intel': INTEL };
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="MU" />);
+    expect(html).toContain('Neither boundary confirms or invalidates anything');
+    expect(html).toContain('a completed close above 120');
+    expect(html).not.toContain('Confirms: ');
   });
 });

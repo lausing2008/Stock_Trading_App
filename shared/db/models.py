@@ -4075,6 +4075,36 @@ class IntelligenceObservation(Base):
     )
 
 
+class IdentifierQuarantine(Base):
+    """A symbol whose IDENTITY could not be resolved, held aside until someone checks it.
+
+    AUD-OBS-UNRESOLVEDSYMBOL (2026-10-08). Seven symbols in the universe were not recognised by
+    the price provider. The tempting conclusion — "dead or mistyped" — is NOT established by
+    that: a provider failing to resolve an identifier is a fact about the provider's coverage as
+    much as about the identifier. `0100.HK` vs `100.HK` is a plausible reading, not a verified
+    one, and zero stored bars is corroboration rather than proof.
+
+    So they are QUARANTINED, not deleted, not renamed and not marked delisted — each of which
+    would assert something unverified. A quarantined symbol is excluded from evidence COLLECTION
+    (there is nothing to collect against an unresolvable identifier) and stays visible as an
+    open question with its evidence attached.
+    """
+    __tablename__ = "identifier_quarantine"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(24), unique=True, index=True, nullable=False)
+    #: unresolved_by_provider | ambiguous | other
+    reason: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: What was observed, in words, including what it does NOT establish.
+    evidence: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    raised_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    #: Set when a person has checked it. Until then the question is open, not answered.
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class CorporateAction(Base):
     """A SOURCED corporate action, kept as evidence rather than folded into a price.
 

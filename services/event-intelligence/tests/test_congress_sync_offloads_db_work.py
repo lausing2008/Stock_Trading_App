@@ -55,3 +55,27 @@ def test_every_scheduled_job_that_does_blocking_work_offloads_it():
             if "to_thread" not in src and "_run(" not in src:
                 offenders.append(n.name)
     assert not offenders, f"scheduled jobs with no visible offload or wrapper: {offenders}"
+
+
+def test_the_worker_opens_and_closes_its_own_session():
+    """`SessionLocal` is a plain sessionmaker, not a scoped_session, so a session created on the
+    event loop and used in the worker would be a connection crossing threads. The session's
+    whole lifetime must sit inside the threaded function."""
+    fn = _fn(_TREE, "_upsert_congress_trades")
+    body = ast.unparse(fn)
+    assert "with SessionLocal() as" in body, "opened here, and closed by the with-block"
+    # And the async caller must not be holding one open across the handoff.
+    caller = ast.unparse(_fn(_TREE, "sync_congress_trades"))
+    after = caller[caller.index("asyncio.to_thread"):]
+    assert "SessionLocal" not in after, "no session may outlive the handoff into the thread"
+
+
+def test_the_comment_does_not_claim_a_frequency_nobody_measured():
+    """One stall was observed. The job is scheduled daily, but Docker keeps five health entries,
+    the container has restarted, and this service has no job-run ledger — so 'it happened every
+    day' is plausible and unestablished, and the code must not assert it."""
+    seg = _CONGRESS[_CONGRESS.index("AUD-EVENTINTEL-BLOCKEDLOOP"):]
+    seg = seg[:seg.index("def _upsert_congress_trades")]
+    assert "not established" in seg
+    assert "no historical evidence" in seg
+    assert "this happened every day" not in seg

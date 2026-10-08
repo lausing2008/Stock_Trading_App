@@ -218,6 +218,9 @@ def _capture(session, stock, *, as_of: datetime, origin: str) -> dict:
     for sessions, label in HORIZONS:
         summary = EB.summarise(subject, buckets, horizon_label=label,
                                horizon_sessions=sessions)
+        triggers = EB.direction_triggers(summary["direction"],
+                                         support=setup.get("support"),
+                                         resistance=setup.get("resistance"))
         existing = _existing_observation(session, subject, as_of, sessions, origin)
         if existing is not None:
             # REUSE RETURNS THE STORED RECORD. Returning a freshly computed summary beside an
@@ -245,12 +248,13 @@ def _capture(session, stock, *, as_of: datetime, origin: str) -> dict:
             # acted on at the next session. Both returns are reported at resolution.
             reference_price_basis="formed_at_close",
             benchmark_symbol=BENCHMARK.get(ctx["venue"]),
-            confirmation_rule=(f"a completed close above {setup.get('resistance')}"
-                               if setup.get("resistance") else None),
-            invalidation_rule=(f"a completed close below {setup.get('support')}"
-                               if setup.get("support") else None),
+            # ORIENTED BY THE READING, not by a fixed template. The boundaries are symmetric
+            # facts about the range; which one confirms depends on what is being claimed.
+            confirmation_rule=triggers["confirms"],
+            invalidation_rule=triggers["invalidates"],
             bucket_ids=bucket_ids, frozen_inputs={"setup": setup, "fundamentals": ctx["fin"],
-                                                  "sessions": ctx["sessions"]},
+                                                  "sessions": ctx["sessions"],
+                                                  "triggers": triggers},
             summary=summary)
         out["observations"].append({"id": row.id, "horizon": label,
                                     "horizon_sessions": sessions,
@@ -413,6 +417,9 @@ def outcomes(symbol: str, _user: str = Depends(get_current_username)) -> dict:
                 # on the observation without ever being served.
                 "confirmation_rule": o.confirmation_rule,
                 "invalidation_rule": o.invalidation_rule,
+                # The full oriented record, including the non-directional case where neither
+                # boundary confirms anything and saying otherwise would invent a thesis.
+                "triggers": (o.frozen_inputs or {}).get("triggers"),
                 "summary": o.summary,
                 "invalidated_reason": o.invalidated_reason,
                 "publishable": o.invalidated_reason is None and current is not None,

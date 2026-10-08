@@ -148,12 +148,65 @@ def digest(payload) -> str:
         .encode("utf-8")).hexdigest()[:32]
 
 
+def direction_triggers(direction: str, *, support=None, resistance=None) -> dict:
+    """What would CONFIRM this reading and what would INVALIDATE it — oriented BY the reading.
+
+    AUD-OBS-TRIGGERORIENTATION (2026-10-08). These were built from a fixed template: "a close
+    above resistance confirms, a close below support invalidates", regardless of direction. On
+    GLD — read BEARISH — that told a reader a rise to 406.56 would CONFIRM the bearish view and
+    a fall to 376.88 would refute it. Exactly backwards. They were generic upside/downside
+    boundaries presented as though they were direction-specific.
+
+    The boundaries themselves are symmetric facts about the price range. Which one confirms
+    depends entirely on what is being claimed, so this takes the direction as its subject.
+
+    A NON-DIRECTIONAL reading has nothing to confirm or invalidate, and saying otherwise would
+    invent a thesis. NEUTRAL gets `establishes` instead — either break would give a direction
+    where there is none — and UNKNOWN gets neither, because a gap in our work makes no claim at
+    all for a price to bear on.
+    """
+    up = f"a completed close above {resistance}" if resistance is not None else None
+    down = f"a completed close below {support}" if support is not None else None
+    if direction in (STRONG_BULLISH, BULLISH):
+        return {"direction": direction, "confirms": up, "invalidates": down,
+                "establishes": None,
+                "basis": "a bullish reading is confirmed by a break UP through resistance and "
+                         "invalidated by a break DOWN through support"}
+    if direction in (STRONG_BEARISH, BEARISH):
+        return {"direction": direction, "confirms": down, "invalidates": up,
+                "establishes": None,
+                "basis": "a bearish reading is confirmed by a break DOWN through support and "
+                         "invalidated by a break UP through resistance — the mirror of the "
+                         "bullish case, not the same rule"}
+    if direction == NEUTRAL:
+        return {"direction": direction, "confirms": None, "invalidates": None,
+                "establishes": [x for x in (up, down) if x],
+                "basis": "no directional reading is being made, so neither boundary confirms or "
+                         "invalidates anything. Either break would ESTABLISH a direction where "
+                         "there currently is none"}
+    return {"direction": direction, "confirms": None, "invalidates": None, "establishes": None,
+            "basis": "no reading was formed — a gap in this platform's coverage, not a view "
+                     "about the price — so there is no thesis for a price level to bear on"}
+
+
 def policy_fingerprint() -> str:
-    """Digest of every rule that can change a bucket reading."""
+    """Digest of every rule that can change WHAT IS CAPTURED.
+
+    Trigger construction is in here because it is part of the record: an observation stores the
+    conditions that would confirm or invalidate it, and those were being built from a template
+    that ignored direction. Correcting that without moving this fingerprint would have left
+    every existing observation reused unchanged — the same failure the resolver fingerprint was
+    widened to prevent, one layer up.
+    """
+    import ast
+    import inspect
+    import textwrap
+    trig = ast.unparse(ast.parse(textwrap.dedent(inspect.getsource(direction_triggers))))
     return digest({"version": POLICY_VERSION, "buckets": list(BUCKETS),
                    "directions": [STRONG_BULLISH, BULLISH, NEUTRAL, BEARISH,
                                   STRONG_BEARISH, UNKNOWN],
-                   "work_remaining": list(WORK_REMAINING)})
+                   "work_remaining": list(WORK_REMAINING),
+                   "triggers": trig})
 
 
 def _aware(dt: datetime):

@@ -207,6 +207,34 @@ def store(session, symbol: str, actions: list, *, covers_from: date, covers_to: 
             "retrieved_at": retrieved_at.isoformat()}
 
 
+def quarantine(session, symbol: str, *, reason: str, evidence: str,
+               source: str | None = SOURCE) -> dict:
+    """Hold a symbol aside as an UNRESOLVED IDENTIFIER. Idempotent.
+
+    Deliberately not "delete", "rename" or "mark delisted": each of those asserts a conclusion
+    the evidence does not support. A provider failing to resolve an identifier is a fact about
+    that provider's coverage as much as about the identifier, and a plausible correction
+    (`0100.HK` for `100.HK`) is a hypothesis, not a finding.
+
+    `checked_at` stays NULL until a person has looked. The question is open, not answered.
+    """
+    from db import IdentifierQuarantine
+    from sqlalchemy import select
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    row = session.execute(select(IdentifierQuarantine).where(
+        IdentifierQuarantine.symbol == symbol)).scalars().first()
+    created = row is None
+    if created:
+        row = IdentifierQuarantine(symbol=symbol, reason=reason, evidence=evidence,
+                                   source=source, raised_at=now)
+        session.add(row)
+    else:
+        row.reason, row.evidence, row.source = reason, evidence, source
+    session.commit()
+    return {"symbol": symbol, "reason": reason, "created": created,
+            "open_question": row.checked_at is None}
+
+
 def ingest(session, symbol: str, *, covers_from: date, covers_to: date, ticker=None) -> dict:
     """Fetch, shape and store one symbol's action history for a bounded span."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)

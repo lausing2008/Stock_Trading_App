@@ -575,3 +575,103 @@ def test_the_coverage_dict_carries_the_evidenced_span_not_only_the_requested_one
     code = ast.unparse(ast.parse(src))
     assert "'evidenced_from'" in code and "'evidenced_to'" in code
     assert "'covers_from'" not in code, "the renamed keys must be gone, not merely shadowed"
+
+
+# =============================================================================================
+# AUD-OBS-TRIGGERORIENTATION (2026-10-08). GLD was read BEARISH and its triggers said
+# "Confirms: a completed close above 406.56 / Invalidates: a completed close below 376.88" —
+# exactly backwards. They were generic upside/downside boundaries presented as direction-
+# specific confirmation and invalidation, built from a template that never looked at the
+# direction at all.
+# =============================================================================================
+
+def test_a_bearish_reading_is_confirmed_by_a_break_DOWN():
+    """THE REPORTED DEFECT, as a case."""
+    t = _EB.direction_triggers("BEARISH", support=376.88, resistance=406.56)
+    assert t["confirms"] == "a completed close below 376.88"
+    assert t["invalidates"] == "a completed close above 406.56"
+
+
+def test_a_bullish_reading_is_the_mirror_image():
+    t = _EB.direction_triggers("BULLISH", support=376.88, resistance=406.56)
+    assert t["confirms"] == "a completed close above 406.56"
+    assert t["invalidates"] == "a completed close below 376.88"
+
+
+def test_bullish_and_bearish_triggers_are_exact_opposites():
+    """The boundaries are symmetric facts about the range; only the claim differs. If these ever
+    stop being mirrors, one of the two directions has picked up the other's rule."""
+    kw = dict(support=100.0, resistance=120.0)
+    up = _EB.direction_triggers("BULLISH", **kw)
+    down = _EB.direction_triggers("BEARISH", **kw)
+    assert up["confirms"] == down["invalidates"]
+    assert up["invalidates"] == down["confirms"]
+
+
+def test_strong_directions_follow_their_own_sign():
+    assert _EB.direction_triggers("STRONG_BEARISH", support=1, resistance=2)["confirms"] \
+        == "a completed close below 1"
+    assert _EB.direction_triggers("STRONG_BULLISH", support=1, resistance=2)["confirms"] \
+        == "a completed close above 2"
+
+
+def test_a_neutral_reading_confirms_and_invalidates_NOTHING():
+    """Saying a boundary confirms a neutral reading would invent a thesis that was never made."""
+    t = _EB.direction_triggers("NEUTRAL", support=100.0, resistance=120.0)
+    assert t["confirms"] is None and t["invalidates"] is None
+    assert t["establishes"] == ["a completed close above 120.0", "a completed close below 100.0"]
+    assert "ESTABLISH a direction" in t["basis"]
+
+
+def test_an_unknown_reading_has_no_triggers_at_all():
+    """UNKNOWN is a gap in OUR work, not a view about the price, so no level bears on it."""
+    t = _EB.direction_triggers("UNKNOWN", support=100.0, resistance=120.0)
+    assert t["confirms"] is None and t["invalidates"] is None and t["establishes"] is None
+
+
+def test_a_missing_boundary_produces_no_rule_rather_than_a_malformed_one():
+    t = _EB.direction_triggers("BEARISH", support=None, resistance=406.56)
+    assert t["confirms"] is None, "no support level means no confirmation condition"
+    assert t["invalidates"] == "a completed close above 406.56"
+
+
+def test_the_capture_route_uses_the_oriented_triggers_not_a_template():
+    """A RENAME OF THE LABELS ALONE WOULD NOT HAVE FIXED THIS — the wrong rule was being
+    STORED, frozen onto the observation, not merely displayed."""
+    import ast
+    src = (_ROOT / "services/research-engine/src/api/observation_routes.py").read_text()
+    code = ast.unparse(ast.parse(src))
+    assert "EB.direction_triggers(" in code
+    assert "confirmation_rule=triggers['confirms']" in code
+    assert "invalidation_rule=triggers['invalidates']" in code
+    # The old template must be gone from the executable code, comments stripped.
+    assert "a completed close above {setup" not in code
+
+
+def test_trigger_construction_is_inside_the_capture_fingerprint(tmp_path, monkeypatch):
+    """Otherwise the correction files nothing: every existing observation would be REUSED with
+    its wrong rules intact, exactly as the resolver fingerprint once did one layer up.
+
+    The variant is written to a REAL FILE and imported, because `policy_fingerprint` reads its
+    subject with `inspect.getsource`, which has nothing to read for a function compiled from a
+    string — the same trap the resolver-fingerprint test hit.
+    """
+    import importlib.util, inspect, textwrap
+    before = _EB.policy_fingerprint()
+    src = textwrap.dedent(inspect.getsource(_EB.direction_triggers))
+    changed = src.replace("'confirms': down, 'invalidates': up",
+                          "'confirms': up, 'invalidates': down").replace(
+                          '"confirms": down, "invalidates": up',
+                          '"confirms": up, "invalidates": down')
+    assert changed != src, "the bearish rule was not found to reverse"
+
+    path = tmp_path / "variant_triggers.py"
+    path.write_text(changed)
+    spec = importlib.util.spec_from_file_location("variant_triggers", path)
+    mod = importlib.util.module_from_spec(spec)
+    mod.__dict__.update({k: v for k, v in _EB.__dict__.items()
+                         if k not in ("__name__", "__file__", "__spec__", "__loader__")})
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(_EB, "direction_triggers", mod.direction_triggers)
+    assert _EB.policy_fingerprint() != before, \
+        "reversing the bearish rule must mint a new capture policy"

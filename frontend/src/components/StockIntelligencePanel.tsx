@@ -68,6 +68,9 @@ const EVIDENCE_TONE: Record<string, { fg: string; bg: string; bd: string }> = {
   unverified:  { fg: '#fdba74', bg: 'rgba(251,146,60,0.10)', bd: 'rgba(251,146,60,0.38)' },
 };
 
+/* Replay and prospective are never pooled, and the summary counts them apart. */
+const POOL_ORDER = ['prospective', 'replay'] as const;
+
 const label: React.CSSProperties = {
   fontSize: 11, letterSpacing: '0.09em', textTransform: 'uppercase', color: '#94a3b8',
 };
@@ -169,11 +172,22 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
   const summary = (obsWithSummary.find(o => o.horizon_sessions === 20) ?? obsWithSummary[0])
                     ?.summary;
   const rows = outcomes?.observations ?? [];
-  const triggerRow = rows.find(r => r.confirmation_rule || r.invalidation_rule);
+  /* A NON-DIRECTIONAL reading has no confirmation or invalidation rule but still has
+     something to say, so matching on the rules alone hid exactly the case that needed it. */
+  const triggerRow = rows.find(r => r.confirmation_rule || r.invalidation_rule || r.triggers);
   const measured = (intel?.buckets ?? []).filter(b => b.direction !== 'UNKNOWN');
   const gaps = (intel?.buckets ?? []).filter(b => b.direction === 'UNKNOWN');
   const supersededCount = rows.reduce((n, r) => n + r.superseded.length, 0);
   const adjustment = rows.map(r => r.outcome).filter(Boolean);
+  /* Distinct reasons a figure cannot be scored — the invalidated capture's own reason, and the
+     resolution label for anything blocked on evidence rather than on elapsed time. */
+  const blockedReasons = Array.from(new Set(rows.flatMap(r => {
+    if (r.invalidated_reason)
+      return [labels.INVALID_CAPTURE ?? 'Invalid capture — excluded from publication'];
+    const st = r.outcome?.state;
+    if (!st || stateKind(st) !== 'blocked') return [];
+    return [labels[st] ?? st];
+  })));
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
@@ -222,7 +236,12 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
         </div>
       )}
 
-      {/* 4 — TRIGGERS */}
+      {/* 4 — TRIGGERS, ORIENTED BY THE READING.
+          A bearish view is confirmed by a break DOWN, not up. These were built from a fixed
+          template and shown on a BEARISH GLD as "Confirms: close above 406.56" — the boundaries
+          are symmetric facts about the range, and which one confirms depends entirely on what is
+          being claimed. A non-directional reading has nothing to confirm, and the panel says so
+          rather than attaching a thesis that was never formed. */}
       {triggerRow && (
         <div style={box}>
           <p style={{ ...label, margin: '0 0 8px' }}>Triggers</p>
@@ -235,11 +254,29 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
               <div><span style={{ color: '#fca5a5' }}>Invalidates: </span>
                 {triggerRow.invalidation_rule}</div>
             )}
+            {!triggerRow.confirmation_rule && !triggerRow.invalidation_rule && (
+              <div style={{ color: '#94a3b8' }}>
+                {(triggerRow.triggers?.establishes ?? []).length > 0 ? (
+                  <>Neither boundary confirms or invalidates anything — no directional reading
+                    was made. Either of these would establish one:{' '}
+                    {(triggerRow.triggers?.establishes ?? []).join('; ')}.</>
+                ) : 'No reading was formed, so no price level bears on one.'}
+              </div>
+            )}
+            {triggerRow.triggers?.basis && (
+              <div style={{ color: '#64748b', fontSize: 12, marginTop: 2 }}>
+                {triggerRow.triggers.basis}
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* 5 — OUTCOME STATUS */}
+      {/* 5 — OUTCOME STATUS: a COMPACT POOL SUMMARY by default, ledger folded underneath.
+          The ledger is one row per observation per horizon and grows without bound; what a
+          reader needs at a glance is how many figures are verified, how many are provisional,
+          and how many captures were excluded. Replay and prospective are counted separately —
+          a retrospective replay's rules were written with its outcomes already in existence. */}
       <div style={box}>
         <p style={{ ...label, margin: '0 0 8px' }}>Outcome status</p>
         {rows.length === 0 ? (
@@ -248,14 +285,54 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
           </p>
         ) : (
           <>
-            {outcomes && Object.keys(outcomes.state_counts).length > 0 && (
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-                {Object.entries(outcomes.state_counts).map(([s, n]) => (
-                  <Pill key={s} text={`${labels[s] ?? s}: ${n}`}
-                        t={KIND_TONE[s === 'INVALID_CAPTURE' ? 'blocked' : stateKind(s)]} />
+            {POOL_ORDER.map(origin => {
+              const c = outcomes?.coverage?.[origin];
+              const pools = c?.pools ?? {};
+              const n = (k: string) => pools[k]?.total ?? 0;
+              const pending = rows.filter(
+                r => r.origin === origin && !r.invalidated_reason
+                     && (!r.outcome || r.outcome.state === 'UNRESOLVED_INSUFFICIENT_SESSIONS')
+              ).length;
+              const any = n('verified') + n('provisional') + n('ineligible')
+                          + (c?.invalidated_captures ?? 0) + pending;
+              if (!any) return null;
+              return (
+                <div key={origin} style={{ display: 'flex', gap: 8, flexWrap: 'wrap',
+                                           alignItems: 'center', marginBottom: 8 }}>
+                  <span style={{ ...label, fontSize: 10, minWidth: 78 }}>{origin}</span>
+                  <Pill text={`${n('verified')} verified`} t={KIND_TONE.resolved} />
+                  <Pill text={`${n('provisional')} provisional`} t={EVIDENCE_TONE.provisional} />
+                  {pending > 0 && <Pill text={`${pending} pending`} t={KIND_TONE.pending} />}
+                  {(c?.invalidated_captures ?? 0) > 0 && (
+                    <Pill text={`${c?.invalidated_captures} invalidated`} t={KIND_TONE.blocked} />
+                  )}
+                </div>
+              );
+            })}
+            {/* THE COUNTS ARE NOT THE REASONS. Folding the ledger must not fold away WHY a
+                figure is not scoreable — that is the actionable part, and it is one line. */}
+            {blockedReasons.length > 0 && (
+              <div style={{ marginTop: 4, display: 'grid', gap: 3 }}>
+                {blockedReasons.map(r => (
+                  <p key={r} style={{ margin: 0, fontSize: 12, color: '#fdba74',
+                                      lineHeight: 1.45 }}>{r}</p>
                 ))}
               </div>
             )}
+            {rows.some(r => r.outcome?.evidence_status === 'provisional') && (
+              <>
+                <p style={{ margin: '6px 0 0', fontSize: 12, color: '#fde047',
+                            lineHeight: 1.5 }}>
+                  {outcomes?.evidence_labels?.provisional
+                   ?? 'Provisional — based on returned corporate actions; completeness unverified'}
+                </p>
+                {outcomes?.provisional_remedy && (
+                  <p style={{ margin: '3px 0 0', fontSize: 12, color: '#94a3b8',
+                              lineHeight: 1.5 }}>{outcomes.provisional_remedy}</p>
+                )}
+              </>
+            )}
+            <Fold title="Outcome ledger" count={rows.length}>
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13,
                               minWidth: 720 }}>
@@ -312,30 +389,10 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
                 </tbody>
               </table>
             </div>
-            {/* THE DENOMINATOR, beside the numerator. A verified result over two eligible
-                rows reads like a finding unless what it EXCLUDED is visible. */}
-            {outcomes?.coverage && (
-              <div style={{ marginTop: 12, display: 'grid', gap: 6 }}>
-                {Object.entries(outcomes.coverage).map(([origin, c]) => (
-                  <div key={origin} style={{ fontSize: 12, color: '#94a3b8' }}>
-                    <span style={{ ...label, fontSize: 10 }}>{origin}</span>{' '}
-                    {Object.entries(c.pools ?? {}).map(([pool, v]) =>
-                      `${pool}: ${v.total}`).join(' · ') || 'no outcomes'}
-                    {c.invalidated_captures > 0 &&
-                      ` · invalid captures: ${c.invalidated_captures}`}
-                  </div>
-                ))}
-              </div>
-            )}
-            {outcomes?.provisional_remedy && rows.some(
-                r => r.outcome?.evidence_status === 'provisional') && (
-              <p style={{ margin: '8px 0 0', fontSize: 12, color: '#fde047', lineHeight: 1.5 }}>
-                {outcomes.provisional_remedy}
-              </p>
-            )}
             <p style={{ margin: '10px 0 0', fontSize: 12, color: '#64748b', lineHeight: 1.5 }}>
               {outcomes?.note}
             </p>
+            </Fold>
           </>
         )}
       </div>
