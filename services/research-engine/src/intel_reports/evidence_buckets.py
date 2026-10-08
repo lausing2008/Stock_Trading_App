@@ -151,6 +151,31 @@ def policy_fingerprint() -> str:
                    "work_remaining": list(WORK_REMAINING)})
 
 
+def sessions_back(venue: str, anchor: datetime, n: int, *, is_trading_day) -> list:
+    """The n completed trading sessions ending strictly before `anchor`'s local day.
+
+    LIVES HERE, ORM-FREE, SO A TEST CAN IMPORT THE REAL FUNCTION. It first lived in the route
+    module, where the service conftest's `db` stub makes it unimportable — so its test
+    re-implemented it, and then could not catch an edit that deleted a line from the original.
+
+    MIDDAY AND TIMEZONE-AWARE. Two separate traps:
+      * midnight — `is_trading_day` resolves the instant into the venue's local calendar, so a
+        midnight anchor lands on the previous local day and shifts the whole window by one.
+      * naive — `is_hk_trading_day` calls `.astimezone()`, which interprets a NAIVE datetime as
+        HOST LOCAL TIME. On a UTC-8 host, naive Sunday 12:00 became Monday in Hong Kong and
+        weekends came back as sessions. The answer must not depend on the machine asking.
+    """
+    from datetime import timedelta, timezone
+    out: list = []
+    day = (anchor.replace(hour=12, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+           - timedelta(days=1))
+    while len(out) < n:
+        if is_trading_day(venue, day):
+            out.append(day.date().isoformat())
+        day -= timedelta(days=1)
+    return list(reversed(out))
+
+
 def unmeasured(name: str, status: str, why: str, *, source: str = "platform") -> Bucket:
     """A bucket with nothing measured — direction UNKNOWN, and the reason recorded."""
     return Bucket(name=name, direction=UNKNOWN, status=status,

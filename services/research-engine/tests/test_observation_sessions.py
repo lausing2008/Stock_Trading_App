@@ -21,17 +21,18 @@ _cal = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_cal)
 
 
+from intel_reports.evidence_buckets import sessions_back as _real  # noqa: E402
+
+
 def _sessions_back(venue, anchor, n):
-    """The function under test, imported without the route module's ORM dependencies."""
-    from datetime import timedelta
-    out = []
-    day = (anchor.replace(hour=12, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
-           - timedelta(days=1))
-    while len(out) < n:
-        if _cal.is_trading_day(venue, day):
-            out.append(day.date().isoformat())
-        day -= timedelta(days=1)
-    return list(reversed(out))
+    """THE REAL FUNCTION, imported — not a copy.
+
+    An earlier version of this file re-implemented it, because it lived in the route module
+    which the service conftest makes unimportable. That copy then could not catch an edit which
+    deleted `out = []` from the original: every test here passed while the deployed endpoint
+    raised NameError on its first call.
+    """
+    return _real(venue, anchor, n, is_trading_day=_cal.is_trading_day)
 
 
 def test_no_session_falls_on_a_weekend():
