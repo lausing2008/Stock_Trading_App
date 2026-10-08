@@ -18,6 +18,12 @@ that upside. A single common-expiry diagram cannot describe that position.
 
 This module is PURE — no DB, no network, no clock beyond an injected `today` — so these tests
 execute the real functions against synthetic chains rather than asserting on source text.
+
+NOTE (O01, 2026-10-08): the hand-built fixtures below now declare `directional_exposure`, as
+every real structure does. Without it the separate exposure-compatibility constraint filters
+them out — "a structure that does not declare which way it leans cannot be shown to be
+compatible" — and these tests would pass or fail for a reason that has nothing to do with the
+payoff backstop they exist to check.
 """
 import importlib.util
 import pathlib
@@ -164,7 +170,7 @@ def test_a_vertical_also_requires_matched_expiries():
 
 def test_no_structure_with_a_non_positive_maximum_payoff_can_be_primary():
     rec = osx._recommend(
-        singles={}, combos={"bull_call_spread": {"name": "Bull Call Spread",
+        singles={}, combos={"bull_call_spread": {"directional_exposure": "bullish", "name": "Bull Call Spread",
                                                  "max_profit_per_contract": -500.0}},
         signal="BUY", iv_rank=50.0, holds_shares=False)
     assert rec["primary"] is None
@@ -173,8 +179,8 @@ def test_no_structure_with_a_non_positive_maximum_payoff_can_be_primary():
 
 def test_the_backstop_reports_what_it_rejected():
     rec = osx._recommend(
-        singles={"long_call": {"name": "Long Call", "max_profit_per_contract": None}},
-        combos={"bull_call_spread": {"name": "Bull Call Spread",
+        singles={"long_call": {"directional_exposure": "bullish", "name": "Long Call", "max_profit_per_contract": None}},
+        combos={"bull_call_spread": {"directional_exposure": "bullish", "name": "Bull Call Spread",
                                      "max_profit_per_contract": -500.0}},
         signal="BUY", iv_rank=10.0, holds_shares=False)
     assert rec["primary"] == "long_call", "an uncapped payoff is not an unsound one"

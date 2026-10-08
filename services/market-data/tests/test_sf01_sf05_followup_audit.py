@@ -9,6 +9,11 @@ known to have failed against the code as it stood.
   SF-03  one share qualified an account for a covered call
   SF-04  price provenance was recorded and never shown
   SF-05  an expired contract was the primary recommendation
+
+O01 NOTE (2026-10-08): the fixtures below now declare `directional_exposure`, as every real
+structure does. A structure that does not declare which way it leans cannot be shown compatible
+with a stated view, so without it these tests would exercise the exposure constraint rather than
+the holdings constraint they are about.
 """
 import ast
 import importlib.util
@@ -107,8 +112,8 @@ def test_one_share_no_longer_qualifies_an_account_for_a_covered_call():
     calls and collars are available", while every payoff beside it was per 100-share contract
     and the frontend separately required 100."""
     rec = osx._recommend(
-        singles={"covered_call": {"name": "Covered Call", "max_profit_per_contract": 500.0},
-                 "long_call": {"name": "Long Call", "max_profit_per_contract": None}},
+        singles={"covered_call": {"directional_exposure": "income_long", "name": "Covered Call", "max_profit_per_contract": 500.0},
+                 "long_call": {"directional_exposure": "bullish", "name": "Long Call", "max_profit_per_contract": None}},
         combos={}, signal="BUY", iv_rank=90.0,
         holds_shares=osx._coverable_contracts(1) >= 1,
         coverable_contracts=osx._coverable_contracts(1), holds_any_shares=True)
@@ -118,7 +123,7 @@ def test_one_share_no_longer_qualifies_an_account_for_a_covered_call():
 def test_a_hundred_shares_still_qualifies():
     """The fix must not refuse a real covered-call holder."""
     rec = osx._recommend(
-        singles={"covered_call": {"name": "Covered Call", "max_profit_per_contract": 500.0}},
+        singles={"covered_call": {"directional_exposure": "income_long", "name": "Covered Call", "max_profit_per_contract": 500.0}},
         combos={}, signal="BUY", iv_rank=90.0,
         holds_shares=osx._coverable_contracts(100) >= 1,
         coverable_contracts=osx._coverable_contracts(100), holds_any_shares=True)
@@ -137,7 +142,7 @@ def test_holding_some_stock_is_not_reported_as_holding_none():
 
 def test_the_coverable_count_travels_with_the_recommendation():
     rec = osx._recommend(
-        singles={"covered_call": {"name": "Covered Call", "max_profit_per_contract": 500.0}},
+        singles={"covered_call": {"directional_exposure": "income_long", "name": "Covered Call", "max_profit_per_contract": 500.0}},
         combos={}, signal="BUY", iv_rank=90.0, holds_shares=True,
         coverable_contracts=3, holds_any_shares=True)
     assert rec["coverable_contracts"] == 3

@@ -263,6 +263,7 @@ def build_strategy_matrix(
             "breakeven": round(leg["strike"] + debit, 2),
             "breakeven_move_pct": _pct(leg["strike"] + debit - current_price, current_price),
             "requires_shares": False,
+            "directional_exposure": "bullish",
             "collateral_per_contract": round(debit * _CONTRACT_MULTIPLIER, 2),
             "what_it_does": "Pays for the right to buy at the strike. Full premium is lost if the stock is below the strike at expiry.",
             "use_when": "You expect a move up big enough and soon enough to clear the breakeven, and you want a hard cap on what you can lose.",
@@ -284,6 +285,7 @@ def build_strategy_matrix(
             "breakeven": round(current_price - credit, 2),
             "breakeven_move_pct": _pct(-credit, current_price),
             "requires_shares": True,
+            "directional_exposure": "income_long",
             "collateral_per_contract": round(current_price * _CONTRACT_MULTIPLIER, 2),
             "what_it_does": f"Collects premium now in exchange for capping your exit near ${leg['strike']:.2f}.",
             "use_when": "You already own the shares, would be content selling at the strike, and want to be paid for the wait.",
@@ -303,6 +305,7 @@ def build_strategy_matrix(
             "breakeven": round(current_price + debit, 2),
             "breakeven_move_pct": _pct(debit, current_price),
             "requires_shares": True,
+            "directional_exposure": "hedge_long",
             "collateral_per_contract": round(debit * _CONTRACT_MULTIPLIER, 2),
             "effective_floor": round(leg["strike"] - debit, 2),
             "what_it_does": f"Insurance. Puts a floor near ${leg['strike'] - debit:.2f} no matter how far the stock falls.",
@@ -326,6 +329,7 @@ def build_strategy_matrix(
             "breakeven": round(leg["strike"] - credit, 2),
             "breakeven_move_pct": _pct(leg["strike"] - credit - current_price, current_price),
             "requires_shares": False,
+            "directional_exposure": "income_bullish",
             "collateral_per_contract": round(leg["strike"] * _CONTRACT_MULTIPLIER, 2),
             "effective_entry": round(leg["strike"] - credit, 2),
             "what_it_does": f"Paid now to promise to buy at ${leg['strike']:.2f}; if assigned your effective cost is ${leg['strike'] - credit:.2f}.",
@@ -372,6 +376,7 @@ def build_strategy_matrix(
             "breakeven": round(current_price + net, 2),
             "breakeven_move_pct": _pct(net, current_price),
             "requires_shares": True,
+            "directional_exposure": "hedge_long",
             "collateral_per_contract": round(current_price * _CONTRACT_MULTIPLIER, 2),
             "what_it_does": (f"Floors you near ${pl['strike']:.2f} and caps you near ${cl['strike']:.2f}, "
                              f"for a net {'cost' if net > 0 else 'credit'} of ${abs(net):.2f}/share."),
@@ -403,6 +408,7 @@ def build_strategy_matrix(
                 "breakeven": round(lo["strike"] + debit, 2),
                 "breakeven_move_pct": _pct(lo["strike"] + debit - current_price, current_price),
                 "requires_shares": False,
+                "directional_exposure": "bullish",
                 "collateral_per_contract": round(debit * _CONTRACT_MULTIPLIER, 2),
                 "reward_risk": round((width - debit) / debit, 2) if debit > 0 else None,
                 "what_it_does": f"Bullish to ${hi['strike']:.2f} for {_pct(debit, lo['price_per_share'])}% of the outright call's cost.",
@@ -431,6 +437,7 @@ def build_strategy_matrix(
                     "breakeven": round(hp["strike"] - debit, 2),
                     "breakeven_move_pct": _pct(hp["strike"] - debit - current_price, current_price),
                     "requires_shares": False,
+                    "directional_exposure": "bearish",
                     "collateral_per_contract": round(debit * _CONTRACT_MULTIPLIER, 2),
                     "reward_risk": round((width - debit) / debit, 2) if debit > 0 else None,
                     "what_it_does": f"Protection between ${hp['strike']:.2f} and ${lp['strike']:.2f} only — below ${lp['strike']:.2f} you are exposed again.",
@@ -510,6 +517,53 @@ def _iv_regime(iv_rank: float | None) -> str:
     return "normal"
 
 
+#: WHICH WAY EACH STRUCTURE LEANS, as a property of the structure rather than a list of names
+#: kept somewhere else. Declared at construction beside `requires_shares`, so a structure added
+#: later inherits the compatibility rule without anyone remembering to update a table.
+#:
+#:   bullish        gains when the underlying rises (long call, bull call spread)
+#:   bearish        gains when the underlying falls (bear put spread)
+#:   income_bullish SELLS premium while carrying LONG exposure. A cash-secured put is the case
+#:                  that matters: it reads as "get paid to wait", but the obligation is to BUY
+#:                  at the strike, so its risk is a falling stock. It is not a bearish trade and
+#:                  must never be offered as one.
+#:   income_long    income against stock already held (covered call) — long exposure, capped
+#:   hedge_long     reduces the risk of stock already held (protective put, collar)
+BULLISH_EXPOSURES = frozenset({"bullish", "income_bullish", "income_long"})
+BEARISH_EXPOSURES = frozenset({"bearish"})
+HEDGE_EXPOSURES = frozenset({"hedge_long"})
+
+
+def _exposure_is_compatible(entry: dict, *, bullish: bool, bearish: bool,
+                            holds_shares: bool) -> bool:
+    """Is this structure's exposure compatible with the stated view?
+
+    O01 (2026-10-08, reproduced by the reviewer). With `signal=SELL`, no shares and IV rank 80,
+    `_recommend` returned `cash_secured_put` as the PRIMARY — a structure whose risk is the
+    stock falling, offered to someone who had just been told the stock would fall. The ranking
+    tested the IV regime before it tested direction, and the final branch treated BEARISH as
+    merely "not bullish", lumping it with no-view.
+
+    Compatibility is a CONSTRAINT, like holding enough shares, so it is applied before ranking
+    and before any fallback — not expressed as a preference order that a later branch can
+    overrule. A bearish view may take a bearish structure, or a hedge of stock actually held,
+    and nothing else. Ranking still decides among what survives.
+    """
+    exposure = entry.get("directional_exposure")
+    if exposure is None:
+        # A structure that does not declare its exposure cannot be shown to be compatible.
+        # Unknown is not permission.
+        return False
+    if bearish:
+        return exposure in BEARISH_EXPOSURES or (exposure in HEDGE_EXPOSURES and holds_shares)
+    if bullish:
+        return exposure not in BEARISH_EXPOSURES
+    # NO STATED VIEW. Everything stays available — the absence of a direction is not evidence
+    # for one — but see `_recommend`, which refuses to present a directional structure as a
+    # primary recommendation on no view at all.
+    return True
+
+
 def _recommend(*, singles: dict, combos: dict, signal: str | None,
                iv_rank: float | None, holds_shares: bool,
                coverable_contracts: int | None = None,
@@ -576,6 +630,24 @@ def _recommend(*, singles: dict, combos: dict, signal: str | None,
     _ineligible = sorted(k for k, v in available.items() if not _is_eligible(v))
     available = {k: v for k, v in available.items() if _is_eligible(v)}
 
+    # O01 (2026-10-08): DIRECTIONAL COMPATIBILITY IS A CONSTRAINT, NOT A PREFERENCE.
+    # Reviewer's reproduced witness: signal=SELL, no shares, IV rank 80, with valid bearish AND
+    # bullish spreads available — primary came back `cash_secured_put`, a structure whose risk
+    # is the stock falling, recommended to someone told the stock would fall. The ranking tested
+    # the IV regime first and the final branch treated BEARISH as merely "not bullish".
+    #
+    # Filtered HERE, beside the holdings constraint and before every ranking branch and
+    # fallback, which is what makes the contradiction impossible rather than merely unlikely —
+    # the same lesson as SF-03 above, where fixing the order left the fallback handing back what
+    # the order had demoted.
+    _incompatible = sorted(
+        k for k, v in available.items()
+        if not _exposure_is_compatible(v, bullish=bullish, bearish=bearish,
+                                       holds_shares=holds_shares))
+    available = {k: v for k, v in available.items()
+                 if _exposure_is_compatible(v, bullish=bullish, bearish=bearish,
+                                            holds_shares=holds_shares)}
+
     # Carried on EVERY return path below, including the empty ones — the reviewer found the
     # fallback omitting exactly this, which left the reader with a recommendation and no
     # statement of what their holding could actually support.
@@ -585,9 +657,26 @@ def _recommend(*, singles: dict, combos: dict, signal: str | None,
                  # Priced, but not something this holding can carry. Reported rather than
                  # silently dropped: "we found nothing" and "we found something you cannot
                  # use" are different answers and lead to different next steps.
-                 "ineligible_for_holding": _ineligible}
+                 "ineligible_for_holding": _ineligible,
+                 # Priced and holdable, but pointing the wrong way for the stated view. Named
+                 # rather than silently dropped: "nothing fits your view" is a different answer
+                 # from "nothing could be priced", and leads somewhere different.
+                 "incompatible_with_direction": _incompatible}
 
     if not available:
+        if _incompatible and bearish:
+            return {"primary": None,
+                    "reason": ("Nothing priced here expresses a downward view that this account "
+                               "could hold. The structures available all carry long exposure, "
+                               "and offering one of those against a bearish view would "
+                               "contradict it — so there is no recommendation, which is the "
+                               "honest answer rather than a fallback."),
+                    **_coverage}
+        if _incompatible:
+            return {"primary": None,
+                    "reason": ("The structures the chain could price point the wrong way for "
+                               "the stated view, so there is no plan here that matches it."),
+                    **_coverage}
         if _ineligible:
             return {"primary": None,
                     "reason": ("The only structures the current chain could price require stock "
@@ -624,7 +713,19 @@ def _recommend(*, singles: dict, combos: dict, signal: str | None,
             order = [("collar", "You own the shares and IV gives no edge either way, so the structure that costs least to hold is the one that funds its own hedge."),
                      ("covered_call", "Income if you are content capping at your target."),
                      ("protective_put", "Protection if keeping the upside matters more than the premium.")]
+    elif bearish:
+        # NO SHARES AND A DOWNWARD VIEW. Only bearish structures survived the compatibility
+        # filter, so this orders among those rather than reaching for an income trade. IV still
+        # matters for HOW to express it, never for whether to invert the view.
+        order = [("bear_put_spread",
+                  "You hold no shares and the view is down: the debit put spread expresses that "
+                  "directly, with the loss capped at what you pay and the gain capped at your "
+                  "own downside target."
+                  + (" Premium is rich, so the short leg sells back some of that expense."
+                     if regime == "rich" else ""))]
     else:
+        # DIRECTION FIRST, THEN IV. The IV regime used to be tested before direction here, which
+        # is how a SELL signal reached a cash-secured put.
         if regime == "rich":
             order = [("cash_secured_put", "You hold no shares and premium is expensive — being PAID to wait for a lower entry beats paying up for a call. You must genuinely want the shares at the strike."),
                      ("bull_call_spread", "If you want defined-risk upside anyway, the spread sells back some of that expensive premium."),
@@ -642,18 +743,32 @@ def _recommend(*, singles: dict, combos: dict, signal: str | None,
                      ("bull_call_spread", "Defined-risk upside if the view turns bullish."),
                      ("long_call", "Highest risk of total premium loss without a directional edge — listed last for that reason.")]
 
+    # O01: WITH NO STATED VIEW, NOTHING HERE IS A VIEW. The game-plan route calls this with
+    # `signal=None`, and with rich IV the ranking then leads with a cash-secured put — a
+    # structure carrying long exposure. That is a reasonable answer to "what can this account
+    # sell premium with"; it is not an answer to "which way is this going", and must not be
+    # read as one. Said on the record rather than left to the reader to infer.
+    _view = {"stated_direction": ("bullish" if bullish else "bearish" if bearish else None),
+             "direction_basis": (
+                 None if (bullish or bearish) else
+                 "No directional view was supplied, so this ranks on your holdings and on where "
+                 "IV sits — not on where the price is going. Read it as what this account could "
+                 "structure, not as a case for a direction.")}
+
     for key, why in order:
         got = pick(key, why)
         if got:
             alts = [{"key": k, "name": available[k]["name"], "reason": w}
                     for k, w in order if k != key and k in available]
             return {**got, "iv_regime": regime, "iv_note": iv_note, "alternatives": alts,
-                    **_coverage}
+                    **_view, **_coverage}
 
     # SF-03 RESIDUAL: `available` is now eligibility-filtered above, so this fallback can only
     # return something the holding can actually support. It still carries the coverage
-    # metadata, which it previously dropped.
+    # metadata, which it previously dropped. O01 adds the direction filter upstream, so it also
+    # cannot return something that contradicts a stated view.
     key = next(iter(available))
     return {"primary": key, "name": available[key]["name"],
             "reason": "The only structure that could be priced from the currently-listed chain.",
-            "iv_regime": regime, "iv_note": iv_note, "alternatives": [], **_coverage}
+            "iv_regime": regime, "iv_note": iv_note, "alternatives": [],
+            **_view, **_coverage}
