@@ -287,3 +287,44 @@ logs were clean throughout — nothing errored, it simply could not reply.
 It surfaced only because `scripts/deploy.sh` refuses to report success over an unhealthy
 container. The DB half is now a plain synchronous function run via `asyncio.to_thread`, matching
 the sibling `job_sync_insider` which already had the right shape.
+
+---
+
+## Broader coverage — the pilot widened to the universe
+
+| | |
+|---|---|
+| Active universe | 210 |
+| Symbols with an action-history coverage claim | **203 (96.7%)** |
+| Symbols carrying at least one action | 110 |
+| Corporate action records | 751 — 15 splits, 736 cash dividends |
+
+Bounded and resumable: one provider call per symbol, a pause between them (this repo has a
+documented history of amplifying a provider rate-limit event), and a per-symbol `try` so one
+bad response cannot end the run. The requested span ends **today**, never in the future.
+
+### AUD-OBS-UNRESOLVEDSYMBOL — a failed lookup was being recorded as "no actions"
+
+Caught by reading the run's own output rather than its summary. yfinance answers an unknown
+ticker with `None` for both series and logs a 404 it does not raise. The shaping helper turned
+that `None` into `{}`, so the run wrote a coverage row claiming *"no corporate actions in this
+span"* — a positive evidential claim produced by a lookup that failed.
+
+`fetch` now requires **positive evidence** that the provider identified the symbol
+(`history_metadata` carries the resolved symbol and currency, and stays empty on failure) and
+raises `SymbolNotResolved` otherwise, so no coverage row is written at all.
+
+A repair pass re-verified all 210 and removed **7** false claims:
+`100.HK`, `2476`, `5.HK`, `992.HK`, `9992`, `SOWX`, `TSMC`.
+
+**Independently corroborated:** every one of those 7 has **zero** stored daily bars. They are
+malformed or dead entries in the universe (`100.HK` for `0100.HK`, `TSMC` for `TSM`), and the
+resolution check agrees with a signal it does not consult. Cleaning up the symbols themselves is
+a separate task and has not been done.
+
+### What this does and does not buy
+
+It makes future outcomes **scoreable** for 203 symbols instead of one. It does not make any of
+them *verified*: yfinance publishes no completeness guarantee, so every figure resting on this
+is `provisional` and labelled. Reaching `verified` needs a source documenting exhaustiveness, or
+a second independent source to corroborate against.
