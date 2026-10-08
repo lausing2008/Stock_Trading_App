@@ -50,6 +50,21 @@ _HK_ZH_NAMES = {
 
 def _run_migrations() -> None:  # noqa: C901
     with engine.begin() as conn:
+        # AUD-OBS-ADDCOLUMN (2026-10-08): `observation_outcomes` was created by create_all()
+        # in an earlier deploy, and create_all() only creates MISSING TABLES — three columns
+        # added to the model afterwards never reached the existing table, so every SELECT
+        # raised UndefinedColumn. Same bug class as the one already recorded in
+        # docs/incidents/docker-deploy-staleness.md. Idempotent, matching this file's pattern.
+        conn.execute(text(
+            "ALTER TABLE IF EXISTS observation_outcomes "
+            "ADD COLUMN IF NOT EXISTS benchmark_entry_return DOUBLE PRECISION"))
+        conn.execute(text(
+            "ALTER TABLE IF EXISTS observation_outcomes "
+            "ADD COLUMN IF NOT EXISTS attempts JSON"))
+        conn.execute(text(
+            "ALTER TABLE IF EXISTS observation_outcomes "
+            "ADD COLUMN IF NOT EXISTS superseded_state VARCHAR(48)"))
+
         # Add Chinese name column and backfill known HK stocks
         conn.execute(text(
             "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS name_zh VARCHAR(256)"

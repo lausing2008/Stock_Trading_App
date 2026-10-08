@@ -79,3 +79,24 @@ def test_the_window_does_not_depend_on_the_host_timezone():
         else:
             os.environ["TZ"] = old
         time.tzset()
+
+
+# ---- AUD-OBS-ADDCOLUMN ----------------------------------------------------------------------
+# create_all() creates MISSING TABLES, never missing columns. `observation_outcomes` was created
+# by an earlier deploy, so three columns added to the model afterwards never reached the live
+# table and every SELECT raised UndefinedColumn. The model and the migration must stay in step.
+
+def test_every_outcome_column_added_after_creation_has_a_migration():
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[3]
+    models = (root / "shared/db/models.py").read_text()
+    session_py = (root / "shared/db/session.py").read_text()
+    block = models[models.index("class ObservationOutcome"):]
+    block = block[:block.index("__table_args__")]
+    import re
+    cols = set(re.findall(r"^\s{4}(\w+):\s*Mapped", block, re.M))
+    # These three were added after the table existed in production.
+    for late in ("benchmark_entry_return", "attempts", "superseded_state"):
+        assert late in cols, f"{late} missing from the model"
+        assert f"ADD COLUMN IF NOT EXISTS {late}" in session_py, \
+            f"{late} is on the model but has no ALTER — create_all() will not add it"
