@@ -65,6 +65,30 @@ def _run_migrations() -> None:  # noqa: C901
             "ALTER TABLE IF EXISTS observation_outcomes "
             "ADD COLUMN IF NOT EXISTS superseded_state VARCHAR(48)"))
 
+        # AUD-OBS-RESOLVERVERSION (2026-10-08): outcome rows are keyed by WHICH RESOLVER wrote
+        # them, so a corrected resolver inserts beside the original instead of being refused.
+        # The old unique constraint spanned (observation_id, horizon_sessions) only and must be
+        # replaced, or the insert collides. Backfill marks pre-existing rows as written by a
+        # resolver whose fingerprint cannot be recomputed — the sentinel is not a guess.
+        conn.execute(text(
+            "ALTER TABLE IF EXISTS observation_outcomes "
+            "ADD COLUMN IF NOT EXISTS resolver_fingerprint VARCHAR(40)"))
+        conn.execute(text(
+            "ALTER TABLE IF EXISTS observation_outcomes "
+            "ADD COLUMN IF NOT EXISTS superseded_by_id BIGINT"))
+        conn.execute(text(
+            "UPDATE observation_outcomes SET resolver_fingerprint = "
+            "'unrecorded-pre-fingerprint' WHERE resolver_fingerprint IS NULL"))
+        conn.execute(text(
+            "ALTER TABLE IF EXISTS observation_outcomes "
+            "DROP CONSTRAINT IF EXISTS uq_outcome_observation_horizon"))
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_outcome_observation_horizon_resolver "
+            "ON observation_outcomes (observation_id, horizon_sessions, resolver_fingerprint)"))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_observation_outcomes_resolver_fingerprint "
+            "ON observation_outcomes (resolver_fingerprint)"))
+
         # Add Chinese name column and backfill known HK stocks
         conn.execute(text(
             "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS name_zh VARCHAR(256)"

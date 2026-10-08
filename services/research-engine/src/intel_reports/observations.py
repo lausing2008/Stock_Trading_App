@@ -142,6 +142,37 @@ def record_buckets(session, *, subject_key, as_of, buckets) -> list:
 #: must be scored by, and silently applying a different one is the bias the freezing prevents.
 SUPPORTED_POLICY_VERSIONS = ("res-1",)
 
+#: Sentinel for outcome rows written before the resolver was fingerprinted. The code that
+#: produced them is no longer present, so its fingerprint cannot be recomputed — and is not
+#: guessed. Such a row is retained, never rewritten, and superseded by the current resolver.
+UNFINGERPRINTED = "unrecorded-pre-fingerprint"
+
+
+def resolver_fingerprint() -> str:
+    """Digest of the RESOLVER'S OWN RULES, derived from them rather than maintained by hand.
+
+    Same principle as `policy_fingerprint`: a version string someone has to remember to bump
+    is a version string that silently goes stale. This covers the frozen policy, the stated
+    execution assumptions, and the body of `resolve` itself.
+
+    Normalised through the AST, with comments and docstrings removed, so that PROSE does not
+    mint a new resolver: a reworded comment would otherwise re-score the whole corpus and fill
+    the supersession log with changes that altered nothing. Any change to what the code
+    actually does always moves it. (`ast.unparse` drops comments on its own; a docstring is a
+    real expression node and has to be removed deliberately — a test caught that.)
+    """
+    import ast
+    import inspect
+    import textwrap
+    tree = ast.parse(textwrap.dedent(inspect.getsource(resolve)))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)) \
+                and ast.get_docstring(node) is not None:
+            node.body = node.body[1:]
+    body = ast.unparse(tree)
+    return digest({"policy": RESOLUTION_POLICY, "execution": EXECUTION_ASSUMPTIONS,
+                   "resolve": body})
+
 
 def resolve(session, observation, *, session_closes: dict, expected_sessions: list,
             benchmark_reference: float | None = None,
@@ -243,9 +274,17 @@ def resolve(session, observation, *, session_closes: dict, expected_sessions: li
     resolved = state.startswith("RESOLVED")
     attempt = {"at": now.isoformat(), "state": state, "basis": basis}
 
+    fingerprint = resolver_fingerprint()
+    attempt["resolver"] = fingerprint
+
+    # IMMUTABILITY IS SCOPED TO ONE RESOLVER. Re-running THIS resolver must never rewrite a
+    # resolved row. A CORRECTED resolver is a different question, and refusing it outright is
+    # how the six-defect fix produced a rerun that changed nothing: every stored figure stayed
+    # as the defective resolver had written it, with no sign on the row that it was stale.
     existing = session.execute(select(ObservationOutcome).where(
         ObservationOutcome.observation_id == observation.id,
-        ObservationOutcome.horizon_sessions == need)).scalars().first()
+        ObservationOutcome.horizon_sessions == need,
+        ObservationOutcome.resolver_fingerprint == fingerprint)).scalars().first()
 
     if existing is None:
         row = ObservationOutcome(
@@ -255,9 +294,24 @@ def resolve(session, observation, *, session_closes: dict, expected_sessions: li
             return_basis=observation.return_basis,
             delisting_cause=(delisting or {}).get("cause"), resolution_state=state,
             sessions_elapsed=len(expected_sessions), resolution_basis=basis,
-            resolved_at=now if resolved else None,
+            resolved_at=now if resolved else None, resolver_fingerprint=fingerprint,
             attempts=[attempt], benchmark_entry_return=bench_entry_ret)
         session.add(row)
+        session.flush()  # needs row.id to point the superseded originals at it
+        # EXPLICIT SUPERSESSION, ORIGINALS RETAINED. Rows from any earlier resolver keep every
+        # figure they were written with; they gain a pointer to this one and an appended note.
+        # Nothing is deleted or edited in place, so both readings stay inspectable side by side.
+        for prior in session.execute(select(ObservationOutcome).where(
+                ObservationOutcome.observation_id == observation.id,
+                ObservationOutcome.horizon_sessions == need,
+                ObservationOutcome.id != row.id)).scalars().all():
+            prior.superseded_by_id = row.id
+            prior.attempts = list(prior.attempts or []) + [{
+                "at": now.isoformat(), "superseded_by": row.id,
+                "note": f"retained unchanged; a corrected resolver ({fingerprint}) scored this "
+                        f"observation afresh. The figures above are those of resolver "
+                        f"{prior.resolver_fingerprint or UNFINGERPRINTED} and must not be "
+                        f"pooled with current ones"}]
         session.commit()
         return row, True
 
@@ -267,7 +321,8 @@ def resolve(session, observation, *, session_closes: dict, expected_sessions: li
     # appended so the supersession is visible rather than silent.
     if existing.resolution_state.startswith("RESOLVED"):
         existing.attempts = list(existing.attempts or []) + [
-            {**attempt, "ignored": "already resolved; a resolved outcome is never rewritten"}]
+            {**attempt, "ignored": "already resolved by this same resolver; a resolved outcome "
+                                   "is never rewritten under the rules that produced it"}]
         session.commit()
         return existing, False
 

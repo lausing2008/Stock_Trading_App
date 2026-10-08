@@ -279,6 +279,11 @@ def replay(symbol: str, sessions_ago: int = Query(90, ge=25, le=400),
                 "excess_return": outcome.excess_return,
                 "return_basis": outcome.return_basis,
                 "superseded_state": outcome.superseded_state,
+                # WHICH RESOLVER produced this figure, and whether a later one has replaced it.
+                # A performance display must read only rows whose `superseded_by` is null, or
+                # it pools a corrected reading with the defective one it replaced.
+                "resolver_fingerprint": outcome.resolver_fingerprint,
+                "superseded_by": outcome.superseded_by_id,
                 "attempts": len(outcome.attempts or []),
                 "basis": outcome.resolution_basis, "created": created}
     body["note"] = ("RETROSPECTIVE REPLAY. Proves the capture and resolution machinery works. "

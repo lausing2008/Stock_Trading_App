@@ -96,7 +96,24 @@ def test_every_outcome_column_added_after_creation_has_a_migration():
     import re
     cols = set(re.findall(r"^\s{4}(\w+):\s*Mapped", block, re.M))
     # These three were added after the table existed in production.
-    for late in ("benchmark_entry_return", "attempts", "superseded_state"):
+    for late in ("benchmark_entry_return", "attempts", "superseded_state",
+                 "resolver_fingerprint", "superseded_by_id"):
         assert late in cols, f"{late} missing from the model"
         assert f"ADD COLUMN IF NOT EXISTS {late}" in session_py, \
             f"{late} is on the model but has no ALTER — create_all() will not add it"
+
+
+def test_the_outcome_unique_constraint_change_is_migrated_not_only_declared():
+    """`create_all()` does not alter an EXISTING table's constraints either. Without the swap
+    the corrected-resolver insert collides with the old two-column constraint in production
+    while passing every test, because the test database is created fresh from the model."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[3]
+    models = (root / "shared/db/models.py").read_text()
+    session_py = (root / "shared/db/session.py").read_text()
+    assert 'name="uq_outcome_observation_horizon_resolver"' in models
+    assert "DROP CONSTRAINT IF EXISTS uq_outcome_observation_horizon" in session_py
+    assert "uq_outcome_observation_horizon_resolver" in session_py
+    # Pre-existing rows must be labelled, not left NULL: a NULL would make the unique index
+    # non-enforcing for exactly the rows a correction is about to supersede.
+    assert "unrecorded-pre-fingerprint" in session_py

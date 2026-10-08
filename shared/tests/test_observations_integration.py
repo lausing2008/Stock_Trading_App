@@ -232,3 +232,139 @@ def test_the_outcome_records_which_return_basis_it_used(session):
     row, _ = _obs(session, horizon_sessions=2)
     out, _ = _resolve(session, row, {D[0]: 101.0, D[1]: 105.0}, expected=D[:2])
     assert out.return_basis == "price_return"
+
+
+# ---- a CORRECTED resolver supersedes, it is not refused -------------------------------------
+#
+# AUD-OBS-RESOLVERVERSION. The six-defect resolver fix was deployed and the replay reran — and
+# changed nothing. Every stored figure stayed as the DEFECTIVE resolver had written it, because
+# "a resolved outcome is never rewritten" applied to a resolver that no longer existed. The two
+# cases are different questions: re-running the SAME rules must never rewrite, and a CORRECTED
+# resolver must be able to produce a reading without destroying the original.
+
+def _force_fingerprint(monkeypatch, value):
+    from intel_reports import observations as O
+    monkeypatch.setattr(O, "resolver_fingerprint", lambda: value)
+
+
+def test_the_fingerprint_is_derived_from_the_resolver_not_maintained_by_hand():
+    from intel_reports.observations import resolver_fingerprint
+    assert len(resolver_fingerprint()) == 32
+    assert resolver_fingerprint() == resolver_fingerprint(), "must be stable within a build"
+
+
+def _reworded_resolve_fingerprint(monkeypatch, tmp_path, replacements):
+    """Swap `resolve` for a variant and ask the REAL fingerprint function about it.
+
+    Deliberately not a re-implementation of the fingerprint rules: a test that recomputes them
+    cannot catch a line deleted from the original. The variant is written to a REAL FILE and
+    imported, because `resolver_fingerprint` reads its subject with `inspect.getsource`, which
+    has nothing to read for a function compiled from a string — the same reason resolution
+    would fail outright under a source-less deployment rather than quietly fingerprinting
+    everything the same, which would pool corrected and uncorrected rows together.
+    """
+    import importlib.util, inspect, textwrap
+    from intel_reports import observations as O
+    variant = textwrap.dedent(inspect.getsource(O.resolve))
+    for before, after in replacements:
+        assert before in variant, f"the edit {before!r} did not apply"
+        variant = variant.replace(before, after)
+    path = tmp_path / "variant_resolver.py"
+    path.write_text("from datetime import datetime, timezone\n"
+                    "from sqlalchemy import select\n\n" + variant)
+    spec = importlib.util.spec_from_file_location("variant_resolver", path)
+    mod = importlib.util.module_from_spec(spec)
+    mod.__dict__.update({k: v for k, v in O.__dict__.items()
+                         if k not in ("__name__", "__file__", "__spec__", "__loader__")})
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(O, "resolve", mod.resolve)
+    return O.resolver_fingerprint()
+
+
+def test_prose_alone_does_not_mint_a_new_resolver(monkeypatch, tmp_path):
+    """Otherwise every doc edit re-scores the corpus and the supersession log becomes noise.
+
+    Covers BOTH kinds of prose. `ast.unparse` drops `#` comments by itself; a docstring is a
+    real expression node and survives it, which the first version of this test caught.
+    """
+    from intel_reports.observations import resolver_fingerprint
+    baseline = resolver_fingerprint()
+    assert _reworded_resolve_fingerprint(monkeypatch, tmp_path, [
+        ('"""Score one observation', '"""REWORDED. Score one observation'),
+        ("# A GUARDED TRANSITION.", "# REWORDED COMMENT."),
+    ]) == baseline
+
+
+def test_changing_what_the_resolver_does_always_moves_the_fingerprint(monkeypatch,
+                                                                       tmp_path):
+    """The other half: a fingerprint insensitive to behaviour would supersede nothing."""
+    from intel_reports.observations import resolver_fingerprint
+    baseline = resolver_fingerprint()
+    assert _reworded_resolve_fingerprint(monkeypatch, tmp_path, [
+        ('state = "RESOLVED"', 'state = "RESOLVED_DIFFERENTLY"'),
+    ]) != baseline
+
+
+def test_the_same_resolver_rerunning_still_never_rewrites(session, monkeypatch):
+    _force_fingerprint(monkeypatch, "resolver-A")
+    row, _ = _obs(session, horizon_sessions=3)
+    first, _ = _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0})
+    again, created = _resolve(session, row, {D[0]: 1.0, D[1]: 1.0, D[2]: 1.0})
+    assert created is False and again.id == first.id
+    assert round(again.descriptive_return, 4) == 0.10
+    assert again.superseded_by_id is None
+
+
+def test_a_corrected_resolver_writes_a_new_row_and_leaves_the_original_intact(session,
+                                                                             monkeypatch):
+    from db.models import ObservationOutcome
+    _force_fingerprint(monkeypatch, "resolver-A")
+    row, _ = _obs(session, horizon_sessions=3)
+    old, _ = _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0})
+    old_id, old_return = old.id, old.descriptive_return
+
+    _force_fingerprint(monkeypatch, "resolver-B")
+    new, created = _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 120.0})
+    assert created is True, "a corrected resolver must not be silently refused"
+    assert new.id != old_id
+    assert round(new.descriptive_return, 4) == 0.20
+
+    session.expire_all()
+    rows = session.execute(select(ObservationOutcome).where(
+        ObservationOutcome.observation_id == row.id)).scalars().all()
+    assert len(rows) == 2, "the original is RETAINED, not replaced"
+    original = next(r for r in rows if r.id == old_id)
+    assert original.descriptive_return == old_return, "its figures are never altered"
+    assert original.superseded_by_id == new.id, "supersession is explicit, not inferred"
+    assert original.resolver_fingerprint == "resolver-A"
+    assert new.superseded_by_id is None
+    note = original.attempts[-1]
+    assert note["superseded_by"] == new.id
+    assert "must not be pooled" in note["note"]
+
+
+def test_a_row_written_before_fingerprinting_is_superseded_not_claimed(session, monkeypatch):
+    """The sentinel is not a guess: the code that wrote those rows is gone."""
+    from db.models import ObservationOutcome
+    from intel_reports.observations import UNFINGERPRINTED
+    _force_fingerprint(monkeypatch, "resolver-A")
+    row, _ = _obs(session, horizon_sessions=3)
+    old, _ = _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0})
+    # Simulate the production rows, which predate the column and carry the backfilled sentinel.
+    old.resolver_fingerprint = UNFINGERPRINTED
+    session.commit()
+
+    _force_fingerprint(monkeypatch, "resolver-B")
+    new, created = _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 120.0})
+    assert created is True
+    session.expire_all()
+    original = session.get(ObservationOutcome, old.id)
+    assert original.superseded_by_id == new.id
+    assert UNFINGERPRINTED in original.attempts[-1]["note"]
+
+
+def test_every_attempt_records_which_resolver_made_it(session, monkeypatch):
+    _force_fingerprint(monkeypatch, "resolver-A")
+    row, _ = _obs(session, horizon_sessions=3)
+    out, _ = _resolve(session, row, {D[0]: 101.0, D[1]: 103.0, D[2]: 110.0})
+    assert out.attempts[0]["resolver"] == "resolver-A"

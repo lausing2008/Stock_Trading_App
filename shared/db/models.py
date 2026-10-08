@@ -4102,10 +4102,23 @@ class ObservationOutcome(Base):
     attempts: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     #: The state this row held before the most recent transition, where one occurred.
     superseded_state: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    #: WHICH RESOLVER WROTE THIS ROW — a digest of the resolver's own rules, not a string
+    #: anyone maintains by hand. Immutability is scoped to one resolver: re-running the SAME
+    #: resolver must never rewrite a resolved row, but a CORRECTED resolver is answering a
+    #: different question and may not be silently refused, which is what happened when the six
+    #: defects were fixed and the rerun changed nothing. `uq_` includes this column, so a
+    #: corrected resolver inserts a NEW row beside the original rather than overwriting it.
+    #: Rows written before this column existed carry `unrecorded-pre-fingerprint`: the code
+    #: that produced them is gone, so its fingerprint cannot be recomputed and is not guessed.
+    resolver_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True,
+                                                             index=True)
+    #: Set on the ORIGINAL row when a later resolver supersedes it. The original figures are
+    #: never altered — supersession is a pointer, so both readings stay inspectable.
+    superseded_by_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (
-        UniqueConstraint("observation_id", "horizon_sessions",
-                         name="uq_outcome_observation_horizon"),
+        UniqueConstraint("observation_id", "horizon_sessions", "resolver_fingerprint",
+                         name="uq_outcome_observation_horizon_resolver"),
     )
