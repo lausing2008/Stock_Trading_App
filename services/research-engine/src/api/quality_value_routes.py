@@ -227,6 +227,11 @@ def evaluations(symbols: str | None = Query(None, description="comma-separated; 
             select(FinancialStatement.symbol)
             .where(FinancialStatement.period_type == "annual").distinct()).all()}
 
+        # Imported HERE, inside the function, matching how `setups` already does it: these
+        # route modules are imported under a conftest that stubs `db`, and the direction-screen
+        # module is reached the same way from both callers.
+        from ..intel_reports.direction_screen import classify_instrument
+
         for stock in stocks:
             fin = _statement_evidence(session, stock.symbol, now)
             # Industry decides whether leverage is even a solvency reading.

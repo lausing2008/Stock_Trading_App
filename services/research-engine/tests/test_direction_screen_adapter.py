@@ -113,3 +113,60 @@ def test_endpoint_excludes_forming_bars_and_ranks_full_population(monkeypatch):
     assert all(r["setup"]["close"] == 106 for r in result["rows"])
     assert all(r["setup"]["resistance"] == 105 for r in result["rows"])
     engine.dispose()
+
+
+def test_the_evaluations_endpoint_resolves_every_name_it_uses():
+    """IT DID NOT. `classify_instrument` was used in `evaluations()` without being imported
+    there, so every call raised NameError — and the whole suite stayed green, because nothing
+    exercised that endpoint's body. The import guard I used matched a LOCAL import inside a
+    different function and concluded the module already had one.
+
+    Compiling the function and checking every global it references against the module's own
+    namespace catches exactly this class of defect without needing a database.
+    """
+    import ast
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    src = (root / "src/api/quality_value_routes.py").read_text()
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "evaluations")
+
+    # Names bound anywhere in the function: parameters, assignments, comprehensions, and —
+    # the point of this test — local imports.
+    bound = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bound.add(node.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:
+                bound.add((a.asname or a.name).split(".")[0])
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, (ast.For, ast.comprehension)):
+            tgt = node.target
+            for n2 in ast.walk(tgt):
+                if isinstance(n2, ast.Name):
+                    bound.add(n2.id)
+
+    module_level = set()
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:
+                module_level.add((a.asname or a.name).split(".")[0])
+        elif isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            module_level.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                for n2 in ast.walk(t):
+                    if isinstance(n2, ast.Name):
+                        module_level.add(n2.id)
+
+    import builtins
+    known = bound | module_level | set(dir(builtins))
+    used = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+    missing = sorted(used - known)
+    assert not missing, f"evaluations() references names it cannot resolve: {missing}"
