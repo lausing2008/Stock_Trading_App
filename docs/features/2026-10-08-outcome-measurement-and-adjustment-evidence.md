@@ -127,3 +127,86 @@ fixes, 3 on the publication selector. `make test` 196, `make test-integration` 8
 * Ingestion covers MU and SPY only.
 * No signed-in browser check — minting a token to inspect a page is not a casual act.
 * Prospective observations #4/#5/#6 are pending on elapsed time, which is the correct state.
+
+---
+
+## Follow-up (2026-10-08, second round)
+
+Four corrections after review of the first delivery.
+
+### 1. The panel belongs inside Quality & Value — it was shipped as a separate page
+
+The agreed integration was the summary and outcome tracking *inside* Quality & Value, keyed to
+the symbol being evaluated. A standalone `/stock-intelligence` page does not satisfy that.
+
+`StockIntelligencePanel` is now one component rendered by Quality & Value. The standalone route
+imports the same component and holds no rendering or fetching of its own (asserted by test), and
+is no longer in the nav. The panel renders only when **one** company is in view — over a 200-row
+universe it is not a summary of anything.
+
+**Conclusions first**, and the order is the argument: direction and horizon → main factors →
+strongest counterevidence → triggers → outcome status. Buckets, adjustment evidence and
+superseded results sit below, collapsed. The triggers (`confirmation_rule` /
+`invalidation_rule`) were stored on every observation and had never been served.
+
+### 2. Instrument applicability — GLD was assessed as a company it is not
+
+GLD was labelled "Fund (inferred)" on the same screen that reported it as missing annual
+statements and lacking a durable moat, with "collect the evidence" as its next research task. A
+gold trust holds no operating business: "no moat" there is not a weak finding, it is a finding
+about the **wrong subject**.
+
+`assessment_applicability()` returns three states:
+
+| Instrument | Confidence | Status |
+|---|---|---|
+| operating_company | declared | `applies` |
+| fund | declared | `not_applicable` — names what fund analysis would require |
+| anything | inferred | `unverified` — **everything today** |
+
+An inferred fund is `unverified`, not `not_applicable`: calling it not-applicable would assert
+the very type the classifier explicitly refuses to assert.
+
+Suppressing the company backlog requires **positive evidence the subject is wrong**. An unknown
+type is not such evidence — treating it as one would repeat the "absence implies fund" error the
+classifier exists to avoid, and would silently empty the backlog for every company. My first
+version did exactly that; an existing test caught it. Where suppressed, the items are still
+carried under a heading saying what they are conditional on.
+
+The caveat renders beside the **collapsed** gate badges, because those badges are what a reader
+sees first and what the caveat governs.
+
+Measured in production: GLD → `fund (inferred)` → `unverified`, backlog conditional, fund
+analysis named. MU → `operating_company (inferred)` → `unverified`, backlog shown.
+
+### 3. A request through a future date evidences nothing about the future
+
+The pilot stored a coverage span ending **2026-12-31** from a fetch made on **2026-10-08** — it
+asserted knowledge of corporate actions that had not happened. `requested_*` and `evidenced_*`
+are now separate columns, `evidenced_to` is capped at the retrieval date, and verification reads
+the evidenced one. The migration caps existing rows rather than trusting what was asked for.
+
+An empty response establishes **"no actions were returned"**, not "none occurred" — yfinance
+publishes no completeness guarantee. The window still verifies (refusing would make every
+dividend payer permanently unresolvable), but `completeness_basis` records the strength and the
+weaker claim is disclosed on the figure itself. A documented completeness guarantee would
+justify `source_guarantee`.
+
+### Two more mistakes of my own
+
+* **A shadowed parameter.** I named the completeness basis `basis`, shadowing the function's
+  `basis` parameter — the *return* basis. `basis == SPLIT_ADJUSTED_PRICE` then compared two
+  unrelated things and was always False, silently disabling the raw-price refusal, the dividend
+  disclosure and the whole total-return branch. Nothing about shadowing raises; the dividend
+  tests are the only reason it did not ship.
+* **A name that was never imported.** `classify_instrument` was used in `evaluations()` without
+  a module-level import, so every call raised `NameError`. My guard for "does this import exist"
+  matched a **local** import inside a different function. `make test`, `make test-integration`
+  and `make test-all` were all green over a route that could not run; it was found by calling it
+  against production. A test now compiles the function and resolves every global it loads
+  against what the module and the function actually bind, local imports included.
+
+### Status of the figures
+
+The return figures in this document are **reported results, not independently verified**. The
+adjustment pilot covers MU and SPY only.
