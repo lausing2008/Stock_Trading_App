@@ -128,6 +128,61 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = 30_000):
   return (await r.json()) as T;
 }
 
+
+// ── Stock intelligence: evidence buckets, observations and their outcomes ───────────────────
+// UNKNOWN IS NOT NEUTRAL. A bucket with nothing measured is a gap in our work, not a finding
+// about the market, and the two must never render the same.
+export interface IntelClaim {
+  claim: string; source: string; source_ref?: string | null; as_of?: string | null;
+  materiality?: string | null; source_group?: string | null;
+}
+export interface IntelBucket {
+  bucket: string; direction: string; status: string; support_quality?: string | null;
+  evidence?: IntelClaim[]; contradictions?: IntelClaim[]; limitations?: IntelClaim[];
+}
+export interface IntelSummary {
+  subject: string; direction: string; direction_basis?: string; horizon?: string;
+  horizon_sessions?: number; support_quality?: string;
+  predictive_confidence?: number | null; predictive_confidence_note?: string;
+  three_factors?: IntelClaim[]; counterevidence?: IntelClaim[];
+  open_questions?: string[] | IntelClaim[];
+}
+export interface IntelObservation {
+  id: number; horizon: string; horizon_sessions: number; direction: string;
+  created: boolean; reused?: boolean; reference_price?: number | null;
+  reference_price_as_of?: string | null; frozen_inputs_digest?: string | null;
+  summary?: IntelSummary; note?: string;
+}
+export interface StockIntelligence {
+  subject: string; as_of: string; origin: string; latest_session?: string | null;
+  buckets: IntelBucket[]; observations: IntelObservation[]; note?: string;
+}
+export interface OutcomeRow {
+  id: number; state: string; sessions_elapsed?: number | null;
+  descriptive_return?: number | null; simulated_next_session_close_return?: number | null;
+  benchmark_return_same_window?: number | null; benchmark_return_entry_window?: number | null;
+  excess_return?: number | null; return_basis?: string | null; reason?: string | null;
+}
+export interface SupersededRow {
+  id: number; resolver?: string | null; superseded_by?: number | null; state: string;
+  descriptive_return?: number | null; excess_return?: number | null;
+}
+export interface OutcomeObservation {
+  observation_id: number; origin: string; observed_at: string; horizon: string;
+  horizon_sessions: number; direction: string; support_quality?: string | null;
+  reference_price?: number | null; reference_price_as_of?: string | null;
+  invalidated_reason?: string | null; publishable: boolean;
+  outcome: OutcomeRow | null; superseded: SupersededRow[];
+}
+export interface StockOutcomes {
+  symbol: string; resolver_fingerprint: string; observations: OutcomeObservation[];
+  state_counts: Record<string, number>;
+  /* SERVED, NEVER COPIED. A frontend keeping its own state->label map is how four backend
+     states once all rendered as the single thing they were added to stop saying. */
+  reason_labels: Record<string, string>;
+  note?: string;
+}
+
 export const api = {
   listStocks: (market?: string) => request<Stock[]>(`/stocks${market ? `?market=${market}` : ''}`),
   latestPrices: () => request<LatestPrice[]>(`/stocks/latest_prices`),
@@ -230,6 +285,13 @@ export const api = {
       undefined, 60_000),
   directionScreen: (params: string) =>
     request<DirectionScreen>(`/quality-value/setups?${params}`, undefined, 60_000),
+  // Stock intelligence. `stockIntelligence` CAPTURES a prospective observation (deduplicated
+  // per day), which is why it is the slower of the two; `stockOutcomes` is a pure read.
+  stockIntelligence: (symbol: string) =>
+    request<StockIntelligence>(`/intelligence/stock/${encodeURIComponent(symbol)}`,
+                               undefined, 60_000),
+  stockOutcomes: (symbol: string) =>
+    request<StockOutcomes>(`/intelligence/outcomes/${encodeURIComponent(symbol)}`),
   intelContract: () => request<{ contract_version: number; report_types: string[] }>(`/intel/contract`),
   generateIntelReport: (body: { report_type: string; symbol?: string; market?: string; event_id?: number }) =>
     // Generation walks the whole covered universe for breadth and leadership, so it is slower

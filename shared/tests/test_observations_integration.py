@@ -27,8 +27,10 @@ OBSERVED = datetime(2026, 9, 1, 20, 5)
 def session():
     from db.models import (Base, EvidenceBucket, IntelligenceObservation, ObservationOutcome)
     engine = create_engine(PG_URL, future=True)
+    from db.models import CorporateAction, CorporateActionCoverage
     tables = [ObservationOutcome.__table__, IntelligenceObservation.__table__,
-              EvidenceBucket.__table__]
+              EvidenceBucket.__table__, CorporateAction.__table__,
+              CorporateActionCoverage.__table__]
     Base.metadata.drop_all(engine, tables=tables)
     Base.metadata.create_all(engine, tables=tables)
     s = sessionmaker(bind=engine, future=True)()
@@ -509,3 +511,47 @@ def test_an_unresolved_row_is_returned_for_coverage_but_carries_no_return(sessio
     assert out.resolution_state == "UNRESOLVED_ADJUSTMENT_UNVERIFIED"
     assert out.descriptive_return is None and out.excess_return is None, \
         "an unverified window has no return, not a zero return"
+
+
+# ---- corporate-action storage and the coverage claim -----------------------------------------
+
+def test_storing_actions_is_idempotent_and_writes_a_coverage_claim(session):
+    from datetime import date as _date
+    from db.models import CorporateAction, CorporateActionCoverage
+    from intel_reports.corporate_actions import normalise, store
+    acts = normalise({"2026-06-03": 2.0}, {"2026-06-10": 0.75}, symbol="MU",
+                     retrieved_at=OBSERVED)
+    kw = dict(covers_from=_date(2026, 1, 1), covers_to=_date(2026, 12, 31),
+              retrieved_at=OBSERVED)
+    first = store(session, "MU", acts, **kw)
+    assert first["actions_created"] == 2
+    again = store(session, "MU", acts, **kw)
+    assert again["actions_created"] == 0 and again["actions_already_held"] == 2
+    assert session.query(CorporateAction).count() == 2
+    assert session.query(CorporateActionCoverage).count() == 1
+
+
+def test_a_coverage_claim_widens_and_never_narrows(session):
+    """Narrowing on a re-run would silently un-verify windows a wider fetch had verified."""
+    from datetime import date as _date
+    from db.models import CorporateActionCoverage
+    from intel_reports.corporate_actions import store
+    store(session, "MU", [], covers_from=_date(2020, 1, 1), covers_to=_date(2026, 12, 31),
+          retrieved_at=OBSERVED)
+    store(session, "MU", [], covers_from=_date(2026, 6, 1), covers_to=_date(2026, 6, 30),
+          retrieved_at=OBSERVED)
+    cov = session.query(CorporateActionCoverage).one()
+    assert cov.covers_from == _date(2020, 1, 1) and cov.covers_to == _date(2026, 12, 31)
+
+
+def test_an_empty_history_still_claims_its_span(session):
+    """A window with no actions is covered just as fully as one with ten — inferring the span
+    from the rows would make an empty result claim nothing, which is the ambiguity the coverage
+    table exists to remove."""
+    from datetime import date as _date
+    from db.models import CorporateActionCoverage
+    from intel_reports.corporate_actions import store
+    store(session, "MU", [], covers_from=_date(2026, 1, 1), covers_to=_date(2026, 12, 31),
+          retrieved_at=OBSERVED)
+    cov = session.query(CorporateActionCoverage).one()
+    assert (cov.covers_from, cov.covers_to) == (_date(2026, 1, 1), _date(2026, 12, 31))

@@ -4075,6 +4075,78 @@ class IntelligenceObservation(Base):
     )
 
 
+class CorporateAction(Base):
+    """A SOURCED corporate action, kept as evidence rather than folded into a price.
+
+    AUD-OBS-ADJWINDOW (2026-10-08). Outcome windows could not establish their adjustment basis
+    because `adj_close` is present on only 1.61% of daily bars. A missing `adj_close` means
+    UNVERIFIED, not unusable: a sufficiently complete, sourced action history establishes the
+    basis just as well, and unlike a provider's adjusted close it says WHAT happened — which a
+    single blended factor cannot, since a split and a distribution move it the same way.
+
+    RAW PRICES ARE NEVER OVERWRITTEN. `prices.close` stays as fetched; adjustment is computed at
+    read time from these records under a named method, so a methodology change re-derives rather
+    than destroys, and an earlier outcome stays reproducible from the evidence it cited.
+    """
+    __tablename__ = "corporate_actions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(24), index=True, nullable=False)
+    #: split | stock_dividend | cash_dividend | spinoff | rights | other.
+    #: Deliberately NOT one bucket: a split changes the share count and MUST be applied to a
+    #: price return, while a cash dividend must NOT be — it is excluded by definition from a
+    #: price return and included in a total return. Collapsing them is the error a provider's
+    #: single adjusted close makes unrecoverable.
+    action_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    #: The first session on which the price reflects the action.
+    ex_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    #: For a split: shares AFTER per share BEFORE (2.0 for a 2-for-1, 0.1 for a 1-for-10).
+    split_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: For a distribution: cash per share, in `currency`.
+    cash_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    #: WHERE IT CAME FROM AND WHEN. An action record with no provenance cannot support a basis
+    #: claim any better than the missing adj_close it replaced.
+    source: Mapped[str] = mapped_column(String(48), nullable=False)
+    source_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "action_type", "ex_date", "source",
+                         name="uq_corporate_action_symbol_type_date_source"),
+    )
+
+
+class CorporateActionCoverage(Base):
+    """What the action history is CLAIMED to cover, so absence can be read.
+
+    Without this, "no rows for this window" is ambiguous between "no actions occurred" and
+    "nobody has looked" — and those are the difference between a verified basis and an
+    unverified one. A coverage claim names the source, the span it covers, the method used to
+    turn actions into an adjustment, and when it was retrieved.
+    """
+    __tablename__ = "corporate_action_coverage"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(24), index=True, nullable=False)
+    source: Mapped[str] = mapped_column(String(48), nullable=False)
+    covers_from: Mapped[date] = mapped_column(Date, nullable=False)
+    covers_to: Mapped[date] = mapped_column(Date, nullable=False)
+    #: Named adjustment methodology, e.g. "cumulative_split_factor_v1". Stored so a later
+    #: change re-derives under a new name instead of silently restating old figures.
+    method: Mapped[str] = mapped_column(String(48), nullable=False)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "source", "method",
+                         name="uq_corporate_action_coverage_symbol_source_method"),
+    )
+
+
 class ObservationOutcome(Base):
     """What actually happened, scored under the policy frozen with the observation.
 

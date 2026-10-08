@@ -5,7 +5,7 @@ behaviour — this endpoint cannot change any of them.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -17,8 +17,9 @@ from db import SessionLocal, Stock, Price, TimeFrame
 
 from ..intel_reports import evidence_buckets as EB
 from ..intel_reports.direction_screen import assess
-from ..intel_reports.observations import (HORIZONS, PROSPECTIVE, REPLAY,
-                                          record_buckets, record_observation, resolve)
+from ..intel_reports.observations import (HORIZONS, PROSPECTIVE, REPLAY, UNRESOLVED_LABEL,
+                                          record_buckets, record_observation, resolve,
+                                          resolver_fingerprint)
 from ..intel_reports.quality_value_store import latest_assessments
 from ..intel_reports.quality_value import (COMPETITIVE_DURABILITY, VALUATION as QV_VALUATION,
                                            VALUE_TRAP_RISK, naive_utc)
@@ -81,6 +82,37 @@ def _adjustment_bars(session, stock_id: int, dates: list) -> list:
                     "close": float(r[1]) if r is not None and r[1] is not None else None,
                     "adj_close": float(r[2]) if r is not None and r[2] is not None else None})
     return out
+
+
+def _actions_for(session, symbol: str, window: list) -> list:
+    """Sourced corporate actions for this symbol inside the window, as plain dicts."""
+    from db import CorporateAction
+    if not window:
+        return []
+    rows = session.execute(select(CorporateAction).where(
+        CorporateAction.symbol == symbol,
+        CorporateAction.ex_date >= date.fromisoformat(window[0]),
+        CorporateAction.ex_date <= date.fromisoformat(window[-1]))
+        .order_by(CorporateAction.ex_date)).scalars().all()
+    return [{"action_type": r.action_type, "ex_date": r.ex_date.isoformat(),
+             "split_ratio": r.split_ratio, "cash_amount": r.cash_amount,
+             "currency": r.currency, "source": r.source, "source_ref": r.source_ref,
+             "retrieved_at": r.retrieved_at.isoformat() if r.retrieved_at else None}
+            for r in rows]
+
+
+def _coverage_for(session, symbol: str) -> dict | None:
+    """The action-history coverage CLAIM, which is what lets absence be read as absence."""
+    from db import CorporateActionCoverage
+    r = session.execute(select(CorporateActionCoverage).where(
+        CorporateActionCoverage.symbol == symbol,
+        CorporateActionCoverage.method == EB.ADJUSTMENT_METHOD)
+        .order_by(CorporateActionCoverage.retrieved_at.desc())).scalars().first()
+    if not r:
+        return None
+    return {"source": r.source, "method": r.method,
+            "covers_from": r.covers_from.isoformat(), "covers_to": r.covers_to.isoformat(),
+            "retrieved_at": r.retrieved_at.isoformat() if r.retrieved_at else None}
 
 
 def _existing_observation(session, subject_key, as_of, horizon_sessions, origin):
@@ -291,13 +323,23 @@ def replay(symbol: str, sessions_ago: int = Query(90, ge=25, le=400),
             # middle.
             window = ([body["latest_session"]] if body["latest_session"] else []) + fwd
             series = {"stock": _adjustment_bars(session, stock.id, window)}
+            actions = {"stock": _actions_for(session, stock.symbol, window)}
+            coverage = {}
+            if (cov := _coverage_for(session, stock.symbol)):
+                coverage["stock"] = cov
             if bench:
                 series["benchmark"] = _adjustment_bars(session, bench.id, window)
-            adj = EB.adjustment_evidence(series)
+                actions["benchmark"] = _actions_for(session, bench.symbol, window)
+                if (bcov := _coverage_for(session, bench.symbol)):
+                    coverage["benchmark"] = bcov
+            adj = EB.adjustment_evidence(series, basis=EB.SPLIT_ADJUSTED_PRICE,
+                                         actions=actions, coverage=coverage)
             outcome, created = resolve(
                 session, row, session_closes=closes, expected_sessions=fwd,
                 benchmark_reference=bench_ref, benchmark_closes=bcloses,
-                adjustment_consistent=adj["consistent"], adjustment_basis=adj["reason"])
+                adjustment_consistent=adj["consistent"], adjustment_basis=adj["reason"],
+                adjustment_factors=adj["factors"],
+                return_basis=adj["basis"] if adj["consistent"] else None)
             o["outcome"] = {
                 "resolution_state": outcome.resolution_state,
                 "sessions_elapsed": outcome.sessions_elapsed,
@@ -321,3 +363,89 @@ def replay(symbol: str, sessions_ago: int = Query(90, ge=25, le=400),
                     "NOT evidence of predictive performance — the rules were written with these "
                     "outcomes already in existence. Never pool with prospective results.")
     return body
+
+
+@router.get("/outcomes/{symbol}")
+def outcomes(symbol: str, _user: str = Depends(get_current_username)) -> dict:
+    """Every observation for a symbol with its CURRENT outcome, plus the superseded history.
+
+    SEPARATED BY ORIGIN AND RETURN BASIS, never pooled: a retrospective replay's rules were
+    written with its outcomes already in existence, and two different return bases are two
+    different measurements.
+    """
+    from db import IntelligenceObservation, ObservationOutcome
+    sym = symbol.strip().upper()
+    with SessionLocal() as session:
+        obs = session.execute(select(IntelligenceObservation).where(
+            IntelligenceObservation.symbol == sym)
+            .order_by(IntelligenceObservation.observed_at,
+                      IntelligenceObservation.horizon_sessions)).scalars().all()
+        rows, current_fp = [], resolver_fingerprint()
+        for o in obs:
+            outs = session.execute(select(ObservationOutcome).where(
+                ObservationOutcome.observation_id == o.id)
+                .order_by(ObservationOutcome.id)).scalars().all()
+            current = next((c for c in outs if c.resolver_fingerprint == current_fp
+                            and c.superseded_by_id is None), None)
+            rows.append({
+                "observation_id": o.id, "origin": o.origin,
+                "observed_at": o.observed_at.isoformat(),
+                "horizon": o.horizon_label, "horizon_sessions": o.horizon_sessions,
+                "direction": o.direction, "support_quality": o.support_quality,
+                "reference_price": o.reference_price,
+                "reference_price_as_of": (o.reference_price_as_of.isoformat()
+                                          if o.reference_price_as_of else None),
+                "invalidated_reason": o.invalidated_reason,
+                "publishable": o.invalidated_reason is None and current is not None,
+                "outcome": None if current is None else {
+                    "id": current.id, "state": current.resolution_state,
+                    "sessions_elapsed": current.sessions_elapsed,
+                    "descriptive_return": current.descriptive_return,
+                    "simulated_next_session_close_return":
+                        current.simulated_executable_return,
+                    "benchmark_return_same_window": current.benchmark_return,
+                    "benchmark_return_entry_window": current.benchmark_entry_return,
+                    "excess_return": current.excess_return,
+                    "return_basis": current.return_basis,
+                    "reason": current.resolution_basis},
+                # RETAINED, NOT SHOWN AS RESULTS. Earlier versions stay auditable and are
+                # explicitly excluded from any performance reading.
+                "superseded": [{"id": c.id, "resolver": c.resolver_fingerprint,
+                                "superseded_by": c.superseded_by_id,
+                                "state": c.resolution_state,
+                                "descriptive_return": c.descriptive_return,
+                                "excess_return": c.excess_return}
+                               for c in outs if c is not current]})
+        counts = {}
+        for r in rows:
+            key = (r["outcome"] or {}).get("state") or "NOT_RESOLVED"
+            if r["invalidated_reason"]:
+                key = "INVALID_CAPTURE"
+            counts[key] = counts.get(key, 0) + 1
+    return {"symbol": sym, "resolver_fingerprint": current_fp, "observations": rows,
+            "state_counts": counts,
+            "reason_labels": UNRESOLVED_LABEL,
+            "note": ("Superseded outcomes are retained as audit records and are excluded from "
+                     "every performance reading. Replay and prospective origins are never "
+                     "pooled, and neither are two different return bases.")}
+
+
+@router.post("/corporate-actions/{symbol}")
+def ingest_corporate_actions(symbol: str,
+                             covers_from: str = Query(...), covers_to: str = Query(...),
+                             _user: str = Depends(get_current_username)) -> dict:
+    """Ingest a SOURCED corporate-action history for one symbol over a bounded span.
+
+    Deliberately per-symbol and span-bounded: the pilot is MU and its benchmark over the
+    affected replay windows, and widening to the universe is a separate decision with its own
+    request budget.
+    """
+    from ..intel_reports import corporate_actions as CA
+    with SessionLocal() as session:
+        try:
+            return CA.ingest(session, symbol.strip().upper(),
+                             covers_from=date.fromisoformat(covers_from),
+                             covers_to=date.fromisoformat(covers_to))
+        except Exception as exc:  # the provider is the likeliest failure, and it must say so
+            log.warning("corporate_action.ingest_failed", symbol=symbol, error=str(exc))
+            raise HTTPException(502, f"{type(exc).__name__}: {exc}")

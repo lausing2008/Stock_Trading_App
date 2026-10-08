@@ -257,68 +257,196 @@ def sessions_forward(venue: str, anchor: datetime, n: int, *, is_trading_day,
     return out
 
 
-#: Relative tolerance on the adjustment factor. A split or dividend moves `adj_close/close` by
-#: far more than this; float noise and vendor rounding move it by far less.
+#: Relative tolerance on an adjustment factor. A split or dividend moves it by far more than
+#: this; float noise and vendor rounding move it by far less.
 ADJUSTMENT_TOLERANCE = 1e-4
 
+# =============================================================================================
+# RETURN BASIS — three distinct definitions, never used interchangeably.
+#
+# A provider's "adjusted close" is NOT one of these. Yahoo's, for instance, is adjusted for
+# splits AND dividends, so its ratio moves for both and a single blended factor cannot say
+# which occurred. Treating it as a split adjustment silently folds distributions into a price
+# return; treating it as a total return assumes a reinvestment convention nobody stated. So the
+# basis is chosen HERE and evidenced from action records, and the provider factor is used only
+# for what it can honestly support.
+# =============================================================================================
 
-def adjustment_evidence(series: dict) -> dict:
-    """Did a corporate action occur inside this window, and can both endpoints share one basis?
+#: Unadjusted closes. Valid ONLY across a window with no corporate action at all.
+RAW_PRICE = "raw_price"
+#: Share-count actions (splits, stock dividends) applied so both endpoints sit on one share
+#: basis. Cash distributions are EXCLUDED BY DEFINITION, and that exclusion is disclosed.
+SPLIT_ADJUSTED_PRICE = "split_adjusted_price"
+#: Split-adjusted AND cash distributions included. Needs an amount for every distribution in
+#: the window; one missing amount makes the total unverifiable, not approximate.
+TOTAL_RETURN = "total_return"
 
-    `series` maps a label ("stock", "benchmark") to an ordered list of
-    `{"date", "close", "adj_close"}` covering EVERY session the return is measured across,
-    INCLUDING the reference session — a split between the reference close and the first
-    measured session corrupts the descriptive return just as surely as one in the middle.
+RETURN_BASES = (RAW_PRICE, SPLIT_ADJUSTED_PRICE, TOTAL_RETURN)
 
-    Returns `{"consistent": True|False|None, "reason": ..., "events": [...]}`.
+#: Actions that change the share count and therefore MUST be applied to a price return.
+SHARE_COUNT_ACTIONS = ("split", "stock_dividend")
+#: Actions that pay value out without changing the share count.
+DISTRIBUTION_ACTIONS = ("cash_dividend", "spinoff")
 
-      * `None` — NOT CHECKED, which is not the same as checked-and-fine. Any bar missing an
-        `adj_close` (or a `close`) makes the question unanswerable, and the resolver treats
-        that as UNRESOLVED_ADJUSTMENT_UNVERIFIED rather than assuming the benign case.
-      * `False` — the adjustment factor MOVES inside the window, so a corporate action
-        occurred and an unadjusted close-to-close return spans two different bases. It is not
-        a reason to void the observation; it is a reason to require adjusted evidence.
-      * `True` — the factor is flat across the whole window for every instrument, so no action
-        occurred and unadjusted closes share one basis.
+#: Named methodology. A change gets a NEW name so earlier figures re-derive under the old one
+#: rather than being silently restated.
+ADJUSTMENT_METHOD = "cumulative_split_factor_v1"
 
-    The benchmark is checked on the same footing as the stock: an excess return built from a
-    stock whose basis is sound and a benchmark whose basis is not is still wrong.
+
+def split_factors(actions: list, dates: list) -> dict:
+    """Cumulative share-count factor to apply to each session's close.
+
+    Walking BACKWARDS from the end of the window: a close before a 2-for-1 split is on an
+    old-share basis and must be halved to sit beside closes after it. The last session is the
+    reference basis, so its factor is 1.0 by construction and the endpoint is never restated.
     """
-    events, unverifiable = [], []
+    by_date = {}
+    for a in actions:
+        if a.get("action_type") in SHARE_COUNT_ACTIONS and a.get("split_ratio"):
+            by_date.setdefault(a["ex_date"], 1.0)
+            by_date[a["ex_date"]] *= float(a["split_ratio"])
+    out, factor = {}, 1.0
+    for d in reversed(dates):
+        out[d] = factor
+        if d in by_date:  # sessions BEFORE the ex-date are on the older basis
+            factor /= by_date[d]
+    return out
+
+
+def adjustment_evidence(series: dict, *, basis: str = SPLIT_ADJUSTED_PRICE,
+                        actions: dict | None = None, coverage: dict | None = None) -> dict:
+    """Can this window's return be computed on `basis`, and on what evidence?
+
+    `series`   {instrument: [{date, close, adj_close}]} covering EVERY session the return
+               spans, INCLUDING the reference session — an action between the reference close
+               and the first measured session corrupts the result just as badly as one in the
+               middle.
+    `actions`  {instrument: [sourced action records]} — the PREFERRED evidence, because it says
+               what happened rather than only that something did.
+    `coverage` {instrument: {source, covers_from, covers_to, method, retrieved_at}} — the claim
+               that the action history is complete for this span. Without it, "no actions" is
+               ambiguous between "none occurred" and "nobody looked", and those are the
+               difference between a verified basis and an unverified one.
+
+    `consistent` is TRI-STATE and never defaults to the benign case:
+      None   — not establishable from the evidence held. Unchecked is not checked-and-fine.
+      False  — an action occurred that this basis cannot absorb from what is held.
+      True   — the basis holds, and `factors` carries the adjustment to apply.
+
+    Both instruments are judged on the same footing: an excess return built from a sound stock
+    basis and an unsound benchmark basis is still wrong.
+    """
+    if basis not in RETURN_BASES:
+        raise ValueError(f"unknown return basis {basis!r}")
+    actions, coverage = actions or {}, coverage or {}
+    out = {"basis": basis, "method": ADJUSTMENT_METHOD, "factors": {}, "actions": [],
+           "disclosures": [], "evidence": {}, "unverified": []}
+
     for label, bars in series.items():
-        if not bars:
-            unverifiable.append(f"{label}: no bars supplied")
+        dates = [b["date"] for b in bars]
+        cov = coverage.get(label)
+        acts = [a for a in actions.get(label, [])
+                if dates and dates[0] <= a.get("ex_date", "") <= dates[-1]]
+        out["actions"].extend({**a, "instrument": label} for a in acts)
+
+        covered = bool(cov and dates and cov.get("covers_from") <= dates[0]
+                       and cov.get("covers_to") >= dates[-1])
+        if covered:
+            out["evidence"][label] = {
+                "verified_by": "sourced_action_history", "source": cov.get("source"),
+                "method": cov.get("method"), "retrieved_at": cov.get("retrieved_at"),
+                "covers": [cov.get("covers_from"), cov.get("covers_to")],
+                "actions_in_window": len(acts)}
+            share = [a for a in acts if a.get("action_type") in SHARE_COUNT_ACTIONS]
+            dist = [a for a in acts if a.get("action_type") in DISTRIBUTION_ACTIONS]
+            if basis == RAW_PRICE and (share or dist):
+                out["unverified"].append(
+                    f"{label}: {len(share) + len(dist)} corporate action(s) in the window, so "
+                    f"unadjusted closes do not share one basis")
+                continue
+            if share and any(not a.get("split_ratio") for a in share):
+                out["unverified"].append(
+                    f"{label}: a share-count action on "
+                    f"{next(a['ex_date'] for a in share if not a.get('split_ratio'))} has no "
+                    f"recorded ratio, so the adjustment cannot be computed")
+                continue
+            out["factors"][label] = split_factors(acts, dates)
+            if basis == SPLIT_ADJUSTED_PRICE and dist:
+                total = sum(a.get("cash_amount") or 0 for a in dist)
+                out["disclosures"].append(
+                    f"{label}: {len(dist)} distribution(s) totalling {total:.4f} per share are "
+                    f"EXCLUDED — a split-adjusted price return does not include them")
+            if basis == TOTAL_RETURN:
+                missing = [a["ex_date"] for a in dist if a.get("cash_amount") is None]
+                if missing:
+                    out["unverified"].append(
+                        f"{label}: distribution(s) on {', '.join(missing[:3])} have no recorded "
+                        f"amount, so a total return cannot be computed")
+                    continue
+                out["disclosures"].append(
+                    f"{label}: {len(dist)} distribution(s) included at the recorded cash amount")
             continue
-        factors = []
+
+        # FALLBACK: the provider's adjustment factor. It can establish only ONE thing honestly —
+        # that NOTHING happened — because a flat factor means the provider applied no adjustment
+        # of any kind. A factor that MOVES cannot be decomposed into a split and a distribution,
+        # so it can never be converted into a basis of our choosing.
+        factors, gaps = [], []
         for b in bars:
             close, adj = b.get("close"), b.get("adj_close")
             if close in (None, 0) or adj is None:
-                unverifiable.append(
-                    f"{label}: {b.get('date')} has no usable close/adj_close pair")
-                continue
-            factors.append((b.get("date"), adj / close))
-        if len(factors) < 2:
-            unverifiable.append(f"{label}: fewer than two comparable sessions")
+                gaps.append(b.get("date"))
+            else:
+                factors.append((b.get("date"), adj / close))
+        if gaps or len(factors) < 2:
+            out["unverified"].append(
+                f"{label}: no corporate-action history covers this window and "
+                + (f"{len(gaps)} session(s) have no adj_close ({', '.join(str(g) for g in gaps[:3])})"
+                   if gaps else "fewer than two sessions carry a provider factor"))
             continue
-        base = factors[0][1]
-        for d, f in factors[1:]:
-            if base == 0 or abs(f - base) / abs(base) > ADJUSTMENT_TOLERANCE:
-                events.append({"instrument": label, "date": d,
-                               "factor_from": base, "factor_to": f})
-                base = f
-    if unverifiable:
-        return {"consistent": None, "events": events,
-                "reason": "the adjustment basis could not be checked across the outcome "
-                          "window — " + "; ".join(unverifiable[:3])}
-    if events:
-        return {"consistent": False, "events": events,
-                "reason": f"the adjustment factor moves inside the outcome window "
-                          f"({len(events)} change(s), first on "
-                          f"{events[0]['date']} for {events[0]['instrument']}), so an "
-                          f"unadjusted close-to-close return spans two different bases"}
-    return {"consistent": True, "events": [],
-            "reason": "the adjustment factor is flat across every session of the outcome "
-                      "window for every instrument, so both endpoints share one basis"}
+        moved = [d for (d, f) in factors[1:]
+                 if factors[0][1] == 0
+                 or abs(f - factors[0][1]) / abs(factors[0][1]) > ADJUSTMENT_TOLERANCE]
+        if moved:
+            out["unverified"].append(
+                f"{label}: the provider adjustment factor moves (first on {moved[0]}) and a "
+                f"single blended factor cannot be decomposed into a split and a distribution, "
+                f"so it cannot establish {basis}")
+            continue
+        out["factors"][label] = {b["date"]: 1.0 for b in bars}
+        out["evidence"][label] = {
+            "verified_by": "provider_adjustment_factor",
+            "source": "stored adj_close", "method": "flat-factor check",
+            "note": "a flat factor shows the provider applied NO adjustment across this "
+                    "window, which rules out an action it recognised. It does not describe "
+                    "the provider's methodology and is not relied on for anything else.",
+            "actions_in_window": 0}
+
+    if out["unverified"]:
+        verdict, reason = None, ("the adjustment basis could not be established — "
+                                 + "; ".join(out["unverified"][:3]))
+    elif not out["evidence"]:
+        verdict, reason = None, "no instrument supplied any adjustment evidence"
+    else:
+        verdict = True
+        kinds = sorted({e["verified_by"] for e in out["evidence"].values()})
+        reason = (f"basis {basis} established for {len(out['evidence'])} instrument(s) via "
+                  f"{', '.join(kinds)}"
+                  + (f"; {len(out['actions'])} corporate action(s) in window" if out["actions"]
+                     else "; no corporate action in window"))
+        if out["disclosures"]:
+            reason += ". " + " ".join(out["disclosures"])
+    out["consistent"] = verdict
+    out["reason"] = reason
+    return out
+
+
+def apply_adjustment(closes: dict, factors: dict | None) -> dict:
+    """Restate closes onto one share basis. Inside the fingerprinted contract, because an
+    adjustment that changes a figure may not sit outside the thing that versions figures."""
+    if not factors:
+        return dict(closes)
+    return {d: (None if v is None else v * factors.get(d, 1.0)) for d, v in closes.items()}
 
 
 def closes_by_date(rows, dates: list) -> dict:

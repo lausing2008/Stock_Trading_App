@@ -143,6 +143,25 @@ def record_buckets(session, *, subject_key, as_of, buckets) -> list:
 #: must be scored by, and silently applying a different one is the bias the freezing prevents.
 SUPPORTED_POLICY_VERSIONS = ("res-1",)
 
+#: What each unresolved state MEANS, in a reader's words. A dashboard showing a bare
+#: UNRESOLVED_ADJUSTMENT_UNVERIFIED tells a reader nothing about what is missing or who can
+#: close it, and a frontend keeping its own copy of this map is how four states once all
+#: rendered as the single thing they were added to stop saying.
+UNRESOLVED_LABEL = {
+    "RESOLVED": "Resolved",
+    "RESOLVED_ACQUISITION": "Resolved at acquisition consideration",
+    "RESOLVED_BANKRUPTCY": "Resolved at terminal value",
+    "UNRESOLVED_INSUFFICIENT_SESSIONS": "Pending — the horizon has not elapsed",
+    "UNRESOLVED_PRICE_MISSING": "Price missing for an expected session",
+    "UNRESOLVED_ADJUSTMENT_UNVERIFIED": "Corporate-action adjustment evidence unavailable",
+    "UNRESOLVED_ADJUSTMENT_MISSING": "Corporate action requires adjusted prices",
+    "UNRESOLVED_DELISTED_NO_TERMINAL_PRICE": "Delisted with no documented terminal value",
+    "UNRESOLVED_IDENTIFIER_FOLLOW_REQUIRED": "Exchange transfer — follow the identifier",
+    "UNRESOLVED_POLICY_UNSUPPORTED": "Frozen under a policy this resolver cannot execute",
+    "NOT_RESOLVED": "Not yet scored",
+    "INVALID_CAPTURE": "Invalid capture — excluded from publication",
+}
+
 #: Sentinel for outcome rows written before the resolver was fingerprinted. The code that
 #: produced them is no longer present, so its fingerprint cannot be recomputed — and is not
 #: guessed. Such a row is retained, never rewritten, and superseded by the current resolver.
@@ -203,6 +222,12 @@ def outcome_contract() -> dict:
         # Adjustment verification — whether both endpoints share one basis.
         "adjustment_evidence": _canonical_source(EB.adjustment_evidence),
         "adjustment_tolerance": EB.ADJUSTMENT_TOLERANCE,
+        "split_factors": _canonical_source(EB.split_factors),
+        "apply_adjustment": _canonical_source(EB.apply_adjustment),
+        "adjustment_method": EB.ADJUSTMENT_METHOD,
+        "return_bases": list(EB.RETURN_BASES),
+        "share_count_actions": list(EB.SHARE_COUNT_ACTIONS),
+        "distribution_actions": list(EB.DISTRIBUTION_ACTIONS),
     }
 
 
@@ -267,6 +292,8 @@ def resolve(session, observation, *, session_closes: dict, expected_sessions: li
             delisting: dict | None = None,
             adjustment_consistent: bool | None = None,
             adjustment_basis: str | None = None,
+            adjustment_factors: dict | None = None,
+            return_basis: str | None = None,
             now: datetime | None = None) -> tuple:
     """Score one observation under ITS OWN frozen policy. Returns (outcome_row, created).
 
@@ -343,17 +370,32 @@ def resolve(session, observation, *, session_closes: dict, expected_sessions: li
                 f"stored row — that would measure a different horizon")
         else:
             state = "RESOLVED"
-            end = session_closes[wanted[-1]]
-            entry = session_closes[wanted[0]]
-            descriptive = (end - observation.reference_price) / observation.reference_price
+            # ADJUSTMENT APPLIED HERE, FROM THE EVIDENCE. The reference price is restated too:
+            # a split between the reference close and the first measured session corrupts the
+            # descriptive return exactly as badly as one in the middle, and the reference
+            # session is inside the window the evidence was built over.
+            f_stock = (adjustment_factors or {}).get("stock")
+            adj_closes = EB.apply_adjustment(session_closes, f_stock)
+            ref_date = (observation.reference_price_as_of.date().isoformat()
+                        if observation.reference_price_as_of else None)
+            ref = observation.reference_price * (
+                (f_stock or {}).get(ref_date, 1.0) if f_stock else 1.0)
+            end = adj_closes[wanted[-1]]
+            entry = adj_closes[wanted[0]]
+            descriptive = (end - ref) / ref
             executable = (end - entry) / entry
             basis = (f"descriptive from the reference close; simulated entry at the close of "
                      f"{wanted[0]}, the first session that OPENED after the observation "
                      f"instant and has since closed"
                      + (f". {adjustment_basis}" if adjustment_basis else ""))
             if benchmark_closes:
-                b_end = benchmark_closes.get(wanted[-1])
-                b_entry = benchmark_closes.get(wanted[0])
+                f_bench = (adjustment_factors or {}).get("benchmark")
+                adj_bench = EB.apply_adjustment(benchmark_closes, f_bench)
+                benchmark_reference = (benchmark_reference * (f_bench or {}).get(ref_date, 1.0)
+                                       if (benchmark_reference and f_bench)
+                                       else benchmark_reference)
+                b_end = adj_bench.get(wanted[-1])
+                b_entry = adj_bench.get(wanted[0])
                 # SAME WINDOW ON BOTH SIDES. An earlier version measured the stock from its
                 # reference close and the benchmark from the first subsequent close, then
                 # subtracted them — two different windows, so the difference was not an excess.
@@ -383,7 +425,7 @@ def resolve(session, observation, *, session_closes: dict, expected_sessions: li
             observation_id=observation.id, horizon_sessions=need,
             descriptive_return=descriptive, simulated_executable_return=executable,
             benchmark_return=bench_ret, excess_return=excess,
-            return_basis=observation.return_basis,
+            return_basis=return_basis or observation.return_basis,
             delisting_cause=(delisting or {}).get("cause"), resolution_state=state,
             sessions_elapsed=len(expected_sessions), resolution_basis=basis,
             resolved_at=now if resolved else None, resolver_fingerprint=fingerprint,

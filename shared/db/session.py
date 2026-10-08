@@ -99,6 +99,14 @@ def _run_migrations() -> None:  # noqa: C901
             "ALTER TABLE IF EXISTS intelligence_observations "
             "ADD COLUMN IF NOT EXISTS invalidated_at TIMESTAMP"))
 
+        # AUD-OBS-ADJWINDOW (2026-10-08): corporate actions kept as sourced evidence, with an
+        # explicit coverage claim so "no rows" can be read as "none occurred" rather than
+        # "nobody looked". create_all() handles these two as NEW tables; the indexes are named
+        # here so a later column addition follows the same path as everything else in this file.
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_corporate_actions_symbol_exdate "
+            "ON corporate_actions (symbol, ex_date)"))
+
         # Add Chinese name column and backfill known HK stocks
         conn.execute(text(
             "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS name_zh VARCHAR(256)"

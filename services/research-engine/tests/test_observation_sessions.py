@@ -221,40 +221,177 @@ def _bars(pairs):
     return [{"date": d, "close": c, "adj_close": a} for d, c, a in pairs]
 
 
-def test_a_split_inside_the_outcome_window_is_not_consistent():
-    """A 2:1 split halves the close and the adjustment factor moves. An unadjusted
-    close-to-close return across it would read as a ~50% loss that never happened."""
-    got = _EB.adjustment_evidence({"stock": _bars([
-        ("2026-06-01", 100.0, 50.0), ("2026-06-02", 102.0, 51.0),
-        ("2026-06-03", 51.5, 51.5), ("2026-06-04", 52.0, 52.0)])})
-    assert got["consistent"] is False
-    assert got["events"] and got["events"][0]["date"] == "2026-06-03"
-    assert "two different bases" in got["reason"]
+_W = ["2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04"]
 
 
-def test_a_quiet_window_is_consistent():
-    got = _EB.adjustment_evidence({"stock": _bars([
-        ("2026-06-01", 100.0, 95.0), ("2026-06-02", 102.0, 96.9)])})
-    assert got["consistent"] is True and got["events"] == []
+def _bars(pairs):
+    return [{"date": d, "close": c, "adj_close": a} for d, c, a in pairs]
 
 
-def test_a_missing_adj_close_is_unverified_not_assumed_fine():
-    """Unchecked is not checked-and-fine — the distinction the whole tri-state exists for."""
-    got = _EB.adjustment_evidence({"stock": [
-        {"date": "2026-06-01", "close": 100.0, "adj_close": None},
-        {"date": "2026-06-02", "close": 102.0, "adj_close": 96.9}]})
-    assert got["consistent"] is None
-    assert "could not be checked" in got["reason"]
+def _cov(source="yfinance", method=None, frm="2026-01-01", to="2026-12-31"):
+    return {"source": source, "method": method or _EB.ADJUSTMENT_METHOD,
+            "covers_from": frm, "covers_to": to, "retrieved_at": "2026-10-08T00:00:00"}
 
 
-def test_the_benchmark_is_checked_on_the_same_footing_as_the_stock():
+def _act(kind, ex, **kw):
+    return {"action_type": kind, "ex_date": ex, "source": "yfinance",
+            "retrieved_at": "2026-10-08T00:00:00", **kw}
+
+
+# ---- ACCEPTANCE 1: A SPLIT ------------------------------------------------------------------
+
+def test_a_split_is_handled_not_classified_unresolvable():
+    """A 2-for-1 on 06-03 halves the quoted close. With a sourced record the window RESOLVES on
+    a split-adjusted basis — ordinary corporate actions must not be permanently unresolvable."""
+    got = _EB.adjustment_evidence(
+        {"stock": _bars([("2026-06-01", 100.0, None), ("2026-06-02", 102.0, None),
+                         ("2026-06-03", 51.5, None), ("2026-06-04", 52.0, None)])},
+        basis=_EB.SPLIT_ADJUSTED_PRICE,
+        actions={"stock": [_act("split", "2026-06-03", split_ratio=2.0)]},
+        coverage={"stock": _cov()})
+    assert got["consistent"] is True, got["reason"]
+    f = got["factors"]["stock"]
+    assert f["2026-06-04"] == 1.0 and f["2026-06-03"] == 1.0, "post-split sessions are the basis"
+    assert f["2026-06-02"] == 0.5 and f["2026-06-01"] == 0.5, "pre-split closes are halved"
+    # The whole point: on this basis the move is +2%, not the -49% a raw close would show.
+    adj = _EB.apply_adjustment({"2026-06-01": 100.0, "2026-06-04": 52.0}, f)
+    assert round(adj["2026-06-04"] / adj["2026-06-01"] - 1, 4) == 0.04
+    assert got["evidence"]["stock"]["verified_by"] == "sourced_action_history"
+
+
+def test_a_split_without_a_recorded_ratio_is_unverified_not_guessed():
+    got = _EB.adjustment_evidence(
+        {"stock": _bars([(d, 100.0, None) for d in _W])}, basis=_EB.SPLIT_ADJUSTED_PRICE,
+        actions={"stock": [_act("split", "2026-06-03")]}, coverage={"stock": _cov()})
+    assert got["consistent"] is None and "no recorded ratio" in got["reason"]
+
+
+# ---- ACCEPTANCE 2: A DIVIDEND ---------------------------------------------------------------
+
+def test_a_cash_dividend_does_not_block_a_price_return_but_is_disclosed():
+    """A distribution is EXCLUDED BY DEFINITION from a split-adjusted price return. Blocking on
+    it would make every dividend payer permanently unresolvable; ignoring it silently would
+    understate the holder's outcome. It resolves, and says what it left out."""
+    got = _EB.adjustment_evidence(
+        {"stock": _bars([(d, 100.0, None) for d in _W])}, basis=_EB.SPLIT_ADJUSTED_PRICE,
+        actions={"stock": [_act("cash_dividend", "2026-06-03", cash_amount=0.75,
+                                currency="USD")]},
+        coverage={"stock": _cov()})
+    assert got["consistent"] is True
+    assert got["factors"]["stock"]["2026-06-01"] == 1.0, "a dividend changes no share count"
+    assert any("EXCLUDED" in d and "0.7500" in d for d in got["disclosures"]), got["disclosures"]
+
+
+def test_the_same_dividend_is_included_under_total_return():
+    got = _EB.adjustment_evidence(
+        {"stock": _bars([(d, 100.0, None) for d in _W])}, basis=_EB.TOTAL_RETURN,
+        actions={"stock": [_act("cash_dividend", "2026-06-03", cash_amount=0.75)]},
+        coverage={"stock": _cov()})
+    assert got["consistent"] is True
+    assert any("included at the recorded cash amount" in d for d in got["disclosures"])
+
+
+def test_a_total_return_without_the_amount_is_unverified():
+    """The two bases are not interchangeable: the SAME evidence supports one and not the other."""
+    acts = {"stock": [_act("cash_dividend", "2026-06-03")]}
+    series = {"stock": _bars([(d, 100.0, None) for d in _W])}
+    assert _EB.adjustment_evidence(series, basis=_EB.SPLIT_ADJUSTED_PRICE, actions=acts,
+                                   coverage={"stock": _cov()})["consistent"] is True
+    tot = _EB.adjustment_evidence(series, basis=_EB.TOTAL_RETURN, actions=acts,
+                                  coverage={"stock": _cov()})
+    assert tot["consistent"] is None and "no recorded amount" in tot["reason"]
+
+
+def test_raw_price_is_refused_whenever_any_action_occurred():
+    got = _EB.adjustment_evidence(
+        {"stock": _bars([(d, 100.0, None) for d in _W])}, basis=_EB.RAW_PRICE,
+        actions={"stock": [_act("cash_dividend", "2026-06-03", cash_amount=0.75)]},
+        coverage={"stock": _cov()})
+    assert got["consistent"] is None and "do not share one basis" in got["reason"]
+
+
+# ---- ACCEPTANCE 3: A BENCHMARK-ONLY ACTION --------------------------------------------------
+
+def test_a_benchmark_only_action_is_adjusted_on_the_benchmark_alone():
     """An excess return built on a sound stock basis and an unsound benchmark basis is still
-    wrong, so a clean stock must not carry a split benchmark through."""
-    got = _EB.adjustment_evidence({
-        "stock": _bars([("2026-06-01", 100.0, 95.0), ("2026-06-02", 102.0, 96.9)]),
-        "benchmark": _bars([("2026-06-01", 400.0, 400.0), ("2026-06-02", 100.0, 100.5)])})
-    assert got["consistent"] is False
-    assert got["events"][0]["instrument"] == "benchmark"
+    wrong. The adjustment must land on the benchmark and must NOT touch the stock."""
+    got = _EB.adjustment_evidence(
+        {"stock": _bars([(d, 100.0, None) for d in _W]),
+         "benchmark": _bars([("2026-06-01", 400.0, None), ("2026-06-02", 404.0, None),
+                             ("2026-06-03", 101.0, None), ("2026-06-04", 102.0, None)])},
+        basis=_EB.SPLIT_ADJUSTED_PRICE,
+        actions={"benchmark": [_act("split", "2026-06-03", split_ratio=4.0)]},
+        coverage={"stock": _cov(), "benchmark": _cov()})
+    assert got["consistent"] is True
+    assert got["factors"]["benchmark"]["2026-06-01"] == 0.25
+    assert got["factors"]["stock"]["2026-06-01"] == 1.0, "the stock must not be restated"
+    assert [a["instrument"] for a in got["actions"]] == ["benchmark"]
+
+
+def test_an_unverifiable_benchmark_blocks_the_window_even_if_the_stock_is_clean():
+    got = _EB.adjustment_evidence(
+        {"stock": _bars([(d, 100.0, None) for d in _W]),
+         "benchmark": _bars([(d, 400.0, None) for d in _W])},
+        basis=_EB.SPLIT_ADJUSTED_PRICE,
+        actions={"stock": []}, coverage={"stock": _cov()})  # benchmark: no coverage, no adj
+    assert got["consistent"] is None
+    assert "benchmark" in got["reason"]
+
+
+# ---- ACCEPTANCE 4: MISSING EVIDENCE ---------------------------------------------------------
+
+def test_missing_adj_close_with_no_action_history_is_unverified():
+    """The MU case exactly: no adj_close and nobody has collected the actions."""
+    got = _EB.adjustment_evidence(
+        {"stock": _bars([(d, 100.0, None) for d in _W])}, basis=_EB.SPLIT_ADJUSTED_PRICE)
+    assert got["consistent"] is None
+    assert "no corporate-action history covers this window" in got["reason"]
+    assert "no adj_close" in got["reason"]
+
+
+def test_missing_adj_close_is_NOT_unusable_when_a_sourced_history_covers_it():
+    """REQUIREMENT 1. The absence of a provider column must not be the end of the question."""
+    got = _EB.adjustment_evidence(
+        {"stock": _bars([(d, 100.0, None) for d in _W])}, basis=_EB.SPLIT_ADJUSTED_PRICE,
+        actions={"stock": []}, coverage={"stock": _cov()})
+    assert got["consistent"] is True, got["reason"]
+    assert got["evidence"]["stock"]["verified_by"] == "sourced_action_history"
+    assert "no corporate action in window" in got["reason"]
+
+
+def test_an_action_history_that_does_not_span_the_window_does_not_cover_it():
+    """Partial coverage is not coverage: an action could sit in the uncovered part."""
+    got = _EB.adjustment_evidence(
+        {"stock": _bars([(d, 100.0, None) for d in _W])}, basis=_EB.SPLIT_ADJUSTED_PRICE,
+        actions={"stock": []}, coverage={"stock": _cov(frm="2026-06-02", to="2026-12-31")})
+    assert got["consistent"] is None
+
+
+def test_a_flat_provider_factor_establishes_only_that_nothing_happened():
+    """It is used for the one thing it can honestly support, and labelled as such."""
+    got = _EB.adjustment_evidence(
+        {"stock": _bars([("2026-06-01", 100.0, 95.0), ("2026-06-02", 102.0, 96.9),
+                         ("2026-06-03", 104.0, 98.8), ("2026-06-04", 106.0, 100.7)])},
+        basis=_EB.SPLIT_ADJUSTED_PRICE)
+    assert got["consistent"] is True
+    assert got["evidence"]["stock"]["verified_by"] == "provider_adjustment_factor"
+    assert "does not describe the provider's methodology" in got["evidence"]["stock"]["note"]
+
+
+def test_a_moving_provider_factor_cannot_be_decomposed_into_a_basis():
+    """REQUIREMENT 2. A split and a dividend move the blended factor the same way, so the
+    factor alone can never say which basis it supports."""
+    got = _EB.adjustment_evidence(
+        {"stock": _bars([("2026-06-01", 100.0, 95.0), ("2026-06-02", 102.0, 96.9),
+                         ("2026-06-03", 51.5, 48.9), ("2026-06-04", 52.0, 52.0)])},
+        basis=_EB.SPLIT_ADJUSTED_PRICE)
+    assert got["consistent"] is None
+    assert "cannot be decomposed" in got["reason"]
+
+
+def test_the_three_bases_are_distinct_and_a_provider_close_is_not_one_of_them():
+    assert len(set(_EB.RETURN_BASES)) == 3
+    assert "adj_close" not in _EB.RETURN_BASES and "adjusted_close" not in _EB.RETURN_BASES
 
 
 def test_the_checked_window_includes_the_reference_session():
