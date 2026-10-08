@@ -635,3 +635,40 @@ comments — must be final *before* the rebuild. Findings discovered by probing 
 deployed fleet are exactly the case that tempts a post-build edit, because the measurement
 only becomes possible once the code is live. Either batch the write-up before the rebuild and
 verify afterwards, or accept a second full rebuild. Do not leave the fleet drifted.
+
+## AUD-DEPLOY-GATEWAYREMOVED (2026-10-08) — a multi-service deploy removed api-gateway, twice
+
+**Reproducible, not bad luck.** Deploying many services in one `scripts/deploy.sh` invocation
+left `stockai-api-gateway-1` **removed** — not stopped, not unhealthy, absent. It happened on
+two consecutive deploys of the full backend set.
+
+**Why it was nearly invisible.** `https://lausing.com` kept returning **200**, because nginx
+serves the frontend directly. Every `/api/*` call returned **500**. The deploy's own summary
+said *"10 healthy"* and *"11 healthy"* — counts of the services that were asked for, which
+never included the one that had vanished.
+
+**Root cause.** `api-gateway` declares in `docker/docker-compose.yml`:
+
+```yaml
+depends_on:
+  <five services>:
+    condition: service_healthy
+```
+
+`docker compose up -d --force-recreate <svc>` without `--no-deps` makes compose consider
+dependents of `<svc>`. Recreating a dependency while the gateway waits on `service_healthy`
+tore the gateway down, and across a twelve-service loop it was never brought back.
+
+**Fix, both halves:**
+
+1. `deploy_service()` now passes **`--no-deps`**. Every dependency is already running during a
+   deploy, so this changes nothing else. Restoring the gateway by hand is the same command:
+   `docker compose -f docker/docker-compose.yml up -d --no-deps api-gateway`.
+2. `verify()` now checks **every service declared in the compose file**, not only the ones in
+   the deploy list, and fails the run naming any container that is absent. The previous check
+   could not have caught this, because it only looked at what it was told to deploy.
+
+**The reading that generalises:** a healthy-count equal to the number of services you asked for
+is not evidence the stack is intact. Ask the compose file what should exist, not the deploy
+list. And a 200 from the public domain is not evidence the application works when a reverse
+proxy serves static assets in front of it.

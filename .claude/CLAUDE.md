@@ -219,6 +219,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/incidents/design-doc-math-verification.md`** — BUG-SA33-UNREACHABLETHRESHOLD — A Design Doc's Own Fix Was Mathematically Unable to Achieve Its Stated Goal (Fixed 2026-07-27)
 - **`docs/incidents/docker-deploy-staleness.md`** — AUD-DEPLOYDRIFT-T370REVERT (2026-09-10) — found by RUNNING `scripts/check_deploy_drift.sh` while answering "everything looks good now?" …
 
+- **`docs/incidents/docker-deploy-staleness.md`** — AUD-DEPLOY-GATEWAYREMOVED (2026-10-08): a multi-service deploy REMOVED api-gateway twice (depends_on service_healthy, no --no-deps). Site stayed 200 via nginx while every /api was 500 [deploy, outage]
 - **`docs/incidents/docker-deploy-staleness.md`** — AUD-REGISTER-POSTBUILD-DRIFT (2026-10-02): editing ANY file under `shared/` after the rebuild — a register note, a docstring — drifts all 12. shared/ is one versioned unit; finish it before rebuilding [drift, shared]
 - **`docs/incidents/docker-deploy-staleness.md`** — Adding a Column to an EXISTING Table Doesn't Auto-Apply — `create_all()` Only Creates Missing Tables; Local Dev Containers Run Stale `shared/db/` — Attribute...
 - **`docs/incidents/ec2-disk-and-frontend-builds.md`** — EC2 Disk Fills Up from Dangling Docker Images; Slow Frontend Builds (24–47 min) — `--no-cache` Was Unnecessary

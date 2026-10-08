@@ -109,7 +109,17 @@ deploy_service() {
   else
     ssh_ec2 "cd $REMOTE_DIR && $COMPOSE build $svc 2>&1 | tail -3"
   fi
-  ssh_ec2 "cd $REMOTE_DIR && $COMPOSE up -d --force-recreate $svc 2>&1 | tail -2"
+  # --no-deps IS LOAD-BEARING, and its absence caused two outages (2026-10-08).
+  #
+  # api-gateway declares `depends_on: ... condition: service_healthy` on five services. Without
+  # --no-deps, recreating any ONE of those makes compose tear the gateway down as a dependent
+  # — and across a 12-service loop it was left REMOVED, not merely stopped. The site still
+  # answered 200 because nginx serves the frontend, while every /api call returned 500, so the
+  # failure was invisible from the outside. Restoring it is exactly
+  # `up -d --no-deps api-gateway`.
+  #
+  # Every dependency is already running during a deploy, so --no-deps changes nothing else.
+  ssh_ec2 "cd $REMOTE_DIR && $COMPOSE up -d --no-deps --force-recreate $svc 2>&1 | tail -2"
 }
 
 # Health is checked AFTER a settle delay and requires the literal string "healthy" — not merely
@@ -126,6 +136,27 @@ verify() {
     if [[ "$st" == *healthy* ]]; then ok "  $svc: $st"
     else warn "  $svc: ${st:-MISSING}"; bad=1; fi
   done
+
+  # EVERY SERVICE IN THE FILE MUST STILL EXIST, not only the ones just deployed. Both 2026-10-08
+  # outages were deploys that removed api-gateway while it was NOT in the deploy list, so the
+  # loop above never looked at it and the run reported "11 healthy" as though that were a count
+  # of what was asked for. A container that vanished is the failure this check exists to name.
+  local declared missing
+  declared=$(ssh_ec2 "cd $REMOTE_DIR && $COMPOSE config --services" | tr -d '\r')
+  missing=""
+  for svc in $declared; do
+    [[ "$svc" == "postgres" || "$svc" == "redis" ]] && continue
+    local up; up=$(ssh_ec2 "docker ps --filter name=stockai-${svc}-1 --format '{{.Names}}'" || true)
+    [[ -n "$up" ]] || missing="$missing $svc"
+  done
+  if [[ -n "$missing" ]]; then
+    warn "  CONTAINER MISSING ENTIRELY:$missing"
+    warn "  A removed container is not a slow start. Recreate with:"
+    warn "    $COMPOSE up -d --no-deps$missing"
+    bad=1
+  else
+    ok "  all declared services present"
+  fi
   # A deploy that leaves the HOST unhealthy is not a successful deploy, even if the container is.
   local avail; avail=$(free_gb)
   local iowait; iowait=$(ssh_ec2 "top -bn1 | awk '/Cpu\(s\)/{print \$10}' | tr -dc '0-9.'" || echo 0)
