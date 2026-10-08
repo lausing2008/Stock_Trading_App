@@ -221,6 +221,11 @@ def evaluations(symbols: str | None = Query(None, description="comma-separated; 
         if wanted:
             q = q.where(Stock.symbol.in_(wanted))
         stocks = list(session.execute(q.limit(MAX_SYMBOLS)).scalars().all())
+        # ONE QUERY, not one per symbol: statement presence is the strongest instrument signal
+        # and is needed for every row.
+        annual_statement_symbols = {r[0] for r in session.execute(
+            select(FinancialStatement.symbol)
+            .where(FinancialStatement.period_type == "annual").distinct()).all()}
 
         for stock in stocks:
             fin = _statement_evidence(session, stock.symbol, now)
@@ -285,10 +290,18 @@ def evaluations(symbols: str | None = Query(None, description="comma-separated; 
                 log.warning("quality_value.persist_failed", symbol=stock.symbol,
                             error=str(exc)[:200])
 
+            # WHAT KIND OF THING IS THIS? A company assessment applied to a pooled vehicle is
+            # not weak evidence, it is about the wrong subject — GLD was shown as
+            # "Fund (inferred)" while being reported as missing annual statements and lacking a
+            # moat, neither of which is a finding about a gold trust.
+            instrument = classify_instrument(
+                symbol=stock.symbol, name=stock.name, sector=stock.sector,
+                industry=stock.industry,
+                has_annual_statements=stock.symbol in annual_statement_symbols)
             out.append({**ev.as_dict(), "name": stock.name, "sector": stock.sector,
-                        "persisted": persisted,
+                        "persisted": persisted, "instrument": instrument,
                         # THE CONCLUSION, ABOVE THE AUDIT DETAIL.
-                        "summary": company_summary(ev, gates)})
+                        "summary": company_summary(ev, gates, instrument=instrument)})
 
     # THE EXPLANATION IS GENERATED FROM THE RESULTS, not written once and left behind. The
     # previous banner was a fixed string saying assessments "are not connected" — true when it

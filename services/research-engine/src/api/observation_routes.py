@@ -395,6 +395,11 @@ def outcomes(symbol: str, _user: str = Depends(get_current_username)) -> dict:
                 "reference_price": o.reference_price,
                 "reference_price_as_of": (o.reference_price_as_of.isoformat()
                                           if o.reference_price_as_of else None),
+                # THE TRIGGERS, which are the actionable half of a reading and were being held
+                # on the observation without ever being served.
+                "confirmation_rule": o.confirmation_rule,
+                "invalidation_rule": o.invalidation_rule,
+                "summary": o.summary,
                 "invalidated_reason": o.invalidated_reason,
                 "publishable": o.invalidated_reason is None and current is not None,
                 "outcome": None if current is None else {

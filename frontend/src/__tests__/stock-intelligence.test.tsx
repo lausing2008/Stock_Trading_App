@@ -17,9 +17,8 @@ vi.mock('swr', () => ({
     return { data, error: swr.error, isLoading: !data && !swr.error, mutate: vi.fn() };
   },
 }));
-vi.mock('next/router', () => ({ useRouter: () => ({ query: { symbol: 'MU' }, push: vi.fn() }) }));
 
-import StockIntelligencePage from '@/pages/stock-intelligence';
+import StockIntelligencePanel from '@/components/StockIntelligencePanel';
 
 /* SERVED LABELS, exactly as the backend's UNRESOLVED_LABEL sends them. The page must not keep
    its own copy — that is how four backend states once all rendered as the single thing they
@@ -46,6 +45,8 @@ const OUTCOMES = {
     { observation_id: 7, origin: 'replay', observed_at: '2026-06-01T00:00:00', horizon: '1-5d',
       horizon_sessions: 5, direction: 'BULLISH', reference_price: 970.85,
       reference_price_as_of: '2026-05-29T00:00:00', invalidated_reason: null, publishable: true,
+      confirmation_rule: 'a completed close above 1108.72',
+      invalidation_rule: 'a completed close below 902.60',
       outcome: { id: 10, state: 'UNRESOLVED_ADJUSTMENT_UNVERIFIED', sessions_elapsed: 5,
                  descriptive_return: null, excess_return: null, return_basis: null,
                  reason: 'the adjustment basis could not be established — stock: no corporate-action history covers this window' },
@@ -95,10 +96,10 @@ const INTEL = {
   ],
 };
 
-describe('stock intelligence dashboard', () => {
+describe('stock intelligence panel', () => {
   it('ships the research view with mixed states and no returns available', () => {
     swr.byKey = { 'stock-outcomes': OUTCOMES, 'stock-intel': INTEL };
-    const html = renderToStaticMarkup(<StockIntelligencePage />);
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="MU" />);
 
     // THE REASON THE USER ASKED FOR, verbatim and visible.
     expect(html).toContain('Corporate-action adjustment evidence unavailable');
@@ -110,46 +111,63 @@ describe('stock intelligence dashboard', () => {
     // The research product renders even though two of four outcomes have no return.
     expect(html).toContain('revenue grew 48.9% in the latest stored year');
     expect(html).toContain('2 measured bucket(s) agree');
-    expect(html).toContain('technical');
+    // The buckets are the WORKING: present as a fold, not rendered into the conclusion.
+    expect(html).toContain('Evidence buckets');
+    expect(html).not.toContain('range break observed');
 
     // Support quality must never be presented as predictive confidence.
     expect(html).toContain('establishes no skill by itself');
 
-    // UNKNOWN buckets are shown as OUR gaps, not as a neutral market reading.
-    expect(html).toContain('Not measured');
-    expect(html).toContain('no forward EPS or revenue consensus history exists');
-    expect(html).toContain('gaps in this platform');
 
     // A resolved row shows its basis; an unresolved one shows no fabricated number.
     expect(html).toContain('split_adjusted_price');
     expect(html).toContain('18.88%');
   });
 
+  it('puts conclusions first and folds the working away', () => {
+    swr.byKey = { 'stock-outcomes': OUTCOMES, 'stock-intel': INTEL };
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="MU" />);
+    const at = (needle: string) => html.indexOf(needle);
+    // 1 direction+horizon -> 2 main factors -> 3 counterevidence -> 4 triggers -> 5 outcome
+    expect(at('over 1-4w')).toBeGreaterThan(-1);
+    expect(at('over 1-4w')).toBeLessThan(at('Main factors'));
+    expect(at('Main factors')).toBeLessThan(at('Strongest counterevidence'));
+    expect(at('Strongest counterevidence')).toBeLessThan(at('Triggers'));
+    expect(at('Triggers')).toBeLessThan(at('Outcome status'));
+    // Triggers are the actionable half and were previously never served at all.
+    expect(html).toContain('a completed close above 1108.72');
+    expect(html).toContain('a completed close below 902.60');
+    // The working is present but BELOW the conclusion, and collapsed.
+    expect(at('Outcome status')).toBeLessThan(at('Evidence buckets'));
+    expect(html).toContain('Adjustment evidence and return basis');
+    expect(html).not.toContain('no forward EPS or revenue consensus history exists');
+  });
+
   it('never renders a superseded figure as a current result', () => {
     swr.byKey = { 'stock-outcomes': OUTCOMES, 'stock-intel': INTEL };
-    const html = renderToStaticMarkup(<StockIntelligencePage />);
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="MU" />);
     // The superseded panel is collapsed by default, so the withdrawn -2.24%/0.44% pair must
     // not appear anywhere in the default render.
     expect(html).not.toContain('-2.24%');
     expect(html).not.toContain('0.44%');
-    expect(html).toContain('Show superseded audit records');
+    expect(html).toContain('Superseded results (audit records)');
   });
 
   it('shows a failed request as an error, never as an empty result', () => {
     /* A 500 rendered as an empty table is indistinguishable from "nothing was observed", and
        this codebase has shipped that confusion before (the health panel stuck on Loading…). */
     swr.byKey = {}; swr.error = new Error('offline');
-    const html = renderToStaticMarkup(<StockIntelligencePage />);
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="MU" />);
     expect(html).toContain('Could not load intelligence for MU');
     expect(html).toContain('not an empty result');
-    expect(html).not.toContain('Loading…');
+    expect(html).not.toContain('Loading MU intelligence');
     swr.error = undefined;
   });
 
   it('shows loading as loading, distinctly from both error and empty', () => {
     swr.byKey = {}; swr.error = undefined;
-    const html = renderToStaticMarkup(<StockIntelligencePage />);
-    expect(html).toContain('Loading…');
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="MU" />);
+    expect(html).toContain('Loading MU intelligence');
     expect(html).not.toContain('Could not load intelligence');
   });
 });

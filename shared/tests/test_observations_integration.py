@@ -541,17 +541,35 @@ def test_a_coverage_claim_widens_and_never_narrows(session):
     store(session, "MU", [], covers_from=_date(2026, 6, 1), covers_to=_date(2026, 6, 30),
           retrieved_at=OBSERVED)
     cov = session.query(CorporateActionCoverage).one()
-    assert cov.covers_from == _date(2020, 1, 1) and cov.covers_to == _date(2026, 12, 31)
+    assert (cov.requested_from, cov.requested_to) == (_date(2020, 1, 1), _date(2026, 12, 31))
+    assert cov.evidenced_from == _date(2020, 1, 1)
 
 
-def test_an_empty_history_still_claims_its_span(session):
-    """A window with no actions is covered just as fully as one with ten — inferring the span
-    from the rows would make an empty result claim nothing, which is the ambiguity the coverage
-    table exists to remove."""
+def test_a_requested_span_past_the_retrieval_date_is_not_evidenced(session):
+    """AUD-OBS-COVERAGEFUTURE. The first pilot asked for a span ending 2026-12-31 and the row
+    claimed it — from a fetch that could not have seen November's corporate actions, because
+    they had not happened."""
     from datetime import date as _date
     from db.models import CorporateActionCoverage
     from intel_reports.corporate_actions import store
-    store(session, "MU", [], covers_from=_date(2026, 1, 1), covers_to=_date(2026, 12, 31),
+    store(session, "MU", [], covers_from=_date(2025, 1, 1), covers_to=_date(2026, 12, 31),
+          retrieved_at=OBSERVED)          # OBSERVED is 2026-09-01
+    cov = session.query(CorporateActionCoverage).one()
+    assert cov.requested_to == _date(2026, 12, 31), "what was asked for is kept"
+    assert cov.evidenced_to == OBSERVED.date(), "what it can speak for stops at retrieval"
+    assert cov.evidenced_to < cov.requested_to
+
+
+def test_an_empty_history_still_claims_its_evidenced_span(session):
+    """A window with no actions is covered as fully as one with ten — inferring the span from
+    the rows would make an empty result claim nothing, which is the ambiguity this table exists
+    to remove. The STRENGTH of that claim is a separate field."""
+    from datetime import date as _date
+    from db.models import CorporateActionCoverage
+    from intel_reports.corporate_actions import store, RESPONSE_ONLY
+    store(session, "MU", [], covers_from=_date(2026, 1, 1), covers_to=_date(2026, 6, 30),
           retrieved_at=OBSERVED)
     cov = session.query(CorporateActionCoverage).one()
-    assert (cov.covers_from, cov.covers_to) == (_date(2026, 1, 1), _date(2026, 12, 31))
+    assert (cov.evidenced_from, cov.evidenced_to) == (_date(2026, 1, 1), _date(2026, 6, 30))
+    assert cov.completeness_basis == RESPONSE_ONLY, \
+        "an empty response establishes 'none returned', not 'none occurred'"

@@ -349,14 +349,32 @@ def adjustment_evidence(series: dict, *, basis: str = SPLIT_ADJUSTED_PRICE,
                 if dates and dates[0] <= a.get("ex_date", "") <= dates[-1]]
         out["actions"].extend({**a, "instrument": label} for a in acts)
 
-        covered = bool(cov and dates and cov.get("covers_from") <= dates[0]
-                       and cov.get("covers_to") >= dates[-1])
+        # THE EVIDENCED SPAN, NEVER THE REQUESTED ONE. A fetch cannot speak for actions that had
+        # not happened when it ran, so a request through a future date verifies nothing past the
+        # retrieval date.
+        covered = bool(cov and dates and cov.get("evidenced_from") <= dates[0]
+                       and cov.get("evidenced_to") >= dates[-1])
         if covered:
+            # NAMED `completeness`, NOT `basis`. Calling it `basis` shadowed this function's
+            # `basis` PARAMETER — the return basis — so `basis == SPLIT_ADJUSTED_PRICE` compared
+            # a completeness value against a return basis and was always False, silently
+            # disabling the raw-price refusal, the dividend disclosure and the whole
+            # total-return branch. Caught by the dividend tests, which is the only reason it did
+            # not ship: nothing about the shadowing itself raises.
+            completeness = cov.get("completeness_basis") or "response_only"
             out["evidence"][label] = {
                 "verified_by": "sourced_action_history", "source": cov.get("source"),
                 "method": cov.get("method"), "retrieved_at": cov.get("retrieved_at"),
-                "covers": [cov.get("covers_from"), cov.get("covers_to")],
+                "evidenced": [cov.get("evidenced_from"), cov.get("evidenced_to")],
+                "requested": [cov.get("requested_from"), cov.get("requested_to")],
+                "completeness_basis": completeness,
+                "completeness_note": cov.get("completeness_note"),
                 "actions_in_window": len(acts)}
+            if not acts and completeness != "source_guarantee":
+                out["disclosures"].append(
+                    f"{label}: no corporate action was RETURNED for this window by "
+                    f"{cov.get('source')}, which publishes no completeness guarantee — that is "
+                    f"weaker than a statement that none occurred")
             share = [a for a in acts if a.get("action_type") in SHARE_COUNT_ACTIONS]
             dist = [a for a in acts if a.get("action_type") in DISTRIBUTION_ACTIONS]
             if basis == RAW_PRICE and (share or dist):

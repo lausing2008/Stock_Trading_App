@@ -9,10 +9,11 @@
  *
  * An empty eligible list is a valid result and is labelled one, not an error state.
  */
-import { useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import Head from 'next/head';
 import useSWR from 'swr';
 import DirectionScreen from '@/components/DirectionScreen';
+import StockIntelligencePanel from '@/components/StockIntelligencePanel';
 import { api, type QualityValueReport, type QvEvaluation, type QvGateStatus,
          type QvAssessment, type QvSummary } from '@/lib/api';
 import { coverageRows, statusColumns, badgeLabel, badgeRemedy,
@@ -179,8 +180,44 @@ function Summary({ s }: { s: QvSummary }) {
                     textTransform: 'uppercase', color: tone, marginBottom: '4px' }}>{title}</div>
       <div style={{ fontSize: '12px', color: '#cbd5e1', lineHeight: 1.5 }}>{children}</div>
     </div>);
+  /* IS A COMPANY ASSESSMENT EVEN THE RIGHT INSTRUMENT HERE? GLD was labelled "Fund (inferred)"
+     while being reported as missing annual statements and lacking a durable moat, with "collect
+     the evidence" as its next research task. A gold trust holds no operating business: "no moat"
+     there is not a weak finding, it is a finding about the wrong subject, and the backlog is not
+     work anyone can do. This banner has to sit ABOVE the gate conclusions, because it governs
+     how all of them should be read. */
+  const ap = s.applicability;
+  const APPLICABILITY_TONE: Record<string, { bg: string; bd: string; fg: string }> = {
+    applies:        { bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.3)', fg: '#6ee7b7' },
+    unverified:     { bg: 'rgba(234,179,8,0.10)',  bd: 'rgba(234,179,8,0.38)', fg: '#fde047' },
+    not_applicable: { bg: 'rgba(248,113,113,0.1)', bd: 'rgba(248,113,113,0.4)', fg: '#fca5a5' },
+  };
+  const apTone = (ap && APPLICABILITY_TONE[ap.status]) ?? APPLICABILITY_TONE.unverified;
   return (
-    <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap', marginTop: '8px',
+    <div style={{ marginTop: '8px' }}>
+    {ap && ap.status !== 'applies' && (
+      <div style={{ padding: '9px 12px', borderRadius: '9px', marginBottom: '8px',
+                    background: apTone.bg, border: `1px solid ${apTone.bd}` }}>
+        <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.06em',
+                      textTransform: 'uppercase', color: apTone.fg, marginBottom: '3px' }}>
+          {ap.status === 'not_applicable'
+            ? 'Company assessment does not apply'
+            : 'Company assessment applicability unverified'}
+        </div>
+        <div style={{ fontSize: '12px', color: '#cbd5e1', lineHeight: 1.5 }}>{ap.note}</div>
+        {ap.basis && (
+          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '3px' }}>
+            Instrument: {ap.instrument_type ?? 'unknown'}
+            {ap.confidence ? ` (${ap.confidence})` : ''} — {ap.basis}
+          </div>)}
+        {!!ap.fund_analysis_required?.length && (
+          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '5px' }}>
+            A verified fund would need instead: {ap.fund_analysis_required.join('; ')}.
+            None of this is computed by this platform today.
+          </div>)}
+      </div>
+    )}
+    <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap',
                   padding: '11px 13px', borderRadius: '9px',
                   background: 'rgba(99,102,241,0.06)',
                   border: '1px solid rgba(99,102,241,0.22)' }}>
@@ -209,12 +246,21 @@ function Summary({ s }: { s: QvSummary }) {
             {s.next_research.map((x, i) => <li key={i}>{x.item}
               {x.note && <span style={{ color: '#94a3b8' }}> — {x.note}</span>}</li>)}
           </ul>) : <span style={{ color: '#64748b' }}>—</span>}
+        {/* CARRIED, NOT HIDDEN. Where the company assessment has not been shown to apply, the
+            items still appear — under a heading that says what they are conditional on, so the
+            screen stops presenting "examine switching costs" as work to do on a gold trust. */}
+        {!!s.next_research_conditional?.length && (
+          <div style={{ marginTop: '6px', color: '#94a3b8', fontSize: '11px' }}>
+            Would apply only if this is an operating company:{' '}
+            {s.next_research_conditional.map(x => x.item).join('; ')}
+          </div>)}
         {!!s.not_closable_by_research?.length && (
           <div style={{ marginTop: '6px', color: '#94a3b8', fontSize: '11px' }}>
             {/* Not a task: no amount of effort closes an undisclosed term. */}
             Not closable by research: {s.not_closable_by_research.map(x => x.item).join('; ')}
           </div>)}
       </Box>
+    </div>
     </div>
   );
 }
@@ -228,7 +274,22 @@ function Row({ e, catalog }: { e: QvEvaluation; catalog?: Catalog }) {
                        minWidth: '72px' }}>{e.symbol}</span>
         <span style={{ color: '#94a3b8', fontSize: '12px', flex: '1 1 160px',
                        overflowWrap: 'anywhere' }}>{e.name ?? '—'}</span>
-        <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', alignItems: 'center' }}>
+          {/* BEFORE THE BADGES, NOT BEHIND A CLICK. The gate badges are visible while the row is
+              collapsed, so a caveat that governs how to read them cannot sit inside the
+              expanded evidence. GLD showed "Fail" on a price rule and "Not collected" on a moat
+              with nothing saying those gates may be asking about the wrong kind of subject. */}
+          {e.summary?.applicability && e.summary.applicability.status !== 'applies' && (
+            <span title={e.summary.applicability.note}
+                  style={{ padding: '2px 8px', borderRadius: '999px', fontSize: '10.5px',
+                           fontWeight: 700, whiteSpace: 'nowrap',
+                           background: 'rgba(234,179,8,0.12)', color: '#fde047',
+                           border: '1px solid rgba(234,179,8,0.4)' }}>
+              {e.summary.applicability.status === 'not_applicable'
+                ? 'Company assessment N/A'
+                : 'Applicability unverified'}
+            </span>
+          )}
           {e.gates.map(g => (
             <span key={g.gate} title={`${GATE_TITLE[g.gate] ?? g.gate}: ${g.status}`}>
               <Pill s={g.status} catalog={catalog} /></span>
@@ -457,6 +518,21 @@ export default function QualityValuePage() {
                   `${r.symbol} #${r.id} (cutoff ${new Date(r.cutoff).toLocaleString()})`
                 ).join(', ')}
               </div>
+            )}
+
+            {/* THE RESEARCH CONCLUSION, ABOVE THE GATE AUDIT. Conclusions first: direction and
+                horizon, main factors, strongest counterevidence, triggers, then what actually
+                happened to the recorded observation. Buckets, adjustment evidence and
+                superseded results are below it and collapsed.
+
+                Shown only when ONE company is in view. Over a 200-row universe this panel is
+                not a summary of anything — it would be 200 panels — and the coverage table
+                above is the right reading for that case. */}
+            {data.evaluations.length === 1 && (
+              <>
+                <H>Research conclusion — {data.evaluations[0].symbol}</H>
+                <StockIntelligencePanel symbol={data.evaluations[0].symbol} />
+              </>
             )}
 
             <H>Companies</H>

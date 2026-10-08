@@ -331,7 +331,76 @@ class Evaluation:
                 "blocking": [g.name for g in self.blocking()]}
 
 
-def company_summary(evaluation, gates) -> dict:
+#: A COMPANY ASSESSMENT ANSWERS QUESTIONS ABOUT A COMPANY. Applied to something that is not
+#: one — or that has not been shown to be one — its conclusions are not weak evidence, they are
+#: about the wrong subject. GLD was labelled "Fund (inferred)" on the same screen that reported
+#: it as missing annual statements and lacking a durable moat: a gold trust holds no operating
+#: business, so "no moat" there is not a finding, and "collect the statements" is not a task.
+APPLICABILITY_APPLIES = "applies"
+APPLICABILITY_UNVERIFIED = "unverified"
+APPLICABILITY_NOT_APPLICABLE = "not_applicable"
+
+APPLICABILITY_NOTE = {
+    APPLICABILITY_APPLIES:
+        "The company-assessment gates below ask questions about an operating business, which "
+        "this listing is taken to be.",
+    APPLICABILITY_UNVERIFIED:
+        "Company assessment applicability unverified. The instrument type here is INFERRED, not "
+        "verified, so it has not been established that these company gates are asking about the "
+        "right kind of subject. Read the gate results as conditional on that.",
+    APPLICABILITY_NOT_APPLICABLE:
+        "Company assessment does not apply. This listing is a pooled vehicle, not an operating "
+        "business, so missing statements and an absent moat are not findings about it and are "
+        "not research tasks. A verified fund needs fund analysis — holdings, mandate, costs, "
+        "tracking and counterparty terms — which this platform does not yet compute.",
+}
+
+#: What a verified fund would actually need, so the screen can say what is missing rather than
+#: silently showing nothing. NOT implemented — naming it is not building it.
+FUND_ANALYSIS_REQUIRED = [
+    "stated mandate and what the vehicle is contractually required to hold",
+    "current holdings or index tracked, with concentration",
+    "total expense ratio and any financing or roll cost",
+    "tracking difference against the stated benchmark",
+    "structure and counterparty terms (physical, synthetic, futures-based, daily reset)",
+]
+
+
+def assessment_applicability(instrument: dict | None) -> dict:
+    """Whether a COMPANY assessment is the right instrument for this listing, and on what basis.
+
+    Three states, and the middle one is the honest default here: nothing in this platform
+    verifies a legal instrument type (checked 2026-10-07), so an inferred operating company is
+    `unverified` rather than `applies`. Only a DECLARED type can reach a confident answer.
+    """
+    kind = (instrument or {}).get("type")
+    conf = (instrument or {}).get("confidence")
+    if conf == "declared" and kind == "operating_company":
+        status = APPLICABILITY_APPLIES
+    elif conf == "declared" and kind == "fund":
+        status = APPLICABILITY_NOT_APPLICABLE
+    else:
+        # Everything else today: nothing in this platform VERIFIES an instrument type, so an
+        # inferred operating company is unverified rather than applying, and an inferred fund is
+        # unverified rather than not-applicable — calling it not-applicable would assert the very
+        # type the classifier explicitly refuses to assert.
+        status = APPLICABILITY_UNVERIFIED
+
+    # SUPPRESSION NEEDS POSITIVE EVIDENCE THAT THE SUBJECT IS WRONG. An unknown or unsupplied
+    # type is not such evidence — treating it as one would repeat the "absence implies fund"
+    # error this classifier exists to avoid, and would silently empty the backlog for every
+    # company. Only a POSITIVE fund signal (the name identifies a pooled vehicle, or a declared
+    # fund type) moves the company research list to conditional.
+    applicable = kind != "fund"
+    return {"status": status, "instrument_type": kind, "confidence": conf,
+            "basis": (instrument or {}).get("basis"),
+            "note": APPLICABILITY_NOTE[status],
+            "company_research_applicable": applicable,
+            "fund_analysis_required": (FUND_ANALYSIS_REQUIRED
+                                       if kind == "fund" else None)}
+
+
+def company_summary(evaluation, gates, *, instrument: dict | None = None) -> dict:
     """Four lines a reader needs before any audit detail.
 
     THE READING ORDER WAS BACKWARDS. Each gate rendered its assessment as prose and then again
@@ -366,12 +435,20 @@ def company_summary(evaluation, gates) -> dict:
     else:
         why = "Every required gate passed at this cutoff."
 
+    applicability = assessment_applicability(instrument)
+    # A RESEARCH BACKLOG FOR A SUBJECT THAT MAY NOT EXIST IS NOISE, NOT A TASK LIST. Where the
+    # company assessment has not been shown to apply, the items are still carried — nothing is
+    # hidden — but under a key that says what they are conditional on, so the screen stops
+    # presenting "examine switching costs" as work to do on a gold trust.
+    applies = applicability["company_research_applicable"]
     return {
         # Deliberately capped. A summary that lists everything is the detail again.
         "supports": supports[:3],
         "unresolved": unresolved,
         "why_not_entry_ready": why,
-        "next_research": next_research[:4],
+        "next_research": next_research[:4] if applies else [],
+        "next_research_conditional": [] if applies else next_research[:4],
+        "applicability": applicability,
         "not_closable_by_research": permanent,
         "note": "assembled from the stored assessments below — it cannot say anything the "
                 "detail does not, and a claim here always carries its counterevidence",

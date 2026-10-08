@@ -91,13 +91,42 @@ def fetch(symbol: str, *, ticker=None) -> tuple[dict, dict, dict]:
             {"provider": SOURCE, "symbol": symbol})
 
 
+#: What an empty response is allowed to establish. yfinance publishes no completeness guarantee,
+#: so a response with no actions in it establishes "the source returned none for this span" and
+#: NOT "none occurred". A source that documents exhaustiveness would justify the stronger value.
+RESPONSE_ONLY = "response_only"
+SOURCE_GUARANTEE = "source_guarantee"
+COMPLETENESS_BASIS = {SOURCE_GUARANTEE: "the source guarantees an exhaustive list for this span",
+                      RESPONSE_ONLY: "the source returned no further actions for this span; it "
+                                     "publishes no completeness guarantee, so this is weaker "
+                                     "than a statement that none occurred"}
+
+
+def evidenced_span(requested_from: date, requested_to: date, retrieved_at: datetime) -> tuple:
+    """What a response can actually speak for, which is never the future.
+
+    AUD-OBS-COVERAGEFUTURE. A successful request through 2026-12-31 issued on 2026-10-08
+    evidences nothing about November: those corporate actions have not happened, and no
+    response can report them. Taking the REQUESTED span as the evidenced one would mark a
+    future outcome window verified on the strength of a fetch that could not have seen it.
+    """
+    cap = retrieved_at.date() if isinstance(retrieved_at, datetime) else retrieved_at
+    return requested_from, min(requested_to, cap)
+
+
 def store(session, symbol: str, actions: list, *, covers_from: date, covers_to: date,
-          retrieved_at: datetime, note: str | None = None) -> dict:
+          retrieved_at: datetime, note: str | None = None,
+          completeness_basis: str = RESPONSE_ONLY) -> dict:
     """Upsert the records and write the coverage claim. Idempotent on (symbol, type, date, source).
 
-    The coverage claim is written for the REQUESTED span, not for the span the returned actions
-    happen to occupy — a history with no actions in it covers its window just as fully as one
-    with ten, and inferring the span from the rows would make an empty result claim nothing.
+    TWO SPANS, STORED SEPARATELY. The REQUESTED span is what was asked for, kept so a later run
+    can tell "never requested" from "requested and nothing came back". The EVIDENCED span is
+    what the response can support as of retrieval, capped at the retrieval date. Verification
+    reads the evidenced one.
+
+    Within the evidenced span, an empty history covers its window as fully as a full one — but
+    only to the strength `completeness_basis` allows, which for a source publishing no
+    exhaustiveness guarantee is "none returned", not "none occurred".
     """
     from db import CorporateAction, CorporateActionCoverage
     from sqlalchemy import select
@@ -119,25 +148,34 @@ def store(session, symbol: str, actions: list, *, covers_from: date, covers_to: 
             source_ref=a.get("source_ref"), retrieved_at=a["retrieved_at"], raw=a.get("raw")))
         created += 1
 
+    ev_from, ev_to = evidenced_span(covers_from, covers_to, retrieved_at)
     cov = session.execute(select(CorporateActionCoverage).where(
         CorporateActionCoverage.symbol == symbol,
         CorporateActionCoverage.source == SOURCE,
         CorporateActionCoverage.method == ADJUSTMENT_METHOD)).scalars().first()
     if cov is None:
-        cov = CorporateActionCoverage(symbol=symbol, source=SOURCE, method=ADJUSTMENT_METHOD,
-                                      covers_from=covers_from, covers_to=covers_to,
-                                      retrieved_at=retrieved_at, note=note)
+        cov = CorporateActionCoverage(
+            symbol=symbol, source=SOURCE, method=ADJUSTMENT_METHOD,
+            requested_from=covers_from, requested_to=covers_to,
+            evidenced_from=ev_from, evidenced_to=ev_to,
+            completeness_basis=completeness_basis, retrieved_at=retrieved_at, note=note)
         session.add(cov)
     else:
         # WIDEN ONLY. Narrowing a coverage claim on a re-run would silently un-verify windows
-        # that were legitimately verified under the earlier, wider fetch.
-        cov.covers_from = min(cov.covers_from, covers_from)
-        cov.covers_to = max(cov.covers_to, covers_to)
+        # that were legitimately verified under an earlier, wider fetch.
+        cov.requested_from = min(cov.requested_from, covers_from)
+        cov.requested_to = max(cov.requested_to, covers_to)
+        cov.evidenced_from = min(cov.evidenced_from, ev_from)
+        cov.evidenced_to = max(cov.evidenced_to, ev_to)
+        cov.completeness_basis = completeness_basis
         cov.retrieved_at = retrieved_at
         cov.note = note or cov.note
     session.commit()
     return {"symbol": symbol, "actions_created": created, "actions_already_held": kept,
-            "covers": [cov.covers_from.isoformat(), cov.covers_to.isoformat()],
+            "requested": [cov.requested_from.isoformat(), cov.requested_to.isoformat()],
+            "evidenced": [cov.evidenced_from.isoformat(), cov.evidenced_to.isoformat()],
+            "completeness_basis": cov.completeness_basis,
+            "completeness_note": COMPLETENESS_BASIS[cov.completeness_basis],
             "source": SOURCE, "method": ADJUSTMENT_METHOD,
             "retrieved_at": retrieved_at.isoformat()}
 

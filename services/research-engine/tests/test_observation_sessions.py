@@ -228,9 +228,14 @@ def _bars(pairs):
     return [{"date": d, "close": c, "adj_close": a} for d, c, a in pairs]
 
 
-def _cov(source="yfinance", method=None, frm="2026-01-01", to="2026-12-31"):
+def _cov(source="yfinance", method=None, frm="2026-01-01", to="2026-12-31",
+         basis="source_guarantee"):
+    """EVIDENCED span, which is what verification reads. Defaults to a guaranteeing source so
+    the split/dividend cases test adjustment and not completeness; completeness has its own."""
     return {"source": source, "method": method or _EB.ADJUSTMENT_METHOD,
-            "covers_from": frm, "covers_to": to, "retrieved_at": "2026-10-08T00:00:00"}
+            "evidenced_from": frm, "evidenced_to": to,
+            "requested_from": frm, "requested_to": to,
+            "completeness_basis": basis, "retrieved_at": "2026-10-08T00:00:00"}
 
 
 def _act(kind, ex, **kw):
@@ -415,6 +420,56 @@ def test_the_route_no_longer_asserts_consistency_from_the_setup_window():
     assert "adjustment_consistent=True" not in code, \
         "the caller must not assert what it has not verified over the OUTCOME window"
     assert "adjustment_consistent=adj['consistent']" in code
+
+
+# ---- COVERAGE: a request through a future date evidences nothing about the future -----------
+
+def test_a_future_requested_span_is_capped_at_the_retrieval_date():
+    """AUD-OBS-COVERAGEFUTURE. The first pilot stored a span ending 2026-12-31 from a fetch made
+    on 2026-10-08 — asserting knowledge of actions that had not happened."""
+    from datetime import date as _d, datetime as _dt
+    from intel_reports.corporate_actions import evidenced_span
+    frm, to = evidenced_span(_d(2025, 1, 1), _d(2026, 12, 31), _dt(2026, 10, 8, 5, 0))
+    assert (frm, to) == (_d(2025, 1, 1), _d(2026, 10, 8))
+
+
+def test_a_wholly_past_request_is_evidenced_in_full():
+    from datetime import date as _d, datetime as _dt
+    from intel_reports.corporate_actions import evidenced_span
+    assert evidenced_span(_d(2025, 1, 1), _d(2026, 6, 30), _dt(2026, 10, 8)) \
+        == (_d(2025, 1, 1), _d(2026, 6, 30))
+
+
+def test_verification_reads_the_evidenced_span_not_the_requested_one():
+    """A window inside the REQUESTED span but past the EVIDENCED end must not verify."""
+    future = [{"date": d, "close": 100.0, "adj_close": None}
+              for d in ("2026-11-02", "2026-11-03")]
+    cov = {"source": "yfinance", "method": _EB.ADJUSTMENT_METHOD,
+           "requested_from": "2025-01-01", "requested_to": "2026-12-31",
+           "evidenced_from": "2025-01-01", "evidenced_to": "2026-10-08",
+           "completeness_basis": "response_only", "retrieved_at": "2026-10-08T00:00:00"}
+    got = _EB.adjustment_evidence({"stock": future}, basis=_EB.SPLIT_ADJUSTED_PRICE,
+                                  actions={"stock": []}, coverage={"stock": cov})
+    assert got["consistent"] is None, got["reason"]
+
+
+def test_an_empty_response_without_a_guarantee_says_so_rather_than_claiming_none_occurred():
+    """REQUIREMENT. An empty response establishes "no actions returned"; only a documented
+    completeness guarantee supports the stronger "none occurred"."""
+    got = _EB.adjustment_evidence(
+        {"stock": _bars([(d, 100.0, None) for d in _W])}, basis=_EB.SPLIT_ADJUSTED_PRICE,
+        actions={"stock": []}, coverage={"stock": _cov(basis="response_only")})
+    assert got["consistent"] is True, "it must stay usable, not become unresolvable"
+    assert any("no completeness guarantee" in d for d in got["disclosures"]), got["disclosures"]
+    assert got["evidence"]["stock"]["completeness_basis"] == "response_only"
+
+
+def test_a_guaranteeing_source_does_not_carry_the_weaker_disclosure():
+    got = _EB.adjustment_evidence(
+        {"stock": _bars([(d, 100.0, None) for d in _W])}, basis=_EB.SPLIT_ADJUSTED_PRICE,
+        actions={"stock": []}, coverage={"stock": _cov(basis="source_guarantee")})
+    assert got["consistent"] is True
+    assert not any("no completeness guarantee" in d for d in got["disclosures"])
 
 
 # ---- DEMONSTRATION 4: the contract covers every outcome-changing dependency -----------------

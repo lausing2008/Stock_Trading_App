@@ -4132,8 +4132,22 @@ class CorporateActionCoverage(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     symbol: Mapped[str] = mapped_column(String(24), index=True, nullable=False)
     source: Mapped[str] = mapped_column(String(48), nullable=False)
-    covers_from: Mapped[date] = mapped_column(Date, nullable=False)
-    covers_to: Mapped[date] = mapped_column(Date, nullable=False)
+    #: WHAT WAS ASKED FOR. Kept because a later run must be able to tell "we never requested
+    #: that span" from "we requested it and the source returned nothing".
+    requested_from: Mapped[date] = mapped_column(Date, nullable=False)
+    requested_to: Mapped[date] = mapped_column(Date, nullable=False)
+    #: WHAT THE RESPONSE CAN ACTUALLY SUPPORT AS OF `retrieved_at`. A successful request through
+    #: 2026-12-31 made on 2026-10-08 evidences nothing about November: those actions have not
+    #: happened, so no response can speak for them. `evidenced_to` is therefore capped at the
+    #: retrieval date, and verification uses THIS interval, never the requested one.
+    evidenced_from: Mapped[date] = mapped_column(Date, nullable=False)
+    evidenced_to: Mapped[date] = mapped_column(Date, nullable=False)
+    #: What an EMPTY response establishes. "response_only" means only that the source returned
+    #: no actions for the span — it does not promise the list was exhaustive. A stronger claim
+    #: requires a documented completeness guarantee from the source, which yfinance does not
+    #: give, so the limitation travels with every figure verified this way.
+    completeness_basis: Mapped[str] = mapped_column(String(32), nullable=False,
+                                                    default="response_only")
     #: Named adjustment methodology, e.g. "cumulative_split_factor_v1". Stored so a later
     #: change re-derives under a new name instead of silently restating old figures.
     method: Mapped[str] = mapped_column(String(48), nullable=False)

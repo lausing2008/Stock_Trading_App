@@ -34,8 +34,26 @@ export type QvSummary = {
   unresolved: { gate: string; question: string }[];
   why_not_entry_ready: string;
   next_research: { gate: string; item: string; note?: string | null }[];
+  /* Carried, not hidden: company research items for a listing whose type is not an operating
+     company. A moat question is not a weak finding about a gold trust — it is about the wrong
+     subject, and listing it as a task would be noise. */
+  next_research_conditional?: { gate: string; item: string; note?: string | null }[];
+  applicability?: QvApplicability;
   not_closable_by_research: { gate: string; item: string; note?: string | null }[];
   note?: string;
+};
+
+/* Whether a COMPANY assessment is even the right instrument for this listing. Nothing in this
+   platform verifies a legal instrument type, so `unverified` is the honest answer for almost
+   everything today — and that is what the screen must say rather than implying otherwise. */
+export type QvApplicability = {
+  status: 'applies' | 'unverified' | 'not_applicable';
+  instrument_type?: string | null;
+  confidence?: string | null;
+  basis?: string | null;
+  note: string;
+  company_research_applicable: boolean;
+  fund_analysis_required?: string[] | null;
 };
 
 export type QvGate = { gate: string; status: QvGateStatus; reasons: string[];
@@ -171,6 +189,8 @@ export interface OutcomeObservation {
   observation_id: number; origin: string; observed_at: string; horizon: string;
   horizon_sessions: number; direction: string; support_quality?: string | null;
   reference_price?: number | null; reference_price_as_of?: string | null;
+  confirmation_rule?: string | null; invalidation_rule?: string | null;
+  summary?: IntelSummary | null;
   invalidated_reason?: string | null; publishable: boolean;
   outcome: OutcomeRow | null; superseded: SupersededRow[];
 }

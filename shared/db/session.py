@@ -111,6 +111,45 @@ def _run_migrations() -> None:  # noqa: C901
             "ALTER TABLE IF EXISTS observation_outcomes "
             "ALTER COLUMN return_basis TYPE VARCHAR(48)"))
 
+        # AUD-OBS-COVERAGEFUTURE (2026-10-08): the first coverage rows claimed a span ending
+        # 2026-12-31, retrieved on 2026-10-08 — i.e. they asserted knowledge of corporate
+        # actions that had not yet happened. Requested and evidenced spans are now separate
+        # columns, and verification reads the evidenced one. The backfill caps the evidenced
+        # end at the retrieval date rather than trusting what was asked for.
+        for stmt in (
+            "ALTER TABLE IF EXISTS corporate_action_coverage "
+            "ADD COLUMN IF NOT EXISTS requested_from DATE",
+            "ALTER TABLE IF EXISTS corporate_action_coverage "
+            "ADD COLUMN IF NOT EXISTS requested_to DATE",
+            "ALTER TABLE IF EXISTS corporate_action_coverage "
+            "ADD COLUMN IF NOT EXISTS evidenced_from DATE",
+            "ALTER TABLE IF EXISTS corporate_action_coverage "
+            "ADD COLUMN IF NOT EXISTS evidenced_to DATE",
+            "ALTER TABLE IF EXISTS corporate_action_coverage "
+            "ADD COLUMN IF NOT EXISTS completeness_basis VARCHAR(32) DEFAULT 'response_only'",
+        ):
+            conn.execute(text(stmt))
+        if conn.execute(text(
+                "SELECT to_regclass('corporate_action_coverage') IS NOT NULL")).scalar():
+            cols = {r[0] for r in conn.execute(text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'corporate_action_coverage'"))}
+            if "covers_from" in cols:
+                conn.execute(text(
+                    "UPDATE corporate_action_coverage SET "
+                    "requested_from = COALESCE(requested_from, covers_from), "
+                    "requested_to = COALESCE(requested_to, covers_to), "
+                    "evidenced_from = COALESCE(evidenced_from, covers_from), "
+                    "evidenced_to = COALESCE(evidenced_to, "
+                    "                        LEAST(covers_to, retrieved_at::date))"))
+                conn.execute(text(
+                    "ALTER TABLE corporate_action_coverage DROP COLUMN IF EXISTS covers_from"))
+                conn.execute(text(
+                    "ALTER TABLE corporate_action_coverage DROP COLUMN IF EXISTS covers_to"))
+            conn.execute(text(
+                "UPDATE corporate_action_coverage SET completeness_basis = 'response_only' "
+                "WHERE completeness_basis IS NULL"))
+
         # Add Chinese name column and backfill known HK stocks
         conn.execute(text(
             "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS name_zh VARCHAR(256)"

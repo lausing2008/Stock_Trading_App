@@ -940,3 +940,79 @@ def test_the_page_renders_the_reused_evaluation_details():
     assert "data.reused_evaluations" in page
     assert "nothing was rewritten" in page
     assert "r.id" in page and "r.cutoff" in page
+
+
+# =============================================================================================
+# AUD-QV-APPLICABILITY (2026-10-08). GLD was shown as "Fund (inferred)" on the same screen that
+# reported it as missing annual statements and lacking a durable moat, with "collect the
+# evidence" as its next research task. A gold trust holds no operating business: "no moat" there
+# is not a weak finding, it is a finding about the wrong subject, and the backlog is not work.
+# =============================================================================================
+from intel_reports.quality_value import (assessment_applicability, company_summary,  # noqa: E402
+                                         APPLICABILITY_APPLIES, APPLICABILITY_UNVERIFIED,
+                                         APPLICABILITY_NOT_APPLICABLE, FUND_ANALYSIS_REQUIRED)
+
+
+def test_an_inferred_fund_is_unverified_not_asserted_not_applicable():
+    """Calling it not-applicable would assert the very type the classifier refuses to assert."""
+    got = assessment_applicability({"type": "fund", "confidence": "inferred",
+                                    "basis": "the NAME identifies a pooled vehicle"})
+    assert got["status"] == APPLICABILITY_UNVERIFIED
+    assert "Company assessment applicability unverified" in got["note"]
+
+
+def test_an_inferred_fund_moves_the_company_research_backlog_to_conditional():
+    got = assessment_applicability({"type": "fund", "confidence": "inferred"})
+    assert got["company_research_applicable"] is False
+    assert got["fund_analysis_required"] == FUND_ANALYSIS_REQUIRED
+    assert "holdings" in " ".join(got["fund_analysis_required"])
+
+
+def test_an_inferred_operating_company_keeps_its_backlog_but_says_it_is_unverified():
+    """The research tasks are still the right tasks IF it is a company; the caveat carries the
+    uncertainty without emptying the list."""
+    got = assessment_applicability({"type": "operating_company", "confidence": "inferred"})
+    assert got["status"] == APPLICABILITY_UNVERIFIED
+    assert got["company_research_applicable"] is True
+
+
+def test_suppression_requires_positive_evidence_not_an_unknown_type():
+    """ABSENCE NEVER IMPLIES FUND. Suppressing on an unknown type would repeat the exact error
+    the classifier exists to avoid, and would silently empty the backlog for every company."""
+    for instrument in (None, {}, {"type": "unverified", "confidence": "inferred"}):
+        got = assessment_applicability(instrument)
+        assert got["company_research_applicable"] is True, instrument
+        assert got["status"] == APPLICABILITY_UNVERIFIED
+
+
+def test_a_declared_fund_is_not_applicable_and_names_what_it_would_need():
+    got = assessment_applicability({"type": "fund", "confidence": "declared"})
+    assert got["status"] == APPLICABILITY_NOT_APPLICABLE
+    assert "not an operating business" in got["note"]
+    assert "fund analysis" in got["note"]
+
+
+def test_only_a_declared_company_reaches_applies():
+    assert assessment_applicability(
+        {"type": "operating_company", "confidence": "declared"})["status"] \
+        == APPLICABILITY_APPLIES
+
+
+def test_the_summary_carries_applicability_and_splits_the_backlog(monkeypatch):
+    """The whole point is that nothing is HIDDEN: the items still travel, under a key that says
+    what they are conditional on."""
+    class _G:
+        name = "competitive_durability"
+        evidence = {"verdict": "insufficient",
+                    "not_assessed": ["customer design-cycle lock-in", "patent portfolio"]}
+    class _Ev:
+        def blocking(self): return []
+        def as_dict(self): return {}
+    fund = company_summary(_Ev(), [_G()], instrument={"type": "fund", "confidence": "inferred"})
+    assert fund["next_research"] == []
+    assert len(fund["next_research_conditional"]) == 2, "carried, not discarded"
+    assert fund["applicability"]["status"] == APPLICABILITY_UNVERIFIED
+
+    co = company_summary(_Ev(), [_G()],
+                         instrument={"type": "operating_company", "confidence": "inferred"})
+    assert len(co["next_research"]) == 2 and co["next_research_conditional"] == []
