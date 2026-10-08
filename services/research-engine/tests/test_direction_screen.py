@@ -82,7 +82,7 @@ def test_a_company_without_statements_is_not_mislabelled_as_a_fund():
                       ("COIN", "Coinbase Global, Inc.")):
         r = _c(sym, name, sector="Technology", stmts=False)
         assert r["type"] == "operating_company", sym
-        assert "no statements stored yet" in r["basis"]
+        assert "Inferred from metadata" in r["basis"]
 
 
 def test_a_fund_is_identified_from_its_name_when_nothing_else_can():
@@ -120,7 +120,43 @@ def test_every_classification_states_the_evidence_behind_it():
     for r in (_c("MU", "Micron", sector="Technology", stmts=True),
               _c("QQQM", "Invesco NASDAQ 100 ETF"), _c("HOOD", "HOOD")):
         assert r["basis"] and len(r["basis"]) > 20
-        assert set(r) == {"type", "leveraged", "basis"}
+        assert set(r) == {"type", "leveraged", "basis", "confidence"}
+
+
+# ---- these are INFERENCES, and must say so ------------------------------------------------
+# Statements and sector metadata support an inference about what a listing is; they do not
+# verify its legal instrument type, and a fund can file statements. No authoritative source
+# exists: `stocks` carries no declared type and `exchange` separates venues, not instruments.
+
+def test_every_heuristic_result_is_marked_inferred():
+    for r in (_c("MU", "Micron", sector="Technology", stmts=True),
+              _c("AMD", "Advanced Micro Devices", sector="Technology"),
+              _c("QQQM", "Invesco NASDAQ 100 ETF"), _c("HOOD", "HOOD")):
+        assert r["confidence"] == "inferred"
+        assert "nferred" in r["basis"] or "not established" in r["basis"]
+
+
+def test_a_declared_type_would_not_be_called_inferred():
+    """The parameter a real classification would arrive through. Always None today."""
+    r = classify_instrument(symbol="QQQM", name="Invesco NASDAQ 100 ETF", sector=None,
+                            industry=None, has_annual_statements=False, declared_type="etf")
+    assert r["type"] == "etf" and r["confidence"] == "declared"
+
+
+def test_absence_of_statements_never_implies_a_fund():
+    """The NAME is the positive signal; absence only fails to contradict it."""
+    r = _c("QQQM", "Invesco NASDAQ 100 ETF")
+    assert "the NAME identifies a pooled vehicle" in r["basis"]
+    assert "is not what the inference rests on" in r["basis"]
+    # A listing with the same absences and no fund-like name must NOT become a fund.
+    assert _c("ZZZZ", "ZZZZ")["type"] == "unverified"
+    assert "absence is not evidence of a fund" in _c("ZZZZ", "ZZZZ")["basis"]
+
+
+def test_a_fund_that_filed_statements_is_not_proven_a_company():
+    """The basis says so explicitly rather than overclaiming from the statements."""
+    r = _c("SOMEFUND", "Some Fund", stmts=True)
+    assert "a fund may also file statements" in r["basis"]
 
 
 def test_only_three_types_exist_so_a_reader_never_sees_a_blank():

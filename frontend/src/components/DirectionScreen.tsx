@@ -100,12 +100,20 @@ const TAG: Record<string, { text: string; fg: string; bg: string }> = {
   unverified:        { text: 'Type unverified', fg: '#fdba74', bg: 'rgba(251,146,60,0.14)' },
 };
 
+/* NO AUTHORITATIVE SOURCE EXISTS for instrument type — `stocks` carries no declared type and
+   `exchange` separates venues, not instruments. So the badge must read as an inference, not an
+   assertion: "Company" alone claims a verified fact the platform does not have. */
+const INFERRED_NOTE = 'Inferred — no declared instrument type is available from any source. ';
+
 function InstrumentTag({ i }: { i: NonNullable<DirectionScreenRow['instrument']> }) {
   const t = TAG[i.type] ?? TAG.unverified;
   const pill = { marginLeft: 6, padding: '1px 6px', borderRadius: 4, fontSize: 10,
     fontWeight: 700, letterSpacing: '0.04em', whiteSpace: 'nowrap' as const };
+  const inferred = i.confidence !== 'declared';
   return <>
-    <span title={i.basis} style={{ ...pill, color: t.fg, background: t.bg }}>{t.text}</span>
+    <span title={(inferred ? INFERRED_NOTE : '') + (i.basis ?? '')}
+      style={{ ...pill, color: t.fg, background: t.bg }}>
+      {t.text}{inferred && i.type !== 'unverified' ? ' (inferred)' : ''}</span>
     {i.leveraged && <span title="Daily-reset leveraged or inverse fund — its return is a
  multiple of a daily move, not of the period." style={{ ...pill, color: '#fca5a5',
       background: 'rgba(248,113,113,0.16)' }}>Leveraged</span>}

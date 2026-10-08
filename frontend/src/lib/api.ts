@@ -10,8 +10,10 @@ export type DirectionScreen = {
   rows: { symbol: string; name: string; market: string; sector?: string; currency: string;
     // There is no is_etf column; the type is INFERRED and travels with the evidence that
     // produced it. "unverified" is a real answer, not a default.
-    instrument?: { type: 'operating_company' | 'fund' | 'unverified';
-                   leveraged?: boolean; basis?: string };
+    instrument?: { type: 'operating_company' | 'fund' | 'unverified' | string;
+                   leveraged?: boolean; basis?: string;
+                   // 'inferred' on every path today — no declared source exists.
+                   confidence?: 'inferred' | 'declared' };
     setup: { direction: string; label: string; strategy: string; factors: string[];
       close?: number; support?: number; resistance?: number; session?: string;
       volume_ratio?: number | null; limitations?: string[] } }[];

@@ -111,3 +111,50 @@ describe('the setup guide remembers a collapse', () => {
     expect(src).toContain('useState(true)');
   });
 });
+
+describe('instrument type reads as an inference, not a fact', () => {
+  const row = (symbol: string, instrument: any) => ({
+    symbol, name: symbol, market: 'US', currency: 'USD', instrument,
+    setup: { direction: 'breakout', label: 'Up — range break observed', close: 10,
+      support: 8, resistance: 9, factors: [], strategy: 's', session: '2026-10-05',
+      limitations: [] } });
+  const render = (rows: any[]) => {
+    state.data = { scanned: rows.length, matching: rows.length, calendar_available: true,
+      sectors: [], session_dates: { US: '2026-10-05' }, policy: 't', note: 'n', rows };
+    state.error = undefined;
+    return renderToStaticMarkup(<DirectionScreen symbols="" />);
+  };
+
+  it('marks an inferred company as inferred rather than asserting it', () => {
+    const html = render([row('AMD', { type: 'operating_company', confidence: 'inferred',
+      leveraged: false, basis: 'metadata' })]);
+    expect(html).toContain('Company (inferred)');
+  });
+
+  it('marks an inferred fund as inferred', () => {
+    const html = render([row('QQQM', { type: 'fund', confidence: 'inferred',
+      leveraged: false, basis: 'name' })]);
+    expect(html).toContain('Fund (inferred)');
+  });
+
+  it('says in the tooltip that no declared source exists', () => {
+    const html = render([row('QQQM', { type: 'fund', confidence: 'inferred',
+      leveraged: false, basis: 'name identifies a pooled vehicle' })]);
+    expect(html).toContain('no declared instrument type is available');
+  });
+
+  it('does not double-label an already-unverified type', () => {
+    const html = render([row('HOOD', { type: 'unverified', confidence: 'inferred',
+      leveraged: false, basis: 'b' })]);
+    expect(html).toContain('Type unverified');
+    expect(html).not.toContain('Type unverified (inferred)');
+  });
+
+  it('would not call a declared type inferred', () => {
+    const html = render([row('QQQM', { type: 'fund', confidence: 'declared',
+      leveraged: false, basis: 'declared by the source' })]);
+    expect(html).toContain('Fund');
+    expect(html).not.toContain('(inferred)');
+    expect(html).not.toContain('no declared instrument type is available');
+  });
+});

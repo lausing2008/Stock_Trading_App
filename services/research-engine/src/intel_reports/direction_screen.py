@@ -94,8 +94,12 @@ def select_setups(rows: list[dict], market="ALL", direction="all", limit=20, sec
 # different reading: a fund's break is a statement about its basket, and a LEVERAGED fund's
 # is a statement about a daily-reset multiple of one.
 #
-# THERE IS NO is_etf COLUMN, so the type is inferred — and the inference is reported with the
-# basis that produced it rather than asserted. Measured against the 189 active listings on
+# THERE IS NO AUTHORITATIVE INSTRUMENT CLASSIFICATION ANYWHERE — checked 2026-10-07, `stocks`
+# carries only symbol/name/sector/industry/exchange/market/currency/cik/index_membership, and
+# `exchange` separates venues (NASDAQ, NYSE, HKEX) rather than instrument types. So every result
+# is an INFERENCE, reported with the basis that produced it and a `confidence` of `inferred`
+# rather than asserted as fact. Statements and sector support an inference about what a listing
+# is; they do not verify its legal type. Measured against the 189 active listings on
 # 2026-10-07, which is what fixes the precedence below:
 #
 #   * 0 symbols have annual statements but no sector/industry. Statements are therefore a
@@ -121,28 +125,51 @@ _LEVERAGE_WORDS = ("ultrapro", "ultra ", "2x", "3x", "leveraged", "daily semicon
 
 
 def classify_instrument(*, symbol: str, name: str | None, sector: str | None,
-                        industry: str | None, has_annual_statements: bool) -> dict:
-    """What kind of thing this row is, and on what basis. Pure.
+                        industry: str | None, has_annual_statements: bool,
+                        declared_type: str | None = None) -> dict:
+    """What kind of thing this row probably is, on what basis, and how strongly. Pure.
 
-    Returns `type` in {operating_company, fund, unverified}, a `basis` naming the evidence,
-    and `leveraged` where the name indicates a daily-reset multiple. `unverified` is a real
-    answer and must render as one — it is not a quiet default for "probably a company".
+    EVERY RESULT HERE IS AN INFERENCE UNLESS `declared_type` IS SUPPLIED. Checked 2026-10-07:
+    no authoritative instrument classification is stored anywhere — `stocks` carries only
+    symbol, name, sector, industry, exchange (NASDAQ / NYSE / HKEX, which separates venues and
+    not instrument types), market, currency, cik and index_membership. A provider quote type,
+    an exchange security type or an issuer classification would be authoritative; none is
+    ingested. `declared_type` is the parameter one would arrive through, and it is always None
+    today.
+
+    So `confidence` is `inferred` on every path below, and a caller rendering this must say so.
+    Statements and sector metadata support an inference about what a listing *is*; they do not
+    verify its legal instrument type, and a fund can perfectly well file financial statements.
+
+    ABSENCE NEVER IMPLIES "FUND". The positive signal for a fund is the NAME; the absence of
+    statements and sector only fails to contradict it. A listing with neither and no fund-like
+    name is `unverified`, which is a real answer and not a lean in either direction.
     """
+    if declared_type:
+        return {"type": declared_type, "leveraged": False, "confidence": "declared",
+                "basis": f"declared by the source as {declared_type}"}
+
     n = (name or "").strip()
     nl = n.lower()
     leveraged = any(w in nl for w in _LEVERAGE_WORDS)
+    INFER = "inferred"
 
     if has_annual_statements:
-        return {"type": "operating_company", "leveraged": False,
-                "basis": "annual financial statements are stored for this issuer"}
+        return {"type": "operating_company", "leveraged": False, "confidence": INFER,
+                "basis": "annual financial statements are stored for this issuer. Inferred: "
+                         "no authoritative instrument classification is available, and a fund "
+                         "may also file statements"}
     if sector or industry:
-        return {"type": "operating_company", "leveraged": False,
-                "basis": f"classified under sector/industry ({sector or industry}); no "
-                         f"statements stored yet"}
+        return {"type": "operating_company", "leveraged": False, "confidence": INFER,
+                "basis": f"classified under sector/industry ({sector or industry}). Inferred "
+                         f"from metadata, not from a declared instrument type"}
     if nl and nl != symbol.lower() and any(w in nl for w in _FUND_WORDS):
-        return {"type": "fund", "leveraged": leveraged,
-                "basis": f"name identifies a pooled vehicle{' with a daily-reset multiple'
-                          if leveraged else ''}; no statements and no sector"}
-    return {"type": "unverified", "leveraged": leveraged,
-            "basis": "no statements, no sector or industry, and the name does not identify "
-                     "a fund — the instrument type is not established either way"}
+        return {"type": "fund", "leveraged": leveraged, "confidence": INFER,
+                "basis": f"the NAME identifies a pooled vehicle"
+                         f"{' with a daily-reset multiple' if leveraged else ''}. Inferred from "
+                         f"the name alone — the absence of statements and sector does not "
+                         f"establish this and is not what the inference rests on"}
+    return {"type": "unverified", "leveraged": leveraged, "confidence": INFER,
+            "basis": "no declared instrument type, no sector or industry, no stored statements, "
+                     "and the name does not identify a fund — the instrument type is not "
+                     "established either way, and absence is not evidence of a fund"}

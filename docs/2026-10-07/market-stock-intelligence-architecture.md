@@ -144,7 +144,9 @@ prediction_outcomes       what actually happened                        (§36/§
   prediction_id, horizon_sessions
   forward_return, benchmark_return, excess_return
   descriptive_return      from reference_price — "was the reading right?"
-  executable_return       from the next tradeable price — the only tradeable measure
+  simulated_executable_return   from the next plausibly tradeable price
+  execution_assumptions         JSON — spread, slippage, timing, liquidity and halt
+                                treatment, all UNMODELLED at first delivery and listed as such
   delisting_cause         acquisition | bankruptcy | exchange_transfer | NULL
   resolution_state        RESOLVED | RESOLVED_ACQUISITION | RESOLVED_BANKRUPTCY |
                           UNRESOLVED_INSUFFICIENT_SESSIONS | UNRESOLVED_PRICE_MISSING |
@@ -219,9 +221,18 @@ Two different measurements, and conflating them is how a backtest flatters itsel
 - **Descriptive forward return** — from the `reference_price` the conclusion was formed
   against, for answering *"was the reading directionally right?"*. Honest, and not a tradeable
   result.
-- **Executable strategy return** — from the **next price a participant could actually have
-  traded at**, given `observed_at`. A conclusion formed at 21:00 after a 16:00 close references
-  that close but could only have been acted on at the next session's open.
+- **Simulated executable return** — from the next price at which a participant could
+  *plausibly* have transacted, given `observed_at`. A conclusion formed at 21:00 after a 16:00
+  close references that close but could only have been acted on at the next session's open.
+
+  **"Simulated" is not hedging — it is the accurate word.** The next tradeable price is an
+  **execution assumption**, not proof of an achievable fill. None of the following is modelled
+  yet, and each can move the result: the bid/ask spread, slippage against displayed size, order
+  timing within the session, available liquidity at the chosen price, and trading halts or
+  auction imbalances that remove the assumed fill entirely. Until they are modelled, the field
+  is named `simulated_executable_return` and the assumptions travel with it in
+  `execution_assumptions`, so a later reader can see what was taken for granted rather than
+  inferring it from an unqualified "executable".
 
 The prediction stores `reference_price` with `reference_price_as_of` and
 `reference_price_basis` (`formed_at_close` | `next_tradeable_open`), and **both returns are
@@ -397,9 +408,13 @@ it decomposes into conditions that can each fail individually:
      insufficient sessions, missing price, each delisting cause, a split inside the window, a
      missing benchmark. This proves *the machinery works*. It is **not** evidence of predictive
      performance, because the rules were written with the outcomes already in existence.
-   - a **newly captured prospective prediction**, resolved only once the sessions elapse. This
-     is the only one that can ever speak to predictive performance, and at the first delivery
-     it will have none — which is the correct state to ship in.
+   - a **newly captured prospective prediction**, resolved only once the sessions elapse.
+
+   **Prospective capture makes future measurement possible; it establishes nothing by itself.**
+   Predictive skill requires resolved observations, an appropriate benchmark, and enough of
+   them to separate a result from noise — none of which exists at capture time. A stored
+   prediction is a precondition for the claim, not a weak form of it, and at first delivery
+   prospective performance is **explicitly unmeasured**.
 6. The data-quality header (§3) names every stale and missing source **before** any conclusion.
 
 Condition 5 is the one that makes the rest falsifiable: without stored predictions and resolved

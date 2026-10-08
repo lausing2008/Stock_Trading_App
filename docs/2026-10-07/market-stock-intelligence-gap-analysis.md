@@ -178,7 +178,7 @@ collapsed them:
 | **Implementation** | Does the code path exist and run? | Yes — `/quality-value/setups`, 189 listings scanned |
 | **Coverage** | Over how much of the intended population, with what inputs? | US 147 + HK 42; daily completed sessions only; ETFs not yet excluded |
 | **Software correctness** | Does the rule do what it says, on the paths exercised? | Partly — unit tests over the classifier and the adapter; **not** every path (gaps, halts, corporate actions, HK lunch break) |
-| **Predictive performance** | Do its outputs lead anywhere useful? | **Unmeasured.** No stored prediction, no resolved outcome |
+| **Predictive performance** | Do its outputs lead anywhere useful? | **Unmeasured** — and a stored prediction would not by itself change that. Skill needs resolved observations, an appropriate benchmark and enough of them to separate a result from noise |
 
 **The last two are different questions and an earlier version of this document ran them
 together as "behavioural verification".** A correctly implemented rule can have poor investment
