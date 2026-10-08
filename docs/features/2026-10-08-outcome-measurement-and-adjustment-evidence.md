@@ -328,3 +328,49 @@ It makes future outcomes **scoreable** for 203 symbols instead of one. It does n
 them *verified*: yfinance publishes no completeness guarantee, so every figure resting on this
 is `provisional` and labelled. Reaching `verified` needs a source documenting exhaustiveness, or
 a second independent source to corroborate against.
+
+---
+
+## Corrections to this document's own earlier claims
+
+Three statements above were stronger than the evidence. Corrected here rather than edited away.
+
+| Claimed | Established | Corrected to |
+|---|---|---|
+| 203 symbols are scoreable | 203 symbols have a **coverage claim** | Each observation still needs its own stock/benchmark window, prices and adjustment evidence. A coverage claim is one input, not an outcome |
+| The 7 are "malformed or dead entries" | The provider did not resolve them; they have 0 stored bars | **Quarantined as unresolved identifiers.** A provider failing to resolve an identifier is a fact about that provider's coverage as much as about the identifier; `0100.HK` for `100.HK` is a hypothesis for a person to check |
+| The event-loop stall "happened every day" | **One** stall observed directly (py-spy, 2026-10-08) on a job scheduled daily | Daily recurrence is plausible and **unestablished**: Docker retains 5 health entries, the container has restarted, and this service has no job-run ledger. The fix stands on the observed stall and the shape of the code |
+
+The seven are held in `identifier_quarantine` with their evidence and an open `checked_at` —
+not deleted, not renamed, not marked delisted, each of which would assert something unverified.
+
+## AUD-OBS-TRIGGERORIENTATION — a bearish reading was told a price rise would confirm it
+
+GLD was read **BEARISH** and its triggers said:
+
+> Confirms: a completed close above 406.56 · Invalidates: a completed close below 376.88
+
+Exactly backwards. They came from a fixed template that never looked at the direction — generic
+upside/downside boundaries presented as direction-specific confirmation and invalidation.
+
+The boundaries are symmetric facts about the range; **which one confirms depends on what is
+being claimed**. `direction_triggers()` now takes the direction as its subject. A
+non-directional reading gets neither: NEUTRAL gets `establishes` (either break would give a
+direction where there is none), UNKNOWN gets nothing at all.
+
+**Relabelling would not have fixed it.** The wrong rule was being *stored*, frozen onto the
+observation — and trigger construction sat *outside* `policy_fingerprint`, so correcting it
+would have left every existing observation reused unchanged with its wrong rules intact. That is
+the resolver-fingerprint failure one layer up, in the capture contract. It is now inside it.
+
+Resolution never consulted these rules, so no resolved figure changes.
+
+Verified in production after deploy: GLD (BEARISH) confirms on a close **below** 376.88 and is
+invalidated **above** 406.56; MU (NEUTRAL) confirms and invalidates nothing, and names both
+boundaries as what would establish a direction.
+
+## Still open — not closed by this work
+
+* The **options / squeezes / dark-pool audit** is a separate documented backlog. Nothing here
+  addresses its strategy-selection, pricing or calibration findings.
+* The return figures throughout are reported results, not independently verified.
