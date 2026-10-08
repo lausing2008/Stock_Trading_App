@@ -16,6 +16,7 @@ from common.market_calendar import is_trading_day, session_bounds
 from db import SessionLocal, Stock, Price, TimeFrame
 
 from ..intel_reports import evidence_buckets as EB
+from ..intel_reports.corporate_actions import COMPLETENESS_BASIS as CA_COMPLETENESS
 from ..intel_reports.direction_screen import assess
 from ..intel_reports.observations import (HORIZONS, PROSPECTIVE, REPLAY, UNRESOLVED_LABEL,
                                           coverage_counts, record_buckets, record_observation,
@@ -110,8 +111,17 @@ def _coverage_for(session, symbol: str) -> dict | None:
         .order_by(CorporateActionCoverage.retrieved_at.desc())).scalars().first()
     if not r:
         return None
+    # THE KEYS `adjustment_evidence` ACTUALLY READS. A rename on the model left this returning
+    # `covers_from`/`covers_to` and every replay raised AttributeError — no test touched it,
+    # the same gap that let an unimported name ship. `test_coverage_dict_matches_what_the_
+    # evidence_reader_consumes` now pins the two together.
     return {"source": r.source, "method": r.method,
-            "covers_from": r.covers_from.isoformat(), "covers_to": r.covers_to.isoformat(),
+            "requested_from": r.requested_from.isoformat(),
+            "requested_to": r.requested_to.isoformat(),
+            "evidenced_from": r.evidenced_from.isoformat(),
+            "evidenced_to": r.evidenced_to.isoformat(),
+            "completeness_basis": r.completeness_basis,
+            "completeness_note": CA_COMPLETENESS.get(r.completeness_basis),
             "retrieved_at": r.retrieved_at.isoformat() if r.retrieved_at else None}
 
 

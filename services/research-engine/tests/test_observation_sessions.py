@@ -537,3 +537,41 @@ def test_the_return_basis_column_fits_every_declared_basis():
     session_py = (_ROOT / "shared/db/session.py").read_text()
     assert "ALTER COLUMN return_basis TYPE" in session_py, \
         "widening a column on an existing table needs a migration, like adding one"
+
+
+# ---- the keys one function produces are the keys the other reads ----------------------------
+
+def test_coverage_dict_matches_what_the_evidence_reader_consumes():
+    """A RENAME ON THE MODEL left `_coverage_for` returning `covers_from`/`covers_to` after
+    `adjustment_evidence` had moved to `evidenced_from`/`evidenced_to`. Every replay raised
+    AttributeError and no test touched it — the same gap that let an unimported name ship.
+
+    Reads both sides from source so neither can drift without this failing.
+    """
+    import ast
+    routes = (_ROOT / "services/research-engine/src/api/observation_routes.py").read_text()
+    tree = ast.parse(routes)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_coverage_for")
+    produced = {k.value for node in ast.walk(fn) if isinstance(node, ast.Dict)
+                for k in node.keys if isinstance(k, ast.Constant)}
+
+    buckets = (_ROOT / "services/research-engine/src/intel_reports/evidence_buckets.py").read_text()
+    ev = next(n for n in ast.walk(ast.parse(buckets))
+              if isinstance(n, ast.FunctionDef) and n.name == "adjustment_evidence")
+    # Every cov.get("...") inside adjustment_evidence is a key it expects from this dict.
+    consumed = {node.args[0].value for node in ast.walk(ev)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get" and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "cov" and node.args
+                and isinstance(node.args[0], ast.Constant)}
+    missing = sorted(consumed - produced)
+    assert not missing, f"adjustment_evidence reads keys _coverage_for does not supply: {missing}"
+
+
+def test_the_coverage_dict_carries_the_evidenced_span_not_only_the_requested_one():
+    src = (_ROOT / "services/research-engine/src/api/observation_routes.py").read_text()
+    import ast
+    code = ast.unparse(ast.parse(src))
+    assert "'evidenced_from'" in code and "'evidenced_to'" in code
+    assert "'covers_from'" not in code, "the renamed keys must be gone, not merely shadowed"
