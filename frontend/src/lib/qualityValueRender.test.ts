@@ -74,6 +74,9 @@ describe('the status type does not close a set the backend owns', () => {
   });
 });
 
+/* The DirectionScreen invocation now reports its session upward (`onSession`) so the research
+   panel can flag when the two panels are reading different days. The assertion pins placement,
+   not the prop list, but it matches on the literal element. */
 describe('reading order: the conclusion sits above the audit detail', () => {
   it('renders the summary before the gate detail', () => {
     const iSummary = PAGE.indexOf('{open && e.summary && <Summary s={e.summary} />}');
@@ -83,7 +86,7 @@ describe('reading order: the conclusion sits above the audit detail', () => {
   });
 
   it('leads with compact price setups and keeps the lengthy research behind expansion', () => {
-    expect(PAGE).toContain('<DirectionScreen symbols={query} />');
+    expect(PAGE).toContain('<DirectionScreen onSession={setSetupSession} symbols={query} />');
     expect(PAGE).toContain('{open && e.summary && <Summary s={e.summary} />}');
   });
 

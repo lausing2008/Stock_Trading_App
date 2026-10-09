@@ -142,7 +142,8 @@ function OutcomeRowCell({ row, labels }:
   );
 }
 
-export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
+export default function StockIntelligencePanel(
+    { symbol, setupSession }: { symbol: string; setupSession?: string | null }) {
   const active = (symbol || '').trim().toUpperCase();
   const { data: outcomes, error: outErr, isLoading: outLoading } =
     useSWR<StockOutcomes>(active ? ['stock-outcomes', active] : null,
@@ -193,8 +194,16 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
   const summarySessions = summary?.horizon_sessions;
   const hasTrigger = (r: OutcomeObservation) =>
     !!(r.confirmation_rule || r.invalidation_rule || r.triggers);
+  /* THE COMPLETE IDENTITY, not policy-and-horizon. Several daily captures share one policy —
+     that is the ordinary case — so matching on policy and horizon alone names a set, not a row.
+     Symbol and origin come from the request and the pool; cutoff is what disambiguates, and the
+     latest cutoff is the conclusion in force. */
+  const latestCutoff = current.reduce<string | undefined>(
+    (acc, r) => (acc === undefined || r.observed_at > acc ? r.observed_at : acc), undefined);
+  const identified = current.filter(r => r.observed_at === latestCutoff);
   const triggerRow =
-    current.find(r => hasTrigger(r) && r.horizon_sessions === summarySessions)
+    identified.find(r => hasTrigger(r) && r.horizon_sessions === summarySessions)
+    ?? [...identified].reverse().find(hasTrigger)
     ?? [...current].reverse().find(hasTrigger);
   const triggerHorizon = triggerRow?.horizon;
   const triggerHorizonMismatch =
@@ -230,7 +239,27 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
               {summary.support_quality && (
                 <span style={label}>support {summary.support_quality}</span>
               )}
+              {/* THE SESSION THIS SPEAKS FOR. The setup card above and this panel read the
+                  market on different days, and both can be right for their own date — but a
+                  reader seeing "Down — range break observed" over one and "Downward setup —
+                  awaiting break" over the other sees a contradiction unless each says when. */}
+              {intel?.latest_session && (
+                <span style={{ ...label, color: '#7dd3fc' }}>
+                  evidence through {intel.latest_session}
+                </span>
+              )}
             </div>
+            {setupSession && intel?.latest_session && setupSession !== intel.latest_session && (
+              <p style={{ margin: '8px 0 0', padding: '7px 10px', borderRadius: 8,
+                          background: 'rgba(56,189,248,0.10)',
+                          border: '1px solid rgba(56,189,248,0.35)',
+                          fontSize: 12, color: '#7dd3fc', lineHeight: 1.5 }}>
+                DIFFERENT SESSIONS. The setup card above reads the market through{' '}
+                {setupSession}; this conclusion reads it through {intel.latest_session}. Both can
+                be right for their own date — a break observed on one session can be a setup
+                awaiting a break on the next — so they are not two views of the same day.
+              </p>
+            )}
             <p style={{ margin: '8px 0 0', fontSize: 12, color: '#fdba74', lineHeight: 1.5 }}>
               {summary.predictive_confidence_note
                ?? 'Support quality describes how well evidenced this reading is, not whether it is right.'}
@@ -352,12 +381,19 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
               const c = outcomes?.coverage?.[origin];
               const pools = c?.pools ?? {};
               const n = (k: string) => pools[k]?.total ?? 0;
-              const pending = rows.filter(
-                r => r.origin === origin && !r.invalidated_reason
-                     && (!r.outcome || r.outcome.state === 'UNRESOLVED_INSUFFICIENT_SESSIONS')
-              ).length;
+              /* PENDING SPLIT BY GENERATION. A historical observation keeps its original
+                 rules and will still resolve — both are preserved — but adding it to the
+                 current aggregate describes a population nobody is reading about. */
+              const isPending = (r: OutcomeObservation) =>
+                r.origin === origin && !r.invalidated_reason
+                && (!r.outcome || r.outcome.state === 'UNRESOLVED_INSUFFICIENT_SESSIONS');
+              const pending = rows.filter(r => isPending(r) && r.is_current_policy).length;
+              const pendingHistorical = rows.filter(
+                r => isPending(r) && r.is_current_policy === false).length;
+              const hp = (k: string) => c?.historical_pools?.[k]?.total ?? 0;
+              const historicalResolved = hp('verified') + hp('provisional') + hp('ineligible');
               const any = n('verified') + n('provisional') + n('ineligible')
-                          + (c?.invalidated_captures ?? 0) + pending;
+                          + (c?.invalidated_captures ?? 0) + pending + pendingHistorical;
               if (!any) return null;
               return (
                 <div key={origin} style={{ display: 'flex', gap: 8, flexWrap: 'wrap',
@@ -365,7 +401,13 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
                   <span style={{ ...label, fontSize: 10, minWidth: 78 }}>{origin}</span>
                   <Pill text={`${n('verified')} verified`} t={KIND_TONE.resolved} />
                   <Pill text={`${n('provisional')} provisional`} t={EVIDENCE_TONE.provisional} />
-                  {pending > 0 && <Pill text={`${pending} pending`} t={KIND_TONE.pending} />}
+                  {pending > 0 && (
+                    <Pill text={`${pending} current pending`} t={KIND_TONE.pending} />
+                  )}
+                  {(pendingHistorical > 0 || historicalResolved > 0) && (
+                    <Pill text={`${pendingHistorical + historicalResolved} historical`}
+                          t={KIND_TONE.none} />
+                  )}
                   {(c?.invalidated_captures ?? 0) > 0 && (
                     <Pill text={`${c?.invalidated_captures} invalidated`} t={KIND_TONE.blocked} />
                   )}

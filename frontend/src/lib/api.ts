@@ -204,6 +204,10 @@ export interface OutcomeObservation {
   /* Which capture generation this row belongs to. Only `is_current_policy` rows supply the
      conclusion in force; the rest keep their original rules and are shown as history. */
   policy_fingerprint?: string | null; is_current_policy?: boolean;
+  /* Symbol, origin, policy, cutoff and horizon together name exactly ONE observation. Policy
+     and horizon alone name a set, because several daily captures share a policy. */
+  identity?: { symbol: string; origin: string; policy_fingerprint?: string | null;
+               observed_at: string; horizon_sessions: number };
   invalidated_reason?: string | null; publishable: boolean;
   outcome: OutcomeRow | null; superseded: SupersededRow[];
 }
@@ -222,9 +226,13 @@ export interface StockOutcomes {
   provisional_remedy?: string;
   /* How many rows each pool holds, and why the others were excluded. A verified figure without
      this beside it is a numerator with no denominator. */
-  coverage?: Record<string, { origin: string; invalidated_captures: number; note: string;
-                              pools: Record<string, { total: number;
-                                                      by_reason: Record<string, number> }> }>;
+  coverage?: Record<string, {
+    origin: string; invalidated_captures: number; note: string;
+    capture_policy?: string | null;
+    pools: Record<string, { total: number; by_reason: Record<string, number> }>;
+    /* Retained and answerable, never added into the current aggregate. */
+    historical_pools?: Record<string, { total: number; by_reason: Record<string, number> }>;
+  }>;
   note?: string;
 }
 

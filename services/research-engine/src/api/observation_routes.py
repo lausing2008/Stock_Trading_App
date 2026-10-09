@@ -432,6 +432,14 @@ def outcomes(symbol: str, _user: str = Depends(get_current_username)) -> dict:
                 # than hidden, so a reader can see both and tell which is in force.
                 "policy_fingerprint": o.policy_fingerprint,
                 "is_current_policy": o.policy_fingerprint == capture_fp,
+                # THE COMPLETE IDENTITY. Matching on policy and horizon alone becomes ambiguous
+                # the moment two daily captures share a policy — which is the ordinary case, not
+                # an edge one. Symbol, origin, policy, cutoff and horizon together name exactly
+                # one observation.
+                "identity": {"symbol": o.symbol, "origin": o.origin,
+                             "policy_fingerprint": o.policy_fingerprint,
+                             "observed_at": o.observed_at.isoformat(),
+                             "horizon_sessions": o.horizon_sessions},
                 "publishable": o.invalidated_reason is None and current is not None,
                 "outcome": None if current is None else {
                     "id": current.id, "state": current.resolution_state,
@@ -461,8 +469,10 @@ def outcomes(symbol: str, _user: str = Depends(get_current_username)) -> dict:
             if r["invalidated_reason"]:
                 key = "INVALID_CAPTURE"
             counts[key] = counts.get(key, 0) + 1
-        pools = coverage_counts(session, origin=REPLAY, symbol=sym)
-        pools_prospective = coverage_counts(session, origin=PROSPECTIVE, symbol=sym)
+        pools = coverage_counts(session, origin=REPLAY, symbol=sym,
+                                capture_policy=capture_fp)
+        pools_prospective = coverage_counts(session, origin=PROSPECTIVE, symbol=sym,
+                                            capture_policy=capture_fp)
 
         # WHAT A COUNT LIKE "6 pending" IS MADE OF. Six pending outcomes on one day is two
         # captures of three horizons, not six independent observations, and the difference

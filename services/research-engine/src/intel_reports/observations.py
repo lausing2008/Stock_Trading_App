@@ -300,7 +300,8 @@ def publishable_outcomes(session, *, origin: str, eligibility: str = "verified",
     return session.execute(q.order_by(ObservationOutcome.id)).all()
 
 
-def coverage_counts(session, *, origin: str, symbol: str | None = None) -> dict:
+def coverage_counts(session, *, origin: str, symbol: str | None = None,
+                    capture_policy: str | None = None) -> dict:
     """How many rows sit in each pool, which is what a statistic must disclose beside itself.
 
     A performance figure computed over the `verified` pool is incomplete without this: the
@@ -308,9 +309,13 @@ def coverage_counts(session, *, origin: str, symbol: str | None = None) -> dict:
     eligible rows reads like a result.
     """
     from db import IntelligenceObservation, ObservationOutcome
+    # SPLIT BY CAPTURE GENERATION. A historical observation keeps its original rules AND its
+    # eventual outcome — both are preserved — but it must not be added into the aggregate for
+    # the rules in force, which describes a different population.
     q = (select(ObservationOutcome.performance_eligibility,
                 ObservationOutcome.evidence_status,
                 ObservationOutcome.resolution_state,
+                IntelligenceObservation.policy_fingerprint,
                 func.count())
          .join(IntelligenceObservation,
                IntelligenceObservation.id == ObservationOutcome.observation_id)
@@ -319,22 +324,28 @@ def coverage_counts(session, *, origin: str, symbol: str | None = None) -> dict:
                 IntelligenceObservation.origin == origin)
          .group_by(ObservationOutcome.performance_eligibility,
                    ObservationOutcome.evidence_status,
-                   ObservationOutcome.resolution_state))
+                   ObservationOutcome.resolution_state,
+                   IntelligenceObservation.policy_fingerprint))
     if symbol:
         q = q.where(IntelligenceObservation.symbol == symbol)
     pools: dict = {}
-    for eligibility, ev, state, n in session.execute(q).all():
+    historical: dict = {}
+    for eligibility, ev, state, fp, n in session.execute(q).all():
         key = eligibility or "ineligible"
-        pools.setdefault(key, {"total": 0, "by_reason": {}})
-        pools[key]["total"] += n
+        target = pools if (capture_policy is None or fp == capture_policy) else historical
+        target.setdefault(key, {"total": 0, "by_reason": {}})
+        target[key]["total"] += n
         reason = f"{ev or 'unclassified'} / {state}"
-        pools[key]["by_reason"][reason] = pools[key]["by_reason"].get(reason, 0) + n
+        target[key]["by_reason"][reason] = target[key]["by_reason"].get(reason, 0) + n
     iq = select(func.count()).select_from(IntelligenceObservation).where(
         IntelligenceObservation.origin == origin,
         IntelligenceObservation.invalidated_reason.isnot(None))
     if symbol:
         iq = iq.where(IntelligenceObservation.symbol == symbol)
     return {"origin": origin, "pools": pools,
+            # Retained and answerable, never added into the current aggregate.
+            "historical_pools": historical,
+            "capture_policy": capture_policy,
             "invalidated_captures": session.execute(iq).scalar(),
             "note": "A verified aggregate must disclose these counts beside it. A provisional "
                     "figure is a different population, not a lower-quality verified one."}

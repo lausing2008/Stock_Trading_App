@@ -355,6 +355,9 @@ function Row({ e, catalog }: { e: QvEvaluation; catalog?: Catalog }) {
 
 export default function QualityValuePage() {
   const [symbols, setSymbols] = useState('');
+  /* The session the SETUP card read, so the research panel can say when the two
+     panels are speaking for different days rather than leaving it to be inferred. */
+  const [setupSession, setSetupSession] = useState<string | undefined>();
   const [query, setQuery] = useState('');
   const { data, error, isLoading } = useSWR<QualityValueReport>(
     ['quality-value', query], () => api.qualityValue(query || undefined),
@@ -405,7 +408,7 @@ export default function QualityValuePage() {
             background: 'linear-gradient(135deg, #4f46e5, #6366f1)' }}>Evaluate</button>
         </div>
 
-        <DirectionScreen symbols={query} />
+        <DirectionScreen onSession={setSetupSession} symbols={query} />
 
         {err && (
           <div style={{ padding: '13px 15px', borderRadius: '10px', fontSize: '13px',
@@ -531,7 +534,8 @@ export default function QualityValuePage() {
             {data.evaluations.length === 1 && (
               <>
                 <H>Research conclusion — {data.evaluations[0].symbol}</H>
-                <StockIntelligencePanel symbol={data.evaluations[0].symbol} />
+                <StockIntelligencePanel symbol={data.evaluations[0].symbol}
+                                        setupSession={setupSession} />
               </>
             )}
 

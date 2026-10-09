@@ -120,7 +120,8 @@ function InstrumentTag({ i }: { i: NonNullable<DirectionScreenRow['instrument']>
   </>;
 }
 
-export default function DirectionScreen({ symbols }: { symbols: string }) {
+export default function DirectionScreen(
+    { symbols, onSession }: { symbols: string; onSession?: (session?: string) => void }) {
   const [market, setMarket] = useState('ALL');
   const [direction, setDirection] = useState('all');
   const [limit, setLimit] = useState('20');
@@ -128,8 +129,15 @@ export default function DirectionScreen({ symbols }: { symbols: string }) {
   const params = new URLSearchParams({ market, direction, limit, symbols });
   if (sector) params.set('sector', sector);
   const query = params.toString();
+  /* REPORTED UPWARD so a sibling panel can flag a session mismatch. Both panels can be right
+     for their own date; a reader seeing them side by side cannot tell without being told. */
   const { data, error, isLoading, mutate } = useSWR(['direction-screen', query],
     () => api.directionScreen(query), { revalidateOnFocus: false });
+
+  const reportedSession = data?.session_dates
+    ? Object.values(data.session_dates)[0] : undefined;
+  useEffect(() => { onSession?.(reportedSession); }, [reportedSession, onSession]);
+
   return <section aria-label="Direction and setups" style={{ margin: '20px 0', color: '#cbd5e1' }}>
     <h2 style={{ fontSize: 18 }}>Direction &amp; setups</h2>
     <p style={{ fontSize: 12 }}>Daily price setup for a 5–20-session research horizon. Read the direction,

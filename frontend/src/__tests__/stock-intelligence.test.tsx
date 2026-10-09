@@ -388,3 +388,86 @@ describe('the triggers belong to the horizon the direction came from', () => {
     expect(html).not.toContain('come from the');  // no mismatch notice when aligned
   });
 });
+
+describe('two panels reading different sessions say so', () => {
+  it('flags a session mismatch prominently rather than leaving it to be inferred', () => {
+    /* GLD's setup card read the market through Oct 7 and said "Down — range break observed";
+       the research panel read it through Oct 8 and said "Downward setup — awaiting break".
+       Both are right for their own date, and side by side they read as a contradiction. */
+    swr.byKey = { 'stock-outcomes': OUTCOMES,
+                  'stock-intel': { ...INTEL, latest_session: '2026-10-08' } };
+    const html = renderToStaticMarkup(
+      <StockIntelligencePanel symbol="GLD" setupSession="2026-10-07" />);
+    expect(html).toContain('DIFFERENT SESSIONS');
+    expect(html).toContain('2026-10-07');
+    expect(html).toContain('2026-10-08');
+    expect(html).toContain('evidence through 2026-10-08');
+  });
+
+  it('says nothing when both panels read the same session', () => {
+    swr.byKey = { 'stock-outcomes': OUTCOMES,
+                  'stock-intel': { ...INTEL, latest_session: '2026-10-07' } };
+    const html = renderToStaticMarkup(
+      <StockIntelligencePanel symbol="GLD" setupSession="2026-10-07" />);
+    expect(html).not.toContain('DIFFERENT SESSIONS');
+    expect(html).toContain('evidence through 2026-10-07');
+  });
+});
+
+describe('pending counts do not mix capture generations', () => {
+  const twoGenerations = {
+    ...OUTCOMES,
+    coverage: { prospective: { origin: 'prospective', invalidated_captures: 0, note: '',
+                               pools: {},
+                               historical_pools: {} } },
+    observations: [
+      ...[40, 41, 42].map(id => ({ ...OUTCOMES.observations[3], observation_id: id,
+        origin: 'prospective', is_current_policy: true, invalidated_reason: null,
+        outcome: { id, state: 'UNRESOLVED_INSUFFICIENT_SESSIONS' } })),
+      ...[50, 51, 52, 53, 54, 55].map(id => ({ ...OUTCOMES.observations[3],
+        observation_id: id, origin: 'prospective', is_current_policy: false,
+        invalidated_reason: null,
+        outcome: { id, state: 'UNRESOLVED_INSUFFICIENT_SESSIONS' } })),
+    ],
+  };
+
+  it('reports current pending apart from historical', () => {
+    /* "9 pending" was three current captures plus six under superseded rules. The historical
+       ones are preserved and will still resolve — they just describe a different population. */
+    swr.byKey = { 'stock-outcomes': twoGenerations, 'stock-intel': INTEL };
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="GLD" />);
+    expect(html).toContain('3 current pending');
+    expect(html).toContain('6 historical');
+    expect(html).not.toContain('9 pending');
+  });
+});
+
+describe('selection uses the complete observation identity', () => {
+  it('picks the latest cutoff when several captures share one policy', () => {
+    /* Policy-and-horizon alone names a SET once two daily captures share a policy, which is the
+       ordinary case. Cutoff is what disambiguates. */
+    const twoDays = {
+      ...OUTCOMES,
+      observations: [
+        { ...OUTCOMES.observations[1], observation_id: 60, observed_at: '2026-10-08T00:00:00',
+          horizon: '1-4w', horizon_sessions: 20, is_current_policy: true, direction: 'BEARISH',
+          confirmation_rule: 'a completed close below 100.00',
+          invalidation_rule: 'a completed close above 200.00',
+          triggers: { direction: 'BEARISH', confirms: 'a completed close below 100.00',
+                      invalidates: 'a completed close above 200.00', establishes: null,
+                      basis: 'bearish' } },
+        { ...OUTCOMES.observations[1], observation_id: 61, observed_at: '2026-10-09T00:00:00',
+          horizon: '1-4w', horizon_sessions: 20, is_current_policy: true, direction: 'BEARISH',
+          confirmation_rule: 'a completed close below 111.00',
+          invalidation_rule: 'a completed close above 222.00',
+          triggers: { direction: 'BEARISH', confirms: 'a completed close below 111.00',
+                      invalidates: 'a completed close above 222.00', establishes: null,
+                      basis: 'bearish' } },
+      ],
+    };
+    swr.byKey = { 'stock-outcomes': twoDays, 'stock-intel': INTEL };
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="GLD" />);
+    expect(html).toContain('111.00');
+    expect(html).not.toContain('100.00');
+  });
+});
