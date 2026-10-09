@@ -3484,16 +3484,9 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         # A COUNT OVER UNKNOWNS IS NOT A COUNT. Where no contract has a tape premium, the whale
         # count is UNAVAILABLE rather than zero — the pressure score and the stored ML feature
         # both read this, and a zero there is a measurement.
-        _known_whales = [c for c in unusual if c.get("is_whale") is not None]
-        _whale_count = (sum(1 for c in _known_whales if c["is_whale"])
-                        if _known_whales else None)
-        _whale_unknown = sum(1 for c in unusual if c.get("is_whale") is None)
-        _tape_premiums = [c["traded_premium"] for c in unusual
-                          if c.get("traded_premium") is not None]
-        _top_whale_premium = max(_tape_premiums) if _tape_premiums else None
-        _turnovers = [c["estimated_turnover"] for c in unusual
-                      if c.get("estimated_turnover") is not None]
-        _top_turnover = max(_turnovers) if _turnovers else None
+        # One shared rule, so the route and its tests cannot drift apart.
+        _wc = whale_coverage(unusual)
+        _whale_count = _wc["whale_count"]
 
         result = {
             "symbol":            sym,
@@ -3505,14 +3498,7 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
             "unusual_count":     len(unusual),
             "unusual":           unusual[:10],
             "expiries_used":     list(expiries[:4]),
-            "whale_count":       _whale_count,
-            # How many contracts could not be judged, so a null count can be read.
-            "whale_count_unknown": _whale_unknown,
-            "whale_count_basis": ("tape" if _whale_count is not None
-                                  else "unavailable — this source carries no last-trade price, "
-                                       "so no premium actually paid can be computed"),
-            "top_whale_premium": _top_whale_premium,
-            "top_estimated_turnover": _top_turnover,
+            **_wc,
             # MPE-02: composite 0-100 options-pressure score — see
             # compute_options_pressure_score()'s own docstring for the weighting rationale.
             "pressure_score": compute_options_pressure_score(
@@ -3618,6 +3604,40 @@ def unusual_premium_fields(volume, last_price, bid, ask, *, last_price_available
     }
 
 
+def whale_coverage(unusual: list) -> dict:
+    """Count whales over the ASSESSED contracts only, and say how many could be assessed.
+
+    Pure and module-level for the same reason `unusual_premium_fields` is: a sabotage run caught
+    a test of mine counting these itself, so collapsing the real rule back to
+    `sum(1 for c in unusual if c["is_whale"])` passed unnoticed. That collapse is the defect —
+    it counts a contract whose premium could not be computed as "not a whale".
+
+    A null `count` means NOTHING could be assessed. A count beside `assessed < total` is a
+    PARTIAL reading and must be presented as such: 1 whale from 2 assessed contracts out of 40
+    is not 1 whale among 40.
+    """
+    known = [c for c in unusual if c.get("is_whale") is not None]
+    unknown = len(unusual) - len(known)
+    count = sum(1 for c in known if c["is_whale"]) if known else None
+    tape = [c["traded_premium"] for c in unusual if c.get("traded_premium") is not None]
+    turnover = [c["estimated_turnover"] for c in unusual
+                if c.get("estimated_turnover") is not None]
+    if count is None:
+        basis = ("unavailable — no contract carries a last-trade price, so no premium actually "
+                 "paid can be computed for any of them")
+    elif unknown == 0:
+        basis = f"tape premium — complete: all {len(unusual)} unusual contract(s) assessed"
+    else:
+        basis = (f"tape premium — PARTIAL: {len(known)} of {len(unusual)} unusual contract(s) "
+                 f"could be assessed; the remaining {unknown} carry no last-trade price and are "
+                 f"neither counted as whales nor as non-whales")
+    return {"whale_count": count, "whale_count_unknown": unknown,
+            "whale_count_assessed": len(known), "whale_count_total": len(unusual),
+            "whale_count_basis": basis,
+            "top_whale_premium": max(tape) if tape else None,
+            "top_estimated_turnover": max(turnover) if turnover else None}
+
+
 def compute_options_pressure_score(
     cp_ratio: float | None,
     sentiment: str | None,
@@ -3689,11 +3709,30 @@ def compute_options_pressure_score(
         "whale_pts": round(whale_pts, 1),
         "volume_pts": round(vol_pts, 1),
     }
+    # THE DENOMINATOR IS ALWAYS STATED, because a score is meaningless without it. The
+    # components are cp_ratio 40 + whale 30 + volume 10 = 80, plus GEX 20 when present — the
+    # first version of this said "70 + 20 if gex", which was simply wrong arithmetic on top of
+    # being emitted only in the unavailable case.
+    _gex_measured = gex is not None and gex.get("distance_to_flip_pct") is not None
+    components["max_possible"] = (
+        40.0 + (0.0 if whale_count is None else 30.0) + 10.0 + (20.0 if _gex_measured else 0.0))
+    components["measured"] = sorted(
+        ["cp_ratio", "volume"]
+        + ([] if whale_count is None else ["whale"])
+        + (["gex"] if _gex_measured else []))
+    components["unmeasured"] = sorted(
+        ([] if whale_count is not None else ["whale"])
+        + ([] if _gex_measured else ["gex"]))
     if whale_count is None:
-        # The score is out of a SMALLER MAXIMUM when a component could not be measured. Saying
-        # so stops 40/100 reading as weak when it is 40 out of a possible 70.
         components["whale_pts_unavailable"] = True
-        components["max_possible"] = 70.0 + (20.0 if gex is not None else 0.0)
+    # NO NORMALISED PERCENTAGE IS EMITTED, DELIBERATELY. 40 out of 50 is not "80% confidence",
+    # and dividing by a denominator that varies with what happened to be measurable produces a
+    # number that looks comparable across symbols and is not. Two scores may only be compared
+    # when `measured` matches.
+    components["comparability"] = (
+        "Comparable only with scores whose `measured` set is identical. This is a point total "
+        "out of `max_possible`, not a percentage and not a probability; rescaling it to 100 "
+        "would make differently-measured symbols look like they rank against each other.")
 
     if gex is not None and gex.get("distance_to_flip_pct") is not None:
         gex_dist = gex["distance_to_flip_pct"]

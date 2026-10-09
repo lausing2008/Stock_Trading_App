@@ -75,6 +75,7 @@ def _extract(name: str):
 
 
 unusual_premium_fields = _extract("unusual_premium_fields")
+whale_coverage = _extract("whale_coverage")
 compute_options_pressure_score = _extract("compute_options_pressure_score")
 
 
@@ -133,13 +134,15 @@ def test_the_pressure_score_does_not_treat_an_unavailable_count_as_zero():
         "40 out of 70 must not read as 40 out of 100 when a component could not be measured"
 
 
-def test_the_whale_count_is_null_when_nothing_could_be_judged():
-    import ast
-    src = (pathlib.Path(__file__).resolve().parents[1] / "src/api/routes.py").read_text()
-    code = ast.unparse(ast.parse(src))
-    assert "_known_whales" in code
-    assert "'whale_count_unknown'" in code, "a null count must be readable"
-    assert "'whale_count_basis'" in code
+def test_the_whale_count_payload_carries_everything_needed_to_read_it():
+    """Superseded by executing `whale_coverage` directly above; this pins the PAYLOAD contract
+    so a field cannot be dropped from the response while the function still returns it."""
+    got = whale_coverage([unusual_premium_fields(4000, 0.0, 4.9, 5.1,
+                                                 last_price_available=False)])
+    for key in ("whale_count", "whale_count_unknown", "whale_count_assessed",
+                "whale_count_total", "whale_count_basis", "top_whale_premium",
+                "top_estimated_turnover"):
+        assert key in got, key
 
 
 def test_the_route_calls_the_shared_function_rather_than_inlining_the_rule():
@@ -205,9 +208,12 @@ def test_an_unavailable_whale_count_scores_zero_points_AND_lowers_the_maximum():
     assert unavailable["score"] == measured_none["score"], "both contribute zero points"
     # ...but only one of them claims the component was measured.
     assert unavailable["components"]["whale_pts_unavailable"] is True
-    assert unavailable["components"]["max_possible"] == 70.0
+    # 40 (cp) + 10 (volume), with whale and GEX unmeasured.
+    assert unavailable["components"]["max_possible"] == 50.0
     assert "whale_pts_unavailable" not in measured_none["components"]
-    assert "max_possible" not in measured_none["components"]
+    # The denominator is ALWAYS stated — a score without one cannot be read at all — and it is
+    # larger here because the whale component WAS measured and happened to be zero.
+    assert measured_none["components"]["max_possible"] == 80.0
 
 
 def test_a_measured_whale_count_still_scores_normally():
@@ -215,4 +221,101 @@ def test_a_measured_whale_count_still_scores_normally():
         cp_ratio=3.0, sentiment="bullish", whale_count=2,
         total_call_vol=5000, total_put_vol=1000)
     assert got["components"]["whale_pts"] == 20.0
-    assert "max_possible" not in got["components"]
+    assert got["components"]["max_possible"] == 80.0
+    assert "whale" in got["components"]["measured"]
+
+
+# ---- partial coverage, and score comparability ----------------------------------------------
+
+def test_a_contract_with_no_tape_premium_is_never_counted_as_a_non_whale():
+    """PARTIAL COVERAGE. A plain `sum(1 for c in unusual if c["is_whale"])` counts an unknown as
+    a non-whale, which is the same falsy-zero error one level up."""
+    unusual = [
+        unusual_premium_fields(4000, 200.0, 4.9, 5.1),                       # tape: whale
+        unusual_premium_fields(4000, 1.0, 4.9, 5.1),                         # tape: not a whale
+        unusual_premium_fields(4000, 0.0, 4.9, 5.1, last_price_available=False),  # unknown
+    ]
+    got = whale_coverage(unusual)   # THE REAL FUNCTION, not a count computed here
+    assert got["whale_count"] == 1
+    assert got["whale_count_assessed"] == 2 and got["whale_count_total"] == 3
+    assert got["whale_count_unknown"] == 1
+    assert "PARTIAL" in got["whale_count_basis"]
+    assert "neither counted as whales nor as non-whales" in got["whale_count_basis"]
+
+
+def test_nothing_assessable_gives_a_null_count_not_a_zero():
+    got = whale_coverage([unusual_premium_fields(4000, 0.0, 4.9, 5.1,
+                                                 last_price_available=False)])
+    assert got["whale_count"] is None
+    assert got["whale_count_assessed"] == 0 and got["whale_count_total"] == 1
+    assert got["whale_count_basis"].startswith("unavailable")
+
+
+def test_full_coverage_says_complete_rather_than_partial():
+    got = whale_coverage([unusual_premium_fields(4000, 200.0, 4.9, 5.1),
+                          unusual_premium_fields(4000, 1.0, 4.9, 5.1)])
+    assert got["whale_count"] == 1 and got["whale_count_unknown"] == 0
+    assert "complete" in got["whale_count_basis"] and "PARTIAL" not in got["whale_count_basis"]
+    assert got["top_whale_premium"] == 80_000_000.0
+
+
+def test_the_route_uses_the_shared_counting_rule():
+    """The counting lived inline, which is how a test could only describe it. Pinning the CALL
+    is what stops the collapsed `sum(1 for c in unusual if c["is_whale"])` coming back."""
+    import ast
+    fn = next(n for n in ast.walk(ast.parse(_ROUTES_SRC))
+              if isinstance(n, ast.FunctionDef) and n.name == "get_options_flow")
+    calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Name) and n.func.id == "whale_coverage"]
+    assert len(calls) == 1
+    inline = {k.value for d in ast.walk(fn) if isinstance(d, ast.Dict)
+              for k in d.keys if isinstance(k, ast.Constant)
+              and str(k.value).startswith("whale_count")}
+    assert not inline, f"whale fields computed inline beside the shared rule: {sorted(inline)}"
+
+
+def test_the_denominator_reflects_every_unmeasured_component():
+    """40 + 30 + 10 = 80, plus GEX 20. The first version of this said "70 + 20 if gex", which
+    was wrong arithmetic AND was emitted only when the whale count was missing."""
+    full = compute_options_pressure_score(
+        cp_ratio=3.0, sentiment="bullish", whale_count=2, total_call_vol=5000,
+        total_put_vol=1000, gex={"distance_to_flip_pct": 2.0})
+    assert full["components"]["max_possible"] == 100.0
+    no_gex = compute_options_pressure_score(
+        cp_ratio=3.0, sentiment="bullish", whale_count=2,
+        total_call_vol=5000, total_put_vol=1000)
+    assert no_gex["components"]["max_possible"] == 80.0, "GEX absent lowers the maximum too"
+    no_whale = compute_options_pressure_score(
+        cp_ratio=3.0, sentiment="bullish", whale_count=None,
+        total_call_vol=5000, total_put_vol=1000)
+    assert no_whale["components"]["max_possible"] == 50.0
+    neither = compute_options_pressure_score(
+        cp_ratio=3.0, sentiment="bullish", whale_count=None,
+        total_call_vol=5000, total_put_vol=1000, gex={"distance_to_flip_pct": None})
+    assert neither["components"]["max_possible"] == 50.0
+
+
+def test_the_score_never_emits_a_normalised_percentage():
+    """40 out of 50 is not "80% confidence", and a ratio over a denominator that varies with
+    what happened to be measurable looks comparable across symbols without being so."""
+    got = compute_options_pressure_score(
+        cp_ratio=3.0, sentiment="bullish", whale_count=None,
+        total_call_vol=5000, total_put_vol=1000)
+    for key in got["components"]:
+        assert "pct" not in key and "percent" not in key and "confidence" not in key
+    assert "score_pct" not in got and "normalised" not in got
+    assert "not a percentage and not a probability" in got["components"]["comparability"]
+
+
+def test_the_measured_set_is_stated_so_two_scores_can_be_compared_honestly():
+    a = compute_options_pressure_score(
+        cp_ratio=3.0, sentiment="bullish", whale_count=2,
+        total_call_vol=5000, total_put_vol=1000)
+    b = compute_options_pressure_score(
+        cp_ratio=3.0, sentiment="bullish", whale_count=None,
+        total_call_vol=5000, total_put_vol=1000)
+    assert a["components"]["measured"] == ["cp_ratio", "volume", "whale"]
+    assert b["components"]["measured"] == ["cp_ratio", "volume"]
+    assert b["components"]["unmeasured"] == ["gex", "whale"]
+    assert a["components"]["measured"] != b["components"]["measured"], \
+        "these two scores are not comparable, and the payload is what says so"
