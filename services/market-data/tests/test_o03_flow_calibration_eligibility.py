@@ -229,6 +229,30 @@ def test_the_partition_records_which_rules_produced_it():
     assert ELIGIBILITY_VERSION.startswith("flow-elig-")
 
 
+def test_the_calibration_PAYLOAD_carries_the_version_not_just_the_partition():
+    """It did not. The partition returned `eligibility_version` and the calibration built its
+    exclusions dict without it, so every published figure read `None` — verified against
+    production, where the field came back null. Testing the partition alone could not see it."""
+    body = _cal_fn_body()
+    assert "'eligibility_version': part['eligibility_version']" in body
+
+
+def test_every_exclusion_key_the_partition_produces_reaches_the_payload():
+    """The general form of the same defect: a key added to the partition and forgotten here."""
+    import ast
+    body = _cal_fn_body()
+    from services.flow_outcome_eligibility import partition as _p
+    produced = set(_p([_row(date(2026, 9, 1), True)], is_trading_day=_cal()))
+    carried = {"original_count", "eligible_count", "excluded_total", "eligibility_version"}
+    # `eligible` is the cohort itself and `excluded_counts`/`exclusion_reasons` are renamed.
+    renamed = {"excluded_counts": "excluded_by_reason",
+               "exclusion_reasons": "exclusion_reasons"}
+    for key in produced - {"eligible"}:
+        name = renamed.get(key, key)
+        assert f"'{name}'" in body, f"the partition produces {key} and the payload drops it"
+    assert carried <= produced | set(renamed.values())
+
+
 def test_the_version_history_is_recorded_in_the_module():
     src = (Path(__file__).resolve().parents[1]
            / "src/services/flow_outcome_eligibility.py").read_text()

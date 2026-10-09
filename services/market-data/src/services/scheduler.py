@@ -5540,7 +5540,11 @@ def _build_options_flow_alert_calibration(session, direction: str) -> dict | Non
                   "eligible_count": part["eligible_count"],
                   "excluded_total": part["excluded_total"],
                   "excluded_by_reason": part["excluded_counts"],
-                  "exclusion_reasons": part["exclusion_reasons"]}
+                  "exclusion_reasons": part["exclusion_reasons"],
+                  # CARRIED TO THE CONSUMER, not just computed. The partition returned this and
+                  # the payload dropped it, so every published figure said `None` — a version
+                  # nobody can read cannot reproduce anything.
+                  "eligibility_version": part["eligibility_version"]}
 
     if len(outcomes) < _OPTIONS_FLOW_ALERT_CAL_MIN_COUNT:
         # INSUFFICIENT ELIGIBLE HISTORY IS A RESULT, and a different one from "no history".
