@@ -165,26 +165,37 @@ def direction_triggers(direction: str, *, support=None, resistance=None) -> dict
     where there is none — and UNKNOWN gets neither, because a gap in our work makes no claim at
     all for a price to bear on.
     """
-    up = f"a completed close above {resistance}" if resistance is not None else None
-    down = f"a completed close below {support}" if support is not None else None
+    # ROUNDED FOR READING, FULL PRECISION KEPT. The stored float is the raw close, so the text
+    # read "a completed close above 406.55999755859375" — precision the instrument does not
+    # trade in and nobody can act on. The unrounded levels travel in `levels` below, so nothing
+    # downstream has to re-derive them from a formatted string.
+    def _px(v):
+        return f"{v:.2f}" if isinstance(v, (int, float)) else v
+
+    up = f"a completed close above {_px(resistance)}" if resistance is not None else None
+    down = f"a completed close below {_px(support)}" if support is not None else None
+    levels = {"resistance": resistance, "support": support}
     if direction in (STRONG_BULLISH, BULLISH):
         return {"direction": direction, "confirms": up, "invalidates": down,
                 "establishes": None,
+                "levels": levels,
                 "basis": "a bullish reading is confirmed by a break UP through resistance and "
                          "invalidated by a break DOWN through support"}
     if direction in (STRONG_BEARISH, BEARISH):
         return {"direction": direction, "confirms": down, "invalidates": up,
                 "establishes": None,
+                "levels": levels,
                 "basis": "a bearish reading is confirmed by a break DOWN through support and "
                          "invalidated by a break UP through resistance — the mirror of the "
                          "bullish case, not the same rule"}
     if direction == NEUTRAL:
         return {"direction": direction, "confirms": None, "invalidates": None,
-                "establishes": [x for x in (up, down) if x],
+                "establishes": [x for x in (up, down) if x], "levels": levels,
                 "basis": "no directional reading is being made, so neither boundary confirms or "
                          "invalidates anything. Either break would ESTABLISH a direction where "
                          "there currently is none"}
     return {"direction": direction, "confirms": None, "invalidates": None, "establishes": None,
+            "levels": levels,
             "basis": "no reading was formed — a gap in this platform's coverage, not a view "
                      "about the price — so there is no thesis for a price level to bear on"}
 

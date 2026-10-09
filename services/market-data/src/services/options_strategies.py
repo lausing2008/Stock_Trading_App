@@ -749,11 +749,17 @@ def _recommend(*, singles: dict, combos: dict, signal: str | None,
     # sell premium with"; it is not an answer to "which way is this going", and must not be
     # read as one. Said on the record rather than left to the reader to infer.
     _view = {"stated_direction": ("bullish" if bullish else "bearish" if bearish else None),
+             # The label the reader sees. "Structure comparison" says what this IS; a primary
+             # recommendation without it reads as an opportunity, and being priceable is not
+             # being suitable.
+             "primary_label": (None if (bullish or bearish)
+                               else "Structure comparison — direction not assessed"),
              "direction_basis": (
                  None if (bullish or bearish) else
                  "No directional view was supplied, so this ranks on your holdings and on where "
-                 "IV sits — not on where the price is going. Read it as what this account could "
-                 "structure, not as a case for a direction.")}
+                 "IV sits — not on where the price is going. A structure being priceable is not "
+                 "the same as an opportunity being suitable; read this as what this account "
+                 "could structure, not as a case for a direction.")}
 
     for key, why in order:
         got = pick(key, why)

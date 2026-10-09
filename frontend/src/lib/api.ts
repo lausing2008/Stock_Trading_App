@@ -198,8 +198,12 @@ export interface OutcomeObservation {
   /* The full oriented record, including the non-directional case where neither boundary
      confirms anything and attaching one would invent a thesis. */
   triggers?: { direction?: string; confirms?: string | null; invalidates?: string | null;
-               establishes?: string[] | null; basis?: string } | null;
+               establishes?: string[] | null; basis?: string;
+               levels?: { support?: number | null; resistance?: number | null } } | null;
   summary?: IntelSummary | null;
+  /* Which capture generation this row belongs to. Only `is_current_policy` rows supply the
+     conclusion in force; the rest keep their original rules and are shown as history. */
+  policy_fingerprint?: string | null; is_current_policy?: boolean;
   invalidated_reason?: string | null; publishable: boolean;
   outcome: OutcomeRow | null; superseded: SupersededRow[];
 }
@@ -209,6 +213,11 @@ export interface StockOutcomes {
   /* SERVED, NEVER COPIED. A frontend keeping its own state->label map is how four backend
      states once all rendered as the single thing they were added to stop saying. */
   reason_labels: Record<string, string>;
+  capture_policy_fingerprint?: string;
+  captures?: { origin: string; captured_on: string; policy_fingerprint?: string | null;
+               is_current_policy: boolean; horizons: string[];
+               observation_ids: number[] }[];
+  capture_note?: string;
   evidence_labels?: Record<string, string>;
   provisional_remedy?: string;
   /* How many rows each pool holds, and why the others were excluded. A verified figure without

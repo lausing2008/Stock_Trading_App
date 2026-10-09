@@ -172,9 +172,23 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
   const summary = (obsWithSummary.find(o => o.horizon_sessions === 20) ?? obsWithSummary[0])
                     ?.summary;
   const rows = outcomes?.observations ?? [];
-  /* A NON-DIRECTIONAL reading has no confirmation or invalidation rule but still has
-     something to say, so matching on the rules alone hid exactly the case that needed it. */
-  const triggerRow = rows.find(r => r.confirmation_rule || r.invalidation_rule || r.triggers);
+  /* THE CONCLUSION COMES FROM THE CURRENT CAPTURE POLICY, NOT THE FIRST ROW.
+     A rule change files a NEW observation beside the old one rather than rewriting it, so a
+     symbol legitimately carries several generations. `rows.find(...)` took whichever came
+     first, which is the OLDEST — so after the trigger orientation was corrected the screen went
+     on showing a superseded capture's reversed rules while the corrected rows sat further down
+     the same response. The data was right; the selection was wrong.
+
+     A NON-DIRECTIONAL reading has no confirmation or invalidation rule but still has something
+     to say, so matching on the rules alone would hide exactly the case that needs explaining. */
+  const current = rows.filter(r => r.is_current_policy);
+  const triggerRow = [...current].reverse().find(
+    r => r.confirmation_rule || r.invalidation_rule || r.triggers);
+  const superseded = rows.filter(r => r.is_current_policy === false);
+  /* If the server named no current generation, show NOTHING and say so. Falling back to "the
+     newest row" would be a guess, and guessing is how the reversed rules stayed on screen. */
+  const generationUnknown = rows.length > 0 && current.length === 0;
+  const triggerHorizon = triggerRow?.horizon;
   const measured = (intel?.buckets ?? []).filter(b => b.direction !== 'UNKNOWN');
   const gaps = (intel?.buckets ?? []).filter(b => b.direction === 'UNKNOWN');
   const supersededCount = rows.reduce((n, r) => n + r.superseded.length, 0);
@@ -242,9 +256,21 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
           are symmetric facts about the range, and which one confirms depends entirely on what is
           being claimed. A non-directional reading has nothing to confirm, and the panel says so
           rather than attaching a thesis that was never formed. */}
+      {generationUnknown && (
+        <div style={{ ...box, borderColor: 'rgba(251,146,60,0.4)' }}>
+          <p style={{ ...label, margin: '0 0 6px' }}>Triggers</p>
+          <p style={{ margin: 0, fontSize: 13, color: '#fdba74', lineHeight: 1.5 }}>
+            The server did not say which capture generation is in force, so no trigger is shown.
+            Picking the newest or the first would be a guess, and guessing is how a superseded
+            capture&rsquo;s reversed rules stayed on this screen.
+          </p>
+        </div>
+      )}
       {triggerRow && (
         <div style={box}>
-          <p style={{ ...label, margin: '0 0 8px' }}>Triggers</p>
+          <p style={{ ...label, margin: '0 0 8px' }}>
+            Triggers{triggerHorizon ? ` · ${triggerHorizon}` : ''}
+          </p>
           <div style={{ display: 'grid', gap: 6, fontSize: 13, color: '#e2e8f0' }}>
             {triggerRow.confirmation_rule && (
               <div><span style={{ color: '#6ee7b7' }}>Confirms: </span>
@@ -285,6 +311,26 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
           </p>
         ) : (
           <>
+            {/* WHAT THE COUNTS ARE MADE OF. Six pending on one day is two captures of three
+                horizons, not six independent observations, and the difference decides whether a
+                reader takes it as coverage or as repetition. */}
+            {(outcomes?.captures ?? []).length > 0 && (
+              <div style={{ marginBottom: 10, display: 'grid', gap: 3 }}>
+                {(outcomes?.captures ?? []).map(c => (
+                  <div key={`${c.origin}-${c.captured_on}-${c.policy_fingerprint}`}
+                       style={{ fontSize: 12, color: c.is_current_policy ? '#cbd5e1' : '#64748b' }}>
+                    {c.is_current_policy ? '▸ current' : '▸ superseded'} · {c.origin} ·
+                    {' '}{c.captured_on} · {c.horizons.length} horizon
+                    {c.horizons.length === 1 ? '' : 's'} ({c.horizons.join(', ')})
+                    {!c.is_current_policy && (
+                      <span style={{ color: '#64748b' }}>
+                        {' '}— captured under an earlier rule set, kept with its original rules
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
             {POOL_ORDER.map(origin => {
               const c = outcomes?.coverage?.[origin];
               const pools = c?.pools ?? {};

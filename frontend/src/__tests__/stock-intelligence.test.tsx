@@ -52,10 +52,10 @@ const OUTCOMES = {
       horizon_sessions: 5, direction: 'BULLISH', reference_price: 970.85,
       reference_price_as_of: '2026-05-29T00:00:00',
       invalidated_reason: 'captured at a non-trading-day cutoff produced by the session-walk defect',
-      publishable: false, outcome: null, superseded: [] },
+      publishable: false, is_current_policy: true, outcome: null, superseded: [] },
     { observation_id: 7, origin: 'replay', observed_at: '2026-06-01T00:00:00', horizon: '1-5d',
       horizon_sessions: 5, direction: 'BULLISH', reference_price: 970.85,
-      reference_price_as_of: '2026-05-29T00:00:00', invalidated_reason: null, publishable: true,
+      reference_price_as_of: '2026-05-29T00:00:00', invalidated_reason: null, publishable: true, is_current_policy: true,
       confirmation_rule: 'a completed close above 1108.72',
       invalidation_rule: 'a completed close below 902.60',
       triggers: { direction: 'BULLISH', confirms: 'a completed close above 1108.72',
@@ -68,7 +68,7 @@ const OUTCOMES = {
                      state: 'RESOLVED', descriptive_return: -0.0224, excess_return: 0.0044 }] },
     { observation_id: 8, origin: 'replay', observed_at: '2026-06-01T00:00:00', horizon: '1-4w',
       horizon_sessions: 20, direction: 'BULLISH', reference_price: 970.85,
-      reference_price_as_of: '2026-05-29T00:00:00', invalidated_reason: null, publishable: true,
+      reference_price_as_of: '2026-05-29T00:00:00', invalidated_reason: null, publishable: true, is_current_policy: true,
       outcome: { id: 11, state: 'RESOLVED', sessions_elapsed: 20, descriptive_return: 0.18876,
                  excess_return: 0.19906, return_basis: 'split_adjusted_price',
                  evidence_status: 'provisional',
@@ -78,7 +78,7 @@ const OUTCOMES = {
       superseded: [] },
     { observation_id: 4, origin: 'prospective', observed_at: '2026-10-08T00:00:00',
       horizon: '1-5d', horizon_sessions: 5, direction: 'UNKNOWN', reference_price: 1088,
-      reference_price_as_of: '2026-10-07T00:00:00', invalidated_reason: null, publishable: true,
+      reference_price_as_of: '2026-10-07T00:00:00', invalidated_reason: null, publishable: true, is_current_policy: true,
       outcome: { id: 12, state: 'UNRESOLVED_INSUFFICIENT_SESSIONS', sessions_elapsed: 0,
                  descriptive_return: null, excess_return: null, return_basis: null,
                  reason: '0 of 5 trading sessions have completed' },
@@ -279,5 +279,79 @@ describe('triggers are oriented by the reading', () => {
     expect(html).toContain('Neither boundary confirms or invalidates anything');
     expect(html).toContain('a completed close above 120');
     expect(html).not.toContain('Confirms: ');
+  });
+});
+
+describe('the conclusion comes from the current capture generation', () => {
+  /* THE DEFECT THAT SHIPPED. After the trigger orientation was corrected, the corrected
+     observations existed in the response (GLD #19/20/21 under policy cd28654a) — but the
+     renderer used `rows.find(...)`, which returns the FIRST row, and the API orders by
+     observed_at then horizon, so it kept rendering a SUPERSEDED capture's reversed rules.
+     The data was right; the selection was wrong, and my verification queried the newest row
+     by id rather than the one the page would pick. */
+  const mixed = {
+    ...OUTCOMES,
+    capture_policy_fingerprint: 'cd28654a',
+    observations: [
+      { ...OUTCOMES.observations[1], observation_id: 16, direction: 'BEARISH',
+        policy_fingerprint: '6b4bfa35', is_current_policy: false,
+        confirmation_rule: 'a completed close above 406.56',   // the OLD, reversed rule
+        invalidation_rule: 'a completed close below 376.88',
+        triggers: { direction: 'BEARISH', confirms: 'a completed close above 406.56',
+                    invalidates: 'a completed close below 376.88', establishes: null,
+                    basis: 'superseded' } },
+      { ...OUTCOMES.observations[1], observation_id: 19, direction: 'BEARISH',
+        policy_fingerprint: 'cd28654a', is_current_policy: true,
+        confirmation_rule: 'a completed close below 376.88',   // the CORRECTED rule
+        invalidation_rule: 'a completed close above 406.56',
+        triggers: { direction: 'BEARISH', confirms: 'a completed close below 376.88',
+                    invalidates: 'a completed close above 406.56', establishes: null,
+                    basis: 'a bearish reading is confirmed by a break DOWN through support' } },
+    ],
+  };
+
+  it('renders the current generation even when a superseded row comes first', () => {
+    swr.byKey = { 'stock-outcomes': mixed, 'stock-intel': INTEL };
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="GLD" />);
+    const confirms = html.indexOf('Confirms: ');
+    expect(confirms).toBeGreaterThan(-1);
+    expect(html.slice(confirms, confirms + 60)).toContain('below 376.88');
+    expect(html.slice(confirms, confirms + 60)).not.toContain('above 406.56');
+  });
+
+  it('labels the superseded capture rather than hiding it', () => {
+    swr.byKey = {
+      'stock-outcomes': { ...mixed, captures: [
+        { origin: 'prospective', captured_on: '2026-10-08', policy_fingerprint: '6b4bfa35',
+          is_current_policy: false, horizons: ['1-5d', '1-4w', '1-3m'],
+          observation_ids: [16, 17, 18] },
+        { origin: 'prospective', captured_on: '2026-10-08', policy_fingerprint: 'cd28654a',
+          is_current_policy: true, horizons: ['1-5d', '1-4w', '1-3m'],
+          observation_ids: [19, 20, 21] },
+      ] },
+      'stock-intel': INTEL };
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="GLD" />);
+    // "6 pending" is TWO captures of THREE horizons, and the page now says so.
+    expect(html).toContain('superseded');
+    expect(html).toContain('current');
+    expect(html).toContain('3 horizons');
+    expect(html).toContain('captured under an earlier rule set');
+  });
+
+  it('shows nothing rather than guessing when no generation is named', () => {
+    swr.byKey = {
+      'stock-outcomes': { ...mixed,
+        observations: mixed.observations.map(o => ({ ...o, is_current_policy: undefined })) },
+      'stock-intel': INTEL };
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="GLD" />);
+    expect(html).toContain('did not say which capture generation is in force');
+    expect(html).not.toContain('Confirms: ');
+  });
+
+  it('rounds displayed trigger prices to a tradeable precision', () => {
+    swr.byKey = { 'stock-outcomes': mixed, 'stock-intel': INTEL };
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="GLD" />);
+    expect(html).not.toContain('406.55999755859375');
+    expect(html).toContain('406.56');
   });
 });

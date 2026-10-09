@@ -157,3 +157,18 @@ def test_a_stated_view_carries_no_such_disclaimer():
                      coverable_contracts=0)
     assert got["stated_direction"] == "bullish"
     assert got["direction_basis"] is None
+
+
+def test_the_no_view_primary_is_labelled_a_structure_comparison():
+    """Being priceable is not being suitable. Without this label a primary recommendation on no
+    view reads as an opportunity — and the game-plan route calls this with `signal=None`."""
+    got = _recommend(**_chain(), signal=None, iv_rank=80.0, holds_shares=False,
+                     coverable_contracts=0)
+    assert got["primary_label"] == "Structure comparison — direction not assessed"
+    assert "not the same as an opportunity being suitable" in got["direction_basis"]
+
+
+def test_a_stated_view_carries_no_structure_comparison_label():
+    got = _recommend(**_chain(), signal="BUY", iv_rank=20.0, holds_shares=False,
+                     coverable_contracts=0)
+    assert got["primary_label"] is None

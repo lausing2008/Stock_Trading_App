@@ -399,6 +399,11 @@ def outcomes(symbol: str, _user: str = Depends(get_current_username)) -> dict:
             .order_by(IntelligenceObservation.observed_at,
                       IntelligenceObservation.horizon_sessions)).scalars().all()
         rows, current_fp = [], resolver_fingerprint()
+        # WHICH CAPTURE POLICY IS CURRENT. A rule change files a NEW observation beside the old
+        # one rather than rewriting it, so a symbol legitimately carries several generations.
+        # The reader's conclusion must come from the current one — the screen was showing a
+        # superseded capture's triggers because the renderer took the FIRST row it found.
+        capture_fp = EB.policy_fingerprint()
         for o in obs:
             outs = session.execute(select(ObservationOutcome).where(
                 ObservationOutcome.observation_id == o.id)
@@ -422,6 +427,11 @@ def outcomes(symbol: str, _user: str = Depends(get_current_username)) -> dict:
                 "triggers": (o.frozen_inputs or {}).get("triggers"),
                 "summary": o.summary,
                 "invalidated_reason": o.invalidated_reason,
+                # WHICH GENERATION THIS ROW BELONGS TO. Historical rows keep their original
+                # rules unchanged — that is the point of freezing them — and are marked rather
+                # than hidden, so a reader can see both and tell which is in force.
+                "policy_fingerprint": o.policy_fingerprint,
+                "is_current_policy": o.policy_fingerprint == capture_fp,
                 "publishable": o.invalidated_reason is None and current is not None,
                 "outcome": None if current is None else {
                     "id": current.id, "state": current.resolution_state,
@@ -453,13 +463,37 @@ def outcomes(symbol: str, _user: str = Depends(get_current_username)) -> dict:
             counts[key] = counts.get(key, 0) + 1
         pools = coverage_counts(session, origin=REPLAY, symbol=sym)
         pools_prospective = coverage_counts(session, origin=PROSPECTIVE, symbol=sym)
-    return {"symbol": sym, "resolver_fingerprint": current_fp, "observations": rows,
+
+        # WHAT A COUNT LIKE "6 pending" IS MADE OF. Six pending outcomes on one day is two
+        # captures of three horizons, not six independent observations, and the difference
+        # decides whether a reader reads it as coverage or as repetition.
+        captures: dict = {}
+        for r in rows:
+            key = (r["origin"], r["observed_at"][:10], r["policy_fingerprint"])
+            c = captures.setdefault(key, {
+                "origin": r["origin"], "captured_on": r["observed_at"][:10],
+                "policy_fingerprint": r["policy_fingerprint"],
+                "is_current_policy": r["is_current_policy"],
+                "horizons": [], "observation_ids": []})
+            c["horizons"].append(r["horizon"])
+            c["observation_ids"].append(r["observation_id"])
+        capture_list = sorted(captures.values(),
+                              key=lambda c: (c["captured_on"], c["is_current_policy"]))
+    return {"symbol": sym, "resolver_fingerprint": current_fp,
+            "capture_policy_fingerprint": capture_fp,
+            "captures": capture_list,
+            "observations": rows,
             "state_counts": counts,
             "reason_labels": UNRESOLVED_LABEL,
             # SERVED, NEVER COPIED client-side.
             "evidence_labels": EB.EVIDENCE_LABEL,
             "provisional_remedy": EB.PROVISIONAL_REMEDY,
             "coverage": {"replay": pools, "prospective": pools_prospective},
+            "capture_note": ("A rule change files a NEW observation beside the old one and "
+                             "never rewrites it, so a symbol can carry several capture "
+                             "generations. Only rows marked `is_current_policy` supply the "
+                             "conclusion in force; the rest are retained with their original "
+                             "rules and are visible as history."),
             "note": ("Superseded outcomes are retained as audit records and are excluded from "
                      "every performance reading. Replay and prospective origins are never "
                      "pooled, and neither are two different return bases.")}

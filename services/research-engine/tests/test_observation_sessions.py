@@ -610,16 +610,21 @@ def test_bullish_and_bearish_triggers_are_exact_opposites():
 
 def test_strong_directions_follow_their_own_sign():
     assert _EB.direction_triggers("STRONG_BEARISH", support=1, resistance=2)["confirms"] \
-        == "a completed close below 1"
+        == "a completed close below 1.00"
     assert _EB.direction_triggers("STRONG_BULLISH", support=1, resistance=2)["confirms"] \
-        == "a completed close above 2"
+        == "a completed close above 2.00"
 
 
 def test_a_neutral_reading_confirms_and_invalidates_NOTHING():
     """Saying a boundary confirms a neutral reading would invent a thesis that was never made."""
     t = _EB.direction_triggers("NEUTRAL", support=100.0, resistance=120.0)
     assert t["confirms"] is None and t["invalidates"] is None
-    assert t["establishes"] == ["a completed close above 120.0", "a completed close below 100.0"]
+    assert t["establishes"] == ["a completed close above 120.00",
+                                "a completed close below 100.00"]
+    # ROUNDED FOR READING, RAW KEPT. The displayed text must not carry precision the instrument
+    # does not trade in; the unrounded levels travel beside it so nothing re-derives them from
+    # a formatted string.
+    assert t["levels"] == {"resistance": 120.0, "support": 100.0}
     assert "ESTABLISH a direction" in t["basis"]
 
 
@@ -675,3 +680,27 @@ def test_trigger_construction_is_inside_the_capture_fingerprint(tmp_path, monkey
     monkeypatch.setattr(_EB, "direction_triggers", mod.direction_triggers)
     assert _EB.policy_fingerprint() != before, \
         "reversing the bearish rule must mint a new capture policy"
+
+
+def test_the_displayed_level_is_rounded_but_the_stored_level_is_not():
+    """A raw close is full float precision — the screen read "a completed close above
+    406.55999755859375", which is not a price anyone can act on. Rounding the TEXT while
+    keeping the number means nothing downstream has to parse a formatted string back."""
+    t = _EB.direction_triggers("BEARISH", support=376.8800048828125,
+                               resistance=406.55999755859375)
+    assert t["confirms"] == "a completed close below 376.88"
+    assert t["invalidates"] == "a completed close above 406.56"
+    assert t["levels"]["support"] == 376.8800048828125, "full precision is retained"
+    assert t["levels"]["resistance"] == 406.55999755859375
+
+
+def test_the_outcomes_endpoint_marks_which_capture_generation_is_current():
+    """THE DEFECT THAT SHIPPED: the corrected observations existed in the response, but nothing
+    in it said which generation was in force, so the renderer took the first row — a superseded
+    capture — and went on displaying reversed rules."""
+    import ast
+    src = (_ROOT / "services/research-engine/src/api/observation_routes.py").read_text()
+    code = ast.unparse(ast.parse(src))
+    assert "'is_current_policy'" in code
+    assert "'capture_policy_fingerprint'" in code
+    assert "'captures'" in code, "a count like '6 pending' must be explainable as captures"
