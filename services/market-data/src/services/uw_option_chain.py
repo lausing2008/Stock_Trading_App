@@ -68,9 +68,18 @@ def _to_chain_row(r: dict, spot: float | None) -> dict:
     """UW row -> the exact shape `_options_chain_rows()` produced from a yfinance DataFrame, so
     every existing consumer (max-pain, the flow summary, the strategy matrix) works unchanged.
 
-    `last_price` is 0.0: UW has no last-traded field here. Nothing downstream should prefer it
-    anyway — mid of nbbo_bid/nbbo_ask is a better mark, and the callers already fall back to it
-    only when bid and ask are both absent.
+    `last_price` is 0.0: UW has no last-traded field here.
+
+    O02 (2026-10-08): "nothing downstream should prefer it" was not true. `get_options_flow`
+    computed `premium = volume * lastPrice * 100`, so every UW-derived row had ZERO premium and
+    a FALSE whale flag regardless of activity — and that count fed the options-pressure score
+    and the stored ML feature `opt_whale_count`, where a missing input was trained on as a
+    measured zero.
+
+    The 0.0 stays, because callers do float arithmetic on this field and a None would move the
+    failure rather than remove it; `last_price_available` is the thing to test, and the route
+    now reads THAT rather than inferring absence from a zero. A zero price and an absent price
+    are different facts and only one of them is a measurement.
     """
     strike = float(r["strike"] or 0)
     otype = (r.get("option_type") or "").lower()
@@ -83,6 +92,9 @@ def _to_chain_row(r: dict, spot: float | None) -> dict:
         "bid": float(r.get("nbbo_bid") or 0),
         "ask": float(r.get("nbbo_ask") or 0),
         "last_price": 0.0,
+        #: THE FIELD TO TEST. This source carries no last-trade price, so no premium actually
+        #: paid can be computed from it — distinct from a contract that genuinely traded at 0.
+        "last_price_available": False,
         "volume": int(r.get("volume") or 0),
         "oi": int(r.get("open_interest") or 0),
         # yfinance gave IV as a fraction and the old adapter multiplied by 100; UW gives a

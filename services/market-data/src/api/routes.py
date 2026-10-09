@@ -3427,8 +3427,24 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
                 mask = (df["openInterest"] > 50) & (df["volume"] > df["openInterest"] * 0.30)
                 for _, row in df[mask].sort_values("volume", ascending=False).head(3).iterrows():
                     vol = int(row["volume"])
-                    last_price = float(row.get("lastPrice", 0))
-                    premium = vol * last_price * 100
+                    # O02 (2026-10-08): THREE SEPARATE QUANTITIES, NEVER ONE.
+                    #
+                    # The migrated UW chain has no last-traded field, so its adapter emits
+                    # `last_price = 0.0`. This computed `premium = volume * lastPrice * 100`,
+                    # which is therefore ZERO for every UW-derived row — and then
+                    # `is_whale = premium > 500_000` is FALSE for all of them regardless of
+                    # activity. False reads as "checked, not a whale". The whale count feeds the
+                    # pressure score AND is persisted as the ML feature `opt_whale_count`, so a
+                    # missing input was being trained on as a measured zero.
+                    #
+                    # Substituting a midpoint would not fix it either: volume x mark x 100 is a
+                    # MARKED TURNOVER ESTIMATE over a day's aggregated trades, not premium
+                    # anybody paid, and calling it premium relabels the same unavailability.
+                    # O02: the three quantities, computed by the shared pure function so the
+                    # route and its tests cannot drift apart.
+                    _pf = unusual_premium_fields(
+                        vol, row.get("lastPrice"), row.get("bid"), row.get("ask"),
+                        last_price_available=row.get("last_price_available"))
                     unusual.append({
                         "expiry":    exp,
                         "side":      side,
@@ -3438,8 +3454,7 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
                         "vol_oi":    round(float(row["volume"]) / max(float(row["openInterest"]), 1), 2),
                         "iv":        round(float(row["impliedVolatility"]) * 100, 1),
                         "itm":       bool(row["inTheMoney"]),
-                        "premium":   round(premium, 2),
-                        "is_whale":  premium > 500_000,
+                        **_pf,
                     })
 
         if total_call_vol == 0 and total_put_vol == 0:
@@ -3466,8 +3481,19 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         # Sort unusual by premium desc, keep top 10
         unusual.sort(key=lambda x: x["premium"], reverse=True)
 
-        _whale_count = sum(1 for c in unusual if c.get("is_whale"))
-        _top_whale_premium = max((c["premium"] for c in unusual), default=0)
+        # A COUNT OVER UNKNOWNS IS NOT A COUNT. Where no contract has a tape premium, the whale
+        # count is UNAVAILABLE rather than zero — the pressure score and the stored ML feature
+        # both read this, and a zero there is a measurement.
+        _known_whales = [c for c in unusual if c.get("is_whale") is not None]
+        _whale_count = (sum(1 for c in _known_whales if c["is_whale"])
+                        if _known_whales else None)
+        _whale_unknown = sum(1 for c in unusual if c.get("is_whale") is None)
+        _tape_premiums = [c["traded_premium"] for c in unusual
+                          if c.get("traded_premium") is not None]
+        _top_whale_premium = max(_tape_premiums) if _tape_premiums else None
+        _turnovers = [c["estimated_turnover"] for c in unusual
+                      if c.get("estimated_turnover") is not None]
+        _top_turnover = max(_turnovers) if _turnovers else None
 
         result = {
             "symbol":            sym,
@@ -3480,7 +3506,13 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
             "unusual":           unusual[:10],
             "expiries_used":     list(expiries[:4]),
             "whale_count":       _whale_count,
+            # How many contracts could not be judged, so a null count can be read.
+            "whale_count_unknown": _whale_unknown,
+            "whale_count_basis": ("tape" if _whale_count is not None
+                                  else "unavailable — this source carries no last-trade price, "
+                                       "so no premium actually paid can be computed"),
             "top_whale_premium": _top_whale_premium,
+            "top_estimated_turnover": _top_turnover,
             # MPE-02: composite 0-100 options-pressure score — see
             # compute_options_pressure_score()'s own docstring for the weighting rationale.
             "pressure_score": compute_options_pressure_score(
@@ -3547,10 +3579,49 @@ def _options_flow_gex_component(symbol: str) -> dict | None:
     }
 
 
+def unusual_premium_fields(volume, last_price, bid, ask, *, last_price_available=None) -> dict:
+    """THREE SEPARATE QUANTITIES, NEVER ONE. Pure and module-level so a test can call THE REAL
+    FUNCTION rather than describing it — a sabotage run caught a test of mine re-implementing
+    this logic, which meant a change to the real computation passed unnoticed.
+
+    O02 (2026-10-08). The migrated UW chain has no last-traded field, so its adapter emits
+    `last_price = 0.0`. The route computed `premium = volume * lastPrice * 100`, therefore ZERO
+    for every UW-derived row, and then `is_whale = premium > 500_000`, FALSE for all of them
+    regardless of activity. False reads as "checked, not a whale". That count feeds the
+    options-pressure score AND is persisted as the ML feature `opt_whale_count`, so a missing
+    input was being trained on as a measured zero.
+
+    Substituting a midpoint does not repair it: volume x mark x 100 is a MARKED TURNOVER
+    ESTIMATE over a day of aggregated, unrelated trades — not premium anybody paid, and not
+    evidence of one large buyer. It is offered under its own name and can never make a whale.
+
+      traded_premium      premium actually paid on the tape; NULL where unavailable
+      estimated_turnover  volume x mark x 100, an estimate, explicitly named
+      is_whale            TRI-STATE. None = unknown, because the tape premium is unavailable.
+    """
+    vol = float(volume or 0)
+    has_tape = ((isinstance(last_price, (int, float)) and float(last_price) > 0)
+                if last_price_available is not False else False)
+    mark = None
+    if (isinstance(bid, (int, float)) and isinstance(ask, (int, float))
+            and float(bid) > 0 and float(ask) > 0 and float(ask) >= float(bid)):
+        mark = (float(bid) + float(ask)) / 2.0
+    traded = round(vol * float(last_price) * 100, 2) if has_tape else None
+    est = round(vol * mark * 100, 2) if mark is not None else None
+    return {
+        "traded_premium": traded,
+        "estimated_turnover": est,
+        "premium_basis": ("tape" if traded is not None
+                          else "estimated_turnover" if est is not None else "unavailable"),
+        "premium": traded,
+        "is_whale": (traded > 500_000 if traded is not None else None),
+    }
+
+
 def compute_options_pressure_score(
     cp_ratio: float | None,
     sentiment: str | None,
-    whale_count: int,
+    whale_count: int | None,
     total_call_vol: int,
     total_put_vol: int,
     gex: dict | None = None,
@@ -3603,7 +3674,10 @@ def compute_options_pressure_score(
     else:
         cpr_pts = min(40.0, max(0.0, (1.0 - cp_ratio) / (1.0 - 0.2) * 40.0))
 
-    whale_pts = min(30.0, whale_count * 10.0)
+    # O02: AN UNAVAILABLE COUNT CONTRIBUTES NOTHING AND SAYS SO. Scoring it as zero would be
+    # indistinguishable from "we looked and there were no whales", which is the error the
+    # tri-state exists to prevent — and this score is read as conviction/intensity.
+    whale_pts = 0.0 if whale_count is None else min(30.0, whale_count * 10.0)
 
     total_vol = (total_call_vol or 0) + (total_put_vol or 0)
     vol_pts = min(10.0, max(0.0, total_vol / 5000.0 * 10.0))
@@ -3615,6 +3689,11 @@ def compute_options_pressure_score(
         "whale_pts": round(whale_pts, 1),
         "volume_pts": round(vol_pts, 1),
     }
+    if whale_count is None:
+        # The score is out of a SMALLER MAXIMUM when a component could not be measured. Saying
+        # so stops 40/100 reading as weak when it is 40 out of a possible 70.
+        components["whale_pts_unavailable"] = True
+        components["max_possible"] = 70.0 + (20.0 if gex is not None else 0.0)
 
     if gex is not None and gex.get("distance_to_flip_pct") is not None:
         gex_dist = gex["distance_to_flip_pct"]
@@ -3671,12 +3750,17 @@ def _uw_option_chain(session: Session, sym: str, exp: str | None = None, spot: f
             # adapter hands back percent, so divide here to keep that contract intact.
             "impliedVolatility": (r["iv"] or 0) / 100.0,
             "inTheMoney": r["itm"],
+            # O02: CARRIED THROUGH, or the route cannot tell "this source has no last-trade
+            # price" from "this contract last traded at zero". `.fillna(0)` downstream would
+            # turn a null into a number, so the fact travels as its own boolean column.
+            "last_price_available": r.get("last_price_available", True),
             # Beyond anything yfinance ever provided.
             "delta": r.get("delta"), "gamma": r.get("gamma"), "theta": r.get("theta"),
             "vega": r.get("vega"), "rho": r.get("rho"),
         } for r in rows] or [], columns=[
             "strike", "bid", "ask", "lastPrice", "volume", "openInterest",
-            "impliedVolatility", "inTheMoney", "delta", "gamma", "theta", "vega", "rho"])
+            "impliedVolatility", "inTheMoney", "last_price_available",
+            "delta", "gamma", "theta", "vega", "rho"])
 
     return _ChainPair(_df(ch["calls"]), _df(ch["puts"]), ch["as_of"])
 
