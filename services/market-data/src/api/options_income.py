@@ -22,6 +22,18 @@ log = get_logger("options_income_api")
 router = APIRouter(prefix="/options-income", tags=["options-income"])
 
 
+_INCOME_MEASUREMENT = {
+    "performance_eligibility": "research_only",
+    "attribution": "not_calculated",
+    "limitations": [
+        "archived quotes and simulated assignment are not broker fills",
+        "early assignment is not modelled",
+        "fees, slippage, financing and tax effects are omitted",
+        "covered-call results require comparison with owning the shares; cash-secured-put results require comparison with cash and a stated limit-entry policy",
+    ],
+}
+
+
 @router.get("/candidates")
 def get_income_candidates(
     strategy: str | None = Query(None, description="COVERED_CALL | CASH_SECURED_PUT (both if omitted)"),
@@ -55,6 +67,7 @@ def get_income_candidates(
         "data_as_of": data_as_of,
         "days_stale": days_stale,
         "is_stale": bool(days_stale is not None and days_stale >= 2),
+        "measurement": _INCOME_MEASUREMENT,
     }
 
 
@@ -109,6 +122,7 @@ def list_income_portfolios(
             "is_active": p.is_active,
             "config": p.config,
             "created_at": p.created_at.isoformat() if p.created_at else None,
+            "measurement": _INCOME_MEASUREMENT,
         })
     return result
 
@@ -207,6 +221,7 @@ def get_income_positions(
         "pnl": pos.pnl,
         "pct_return_on_collateral": pos.pct_return_on_collateral,
         "close_reason": pos.close_reason,
+        "measurement": _INCOME_MEASUREMENT,
     } for pos in positions]
 
 

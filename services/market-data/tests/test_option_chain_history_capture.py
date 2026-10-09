@@ -123,3 +123,53 @@ def test_historical_chain_fetcher_drops_non_dict_rows(monkeypatch):
     monkeypatch.setattr(uw, "is_available", lambda: True)
     monkeypatch.setattr(uw, "_get", lambda *a, **k: [{"option_symbol": "X"}, "garbage", None])
     assert uw.get_historical_option_chain("AAPL", "2026-06-02") == [{"option_symbol": "X"}]
+
+
+def test_historical_chain_paginates_after_an_exactly_full_page(monkeypatch):
+    import src.services.unusual_whales as uw
+
+    monkeypatch.setattr(uw, "is_available", lambda: True)
+    calls = []
+
+    def _get(*args, **kwargs):
+        page = kwargs["params"]["page"]
+        calls.append(page)
+        if page == 0:
+            return [{"option_symbol": f"X{i}"} for i in range(500)]
+        return [{"option_symbol": "X500"}, {"option_symbol": "X501"}]
+
+    monkeypatch.setattr(uw, "_get", _get)
+    result = uw.get_historical_option_chain_result("AAPL", "2026-06-02")
+    assert result["status"] == "complete"
+    assert result["pages"] == 2
+    assert len(result["rows"]) == 502
+    assert calls == [0, 1]
+
+
+def test_historical_chain_retains_partial_rows_and_marks_request_failure(monkeypatch):
+    import src.services.unusual_whales as uw
+
+    monkeypatch.setattr(uw, "is_available", lambda: True)
+
+    def _get(*args, **kwargs):
+        if kwargs["params"]["page"] == 0:
+            return [{"option_symbol": f"X{i}"} for i in range(500)]
+        raise RuntimeError("provider failed on page 1")
+
+    monkeypatch.setattr(uw, "_get", _get)
+    result = uw.get_historical_option_chain_result("AAPL", "2026-06-02")
+    assert result["status"] == "incomplete"
+    assert result["reason"] == "request_failed"
+    assert len(result["rows"]) == 500
+
+
+def test_historical_chain_repeated_page_is_incomplete(monkeypatch):
+    import src.services.unusual_whales as uw
+
+    monkeypatch.setattr(uw, "is_available", lambda: True)
+    page = [{"option_symbol": f"X{i}"} for i in range(500)]
+    monkeypatch.setattr(uw, "_get", lambda *args, **kwargs: page)
+    result = uw.get_historical_option_chain_result("AAPL", "2026-06-02")
+    assert result["status"] == "incomplete"
+    assert result["reason"] == "repeated_page"
+    assert len(result["rows"]) == 500

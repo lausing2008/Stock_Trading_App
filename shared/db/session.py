@@ -33,6 +33,9 @@ def get_session() -> Iterator[Session]:
 def init_db() -> None:
     """Idempotent metadata create — suitable for dev. Use Alembic in prod."""
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE IF EXISTS options_flow_snapshots ADD COLUMN IF NOT EXISTS evidence JSON"))
+
     _run_migrations()
     _apply_isolated_ddl()
     _apply_one_shot_migrations()

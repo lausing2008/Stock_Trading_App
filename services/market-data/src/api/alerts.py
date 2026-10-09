@@ -259,12 +259,16 @@ def get_alert_preferences(
                 "group": a["group"],
                 "label": a["label"],
                 "desc": a.get("desc"),
-                "enabled": stored.get(a["key"], True),
+                "enabled": stored.get(a["key"], a.get("default_enabled", True)),
+                "default_enabled": a.get("default_enabled", True),
             }
             for a in ALERT_TYPES
         ],
         # Stated so the UI can explain the default rather than implying a row exists per type.
         "default_when_unset": True,
+        "defaults_by_type": {
+            a["key"]: a.get("default_enabled", True) for a in ALERT_TYPES
+        },
     }
 
 

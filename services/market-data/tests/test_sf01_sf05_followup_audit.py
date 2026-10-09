@@ -168,8 +168,8 @@ def test_a_last_trade_price_is_labelled_in_the_ui():
 
 
 def test_the_primary_recommendation_itself_is_qualified():
-    """'Best fit right now' is the strongest claim on the page."""
-    i = _MATRIX_TSX.index("Best fit right now")
+    """The structure comparison must carry quote provenance beside the result."""
+    i = _MATRIX_TSX.index("Structure comparison:")
     block = _MATRIX_TSX[i:i + 1400]
     assert "price_source === 'last_trade'" in block
     assert "research estimates" in block

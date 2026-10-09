@@ -3062,7 +3062,22 @@ def backtest_leaps_run(
             f"(delta ~{target_delta}, >={min_dte} DTE), or no exit quote near {exit_date}. "
             "Greeks are sparse by design — check /backtest/leaps/coverage first."
         ))
-    return res
+    return {
+        **res,
+        "measurement": {
+            "status": "historical_replay",
+            "performance_eligibility": "research_only",
+            "contract_selection": "fixed at entry; no daily reselection",
+            "entry_exit_basis": "entry ask and exit bid from archived settled-session quotes",
+            "attribution": "not_calculated",
+            "limitations": [
+                "quotes are not fills and quote size is unavailable",
+                "fees, additional slippage, taxes and financing are omitted",
+                "corporate-action deliverables require separate verification",
+                "one replay does not establish expected performance",
+            ],
+        },
+    }
 
 
 @router.get("/backtest/leaps/rolling")
@@ -3115,7 +3130,21 @@ def backtest_leaps_rolling_run(
             f"(delta ~{target_delta}, >={min_dte} DTE, {hold_days}-day holds). "
             "Greeks are sparse by design — check /backtest/leaps/coverage first."
         ))
-    return res
+    return {
+        **res,
+        "measurement": {
+            "status": "historical_replay",
+            "performance_eligibility": "research_only",
+            "entry_exit_basis": "each cycle enters at archived ask and exits at archived bid",
+            "attribution": "not_calculated",
+            "limitations": [
+                "quotes are not fills and quote size is unavailable",
+                "fees, additional slippage, taxes and financing are omitted",
+                "skipped cycles change the measured path and are reported separately",
+                "win rate across a small overlapping sample is not predictive skill",
+            ],
+        },
+    }
 
 
 @router.get("/backtest/leaps/compare")
@@ -3146,7 +3175,20 @@ def backtest_leaps_compare(
         raise HTTPException(400, "dates must be YYYY-MM-DD")
     if d_out <= d_in:
         raise HTTPException(400, "exit_date must be after entry_date")
-    return _cmp(syms, d_in, d_out, target_delta, min_dte, contracts)
+    return {
+        **_cmp(syms, d_in, d_out, target_delta, min_dte, contracts),
+        "measurement": {
+            "status": "historical_replay",
+            "performance_eligibility": "research_only",
+            "entry_exit_basis": "archived ask-to-bid replay",
+            "attribution": "not_calculated",
+            "limitations": [
+                "missing symbols and relaxed-delta substitutions limit comparability",
+                "fees, additional slippage, taxes and financing are omitted",
+                "a cross-symbol ranking over one interval is not expected performance",
+            ],
+        },
+    }
 
 
 @router.get("/backtest/replay-fidelity")

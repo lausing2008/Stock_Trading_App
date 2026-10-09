@@ -3383,7 +3383,7 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
     Returns null fields for HK stocks and others without listed options.
     """
     sym = symbol.upper()
-    cache_key = f"options_flow:{sym}"
+    cache_key = f"options_flow:v2:{sym}"
     try:
         rdb = _get_redis()
         cached = rdb.get(cache_key)
@@ -3407,6 +3407,7 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         total_call_vol = 0
         total_put_vol = 0
         unusual: list[dict] = []
+        received_expiries = []
 
         for exp in expiries[:4]:  # nearest four expiries
             try:
@@ -3414,6 +3415,7 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
             except Exception:
                 continue
 
+            received_expiries.append(exp)
             calls = chain.calls.fillna(0)
             puts  = chain.puts.fillna(0)
 
@@ -3488,7 +3490,11 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         _wc = whale_coverage(unusual)
         _whale_count = _wc["whale_count"]
 
+        from ..services.uw_option_chain import latest_as_of
+        chain_date = latest_as_of(session, sym)
         result = {
+            "chain_as_of": chain_date.isoformat() if chain_date else None,
+            "source": "unusual_whales_settled_chain",
             "symbol":            sym,
             "available":         True,
             "call_volume":       total_call_vol,
@@ -3497,7 +3503,13 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
             "sentiment":         sentiment,
             "unusual_count":     len(unusual),
             "unusual":           unusual[:10],
-            "expiries_used":     list(expiries[:4]),
+            "expiries_used":     received_expiries,
+            "expiries_attempted": list(expiries[:4]),
+            "coverage_status": "partial" if len(received_expiries) < len(expiries[:4]) else "unverified",
+            "activity_composition": "call_heavy" if cp_ratio >= 1.3 else "put_heavy" if cp_ratio <= .8 else "mixed",
+            "directional_intent": "not_established",
+            "independence_group": "option_chain",
+            "sentiment_basis": "legacy composition label; not trade intent or independent directional evidence",
             **_wc,
             # MPE-02: composite 0-100 options-pressure score — see
             # compute_options_pressure_score()'s own docstring for the weighting rationale.
@@ -4214,7 +4226,7 @@ def get_options_expirations(symbol: str, session: Session = Depends(get_session)
 
 @router.get("/{symbol}/gamma-exposure")
 def get_gamma_exposure(symbol: str):
-    """MPE-06: real, calculated dealer gamma exposure (GEX) via Unusual Whales — call_wall/
+    """MPE-06: provider-model gamma exposure (GEX) via Unusual Whales — call_wall/
     put_wall (the strikes where dealer gamma concentrates) and gamma_flip (the "zero gamma"
     level where dealer hedging flips direction), when a real subscription is configured and
     enabled (see Settings → Market Pressure Data).
@@ -4268,6 +4280,14 @@ def get_gamma_exposure(symbol: str):
         "gamma_flip": levels.gamma_flip,
         "gamma_magnet": levels.gamma_magnet,
         "as_of_date": levels.as_of_date,
+        "as_of_time": levels.as_of_time,
+        "model_source": levels.source,
+        "nearby_flips": levels.nearby_flips,
+        "evidence_kind": "provider_model_estimate",
+        "dealer_inventory_observed": False,
+        "model_version": None,
+        "dealer_sign_assumption": "provider-assumed market-maker exposure",
+        "aggregation": "ticker-wide; not an expiry selection",
         "max_pain": [
             {"expiry": r.expiry, "max_pain": r.max_pain} for r in max_pain_rows if r.max_pain is not None
         ],
@@ -4311,6 +4331,9 @@ def get_short_interest_uw(symbol: str):
         "symbol": sym,
         "available": True,
         "short_percent_of_float": round(si.si_float * 100, 2),
+        "market_date": si.market_date,
+        "source": "unusual_whales",
+        "freshness": "dated" if si.market_date else "unknown",
     }
 
 

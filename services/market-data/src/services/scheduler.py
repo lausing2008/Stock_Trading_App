@@ -6036,7 +6036,7 @@ _DARK_POOL_ALERT_COOLDOWN_MINUTES = 60  # longer than options-flow's 30 — a sy
 # printing in pieces over the day.
 
 
-def _dark_pool_premium_baseline(session, symbol: str) -> float | None:
+def _dark_pool_premium_baseline(session, symbol: str, before: datetime | None = None) -> float | None:
     """AUD-DARKPOOL-ABSTHRESHOLD: median print premium for `symbol` over the trailing
     _DARK_POOL_BASELINE_DAYS, or None when there isn't enough history to be meaningful.
 
@@ -6049,15 +6049,16 @@ def _dark_pool_premium_baseline(session, symbol: str) -> float | None:
     premium distribution makes the mean actively counterproductive here.
     """
     try:
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=_DARK_POOL_BASELINE_DAYS)
+        before = (before or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(tzinfo=None)
+        cutoff = before - timedelta(days=_DARK_POOL_BASELINE_DAYS)
         row = session.execute(
             text("""
                 SELECT COUNT(*) AS n,
                        percentile_cont(0.5) WITHIN GROUP (ORDER BY premium) AS med
                 FROM dark_pool_prints
-                WHERE symbol = :sym AND executed_at >= :cutoff AND premium IS NOT NULL
+                WHERE symbol = :sym AND executed_at >= :cutoff AND executed_at < :before AND premium IS NOT NULL
             """),
-            {"sym": symbol, "cutoff": cutoff},
+            {"sym": symbol, "cutoff": cutoff, "before": before},
         ).one()
         if row.n is None or row.n < _DARK_POOL_BASELINE_MIN_PRINTS:
             return None
@@ -6284,8 +6285,7 @@ def check_dark_pool_alerts() -> None:
                     # large-cap flow (a $1M print in AAPL) from alerting just for being big.
                     # baseline is None until a symbol has enough history — then only the
                     # absolute floor applies, i.e. exactly the pre-fix behavior.
-                    _baseline = _dark_pool_premium_baseline(session, symbol)
-                    _rel_floor = (_baseline * _DARK_POOL_REL_MULTIPLE) if _baseline else 0.0
+
                     # AUD-DARKPOOL-STALEPRINT: a print must also be RECENT. Without this the
                     # biggest block in UW's multi-day rolling window was re-selected on every
                     # 1-minute run and re-emailed each time the 60-minute cooldown lapsed —
@@ -6293,16 +6293,25 @@ def check_dark_pool_alerts() -> None:
                     _print_cutoff = datetime.now(timezone.utc) - timedelta(
                         minutes=_DARK_POOL_PRINT_MAX_AGE_MINUTES
                     )
-                    qualifying = [
-                        r for r in rows
-                        if (r.premium or 0) >= _DARK_POOL_ALERT_MIN_PREMIUM
-                        and (r.premium or 0) >= _rel_floor
-                        and _dark_pool_print_is_recent(r, _print_cutoff)
-                    ]
+                    qualifying = []
+                    for r in rows:
+                        if (r.premium or 0) < _DARK_POOL_ALERT_MIN_PREMIUM or not _dark_pool_print_is_recent(r, _print_cutoff):
+                            continue
+                        event_at = datetime.fromisoformat(r.executed_at.replace("Z", "+00:00"))
+                        if event_at.tzinfo is None:
+                            event_at = event_at.replace(tzinfo=timezone.utc)
+                        baseline = _dark_pool_premium_baseline(session, symbol, before=event_at)
+                        from .option_evidence import dark_pool_qualifies
+                        if dark_pool_qualifies(r.premium or 0, baseline, _DARK_POOL_ALERT_MIN_PREMIUM, _DARK_POOL_REL_MULTIPLE):
+                            qualifying.append(r)
                     if not qualifying:
                         continue
                     id_by_symbol[symbol] = stock_id
                     biggest = max(qualifying, key=lambda r: r.premium or 0)
+                    biggest_at = datetime.fromisoformat(biggest.executed_at.replace("Z", "+00:00"))
+                    if biggest_at.tzinfo is None:
+                        biggest_at = biggest_at.replace(tzinfo=timezone.utc)
+                    _baseline = _dark_pool_premium_baseline(session, symbol, before=biggest_at)
                     candidates[symbol] = {
                         "symbol": symbol,
                         # T377-DARKPOOL-SIDE: `price` remains the pre-existing "best available
@@ -15520,7 +15529,7 @@ def capture_option_chain_history(
     from . import unusual_whales as _uw
 
     _t0 = time.monotonic()
-    days_done = days_skipped = days_empty = 0
+    days_done = days_skipped = days_empty = days_incomplete = 0
     rows_written = 0
     errors = 0
 
@@ -15533,17 +15542,15 @@ def capture_option_chain_history(
                 with _SL() as sess:
                     if skip_existing:
                         existing = sess.execute(_text(
-                            "SELECT 1 FROM option_chain_history WHERE symbol=:s AND as_of=:d LIMIT 1"
+                            "SELECT 1 FROM option_chain_coverage "
+                            "WHERE symbol=:s AND as_of=:d AND status='complete' LIMIT 1"
                         ), {"s": sym, "d": as_of}).first()
                         if existing:
                             days_skipped += 1
                             continue
 
-                rows = _uw.get_historical_option_chain(sym, as_of)
-                if not rows:
-                    days_empty += 1
-                    time.sleep(_OPTHIST_THROTTLE_S)
-                    continue
+                fetch = _uw.get_historical_option_chain_result(sym, as_of)
+                rows = fetch["rows"]
 
                 payload = []
                 for r in rows:
@@ -15572,8 +15579,8 @@ def capture_option_chain_history(
                         "rho": _opthist_f(r.get("rho")),
                     })
 
-                if payload:
-                    with _SL() as sess:
+                with _SL() as sess:
+                    if payload:
                         sess.execute(_text("""
                             INSERT INTO option_chain_history
                                 (symbol, as_of, option_symbol, expiry, strike, option_type,
@@ -15599,9 +15606,34 @@ def capture_option_chain_history(
                                 rho = EXCLUDED.rho,
                                 fetched_at = NOW()
                         """), payload)
-                        sess.commit()
+                    sess.execute(_text("""
+                        INSERT INTO option_chain_coverage
+                            (symbol, as_of, status, pages_fetched, page_size, rows_returned,
+                             completion_reason, source, retrieved_at)
+                        VALUES
+                            (:symbol, :as_of, :status, :pages, :page_size, :rows,
+                             :reason, 'unusual_whales', NOW())
+                        ON CONFLICT (symbol, as_of) DO UPDATE SET
+                            status = EXCLUDED.status,
+                            pages_fetched = EXCLUDED.pages_fetched,
+                            page_size = EXCLUDED.page_size,
+                            rows_returned = EXCLUDED.rows_returned,
+                            completion_reason = EXCLUDED.completion_reason,
+                            retrieved_at = NOW()
+                    """), {
+                        "symbol": sym, "as_of": as_of, "status": fetch["status"],
+                        "pages": fetch["pages"], "page_size": fetch["page_size"],
+                        "rows": len(rows), "reason": fetch["reason"],
+                    })
+                    sess.commit()
+                if payload:
                     rows_written += len(payload)
+                if fetch["status"] == "complete" and payload:
                     days_done += 1
+                elif fetch["status"] == "complete":
+                    days_empty += 1
+                else:
+                    days_incomplete += 1
                 time.sleep(_OPTHIST_THROTTLE_S)
             except Exception as exc:
                 errors += 1
@@ -15610,14 +15642,16 @@ def capture_option_chain_history(
 
     elapsed = time.monotonic() - _t0
     log.info("scheduler.opthist_done", days_done=days_done, days_skipped=days_skipped,
-             days_empty=days_empty, rows=rows_written, errors=errors, elapsed_s=round(elapsed))
+             days_empty=days_empty, days_incomplete=days_incomplete,
+             rows=rows_written, errors=errors, elapsed_s=round(elapsed))
     _record_job_status("option_chain_history_capture",
-                       "ok" if errors == 0 else "partial", elapsed)
+                       "ok" if errors == 0 and days_incomplete == 0 else "partial", elapsed)
     return {
         "symbols": len(symbols),
         "days_captured": days_done,
         "days_skipped_existing": days_skipped,
         "days_empty_non_trading": days_empty,
+        "days_incomplete": days_incomplete,
         "rows_written": rows_written,
         "errors": errors,
         "elapsed_s": round(elapsed, 1),

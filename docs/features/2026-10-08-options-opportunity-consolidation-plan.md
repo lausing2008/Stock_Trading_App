@@ -182,3 +182,35 @@ Suggested practical sequencing within phase 3: price-confirmed debit spreads and
 Monitor source lag and coverage by symbol and strategy; candidate rejection counts by gate; quote-age and complete-chain distributions; same-day expiry and invalid identity rates; duplicate/delivery lag; option mark coverage; calibrated-versus-unmeasured cohorts; risk-budget violations. A job that returns zero candidates must distinguish empty universe, missing evidence, filtered candidates and errors.
 
 Account size and existing positions are still needed for real quantities. Current provider intraday quote entitlement, quote sizes, corporate-action deliverables and full-chain completeness require verification. Start with existing subscriptions and caching; no new vendor purchase or quota expansion is authorized by this plan. Do not translate current heuristic scores into percentages to avoid that work.
+
+## Implemented first consolidation slice — 2026-10-09
+
+The first slice now covers O01–O12 as containment and measurement infrastructure:
+
+- `/options-flow-alerts` is a paginated research triage page with server-side symbol,
+  direction, premium and sweep filters. Historical calibration shows original count, eligible
+  count, exclusions, distinct dates, horizon units and eligibility version.
+- Selecting a row opens one decision review: directional inference, compatible structures,
+  missing actionability gates, trigger/exit requirements, maximum-loss policy and measurement
+  status. It does not produce an order quantity from a historical alert.
+- The fixed-contract ledger supports long calls and long puts under a close-before-expiry
+  policy. It freezes exact identity and quote times, assumes buy ask/sell bid plus declared
+  slippage and fees, retains unresolved attempts, and can demonstrate a correct stock direction
+  with a losing option.
+- Actionability uses hard gates and the initial planning policy of 0.25% account value maximum
+  loss per trade and 1% aggregate open option risk. These are conservative defaults chosen
+  because no user-specific loss limit was supplied; they are not evidence-optimized. Missing
+  account value/open risk/max loss produces no quantity.
+- A new `option_opportunity` preference defaults off. Even an eligible opportunity queues only
+  for a user with an explicit enabled row, through the existing durable outbox. No new alerts
+  are sent by this slice because no live opportunity currently clears every gate.
+- Provider chain pagination and stored coverage distinguish complete, incomplete, failed and
+  legacy-unverified captures. Flow composition, GEX, short interest and dark-pool evidence now
+  carry their narrower meanings and provenance.
+- LEAPS and income outputs are labelled historical replay/simulation and `research_only`, with
+  omitted fills, fees, financing, early assignment and attribution made explicit.
+
+This completes the correctness and usability work in the first slice. It does not complete the
+prospective evidence needed for a profit claim, multi-leg lifecycle engines, broker execution,
+or assignment-aware strategy P&L. The playbooks remain the specification for those later
+strategy-specific promotions; each family must earn actionability separately.

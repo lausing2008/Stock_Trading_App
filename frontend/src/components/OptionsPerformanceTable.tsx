@@ -60,7 +60,7 @@ export default function OptionsPerformanceTable({ data }: { data: OptionsPerform
           <>
             {' '}The option columns follow a single contract each, chosen as the strike nearest
             the {data.entry_spot?.toFixed(2)} open and held across every row — so the call can
-            fall on a day the stock rises, which is time decay, not an error.
+            fall on a day the stock rises. Time decay, volatility and quote changes can contribute; this table does not isolate their effects.
           </>
         ) : (
           <>

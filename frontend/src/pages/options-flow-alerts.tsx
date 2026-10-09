@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import {
@@ -8,6 +8,7 @@ import {
   type OptionsFlowAlertBacktestResponse,
   type OptionsFlowAlertBacktestWindowStat,
 } from '@/lib/api';
+import { FlowDecisionReview } from '@/components/FlowDecisionReview';
 import { getSession } from '@/lib/auth';
 
 // MPE-OPTIONS-FLOW-ALERT — dashboard for the real Unusual Whales unusual-options-activity
@@ -60,7 +61,7 @@ function DirectionCard({ row }: { row: OptionsFlowAlertDirectionSummary }) {
       </div>
       <div style={{ fontSize: '11px', color: '#475569', marginBottom: 12 }}>
         {row.fired_count} alert{row.fired_count === 1 ? '' : 's'} fired in window
-        {primary && ` · ${primary.n} outcome${primary.n === 1 ? '' : 's'} resolved (10d)`}
+        {primary && ` · ${primary.n} eligible outcome${primary.n === 1 ? '' : 's'} (10 calendar days)`}
       </div>
       {primary ? (
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
@@ -73,11 +74,22 @@ function DirectionCard({ row }: { row: OptionsFlowAlertDirectionSummary }) {
           <span style={{ fontSize: '15px', fontWeight: 700, color: returnColor(primary.avg_return_pct, row.direction) }}>
             {fmtPct(primary.avg_return_pct)}
           </span>
-          <span style={{ fontSize: '11px', color: '#475569' }}>avg return, 10d</span>
+          <span style={{ fontSize: '11px', color: '#475569' }}>mean underlying move</span>
         </div>
       ) : (
         <div style={{ fontSize: '12px', color: '#475569' }}>No 10-day outcomes resolved yet in this window.</div>
       )}
+      <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 12 }}>
+        Measured underlying directional hit rate · not option profit or a forecast.<br />
+        {primary?.original_n ?? 'Unknown'} resolved before filtering · {primary?.excluded_total ?? 'unknown'} excluded
+        {' · '}{primary?.distinct_dates ?? 'unknown'} distinct dates
+        <details><summary>Eligibility and exclusions</summary>
+          <p>Rules: {primary?.eligibility_version ?? 'not supplied'}. Multiple contracts on one date are correlated observations.</p>
+          {Object.entries(primary?.excluded_by_reason ?? {}).map(([reason, count]) => (
+            <p key={reason}>{reason.replace(/_/g, ' ')}: {count}. {primary?.exclusion_reasons?.[reason]}</p>
+          ))}
+        </details>
+      </div>
       <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: '11px', color: '#64748b', flexWrap: 'wrap' }}>
         <span>1d: {row.window_1d ? `${fmtPct(row.window_1d.avg_return_pct)} (${row.window_1d.n})` : '—'}</span>
         <span>2d: {row.window_2d ? `${fmtPct(row.window_2d.avg_return_pct)} (${row.window_2d.n})` : '—'}</span>
@@ -256,25 +268,19 @@ export default function OptionsFlowAlertsPage() {
   const [sweepOnly, setSweepOnly] = useState(false);
   const [minPremium, setMinPremium] = useState(0);
   const [sortKey, setSortKey] = useState<SortKey>('fired_date');
+  const [symbol, setSymbol] = useState('');
+  const [page, setPage] = useState(0);
+  const [selected, setSelected] = useState<OptionsFlowAlertRow | null>(null);
+  const pageSize = 25;
+  useEffect(() => { setPage(0); setSelected(null); }, [daysBack, dirFilter, sweepOnly, minPremium, sortKey, symbol]);
 
   const { data, isLoading, error, mutate } = useSWR(
-    authed ? ['options-flow-alert-performance', daysBack] : null,
-    () => api.getOptionsFlowAlertPerformance({ days_back: daysBack, limit: 500 }),
+    authed ? ['options-flow-alert-performance', daysBack, page, symbol, dirFilter, sweepOnly, minPremium, sortKey] : null,
+    () => api.getOptionsFlowAlertPerformance({ days_back: daysBack, limit: pageSize, offset: page * pageSize, symbol: symbol || undefined, direction: dirFilter === 'all' ? undefined : dirFilter, sweep_only: sweepOnly, min_premium: minPremium, sort: sortKey }),
     { revalidateOnFocus: false, refreshInterval: 60_000 }
   );
 
-  const filteredRows = useMemo(() => {
-    if (!data) return [];
-    let rows = data.recent_alerts;
-    if (dirFilter !== 'all') rows = rows.filter(r => r.direction === dirFilter);
-    if (sweepOnly) rows = rows.filter(r => r.has_sweep);
-    if (minPremium > 0) rows = rows.filter(r => (r.total_premium ?? 0) >= minPremium);
-    const sorted = [...rows];
-    if (sortKey === 'total_premium') sorted.sort((a, b) => (b.total_premium ?? 0) - (a.total_premium ?? 0));
-    else if (sortKey === 'volume_oi_ratio') sorted.sort((a, b) => (b.volume_oi_ratio ?? 0) - (a.volume_oi_ratio ?? 0));
-    else sorted.sort((a, b) => (b.fired_date + b.symbol).localeCompare(a.fired_date + a.symbol));
-    return sorted;
-  }, [data, dirFilter, sweepOnly, minPremium, sortKey]);
+  const filteredRows = data?.recent_alerts ?? [];
 
   if (!authed) return null;
 
@@ -286,12 +292,9 @@ export default function OptionsFlowAlertsPage() {
             🎯 Unusual Options Activity
           </h1>
           <p style={{ fontSize: '12px', color: '#475569', maxWidth: 720 }}>
-            Real Unusual Whales flow-alerts — a rule-based sweep/repeated-hits detection over
-            the full options tape, direction derived from the real ask-side/bid-side premium
-            split (not a naive call=bullish/put=bearish read — a bid-side-dominant PUT means
-            aggressive put SELLING, a bullish bet). This is the FULL, uncapped list; the email
-            only sends the top ~12 by premium size per cycle, with a per-(symbol, direction)
-            30-minute cooldown so the same setup can&apos;t re-alert faster than that.
+            Review unusual activity, inspect why it matters, then compare a strategy only after
+            checking quotes and risk. These are historical research signals; premium size is not
+            conviction and a correct stock direction does not establish option profit.
           </p>
         </div>
         <button
@@ -302,7 +305,14 @@ export default function OptionsFlowAlertsPage() {
         </button>
       </div>
 
+      <div style={{ color: '#cbd5e1', marginBottom: 16 }}>
+        <strong>Start here:</strong> search a symbol, select Review, and check the missing evidence.
+        This ledger does not establish an actionable opportunity.
+      </div>
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '20px', alignItems: 'center' }}>
+        <input aria-label="Search symbol" placeholder="Symbol, e.g. MU" value={symbol}
+          onChange={e => setSymbol(e.target.value.toUpperCase().trim())}
+          style={{ padding: 8, background: '#0d1424', color: '#e2e8f0', border: '1px solid #475569' }} />
         <select
           value={daysBack}
           onChange={e => setDaysBack(Number(e.target.value) as typeof DAYS_OPTS[number])}
@@ -355,13 +365,20 @@ export default function OptionsFlowAlertsPage() {
 
       {data && (
         <>
+          <p style={{ color: '#94a3b8' }}>Performance: entire {daysBack}-day lookback, independent of table filters. Horizons below are calendar days.</p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px', marginBottom: '20px' }}>
             {data.by_direction.map(row => <DirectionCard key={row.direction} row={row} />)}
           </div>
 
+          {selected && <FlowDecisionReview row={selected} onClose={() => setSelected(null)} />}
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '8px', flexWrap: 'wrap', gap: 8 }}>
             <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>
-              {filteredRows.length} OF {data.recent_alerts.length} ALERTS SHOWN
+              {filteredRows.length} SHOWN · {data.matching_count ?? 'unknown'} MATCH FILTERS · {data.total_count ?? 'unknown'} TOTAL
+              <span style={{ marginLeft: 12 }}>
+                <button disabled={page === 0} onClick={() => setPage(p => p - 1)}>Previous</button>
+                {' '}Page {page + 1}{' '}
+                <button disabled={(page + 1) * pageSize >= (data.matching_count ?? 0)} onClick={() => setPage(p => p + 1)}>Next</button>
+              </span>
             </div>
           </div>
 
@@ -370,7 +387,7 @@ export default function OptionsFlowAlertsPage() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px' }}>
                 <thead>
                   <tr style={{ background: 'rgba(148,163,184,0.05)' }}>
-                    {['Date', 'Symbol', 'Dir', 'Type', 'Strike', 'Expiry', 'Premium', 'Vol/OI', 'Side', 'Sweep', '10d', 'Win?'].map(h => (
+                    {['Date', 'Symbol', 'Dir', 'Type', 'Strike', 'Expiry', 'Premium', 'Vol/OI', 'Side', 'Sweep', 'Stock 10d', 'Direction hit?', 'Calibration', 'Review'].map(h => (
                       <th key={h} style={{ textAlign: ['Date', 'Symbol'].includes(h) ? 'left' : 'right', padding: '8px 10px', color: '#475569', fontWeight: 700, fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '0.04em', borderBottom: '1px solid #1e293b' }}>
                         {h}
                       </th>
@@ -391,17 +408,21 @@ export default function OptionsFlowAlertsPage() {
                       <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700, color: '#e2e8f0' }}>{fmtMoney(row.total_premium)}</td>
                       <td style={{ padding: '8px 10px', textAlign: 'right', color: '#64748b' }}>{row.volume_oi_ratio != null ? `${row.volume_oi_ratio.toFixed(1)}x` : '—'}</td>
                       <td style={{ padding: '8px 10px', textAlign: 'right', fontSize: '11px', color: row.ask_side_dominant ? '#22c55e' : '#f59e0b' }}>
-                        {row.ask_side_dominant ? 'Ask (buy)' : 'Bid (sell)'}
+                        {row.ask_side_dominant == null ? 'Unknown' : row.ask_side_dominant ? 'Ask-side' : 'Bid-side'}
                       </td>
                       <td style={{ padding: '8px 10px', textAlign: 'right' }}>{row.has_sweep ? '⚡' : ''}</td>
                       <td style={{ padding: '8px 10px', textAlign: 'right', color: returnColor(row.return_10d, row.direction) }}>{fmtPct(row.return_10d)}</td>
                       <td style={{ padding: '8px 10px', textAlign: 'right' }}>
                         {row.is_correct_10d == null ? <span style={{ color: '#475569' }}>—</span> : row.is_correct_10d ? <span style={{ color: '#22c55e' }}>✓</span> : <span style={{ color: '#ef4444' }}>✗</span>}
                       </td>
+                      <td style={{ padding: 8, color: '#cbd5e1' }} title={row.eligibility_reason ?? undefined}>
+                        {(row.calibration_eligibility ?? 'unavailable').replace(/_/g, ' ')}
+                      </td>
+                      <td><button onClick={() => setSelected(row)} aria-label={`Review ${row.symbol} ${row.option_chain}`}>Review</button></td>
                     </tr>
                   ))}
                   {filteredRows.length === 0 && (
-                    <tr><td colSpan={12} style={{ padding: '20px', textAlign: 'center', color: '#475569' }}>No alerts match these filters.</td></tr>
+                    <tr><td colSpan={14} style={{ padding: '20px', textAlign: 'center', color: '#475569' }}>No alerts match these filters.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -411,11 +432,11 @@ export default function OptionsFlowAlertsPage() {
           <div style={{ marginTop: '20px', padding: '14px 16px', borderRadius: '10px', background: 'rgba(148,163,184,0.05)', border: '1px solid #1e293b' }}>
             <div style={{ fontSize: '11px', fontWeight: 700, color: '#94a3b8', marginBottom: 8 }}>HOW TO READ THIS</div>
             <ul style={{ fontSize: '11.5px', color: '#64748b', margin: 0, paddingLeft: '18px', lineHeight: 1.6 }}>
-              <li><strong style={{ color: '#94a3b8' }}>Side</strong>: &quot;Ask (buy)&quot; means the trade printed aggressively at the ask — someone paid up to get in fast. &quot;Bid (sell)&quot; means someone sold aggressively at the bid.</li>
+              <li><strong style={{ color: '#94a3b8' }}>Side</strong>: Ask-side or bid-side describes the inferred trade aggressor. It does not establish whether the customer opened or closed a position, or whether this contract was one leg of a larger trade.</li>
               <li>A CALL bought at the ask, or a PUT sold at the bid, both read <span style={{ color: '#22c55e', fontWeight: 700 }}>bullish</span>. A PUT bought at the ask, or a CALL sold at the bid, both read <span style={{ color: '#ef4444', fontWeight: 700 }}>bearish</span>.</li>
-              <li><strong style={{ color: '#94a3b8' }}>Vol/OI</strong> — today&apos;s volume vs. existing open interest. Above 1x means MORE contracts traded today than were already open — new positioning, not just existing holders trading among themselves.</li>
+              <li><strong style={{ color: '#94a3b8' }}>Vol/OI</strong> — today&apos;s volume vs. existing open interest. Above 1x means MORE contracts traded today than were already open — it does not establish new positions; contracts can trade repeatedly and OI is a dated snapshot.</li>
               <li><strong style={{ color: '#94a3b8' }}>⚡ Sweep</strong> — the order hit multiple exchanges near-simultaneously, typical of someone trying to fill a large order fast before the price moves against them.</li>
-              <li>This reports a <strong style={{ color: '#94a3b8' }}>measured fact</strong> — large, urgent options positioning was detected — never a prediction the stock will actually move. The win-rate columns only populate once &gt;=30 resolved outcomes exist for that direction. Not financial advice.</li>
+              <li>These are provider-reported activity signals. Side is an inference about trade aggressor; opening, closing, multi-leg relationships and portfolio intent are not established. Directional hit rates describe the eligible historical cohort, not the probability this contract makes money.</li>
             </ul>
           </div>
         </>

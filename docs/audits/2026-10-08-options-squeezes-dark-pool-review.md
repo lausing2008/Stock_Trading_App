@@ -86,6 +86,38 @@ Snapshot `as_of`/computation date does not prove quote freshness. A full-history
 
 ## Findings and corrective direction
 
+### Implementation status — 2026-10-09
+
+All twelve findings now have production-code containment. This does not promote any strategy
+to proven or profitable. It removes invalid inputs and claims, provides a fixed-contract shadow
+ledger, and makes missing prerequisites block promotion.
+
+| Finding | Implemented boundary |
+|---|---|
+| O01 | Directional exposure is declared by each structure and incompatible structures are removed before ranking and fallback. |
+| O02 | Tape premium, estimated turnover and unavailable premium are separate; whale assessment is tri-state and reports assessed/total coverage. |
+| O03 | `flow-elig-2` uses last tradable session, excludes expired/same-day/timing-unknown contracts, versions the cohort and serves one partition to calibration and the API. |
+| O04 | A versioned fixed-contract ledger freezes contract, times, source, rules, costs and deliverable; it resolves ask-to-bid net P&L separately from the underlying event study and preserves every attempt. Trigger ordering remains explicitly unmeasured where intraday evidence is absent. |
+| O05 | Promotion is a hard gate. Fresh two-sided quotes, identity/deliverable, market/session, event coverage, permissions, capital and portfolio risk are mandatory. Default sizing caps loss at 0.25% of account value and aggregate open option risk at 1%; absent account facts produce no quantity. |
+| O06 | One route owns normalized flow evidence. Chain composition no longer changes the stock signal, partial expiry coverage is reported, and shared-source evidence has one independence group. |
+| O07 | Short interest carries market date/source/freshness. GEX is labelled a provider model of assumed market-maker exposure with source time, and the documented ticker-wide response is no longer treated as an expiry list. |
+| O08 | Each dark-pool print is compared with a baseline ending before that print. The result remains context pending matched-control and net-strategy evidence. |
+| O09 | Historical chains paginate to a terminal short page; complete/incomplete coverage, page count and failure reason are stored. Legacy rows without coverage evidence remain unverified. |
+| O10 | The undefined snapshot fallback is removed. Missing source price now yields no snapshot instead of a fabricated or crashing fallback. |
+| O11 | `option_opportunity` is a new explicit-opt-in channel. Only an actionable frozen opportunity can enter the durable outbox; absence of a preference row sends nothing, retries reuse frozen content, and no provider send occurs in the decision path. |
+| O12 | LEAPS and income payloads declare replay/simulation status, execution basis, omitted costs/cash flows and `research_only` eligibility. The UI no longer attributes a price change to time decay alone. |
+
+The current flow page is a triage ledger. It now searches and filters server-side, paginates,
+keeps calibration denominators/exclusions visible, and opens a one-alert decision review. That
+review leads with the decision state, compatible structures, missing gates, proposed planning
+limits, trigger/exit requirements and the distinction between underlying movement and option
+P&L. A historical row is never labelled actionable.
+
+The next evidence milestone is prospective resolved fixed-contract observations. Until live
+quote entitlement, quote size, contract deliverables, account value, permissions and portfolio
+risk are supplied, the correct production result is `research_only` with no quantity and no
+opportunity email.
+
 ### O01 — High: strategy recommendation can contradict the stated direction
 
 **Reproduced.** [`options_strategies.py`](../../services/market-data/src/services/options_strategies.py), `_recommend` (~513), prioritizes IV and ownership. With `signal=SELL`, no shares, IV rank 80 and valid bearish and bullish spreads, primary is `cash_secured_put`. The same happens for HOLD and BUY. A CSP carries bullish downside exposure. A bearish debit spread is available but not selected for this scenario. [Witness](evidence/2026-10-08-options-review/strategy-witness.py).

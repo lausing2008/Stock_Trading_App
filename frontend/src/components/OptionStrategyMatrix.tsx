@@ -145,10 +145,12 @@ export default function OptionStrategyMatrixPanel({ matrix, spot }: { matrix: Op
 
   return (
     <div style={{ marginTop: 16 }}>
+      <p style={{ color: '#fbbf24', fontSize: 13 }}>Research comparison only. Fresh quotes, contract deliverables,
+        event coverage, account permissions and portfolio risk have not been verified. No trade quantity is recommended.</p>
       {rec.primary && (
         <div style={{ ...CARD, borderColor: '#22c55e', marginBottom: 14 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: '#22c55e' }}>
-            ★ Best fit right now: {rec.name}
+            Structure comparison: {rec.name}
           </div>
           <div style={{ fontSize: 12, color: '#cbd5e1', marginTop: 6, lineHeight: 1.6 }}>{rec.reason}</div>
           {/* SF-04: "Best fit RIGHT NOW" is the strongest claim on this page. If the structure

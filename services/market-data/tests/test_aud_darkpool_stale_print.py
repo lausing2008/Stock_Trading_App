@@ -174,11 +174,12 @@ def test_the_age_filter_is_applied_to_qualifying_prints():
 
 
 def test_the_dollar_and_relative_bars_are_unchanged():
-    """This fix adds a condition; it must not relax the two that already existed."""
-    i = SCHED_SRC.index("qualifying = [")
-    block = SCHED_SRC[i:i + 400]
-    assert ">= _DARK_POOL_ALERT_MIN_PREMIUM" in block
-    assert ">= _rel_floor" in block
+    """Execute the shared predicate; source substrings can pass on comments or dead code."""
+    from src.services.option_evidence import dark_pool_qualifies
+
+    assert dark_pool_qualifies(1_000_000, 200_000, 1_000_000, 5.0)
+    assert not dark_pool_qualifies(999_999, 100_000, 1_000_000, 5.0)
+    assert not dark_pool_qualifies(1_000_000, 250_000, 1_000_000, 5.0)
 
 
 def test_prints_are_still_persisted_BEFORE_filtering():

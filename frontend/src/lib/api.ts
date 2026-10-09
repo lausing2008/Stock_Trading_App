@@ -528,10 +528,13 @@ export const api = {
   },
 
   // MPE-OPTIONS-FLOW-ALERT — real Unusual Whales flow-alerts performance/recent-list
-  getOptionsFlowAlertPerformance: (params?: { days_back?: number; limit?: number }) => {
+  getOptionsFlowAlertPerformance: (params?: { days_back?: number; limit?: number; offset?: number; symbol?: string; direction?: string; sweep_only?: boolean; min_premium?: number; sort?: string }) => {
     const p = new URLSearchParams();
     if (params?.days_back != null) p.set('days_back', String(params.days_back));
     if (params?.limit != null) p.set('limit', String(params.limit));
+    for (const key of ['offset', 'symbol', 'direction', 'sweep_only', 'min_premium', 'sort'] as const) {
+      if (params?.[key] != null) p.set(key, String(params[key]));
+    }
     const qs = p.toString();
     return request<OptionsFlowAlertPerformanceResponse>(`/admin/options-flow-alert-performance${qs ? `?${qs}` : ''}`);
   },
@@ -2484,6 +2487,12 @@ export type OptionStrategyMatrix = {
   recommendation: OptionStrategyRecommendation;
   iv_rank: number | null;
   iv_regime: 'rich' | 'cheap' | 'normal' | 'unknown';
+  trade_eligibility?: {
+    status: 'research_only' | 'actionable';
+    blockers: string[];
+    quantity: number | null;
+    risk_budget?: number | null;
+  };
 };
 
 export type OptionsGamePlan = {
@@ -2897,18 +2906,26 @@ export type SqueezeAlertPerformanceResponse = {
 // MPE-OPTIONS-FLOW-ALERT — a genuinely separate endpoint from squeeze/gamma performance above,
 // since OptionsFlowAlertOutcome is keyed per-CONTRACT (option_chain), grouped by direction
 // (bullish/bearish), not alert_type — see options_flow_alert_performance()'s own docstring.
+export type OptionsFlowWindowStat = (NonNullable<SqueezeAlertWindowStat> & {
+  original_n?: number; excluded_total?: number; excluded_by_reason?: Record<string, number>;
+  exclusion_reasons?: Record<string, string>; eligibility_version?: string;
+  distinct_dates?: number; horizon_unit?: string;
+}) | null;
+
 export type OptionsFlowAlertDirectionSummary = {
   direction: 'bullish' | 'bearish';
   fired_count: number;
-  window_10d: SqueezeAlertWindowStat;
-  window_1d: SqueezeAlertWindowStat;
-  window_2d: SqueezeAlertWindowStat;
-  window_3d: SqueezeAlertWindowStat;
-  window_5d: SqueezeAlertWindowStat;
-  window_20d: SqueezeAlertWindowStat;
+  window_10d: OptionsFlowWindowStat;
+  window_1d: OptionsFlowWindowStat;
+  window_2d: OptionsFlowWindowStat;
+  window_3d: OptionsFlowWindowStat;
+  window_5d: OptionsFlowWindowStat;
+  window_20d: OptionsFlowWindowStat;
 };
 
 export type OptionsFlowAlertRow = {
+  calibration_eligibility?: string;
+  eligibility_reason?: string | null;
   symbol: string;
   option_chain: string;
   option_type: 'call' | 'put';
@@ -2918,7 +2935,7 @@ export type OptionsFlowAlertRow = {
   fired_date: string;
   alert_price: number;
   total_premium: number | null;
-  ask_side_dominant: boolean;
+  ask_side_dominant: boolean | null;
   has_sweep: boolean;
   volume_oi_ratio: number | null;
   alert_rule: string | null;
@@ -2934,6 +2951,7 @@ export type OptionsFlowAlertRow = {
 };
 
 export type OptionsFlowAlertPerformanceResponse = {
+  matching_count?: number; total_count?: number; offset?: number; limit?: number;
   days_back: number;
   by_direction: OptionsFlowAlertDirectionSummary[];
   recent_alerts: OptionsFlowAlertRow[];

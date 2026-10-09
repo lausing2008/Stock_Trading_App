@@ -2452,23 +2452,15 @@ def _apply_style_signal(
         reasons["sector_headwind"] = False
     fused = float(np.clip(fused, 0.0, 1.0))
 
-    # ── Options flow ──────────────────────────────────────────────────────────
-    if options_sentiment == "strongly_bullish":
-        fused = float(np.clip(fused + 0.04, 0.0, 1.0))
-        reasons["options_flag"] = "unusual_call_activity"
-    elif options_sentiment == "bullish":
-        fused = float(np.clip(fused + 0.02, 0.0, 1.0))
-        reasons["options_flag"] = "elevated_call_volume"
-    elif options_sentiment == "bearish":
-        fused = float(np.clip(0.5 + (fused - 0.5) * 0.92, 0.0, 1.0))
-        reasons["options_flag"] = "elevated_put_volume"
-    elif options_sentiment == "slightly_bearish":
-        fused = float(np.clip(0.5 + (fused - 0.5) * 0.96, 0.0, 1.0))
-        reasons["options_flag"] = "slightly_elevated_puts"
-    elif options_sentiment is not None:
-        reasons["options_flag"] = "neutral"
-    else:
-        reasons["options_flag"] = "no_data"
+    # Chain composition is context, not independently validated trade intent. Preserve
+    # the observed category for explanation but do not manufacture a directional bonus.
+    reasons["options_flag"] = {
+        "strongly_bullish": "unusual_call_activity", "bullish": "elevated_call_volume",
+        "bearish": "elevated_put_volume", "slightly_bearish": "slightly_elevated_puts",
+        "neutral": "mixed_activity",
+    }.get(options_sentiment, "no_data")
+    reasons["options_directional_adjustment"] = 0.0
+    reasons["options_evidence_basis"] = "chain composition only; trade intent unestablished"
 
     # ── S/R zone context ──────────────────────────────────────────────────────
     sr_ctx = base_reasons.get("sr_context", "neutral")

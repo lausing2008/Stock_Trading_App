@@ -10,10 +10,9 @@ wanted. Found while auditing why the Short Squeeze Alert had gone quiet.
 
 TWO DESIGN DECISIONS WORTH KNOWING:
 
-**Absence means subscribed.** No preference rows are created up front and a missing row reads as
-opted IN, so shipping this changes nobody's mail on day one. The opposite default would have
-silently switched off every alert on the platform at deploy time — a much worse failure than the
-one being fixed, and one that would have looked like the mail system breaking.
+**Each type declares its default.** Existing operational alerts default on to preserve their
+established subscriptions. A new trade-opportunity channel defaults off: absence of a row is
+not consent to receive a new class of trade prompt.
 
 **Unsubscribe tokens are stateless HMACs, not stored secrets.** A mail client must be able to
 act on a link months later without a session, so the token has to survive with no server-side
@@ -57,6 +56,9 @@ ALERT_TYPES: list[dict] = [
      "desc": "Concentrated open interest near the money, close to expiry."},
     {"key": "options_flow",        "group": "Options",   "label": "Options flow alerts",
      "desc": "Unusual options activity."},
+    {"key": "option_opportunity", "group": "Options",   "label": "Actionable option opportunities",
+     "desc": "Only fully gated option opportunities with frozen risk and contract details.",
+     "default_enabled": False},
     {"key": "dark_pool",           "group": "Options",   "label": "Dark pool prints",
      "desc": "Large off-exchange block trades."},
 

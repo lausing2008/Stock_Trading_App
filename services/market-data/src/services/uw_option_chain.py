@@ -64,6 +64,21 @@ def latest_as_of(session: Session, symbol: str, not_after: date | None = None) -
     return row.d if row and row.d else None
 
 
+def _coverage_for(session: Session, symbol: str, as_of: date) -> dict | None:
+    """Stored pagination evidence for this exact symbol/session, if it exists."""
+    try:
+        row = session.execute(text("""
+            SELECT status, pages_fetched, page_size, rows_returned, completion_reason,
+                   source, retrieved_at
+            FROM option_chain_coverage
+            WHERE symbol = :sym AND as_of = :as_of
+        """), {"sym": symbol.upper(), "as_of": as_of}).first()
+    except Exception:
+        # Supports rolling upgrades where the new coverage table has not been created yet.
+        return None
+    return dict(row._mapping) if row else None
+
+
 def _to_chain_row(r: dict, spot: float | None) -> dict:
     """UW row -> the exact shape `_options_chain_rows()` produced from a yfinance DataFrame, so
     every existing consumer (max-pain, the flow summary, the strategy matrix) works unchanged.
@@ -159,8 +174,25 @@ def get_chain(
     puts  = [_to_chain_row(r, spot) for r in rows if (r.get("option_type") or "").lower().startswith("p")]
     all_exp = sorted({r["expiry"].isoformat() for r in _rows_for(session, sym, as_of) if r.get("expiry")})
 
+    coverage = _coverage_for(session, sym, as_of)
+    legacy_status = "unverified_legacy_cap" if len(rows) == 500 else "unverified_legacy"
     return {
         "available": True, "symbol": sym,
+        "coverage_status": coverage["status"] if coverage else legacy_status,
+        "coverage_reason": coverage["completion_reason"] if coverage else (
+            "Exactly 500 archived rows may be a pre-pagination partial capture."
+            if len(rows) == 500 else
+            "This archive predates stored pagination evidence; missing contracts cannot be inferred absent."
+        ),
+        "coverage": ({
+            "pages_fetched": coverage["pages_fetched"],
+            "page_size": coverage["page_size"],
+            "rows_returned": coverage["rows_returned"],
+            "retrieved_at": coverage["retrieved_at"].isoformat() if coverage.get("retrieved_at") else None,
+        } if coverage else None),
+        "returned_contracts": len(rows),
+        "actionable": False,
+        "actionability_reason": "Settled archive quotes are research evidence, not fresh executable quotes.",
         "as_of": as_of.isoformat(),
         # The whole point of carrying this: these are SETTLED closes, not live quotes.
         "is_settled_session": True,

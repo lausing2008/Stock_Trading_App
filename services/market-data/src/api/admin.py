@@ -1073,6 +1073,12 @@ def squeeze_alert_performance(
 def options_flow_alert_performance(
     days_back: int = Query(180, ge=1, le=730),
     limit: int = Query(50, ge=1, le=500, description="How many most-recent rows to return in recent_alerts"),
+    offset: int = Query(0, ge=0),
+    symbol: str | None = Query(None, max_length=20),
+    direction: str | None = Query(None, pattern="^(bullish|bearish)$"),
+    sweep_only: bool = Query(False),
+    min_premium: float = Query(0, ge=0),
+    sort: str = Query("fired_date", pattern="^(fired_date|total_premium|volume_oi_ratio)$"),
     _: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
@@ -1099,7 +1105,8 @@ def options_flow_alert_performance(
     # page was showing all of them. One function decides eligibility for both.
     from common.market_calendar import is_trading_day as _itd
     from ..services.flow_outcome_eligibility import (
-        partition as _partition, ELIGIBILITY_VERSION as _ELIG_VERSION)
+        partition as _partition, classify as _classify, EXCLUSION_REASON,
+        ELIGIBILITY_VERSION as _ELIG_VERSION)
 
     def _summary_for_window(window: int) -> dict[str, dict]:
         ret_col = getattr(OptionsFlowAlertOutcome, f"return_{window}d")
@@ -1134,6 +1141,10 @@ def options_flow_alert_performance(
                 "excluded_total": part["excluded_total"],
                 "excluded_by_reason": part["excluded_counts"],
                 "eligibility_version": _ELIG_VERSION,
+                "metric": "measured underlying directional hit rate",
+                "horizon": window, "horizon_unit": "calendar_days",
+                "distinct_dates": len({r["fired_date"] for r in elig}),
+                "exclusion_reasons": part["exclusion_reasons"],
             }
         return out
 
@@ -1146,28 +1157,43 @@ def options_flow_alert_performance(
     ).all())
 
     by_direction = []
-    for direction in ("bullish", "bearish"):
+    for summary_direction in ("bullish", "bearish"):
         by_direction.append({
-            "direction": direction,
-            "fired_count": fired_counts.get(direction, 0),
-            "window_10d": by_window[10].get(direction),
-            "window_1d": by_window[1].get(direction),
-            "window_2d": by_window[2].get(direction),
-            "window_3d": by_window[3].get(direction),
-            "window_5d": by_window[5].get(direction),
-            "window_20d": by_window[20].get(direction),
+            "direction": summary_direction,
+            "fired_count": fired_counts.get(summary_direction, 0),
+            "window_10d": by_window[10].get(summary_direction),
+            "window_1d": by_window[1].get(summary_direction),
+            "window_2d": by_window[2].get(summary_direction),
+            "window_3d": by_window[3].get(summary_direction),
+            "window_5d": by_window[5].get(summary_direction),
+            "window_20d": by_window[20].get(summary_direction),
         })
 
-    recent_rows = session.execute(
-        select(OptionsFlowAlertOutcome, Stock.symbol)
-        .join(Stock, OptionsFlowAlertOutcome.stock_id == Stock.id)
-        .where(OptionsFlowAlertOutcome.fired_date >= cutoff)
-        .order_by(desc(OptionsFlowAlertOutcome.fired_date), desc(OptionsFlowAlertOutcome.fired_at))
-        .limit(limit)
-    ).all()
+    # Filters apply to the entire ledger before pagination. Summary cards remain the
+    # full lookback cohort and state that scope in the UI.
+    predicates = [OptionsFlowAlertOutcome.fired_date >= cutoff]
+    if symbol:
+        predicates.append(Stock.symbol == symbol.strip().upper())
+    if direction:
+        predicates.append(OptionsFlowAlertOutcome.direction == direction)
+    if sweep_only:
+        predicates.append(OptionsFlowAlertOutcome.has_sweep.is_(True))
+    if min_premium:
+        predicates.append(OptionsFlowAlertOutcome.total_premium >= min_premium)
+    base = select(OptionsFlowAlertOutcome, Stock.symbol).join(
+        Stock, OptionsFlowAlertOutcome.stock_id == Stock.id).where(*predicates)
+    matching_count = session.scalar(select(func.count()).select_from(base.subquery()))
+    sort_col = getattr(OptionsFlowAlertOutcome, sort)
+    recent_rows = session.execute(base.order_by(
+        sort_col.desc().nulls_last(), OptionsFlowAlertOutcome.fired_at.desc(),
+        OptionsFlowAlertOutcome.id.desc()).offset(offset).limit(limit)).all()
     recent_alerts = [
         {
             "symbol": symbol,
+            "calibration_eligibility": _classify(row.expiry, row.fired_date, row.entry_date,
+                                                 is_trading_day=_itd),
+            "eligibility_reason": EXCLUSION_REASON.get(_classify(
+                row.expiry, row.fired_date, row.entry_date, is_trading_day=_itd)),
             "option_chain": row.option_chain,
             "option_type": row.option_type,
             "direction": row.direction,
@@ -1195,6 +1221,11 @@ def options_flow_alert_performance(
 
     return {
         "days_back": days_back,
+        "matching_count": matching_count, "offset": offset, "limit": limit,
+        "total_count": sum(fired_counts.values()),
+        "summary_scope": "entire_lookback",
+        "metric": "measured underlying directional hit rate",
+        "horizon_unit": "calendar_days",
         "by_direction": by_direction,
         "recent_alerts": recent_alerts,
     }
@@ -2330,3 +2361,82 @@ def uw_screener_endpoint(
     from ..services.unusual_whales import get_stock_screener
     rows = get_stock_screener(limit=limit)
     return {"count": len(rows), "rows": rows}
+
+
+@router.post('/option-strategy-ledger')
+def capture_option_strategy(payload: dict, _: User = Depends(get_admin_user),
+                            session: Session = Depends(get_session)):
+    """Record a research simulation, not an order or notification."""
+    from db.models import OptionStrategyCapture
+    from ..services.option_strategy_ledger import validate_capture, fingerprint, digest
+    from sqlalchemy.exc import IntegrityError
+    inputs = dict(payload)
+    # A client cannot backdate a prospective capture and call known outcomes prospective.
+    if inputs.get('origin') == 'prospective':
+        inputs['captured_at'] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    try:
+        validate_capture(inputs)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    policy = fingerprint()
+    # Prospective retries use the original frozen server timestamp, not a new clock reading.
+    identity = {k: v for k, v in inputs.items() if k != 'captured_at'} if inputs['origin'] == 'prospective' else inputs
+    key = digest({'inputs': identity, 'policy': policy})
+    existing = session.scalar(select(OptionStrategyCapture).where(OptionStrategyCapture.capture_key == key))
+    if existing:
+        return {'id': existing.id, 'created': False, 'inputs': existing.inputs, 'policy_fingerprint': existing.policy_fingerprint}
+    row = OptionStrategyCapture(capture_key=key, policy_fingerprint=policy, inputs=inputs)
+    try:
+        session.add(row)
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        row = session.scalar(select(OptionStrategyCapture).where(OptionStrategyCapture.capture_key == key))
+        if row is None:
+            raise
+        return {'id': row.id, 'created': False, 'inputs': row.inputs, 'policy_fingerprint': row.policy_fingerprint}
+    return {'id': row.id, 'created': True, 'inputs': row.inputs, 'policy_fingerprint': policy}
+
+
+@router.post('/option-strategy-ledger/{capture_id}/resolve')
+def resolve_option_strategy(capture_id: int, evidence: dict, _: User = Depends(get_admin_user),
+                            session: Session = Depends(get_session)):
+    from db.models import OptionStrategyCapture, OptionStrategyResolution
+    from ..services.option_strategy_ledger import resolve, digest
+    from sqlalchemy.exc import IntegrityError
+    capture = session.get(OptionStrategyCapture, capture_id)
+    if capture is None:
+        raise HTTPException(404, 'Capture not found')
+    try:
+        result = resolve(capture.inputs, evidence, _dt.datetime.now(_dt.timezone.utc))
+        key = digest({'capture_id': capture_id, 'evidence': evidence, 'result': result})
+    except (ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    existing = session.scalar(select(OptionStrategyResolution).where(OptionStrategyResolution.attempt_key == key))
+    if existing:
+        return {'id': existing.id, 'created': False, 'result': existing.result}
+    row = OptionStrategyResolution(capture_id=capture_id, attempt_key=key, evidence=evidence, result=result)
+    try:
+        session.add(row)
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        row = session.scalar(select(OptionStrategyResolution).where(OptionStrategyResolution.attempt_key == key))
+        if row is None:
+            raise
+        return {'id': row.id, 'created': False, 'result': row.result}
+    return {'id': row.id, 'created': True, 'result': result}
+
+
+@router.get('/option-strategy-ledger/{capture_id}')
+def get_option_strategy(capture_id: int, _: User = Depends(get_admin_user),
+                        session: Session = Depends(get_session)):
+    from db.models import OptionStrategyCapture, OptionStrategyResolution
+    capture = session.get(OptionStrategyCapture, capture_id)
+    if capture is None:
+        raise HTTPException(404, 'Capture not found')
+    rows = session.scalars(select(OptionStrategyResolution).where(
+        OptionStrategyResolution.capture_id == capture_id).order_by(OptionStrategyResolution.id)).all()
+    return {'id': capture.id, 'inputs': capture.inputs, 'policy_fingerprint': capture.policy_fingerprint,
+            'attempts': [{'id': row.id, 'evidence': row.evidence, 'result': row.result} for row in rows],
+            'note': 'Attempts are audit history, not independent trades. Supplied evidence is provisional; no verified aggregate is published.'}

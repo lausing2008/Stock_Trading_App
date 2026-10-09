@@ -25,6 +25,7 @@ import re
 _ROOT = pathlib.Path(__file__).resolve().parents[3]
 _SCHED = (_ROOT / "services/market-data/src/services/scheduler.py").read_text()
 _PTE = (_ROOT / "services/market-data/src/services/paper_trading_engine.py").read_text()
+_OPTION_OPPORTUNITY = (_ROOT / "services/market-data/src/services/option_opportunity_notifications.py").read_text()
 _PREFS = (_ROOT / "shared/common/alert_prefs.py").read_text()
 
 
@@ -60,6 +61,7 @@ def _executable(src: str) -> str:
 
 _SCHED_CODE = _executable(_SCHED)
 _PTE_CODE = _executable(_PTE)
+_OPTION_OPPORTUNITY_CODE = _executable(_OPTION_OPPORTUNITY)
 
 
 def _is_enforced(alert_type: str) -> bool:
@@ -80,7 +82,8 @@ def _is_enforced(alert_type: str) -> bool:
         rf'_may_send\([^)]*"{alert_type}"\)',
         rf'alert_type == "{alert_type}"',
     ]
-    return any(re.search(p, _SCHED_CODE) or re.search(p, _PTE_CODE) for p in patterns)
+    return any(re.search(p, _SCHED_CODE) or re.search(p, _PTE_CODE)
+               or re.search(p, _OPTION_OPPORTUNITY_CODE) for p in patterns)
 
 
 def test_every_manageable_alert_type_is_enforced():

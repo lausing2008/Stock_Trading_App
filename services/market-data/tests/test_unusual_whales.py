@@ -102,7 +102,7 @@ def test_gex_levels_reads_from_cache_when_present():
     cached_row = uw.GexLevels(call_wall=250.0, put_wall=200.0, gamma_flip=225.0,
                                gamma_magnet=230.0, as_of_date="2026-08-25")
     import json
-    fake_redis.store["stockai:uw:gex:AAPL"] = json.dumps(asdict(cached_row))
+    fake_redis.store["stockai:uw:gex:v2:AAPL"] = json.dumps(asdict(cached_row))
     with patch.object(uw, "is_available", return_value=True), \
          patch.object(uw, "_get_redis", return_value=fake_redis), \
          patch.object(uw, "_get") as mock_get:
@@ -117,7 +117,8 @@ def test_gex_levels_parses_a_real_dict_response():
          patch.object(uw, "_get_redis", return_value=fake_redis), \
          patch.object(uw, "_get", return_value={
              "call_wall": "250.0", "put_wall": "200.0", "gamma_flip": "225.5",
-             "gamma_magnet": "230.0", "date": "2026-08-25",
+             "gamma_magnet": "230.0", "date": "2026-08-25", "time": "15:55:00",
+             "source": "volume", "nearby_flips": ["224.0", "226.0"],
          }):
         result = uw.get_gex_levels("AAPL")
     assert result.call_wall == 250.0
@@ -125,11 +126,13 @@ def test_gex_levels_parses_a_real_dict_response():
     assert result.gamma_flip == 225.5
     assert result.gamma_magnet == 230.0
     assert result.as_of_date == "2026-08-25"
+    assert result.as_of_time == "15:55:00"
+    assert result.source == "volume"
+    assert result.nearby_flips == [224.0, 226.0]
 
 
-def test_gex_levels_parses_a_real_list_response_using_the_first_row():
-    """UW's real response for this endpoint is a list of per-expiry rows (confirmed live) —
-    the first row must be the one used."""
+def test_gex_levels_rejects_a_list_instead_of_selecting_an_arbitrary_expiry():
+    """The documented endpoint is one ticker-wide object, not an expiry list."""
     fake_redis = _FakeRedis()
     with patch.object(uw, "is_available", return_value=True), \
          patch.object(uw, "_get_redis", return_value=fake_redis), \
@@ -140,8 +143,7 @@ def test_gex_levels_parses_a_real_list_response_using_the_first_row():
               "gamma_magnet": "999.0", "date": "2026-09-25"},
          ]):
         result = uw.get_gex_levels("AAPL")
-    assert result.call_wall == 250.0
-    assert result.as_of_date == "2026-08-25"
+    assert result is None
 
 
 def test_gex_levels_returns_none_for_a_symbol_with_no_options():
@@ -176,7 +178,7 @@ def test_gex_levels_writes_a_negative_cache_entry_too():
          patch.object(uw, "_get_redis", return_value=fake_redis), \
          patch.object(uw, "_get", return_value=None):
         uw.get_gex_levels("XYZ")
-    assert "stockai:uw:gex:XYZ" in fake_redis.store
+    assert "stockai:uw:gex:v2:XYZ" in fake_redis.store
 
 
 # ── get_short_interest() — parsing/caching, with _get() mocked directly ────────────────────

@@ -212,6 +212,9 @@ class GexLevels:
     gamma_flip: float | None
     gamma_magnet: float | None
     as_of_date: str | None
+    as_of_time: str | None = None
+    source: str | None = None
+    nearby_flips: list[float] | None = None
 
 
 @dataclass
@@ -713,9 +716,12 @@ def _get(path: str, params: dict | None = None, *, endpoint: str | None = None) 
 
 
 def get_gex_levels(symbol: str) -> GexLevels | None:
-    """Real, calculated gamma exposure levels for `symbol` — call_wall/put_wall (the strikes
-    where dealer gamma concentrates on each side) and gamma_flip (the "zero gamma" price level
-    dealers' own hedging flips direction at). Redis-cached 15 min. Returns None if Unusual
+    """Provider-model gamma-exposure levels for one ticker and market date.
+
+    UW documents this as a ticker-wide result derived from directionalized volume by default,
+    or open interest when explicitly requested. It is assumed market-maker exposure, not an
+    observation of dealer inventory and not one row per expiry. Redis-cached 15 min. Returns
+    None if Unusual
     Whales is disabled/unconfigured, the fetch fails for any reason, or the symbol has no real
     GEX data (e.g. no listed options) — every failure mode fails open, never raises, so a
     caller can always fall back to the existing free OI-concentration proxy
@@ -724,7 +730,7 @@ def get_gex_levels(symbol: str) -> GexLevels | None:
     if not is_available():
         return None
     sym = symbol.upper()
-    cache_key = f"stockai:uw:gex:{sym}"
+    cache_key = f"stockai:uw:gex:v2:{sym}"
     try:
         cached = _get_redis().get(cache_key)
         if cached:
@@ -744,10 +750,9 @@ def get_gex_levels(symbol: str) -> GexLevels | None:
     if not data:
         result = None
     else:
-        # UW's real response is a list of per-expiry rows (confirmed via the live spec) —
-        # the nearest/most-relevant row is the first one; a symbol with zero listed options
-        # returns an empty list, not a dict, so this must handle both shapes defensively.
-        row = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else None)
+        # The documented GEX-level response is one ticker-wide object. A list is a different
+        # endpoint/shape and is rejected rather than choosing an arbitrary member.
+        row = data if isinstance(data, dict) else None
         if not row:
             result = None
         else:
@@ -757,6 +762,10 @@ def get_gex_levels(symbol: str) -> GexLevels | None:
                 gamma_flip=_to_float(row.get("gamma_flip")),
                 gamma_magnet=_to_float(row.get("gamma_magnet")),
                 as_of_date=row.get("date"),
+                as_of_time=row.get("time"),
+                source=row.get("source"),
+                nearby_flips=[v for v in (_to_float(x) for x in (row.get("nearby_flips") or []))
+                              if v is not None],
             )
 
     try:
@@ -2116,6 +2125,57 @@ def _to_float(v) -> float | None:
 
 # ── OPTHIST-1: historical option chains ──────────────────────────────────────────────────
 
+def get_historical_option_chain_result(symbol: str, as_of: str,
+                                       *, page_limit: int = 500,
+                                       max_pages: int = 100) -> dict:
+    """Fetch every documented page and report whether a terminal page was observed.
+
+    UW documents `greeks=true` responses as pages of at most 500 rows, with page numbering
+    beginning at zero. A short (including empty) page is the terminal evidence. Repeated pages,
+    a page cap, or a request failure are retained as incomplete rather than presented as a full
+    chain. The rows remain useful research evidence in all of those states.
+    """
+    if not is_available():
+        return {"rows": [], "status": "unavailable", "pages": 0,
+                "reason": "unusual_whales_disabled", "page_size": page_limit}
+    sym = symbol.upper()
+    rows: list[dict] = []
+    seen_contracts: set[str] = set()
+    for page in range(max_pages):
+        try:
+            raw = _get(
+                f"/api/stock/{sym}/option-chains",
+                params={"date": as_of, "greeks": "true", "limit": page_limit, "page": page},
+                endpoint="/api/stock/{ticker}/option-chains",
+            )
+        except Exception as exc:  # includes entitlement, rate and transport failures
+            log.warning("unusual_whales.hist_chain_failed", symbol=sym, as_of=as_of,
+                        page=page, error=str(exc))
+            return {"rows": rows, "status": "incomplete", "pages": page,
+                    "reason": "request_failed", "page_size": page_limit}
+        page_rows = raw if isinstance(raw, list) else []
+        if raw is not None and not isinstance(raw, list):
+            return {"rows": rows, "status": "incomplete", "pages": page,
+                    "reason": "unexpected_response_shape", "page_size": page_limit}
+        clean = [r for r in page_rows if isinstance(r, dict)]
+        page_keys = {str(r.get("option_symbol")) for r in clean if r.get("option_symbol")}
+        if page_keys and page_keys <= seen_contracts:
+            return {"rows": rows, "status": "incomplete", "pages": page,
+                    "reason": "repeated_page", "page_size": page_limit}
+        for row in clean:
+            key = row.get("option_symbol")
+            if key and str(key) in seen_contracts:
+                continue
+            if key:
+                seen_contracts.add(str(key))
+            rows.append(row)
+        if len(page_rows) < page_limit:
+            return {"rows": rows, "status": "complete", "pages": page + 1,
+                    "reason": "terminal_page", "page_size": page_limit}
+    return {"rows": rows, "status": "incomplete", "pages": max_pages,
+            "reason": "page_limit_reached", "page_size": page_limit}
+
+
 def get_historical_option_chain(symbol: str, as_of: str) -> list[dict]:
     """OPTHIST-1: the full option chain for `symbol` as it existed on `as_of` (YYYY-MM-DD).
 
@@ -2140,24 +2200,7 @@ def get_historical_option_chain(symbol: str, as_of: str) -> list[dict]:
     surfaces as UnusualWhalesAuthError and is caught here like any other failure. Verified
     2026-09-07 on API BASIC: real chains back to at least 2024-09-09.
     """
-    if not is_available():
-        return []
-    sym = symbol.upper()
-    try:
-        raw = _get(
-            f"/api/stock/{sym}/option-chains",
-            params={"date": as_of, "greeks": "true"},
-            endpoint="/api/stock/{ticker}/option-chains",
-        )
-    except Exception as exc:  # incl. UnusualWhalesAuthError for out-of-window dates
-        log.warning("unusual_whales.hist_chain_failed", symbol=sym, as_of=as_of, error=str(exc))
-        return []
-    if raw is None:
-        return []
-    rows = raw if isinstance(raw, list) else raw.get("data", [])
-    if not isinstance(rows, list):
-        return []
-    return [r for r in rows if isinstance(r, dict)]
+    return get_historical_option_chain_result(symbol, as_of)["rows"]
 
 
 # ── AUD-UWEXPAND: endpoints the API BASIC tier already grants but nothing consumed ──────────

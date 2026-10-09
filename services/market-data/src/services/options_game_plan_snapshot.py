@@ -120,7 +120,6 @@ def compute_options_game_plan_snapshot(session, stock_id: int, symbol: str) -> O
     from sqlalchemy import select
 
     try:
-        import yfinance as yf
 
         # T404-OPTIONS-UW-MIGRATION: the chain now comes from Unusual Whales. This job is the
         # reason the outage was measurable at all — it produced zero rows on 09-15/16/17 while
@@ -133,8 +132,8 @@ def compute_options_game_plan_snapshot(session, stock_id: int, symbol: str) -> O
 
         current_price = _goal_current_price(session, symbol)
         if current_price is None:
-            hist = t.history(period="1d")
-            current_price = float(hist["Close"].iloc[-1]) if not hist.empty else None
+            log.warning("options_game_plan_snapshot.price_unavailable", symbol=symbol)
+            return None
         if not current_price:
             return None
 

@@ -445,6 +445,17 @@ def build_strategy_matrix(
                 }
 
     return {
+        # Construction has no live quote, account, deliverable, market-state or portfolio
+        # evidence. It therefore cannot call the shared promotion gate with invented facts.
+        "trade_eligibility": {
+            "status": "research_only", "quantity": None, "risk_budget": None,
+            "blockers": [
+                "identity_verified", "deliverable_verified", "quotes_fresh",
+                "two_sided_quotes", "spread_acceptable", "size_sufficient",
+                "market_open", "event_coverage_verified", "account_permissions_verified",
+                "capital_sufficient", "portfolio_risk_checked",
+            ],
+        },
         "singles": singles,
         "combos": combos,
         "unavailable": unavailable,

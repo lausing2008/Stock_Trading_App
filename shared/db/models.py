@@ -370,7 +370,7 @@ class AlertCondition(str, enum.Enum):
 
 
 class AlertPreference(Base):
-    """AUD-ALERTPREFS (2026-09-24): per-user, per-alert-type opt-out.
+    """AUD-ALERTPREFS (2026-09-24): per-user, per-alert-type preference.
 
     WHY. Before this, the audience for every scheduled alert was "any user holding at least one
     untriggered PriceAlert row" — and the alert's own symbol was never compared against that
@@ -379,10 +379,9 @@ class AlertPreference(Base):
     anywhere in send_email(). The only way to stop any of it was to delete your price alerts,
     which also stopped the alerts you actually wanted.
 
-    ABSENCE MEANS SUBSCRIBED. There is deliberately no row per user per type created up front,
-    and a missing row reads as opted IN — so deploying this changes nobody's mail on day one.
-    A default of opted-out would have silently switched off every alert on the platform the
-    moment this shipped, which is a far worse failure than the problem being fixed.
+    Existing alert types interpret absence as subscribed. New trade-promotion channels may
+    declare an explicit opt-in default in common.alert_prefs; their send path must also require
+    a stored enabled row so a catalogue/API mistake cannot enroll a user.
 
     Essential mail is not representable here at all: a user's own PriceAlert firing, and
     broker re-auth, are account-critical and are never routed through a preference check — see
@@ -2288,6 +2287,7 @@ class OptionsFlowSnapshot(Base):
     whale_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     top_whale_premium: Mapped[float | None] = mapped_column(Float, nullable=True)
     sentiment: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -2398,6 +2398,32 @@ class OptionChainHistory(Base):
     __table_args__ = (
         UniqueConstraint("symbol", "as_of", "option_symbol", name="uq_optchain_sym_date_contract"),
         Index("ix_optchain_sym_asof", "symbol", "as_of"),
+    )
+
+
+class OptionChainCoverage(Base):
+    """Pagination evidence for one historical chain request.
+
+    Contract rows alone cannot establish completeness: the provider caps enriched pages at 500.
+    Only a terminal short page makes a capture complete. Partial rows remain available for
+    research, while absence claims and actionable promotion require `status=complete`.
+    """
+    __tablename__ = "option_chain_coverage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False)
+    as_of: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    pages_fetched: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    page_size: Mapped[int] = mapped_column(Integer, nullable=False, default=500)
+    rows_returned: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completion_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False,
+                                        default="unusual_whales")
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "as_of", name="uq_option_chain_coverage_symbol_date"),
+        Index("ix_option_chain_coverage_symbol_date", "symbol", "as_of"),
     )
 
 
@@ -4265,3 +4291,24 @@ class ObservationOutcome(Base):
         UniqueConstraint("observation_id", "horizon_sessions", "resolver_fingerprint",
                          name="uq_outcome_observation_horizon_resolver"),
     )
+
+
+class OptionStrategyCapture(Base):
+    """Immutable fixed-contract capture, separate from underlying event studies."""
+    __tablename__ = 'option_strategy_captures'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    capture_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    policy_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    inputs: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class OptionStrategyResolution(Base):
+    """Every distinct resolver/evidence attempt is retained; no result overwritten."""
+    __tablename__ = 'option_strategy_resolutions'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    capture_id: Mapped[int] = mapped_column(ForeignKey('option_strategy_captures.id'), nullable=False, index=True)
+    attempt_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSON, nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

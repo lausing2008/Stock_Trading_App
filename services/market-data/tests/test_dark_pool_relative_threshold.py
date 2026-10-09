@@ -60,34 +60,25 @@ def test_baseline_requires_a_real_sample():
 
 # ── both bars are applied, conjunctively ─────────────────────────────────────
 
-def _qualifying_block() -> str:
-    start = _SOURCE.index("_baseline = _dark_pool_premium_baseline(session, symbol)")
-    end = _SOURCE.index("if not qualifying:", start)
-    return _SOURCE[start:end]
-
-
-def test_absolute_and_relative_are_combined_with_and_not_or():
-    """`or` would make the alert MORE permissive than before the fix — the exact opposite of
-    the intent, and an easy thing to get backwards."""
-    block = _qualifying_block()
-    assert ">= _DARK_POOL_ALERT_MIN_PREMIUM" in block
-    assert ">= _rel_floor" in block
-    assert "and (r.premium or 0) >= _rel_floor" in block
-
-
-def test_relative_floor_is_zero_when_no_baseline_exists():
-    """Falls back to pre-fix behavior rather than blocking every alert on a cold table."""
-    block = _qualifying_block()
-    assert "_rel_floor = (_baseline * _DARK_POOL_REL_MULTIPLE) if _baseline else 0.0" in block
-
-
-def test_prints_are_persisted_before_filtering():
-    """The baseline is built from ORDINARY prints; persisting only qualifying ones would
-    destroy the distribution the relative bar measures against."""
-    src = _SOURCE
-    persist_idx = src.index("_persist_dark_pool_prints(session, stock_id, symbol, rows)")
-    filter_idx = src.index("_baseline = _dark_pool_premium_baseline(session, symbol)")
-    assert persist_idx < filter_idx
+def test_event_baseline_ends_before_the_event():
+    import ast
+    from datetime import datetime, timezone, timedelta
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    tree = ast.parse(_SOURCE)
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_dark_pool_premium_baseline')
+    ns = dict(datetime=datetime, timezone=timezone, timedelta=timedelta,
+              _DARK_POOL_BASELINE_DAYS=14, _DARK_POOL_BASELINE_MIN_PRINTS=20,
+              text=lambda sql: sql, log=MagicMock())
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), str(_SCHEDULER_PATH), 'exec'), ns)
+    session = MagicMock()
+    session.execute.return_value.one.return_value = SimpleNamespace(n=21, med=100000.)
+    event = datetime(2026, 10, 7, 15, tzinfo=timezone.utc)
+    assert ns['_dark_pool_premium_baseline'](session, 'MU', before=event) == 100000.
+    sql, params = session.execute.call_args.args
+    assert 'executed_at < :before' in sql
+    assert params['before'] == event.replace(tzinfo=None)
+    assert params['cutoff'] == event.replace(tzinfo=None) - timedelta(days=14)
 
 
 def test_baseline_uses_median_not_mean():
@@ -129,9 +120,8 @@ def test_persist_fails_open_and_rolls_back():
 # ── behavior of the two-bar filter ───────────────────────────────────────────
 
 def _qualifies(premium: float, baseline: float | None) -> bool:
-    """The exact expression the scheduler applies."""
-    rel_floor = (baseline * _REL_MULTIPLE) if baseline else 0.0
-    return premium >= _MIN_PREMIUM and premium >= rel_floor
+    from src.services.option_evidence import dark_pool_qualifies
+    return dark_pool_qualifies(premium, baseline, _MIN_PREMIUM, _REL_MULTIPLE)
 
 
 def test_routine_large_cap_print_no_longer_qualifies():
