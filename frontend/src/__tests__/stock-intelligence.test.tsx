@@ -105,6 +105,7 @@ const INTEL = {
     { id: 5, horizon: '1-4w', horizon_sessions: 20, direction: 'UNKNOWN', created: false,
       summary: { subject: 'stock:MU', direction: 'BULLISH',
                  direction_basis: '2 measured bucket(s) agree', horizon: '1-4w',
+                 horizon_sessions: 20,
                  support_quality: 'MEDIUM', predictive_confidence: null,
                  predictive_confidence_note: 'not calibrated — a stored observation makes future measurement possible and establishes no skill by itself',
                  three_factors: [{ claim: 'revenue grew 48.9% in the latest stored year',
@@ -353,5 +354,37 @@ describe('the conclusion comes from the current capture generation', () => {
     const html = renderToStaticMarkup(<StockIntelligencePanel symbol="GLD" />);
     expect(html).not.toContain('406.55999755859375');
     expect(html).toContain('406.56');
+  });
+});
+
+
+describe('the triggers belong to the horizon the direction came from', () => {
+  it('prefers the current row matching the summary horizon', () => {
+    /* The summary reads 20 sessions. Taking whichever current row came last put a 1-3m
+       boundary under a 1-4w direction, and two horizons can legitimately disagree. */
+    const multi = {
+      ...OUTCOMES,
+      observations: [
+        { ...OUTCOMES.observations[1], observation_id: 40, horizon: '1-4w',
+          horizon_sessions: 20, is_current_policy: true, direction: 'BEARISH',
+          confirmation_rule: 'a completed close below 376.88',
+          invalidation_rule: 'a completed close above 406.56',
+          triggers: { direction: 'BEARISH', confirms: 'a completed close below 376.88',
+                      invalidates: 'a completed close above 406.56', establishes: null,
+                      basis: 'bearish' } },
+        { ...OUTCOMES.observations[1], observation_id: 41, horizon: '1-3m',
+          horizon_sessions: 63, is_current_policy: true, direction: 'BEARISH',
+          confirmation_rule: 'a completed close below 300.00',
+          invalidation_rule: 'a completed close above 500.00',
+          triggers: { direction: 'BEARISH', confirms: 'a completed close below 300.00',
+                      invalidates: 'a completed close above 500.00', establishes: null,
+                      basis: 'bearish' } },
+      ],
+    };
+    swr.byKey = { 'stock-outcomes': multi, 'stock-intel': INTEL };
+    const html = renderToStaticMarkup(<StockIntelligencePanel symbol="GLD" />);
+    expect(html).toContain('376.88');
+    expect(html).not.toContain('300.00');
+    expect(html).not.toContain('come from the');  // no mismatch notice when aligned
   });
 });

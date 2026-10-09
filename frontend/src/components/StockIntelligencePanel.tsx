@@ -182,13 +182,24 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
      A NON-DIRECTIONAL reading has no confirmation or invalidation rule but still has something
      to say, so matching on the rules alone would hide exactly the case that needs explaining. */
   const current = rows.filter(r => r.is_current_policy);
-  const triggerRow = [...current].reverse().find(
-    r => r.confirmation_rule || r.invalidation_rule || r.triggers);
   const superseded = rows.filter(r => r.is_current_policy === false);
   /* If the server named no current generation, show NOTHING and say so. Falling back to "the
      newest row" would be a guess, and guessing is how the reversed rules stayed on screen. */
   const generationUnknown = rows.length > 0 && current.length === 0;
+  /* THE SAME HORIZON THE DIRECTION CAME FROM. The summary reads the 20-session horizon; taking
+     the triggers from whichever current row happened to be last put a 1-3m boundary under a
+     1-4w direction, and the two can legitimately disagree. Matching them is what makes the
+     Triggers block an explanation of the conclusion above it rather than a separate claim. */
+  const summarySessions = summary?.horizon_sessions;
+  const hasTrigger = (r: OutcomeObservation) =>
+    !!(r.confirmation_rule || r.invalidation_rule || r.triggers);
+  const triggerRow =
+    current.find(r => hasTrigger(r) && r.horizon_sessions === summarySessions)
+    ?? [...current].reverse().find(hasTrigger);
   const triggerHorizon = triggerRow?.horizon;
+  const triggerHorizonMismatch =
+    !!triggerRow && summarySessions !== undefined
+    && triggerRow.horizon_sessions !== summarySessions;
   const measured = (intel?.buckets ?? []).filter(b => b.direction !== 'UNKNOWN');
   const gaps = (intel?.buckets ?? []).filter(b => b.direction === 'UNKNOWN');
   const supersededCount = rows.reduce((n, r) => n + r.superseded.length, 0);
@@ -271,6 +282,12 @@ export default function StockIntelligencePanel({ symbol }: { symbol: string }) {
           <p style={{ ...label, margin: '0 0 8px' }}>
             Triggers{triggerHorizon ? ` · ${triggerHorizon}` : ''}
           </p>
+          {triggerHorizonMismatch && (
+            <p style={{ margin: '0 0 8px', fontSize: 12, color: '#fdba74', lineHeight: 1.45 }}>
+              These boundaries come from the {triggerHorizon} horizon, while the direction above
+              is read over {summary?.horizon}. Two horizons can disagree, so read them apart.
+            </p>
+          )}
           <div style={{ display: 'grid', gap: 6, fontSize: 13, color: '#e2e8f0' }}>
             {triggerRow.confirmation_rule && (
               <div><span style={{ color: '#6ee7b7' }}>Confirms: </span>
