@@ -1092,27 +1092,50 @@ def options_flow_alert_performance(
 
     cutoff = date.today() - timedelta(days=days_back)
 
+    # O03 (2026-10-08): THE SAME ELIGIBLE COHORT AS THE CALIBRATION. This endpoint had its own
+    # query with no contract-validity filter at all, so the performance screen and the figure
+    # attached to an alert were computed over DIFFERENT populations — 55% of the rows feeding
+    # the calibration were contracts that had already expired when the alert fired, and this
+    # page was showing all of them. One function decides eligibility for both.
+    from common.market_calendar import is_trading_day as _itd
+    from ..services.flow_outcome_eligibility import (
+        partition as _partition, ELIGIBILITY_VERSION as _ELIG_VERSION)
+
     def _summary_for_window(window: int) -> dict[str, dict]:
         ret_col = getattr(OptionsFlowAlertOutcome, f"return_{window}d")
         correct_col = getattr(OptionsFlowAlertOutcome, f"is_correct_{window}d")
         rows = session.execute(
             select(
                 OptionsFlowAlertOutcome.direction,
-                func.count().label("n"),
-                func.sum(case((correct_col.is_(True), 1), else_=0)).label("wins"),
-                func.avg(ret_col).label("avg_return"),
+                OptionsFlowAlertOutcome.fired_date,
+                OptionsFlowAlertOutcome.expiry,
+                OptionsFlowAlertOutcome.entry_date,
+                correct_col.label("is_correct"),
+                ret_col.label("ret"),
             )
             .where(OptionsFlowAlertOutcome.fired_date >= cutoff, correct_col.is_not(None))
-            .group_by(OptionsFlowAlertOutcome.direction)
-        ).all()
-        return {
-            row.direction: {
-                "n": row.n, "wins": row.wins,
-                "win_rate": round(row.wins / row.n, 3) if row.n else None,
-                "avg_return_pct": round(row.avg_return * 100, 2) if row.avg_return is not None else None,
+        ).mappings().all()
+
+        out: dict[str, dict] = {}
+        by_direction: dict[str, list] = {}
+        for r in rows:
+            by_direction.setdefault(r["direction"], []).append(dict(r))
+        for direction, drows in by_direction.items():
+            part = _partition(drows, is_trading_day=_itd)
+            elig = part["eligible"]
+            wins = sum(1 for r in elig if r["is_correct"])
+            rets = [r["ret"] for r in elig if r["ret"] is not None]
+            out[direction] = {
+                "n": len(elig), "wins": wins,
+                "win_rate": round(wins / len(elig), 3) if elig else None,
+                "avg_return_pct": (round(sum(rets) / len(rets) * 100, 2) if rets else None),
+                # The denominator a reader needs beside the rate.
+                "original_n": part["original_count"],
+                "excluded_total": part["excluded_total"],
+                "excluded_by_reason": part["excluded_counts"],
+                "eligibility_version": _ELIG_VERSION,
             }
-            for row in rows
-        }
+        return out
 
     by_window = {w: _summary_for_window(w) for w in (1, 2, 3, 5, 10, 20)}
 

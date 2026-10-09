@@ -23,11 +23,21 @@ from __future__ import annotations
 
 from datetime import date
 
+#: VERSIONED. Immutable input facts alone cannot reproduce an old result once the RULES change
+#: — a row re-partitioned under a later rule set yields a different verdict from the same
+#: expiry and dates. Anything that publishes a filtered cohort must record this alongside it, so
+#: an earlier figure can be re-derived by saying which rules produced it.
+#:
+#:   v1  expiry vs fired_date and entry_date, dates only
+#:   v2  last TRADABLE session vs the modelled entry; `timing_unknown` where entry is unknown
+ELIGIBILITY_VERSION = "flow-elig-2"
+
 ELIGIBLE = "eligible"
 EXPIRED_BEFORE_ALERT = "expired_before_alert"
 EXPIRED_BEFORE_ENTRY = "expired_before_entry"
 SAME_DAY_EXPIRY = "same_day_expiry"
 NO_EXPIRY_RECORDED = "no_expiry_recorded"
+TIMING_UNKNOWN = "timing_unknown"
 
 #: Why each exclusion exists, in a reader's words. Served beside any count so an excluded
 #: cohort can be understood rather than merely subtracted.
@@ -43,32 +53,78 @@ EXCLUSION_REASON = {
         "an evaluator entering at the next session cannot measure THIS trade",
     NO_EXPIRY_RECORDED:
         "no expiry is stored, so contract validity cannot be established either way",
+    TIMING_UNKNOWN:
+        "no entry date is stored, so whether the contract was still tradable at the modelled "
+        "entry cannot be established — unknown, not assumed fine",
 }
 
 #: Everything that is not `eligible`. Named so a caller cannot forget one.
-EXCLUDED = (EXPIRED_BEFORE_ALERT, EXPIRED_BEFORE_ENTRY, SAME_DAY_EXPIRY, NO_EXPIRY_RECORDED)
+EXCLUDED = (EXPIRED_BEFORE_ALERT, EXPIRED_BEFORE_ENTRY, SAME_DAY_EXPIRY, NO_EXPIRY_RECORDED,
+            TIMING_UNKNOWN)
+
+
+def last_tradable_session(expiry: date, *, is_trading_day=None) -> date:
+    """The last session on which the contract could actually be traded.
+
+    AN EXPIRY DATE IS NOT A TRADING INSTANT. A Friday alert on a contract dated Saturday passes
+    "expiry is after the alert" and "expiry is after Monday's entry" is false — but only if the
+    comparison uses the right date. Historically US monthly equity options carried a SATURDAY
+    expiration and stopped trading the preceding Friday, and any expiry landing on a weekend or
+    holiday is untradable on its own stated date.
+
+    So the comparison walks back to the nearest session at or before the expiry. Where no
+    calendar is supplied this falls back to the stated date, which is the status quo and is why
+    every production caller passes one.
+    """
+    from datetime import timedelta
+    if is_trading_day is None:
+        return expiry
+    d, guard = expiry, 0
+    while guard < 10 and not is_trading_day("US", _noon(d)):
+        d -= timedelta(days=1)
+        guard += 1
+    return d
+
+
+def _noon(d: date):
+    """Midday UTC, because `is_trading_day` resolves an instant into the venue's local calendar
+    and a midnight value lands on the previous local day."""
+    from datetime import datetime, timezone
+    return datetime(d.year, d.month, d.day, 12, tzinfo=timezone.utc)
 
 
 def classify(expiry: date | None, fired_date: date | None,
-             entry_date: date | None = None) -> str:
-    """Eligibility of one stored outcome for a NEXT-DAY-ENTRY calibration.
+             entry_date: date | None = None, *, is_trading_day=None) -> str:
+    """Eligibility of one stored outcome for a NEXT-SESSION-ENTRY calibration.
 
     Order matters: a contract that expired before the alert also expired before entry, and the
     earlier, more specific fact is the one worth reporting.
+
+    THE COMPARISON IS AGAINST THE LAST TRADABLE SESSION, not the stated expiry date. A Friday
+    alert on a Saturday-dated contract clears "expiry is after the alert" and would clear a
+    naive entry check too, while the contract in fact stopped trading before the modelled entry.
+
+    AND AN UNKNOWN ENTRY IS NOT A PASS. Where no entry date is stored the evaluator has not
+    placed the trade yet, so whether the contract was still tradable then is UNKNOWN — reported
+    as `timing_unknown` rather than falling through to eligible, which is what the first version
+    of this did.
     """
     if expiry is None:
         return NO_EXPIRY_RECORDED
+    tradable_to = last_tradable_session(expiry, is_trading_day=is_trading_day)
     if fired_date is not None:
-        if expiry < fired_date:
+        if tradable_to < fired_date:
             return EXPIRED_BEFORE_ALERT
-        if expiry == fired_date:
+        if tradable_to == fired_date:
             return SAME_DAY_EXPIRY
-    if entry_date is not None and expiry < entry_date:
+    if entry_date is None:
+        return TIMING_UNKNOWN
+    if tradable_to < entry_date:
         return EXPIRED_BEFORE_ENTRY
     return ELIGIBLE
 
 
-def partition(rows) -> dict:
+def partition(rows, *, is_trading_day=None) -> dict:
     """Split stored outcomes into the eligible cohort and the exclusions, by reason.
 
     `rows` are objects or mappings carrying `expiry`, `fired_date`, `entry_date` and the hit
@@ -80,7 +136,8 @@ def partition(rows) -> dict:
 
     eligible, excluded = [], {}
     for r in rows:
-        verdict = classify(_get(r, "expiry"), _get(r, "fired_date"), _get(r, "entry_date"))
+        verdict = classify(_get(r, "expiry"), _get(r, "fired_date"), _get(r, "entry_date"),
+                           is_trading_day=is_trading_day)
         if verdict == ELIGIBLE:
             eligible.append(r)
         else:
@@ -92,4 +149,7 @@ def partition(rows) -> dict:
         "excluded_counts": {k: len(v) for k, v in sorted(excluded.items())},
         "excluded_total": sum(len(v) for v in excluded.values()),
         "exclusion_reasons": {k: EXCLUSION_REASON[k] for k in sorted(excluded)},
+        # WHICH RULES PRODUCED THIS SPLIT. Without it an earlier published cohort cannot be
+        # re-derived once the rules change, however immutable its inputs are.
+        "eligibility_version": ELIGIBILITY_VERSION,
     }

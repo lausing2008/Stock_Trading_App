@@ -123,7 +123,8 @@ def _cal_fn_body():
 
 def test_the_calibration_partitions_before_counting():
     body = _cal_fn_body()
-    assert "_partition(raw)" in body, "the shared rule must do the filtering"
+    assert "_partition(raw" in body, "the shared rule must do the filtering"
+    assert "is_trading_day=_itd" in body, "and with the trading calendar, not dates alone"
     assert "part['eligible']" in body
 
 
@@ -169,3 +170,122 @@ def test_one_computation_feeds_the_stored_row_and_the_email():
     assert len(calls) == 2, "exactly two calls: one per direction"
     reads = src.count('cal["win_rate"]')
     assert reads == 1, f"the rate must be read in exactly one place, found {reads}"
+
+
+# ---- an expiry date is not a trading instant --------------------------------------------------
+
+def _cal():
+    from common.market_calendar import is_trading_day
+    return is_trading_day
+
+
+def test_a_saturday_dated_contract_stops_trading_on_the_friday():
+    """Historically US monthly equity options carried a SATURDAY expiration and stopped trading
+    the preceding Friday. Any expiry landing on a weekend or holiday is untradable on its own
+    stated date, so the comparison must use the last tradable session."""
+    from services.flow_outcome_eligibility import last_tradable_session
+    assert last_tradable_session(date(2026, 10, 10), is_trading_day=_cal()) == date(2026, 10, 9)
+    # A weekday expiry is its own last session.
+    assert last_tradable_session(date(2026, 10, 9), is_trading_day=_cal()) == date(2026, 10, 9)
+
+
+def test_the_friday_alert_saturday_expiry_case_is_not_eligible():
+    """THE REPORTED GAP. Expiry (Sat 10th) is after the alert (Fri 9th) and before Monday's
+    entry, so a date-only rule can pass it as a live contract. It stopped trading on the 9th."""
+    got = classify(date(2026, 10, 10), date(2026, 10, 9), date(2026, 10, 12),
+                   is_trading_day=_cal())
+    assert got != ELIGIBLE
+    assert got == SAME_DAY_EXPIRY, "its last tradable session IS the alert day"
+
+
+def test_an_unknown_entry_date_is_timing_unknown_not_eligible():
+    """The first version fell through to eligible when no entry date was stored, which assumes
+    exactly the thing that cannot be established."""
+    from services.flow_outcome_eligibility import TIMING_UNKNOWN
+    assert classify(date(2026, 11, 20), date(2026, 10, 9), None,
+                    is_trading_day=_cal()) == TIMING_UNKNOWN
+
+
+def test_a_genuinely_live_contract_is_still_eligible():
+    """The control — the stricter rule must not refuse ordinary rows."""
+    assert classify(date(2026, 11, 20), date(2026, 10, 9), date(2026, 10, 12),
+                    is_trading_day=_cal()) == ELIGIBLE
+
+
+def test_timing_unknown_has_its_own_reason_and_is_an_exclusion():
+    from services.flow_outcome_eligibility import TIMING_UNKNOWN, EXCLUDED, EXCLUSION_REASON
+    assert TIMING_UNKNOWN in EXCLUDED
+    assert "unknown, not assumed fine" in EXCLUSION_REASON[TIMING_UNKNOWN]
+
+
+# ---- the calculation is versioned -------------------------------------------------------------
+
+def test_the_partition_records_which_rules_produced_it():
+    """Immutable inputs alone cannot reproduce an old result after the RULES change — the same
+    expiry and dates yield a different verdict under a later rule set."""
+    from services.flow_outcome_eligibility import ELIGIBILITY_VERSION
+    got = partition([_row(date(2026, 11, 20), True)], is_trading_day=_cal())
+    assert got["eligibility_version"] == ELIGIBILITY_VERSION
+    assert ELIGIBILITY_VERSION.startswith("flow-elig-")
+
+
+def test_the_version_history_is_recorded_in_the_module():
+    src = (Path(__file__).resolve().parents[1]
+           / "src/services/flow_outcome_eligibility.py").read_text()
+    assert "v1  expiry vs fired_date" in src and "v2  last TRADABLE session" in src
+
+
+# ---- the rate is named precisely ---------------------------------------------------------------
+
+def test_the_rate_is_labelled_an_underlying_directional_hit_rate():
+    body = _cal_fn_body()
+    assert "'measured underlying directional hit rate'" in body
+    assert "not a calibrated probability" in body.lower()
+    assert "options strategy" in body.lower()
+
+
+def test_the_window_is_named_calendar_days_because_that_is_what_it_is():
+    """`_SQUEEZE_OUTCOME_WINDOWS` is commented "calendar days after entry" and the evaluator
+    does `entry_date + timedelta(days=window)`. Ten calendar days is not ten sessions."""
+    body = _cal_fn_body()
+    assert "'horizon_unit': 'calendar_days'" in body
+    sched = _calibration_source()
+    assert "calendar days after entry" in sched, "the source convention must still say so"
+
+
+# ---- API and UI read the same cohort -----------------------------------------------------------
+
+def test_the_admin_performance_endpoint_uses_the_same_eligibility_rule():
+    """ONE FUNCTION FEEDING THE STORED ROW AND THE EMAIL DOES NOT COVER THE API. This endpoint
+    had its OWN query with no validity filter, so the performance screen and the figure attached
+    to an alert were computed over different populations."""
+    import ast
+    admin = (Path(__file__).resolve().parents[1] / "src/api/admin.py").read_text()
+    fn = next(n for n in ast.walk(ast.parse(admin))
+              if isinstance(n, ast.FunctionDef) and "options_flow_alert_performance" in n.name)
+    body = ast.unparse(fn)
+    assert "_partition(" in body, "the API must apply the shared eligibility rule"
+    assert "is_trading_day=_itd" in body, "including the trading-calendar comparison"
+
+
+def test_the_admin_endpoint_reports_its_denominator_and_rule_version():
+    import ast
+    admin = (Path(__file__).resolve().parents[1] / "src/api/admin.py").read_text()
+    fn = next(n for n in ast.walk(ast.parse(admin))
+              if isinstance(n, ast.FunctionDef) and "options_flow_alert_performance" in n.name)
+    body = ast.unparse(fn)
+    for key in ("'original_n'", "'excluded_total'", "'excluded_by_reason'",
+                "'eligibility_version'"):
+        assert key in body, f"{key} must travel with the rate the UI renders"
+
+
+def test_exactly_one_module_decides_eligibility():
+    """Two implementations are two rules that will disagree."""
+    import subprocess
+    root = Path(__file__).resolve().parents[3]
+    # SOURCE ONLY — a test file naturally mentions the function it tests.
+    hits = subprocess.run(
+        ["grep", "-rln", "--include=*.py", "def classify(expiry",
+         *[str(p) for p in (root / "services").glob("*/src")]],
+        capture_output=True, text=True).stdout.split()
+    assert len(hits) == 1, f"eligibility is defined in more than one place: {hits}"

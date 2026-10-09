@@ -5512,6 +5512,7 @@ def _build_options_flow_alert_calibration(session, direction: str) -> dict | Non
     rate computed over one or two market days describes that market, not this alert — see the
     constant's own comment for the measured case that motivated it.
     """
+    from common.market_calendar import is_trading_day as _itd
     from .flow_outcome_eligibility import partition as _partition
 
     rows = session.execute(
@@ -5532,7 +5533,7 @@ def _build_options_flow_alert_calibration(session, direction: str) -> dict | Non
     # entry_date), so it is reproducible from the record rather than depending on a flag written
     # once. Nothing on the historical rows is rewritten — `calibrated_win_rate` on each stored
     # outcome is what THAT alert actually displayed and stays exactly as published.
-    part = _partition(raw)
+    part = _partition(raw, is_trading_day=_itd)
     eligible = part["eligible"]
     outcomes = [r["is_correct"] for r in eligible]
     exclusions = {"original_count": part["original_count"],
@@ -5563,7 +5564,23 @@ def _build_options_flow_alert_calibration(session, direction: str) -> dict | Non
                 "status": "clustered_dates", **exclusions}
     return {"win_rate": round(sum(outcomes) / len(outcomes), 3),
             "count": len(outcomes), "distinct_dates": distinct_dates,
-            "status": "measured", "horizon": "10d", **exclusions}
+            "status": "measured",
+            # NAMED PRECISELY, because none of these are interchangeable:
+            #   * the window is 10 CALENDAR days from entry, not ten trading sessions — see
+            #     `_SQUEEZE_OUTCOME_WINDOWS`, whose own comment says "calendar days after entry";
+            #   * the measurement is of the UNDERLYING's direction, not of an option position's
+            #     profit, which would need the contract, its premium and its costs;
+            #   * clearing the sample-size and distinct-date floors makes a rate MEASURED. It
+            #     does not make it a calibrated probability, and it says nothing about whether
+            #     an options strategy built on it would have made money.
+            "horizon": "10d",
+            "horizon_unit": "calendar_days",
+            "metric": "measured underlying directional hit rate",
+            "metric_note": ("Measured underlying directional hit rate over 10 CALENDAR days "
+                            "from entry. Not a calibrated probability, and not an options "
+                            "strategy result — the option's premium, spread, costs and "
+                            "assignment are nowhere in this figure."),
+            **exclusions}
 
 
 def check_options_flow_alerts() -> None:
