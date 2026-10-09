@@ -5512,14 +5512,46 @@ def _build_options_flow_alert_calibration(session, direction: str) -> dict | Non
     rate computed over one or two market days describes that market, not this alert — see the
     constant's own comment for the measured case that motivated it.
     """
+    from .flow_outcome_eligibility import partition as _partition
+
     rows = session.execute(
-        select(OptionsFlowAlertOutcome.is_correct_10d, OptionsFlowAlertOutcome.fired_date)
+        select(OptionsFlowAlertOutcome.is_correct_10d, OptionsFlowAlertOutcome.fired_date,
+               OptionsFlowAlertOutcome.expiry, OptionsFlowAlertOutcome.entry_date)
         .where(OptionsFlowAlertOutcome.direction == direction, OptionsFlowAlertOutcome.is_correct_10d.is_not(None))
-    ).all()
-    outcomes = [r[0] for r in rows]
+    ).mappings().all()
+    raw = [{"is_correct": r["is_correct_10d"], "fired_date": r["fired_date"],
+            "expiry": r["expiry"], "entry_date": r["entry_date"]} for r in rows]
+
+    # O03 (2026-10-08): CONTRACT ELIGIBILITY, which this had none of. The query took every
+    # non-null hit flag for the direction, and a follow-up measured 1,102 of 1,998 selected
+    # rows (55.16%) as contracts that had ALREADY EXPIRED when the alert fired. There was never
+    # a trade there to measure. Recent captures being clean does not repair the history the
+    # number is computed over.
+    #
+    # The verdict is DERIVED AT READ TIME from stored, immutable facts (expiry, fired_date,
+    # entry_date), so it is reproducible from the record rather than depending on a flag written
+    # once. Nothing on the historical rows is rewritten — `calibrated_win_rate` on each stored
+    # outcome is what THAT alert actually displayed and stays exactly as published.
+    part = _partition(raw)
+    eligible = part["eligible"]
+    outcomes = [r["is_correct"] for r in eligible]
+    exclusions = {"original_count": part["original_count"],
+                  "eligible_count": part["eligible_count"],
+                  "excluded_total": part["excluded_total"],
+                  "excluded_by_reason": part["excluded_counts"],
+                  "exclusion_reasons": part["exclusion_reasons"]}
+
     if len(outcomes) < _OPTIONS_FLOW_ALERT_CAL_MIN_COUNT:
-        return None
-    distinct_dates = len({r[1] for r in rows if r[1] is not None})
+        # INSUFFICIENT ELIGIBLE HISTORY IS A RESULT, and a different one from "no history".
+        # Returning a bare None here would make a calibration removed by filtering
+        # indistinguishable from one that never existed.
+        log.info("options_flow_alert.calibration_insufficient_eligible",
+                 direction=direction, **exclusions,
+                 required=_OPTIONS_FLOW_ALERT_CAL_MIN_COUNT,
+                 note="filtering removed the calibration basis — not a zero win rate")
+        return {"win_rate": None, "count": len(outcomes), "distinct_dates": None,
+                "status": "insufficient_eligible_history", **exclusions}
+    distinct_dates = len({r["fired_date"] for r in eligible if r["fired_date"] is not None})
     if distinct_dates < _OPTIONS_FLOW_ALERT_CAL_MIN_DATES:
         log.info(
             "options_flow_alert.calibration_suppressed_clustered",
@@ -5527,9 +5559,11 @@ def _build_options_flow_alert_calibration(session, direction: str) -> dict | Non
             required_dates=_OPTIONS_FLOW_ALERT_CAL_MIN_DATES,
             note="enough outcomes but too few distinct days — would measure the market, not the alert",
         )
-        return None
+        return {"win_rate": None, "count": len(outcomes), "distinct_dates": distinct_dates,
+                "status": "clustered_dates", **exclusions}
     return {"win_rate": round(sum(outcomes) / len(outcomes), 3),
-            "count": len(outcomes), "distinct_dates": distinct_dates}
+            "count": len(outcomes), "distinct_dates": distinct_dates,
+            "status": "measured", "horizon": "10d", **exclusions}
 
 
 def check_options_flow_alerts() -> None:

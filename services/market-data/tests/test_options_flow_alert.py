@@ -437,9 +437,16 @@ def test_calibration_uses_the_shared_30_sample_floor():
     assert "_OPTIONS_FLOW_ALERT_CAL_MIN_COUNT" in body
 
 
-def test_calibration_returns_none_not_a_fabricated_rate_below_the_floor():
+def test_calibration_never_fabricates_a_rate_below_the_floor():
+    """O03 (2026-10-08) replaced the bare `return None` with a STRUCTURED result, because
+    "insufficient eligible history" and "no history at all" are different answers and a bare
+    None cannot tell them apart. The property this test exists for is unchanged: no rate is
+    invented below the floor."""
     body = _func_body("_build_options_flow_alert_calibration")
-    assert "return None" in body
+    assert "'win_rate': None" in body or '"win_rate": None' in body
+    assert "'insufficient_eligible_history'" in body or '"insufficient_eligible_history"' in body
+    # And never a zero standing in for an absent measurement.
+    assert "'win_rate': 0" not in body and '"win_rate": 0' not in body
 
 
 # ── evaluate_options_flow_alert_outcomes() ──────────────────────────────────────────────────

@@ -35,6 +35,20 @@ class _FA:
 
 # ── F1: expired-contract filter ──────────────────────────────────────────────────────────
 
+def _calibration_body() -> str:
+    """The WHOLE function, sliced at the next top-level def.
+
+    Was a fixed 2600-character window. O03 (2026-10-08) added contract-eligibility filtering and
+    the function outgrew it, so assertions about its floors started failing while the floors
+    themselves were untouched — a test reporting on where it stopped reading.
+    """
+    import ast
+    fn = next(n for n in ast.walk(ast.parse(SCHED_SRC))
+              if isinstance(n, ast.FunctionDef)
+              and n.name == "_build_options_flow_alert_calibration")
+    return ast.unparse(fn)
+
+
 def test_drops_a_contract_that_already_expired():
     """THE CORE F1 FIX — the SPCX case: expiry 5 days before the alert fired."""
     past = (dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=5)).isoformat()
@@ -103,9 +117,10 @@ def test_calibration_requires_distinct_dates_not_just_count():
     """THE CORE F2 FIX. A COUNT floor alone cannot tell a real sample from one market day —
     alerts fire in bursts across dozens of contracts within minutes."""
     assert "_OPTIONS_FLOW_ALERT_CAL_MIN_DATES" in SCHED_SRC
-    body = SCHED_SRC[SCHED_SRC.index("def _build_options_flow_alert_calibration"):][:2600]
+    body = _calibration_body()
     assert "distinct_dates < _OPTIONS_FLOW_ALERT_CAL_MIN_DATES" in body
-    assert "return None" in body
+    assert "win_rate': None" in body, \
+        "a suppressed calibration must still not fabricate a rate"
 
 
 def test_date_floor_is_above_the_two_days_that_produced_the_artifact():
@@ -117,7 +132,7 @@ def test_date_floor_is_above_the_two_days_that_produced_the_artifact():
 
 def test_count_floor_is_retained():
     """The fix ADDS a dimension; it must not replace the existing sample-size floor."""
-    body = SCHED_SRC[SCHED_SRC.index("def _build_options_flow_alert_calibration"):][:2600]
+    body = _calibration_body()
     assert "len(outcomes) < _OPTIONS_FLOW_ALERT_CAL_MIN_COUNT" in body
     assert sch._OPTIONS_FLOW_ALERT_CAL_MIN_COUNT == 30
 
@@ -125,18 +140,18 @@ def test_count_floor_is_retained():
 def test_suppression_is_logged_with_the_diagnostic_numbers():
     """When a calibration is withheld, the reason must be inspectable — otherwise 'no
     calibration' is indistinguishable from 'no data'."""
-    body = SCHED_SRC[SCHED_SRC.index("def _build_options_flow_alert_calibration"):][:2600]
+    body = _calibration_body()
     assert "calibration_suppressed_clustered" in body
     assert "distinct_dates=distinct_dates" in body
 
 
 def test_result_exposes_distinct_dates_for_downstream_honesty():
-    body = SCHED_SRC[SCHED_SRC.index("def _build_options_flow_alert_calibration"):][:2600]
-    assert '"distinct_dates": distinct_dates' in body
+    body = _calibration_body()
+    assert '\'distinct_dates\': distinct_dates' in body
 
 
 def test_query_selects_fired_date_so_the_floor_can_be_computed():
-    body = SCHED_SRC[SCHED_SRC.index("def _build_options_flow_alert_calibration"):][:2600]
+    body = _calibration_body()
     assert "OptionsFlowAlertOutcome.fired_date" in body
 
 
