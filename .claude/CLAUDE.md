@@ -354,6 +354,8 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
+- **`docs/audits/2026-10-09-ai-signals-options-alert-quality.md`** — live AI/flow quality audit, model provenance and weight defects, outcome/delivery gaps, stock review improvements and prioritized acceptance plan; local fixes tracked separately from deployed evidence [audit, signals, options]
+
 - **`docs/2026-10-07/market-stock-intelligence-{gap-analysis,architecture}.md`** — fit-gap vs the 52-section Market & Stock Intelligence spec: 17 implemented, 16 partial, 6 not, 5 BLOCKED on data. The missing layer is evidence BUCKETS, not a new engine [gap analysis, spec]
 - **`docs/audits/2026-10-07-mu-crdo-completed-assessment.md`** — MU and CRDO end to end from SEC filings. MU is 14.1x PEAK earnings and 70.0x the 6-yr mean; CRDO has ~90% of revenue in 10 customers. EDGAR supplies the share count, basis and filing date the provider never had [MU, CRDO, EDGAR]
 - **`docs/audits/2026-10-06-quality-value-readiness-inventory.md`** — measured: 2 of 7 gates computable, the 2 that decide eligibility are not. Corrects 2 claims of my own — "the table is stale" (153/156 current) and "no share count anywhere" (it exists, unusably) [readiness, valuation]

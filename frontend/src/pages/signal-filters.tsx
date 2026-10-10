@@ -38,7 +38,7 @@ type PresetState = { style: string; market: string; sigFilter: string; sortKey?:
 const COL_TIPS: Record<SortKey, string> = {
   symbol:             'Stock ticker symbol. Click to open the stock detail page.',
   signal:             'Current signal from the latest AI analysis: BUY / HOLD / WAIT / SELL.',
-  bullish_probability:'Fused probability score (0–100%) after all filters applied. Above 50% = bullish lean. BUY threshold is 65% (SWING bull regime).',
+  bullish_probability:'Combined technical and model directional score (0–100). Above 50 leans bullish. This is not a calibrated probability; thresholds vary with style, regime and active policy.',
   suppression_count:  'Number of suppression conditions currently active for this stock. Higher = signal is being held back by more filters.',
   weekly_rsi:         'RSI(14) computed on weekly bars (daily OHLCV resampled to Monday-anchored weeks). Below 40 = weekly bearish momentum. Used by the Weekly Gate.',
   rsi:                'Daily RSI(14). Below 35 = oversold (potential entry zone, green). Above 70 = overbought (yellow). Drives the TA score.',
@@ -53,7 +53,7 @@ const COL_TIPS: Record<SortKey, string> = {
 };
 
 const SORT_LABELS: Record<SortKey, string> = {
-  symbol: 'Symbol', signal: 'Signal', bullish_probability: 'Bull%',
+  symbol: 'Symbol', signal: 'Signal', bullish_probability: 'Direction score',
   suppression_count: 'Filters', weekly_rsi: 'W.RSI', rsi: 'RSI',
   adx: 'ADX', days_to_earnings: 'Earn.d', news_sentiment: 'News',
   rs_score: 'RS', breadth_pct: 'Breadth', vol_ratio: 'Vol',
@@ -594,7 +594,7 @@ export default function SignalFiltersPage() {
                     }}>!</span>
                   </span>
                 </th>
-                <SortTh col="bullish_probability" label="Bull%"   sortKey={sortKey} dir={sortDir} onSort={handleSort} />
+                <SortTh col="bullish_probability" label="Direction score" sortKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <SortTh col="vol_ratio"           label="Vol"      sortKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <SortTh col="suppression_count"  label="Filters"  sortKey={sortKey} dir={sortDir} onSort={handleSort} />
 
@@ -721,7 +721,7 @@ export default function SignalFiltersPage() {
 
                     {/* Bull% */}
                     <td style={{ ...TD, color: (row.bullish_probability ?? 0) >= 0.5 ? '#22c55e' : '#f87171', fontWeight: 600 }}>
-                      {row.bullish_probability != null ? `${(row.bullish_probability * 100).toFixed(1)}%` : '—'}
+                      {row.bullish_probability != null ? `${(row.bullish_probability * 100).toFixed(1)}/100` : '—'}
                     </td>
 
                     {/* Vol ratio */}

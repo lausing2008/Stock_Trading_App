@@ -1293,7 +1293,7 @@ Return ONLY valid JSON — no markdown, no prose:
       const systemCtx = [
         `You are a financial analyst assistant for the stock ${symbol} (${(data as Overview & { price?: { name?: string } })?.price?.name ?? symbol}).`,
         `Current price: ${data?.price ? JSON.stringify(data.price) : 'N/A'}`,
-        data?.signal ? `Signal: ${data.signal.signal} (${((data.signal.bullish_probability ?? 0) * 100).toFixed(0)}% bullish, ${(data.signal.confidence ?? 0).toFixed(0)}% confidence)` : '',
+        data?.signal ? `Signal: ${data.signal.signal} (direction ${((data.signal.bullish_probability ?? 0) * 100).toFixed(0)}/100, strength ${(data.signal.confidence ?? 0).toFixed(0)}/100; neither is a profit probability)` : '',
         data?.ranking ? `K-Score: ${data.ranking.score?.toFixed(0)}, Fair Value: $${data.ranking.fair_price?.toFixed(2)}` : '',
         `Recent headlines: ${(news ?? []).slice(0, 5).map(n => n.title).join(' | ')}`,
         'Be concise, data-driven, and reference the above context in your answers.',
@@ -2680,7 +2680,7 @@ Return ONLY valid JSON — no markdown, no prose:
                         {isUp ? '↑' : '↓'} {displayResult.direction}
                       </div>
                       <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 4 }}>
-                        {bullishPct}% bullish · {displayResult.confidence?.toFixed(1)}% confidence
+                        direction {bullishPct}/100 · strength {displayResult.confidence?.toFixed(1)}/100
                       </div>
                     </div>
                     <div style={{ flex: 1 }}>

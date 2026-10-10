@@ -203,14 +203,18 @@ The first slice now covers O01–O12 as containment and measurement infrastructu
   account value/open risk/max loss produces no quantity.
 - A new `option_opportunity` preference defaults off. Even an eligible opportunity queues only
   for a user with an explicit enabled row, through the existing durable outbox. No new alerts
-  are sent by this slice because no live opportunity currently clears every gate.
+  are sent by this slice: there is no production producer calling the helper yet. Eligibility
+  has not been evaluated across a live opportunity population.
 - Provider chain pagination and stored coverage distinguish complete, incomplete, failed and
   legacy-unverified captures. Flow composition, GEX, short interest and dark-pool evidence now
   carry their narrower meanings and provenance.
 - LEAPS and income outputs are labelled historical replay/simulation and `research_only`, with
   omitted fills, fees, financing, early assignment and attribution made explicit.
 
-This completes the correctness and usability work in the first slice. It does not complete the
+The [2026-10-09 quality audit](../audits/2026-10-09-ai-signals-options-alert-quality.md)
+found further correctness and usability gaps; this first slice is infrastructure, not completed
+end-to-end opportunity delivery. In particular the production strategy ledger was empty and
+the new notification helper had no production caller. It does not complete the
 prospective evidence needed for a profit claim, multi-leg lifecycle engines, broker execution,
 or assignment-aware strategy P&L. The playbooks remain the specification for those later
 strategy-specific promotions; each family must earn actionability separately.

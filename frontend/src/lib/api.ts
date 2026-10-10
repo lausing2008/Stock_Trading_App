@@ -2951,10 +2951,22 @@ export type OptionsFlowAlertRow = {
 };
 
 export type OptionsFlowAlertPerformanceResponse = {
+  stock_summary_scope?: string;
+  stock_summaries?: OptionsFlowStockSummary[];
   matching_count?: number; total_count?: number; offset?: number; limit?: number;
   days_back: number;
   by_direction: OptionsFlowAlertDirectionSummary[];
   recent_alerts: OptionsFlowAlertRow[];
+};
+
+export type OptionsFlowStockSummary = {
+  symbol: string;
+  alert_count: number;
+  contracts: number;
+  dates: number;
+  bullish: number;
+  bearish: number;
+  latest_at: string;
 };
 
 // BT-1/BT-2 gate-replay backtests. Both replay _should_enter(), the DE-outage FALLBACK gate.

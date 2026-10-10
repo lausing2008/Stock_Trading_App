@@ -42,6 +42,25 @@ with Session(engine) as session:
     cap = ns['capture_option_strategy'](c, None, session)
     assert cap['created']
     assert ns['capture_option_strategy'](c, None, session)['created'] is False
+    class Clock(dt.datetime):
+        current = dt.datetime(2020, 1, 2, 14, tzinfo=dt.timezone.utc)
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+    ns['_dt'] = types.SimpleNamespace(datetime=Clock, timezone=dt.timezone)
+    prospective = {**c, 'origin': 'prospective'}
+    first = ns['capture_option_strategy'](prospective, None, session)
+    Clock.current = dt.datetime(2020, 1, 2, 16, tzinfo=dt.timezone.utc)
+    retry = ns['capture_option_strategy'](prospective, None, session)
+    assert retry['id'] == first['id'] and retry['created'] is False
+    assert retry['inputs']['captured_at'] == first['inputs']['captured_at']
+    try:
+        ns['capture_option_strategy']({**prospective, 'contract_id': 'NEW'}, None, session)
+    except HTTPException as exc:
+        assert exc.status_code == 422
+    else:
+        raise AssertionError('A new late prospective capture must fail')
+    ns['_dt'] = dt
     e = dict(entry=dict(contract_id='TEST-C100', source='fixture', quoted_at=c['entry_at'], bid=4.8, ask=5),
              exit=dict(contract_id='TEST-C100', source='fixture', quoted_at=c['exit_at'], bid=3, ask=3.2), deliverable_unchanged_verified=True)
     unresolved = ns['resolve_option_strategy'](cap['id'], {}, None, session)
@@ -66,6 +85,10 @@ with Session(engine) as session:
     assert len(result['recent_alerts']) == 1
     assert result['recent_alerts'][0]['total_premium'] == 1001
     assert result['recent_alerts'][0]['calibration_eligibility'] == 'same_day_expiry'
+    assert len(result['stock_summaries']) == 1
+    assert result['stock_summaries'][0]['alert_count'] == 3  # all pages, not the single returned row
+    assert result['stock_summaries'][0]['bullish'] == 3
+    assert result['stock_summaries'][0]['bearish'] == 0
     stats = result['by_direction'][0]['window_10d']
     assert stats['n'] == 0 and stats['excluded_total'] == 3 and stats['original_n'] == 3
     assert stats['horizon_unit'] == 'calendar_days'

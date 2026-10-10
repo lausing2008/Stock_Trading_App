@@ -9,6 +9,7 @@ import {
   type OptionsFlowAlertBacktestWindowStat,
 } from '@/lib/api';
 import { FlowDecisionReview } from '@/components/FlowDecisionReview';
+import { StockFlowOverview } from '@/components/StockFlowOverview';
 import { getSession } from '@/lib/auth';
 
 // MPE-OPTIONS-FLOW-ALERT — dashboard for the real Unusual Whales unusual-options-activity
@@ -306,7 +307,7 @@ export default function OptionsFlowAlertsPage() {
       </div>
 
       <div style={{ color: '#cbd5e1', marginBottom: 16 }}>
-        <strong>Start here:</strong> search a symbol, select Review, and check the missing evidence.
+        <strong>Start here:</strong> inspect a stock, select Review alert, and check the missing evidence.
         This ledger does not establish an actionable opportunity.
       </div>
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '20px', alignItems: 'center' }}>
@@ -370,6 +371,7 @@ export default function OptionsFlowAlertsPage() {
             {data.by_direction.map(row => <DirectionCard key={row.direction} row={row} />)}
           </div>
 
+          {data.stock_summaries && <StockFlowOverview rows={data.stock_summaries} onSelect={setSymbol} />}
           {selected && <FlowDecisionReview row={selected} onClose={() => setSelected(null)} />}
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '8px', flexWrap: 'wrap', gap: 8 }}>
             <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>
@@ -418,7 +420,7 @@ export default function OptionsFlowAlertsPage() {
                       <td style={{ padding: 8, color: '#cbd5e1' }} title={row.eligibility_reason ?? undefined}>
                         {(row.calibration_eligibility ?? 'unavailable').replace(/_/g, ' ')}
                       </td>
-                      <td><button onClick={() => setSelected(row)} aria-label={`Review ${row.symbol} ${row.option_chain}`}>Review</button></td>
+                      <td><button onClick={() => setSelected(row)} aria-label={`Review alert ${row.symbol} ${row.option_chain}`}>Review alert</button></td>
                     </tr>
                   ))}
                   {filteredRows.length === 0 && (

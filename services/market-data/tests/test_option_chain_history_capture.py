@@ -123,6 +123,18 @@ def test_historical_chain_fetcher_drops_non_dict_rows(monkeypatch):
     monkeypatch.setattr(uw, "is_available", lambda: True)
     monkeypatch.setattr(uw, "_get", lambda *a, **k: [{"option_symbol": "X"}, "garbage", None])
     assert uw.get_historical_option_chain("AAPL", "2026-06-02") == [{"option_symbol": "X"}]
+    result = uw.get_historical_option_chain_result("AAPL", "2026-06-02")
+    assert result['status'] == 'incomplete'
+    assert result['reason'] == 'malformed_contract_rows'
+
+
+def test_absent_response_is_not_a_complete_empty_chain(monkeypatch):
+    import src.services.unusual_whales as uw
+    monkeypatch.setattr(uw, 'is_available', lambda: True)
+    monkeypatch.setattr(uw, '_get', lambda *a, **k: None)
+    assert uw.get_historical_option_chain_result('AAPL', '2026-06-02')['status'] == 'incomplete'
+    monkeypatch.setattr(uw, '_get', lambda *a, **k: [])
+    assert uw.get_historical_option_chain_result('AAPL', '2026-06-02')['status'] == 'complete'
 
 
 def test_historical_chain_paginates_after_an_exactly_full_page(monkeypatch):

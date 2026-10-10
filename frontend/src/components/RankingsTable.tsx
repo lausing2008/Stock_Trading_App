@@ -46,8 +46,8 @@ export default function RankingsTable({
             <th className="px-3 py-2 text-right">vs Avg</th>
             <th className="px-3 py-2 text-right">K-Score</th>
             <th className="px-3 py-2 text-center">Signal</th>
-            <th className="px-3 py-2 text-right" title="Fused ML bullish probability (0–100%). >65% = BUY threshold">Bull%</th>
-            <th className="px-3 py-2 text-right" title="Signal STRENGTH 0–100 (distance from a neutral model score), not a probability of profit. Higher has not historically meant more accurate — see the Signal card for the measured win rate by confidence band.">Conf%</th>
+            <th className="px-3 py-2 text-right" title="Fused directional score on a 0–100 scale. It is not a probability of profit.">Direction</th>
+            <th className="px-3 py-2 text-right" title="Distance from a neutral fused score on a 0–100 scale. Higher has not historically established better accuracy or profitability.">Strength</th>
             <th className="px-3 py-2 text-right" title="Relative Strength vs sector ETF (0-100). >60 = leading sector, <40 = lagging">RS</th>
             <th className="px-3 py-2 text-right">Confluence</th>
             <th className="px-3 py-2 text-right">Fair Price</th>
@@ -148,13 +148,13 @@ export default function RankingsTable({
                   ) : <span className="text-slate-700">—</span>}
                   {signal === 'HOLD' && sig?.bullish_probability != null && sig.bullish_probability >= 0.55 && sig.bullish_probability < 0.65 && (
                     <span style={{ fontSize: '9px', fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', padding: '1px 4px', borderRadius: 3, marginLeft: 4, whiteSpace: 'nowrap' }}
-                          title={`Near BUY — ${(sig.bullish_probability * 100).toFixed(1)}% bullish probability (threshold: 65%)`}>
+                          title={`Near BUY — directional score ${(sig.bullish_probability * 100).toFixed(1)}/100 (threshold: 65)`}>
                       ~BUY
                     </span>
                   )}
                   {(signal === 'HOLD' || signal === 'WAIT') && sig?.bullish_probability != null && sig.bullish_probability > 0.35 && sig.bullish_probability <= 0.45 && (
                     <span style={{ fontSize: '9px', fontWeight: 700, color: '#f87171', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)', padding: '1px 4px', borderRadius: 3, marginLeft: 4, whiteSpace: 'nowrap' }}
-                          title={`Near SELL — ${(sig.bullish_probability * 100).toFixed(1)}% bullish probability (approaching sell zone: ≤35%)`}>
+                          title={`Near SELL — directional score ${(sig.bullish_probability * 100).toFixed(1)}/100 (approaching sell zone: ≤35)`}>
                       ~SELL
                     </span>
                   )}
@@ -165,7 +165,7 @@ export default function RankingsTable({
                     : sig.bullish_probability >= 0.5 ? '#94a3b8'
                     : '#f87171',
                 }}>
-                  {sig?.bullish_probability != null ? `${(sig.bullish_probability * 100).toFixed(1)}%` : '—'}
+                  {sig?.bullish_probability != null ? `${(sig.bullish_probability * 100).toFixed(1)}/100` : '—'}
                 </td>
                 <td className="px-3 py-2 text-right text-xs font-semibold" style={{
                   color: sig?.confidence == null ? '#475569'

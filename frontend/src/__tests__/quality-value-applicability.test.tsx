@@ -16,6 +16,7 @@ import { join } from 'path';
    panel — so a mock that hands the same payload to all of them feeds the quality-value report
    into DirectionScreen and crashes on a field it does not have. */
 const state = vi.hoisted(() => ({ data: undefined as any, error: undefined as any }));
+vi.mock('next/router', () => ({ useRouter: () => ({ isReady: true, query: {} }) }));
 vi.mock('swr', () => ({
   default: (key: any) => {
     const k = Array.isArray(key) ? key[0] : String(key ?? '');

@@ -12,12 +12,12 @@
  *   Short-Term  — high momentum + volume expansion
  *   Long-Term   — undervalued fundamentals near fair value
  *   Growth      — top growth + momentum sub-scores
- *   AI Signal   — only active BUY signals, ranked by signal confidence
+ *   AI Signal   — only active BUY signals, ranked by the existing composite score
  *
  * AI Outlook (optional, triggered by "Generate AI Outlook" button)
  * ────────────────────────────────────────────────────────────────
  * Builds a user message with every visible stock's symbol, price, K-Score,
- * AI signal, confidence, bullish probability, sector, and news headlines.
+ * AI signal, signal strength, directional score, sector, and news headlines.
  * System prompt: hedge fund quant analyst producing a 2–5 day directional
  * outlook (BULLISH / BEARISH / NEUTRAL) per stock with catalysts and risk.
  * Parsed as JSON OutlookItem[] array (max_tokens=8192).
@@ -52,7 +52,7 @@ const STRATEGIES: { key: Strategy; label: string; icon: string; tagline: string;
   { key: 'short',    label: 'Short-Term', icon: '⚡', tagline: '1–5 day move',               desc: 'High recent momentum and volume expansion. Best for capitalising on short breakouts or pullbacks.' },
   { key: 'longterm', label: 'Long-Term',  icon: '🏛️', tagline: '6–24 month horizon',         desc: 'Undervalued fundamentals with strong growth trajectory. Buy and hold at or below fair value.' },
   { key: 'growth',   label: 'Growth',     icon: '🚀', tagline: 'High growth momentum',       desc: 'Top growth + momentum scores. Companies growing revenue/earnings faster than the market.' },
-  { key: 'aisignal',   label: 'AI Signal',   icon: '🤖', tagline: 'BUY-signal stocks only',        desc: 'Only stocks where the AI engine has issued an active BUY signal, ranked by signal confidence and bullish probability.' },
+  { key: 'aisignal',   label: 'AI Signal',   icon: '🤖', tagline: 'BUY-signal stocks only',        desc: 'Only stocks where the signal engine has issued an active BUY label. Strength is distance from neutral, not a probability or proof of quality.' },
   { key: 'confluence', label: 'Confluence',  icon: '🎯', tagline: 'All signals aligned',           desc: 'Stocks where AI Signal, K-Score, Technical, and Momentum all point in the same direction. Highest-conviction setups only.' },
 ];
 
@@ -124,9 +124,9 @@ function getReasons(
   const out: { text: string; positive: boolean }[] = [];
 
   if (sig?.signal === 'BUY')
-    out.push({ text: `AI signal BUY — ${(sig.confidence ?? 0).toFixed(0)}% confidence`, positive: true });
+    out.push({ text: `AI signal BUY — strength ${(sig.confidence ?? 0).toFixed(0)}/100`, positive: true });
   if (sig?.signal === 'HOLD' && (sig.confidence ?? 0) > 30)
-    out.push({ text: `AI signal HOLD — holding zone with ${(sig.confidence ?? 0).toFixed(0)}% confidence`, positive: true });
+    out.push({ text: `AI signal HOLD — strength ${(sig.confidence ?? 0).toFixed(0)}/100`, positive: true });
 
   if (r.fair_price && lp?.price) {
     const upside = ((r.fair_price - lp.price) / lp.price) * 100;
@@ -171,7 +171,7 @@ function getKeyMetric(
       return { label: 'Growth', value: `${(r.growth ?? 0).toFixed(0)}/100`, color: scoreColor(r.growth ?? 0) };
     case 'aisignal':
       return sig
-        ? { label: 'AI Confidence', value: `${(sig.confidence ?? 0).toFixed(0)}%`, color: scoreColor(sig.confidence ?? 0) }
+        ? { label: 'Signal Strength', value: `${(sig.confidence ?? 0).toFixed(0)}/100`, color: scoreColor(sig.confidence ?? 0) }
         : null;
     case 'confluence': {
       const cs = confluenceScore(r, sig);
@@ -581,7 +581,7 @@ export default function Opportunities() {
 Name: ${r.name}${r.name_zh ? ` (${r.name_zh})` : ''}
 Sector: ${r.sector ?? 'Unknown'} | Market: ${r.market}
 Current Price: ${lp?.price != null ? lp.price.toFixed(2) : 'N/A'} | Today: ${lp?.change_pct != null ? `${lp.change_pct >= 0 ? '+' : ''}${lp.change_pct.toFixed(2)}%` : 'N/A'}
-AI Signal: ${sig?.signal ?? 'N/A'} | Horizon: ${sig?.horizon ?? 'N/A'} | Confidence: ${sig?.confidence?.toFixed(0) ?? 0}% | Bullish Probability: ${sig?.bullish_probability != null ? `${(sig.bullish_probability * 100).toFixed(0)}%` : 'N/A'}
+AI Signal: ${sig?.signal ?? 'N/A'} | Horizon: ${sig?.horizon ?? 'N/A'} | Signal Strength: ${sig?.confidence?.toFixed(0) ?? 0}/100 | Directional Score: ${sig?.bullish_probability != null ? `${(sig.bullish_probability * 100).toFixed(0)}/100` : 'N/A'} | Neither score is a probability of profit
 K-Score: ${(r.score ?? 0).toFixed(0)} | Technical: ${(r.technical ?? 0).toFixed(0)} | Momentum: ${(r.momentum ?? 0).toFixed(0)} | Value: ${(r.value ?? 0).toFixed(0)} | Growth: ${(r.growth ?? 0).toFixed(0)} | Volatility: ${(r.volatility ?? 0).toFixed(0)}
 Fair Value Upside: ${fairUpside != null ? `${Number(fairUpside) >= 0 ? '+' : ''}${fairUpside}%` : 'N/A'}
 Recent News Headlines (5 most recent):

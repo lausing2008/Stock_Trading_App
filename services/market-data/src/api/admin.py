@@ -1183,6 +1183,20 @@ def options_flow_alert_performance(
     base = select(OptionsFlowAlertOutcome, Stock.symbol).join(
         Stock, OptionsFlowAlertOutcome.stock_id == Stock.id).where(*predicates)
     matching_count = session.scalar(select(func.count()).select_from(base.subquery()))
+    # Aggregate before pagination: a stock review cannot be based on whichever 25
+    # contracts happened to fit on the current page. Counts describe filtered history.
+    from sqlalchemy import case
+    stock_groups = session.execute(select(
+        Stock.symbol.label('symbol'),
+        func.count().label('alert_count'),
+        func.count(func.distinct(OptionsFlowAlertOutcome.option_chain)).label('contracts'),
+        func.count(func.distinct(OptionsFlowAlertOutcome.fired_date)).label('dates'),
+        func.sum(case((OptionsFlowAlertOutcome.direction == 'bullish', 1), else_=0)).label('bullish'),
+        func.sum(case((OptionsFlowAlertOutcome.direction == 'bearish', 1), else_=0)).label('bearish'),
+        func.max(OptionsFlowAlertOutcome.fired_at).label('latest_at'),
+    ).join(Stock, OptionsFlowAlertOutcome.stock_id == Stock.id).where(*predicates)
+      .group_by(Stock.symbol).order_by(func.max(OptionsFlowAlertOutcome.fired_at).desc(), Stock.symbol)
+      .limit(50)).mappings().all()
     sort_col = getattr(OptionsFlowAlertOutcome, sort)
     recent_rows = session.execute(base.order_by(
         sort_col.desc().nulls_last(), OptionsFlowAlertOutcome.fired_at.desc(),
@@ -1224,6 +1238,8 @@ def options_flow_alert_performance(
         "matching_count": matching_count, "offset": offset, "limit": limit,
         "total_count": sum(fired_counts.values()),
         "summary_scope": "entire_lookback",
+        "stock_summary_scope": "filtered_history_before_pagination_latest_50_symbols",
+        "stock_summaries": [dict(row) for row in stock_groups],
         "metric": "measured underlying directional hit rate",
         "horizon_unit": "calendar_days",
         "by_direction": by_direction,
@@ -2374,17 +2390,22 @@ def capture_option_strategy(payload: dict, _: User = Depends(get_admin_user),
     # A client cannot backdate a prospective capture and call known outcomes prospective.
     if inputs.get('origin') == 'prospective':
         inputs['captured_at'] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    policy = fingerprint()
+    # Prospective retries use the original frozen server timestamp, not a new clock reading.
+    identity = {k: v for k, v in inputs.items() if k != 'captured_at'} if inputs.get('origin') == 'prospective' else inputs
+    try:
+        key = digest({'inputs': identity, 'policy': policy})
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    existing = session.scalar(select(OptionStrategyCapture).where(OptionStrategyCapture.capture_key == key))
+    if existing:
+        return {'id': existing.id, 'created': False, 'inputs': existing.inputs, 'policy_fingerprint': existing.policy_fingerprint}
+    # The clock governs new captures. A retry after entry retrieves the already
+    # frozen capture; it must not be rejected as an attempted late prediction.
     try:
         validate_capture(inputs)
     except (ValueError, TypeError, KeyError) as exc:
         raise HTTPException(422, str(exc)) from exc
-    policy = fingerprint()
-    # Prospective retries use the original frozen server timestamp, not a new clock reading.
-    identity = {k: v for k, v in inputs.items() if k != 'captured_at'} if inputs['origin'] == 'prospective' else inputs
-    key = digest({'inputs': identity, 'policy': policy})
-    existing = session.scalar(select(OptionStrategyCapture).where(OptionStrategyCapture.capture_key == key))
-    if existing:
-        return {'id': existing.id, 'created': False, 'inputs': existing.inputs, 'policy_fingerprint': existing.policy_fingerprint}
     row = OptionStrategyCapture(capture_key=key, policy_fingerprint=policy, inputs=inputs)
     try:
         session.add(row)

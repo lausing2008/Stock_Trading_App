@@ -419,17 +419,24 @@ def _fetch_ml_data(symbol: str, style_key: str = "SWING") -> tuple[float | None,
                     # 0.0`) that exists specifically to zero out a worthless model's weight —
                     # a genuine 0.0 AUC should assign 0.0 weight, not the ~20% weight a
                     # substituted 0.55 produces. `is not None` is the correct presence check.
-                    test_auc = 0.55
+                    test_auc = 0.0
+                    quality_status = "unavailable"
                     for _key in ("mean_model_test_auc", "auc", "cv_auc_mean"):
                         _val = m.get(_key)
                         if _val is not None:
                             test_auc = float(_val)
+                            if not np.isfinite(test_auc) or not 0 <= test_auc <= 1:
+                                test_auc = 0.0
+                                quality_status = "invalid"
+                            else:
+                                quality_status = "measured"
                             break
                     ml_meta = {
                         "ml_model": data.get("model", "xgboost"),
                         "ml_agreement": data.get("ensemble_agreement"),
                         "ml_model_probs": data.get("model_probabilities"),
                         "ml_oos_suppressed": bool(data.get("oos_suppressed", False)),
+                        "ml_quality_status": quality_status,
                     }
                     return prob, test_auc, ml_meta
                 # 404 = no model for this endpoint — try next in cascade (expected, not an error)
@@ -2092,7 +2099,7 @@ def _apply_style_signal(
         ml_w = min(raw_w, eff_cap)
         if raw_w > 0:  # floor only applies to non-zero weights — don't resurrect a zero-weighted inverse model
             # T228: AUC-scaled floor — near-random (AUC≈0.50) gets floor≈0; AUC≥0.60 gets full floor
-            auc_floor = max(0.0, (ml_test_auc - 0.50) / 0.10) * p.get("ml_weight_floor", 0.0)
+            auc_floor = min(1.0, max(0.0, (ml_test_auc - 0.50) / 0.10)) * p.get("ml_weight_floor", 0.0)
             ml_w = max(ml_w, auc_floor)
         gap = abs(ml_prob_c - ta_prob)
         if gap > 0.35:
@@ -3177,7 +3184,10 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             cp_ratio=cp_ratio,
             kscore=kscore,
             is_stale=is_stale,
-            base_reasons=reasons,
+            base_reasons={**reasons,
+                          **{key: _ml_m.get(key) for key in (
+                              "ml_model", "ml_agreement", "ml_model_probs", "ml_quality_status")},
+                          "ml_test_auc": _ml_auc if _ml_m.get("ml_quality_status") == "measured" else None},
             earnings_beat_rate=earnings_beat_rate,
             sector_etf_above_sma50=sector_etf_above_sma50,
             short_pct_float=short_pct_float,

@@ -1,0 +1,1212 @@
+{
+  "retrieved_at": "2026-10-10T06:28:08.849968+00:00",
+  "stale_latest": [
+    {
+      "symbol": "SKHYV",
+      "horizon": "SHORT",
+      "ts": "2026-09-06 22:28:47.294155",
+      "signal": "HOLD",
+      "stale_warning": "true"
+    },
+    {
+      "symbol": "SKHYV",
+      "horizon": "SWING",
+      "ts": "2026-09-06 22:28:47.294155",
+      "signal": "HOLD",
+      "stale_warning": "true"
+    },
+    {
+      "symbol": "SKHYV",
+      "horizon": "LONG",
+      "ts": "2026-09-06 22:28:47.294155",
+      "signal": "HOLD",
+      "stale_warning": "true"
+    },
+    {
+      "symbol": "SKHYV",
+      "horizon": "GROWTH",
+      "ts": "2026-09-06 22:28:47.294155",
+      "signal": "HOLD",
+      "stale_warning": "true"
+    }
+  ],
+  "ai_bad_timing": [
+    {
+      "symbol": "DIVO",
+      "horizon": "GROWTH",
+      "signal_date": "2026-08-20",
+      "entry_date": "2026-08-20",
+      "exit_date": "2026-09-16",
+      "hold_days": 14
+    },
+    {
+      "symbol": "NATL",
+      "horizon": "GROWTH",
+      "signal_date": "2026-08-18",
+      "entry_date": "2026-08-18",
+      "exit_date": "2026-09-22",
+      "hold_days": 14
+    },
+    {
+      "symbol": "AMZN",
+      "horizon": "SWING",
+      "signal_date": "2026-08-11",
+      "entry_date": "2026-08-11",
+      "exit_date": "2026-08-27",
+      "hold_days": 14
+    },
+    {
+      "symbol": "GPN",
+      "horizon": "SWING",
+      "signal_date": "2026-08-06",
+      "entry_date": "2026-08-06",
+      "exit_date": "2026-08-31",
+      "hold_days": 14
+    },
+    {
+      "symbol": "SCHD",
+      "horizon": "GROWTH",
+      "signal_date": "2026-08-06",
+      "entry_date": "2026-08-06",
+      "exit_date": "2026-09-16",
+      "hold_days": 14
+    },
+    {
+      "symbol": "VZ",
+      "horizon": "SWING",
+      "signal_date": "2026-08-05",
+      "entry_date": "2026-08-05",
+      "exit_date": "2026-09-09",
+      "hold_days": 14
+    },
+    {
+      "symbol": "CORT",
+      "horizon": "SWING",
+      "signal_date": "2026-08-05",
+      "entry_date": "2026-08-05",
+      "exit_date": "2026-08-21",
+      "hold_days": 14
+    },
+    {
+      "symbol": "V",
+      "horizon": "SWING",
+      "signal_date": "2026-08-03",
+      "entry_date": "2026-08-03",
+      "exit_date": "2026-08-31",
+      "hold_days": 14
+    },
+    {
+      "symbol": "ARMK",
+      "horizon": "GROWTH",
+      "signal_date": "2026-07-28",
+      "entry_date": "2026-07-28",
+      "exit_date": "2026-08-18",
+      "hold_days": 14
+    },
+    {
+      "symbol": "NET",
+      "horizon": "GROWTH",
+      "signal_date": "2026-07-21",
+      "entry_date": "2026-07-21",
+      "exit_date": "2026-08-18",
+      "hold_days": 14
+    },
+    {
+      "symbol": "VRTX",
+      "horizon": "SWING",
+      "signal_date": "2026-07-21",
+      "entry_date": "2026-07-21",
+      "exit_date": "2026-08-06",
+      "hold_days": 14
+    },
+    {
+      "symbol": "JPM",
+      "horizon": "GROWTH",
+      "signal_date": "2026-07-20",
+      "entry_date": "2026-07-20",
+      "exit_date": "2026-08-19",
+      "hold_days": 14
+    },
+    {
+      "symbol": "NU",
+      "horizon": "GROWTH",
+      "signal_date": "2026-07-17",
+      "entry_date": "2026-07-17",
+      "exit_date": "2026-08-06",
+      "hold_days": 14
+    },
+    {
+      "symbol": "0005.HK",
+      "horizon": "GROWTH",
+      "signal_date": "2026-07-16",
+      "entry_date": "2026-07-16",
+      "exit_date": "2026-08-05",
+      "hold_days": 14
+    },
+    {
+      "symbol": "ABBV",
+      "horizon": "SWING",
+      "signal_date": "2026-07-13",
+      "entry_date": "2026-07-13",
+      "exit_date": "2026-07-31",
+      "hold_days": 14
+    },
+    {
+      "symbol": "DIVO",
+      "horizon": "GROWTH",
+      "signal_date": "2026-07-10",
+      "entry_date": "2026-07-10",
+      "exit_date": "2026-08-20",
+      "hold_days": 14
+    },
+    {
+      "symbol": "ARMK",
+      "horizon": "SWING",
+      "signal_date": "2026-06-22",
+      "entry_date": "2026-06-22",
+      "exit_date": "2026-07-16",
+      "hold_days": 14
+    }
+  ],
+  "ai_model_provenance": [
+    {
+      "symbol": "MU",
+      "horizon": "SHORT",
+      "model": "lightgbm",
+      "auc": "0.59375",
+      "probability": "0.45",
+      "weight": "0.4",
+      "suppressed": "true"
+    },
+    {
+      "symbol": "MU",
+      "horizon": "SWING",
+      "model": "lightgbm",
+      "auc": "0.59375",
+      "probability": "0.95",
+      "weight": "0.11",
+      "suppressed": "false"
+    },
+    {
+      "symbol": "MU",
+      "horizon": "LONG",
+      "model": "lightgbm",
+      "auc": "0.59375",
+      "probability": "0.5",
+      "weight": "0.0",
+      "suppressed": "true"
+    },
+    {
+      "symbol": "MU",
+      "horizon": "GROWTH",
+      "model": "lightgbm",
+      "auc": "0.59375",
+      "probability": "0.5",
+      "weight": "0.0",
+      "suppressed": "true"
+    },
+    {
+      "symbol": "NVDA",
+      "horizon": "SHORT",
+      "model": "ensemble_xgb_lgb_rf",
+      "auc": "0.5013",
+      "probability": "0.5",
+      "weight": "0.4",
+      "suppressed": "true"
+    },
+    {
+      "symbol": "NVDA",
+      "horizon": "SWING",
+      "model": "ensemble_xgb_lgb_rf",
+      "auc": "0.5013",
+      "probability": "0.5",
+      "weight": "0.0",
+      "suppressed": "true"
+    },
+    {
+      "symbol": "NVDA",
+      "horizon": "LONG",
+      "model": "ensemble_xgb_lgb_rf",
+      "auc": "0.5013",
+      "probability": "0.5",
+      "weight": "0.0",
+      "suppressed": "true"
+    },
+    {
+      "symbol": "NVDA",
+      "horizon": "GROWTH",
+      "model": "ensemble_xgb_lgb_rf",
+      "auc": "0.5013",
+      "probability": "0.45",
+      "weight": "0.67",
+      "suppressed": "true"
+    }
+  ],
+  "signal_outcomes_recent30": [
+    {
+      "market": "US",
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "n": 563,
+      "dates": 19,
+      "hit_rate": "51.69",
+      "mean_raw_return": "1.263"
+    },
+    {
+      "market": "US",
+      "horizon": "SHORT",
+      "signal_direction": "SELL",
+      "n": 423,
+      "dates": 19,
+      "hit_rate": "46.81",
+      "mean_raw_return": "0.559"
+    },
+    {
+      "market": "US",
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "n": 231,
+      "dates": 12,
+      "hit_rate": "58.01",
+      "mean_raw_return": "2.564"
+    },
+    {
+      "market": "US",
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "n": 369,
+      "dates": 19,
+      "hit_rate": "45.53",
+      "mean_raw_return": "0.727"
+    },
+    {
+      "market": "US",
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "n": 55,
+      "dates": 1,
+      "hit_rate": "56.36",
+      "mean_raw_return": "0.754"
+    },
+    {
+      "market": "US",
+      "horizon": "LONG",
+      "signal_direction": "SELL",
+      "n": 328,
+      "dates": 16,
+      "hit_rate": "48.78",
+      "mean_raw_return": "0.897"
+    },
+    {
+      "market": "US",
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "n": 268,
+      "dates": 13,
+      "hit_rate": "60.07",
+      "mean_raw_return": "1.583"
+    },
+    {
+      "market": "US",
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "n": 104,
+      "dates": 17,
+      "hit_rate": "39.42",
+      "mean_raw_return": "1.506"
+    },
+    {
+      "market": "HK",
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "n": 116,
+      "dates": 18,
+      "hit_rate": "39.66",
+      "mean_raw_return": "-0.711"
+    },
+    {
+      "market": "HK",
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "n": 46,
+      "dates": 5,
+      "hit_rate": "17.39",
+      "mean_raw_return": "-6.698"
+    },
+    {
+      "market": "HK",
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "n": 200,
+      "dates": 18,
+      "hit_rate": "50.50",
+      "mean_raw_return": "1.265"
+    },
+    {
+      "market": "HK",
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "n": 11,
+      "dates": 1,
+      "hit_rate": "27.27",
+      "mean_raw_return": "-6.765"
+    },
+    {
+      "market": "HK",
+      "horizon": "LONG",
+      "signal_direction": "SELL",
+      "n": 201,
+      "dates": 16,
+      "hit_rate": "61.69",
+      "mean_raw_return": "-1.968"
+    },
+    {
+      "market": "HK",
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "n": 49,
+      "dates": 12,
+      "hit_rate": "16.33",
+      "mean_raw_return": "-6.211"
+    },
+    {
+      "market": "HK",
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "n": 118,
+      "dates": 18,
+      "hit_rate": "45.76",
+      "mean_raw_return": "2.349"
+    }
+  ],
+  "coverage_empty": {
+    "error": "(psycopg2.errors.UndefinedColumn) column \"rows_received\" does not exist"
+  },
+  "clock": [
+    {
+      "database_time": "2026-10-10 06:28:09.146315+00:00"
+    }
+  ],
+  "latest_signals": [
+    {
+      "market": "US",
+      "horizon": "SHORT",
+      "n": 151,
+      "oldest": "2026-09-06 22:28:47.294155",
+      "newest": "2026-10-09 20:39:20.044051",
+      "buys": 14,
+      "ml_contributing": 72,
+      "ml_suppressed": 114,
+      "data_stale": 0
+    },
+    {
+      "market": "US",
+      "horizon": "SWING",
+      "n": 151,
+      "oldest": "2026-09-06 22:28:47.294155",
+      "newest": "2026-10-09 20:39:20.044051",
+      "buys": 37,
+      "ml_contributing": 83,
+      "ml_suppressed": 123,
+      "data_stale": 0
+    },
+    {
+      "market": "US",
+      "horizon": "LONG",
+      "n": 151,
+      "oldest": "2026-09-06 22:28:47.294155",
+      "newest": "2026-10-09 20:39:20.044051",
+      "buys": 31,
+      "ml_contributing": 74,
+      "ml_suppressed": 126,
+      "data_stale": 0
+    },
+    {
+      "market": "US",
+      "horizon": "GROWTH",
+      "n": 151,
+      "oldest": "2026-09-06 22:28:47.294155",
+      "newest": "2026-10-09 20:39:20.044051",
+      "buys": 37,
+      "ml_contributing": 67,
+      "ml_suppressed": 127,
+      "data_stale": 0
+    },
+    {
+      "market": "HK",
+      "horizon": "SHORT",
+      "n": 42,
+      "oldest": "2026-10-09 08:30:20.694155",
+      "newest": "2026-10-09 08:38:52.422970",
+      "buys": 0,
+      "ml_contributing": 15,
+      "ml_suppressed": 25,
+      "data_stale": 0
+    },
+    {
+      "market": "HK",
+      "horizon": "SWING",
+      "n": 42,
+      "oldest": "2026-10-09 08:30:20.694155",
+      "newest": "2026-10-09 08:38:52.422970",
+      "buys": 1,
+      "ml_contributing": 19,
+      "ml_suppressed": 23,
+      "data_stale": 0
+    },
+    {
+      "market": "HK",
+      "horizon": "LONG",
+      "n": 42,
+      "oldest": "2026-10-09 08:30:20.694155",
+      "newest": "2026-10-09 08:38:52.422970",
+      "buys": 1,
+      "ml_contributing": 18,
+      "ml_suppressed": 27,
+      "data_stale": 0
+    },
+    {
+      "market": "HK",
+      "horizon": "GROWTH",
+      "n": 42,
+      "oldest": "2026-10-09 08:30:20.694155",
+      "newest": "2026-10-09 08:38:52.422970",
+      "buys": 0,
+      "ml_contributing": 20,
+      "ml_suppressed": 24,
+      "data_stale": 0
+    }
+  ],
+  "current_strength": [
+    {
+      "market": "US",
+      "horizon": "SHORT",
+      "n": 151,
+      "avg_strength": "21.12",
+      "median_strength": "19.50",
+      "under20": 79,
+      "over40": 16,
+      "avg_pre": "0.5061",
+      "avg_final": "0.5104"
+    },
+    {
+      "market": "US",
+      "horizon": "SWING",
+      "n": 151,
+      "avg_strength": "17.68",
+      "median_strength": "17.48",
+      "under20": 94,
+      "over40": 4,
+      "avg_pre": "0.5029",
+      "avg_final": "0.5222"
+    },
+    {
+      "market": "US",
+      "horizon": "LONG",
+      "n": 151,
+      "avg_strength": "22.29",
+      "median_strength": "19.74",
+      "under20": 76,
+      "over40": 16,
+      "avg_pre": "0.5106",
+      "avg_final": "0.5417"
+    },
+    {
+      "market": "US",
+      "horizon": "GROWTH",
+      "n": 151,
+      "avg_strength": "22.31",
+      "median_strength": "20.08",
+      "under20": 75,
+      "over40": 22,
+      "avg_pre": "0.5392",
+      "avg_final": "0.5428"
+    },
+    {
+      "market": "HK",
+      "horizon": "SHORT",
+      "n": 42,
+      "avg_strength": "20.45",
+      "median_strength": "16.91",
+      "under20": 24,
+      "over40": 4,
+      "avg_pre": "0.4045",
+      "avg_final": "0.4332"
+    },
+    {
+      "market": "HK",
+      "horizon": "SWING",
+      "n": 42,
+      "avg_strength": "16.93",
+      "median_strength": "12.62",
+      "under20": 29,
+      "over40": 4,
+      "avg_pre": "0.3992",
+      "avg_final": "0.4414"
+    },
+    {
+      "market": "HK",
+      "horizon": "LONG",
+      "n": 42,
+      "avg_strength": "19.40",
+      "median_strength": "19.31",
+      "under20": 22,
+      "over40": 4,
+      "avg_pre": "0.3977",
+      "avg_final": "0.4445"
+    },
+    {
+      "market": "HK",
+      "horizon": "GROWTH",
+      "n": 42,
+      "avg_strength": "18.10",
+      "median_strength": "12.95",
+      "under20": 28,
+      "over40": 4,
+      "avg_pre": "0.4189",
+      "avg_final": "0.4428"
+    }
+  ],
+  "current_reducers": [
+    {
+      "market": "US",
+      "horizon": "SHORT",
+      "n": 151,
+      "low_oos": 114,
+      "ml_ta_conflict": 29,
+      "weekly_gate": 0,
+      "adx": 6,
+      "high_vol": 0,
+      "cap_applied": 79,
+      "short_history": 2,
+      "stale": 2
+    },
+    {
+      "market": "US",
+      "horizon": "SWING",
+      "n": 151,
+      "low_oos": 123,
+      "ml_ta_conflict": 30,
+      "weekly_gate": 14,
+      "adx": 40,
+      "high_vol": 0,
+      "cap_applied": 48,
+      "short_history": 2,
+      "stale": 2
+    },
+    {
+      "market": "US",
+      "horizon": "LONG",
+      "n": 151,
+      "low_oos": 126,
+      "ml_ta_conflict": 23,
+      "weekly_gate": 14,
+      "adx": 0,
+      "high_vol": 0,
+      "cap_applied": 51,
+      "short_history": 2,
+      "stale": 2
+    },
+    {
+      "market": "US",
+      "horizon": "GROWTH",
+      "n": 151,
+      "low_oos": 127,
+      "ml_ta_conflict": 46,
+      "weekly_gate": 0,
+      "adx": 18,
+      "high_vol": 0,
+      "cap_applied": 41,
+      "short_history": 2,
+      "stale": 2
+    },
+    {
+      "market": "HK",
+      "horizon": "SHORT",
+      "n": 42,
+      "low_oos": 25,
+      "ml_ta_conflict": 5,
+      "weekly_gate": 0,
+      "adx": 0,
+      "high_vol": 10,
+      "cap_applied": 26,
+      "short_history": 0,
+      "stale": 0
+    },
+    {
+      "market": "HK",
+      "horizon": "SWING",
+      "n": 42,
+      "low_oos": 23,
+      "ml_ta_conflict": 5,
+      "weekly_gate": 6,
+      "adx": 16,
+      "high_vol": 8,
+      "cap_applied": 15,
+      "short_history": 0,
+      "stale": 0
+    },
+    {
+      "market": "HK",
+      "horizon": "LONG",
+      "n": 42,
+      "low_oos": 27,
+      "ml_ta_conflict": 4,
+      "weekly_gate": 6,
+      "adx": 0,
+      "high_vol": 9,
+      "cap_applied": 22,
+      "short_history": 0,
+      "stale": 0
+    },
+    {
+      "market": "HK",
+      "horizon": "GROWTH",
+      "n": 42,
+      "low_oos": 24,
+      "ml_ta_conflict": 4,
+      "weekly_gate": 0,
+      "adx": 5,
+      "high_vol": 11,
+      "cap_applied": 14,
+      "short_history": 0,
+      "stale": 0
+    }
+  ],
+  "signal_outcomes_180d": [
+    {
+      "market": "US",
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "total": 3464,
+      "resolved": 3464,
+      "dates": 92,
+      "symbols": 135,
+      "hit_rate": "43.62",
+      "mean_raw_return": "-0.735",
+      "censored": 0,
+      "entry_not_later": 0
+    },
+    {
+      "market": "US",
+      "horizon": "SHORT",
+      "signal_direction": "SELL",
+      "total": 1341,
+      "resolved": 1341,
+      "dates": 93,
+      "symbols": 126,
+      "hit_rate": "41.69",
+      "mean_raw_return": "0.725",
+      "censored": 0,
+      "entry_not_later": 0
+    },
+    {
+      "market": "US",
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "total": 3042,
+      "resolved": 3042,
+      "dates": 86,
+      "symbols": 131,
+      "hit_rate": "41.81",
+      "mean_raw_return": "-1.630",
+      "censored": 0,
+      "entry_not_later": 8
+    },
+    {
+      "market": "US",
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "total": 1122,
+      "resolved": 1122,
+      "dates": 99,
+      "symbols": 125,
+      "hit_rate": "43.49",
+      "mean_raw_return": "0.534",
+      "censored": 0,
+      "entry_not_later": 0
+    },
+    {
+      "market": "US",
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "total": 2340,
+      "resolved": 2340,
+      "dates": 56,
+      "symbols": 125,
+      "hit_rate": "49.15",
+      "mean_raw_return": "-1.358",
+      "censored": 0,
+      "entry_not_later": 0
+    },
+    {
+      "market": "US",
+      "horizon": "LONG",
+      "signal_direction": "SELL",
+      "total": 1139,
+      "resolved": 1139,
+      "dates": 86,
+      "symbols": 122,
+      "hit_rate": "42.32",
+      "mean_raw_return": "1.347",
+      "censored": 0,
+      "entry_not_later": 0
+    },
+    {
+      "market": "US",
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "total": 3390,
+      "resolved": 3390,
+      "dates": 78,
+      "symbols": 132,
+      "hit_rate": "42.21",
+      "mean_raw_return": "-1.801",
+      "censored": 0,
+      "entry_not_later": 8
+    },
+    {
+      "market": "US",
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "total": 667,
+      "resolved": 667,
+      "dates": 83,
+      "symbols": 113,
+      "hit_rate": "38.98",
+      "mean_raw_return": "1.368",
+      "censored": 0,
+      "entry_not_later": 0
+    },
+    {
+      "market": "HK",
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "total": 943,
+      "resolved": 943,
+      "dates": 82,
+      "symbols": 42,
+      "hit_rate": "33.62",
+      "mean_raw_return": "-2.707",
+      "censored": 0,
+      "entry_not_later": 0
+    },
+    {
+      "market": "HK",
+      "horizon": "SHORT",
+      "signal_direction": "SELL",
+      "total": 215,
+      "resolved": 215,
+      "dates": 20,
+      "symbols": 36,
+      "hit_rate": "45.58",
+      "mean_raw_return": "0.330",
+      "censored": 0,
+      "entry_not_later": 0
+    },
+    {
+      "market": "HK",
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "total": 650,
+      "resolved": 650,
+      "dates": 72,
+      "symbols": 40,
+      "hit_rate": "29.85",
+      "mean_raw_return": "-5.530",
+      "censored": 0,
+      "entry_not_later": 0
+    },
+    {
+      "market": "HK",
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "total": 649,
+      "resolved": 649,
+      "dates": 98,
+      "symbols": 39,
+      "hit_rate": "48.54",
+      "mean_raw_return": "0.212",
+      "censored": 0,
+      "entry_not_later": 0
+    },
+    {
+      "market": "HK",
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "total": 540,
+      "resolved": 540,
+      "dates": 50,
+      "symbols": 40,
+      "hit_rate": "32.59",
+      "mean_raw_return": "-9.315",
+      "censored": 0,
+      "entry_not_later": 0
+    },
+    {
+      "market": "HK",
+      "horizon": "LONG",
+      "signal_direction": "SELL",
+      "total": 669,
+      "resolved": 669,
+      "dates": 85,
+      "symbols": 39,
+      "hit_rate": "49.33",
+      "mean_raw_return": "0.810",
+      "censored": 0,
+      "entry_not_later": 0
+    },
+    {
+      "market": "HK",
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "total": 826,
+      "resolved": 826,
+      "dates": 71,
+      "symbols": 39,
+      "hit_rate": "31.11",
+      "mean_raw_return": "-5.323",
+      "censored": 0,
+      "entry_not_later": 1
+    },
+    {
+      "market": "HK",
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "total": 523,
+      "resolved": 523,
+      "dates": 81,
+      "symbols": 38,
+      "hit_rate": "42.83",
+      "mean_raw_return": "2.200",
+      "censored": 0,
+      "entry_not_later": 0
+    }
+  ],
+  "signal_strength_bands": [
+    {
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "band": "0-20",
+      "n": 909,
+      "dates": 35,
+      "hit_rate": "41.36"
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "band": "20-40",
+      "n": 2107,
+      "dates": 86,
+      "hit_rate": "43.76"
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "band": "40-60",
+      "n": 1072,
+      "dates": 88,
+      "hit_rate": "39.65"
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "band": "60+",
+      "n": 319,
+      "dates": 67,
+      "hit_rate": "32.92"
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "SELL",
+      "band": "20-40",
+      "n": 593,
+      "dates": 87,
+      "hit_rate": "46.21"
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "SELL",
+      "band": "40-60",
+      "n": 847,
+      "dates": 89,
+      "hit_rate": "40.26"
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "SELL",
+      "band": "60+",
+      "n": 116,
+      "dates": 41,
+      "hit_rate": "36.21"
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "band": "0-20",
+      "n": 603,
+      "dates": 28,
+      "hit_rate": "31.18"
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "band": "20-40",
+      "n": 1406,
+      "dates": 72,
+      "hit_rate": "41.96"
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "band": "40-60",
+      "n": 1186,
+      "dates": 81,
+      "hit_rate": "43.00"
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "band": "60+",
+      "n": 497,
+      "dates": 73,
+      "hit_rate": "35.81"
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "band": "20-40",
+      "n": 1066,
+      "dates": 103,
+      "hit_rate": "46.06"
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "band": "40-60",
+      "n": 631,
+      "dates": 94,
+      "hit_rate": "43.74"
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "band": "60+",
+      "n": 74,
+      "dates": 37,
+      "hit_rate": "48.65"
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "band": "0-20",
+      "n": 151,
+      "dates": 12,
+      "hit_rate": "54.97"
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "band": "20-40",
+      "n": 851,
+      "dates": 56,
+      "hit_rate": "48.77"
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "band": "40-60",
+      "n": 931,
+      "dates": 55,
+      "hit_rate": "46.94"
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "band": "60+",
+      "n": 947,
+      "dates": 54,
+      "hit_rate": "41.29"
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "SELL",
+      "band": "20-40",
+      "n": 763,
+      "dates": 65,
+      "hit_rate": "47.18"
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "SELL",
+      "band": "40-60",
+      "n": 924,
+      "dates": 88,
+      "hit_rate": "43.61"
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "SELL",
+      "band": "60+",
+      "n": 121,
+      "dates": 41,
+      "hit_rate": "40.50"
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "band": "0-20",
+      "n": 35,
+      "dates": 18,
+      "hit_rate": "25.71"
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "band": "20-40",
+      "n": 929,
+      "dates": 69,
+      "hit_rate": "35.95"
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "band": "40-60",
+      "n": 1642,
+      "dates": 76,
+      "hit_rate": "42.39"
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "band": "60+",
+      "n": 1610,
+      "dates": 73,
+      "hit_rate": "40.31"
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "band": "20-40",
+      "n": 169,
+      "dates": 23,
+      "hit_rate": "36.69"
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "band": "40-60",
+      "n": 771,
+      "dates": 87,
+      "hit_rate": "42.80"
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "band": "60+",
+      "n": 250,
+      "dates": 68,
+      "hit_rate": "36.80"
+    }
+  ],
+  "notification_states": [],
+  "strategy_ledger": [
+    {
+      "kind": "captures",
+      "n": 0
+    },
+    {
+      "kind": "resolutions",
+      "n": 0
+    }
+  ],
+  "squeezes": [
+    {
+      "alert_type": "gamma_unwind_calls",
+      "total": 197,
+      "resolved": 155,
+      "dates": 43,
+      "hit_rate_10d": "49.68"
+    },
+    {
+      "alert_type": "gamma_unwind_puts",
+      "total": 364,
+      "resolved": 294,
+      "dates": 49,
+      "hit_rate_10d": "45.24"
+    },
+    {
+      "alert_type": "short_squeeze",
+      "total": 17,
+      "resolved": 16,
+      "dates": 7,
+      "hit_rate_10d": "25.00"
+    },
+    {
+      "alert_type": "squeeze_ignition",
+      "total": 6,
+      "resolved": 6,
+      "dates": 6,
+      "hit_rate_10d": "50.00"
+    }
+  ],
+  "chain_coverage": [
+    {
+      "status": "complete",
+      "n": 266,
+      "min": "2026-10-01",
+      "max": "2026-10-08"
+    },
+    {
+      "status": "incomplete",
+      "n": 8,
+      "min": "2026-10-01",
+      "max": "2026-10-08"
+    }
+  ],
+  "flow_eligible_10d": [
+    {
+      "direction": "bullish",
+      "original_count": 1031,
+      "eligible_count": 432,
+      "excluded_counts": {
+        "expired_before_alert": 516,
+        "same_day_expiry": 83
+      },
+      "excluded_total": 599,
+      "exclusion_reasons": {
+        "expired_before_alert": "the contract had already expired when the alert fired \u2014 there was never a trade here to measure",
+        "same_day_expiry": "the contract expired on the alert day. That can be legitimate intraday research, but an evaluator entering at the next session cannot measure THIS trade"
+      },
+      "eligibility_version": "flow-elig-2",
+      "hit_rate": 0.5208333333333334,
+      "distinct_dates": 20,
+      "distinct_symbols": 40,
+      "symbol_date_clusters": 150,
+      "equal_cluster_hit_rate": 0.56,
+      "largest_cluster": 13
+    },
+    {
+      "direction": "bearish",
+      "original_count": 1059,
+      "eligible_count": 398,
+      "excluded_counts": {
+        "expired_before_alert": 586,
+        "same_day_expiry": 75
+      },
+      "excluded_total": 661,
+      "exclusion_reasons": {
+        "expired_before_alert": "the contract had already expired when the alert fired \u2014 there was never a trade here to measure",
+        "same_day_expiry": "the contract expired on the alert day. That can be legitimate intraday research, but an evaluator entering at the next session cannot measure THIS trade"
+      },
+      "eligibility_version": "flow-elig-2",
+      "hit_rate": 0.3693467336683417,
+      "distinct_dates": 21,
+      "distinct_symbols": 40,
+      "symbol_date_clusters": 160,
+      "equal_cluster_hit_rate": 0.325,
+      "largest_cluster": 13
+    }
+  ]
+}
+

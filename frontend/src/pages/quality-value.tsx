@@ -9,7 +9,8 @@
  *
  * An empty eligible list is a valid result and is labelled one, not an error state.
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/router';
 import Head from 'next/head';
 import useSWR from 'swr';
 import DirectionScreen from '@/components/DirectionScreen';
@@ -354,13 +355,23 @@ function Row({ e, catalog }: { e: QvEvaluation; catalog?: Catalog }) {
 }
 
 export default function QualityValuePage() {
+  const router = useRouter();
   const [symbols, setSymbols] = useState('');
   /* The session the SETUP card read, so the research panel can say when the two
      panels are speaking for different days rather than leaving it to be inferred. */
   const [setupSession, setSetupSession] = useState<string | undefined>();
   const [query, setQuery] = useState('');
+  const routeSymbols = typeof router.query.symbols === 'string' ? router.query.symbols.trim().toUpperCase() : '';
+  const [appliedRoute, setAppliedRoute] = useState<string | null>(null);
+  useEffect(() => {
+    if (!router.isReady) return;
+    setSymbols(routeSymbols);
+    setQuery(routeSymbols);
+    setAppliedRoute(routeSymbols);
+  }, [router.isReady, routeSymbols]);
+  const routeApplied = router.isReady && appliedRoute === routeSymbols;
   const { data, error, isLoading } = useSWR<QualityValueReport>(
-    ['quality-value', query], () => api.qualityValue(query || undefined),
+    routeApplied ? ['quality-value', query] : null, () => api.qualityValue(query || undefined),
     { revalidateOnFocus: false });
   const err = error ? (error instanceof Error ? error.message : String(error)) : null;
 
@@ -408,7 +419,7 @@ export default function QualityValuePage() {
             background: 'linear-gradient(135deg, #4f46e5, #6366f1)' }}>Evaluate</button>
         </div>
 
-        <DirectionScreen onSession={setSetupSession} symbols={query} />
+        {routeApplied && <DirectionScreen onSession={setSetupSession} symbols={query} />}
 
         {err && (
           <div style={{ padding: '13px 15px', borderRadius: '10px', fontSize: '13px',

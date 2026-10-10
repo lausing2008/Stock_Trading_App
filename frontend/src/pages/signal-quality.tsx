@@ -1,24 +1,19 @@
 /**
  * Signal Quality / Calibration page (/signal-quality)
  *
- * Shows how well-calibrated the AI signal confidence scores are.
- * A well-calibrated model: when it says 70% confidence, it should be right ~70% of the time.
+ * Shows historical underlying outcomes by signal-strength band.
  *
  * Data source: GET /signals/outcomes/calibration?days=N
  *
- * Reading the reliability diagram
+ * Reading the outcome-by-strength plot
  * ────────────────────────────────
- * X axis = expected win rate (midpoint of confidence band, e.g. 65–70% band → 67.5%)
+ * X axis = midpoint of the signal-strength band
  * Y axis = actual win rate observed for signals in that band
- * Diagonal = perfect calibration
- * Points above diagonal = model is UNDER-confident (actual beats expectation) — good
- * Points below diagonal = model is OVER-confident (actual lags expectation) — recalibrate
  *
- * Confidence bands
+ * Strength bands
  * ─────────────────
- * Signals are grouped into 5-point confidence buckets (50–55%, 55–60%, …, 95–100%).
- * Each row shows: how many signals fell in that band, actual win rate, avg return,
- * and the calibration gap (actual − expected). A negative gap means overconfident.
+ * Signals are grouped into 5-point strength buckets. Strength is distance from neutral,
+ * not a claimed probability, so comparing a band midpoint to its hit rate is invalid.
  */
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
@@ -37,21 +32,6 @@ function fmtPct(n: number | null | undefined, digits = 1): string {
 function fmtReturn(n: number | null | undefined): string {
   if (n == null) return '—';
   return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
-}
-
-function gapColor(gap: number): string {
-  if (gap >= 5) return '#4ade80';
-  if (gap >= 0) return '#86efac';
-  if (gap >= -5) return '#fbbf24';
-  return '#f87171';
-}
-
-function gapLabel(gap: number): string {
-  if (gap >= 10) return 'Under-confident';
-  if (gap >= 3) return 'Slightly under';
-  if (gap >= -3) return 'Well calibrated';
-  if (gap >= -8) return 'Slightly over';
-  return 'Over-confident';
 }
 
 function horizonColor(h: string): string {
@@ -122,7 +102,7 @@ function ReliabilityDiagram({ bands }: { bands: CalibrationBand[] }) {
       width={W}
       height={H}
       style={{ display: 'block', maxWidth: '100%' }}
-      aria-label="Reliability diagram: expected vs actual win rate"
+      aria-label="Historical underlying hit rate by signal-strength band"
     >
       {/* Grid lines Y */}
       {gridY.map(v => (
@@ -147,18 +127,11 @@ function ReliabilityDiagram({ bands }: { bands: CalibrationBand[] }) {
       <line x1={pad.left} y1={pad.top} x2={pad.left} y2={pad.top + plotH} stroke="#334155" strokeWidth="1" />
       <line x1={pad.left} y1={pad.top + plotH} x2={pad.left + plotW} y2={pad.top + plotH} stroke="#334155" strokeWidth="1" />
 
-      {/* Perfect calibration diagonal */}
-      <line
-        x1={xPos(50)} y1={yPos(50)}
-        x2={xPos(100)} y2={yPos(100)}
-        stroke="#475569" strokeWidth="1.5" strokeDasharray="5,4"
-      />
-
       {/* Points */}
       {pts.map((b, i) => {
         const cx = xPos(b.midpoint);
         const cy = yPos(b.win_rate_pct);
-        const color = gapColor(b.calibration_gap);
+        const color = b.win_rate_pct >= 55 ? '#4ade80' : b.win_rate_pct >= 45 ? '#fbbf24' : '#f87171';
         // Radius proportional to count, capped
         const r = Math.max(4, Math.min(10, 4 + Math.sqrt(b.count) * 0.7));
         return (
@@ -194,7 +167,7 @@ function ReliabilityDiagram({ bands }: { bands: CalibrationBand[] }) {
 
       {/* Axis titles */}
       <text x={pad.left + plotW / 2} y={H - 2} textAnchor="middle" fill="#64748b" fontSize="9" fontFamily="system-ui,sans-serif">
-        Expected (confidence midpoint)
+        Signal strength band
       </text>
       <text
         x={9} y={pad.top + plotH / 2}
@@ -218,7 +191,7 @@ function BandTable({ bands }: { bands: CalibrationBand[] }) {
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
         <thead>
           <tr style={{ borderBottom: '1px solid #334155' }}>
-            {['Confidence Band', 'Signals', 'Win Rate', 'Avg Return', 'Gap', 'Assessment'].map(h => (
+            {['Strength Band', 'Signals', 'Underlying Hit Rate', 'Avg Underlying Return'].map(h => (
               <th key={h} style={{ padding: '6px 10px', textAlign: 'left', color: '#64748b', fontWeight: 600, whiteSpace: 'nowrap' }}>
                 {h}
               </th>
@@ -227,7 +200,6 @@ function BandTable({ bands }: { bands: CalibrationBand[] }) {
         </thead>
         <tbody>
           {bands.map((b, i) => {
-            const color = gapColor(b.calibration_gap);
             return (
               <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
                 <td style={{ padding: '7px 10px', color: '#e2e8f0', fontWeight: 600, fontFamily: 'monospace' }}>
@@ -242,22 +214,6 @@ function BandTable({ bands }: { bands: CalibrationBand[] }) {
                 </td>
                 <td style={{ padding: '7px 10px', color: b.avg_return_pct == null ? '#475569' : b.avg_return_pct >= 0 ? '#4ade80' : '#f87171' }}>
                   {fmtReturn(b.avg_return_pct)}
-                </td>
-                <td style={{ padding: '7px 10px' }}>
-                  <span style={{
-                    display: 'inline-block',
-                    padding: '2px 7px',
-                    borderRadius: 4,
-                    background: `${color}22`,
-                    color,
-                    fontWeight: 700,
-                    fontSize: 11,
-                  }}>
-                    {b.calibration_gap >= 0 ? '+' : ''}{b.calibration_gap.toFixed(1)}pp
-                  </span>
-                </td>
-                <td style={{ padding: '7px 10px', color: '#94a3b8', fontSize: 11 }}>
-                  {gapLabel(b.calibration_gap)}
                 </td>
               </tr>
             );
@@ -298,9 +254,9 @@ function HorizonSection({ h }: { h: CalibrationHorizon }) {
         <StatCard label="Win Rate" value={fmtPct(h.win_rate_pct)} color={wrColor} />
         <StatCard label="Avg Return" value={fmtReturn(h.avg_return_pct)} color={h.avg_return_pct == null ? undefined : h.avg_return_pct >= 0 ? '#4ade80' : '#f87171'} />
         <StatCard
-          label="Suggested Min Confidence"
-          value={h.suggested_min_confidence != null ? `${h.suggested_min_confidence}%` : '—'}
-          sub={h.suggested_min_confidence != null ? 'Filter below this to improve precision' : 'Not enough data'}
+          label="Historical Candidate Floor"
+          value={h.suggested_min_confidence != null ? `${h.suggested_min_confidence}/100` : '—'}
+          sub={h.suggested_min_confidence != null ? 'Retrospective only; validate prospectively before use' : 'Not enough data'}
           color="#facc15"
         />
       </div>
@@ -310,7 +266,7 @@ function HorizonSection({ h }: { h: CalibrationHorizon }) {
         {/* Reliability diagram */}
         <div style={{ flexShrink: 0 }}>
           <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, fontWeight: 600 }}>
-            Reliability Diagram
+            Outcome by Strength
           </div>
           <div style={{ background: '#0a1120', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 8px' }}>
             <ReliabilityDiagram bands={h.bands} />
@@ -318,11 +274,11 @@ function HorizonSection({ h }: { h: CalibrationHorizon }) {
           <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: '#475569' }}>
               <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: '50%', background: '#4ade80' }} />
-              Above diagonal = under-confident (good)
+              Green = historical hit rate at least 55%
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: '#475569' }}>
               <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: '50%', background: '#f87171' }} />
-              Below diagonal = over-confident
+              Red = historical hit rate below 45%
             </div>
             <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
               Point size = relative sample count
@@ -333,7 +289,7 @@ function HorizonSection({ h }: { h: CalibrationHorizon }) {
         {/* Band table */}
         <div style={{ flex: 1, minWidth: 280 }}>
           <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, fontWeight: 600 }}>
-            Confidence Bands
+            Strength Bands
           </div>
           <BandTable bands={h.bands} />
         </div>
@@ -403,15 +359,12 @@ export default function SignalQualityPage() {
             <span style={{ color: '#94a3b8', fontSize: 13 }}>Signal Quality</span>
           </div>
           <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0, color: '#f1f5f9' }}>
-            Signal Calibration
+            Signal Strength Outcomes
           </h1>
           <p style={{ color: '#64748b', fontSize: 14, margin: '8px 0 0', maxWidth: 640, lineHeight: 1.6 }}>
-            A well-calibrated model means the confidence score matches actual outcomes: when the AI assigns
-            70% confidence, it should win roughly 70% of the time. Points{' '}
-            <span style={{ color: '#4ade80' }}>above the diagonal</span> indicate the model is more accurate
-            than it claims (under-confident — good). Points{' '}
-            <span style={{ color: '#f87171' }}>below the diagonal</span> mean the model is claiming more
-            certainty than it delivers (over-confident — needs recalibration).
+            Signal strength is distance from a neutral fused score, not a probability. This page tests whether
+            stronger historical bands produced better underlying outcomes. It does not report option P&amp;L,
+            and mixed historical policies must not be treated as prospective evidence.
           </p>
         </div>
 

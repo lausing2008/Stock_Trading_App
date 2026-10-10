@@ -144,8 +144,8 @@ function GettingStartedTab() {
 
       <Callout tone="warn" title="Standing disclaimer">
         Every signal, score, and report in this app is a measured, historical read — not a
-        prediction of what a stock will do next. Confidence percentages measure distance from a
-        50/50 coin-flip, not the odds of the trade working. Nothing here is financial advice, and
+        prediction of what a stock will do next. Signal strength measures distance from a neutral
+        fused score, not the odds of the trade working. Nothing here is financial advice, and
         every conviction/gate check exists specifically because the headline label alone is not
         sufficient reason to enter a real position.
       </Callout>
@@ -316,42 +316,41 @@ function ChartToolsTab() {
 function SignalTab() {
   return (
     <div style={{ maxWidth: 780 }}>
-      <Section title="Why a BUY signal can show low confidence">
+      <Section title="Why a BUY signal can show low strength">
         <p>
-          Confidence and the BUY/SELL/HOLD decision are two <b>entirely independent</b> calculations
+          Signal strength and the BUY/SELL/HOLD decision are related readings of the same fused score,
+          but they answer different questions
           — this is the single most common source of confusion on the stock detail page.
         </p>
         <p>
-          <b>Confidence</b> = <Code>abs(fused_probability - 0.5) * 200</Code> — purely &ldquo;how far
-          from a 50/50 coin-flip is the model&rsquo;s probability.&rdquo; A fused probability of 56%
-          bullish is barely above a toss-up, so confidence is mechanically forced to just 12% no
-          matter what else is true about the stock. Confidence measures conviction in the
-          probability estimate itself — not trade quality.
+          <b>Signal strength</b> = <Code>abs(fused_score - 0.5) * 200</Code> — purely &ldquo;how far
+          from neutral is the fused directional score?&rdquo; A score of 0.56 is barely bullish, so
+          strength is mechanically 12/100. The fused score combines model and technical evidence;
+          it is not a calibrated probability and strength is not trade quality.
         </p>
         <p>
           <b>BUY/SELL/HOLD</b> is decided separately by whether that same probability clears a
           per-style, per-regime <b>threshold</b> that can itself be self-tuned over time. A BUY
-          signal with low confidence means the probability barely cleared the bar to be called BUY
+          signal with low strength means the directional score barely cleared the bar to be called BUY
           at all — a marginal, low-conviction call, not a strong one.
         </p>
       </Section>
 
-      <Section title="What confidence level is actually &ldquo;good&rdquo;?">
+      <Section title="How should signal strength be read?">
         <p>
-          There is no single hard cutoff — confidence is a continuous read of how far the
-          probability sits from a coin-flip, not a pass/fail score. As a rough guide for reading
-          the number itself (independent of the panels below, which matter more):
+          There is no validated universal cutoff. Strength is a continuous read of distance from
+          neutral, and production history must establish whether higher bands rank outcomes better.
+          Until that relationship is demonstrated, read the number descriptively:
         </p>
         <ul style={{ paddingLeft: 20, margin: 0 }}>
-          <li style={{ marginBottom: 8 }}><b>Below ~40%</b> — marginal. The probability barely cleared the BUY/SELL threshold; treat the label as a weak lean, not a real call.</li>
-          <li style={{ marginBottom: 8 }}><b>~40–60%</b> — moderate. A reasonably confident directional read, but still worth corroborating before sizing a position.</li>
-          <li style={{ marginBottom: 8 }}><b>Above ~60%</b> — high conviction. The fused probability is well clear of a toss-up in either direction.</li>
+          <li style={{ marginBottom: 8 }}><b>Near 0</b> — the fused evidence is near neutral or safeguards compressed it toward neutral.</li>
+          <li style={{ marginBottom: 8 }}><b>Farther from 0</b> — the engine expressed a stronger directional lean; this still says nothing by itself about expected return.</li>
+          <li style={{ marginBottom: 8 }}><b>Use the outcome cohort</b> — horizon, direction, policy version, sample size and dates determine whether historical evidence is relevant.</li>
         </ul>
-        <Callout tone="warn" title="Confidence alone is not enough">
-          A high-confidence BUY can still fail the Conviction Gate (see below), and a
-          low-confidence BUY that clears every other check can still be a reasonable, if smaller,
-          position. Confidence tells you how sure the MODEL is about its own probability estimate
-          — it does not by itself tell you whether the trade is a good idea. Always read it
+        <Callout tone="warn" title="Strength alone is not enough">
+          A high-strength BUY can still fail the Conviction Gate (see below), and a
+          low-strength BUY can still sit in a useful research setup. Strength reports how far the
+          final fused score sits from neutral. It does not tell you whether the trade is a good idea. Always read it
           alongside Confluence Score and Conviction Gate, never on its own.
         </Callout>
         <p>

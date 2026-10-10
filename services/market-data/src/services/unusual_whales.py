@@ -2154,10 +2154,11 @@ def get_historical_option_chain_result(symbol: str, as_of: str,
             return {"rows": rows, "status": "incomplete", "pages": page,
                     "reason": "request_failed", "page_size": page_limit}
         page_rows = raw if isinstance(raw, list) else []
-        if raw is not None and not isinstance(raw, list):
+        if not isinstance(raw, list):
             return {"rows": rows, "status": "incomplete", "pages": page,
                     "reason": "unexpected_response_shape", "page_size": page_limit}
-        clean = [r for r in page_rows if isinstance(r, dict)]
+        clean = [r for r in page_rows if isinstance(r, dict) and r.get("option_symbol")]
+        malformed = len(clean) != len(page_rows)
         page_keys = {str(r.get("option_symbol")) for r in clean if r.get("option_symbol")}
         if page_keys and page_keys <= seen_contracts:
             return {"rows": rows, "status": "incomplete", "pages": page,
@@ -2169,6 +2170,9 @@ def get_historical_option_chain_result(symbol: str, as_of: str,
             if key:
                 seen_contracts.add(str(key))
             rows.append(row)
+        if malformed:
+            return {"rows": rows, "status": "incomplete", "pages": page + 1,
+                    "reason": "malformed_contract_rows", "page_size": page_limit}
         if len(page_rows) < page_limit:
             return {"rows": rows, "status": "complete", "pages": page + 1,
                     "reason": "terminal_page", "page_size": page_limit}

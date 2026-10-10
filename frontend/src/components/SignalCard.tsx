@@ -11,8 +11,8 @@
  * Signal fields
  * ─────────────
  *   signal            BUY | SELL | HOLD | WAIT
- *   confidence        0–100 composite TA score (higher = stronger conviction)
- *   bullish_probability  0–1 XGBoost ML output (displayed as %)
+ *   confidence        0–100 distance of the final fused score from neutral
+ *   bullish_probability  0–1 fused directional score (not a profit probability)
  *   horizon           SWING (days–weeks) | POSITION (weeks–months) | GROWTH (momentum)
  *   reasons           Detailed breakdown object (see Reasons type below)
  *
@@ -33,15 +33,16 @@
  *  11. MACD histogram
  *  12. ADX (trend strength)
  *  13. OBV (volume confirmation)
- *  14. ML Model (XGBoost bullish probability)
+ *  14. ML model directional output
  *  15. TA composite score (footer)
  *
  * v3 signal engine enhancements reflected here:
- *   • weekly_alignment / weekly_ta_score  — ±12–15% confidence adjustment
+ *   • weekly_alignment / weekly_ta_score  — multi-timeframe adjustment
  *   • active_patterns / pattern_adjustment — chart pattern fusion score
  *   • price_above_vwap / vwma_20          — volume-weighted trend context
  *   • days_to_earnings / earnings_warning — proximity penalty (critical/caution/note)
  */
+import React from 'react';
 import type { Signal } from '@/lib/api';
 
 const SIGNAL_COLOR: Record<string, string> = {
@@ -115,8 +116,26 @@ type Reasons = {
   // SA-27: OOS accuracy suppression flag
   ml_oos_suppressed?: boolean;
   low_oos_accuracy?: boolean;
+  ml_quality_status?: 'measured' | 'unavailable' | 'invalid' | string | null;
+  ml_test_auc?: number | null;
+  ml_model?: string | null;
+  ml_weight?: number | null;
+  ml_overconfidence_gate?: boolean;
   // H3: additional context factors
-  breadth_compression?: number | null;
+  breadth_compression?: boolean | null;
+  weekly_overbought_gate?: boolean;
+  hsi_bear_gate?: boolean;
+  hk_southbound_compression?: boolean;
+  hk_liquidity_gate?: boolean;
+  stale_price_warning?: boolean;
+  insufficient_history_warning?: boolean;
+  compression_cap_applied?: boolean;
+  fused_pre_compression?: number | null;
+  fused_post_compression?: number | null;
+  fused_post_cap?: number | null;
+  compression_total_ratio?: number | null;
+  pillar_gate?: string | null;
+  sell_pillar_gate?: string | null;
   pullback_recovery?: string | null;
   news_sentiment_flag?: string | null;
   rs_flag?: string | null;
@@ -143,6 +162,26 @@ type Reasons = {
 };
 
 type Factor = { label: string; bullish: boolean; detail: string; warning?: boolean };
+
+function activeStrengthReducers(r: Reasons): string[] {
+  const reducers: string[] = [];
+  if (r.low_oos_accuracy) reducers.push('low out-of-sample model quality');
+  if (r.ml_ta_conflict) reducers.push('model and technical disagreement');
+  if (r.ml_overconfidence_gate) reducers.push('model-dominance safeguard');
+  if (r.weekly_gate_fired) reducers.push('bearish weekly structure');
+  if (r.weekly_overbought_gate) reducers.push('extended weekly conditions');
+  if (r.adx_compression) reducers.push('weak or choppy trend');
+  if (r.high_vol_compression) reducers.push('high-volatility regime');
+  if (r.breadth_compression === true) reducers.push('weak market breadth');
+  if (r.hsi_bear_gate) reducers.push('bearish HSI regime');
+  if (r.hk_southbound_compression) reducers.push('negative southbound flow');
+  if (r.hk_liquidity_gate) reducers.push('thin HK liquidity');
+  if (r.pillar_gate?.startsWith('compressed_')) reducers.push('too few independent bullish pillars');
+  if (r.sell_pillar_gate?.startsWith('compressed_')) reducers.push('too few independent bearish pillars');
+  if (r.stale_price_warning) reducers.push('stale price input');
+  if (r.insufficient_history_warning) reducers.push('insufficient price history');
+  return reducers;
+}
 
 function buildReasons(r: Reasons): Factor[] {
   const factors: Factor[] = [];
@@ -419,20 +458,19 @@ function buildReasons(r: Reasons): Factor[] {
     factors.push({
       label: 'ML Model',
       bullish,
-      detail: `XGBoost predicts ${pct}% probability of upward move`,
+      detail: `ML model output ${pct}/100. This is not a calibrated probability of profit.`,
     });
   }
 
   // ── Additional context factors (H3) ───────────────────────────────────────
 
   // Market breadth compression
-  if (r.breadth_compression != null && r.breadth_compression < 1.0) {
-    const pct = Math.round((1 - r.breadth_compression) * 100);
+  if (r.breadth_compression === true) {
     factors.push({
-      label: `Breadth Compressed −${pct}%`,
+      label: 'Weak Market Breadth',
       bullish: false,
-      warning: r.breadth_compression <= 0.92,
-      detail: `Market breadth weak — signal compressed by ${pct}% (small/mid caps lagging)`,
+      warning: true,
+      detail: 'Weak breadth reduced a bullish reading toward neutral; the exact multiplier is retained by the engine, not inferred from this flag.',
     });
   }
 
@@ -601,6 +639,11 @@ function buildReasons(r: Reasons): Factor[] {
 export default function SignalCard({ signal }: { signal: Signal }) {
   const reasons = signal.reasons as Reasons;
   const factors = buildReasons(reasons ?? {});
+  const strengthReducers = activeStrengthReducers(reasons ?? {});
+  const preFilterDirectional = reasons?.fused_pre_compression;
+  const preFilterStrength = preFilterDirectional == null
+    ? null
+    : Math.abs(preFilterDirectional - 0.5) * 200;
   const taScore = reasons?.ta_score;
   const regime  = reasons?.market_regime;
 
@@ -622,7 +665,7 @@ export default function SignalCard({ signal }: { signal: Signal }) {
           )}
           {reasons?.low_oos_accuracy && (
             <span title="ML model cross-validation accuracy < 52% — predictions are near coin-flip; signal relies more heavily on TA" style={{ fontSize: '9px', fontWeight: 700, color: '#eab308', background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.3)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
-              LOW ML CONF
+              LOW ML QUALITY
             </span>
           )}
           {reasons?.stability_days != null && reasons.stability_days > 0 && (
@@ -694,12 +737,12 @@ export default function SignalCard({ signal }: { signal: Signal }) {
       {/* Scores */}
       <div className="grid grid-cols-3 gap-2 mb-3">
         <div className="text-center">
-          <div className="text-lg font-bold text-slate-100" title="AUD-A11: signal STRENGTH, not probability of profit. Computed as |fused_probability − 0.5| × 200, i.e. how far the model sits from neutral — so it measures conviction, not accuracy. Measured Sept 2026 on the frozen US SHORT BUY cohort, the 40+ band had the WORST hit rate of four (19.0% vs 45.5% below 10), so do NOT read a higher number as a better trade. The win rate shown beside it is the empirical figure.">{(signal.confidence ?? 0).toFixed(0)}%</div>
-          <div className="text-xs text-slate-500">Confidence</div>
+          <div className="text-lg font-bold text-slate-100" title="Distance from neutral in the combined model and technical score. A higher score does not establish better accuracy or profitability.">{(signal.confidence ?? 0).toFixed(0)}/100</div>
+          <div className="text-xs text-slate-500">Signal strength</div>
         </div>
         <div className="text-center">
-          <div className="text-lg font-bold text-slate-100">{(signal.bullish_probability * 100).toFixed(0)}%</div>
-          <div className="text-xs text-slate-500">Bullish</div>
+          <div className="text-lg font-bold text-slate-100">{(signal.bullish_probability * 100).toFixed(0)}/100</div>
+          <div className="text-xs text-slate-500">Directional score</div>
         </div>
         <div className="text-center">
           <div className="text-lg font-bold text-slate-100">{signal.horizon}</div>
@@ -707,7 +750,7 @@ export default function SignalCard({ signal }: { signal: Signal }) {
         </div>
       </div>
 
-      {/* Confidence bar */}
+      {/* Directional score bar */}
       <div className="h-1 rounded-full bg-slate-800 mb-3 overflow-hidden">
         <div
           className={`h-full rounded-full ${signal.signal === 'BUY' ? 'bg-green-500' : signal.signal === 'SELL' ? 'bg-red-500' : signal.signal === 'WAIT' ? 'bg-orange-500' : 'bg-yellow-500'}`}
@@ -715,14 +758,43 @@ export default function SignalCard({ signal }: { signal: Signal }) {
         />
       </div>
 
+      <div className="mb-3 rounded-md border border-slate-800 bg-slate-950/50 px-3 py-2 text-xs">
+        <div className="font-medium text-slate-300">Why this strength?</div>
+        <div className="mt-1 text-slate-500">
+          {(signal.confidence ?? 0).toFixed(0)}/100 is the final distance from neutral:
+          {' '}|{(signal.bullish_probability ?? 0.5).toFixed(3)} − 0.500| × 200.
+          It is not a probability of being right or earning a profit.
+        </div>
+        {preFilterDirectional != null && preFilterStrength != null && (
+          <div className="mt-1 text-slate-500">
+            Before the recorded filter chain: {preFilterDirectional.toFixed(3)} directional,
+            {' '}{preFilterStrength.toFixed(0)}/100 strength. Final: {(signal.bullish_probability ?? 0.5).toFixed(3)} directional,
+            {' '}{(signal.confidence ?? 0).toFixed(0)}/100 strength.
+          </div>
+        )}
+        <div className="mt-1 text-slate-500">
+          Model evidence:{' '}
+          {reasons?.ml_quality_status === 'measured' && reasons.ml_test_auc != null
+            ? `${reasons.ml_model ?? 'recorded model'} AUC ${reasons.ml_test_auc.toFixed(3)}, weight ${((reasons.ml_weight ?? 0) * 100).toFixed(0)}/100`
+            : 'quality unavailable or invalid; no measured AUC is claimed'}.
+        </div>
+        <div className="mt-1 text-slate-500">
+          Active reducers: {strengthReducers.length ? strengthReducers.join('; ') : 'none recorded'}.
+          {reasons?.compression_cap_applied ? ' The compression cap limited the combined pre-gate reduction.' : ''}
+        </div>
+        <div className="mt-1 text-slate-600">
+          A low value means the evidence stayed near neutral or safeguards pulled it toward neutral. It is a valid abstention state, not a number to fill upward.
+        </div>
+      </div>
+
       {/* T223/T232-OC5: Historical win rate from outcome calibration, keyed by horizon+direction+market */}
       {reasons?.calibrated_win_rate != null && (
         <div className="flex items-center justify-between mb-3 px-1">
           <span
             className="text-xs text-slate-500"
-            title="Win rate for this horizon, direction, and confidence level — from last 180 days of signal outcomes"
+            title="Historical underlying outcome rate for this horizon, direction and score band. Market-specific where sufficient, otherwise pooled across markets. Mixed historical rules; not option P&L or a forecast."
           >
-            Historical win rate
+            Historical underlying hit rate
             {reasons.calibrated_win_rate_count != null && (
               <span className="text-slate-600"> (n={reasons.calibrated_win_rate_count})</span>
             )}

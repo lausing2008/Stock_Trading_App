@@ -68,14 +68,23 @@ def test_genuine_zero_in_first_two_keys_falls_through_to_real_third_value():
     assert test_auc == 0.0  # mean_model_test_auc=0.0 is present and used — real value wins
 
 
-def test_all_three_keys_genuinely_absent_falls_back_to_default():
-    _, test_auc, _ = _run_fetch({})
-    assert test_auc == 0.55
+def test_missing_quality_never_invents_an_auc():
+    _, test_auc, meta = _run_fetch({})
+    assert test_auc == 0.0  # zero weight sentinel, not a reported measurement
+    assert meta['ml_quality_status'] == 'unavailable'
 
 
-def test_all_three_keys_explicitly_none_falls_back_to_default():
-    _, test_auc, _ = _run_fetch({"mean_model_test_auc": None, "auc": None, "cv_auc_mean": None})
-    assert test_auc == 0.55
+def test_all_three_keys_explicitly_none_have_no_quality_evidence():
+    _, test_auc, meta = _run_fetch({"mean_model_test_auc": None, "auc": None, "cv_auc_mean": None})
+    assert test_auc == 0.0
+    assert meta['ml_quality_status'] == 'unavailable'
+
+
+def test_nonfinite_and_out_of_range_quality_cannot_contribute():
+    for value in (float('nan'), float('inf'), -0.1, 1.2):
+        _, test_auc, meta = _run_fetch({'auc': value})
+        assert test_auc == 0.0
+        assert meta['ml_quality_status'] == 'invalid'
 
 
 def test_normal_nonzero_value_parses_correctly():
