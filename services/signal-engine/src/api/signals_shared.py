@@ -241,11 +241,16 @@ def _build_confidence_calibration(session: Session) -> dict:
     "HORIZON|DIRECTION|BAND" fallback entries (pooled across markets, used when the
     market-specific bucket is too thin), each {"win_rate": float, "count": int}, or {}.
     """
+    from .signal_outcome_eligibility import (
+        classify as _elig_classify, partition as _elig_partition,
+        ELIGIBLE as _ELIGIBLE, STANDING_LIMITATIONS as _STANDING_LIMITATIONS)
+
     cutoff = date.today() - timedelta(days=180)
     rows = session.execute(
         select(
             SignalOutcome.confidence, SignalOutcome.is_correct,
             SignalOutcome.horizon, SignalOutcome.signal_direction, Stock.market,
+            SignalOutcome.signal_date, SignalOutcome.entry_date,
         )
         .join(Stock, Stock.id == SignalOutcome.stock_id)
         .where(
@@ -253,6 +258,21 @@ def _build_confidence_calibration(session: Session) -> dict:
             SignalOutcome.signal_date >= cutoff,
         )
     ).all()
+
+    # AQ05 (2026-10-09): TIMING ELIGIBILITY, which this had none of. Measured in production:
+    # 17 of 21,520 resolved outcomes carry `entry_date = signal_date`, entered on the signal's
+    # own day under an evaluator whose convention is entry at the NEXT session. Few, and the
+    # rates barely move — but a calibration that silently includes them is not measuring the
+    # convention it claims to.
+    _part = _elig_partition([
+        {"signal_date": r.signal_date, "entry_date": r.entry_date} for r in rows])
+    rows = [r for r in rows
+            if _elig_classify(r.signal_date, r.entry_date) == _ELIGIBLE]
+    _exclusions = {"original_count": _part["original_count"],
+                   "eligible_count": _part["eligible_count"],
+                   "excluded_total": _part["excluded_total"],
+                   "excluded_by_reason": _part["excluded_counts"],
+                   "exclusion_reasons": _part["exclusion_reasons"]}
 
     buckets: dict[str, dict] = {}
     for lo, hi, band in _CONF_BANDS:
@@ -267,17 +287,41 @@ def _build_confidence_calibration(session: Session) -> dict:
             # str, enum.Enum members stringify as "Market.US" via f-string/str(), not "US" —
             # use .value explicitly so the bucket key and API response are the plain string.
             mkt = r.market.value if hasattr(r.market, "value") else r.market
-            by_market.setdefault((horiz, r.signal_direction, mkt), []).append(r.is_correct)
-            by_pooled.setdefault((horiz, r.signal_direction), []).append(r.is_correct)
-        for (horiz, direction, market), outcomes in by_market.items():
-            if len(outcomes) >= _CONF_CAL_MIN_COUNT:
-                key = _cal_bucket_key(horiz, direction, market, band)
-                buckets[key] = {"win_rate": round(sum(outcomes) / len(outcomes), 3), "count": len(outcomes)}
-        for (horiz, direction), outcomes in by_pooled.items():
-            if len(outcomes) >= _CONF_CAL_MIN_COUNT:
-                key = _cal_bucket_key(horiz, direction, None, band)
-                buckets[key] = {"win_rate": round(sum(outcomes) / len(outcomes), 3), "count": len(outcomes)}
+            _row = {"is_correct": r.is_correct, "signal_date": r.signal_date,
+                    "entry_date": r.entry_date}
+            by_market.setdefault((horiz, r.signal_direction, mkt), []).append(_row)
+            by_pooled.setdefault((horiz, r.signal_direction), []).append(_row)
+        # AQ05: A COUNT FLOOR CANNOT SEE CLUSTERING. Thirty outcomes from two market days
+        # describe those two days — the same correction the options flow calibration already
+        # carries (AUD-OPT6). Each bucket now needs distinct dates too, and a bucket that fails
+        # keeps its counts rather than vanishing.
+        for (horiz, direction, market), rs in by_market.items():
+            key = _cal_bucket_key(horiz, direction, market, band)
+            buckets[key] = _bucket_entry(rs, scope="market")
+        for (horiz, direction), rs in by_pooled.items():
+            key = _cal_bucket_key(horiz, direction, None, band)
+            buckets[key] = _bucket_entry(rs, scope="pooled_markets")
+    buckets["__meta__"] = {**_exclusions,
+                           "limitations": list(_STANDING_LIMITATIONS)}
     return buckets
+
+
+def _bucket_entry(rs, *, scope: str) -> dict:
+    """One bucket: the rate where publishable, the counts always, and WHICH SCOPE it is."""
+    from .signal_outcome_eligibility import publication_status
+    outcomes = [r["is_correct"] for r in rs]
+    status = publication_status(rs)
+    return {
+        "win_rate": (round(sum(outcomes) / len(outcomes), 3)
+                     if status["status"] == "measured" else None),
+        "count": len(outcomes),
+        "distinct_dates": status["distinct_dates"],
+        "status": status["status"],
+        "missing_requirement": status["missing_requirement"],
+        # EXPLICIT SCOPE. The lookup drops from a market-specific bucket to a pooled one and
+        # used to return the same shape, so a reader could not tell which they were shown.
+        "scope": scope,
+    }
 
 
 def _get_confidence_calibration(session: Session) -> dict:
@@ -309,15 +353,51 @@ def _calibrated_win_rate(
         if not (lo <= confidence < hi):
             continue
         if horizon and direction:
+            # AQ05: a bucket that could not be PUBLISHED carries `win_rate: None` and is skipped
+            # here rather than returned as a rate of nothing. Its counts stay readable in the
+            # map for anyone asking why there is no number.
             if market:
                 entry = cal_map.get(_cal_bucket_key(horizon, direction, market, band))
-                if entry:
+                if entry and entry.get("win_rate") is not None:
                     return entry["win_rate"], entry["count"]
             entry = cal_map.get(_cal_bucket_key(horizon, direction, None, band))
-            if entry:
+            if entry and entry.get("win_rate") is not None:
                 return entry["win_rate"], entry["count"]
             return None
         # Legacy fallback: no horizon/direction supplied — cannot key precisely.
+        return None
+    return None
+
+
+def calibrated_win_rate_detail(
+    confidence: float, cal_map: dict, horizon: str | None = None,
+    direction: str | None = None, market: str | None = None,
+) -> dict | None:
+    """The same lookup, but saying WHICH BUCKET answered.
+
+    AQ05: `_calibrated_win_rate` drops from a market-specific bucket to a pooled one and returns
+    the identical `(rate, count)` shape, so a reader cannot tell whether the number describes
+    their market or an average across markets. The tuple form is kept for existing callers;
+    anything that displays the rate should use this and show the scope.
+    """
+    for lo, hi, band in _CONF_BANDS:
+        if not (lo <= confidence < hi):
+            continue
+        if not (horizon and direction):
+            return None
+        for key, scope in ((_cal_bucket_key(horizon, direction, market, band), "market")
+                           if market else (None, None), ):
+            if key is None:
+                continue
+            entry = cal_map.get(key)
+            if entry and entry.get("win_rate") is not None:
+                return {**entry, "band": band, "scope": "market", "fell_back": False}
+        entry = cal_map.get(_cal_bucket_key(horizon, direction, None, band))
+        if entry and entry.get("win_rate") is not None:
+            return {**entry, "band": band, "scope": "pooled_markets",
+                    "fell_back": bool(market),
+                    "fallback_note": ("No publishable bucket for this market, so this rate is "
+                                      "pooled across markets." if market else None)}
         return None
     return None
 
