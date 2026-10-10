@@ -80,12 +80,20 @@ from common.indicators import rsi as _canon_rsi, atr as _canon_atr
 log = get_logger("ml-prediction.builder")
 
 
+from common import price_basis as _price_basis
+
 def _adj_close(df: pd.DataFrame) -> pd.Series:
-    """Return adj_close when available (filling gaps with close), else close."""
-    ac = df.get("adj_close")
-    if ac is not None and not ac.isna().all():
-        return ac.fillna(df["close"]).astype(float)
-    return df["close"].astype(float)
+    """The close series on ONE evidenced basis for this window.
+
+    AQ04 (2026-10-09). THE SAME DEFECT EXISTED IN TWO SERVICES. This was
+    `adj_close.fillna(close)`, which splices two bases wherever the adjusted series has gaps and
+    invents movement: a constant raw [100, 100, 100] with a partial adjusted [50, NULL, 50]
+    became [50, 100, 50]. Here that fabricated return fed MODEL TRAINING FEATURES, so the
+    invention was learned rather than merely displayed.
+
+    Delegates to `common.price_basis`, shared with signal-engine, so the rule exists once.
+    """
+    return _price_basis.resolve_ohlc(df)["close"]
 
 
 # AUD232-054: kept in sync with meta_trainer.py's SECTOR_MAP sector-name coverage — the two

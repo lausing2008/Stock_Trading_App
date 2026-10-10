@@ -101,6 +101,7 @@ import pandas as pd
 from common.config import get_settings
 from common.logging import get_logger
 from common.indicators import rsi as _canon_rsi, macd as _canon_macd, atr as _canon_atr
+from common import price_basis as _price_basis
 
 log = get_logger("signal-generator")
 _settings = get_settings()
@@ -112,15 +113,31 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def _adj_close(df: pd.DataFrame) -> pd.Series:
-    """Return adj_close when available (filling gaps with close), else close.
+    """The close series on ONE evidenced basis for this window.
 
-    Dividend-adjusted prices prevent false SMA/ATR/MACD signals on ex-dividend
-    dates where unadjusted close drops by the dividend amount.
+    AQ04 (2026-10-09). This used to be `adj_close.fillna(close)`. Where the adjusted series has
+    gaps that splices two bases into one series and INVENTS MOVEMENT: the audit's witness is a
+    constant raw series [100, 100, 100] with a partial adjusted series [50, NULL, 50], which
+    became [50, 100, 50] — a +100% move and a -50% move out of a stock that did not budge.
+    Every SMA, MACD, ATR and return downstream read that.
+
+    The rule now lives in `common.price_basis`, shared with ml-prediction's own copy of the same
+    bug: a window has one basis or it has none, and partial coverage falls back to RAW
+    THROUGHOUT rather than splicing. Dividend adjustment is then simply unavailable for that
+    window, which is the honest answer and is reported by `_ohlc`.
     """
-    ac = df.get("adj_close")
-    if ac is not None and not ac.isna().all():
-        return ac.fillna(df["close"]).astype(float)
-    return df["close"].astype(float)
+    return _price_basis.resolve_ohlc(df)["close"]
+
+
+def _ohlc(df: pd.DataFrame) -> dict:
+    """High, low and close on ONE basis, plus which basis and why.
+
+    THE SECOND MIXTURE AQ04 FOUND. Indicators needing a range — ATR, Supertrend, the typical
+    price — took the adjusted CLOSE beside the RAW high and low. Across any split those are
+    different scales, so the true range is measured between prices that never coexisted. When
+    the adjusted basis is used, the whole bar is restated by the same per-row factor.
+    """
+    return _price_basis.resolve_ohlc(df)
 
 # ── TA component weights (SA-5) ───────────────────────────────────────────────
 # Defaults are the hand-tuned values used since launch.
@@ -725,8 +742,8 @@ def _supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0) -> 
     cross_up:   True if trend just flipped from -1 → +1 this bar
     cross_down: True if trend just flipped from +1 → -1 this bar
     """
-    high  = df["high"].astype(float)
-    low   = df["low"].astype(float)
+    _b = _ohlc(df)
+    high, low = _b["high"], _b["low"]
     close = _adj_close(df)
     n = len(close)
     if n < period + 2:
@@ -770,8 +787,8 @@ def _supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0) -> 
 
 def _adx(df: pd.DataFrame, period: int = 14) -> tuple[float, float, float]:
     """Return (ADX, +DI, -DI). ADX > 25 = trending, > 40 = strong trend."""
-    high = df["high"].astype(float)
-    low  = df["low"].astype(float)
+    _b = _ohlc(df)
+    high, low = _b["high"], _b["low"]
     close = _adj_close(df)
 
     up_move   = high.diff()
@@ -972,8 +989,8 @@ def _sr_context(df: pd.DataFrame, symbol: str | None = None) -> dict:
             return remote
 
     close = _adj_close(df)
-    high  = df["high"].astype(float)
-    low   = df["low"].astype(float)
+    _b = _ohlc(df)
+    high, low = _b["high"], _b["low"]
     current = float(close.iloc[-1])
     prev    = float(close.iloc[-2]) if len(close) >= 2 else current
 
@@ -1291,7 +1308,9 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
 
     # ── Rolling 20-day VWMA (Volume-Weighted Moving Average, not session-reset VWAP) ──
     # Use iloc[:-1] to exclude today's bar from the rolling window (avoid self-contamination)
-    typical_price = (df["high"].astype(float) + df["low"].astype(float) + close) / 3
+    # AQ04: the same basis as `close`, which came from `_adj_close`.
+    _tb = _ohlc(df)
+    typical_price = (_tb["high"] + _tb["low"] + close) / 3
     vwma_20 = (typical_price.iloc[:-1] * volume.iloc[:-1]).rolling(20).sum() / volume.iloc[:-1].rolling(20).sum()
     vwma_val = vwma_20.iloc[-1]
     price_above_vwap: bool | None = None
@@ -2978,9 +2997,12 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     # _supertrend() above — a real, silently-recurring instance of the same bug class within one
     # file, caught only by this consolidation pass. Now delegates to the same canonical atr()
     # every other call site in this file uses.
-    _close = _adj_close(df)
-    _high = df["high"].astype(float)
-    _low = df["low"].astype(float)
+    # AQ04: one basis for the whole bar — an adjusted close beside a raw high measures a true
+    # range between two prices that never coexisted.
+    _b = _ohlc(df)
+    _close = _b["close"]
+    _high = _b["high"]
+    _low = _b["low"]
     _atr_series = _canon_atr(_high, _low, _close, period=14)
     _last_price = float(_close.iloc[-1])
     _atr_14 = float(_atr_series.iloc[-1]) if not pd.isna(_atr_series.iloc[-1]) else None

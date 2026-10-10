@@ -29,3 +29,15 @@ _indicators_mod = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(_indicators_mod)
 sys.modules["common.indicators"] = _indicators_mod
 setattr(sys.modules["common"], "indicators", _indicators_mod)
+
+# common.price_basis is likewise pure pandas/numpy with no env/structlog dependency, and the
+# real implementation is what decides whether a window uses an adjusted or a raw basis (AQ04).
+# Under the blanket "common" stub it returns a MagicMock and every comparison downstream raises
+# TypeError, so it is loaded for real exactly like common.indicators above.
+_pb_path = _pathlib.Path(__file__).resolve().parents[3] / "shared" / "common" / "price_basis.py"
+_pb_spec = _ilu.spec_from_file_location("common.price_basis", _pb_path)
+_pb_mod = _ilu.module_from_spec(_pb_spec)
+_pb_spec.loader.exec_module(_pb_mod)
+sys.modules["common.price_basis"] = _pb_mod
+setattr(sys.modules["common"], "price_basis", _pb_mod)
+
