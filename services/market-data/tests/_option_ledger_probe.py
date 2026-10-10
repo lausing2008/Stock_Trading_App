@@ -73,10 +73,11 @@ with Session(engine) as session:
     # Real SQL filtering/pagination, not a mocked .execute chain.
     stock = models.Stock(symbol='TEST', name='Test', exchange=models.Exchange.NASDAQ, market=models.Market.US)
     session.add(stock); session.flush()
+    same_day_expiry = dt.date(2026, 10, 9)
     for i in range(3):
         session.add(models.OptionsFlowAlertOutcome(id=i+1, stock_id=stock.id, symbol='TEST', option_chain=f'TEST{i}', option_type='call',
-            direction='bullish', fired_date=dt.date.today(), fired_at=dt.datetime.now(), expiry=dt.date.today(),
-            alert_price=100, ask_side_dominant=True, total_premium=1000 + i, entry_date=dt.date.today(), return_10d=.01, is_correct_10d=True))
+            direction='bullish', fired_date=same_day_expiry, fired_at=dt.datetime(2026, 10, 9, 14), expiry=same_day_expiry,
+            alert_price=100, ask_side_dominant=True, total_premium=1000 + i, entry_date=same_day_expiry, return_10d=.01, is_correct_10d=True))
     session.commit()
     args = dict(days_back=30, limit=1, offset=1, symbol='TEST', direction='bullish', sweep_only=False,
                 min_premium=0, sort='total_premium', _=None, session=session)
@@ -91,23 +92,47 @@ with Session(engine) as session:
     assert result['stock_summaries'][0]['bearish'] == 0
     stats = result['by_direction'][0]['window_10d']
     assert stats['n'] == 0 and stats['excluded_total'] == 3 and stats['original_n'] == 3
+    assert stats['status'] == 'insufficient_eligible_history' and stats['win_rate'] is None
     assert stats['horizon_unit'] == 'calendar_days'
     # New opportunity mail is explicit opt-in and queues through the durable outbox only.
     from src.services.option_opportunity_notifications import enqueue_if_eligible
+    from src.services.option_strategy_ledger import actionable_gate
     user = models.User(username='option-user', password_hash='x', email='option@example.com', is_active=True)
     session.add(user); session.commit()
+    gates = {key: True for key in (
+        'direction_compatible', 'identity_verified', 'deliverable_verified',
+        'market_open', 'entry_before_last_trade', 'event_coverage_verified',
+        'account_permissions_verified',
+    )}
+    decision_facts = {**gates, 'opportunity_id': 'opp-1',
+        'symbol': 'TEST', 'strategy': 'long_call',
+        'contract_id': 'TEST-C100', 'quote_source': 'fixture',
+        'confirmation_rule': 'above 100', 'invalidation_rule': 'below 95',
+        'measurement_status': 'prospective_unmeasured',
+        'decision_at': '2099-10-09T18:00:30+00:00',
+        'quote_as_of': '2099-10-09T18:00:00+00:00',
+        'event_at': '2099-10-09T17:55:00+00:00',
+        'entry_deadline': '2099-10-09T19:00:00+00:00',
+        'bid': 4.8, 'ask': 5.0, 'ask_size_contracts': 1,
+        'fee_per_contract_per_side': .65, 'slippage_per_share_per_side': .05,
+        'account_value': 250_000, 'open_option_risk': 0,
+        'available_options_buying_power': 10_000}
+    gate = actionable_gate(decision_facts)
+    bound = gate['bound_decision']
+    assert gate['status'] == 'actionable' and bound['quantity'] == 1
     opportunity = dict(opportunity_id='opp-1', symbol='TEST', strategy='long_call',
-        contract_id='TEST-C100', entry_deadline='2026-10-09T19:00:00+00:00',
-        maximum_loss=250, quantity=1, confirmation_rule='above 100',
+        contract_id='TEST-C100', entry_deadline=bound['entry_deadline'],
+        quote_source=bound['quote_source'], quote_as_of=bound['quote_as_of'],
+        maximum_loss=bound['maximum_loss'], quantity=bound['quantity'],
+        decision_fingerprint=bound['decision_fingerprint'], confirmation_rule='above 100',
         invalidation_rule='below 95', measurement_status='prospective_unmeasured')
-    gate = {'status': 'actionable', 'quantity': 1}
-    assert enqueue_if_eligible(session, user=user, opportunity=opportunity, gate=gate)['status'] == 'not_opted_in'
+    assert enqueue_if_eligible(session, user=user, opportunity=opportunity, decision_facts=decision_facts)['status'] == 'not_opted_in'
     session.add(models.AlertPreference(user_id=user.id, alert_type='option_opportunity', enabled=True, source='settings'))
     session.commit()
-    queued = enqueue_if_eligible(session, user=user, opportunity=opportunity, gate=gate)
+    queued = enqueue_if_eligible(session, user=user, opportunity=opportunity, decision_facts=decision_facts)
     session.commit()
     assert queued['status'] == 'queued'
-    assert enqueue_if_eligible(session, user=user, opportunity=opportunity, gate=gate)['status'] == 'already_queued'
+    assert enqueue_if_eligible(session, user=user, opportunity=opportunity, decision_facts=decision_facts)['status'] == 'already_queued'
     outbox = session.scalar(select(models.NotificationOutbox))
     assert outbox.alert_type == 'option_opportunity' and outbox.state == 'pending'
 print('real-handler ledger and filtered-pagination probe passed')

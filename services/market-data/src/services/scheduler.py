@@ -505,6 +505,14 @@ def _record_position_scaling_promotion_status(result: dict) -> None:
 from common.conviction_gate import CONTRACT_VERSION as _CONVICTION_CONTRACT_VERSION
 # SR-04: one canonical reading of a provider event time — see shared/common/signal_time.py.
 from common.signal_time import parse_signal_instant
+from .flow_outcome_eligibility import (
+    MIN_DISTINCT_DATES as _FLOW_CAL_MIN_DATES,
+    MIN_ELIGIBLE_OUTCOMES as _FLOW_CAL_MIN_COUNT,
+)
+from .option_alert_freshness import (
+    classify_flow_event_freshness,
+    partition_fresh_flow_candidates,
+)
 
 
 def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed: list, signal: str, sent_at: str | None = None, conviction_tier: str | None = None, signal_ts: str | None = None) -> None:
@@ -5479,7 +5487,7 @@ def _record_options_flow_alert_outcome(
         log.warning("options_flow_alert_outcome.record_failed", symbol=symbol, error=str(exc))
 
 
-_OPTIONS_FLOW_ALERT_CAL_MIN_COUNT = 30  # matches _SQUEEZE_FAMILY_CAL_MIN_COUNT exactly
+_OPTIONS_FLOW_ALERT_CAL_MIN_COUNT = _FLOW_CAL_MIN_COUNT
 
 # AUD-OPT6-CALIBRATIONCLUSTERING: a COUNT floor alone cannot tell a real sample from one
 # market day. Alerts fire in bursts across dozens of contracts on a handful of symbols within
@@ -5496,7 +5504,7 @@ _OPTIONS_FLOW_ALERT_CAL_MIN_COUNT = 30  # matches _SQUEEZE_FAMILY_CAL_MIN_COUNT 
 # This is the THIRD time a clustered sample produced a confident wrong conclusion here — see
 # the two retracted findings in docs/2026-09-05/SESSION_INDEX_AND_NEXT_STEPS.md, both of which
 # reversed once the sample was widened.
-_OPTIONS_FLOW_ALERT_CAL_MIN_DATES = 5
+_OPTIONS_FLOW_ALERT_CAL_MIN_DATES = _FLOW_CAL_MIN_DATES
 
 
 def _build_options_flow_alert_calibration(session, direction: str) -> dict | None:
@@ -5513,7 +5521,10 @@ def _build_options_flow_alert_calibration(session, direction: str) -> dict | Non
     constant's own comment for the measured case that motivated it.
     """
     from common.market_calendar import is_trading_day as _itd
-    from .flow_outcome_eligibility import partition as _partition
+    from .flow_outcome_eligibility import (
+        cohort_measurement_status as _cohort_status,
+        partition as _partition,
+    )
 
     rows = session.execute(
         select(OptionsFlowAlertOutcome.is_correct_10d, OptionsFlowAlertOutcome.fired_date,
@@ -5536,6 +5547,7 @@ def _build_options_flow_alert_calibration(session, direction: str) -> dict | Non
     part = _partition(raw, is_trading_day=_itd)
     eligible = part["eligible"]
     outcomes = [r["is_correct"] for r in eligible]
+    cohort = _cohort_status(part)
     exclusions = {"original_count": part["original_count"],
                   "eligible_count": part["eligible_count"],
                   "excluded_total": part["excluded_total"],
@@ -5546,7 +5558,7 @@ def _build_options_flow_alert_calibration(session, direction: str) -> dict | Non
                   # nobody can read cannot reproduce anything.
                   "eligibility_version": part["eligibility_version"]}
 
-    if len(outcomes) < _OPTIONS_FLOW_ALERT_CAL_MIN_COUNT:
+    if cohort["status"] == "insufficient_eligible_history":
         # INSUFFICIENT ELIGIBLE HISTORY IS A RESULT, and a different one from "no history".
         # Returning a bare None here would make a calibration removed by filtering
         # indistinguishable from one that never existed.
@@ -5554,21 +5566,18 @@ def _build_options_flow_alert_calibration(session, direction: str) -> dict | Non
                  direction=direction, **exclusions,
                  required=_OPTIONS_FLOW_ALERT_CAL_MIN_COUNT,
                  note="filtering removed the calibration basis — not a zero win rate")
-        return {"win_rate": None, "count": len(outcomes), "distinct_dates": None,
-                "status": "insufficient_eligible_history", **exclusions}
-    distinct_dates = len({r["fired_date"] for r in eligible if r["fired_date"] is not None})
-    if distinct_dates < _OPTIONS_FLOW_ALERT_CAL_MIN_DATES:
+        return {"win_rate": None, "count": len(outcomes), **cohort, **exclusions}
+    distinct_dates = cohort["distinct_dates"]
+    if cohort["status"] == "clustered_dates":
         log.info(
             "options_flow_alert.calibration_suppressed_clustered",
             direction=direction, outcomes=len(outcomes), distinct_dates=distinct_dates,
             required_dates=_OPTIONS_FLOW_ALERT_CAL_MIN_DATES,
             note="enough outcomes but too few distinct days — would measure the market, not the alert",
         )
-        return {"win_rate": None, "count": len(outcomes), "distinct_dates": distinct_dates,
-                "status": "clustered_dates", **exclusions}
+        return {"win_rate": None, "count": len(outcomes), **cohort, **exclusions}
     return {"win_rate": round(sum(outcomes) / len(outcomes), 3),
-            "count": len(outcomes), "distinct_dates": distinct_dates,
-            "status": "measured",
+            "count": len(outcomes), **cohort,
             # NAMED PRECISELY, because none of these are interchangeable:
             #   * the window is 10 CALENDAR days from entry, not ten trading sessions — see
             #     `_SQUEEZE_OUTCOME_WINDOWS`, whose own comment says "calendar days after entry";
@@ -5703,6 +5712,8 @@ def check_options_flow_alerts() -> None:
             # SR-04: rows dropped for an unreadable event time, and rows replaced by a newer
             # event on the same contract. Reported on the job line so neither is silent.
             _flow_quarantined = 0
+            _flow_stale = 0
+            _flow_future = 0
             _flow_superseded = 0
             for stock_id, symbol in symbols:
                 try:
@@ -5771,6 +5782,21 @@ def check_options_flow_alerts() -> None:
                                       chain=row.option_chain, created_at=row.created_at,
                                       state=_event_at.state)
                             continue
+                        _freshness = classify_flow_event_freshness(
+                            _event_at.at, datetime.now(timezone.utc),
+                        )
+                        if not _freshness["eligible"]:
+                            if _freshness["state"] == "stale":
+                                _flow_stale += 1
+                            else:
+                                _flow_future += 1
+                            log.debug(
+                                "options_flow.event_outside_entry_window",
+                                symbol=symbol, chain=row.option_chain,
+                                created_at=row.created_at, state=_freshness["state"],
+                                age_seconds=_freshness["age_seconds"],
+                            )
+                            continue
                         _prior = candidates.get(row.option_chain)
                         if _prior is not None:
                             _prior_at = _prior["event_at"]
@@ -5820,8 +5846,20 @@ def check_options_flow_alerts() -> None:
                     log.warning("options_flow_alert.symbol_error", symbol=symbol, error=str(exc))
                     continue
 
+            candidates, _final_freshness_exclusions = partition_fresh_flow_candidates(
+                candidates, datetime.now(timezone.utc),
+            )
+            _flow_stale += _final_freshness_exclusions["stale"]
+            _flow_future += (_final_freshness_exclusions["future"]
+                             + _final_freshness_exclusions["timezone_missing"])
             if not candidates:
                 _record_job_status("check_options_flow_alerts", "ok", time.monotonic() - _t0)
+                log.info("options_flow_alert.done", candidates=0, sent=0,
+                         recipients=len(recipients),
+                         quarantined_no_event_time=_flow_quarantined,
+                         stale_for_entry=_flow_stale,
+                         future_event_time=_flow_future,
+                         superseded_by_newer_event=_flow_superseded)
                 return
 
             for chain, cand in candidates.items():
@@ -5974,6 +6012,8 @@ def check_options_flow_alerts() -> None:
             log.info("options_flow_alert.done", candidates=len(candidates), sent=sent,
                      recipients=len(recipients),
                      quarantined_no_event_time=_flow_quarantined,
+                     stale_for_entry=_flow_stale,
+                     future_event_time=_flow_future,
                      superseded_by_newer_event=_flow_superseded)
     except Exception as exc:
         log.error("options_flow_alert.failed", error=str(exc), exc_info=True)

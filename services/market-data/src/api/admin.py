@@ -1105,6 +1105,7 @@ def options_flow_alert_performance(
     # page was showing all of them. One function decides eligibility for both.
     from common.market_calendar import is_trading_day as _itd
     from ..services.flow_outcome_eligibility import (
+        cohort_measurement_status as _cohort_status,
         partition as _partition, classify as _classify, EXCLUSION_REASON,
         ELIGIBILITY_VERSION as _ELIG_VERSION)
 
@@ -1130,12 +1131,15 @@ def options_flow_alert_performance(
         for direction, drows in by_direction.items():
             part = _partition(drows, is_trading_day=_itd)
             elig = part["eligible"]
+            cohort = _cohort_status(part)
             wins = sum(1 for r in elig if r["is_correct"])
             rets = [r["ret"] for r in elig if r["ret"] is not None]
+            measured = cohort["status"] == "measured"
             out[direction] = {
                 "n": len(elig), "wins": wins,
-                "win_rate": round(wins / len(elig), 3) if elig else None,
-                "avg_return_pct": (round(sum(rets) / len(rets) * 100, 2) if rets else None),
+                "win_rate": round(wins / len(elig), 3) if measured else None,
+                "avg_return_pct": (round(sum(rets) / len(rets) * 100, 2)
+                                     if measured and rets else None),
                 # The denominator a reader needs beside the rate.
                 "original_n": part["original_count"],
                 "excluded_total": part["excluded_total"],
@@ -1143,7 +1147,7 @@ def options_flow_alert_performance(
                 "eligibility_version": _ELIG_VERSION,
                 "metric": "measured underlying directional hit rate",
                 "horizon": window, "horizon_unit": "calendar_days",
-                "distinct_dates": len({r["fired_date"] for r in elig}),
+                **cohort,
                 "exclusion_reasons": part["exclusion_reasons"],
             }
         return out

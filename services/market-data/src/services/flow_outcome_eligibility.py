@@ -31,6 +31,8 @@ from datetime import date
 #:   v1  expiry vs fired_date and entry_date, dates only
 #:   v2  last TRADABLE session vs the modelled entry; `timing_unknown` where entry is unknown
 ELIGIBILITY_VERSION = "flow-elig-2"
+MIN_ELIGIBLE_OUTCOMES = 30
+MIN_DISTINCT_DATES = 5
 
 ELIGIBLE = "eligible"
 EXPIRED_BEFORE_ALERT = "expired_before_alert"
@@ -153,3 +155,26 @@ def partition(rows, *, is_trading_day=None) -> dict:
         # re-derived once the rules change, however immutable its inputs are.
         "eligibility_version": ELIGIBILITY_VERSION,
     }
+
+
+def cohort_measurement_status(partitioned: dict) -> dict:
+    """One publication status for every consumer of the eligible cohort."""
+    eligible = partitioned["eligible"]
+    distinct_dates = len({_get_value(row, "fired_date") for row in eligible
+                          if _get_value(row, "fired_date") is not None})
+    if len(eligible) < MIN_ELIGIBLE_OUTCOMES:
+        status = "insufficient_eligible_history"
+    elif distinct_dates < MIN_DISTINCT_DATES:
+        status = "clustered_dates"
+    else:
+        status = "measured"
+    return {
+        "status": status,
+        "distinct_dates": distinct_dates,
+        "required_eligible_outcomes": MIN_ELIGIBLE_OUTCOMES,
+        "required_distinct_dates": MIN_DISTINCT_DATES,
+    }
+
+
+def _get_value(row, key):
+    return row.get(key) if hasattr(row, "get") else getattr(row, key, None)

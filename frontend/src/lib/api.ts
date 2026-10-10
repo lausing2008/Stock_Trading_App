@@ -2910,6 +2910,8 @@ export type OptionsFlowWindowStat = (NonNullable<SqueezeAlertWindowStat> & {
   original_n?: number; excluded_total?: number; excluded_by_reason?: Record<string, number>;
   exclusion_reasons?: Record<string, string>; eligibility_version?: string;
   distinct_dates?: number; horizon_unit?: string;
+  status?: 'measured' | 'insufficient_eligible_history' | 'clustered_dates';
+  required_eligible_outcomes?: number; required_distinct_dates?: number;
 }) | null;
 
 export type OptionsFlowAlertDirectionSummary = {

@@ -1,6 +1,8 @@
 # Consolidated US options opportunities: design and delivery plan
 
-Date: 2026-10-08. **Proposed implementation; no runtime changes in this delivery.**
+Date: 2026-10-08; implementation status updated 2026-10-10. The design includes both shipped
+containment slices and later activation requirements; a documented strategy is not necessarily
+implemented or eligible for notification.
 
 Companion documents: [audit and evidence](../audits/2026-10-08-options-squeezes-dark-pool-review.md), [strategy playbooks](2026-10-08-options-opportunity-playbooks.md).
 
@@ -218,3 +220,33 @@ the new notification helper had no production caller. It does not complete the
 prospective evidence needed for a profit claim, multi-leg lifecycle engines, broker execution,
 or assignment-aware strategy P&L. The playbooks remain the specification for those later
 strategy-specific promotions; each family must earn actionability separately.
+
+## Second correctness slice — 2026-10-10
+
+This slice tightens the boundary immediately before any future opportunity notification. It
+does not activate a producer or enroll a recipient.
+
+- The single-leg gate now derives quote age, event age, two-sided spread, displayed ask size,
+  per-contract loss, account risk remaining, buying-power capacity and integral quantity from
+  frozen numerical facts. The initial planning limits remain 0.25% of account value per trade
+  and 1% aggregate open option risk. Quantity is the minimum permitted by all three capital
+  constraints and displayed size.
+- One decision fingerprint binds the opportunity, contract, strategy, thesis rules,
+  prospective-unmeasured state, quote identity/time, entry deadline, costs, account facts,
+  quantity and maximum loss. The notification service recomputes this decision from facts; it
+  no longer accepts a caller-provided actionable verdict. Any changed quantity, loss, contract,
+  rule or fingerprint abstains before database access.
+- The legacy flow-email selector now separates its 48-hour provider discovery window from a
+  15-minute entry-event window. Missing, future and stale event times are excluded and counted.
+  Candidate age is checked again after the full symbol scan, so a slow scan cannot send an
+  event whose decision window expired while the scan was running.
+- Flow calibration publication has one shared status for the email builder, performance API
+  and page: at least 30 eligible outcomes and five distinct dates. Smaller or date-clustered
+  cohorts retain counts and exclusions but publish no rate or mean return; the page states
+  exactly what evidence is missing.
+
+This closes the numerical trust defect in AQ09 for the currently inactive long-call/long-put
+notification helper, the flow half of AQ07, and AQ14's inconsistent publication status. It does
+not establish canonical provider contract identity, a live prospective capture, multi-leg
+economics, assignment, broker fills or predictive performance. Those remain activation
+dependencies, not defects hidden behind a higher score.

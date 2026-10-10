@@ -21,6 +21,7 @@ import pathlib
 
 import src.services.scheduler as sch
 import src.services.unusual_whales as uw
+from src.services.flow_outcome_eligibility import cohort_measurement_status
 
 SCHED_SRC = pathlib.Path(sch.__file__).read_text()
 UW_SRC = pathlib.Path(uw.__file__).read_text()
@@ -116,11 +117,10 @@ def test_dropping_is_logged_not_silent():
 def test_calibration_requires_distinct_dates_not_just_count():
     """THE CORE F2 FIX. A COUNT floor alone cannot tell a real sample from one market day —
     alerts fire in bursts across dozens of contracts within minutes."""
-    assert "_OPTIONS_FLOW_ALERT_CAL_MIN_DATES" in SCHED_SRC
-    body = _calibration_body()
-    assert "distinct_dates < _OPTIONS_FLOW_ALERT_CAL_MIN_DATES" in body
-    assert "win_rate': None" in body, \
-        "a suppressed calibration must still not fabricate a rate"
+    result = cohort_measurement_status({
+        "eligible": [{"fired_date": dt.date(2026, 9, 2)} for _ in range(30)],
+    })
+    assert result["status"] == "clustered_dates"
 
 
 def test_date_floor_is_above_the_two_days_that_produced_the_artifact():
@@ -132,8 +132,10 @@ def test_date_floor_is_above_the_two_days_that_produced_the_artifact():
 
 def test_count_floor_is_retained():
     """The fix ADDS a dimension; it must not replace the existing sample-size floor."""
-    body = _calibration_body()
-    assert "len(outcomes) < _OPTIONS_FLOW_ALERT_CAL_MIN_COUNT" in body
+    result = cohort_measurement_status({
+        "eligible": [{"fired_date": dt.date(2026, 9, day)} for day in range(1, 6)],
+    })
+    assert result["status"] == "insufficient_eligible_history"
     assert sch._OPTIONS_FLOW_ALERT_CAL_MIN_COUNT == 30
 
 
@@ -146,8 +148,10 @@ def test_suppression_is_logged_with_the_diagnostic_numbers():
 
 
 def test_result_exposes_distinct_dates_for_downstream_honesty():
-    body = _calibration_body()
-    assert '\'distinct_dates\': distinct_dates' in body
+    result = cohort_measurement_status({
+        "eligible": [{"fired_date": dt.date(2026, 9, day)} for day in range(1, 6)],
+    })
+    assert result["distinct_dates"] == 5
 
 
 def test_query_selects_fired_date_so_the_floor_can_be_computed():

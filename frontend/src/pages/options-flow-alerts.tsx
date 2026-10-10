@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import {
@@ -52,7 +52,7 @@ function returnColor(returnPct: number | null | undefined, direction: string): s
   return isWin ? '#22c55e' : '#ef4444';
 }
 
-function DirectionCard({ row }: { row: OptionsFlowAlertDirectionSummary }) {
+export function DirectionCard({ row }: { row: OptionsFlowAlertDirectionSummary }) {
   const primary = row.window_10d;
   const dirColor = row.direction === 'bullish' ? '#22c55e' : '#ef4444';
   return (
@@ -65,7 +65,7 @@ function DirectionCard({ row }: { row: OptionsFlowAlertDirectionSummary }) {
         {primary && ` · ${primary.n} eligible outcome${primary.n === 1 ? '' : 's'} (10 calendar days)`}
       </div>
       {primary ? (
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+        primary.status === 'measured' ? <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
           <span style={{
             background: `${winRateColor(primary.win_rate)}22`, color: winRateColor(primary.win_rate),
             border: `1px solid ${winRateColor(primary.win_rate)}44`, borderRadius: 20, padding: '2px 9px', fontSize: 12, fontWeight: 700,
@@ -76,6 +76,10 @@ function DirectionCard({ row }: { row: OptionsFlowAlertDirectionSummary }) {
             {fmtPct(primary.avg_return_pct)}
           </span>
           <span style={{ fontSize: '11px', color: '#475569' }}>mean underlying move</span>
+        </div> : <div style={{ fontSize: '12px', color: '#f59e0b' }}>
+          Unmeasured — {primary.status === 'clustered_dates'
+            ? `only ${primary.distinct_dates ?? 0} distinct dates; ${primary.required_distinct_dates ?? 5} required`
+            : `only ${primary.n} eligible outcomes; ${primary.required_eligible_outcomes ?? 30} required`}.
         </div>
       ) : (
         <div style={{ fontSize: '12px', color: '#475569' }}>No 10-day outcomes resolved yet in this window.</div>

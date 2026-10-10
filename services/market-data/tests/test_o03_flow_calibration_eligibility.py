@@ -143,6 +143,17 @@ def test_insufficient_eligible_history_is_a_distinct_result_from_no_history():
     assert "not a zero win rate" in body
 
 
+def test_shared_cohort_status_suppresses_small_and_clustered_rates():
+    from services.flow_outcome_eligibility import cohort_measurement_status
+
+    small = {"eligible": [{"fired_date": date(2026, 1, day)} for day in range(1, 6)]}
+    assert cohort_measurement_status(small)["status"] == "insufficient_eligible_history"
+    clustered = {"eligible": [{"fired_date": date(2026, 1, 2)} for _ in range(30)]}
+    assert cohort_measurement_status(clustered)["status"] == "clustered_dates"
+    measured = {"eligible": [{"fired_date": date(2026, 1, 1 + i % 5)} for i in range(30)]}
+    assert cohort_measurement_status(measured)["status"] == "measured"
+
+
 def test_the_horizon_travels_with_the_rate():
     assert "'horizon': '10d'" in _cal_fn_body(), \
         "a hit rate without its horizon cannot be compared with anything"

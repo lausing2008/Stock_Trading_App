@@ -69,7 +69,8 @@ def test_unsupported_contract_or_policy_is_rejected(change):
 def test_unknown_account_and_quotes_never_actionable():
     r = actionable_gate({})
     assert r['status'] == 'research_only'
-    assert 'quotes_fresh' in r['blockers']
-    assert 'capital_sufficient' in r['blockers']
+    assert 'direction_compatible' in r['blockers']
+    assert 'numeric_identity_or_time_evidence_missing' in r['blockers']
     assert r['quantity'] is None
+    assert r['bound_decision'] is None
     assert len(fingerprint()) == 64

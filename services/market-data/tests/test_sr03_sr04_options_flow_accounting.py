@@ -73,8 +73,13 @@ def _select(rows, imbalance=0.5):
     """Run the REAL extracted selection over a list of rows, in the order given."""
     env = {
         "parse_signal_instant": parse_signal_instant,
+        "classify_flow_event_freshness": lambda event_at, decision_at: {
+            "eligible": True, "state": "fresh", "age_seconds": 0,
+        },
+        "datetime": datetime, "timezone": timezone,
         "candidates": {}, "log": _NullLog(),
-        "_flow_quarantined": 0, "_flow_superseded": 0,
+        "_flow_quarantined": 0, "_flow_stale": 0, "_flow_future": 0,
+        "_flow_superseded": 0,
         "symbol": "AAPL", "_imbalance": imbalance,
     }
     snippet = _selection_snippet()

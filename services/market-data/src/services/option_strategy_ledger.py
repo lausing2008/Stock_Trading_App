@@ -8,12 +8,15 @@ import ast
 import hashlib
 import json
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
 DEFAULT_MAX_LOSS_PER_TRADE_PCT = 0.0025
 DEFAULT_MAX_OPEN_OPTIONS_RISK_PCT = 0.01
+DEFAULT_MAX_QUOTE_AGE_SECONDS = 60
+DEFAULT_MAX_EVENT_AGE_SECONDS = 15 * 60
+DEFAULT_MAX_SPREAD_FRACTION = 0.15
 
 
 def fingerprint() -> str:
@@ -110,37 +113,130 @@ def resolve(capture: dict, evidence: dict, now: datetime) -> dict:
 
 
 def actionable_gate(facts: dict) -> dict:
-    """Promotion is explicit and independent of a research score. Missing facts abstain."""
+    """Derive one numerically-bound single-leg decision. Missing facts abstain.
+
+    Booleans may establish evidence/permission, but they never establish price, size,
+    capital or risk. Those are recomputed here from the frozen quote and account facts.
+    """
     required = ('direction_compatible', 'identity_verified', 'deliverable_verified',
-                'quotes_fresh', 'two_sided_quotes', 'spread_acceptable', 'size_sufficient',
                 'market_open', 'entry_before_last_trade', 'event_coverage_verified',
-                'account_permissions_verified', 'capital_sufficient', 'portfolio_risk_checked')
+                'account_permissions_verified')
     blockers = [key for key in required if facts.get(key) is not True]
-    account_value = facts.get('account_value')
-    open_option_risk = facts.get('open_option_risk')
-    max_loss_per_contract = facts.get('max_loss_per_contract')
     quantity = None
     risk_budget = None
-    if not blockers:
-        try:
-            account_value = number(account_value, 'account_value', 0.01)
-            open_option_risk = number(open_option_risk, 'open_option_risk')
-            max_loss_per_contract = number(max_loss_per_contract, 'max_loss_per_contract', 0.01)
-            risk_budget = min(
-                account_value * DEFAULT_MAX_LOSS_PER_TRADE_PCT,
-                max(0.0, account_value * DEFAULT_MAX_OPEN_OPTIONS_RISK_PCT - open_option_risk),
-            )
-            quantity = math.floor(risk_budget / max_loss_per_contract)
-            if quantity < 1:
-                blockers.append('risk_budget_too_small')
-                quantity = None
-        except (TypeError, ValueError):
-            blockers.append('risk_inputs_verified')
+    bound = None
+    try:
+        symbol = str(facts['symbol']).strip().upper()
+        strategy = str(facts['strategy']).strip()
+        contract_id = str(facts['contract_id']).strip()
+        quote_source = str(facts['quote_source']).strip()
+        opportunity_id = str(facts['opportunity_id']).strip()
+        confirmation_rule = str(facts['confirmation_rule']).strip()
+        invalidation_rule = str(facts['invalidation_rule']).strip()
+        measurement_status = str(facts['measurement_status']).strip()
+        if not all((symbol, strategy, contract_id, quote_source, opportunity_id,
+                    confirmation_rule, invalidation_rule, measurement_status)):
+            raise ValueError('identity fields are required')
+        if strategy not in ('long_call', 'long_put'):
+            blockers.append('strategy_not_supported')
+        if measurement_status != 'prospective_unmeasured':
+            blockers.append('measurement_not_prospective_unmeasured')
+
+        decision_at = instant(facts['decision_at'])
+        quote_as_of = instant(facts['quote_as_of'])
+        event_at = instant(facts['event_at'])
+        entry_deadline = instant(facts['entry_deadline'])
+        if quote_as_of > decision_at:
+            blockers.append('quote_time_future')
+        elif decision_at - quote_as_of > timedelta(seconds=DEFAULT_MAX_QUOTE_AGE_SECONDS):
+            blockers.append('quote_stale')
+        if event_at > decision_at:
+            blockers.append('event_time_future')
+        elif decision_at - event_at > timedelta(seconds=DEFAULT_MAX_EVENT_AGE_SECONDS):
+            blockers.append('event_stale')
+        if entry_deadline <= decision_at:
+            blockers.append('entry_window_expired')
+
+        bid = number(facts['bid'], 'bid')
+        ask = number(facts['ask'], 'ask', 0.000001)
+        ask_size = number(facts['ask_size_contracts'], 'ask_size_contracts')
+        fee = number(facts['fee_per_contract_per_side'], 'fee_per_contract_per_side')
+        slippage = number(facts['slippage_per_share_per_side'], 'slippage_per_share_per_side')
+        if bid > ask:
+            blockers.append('quote_crossed')
+        midpoint = (bid + ask) / 2
+        spread_fraction = (ask - bid) / midpoint if midpoint > 0 else math.inf
+        if spread_fraction > DEFAULT_MAX_SPREAD_FRACTION:
+            blockers.append('spread_too_wide')
+
+        account_value = number(facts['account_value'], 'account_value', 0.01)
+        open_option_risk = number(facts['open_option_risk'], 'open_option_risk')
+        buying_power = number(facts['available_options_buying_power'], 'available_options_buying_power')
+        max_loss_per_contract = round((ask + slippage) * 100 + 2 * fee, 4)
+        supplied_loss = facts.get('max_loss_per_contract')
+        if supplied_loss is not None and abs(number(supplied_loss, 'max_loss_per_contract', 0.01) - max_loss_per_contract) > 0.005:
+            blockers.append('maximum_loss_mismatch')
+
+        risk_budget = min(
+            account_value * DEFAULT_MAX_LOSS_PER_TRADE_PCT,
+            max(0.0, account_value * DEFAULT_MAX_OPEN_OPTIONS_RISK_PCT - open_option_risk),
+            buying_power,
+        )
+        risk_quantity = math.floor(risk_budget / max_loss_per_contract)
+        displayed_quantity = math.floor(ask_size)
+        quantity = min(risk_quantity, displayed_quantity)
+        if risk_quantity < 1:
+            blockers.append('risk_budget_too_small')
+        if displayed_quantity < 1:
+            blockers.append('displayed_size_insufficient')
+        if quantity < 1:
+            quantity = None
+
+        if quantity is not None:
+            maximum_loss = round(max_loss_per_contract * quantity, 4)
+            policy = {
+                'max_loss_per_trade_pct_of_account': DEFAULT_MAX_LOSS_PER_TRADE_PCT,
+                'max_aggregate_open_option_risk_pct_of_account': DEFAULT_MAX_OPEN_OPTIONS_RISK_PCT,
+                'max_quote_age_seconds': DEFAULT_MAX_QUOTE_AGE_SECONDS,
+                'max_event_age_seconds': DEFAULT_MAX_EVENT_AGE_SECONDS,
+                'max_spread_fraction': DEFAULT_MAX_SPREAD_FRACTION,
+                'execution_basis': 'buy_ask_plus_frozen_slippage_and_two_sided_fees',
+            }
+            bound = {
+                'opportunity_id': opportunity_id,
+                'symbol': symbol, 'strategy': strategy, 'contract_id': contract_id,
+                'confirmation_rule': confirmation_rule,
+                'invalidation_rule': invalidation_rule,
+                'measurement_status': measurement_status,
+                'quote_source': quote_source, 'quote_as_of': quote_as_of.isoformat(),
+                'event_at': event_at.isoformat(), 'decision_at': decision_at.isoformat(),
+                'entry_deadline': entry_deadline.isoformat(), 'bid': bid, 'ask': ask,
+                'ask_size_contracts': displayed_quantity, 'quantity': quantity,
+                'fee_per_contract_per_side': fee,
+                'slippage_per_share_per_side': slippage,
+                'max_loss_per_contract': max_loss_per_contract,
+                'maximum_loss': maximum_loss,
+                'risk_budget': round(risk_budget, 4),
+                'account_value': account_value, 'open_option_risk': open_option_risk,
+                'available_options_buying_power': buying_power,
+                'risk_policy': policy,
+            }
+            bound['decision_fingerprint'] = digest(bound)
+    except (KeyError, TypeError, ValueError):
+        blockers.append('numeric_identity_or_time_evidence_missing')
+        quantity = None
+        bound = None
+    blockers = list(dict.fromkeys(blockers))
     return {'status': 'actionable' if not blockers else 'research_only',
             'blockers': blockers, 'quantity': quantity,
             'risk_budget': round(risk_budget, 2) if risk_budget is not None else None,
+            'bound_decision': bound,
             'risk_policy': {
                 'max_loss_per_trade_pct_of_account': DEFAULT_MAX_LOSS_PER_TRADE_PCT,
                 'max_aggregate_open_option_risk_pct_of_account': DEFAULT_MAX_OPEN_OPTIONS_RISK_PCT,
+                'max_quote_age_seconds': DEFAULT_MAX_QUOTE_AGE_SECONDS,
+                'max_event_age_seconds': DEFAULT_MAX_EVENT_AGE_SECONDS,
+                'max_spread_fraction': DEFAULT_MAX_SPREAD_FRACTION,
             },
-            'note': 'Eligibility checks do not establish predictive skill or an achievable fill.'}
+            'note': ('Quantity is bounded by risk, buying power and displayed ask size. '
+                     'Eligibility still does not establish predictive skill or an achievable fill.')}
