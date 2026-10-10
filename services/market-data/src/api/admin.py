@@ -982,6 +982,7 @@ def squeeze_alert_performance(
 
     cutoff = date.today() - timedelta(days=days_back)
 
+
     def _summary_for_window(window: int) -> dict[str, dict]:
         price_col = getattr(SqueezeAlertOutcome, f"return_{window}d")
         correct_col = getattr(SqueezeAlertOutcome, f"is_correct_{window}d")
@@ -1109,6 +1110,28 @@ def options_flow_alert_performance(
         partition as _partition, classify as _classify, EXCLUSION_REASON,
         ELIGIBILITY_VERSION as _ELIG_VERSION)
 
+    def _delivered_pool(elig) -> dict:
+        """The subset the sender accepted, with its own denominator.
+
+        Deliberately NOT a filter applied to the figure above: both populations are reported,
+        because a delivered subset that does no better than the candidate set it was drawn
+        from has not earned the send.
+        """
+        rows = [r for r in elig if r.get("delivery_state") == _DELIVERED_STATE]
+        wins = sum(1 for r in rows if r["is_correct"])
+        rets = [r["ret"] for r in rows if r["ret"] is not None]
+        status = _cohort_status({"eligible": rows})
+        measured = status["status"] == "measured"
+        return {
+            "population": "sender_accepted",
+            "n": len(rows), "wins": wins,
+            "win_rate": round(wins / len(rows), 3) if measured and rows else None,
+            "avg_return_pct": (round(sum(rets) / len(rets) * 100, 2)
+                               if measured and rets else None),
+            **status,
+            "note": ("Provider acceptance, not inbox delivery — this system cannot observe "
+                     "whether anyone received or opened a message."),
+        }
     def _summary_for_window(window: int) -> dict[str, dict]:
         ret_col = getattr(OptionsFlowAlertOutcome, f"return_{window}d")
         correct_col = getattr(OptionsFlowAlertOutcome, f"is_correct_{window}d")
@@ -1118,6 +1141,7 @@ def options_flow_alert_performance(
                 OptionsFlowAlertOutcome.fired_date,
                 OptionsFlowAlertOutcome.expiry,
                 OptionsFlowAlertOutcome.entry_date,
+                OptionsFlowAlertOutcome.delivery_state,
                 correct_col.label("is_correct"),
                 ret_col.label("ret"),
             )
@@ -1149,6 +1173,15 @@ def options_flow_alert_performance(
                 "horizon": window, "horizon_unit": "calendar_days",
                 **cohort,
                 "exclusion_reasons": part["exclusion_reasons"],
+                # AQ06: TWO POPULATIONS, REPORTED APART. Everything above describes every
+                # CANDIDATE considered. A reader asking an alert's hit rate means the subset a
+                # recipient was actually sent — and the candidate figure is the baseline that
+                # subset must beat to be worth sending at all.
+                "delivered": _delivered_pool(elig),
+                # Rows written before AQ06 carry no delivery state. Counted, never guessed
+                # into a pool.
+                "delivery_state_unknown": sum(
+                    1 for r in elig if r.get("delivery_state") is None),
             }
         return out
 

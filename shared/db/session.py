@@ -164,6 +164,22 @@ def _run_migrations() -> None:  # noqa: C901
             "ALTER TABLE IF EXISTS observation_outcomes "
             "ADD COLUMN IF NOT EXISTS performance_eligibility VARCHAR(16)"))
 
+        # AQ06 (2026-10-10): a candidate is not a delivered alert. Existing rows are left NULL
+        # rather than backfilled to `candidate`: they were written before the distinction was
+        # recorded, and claiming a delivery state for them would be the exact conflation these
+        # columns exist to prevent.
+        for _stmt in (
+            "ALTER TABLE IF EXISTS options_flow_alert_outcomes "
+            "ADD COLUMN IF NOT EXISTS delivery_state VARCHAR(32)",
+            "ALTER TABLE IF EXISTS options_flow_alert_outcomes "
+            "ADD COLUMN IF NOT EXISTS delivered_recipient_count INTEGER",
+            "ALTER TABLE IF EXISTS options_flow_alert_outcomes "
+            "ADD COLUMN IF NOT EXISTS delivery_decided_at TIMESTAMP",
+            "CREATE INDEX IF NOT EXISTS ix_ofao_delivery_state "
+            "ON options_flow_alert_outcomes (delivery_state)",
+        ):
+            conn.execute(text(_stmt))
+
         # Add Chinese name column and backfill known HK stocks
         conn.execute(text(
             "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS name_zh VARCHAR(256)"

@@ -250,3 +250,39 @@ notification helper, the flow half of AQ07, and AQ14's inconsistent publication 
 not establish canonical provider contract identity, a live prospective capture, multi-leg
 economics, assignment, broker fills or predictive performance. Those remain activation
 dependencies, not defects hidden behind a higher score.
+
+
+## Third correctness slice — 2026-10-10
+
+Three P1 measurement defects from the alert-quality audit, each fixed at the point where the
+number is produced rather than where it is displayed.
+
+- **AQ04 — a partial adjusted series invented movement.** `_adj_close` returned
+  `adj_close.fillna(close)`, splicing two bases wherever the adjusted series had gaps: a
+  constant raw `[100,100,100]` with a partial adjusted `[50,NULL,50]` became `[50,100,50]`.
+  The same defect existed independently in **two services**; in ml-prediction it fed model
+  training features, so the fabrication was learned rather than displayed. A second mixture sat
+  beside it — adjusted close with raw high/low, measuring true range between prices that never
+  coexisted (five sites). `common.price_basis` is now one rule: a window has one basis or none,
+  partial coverage falls back to raw throughout, and a fully adjusted window restates the whole
+  bar by the same per-row factor.
+- **AQ05 — the calibration cohort.** Measured in production: 17 of 21,520 resolved outcomes
+  carry `entry_date = signal_date` under a next-session convention (GROWTH/BUY 0.4004 → 0.3998).
+  Timing eligibility now excludes them and reports the exclusions; every bucket needs 30
+  eligible outcomes **and** 5 distinct signal dates, keeps its counts when it fails, and
+  declares its `scope` so a pooled bucket cannot masquerade as market-specific. Model and rule
+  version pooling cannot be repaired here — no version is stored — and is published as a
+  standing limitation beside every rate.
+- **AQ06 — a candidate is not a delivered alert.** Outcome rows were written for every
+  candidate before cooldown, ranking and the email cap, so every rate over them answered "how
+  did everything we considered behave" while a reader heard "how did the alerts I got behave".
+  Five delivery states are now folded across recipients and persisted, and the performance API
+  reports a `delivered` pool beside the candidate figure — not instead of it, because the
+  candidate set is the baseline a delivered subset must beat to be worth sending.
+
+Twelve sabotages across the three, each confirmed applied before being counted as caught. Two
+of them exposed weaknesses in my own tests: one matched an IMPORT rather than the filtering it
+claimed to check, and one re-implemented the rule it was testing.
+
+Still open after this slice: the AI halves of AQ06 and AQ07 (the selected-signal clock), the
+outcome evaluators' direct `Price.close` reads in AQ04, and AQ11's live prospective trace.

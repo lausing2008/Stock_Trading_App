@@ -2924,6 +2924,18 @@ class OptionsFlowAlertOutcome(Base):
     return_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_correct_20d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: AQ06 — WHAT ACTUALLY HAPPENED TO THIS CANDIDATE. The row is written for every candidate
+    #: before the per-recipient loop applies cooldown, ranking and the email cap, so without
+    #: this the table is a record of CANDIDATES wearing the name of alerts and every rate over
+    #: it answers "how did everything we considered behave" while the reader hears "how did the
+    #: alerts I got behave".
+    #: candidate | suppressed_by_cooldown | omitted_by_cap | queued_not_sent | sender_accepted
+    #: `sender_accepted` means the mail provider returned success. It is NOT inbox delivery,
+    #: which this system cannot observe.
+    delivery_state: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    #: How many recipients' payloads the sender accepted this contract in.
+    delivered_recipient_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    delivery_decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class PortfolioRiskMetric(Base):

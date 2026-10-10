@@ -5868,6 +5868,11 @@ def check_options_flow_alerts() -> None:
                 )
 
             from .email_service import send_options_flow_alert_email
+            from .alert_delivery_pool import fold_recipient as _fold_delivery, summarise as _sum_delivery
+            # AQ06: the loop below already knows what happened to each candidate — it computes
+            # deferred/queued/omitted/accepted and logs them. Nothing persisted, so the outcome
+            # table was a record of CANDIDATES wearing the name of alerts.
+            _delivery_states: dict = {}
             sent = 0
             for uid, user in recipients.items():
                 state_key = f"stockai:options_flow_alert_seen:{uid}"
@@ -5998,6 +6003,10 @@ def check_options_flow_alerts() -> None:
                     _rc.expire(state_key, 20 * 3600)
                 except Exception:
                     pass
+                _fold_delivery(_delivery_states,
+                               deferred=deferred_chains, queued=cooldown_ok_chains,
+                               omitted=omitted_chains, accepted=accepted_chains,
+                               send_attempted=send_attempted, send_ok=send_ok)
                 if deferred_chains or omitted_chains or not send_attempted:
                     log.info("options_flow_alert.recipient_accounting", user=uid,
                              observed=len(current_chains), newly_seen=len(newly_seen),
@@ -6008,7 +6017,34 @@ def check_options_flow_alerts() -> None:
                              send_attempted=send_attempted, send_ok=send_ok,
                              note="deferred and omitted work is retained, not marked delivered")
 
+            # AQ06: PERSIST WHAT HAPPENED, so a performance pool can separate the alerts a
+            # recipient was actually sent from every candidate considered. The full candidate
+            # set is retained as the baseline a delivered subset must beat to be worth sending.
+            _delivery = _sum_delivery(list(candidates.keys()), _delivery_states)
+            _accepted_per_chain: dict = {}
+            for _c, _st in _delivery["per_chain"].items():
+                _accepted_per_chain[_c] = sum(
+                    1 for _s in [_st] if _s == "sender_accepted")
+            try:
+                _now = datetime.now(timezone.utc).replace(tzinfo=None)
+                for _chain, _state in _delivery["per_chain"].items():
+                    session.execute(
+                        update(OptionsFlowAlertOutcome)
+                        .where(OptionsFlowAlertOutcome.option_chain == _chain,
+                               OptionsFlowAlertOutcome.fired_date == date.today())
+                        .values(delivery_state=_state,
+                                delivered_recipient_count=_accepted_per_chain.get(_chain, 0),
+                                delivery_decided_at=_now))
+                session.commit()
+            except Exception as _dexc:          # a persistence hiccup must not lose the send
+                session.rollback()
+                log.warning("options_flow_alert.delivery_state_persist_failed",
+                            error=str(_dexc)[:200])
+
             _record_job_status("check_options_flow_alerts", "ok", time.monotonic() - _t0)
+            log.info("options_flow_alert.delivery_pools",
+                     candidates=_delivery["candidate_total"],
+                     delivered=_delivery["delivered_total"], **_delivery["counts"])
             log.info("options_flow_alert.done", candidates=len(candidates), sent=sent,
                      recipients=len(recipients),
                      quarantined_no_event_time=_flow_quarantined,
