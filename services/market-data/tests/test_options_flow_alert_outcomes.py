@@ -32,7 +32,11 @@ _spec.loader.exec_module(_models)
 _ENGINE = create_engine("sqlite:///:memory:")
 _models.Base.metadata.create_all(
     _ENGINE,
-    tables=[_models.Stock.__table__, _models.Price.__table__, _models.OptionsFlowAlertOutcome.__table__],
+    tables=[
+        _models.Stock.__table__, _models.Price.__table__,
+        _models.CorporateAction.__table__, _models.CorporateActionCoverage.__table__,
+        _models.OptionsFlowAlertOutcome.__table__,
+    ],
 )
 
 _autoincrement_counter = [0]
@@ -53,6 +57,8 @@ for _mod, _stub in _saved_stubs.items():
 Stock = _models.Stock
 Price = _models.Price
 OptionsFlowAlertOutcome = _models.OptionsFlowAlertOutcome
+CorporateAction = _models.CorporateAction
+CorporateActionCoverage = _models.CorporateActionCoverage
 Market = _models.Market
 TimeFrame = _models.TimeFrame
 
@@ -71,7 +77,10 @@ def _new_id() -> int:
 
 def _make_session():
     session = Session(_ENGINE)
-    for table in (OptionsFlowAlertOutcome.__table__, Price.__table__, Stock.__table__):
+    for table in (
+        OptionsFlowAlertOutcome.__table__, CorporateAction.__table__,
+        CorporateActionCoverage.__table__, Price.__table__, Stock.__table__,
+    ):
         session.execute(table.delete())
     session.commit()
     return session
@@ -157,9 +166,13 @@ def _extract_evaluate_options_flow_alert_outcomes(session):
 
     _fake_redis = MagicMock()
     _fake_redis.set.return_value = True
+    from common.outcome_price_basis import resolve_window
+
     namespace = {
         "select": select, "bisect": __import__("bisect"),
         "Price": Price, "TimeFrame": TimeFrame, "OptionsFlowAlertOutcome": OptionsFlowAlertOutcome,
+        "CorporateAction": CorporateAction, "CorporateActionCoverage": CorporateActionCoverage,
+        "_resolve_outcome_basis": resolve_window,
         "SessionLocal": lambda: _CtxSession(session),
         "date": date, "datetime": datetime, "timedelta": timedelta, "timezone": timezone,
         "time": __import__("time"),
@@ -283,6 +296,7 @@ def test_evaluate_scores_a_bullish_row_as_a_win_when_price_rises():
     assert row.entry_price == 101.0
     assert row.is_correct_10d is True
     assert row.return_10d > 0
+    assert row.evidence_status == "unverified"
 
 
 def test_evaluate_scores_a_bearish_row_as_a_win_when_price_falls():

@@ -19,7 +19,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from common.jwt_auth import get_current_username
-from db import Price, Signal, SignalHorizon, SignalOutcome, SignalOutcomeHorizon, SignalType, Stock, TimeFrame, TuneHistory, get_session
+from common.outcome_price_basis import resolve_window as _resolve_outcome_basis
+from db import CorporateAction, CorporateActionCoverage, Price, Signal, SignalHorizon, SignalOutcome, SignalOutcomeHorizon, SignalType, Stock, TimeFrame, TuneHistory, get_session
 
 from .signals_shared import (
     _CONF_CAL_CACHE_KEY, _OUTCOME_CENSOR_GRACE_DAYS, _OUTCOME_HOLD_DAYS,
@@ -257,7 +258,20 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         pr_date = pr.ts.date() if hasattr(pr.ts, "date") else pr.ts
         _outcome_price_map[pr.stock_id].append((pr_date, float(pr.close)))
 
-    def _lookup_outcome_price(stock_id: int, on_or_after: "date") -> "tuple | None":
+    _symbols_by_stock = {sig.stock_id: symbol for sig, symbol, _ in pending_signals}
+    _actions_by_symbol = defaultdict(list)
+    _coverage_by_symbol = {}
+    if _symbols_by_stock:
+        for action in session.execute(select(CorporateAction).where(
+                CorporateAction.symbol.in_(set(_symbols_by_stock.values())))).scalars():
+            _actions_by_symbol[action.symbol].append(action)
+        for coverage in session.execute(select(CorporateActionCoverage).where(
+                CorporateActionCoverage.symbol.in_(set(_symbols_by_stock.values())))).scalars():
+            prior = _coverage_by_symbol.get(coverage.symbol)
+            if prior is None or coverage.retrieved_at > prior.retrieved_at:
+                _coverage_by_symbol[coverage.symbol] = coverage
+
+    def _lookup_price_in_bucket(bucket: list[tuple], on_or_after: "date") -> "tuple | None":
         """Returns the first (date, close) bar on or after `on_or_after`, or None if none
         exists — INCLUDING when the nearest available bar is too far past `on_or_after` to be
         a legitimate exit/entry fill (AUD261-CENSORING-NEVER-FIRED).
@@ -274,7 +288,6 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         censoring branch already uses, so both halves of "is this price recent enough to
         trust" agree on the same threshold.
         """
-        bucket = _outcome_price_map.get(stock_id, [])
         if not bucket:
             return None
         dates = [b[0] for b in bucket]
@@ -286,7 +299,11 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
             return None
         return found_date, found_close
 
-    def _window_return(stock_id: int, entry_date: "date", entry_price: float, days: int, signal_direction: str = "BUY"):
+    def _lookup_outcome_price(stock_id: int, on_or_after: "date") -> "tuple | None":
+        return _lookup_price_in_bucket(_outcome_price_map.get(stock_id, []), on_or_after)
+
+    def _window_return(stock_id: int, entry_date: "date", entry_price: float, days: int,
+                       signal_direction: str = "BUY", bucket: "list[tuple] | None" = None):
         """Return (price, return_pct, is_correct) for a +N-day window, or (None, None, None).
 
         is_correct: BUY wins when ret clears the cost hurdle; SELL wins when ret falls
@@ -295,7 +312,8 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         target = entry_date + timedelta(days=days)
         if target > today:
             return None, None, None
-        result = _lookup_outcome_price(stock_id, target)
+        result = (_lookup_price_in_bucket(bucket, target) if bucket is not None
+                  else _lookup_outcome_price(stock_id, target))
         if result is None or entry_price <= 0:
             return None, None, None
         _, price = result
@@ -446,6 +464,21 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
                     skipped_open += 1
                     continue
             else:
+                # AQ04: calculation and evidence are separate. Resolve one coherent basis over
+                # every stored window. If evidence is missing, retain a labelled raw calculation
+                # for audit but it cannot enter verified calibration.
+                _basis_end = entry_date + timedelta(days=max(20, hold_days))
+                _basis = _resolve_outcome_basis(
+                    _outcome_price_map.get(sig.stock_id, []),
+                    _actions_by_symbol.get(symbol, []), _coverage_by_symbol.get(symbol),
+                    start=entry_date, end=_basis_end)
+                _basis_bucket = _basis["prices"] or _outcome_price_map.get(sig.stock_id, [])
+                entry_result = _lookup_price_in_bucket(_basis_bucket, entry_date)
+                exit_result = _lookup_price_in_bucket(_basis_bucket, exit_target)
+                if entry_result is None or exit_result is None:
+                    skipped_no_price += 1
+                    continue
+                entry_date, entry_price = entry_result
                 exit_date, exit_price = exit_result
                 if entry_price <= 0:
                     skipped_no_price += 1
@@ -462,9 +495,9 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
 
                 # INT-8: multi-window forward returns (pass signal direction so SELL wins on negative returns)
                 _sig_dir = sig.first_buy_sell_signal.value  # "BUY" or "SELL"
-                p5, r5, c5   = _window_return(sig.stock_id, entry_date, entry_price, 5,  _sig_dir)
-                p10, r10, c10 = _window_return(sig.stock_id, entry_date, entry_price, 10, _sig_dir)
-                p20, r20, c20 = _window_return(sig.stock_id, entry_date, entry_price, 20, _sig_dir)
+                p5, r5, c5 = _window_return(sig.stock_id, entry_date, entry_price, 5, _sig_dir, _basis_bucket)
+                p10, r10, c10 = _window_return(sig.stock_id, entry_date, entry_price, 10, _sig_dir, _basis_bucket)
+                p20, r20, c20 = _window_return(sig.stock_id, entry_date, entry_price, 20, _sig_dir, _basis_bucket)
                 res_rec, res_score = _fetch_research(symbol)
 
                 reasons = sig.first_buy_sell_reasons or {}
@@ -487,6 +520,9 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
                     exit_price=exit_price,
                     hold_days=hold_days_actual,
                     pct_return=pct_return,
+                    return_basis=_basis["basis"],
+                    evidence_status=_basis["evidence_status"],
+                    evidence_basis=_basis["reason"],
                     is_correct=is_correct,
                     price_5d=p5, return_5d=r5, is_correct_5d=c5,
                     price_10d=p10, return_10d=r10, is_correct_10d=c10,
@@ -558,21 +594,49 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
                 _outcome_price_map[pr.stock_id].append((pr_date, float(pr.close)))
 
         for out in needs_update:
+            # A pre-AQ04 row has no reconstructable stored basis. Leaving its auxiliary
+            # windows empty is honest; filling them from today's raw bars would splice a new
+            # basis onto an unknown historical entry price.
+            if out.evidence_status not in ("verified", "provisional", "unverified"):
+                continue
+            _raw_bucket = _outcome_price_map.get(out.stock_id, [])
+            _basis = _resolve_outcome_basis(
+                _raw_bucket, _actions_by_symbol.get(out.symbol, []),
+                _coverage_by_symbol.get(out.symbol), start=out.entry_date,
+                end=out.entry_date + timedelta(days=20))
+            _basis_bucket = _basis["prices"] or _raw_bucket
+            _entry = _lookup_price_in_bucket(_basis_bucket, out.entry_date)
+            if _entry is None:
+                continue
             changed = False
-            ep, ed = out.entry_price, out.entry_date
+            ed, ep = _entry
             _out_dir = out.signal_direction or "BUY"  # SELL wins on negative return
-            if out.price_5d is None:
-                p5, r5, c5 = _window_return(out.stock_id, ed, ep, 5, _out_dir)
+            # Keep every monetary field on one basis as later windows mature. A split inside
+            # the 20-day span can change the displayed historical prices while leaving the
+            # already measured return invariant; retaining raw entry/exit beside adjusted
+            # auxiliary prices would recreate AQ04's mixed-basis defect.
+            out.entry_date, out.entry_price = ed, ep
+            if out.exit_date is not None:
+                _exit = _lookup_price_in_bucket(_basis_bucket, out.exit_date)
+                if _exit is not None:
+                    out.exit_date, out.exit_price = _exit
+                    out.pct_return = (out.exit_price - ep) / ep
+                    out.is_correct = (
+                        out.pct_return > _OUTCOME_WIN_HURDLE_PCT if _out_dir == "BUY"
+                        else out.pct_return < -_OUTCOME_WIN_HURDLE_PCT)
+                    changed = True
+            if out.price_5d is None or ed + timedelta(days=5) <= today:
+                p5, r5, c5 = _window_return(out.stock_id, ed, ep, 5, _out_dir, _basis_bucket)
                 if p5 is not None:
                     out.price_5d, out.return_5d, out.is_correct_5d = p5, r5, c5
                     changed = True
-            if out.price_10d is None:
-                p10, r10, c10 = _window_return(out.stock_id, ed, ep, 10, _out_dir)
+            if out.price_10d is None or ed + timedelta(days=10) <= today:
+                p10, r10, c10 = _window_return(out.stock_id, ed, ep, 10, _out_dir, _basis_bucket)
                 if p10 is not None:
                     out.price_10d, out.return_10d, out.is_correct_10d = p10, r10, c10
                     changed = True
-            if out.price_20d is None:
-                p20, r20, c20 = _window_return(out.stock_id, ed, ep, 20, _out_dir)
+            if out.price_20d is None or ed + timedelta(days=20) <= today:
+                p20, r20, c20 = _window_return(out.stock_id, ed, ep, 20, _out_dir, _basis_bucket)
                 if p20 is not None:
                     out.price_20d, out.return_20d, out.is_correct_20d = p20, r20, c20
                     changed = True
@@ -653,14 +717,29 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
                         horizon_created += 1
                     continue  # still pending — nothing to resolve yet, existing row unchanged
 
-                price, ret, correct = _window_return(sig.stock_id, entry_date, entry_price,
-                                                     window_days, sig_dir)
+                _raw_bucket = _outcome_price_map.get(sig.stock_id, [])
+                _basis = _resolve_outcome_basis(
+                    _raw_bucket, _actions_by_symbol.get(symbol, []),
+                    _coverage_by_symbol.get(symbol), start=entry_date, end=target_date)
+                _basis_bucket = _basis["prices"] or _raw_bucket
+                _basis_entry = _lookup_price_in_bucket(_basis_bucket, entry_date)
+                if _basis_entry is None:
+                    continue
+                basis_entry_date, basis_entry_price = _basis_entry
+                price, ret, correct = _window_return(
+                    sig.stock_id, basis_entry_date, basis_entry_price,
+                    window_days, sig_dir, _basis_bucket)
                 if price is not None:
                     if existing is not None:
+                        existing.entry_date = basis_entry_date
+                        existing.entry_price = basis_entry_price
                         existing.exit_date = target_date
                         existing.exit_price = price
                         existing.pct_return = ret
                         existing.is_correct = correct
+                        existing.return_basis = _basis["basis"]
+                        existing.evidence_status = _basis["evidence_status"]
+                        existing.evidence_basis = _basis["reason"]
                         existing.status = "resolved"
                         existing.resolved_at = datetime.now(timezone.utc)
                     else:
@@ -668,9 +747,13 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
                             signal_id=sig.id, stock_id=sig.stock_id, symbol=symbol,
                             horizon=sig.horizon, signal_direction=sig_dir, signal_date=signal_date,
                             window_days=window_days, is_primary_window=is_primary,
-                            entry_date=entry_date, entry_price=entry_price, target_date=target_date,
+                            entry_date=basis_entry_date, entry_price=basis_entry_price,
+                            target_date=target_date,
                             exit_date=target_date, exit_price=price, pct_return=ret,
                             is_correct=correct, status="resolved",
+                            return_basis=_basis["basis"],
+                            evidence_status=_basis["evidence_status"],
+                            evidence_basis=_basis["reason"],
                             resolved_at=datetime.now(timezone.utc),
                         ))
                     horizon_resolved += 1
@@ -870,5 +953,3 @@ def backfill_bearish_pillars(
         "skipped_insufficient_history": skipped_insufficient_history,
         "remaining_unbackfilled_sell_outcomes": remaining,
     }
-
-

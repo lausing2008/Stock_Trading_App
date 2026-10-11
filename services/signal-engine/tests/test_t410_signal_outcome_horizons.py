@@ -54,7 +54,7 @@ def _extract(start_marker: str, end_marker: str) -> str:
 # needs as its body — no re-indenting, which is what corrupted the nested docstrings/if-blocks
 # on the first attempt.
 _PRICE_HELPERS_SRC = "if True:\n" + _extract(
-    '    def _lookup_outcome_price(stock_id: int, on_or_after: "date")',
+    '    def _lookup_price_in_bucket(bucket: list[tuple], on_or_after: "date")',
     '\n    def _fetch_research(',
 )
 _PHASE3_SRC = "if True:\n" + _extract(
@@ -115,6 +115,7 @@ def _run_phase3(session, pending_signals, price_map: dict, today: date):
     already uses in production. `pending_signals`: [(Signal, symbol, is_delisted), ...]."""
     from collections import defaultdict
     import bisect as _bisect
+    from common.outcome_price_basis import resolve_window
     namespace = {
         "bisect": _bisect, "date": date, "datetime": datetime, "timezone": timezone,
         "timedelta": timedelta, "select": select,
@@ -123,6 +124,8 @@ def _run_phase3(session, pending_signals, price_map: dict, today: date):
         "_OUTCOME_WIN_HURDLE_PCT": _OUTCOME_WIN_HURDLE_PCT,
         "_OUTCOME_HOLD_DAYS": _OUTCOME_HOLD_DAYS,
         "_SELL_OUTCOME_HOLD_DAYS": _SELL_OUTCOME_HOLD_DAYS,
+        "_resolve_outcome_basis": resolve_window,
+        "_actions_by_symbol": defaultdict(list), "_coverage_by_symbol": {},
         "SignalOutcomeHorizon": SignalOutcomeHorizon,
         "session": session, "pending_signals": pending_signals, "today": today,
         "log": _NullLog(),
@@ -159,6 +162,7 @@ def test_a_long_buy_gets_a_resolved_5day_outcome_while_its_28day_primary_stays_p
     assert rows[5].status == "resolved"
     assert rows[5].is_correct is True   # (106-100)/100 = 6% > hurdle
     assert rows[5].pct_return == pytest.approx(0.06)
+    assert rows[5].evidence_status == "unverified"
     assert rows[28].status == "pending"
     assert rows[28].exit_price is None and rows[28].is_correct is None
     assert rows[28].is_primary_window is True

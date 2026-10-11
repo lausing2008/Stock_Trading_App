@@ -8,6 +8,7 @@ import ast
 import hashlib
 import json
 import math
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -17,6 +18,19 @@ DEFAULT_MAX_OPEN_OPTIONS_RISK_PCT = 0.01
 DEFAULT_MAX_QUOTE_AGE_SECONDS = 60
 DEFAULT_MAX_EVENT_AGE_SECONDS = 15 * 60
 DEFAULT_MAX_SPREAD_FRACTION = 0.15
+_OCC = re.compile(r"^([A-Z0-9.]{1,6})(\d{6})([CP])(\d{8})$")
+
+
+def parse_occ_contract(contract_id: str) -> dict:
+    """Parse the canonical OCC-style identity carried by the stored UW chain."""
+    match = _OCC.fullmatch(str(contract_id).strip().upper())
+    if not match:
+        raise ValueError("contract_id must be a canonical OCC-style option identifier")
+    root, yymmdd, side, strike_mills = match.groups()
+    expiry = datetime.strptime(yymmdd, "%y%m%d").date().isoformat()
+    return {"root": root, "expiry": expiry,
+            "option_type": "call" if side == "C" else "put",
+            "strike": int(strike_mills) / 1000.0}
 
 
 def fingerprint() -> str:
@@ -53,6 +67,21 @@ def validate_capture(capture: dict) -> dict:
     for key in ('symbol', 'contract_id', 'quote_source', 'confirmation_rule', 'invalidation_rule'):
         if not isinstance(capture.get(key), str) or not capture[key].strip():
             raise ValueError(f'{key} is required')
+    canonical = parse_occ_contract(capture['contract_id'])
+    wanted_type = 'call' if capture['strategy'] == 'long_call' else 'put'
+    if canonical['root'] != capture['symbol'].upper() or canonical['option_type'] != wanted_type:
+        raise ValueError('contract identity does not match symbol and strategy')
+    identity = capture.get('contract_identity_evidence')
+    if not isinstance(identity, dict) or identity.get('verified_by') != 'stored_unusual_whales_chain':
+        raise ValueError('canonical contract identity must be verified from the stored provider chain')
+    for key, expected in (('contract_id', capture['contract_id']),
+                          ('symbol', capture['symbol'].upper()),
+                          ('option_type', canonical['option_type']),
+                          ('expiry', canonical['expiry'])):
+        if identity.get(key) != expected:
+            raise ValueError(f'canonical contract identity mismatch: {key}')
+    if abs(number(identity.get('strike'), 'identity strike') - canonical['strike']) > 0.0001:
+        raise ValueError('canonical contract identity mismatch: strike')
     captured, entry, exit_at, last_trade = (instant(capture[k]) for k in ('captured_at', 'entry_at', 'exit_at', 'last_trade_at'))
     if not entry < exit_at < last_trade:
         raise ValueError('Require entry < exit < last trade; expiry/exercise handling is not implemented')

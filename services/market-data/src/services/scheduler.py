@@ -85,7 +85,8 @@ from sqlalchemy.orm import selectinload, Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, AnalystPriceTarget, DarkPoolAlertOutcome, DarkPoolPrint, EarningsEvent, EconomicEvent, FixRecord, FixSnapshot, FundamentalsSnapshot, LlmCallLog, Market, OptionsFlowAlertOutcome, OptionsFlowSnapshot, OptionsGamePlanSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, UserRole, UserTier, VolumeAreaLevel, Watchlist, WatchlistItem
+from common.outcome_price_basis import resolve_window as _resolve_outcome_basis
+from db import AlertCondition, AnalystPriceTarget, CorporateAction, CorporateActionCoverage, DarkPoolAlertOutcome, DarkPoolPrint, EarningsEvent, EconomicEvent, FixRecord, FixSnapshot, FundamentalsSnapshot, LlmCallLog, Market, OptionsFlowAlertOutcome, OptionsFlowSnapshot, OptionsGamePlanSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, UserRole, UserTier, VolumeAreaLevel, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -512,6 +513,15 @@ from .flow_outcome_eligibility import (
 from .option_alert_freshness import (
     classify_flow_event_freshness,
     partition_fresh_flow_candidates,
+)
+from .ai_signal_alert_contract import (
+    CONTRACT_VERSION as _AI_ALERT_CONTRACT_VERSION,
+    CANDIDATE as _AI_CANDIDATE,
+    SUPPRESSED_BY_COOLDOWN as _AI_SUPPRESSED_BY_COOLDOWN,
+    QUEUED_NOT_SENT as _AI_QUEUED_NOT_SENT,
+    SENDER_ACCEPTED as _AI_SENDER_ACCEPTED,
+    classify_selected_signal_freshness as _classify_selected_signal_freshness,
+    merge as _merge_ai_delivery,
 )
 
 
@@ -7234,21 +7244,43 @@ def evaluate_options_flow_alert_outcomes() -> None:
                 pr_date = ts.date() if hasattr(ts, "date") else ts
                 price_map.setdefault(stock_id, []).append((pr_date, float(close)))
 
+            _symbols = {row.symbol for row in pending}
+            _actions: dict[str, list] = {}
+            for _action in session.execute(select(CorporateAction).where(
+                    CorporateAction.symbol.in_(_symbols))).scalars():
+                _actions.setdefault(_action.symbol, []).append(_action)
+            _coverage: dict[str, object] = {}
+            for _cov in session.execute(select(CorporateActionCoverage).where(
+                    CorporateActionCoverage.symbol.in_(_symbols))).scalars():
+                if (_cov.symbol not in _coverage
+                        or _cov.retrieved_at > _coverage[_cov.symbol].retrieved_at):
+                    _coverage[_cov.symbol] = _cov
+
             evaluated = 0
             for row in pending:
                 try:
-                    bucket = price_map.get(row.stock_id, [])
-                    if row.entry_price is None:
-                        entry_result = _squeeze_outcome_lookup_price(bucket, row.fired_date + timedelta(days=1))
-                        if entry_result is None:
-                            continue
-                        row.entry_date, row.entry_price = entry_result
+                    # Rows calculated before AQ04 have no stored basis. Retain them as
+                    # historical unknowns; applying today's evidence to only their remaining
+                    # windows would splice two bases into one row.
+                    if row.evidence_status is None and row.entry_price is not None:
+                        continue
+                    raw_bucket = price_map.get(row.stock_id, [])
+                    _basis = _resolve_outcome_basis(
+                        raw_bucket, _actions.get(row.symbol, []), _coverage.get(row.symbol),
+                        start=row.fired_date, end=row.fired_date + timedelta(days=35))
+                    bucket = _basis["prices"] or raw_bucket
+                    row.return_basis = _basis["basis"]
+                    row.evidence_status = _basis["evidence_status"]
+                    row.evidence_basis = _basis["reason"]
+                    entry_result = _squeeze_outcome_lookup_price(
+                        bucket, row.fired_date + timedelta(days=1))
+                    if entry_result is None:
+                        continue
+                    row.entry_date, row.entry_price = entry_result
 
                     is_bearish_thesis = row.direction == "bearish"
                     for window in _SQUEEZE_OUTCOME_WINDOWS:
                         price_field, ret_field, correct_field = f"price_{window}d", f"return_{window}d", f"is_correct_{window}d"
-                        if getattr(row, price_field) is not None:
-                            continue
                         target = row.entry_date + timedelta(days=window)
                         if target > today:
                             continue
@@ -8165,6 +8197,24 @@ def check_signal_alerts() -> None:
             regime_thresholds = _REGIME_THRESHOLDS.get(current_regime, _REGIME_THRESHOLDS["unknown"])
 
             fired = 0
+            # AQ06: fold per-recipient outcomes onto the exact selected Signal row. Existing
+            # sender-accepted evidence is loaded from the response so later runs cannot
+            # downgrade it.
+            _ai_delivery: dict[int, dict] = {}
+
+            def _mark_ai_delivery(detail: dict, state: str, *, accepted: bool = False) -> None:
+                signal_id = detail.get("signal_id")
+                if signal_id is None:
+                    return
+                signal_id = int(signal_id)
+                current_state = _ai_delivery.setdefault(signal_id, {
+                    "state": detail.get("alert_delivery_state"),
+                    "recipients": int(detail.get("alert_delivered_recipient_count") or 0),
+                })
+                current_state["state"] = _merge_ai_delivery(current_state["state"], state)
+                if accepted:
+                    current_state["recipients"] += 1
+
             for alert in alerts:
                 # EA-05: `signal` is advertised as a manageable type and its settings toggle
                 # wrote a row nothing read. Checked here, before any per-alert work, so an
@@ -8190,6 +8240,20 @@ def check_signal_alerts() -> None:
                 key = (alert.symbol, style)
                 current = signals.get(key)
                 if not current:
+                    continue
+
+                sig_detail = signal_details.get(key) or {}
+                _mark_ai_delivery(sig_detail, _AI_CANDIDATE)
+                # AQ07: price and selected-model-output clocks are independent. A fresh bar
+                # cannot make an old signal current. Missing, invalid, future and stale model
+                # timestamps all abstain; this is checked before transition/direction logic.
+                _signal_freshness = _classify_selected_signal_freshness(sig_detail.get("ts"))
+                if not _signal_freshness["eligible"]:
+                    log.warning("signal_alert.selected_signal_not_current",
+                                symbol=alert.symbol, style=style,
+                                state=_signal_freshness["state"],
+                                age_seconds=_signal_freshness["age_seconds"],
+                                max_age_seconds=_signal_freshness["max_age_seconds"])
                     continue
 
                 prev = alert.last_signal
@@ -8319,6 +8383,7 @@ def check_signal_alerts() -> None:
                             # Do NOT advance last_signal — if we set it to current now, the
                             # next run sees prev==current and never detects the transition.
                             # Keep last_signal at prev so the email fires once cooldown expires.
+                            _mark_ai_delivery(sig_detail, _AI_SUPPRESSED_BY_COOLDOWN)
                             continue
 
                 # Guard: no email address → log and advance state to avoid infinite retry
@@ -8495,6 +8560,7 @@ def check_signal_alerts() -> None:
                     _send_error_msg = str(_send_exc)
                     log.warning("signal_alert.recipient_send_error", symbol=alert.symbol, alert_id=alert.id, error=_send_error_msg)
                 if email_ok:
+                    _mark_ai_delivery(sig_detail, _AI_SENDER_ACCEPTED, accepted=True)
                     alert.last_signal = current  # advance state only after successful send
                     now_utc = datetime.now(timezone.utc)
                     alert.last_sent_at = now_utc   # persist so Redis restarts don't lose sent_at
@@ -8540,6 +8606,7 @@ def check_signal_alerts() -> None:
                     except Exception as _push_exc:
                         log.warning("signal_alert.push_failed", symbol=alert.symbol, error=str(_push_exc))
                 elif is_quota_exceeded():
+                    _mark_ai_delivery(sig_detail, _AI_QUEUED_NOT_SENT)
                     # T239-EMAIL2: DP-1's 5-retry give-up was designed for a genuinely broken
                     # SMTP config (bad password, wrong host) that never recovers on its own.
                     # Gmail's daily quota (550 5.4.5) is transient and self-clears — during a
@@ -8550,6 +8617,7 @@ def check_signal_alerts() -> None:
                     log.warning("signal_alert.skipped_quota_exceeded", symbol=alert.symbol,
                                 note="Gmail daily send quota exceeded — will keep retrying, not counted toward give-up limit")
                 else:
+                    _mark_ai_delivery(sig_detail, _AI_QUEUED_NOT_SENT)
                     # DP-1: cap retries to prevent infinite loop on broken email config
                     _alert_fail_counts[alert.id] = _alert_fail_counts.get(alert.id, 0) + 1
                     if _send_raised:
@@ -8578,6 +8646,18 @@ def check_signal_alerts() -> None:
                         alert.last_signal = current  # force-advance so next run sees new state
                         _alert_fail_counts.pop(alert.id, None)
 
+            # One update per selected Signal row after all recipients have been folded. Rows
+            # with no selector evidence stay NULL; historical NULLs are never guessed.
+            _delivery_now = datetime.now(timezone.utc)
+            for _signal_id, _decision in _ai_delivery.items():
+                session.execute(
+                    update(Signal).where(Signal.id == _signal_id).values(
+                        alert_delivery_state=_decision["state"],
+                        alert_delivered_recipient_count=_decision["recipients"],
+                        alert_delivery_decided_at=_delivery_now,
+                        alert_delivery_version=_AI_ALERT_CONTRACT_VERSION,
+                    )
+                )
             session.commit()
             if fired:
                 log.info("signal_alert.check_done", fired=fired)

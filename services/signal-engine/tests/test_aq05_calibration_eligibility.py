@@ -142,6 +142,8 @@ def test_the_builder_reports_its_exclusions():
                 "'excluded_by_reason'"):
         assert key in body, f"{key} must travel with the calibration"
     assert "'limitations'" in body
+    assert "evidence_counts" in body
+    assert "r.evidence_status == 'verified'" in body
 
 
 def test_every_bucket_carries_its_scope_and_status():
@@ -149,6 +151,21 @@ def test_every_bucket_carries_its_scope_and_status():
     for key in ("'scope'", "'status'", "'distinct_dates'", "'missing_requirement'"):
         assert key in body
     assert "publication_status" in body, "the shared floors, not a local copy"
+
+
+def test_every_bucket_reports_generated_and_sender_accepted_populations_separately():
+    body = _fn("_bucket_entry")
+    assert "'population': 'sender_accepted'" in body
+    assert "alert_delivery_state" in body
+    assert "delivery_state_unknown" in body
+    assert "Provider acceptance, not inbox delivery" in body
+
+
+def test_delivery_evidence_is_joined_from_the_exact_signal_row():
+    body = _fn("_build_confidence_calibration")
+    assert "Signal.id == SignalOutcome.signal_id" in body
+    assert "Signal.alert_delivery_state" in body
+    assert "Signal.alert_delivery_version" in body
 
 
 def test_an_unpublishable_bucket_returns_no_rate_but_keeps_its_counts():

@@ -251,7 +251,10 @@ def _build_confidence_calibration(session: Session) -> dict:
             SignalOutcome.confidence, SignalOutcome.is_correct,
             SignalOutcome.horizon, SignalOutcome.signal_direction, Stock.market,
             SignalOutcome.signal_date, SignalOutcome.entry_date,
+            SignalOutcome.evidence_status,
+            Signal.alert_delivery_state, Signal.alert_delivery_version,
         )
+        .join(Signal, Signal.id == SignalOutcome.signal_id)
         .join(Stock, Stock.id == SignalOutcome.stock_id)
         .where(
             SignalOutcome.is_correct.is_not(None),
@@ -268,11 +271,20 @@ def _build_confidence_calibration(session: Session) -> dict:
         {"signal_date": r.signal_date, "entry_date": r.entry_date} for r in rows])
     rows = [r for r in rows
             if _elig_classify(r.signal_date, r.entry_date) == _ELIGIBLE]
+    _evidence_counts = {
+        state: sum(1 for r in rows if (r.evidence_status or "unknown") == state)
+        for state in ("verified", "provisional", "unverified", "unknown")
+    }
+    _timing_eligible_count = len(rows)
+    rows = [r for r in rows if r.evidence_status == "verified"]
     _exclusions = {"original_count": _part["original_count"],
-                   "eligible_count": _part["eligible_count"],
+                   "timing_eligible_count": _timing_eligible_count,
+                   "eligible_count": len(rows),
                    "excluded_total": _part["excluded_total"],
                    "excluded_by_reason": _part["excluded_counts"],
-                   "exclusion_reasons": _part["exclusion_reasons"]}
+                   "exclusion_reasons": _part["exclusion_reasons"],
+                   "evidence_counts": _evidence_counts,
+                   "evidence_requirement": "verified corporate-action basis"}
 
     buckets: dict[str, dict] = {}
     for lo, hi, band in _CONF_BANDS:
@@ -288,7 +300,9 @@ def _build_confidence_calibration(session: Session) -> dict:
             # use .value explicitly so the bucket key and API response are the plain string.
             mkt = r.market.value if hasattr(r.market, "value") else r.market
             _row = {"is_correct": r.is_correct, "signal_date": r.signal_date,
-                    "entry_date": r.entry_date}
+                    "entry_date": r.entry_date,
+                    "alert_delivery_state": r.alert_delivery_state,
+                    "alert_delivery_version": r.alert_delivery_version}
             by_market.setdefault((horiz, r.signal_direction, mkt), []).append(_row)
             by_pooled.setdefault((horiz, r.signal_direction), []).append(_row)
         # AQ05: A COUNT FLOOR CANNOT SEE CLUSTERING. Thirty outcomes from two market days
@@ -311,6 +325,9 @@ def _bucket_entry(rs, *, scope: str) -> dict:
     from .signal_outcome_eligibility import publication_status
     outcomes = [r["is_correct"] for r in rs]
     status = publication_status(rs)
+    delivered_rows = [r for r in rs if r.get("alert_delivery_state") == "sender_accepted"]
+    delivered_status = publication_status(delivered_rows)
+    delivered_outcomes = [r["is_correct"] for r in delivered_rows]
     return {
         "win_rate": (round(sum(outcomes) / len(outcomes), 3)
                      if status["status"] == "measured" else None),
@@ -321,6 +338,16 @@ def _bucket_entry(rs, *, scope: str) -> dict:
         # EXPLICIT SCOPE. The lookup drops from a market-specific bucket to a pooled one and
         # used to return the same shape, so a reader could not tell which they were shown.
         "scope": scope,
+        "delivered": {
+            "population": "sender_accepted",
+            "win_rate": (round(sum(delivered_outcomes) / len(delivered_outcomes), 3)
+                         if delivered_status["status"] == "measured" else None),
+            "count": len(delivered_rows),
+            **delivered_status,
+            "note": "Provider acceptance, not inbox delivery.",
+        },
+        "delivery_state_unknown": sum(
+            1 for r in rs if r.get("alert_delivery_version") is None),
     }
 
 
@@ -428,7 +455,9 @@ def _stored_signal_for_style(session: Session, stock_id: int, style_key: str) ->
     except ValueError:
         return None
     row = session.execute(
-        select(Signal.signal, Signal.confidence, Signal.bullish_probability, Signal.ts, Signal.reasons)
+        select(Signal.id, Signal.signal, Signal.confidence, Signal.bullish_probability,
+               Signal.ts, Signal.reasons, Signal.alert_delivery_state,
+               Signal.alert_delivered_recipient_count, Signal.alert_delivery_version)
         .where(Signal.stock_id == stock_id, Signal.horizon == horiz)
         .order_by(_desc(Signal.ts))
         .limit(1)
@@ -438,12 +467,16 @@ def _stored_signal_for_style(session: Session, stock_id: int, style_key: str) ->
     reasons = dict(row.reasons) if row.reasons else {}
     reasons["stability_days"] = _compute_stability(session, stock_id, horiz, row.signal.value)
     return {
+        "signal_id": row.id,
         "signal": row.signal.value,
         "horizon": style_key,
         "confidence": row.confidence,
         "bullish_probability": row.bullish_probability,
         "reasons": reasons,
         "ts": row.ts.isoformat() if row.ts else None,
+        "alert_delivery_state": row.alert_delivery_state,
+        "alert_delivered_recipient_count": row.alert_delivered_recipient_count,
+        "alert_delivery_version": row.alert_delivery_version,
     }
 
 
@@ -495,4 +528,3 @@ _OUTCOME_CENSOR_GRACE_DAYS = 10
 # EV-lift gate and OC5 calibration bands other in-flight work already trusts. Tracked as a
 # known limitation for a future pass, not silently skipped — see docs/KNOWN_LIMITATIONS.md.
 _OUTCOME_WIN_HURDLE_PCT = 0.005
-

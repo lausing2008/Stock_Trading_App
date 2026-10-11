@@ -17,6 +17,7 @@ models = importlib.util.module_from_spec(spec); sys.modules['db.models'] = model
 engine = create_engine('sqlite://')
 models.Base.metadata.create_all(engine, tables=[
     models.OptionStrategyCapture.__table__, models.OptionStrategyResolution.__table__,
+    models.OptionChainHistory.__table__,
     models.Stock.__table__, models.OptionsFlowAlertOutcome.__table__, models.User.__table__,
     models.AlertPreference.__table__, models.NotificationOutbox.__table__,
 ])
@@ -34,7 +35,13 @@ for node in tree.body:
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), 'exec'), ns)
 
 with Session(engine) as session:
-    c = dict(strategy='long_call', origin='replay', symbol='TEST', contract_id='TEST-C100', quote_source='fixture',
+    contract_id = 'TEST260116C00100000'
+    session.add(models.OptionChainHistory(
+        id=1, symbol='TEST', as_of=dt.date(2020, 1, 2), option_symbol=contract_id,
+        expiry=dt.date(2026, 1, 16), strike=100.0, option_type='call',
+    ))
+    session.commit()
+    c = dict(strategy='long_call', origin='replay', symbol='TEST', contract_id=contract_id, quote_source='fixture',
              confirmation_rule='above 100', invalidation_rule='below 95', captured_at='2020-01-02T14:00:00Z',
              entry_at='2020-01-02T15:00:00Z', exit_at='2020-01-03T15:00:00Z', last_trade_at='2020-01-17T21:00:00Z',
              deliverable='standard_100_shares', multiplier=100, quantity=1, fee_per_contract_per_side=.65,
@@ -61,8 +68,8 @@ with Session(engine) as session:
     else:
         raise AssertionError('A new late prospective capture must fail')
     ns['_dt'] = dt
-    e = dict(entry=dict(contract_id='TEST-C100', source='fixture', quoted_at=c['entry_at'], bid=4.8, ask=5),
-             exit=dict(contract_id='TEST-C100', source='fixture', quoted_at=c['exit_at'], bid=3, ask=3.2), deliverable_unchanged_verified=True)
+    e = dict(entry=dict(contract_id=contract_id, source='fixture', quoted_at=c['entry_at'], bid=4.8, ask=5),
+             exit=dict(contract_id=contract_id, source='fixture', quoted_at=c['exit_at'], bid=3, ask=3.2), deliverable_unchanged_verified=True)
     unresolved = ns['resolve_option_strategy'](cap['id'], {}, None, session)
     resolved = ns['resolve_option_strategy'](cap['id'], e, None, session)
     assert resolved['result']['net_pnl'] == -211.3
@@ -91,7 +98,8 @@ with Session(engine) as session:
     assert result['stock_summaries'][0]['bullish'] == 3
     assert result['stock_summaries'][0]['bearish'] == 0
     stats = result['by_direction'][0]['window_10d']
-    assert stats['n'] == 0 and stats['excluded_total'] == 3 and stats['original_n'] == 3
+    assert stats['n'] == 0 and stats['excluded_total'] == 0 and stats['original_n'] == 0
+    assert stats['calculated_n'] == 3 and stats['evidence_counts']['unknown'] == 3
     assert stats['status'] == 'insufficient_eligible_history' and stats['win_rate'] is None
     assert stats['horizon_unit'] == 'calendar_days'
     # New opportunity mail is explicit opt-in and queues through the durable outbox only.

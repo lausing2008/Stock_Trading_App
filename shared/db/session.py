@@ -180,6 +180,26 @@ def _run_migrations() -> None:  # noqa: C901
         ):
             conn.execute(text(_stmt))
 
+        # AQ04 residual: outcome calculation, evidence and publication eligibility are
+        # separate. Historical NULLs are retained because their basis cannot be reconstructed
+        # by a schema migration.
+        for _table in ("signal_outcomes", "options_flow_alert_outcomes"):
+            for _column, _type in (
+                ("return_basis", "VARCHAR(32)"),
+                ("evidence_status", "VARCHAR(16)"),
+                ("evidence_basis", "TEXT"),
+            ):
+                conn.execute(text(
+                    f"ALTER TABLE IF EXISTS {_table} ADD COLUMN IF NOT EXISTS {_column} {_type}"))
+        for _column, _type in (
+            ("return_basis", "VARCHAR(32)"),
+            ("evidence_status", "VARCHAR(16)"),
+            ("evidence_basis", "TEXT"),
+        ):
+            conn.execute(text(
+                f"ALTER TABLE IF EXISTS signal_outcome_horizons "
+                f"ADD COLUMN IF NOT EXISTS {_column} {_type}"))
+
         # Add Chinese name column and backfill known HK stocks
         conn.execute(text(
             "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS name_zh VARCHAR(256)"
@@ -958,6 +978,16 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "ALTER TABLE signals ADD COLUMN IF NOT EXISTS first_buy_sell_reasons JSON"
         ))
+        # AQ06/AQ07: delivery belongs to the generated signal row actually selected.
+        # Historical NULLs stay unknown; no migration can reconstruct provider acceptance.
+        for _stmt in (
+            "ALTER TABLE signals ADD COLUMN IF NOT EXISTS alert_delivery_state VARCHAR(32)",
+            "ALTER TABLE signals ADD COLUMN IF NOT EXISTS alert_delivered_recipient_count INTEGER",
+            "ALTER TABLE signals ADD COLUMN IF NOT EXISTS alert_delivery_decided_at TIMESTAMP",
+            "ALTER TABLE signals ADD COLUMN IF NOT EXISTS alert_delivery_version VARCHAR(32)",
+            "CREATE INDEX IF NOT EXISTS ix_signals_alert_delivery_state ON signals (alert_delivery_state)",
+        ):
+            conn.execute(text(_stmt))
 
 
 def _apply_isolated_ddl() -> None:

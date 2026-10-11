@@ -224,6 +224,13 @@ class Signal(Base):
     first_buy_sell_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     first_buy_sell_bullish_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
     first_buy_sell_reasons: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # AQ06/AQ07: notification evidence for this exact daily signal row. NULL means the row
+    # predates the contract or was never evaluated by the alert selector; it is never guessed
+    # into the delivered pool. `sender_accepted` is provider acceptance, not inbox delivery.
+    alert_delivery_state: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    alert_delivered_recipient_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    alert_delivery_decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    alert_delivery_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     __table_args__ = (
         Index("ix_signals_stock_ts", "stock_id", "ts"),
         Index("ix_signals_stock_horizon_ts", "stock_id", "horizon", "ts"),
@@ -846,6 +853,9 @@ class SignalOutcome(Base):
     # fully-evaluated outcome. Written after a grace period so a brief ingestion delay isn't
     # mistaken for a permanent loss of price data.
     skip_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    return_basis: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    evidence_status: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    evidence_basis: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         Index("ix_signal_outcomes_horizon_correct", "horizon", "is_correct"),
@@ -919,6 +929,11 @@ class SignalOutcomeHorizon(Base):
     exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     pct_return: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_correct: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # AQ04: each independently resolved horizon carries the same calculation/evidence split
+    # as its primary SignalOutcome. Historical NULLs remain unknown rather than being guessed.
+    return_basis: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    evidence_status: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    evidence_basis: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Explicit state — AUD-C02-C03's own required fix over inferring maturity from NULLs, which
     # is how the ambiguity this table exists to resolve first arose. 'pending': target_date not
@@ -2924,6 +2939,9 @@ class OptionsFlowAlertOutcome(Base):
     return_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_correct_20d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    return_basis: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    evidence_status: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    evidence_basis: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: AQ06 — WHAT ACTUALLY HAPPENED TO THIS CANDIDATE. The row is written for every candidate
     #: before the per-recipient loop applies cooldown, ranking and the email cap, so without
     #: this the table is a record of CANDIDATES wearing the name of alerts and every rate over

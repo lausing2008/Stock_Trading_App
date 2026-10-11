@@ -1142,6 +1142,7 @@ def options_flow_alert_performance(
                 OptionsFlowAlertOutcome.expiry,
                 OptionsFlowAlertOutcome.entry_date,
                 OptionsFlowAlertOutcome.delivery_state,
+                OptionsFlowAlertOutcome.evidence_status,
                 correct_col.label("is_correct"),
                 ret_col.label("ret"),
             )
@@ -1153,7 +1154,15 @@ def options_flow_alert_performance(
         for r in rows:
             by_direction.setdefault(r["direction"], []).append(dict(r))
         for direction, drows in by_direction.items():
-            part = _partition(drows, is_trading_day=_itd)
+            # AQ04: only a verified corporate-action basis may publish performance. A
+            # calculated provisional return remains visible in counts but is not evidence for
+            # a hit rate. Historical NULLs are unknown, never assumed verified.
+            _evidence_counts = {
+                state: sum(1 for r in drows if (r.get("evidence_status") or "unknown") == state)
+                for state in ("verified", "provisional", "unverified", "unknown")
+            }
+            verified_rows = [r for r in drows if r.get("evidence_status") == "verified"]
+            part = _partition(verified_rows, is_trading_day=_itd)
             elig = part["eligible"]
             cohort = _cohort_status(part)
             wins = sum(1 for r in elig if r["is_correct"])
@@ -1165,10 +1174,13 @@ def options_flow_alert_performance(
                 "avg_return_pct": (round(sum(rets) / len(rets) * 100, 2)
                                      if measured and rets else None),
                 # The denominator a reader needs beside the rate.
+                "calculated_n": len(drows),
                 "original_n": part["original_count"],
                 "excluded_total": part["excluded_total"],
                 "excluded_by_reason": part["excluded_counts"],
                 "eligibility_version": _ELIG_VERSION,
+                "evidence_counts": _evidence_counts,
+                "evidence_requirement": "verified corporate-action basis",
                 "metric": "measured underlying directional hit rate",
                 "horizon": window, "horizon_unit": "calendar_days",
                 **cohort,
@@ -2437,6 +2449,29 @@ def capture_option_strategy(payload: dict, _: User = Depends(get_admin_user),
     existing = session.scalar(select(OptionStrategyCapture).where(OptionStrategyCapture.capture_key == key))
     if existing:
         return {'id': existing.id, 'created': False, 'inputs': existing.inputs, 'policy_fingerprint': existing.policy_fingerprint}
+    # AQ11: identity is server-derived from the provider archive, never asserted by the
+    # caller. This proves symbol/type/strike/expiry identity; deliverable verification remains
+    # a separate required fact because this archive does not carry adjusted-contract terms.
+    from db.models import OptionChainHistory
+    _contract = session.scalar(
+        select(OptionChainHistory)
+        .where(OptionChainHistory.option_symbol == inputs.get('contract_id'),
+               OptionChainHistory.symbol == str(inputs.get('symbol') or '').upper())
+        .order_by(OptionChainHistory.as_of.desc())
+        .limit(1)
+    )
+    if _contract is None:
+        raise HTTPException(422, 'Contract identity is absent from the stored provider chain')
+    inputs['contract_identity_evidence'] = {
+        'verified_by': 'stored_unusual_whales_chain',
+        'source': 'unusual_whales',
+        'as_of': _contract.as_of.isoformat(),
+        'contract_id': _contract.option_symbol,
+        'symbol': _contract.symbol,
+        'option_type': _contract.option_type,
+        'strike': _contract.strike,
+        'expiry': _contract.expiry.isoformat() if _contract.expiry else None,
+    }
     # The clock governs new captures. A retry after entry retrieves the already
     # frozen capture; it must not be rejected as an attempted late prediction.
     try:

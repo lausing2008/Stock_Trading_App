@@ -173,3 +173,17 @@ def test_the_delivered_pool_carries_its_own_denominator_and_status():
     assert "'population': 'sender_accepted'" in body
     assert "_cohort_status(" in body, "the same publication floors as every other cohort"
     assert "not inbox delivery" in body
+
+
+def test_performance_requires_verified_adjustment_evidence_before_publication():
+    body = _fn("evaluate_options_flow_alert_outcomes")
+    assert "_resolve_outcome_basis" in body
+    assert "row.evidence_status" in body and "row.return_basis" in body
+    import ast
+    src = _admin()
+    endpoint = next(n for n in ast.walk(ast.parse(src))
+                    if isinstance(n, ast.FunctionDef)
+                    and n.name == "options_flow_alert_performance")
+    rendered = ast.unparse(endpoint)
+    assert "r.get('evidence_status') == 'verified'" in rendered
+    assert "evidence_counts" in rendered

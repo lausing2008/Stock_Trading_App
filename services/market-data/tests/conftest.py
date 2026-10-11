@@ -89,6 +89,14 @@ for _mod_name in ("signal_time", "conviction_gate"):
     _sp.loader.exec_module(_m)
     setattr(sys.modules["common"], _mod_name, _m)
 
+# AQ04: pure forward-return basis/evidence contract used by scheduler evaluators.
+_opb_path = _pathlib.Path(__file__).resolve().parents[3] / "shared" / "common" / "outcome_price_basis.py"
+_opb_spec = _ilu.spec_from_file_location("common.outcome_price_basis", _opb_path)
+_opb_mod = _ilu.module_from_spec(_opb_spec)
+_opb_spec.loader.exec_module(_opb_mod)
+sys.modules["common.outcome_price_basis"] = _opb_mod
+setattr(sys.modules["common"], "outcome_price_basis", _opb_mod)
+
 # AUD-ALERTPREFS: common.alert_prefs must be REAL for the same reason as the two above — it is
 # all membership tests and an HMAC comparison. Under the blanket "common" MagicMock,
 # `is_manageable("price_alert")` returns a truthy Mock, so a test asserting that ESSENTIAL mail

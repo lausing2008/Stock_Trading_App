@@ -2541,7 +2541,12 @@ def get_horizon_coverage(
             SignalOutcomeHorizon.window_days, SignalOutcomeHorizon.status,
             func.count().label("n"),
         )
-        .where(SignalOutcomeHorizon.signal_date >= since_date)
+        .where(
+            SignalOutcomeHorizon.signal_date >= since_date,
+            # AQ04: coverage is a performance denominator. Historical/unknown and
+            # provisional rows remain stored but do not read as measured outcomes.
+            SignalOutcomeHorizon.evidence_status == "verified",
+        )
         .group_by(SignalOutcomeHorizon.horizon, SignalOutcomeHorizon.signal_direction,
                   SignalOutcomeHorizon.window_days, SignalOutcomeHorizon.status)
     ).all()
@@ -2553,4 +2558,18 @@ def get_horizon_coverage(
         by_bucket.setdefault(key, {"pending": 0, "resolved": 0, "missing_price": 0, "skipped": 0})
         by_bucket[key][r.status] = by_bucket[key].get(r.status, 0) + r.n
 
-    return {"since": since_date.isoformat(), "by_bucket": by_bucket}
+    evidence_counts = dict(session.execute(
+        select(SignalOutcomeHorizon.evidence_status, func.count())
+        .where(SignalOutcomeHorizon.signal_date >= since_date)
+        .group_by(SignalOutcomeHorizon.evidence_status)
+    ).all())
+    return {
+        "since": since_date.isoformat(), "by_bucket": by_bucket,
+        "evidence_counts": {
+            "verified": int(evidence_counts.get("verified", 0)),
+            "provisional": int(evidence_counts.get("provisional", 0)),
+            "unverified": int(evidence_counts.get("unverified", 0)),
+            "unknown_historical": int(evidence_counts.get(None, 0)),
+        },
+        "pool": "verified",
+    }

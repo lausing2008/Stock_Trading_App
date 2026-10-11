@@ -467,10 +467,15 @@ def test_evaluator_scores_direction_from_the_rows_own_direction_column():
     assert 'is_bearish_thesis = row.direction == "bearish"' in body
 
 
-def test_evaluator_never_re_evaluates_an_already_closed_window():
+def test_evaluator_preserves_unknown_history_but_restates_current_rows_on_one_basis():
     body = _func_body("evaluate_options_flow_alert_outcomes")
-    assert "if getattr(row, price_field) is not None:" in body
+    # Pre-contract rows cannot be partly upgraded because their original basis is unknown.
+    assert "if row.evidence_status is None and row.entry_price is not None:" in body
     assert "continue" in body
+    # Current-contract rows must recompute entry and every matured window together when a
+    # newly observed split changes the coherent basis; a fill-once guard would mix bases.
+    assert "row.entry_date, row.entry_price = entry_result" in body
+    assert "if getattr(row, price_field) is not None:" not in body
 
 
 def test_aud_e03_win_rate_label_states_instrument_horizon_and_hurdle_explicitly():

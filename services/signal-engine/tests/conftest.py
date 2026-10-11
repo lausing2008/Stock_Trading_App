@@ -41,3 +41,10 @@ _pb_spec.loader.exec_module(_pb_mod)
 sys.modules["common.price_basis"] = _pb_mod
 setattr(sys.modules["common"], "price_basis", _pb_mod)
 
+# AQ04: pure forward-return basis/evidence contract used by outcomes.py.
+_opb_path = _pathlib.Path(__file__).resolve().parents[3] / "shared" / "common" / "outcome_price_basis.py"
+_opb_spec = _ilu.spec_from_file_location("common.outcome_price_basis", _opb_path)
+_opb_mod = _ilu.module_from_spec(_opb_spec)
+_opb_spec.loader.exec_module(_opb_mod)
+sys.modules["common.outcome_price_basis"] = _opb_mod
+setattr(sys.modules["common"], "outcome_price_basis", _opb_mod)

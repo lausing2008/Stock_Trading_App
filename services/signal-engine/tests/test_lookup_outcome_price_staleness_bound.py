@@ -30,9 +30,10 @@ def _extract_lookup_outcome_price(price_map: dict[int, list[tuple]], grace_days:
     exactly (bisect, _outcome_price_map, _OUTCOME_CENSOR_GRACE_DAYS)."""
     import bisect
 
-    start = _OUTCOMES_SOURCE.index("def _lookup_outcome_price(stock_id: int, on_or_after:")
+    # The stock-id wrapper delegates to the shared bucket lookup; extract both real closures.
+    start = _OUTCOMES_SOURCE.index("    def _lookup_price_in_bucket(bucket: list[tuple], on_or_after:")
     end = _OUTCOMES_SOURCE.index("\n\n    def _window_return(", start)
-    func_source = _OUTCOMES_SOURCE[start:end]
+    func_source = "if True:\n" + _OUTCOMES_SOURCE[start:end]
     namespace = {
         "bisect": bisect,
         "_outcome_price_map": price_map,

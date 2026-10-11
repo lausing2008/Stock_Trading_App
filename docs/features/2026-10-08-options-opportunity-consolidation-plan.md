@@ -286,3 +286,29 @@ claimed to check, and one re-implemented the rule it was testing.
 
 Still open after this slice: the AI halves of AQ06 and AQ07 (the selected-signal clock), the
 outcome evaluators' direct `Price.close` reads in AQ04, and AQ11's live prospective trace.
+
+## Fourth correctness slice — 2026-10-11
+
+- **AQ06 AI denominator:** delivery evidence is bound to the exact daily `Signal` row selected
+  by the subscription job. Generated performance remains the baseline; sender-accepted rows
+  are a separate cohort with their own count/date publication floors. Provider acceptance is
+  stated as such and never relabelled inbox delivery. Rows predating the contract remain
+  unknown.
+- **AQ07 AI clock:** the selected signal timestamp has its own 72-hour limit, independent of
+  the price-bar clock. Missing, invalid, future and stale model output abstains before
+  transition logic, so a current quote cannot refresh old model output.
+- **AQ04 outcome basis:** AI and options-flow evaluators now call one shared split-adjusted
+  window resolver. Calculation, evidence and publication are separate: source-guaranteed
+  coverage is verified; response-only coverage is provisional; a missing span is unverified.
+  Only verified rows publish a calibration rate. Historical rows remain unknown rather than
+  being upgraded by migration.
+- **AQ11 identity:** a fixed-contract capture can no longer accept an identity asserted by its
+  caller. The server must find the exact OCC-style contract in the stored Unusual Whales chain
+  and inject the observed symbol, type, strike and expiry; the ledger cross-checks every field.
+  Deliverable terms remain a separate required fact because the chain archive does not carry
+  adjusted-contract terms.
+
+The production ledger still has zero captures and zero resolutions. 2026-10-11 is a Sunday,
+so there is no current quote inside the one-minute evidence window. A live prospective trace
+remains pending for the next market session; no weekend record was manufactured. Multi-leg
+economics, assignment and broker-fill evidence remain later strategy-specific work.

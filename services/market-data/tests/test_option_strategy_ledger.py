@@ -4,22 +4,27 @@ import pytest
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from services.option_strategy_ledger import validate_capture, resolve, actionable_gate, fingerprint
+from services.option_strategy_ledger import validate_capture, resolve, actionable_gate, fingerprint, parse_occ_contract
 
 
 def capture():
-    return dict(strategy='long_call', origin='replay', symbol='TEST', contract_id='TEST-C100',
+    return dict(strategy='long_call', origin='replay', symbol='TEST', contract_id='TEST260116C00100000',
                 quote_source='fixture', confirmation_rule='above 100', invalidation_rule='below 95',
                 captured_at='2026-01-02T14:00:00Z', entry_at='2026-01-02T15:00:00Z',
                 exit_at='2026-01-05T15:00:00Z', last_trade_at='2026-01-16T21:00:00Z',
                 deliverable='standard_100_shares', multiplier=100, quantity=1,
                 fee_per_contract_per_side=.65, slippage_per_share_per_side=.05,
-                exit_policy='scheduled_close_before_expiry')
+                exit_policy='scheduled_close_before_expiry',
+                contract_identity_evidence={
+                    'verified_by': 'stored_unusual_whales_chain', 'source': 'unusual_whales',
+                    'as_of': '2026-01-02', 'contract_id': 'TEST260116C00100000',
+                    'symbol': 'TEST', 'option_type': 'call', 'strike': 100.0,
+                    'expiry': '2026-01-16'})
 
 
 def evidence():
-    return dict(entry=dict(contract_id='TEST-C100', source='fixture', quoted_at='2026-01-02T15:00:00Z', bid=4.8, ask=5, underlying=100),
-                exit=dict(contract_id='TEST-C100', source='fixture', quoted_at='2026-01-05T15:00:00Z', bid=3, ask=3.2, underlying=102),
+    return dict(entry=dict(contract_id='TEST260116C00100000', source='fixture', quoted_at='2026-01-02T15:00:00Z', bid=4.8, ask=5, underlying=100),
+                exit=dict(contract_id='TEST260116C00100000', source='fixture', quoted_at='2026-01-05T15:00:00Z', bid=3, ask=3.2, underlying=102),
                 deliverable_unchanged_verified=True)
 
 
@@ -74,3 +79,12 @@ def test_unknown_account_and_quotes_never_actionable():
     assert r['quantity'] is None
     assert r['bound_decision'] is None
     assert len(fingerprint()) == 64
+
+
+def test_occ_identity_is_parsed_and_cross_checked():
+    assert parse_occ_contract('TEST260116C00100000') == {
+        'root': 'TEST', 'expiry': '2026-01-16', 'option_type': 'call', 'strike': 100.0}
+    c = capture()
+    c['contract_identity_evidence']['strike'] = 101.0
+    with pytest.raises(ValueError, match='strike'):
+        validate_capture(c)
