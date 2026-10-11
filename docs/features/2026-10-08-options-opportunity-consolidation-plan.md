@@ -312,3 +312,25 @@ The production ledger still has zero captures and zero resolutions. 2026-10-11 i
 so there is no current quote inside the one-minute evidence window. A live prospective trace
 remains pending for the next market session; no weekend record was manufactured. Multi-leg
 economics, assignment and broker-fill evidence remain later strategy-specific work.
+
+### Deployment verification
+
+Tier 431 was deployed from commit `3baf21b5`. All 15 containers were healthy and all 12
+backend images matched the deployed source. The authenticated routes were present behind the
+gateway, and the new delivery, evidence and canonical-contract columns were present in the
+production schema.
+
+The production data also confirms the intended abstentions rather than supplying evidence it
+does not contain:
+
+- 376 new AI signal rows carry `delivery_version = ai-alert-1` and remain candidates; 65,610
+  older rows have unknown delivery state. No historical row was inferred to be delivered.
+- 21,520 AI outcomes, 27,225 AI horizon rows and 2,406 flow outcomes predate the new return-
+  basis evidence fields and therefore remain unknown rather than verified.
+- All 203 corporate-action coverage claims use `response_only` completeness, which supports a
+  provisional calculation but cannot enter a verified performance rate.
+- The fixed-contract ledger has zero captures and zero resolutions. Its first live trace still
+  requires a prospective, canonical contract quote observed during an open market session.
+
+These are measurement boundaries, not deployment gaps. The code and schema are live; the
+remaining evidence must be accumulated prospectively.
