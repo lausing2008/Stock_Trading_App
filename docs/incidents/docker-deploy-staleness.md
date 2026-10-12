@@ -794,3 +794,44 @@ A versioning mechanism is only as wide as the contract it hashes. Defect 3 is th
 one: it would have made defects 1 and 2 **invisible after they were fixed**, presenting a
 successful deploy over frozen, stale figures. When adding anything to a resolution path, add it
 to `outcome_contract()` in the same commit.
+
+---
+
+## AUD-DEPLOY-MIGRATIONCONVOY (2026-10-12) — twelve simultaneous restarts plus one orphaned transaction stalled the platform
+
+**What I did.** `shared/` had changed, so all twelve backends needed rebuilding and I deployed
+them in one command. Correct on the drift rule; wrong on concurrency.
+
+**What happened.** Every service runs `init_db()` → `_run_migrations()` at startup, which issues
+~70 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements in one transaction. Twelve of those
+started within seconds of each other, against a live database still serving traffic.
+
+One connection (`client 172.18.0.14`, no application_name) was left **idle in transaction** for
+nearly two minutes after a read-only `SELECT` on `realtime_news_items` — almost certainly a
+container killed mid-transaction by the rolling restart. Its lock blocked event-intelligence's
+`ALTER TABLE realtime_news_items`, and **that pending ACCESS EXCLUSIVE lock then queued every
+later reader behind it**, including queries against entirely unrelated tables. 25 sessions
+blocked. event-intelligence never finished startup — uvicorn logged "Waiting for application
+startup" and never listened, so its health check failed with `Cannot assign requested address`
+rather than anything that looked like a database problem.
+
+**Diagnosis.** py-spy on PID 1 showed the stack parked in `_run_migrations` → `execute`, which
+pointed at the database rather than the service. `pg_blocking_pids()` then gave the chain in one
+query: 25 blocked, all tracing to a single root that was not running anything at all.
+
+**Remediation.** Terminated only that session, with the predicate written to be narrow: `idle in
+transaction`, idle > 60s, blocking at least one other session, and a `SELECT`-only last
+statement — so the rollback could not discard work. Blocked sessions went 25 → 6 → 0 and every
+container reached healthy.
+
+**Two things to carry forward.**
+
+1. **A pending exclusive lock blocks readers that arrive after it, not just conflicting ones.**
+   The symptom therefore appears on tables the migration never mentions, which is why the first
+   reading of the evidence (`users`, `stocks`, `signal_outcomes` all stalled) looked like a
+   platform-wide failure rather than one table's queue.
+2. **`shared/` changing means all twelve need rebuilding; it does not mean all twelve at once.**
+   Staggering them, or taking the migration lock once before the fleet restarts, avoids twelve
+   concurrent DDL transactions competing with live traffic. The deploy script's own health
+   gate is what caught this — it refused to report success, which is the only reason it was
+   investigated rather than declared done.

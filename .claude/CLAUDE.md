@@ -220,6 +220,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/incidents/design-doc-math-verification.md`** — BUG-SA33-UNREACHABLETHRESHOLD — A Design Doc's Own Fix Was Mathematically Unable to Achieve Its Stated Goal (Fixed 2026-07-27)
 - **`docs/incidents/docker-deploy-staleness.md`** — AUD-DEPLOYDRIFT-T370REVERT (2026-09-10) — found by RUNNING `scripts/check_deploy_drift.sh` while answering "everything looks good now?" …
 
+- **`docs/incidents/docker-deploy-staleness.md`** — AUD-DEPLOY-MIGRATIONCONVOY (2026-10-12): 12 simultaneous restarts ran 12 concurrent DDL transactions; one orphaned idle-in-transaction connection then blocked 25 sessions. A pending exclusive lock stalls LATER readers of unrelated queries [deploy, locks]
 - **`docs/incidents/docker-deploy-staleness.md`** — AUD-DEPLOY-GATEWAYREMOVED (2026-10-08): a multi-service deploy REMOVED api-gateway twice (depends_on service_healthy, no --no-deps). Site stayed 200 via nginx while every /api was 500 [deploy, outage]
 - **`docs/incidents/docker-deploy-staleness.md`** — AUD-REGISTER-POSTBUILD-DRIFT (2026-10-02): editing ANY file under `shared/` after the rebuild — a register note, a docstring — drifts all 12. shared/ is one versioned unit; finish it before rebuilding [drift, shared]
 - **`docs/incidents/docker-deploy-staleness.md`** — AUD-OBS-SESSIONBOUNDS (2026-10-08): the walk admitted a session at 12:00 UTC — before the US OPEN — and skipped the cutoff's own day. Adjustment was asserted, not checked: only 1.61% of daily bars carry adj_close [sessions, adjustment]
