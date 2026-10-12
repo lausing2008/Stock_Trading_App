@@ -497,7 +497,7 @@ export default function SignalTuningPage() {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
                     <tr>
-                      {['Symbol', 'Test AUC', 'CV AUC', 'Gap', 'Age'].map(h => (
+                      {['Symbol', 'Test AUC', 'CV AUC', 'Gap', 'Test n', 'Age', 'Quality'].map(h => (
                         <th key={h} style={{ padding: '3px 8px', color: '#475569', fontWeight: 500, fontSize: 10, textAlign: h === 'Symbol' ? 'left' : 'right', textTransform: 'uppercase' }}>{h}</th>
                       ))}
                     </tr>
@@ -509,12 +509,16 @@ export default function SignalTuningPage() {
                         <td style={{ padding: '4px 8px', textAlign: 'right', color: (m.test_auc ?? 0) >= 0.60 ? '#4ade80' : (m.test_auc ?? 0) >= 0.55 ? '#fbbf24' : '#f87171', fontWeight: 600 }}>{m.test_auc?.toFixed(3) ?? '—'}</td>
                         <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{m.cv_auc?.toFixed(3) ?? '—'}</td>
                         <td style={{ padding: '4px 8px', textAlign: 'right', color: (m.overfit_gap ?? 0) > 0.10 ? '#f87171' : '#475569', fontSize: 10 }}>{m.overfit_gap != null ? (m.overfit_gap > 0 ? '+' : '') + m.overfit_gap.toFixed(3) : '—'}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right', color: '#94a3b8', fontSize: 10 }}>{m.n_test ?? '—'}</td>
                         <td
                           style={{ padding: '4px 8px', textAlign: 'right', color: ageColor(m.age_days), fontSize: 10 }}
                           title={m.trained_at ? `Trained ${new Date(m.trained_at).toLocaleString()}` : 'No trained_at recorded — this bundle predates the field (2026-06-15), so it is necessarily older than that'}
                         >
                           {formatAge(m.age_days)}
-                          {m.oos_suppressed && <span style={{ color: '#fbbf24', marginLeft: 4 }} title="Suppressed at inference — substituted with a neutral 0.5">⊘</span>}
+                          {m.oos_suppressed && <span style={{ color: '#fbbf24', marginLeft: 4 }} title={`Suppressed at inference (${m.suppression_reason?.replaceAll('_', ' ') ?? 'reason unavailable'}); substituted with a neutral 0.5`}>⊘</span>}
+                        </td>
+                        <td style={{ padding: '4px 8px', color: m.oos_suppressed ? '#fbbf24' : '#4ade80', fontSize: 10 }}>
+                          {m.oos_suppressed ? `Suppressed: ${m.suppression_reason?.replaceAll('_', ' ') ?? 'reason unavailable'}` : 'Available'}
                         </td>
                       </tr>
                     ))}

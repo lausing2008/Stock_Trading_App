@@ -1,0 +1,402 @@
+[
+  {
+    "artifact": "xgboost/MSFT.joblib",
+    "trained_at": "2026-10-09T20:46:03.933125+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.5,
+      "precision": 0.0,
+      "recall": 0.0,
+      "cv_auc_mean": 0.5290396481825053,
+      "overfit_gap": 0.029,
+      "n_test": 21,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  },
+  {
+    "artifact": "xgboost/MSFT_growth.joblib",
+    "trained_at": "2026-09-28T08:41:31.613809+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.5416666666666666,
+      "precision": 1.0,
+      "recall": 0.08333333333333333,
+      "cv_auc_mean": 0.3652173913043478,
+      "overfit_gap": -0.1764,
+      "n_test": 15,
+      "embargo_shortfall": null,
+      "evaluation_valid": true
+    }
+  },
+  {
+    "artifact": "xgboost/MSFT_long.joblib",
+    "trained_at": "2026-09-28T08:41:28.190797+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": null,
+      "precision": 1.0,
+      "recall": 1.0,
+      "cv_auc_mean": 0.4916122004357299,
+      "overfit_gap": null,
+      "n_test": 12,
+      "embargo_shortfall": null,
+      "evaluation_valid": true
+    }
+  },
+  {
+    "artifact": "xgboost/MSFT_short.joblib",
+    "trained_at": "2026-10-09T20:45:59.781232+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.7857142857142857,
+      "precision": 0.5714285714285714,
+      "recall": 0.6666666666666666,
+      "cv_auc_mean": 0.4419870884065257,
+      "overfit_gap": -0.3437,
+      "n_test": 26,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  },
+  {
+    "artifact": "xgboost/NVDA.joblib",
+    "trained_at": "2026-10-09T20:46:20.133376+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.7222222222222222,
+      "precision": 0.8181818181818182,
+      "recall": 1.0,
+      "cv_auc_mean": 0.5533482142857142,
+      "overfit_gap": -0.1689,
+      "n_test": 22,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  },
+  {
+    "artifact": "xgboost/NVDA_growth.joblib",
+    "trained_at": "2026-10-07T20:46:08.208750+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.8888888888888888,
+      "precision": 0.8888888888888888,
+      "recall": 0.8888888888888888,
+      "cv_auc_mean": 0.5184155659155659,
+      "overfit_gap": -0.3705,
+      "n_test": 20,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  },
+  {
+    "artifact": "xgboost/NVDA_long.joblib",
+    "trained_at": "2026-09-28T08:41:45.687911+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.0,
+      "precision": 0.7857142857142857,
+      "recall": 0.9166666666666666,
+      "cv_auc_mean": 0.5032219562051972,
+      "overfit_gap": 0.5032,
+      "n_test": 15,
+      "embargo_shortfall": null,
+      "evaluation_valid": true
+    }
+  },
+  {
+    "artifact": "xgboost/NVDA_short.joblib",
+    "trained_at": "2026-10-09T20:46:16.319746+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.375,
+      "precision": 0.0,
+      "recall": 0.0,
+      "cv_auc_mean": 0.5995571035431717,
+      "overfit_gap": 0.2246,
+      "n_test": 25,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  },
+  {
+    "artifact": "xgboost/INTC.joblib",
+    "trained_at": "2026-10-09T20:49:25.526324+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.2,
+      "precision": 0.5555555555555556,
+      "recall": 0.5,
+      "cv_auc_mean": 0.640595723401023,
+      "overfit_gap": 0.4406,
+      "n_test": 27,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  },
+  {
+    "artifact": "xgboost/INTC_growth.joblib",
+    "trained_at": "2026-09-28T08:44:42.985825+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.8933333333333334,
+      "precision": 0.875,
+      "recall": 0.9333333333333333,
+      "cv_auc_mean": 0.6191954998406611,
+      "overfit_gap": -0.2741,
+      "n_test": 25,
+      "embargo_shortfall": null,
+      "evaluation_valid": true
+    }
+  },
+  {
+    "artifact": "xgboost/INTC_long.joblib",
+    "trained_at": "2026-09-30T20:47:34.657709+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.8500000000000001,
+      "precision": 0.0,
+      "recall": 0.0,
+      "cv_auc_mean": 0.6151962626607658,
+      "overfit_gap": -0.2348,
+      "n_test": 21,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  },
+  {
+    "artifact": "xgboost/INTC_short.joblib",
+    "trained_at": "2026-10-09T20:49:19.894607+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.2888888888888889,
+      "precision": 0.0,
+      "recall": 0.0,
+      "cv_auc_mean": 0.576581605528974,
+      "overfit_gap": 0.2877,
+      "n_test": 27,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  },
+  {
+    "artifact": "random_forest/MSFT.joblib",
+    "trained_at": "2026-10-09T20:46:06.914704+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.9444444444444444,
+      "precision": 1.0,
+      "recall": 0.6666666666666666,
+      "cv_auc_mean": 0.37806411049268196,
+      "overfit_gap": -0.5664,
+      "n_test": 21,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  },
+  {
+    "artifact": "random_forest/MSFT_growth.joblib",
+    "trained_at": "2026-09-28T08:41:36.423750+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.3055555555555556,
+      "precision": 0.7857142857142857,
+      "recall": 0.9166666666666666,
+      "cv_auc_mean": 0.523342803030303,
+      "overfit_gap": 0.2178,
+      "n_test": 15,
+      "embargo_shortfall": null,
+      "evaluation_valid": true
+    }
+  },
+  {
+    "artifact": "random_forest/MSFT_long.joblib",
+    "trained_at": "2026-09-28T08:41:30.655112+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": null,
+      "precision": 1.0,
+      "recall": 1.0,
+      "cv_auc_mean": 0.4655047204066811,
+      "overfit_gap": null,
+      "n_test": 12,
+      "embargo_shortfall": null,
+      "evaluation_valid": true
+    }
+  },
+  {
+    "artifact": "random_forest/MSFT_short.joblib",
+    "trained_at": "2026-10-09T20:46:02.812283+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.5476190476190477,
+      "precision": 0.625,
+      "recall": 0.8333333333333334,
+      "cv_auc_mean": 0.42339515888109236,
+      "overfit_gap": -0.1242,
+      "n_test": 26,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  },
+  {
+    "artifact": "random_forest/NVDA.joblib",
+    "trained_at": "2026-10-09T20:46:24.479564+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.3888888888888889,
+      "precision": 0.8181818181818182,
+      "recall": 1.0,
+      "cv_auc_mean": 0.4229910714285714,
+      "overfit_gap": 0.0341,
+      "n_test": 22,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  },
+  {
+    "artifact": "random_forest/NVDA_growth.joblib",
+    "trained_at": "2026-10-07T20:46:11.489452+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 1.0,
+      "precision": 1.0,
+      "recall": 0.3333333333333333,
+      "cv_auc_mean": 0.39228761978761983,
+      "overfit_gap": -0.6077,
+      "n_test": 20,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  },
+  {
+    "artifact": "random_forest/NVDA_long.joblib",
+    "trained_at": "2026-09-28T08:41:48.400117+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.0,
+      "precision": 0.7857142857142857,
+      "recall": 0.9166666666666666,
+      "cv_auc_mean": 0.48459551411290325,
+      "overfit_gap": 0.4846,
+      "n_test": 15,
+      "embargo_shortfall": null,
+      "evaluation_valid": true
+    }
+  },
+  {
+    "artifact": "random_forest/NVDA_short.joblib",
+    "trained_at": "2026-10-09T20:46:19.294941+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 1.0,
+      "precision": 1.0,
+      "recall": 0.4444444444444444,
+      "cv_auc_mean": 0.6549922600619194,
+      "overfit_gap": -0.345,
+      "n_test": 25,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  },
+  {
+    "artifact": "random_forest/INTC.joblib",
+    "trained_at": "2026-10-09T20:49:29.417655+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 1.0,
+      "precision": 1.0,
+      "recall": 0.4,
+      "cv_auc_mean": 0.6604946472397357,
+      "overfit_gap": -0.3395,
+      "n_test": 27,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  },
+  {
+    "artifact": "random_forest/INTC_growth.joblib",
+    "trained_at": "2026-09-28T08:44:45.824697+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.9533333333333334,
+      "precision": 0.6818181818181818,
+      "recall": 1.0,
+      "cv_auc_mean": 0.694486033679582,
+      "overfit_gap": -0.2588,
+      "n_test": 25,
+      "embargo_shortfall": null,
+      "evaluation_valid": true
+    }
+  },
+  {
+    "artifact": "random_forest/INTC_long.joblib",
+    "trained_at": "2026-09-30T20:47:38.166195+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "cv_auc_mean": 0.6309293291571503,
+      "overfit_gap": -0.3691,
+      "n_test": 21,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  },
+  {
+    "artifact": "random_forest/INTC_short.joblib",
+    "trained_at": "2026-10-09T20:49:24.312500+00:00",
+    "suppressed": true,
+    "reason": null,
+    "metrics": {
+      "auc": 0.17777777777777778,
+      "precision": 0.0,
+      "recall": 0.0,
+      "cv_auc_mean": 0.6729834785097942,
+      "overfit_gap": 0.4952,
+      "n_test": 27,
+      "embargo_shortfall": null,
+      "evaluation_valid": true,
+      "threshold_evaluation_mode": "holdout"
+    }
+  }
+]

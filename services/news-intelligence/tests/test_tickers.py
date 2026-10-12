@@ -19,6 +19,39 @@ def _fake_universe(monkeypatch, rows):
 
 
 class TestExtractSymbols:
+    def test_rtx_spark_product_does_not_tag_rtx_corporation(self):
+        assert tickers.normalize_provider_symbols(
+            ["MSFT", "NVDA", "RTX"],
+            "Microsoft RTX Spark machines with NVIDIA chips ship next week",
+        ) == ["MSFT", "NVDA"]
+        assert tickers.normalize_provider_symbols(
+            ["RTX"], "RTX Corporation wins a contract as RTX Spark launches"
+        ) == ["RTX"]
+        assert tickers.normalize_provider_symbols(
+            ["RTX"], "RTX wins defense contract"
+        ) == ["RTX"]
+
+    def test_surface_launch_matches_company_names_without_legal_suffixes(self, monkeypatch):
+        _fake_universe(monkeypatch, [
+            ("MSFT", "MICROSOFT CORP.", "US"),
+            ("NVDA", "NVIDIA CORP.", "US"),
+            ("INTC", "INTEL CORPORATION", "US"),
+        ])
+        assert tickers.extract_symbols(
+            "Microsoft introduces Surface Laptop Ultra with Nvidia chips"
+        ) == ["MSFT", "NVDA"]
+        # A competitive effect is a hypothesis, not a company mention.
+        assert tickers.extract_symbols("Intel responds to Microsoft's new devices") == ["MSFT", "INTC"]
+
+    def test_aliases_remain_universe_scoped_and_boundary_aware(self, monkeypatch):
+        _fake_universe(monkeypatch, [("INTC", "INTEL CORPORATION", "US")])
+        assert tickers.extract_symbols("Microsoft and Nvidia announce a partnership") == []
+        assert tickers.extract_symbols("Artificial intelligence demand accelerates") == []
+
+    def test_product_name_does_not_invent_company_identity(self, monkeypatch):
+        _fake_universe(monkeypatch, [("MSFT", "MICROSOFT CORP.", "US")])
+        assert tickers.extract_symbols("New surface coating improves battery life") == []
+
     def test_matches_real_ticker_as_standalone_word(self, monkeypatch):
         _fake_universe(monkeypatch, [("AAPL", "APPLE INC", "US")])
         assert tickers.extract_symbols("AAPL announces new product line") == ["AAPL"]

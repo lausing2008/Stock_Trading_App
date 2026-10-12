@@ -36,66 +36,98 @@ import hmac
 ALERT_TYPES: list[dict] = [
     # Trading signals
     {"key": "signal",              "group": "Signals",   "label": "AI Signal changes",
-     "desc": "A watchlist stock's AI signal flips (e.g. HOLD to BUY)."},
+     "desc": "A watchlist stock's AI signal flips (e.g. HOLD to BUY).",
+     "default_enabled": True},
     {"key": "top3_conviction",     "group": "Signals",   "label": "Top conviction picks",
-     "desc": "The day's highest-conviction names."},
+     "desc": "The day's highest-conviction names.",
+     "default_enabled": True},
     {"key": "sector_rotation",     "group": "Signals",   "label": "Sector rotation",
-     "desc": "Money moving between sectors."},
+     "desc": "Money moving between sectors.",
+     "default_enabled": True},
 
     # Squeeze family
     {"key": "short_squeeze",       "group": "Squeeze",   "label": "Short Squeeze Alert",
      "desc": "Heavily-shorted stock moving up hard right now. Measured win rate has been poor — "
-             "see the Squeeze Alert Performance page before acting on it."},
+             "see the Squeeze Alert Performance page before acting on it.",
+     "default_enabled": True},
     {"key": "squeeze_ignition",    "group": "Squeeze",   "label": "Squeeze Watch (early stage)",
-     "desc": "The same setup one stage earlier, below the confirmation threshold."},
+     "desc": "The same setup one stage earlier, below the confirmation threshold.",
+     "default_enabled": True},
     {"key": "prebreakout",         "group": "Squeeze",   "label": "Pre-Breakout Watch",
-     "desc": "Heavily-shorted stocks compressing toward a 6-month low in volatility."},
+     "desc": "Heavily-shorted stocks compressing toward a 6-month low in volatility.",
+     "default_enabled": True},
 
     # Options / flow
     {"key": "gamma_unwind",        "group": "Options",   "label": "Options Expiry Watch",
-     "desc": "Concentrated open interest near the money, close to expiry."},
+     "desc": "Concentrated open interest near the money, close to expiry.",
+     "default_enabled": True},
     {"key": "options_flow",        "group": "Options",   "label": "Options flow alerts",
-     "desc": "Unusual options activity."},
+     "desc": "Unusual options activity.",
+     "default_enabled": True},
     {"key": "option_opportunity", "group": "Options",   "label": "Actionable option opportunities",
      "desc": "Only fully gated option opportunities with frozen risk and contract details.",
      "default_enabled": False},
     {"key": "dark_pool",           "group": "Options",   "label": "Dark pool prints",
-     "desc": "Large off-exchange block trades."},
+     "desc": "Large off-exchange block trades.",
+     "default_enabled": True},
 
     # Market events
+    {"key": "product_impact", "group": "Market", "label": "Product impact watches",
+     "desc": "Sourced product milestones for companies you follow and related suppliers or "
+             "competitors. Research watches, not trade signals.",
+     # DEFAULTS OFF (2026-10-12). A BRAND-NEW channel has no established subscription to
+     # preserve, so the reason the operational alerts above default on does not apply to it.
+     # Absence of a row is not consent to receive a new class of mail, and a watchlist entry
+     # is consent to track a symbol rather than to be emailed about it. One word to flip.
+     "default_enabled": False},
     {"key": "volume_anomaly",      "group": "Market",    "label": "Volume anomalies",
-     "desc": "Unusual volume against a stock's own baseline."},
+     "desc": "Unusual volume against a stock's own baseline.",
+     "default_enabled": True},
     {"key": "earnings_screener",   "group": "Market",    "label": "Earnings beat screener",
-     "desc": "Fresh earnings surprises."},
+     "desc": "Fresh earnings surprises.",
+     "default_enabled": True},
     {"key": "earnings_reminder",   "group": "Market",    "label": "Earnings reminders",
-     "desc": "Upcoming reports for stocks you follow."},
+     "desc": "Upcoming reports for stocks you follow.",
+     "default_enabled": True},
     {"key": "sr_watch",            "group": "Market",    "label": "Support/resistance watch",
-     "desc": "Price approaching a level you are watching."},
+     "desc": "Price approaching a level you are watching.",
+     "default_enabled": True},
     {"key": "value_area",          "group": "Market",    "label": "Value area breakdown",
-     "desc": "Price leaving its established value area."},
+     "desc": "Price leaving its established value area.",
+     "default_enabled": True},
     {"key": "theme_forecast",      "group": "Market",    "label": "Theme forecast",
-     "desc": "Emerging cross-stock themes."},
+     "desc": "Emerging cross-stock themes.",
+     "default_enabled": True},
 
     # Digests
-    {"key": "morning_digest",      "group": "Digests",   "label": "Morning digest"},
-    {"key": "premarket_brief",     "group": "Digests",   "label": "Pre-market brief"},
-    {"key": "post_open_digest",    "group": "Digests",   "label": "Post-open digest"},
-    {"key": "portfolio_digest",    "group": "Digests",   "label": "Paper portfolio digest"},
-    {"key": "trade_coach",         "group": "Digests",   "label": "Trade pattern coach"},
+    {"key": "morning_digest",      "group": "Digests",   "label": "Morning digest",
+     "default_enabled": True},
+    {"key": "premarket_brief",     "group": "Digests",   "label": "Pre-market brief",
+     "default_enabled": True},
+    {"key": "post_open_digest",    "group": "Digests",   "label": "Post-open digest",
+     "default_enabled": True},
+    {"key": "portfolio_digest",    "group": "Digests",   "label": "Paper portfolio digest",
+     "default_enabled": True},
+    {"key": "trade_coach",         "group": "Digests",   "label": "Trade pattern coach",
+     "default_enabled": True},
 
     # Portfolio
     {"key": "portfolio_drawdown",  "group": "Portfolio", "label": "Drawdown alerts",
-     "desc": "Your paper portfolio breaching a drawdown limit."},
+     "desc": "Your paper portfolio breaching a drawdown limit.",
+     "default_enabled": True},
     {"key": "trade_exit",          "group": "Portfolio", "label": "Trade exits",
-     "desc": "A paper position closing."},
+     "desc": "A paper position closing.",
+     "default_enabled": True},
     {"key": "squeeze_watch_revert", "group": "Portfolio", "label": "Squeeze watch reverts",
-     "desc": "A stock you added to a squeeze watch losing the setup."},
+     "desc": "A stock you added to a squeeze watch losing the setup.",
+     "default_enabled": True},
     # EA-05 (2026-09-28 email audit): the flow digest was sent to EVERY user with a nonempty
     # address — no active-account predicate, no preference check, and no entry here, so there
     # was no way to turn it off. Registered so the settings page can manage it and
     # test_every_manageable_alert_type_is_enforced can hold its delivery path to the same bar.
     {"key": "flow_digest",         "group": "Market", "label": "Options & dark-pool digest",
-     "desc": "A periodic summary of unusual options activity and dark-pool prints."},
+     "desc": "A periodic summary of unusual options activity and dark-pool prints.",
+     "default_enabled": True},
 ]
 
 _BY_KEY = {a["key"]: a for a in ALERT_TYPES}

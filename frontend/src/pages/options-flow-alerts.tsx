@@ -9,6 +9,7 @@ import {
   type OptionsFlowAlertBacktestWindowStat,
 } from '@/lib/api';
 import { FlowDecisionReview } from '@/components/FlowDecisionReview';
+import { LongOptionPlaybookReview } from '@/components/LongOptionPlaybookReview';
 import { StockFlowOverview } from '@/components/StockFlowOverview';
 import { getSession } from '@/lib/auth';
 
@@ -285,6 +286,11 @@ export default function OptionsFlowAlertsPage() {
     { revalidateOnFocus: false, refreshInterval: 60_000 }
   );
 
+  const { data: delivery, error: deliveryError } = useSWR(
+    authed ? 'options-flow-delivery' : null, api.optionsFlowDelivery,
+    { refreshInterval: 60_000 }
+  );
+
   const filteredRows = data?.recent_alerts ?? [];
 
   if (!authed) return null;
@@ -314,6 +320,29 @@ export default function OptionsFlowAlertsPage() {
         <strong>Start here:</strong> inspect a stock, select Review alert, and check the missing evidence.
         This ledger does not establish an actionable opportunity.
       </div>
+      <div role="note" style={{ color: '#cbd5e1', marginBottom: 16 }}>
+        <strong>Why no trade-plan alerts?</strong> Automatic actionable-opportunity generation
+        is not connected yet. Options flow alerts report observed activity; the strategy guides
+        describe research playbooks. Enabling the opportunity preference alone will not send a
+        trade plan. A plan requires current contract quotes, entry and exit conditions, and a
+        verified risk budget.
+      </div>
+      <section aria-label="Your options-flow delivery" style={{ padding: 12, marginBottom: 16, border: '1px solid #334155', borderRadius: 8, color: '#cbd5e1' }}>
+        <strong>Your options-flow alert status</strong>
+        {deliveryError && <p>Delivery status is unavailable.</p>}
+        {delivery && <>
+          <p style={{ margin: '6px 0' }}>
+            Legacy flow email eligibility: {delivery.eligible_legacy_subscription ? 'active price alert found' : 'no active price alert'}.
+            {' '}{delivery.subscription_note}
+          </p>
+          {delivery.rows.length === 0 && <p style={{ margin: '6px 0' }}>{delivery.historical_delivery_note}</p>}
+          {delivery.rows.slice(0, 8).map(row => <div key={`${row.option_chain}:${row.fired_date}`} style={{ fontSize: 12 }}>
+            {row.fired_date} {row.symbol} {row.option_chain}: {row.state.replaceAll('_', ' ')}
+            {row.reason ? ` — ${row.reason}` : ''}
+          </div>)}
+        </>}
+      </section>
+
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '20px', alignItems: 'center' }}>
         <input aria-label="Search symbol" placeholder="Symbol, e.g. MU" value={symbol}
           onChange={e => setSymbol(e.target.value.toUpperCase().trim())}
@@ -376,7 +405,7 @@ export default function OptionsFlowAlertsPage() {
           </div>
 
           {data.stock_summaries && <StockFlowOverview rows={data.stock_summaries} onSelect={setSymbol} />}
-          {selected && <FlowDecisionReview row={selected} onClose={() => setSelected(null)} />}
+          {selected && <><FlowDecisionReview row={selected} onClose={() => setSelected(null)} /><LongOptionPlaybookReview row={selected} /></>}
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '8px', flexWrap: 'wrap', gap: 8 }}>
             <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>
               {filteredRows.length} SHOWN · {data.matching_count ?? 'unknown'} MATCH FILTERS · {data.total_count ?? 'unknown'} TOTAL

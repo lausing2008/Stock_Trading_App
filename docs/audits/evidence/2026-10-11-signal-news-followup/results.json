@@ -1,0 +1,390 @@
+{
+  "clock": [
+    {
+      "observed_at": "2026-10-12 04:14:36.921634+00:00"
+    }
+  ],
+  "news_event": [
+    {
+      "source": "alpaca",
+      "symbol": "MSFT",
+      "headline": "Microsoft Exec Says Co. Introduces Surface Laptop Ultra",
+      "url": "https://www.benzinga.com/news/26/10/62228248/microsoft-exec-says-co-introduces-surface-laptop-ultra",
+      "published_at": "2026-10-07 17:39:06.500000",
+      "ingested_at": "2026-10-07 17:39:09.579201",
+      "sentiment_label": "neutral",
+      "is_material": false,
+      "category": "other",
+      "classification_deferred_reason": null
+    },
+    {
+      "source": "alpaca",
+      "symbol": "MSFT",
+      "headline": "Microsoft Exec Says Call Of Duty Will Come To NVIDIA RTX Spark Machines In 2027",
+      "url": "https://www.benzinga.com/news/26/10/62228309/microsoft-exec-says-call-duty-will-come-nvidia-rtx-spark-machines-2027",
+      "published_at": "2026-10-07 17:40:40.331000",
+      "ingested_at": "2026-10-07 17:40:45.318124",
+      "sentiment_label": "positive",
+      "is_material": false,
+      "category": "other",
+      "classification_deferred_reason": null
+    },
+    {
+      "source": "alpaca",
+      "symbol": "NVDA",
+      "headline": "Microsoft Exec Says Call Of Duty Will Come To NVIDIA RTX Spark Machines In 2027",
+      "url": "https://www.benzinga.com/news/26/10/62228309/microsoft-exec-says-call-duty-will-come-nvidia-rtx-spark-machines-2027",
+      "published_at": "2026-10-07 17:40:40.331000",
+      "ingested_at": "2026-10-07 17:40:45.318124",
+      "sentiment_label": "positive",
+      "is_material": false,
+      "category": "other",
+      "classification_deferred_reason": null
+    },
+    {
+      "source": "alpaca",
+      "symbol": "MSFT",
+      "headline": "Microsoft Exec Says RTX Spark-Based Machines With NVIDIA Chips Will Begin Shipping Next Week",
+      "url": "https://www.benzinga.com/news/26/10/62228587/microsoft-exec-says-rtx-spark-based-machines-nvidia-chips-will-begin-shipping-next-week",
+      "published_at": "2026-10-07 17:49:33.799000",
+      "ingested_at": "2026-10-07 17:49:36.944131",
+      "sentiment_label": "positive",
+      "is_material": true,
+      "category": "other",
+      "classification_deferred_reason": null
+    },
+    {
+      "source": "alpaca",
+      "symbol": "NVDA",
+      "headline": "Microsoft Exec Says RTX Spark-Based Machines With NVIDIA Chips Will Begin Shipping Next Week",
+      "url": "https://www.benzinga.com/news/26/10/62228587/microsoft-exec-says-rtx-spark-based-machines-nvidia-chips-will-begin-shipping-next-week",
+      "published_at": "2026-10-07 17:49:33.799000",
+      "ingested_at": "2026-10-07 17:49:36.944131",
+      "sentiment_label": "positive",
+      "is_material": true,
+      "category": "other",
+      "classification_deferred_reason": null
+    },
+    {
+      "source": "alpaca",
+      "symbol": "RTX",
+      "headline": "Microsoft Exec Says RTX Spark-Based Machines With NVIDIA Chips Will Begin Shipping Next Week",
+      "url": "https://www.benzinga.com/news/26/10/62228587/microsoft-exec-says-rtx-spark-based-machines-nvidia-chips-will-begin-shipping-next-week",
+      "published_at": "2026-10-07 17:49:33.799000",
+      "ingested_at": "2026-10-07 17:49:36.944131",
+      "sentiment_label": "positive",
+      "is_material": true,
+      "category": "other",
+      "classification_deferred_reason": null
+    },
+    {
+      "source": "alpaca",
+      "symbol": "MSFT",
+      "headline": "Microsoft Exec Says Surface Laptop Ultra Prices Range Up To $5,899 For Most Powerful Model",
+      "url": "https://www.benzinga.com/news/26/10/62228838/microsoft-exec-says-surface-laptop-ultra-prices-range-5-899-most-powerful-model",
+      "published_at": "2026-10-07 17:57:04.399000",
+      "ingested_at": "2026-10-07 17:57:07.561548",
+      "sentiment_label": "neutral",
+      "is_material": false,
+      "category": "other",
+      "classification_deferred_reason": null
+    },
+    {
+      "source": "alpaca",
+      "symbol": "DELL",
+      "headline": "Dell Technologies Rolls Out Nvidia RTX Spark-Powered XPS 16 Creator Edition",
+      "url": "https://www.benzinga.com/news/26/10/62229356/dell-technologies-rolls-out-nvidia-rtx-spark-powered-xps-16-creator-edition",
+      "published_at": "2026-10-07 18:10:06.861000",
+      "ingested_at": "2026-10-07 18:10:10.088905",
+      "sentiment_label": "positive",
+      "is_material": false,
+      "category": "other",
+      "classification_deferred_reason": null
+    },
+    {
+      "source": "alpaca",
+      "symbol": "NVDA",
+      "headline": "Dell Technologies Rolls Out Nvidia RTX Spark-Powered XPS 16 Creator Edition",
+      "url": "https://www.benzinga.com/news/26/10/62229356/dell-technologies-rolls-out-nvidia-rtx-spark-powered-xps-16-creator-edition",
+      "published_at": "2026-10-07 18:10:06.861000",
+      "ingested_at": "2026-10-07 18:10:10.088905",
+      "sentiment_label": "positive",
+      "is_material": false,
+      "category": "other",
+      "classification_deferred_reason": null
+    },
+    {
+      "source": "alpaca",
+      "symbol": "RTX",
+      "headline": "Dell Technologies Rolls Out Nvidia RTX Spark-Powered XPS 16 Creator Edition",
+      "url": "https://www.benzinga.com/news/26/10/62229356/dell-technologies-rolls-out-nvidia-rtx-spark-powered-xps-16-creator-edition",
+      "published_at": "2026-10-07 18:10:06.861000",
+      "ingested_at": "2026-10-07 18:10:10.088905",
+      "sentiment_label": "positive",
+      "is_material": false,
+      "category": "other",
+      "classification_deferred_reason": null
+    }
+  ],
+  "news_sources": [
+    {
+      "source": "alpaca",
+      "rows": 9676,
+      "articles": 4916,
+      "latest": "2026-10-12 03:24:54.653370"
+    },
+    {
+      "source": "businesswire",
+      "rows": 113,
+      "articles": 113,
+      "latest": "2026-10-10 19:11:24.990009"
+    },
+    {
+      "source": "pr_newswire",
+      "rows": 919,
+      "articles": 919,
+      "latest": "2026-10-12 04:01:43.972761"
+    },
+    {
+      "source": "sec_edgar",
+      "rows": 10274,
+      "articles": 10074,
+      "latest": "2026-10-10 01:58:24.909226"
+    }
+  ],
+  "preferences": [],
+  "outbox": [],
+  "flow": [
+    {
+      "fired_date": "2026-10-02",
+      "direction": "bearish",
+      "n": 25
+    },
+    {
+      "fired_date": "2026-10-02",
+      "direction": "bullish",
+      "n": 18
+    },
+    {
+      "fired_date": "2026-10-05",
+      "direction": "bearish",
+      "n": 1
+    },
+    {
+      "fired_date": "2026-10-05",
+      "direction": "bullish",
+      "n": 3
+    },
+    {
+      "fired_date": "2026-10-06",
+      "direction": "bearish",
+      "n": 24
+    },
+    {
+      "fired_date": "2026-10-06",
+      "direction": "bullish",
+      "n": 11
+    },
+    {
+      "fired_date": "2026-10-07",
+      "direction": "bearish",
+      "n": 33
+    },
+    {
+      "fired_date": "2026-10-07",
+      "direction": "bullish",
+      "n": 11
+    },
+    {
+      "fired_date": "2026-10-08",
+      "direction": "bearish",
+      "n": 33
+    },
+    {
+      "fired_date": "2026-10-08",
+      "direction": "bullish",
+      "n": 19
+    },
+    {
+      "fired_date": "2026-10-09",
+      "direction": "bearish",
+      "n": 18
+    },
+    {
+      "fired_date": "2026-10-09",
+      "direction": "bullish",
+      "n": 16
+    }
+  ],
+  "ledger": [
+    {
+      "captures": 0
+    }
+  ],
+  "watchlist": [
+    {
+      "symbol": "INTC",
+      "name": "Intel Corporation",
+      "active": true,
+      "watchers": 1
+    },
+    {
+      "symbol": "NVDA",
+      "name": "NVIDIA Corp.",
+      "active": true,
+      "watchers": 3
+    },
+    {
+      "symbol": "MSFT",
+      "name": "Microsoft Corp.",
+      "active": true,
+      "watchers": 0
+    }
+  ],
+  "signals": [
+    {
+      "symbol": "MSFT",
+      "horizon": "SHORT",
+      "ts": "2026-10-11 21:50:26.512796",
+      "signal": "HOLD",
+      "confidence": 10.52,
+      "bullish_probability": 0.5526,
+      "auc": "0.6667",
+      "low_oos": "true",
+      "compression_cap": "true",
+      "weekly_gate": "false"
+    },
+    {
+      "symbol": "MSFT",
+      "horizon": "SWING",
+      "ts": "2026-10-11 21:50:26.512796",
+      "signal": "HOLD",
+      "confidence": 18.62,
+      "bullish_probability": 0.5931,
+      "auc": "0.6481",
+      "low_oos": "true",
+      "compression_cap": "false",
+      "weekly_gate": "false"
+    },
+    {
+      "symbol": "MSFT",
+      "horizon": "LONG",
+      "ts": "2026-10-11 21:50:26.512796",
+      "signal": "BUY",
+      "confidence": 28.68,
+      "bullish_probability": 0.6434,
+      "auc": "0.4786",
+      "low_oos": "true",
+      "compression_cap": "false",
+      "weekly_gate": "false"
+    },
+    {
+      "symbol": "MSFT",
+      "horizon": "GROWTH",
+      "ts": "2026-10-11 21:50:26.512796",
+      "signal": "BUY",
+      "confidence": 33.86,
+      "bullish_probability": 0.6693,
+      "auc": "0.4236",
+      "low_oos": "true",
+      "compression_cap": "false",
+      "weekly_gate": "false"
+    },
+    {
+      "symbol": "NVDA",
+      "horizon": "SHORT",
+      "ts": "2026-10-11 21:50:29.160107",
+      "signal": "BUY",
+      "confidence": 14.6,
+      "bullish_probability": 0.573,
+      "auc": "0.6875",
+      "low_oos": "true",
+      "compression_cap": "true",
+      "weekly_gate": "false"
+    },
+    {
+      "symbol": "NVDA",
+      "horizon": "SWING",
+      "ts": "2026-10-11 21:50:29.160107",
+      "signal": "BUY",
+      "confidence": 26.66,
+      "bullish_probability": 0.6333,
+      "auc": "0.5013",
+      "low_oos": "true",
+      "compression_cap": "false",
+      "weekly_gate": "false"
+    },
+    {
+      "symbol": "NVDA",
+      "horizon": "LONG",
+      "ts": "2026-10-11 21:50:29.160107",
+      "signal": "BUY",
+      "confidence": 34.56,
+      "bullish_probability": 0.6728,
+      "auc": "0.0",
+      "low_oos": "true",
+      "compression_cap": "false",
+      "weekly_gate": "false"
+    },
+    {
+      "symbol": "NVDA",
+      "horizon": "GROWTH",
+      "ts": "2026-10-11 21:50:29.160107",
+      "signal": "HOLD",
+      "confidence": 18.8,
+      "bullish_probability": 0.594,
+      "auc": "0.9444",
+      "low_oos": "true",
+      "compression_cap": "false",
+      "weekly_gate": "false"
+    },
+    {
+      "symbol": "INTC",
+      "horizon": "SHORT",
+      "ts": "2026-10-11 21:51:01.040721",
+      "signal": "HOLD",
+      "confidence": 5.81,
+      "bullish_probability": 0.471,
+      "auc": "0.2333",
+      "low_oos": "true",
+      "compression_cap": "true",
+      "weekly_gate": "false"
+    },
+    {
+      "symbol": "INTC",
+      "horizon": "SWING",
+      "ts": "2026-10-11 21:51:01.040721",
+      "signal": "HOLD",
+      "confidence": 1.08,
+      "bullish_probability": 0.5054,
+      "auc": "0.6",
+      "low_oos": "true",
+      "compression_cap": "false",
+      "weekly_gate": "false"
+    },
+    {
+      "symbol": "INTC",
+      "horizon": "LONG",
+      "ts": "2026-10-11 21:51:01.040721",
+      "signal": "HOLD",
+      "confidence": 1.93,
+      "bullish_probability": 0.5096,
+      "auc": "0.925",
+      "low_oos": "true",
+      "compression_cap": "false",
+      "weekly_gate": "false"
+    },
+    {
+      "symbol": "INTC",
+      "horizon": "GROWTH",
+      "ts": "2026-10-11 21:51:01.040721",
+      "signal": "HOLD",
+      "confidence": 2.67,
+      "bullish_probability": 0.5134,
+      "auc": "0.9233",
+      "low_oos": "true",
+      "compression_cap": "false",
+      "weekly_gate": "false"
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "flow_delivery": [
+    {
+      "fired_date": "2026-10-05",
+      "delivery_state": null,
+      "n": 4,
+      "accepted_recipients": null
+    },
+    {
+      "fired_date": "2026-10-06",
+      "delivery_state": null,
+      "n": 35,
+      "accepted_recipients": null
+    },
+    {
+      "fired_date": "2026-10-07",
+      "delivery_state": null,
+      "n": 44,
+      "accepted_recipients": null
+    },
+    {
+      "fired_date": "2026-10-08",
+      "delivery_state": null,
+      "n": 52,
+      "accepted_recipients": null
+    },
+    {
+      "fired_date": "2026-10-09",
+      "delivery_state": null,
+      "n": 34,
+      "accepted_recipients": null
+    }
+  ],
+  "recipients": [
+    {
+      "users_with_open_price_alerts": 1,
+      "with_email": 1
+    }
+  ],
+  "event_price_subscriptions": [
+    {
+      "symbol": "INTC",
+      "open_price_alerts": 4
+    },
+    {
+      "symbol": "NVDA",
+      "open_price_alerts": 2
+    }
+  ]
+}

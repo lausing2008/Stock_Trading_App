@@ -598,6 +598,11 @@ def list_all_metrics(model: str = "xgboost"):
         try:
             bundle = joblib.load(artifact)
             m = bundle.get("metrics", {})
+            from ..training.trainer import _compute_oos_suppression
+            _, derived_reason = _compute_oos_suppression(
+                m.get("cv_auc_mean"), m.get("recall"), m.get("precision"),
+                m.get("overfit_gap"), m.get("evaluation_valid"),
+            ) if m.get("recall") is not None and m.get("precision") is not None else (False, None)
             trained_at = bundle.get("trained_at")
             results.append({
                 "symbol": sym,
@@ -613,6 +618,9 @@ def list_all_metrics(model: str = "xgboost"):
                 # substituted with a neutral 0.5 at inference, so a high AUC on a suppressed
                 # model is not evidence it is doing any work.
                 "oos_suppressed": bool(bundle.get("oos_suppressed", False)),
+                "suppression_reason": (derived_reason or "unrecorded_reason")
+                    if bundle.get("oos_suppressed") else None,
+                "n_test": m.get("n_test"),
             })
         except Exception:
             results.append({"symbol": sym, "model": model, "error": "failed to load"})

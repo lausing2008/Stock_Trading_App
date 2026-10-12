@@ -2594,6 +2594,56 @@ def _send_early_earnings_stage(session, sym, phase, headline, subject, body_text
                      symbol=sym, phase=phase, user=u_obj.username)
 
 
+def run_product_impact_watches() -> None:
+    """Record reviewed product impacts, then dispatch only this channel's outbox rows."""
+    import os as _os
+    import uuid as _uuid
+    from .news_impact_watch import ALERT_TYPE, process_recent
+    from . import earnings_outbox as _eo
+    from .email_service import send_email
+    started = time.monotonic()
+    lock_key = "stockai:lock:product_impact_watches"
+    lock_token = _uuid.uuid4().hex
+    try:
+        redis_client = _get_redis()
+        if not redis_client.set(lock_key, lock_token, nx=True, ex=300):
+            return
+    except Exception as exc:
+        log.warning("product_impact.lock_unavailable", error=str(exc))
+        return
+    try:
+        with SessionLocal() as session:
+            result = process_recent(session)
+            session.commit()
+            def _subscribed(row):
+                user = session.get(User, row.user_id) if row.user_id else None
+                if user is None or not user.is_active:
+                    return False
+                if not _may_send(session, user, "product_impact"):
+                    return False
+                return True
+            delivered = _eo.deliver_batch(
+                session, owner=f"product-impact:{_os.getpid()}",
+                send=lambda row: send_email(row.recipient, row.subject, row.body_html, row.body_text),
+                is_subscribed=_subscribed,
+                activated_at=datetime.min, alert_types=(ALERT_TYPE,), limit=10,
+            )
+            log.info("product_impact.scan", **result, delivery=delivered)
+        _record_job_status("run_product_impact_watches", "ok", time.monotonic() - started)
+    except Exception as exc:
+        log.error("product_impact.failed", error=str(exc))
+        _record_job_status("run_product_impact_watches", "error", time.monotonic() - started, str(exc))
+    finally:
+        # Release only our own lease; a slow run must not delete a replacement worker's lock.
+        try:
+            redis_client.eval(
+                "if redis.call('get', KEYS[1]) == ARGV[1] then "
+                "return redis.call('del', KEYS[1]) else return 0 end",
+                1, lock_key, lock_token)
+        except Exception as exc:
+            log.warning("product_impact.lock_release_failed", error=str(exc))
+
+
 def drain_earnings_outbox() -> None:
     """M20 — deliver queued earnings-phase notifications. The outbox's drain side.
 
@@ -2660,7 +2710,8 @@ def drain_earnings_outbox() -> None:
             result = _eo.deliver_batch(session, owner=_worker_id, send=_send,
                                        is_subscribed=_subscribed,
                                        legacy_marker=_legacy_marker,
-                                       activated_at=_eo.activation_watermark(_rc))
+                                       activated_at=_eo.activation_watermark(_rc),
+                                       alert_types=("early_earnings_news",))
         if result.get("no_activation_watermark"):
             log.warning("earnings_outbox.no_activation_watermark", mode=mode,
                         key=_eo.ACTIVATED_AT_KEY,
@@ -5883,6 +5934,7 @@ def check_options_flow_alerts() -> None:
             # deferred/queued/omitted/accepted and logs them. Nothing persisted, so the outcome
             # table was a record of CANDIDATES wearing the name of alerts.
             _delivery_states: dict = {}
+            _recipient_dispositions: list[dict] = []
             sent = 0
             for uid, user in recipients.items():
                 state_key = f"stockai:options_flow_alert_seen:{uid}"
@@ -5965,6 +6017,7 @@ def check_options_flow_alerts() -> None:
                         cooldown_ok_chains.append(chain)  # fail open — a Redis hiccup must not silently drop a real alert
 
                 omitted_chains: list[str] = []
+                capped: list[str] = []
                 if cooldown_ok_chains:
                     # Largest premium first — the cap below keeps only the most genuinely
                     # "unusual" activity in the actual email; everything else still landed in
@@ -6017,6 +6070,10 @@ def check_options_flow_alerts() -> None:
                                deferred=deferred_chains, queued=cooldown_ok_chains,
                                omitted=omitted_chains, accepted=accepted_chains,
                                send_attempted=send_attempted, send_ok=send_ok)
+                _recipient_dispositions.append(dict(user_id=uid, candidates=candidates,
+                    fired_date=date.today(), accepted=accepted_chains, queued=capped,
+                    omitted=omitted_chains, deferred=deferred_chains,
+                    previously_seen=prev_seen, send_attempted=send_attempted, send_ok=send_ok))
                 if deferred_chains or omitted_chains or not send_attempted:
                     log.info("options_flow_alert.recipient_accounting", user=uid,
                              observed=len(current_chains), newly_seen=len(newly_seen),
@@ -6036,6 +6093,9 @@ def check_options_flow_alerts() -> None:
                 _accepted_per_chain[_c] = sum(
                     1 for _s in [_st] if _s == "sender_accepted")
             try:
+                from .flow_recipient_funnel import record as _record_flow_recipient
+                for _decision in _recipient_dispositions:
+                    _record_flow_recipient(session, **_decision)
                 _now = datetime.now(timezone.utc).replace(tzinfo=None)
                 for _chain, _state in _delivery["per_chain"].items():
                     session.execute(
@@ -15088,6 +15148,12 @@ def start_scheduler() -> None:
             id="early_earnings_news_alert_check",
             replace_existing=True,
             max_instances=1, coalesce=True, misfire_grace_time=60,
+        )
+
+        _scheduler.add_job(
+            run_product_impact_watches, "interval", minutes=1,
+            id="product_impact_watches", max_instances=1, coalesce=True,
+            replace_existing=True, misfire_grace_time=60,
         )
 
         # ── M20: drain the earnings notification outbox — every minute ───────────

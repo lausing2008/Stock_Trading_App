@@ -19,7 +19,7 @@ from db import SessionLocal, RealtimeNewsItem
 
 from .classify import classify_in_batches
 from .scope import classification_scope as _classification_scope
-from .tickers import _load_cik_map, _load_universe, extract_symbols, symbol_for_cik
+from .tickers import _load_cik_map, _load_universe, extract_symbols, normalize_provider_symbols, symbol_for_cik
 
 log = structlog.get_logger()
 
@@ -371,7 +371,7 @@ def persist_news_items(
         _in_scope: list[str | None] = []   # why each item is (or is not) worth classifying
         for it in _new_items:
             if symbol_mode == "tagged":
-                _syms = it.get("symbols")
+                _syms = normalize_provider_symbols(it.get("symbols"), it["headline"])
             elif symbol_mode == "cik":
                 _s = symbol_for_cik(it.get("cik"))
                 _syms = [_s] if _s else None

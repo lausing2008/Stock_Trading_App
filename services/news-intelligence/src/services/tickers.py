@@ -26,6 +26,14 @@ _universe_cache_at: float = 0.0
 _cik_cache: dict[str, str] = {}  # cik (zero-stripped) -> symbol
 _cik_cache_at: float = 0.0
 
+# Company identities, not product/competitor relationships. Keep aliases explicit:
+# stripping arbitrary company suffixes can turn names such as Block into common verbs.
+_COMPANY_ALIASES = {
+    "MSFT": ("MICROSOFT",),
+    "NVDA": ("NVIDIA",),
+    "INTC": ("INTEL",),
+}
+
 
 def _load_universe() -> list[tuple[str, str, str]]:
     global _universe_cache, _universe_cache_at
@@ -96,6 +104,22 @@ def _name_pattern(name_upper: str) -> re.Pattern[str]:
     return re.compile(rf"(?<![A-Za-z0-9]){re.escape(name_upper)}(?![A-Za-z0-9])")
 
 
+def normalize_provider_symbols(symbols: list[str] | None, headline: str) -> list[str] | None:
+    """Drop the narrow RTX Corporation/product-name collision in provider tags.
+
+    Alpaca tagged RTX Corporation on NVIDIA RTX Spark stories. Keep an explicit company or
+    cashtag mention; other provider tags remain untouched because a headline is not full text.
+    """
+    if not symbols or "RTX" not in {str(sym).upper() for sym in symbols}:
+        return symbols
+    upper = headline.upper()
+    if "RTX SPARK" not in upper:
+        return symbols
+    if "RTX CORPORATION" in upper or "RAYTHEON" in upper or "$RTX" in upper:
+        return symbols
+    return [sym for sym in symbols if str(sym).upper() != "RTX"]
+
+
 def extract_symbols(headline: str, max_matches: int = 5) -> list[str]:
     """Return real, universe-matched stock symbols mentioned in `headline`.
 
@@ -137,6 +161,11 @@ def extract_symbols(headline: str, max_matches: int = 5) -> list[str]:
                 matched = True
         if not matched and name_upper and len(name_upper) >= 4 and _name_pattern(name_upper).search(upper):
             matched = True
+        if not matched:
+            matched = any(
+                _name_pattern(alias).search(upper)
+                for alias in _COMPANY_ALIASES.get(symbol, ())
+            )
         if matched:
             matches.append(symbol)
         if len(matches) >= max_matches:

@@ -15,6 +15,9 @@ from .api.journal import router as journal_router
 from .api.board import router as board_router
 from .api.positions import router as positions_router
 from .api.app_notifications import router as app_notifications_router
+from .api.news_impacts import router as news_impacts_router
+from .api.flow_delivery import router as flow_delivery_router
+from .api.long_option_playbook import router as long_option_playbook_router
 from .api.paper_portfolio import router as paper_portfolio_router
 from .api.broker import router as broker_router
 from .api.rl import router as rl_router
@@ -45,6 +48,6 @@ async def on_startup():
 
 app = create_app(
     "market-data-service",
-    routers=[data_router, admin_router, auth_router, watchlists_router, watchlist_router, news_router, alerts_router, signal_alerts_router, journal_router, board_router, positions_router, app_notifications_router, paper_portfolio_router, broker_router, rl_router, push_router, conditional_orders_router, risk_snapshots_router, options_income_router, fed_watch_router],
+    routers=[data_router, admin_router, auth_router, watchlists_router, watchlist_router, news_router, alerts_router, signal_alerts_router, journal_router, board_router, positions_router, app_notifications_router, news_impacts_router, flow_delivery_router, long_option_playbook_router, paper_portfolio_router, broker_router, rl_router, push_router, conditional_orders_router, risk_snapshots_router, options_income_router, fed_watch_router],
     on_startup=on_startup,
 )

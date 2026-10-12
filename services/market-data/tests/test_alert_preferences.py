@@ -249,3 +249,47 @@ def test_every_model_the_alerts_api_imports_is_exported_from_db():
         # Imported in the import block AND named in __all__ — one without the other still breaks.
         assert f"    {name},\n" in init_src, f"{name} not imported in shared/db/__init__.py"
         assert f'    "{name}",\n' in init_src, f"{name} missing from shared/db __all__"
+
+
+# ---- every type declares its default; omission cannot enrol anyone -----------------------------
+#
+# 2026-10-12: `product_impact` was added as a NEW email channel without a `default_enabled` key,
+# and the consumer read `a.get("default_enabled", True)`. So absence of a row meant SUBSCRIBED,
+# and deploying would have enrolled every user holding MSFT, NVDA or INTC in a watchlist into a
+# channel they had never seen. The module's own docstring already said "Each type declares its
+# default" — 25 of 26 types did not.
+
+def test_every_alert_type_declares_its_default_explicitly():
+    """The module claims this; it was true of exactly one type out of 26."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "shared"))
+    from common.alert_prefs import ALERT_TYPES
+    missing = sorted(a["key"] for a in ALERT_TYPES if "default_enabled" not in a)
+    assert not missing, (
+        f"these types inherit a default by omission: {missing}. A reader cannot tell whether "
+        f"that was a decision or an oversight, which is the whole point of declaring it.")
+
+
+def test_an_undeclared_default_enrols_nobody():
+    """FAIL CLOSED. The fallback used to be True, so forgetting the key opted everyone IN."""
+    import ast
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "src/api/alerts.py").read_text()
+    code = ast.unparse(ast.parse(src))
+    assert "default_enabled', True" not in code and 'default_enabled", True' not in code, \
+        "an absent declaration must never default to enrolled"
+    assert code.count("default_enabled', False") + code.count('default_enabled", False') >= 2
+
+
+def test_a_brand_new_channel_does_not_default_on():
+    """There is no established subscription to preserve for a channel nobody has seen, which is
+    the stated reason the operational alerts default on."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "shared"))
+    from common.alert_prefs import ALERT_TYPES
+    by_key = {a["key"]: a for a in ALERT_TYPES}
+    for new_channel in ("product_impact", "option_opportunity"):
+        assert by_key[new_channel]["default_enabled"] is False, \
+            f"{new_channel} is a new channel and must not enrol users who never asked"

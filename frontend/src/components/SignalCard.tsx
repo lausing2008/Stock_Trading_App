@@ -664,7 +664,7 @@ export default function SignalCard({ signal }: { signal: Signal }) {
             </span>
           )}
           {reasons?.low_oos_accuracy && (
-            <span title="ML model cross-validation accuracy < 52% — predictions are near coin-flip; signal relies more heavily on TA" style={{ fontSize: '9px', fontWeight: 700, color: '#eab308', background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.3)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+            <span title="ML model did not clear out-of-sample quality checks; see Model Accuracy for the reason and test sample size" style={{ fontSize: '9px', fontWeight: 700, color: '#eab308', background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.3)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
               LOW ML QUALITY
             </span>
           )}

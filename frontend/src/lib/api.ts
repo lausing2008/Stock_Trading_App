@@ -1201,6 +1201,10 @@ export const api = {
     return request<RealtimeNewsItem[]>(`/news${qs ? `?${qs}` : ''}`);
   },
   newsHot: (symbol: string) => request<HotNewsFlag>(`/news/hot/${symbol}`),
+  newsImpacts: () => request<NewsImpactWatch[]>(`/news-impact`),
+  optionsFlowDelivery: () => request<OptionsFlowDelivery>(`/options-flow-delivery`),
+  longOptionPlaybook: (optionChain: string, firedDate: string) => request<LongOptionPlaybook>(
+    `/long-option-playbook?option_chain=${encodeURIComponent(optionChain)}&fired_date=${encodeURIComponent(firedDate)}`),
 
   // ── Broker integration ──────────────────────────────────────────────────
   // TIER84-BROKER-PORTABILITY: metadata-driven — the frontend renders each broker_type's
@@ -3821,6 +3825,8 @@ export type MlModelMetric = {
   // A suppressed model is substituted with a neutral 0.5 at inference, so its AUC is not
   // evidence it is contributing anything.
   oos_suppressed?: boolean;
+  suppression_reason?: string | null;
+  n_test?: number | null;
   error?: string;
 };
 
@@ -4657,3 +4663,38 @@ export interface OptionsPerformance {
   summary?: Partial<Record<'underlying' | 'call' | 'put', OptionsPerformanceTally>>;
   mark_basis?: string;
 }
+
+export type NewsImpactWatch = {
+  event_key: string;
+  title: string;
+  published_at: string;
+  source_url: string;
+  observed_url: string | null;
+  evidence_status: string;
+  impacts: { symbol: string; direction: string; role: string; reason: string }[];
+  matched_symbols: string[];
+  state: string;
+  reason: string | null;
+  email_state: string | null;
+  email_reason: string | null;
+  provider_accepted_at: string | null;
+};
+
+export type OptionsFlowDelivery = {
+  eligible_legacy_subscription: boolean;
+  subscription_note: string;
+  historical_delivery_note: string;
+  rows: { symbol: string; option_chain: string; fired_date: string;
+          state: string; reason: string | null; decided_at: string }[];
+};
+
+export type LongOptionPlaybook = {
+  status: string; symbol: string; source_flow_contract: string;
+  observed_direction: string; strategy: string;
+  leg: null | { contract_id: string; expiry: string; strike: number;
+                archived_bid: number; archived_ask: number; quote_as_of: string;
+                breakeven_at_expiry_before_fees: number;
+                premium_per_standard_100_share_contract_before_fees: number };
+  confirmation_rule: string; invalidation_rule: string; exit_policy: string;
+  blockers: string[]; note: string;
+};

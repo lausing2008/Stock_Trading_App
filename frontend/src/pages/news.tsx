@@ -48,6 +48,10 @@ export default function NewsPage() {
     { refreshInterval: 60_000 }
   );
 
+  const { data: impactWatches, error: impactError } = useSWR(
+    'news-impact', api.newsImpacts, { refreshInterval: 60_000 }
+  );
+
   const items = (data ?? []).filter(it => {
     if (materialOnly && !it.is_material) return false;
     if (sourceFilter !== 'all' && it.source !== sourceFilter) return false;
@@ -66,6 +70,29 @@ export default function NewsPage() {
           a short-lived hot-news gate on the AI Signal engine (see Settings for Alpaca setup).
         </div>
       </div>
+
+      <section aria-label="Product impact watches" style={{ marginBottom: 20 }}>
+        <h2 style={{ color: '#e2e8f0', fontSize: 16, margin: '0 0 8px' }}>Product impact watches</h2>
+        {impactError && <p style={{ color: '#f87171' }}>Impact watch status is unavailable.</p>}
+        {impactWatches?.length === 0 && <p style={{ color: '#94a3b8' }}>No reviewed product events recorded yet.</p>}
+        {impactWatches?.map(event => (
+          <article key={event.event_key} style={{ padding: 14, marginBottom: 10, border: '1px solid #334155', borderRadius: 10, background: '#0f172a' }}>
+            <strong style={{ color: '#f1f5f9' }}>{event.title}</strong>
+            <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 4 }}>
+              {new Date(event.published_at).toLocaleString()} · Your alert: {event.state.replaceAll('_', ' ')}
+              {event.reason ? ` — ${event.reason}` : ''}
+              {event.email_state ? ` · Email provider: ${event.email_state.replaceAll('_', ' ')}` : ''}
+            </div>
+            <ul style={{ color: '#cbd5e1', fontSize: 13, paddingLeft: 20 }}>
+              {event.impacts.map(impact => <li key={impact.symbol}>
+                <strong>{impact.symbol}</strong>: {impact.direction.replaceAll('_', ' ')} — {impact.reason}
+              </li>)}
+            </ul>
+            <a href={event.source_url} target="_blank" rel="noopener noreferrer" style={{ color: '#38bdf8', fontSize: 12 }}>Official source</a>
+            <p style={{ color: '#64748b', fontSize: 12, marginBottom: 0 }}>Research watch. Revenue, share-price and option-return effects have not been measured.</p>
+          </article>
+        ))}
+      </section>
 
       <div style={{
         display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center',

@@ -259,15 +259,19 @@ def get_alert_preferences(
                 "group": a["group"],
                 "label": a["label"],
                 "desc": a.get("desc"),
-                "enabled": stored.get(a["key"], a.get("default_enabled", True)),
-                "default_enabled": a.get("default_enabled", True),
+                # FAIL CLOSED. An undeclared default used to fall back to True, so a newly
+                # added type silently enrolled every user who had never seen it. A type that
+                # forgets to declare now enrols nobody, and the ratchet test below refuses the
+                # omission outright.
+                "enabled": stored.get(a["key"], a.get("default_enabled", False)),
+                "default_enabled": a.get("default_enabled", False),
             }
             for a in ALERT_TYPES
         ],
         # Stated so the UI can explain the default rather than implying a row exists per type.
         "default_when_unset": True,
         "defaults_by_type": {
-            a["key"]: a.get("default_enabled", True) for a in ALERT_TYPES
+            a["key"]: a.get("default_enabled", False) for a in ALERT_TYPES
         },
     }
 

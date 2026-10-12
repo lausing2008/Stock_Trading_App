@@ -3335,6 +3335,49 @@ class InstitutionalOwnership(Base):
     )
 
 
+class OptionsFlowRecipientDecision(Base):
+    """Durable per-user funnel for a flow candidate; legacy rows remain unknown."""
+    __tablename__ = "options_flow_recipient_decisions"
+    __table_args__ = (UniqueConstraint("user_id", "option_chain", "fired_date",
+                                      name="uq_flow_recipient_contract_day"),)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    option_chain: Mapped[str] = mapped_column(String(64), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    fired_date: Mapped[date] = mapped_column(Date, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decided_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class NewsImpactEvent(Base):
+    """A sourced product milestone with explicit per-company roles."""
+    __tablename__ = "news_impact_events"
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    event_key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    impacts: Mapped[list] = mapped_column(JSON, nullable=False)
+    evidence_status: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class NewsImpactReceipt(Base):
+    """One user's durable eligibility and delivery decision per event."""
+    __tablename__ = "news_impact_receipts"
+    __table_args__ = (UniqueConstraint("event_id", "user_id", name="uq_news_impact_event_user"),)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("news_impact_events.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    matched_symbols: Mapped[list] = mapped_column(JSON, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    outbox_event_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    decided_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class NotificationOutbox(Base):
     """M20 — durable, idempotent notification delivery.
 

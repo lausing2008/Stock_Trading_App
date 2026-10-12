@@ -119,7 +119,8 @@ def enqueue(session, *, event_id: str, recipient: str, subject: str, body_html: 
 
 def claim(session, *, owner: str, limit: int = 20,
           lease_seconds: int = DEFAULT_LEASE_SECONDS,
-          now: datetime | None = None) -> list[NotificationOutbox]:
+          now: datetime | None = None,
+          alert_types: tuple[str, ...] | None = None) -> list[NotificationOutbox]:
     """Lease up to `limit` due notifications for `owner`.
 
     COMPARE-AND-SET, VERIFIED BY ROWCOUNT. Each row is claimed with an UPDATE whose WHERE clause
@@ -154,6 +155,7 @@ def claim(session, *, owner: str, limit: int = 20,
     )
     candidates = (session.query(NotificationOutbox)
                   .filter(*claimable)
+                  .filter(NotificationOutbox.alert_type.in_(alert_types) if alert_types else True)
                   .order_by(NotificationOutbox.available_at, NotificationOutbox.id)
                   .limit(limit).all())
 

@@ -172,7 +172,8 @@ def enqueue_phase_alert(session, *, user_id, recipient: str, symbol: str, event_
 
 def deliver_batch(session, *, owner: str, send, is_subscribed, commit=None,
                   legacy_marker=None, activated_at: datetime | None = None,
-                  now: datetime | None = None, limit: int = 20) -> dict:
+                  now: datetime | None = None, limit: int = 20,
+                  alert_types: tuple[str, ...] | None = None) -> dict:
     """One worker pass: quarantine, expire, claim, recheck, dispatch, settle.
 
     `send(row) -> bool` is injected so the whole path can be exercised against a fake provider,
@@ -203,7 +204,7 @@ def deliver_batch(session, *, owner: str, send, is_subscribed, commit=None,
     out["expired"] = _ob.expire_stale(session, now=now)
     commit()
 
-    rows = _ob.claim(session, owner=owner, limit=limit, now=now)
+    rows = _ob.claim(session, owner=owner, limit=limit, now=now, alert_types=alert_types)
     commit()
     out["claimed"] = len(rows)
 

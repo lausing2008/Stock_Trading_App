@@ -165,6 +165,11 @@ _ALERT_JOB_IDS = {
     # so it belongs on the alert side and must obey the same environment gate. It is inert
     # unless the rollout flag says `outbox`, but "inert by default" is a flag, not a gate.
     "earnings_outbox_drain",
+    # 2026-10-12: the product-impact watch both ENQUEUES to the outbox and drains its own
+    # channel's rows through `send_email`, so it is an alerting job and must obey the same
+    # environment gate. Verified placed inside `if _is_alerting_enabled():` — this list entry
+    # was the only thing missing, and this guard is what caught it.
+    "product_impact_watches",
     "broker_auth_check",
     "morning_digest_us",
     "morning_digest_hk",
