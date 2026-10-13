@@ -272,14 +272,22 @@ def test_every_alert_type_declares_its_default_explicitly():
 
 
 def test_an_undeclared_default_enrols_nobody():
-    """FAIL CLOSED. The fallback used to be True, so forgetting the key opted everyone IN."""
-    import ast
+    """FAIL CLOSED. The fallback used to be True, so forgetting the key opted everyone IN.
+
+    AQ-REVIEW-2 (2026-10-12): this used to count `default_enabled", False` literals in
+    `alerts.py`. It therefore broke when the rule moved into one shared function while behaving
+    identically — it was pinning the spelling of a fallback rather than the fallback. Worse, it
+    could never have caught the defect that actually shipped: the SENDER had its own copy of the
+    rule, in a different file this test never read, and that copy returned True.
+    """
+    import sys
     from pathlib import Path
-    src = (Path(__file__).resolve().parents[1] / "src/api/alerts.py").read_text()
-    code = ast.unparse(ast.parse(src))
-    assert "default_enabled', True" not in code and 'default_enabled", True' not in code, \
-        "an absent declaration must never default to enrolled"
-    assert code.count("default_enabled', False") + code.count('default_enabled", False') >= 2
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "shared"))
+    from common.alert_prefs import default_enabled_for, effective_enabled
+
+    assert default_enabled_for("a_type_nobody_declared") is False
+    assert effective_enabled("a_type_nobody_declared", None) is False
+    assert effective_enabled("a_type_nobody_declared", None, lookup_failed=True) is False
 
 
 def test_a_brand_new_channel_does_not_default_on():

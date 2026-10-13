@@ -129,30 +129,39 @@ def test_the_flow_digest_excludes_inactive_accounts():
     assert "User.is_active.is_(True)" in block
 
 
+# AQ-REVIEW-2 (2026-10-12): THESE THREE USED TO BE SOURCE-TEXT ASSERTIONS, matching literal
+# strings in `_may_send`'s body. They broke the moment the rule moved to its own module while
+# behaving identically — which is the tell: they were pinning the SPELLING, not the decision.
+# They are behavioural now, and each one failed when its defect was reinstated.
+
+
 def test_the_single_recipient_gate_rejects_inactive_accounts():
-    """_filter_by_alert_pref cannot see account state; _may_send is what closes that half."""
-    body = _SCHED[_SCHED.index("def _may_send("):]
-    body = body[:body.index("\ndef ")]
-    code = "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
-    assert 'getattr(user, "is_active", True)' in code
-    assert 'getattr(user, "email", None)' in code
+    """`filter_recipients` cannot see account state; the single-recipient gate closes that half."""
+    assert _load_gate()(_session_with(True), _user(is_active=False), "signal") is False
+    assert _load_gate()(_session_with(True), _user(email=None), "signal") is False
 
 
-def test_the_gate_fails_open_on_a_lookup_error():
-    """Established convention, and the right one: silently dropping mail because a settings
-    query failed is indistinguishable from the alert never having fired."""
-    body = _SCHED[_SCHED.index("def _may_send("):]
-    body = body[:body.index("\ndef ")]
-    tail = body[body.index("except Exception"):]
-    assert "return True" in tail[:400]
+def test_the_gate_fails_open_on_a_lookup_error_for_a_default_on_type():
+    """Established convention, and the right one FOR THESE TYPES: silently dropping mail
+    because a settings query failed is indistinguishable from the alert never having fired."""
+    session = MagicMock()
+    session.execute.side_effect = RuntimeError("preference table unavailable")
+    assert _load_gate()(session, _user(), "signal") is True
 
 
-def test_absence_of_a_row_means_subscribed():
-    """A user who has never opened settings must be unaffected — only an explicit disable
-    removes anyone."""
-    body = _SCHED[_SCHED.index("def _may_send("):]
-    body = body[:body.index("\ndef ")]
-    assert "return True if row is None else bool(row[0])" in body
+def test_the_gate_fails_CLOSED_on_a_lookup_error_for_an_opt_in_type():
+    """The inverse, and the reason the rule had to become per-type: for a channel nobody has
+    opted into, the failure that cannot be taken back is sending, not staying silent."""
+    session = MagicMock()
+    session.execute.side_effect = RuntimeError("preference table unavailable")
+    assert _load_gate()(session, _user(), "product_impact") is False
+
+
+def test_what_absence_means_is_per_type():
+    """A user who has never opened settings is unaffected for the long-standing types, and is
+    NOT enrolled in an opt-in channel. One function, two answers, taken from the registry."""
+    assert _load_gate()(_session_with(None), _user(), "signal") is True
+    assert _load_gate()(_session_with(None), _user(), "product_impact") is False
 
 
 # ── The behavioural half: dispatch, not inventory ────────────────────────────
@@ -170,18 +179,20 @@ from unittest.mock import MagicMock  # noqa: E402
 
 
 def _load_gate():
-    """Execute the real `_may_send` in isolation."""
-    import ast
-    import copy
+    """The shipped gate itself — imported, not reconstructed.
 
-    node = copy.deepcopy(next(n for n in ast.parse(_SCHED).body
-                              if isinstance(n, ast.FunctionDef) and n.name == "_may_send"))
-    ns = {"log": types.SimpleNamespace(warning=lambda *a, **k: None,
-                                       info=lambda *a, **k: None),
-          "text": lambda q: q}
-    exec(compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])),
-                 "<gate>", "exec"), ns)
-    return ns["_may_send"]
+    This used to AST-copy `_may_send` out of `scheduler.py` and exec the copy, because importing
+    scheduler.py means importing apscheduler, yfinance and most of the service. That is also
+    exactly why the rule now lives in `alert_audience`, which imports nothing heavy: the real
+    function can simply be called. A copy that is one edit behind the original is a test that
+    passes on code nobody runs.
+    """
+    import importlib.util
+    path = _ROOT / "services/market-data/src/services/alert_audience.py"
+    spec = importlib.util.spec_from_file_location("ea05_alert_audience", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.may_send
 
 
 def _session_with(enabled):
@@ -207,11 +218,6 @@ def test_an_opted_in_user_is_allowed():
     assert _load_gate()(_session_with(True), _user(), "signal") is True
 
 
-def test_a_user_with_no_preference_row_is_allowed():
-    """Absence means subscribed — a user who has never opened settings is unaffected."""
-    assert _load_gate()(_session_with(None), _user(), "signal") is True
-
-
 def test_an_inactive_account_is_refused_whatever_the_preference_says():
     assert _load_gate()(_session_with(True), _user(is_active=False), "signal") is False
 
@@ -227,14 +233,6 @@ def test_an_essential_type_ignores_the_preference_entirely():
     gate = _load_gate()
     assert gate(_session_with(False), _user(), "price_alert") is True
     assert gate(_session_with(False), _user(), "conditional_order") is True
-
-
-def test_a_failed_preference_lookup_fails_open():
-    """Silently dropping mail because a settings query failed is indistinguishable, from the
-    outside, from the alert never having fired."""
-    session = MagicMock()
-    session.execute.side_effect = RuntimeError("preference table unavailable")
-    assert _load_gate()(session, _user(), "signal") is True
 
 
 def test_every_gate_call_actually_controls_delivery():

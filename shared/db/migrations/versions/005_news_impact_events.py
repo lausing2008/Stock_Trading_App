@@ -35,7 +35,7 @@ def upgrade():
         sa.Column("published_at", sa.DateTime(), nullable=False),
         sa.Column("observed_at", sa.DateTime(), server_default=sa.func.now()),
         sa.Column("impacts", sa.JSON(), nullable=False),
-        sa.Column("evidence_status", sa.String(32), nullable=False))
+        sa.Column("evidence_status", sa.String(64), nullable=False))
     if not inspect(op.get_bind()).has_table("news_impact_receipts"):
         op.create_table("news_impact_receipts",
         sa.Column("id", sa.BigInteger().with_variant(sa.Integer, "sqlite"), primary_key=True, autoincrement=True),

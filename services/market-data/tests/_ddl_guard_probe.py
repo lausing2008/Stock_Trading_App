@@ -172,5 +172,96 @@ check('every app connection carries an idle-in-transaction timeout',
 check('a non-Postgres URL gets no Postgres-only connect options',
       ddl_guard.connect_options('sqlite:///x.db') == {}, ddl_guard.connect_options('sqlite:///x.db'))
 
+# ------------------------------------- 7. contention is not swallowed by the DDL handlers
+# AQ-REVIEW-5 (2026-10-12). `_apply_isolated_ddl` and `_apply_once` catch every exception and
+# print a warning. That handler exists for a statement that CANNOT succeed -- a duplicate index
+# -- where dying at startup would be worse than continuing without it. A lock timeout is the
+# opposite: the statement is fine and would apply on a retry. Swallowing it let init_db() return
+# success with required broker-submission columns missing, no retry, and no error, directly
+# contradicting the guarantee the retry loop documents.
+
+
+class ContendedEngine(FakeEngine):
+    """Every DDL statement loses the lock race; the SET LOCALs still succeed."""
+    def __init__(self):
+        super().__init__()
+        outer = self
+
+        class Conn(FakeConn):
+            def execute(self, stmt, params=None):
+                text = str(stmt)
+                outer.log.append(text)
+                # The SET LOCALs and the advisory lock itself are not the contended statements;
+                # taking the lock has to succeed or the DDL is never reached and the test
+                # measures the wrong thing.
+                if text.startswith('SET LOCAL') or 'advisory' in text:
+                    return MagicMock(scalar=lambda: True, rowcount=1)
+                raise LockTimeout()
+        self._conn_cls = Conn
+
+    def connect(self):
+        return self._conn_cls(self.log, self.lock_results, self.params)
+
+    def begin(self):
+        return self._conn_cls(self.log, self.lock_results, self.params)
+
+
+eng = ContendedEngine(); with_engine(eng)
+raised = None
+try:
+    session._apply_isolated_ddl()
+except Exception as exc:
+    raised = exc
+check('a contended isolated DDL statement raises instead of warning',
+      isinstance(raised, LockTimeout), raised)
+
+# ...while a statement that genuinely cannot succeed still only warns, which is why the
+# handler exists at all. Reusing the real function, with a non-retryable failure.
+class BrokenEngine(FakeEngine):
+    def __init__(self):
+        super().__init__()
+        outer = self
+
+        class Conn(FakeConn):
+            def execute(self, stmt, params=None):
+                text = str(stmt)
+                outer.log.append(text)
+                if text.startswith('SET LOCAL') or 'advisory' in text:
+                    return MagicMock(scalar=lambda: True, rowcount=1)
+                raise ValueError('duplicate key value violates unique constraint')
+        self._conn_cls = Conn
+
+    def connect(self):
+        return self._conn_cls(self.log, self.lock_results, self.params)
+
+    def begin(self):
+        return self._conn_cls(self.log, self.lock_results, self.params)
+
+
+eng = BrokenEngine(); with_engine(eng)
+survived = True
+try:
+    session._apply_isolated_ddl()
+except Exception:
+    survived = False
+check('a statement that cannot succeed still only warns, and startup continues', survived)
+
+# The chain: the real isolated-DDL handler inside the real retry loop. Not two separate claims.
+eng = ContendedEngine(); with_engine(eng)
+calls = []
+def schema_with_real_isolated_ddl():
+    calls.append(1)
+    session._apply_isolated_ddl()
+session._create_schema = schema_with_real_isolated_ddl
+session.time = types.SimpleNamespace(monotonic=lambda: 0.0, sleep=lambda s: None)
+raised = None
+try:
+    session.init_db()
+except Exception as exc:
+    raised = exc
+check('contention in isolated DDL reaches the retry loop and is retried', len(calls) > 1, calls)
+check('and an unresolvable one ends as a startup failure, not a silent success',
+      isinstance(raised, LockTimeout), raised)
+
 print('FAILURES:', failures)
 sys.exit(1 if failures else 0)

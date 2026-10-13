@@ -52,19 +52,26 @@ with Session(engine) as session:
         session.add(models.WatchlistItem(user_id=i, stock_id=stock.id))
     session.add(models.AlertPreference(user_id=2, alert_type='product_impact', enabled=False))
     session.commit()
-    may_send = lambda sess, user, typ: not bool(sess.scalar(select(models.AlertPreference)
-        .where(models.AlertPreference.user_id == user.id,
-               models.AlertPreference.alert_type == typ,
-               models.AlertPreference.enabled.is_(False))))
+    # AQ-REVIEW-2/3 (2026-10-12): THIS USED TO INJECT A LAMBDA, and the lambda implemented a
+    # different rule from the shipped gate — it checked one preference row and ignored the
+    # registry default, the email address and account activity. The suite was therefore green
+    # on behaviour the live caller could not produce, and two defects shipped behind it. The
+    # real gate is used instead; it lives in `alert_audience` precisely so this is possible
+    # without standing the scheduler up.
+    #
+    # product_impact is opt-in, so the users who should receive it need an explicit row.
+    for uid in (1, 3):
+        session.add(models.AlertPreference(user_id=uid, alert_type='product_impact', enabled=True))
+    session.commit()
     assert not recognize(session.get(models.RealtimeNewsItem, 2))
-    result = process_recent(session, now=t0.replace(tzinfo=timezone.utc) + timedelta(minutes=1), may_send=may_send)
+    result = process_recent(session, now=t0.replace(tzinfo=timezone.utc) + timedelta(minutes=1))
     session.commit()
     assert result['new_alerts'] == 2
     receipts = {r.user_id: r.state for r in session.scalars(select(models.NewsImpactReceipt))}
     assert receipts == {1: 'email_queued', 2: 'preference_disabled', 3: 'in_app_only'}
     assert len(list(session.scalars(select(models.NotificationOutbox)))) == 1
     assert len(list(session.scalars(select(models.AppNotification)))) == 2
-    process_recent(session, now=t0.replace(tzinfo=timezone.utc) + timedelta(minutes=2), may_send=may_send)
+    process_recent(session, now=t0.replace(tzinfo=timezone.utc) + timedelta(minutes=2))
     session.commit()
     assert len(list(session.scalars(select(models.NewsImpactReceipt)))) == 3
     claimed = claim(session, owner='test', now=t0 + timedelta(minutes=2), alert_types=('product_impact',))
@@ -74,7 +81,7 @@ with Session(engine) as session:
     stock = session.scalar(select(models.Stock).where(models.Stock.symbol == 'INTC'))
     session.add(models.WatchlistItem(user_id=4, stock_id=stock.id))
     session.commit()
-    process_recent(session, now=t0.replace(tzinfo=timezone.utc) + timedelta(days=5), may_send=may_send)
+    process_recent(session, now=t0.replace(tzinfo=timezone.utc) + timedelta(days=5))
     session.commit()
     late = session.scalar(select(models.NewsImpactReceipt).where(models.NewsImpactReceipt.user_id == 4))
     assert late.state == 'historical_no_alert'

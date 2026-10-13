@@ -133,8 +133,18 @@ def init_db() -> None:
 
 def _create_schema() -> None:
     """The schema work itself. Always called with the startup lock held."""
-    Base.metadata.create_all(bind=engine)
+    # AQ-REVIEW-4 (2026-10-12): create_all() USED TO RUN ON ITS OWN CONNECTION, which meant the
+    # one statement most likely to block had no lock_timeout at all. The advisory lock serializes
+    # the twelve app startups against each other; it does nothing about a lock held by an
+    # ordinary client, and creating a missing table with a foreign key to a locked existing one
+    # waits on that client indefinitely — while HOLDING the advisory lock, so the other eleven
+    # queue behind it. That is the convoy again, one layer down. The idle-in-transaction timeout
+    # does not help: it does not interrupt a statement actively waiting for a lock.
+    #
+    # Binding create_all to the _ddl_begin() connection puts it under the same timeout and the
+    # same retry contract as every other statement here.
     with _ddl_begin() as conn:
+        Base.metadata.create_all(bind=conn)
         conn.execute(text("ALTER TABLE IF EXISTS options_flow_snapshots ADD COLUMN IF NOT EXISTS evidence JSON"))
 
     _run_migrations()
@@ -214,6 +224,16 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "ALTER TABLE IF EXISTS observation_outcomes "
             "ALTER COLUMN return_basis TYPE VARCHAR(48)"))
+
+        # AQ-REVIEW-1 (2026-10-12): `news_impact_events.evidence_status` was created at
+        # VARCHAR(32) by migration 005, and the producer's only value is 38 characters — so
+        # every recognized event failed to persist on PostgreSQL while passing on SQLite, which
+        # does not enforce the length. Widening the model and the migration does NOT fix the
+        # table that already exists in production; this does. Same class as the create_all()
+        # incidents this file is otherwise full of.
+        conn.execute(text(
+            "ALTER TABLE IF EXISTS news_impact_events "
+            "ALTER COLUMN evidence_status TYPE VARCHAR(64)"))
 
         # AUD-OBS-COVERAGEFUTURE (2026-10-08): the first coverage rows claimed a span ending
         # 2026-12-31, retrieved on 2026-10-08 — i.e. they asserted knowledge of corporate
@@ -1153,6 +1173,15 @@ def _apply_isolated_ddl() -> None:
             with _ddl_begin() as conn:
                 conn.execute(text(sql))
         except Exception as exc:          # noqa: BLE001 — see the docstring
+            # AQ-REVIEW-5 (2026-10-12): CONTENTION IS NOT A FAILED STATEMENT, so it must not be
+            # absorbed here. This handler exists for a statement that cannot succeed — a
+            # duplicate index — where dying at startup would be worse than continuing without
+            # it. A lock timeout is the opposite case: the statement is fine and would apply on
+            # a retry. Swallowing it let init_db() return success with required broker-submission
+            # columns missing and no retry, directly contradicting the guarantee the retry loop
+            # above documents.
+            if ddl_guard.is_lock_contention(exc):
+                raise
             print(f"[init_db] WARNING {name} not applied: {exc}")
 
 
@@ -1264,6 +1293,8 @@ def _apply_once(name: str, sql: str, params: dict | None = None) -> None:
                 ")"
             ))
     except Exception as exc:  # noqa: BLE001
+        if ddl_guard.is_lock_contention(exc):
+            raise  # AQ-REVIEW-5: retryable, so it belongs to init_db()'s loop, not to a warning
         _MIGRATION_FAILURES[name] = f"ledger unavailable: {exc}"
         print(f"[init_db] WARNING applied_migrations ledger unavailable: {exc}")
         return
@@ -1279,6 +1310,8 @@ def _apply_once(name: str, sql: str, params: dict | None = None) -> None:
             conn.execute(text(sql), params or {})
         _MIGRATION_FAILURES.pop(name, None)
     except Exception as exc:  # noqa: BLE001 — same rationale as _apply_isolated_ddl's own
+        if ddl_guard.is_lock_contention(exc):
+            raise  # AQ-REVIEW-5: see _apply_isolated_ddl — contention retries, it does not warn
         _MIGRATION_FAILURES[name] = str(exc)
         print(f"[init_db] WARNING one-shot migration {name} not applied: {exc}")
 

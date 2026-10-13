@@ -310,37 +310,30 @@ def _may_send(session, user, alert_type: str) -> bool:
     It also enforces what the dict filter cannot: an INACTIVE account. The flow digest selected
     every user with a nonempty email and mailed disabled accounts.
 
-    Same two conventions as the dict filter, deliberately: absence means SUBSCRIBED (only an
-    explicit `enabled = FALSE` opts out), and a failed lookup FAILS OPEN, because silently
-    dropping mail on a settings-query error is indistinguishable from the alert never firing.
+    WHAT ABSENCE MEANS IS PER TYPE, read from the registry's declared default rather than fixed
+    here. For the long-standing types absence means SUBSCRIBED and a failed lookup FAILS OPEN,
+    because silently dropping mail on a settings-query error is indistinguishable from the alert
+    never firing. For an OPT-IN type both invert, because there the unrecoverable mistake is
+    mailing somebody who never agreed. See `alert_audience` and `common.alert_prefs`.
     """
-    if user is None:
-        return False
-    if not getattr(user, "email", None):
-        return False
-    # An inactive account is not a preference question — it is not a recipient.
-    if not getattr(user, "is_active", True):
-        return False
-    try:
-        from common.alert_prefs import ESSENTIAL
-        if alert_type in ESSENTIAL:
-            return True
-    except Exception:
-        pass
-    uid = getattr(user, "id", None)
-    if uid is None:
-        return True
-    try:
-        row = session.execute(
-            text("SELECT enabled FROM alert_preferences "
-                 "WHERE user_id = :u AND alert_type = :at"),
-            {"u": uid, "at": alert_type},
-        ).first()
-    except Exception as exc:
-        log.warning("alert_prefs.single_lookup_failed", alert_type=alert_type,
-                    user_id=uid, error=str(exc))
-        return True
-    return True if row is None else bool(row[0])
+    from .alert_audience import may_send as _impl
+    return _impl(session, user, alert_type)
+
+
+def _may_notify(session, user, alert_type: str) -> bool:
+    """Is this account an eligible AUDIENCE for `alert_type`, delivery channel set aside?
+
+    AQ-REVIEW-3 (2026-10-12). Split from `_may_send` because the two questions were fused and
+    the fusion was reachable: `news_impact_watch` asked `_may_send()` before creating an IN-APP
+    notification, and `_may_send` answers False for an account with no email address. An opted-in
+    user without one therefore got no in-app notice AND a receipt reading `preference_disabled`,
+    which names the wrong cause.
+
+    The rule itself lives in `alert_audience`, which imports nothing heavy and can therefore be
+    exercised against a real database — see that module for why that matters here.
+    """
+    from .alert_audience import may_notify as _impl
+    return _impl(session, user, alert_type)
 
 
 def _filter_by_alert_pref(session, recipients: dict, alert_type: str) -> dict:
@@ -351,27 +344,17 @@ def _filter_by_alert_pref(session, recipients: dict, alert_type: str) -> dict:
     shapes, and one central filter is far easier to verify than twelve edited WHERE clauses.
     It also keeps the audience rule in one place when the next alert type is added.
 
-    ABSENCE MEANS SUBSCRIBED — only an explicit `enabled = FALSE` row removes anyone, so a user
-    who has never touched their settings is unaffected. FAILS OPEN: if the preference lookup
-    raises, everyone still gets their mail. Silently dropping alerts because a settings query
-    failed would be indistinguishable, from the outside, from the alert never having fired.
+    WHAT ABSENCE MEANS IS PER TYPE, and comes from the registry's declared default — not from
+    this function. For the long-standing types absence means SUBSCRIBED and a failed lookup
+    FAILS OPEN, because silently dropping alerts on a settings-query error is indistinguishable,
+    from the outside, from the alert never having fired. For an OPT-IN type both of those invert:
+    absence means not subscribed, and a failed lookup sends nothing, because there the
+    unrecoverable mistake is mailing somebody who never agreed.
     """
     if not recipients:
         return recipients
-    try:
-        opted_out = {
-            r[0] for r in session.execute(
-                text("SELECT user_id FROM alert_preferences "
-                     "WHERE alert_type = :at AND enabled = FALSE"),
-                {"at": alert_type},
-            ).all()
-        }
-    except Exception as exc:
-        log.warning("alert_prefs.lookup_failed", alert_type=alert_type, error=str(exc))
-        return recipients
-    if not opted_out:
-        return recipients
-    return {uid: u for uid, u in recipients.items() if uid not in opted_out}
+    from .alert_audience import filter_recipients as _impl
+    return _impl(session, recipients, alert_type)
 
 
 def _record_job_status(job_name: str, status: str, duration_s: float, error: str | None = None) -> None:

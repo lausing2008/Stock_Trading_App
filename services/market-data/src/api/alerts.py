@@ -243,7 +243,8 @@ def get_alert_preferences(
     has no rows at all, and an empty list would render as "you receive nothing" — the exact
     opposite of the truth, since absence means subscribed.
     """
-    from common.alert_prefs import ALERT_TYPES
+    from common.alert_prefs import (ALERT_TYPES, default_enabled_for,
+                                     effective_enabled)
     from db import AlertPreference
 
     stored = {
@@ -263,16 +264,19 @@ def get_alert_preferences(
                 # added type silently enrolled every user who had never seen it. A type that
                 # forgets to declare now enrols nobody, and the ratchet test below refuses the
                 # omission outright.
-                "enabled": stored.get(a["key"], a.get("default_enabled", False)),
-                "default_enabled": a.get("default_enabled", False),
+                # AQ-REVIEW-2 (2026-10-12): resolved by the SAME function the sender uses.
+                # This line previously re-implemented the rule, and the sender re-implemented it
+                # a third way and disagreed — a type could read "off" here while the sender
+                # admitted it. A default only one of three readers honours is not a default.
+                "enabled": effective_enabled(a["key"], stored.get(a["key"])),
+                "default_enabled": default_enabled_for(a["key"]),
             }
             for a in ALERT_TYPES
         ],
-        # Stated so the UI can explain the default rather than implying a row exists per type.
-        "default_when_unset": True,
-        "defaults_by_type": {
-            a["key"]: a.get("default_enabled", False) for a in ALERT_TYPES
-        },
+        # PER TYPE, not one answer for all of them. This was `True` unconditionally, which is the
+        # claim the opt-in channel disproves; a UI explaining "unset means on" would have been
+        # telling users the opposite of what the sender does for an opt-in type.
+        "defaults_by_type": {a["key"]: default_enabled_for(a["key"]) for a in ALERT_TYPES},
     }
 
 

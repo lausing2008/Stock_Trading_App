@@ -4424,7 +4424,9 @@ export type AlertPreferenceRow = {
 
 export type AlertPreferencesResponse = {
   types: AlertPreferenceRow[];
-  default_when_unset: boolean;
+  /** Per-type default for an account with no stored row. `default_when_unset` was removed:
+   *  it claimed one answer for every type, which an opt-in channel disproves. */
+  defaults_by_type?: Record<string, boolean>;
 };
 
 export type InstitutionalFund = {

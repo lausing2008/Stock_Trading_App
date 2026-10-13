@@ -165,6 +165,58 @@ def is_manageable(alert_type: str | None) -> bool:
     return alert_type in _BY_KEY
 
 
+# ── Effective preference: ONE answer, used by settings AND by every sender ────
+
+def default_enabled_for(alert_type: str) -> bool:
+    """What a type means for an account that has never configured it.
+
+    An UNKNOWN type returns False. A type not in the registry is not a channel anyone was
+    offered, so it has no established subscription to preserve, and guessing True would
+    reintroduce the defect this function exists to close.
+    """
+    entry = _BY_KEY.get(alert_type)
+    if entry is None:
+        return False
+    return bool(entry.get("default_enabled", False))
+
+
+def effective_enabled(alert_type: str, stored: bool | None, *,
+                      lookup_failed: bool = False) -> bool:
+    """May this account be sent `alert_type`? The only implementation of that question.
+
+    AQ-REVIEW-2 (2026-10-12). This existed in three places that did not agree. The settings
+    endpoint read the registry's declared default; the SENDER did not — `_may_send()` returned
+    True for a missing row and True again when the lookup raised, so an account could see a
+    channel switched off in settings while the sender admitted it. Declaring a default that only
+    the settings page honours is not a default; it is a label on a screen.
+
+    FAILURE FALLS BACK TO THE DECLARED DEFAULT, which is deliberately not the same thing as
+    "fail open". For the long-standing types whose default is True this IS fail-open, and the
+    original reasoning still holds: silently dropping mail because a settings query failed is
+    indistinguishable, from the outside, from the alert never having fired. For an opt-in
+    channel it is fail-CLOSED, because the matching failure there is sending a kind of message
+    to somebody who never agreed to receive it — and that one cannot be taken back.
+
+    ESSENTIAL is answered first and never consults a preference at all; see ESSENTIAL above for
+    why those are not representable as a preference.
+    """
+    if alert_type in ESSENTIAL:
+        return True
+    if lookup_failed or stored is None:
+        return default_enabled_for(alert_type)
+    return bool(stored)
+
+
+def opt_in_only(alert_type: str) -> bool:
+    """True when absence of a row means NOT subscribed.
+
+    Callers that filter a whole recipient set need this: the long-standing query shape asks for
+    `enabled = FALSE` rows and removes them, which cannot express "keep only those who said
+    yes". A type answering True here needs the opposite query, not a tweak to that one.
+    """
+    return not default_enabled_for(alert_type) and alert_type not in ESSENTIAL
+
+
 # ── Stateless unsubscribe tokens ──────────────────────────────────────────────
 
 def _sign(user_id: int, alert_type: str, secret: str) -> str:

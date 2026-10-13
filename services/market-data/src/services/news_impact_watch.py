@@ -68,15 +68,21 @@ def _body(event: NewsImpactEvent) -> str:
     return "\n".join(lines)
 
 
-def process_recent(session, *, now: datetime | None = None, may_send=None) -> dict:
+def process_recent(session, *, now: datetime | None = None, may_send=None,
+                   may_notify=None) -> dict:
     """Discover one reviewed event; record audience decisions and enqueue fresh watches.
 
     The 14-day scan makes a previously missed event visible without emailing old news.
     Re-runs are idempotent via event and receipt constraints plus the outbox event ID.
     """
     now = now or datetime.now(timezone.utc)
+    # alert_audience, not scheduler: the same functions, without importing apscheduler and the
+    # rest of the service to ask a preference question. That import weight is why this producer
+    # was only ever tested with an injected lambda that did not match the shipped rule.
     if may_send is None:
-        from .scheduler import _may_send as may_send
+        from .alert_audience import may_send as may_send
+    if may_notify is None:
+        from .alert_audience import may_notify as may_notify
     naive_now = now.replace(tzinfo=None)
     news = session.execute(
         select(RealtimeNewsItem)
@@ -115,7 +121,11 @@ def process_recent(session, *, now: datetime | None = None, may_send=None) -> di
         if event_age > MAX_LIVE_AGE:
             receipt.state, receipt.reason = "historical_no_alert", "event older than four hours when discovered"
             continue
-        if not may_send(session, user, ALERT_TYPE):
+        # AQ-REVIEW-3 (2026-10-12): AUDIENCE first, DELIVERY CHANNEL second. These were fused,
+        # and `may_send` answers False for an account with no email address — so an opted-in user
+        # without one was recorded as `preference_disabled`, which is not what happened, and
+        # never received the in-app notice the `in_app_only` branch below exists to give them.
+        if not may_notify(session, user, ALERT_TYPE):
             receipt.state, receipt.reason = "preference_disabled", "product impact preference disabled"
             continue
         body = _body(event)
@@ -125,8 +135,13 @@ def process_recent(session, *, now: datetime | None = None, may_send=None) -> di
         session.add(AppNotification(user_id=user_id, alert_id=EVENT_KEY,
             symbol=sorted(symbols)[0], message=in_app, triggered_at=naive_now,
             read=False))
-        if not (user.email or "").strip():
-            receipt.state, receipt.reason = "in_app_only", "no recipient email"
+        if not may_send(session, user, ALERT_TYPE):
+            # Reached with the preference ENABLED, so the cause is the channel, not consent.
+            # Distinguished because "we may not write to you" and "you asked us not to" are
+            # different facts and a receipt that conflates them misreports the audience.
+            receipt.state, receipt.reason = "in_app_only", (
+                "no recipient email" if not (user.email or "").strip()
+                else "email delivery not available for this account")
             created += 1
             continue
         outbox_id = f"product-impact:{EVENT_KEY}:{user_id}"

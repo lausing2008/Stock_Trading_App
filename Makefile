@@ -97,3 +97,23 @@ test-integration:
 		shared/tests/test_quality_value_persistence_integration.py \
 		shared/tests/test_observations_integration.py; \
 	 rc=$$?; docker rm -f stockai-budget-pg stockai-budget-redis >/dev/null 2>&1; exit $$rc
+	@$(MAKE) --no-print-directory test-integration-pg-schema
+
+# AQ-REVIEW (2026-10-12): two defects shipped green because SQLite cannot express what they
+# depend on — a declared varchar length it does not enforce, and a real lock another session
+# holds. Each of these targets its own disposable database and is REQUIRED, so a missing
+# container fails the target rather than skipping into a green summary line.
+test-integration-pg-schema:
+	@docker rm -f stockai-schema-pg >/dev/null 2>&1 || true
+	@docker run -d --name stockai-schema-pg -e POSTGRES_PASSWORD=probe \
+		-e POSTGRES_DB=schemaprobe -p 55439:5432 postgres:16-alpine >/dev/null
+	@for i in $$(seq 1 30); do \
+		docker exec stockai-schema-pg pg_isready -U postgres >/dev/null 2>&1 && break; sleep 1; done
+	@NEWS_IMPACT_PG_URL=postgresql+psycopg2://postgres:probe@localhost:55439/schemaprobe \
+	 NEWS_IMPACT_PG_REQUIRED=1 \
+	 DDL_GUARD_PG_URL=postgresql+psycopg2://postgres:probe@localhost:55439/schemaprobe \
+	 DDL_GUARD_PG_REQUIRED=1 \
+	 python3 -m pytest -q -p no:randomly \
+		services/market-data/tests/test_news_impact_postgres.py \
+		services/market-data/tests/test_ddl_guard_postgres.py; \
+	 rc=$$?; docker rm -f stockai-schema-pg >/dev/null 2>&1; exit $$rc

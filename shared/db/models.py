@@ -3361,7 +3361,13 @@ class NewsImpactEvent(Base):
     published_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     impacts: Mapped[list] = mapped_column(JSON, nullable=False)
-    evidence_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: AQ-REVIEW-1 (2026-10-12): was String(32); the producer's own only value is 38 characters
+    #: ("official_spec_and_provider_observation") so every insert raised
+    #: StringDataRightTruncation on PostgreSQL. SQLite does not enforce a declared varchar
+    #: length, which is why the shipped probe passed over it. Widened rather than truncated: the
+    #: value names WHAT the evidence is, and shortening it to fit a column would make the record
+    #: less legible to protect a number that was itself arbitrary.
+    evidence_status: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class NewsImpactReceipt(Base):
