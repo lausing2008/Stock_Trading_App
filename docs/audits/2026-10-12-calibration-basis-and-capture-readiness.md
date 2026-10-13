@@ -134,3 +134,40 @@ blocked description.
 
 **Still out of scope and unchanged:** multi-leg economics, assignment, broker fills. No capture
 was manufactured. Nothing was sent.
+
+---
+
+## Deployment verification (commit `28c04853`)
+
+All 13 services rebuilt and recreated; 15/15 containers healthy; **0/12 backend drift** — the
+three changed `shared/` files hash identically across every backend and match the local tree
+(`5aa8955a…`), and signal-engine's `calibration.py` matches byte-for-byte (`a07ddf41…`).
+
+| Check | Result |
+|---|---|
+| `idle_in_transaction_session_timeout` on a live app connection | `5min` |
+| client backends carrying it | 26 |
+| blocked sessions | 0 |
+| idle-in-transaction > 60s | 0 |
+| migration warnings / "not proceeding unserialized" | 0 |
+| `option_prospective_capture` | `not_ready`, both data-source requirements failing with named evidence |
+| pages `/`, `/improvements`, `/quality-value` | 200 |
+| tier 433 in the served static chunk | present |
+
+**The deploy did not exercise the lock under contention, and the report should not imply it
+did.** Zero services logged a wait. `shared/` changed, so every image rebuilt from a cold cache
+and the twelve startups were naturally minutes apart — the opposite of the cached, fast-build
+deploy that produced the convoy. The contention path is covered by the five sabotages, not by
+this run.
+
+So it was tested directly against the production database instead, across two real sessions,
+using the shipped lock key: while session A held it, a separate session was **refused**
+(`granted: false`, one holder visible in `pg_locks`); after A finished the same call was
+**granted**; and no advisory lock remained afterwards. An earlier attempt at this check was
+invalid and is recorded as such — both calls ran in one session, and Postgres advisory locks are
+re-entrant within a session, so it returned `true` for a reason that had nothing to do with the
+lock working.
+
+The AQ11 readiness finding also reproduces against the **production** database rather than only
+a test fixture: `option_chain_history` has no size columns and `users` has no options permission
+or buying-power columns there either.
