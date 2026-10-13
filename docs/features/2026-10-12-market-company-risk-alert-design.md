@@ -262,3 +262,52 @@ edited whenever the thing it guards grows.
 
 **Not built, and deliberately:** company-event coverage, the brief/digest compilation, quiet
 hours, and the live send path. The shadow review comes first.
+
+---
+
+## Deployment and the first shadow reading (commit `8597f1b6`)
+
+15/15 healthy, **0/12 drifted**, `/risk-alerts` 200, both API routes 401 (routed and guarded),
+tier 435 in the served chunk. `risk_events` and `risk_event_receipts` were created **with**
+their unique constraints — `create_all()` builds a NEW table whole; it is adding to an existing
+one that it silently skips.
+
+One detection was run against production. Delivery flag absent, so shadow:
+
+```
+subjects 157 | events 93 | unmeasurable 17 | receipts 52
+pullback         55 events  avg -14.99%  worst -42.47%
+session_decline  38 events  avg  -6.33%  worst -23.70%
+evidence_status  unverified: 110   verified: 0
+receipts         shadow_suppressed: 52      (nothing sent)
+```
+
+**A second run produced 0 new events and 0 new receipts**, so session-scoped identity holds
+against a real unique constraint, not only against SQLite.
+
+### Three readings, and what each does and does not support
+
+**93 events is NOT the steady-state rate, and must not be quoted as one.** It is a cold start:
+with no prior events, `should_emit` answers "first observation" for every subject, so the
+escalation ladder suppressed nothing. The rate that matters is the second and later sessions,
+which needs more days before it means anything. Reporting the first-day number as a daily rate
+would overstate volume by whatever the ladder turns out to suppress.
+
+**Nothing is verified, and the cause is measured rather than guessed.** Corporate-action
+coverage is evidenced through **2026-10-08** while the latest daily bar is **2026-10-13**, so
+every price window runs five days past the evidence and `resolve_window` correctly declines to
+call it verified. 203 symbols have coverage — this is a *freshness* gap, not a missing-data gap.
+Until the action ingest keeps `evidenced_to` level with the price bars, the verified path is
+unreachable in production and every figure here stays labelled unverified. The same applies to
+the AQ04 calibration basis, which shares this contract. **Not fixed here:** the cadence is an
+ingest-cost decision, not a code defect, and it is stated rather than quietly worked around.
+
+**17 subjects could not be measured at all** — a recorded corporate action inside the window
+with no applicable ratio. They are recorded as `unmeasurable`, which is the point: without
+those rows a reader cannot tell a broken feed from a calm market.
+
+### What the shadow review still needs
+
+More sessions, for the post-ladder rate; a judgement on whether a 7% pullback floor over 15
+sessions is the right first rung given 55 of 157 subjects cleared it; and the coverage-freshness
+decision above. None of that is a code change yet, which is why delivery stays off.
