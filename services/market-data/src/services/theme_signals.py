@@ -46,16 +46,8 @@ log = structlog.get_logger()
 # silently skips any symbol not found — a theme with zero resolvable symbols is skipped
 # entirely, never fabricated from nothing) — no attempt is made to auto-discover new theme
 # constituents; editing this list is the only way to change theme coverage.
-THEMES: dict[str, list[str]] = {
-    "AI / GPU Semiconductors": ["NVDA", "AMD", "AVGO", "TSM"],
-    "Semiconductor Packaging & Testing": ["AMKR", "TSM", "MU"],
-    "Passive Components (MLCC)": ["MU", "TXN", "ON"],
-    "Gold & Precious Metals": ["GLD", "NEM", "GOLD", "AEM"],
-    "Space & Satellite": ["RKLB", "LMT", "NOC", "ASTS"],
-    "Healthcare & Biotech": ["UNH", "LLY", "JNJ", "ISRG"],
-    "AI Infrastructure & Data Centers": ["MSFT", "GOOGL", "META", "AMZN"],
-    "Clean Energy": ["ENPH", "FSLR", "TSLA", "NEE"],
-}
+from .theme_baskets import THEMES  # single source of truth; see that module
+
 
 _REDIS_THEME_LLM_ENABLED = "stockai:admin:feature:theme_forecast_email_enabled"
 

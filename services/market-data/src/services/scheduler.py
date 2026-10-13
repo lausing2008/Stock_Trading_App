@@ -2577,6 +2577,53 @@ def _send_early_earnings_stage(session, sym, phase, headline, subject, body_text
                      symbol=sym, phase=phase, user=u_obj.username)
 
 
+def run_price_risk_detection() -> None:
+    """Detect measured price-risk events. SHADOW BY DEFAULT — detects, records, sends nothing.
+
+    DELIBERATELY NOT BEHIND `_is_alerting_enabled()`, and the reason is the point of the whole
+    shadow period: that guard stops MAIL, and this job's entire purpose right now is to
+    accumulate the detection record that decides whether mail should ever be enabled. Gating it
+    behind the mail switch would skip the measurement in exactly the environments where it is
+    being measured. It is classified on the non-alert side for the same reason it is safe to
+    run there: `detect()` writes rows and never enqueues or sends.
+
+    If a send path is ever added here, this job MOVES to the alerting side and into
+    `_ALERT_JOB_IDS`. A test asserts the no-send property rather than trusting this note.
+
+    One event per subject per session by construction: the event key is session-scoped, so a
+    repeat within the day collides with the unique constraint instead of duplicating.
+    """
+    import uuid as _uuid
+    from .price_risk_watch import detect
+    started = time.monotonic()
+    lock_key = "stockai:lock:price_risk_detection"
+    lock_token = _uuid.uuid4().hex
+    try:
+        redis_client = _get_redis()
+        if not redis_client.set(lock_key, lock_token, nx=True, ex=600):
+            return
+    except Exception as exc:
+        log.warning("price_risk.lock_unavailable", error=str(exc))
+        return
+    try:
+        with SessionLocal() as session:
+            result = detect(session, redis_client=redis_client)
+            session.commit()
+            log.info("price_risk.scan", **result)
+        _record_job_status("run_price_risk_detection", "ok", time.monotonic() - started)
+    except Exception as exc:
+        log.error("price_risk.failed", error=str(exc))
+        _record_job_status("run_price_risk_detection", "error", time.monotonic() - started,
+                           str(exc))
+    finally:
+        try:
+            rc = _get_redis()
+            if (rc.get(lock_key) or b"").decode() == lock_token:
+                rc.delete(lock_key)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def run_product_impact_watches() -> None:
     """Record reviewed product impacts, then dispatch only this channel's outbox rows."""
     import os as _os
@@ -14675,6 +14722,16 @@ def start_scheduler() -> None:
     # here specifically because 19:00 ET is already after the close — a late run prices against
     # the same settled closing prices, and 4h keeps it inside the same evening rather than
     # letting it surface at some unrelated hour the next day.
+    # Price-risk detection. 20:10 ET on weekdays: after the close and after the options-income
+    # step above, so the session's daily bars are settled rather than mid-session partials.
+    # A partial bar would report a move that is not the day's move.
+    _scheduler.add_job(
+        run_price_risk_detection,
+        CronTrigger(hour=20, minute=10, day_of_week="mon-fri", timezone="America/New_York"),
+        id="price_risk_detection", replace_existing=True,
+        max_instances=1, coalesce=True, misfire_grace_time=3600,
+    )
+
     _scheduler.add_job(
         _run_options_income_step_safe,
         CronTrigger(hour=19, minute=0, day_of_week="mon-fri",

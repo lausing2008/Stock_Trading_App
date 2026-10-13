@@ -237,6 +237,12 @@ _NON_ALERT_JOB_IDS = {
     "prebreakout_alert_outcome_eval_daily", "options_flow_alert_outcome_eval_daily",
     "dark_pool_alert_outcome_eval_daily", "fix_effectiveness_recheck_daily",
     "analyst_target_outcomes_daily",
+    # Price-risk detection (2026-10-12). Writes RiskEvent/RiskEventReceipt rows and NEVER
+    # enqueues or sends — which is why it is safe on the non-alert side, and why a local dev
+    # stack can still accumulate the shadow measurement with mail switched off. If a send path
+    # is ever added it moves to _ALERT_JOB_IDS; test_price_risk_detection_never_sends is what
+    # catches that rather than this comment.
+    "price_risk_detection",
     "live_price_cache_refresh", "avg_volume_cache_refresh", "avg_volume_startup_check",
     "signal_watchdog_daily", "db_purge_weekly", "meta_model_monthly_retrain",
     "backfill_realized_ev_monthly", "position_scaling_gate_weekly_retrain",

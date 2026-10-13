@@ -3384,6 +3384,79 @@ class NewsImpactReceipt(Base):
     decided_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class RiskEvent(Base):
+    """One measured price-risk detection: what moved, by how much, over which window.
+
+    SEPARATE FROM `NewsImpactEvent` ON PURPOSE. That one records something a publisher said;
+    this records something a price did. They carry different evidence — a story has a URL and a
+    publication time, a move has a price basis and a session window — and collapsing them would
+    force one of the two to travel with fields that cannot be filled, which is how an evidence
+    status ends up meaning nothing.
+
+    `event_key` is session-scoped, so a detector that runs every fifteen minutes cannot mint a
+    second event for a move it already reported; the duplicate is refused by the unique
+    constraint rather than by a caller remembering to check.
+    """
+    __tablename__ = "risk_events"
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"),
+                                    primary_key=True, autoincrement=True)
+    event_key: Mapped[str] = mapped_column(String(160), unique=True, nullable=False)
+    #: symbol | theme | sector | benchmark — what KIND of thing moved.
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    #: The ticker, theme name or benchmark this is about.
+    subject: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    #: session_decline | pullback | basket_breadth | unmeasurable
+    rule: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False, default="down")
+    change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: Position on the rule's escalation ladder. Re-reporting requires a HIGHER step.
+    step: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    window_sessions: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    observed_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    observed_to: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    #: The AQ04 contract, carried rather than assumed: which price basis produced this number
+    #: and whether the corporate-action evidence supports it. An unverified move is still
+    #: shown; it simply cannot be quoted as a verified figure.
+    price_basis: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    evidence_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    evidence_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Measured facts: endpoint prices and dates, overnight/regular split, basket coverage.
+    evidence: Mapped[dict] = mapped_column(JSON, nullable=False)
+    #: shadow | live — what the system was DOING when this was detected. A shadow event is a
+    #: real detection whose delivery was deliberately withheld, which is not the same as an
+    #: event nobody was eligible for, and the history has to be able to tell them apart.
+    delivery_mode: Mapped[str] = mapped_column(String(8), nullable=False, default="shadow")
+    detected_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(),
+                                                  index=True)
+
+
+class RiskEventReceipt(Base):
+    """What was decided FOR ONE RECIPIENT about one risk event, and why.
+
+    The per-recipient row is the unit that makes an alert channel auditable: "the event fired"
+    and "you were told" are different facts, and only this one answers the second. States
+    mirror the news-impact receipts deliberately so a reader does not have to learn two
+    vocabularies for the same question.
+    """
+    __tablename__ = "risk_event_receipts"
+    __table_args__ = (UniqueConstraint("event_id", "user_id", name="uq_risk_event_user"),)
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"),
+                                    primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("risk_events.id", ondelete="CASCADE"),
+                                          nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"),
+                                         nullable=False, index=True)
+    #: watchlist | theme_member | explicit_symbol — HOW this user came to be in the audience.
+    matched_via: Mapped[str] = mapped_column(String(32), nullable=False)
+    matched_symbols: Mapped[list] = mapped_column(JSON, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    outbox_event_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    decided_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class NotificationOutbox(Base):
     """M20 — durable, idempotent notification delivery.
 

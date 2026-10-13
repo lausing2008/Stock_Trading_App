@@ -72,6 +72,20 @@ ALERT_TYPES: list[dict] = [
      "default_enabled": True},
 
     # Market events
+    # PRICE RISK (2026-10-12). Two keys, not one, because the design calls for independent
+    # in-app and email control and this table stores one boolean per type — so "independent"
+    # has to be two rows, not a second column nobody would see. Both DEFAULT OFF: neither has
+    # an established subscription to preserve, and the channel is in shadow mode with
+    # deliberately unvalidated thresholds. Turning them on is a decision, not an omission.
+    {"key": "price_risk", "group": "Market", "label": "Price-risk email alerts",
+     "desc": "Email when a followed stock, theme or benchmark makes a material measured move "
+             "— independent of the AI signal's direction label, which does not change merely "
+             "because a price falls.",
+     "default_enabled": False},
+    {"key": "price_risk_in_app", "group": "Market", "label": "Price-risk in-app notices",
+     "desc": "The same detections as a notice inside the app, controlled separately from "
+             "email so one can be on without the other.",
+     "default_enabled": False},
     {"key": "product_impact", "group": "Market", "label": "Product impact watches",
      "desc": "Sourced product milestones for companies you follow and related suppliers or "
              "competitors. Research watches, not trade signals.",

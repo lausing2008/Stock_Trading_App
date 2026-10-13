@@ -1167,6 +1167,17 @@ export const api = {
   // AUD-ALERTPREFS: per-alert-type email preferences. The response carries the full
   // catalogue, not just stored rows — a user who has never opened the screen has no rows, and
   // absence means SUBSCRIBED, so an empty list would render as the exact opposite of the truth.
+  riskAlertHistory: (params: { days?: number; scope?: string; rule?: string; subject?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.days) q.set('days', String(params.days));
+    if (params.scope) q.set('scope', params.scope);
+    if (params.rule) q.set('rule', params.rule);
+    if (params.subject) q.set('subject', params.subject);
+    const qs = q.toString();
+    return request<RiskAlertHistoryResponse>(`/alerts/risk-history${qs ? `?${qs}` : ''}`);
+  },
+  riskAlertSummary: (days = 14) =>
+    request<RiskAlertSummaryResponse>(`/alerts/risk-history/summary?days=${days}`),
   alertPreferences: () => request<AlertPreferencesResponse>(`/alerts/preferences`),
   setAlertPreference: (alertType: string, enabled: boolean) =>
     request<{ alert_type: string; enabled: boolean }>(`/alerts/preferences`, {
@@ -4420,6 +4431,49 @@ export type AlertPreferenceRow = {
   label: string;
   desc: string | null;
   enabled: boolean;
+};
+
+export type RiskAlertEvent = {
+  id: number;
+  event_key: string;
+  scope: string;
+  subject: string;
+  rule: string;
+  direction: string;
+  change_pct: number | null;
+  step: number;
+  ladder?: number[] | null;
+  window_sessions: number | null;
+  observed_from: string | null;
+  observed_to: string;
+  price_basis: string | null;
+  evidence_status: string;
+  evidence_reason: string | null;
+  evidence: Record<string, unknown>;
+  /** `shadow` = detected with delivery deliberately withheld, NOT "nobody was eligible". */
+  delivery_mode: string;
+  detected_at: string | null;
+  delivery_state: string | null;
+  delivery_reason: string | null;
+};
+
+export type RiskAlertHistoryResponse = {
+  count: number;
+  days: number;
+  events: RiskAlertEvent[];
+};
+
+export type RiskAlertSummaryResponse = {
+  days: number;
+  events_total: number;
+  events_per_day: number;
+  distinct_subjects: number;
+  by_rule: Record<string, number>;
+  by_delivery_mode: Record<string, number>;
+  my_receipt_states: Record<string, number>;
+  unmeasurable_events: number;
+  events_without_verified_basis: number;
+  delivery_note: string;
 };
 
 export type AlertPreferencesResponse = {

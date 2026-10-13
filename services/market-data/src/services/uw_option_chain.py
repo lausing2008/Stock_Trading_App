@@ -124,6 +124,25 @@ def _to_chain_row(r: dict, spot: float | None) -> dict:
     }
 
 
+def _release_read_transaction(session: Session, *, symbol: str) -> bool:
+    """End a READ-ONLY transaction before a slow external call. Returns whether it was released.
+
+    `rollback()` and not `commit()`: there is nothing to commit on a read path, and rollback
+    cannot flush anything the caller did not ask to be written. Both are refused outright when
+    the session has pending state, which is what makes this safe to call from a shared session.
+    """
+    if session.new or session.dirty or session.deleted:
+        log.info("uw_chain.transaction_held", symbol=symbol,
+                 reason="caller has pending changes; not releasing their transaction")
+        return False
+    try:
+        session.rollback()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("uw_chain.release_failed", symbol=symbol, error=str(exc))
+        return False
+
+
 def get_chain(
     session: Session,
     symbol: str,
@@ -147,6 +166,19 @@ def get_chain(
     # Fetch when we have nothing, or nothing recent enough to be worth showing.
     stale = as_of is None or (today - as_of).days > _MAX_LOOKBACK_DAYS
     if stale and allow_fetch:
+        # PROVIDER REQUESTS DO NOT BELONG INSIDE A DATABASE TRANSACTION (2026-10-12).
+        # `latest_as_of()` above is a SELECT, and in SQLAlchemy a SELECT opens a transaction
+        # that stays open until commit or rollback. The capture below then makes Unusual Whales
+        # requests — so the connection sat `idle in transaction` for the whole round trip,
+        # holding its locks and its MVCC snapshot while waiting on somebody else's network.
+        # Observed in production at 30-35 seconds per symbol, which is also exactly the shape
+        # the 2026-10-12 migration convoy's orphan had.
+        #
+        # Released conservatively: only when this session has nothing pending, because the
+        # session belongs to the CALLER and discarding their uncommitted work to tidy up a read
+        # would be a far worse bug than the one being fixed. A session with pending state keeps
+        # its transaction and the reason is recorded rather than silently skipped.
+        _release_read_transaction(session, symbol=sym)
         try:
             from .scheduler import capture_option_chain_history
             # Yesterday back MAX_LOOKBACK: the chain for a session settles after its close, so

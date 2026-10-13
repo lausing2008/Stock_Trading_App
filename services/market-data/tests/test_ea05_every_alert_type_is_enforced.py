@@ -64,26 +64,71 @@ _PTE_CODE = _executable(_PTE)
 _OPTION_OPPORTUNITY_CODE = _executable(_OPTION_OPPORTUNITY)
 
 
-def _is_enforced(alert_type: str) -> bool:
-    """Does SOME delivery path actually consult this type's preference?
+#: Every service module that could plausibly deliver something. Scanned as a DIRECTORY rather
+#: than a hand-listed trio: the list was three files, a fourth delivery path was added
+#: elsewhere, and the ratchet reported it as unenforced when it was enforced perfectly well.
+#: A maintenance list that has to be edited whenever the thing it guards grows is a second
+#: place to forget.
+_SCAN_ROOTS = (
+    _ROOT / "services/market-data/src/services",
+    _ROOT / "services/market-data/src/api",
+)
+_GATE_CALLS = {"_may_send", "may_send", "_may_notify", "may_notify",
+               "_filter_by_alert_pref", "filter_recipients"}
 
-    Three accepted shapes, because the jobs genuinely differ: the recipient-dict filter, the
-    single-recipient gate, and an in-SQL predicate for the one path that selects bare email
-    addresses (paper exits), where reconstructing a user from an address would be the identity
-    guesswork this finding warns against.
 
-    STRUCTURAL ONLY, and labelled as such. It proves a call EXISTS in executable code, not
-    that the call's RESULT gates delivery. The behavioural half is
-    test_an_opted_out_user_receives_nothing below, which runs a real job end to end; this stays
-    as the cheap check that no registered type is forgotten entirely.
+def _enforced_types() -> set[str]:
+    """Every alert type some delivery path actually consults, resolving CONSTANTS.
+
+    The previous version matched the type as a string LITERAL inside the call parentheses, so
+    `may_send(session, user, ALERT_TYPE_EMAIL)` — a perfectly ordinary named constant — read as
+    unenforced. Rather than spell literals into call sites to satisfy a regex, module-level
+    `NAME = "literal"` bindings are resolved and a call passing that name counts.
+
+    STRUCTURAL ONLY, and still labelled as such: it proves a call EXISTS in executable code,
+    not that the call's RESULT gates delivery. The behavioural half is
+    test_an_opted_out_user_receives_nothing below, which runs a real job end to end.
     """
-    patterns = [
-        rf'_filter_by_alert_pref\([^)]*"{alert_type}"\)',
-        rf'_may_send\([^)]*"{alert_type}"\)',
-        rf'alert_type == "{alert_type}"',
-    ]
-    return any(re.search(p, _SCHED_CODE) or re.search(p, _PTE_CODE)
-               or re.search(p, _OPTION_OPPORTUNITY_CODE) for p in patterns)
+    import ast
+
+    found: set[str] = set()
+    for rootdir in _SCAN_ROOTS:
+        for path in sorted(rootdir.rglob("*.py")):
+            try:
+                tree = ast.parse(path.read_text())
+            except SyntaxError:  # pragma: no cover - a broken file fails elsewhere, loudly
+                continue
+            consts: dict[str, str] = {}
+            for node in tree.body:
+                if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) \
+                        and isinstance(node.value.value, str):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            consts[target.id] = node.value.value
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    name = (node.func.attr if isinstance(node.func, ast.Attribute)
+                            else getattr(node.func, "id", None))
+                    if name in _GATE_CALLS:
+                        for arg in node.args:
+                            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                                found.add(arg.value)
+                            elif isinstance(arg, ast.Name) and arg.id in consts:
+                                found.add(consts[arg.id])
+                # The in-SQL predicate shape, for the path that selects bare email addresses.
+                if isinstance(node, ast.Compare) and isinstance(node.left, ast.Attribute) \
+                        and node.left.attr == "alert_type":
+                    for comp in node.comparators:
+                        if isinstance(comp, ast.Constant) and isinstance(comp.value, str):
+                            found.add(comp.value)
+    # The raw-SQL predicate form, which no AST of Python can see.
+    for blob in (_SCHED_CODE, _PTE_CODE, _OPTION_OPPORTUNITY_CODE):
+        found.update(re.findall(r'alert_type\s*==\s*"([a-z_]+)"', blob))
+    return found
+
+
+def _is_enforced(alert_type: str) -> bool:
+    return alert_type in _enforced_types()
 
 
 def test_every_manageable_alert_type_is_enforced():

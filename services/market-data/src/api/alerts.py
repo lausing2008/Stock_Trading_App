@@ -370,3 +370,125 @@ def unsubscribe(
         "<p style=\"margin:0;color:#64748b;font-size:14px\">Other alerts are unaffected. "
         "You can turn this back on any time in your alert settings.</p></div>"
     )
+
+
+# ── Price-risk alert history ─────────────────────────────────────────────────
+#
+# The design asked for "a clear alert history" and for a shadow period that measures volume,
+# misses and duplicates BEFORE anything is delivered. Both are served from the same rows, which
+# is the point: a summary derived from a different query than the list it summarises is how two
+# screens come to disagree about the same week.
+
+@router.get("/risk-history")
+def risk_alert_history(
+    scope: str | None = None,
+    rule: str | None = None,
+    subject: str | None = None,
+    days: int = 14,
+    limit: int = 200,
+    user=Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Detected price-risk events, newest first, with this account's own receipt state.
+
+    The receipt is LEFT-joined rather than required. An event with no receipt for this account
+    is a real detection that this account was not an audience for, and dropping those would
+    turn the history into "what I was sent", which is a different and much less useful
+    question when the channel is deliberately not sending yet.
+    """
+    from datetime import timedelta
+    from db import RiskEvent, RiskEventReceipt
+
+    since = datetime.utcnow() - timedelta(days=max(1, min(days, 120)))
+    q = (select(RiskEvent, RiskEventReceipt)
+         .join(RiskEventReceipt,
+               (RiskEventReceipt.event_id == RiskEvent.id)
+               & (RiskEventReceipt.user_id == user.id), isouter=True)
+         .where(RiskEvent.detected_at >= since)
+         .order_by(RiskEvent.detected_at.desc())
+         .limit(max(1, min(limit, 1000))))
+    if scope:
+        q = q.where(RiskEvent.scope == scope)
+    if rule:
+        q = q.where(RiskEvent.rule == rule)
+    if subject:
+        q = q.where(RiskEvent.subject == subject.upper()
+                    if len(subject) <= 20 else subject)
+
+    rows = []
+    for event, receipt in session.execute(q).all():
+        rows.append({
+            "id": event.id, "event_key": event.event_key,
+            "scope": event.scope, "subject": event.subject, "rule": event.rule,
+            "direction": event.direction, "change_pct": event.change_pct,
+            "step": event.step, "ladder": (event.evidence or {}).get("ladder"),
+            "window_sessions": event.window_sessions,
+            "observed_from": event.observed_from.isoformat() if event.observed_from else None,
+            "observed_to": event.observed_to.isoformat(),
+            "price_basis": event.price_basis,
+            "evidence_status": event.evidence_status,
+            "evidence_reason": event.evidence_reason,
+            "evidence": event.evidence,
+            # SHADOW IS A STATE, NOT AN ABSENCE. "detected but deliberately not delivered" and
+            # "nobody was eligible" look identical unless the mode is carried on the row.
+            "delivery_mode": event.delivery_mode,
+            "detected_at": event.detected_at.isoformat() if event.detected_at else None,
+            "delivery_state": receipt.state if receipt else None,
+            "delivery_reason": receipt.reason if receipt else None,
+        })
+    return {"count": len(rows), "days": days, "events": rows}
+
+
+@router.get("/risk-history/summary")
+def risk_alert_summary(
+    days: int = 14,
+    user=Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """What a shadow period is for: volume, duplicate pressure and what could not be measured.
+
+    `suppressed_by_ladder` is the number of detections that were NOT raised because they did
+    not escalate. It is the single most useful number here — it is the difference between this
+    channel and one that repeats "still down" on every polling cycle — and it is reported
+    rather than inferred from the gap between two other counts.
+    """
+    from datetime import timedelta
+    from sqlalchemy import func
+    from db import RiskEvent, RiskEventReceipt
+
+    since = datetime.utcnow() - timedelta(days=max(1, min(days, 120)))
+    by_rule = dict(session.execute(
+        select(RiskEvent.rule, func.count()).where(RiskEvent.detected_at >= since)
+        .group_by(RiskEvent.rule)).all())
+    by_mode = dict(session.execute(
+        select(RiskEvent.delivery_mode, func.count()).where(RiskEvent.detected_at >= since)
+        .group_by(RiskEvent.delivery_mode)).all())
+    by_state = dict(session.execute(
+        select(RiskEventReceipt.state, func.count())
+        .join(RiskEvent, RiskEvent.id == RiskEventReceipt.event_id)
+        .where(RiskEvent.detected_at >= since, RiskEventReceipt.user_id == user.id)
+        .group_by(RiskEventReceipt.state)).all())
+    unverified = session.execute(
+        select(func.count()).select_from(RiskEvent)
+        .where(RiskEvent.detected_at >= since,
+               RiskEvent.evidence_status.notin_(("verified", "provisional")))).scalar() or 0
+    subjects = session.execute(
+        select(func.count(func.distinct(RiskEvent.subject)))
+        .where(RiskEvent.detected_at >= since)).scalar() or 0
+
+    total = sum(by_rule.values())
+    return {
+        "days": days,
+        "events_total": total,
+        "events_per_day": round(total / max(1, days), 2),
+        "distinct_subjects": subjects,
+        "by_rule": by_rule,
+        "by_delivery_mode": by_mode,
+        "my_receipt_states": by_state,
+        "unmeasurable_events": by_rule.get("unmeasurable", 0),
+        "events_without_verified_basis": unverified,
+        # Stated, not implied: these are detections, and a detection is not a message. While
+        # `by_delivery_mode` shows `shadow`, nothing here was sent to anyone.
+        "delivery_note": ("shadow events are detections whose delivery was deliberately "
+                          "withheld; they were not sent"),
+    }
