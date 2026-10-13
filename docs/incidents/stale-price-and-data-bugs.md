@@ -349,3 +349,63 @@ Cadence near the open is untouched: `us_5m_intraday` still runs every 5 minutes 
 **Not addressed here, and still open:** Unusual Whales' 13,131 adapter failures exceed
 yfinance's, and whether premarket ingestion is worth 2,840 calls/day for one email section
 remains a product question rather than a defect.
+
+---
+
+## AUD-OLDESTWINDOW (2026-10-13) — "the last 5 bars" were the last 5 bars of 2024
+
+**Reported by the user** from the IONQ stock page: *Live Pattern Signals* showed
+"Golden Cross • spread expanding" on a −9.07% day, while the sidebar said SMA50 < SMA200 and
+the ML direction read 44/100. The question was why they disagreed. They did not just disagree:
+the badge was describing a different year.
+
+**The bug.** Two daily-bar queries took the window with
+
+```python
+.order_by(Price.ts.asc()).limit(260)
+```
+
+which returns the **oldest** 260 bars, not the latest. Every "within the last N bars" check that
+followed was run against the tail of that old window.
+
+- `services/signal-engine/src/api/routes.py` `detect_patterns()` — the `/signals/{symbol}/patterns`
+  endpoint behind *Live Pattern Signals* (golden/death cross, MACD cross, RSI bounce, double
+  bottom, breakout).
+- `services/market-data/src/services/scheduler.py` `check_technical_alerts()` — user price alerts
+  of the technical kind (EMA cross, 52-week high/low, golden/death cross, MACD).
+
+**Measured in production before the fix:**
+
+| | Old query (asc) | Fixed (desc → reversed) |
+|---|---|---|
+| IONQ window | 2023-10-12 → **2024-10-23** | 2025-09-30 → 2026-10-12 |
+| last close | 14.74 | 36.27 |
+| EMA50 / EMA200 | 9.58 / 9.44 | 41.63 / 45.35 |
+| golden cross on last bar | **True** | False (EMA50 *below* EMA200) |
+
+The "(9.44)" in the badge text was the giveaway: an EMA200 that IONQ last traded near in 2024.
+**189 of 206** symbols with daily history have more than 260 bars, so this hit almost the whole
+universe. The few with ≤260 bars got the correct window by accident, which is why it was never
+obvious.
+
+**It also fired a real alert.** IONQ's GOLDEN_CROSS price alert triggered at 2026-10-13
+01:26 UTC — on the 2024-10-23 cross. Price history is a rolling ~3-year window, so the oldest
+260 bars slide forward one day per day, and a historical cross eventually "arrives" at the end
+of the stale window and looks live. Whether that alert emailed is **unknown**: market-data
+restarted at 07:25 UTC and the send logs went with it. 51 GOLDEN_CROSS alerts are active; the
+only other one ever triggered was NET on 2026-06-26, which was not re-checked.
+
+**Fix.** `.order_by(Price.ts.desc()).limit(260)` then `rows = list(reversed(rows))` so
+indicators still see chronological order. A grep for `order_by(Price.ts.asc())` followed by
+`.limit(` across `services/*/src` and `shared/` found exactly these two sites.
+
+**Test.** `services/signal-engine/tests/test_technical_signal_price_window.py` extracts the real
+query + row-preparation statements from BOTH functions via `ast` and runs them against SQLite
+at 0/30/260/400 bars of history, plus decoy bars from another stock and another timeframe.
+Sabotage: restoring the `asc` query fails exactly the 400-bar case in both functions (2 failed,
+6 passed) — the only case where oldest and latest differ. The test was first written under
+`shared/tests/`, which **neither `make test` nor CI collects**; moved into signal-engine's
+suite so it actually runs.
+
+**Not changed:** the badge uses EMA50/EMA200 while the sidebar uses SMA50/SMA200. They can
+disagree for a few days around a cross, legitimately; that is a labelling question, not this bug.

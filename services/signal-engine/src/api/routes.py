@@ -936,9 +936,11 @@ def detect_patterns(
     rows = session.execute(
         select(Price.ts, Price.close, Price.high, Price.low, Price.volume)
         .where(Price.stock_id == stock.id, Price.timeframe == TimeFrame.D1)
-        .order_by(Price.ts.asc())
+        .order_by(Price.ts.desc())
         .limit(260)
     ).all()
+    # Select the latest window, then restore chronological order for indicators.
+    rows = list(reversed(rows))
 
     if len(rows) < 30:
         return {"symbol": symbol.upper(), "patterns": [], "as_of": datetime.now(timezone.utc).isoformat() + "Z"}

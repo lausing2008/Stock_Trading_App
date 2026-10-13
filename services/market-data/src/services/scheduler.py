@@ -9481,9 +9481,11 @@ def check_technical_alerts() -> None:
                     rows = session.execute(
                         select(Price.ts, Price.close, Price.volume)
                         .where(Price.stock_id == stock.id, Price.timeframe == "D1")
-                        .order_by(Price.ts.asc())
+                        .order_by(Price.ts.desc())
                         .limit(260)
                     ).all()
+                    # Select the latest window, then restore chronological order for indicators.
+                    rows = list(reversed(rows))
                     if len(rows) < 3:
                         continue
                     prices_by_sym[sym] = pd.Series(
