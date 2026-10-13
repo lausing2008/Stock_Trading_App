@@ -15,6 +15,12 @@ PROVISIONAL = "provisional"
 UNVERIFIED = "unverified"
 #: Actions that change the share count, and therefore the meaning of a raw price.
 SHARE_COUNT_ACTIONS = ("split", "stock_dividend")
+#: The ONLY action type known to leave a price-return figure intact. An ALLOWLIST, not a
+#: blocklist of share-count types: a spinoff, rights issue or any type this module has never
+#: heard of moves the price for a reason that is not a return, so it stays excluded until
+#: someone writes the adjustment for it. (The first cut of AUD-PRICERISK-DIVIDEND blocklisted
+#: share-count types instead, and a spinoff window came back usable.)
+PRICE_NEUTRAL_ACTIONS = ("cash_dividend",)
 
 
 def _get(obj, name, default=None):
@@ -51,6 +57,16 @@ def resolve_window(bars, actions, coverage, *, start: date, end: date) -> dict:
         return {"prices": [], "basis": BASIS, "method": METHOD,
                 "evidence_status": UNVERIFIED, "limiting_factor": "unapplied_action",
                 "reason": "share-count action has no recorded ratio"}
+    # Anything else that is not price-neutral — a spinoff, a rights issue, an unknown type —
+    # has no adjustment here, so the window cannot be presented as adjusted. Before 2026-10-13
+    # this branch applied splits and silently passed everything else through as `adjusted`.
+    unresolved = sorted({str(_get(a, "action_type")) for a in window_actions
+                         if _get(a, "action_type") not in SHARE_COUNT_ACTIONS
+                         and _get(a, "action_type") not in PRICE_NEUTRAL_ACTIONS})
+    if unresolved:
+        return {"prices": [], "basis": BASIS, "method": METHOD,
+                "evidence_status": UNVERIFIED, "limiting_factor": "unapplied_action",
+                "reason": f"no adjustment exists for: {', '.join(unresolved)}"}
 
     adjusted = []
     for bar_date, close in selected:
@@ -112,13 +128,13 @@ def classify_observation_window(resolved, actions, *, start: date, end: date) ->
                 "evidence_status": resolved.get("evidence_status", PROVISIONAL),
                 "reason": resolved.get("reason", ""), "cash_dividends": dividends}
 
-    # Only SHARE-COUNT actions corrupt a split-adjusted price return. A cash dividend does not:
-    # the basis above is price return, `resolve_window` never adjusts for one, and the price
-    # drop on the ex-date is a fraction of a percent and real. Counting it here made AVGO
-    # "unmeasurable" through its whole 2026-10 decline, silencing every alert about it, because
-    # an ordinary quarterly dividend sat inside the window (AUD-PRICERISK-DIVIDEND, 2026-10-13).
+    # Every action in the window corrupts the figure EXCEPT a cash dividend. The basis above is
+    # price return, `resolve_window` never adjusts for one, and its ex-date drop is real and
+    # small; counting it here made AVGO "unmeasurable" through its whole 2026-10 decline
+    # (AUD-PRICERISK-DIVIDEND). Spinoffs, rights issues and unknown types stay excluded — see
+    # PRICE_NEUTRAL_ACTIONS for why this is an allowlist.
     in_window = [a for a in actions if start <= _get(a, "ex_date") <= end
-                 and _get(a, "action_type") in SHARE_COUNT_ACTIONS]
+                 and _get(a, "action_type") not in PRICE_NEUTRAL_ACTIONS]
     if in_window:
         kinds = sorted({str(_get(a, "action_type")) for a in in_window})
         return {"usable": False, "basis": None, "adjustment": KNOWN_CORRUPT,
@@ -128,7 +144,7 @@ def classify_observation_window(resolved, actions, *, start: date, end: date) ->
 
     return {"usable": True, "basis": "raw_price", "adjustment": UNADJUSTED_NO_KNOWN_ACTION,
             "evidence_status": UNVERIFIED,
-            "reason": ("no share-count action recorded in window; completeness unverified"
+            "reason": ("no price-affecting action recorded in window; completeness unverified"
                        + (f"; {len(dividends)} cash dividend(s) in window, not adjusted"
                           if dividends else "")),
             "cash_dividends": dividends}

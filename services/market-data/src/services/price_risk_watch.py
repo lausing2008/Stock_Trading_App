@@ -47,6 +47,12 @@ LIVE_PRICES_KEY = "stockai:live_prices"
 #: How closely a live quote's own previous close must match the last settled bar for the quote
 #: to be accepted as TODAY's. Loose enough for rounding, far tighter than any real daily move.
 QUOTE_PREV_CLOSE_TOLERANCE = 0.005
+#: Oldest cached quote an intraday measurement may use. The cache refreshes every minute; ten
+#: minutes tolerates a few failed refreshes without letting a morning quote stand in for the
+#: afternoon.
+MAX_QUOTE_AGE = timedelta(minutes=10)
+#: A quote stamped slightly in the future is clock skew between hosts; far in the future is wrong.
+MAX_QUOTE_CLOCK_SKEW = timedelta(minutes=2)
 
 #: Rules whose episode is ONE SESSION. Everything else is episodic across sessions.
 SESSION_RULES = ("session_decline", "basket_breadth")
@@ -185,11 +191,21 @@ def live_quotes(redis_client) -> dict[str, dict]:
 def with_live_quote(series: list, quote: dict | None, market: str, now: datetime):
     """Extend settled daily bars with today's live price, when — and only when — it is today's.
 
-    Returns `(series, quote_status)`. The quote is used only during the venue's REGULAR session,
-    and only when the quote's own previous close matches the last settled bar before today. That
-    match is the freshness proof: the cache carries no timestamp, and a closed market's cache
-    entry is its last COMPLETED day (BUG-VOLANOM-STALEMARKET), which would otherwise be read as
-    a fresh move. A mismatch leaves the settled bars untouched and says so.
+    Returns `(series, quote_status)`. A quote is used only if ALL of these hold:
+
+      * the venue is in its REGULAR session (`is_regular_session`, so holidays fall out);
+      * the row carries `fetched_at`, no more than `MAX_QUOTE_AGE` before `now`;
+      * the row carries the provider's own `session_date`, equal to the venue's date today;
+      * its previous close matches the last settled bar within `QUOTE_PREV_CLOSE_TOLERANCE`.
+
+    The first version had only the last check. That proves the quote BELONGS to today's
+    session, not that it is CURRENT: a row cached at 09:40 still matches at 15:40, and would be
+    reported as the afternoon's move. A row that cannot prove its age is refused, not trusted —
+    the cache key's TTL bounds the blob, not the data written into it. Each refusal has its own
+    status so the job log shows which proof failed.
+
+    Note what this does NOT prove: the provider's own delay. Yahoo's daily download carries no
+    quote time, so a fresh fetch can still be a ~15-minute-delayed price. Labelled, not hidden.
     """
     if not quote or not series or not is_regular_session(market, now):
         return series, None
@@ -198,11 +214,23 @@ def with_live_quote(series: list, quote: dict | None, market: str, now: datetime
     except (KeyError, TypeError, ValueError):
         return series, "quote_unusable"
     today = _session_date(market, now)
+    try:
+        fetched = datetime.fromisoformat(str(quote["fetched_at"]))
+        if fetched.tzinfo is None:
+            raise ValueError("naive fetched_at")
+        quote_session = date.fromisoformat(str(quote["session_date"]))
+    except (KeyError, TypeError, ValueError):
+        return series, "quote_unproven"
+    age = now - fetched
+    if age > MAX_QUOTE_AGE or age < -MAX_QUOTE_CLOCK_SKEW:
+        return series, "quote_stale"
+    if quote_session != today:
+        return series, "quote_wrong_session"
     settled = [b for b in series if b[0] < today]
     if not settled or price <= 0 or prev <= 0:
         return series, "quote_unusable"
     if abs(settled[-1][1] - prev) / prev > QUOTE_PREV_CLOSE_TOLERANCE:
-        return series, "quote_stale"
+        return series, "quote_mismatch"
     today_open = next((b[2] for b in series if b[0] == today), None)
     return settled + [(today, price, today_open)], "live_quote"
 
@@ -310,6 +338,7 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
     actions, coverage = _evidence_for(session, set(stocks))
 
     created = unmeasurable = receipts = intraday = episodes_closed = 0
+    quote_refusals: dict[str, int] = {}
     pending: dict[int, list] = {}
     #: Per symbol: {"as_of", "session", "window"} from ADJUSTED prices, or None when the symbol
     #: was unmeasurable or had no bars. Breadth reads only this — it must never re-derive a raw
@@ -323,6 +352,8 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
         series, quote_status = with_live_quote(series, quotes.get(symbol), market, now)
         if quote_status == "live_quote":
             intraday += 1
+        elif quote_status:
+            quote_refusals[quote_status] = quote_refusals.get(quote_status, 0) + 1
         if len(series) < 2:
             measured[symbol] = None
             continue
@@ -440,7 +471,8 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
     queued = _queue_digests(session, pending, now) if live else {"emails": 0, "in_app": 0}
     return {"mode": mode, "subjects": len(universe), "events": created,
             "unmeasurable": unmeasurable, "receipts": receipts,
-            "intraday_quotes": intraday, "episodes_closed": episodes_closed,
+            "intraday_quotes": intraday, "quote_refusals": quote_refusals,
+            "episodes_closed": episodes_closed,
             "config_errors": cfg["errors"], **queued}
 
 
@@ -637,7 +669,7 @@ def describe(event: RiskEvent) -> str:
     if ev.get("cash_dividends_added_back"):
         line += " (cash dividend added back)"
     if ev.get("price_source") == "live_quote":
-        line += " [intraday quote; the session is not over]"
+        line += " [intraday quote, possibly delayed by the provider; the session is not over]"
     return line + "."
 
 

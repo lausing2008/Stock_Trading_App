@@ -10,6 +10,7 @@ resolve_window = _module.resolve_window
 VERIFIED, PROVISIONAL, UNVERIFIED = _module.VERIFIED, _module.PROVISIONAL, _module.UNVERIFIED
 classify_observation_window = _module.classify_observation_window
 UNADJUSTED_NO_KNOWN_ACTION, KNOWN_CORRUPT = _module.UNADJUSTED_NO_KNOWN_ACTION, _module.KNOWN_CORRUPT
+ADJUSTED = _module.ADJUSTED
 
 
 def _coverage(kind="source_guarantee"):
@@ -132,3 +133,31 @@ def test_a_split_in_a_stale_window_is_still_corrupt():
     resolved = resolve_window(bars, [split], None, start=bars[0][0], end=bars[-1][0])
     out = classify_observation_window(resolved, [split], start=bars[0][0], end=bars[-1][0])
     assert out["usable"] is False and out["adjustment"] == KNOWN_CORRUPT
+
+
+def test_a_spinoff_in_a_stale_window_stays_corrupt():
+    """Review 2026-10-13: the first cut blocklisted share-count types, so this was usable."""
+    bars = [(date(2026, 10, 1), 100.0), (date(2026, 10, 9), 70.0)]
+    for kind in ("spinoff", "rights_issue", "something_new"):
+        act = {"ex_date": date(2026, 10, 5), "action_type": kind}
+        resolved = resolve_window(bars, [act], None, start=bars[0][0], end=bars[-1][0])
+        out = classify_observation_window(resolved, [act], start=bars[0][0], end=bars[-1][0])
+        assert out["usable"] is False and out["adjustment"] == KNOWN_CORRUPT, kind
+
+
+def test_a_spinoff_in_a_COVERED_window_is_not_passed_off_as_adjusted():
+    bars = [(date(2026, 10, 1), 100.0), (date(2026, 10, 9), 70.0)]
+    act = {"ex_date": date(2026, 10, 5), "action_type": "spinoff"}
+    resolved = resolve_window(bars, [act], _coverage(), start=bars[0][0], end=bars[-1][0])
+    assert resolved["prices"] == [] and resolved["limiting_factor"] == "unapplied_action"
+    out = classify_observation_window(resolved, [act], start=bars[0][0], end=bars[-1][0])
+    assert out["usable"] is False
+
+
+def test_a_cash_dividend_in_a_covered_window_is_still_adjusted_and_named():
+    bars = [(date(2026, 10, 1), 100.0), (date(2026, 10, 9), 99.0)]
+    div = {"ex_date": date(2026, 10, 5), "action_type": "cash_dividend", "cash_amount": 1.0}
+    resolved = resolve_window(bars, [div], _coverage(), start=bars[0][0], end=bars[-1][0])
+    out = classify_observation_window(resolved, [div], start=bars[0][0], end=bars[-1][0])
+    assert out["usable"] is True and out["adjustment"] == ADJUSTED
+    assert out["cash_dividends"][0]["cash_amount"] == 1.0

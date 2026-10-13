@@ -347,8 +347,13 @@ dividend, which `resolve_window` itself never treats as corrupting. Production h
 dividends and 15 splits, so this silenced most "unmeasurable" subjects (17 → 0 in the dry run).
 Now:
 
-- Only share-count actions (`split`, `stock_dividend`) make a window corrupt. That makes the
-  stale-coverage branch agree with the covered branch, which already ignored cash dividends.
+- **Cash dividends are the one exception, by allowlist** (`PRICE_NEUTRAL_ACTIONS`). Every
+  other action in the window — split, stock dividend, spinoff, rights issue, or a type this
+  module has never seen — still makes it corrupt unless it is actually adjusted. *(Corrected
+  after review: the first cut blocklisted share-count types instead, so a spinoff window came
+  back `usable`. The covered branch of `resolve_window` had the same gap before this work — it
+  applied splits and passed any other type through as "adjusted" — and now refuses with
+  `limiting_factor = unapplied_action`.)*
 - Cash dividends are **named** in the result (`cash_dividends`), never silently dropped.
 - Price-risk detection **adds them back** (`price_risk.dividend_adjust`, standard
   back-adjustment), so an ex-date drop is not reported as a holder's loss. The event records
@@ -393,11 +398,22 @@ member whose latest bar is older than the basket's newest session.
 
 **Intraday scanning, shadow (review item 3).** The job now also fires 10:05, 12:05, 14:05 and
 15:40 ET, and 11:30 / 15:30 HKT, besides 20:10 ET. Intraday runs append today's price from the
-shared `stockai:live_prices` cache only when (a) the venue is in its regular session
-(`is_regular_session`, so holidays fall out) and (b) the quote's own previous close matches
-the last settled bar within 0.5%. That cache carries no timestamp; the match is the freshness
-proof (see BUG-VOLANOM-STALEMARKET). Intraday events are labelled `[intraday quote; the
-session is not over]`. Event keys now include the ladder **step** (a worse reading later the
+shared `stockai:live_prices` cache only when all four hold: the venue is in its regular session
+(`is_regular_session`, so holidays fall out); the row's `fetched_at` is at most **10 minutes**
+old (and not more than 2 minutes in the future); the row's provider `session_date` is the
+venue's date today; and its previous close matches the last settled bar within 0.5%. Each
+refusal is counted by reason in the job's `quote_refusals` (`quote_unproven`, `quote_stale`,
+`quote_wrong_session`, `quote_mismatch`).
+
+*Corrected after review:* the first cut used the previous-close match alone. That proves a
+quote belongs to today's session, not that it is current — a row cached at 09:40 still matches
+at 15:40. `_fetch_live_bulk` now stamps every row with `fetched_at` (taken *before* the
+request, so it can understate freshness but never overstate it) and `session_date` (the
+provider's bar date). Rows from the single-symbol fallback get `fetched_at` only, because that
+path can read `fast_info`, which has no bar date — so they are refused for intraday use rather
+than guessed. **Not proven:** the provider's own delay; Yahoo's daily download has no quote
+time, so a fresh fetch can still be a ~15-minute-delayed price. Intraday events say
+`[intraday quote, possibly delayed by the provider; the session is not over]`. Event keys now include the ladder **step** (a worse reading later the
 same session is an escalation, not a duplicate) and the **mode** (a shadow row proves
 detection, not that anyone was told).
 
@@ -428,8 +444,13 @@ detection, not that anyone was told).
 - **Nine sabotages, all caught**: dividend counted as corrupt; recovery not written; closed
   check behind the ladder; stale member counted; slow rule removed; step dropped from key;
   quote freshness check removed; cap removed; dividend not added back.
+- **Review round (second commit), six more sabotages, all caught**: blocklist instead of
+  allowlist; `resolve_window` passing spinoffs; quote age check removed; future-skew check
+  removed; session-date check removed; missing stamps tolerated. Plus
+  `test_live_price_provenance.py` for the cache writer. `make test`: all services passed.
 - **Production dry run** (new code against live data and the live-price cache, delivery
-  forced off, transaction rolled back — nothing written):
+  forced off, transaction rolled back — nothing written). Run *before* the quote-provenance
+  fix; until the stamped cache writer is deployed, every intraday quote is `quote_unproven`:
 
   | | Before (deployed) | After |
   | --- | --- | --- |

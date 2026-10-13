@@ -218,6 +218,12 @@ def _fetch_live_bulk(stocks: list) -> list[dict]:
     except Exception:
         _avg_volume_cache = {}
 
+    # PROVENANCE, stamped on every row (2026-10-13). `fetched_at` is taken BEFORE the request,
+    # so it can only understate a row's freshness, never overstate it. `session_date` is the
+    # provider's own bar date for the price. Without them a reader cannot tell this minute's
+    # quote from one written hours ago — the cache key's TTL bounds the BLOB, not the data in
+    # it, and price-risk detection refuses an intraday quote that cannot prove both.
+    fetched_at = datetime.now(timezone.utc).isoformat()
     try:
         raw = yf.download(
             symbols,
@@ -254,6 +260,10 @@ def _fetch_live_bulk(stocks: list) -> list[dict]:
             price = float(closes.iloc[-1])
             prev_close = float(closes.iloc[-2]) if len(closes) > 1 else None
             change_pct = ((price - prev_close) / prev_close * 100) if prev_close else None
+            try:
+                session_date = pd.Timestamp(closes.index[-1]).date().isoformat()
+            except Exception:
+                session_date = None
 
             try:
                 sym_data = raw[symbol] if len(symbols) > 1 else raw
@@ -275,6 +285,8 @@ def _fetch_live_bulk(stocks: list) -> list[dict]:
                 "currency": currency_map.get(symbol, "USD"),
                 "volume": volume,
                 "avg_volume": avg_volume,
+                "fetched_at": fetched_at,
+                "session_date": session_date,
             })
             fetched.add(symbol)
         except Exception:
@@ -297,6 +309,9 @@ def _fetch_live_bulk(stocks: list) -> list[dict]:
             for fut in as_completed(futs):
                 r = fut.result()
                 if r:
+                    # Fetch time only: this path may read `fast_info`, which carries no bar
+                    # date, so `session_date` stays absent rather than guessed.
+                    r.setdefault("fetched_at", fetched_at)
                     results.append(r)
 
     return results

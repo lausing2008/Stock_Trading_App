@@ -392,28 +392,63 @@ check('a basket grinding lower is caught by multi-day breadth, not the one-day r
 
 # 13. INTRADAY: a live quote is today's price only when its previous close matches.
 MORNING = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)   # 11:00 ET, regular session
+
+def q(price, prev=100.0, at=None, session='2026-10-12', **drop):
+    row = {'symbol': 'NVDA', 'price': price, 'prev_close': prev,
+           'fetched_at': (at or MORNING).isoformat(), 'session_date': session}
+    for k in drop:
+        row.pop(k, None)
+    return [row]
 build({'NVDA': [100, 100, 100, 100, 100, 100]})
-result, events, receipts, outbox = run(now=MORNING, quotes=[{'symbol': 'NVDA', 'price': 96.0,
-                                                             'prev_close': 100.0}])
+result, events, receipts, outbox = run(now=MORNING, quotes=q(96.0))
 check('an intraday quote produces a same-session decline',
       ('session_decline', 1) in rules(events) and result['intraday_quotes'] == 1, (rules(events), result))
 check('...labelled as an intraday quote',
       all(e.evidence.get('price_source') == 'live_quote' for e in events))
 result, ev2, *_ = run(now=MORNING + timedelta(hours=3),
-                      quotes=[{'symbol': 'NVDA', 'price': 93.0, 'prev_close': 100.0}])
+                      quotes=q(93.0, at=MORNING + timedelta(hours=3)))
 check('a worse reading later the same session is an escalation, not a duplicate',
       ('session_decline', 2) in rules(ev2), rules(ev2))
 result, ev3, *_ = run(now=MORNING + timedelta(hours=4),
-                      quotes=[{'symbol': 'NVDA', 'price': 93.5, 'prev_close': 100.0}])
+                      quotes=q(93.5, at=MORNING + timedelta(hours=4)))
 check('the same step again is not repeated', len(ev3) == len(ev2), (rules(ev2), rules(ev3)))
 
 build({'NVDA': [100, 100, 100, 100, 100, 100]})
-result, events, *_ = run(now=MORNING, quotes=[{'symbol': 'NVDA', 'price': 80.0, 'prev_close': 120.0}])
+result, events, *_ = run(now=MORNING, quotes=q(80.0, prev=120.0))
 check('a quote whose previous close does not match the bars is not used',
-      events == [] and result['intraday_quotes'] == 0, (rules(events), result))
+      events == [] and result['quote_refusals'] == {'quote_mismatch': 1}, (rules(events), result))
 build({'NVDA': [100, 100, 100, 100, 100, 100]})
-result, events, *_ = run(quotes=[{'symbol': 'NVDA', 'price': 90.0, 'prev_close': 100.0}])
+result, events, *_ = run(quotes=q(90.0, at=NOW))
 check('outside the regular session the cache is ignored', events == [], rules(events))
+
+# 13b. FRESHNESS MUST BE PROVEN (review 2026-10-13): a quote cached this MORNING matches the
+#      previous close all day, so the match alone let it stand in for the afternoon.
+AFTERNOON = MORNING + timedelta(hours=4)
+for label, quotes, why in (
+        ('a quote cached hours earlier today is refused', q(90.0, at=MORNING), 'quote_stale'),
+        ('a quote with no fetch time is refused', q(90.0, at=AFTERNOON, fetched_at=1), 'quote_unproven'),
+        ('a quote with no bar date is refused', q(90.0, at=AFTERNOON, session_date=1), 'quote_unproven'),
+        ("a quote dated to another session is refused",
+         q(90.0, at=AFTERNOON, session='2026-10-09'), 'quote_wrong_session'),
+        ('a quote stamped well in the future is refused',
+         q(90.0, at=AFTERNOON + timedelta(minutes=30)), 'quote_stale')):
+    build({'NVDA': [100, 100, 100, 100, 100, 100]})
+    result, events, *_ = run(now=AFTERNOON, quotes=quotes)
+    check(label, events == [] and result['quote_refusals'] == {why: 1}, (rules(events), result))
+build({'NVDA': [100, 100, 100, 100, 100, 100]})
+result, events, *_ = run(now=AFTERNOON, quotes=q(90.0, at=AFTERNOON - timedelta(minutes=9)))
+check('a quote inside the age limit is used', result['intraday_quotes'] == 1, result)
+
+# 14. A SPINOFF is not a cash dividend: the window stays unmeasurable.
+build({'SPIN': [100, 100, 100, 100, 100, 70]}, coverage=False)
+with Session(engine, autoflush=False) as s:
+    _ids['act'] += 1
+    s.add(models.CorporateAction(id=_ids['act'], symbol='SPIN', ex_date=TODAY, action_type='spinoff',
+                                 source='test', retrieved_at=datetime(2026, 10, 12)))
+    s.commit()
+result, events, *_ = run()
+check('an unresolved spinoff yields an unmeasurable record, not a 30% decline',
+      rules(events) == [('unmeasurable', 0)], rules(events))
 
 print('FAILURES:', failures)
 sys.exit(1 if failures else 0)
