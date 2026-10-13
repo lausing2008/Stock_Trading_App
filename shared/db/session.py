@@ -1,11 +1,14 @@
 """DB session factory + init helper."""
+import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from common.config import get_settings
 
+from . import ddl_guard
 from .models import Base
 
 _settings = get_settings()
@@ -16,6 +19,11 @@ engine = create_engine(
     pool_size=5,
     max_overflow=10,
     future=True,
+    # AUD-DEPLOY-MIGRATIONCONVOY (2026-10-12): every connection this application opens carries
+    # an idle-in-transaction timeout, so a container killed mid-transaction releases its locks
+    # on a timer instead of holding them until someone notices. The convoy's root cause was one
+    # such orphan. See shared/db/ddl_guard.py for why this is scoped to our own connections.
+    connect_args=ddl_guard.connect_options(_settings.database_url),
 )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
@@ -30,10 +38,103 @@ def get_session() -> Iterator[Session]:
         db.close()
 
 
-def init_db() -> None:
-    """Idempotent metadata create — suitable for dev. Use Alembic in prod."""
-    Base.metadata.create_all(bind=engine)
+@contextmanager
+def _ddl_begin():
+    """A transaction for startup DDL, with the timeouts from ddl_guard applied.
+
+    Used in place of `engine.begin()` everywhere schema changes are issued. The timeouts are the
+    difference between a contended ALTER failing in 15 seconds and a contended ALTER parking a
+    pending ACCESS EXCLUSIVE lock that every subsequent reader queues behind — which is how one
+    stuck connection stalled the whole platform on 2026-10-12.
+    """
     with engine.begin() as conn:
+        if ddl_guard.is_postgres(engine.dialect.name):
+            for stmt in ddl_guard.ddl_session_statements():
+                conn.execute(text(stmt))
+        yield conn
+
+
+@contextmanager
+def _startup_schema_lock():
+    """Hold the cross-service advisory lock for the duration of startup DDL.
+
+    Twelve containers run `init_db()` within seconds of each other on a full deploy, because
+    `docker compose up -d` returns when a container has started rather than when it is healthy.
+    This makes them take turns. A service waiting here is idle and holds no table locks, so a
+    long wait costs startup latency and nothing else.
+
+    On a non-Postgres dialect (SQLite in tests) there is no advisory lock and no concurrency to
+    serialize, so the body runs unguarded — stated explicitly rather than left to an exception
+    handler, because a lock that silently did not apply is worse than one that was never asked
+    for.
+    """
+    if not ddl_guard.is_postgres(engine.dialect.name):
+        yield False
+        return
+
+    conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+    deadline = time.monotonic() + ddl_guard.LOCK_WAIT_SECONDS
+    try:
+        waited = False
+        while True:
+            got = conn.execute(
+                text("SELECT pg_try_advisory_lock(:k)"), {"k": ddl_guard.MIGRATION_LOCK_KEY}
+            ).scalar()
+            if got:
+                break
+            if time.monotonic() >= deadline:
+                # Deliberately NOT a silent fallthrough to running the DDL anyway. Proceeding
+                # unserialized is the exact condition this lock exists to prevent, and the
+                # caller turns this into a startup failure the deploy's health gate can see.
+                raise TimeoutError(
+                    f"startup schema lock held by another service for "
+                    f"{ddl_guard.LOCK_WAIT_SECONDS:.0f}s; not proceeding unserialized"
+                )
+            if not waited:
+                print("[init_db] waiting for the startup schema lock held by another service")
+                waited = True
+            time.sleep(1.0)
+        yield True
+    finally:
+        try:
+            conn.execute(
+                text("SELECT pg_advisory_unlock(:k)"), {"k": ddl_guard.MIGRATION_LOCK_KEY}
+            )
+        except Exception:  # noqa: BLE001 — closing the connection releases it regardless
+            pass
+        conn.close()
+
+
+def init_db() -> None:
+    """Idempotent metadata create — suitable for dev. Use Alembic in prod.
+
+    AUD-DEPLOY-MIGRATIONCONVOY (2026-10-12): all of the schema work below runs under one
+    cross-service advisory lock, and a run that loses a race for a table lock is retried rather
+    than either hanging or being skipped. Retries are exhausted into a raised exception on
+    purpose — a container that serves traffic against a schema it failed to migrate is the
+    silent failure this whole file exists to prevent.
+    """
+    attempt = 0
+    while True:
+        try:
+            with _startup_schema_lock():
+                _create_schema()
+            return
+        except Exception as exc:  # noqa: BLE001
+            if not ddl_guard.is_lock_contention(exc):
+                raise
+            delay = ddl_guard.retry_delay_seconds(attempt)
+            if delay is None:
+                raise
+            print(f"[init_db] schema DDL contended ({exc}); retrying in {delay:.0f}s")
+            time.sleep(delay)
+            attempt += 1
+
+
+def _create_schema() -> None:
+    """The schema work itself. Always called with the startup lock held."""
+    Base.metadata.create_all(bind=engine)
+    with _ddl_begin() as conn:
         conn.execute(text("ALTER TABLE IF EXISTS options_flow_snapshots ADD COLUMN IF NOT EXISTS evidence JSON"))
 
     _run_migrations()
@@ -52,7 +153,7 @@ _HK_ZH_NAMES = {
 
 
 def _run_migrations() -> None:  # noqa: C901
-    with engine.begin() as conn:
+    with _ddl_begin() as conn:
         # AUD-OBS-ADDCOLUMN (2026-10-08): `observation_outcomes` was created by create_all()
         # in an earlier deploy, and create_all() only creates MISSING TABLES — three columns
         # added to the model afterwards never reached the existing table, so every SELECT
@@ -1049,7 +1150,7 @@ def _apply_isolated_ddl() -> None:
     ]
     for name, sql in statements:
         try:
-            with engine.begin() as conn:
+            with _ddl_begin() as conn:
                 conn.execute(text(sql))
         except Exception as exc:          # noqa: BLE001 — see the docstring
             print(f"[init_db] WARNING {name} not applied: {exc}")
@@ -1155,7 +1256,7 @@ def _apply_once(name: str, sql: str, params: dict | None = None) -> None:
     on the primary key until the first commits, then conflicts, inserts nothing, and skips.
     """
     try:
-        with engine.begin() as conn:
+        with _ddl_begin() as conn:
             conn.execute(text(
                 "CREATE TABLE IF NOT EXISTS applied_migrations ("
                 "  name VARCHAR(160) PRIMARY KEY,"
@@ -1168,7 +1269,7 @@ def _apply_once(name: str, sql: str, params: dict | None = None) -> None:
         return
 
     try:
-        with engine.begin() as conn:
+        with _ddl_begin() as conn:
             claimed = conn.execute(text(
                 "INSERT INTO applied_migrations (name) VALUES (:name) "
                 "ON CONFLICT (name) DO NOTHING"
@@ -1223,7 +1324,7 @@ def _seed_admin() -> None:
     if not raw_pw:
         return  # no password configured — skip seeding (admin created manually)
 
-    with engine.begin() as conn:
+    with _ddl_begin() as conn:
         row = conn.execute(
             text("SELECT id FROM users WHERE username = 'lausing'")
         ).fetchone()

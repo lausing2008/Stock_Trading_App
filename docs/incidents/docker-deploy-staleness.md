@@ -835,3 +835,37 @@ container reached healthy.
    concurrent DDL transactions competing with live traffic. The deploy script's own health
    gate is what caught this — it refused to report success, which is the only reason it was
    investigated rather than declared done.
+
+### Remediation shipped 2026-10-12 — serialized startup DDL (`shared/db/ddl_guard.py`)
+
+The write-up above ended with "stagger them, or take the migration lock once". That is now code,
+because the deploy script's sequential loop never did the serializing: `docker compose up -d`
+returns when a container has STARTED, not when it is healthy, so twelve application startups
+overlap however carefully the shell iterates. Serialization has to live in the application.
+
+Three settings, for the three independent things that were wrong:
+
+1. **A cross-service advisory lock** around all of `init_db()`. The other eleven wait their turn.
+   A service waiting holds no table locks, so a long wait costs startup latency and nothing else.
+2. **`lock_timeout` on every DDL transaction.** This is the one that turned a single stuck
+   connection into a platform-wide stall: a blocked `ALTER` parks a pending ACCESS EXCLUSIVE lock
+   that every later reader queues behind, including readers of tables the migration never names.
+   Bounding it converts an indefinite, invisible wait into a bounded, loud failure. `SET LOCAL`,
+   not `SET` — these connections return to a pool that serves ordinary requests, and a leaked
+   15-second `lock_timeout` would turn ordinary row contention into user-visible errors.
+3. **`idle_in_transaction_session_timeout` on every connection the application opens.** This is
+   the half that addresses the orphan rather than its victim. Scoped to our own connections, not
+   set on the database, because the observed orphan was ours and a database-wide setting would
+   also bind clients we do not control.
+
+Contention retries with backoff and then **raises**. A container serving traffic against a
+schema it failed to migrate is the silent half of this bug class; the deploy's health gate
+catches the loud half. Exhausting the lock wait also raises rather than proceeding
+unserialized — falling through would be the exact condition the lock exists to prevent.
+
+Five sabotages confirmed the tests bite, each verified applied first: removing `lock_timeout`;
+running the DDL outside the lock; falling through on lock-wait exhaustion; swallowing the final
+contention and starting up anyway; and treating a genuine schema error as contention so a real
+defect is retried instead of raised. One earlier attempt was not a sabotage at all — the anchor
+text appears at two call sites and the edit landed on the wrong one, which is worth recording
+because it is indistinguishable from a passing test until the counts are checked.

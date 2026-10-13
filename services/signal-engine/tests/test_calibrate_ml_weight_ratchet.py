@@ -63,12 +63,25 @@ def _extract_calibrate_ml_weight_core():
         "def _core(rows, price_rows, prev_cap, set_ml_weight_global_cap, _record_tune_history, log):\n"
         + "\n".join("    " + line if line.strip() else line for line in dedented.splitlines())
     )
+    # AQ04 (2026-10-12): the core now classifies each observation's window against corporate
+    # actions. `_observation_basis` is defined above calibrate_ml_weight, outside the extracted
+    # slice, so it is extracted the SAME way rather than re-implemented here — a stub would make
+    # this harness agree with itself instead of with the shipped rule. The evidence maps are
+    # injected empty, which is the "nothing recorded" case: usable on raw prices, exactly the
+    # behaviour these ratchet assertions were written against.
+    from common.outcome_price_basis import (classify_observation_window as _cw,
+                                            resolve_window as _rw)
+    _helper_start = _CAL_SOURCE.index("def _observation_basis(")
+    _helper_end = _CAL_SOURCE.index("\n\n\n", _helper_start)
     namespace = {
         "datetime": datetime, "timezone": timezone, "timedelta": timedelta, "date": date,
         "_OUTCOME_HOLD_DAYS": _OUTCOME_HOLD_DAYS, "bisect": __import__("bisect"),
         "lookback_days": 180,  # only used in the returned dict for display; real value irrelevant here
         "session": None,  # real function's own FastAPI route parameter; only forwarded verbatim
+        "_resolve_outcome_basis": _rw, "_classify_window": _cw,
+        "_actions": {}, "_coverage": {},
     }
+    exec(_CAL_SOURCE[_helper_start:_helper_end], namespace)  # noqa: S102 — real helper source
     exec(func_source, namespace)  # noqa: S102 — isolated eval of real source
     return namespace["_core"]
 

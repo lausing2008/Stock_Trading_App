@@ -334,3 +334,24 @@ does not contain:
 
 These are measurement boundaries, not deployment gaps. The code and schema are live; the
 remaining evidence must be accumulated prospectively.
+
+
+## Backlog closure — 2026-10-12
+
+- **AQ06 / AQ07 (AI halves): already closed by the fourth slice.** Verified wired, not re-done —
+  `scheduler.py:8310` for the signal clock, `scheduler.py:5932` for the delivery fold. The
+  backlog entry was stale, not the code.
+- **AQ04 residual: closed.** Both ML-weight calibrators now classify each observation's window
+  against corporate-action evidence instead of reading `Price.close` directly. A recorded,
+  unappliable action drops the observation; a window with nothing recorded is kept and labelled
+  unverified. Chasing a sabotage exposed a defect in the fix itself: the window was classified
+  over the calendar target rather than the session the exit actually fills on.
+- **AQ11: re-scoped, and the record corrected.** It is not waiting for a market session. The
+  actionability gate requires a live sized quote, a verified deliverable, verified options
+  permissions and available options buying power, and **none of those has a source in this
+  platform**; `enqueue_if_eligible` also has no production caller. No producer was built, because
+  building one would mean supplying those facts from nothing. Instead the absence is now
+  reported by the M24 capability matrix as `option_prospective_capture: not_ready`, with the
+  missing facts named, so an unbuildable ledger stops looking like an empty one.
+
+See `docs/audits/2026-10-12-calibration-basis-and-capture-readiness.md`.

@@ -48,8 +48,11 @@ def _load_session_module():
     mod = importlib.util.module_from_spec(spec)
     # session.py does `from .models import Base`; with no package context that relative import
     # fails, so give the loaded module a package whose `.models` is the stub above.
+    # __path__ points at the real shared/db so `from . import ddl_guard` loads the SHIPPED
+    # startup-DDL guard rather than a stub. `.models` stays stubbed via sys.modules below, which
+    # takes precedence, so only the guard is real.
     pkg = types.ModuleType("ec01_pkg")
-    pkg.__path__ = []
+    pkg.__path__ = [str(_ROOT / "shared" / "db")]
     pkg.models = _models
     sys.modules["ec01_pkg"] = pkg
     sys.modules["ec01_pkg.models"] = _models

@@ -15,7 +15,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from common.jwt_auth import get_current_username
-from db import Price, Signal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, TuneHistory, get_session
+from common.outcome_price_basis import (
+    KNOWN_CORRUPT as _KNOWN_CORRUPT,
+    classify_observation_window as _classify_window,
+    resolve_window as _resolve_outcome_basis,
+)
+from db import (CorporateAction, CorporateActionCoverage, Price, Signal, SignalHorizon,
+                SignalOutcome, SignalType, Stock, TimeFrame, TuneHistory, get_session)
 
 from .signals_shared import (
     _CONF_CAL_CACHE_KEY, _CONF_CAL_MIN_COUNT, _OUTCOME_HOLD_DAYS,
@@ -154,6 +160,62 @@ def watchdog_self_tuning_report(
     }
 
 
+def _first_adjusted_after(adjusted: dict, after_date):
+    """First adjusted close STRICTLY after `after_date` — the entry convention.
+
+    Kept separate from the at-or-after lookup because entry and exit use different boundary
+    rules in this function and always have: a signal cannot be entered on its own bar.
+    """
+    later = sorted(d for d in adjusted if d > after_date)
+    return adjusted[later[0]] if later else None
+
+
+def _first_adjusted_at_or_after(adjusted: dict, target_date):
+    """First adjusted close on or after `target_date` — the exit convention."""
+    later = sorted(d for d in adjusted if d >= target_date)
+    return adjusted[later[0]] if later else None
+
+
+def _load_action_evidence(session, symbols):
+    """Corporate actions + the latest coverage row per symbol, keyed for the basis contract.
+
+    AQ04 residual (2026-10-12). Both ML-weight calibrators measured a 14-28 day forward return
+    straight off `Price.close`, outside the adjustment-evidence contract the outcome evaluator
+    already uses. A split inside the hold window reads as a crash — a 2:1 split on a flat stock
+    is a -50% observation — and these two functions do not merely report that number: the second
+    WRITES the global ML fusion weight from it, so a corrupt return moves how much the model is
+    trusted in production.
+
+    Mirrors the loading in outcomes.py deliberately, including taking the most recently
+    retrieved coverage row per symbol rather than an arbitrary one.
+    """
+    actions, coverage = {}, {}
+    if not symbols:
+        return actions, coverage
+    for action in session.execute(select(CorporateAction).where(
+            CorporateAction.symbol.in_(set(symbols)))).scalars():
+        actions.setdefault(action.symbol, []).append(action)
+    for cov in session.execute(select(CorporateActionCoverage).where(
+            CorporateActionCoverage.symbol.in_(set(symbols)))).scalars():
+        prior = coverage.get(cov.symbol)
+        if prior is None or cov.retrieved_at > prior.retrieved_at:
+            coverage[cov.symbol] = cov
+    return actions, coverage
+
+
+def _observation_basis(bars, actions, coverage, symbol, start, end):
+    """Classify one observation window — see common.outcome_price_basis for the rule itself.
+
+    The rule lives in `shared/common/` rather than here because the outcome evaluator answers
+    the same question, and a second copy is how two evaluators come to disagree about whether
+    the same window is measurable.
+    """
+    resolved = _resolve_outcome_basis(bars, actions.get(symbol, []), coverage.get(symbol),
+                                      start=start, end=end)
+    verdict = _classify_window(resolved, actions.get(symbol, []), start=start, end=end)
+    return resolved, verdict
+
+
 @router.get("/ml-weight-validation")
 def ml_weight_validation(
     lookback_days: int = Query(180, ge=30, le=730),
@@ -182,6 +244,8 @@ def ml_weight_validation(
         return {"lookback_days": lookback_days, "signal_count": 0, "curve": [], "optimal_weight": None}
 
     stock_ids = list({sig.stock_id for sig, _ in rows})
+    # AQ04 residual: the adjustment evidence travels with the prices, not after them.
+    _actions, _coverage = _load_action_evidence(session, {sym for _, sym in rows})
     price_since = (cutoff - timedelta(days=5)).date()
     price_rows = session.execute(
         select(Price.stock_id, Price.ts, Price.close)
@@ -219,9 +283,11 @@ def ml_weight_validation(
 
     # Build list of (ml_prob, ta_score, pct_change) for signals with complete data
     observations: list[tuple[float, float, float]] = []
+    dropped_corrupt = 0      # a recorded action inside the window that could not be applied
+    unverified_used = 0      # no action recorded, completeness unverified — usable, not quotable
     seen: set[tuple] = set()
 
-    for sig, _ in rows:
+    for sig, symbol in rows:
         signal_date = sig.ts.date() if isinstance(sig.ts, datetime) else sig.ts
         key = (sig.stock_id, signal_date)
         if key in seen:
@@ -240,6 +306,20 @@ def ml_weight_validation(
             continue
         if entry <= 0:
             continue
+
+        _resolved, _verdict = _observation_basis(
+            list(zip(_pts.get(sig.stock_id, []), _pclose.get(sig.stock_id, []))),
+            _actions, _coverage, symbol, entry_date, exit_date)
+        if not _verdict["usable"]:
+            dropped_corrupt += 1
+            continue
+        if _resolved["prices"]:
+            _adj = dict(_resolved["prices"])
+            entry, exit_p = _adj.get(entry_date, entry), _adj.get(exit_date, exit_p)
+            if entry <= 0:
+                continue
+        else:
+            unverified_used += 1
 
         pct = (exit_p - entry) / entry * 100
         observations.append((float(ml_prob), float(ta_score), pct))
@@ -280,6 +360,12 @@ def ml_weight_validation(
         "optimal_weight": optimal_weight,
         "optimal_accuracy": round(best_acc, 1),
         "current_formula_range": [0.40, 0.75],
+        "return_basis": {
+            "basis": "split_adjusted_price where evidenced, raw price otherwise",
+            "observations_used": len(observations),
+            "dropped_unadjustable_action": dropped_corrupt,
+            "used_unverified_completeness": unverified_used,
+        },
         "curve": curve,
     }
 
@@ -315,6 +401,8 @@ def calibrate_ml_weight(
         return {"applied": False, "reason": "no_signals", "optimal_weight": None}
 
     stock_ids = list({sig.stock_id for sig, _ in rows})
+    # AQ04 residual: the adjustment evidence travels with the prices, not after them.
+    _actions, _coverage = _load_action_evidence(session, {sym for _, sym in rows})
     price_since = (cutoff - timedelta(days=5)).date()
     price_rows = session.execute(
         select(Price.stock_id, Price.ts, Price.close)
@@ -353,6 +441,22 @@ def calibrate_ml_weight(
             return None
         return _pclose[sid][idx]
 
+    def _exit_session(sid, target_date):
+        """The session an exit actually fills on, with its date — not the calendar target.
+
+        The holding window has to be classified over the dates a position is really held, and
+        the exit fills on the first session AT OR AFTER the target. Those differ by up to a long
+        weekend, and a split in that gap would otherwise fall outside the window being checked
+        and be admitted as a real return.
+        """
+        ts_list = _pts.get(sid)
+        if not ts_list:
+            return None, None
+        idx = bisect.bisect_left(ts_list, target_date)
+        if idx >= len(ts_list):
+            return None, None
+        return _pclose[sid][idx], ts_list[idx]
+
     # T234-ML-WEIGHT-NO-VALIDATION-GATE: exit_p previously used whatever the MOST RECENT close
     # happened to be, mixing holding periods from days to ~180 days (lookback_days) into the same
     # sweep — a signal evaluated the day it fired and one evaluated 6 months later were treated as
@@ -361,8 +465,10 @@ def calibrate_ml_weight(
     # use), so every observation measures the same kind of thing: return AFTER the horizon this
     # signal was actually meant to be held for.
     observations: list[tuple[float, float, float, object]] = []
+    dropped_corrupt = 0      # a recorded action inside the window that could not be applied
+    unverified_used = 0      # no action recorded, completeness unverified — usable, not quotable
     seen: set[tuple] = set()
-    for sig, _ in rows:
+    for sig, symbol in rows:
         signal_date = sig.ts.date() if isinstance(sig.ts, datetime) else sig.ts
         key = (sig.stock_id, signal_date)
         if key in seen:
@@ -381,14 +487,47 @@ def calibrate_ml_weight(
             continue
         hold_days = _OUTCOME_HOLD_DAYS.get(sig.horizon.value, 14)
         target_exit_date = signal_date + timedelta(days=hold_days)
-        exit_p = _first_close_at_or_after(sig.stock_id, target_exit_date)
+        exit_p, exit_date_actual = _exit_session(sig.stock_id, target_exit_date)
         if exit_p is None:
             continue  # hold window hasn't closed yet — not a resolved observation
+
+        # AQ04 residual: this function WRITES the global ML fusion weight, so an unadjusted
+        # split inside the hold window does not merely misreport — it moves how much the model
+        # is trusted in production. A window with a recorded, unappliable action is dropped; a
+        # window with nothing recorded is kept on raw prices and counted as unverified.
+        _resolved, _verdict = _observation_basis(
+            list(zip(_pts.get(sig.stock_id, []), _pclose.get(sig.stock_id, []))),
+            _actions, _coverage, symbol, signal_date, exit_date_actual)
+        if not _verdict["usable"]:
+            dropped_corrupt += 1
+            continue
+        if _resolved["prices"]:
+            _adj = dict(_resolved["prices"])
+            _entry_adj = _first_adjusted_after(_adj, signal_date)
+            _exit_adj = _adj.get(exit_date_actual)
+            # Defensive, not expected: the window ENDS on exit_date_actual and the entry bar is
+            # by construction a session inside it, so both lookups resolve. Dropping rather than
+            # falling back to the raw price keeps a basis mix from ever reaching the sample.
+            if _entry_adj is None or _exit_adj is None or _entry_adj <= 0:
+                dropped_corrupt += 1
+                continue
+            entry, exit_p = _entry_adj, _exit_adj
+        else:
+            unverified_used += 1
+
         pct = (exit_p - entry) / entry * 100
         observations.append((float(ml_prob), float(ta_score), pct, signal_date))
 
     if not observations:
-        return {"applied": False, "reason": "no_observations", "optimal_weight": None}
+        # The basis counts travel on THIS path too. "no observations" and "every observation was
+        # dropped as unadjustable" are different facts, and without the counts they look alike.
+        return {"applied": False, "reason": "no_observations", "optimal_weight": None,
+                "return_basis": {
+                    "basis": "split_adjusted_price where evidenced, raw price otherwise",
+                    "observations_used": 0,
+                    "dropped_unadjustable_action": dropped_corrupt,
+                    "used_unverified_completeness": unverified_used,
+                }}
 
     # Sort by date, split older 70% for calibration, newer 30% for validation
     observations.sort(key=lambda x: x[3])
@@ -457,6 +596,12 @@ def calibrate_ml_weight(
             "optimal_weight": optimal_weight,
             "signal_count": len(observations),
             "lookback_days": lookback_days,
+            "return_basis": {
+                "basis": "split_adjusted_price where evidenced, raw price otherwise",
+                "observations_used": len(observations),
+                "dropped_unadjustable_action": dropped_corrupt,
+                "used_unverified_completeness": unverified_used,
+            },
             "curve": curve,
         }
 
@@ -500,6 +645,12 @@ def calibrate_ml_weight(
             "baseline_validation_ev_pct": round(baseline_ev, 2) if baseline_fired else None,
             "signal_count": len(observations),
             "lookback_days": lookback_days,
+            "return_basis": {
+                "basis": "split_adjusted_price where evidenced, raw price otherwise",
+                "observations_used": len(observations),
+                "dropped_unadjustable_action": dropped_corrupt,
+                "used_unverified_completeness": unverified_used,
+            },
             "curve": curve,
         }
 
@@ -525,6 +676,12 @@ def calibrate_ml_weight(
         "signal_count": len(observations),
         "lookback_days": lookback_days,
         "previous_cap": prev_cap,
+        "return_basis": {
+            "basis": "split_adjusted_price where evidenced, raw price otherwise",
+            "observations_used": len(observations),
+            "dropped_unadjustable_action": dropped_corrupt,
+            "used_unverified_completeness": unverified_used,
+        },
         "curve": curve,
     }
 

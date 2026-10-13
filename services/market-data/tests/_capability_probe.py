@@ -58,6 +58,10 @@ R["empty_db"] = {
 # ── 2. HEALTHY database: everything ready ─────────────────────────────────────────────────────
 _models.Base.metadata.create_all(engine)
 rep = cap.report(matrix)
+# AQ11: the per-requirement evidence for the one capability that is NOT schema-provisionable,
+# so a test can assert on the reason and not merely on the state.
+R["healthy_detail"] = next(e for e in rep["capabilities"]
+                           if e["capability"] == "option_prospective_capture")
 R["healthy_db"] = {"all_ready": rep["all_ready"],
                    "states": {e["capability"]: e["state"] for e in rep["capabilities"]},
                    "degraded": rep["degraded"]}

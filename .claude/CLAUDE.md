@@ -357,6 +357,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
+- **`docs/audits/2026-10-12-calibration-basis-and-capture-readiness.md`** — the ML fusion weight was fitted on unadjusted returns (a 2:1 split reads as -50%). AQ11 is NOT waiting for a session: the gate's quote-size, permission and buying-power facts have no source [AQ04, AQ11]
 - **`docs/audits/2026-10-09-ai-signals-options-alert-quality.md`** — live AI/flow quality audit, model provenance and weight defects, outcome/delivery gaps, stock review improvements and prioritized acceptance plan; local fixes tracked separately from deployed evidence [audit, signals, options]
 
 - **`docs/2026-10-07/market-stock-intelligence-{gap-analysis,architecture}.md`** — fit-gap vs the 52-section Market & Stock Intelligence spec: 17 implemented, 16 partial, 6 not, 5 BLOCKED on data. The missing layer is evidence BUCKETS, not a new engine [gap analysis, spec]

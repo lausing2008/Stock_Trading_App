@@ -59,3 +59,49 @@ def resolve_window(bars, actions, coverage, *, start: date, end: date) -> dict:
             "evidence_status": status,
             "reason": ("source documents complete action history" if status == VERIFIED else
                        "source response has no documented completeness guarantee")}
+
+
+# Observation-level outcomes of applying the contract above. `resolve_window` answers "can this
+# window be adjusted?"; these answer the question a CALLER has, which is "may I use this number,
+# and what is it a number of?".
+ADJUSTED = "adjusted"
+UNADJUSTED_NO_KNOWN_ACTION = "unadjusted_no_known_action"
+KNOWN_CORRUPT = "known_corrupt"
+
+
+def classify_observation_window(resolved, actions, *, start: date, end: date) -> dict:
+    """Decide whether one forward return over [start, end] may be used, and on what basis.
+
+    AQ04 residual (2026-10-12). `resolve_window` returns no prices whenever evidence does not
+    span the window, which collapses two genuinely different situations into one empty result:
+
+      * a corporate action is RECORDED inside the window and could not be applied — the raw
+        return is known to be wrong, because a 2:1 split reads as a 50% loss; and
+      * nothing is recorded for the window at all — the raw return is unverified, which is not
+        the same as wrong, and discarding it would silently shrink the population a calibration
+        is fitted on.
+
+    Treating those alike would either throw away most of the sample or admit a return that is
+    definitely corrupt. So the first is refused and the second is kept and LABELLED, and the
+    caller reports both counts rather than quietly resolving the ambiguity in either direction.
+
+    Note the asymmetry is deliberate: "no action recorded" is not evidence that no action
+    occurred, which is exactly why the result stays `unverified` and cannot reach a published
+    rate. It is good enough to fit a weight on and not good enough to quote.
+    """
+    if resolved.get("prices"):
+        return {"usable": True, "basis": resolved.get("basis", BASIS),
+                "adjustment": ADJUSTED,
+                "evidence_status": resolved.get("evidence_status", PROVISIONAL),
+                "reason": resolved.get("reason", "")}
+
+    in_window = [a for a in actions if start <= _get(a, "ex_date") <= end]
+    if in_window:
+        kinds = sorted({str(_get(a, "action_type")) for a in in_window})
+        return {"usable": False, "basis": None, "adjustment": KNOWN_CORRUPT,
+                "evidence_status": UNVERIFIED,
+                "reason": f"corporate action in window could not be applied: {', '.join(kinds)}"}
+
+    return {"usable": True, "basis": "raw_price", "adjustment": UNADJUSTED_NO_KNOWN_ACTION,
+            "evidence_status": UNVERIFIED,
+            "reason": "no corporate action recorded in window; completeness unverified"}

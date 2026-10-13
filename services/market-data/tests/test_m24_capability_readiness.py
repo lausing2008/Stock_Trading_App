@@ -36,9 +36,37 @@ def test_an_empty_database_reports_every_capability_not_ready(probe):
     assert set(e["states"].values()) == {"not_ready"}
 
 
-def test_a_healthy_database_reports_every_capability_ready(probe):
-    assert probe["healthy_db"]["all_ready"] is True
-    assert probe["healthy_db"]["degraded"] == []
+#: AQ11 (2026-10-12): `option_prospective_capture` is NOT schema-provisionable. Its
+#: prerequisites are a live sized quote and account permission/buying-power facts, which no
+#: table in this platform supplies — so a fully-migrated database does not make it ready, and
+#: it is expected to stay degraded until those sources exist. It is named here rather than
+#: filtered by a pattern so that a capability becoming permanently red cannot pass unnoticed.
+_NOT_SCHEMA_PROVISIONABLE = {"option_prospective_capture"}
+
+
+def test_a_healthy_database_reports_every_schema_provisionable_capability_ready(probe):
+    states = probe["healthy_db"]["states"]
+    provisionable = {k: v for k, v in states.items() if k not in _NOT_SCHEMA_PROVISIONABLE}
+    assert set(provisionable.values()) == {"ready"}, provisionable
+    assert probe["healthy_db"]["degraded"] == [
+        d for d in probe["healthy_db"]["degraded"]
+        if d.split(":")[0] in _NOT_SCHEMA_PROVISIONABLE
+    ], probe["healthy_db"]["degraded"]
+
+
+def test_a_capability_with_no_data_source_stays_not_ready_and_says_why(probe):
+    """The point of the entry: an empty ledger and an unbuildable ledger look identical.
+
+    Without this, "no prospective captures" reads as "no opportunities arose" rather than
+    "nothing can produce one", which is the reading that kept AQ11 looking like it was waiting
+    for a market session.
+    """
+    states = probe["healthy_db"]["states"]
+    assert states["option_prospective_capture"] == "not_ready"
+    reason = next(d for d in probe["healthy_db"]["degraded"]
+                  if d.startswith("option_prospective_capture"))
+    for fragment in ("live sized quote", "buying-power", "no job calls the gate"):
+        assert fragment in reason, reason
 
 
 def test_an_outage_is_UNKNOWN_not_not_ready(probe):

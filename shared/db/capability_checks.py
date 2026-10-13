@@ -161,7 +161,7 @@ def _columns_exist(engine, table: str, columns: tuple[str, ...]):
 
 
 def build_matrix(engine) -> list[Capability]:
-    """The five capabilities this platform's newer machinery depends on."""
+    """The capabilities this platform's newer machinery depends on."""
     return [
         Capability(
             name="outbox_enqueue",
@@ -238,6 +238,45 @@ def build_matrix(engine) -> list[Capability]:
                             "one reservation per proposed entry",
                             _unique_constraint(engine, "portfolio_exposure_reservations",
                                                "intent_id"), Level.SCHEMA),
+            ],
+        ),
+        Capability(
+            name="option_prospective_capture",
+            # AQ11 (2026-10-12). The record said the live prospective trace was waiting for a
+            # market session — "2026-10-11 is Sunday, so no quote can meet the one-minute
+            # evidence window". A session is NOT what it is waiting for. `actionable_gate`
+            # requires a live two-sided quote with displayed ask size, a verified deliverable,
+            # verified options permissions and available options buying power. None of those
+            # has a source in this platform: the stored chain archive is a DAILY snapshot with
+            # no size columns, and no table anywhere records an account's options permission or
+            # buying power. `long_option_playbook.build()` already states this by hardcoding
+            # the same four blockers on every plan it produces.
+            #
+            # Separately, `enqueue_if_eligible` has NO production caller — the same shape as the
+            # M25 blocker, where enabling a flag would have silently stopped every broker entry.
+            # So the ledger being empty is not "nothing has happened yet"; it is "nothing can
+            # happen yet", and those read identically from the outside. That is what this
+            # capability exists to separate.
+            blocks=("prospective option captures cannot be produced: no live sized quote and no "
+                    "account permission/buying-power facts exist, and no job calls the gate"),
+            impact=Impact.ENTRY,
+            recovery=("nothing is captured, so nothing is mismeasured; the ledger stays empty "
+                      "and reports WHY rather than reading as an absence of opportunities"),
+            requirements=[
+                Requirement("live sized option quote",
+                            "displayed ask size — the gate bounds quantity by it, and the "
+                            "stored chain archive is a daily snapshot that carries no size",
+                            _columns_exist(engine, "option_chain_history",
+                                           ("nbbo_bid_size", "nbbo_ask_size")), Level.SCHEMA),
+                Requirement("account options permissions and buying power",
+                            "the gate recomputes size from account facts; a boolean may "
+                            "establish permission but never establishes capital",
+                            _columns_exist(engine, "users",
+                                           ("options_permission_level",
+                                            "available_options_buying_power")), Level.SCHEMA),
+                Requirement("prospective capture ledger",
+                            "where a capture would land once one can be produced",
+                            _table_exists(engine, "option_strategy_captures"), Level.SCHEMA),
             ],
         ),
         Capability(
