@@ -94,3 +94,43 @@ The 7% pullback first rung stays as-is for the shadow period, per direction. The
 delivery preconditions — several sessions of deduplication, escalation and recovery evidence;
 per-user volume comparisons for alternative first rungs; opt-in delivery, quiet hours and a
 digest — are not built, and delivery stays off.
+
+---
+
+## Production result (commit `f42be888`)
+
+The real job was run, not the endpoint directly — service token, batched request, the path the
+scheduler will take.
+
+```
+BEFORE   coverage evidenced_to 2026-10-08, 203 symbols
+RUN      requested 157 | refreshed 155 | failed 2 (SKHYV, US10Y) | 48.5s | ceiling=provisional
+AFTER    coverage evidenced_to 2026-10-13, 155 symbols current
+```
+
+48.5s against the ~91s serial estimate: the handshake is paid once, not per symbol. The two
+failures are named rather than counted — both are identifiers yfinance does not resolve as
+tradable tickers, which is the `SymbolNotResolved` case, and a failed lookup correctly writes no
+coverage claim at all rather than an empty one.
+
+Detection before and after, same universe, same code:
+
+| Run | Events | `unverified` | `provisional` | `verified` | Unmeasurable |
+|---|---|---|---|---|---|
+| 06:26, stale coverage | 110 | **110** | 0 | 0 | **17** |
+| 07:31, fresh coverage | 13 | 0 | **13** | 0 | **0** |
+
+Three things this establishes, and one it does not.
+
+- **Freshness was the binding limit.** Every unmeasurable subject became measurable; the figure
+  that mattered was `evidenced_to`, not anything about the prices.
+- **The ceiling held exactly as predicted.** Every refreshed event is `provisional`. **None is
+  `verified`, and none ever will be from this source.** If a later reading shows `verified`
+  rows, something has changed about the source or someone has written a `source_guarantee`
+  claim that yfinance does not support.
+- **The escalation ladder suppressed most repeat reporting**: 110 on the cold start, 13 on the
+  next session over the same universe.
+
+What it does **not** establish: a steady-state alert rate. 13 is **one** session after the cold
+start, and the preconditions ask for several sessions of deduplication, escalation and recovery
+evidence before any of this is read as a rate.
