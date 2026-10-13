@@ -2577,6 +2577,73 @@ def _send_early_earnings_stage(session, sym, phase, headline, subject, body_text
                      symbol=sym, phase=phase, user=u_obj.username)
 
 
+def run_corporate_action_refresh() -> None:
+    """Extend corporate-action coverage to today for the symbols people actually follow.
+
+    WHY DAILY, FROM MEASUREMENT RATHER THAN TASTE. Measured in production 2026-10-12: 2 provider
+    calls and 0.58s per symbol. For the 157 followed symbols that is ~314 calls and ~91 seconds
+    serially, against a platform whose price ingest alone already makes thousands of yfinance
+    calls a day. The alternative — a weekly sweep — is what produced the observed state, where
+    coverage sat evidenced through 2026-10-08 while bars ran to 2026-10-13 and EVERY price-risk
+    and calibration figure was consequently unverifiable. A refresh is cheap; staleness is not.
+
+    WHAT IT DOES NOT ACHIEVE, stated here because the reverse is the easy assumption: this fixes
+    FRESHNESS only. A refreshed window becomes computable, so `unverified` becomes
+    `provisional`. It never becomes `verified`, which requires the source to document that its
+    action list is exhaustive — yfinance publishes no such guarantee. See
+    `common.outcome_price_basis.best_achievable_status`.
+
+    Scheduled before `price_risk_detection` so the same evening's detections read the coverage
+    this run just extended, rather than yesterday's.
+    """
+    import uuid as _uuid
+    started = time.monotonic()
+    lock_key = "stockai:lock:corporate_action_refresh"
+    lock_token = _uuid.uuid4().hex
+    try:
+        redis_client = _get_redis()
+        if not redis_client.set(lock_key, lock_token, nx=True, ex=1800):
+            return
+    except Exception as exc:
+        log.warning("ca_refresh.lock_unavailable", error=str(exc))
+        return
+    try:
+        with SessionLocal() as session:
+            symbols = sorted({r[0] for r in session.execute(
+                select(Stock.symbol).join(WatchlistItem,
+                                          WatchlistItem.stock_id == Stock.id)).all()})
+        if not symbols:
+            log.info("ca_refresh.no_followed_symbols")
+            _record_job_status("run_corporate_action_refresh", "ok", time.monotonic() - started)
+            return
+        # One request for the batch, not one per symbol: 157 internal round trips to save a
+        # loop would be its own small convoy.
+        resp = httpx.post(
+            f"{_settings.research_engine_url}/intelligence/corporate-actions/refresh",
+            params={"symbols": ",".join(symbols)},
+            headers={"Authorization": f"Bearer {_service_token()}"},
+            timeout=600.0,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        log.info("ca_refresh.done", requested=body.get("requested"),
+                 refreshed=body.get("refreshed"), failed=body.get("failed"),
+                 ceiling=body.get("ceiling"),
+                 failures=[f.get("symbol") for f in (body.get("failures") or [])][:20])
+        _record_job_status("run_corporate_action_refresh", "ok", time.monotonic() - started)
+    except Exception as exc:
+        log.error("ca_refresh.failed", error=str(exc)[:300])
+        _record_job_status("run_corporate_action_refresh", "error",
+                           time.monotonic() - started, str(exc))
+    finally:
+        try:
+            rc = _get_redis()
+            if (rc.get(lock_key) or b"").decode() == lock_token:
+                rc.delete(lock_key)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def run_price_risk_detection() -> None:
     """Detect measured price-risk events. SHADOW BY DEFAULT — detects, records, sends nothing.
 
@@ -14722,6 +14789,16 @@ def start_scheduler() -> None:
     # here specifically because 19:00 ET is already after the close — a late run prices against
     # the same settled closing prices, and 4h keeps it inside the same evening rather than
     # letting it surface at some unrelated hour the next day.
+    # Corporate-action coverage refresh, 19:50 ET weekdays — AFTER the close and BEFORE
+    # price-risk detection at 20:10, so the evening's detections read coverage extended to
+    # today rather than to whenever the last sweep happened to run.
+    _scheduler.add_job(
+        run_corporate_action_refresh,
+        CronTrigger(hour=19, minute=50, day_of_week="mon-fri", timezone="America/New_York"),
+        id="corporate_action_refresh", replace_existing=True,
+        max_instances=1, coalesce=True, misfire_grace_time=3600,
+    )
+
     # Price-risk detection. 20:10 ET on weekdays: after the close and after the options-income
     # step above, so the session's daily bars are settled rather than mid-session partials.
     # A partial bar would report a move that is not the day's move.

@@ -26,14 +26,19 @@ def resolve_window(bars, actions, coverage, *, start: date, end: date) -> dict:
     selected = [(d, float(c)) for d, c in bars if start <= d <= end and c is not None]
     if not selected:
         return {"prices": [], "basis": BASIS, "method": METHOD,
-                "evidence_status": UNVERIFIED, "reason": "no price bars in outcome window"}
+                "evidence_status": UNVERIFIED, "limiting_factor": "no_prices",
+                "reason": "no price bars in outcome window"}
     evidenced_from = _get(coverage, "evidenced_from")
     evidenced_to = _get(coverage, "evidenced_to")
     covered = bool(evidenced_from and evidenced_to
                    and evidenced_from <= selected[0][0] and evidenced_to >= selected[-1][0])
     if not covered:
+        # FRESHNESS, not completeness. This one is fixable by re-fetching: the source was simply
+        # never asked about these dates. Named separately because the two unverified cases have
+        # completely different remedies and conflating them makes a refresh look like a fix for
+        # both — it is not. See `best_achievable_status`.
         return {"prices": [], "basis": BASIS, "method": METHOD,
-                "evidence_status": UNVERIFIED,
+                "evidence_status": UNVERIFIED, "limiting_factor": "coverage_span",
                 "reason": "corporate-action evidence does not span the outcome window"}
 
     window_actions = [a for a in actions
@@ -42,7 +47,7 @@ def resolve_window(bars, actions, coverage, *, start: date, end: date) -> dict:
               if _get(a, "action_type") in ("split", "stock_dividend")]
     if any(not _get(a, "split_ratio") for a in splits):
         return {"prices": [], "basis": BASIS, "method": METHOD,
-                "evidence_status": UNVERIFIED,
+                "evidence_status": UNVERIFIED, "limiting_factor": "unapplied_action",
                 "reason": "share-count action has no recorded ratio"}
 
     adjusted = []
@@ -57,6 +62,9 @@ def resolve_window(bars, actions, coverage, *, start: date, end: date) -> dict:
     status = VERIFIED if completeness == "source_guarantee" else PROVISIONAL
     return {"prices": adjusted, "basis": BASIS, "method": METHOD,
             "evidence_status": status,
+            # COMPLETENESS, not freshness. Re-fetching cannot improve this one: the span is
+            # covered and the source still publishes no guarantee that its list is exhaustive.
+            "limiting_factor": None if status == VERIFIED else "source_completeness",
             "reason": ("source documents complete action history" if status == VERIFIED else
                        "source response has no documented completeness guarantee")}
 
@@ -105,3 +113,19 @@ def classify_observation_window(resolved, actions, *, start: date, end: date) ->
     return {"usable": True, "basis": "raw_price", "adjustment": UNADJUSTED_NO_KNOWN_ACTION,
             "evidence_status": UNVERIFIED,
             "reason": "no corporate action recorded in window; completeness unverified"}
+
+
+def best_achievable_status(completeness_basis: str | None) -> str:
+    """The strongest status this SOURCE can ever support, however fresh its coverage is.
+
+    Freshness and completeness are different limits with different remedies, and the difference
+    is easy to lose. Re-fetching a stale span makes a window COMPUTABLE — unverified becomes
+    provisional. It does not make it VERIFIED, because verified means the source documents that
+    its action list is exhaustive, and yfinance publishes no such guarantee. So a refresh
+    campaign against a `response_only` source raises every window to provisional and stops
+    there, by design rather than by failure.
+
+    Stated as a function so a surface can say which ceiling applies instead of implying that a
+    figure is one refresh away from verified when it is not.
+    """
+    return VERIFIED if completeness_basis == "source_guarantee" else PROVISIONAL

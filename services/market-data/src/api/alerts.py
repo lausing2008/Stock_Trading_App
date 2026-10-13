@@ -492,3 +492,55 @@ def risk_alert_summary(
         "delivery_note": ("shadow events are detections whose delivery was deliberately "
                           "withheld; they were not sent"),
     }
+
+
+@router.get("/risk-history/exclusions")
+def risk_alert_exclusions(
+    days: int = 14,
+    user=Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Every subject that could NOT be measured, and the reason, one row each.
+
+    A delivery precondition, not a diagnostic nicety. "17 unmeasurable" cannot be acted on; a
+    named subject with a named limit can, and the three limits have completely different
+    remedies — a stale span is fixed by refreshing coverage, a missing completeness guarantee
+    is not fixable by refreshing at all, and an unappliable corporate action is neither.
+
+    `best_achievable` is reported per subject so a reader can see where refreshing would get
+    this figure to. Against a source that publishes no completeness guarantee that ceiling is
+    `provisional`, and no amount of re-fetching reaches `verified`.
+    """
+    from datetime import timedelta
+    from db import RiskEvent
+
+    since = datetime.utcnow() - timedelta(days=max(1, min(days, 120)))
+    rows = session.execute(
+        select(RiskEvent)
+        .where(RiskEvent.detected_at >= since, RiskEvent.rule == "unmeasurable")
+        .order_by(RiskEvent.detected_at.desc())).scalars().all()
+
+    by_factor: dict[str, int] = {}
+    out = []
+    for ev in rows:
+        ev_evidence = ev.evidence or {}
+        factor = ev_evidence.get("limiting_factor") or "unspecified"
+        by_factor[factor] = by_factor.get(factor, 0) + 1
+        out.append({
+            "subject": ev.subject, "scope": ev.scope,
+            "observed_to": ev.observed_to.isoformat(),
+            "limiting_factor": factor,
+            "reason": ev.evidence_reason,
+            "best_achievable": ev_evidence.get("best_achievable"),
+            "coverage_evidenced_to": ev_evidence.get("coverage_evidenced_to"),
+            "window_end": ev_evidence.get("window_end"),
+            # Separated because the remedies differ, and because a refresh campaign that
+            # "fixed" the first kind would leave the other two untouched while looking like
+            # a complete repair.
+            "fixable_by_refresh": factor == "coverage_span",
+        })
+    return {
+        "days": days, "count": len(out), "by_limiting_factor": by_factor,
+        "unexplained": [r["subject"] for r in out if r["limiting_factor"] == "unspecified"],
+        "exclusions": out,
+    }

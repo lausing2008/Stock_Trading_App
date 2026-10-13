@@ -195,6 +195,13 @@ def evaluate(subject: str, scope: str, bars: list[tuple[date, float]], verdict: 
     if not verdict.get("usable"):
         return [{"scope": scope, "subject": subject, "rule": UNMEASURABLE, "step": 0,
                  "evidence_status": verdict.get("evidence_status"),
+                 # WHY, in a form a reader can act on: which limit bit, what the best possible
+                 # status is for this source however fresh it gets, and how far the evidence
+                 # actually reaches compared with the window that was asked about.
+                 "limiting_factor": verdict.get("limiting_factor"),
+                 "best_achievable": verdict.get("best_achievable"),
+                 "coverage_evidenced_to": verdict.get("coverage_evidenced_to"),
+                 "window_end": verdict.get("window_end"),
                  "reason": verdict.get("reason"), "as_of": bars[-1][0] if bars else None}]
 
     out = []

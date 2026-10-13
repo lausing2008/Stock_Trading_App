@@ -15,7 +15,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from common.outcome_price_basis import classify_observation_window, resolve_window
+from common.outcome_price_basis import (best_achievable_status,
+                                        classify_observation_window, resolve_window)
 from db import (CorporateAction, CorporateActionCoverage, Price, RiskEvent, RiskEventReceipt,
                 Stock, TimeFrame, User, WatchlistItem)
 
@@ -129,6 +130,17 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
         verdict = classify_observation_window(resolved, actions.get(symbol, []),
                                               start=window_start, end=window_end)
         usable = resolved["prices"] or closes
+        # The LIMITING FACTOR travels with the exclusion, because "unmeasurable" alone cannot
+        # be acted on. A stale span is fixed by a refresh; a missing completeness guarantee is
+        # not fixable by one; an unappliable action is neither. See `best_achievable_status`.
+        verdict = {**verdict,
+                   "limiting_factor": resolved.get("limiting_factor"),
+                   "best_achievable": best_achievable_status(
+                       getattr(coverage.get(symbol), "completeness_basis", None)),
+                   "coverage_evidenced_to": (
+                       getattr(coverage.get(symbol), "evidenced_to", None).isoformat()
+                       if getattr(coverage.get(symbol), "evidenced_to", None) else None),
+                   "window_end": window_end.isoformat()}
         candidates = price_risk.evaluate(symbol, "symbol", list(usable), verdict, opens=opens)
         moves_by_symbol[symbol] = None
         for cand in candidates:

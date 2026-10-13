@@ -509,6 +509,62 @@ def outcomes(symbol: str, _user: str = Depends(get_current_username)) -> dict:
                      "pooled, and neither are two different return bases.")}
 
 
+@router.post("/corporate-actions/refresh")
+def refresh_corporate_actions(symbols: str = Query(...), lookback_days: int = Query(400),
+                              _user: str = Depends(get_current_username)) -> dict:
+    """Extend corporate-action coverage to TODAY for a batch of symbols.
+
+    MEASURED COST (2026-10-12, production): 2 provider calls and 0.58s per symbol, with a
+    one-off extra handshake on the first. For the 157 followed symbols that is ~314 calls and
+    ~91 seconds serially — small beside the thousands of yfinance calls the price ingest
+    already makes each day.
+
+    WHAT THIS CAN AND CANNOT ACHIEVE. It fixes FRESHNESS: a window the source was never asked
+    about becomes computable, so `unverified` becomes `provisional`. It cannot produce
+    `verified`, because that requires the source to document that its action list is
+    exhaustive, and yfinance publishes no such guarantee. A refresh campaign therefore raises
+    everything to provisional and stops, by design. The response says so per symbol rather than
+    leaving a reader to infer that one more refresh would get there.
+
+    `ingest` widens coverage and never narrows it, so re-running is additive: a failure for one
+    symbol leaves that symbol's previous claim intact rather than shrinking it.
+    """
+    from ..intel_reports import corporate_actions as CA
+    from common.outcome_price_basis import best_achievable_status
+
+    wanted = [s.strip().upper() for s in symbols.split(",") if s.strip()][:500]
+    if not wanted:
+        raise HTTPException(400, "symbols is required (comma-separated)")
+    today = date.today()
+    covers_from = today - timedelta(days=max(1, min(lookback_days, 3650)))
+    refreshed, failed = [], []
+    with SessionLocal() as session:
+        for sym in wanted:
+            try:
+                res = CA.ingest(session, sym, covers_from=covers_from, covers_to=today)
+                evidenced = res.get("evidenced") or [None, None]
+                refreshed.append({"symbol": sym, "evidenced_to": evidenced[-1],
+                                  "actions_created": res.get("actions_created"),
+                                  "completeness_basis": res.get("completeness_basis")})
+            except Exception as exc:  # noqa: BLE001 — one symbol must not end the batch
+                # NAMED, not counted. "7 failed" cannot be acted on; a symbol and a reason can,
+                # and an unresolved ticker is a different problem from a rate limit.
+                failed.append({"symbol": sym, "error": f"{type(exc).__name__}: {exc}"[:200]})
+                log.warning("corporate_action.refresh_failed", symbol=sym, error=str(exc)[:200])
+    return {
+        "requested": len(wanted), "refreshed": len(refreshed), "failed": len(failed),
+        # REQUESTED, and named as such. AUD-OBS-COVERAGEFUTURE renamed these keys precisely so
+        # a span that was ASKED FOR cannot be read as a span that is EVIDENCED; the evidenced
+        # end is capped at the retrieval date and is reported per symbol below.
+        "requested_from": covers_from.isoformat(), "requested_to": today.isoformat(),
+        "results": refreshed, "failures": failed,
+        "ceiling": best_achievable_status("response_only"),
+        "ceiling_note": ("yfinance publishes no completeness guarantee, so a refreshed window "
+                         "reaches PROVISIONAL and never VERIFIED. Freshness and completeness "
+                         "are different limits; only the first is fixable by re-fetching."),
+    }
+
+
 @router.post("/corporate-actions/{symbol}")
 def ingest_corporate_actions(symbol: str,
                              covers_from: str = Query(...), covers_to: str = Query(...),

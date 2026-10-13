@@ -71,7 +71,8 @@ class Redis:
 _ids = {'cov': 0, 'act': 0, 'pref': 0}
 
 
-def build(closes_by_symbol, *, split_for=None, coverage=True, opt_in=()):
+def build(closes_by_symbol, *, split_for=None, coverage=True, opt_in=(),
+          completeness='response_only'):
     with Session(engine) as s:
         for t in (models.RiskEventReceipt, models.RiskEvent, models.AlertPreference,
                   models.CorporateActionCoverage, models.CorporateAction,
@@ -100,7 +101,7 @@ def build(closes_by_symbol, *, split_for=None, coverage=True, opt_in=()):
                 s.add(models.CorporateActionCoverage(
                     id=_ids['cov'], symbol=symbol, requested_from=start, requested_to=TODAY,
                     evidenced_from=start, evidenced_to=TODAY,
-                    completeness_basis='source_guarantee', source='test',
+                    completeness_basis=completeness, source='test',
                     method='cumulative_split_factor_v1', retrieved_at=datetime(2026, 10, 12)))
             if split_for == symbol:
                 _ids['act'] += 1
@@ -185,6 +186,41 @@ if breadth:
     ev = breadth[0].evidence.get('breadth', {})
     check('...carrying coverage and sample size, not just a fraction',
           'coverage' in ev and 'observed_count' in ev and 'declined_symbols' in ev, ev)
+
+# 8. EVERY excluded subject must carry an actionable reason — a delivery precondition.
+build({'SPLT': [100, 100, 100, 100, 100, 50]}, split_for='SPLT')
+result, events, receipts, outbox = run()
+excl = [e for e in events if e.rule == 'unmeasurable']
+check('every exclusion names its limiting factor',
+      excl and all((e.evidence or {}).get('limiting_factor') for e in excl),
+      [(e.subject, (e.evidence or {}).get('limiting_factor')) for e in excl])
+check('every exclusion states the best status this source could ever reach',
+      all((e.evidence or {}).get('best_achievable') for e in excl),
+      [(e.subject, (e.evidence or {}).get('best_achievable')) for e in excl])
+check('a source with no completeness guarantee can never reach verified',
+      all((e.evidence or {}).get('best_achievable') != 'verified' for e in excl
+          if (e.evidence or {}).get('best_achievable')),
+      [(e.subject, (e.evidence or {}).get('best_achievable')) for e in excl])
+
+# A stale span with NOTHING recorded in it is still MEASURABLE — just not verifiable. Keeping
+# those usable is the difference between a conservative rule and one that discards most of the
+# sample; what must not happen is calling the result verified.
+build({'STALE': [100, 100, 100, 100, 100, 94]}, coverage=False)
+result, events, receipts, outbox = run()
+measured = [e for e in events if e.rule == 'session_decline']
+check('a stale span with no recorded action is still measured', len(measured) == 1,
+      [(e.rule, e.change_pct) for e in events])
+check('...but is never presented as verified',
+      all(e.evidence_status != 'verified' for e in events),
+      [(e.rule, e.evidence_status) for e in events])
+
+# A source that DOES document completeness can reach verified; the ceiling is a property of the
+# source, not a blanket refusal.
+build({'GUAR': [100, 100, 100, 100, 100, 94]}, completeness='source_guarantee')
+result, events, receipts, outbox = run()
+check('a source documenting completeness reaches verified',
+      any(e.evidence_status == 'verified' for e in events),
+      [(e.rule, e.evidence_status) for e in events])
 
 print('FAILURES:', failures)
 sys.exit(1 if failures else 0)
