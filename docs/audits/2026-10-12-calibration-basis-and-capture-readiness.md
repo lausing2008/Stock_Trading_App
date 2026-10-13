@@ -139,9 +139,17 @@ was manufactured. Nothing was sent.
 
 ## Deployment verification (commit `28c04853`)
 
-All 13 services rebuilt and recreated; 15/15 containers healthy; **0/12 backend drift** — the
-three changed `shared/` files hash identically across every backend and match the local tree
-(`5aa8955a…`), and signal-engine's `calibration.py` matches byte-for-byte (`a07ddf41…`).
+All 13 services rebuilt and recreated; 15/15 containers healthy; **0/12 drifted or errored**
+from `scripts/check_deploy_drift.sh`, which compares each container's full `/app/src` AND
+`/app/shared` tree against the local tree at HEAD. The frontend is outside that denominator by
+design — tier 433 was confirmed in the SERVED chunk
+(`/app/.next/static/chunks/pages/improvements-c809c5db0e949b4f.js`), never the webpack cache,
+which the script's own closing note warns about.
+
+An earlier, narrower check is superseded by that run but worth keeping for what it establishes
+on its own: the three changed `shared/` files hash identically across all twelve backends and
+match local (`5aa8955a…`), and signal-engine's `calibration.py` matches byte-for-byte
+(`a07ddf41…`).
 
 | Check | Result |
 |---|---|

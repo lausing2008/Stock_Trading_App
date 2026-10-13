@@ -869,3 +869,24 @@ contention and starting up anyway; and treating a genuine schema error as conten
 defect is retried instead of raised. One earlier attempt was not a sabotage at all — the anchor
 text appears at two call sites and the edit landed on the wrong one, which is worth recording
 because it is indistinguishable from a passing test until the counts are checked.
+
+### Operational note: `check_deploy_drift.sh` runs from the LAPTOP, not on EC2
+
+Recorded 2026-10-12 after losing three attempts to it. The script SSHes to `18.205.121.71` to
+run `docker exec` itself, so running it *on* EC2 makes the host SSH to itself using
+`/home/ec2-user/Documents/Stock_AI/lausing.pem` — a path that exists on the laptop and not on
+the instance. Every per-container read then hangs on a connection that will never authenticate.
+
+**The failure mode is what makes this worth a note.** It does not report a missing key. It
+reports:
+
+```
+ERROR market-data — could not read /app/src from container (is stockai-market-data-1 running?)
+```
+
+— which reads as a sick container, and invites exactly the wrong investigation. The container
+was healthy throughout. Worse, each hung attempt leaves an `ssh` process and a
+`check_deploy_drift.sh` parked on the instance; three attempts left six, and they have to be
+killed by PID (`pkill -f` on the whole pattern does not reliably catch the detached children).
+
+Run it from the laptop, where it finishes in a couple of minutes and prints a real denominator.
