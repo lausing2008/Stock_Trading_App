@@ -8,6 +8,8 @@ _module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_module)
 resolve_window = _module.resolve_window
 VERIFIED, PROVISIONAL, UNVERIFIED = _module.VERIFIED, _module.PROVISIONAL, _module.UNVERIFIED
+classify_observation_window = _module.classify_observation_window
+UNADJUSTED_NO_KNOWN_ACTION, KNOWN_CORRUPT = _module.UNADJUSTED_NO_KNOWN_ACTION, _module.KNOWN_CORRUPT
 
 
 def _coverage(kind="source_guarantee"):
@@ -100,3 +102,33 @@ def test_the_ceiling_is_a_property_of_the_source_not_of_the_window():
     assert best_achievable_status("response_only") == PROVISIONAL
     assert best_achievable_status("source_guarantee") == VERIFIED
     assert best_achievable_status(None) == PROVISIONAL, "an unknown basis is not a guarantee"
+
+
+# ── AUD-PRICERISK-DIVIDEND (2026-10-13) ──────────────────────────────────────
+
+def test_a_cash_dividend_does_not_mark_a_stale_window_corrupt():
+    """AVGO, 2026-10: a $0.65 dividend made its whole decline 'unmeasurable'."""
+    bars = [(date(2026, 10, 1), 376.0), (date(2026, 10, 9), 355.0)]
+    div = {"symbol": "AVGO", "ex_date": date(2026, 10, 5), "action_type": "cash_dividend",
+           "cash_amount": 0.65}
+    resolved = resolve_window(bars, [div], None, start=bars[0][0], end=bars[-1][0])
+    out = classify_observation_window(resolved, [div], start=bars[0][0], end=bars[-1][0])
+    assert out["usable"] is True and out["adjustment"] == UNADJUSTED_NO_KNOWN_ACTION
+    assert out["evidence_status"] == "unverified"
+
+
+def test_a_cash_dividend_is_NAMED_not_silently_dropped():
+    bars = [(date(2026, 10, 1), 100.0), (date(2026, 10, 9), 99.0)]
+    div = {"ex_date": date(2026, 10, 5), "action_type": "cash_dividend", "cash_amount": 1.0}
+    resolved = resolve_window(bars, [div], None, start=bars[0][0], end=bars[-1][0])
+    out = classify_observation_window(resolved, [div], start=bars[0][0], end=bars[-1][0])
+    assert out["cash_dividends"] == [{"ex_date": date(2026, 10, 5), "cash_amount": 1.0}]
+    assert "cash dividend" in out["reason"]
+
+
+def test_a_split_in_a_stale_window_is_still_corrupt():
+    bars = [(date(2026, 10, 1), 100.0), (date(2026, 10, 9), 50.0)]
+    split = {"ex_date": date(2026, 10, 5), "action_type": "split", "split_ratio": 2.0}
+    resolved = resolve_window(bars, [split], None, start=bars[0][0], end=bars[-1][0])
+    out = classify_observation_window(resolved, [split], start=bars[0][0], end=bars[-1][0])
+    assert out["usable"] is False and out["adjustment"] == KNOWN_CORRUPT

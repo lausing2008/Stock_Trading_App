@@ -115,7 +115,7 @@ def test_a_recovery_closes_the_episode_so_the_next_decline_is_new():
     time — a high-water mark alone never resets."""
     closed, why = pr.should_emit({"step": 3, "worst_pct": 9.0},
                                  {"step": 1, "change_pct": -3.0})
-    assert closed is False and "recovered" in why
+    assert closed is False and "recovering" in why
     again, why2 = pr.should_emit({"step": 3, "worst_pct": 9.0, "episode_closed": True},
                                  {"step": 3, "change_pct": -9.0})
     assert again and "new episode" in why2
@@ -128,6 +128,83 @@ def test_the_event_key_is_session_scoped_so_a_rerun_cannot_duplicate():
     b = pr.event_key("symbol", "NVDA", "session_decline", date(2026, 10, 9))
     c = pr.event_key("symbol", "NVDA", "session_decline", date(2026, 10, 10))
     assert a == b and a != c
+
+
+def test_an_intraday_escalation_is_a_new_key_but_a_repeat_is_not():
+    """Intraday runs: -3% at 10:00 and -6% at 14:00 are two reports; -3% twice is one."""
+    k = lambda step, mode="shadow": pr.event_key("symbol", "NVDA", "session_decline",
+                                                 date(2026, 10, 9), step, mode)
+    assert k(1) == k(1) and k(1) != k(2)
+
+
+def test_a_shadow_detection_does_not_occupy_the_live_key():
+    """A shadow row proves detection, not that anybody was told."""
+    d = date(2026, 10, 9)
+    assert (pr.event_key("symbol", "NVDA", "pullback", d, 1, "shadow")
+            != pr.event_key("symbol", "NVDA", "pullback", d, 1, "live"))
+
+
+# ── recovery is measured from prices, not supplied ───────────────────────────
+
+def test_episode_closed_requires_recovering_half_the_drop():
+    ev = {"from_price": 100.0, "to_price": 90.0}
+    assert pr.episode_closed(ev, [91.0, 94.9]) is False
+    assert pr.episode_closed(ev, [91.0, 95.0]) is True
+
+
+def test_episode_closed_without_endpoint_prices_is_not_assumed():
+    assert pr.episode_closed({}, [1000.0]) is False
+    assert pr.episode_closed(None, [1000.0]) is False
+
+
+def test_a_closed_episode_reopens_even_at_a_lower_step():
+    """Checked before the ladder: once closed, the old high-water mark is irrelevant."""
+    emit, why = pr.should_emit({"step": 3, "worst_pct": 15.0, "episode_closed": True},
+                               {"step": 1, "change_pct": -7.5})
+    assert emit and "new episode" in why
+
+
+# ── slow decline ─────────────────────────────────────────────────────────────
+
+def test_a_slow_bleed_with_no_big_day_is_caught():
+    """NVDA, 2026-10: -5.8% over five sessions, no day worse than -1.3%."""
+    bars = _series([239.24, 237.47, 230.48, 229.28, 226.32, 225.33])
+    out = {c["rule"]: c for c in pr.evaluate("NVDA", "symbol", bars, USABLE)}
+    assert "session_decline" not in out and "pullback" not in out
+    assert out["slow_decline"]["step"] == 1
+    assert round(out["slow_decline"]["change_pct"], 1) == -5.8
+
+
+def test_slow_decline_threshold_and_window_are_parameters():
+    bars = _series([100, 99, 98, 97, 96, 95.5])
+    assert not [c for c in pr.evaluate("X", "symbol", bars, USABLE) if c["rule"] == "slow_decline"]
+    hits = [c for c in pr.evaluate("X", "symbol", bars, USABLE, slow_steps=(4.0,))
+            if c["rule"] == "slow_decline"]
+    assert hits and hits[0]["step"] == 1
+    assert pr.slow_decline(bars, sessions=10) is None  # not enough history: silence, not a guess
+
+
+# ── dividends ────────────────────────────────────────────────────────────────
+
+def test_an_ex_dividend_drop_is_added_back_not_reported():
+    bars = _series([100, 100, 100, 100, 100, 96])          # $4 dividend, ex on the last day
+    ex = bars[-1][0]
+    adj, applied, unknown = pr.dividend_adjust(bars, [{"ex_date": ex, "cash_amount": 4.0}])
+    assert unknown == [] and applied[0]["pct_of_price"] == 4.0
+    assert not pr.evaluate("X", "symbol", adj, USABLE)
+
+
+def test_a_dividend_with_no_amount_is_reported_as_unknown_not_assumed_zero():
+    bars = _series([100, 100, 96])
+    _, applied, unknown = pr.dividend_adjust(bars, [{"ex_date": bars[-1][0], "cash_amount": None}])
+    assert applied == [] and unknown == [bars[-1][0].isoformat()]
+
+
+def test_a_dividend_outside_the_bars_changes_nothing():
+    bars = _series([100, 96])
+    adj, applied, unknown = pr.dividend_adjust(
+        bars, [{"ex_date": bars[0][0] - timedelta(days=5), "cash_amount": 9.0}])
+    assert adj == bars and applied == [] and unknown == []
 
 
 # ── composition, including the case that must not produce a number ───────────
@@ -192,3 +269,10 @@ def test_a_basket_smaller_than_the_nominal_minimum_still_requires_full_coverage(
     assert out["triggered"] is False, "2 of 3 is 67% coverage, below the 80% floor"
     whole = pr.basket_breadth({"A": -5.0, "B": -5.0, "C": 1.0}, member_count=3)
     assert whole["sufficient_evidence"] is True
+
+
+def test_a_slow_decline_is_not_repeated_when_the_pullback_already_reports_the_move():
+    """AMD 2026-10: pullback -9.3% and slow decline -9.3% were the same move, listed twice."""
+    bars = _series([649.42, 645.86, 620.68, 608.1, 594.24, 588.32])
+    rules = {c["rule"] for c in pr.evaluate("AMD", "symbol", bars, USABLE)}
+    assert "pullback" in rules and "slow_decline" not in rules

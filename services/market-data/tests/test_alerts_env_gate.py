@@ -170,6 +170,9 @@ _ALERT_JOB_IDS = {
     # environment gate. Verified placed inside `if _is_alerting_enabled():` — this list entry
     # was the only thing missing, and this guard is what caught it.
     "product_impact_watches",
+    # 2026-10-13: the price-risk channel's SENDING half. Detection stays non-alert (it queues,
+    # never sends); this drain is the only place the channel calls a mail provider.
+    "price_risk_outbox_drain",
     "broker_auth_check",
     "morning_digest_us",
     "morning_digest_hk",
@@ -237,11 +240,11 @@ _NON_ALERT_JOB_IDS = {
     "prebreakout_alert_outcome_eval_daily", "options_flow_alert_outcome_eval_daily",
     "dark_pool_alert_outcome_eval_daily", "fix_effectiveness_recheck_daily",
     "analyst_target_outcomes_daily",
-    # Price-risk detection (2026-10-12). Writes RiskEvent/RiskEventReceipt rows and NEVER
-    # enqueues or sends — which is why it is safe on the non-alert side, and why a local dev
-    # stack can still accumulate the shadow measurement with mail switched off. If a send path
-    # is ever added it moves to _ALERT_JOB_IDS; test_price_risk_detection_never_sends is what
-    # catches that rather than this comment.
+    # Price-risk detection (2026-10-12). Writes RiskEvent/RiskEventReceipt rows and NEVER calls
+    # a mail provider — safe on the non-alert side, so a local dev stack still accumulates the
+    # shadow measurement with mail switched off. Since 2026-10-13 it may QUEUE outbox rows when
+    # the delivery flag is set; sending is `price_risk_outbox_drain`, on the alert side. The
+    # probe's "detection never calls a provider" check is what enforces the split.
     "price_risk_detection",
     # Corporate-action coverage refresh: a yfinance -> Postgres data capture, no email. Keeps
     # `evidenced_to` level with the price bars so figures are computable rather than permanently

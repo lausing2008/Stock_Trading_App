@@ -28,6 +28,15 @@ BENCHMARK_DECLINE_STEPS = (2.0, 3.0, 5.0, 8.0)
 PULLBACK_STEPS = (7.0, 12.0, 18.0, 25.0)
 PULLBACK_SESSIONS = 5
 
+#: SLOW DECLINE: first-to-last change over N trading sessions. The gap it closes is the 2026-10
+#: AI selloff: NVDA lost 5.8% over five sessions without one day worse than -1.3%, so neither
+#: the session ladder (-3%) nor the pullback ladder (-7%) fired. A steady bleed is what a holder
+#: most needs told, because no single day looks like news (AUD-PRICERISK-SLOWBLEED).
+#: -5% / 5 sessions is a STARTING value to evaluate in shadow, not a validated one; both are
+#: overridable at runtime (see `price_risk_watch.load_config`).
+SLOW_DECLINE_SESSIONS = 5
+SLOW_DECLINE_STEPS = (5.0, 8.0, 12.0, 18.0)
+
 #: A basket says something only when enough of it was actually observed. Breadth over three
 #: stale members is not breadth.
 #:
@@ -43,6 +52,10 @@ BREADTH_MEMBER_DECLINE_PCT = 2.0
 BREADTH_FRACTION = 0.60
 BREADTH_MIN_OBSERVED = 5
 BREADTH_MIN_COVERAGE = 0.80
+#: Multi-session breadth: a member counts as declining when it is down this much over the
+#: pullback window. The one-day rule above needs most of a basket down 2% ON THE SAME DAY, so a
+#: sector grinding lower a percent a day never triggered it.
+BASKET_PULLBACK_MEMBER_PCT = 4.0
 
 #: A move that has recovered past this fraction of its worst point ends the episode, so the
 #: next decline is reported as new rather than suppressed forever by a stale high-water mark.
@@ -142,14 +155,81 @@ def basket_breadth(member_moves: dict[str, float | None], member_count: int, *,
     }
 
 
-def event_key(scope: str, subject: str, rule: str, as_of: date) -> str:
-    """Identity for one detection. Two runs of the same session produce the same key.
+def window_change(bars: list[tuple[date, float]], sessions: int = SLOW_DECLINE_SESSIONS) -> float | None:
+    """First-to-last change over the trailing window of SESSIONS; the basket-level slow move."""
+    if len(bars) < 2:
+        return None
+    window = bars[-(sessions + 1):] if len(bars) > sessions else bars
+    start = window[0][1]
+    return None if start <= 0 else _pct(start, window[-1][1])
 
-    Scoped to the SESSION rather than the wall clock, so a job that runs every fifteen minutes
+
+def dividend_adjust(bars: list[tuple[date, float]], dividends: list[dict]):
+    """Add cash dividends back so an ex-dividend drop is not reported as a decline.
+
+    Returns `(bars, applied, unknown)`. Standard back-adjustment: every close BEFORE an ex-date
+    is scaled by `1 - amount / close_before_ex`, so the series measures what a holder lost
+    rather than the mechanical drop when the dividend leaves the share price. `unknown` lists
+    ex-dates whose amount was not recorded — those cannot be adjusted, and the caller must not
+    present a move across them as a measured decline.
+    """
+    applied, unknown = [], []
+    adjusted = list(bars)
+    for div in sorted(dividends or [], key=lambda d: d["ex_date"]):
+        ex = div["ex_date"]
+        before = [c for d, c in bars if d < ex]
+        if not before or not any(d >= ex for d, _ in bars):
+            continue  # ex-date outside the bars: nothing in this series straddles it
+        amount = div.get("cash_amount")
+        if not amount or amount <= 0:
+            unknown.append(ex.isoformat())
+            continue
+        factor = 1.0 - float(amount) / before[-1]
+        if factor <= 0:
+            unknown.append(ex.isoformat())
+            continue
+        adjusted = [(d, c * factor) if d < ex else (d, c) for d, c in adjusted]
+        applied.append({"ex_date": ex.isoformat(), "cash_amount": float(amount),
+                        "pct_of_price": round(float(amount) / before[-1] * 100, 3)})
+    return adjusted, applied, unknown
+
+
+def event_key(scope: str, subject: str, rule: str, as_of: date, step: int = 0,
+              mode: str = "shadow") -> str:
+    """Identity for one detection. Two runs of the same session at the same step collide.
+
+    Scoped to the SESSION rather than the wall clock, so a job that runs several times a day
     cannot mint a new event for a move it already reported — the duplicate is refused by a
     unique constraint rather than by remembering to check.
+
+    STEP is part of the key because the job now runs intraday: a -3% morning that becomes -6%
+    by the afternoon is an escalation inside one session, and a session-only key refused it as
+    a duplicate. MODE is part of it so a live run can report an episode that a shadow run had
+    already recorded — the shadow row proves detection, not that anybody was told.
     """
-    return f"risk:{scope}:{subject}:{rule}:{as_of.isoformat()}"
+    return f"risk:{scope}:{subject}:{rule}:{as_of.isoformat()}:s{int(step)}:{mode}"
+
+
+def episode_closed(prior_evidence: dict | None, closes_since: list[float]) -> bool:
+    """Has the price recovered enough since the prior event to end that episode?
+
+    Measured from PRICES, not from a flag. The flag this replaced (`episode_closed` in the
+    event's evidence) was read but never written, so a decline -> recovery -> second decline
+    was suppressed as "the same episode" forever — the exact case `should_emit` documents.
+
+    Recovered means some close after the prior event regained `EPISODE_RECOVERY_FRACTION` of
+    that event's drop. Without the endpoint prices the answer is False: an episode that cannot
+    be shown to have ended is not assumed to have ended.
+    """
+    ev = prior_evidence or {}
+    try:
+        top, bottom = float(ev["from_price"]), float(ev["to_price"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if top <= bottom:
+        return False
+    line = bottom + (top - bottom) * EPISODE_RECOVERY_FRACTION
+    return any(c >= line for c in closes_since)
 
 
 def should_emit(prior: dict | None, candidate: dict) -> tuple[bool, str]:
@@ -171,17 +251,33 @@ def should_emit(prior: dict | None, candidate: dict) -> tuple[bool, str]:
     worst = abs(float(prior.get("worst_pct") or 0.0))
     step = int(candidate.get("step") or 0)
     now = abs(float(candidate.get("change_pct") or 0.0))
+    # Checked FIRST: once the prior episode has ended, its ladder position is irrelevant. It was
+    # checked last, behind the "same episode" return, so a closed episode could never reopen.
+    if prior.get("episode_closed") and step > 0:
+        return True, "new episode after recovery"
     if step > prior_step:
         return True, f"escalated from step {prior_step} to {step}"
     if worst > 0 and now <= worst * (1.0 - EPISODE_RECOVERY_FRACTION):
-        return False, "recovered; episode closed, awaiting a new decline"
-    if prior.get("episode_closed") and step > 0:
-        return True, "new episode after recovery"
+        return False, "recovering; not yet a new decline"
     return False, f"same episode, step {step} not above {prior_step}"
 
 
+def slow_decline(bars: list[tuple[date, float]], sessions: int = SLOW_DECLINE_SESSIONS) -> dict | None:
+    """First-to-last change over the trailing `sessions` trading sessions."""
+    if len(bars) <= sessions:
+        return None
+    window = bars[-(sessions + 1):]
+    (from_date, start), (as_of, close) = window[0], window[-1]
+    if start <= 0:
+        return None
+    return {"as_of": as_of, "from_date": from_date, "from_price": start, "to_price": close,
+            "change_pct": _pct(start, close), "window_sessions": sessions}
+
+
 def evaluate(subject: str, scope: str, bars: list[tuple[date, float]], verdict: dict, *,
-             opens: dict | None = None, steps: tuple[float, ...] | None = None) -> list[dict]:
+             opens: dict | None = None, steps: tuple[float, ...] | None = None,
+             slow_sessions: int = SLOW_DECLINE_SESSIONS,
+             slow_steps: tuple[float, ...] = SLOW_DECLINE_STEPS) -> list[dict]:
     """Every candidate for one subject, or one record saying why it could not be measured.
 
     AN UNMEASURABLE SUBJECT PRODUCES A RECORD, NOT SILENCE. A corporate action inside the
@@ -206,7 +302,8 @@ def evaluate(subject: str, scope: str, bars: list[tuple[date, float]], verdict: 
 
     out = []
     for rule, measured, rung in (("session_decline", session_move(bars, opens), ladder),
-                                 ("pullback", pullback(bars), PULLBACK_STEPS)):
+                                 ("pullback", pullback(bars), PULLBACK_STEPS),
+                                 ("slow_decline", slow_decline(bars, slow_sessions), slow_steps)):
         if not measured or measured["change_pct"] >= 0:
             continue
         step = step_for(abs(measured["change_pct"]), rung)
@@ -217,4 +314,11 @@ def evaluate(subject: str, scope: str, bars: list[tuple[date, float]], verdict: 
                     "basis": verdict.get("basis"),
                     "evidence_status": verdict.get("evidence_status"),
                     "reason": verdict.get("reason")})
+    # A pullback is measured from the window's PEAK, a slow decline from its FIRST bar, and the
+    # peak is never below the first bar — so whenever a pullback clears its rung it already
+    # reports this move at least as large. Emitting both put the same move in a digest twice
+    # (AMD, MU, TSM in the 2026-10-13 production dry run). The slow rule exists for the bleed
+    # the pullback ladder misses, and that is the only case it now reports.
+    if any(c["rule"] == "pullback" for c in out):
+        out = [c for c in out if c["rule"] != "slow_decline"]
     return out

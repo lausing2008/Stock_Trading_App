@@ -1,7 +1,19 @@
 # Market, company and price-risk alerts
 
-Status: proposed design following an approved read-only production diagnostic. No new
-channels have been implemented, enabled or sent by this investigation.
+## Status (updated 2026-10-13)
+
+| Part | State |
+| --- | --- |
+| Price & risk changes — detection | **Built.** Deployed in shadow 2026-10-12 (`8597f1b6`). The 2026-10-13 rework below is **committed locally, not deployed**. |
+| Price & risk changes — email/in-app delivery | **Built, not enabled.** The delivery flag is absent and no account is enrolled; nothing has been sent. |
+| Market & sector developments | Proposed only (basket breadth is the first piece of it). |
+| Company developments | Proposed only. |
+| Morning brief / closing recap | Proposed only. |
+
+The sections from "Production findings" to "Existing components" are the **original design**
+(2026-10-12) and describe intent. Current behaviour is in the dated build sections at the end;
+where they differ (for example, the pullback window is 5 sessions, not 15), the build sections
+are correct.
 
 ## Production findings
 
@@ -311,3 +323,156 @@ those rows a reader cannot tell a broken feed from a calm market.
 More sessions, for the post-ladder rate; a judgement on whether a 7% pullback floor over 15
 sessions is the right first rung given 55 of 157 subjects cleared it; and the coverage-freshness
 decision above. None of that is a code change yet, which is why delivery stays off.
+
+---
+
+# Step 1b: reliability fixes, slow declines, intraday shadow, delivery path (2026-10-13)
+
+**Trigger.** The AI names fell for a week and the user heard nothing. Three causes, measured
+against production rather than assumed. They explain the silence **of this detector only**;
+the AI-signal and price-alert paths are separate and were not re-diagnosed here.
+
+| Stock | Peak → Oct 13 | What the deployed detector did |
+| --- | --- | --- |
+| AMD | 649.42 → 588.32, −9.4% | Detected (pullback), withheld: shadow |
+| MU, TSM | −9.1%, −8.5% | Detected, withheld: shadow |
+| NVDA | 239.24 → 225.33, −5.8% | **Nothing.** No day worse than −1.3%; pullback rung starts at −7% |
+| AVGO | 376.51 → 355.78, −5.5% | **"Unmeasurable"** — a $0.65 cash dividend in the window |
+
+## What changed
+
+**Cash dividends (AUD-PRICERISK-DIVIDEND).** `classify_observation_window` marked a window
+`known_corrupt` for *any* recorded action whenever coverage was stale — including a cash
+dividend, which `resolve_window` itself never treats as corrupting. Production holds 744 cash
+dividends and 15 splits, so this silenced most "unmeasurable" subjects (17 → 0 in the dry run).
+Now:
+
+- Only share-count actions (`split`, `stock_dividend`) make a window corrupt. That makes the
+  stale-coverage branch agree with the covered branch, which already ignored cash dividends.
+- Cash dividends are **named** in the result (`cash_dividends`), never silently dropped.
+- Price-risk detection **adds them back** (`price_risk.dividend_adjust`, standard
+  back-adjustment), so an ex-date drop is not reported as a holder's loss. The event records
+  each dividend applied; the basis reads `...+cash_dividends_added_back`.
+- A dividend with **no recorded amount** cannot be added back, so a window straddling it is
+  `unmeasurable` with `limiting_factor = dividend_amount_unknown` — not assumed to be zero.
+- **Side effect on AQ04 calibration** (signal-engine shares this function): windows that
+  contained only a cash dividend under stale coverage were being dropped as corrupt; they are
+  now kept, labelled `unverified`, like any other window without a share-count action. That is
+  the population the function's own docstring describes.
+
+**Slow decline (AUD-PRICERISK-SLOWBLEED).** New rule `slow_decline`: first-to-last change over
+5 trading sessions, ladder −5 / −8 / −12 / −18%. **−5% is a starting value to evaluate, not a
+validated one.** It is suppressed whenever a pullback already reports the move (the peak is
+never below the first bar), and while a pullback episode for the same stock is still open —
+otherwise a −7% pullback easing to −6.5% reappeared as a "new" slow decline.
+
+Runtime-configurable without a deploy, Redis key `stockai:admin:price_risk:config`:
+
+```json
+{"slow_decline_sessions": 5, "slow_decline_steps": [5, 8, 12, 18], "basket_slow_member_pct": 4}
+```
+
+Invalid values fall back to the default **and are named** in the job's `config_errors`.
+
+**Multi-day basket breadth.** New rule `basket_slow_decline`: ≥60% of a maintained basket each
+down ≥4% over the same 5-session window. The one-day rule needs most of a basket down 2% *on
+the same day*, which a week-long grind never satisfies.
+
+**Recovery is persisted (review item 1).** `should_emit` read an `episode_closed` flag nobody
+wrote, and checked it *after* the "same episode" return, so a decline → recovery → second
+decline was silent forever. Now each run, for each open pullback/slow-decline episode, checks
+whether any later close regained half the drop and **writes** `episode_closed`,
+`episode_closed_on` and `episode_closed_by` (`price_recovery` / `age` / `breadth_receded`) to
+the event that opened it. The flag is checked first in `should_emit`. Session rules
+(`session_decline`, `basket_breadth`) are one episode per session: two −4% days are two moves.
+
+**Basket evidence (review item 2).** Breadth read raw closes for any member without a
+candidate, including members the evidence contract had just refused. Now breadth reads only
+moves measured from adjusted prices; an unmeasurable member is **unobserved**, and so is a
+member whose latest bar is older than the basket's newest session.
+
+**Intraday scanning, shadow (review item 3).** The job now also fires 10:05, 12:05, 14:05 and
+15:40 ET, and 11:30 / 15:30 HKT, besides 20:10 ET. Intraday runs append today's price from the
+shared `stockai:live_prices` cache only when (a) the venue is in its regular session
+(`is_regular_session`, so holidays fall out) and (b) the quote's own previous close matches
+the last settled bar within 0.5%. That cache carries no timestamp; the match is the freshness
+proof (see BUG-VOLANOM-STALEMARKET). Intraday events are labelled `[intraday quote; the
+session is not over]`. Event keys now include the ladder **step** (a worse reading later the
+same session is an escalation, not a duplicate) and the **mode** (a shadow row proves
+detection, not that anyone was told).
+
+## Delivery path — built, NOT enabled
+
+- **Enrolment is per account.** Both `price_risk` (email) and `price_risk_in_app` default
+  OFF; the delivery flag `stockai:admin:feature:price_risk_delivery_enabled` alone reaches
+  nobody. An account is in the audience if either channel is on.
+- **One digest per user per run**, never one email per symbol; one in-app notice alongside.
+- **Duplicate suppression:** the outbox id is a hash of the event keys in the digest, so a
+  re-run queues nothing new. Receipts carry the `outbox_event_id`.
+- **Daily ceiling:** 6 price-risk emails per user per rolling 24h; over it the receipt says
+  `email_capped` rather than dropping silently.
+- **Retries, expiry (12h), opt-out recheck at send, the acceptance/crash gap:** the outbox's
+  own (`common.outbox`, `earnings_outbox.deliver_batch`).
+- **Split send:** detection only *queues* (non-alert side, so dev stacks keep measuring).
+  `drain_price_risk_outbox`, every 2 minutes behind `_is_alerting_enabled()`, is the only
+  sender — `price_risk_outbox_drain` is in the env-gate test's alert list.
+- Content: measured facts only; says explicitly that it is not a trade signal, that the AI
+  label may not have changed, and that the alert does not establish *why* the price moved.
+
+## Validation
+
+- 31 pure detector tests; 12 shared price-basis tests; the end-to-end probe (real models,
+  real audience gate, real outbox, now with `autoflush=False` like production) covers
+  dividends, slow decline, config, persisted recovery, stale/unmeasurable basket members,
+  intraday freshness and escalation, digest, dedup, in-app-only, shadow-vs-live and the cap.
+- **Nine sabotages, all caught**: dividend counted as corrupt; recovery not written; closed
+  check behind the ladder; stale member counted; slow rule removed; step dropped from key;
+  quote freshness check removed; cap removed; dividend not added back.
+- **Production dry run** (new code against live data and the live-price cache, delivery
+  forced off, transaction rolled back — nothing written):
+
+  | | Before (deployed) | After |
+  | --- | --- | --- |
+  | Unmeasurable subjects | 17 | 0 |
+  | NVDA | nothing | slow decline −5.6% |
+  | AVGO | unmeasurable | slow decline −5.3% |
+  | AI / GPU basket | nothing | basket slow decline, −7.1% avg |
+  | Cold read, all open episodes | 93 | 97 (65 pullback, 23 session, **8 slow**, 1 basket) |
+  | Increment over existing shadow history | — | 39 events |
+
+  The slow rule adds 8 subjects after de-duplication; before it, 72 of 157 cleared −5%.
+
+- **A defect the dry run found and the tests had missed:** a basket event wrote one receipt
+  per declining member, de-duplicated by a SELECT that cannot see unflushed rows. Production
+  sessions use `autoflush=False`, so a user watching NVDA, AVGO and TSM hit the unique
+  constraint and the whole run would have aborted. Fixed (one receipt per user, matched
+  symbols merged); the probe now runs `autoflush=False` so it cannot hide again.
+
+## Go-live criteria (review item 4) — for enabling email
+
+Measured over **at least 5 US sessions** of intraday shadow, from `/risk-alerts` and the
+receipts table:
+
+1. **Volume:** after the cold start, median new events per session that would reach the
+   enrolled account ≤ ~10, and digests per day ≤ the cap (6) on a normal day.
+2. **Freshness:** every intraday event has `price_source = live_quote` *or* settled bars;
+   `quote_stale` counted, and investigated if above a few percent of subjects.
+3. **Detection delay:** a move visible in the live cache is recorded by the next scheduled
+   run (≤ ~2h during the session).
+4. **Duplicates:** zero repeated (subject, rule, session, step) events; zero slow-decline
+   events while a pullback episode is open.
+5. **Re-alert:** at least one observed `episode_closed_by = price_recovery` followed by a
+   correct new episode, or the probe case accepted as sufficient.
+6. **Not over-suppressed:** compare episodes reported against a plain count of subjects that
+   crossed each threshold; a falling event count alone could be excessive suppression.
+
+Then: set the delivery flag and opt in **one** account (email + in-app), watch one session,
+and only then consider anyone else.
+
+## Not done
+
+- Not deployed. `shared/common/outcome_price_basis.py` changed, so this is a rebuild of
+  all 12 backend images, not a one-container copy (see AUD-REGISTER-POSTBUILD-DRIFT); deploy
+  in a calm window and not 12-at-once (AUD-DEPLOY-MIGRATIONCONVOY). No schema change.
+- Benchmarks (SPY/QQQ/SOXX) are not yet subjects; only watchlist symbols and theme baskets.
+- Company-event and macro channels, morning brief, closing recap, quiet hours.

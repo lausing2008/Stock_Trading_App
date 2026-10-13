@@ -4,6 +4,7 @@ Nothing is injected: `detect()` resolves prices, applies the adjustment contract
 and receipts, and consults the shipped `alert_audience` functions.
 """
 import importlib.util
+import json
 import sys
 import types
 from datetime import date, datetime, timedelta, timezone
@@ -62,18 +63,27 @@ NOW = datetime(2026, 10, 12, 21, 0, tzinfo=timezone.utc)
 
 
 class Redis:
-    def __init__(self, live=False):
-        self.live = live
+    """Key-aware: the detector reads the delivery flag, the config and the live-price cache."""
+    def __init__(self, live=False, quotes=None, config=None):
+        self.live, self.quotes, self.config = live, quotes, config
     def get(self, key):
-        return b"1" if self.live else None
+        if key == prw.DELIVERY_FLAG:
+            return b"1" if self.live else None
+        if key == prw.LIVE_PRICES_KEY and self.quotes is not None:
+            return json.dumps(self.quotes).encode()
+        if key == prw.CONFIG_KEY and self.config is not None:
+            return self.config if isinstance(self.config, bytes) else json.dumps(self.config).encode()
+        return None
 
 
 _ids = {'cov': 0, 'act': 0, 'pref': 0}
 
 
 def build(closes_by_symbol, *, split_for=None, coverage=True, opt_in=(),
-          completeness='response_only'):
-    with Session(engine) as s:
+          completeness='response_only', dividends=None, end_for=None, reset=True):
+    if not reset:
+        return
+    with Session(engine, autoflush=False) as s:
         for t in (models.RiskEventReceipt, models.RiskEvent, models.AlertPreference,
                   models.CorporateActionCoverage, models.CorporateAction,
                   models.WatchlistItem, models.Price, models.Stock, models.User,
@@ -89,7 +99,8 @@ def build(closes_by_symbol, *, split_for=None, coverage=True, opt_in=(),
                                exchange=models.Exchange.NASDAQ, active=True))
             s.flush()
             s.add(models.WatchlistItem(id=sid, user_id=1, stock_id=sid))
-            start = TODAY - timedelta(days=len(closes) - 1)
+            end = (end_for or {}).get(symbol, TODAY)
+            start = end - timedelta(days=len(closes) - 1)
             for i, c in enumerate(closes):
                 pid += 1
                 d = start + timedelta(days=i)
@@ -103,6 +114,11 @@ def build(closes_by_symbol, *, split_for=None, coverage=True, opt_in=(),
                     evidenced_from=start, evidenced_to=TODAY,
                     completeness_basis=completeness, source='test',
                     method='cumulative_split_factor_v1', retrieved_at=datetime(2026, 10, 12)))
+            for ex, amount in (dividends or {}).get(symbol, []):
+                _ids['act'] += 1
+                s.add(models.CorporateAction(id=_ids['act'], symbol=symbol, ex_date=ex,
+                                             action_type='cash_dividend', cash_amount=amount,
+                                             source='test', retrieved_at=datetime(2026, 10, 12)))
             if split_for == symbol:
                 _ids['act'] += 1
                 s.add(models.CorporateAction(id=_ids['act'], symbol=symbol, ex_date=TODAY, action_type='split',
@@ -114,9 +130,9 @@ def build(closes_by_symbol, *, split_for=None, coverage=True, opt_in=(),
         s.commit()
 
 
-def run(live=False):
-    with Session(engine) as s:
-        result = detect(s, now=NOW, redis_client=Redis(live))
+def run(live=False, now=NOW, quotes=None, config=None):
+    with Session(engine, autoflush=False) as s:
+        result = detect(s, now=now, redis_client=Redis(live, quotes, config))
         s.commit()
         events = list(s.scalars(select(models.RiskEvent)))
         receipts = list(s.scalars(select(models.RiskEventReceipt)))
@@ -138,7 +154,7 @@ check('SHADOW SENDS NOTHING', outbox == [], outbox)
 
 # 2. Re-running the same session does not duplicate.
 before = len(events)
-with Session(engine) as s:
+with Session(engine, autoflush=False) as s:
     detect(s, now=NOW, redis_client=Redis()); s.commit()
     after = len(list(s.scalars(select(models.RiskEvent))))
 check('a second run in the same session creates no duplicate', after == before, (before, after))
@@ -154,19 +170,64 @@ check('...and no event claims the 50% crash the split invented',
       [(e.rule, e.change_pct) for e in events])
 check('...and nothing was sent for it', outbox == [], outbox)
 
-# 4. Live mode, opted in: eligible — and STILL nothing is sent, because this job never sends.
+# 4. Live mode, opted in: ONE digest is QUEUED — and no provider is called, because detection
+#    never sends. The drain job, on the alerting side, is the only sender.
 build({'NVDA': [100, 100, 100, 100, 100, 94]}, opt_in=(ALERT_TYPE_EMAIL, ALERT_TYPE_IN_APP))
 result, events, receipts, outbox = run(live=True)
-check('with delivery enabled and opted in, the receipt is eligible',
-      any(r.state == 'eligible_for_email' for r in receipts),
+check('with delivery enabled and opted in, the receipts are queued',
+      receipts and all(r.state == 'email_queued' for r in receipts),
       [(r.state, r.reason) for r in receipts])
-check('THE DETECTION JOB NEVER SENDS, even in live mode', outbox == [], outbox)
+check('...as ONE digest for several events, not one email each',
+      len(outbox) == 1 and len(events) >= 2, (len(outbox), [(e.rule, e.step) for e in events]))
+check('THE DETECTION JOB NEVER CALLS A PROVIDER: the row is pending',
+      all(o.state == 'pending' for o in outbox), [o.state for o in outbox])
+check('the receipt points at the outbox row it was queued in',
+      all(r.outbox_event_id == outbox[0].event_id for r in receipts))
+check('the digest says this is a measured move, not a signal, and claims no cause',
+      outbox and 'not trade signals' in outbox[0].body_text
+      and 'does not establish WHY' in outbox[0].body_text, outbox and outbox[0].body_text)
+before = len(outbox)
+result, events, receipts, outbox = run(live=True)
+check('a re-run queues no duplicate digest', len(outbox) == before, (before, len(outbox)))
 
 # 5. Live mode, NOT opted in: the opt-in default governs delivery here too.
 build({'NVDA': [100, 100, 100, 100, 100, 94]})
 result, events, receipts, outbox = run(live=True)
 check('live mode still refuses an account that never opted in',
-      all(r.state == 'preference_disabled' for r in receipts),
+      receipts and all(r.state == 'preference_disabled' for r in receipts) and outbox == [],
+      [(r.state, r.reason) for r in receipts])
+
+# 5b. In-app only: email off, in-app on -> a notice, no email, and the receipt says why.
+build({'NVDA': [100, 100, 100, 100, 100, 94]}, opt_in=(ALERT_TYPE_IN_APP,))
+result, events, receipts, outbox = run(live=True)
+with Session(engine, autoflush=False) as s:
+    notices = list(s.scalars(select(models.AppNotification)))
+check('in-app only: one notice, no email', len(notices) == 1 and outbox == [],
+      (len(notices), len(outbox)))
+check('...recorded as in_app_only, not as preference_disabled',
+      receipts and all(r.state == 'in_app_only' for r in receipts),
+      [(r.state, r.reason) for r in receipts])
+
+# 5c. A shadow detection does not count as having told anybody.
+build({'NVDA': [100, 100, 100, 100, 100, 94]}, opt_in=(ALERT_TYPE_EMAIL,))
+run(live=False)
+result, events, receipts, outbox = run(live=True)
+check('an episode recorded only in shadow is still reported once live', len(outbox) == 1,
+      [(e.delivery_mode, e.rule) for e in events])
+
+# 5d. The per-user daily ceiling.
+build({'NVDA': [100, 100, 100, 100, 100, 94]}, opt_in=(ALERT_TYPE_EMAIL,))
+with Session(engine, autoflush=False) as s:
+    for i in range(prw.MAX_EMAILS_PER_USER_PER_DAY):
+        s.add(models.NotificationOutbox(event_id=f'price-risk:1:prior{i}', recipient='u1@example.com',
+              subject='x', body_html='x', body_text='x', alert_type=ALERT_TYPE_EMAIL, user_id=1,
+              state='accepted', created_at=NOW.replace(tzinfo=None) - timedelta(hours=1)))
+    s.commit()
+result, events, receipts, outbox = run(live=True)
+check('the daily ceiling stops a further email', len(outbox) == prw.MAX_EMAILS_PER_USER_PER_DAY,
+      len(outbox))
+check('...and the receipt records the cap rather than a silent drop',
+      receipts and all(r.state == 'email_capped' for r in receipts),
       [(r.state, r.reason) for r in receipts])
 
 # 6. An unreadable delivery flag means shadow, never live.
@@ -182,6 +243,9 @@ result, events, receipts, outbox = run()
 breadth = [e for e in events if e.rule == 'basket_breadth']
 check('a basket falling together is reported', len(breadth) >= 1,
       [(e.rule, e.subject) for e in events])
+check('...with ONE receipt per user, not one per member they watch (prod runs autoflush=False)',
+      breadth and len([r for r in receipts if r.event_id == breadth[0].id]) == 1,
+      [(r.event_id, r.matched_symbols) for r in receipts])
 if breadth:
     ev = breadth[0].evidence.get('breadth', {})
     check('...carrying coverage and sample size, not just a fraction',
@@ -221,6 +285,135 @@ result, events, receipts, outbox = run()
 check('a source documenting completeness reaches verified',
       any(e.evidence_status == 'verified' for e in events),
       [(e.rule, e.evidence_status) for e in events])
+
+# ── 2026-10-13 fixes ─────────────────────────────────────────────────────────
+
+def rules(events, subject=None):
+    return sorted((e.rule, e.step) for e in events if subject in (None, e.subject))
+
+# 9. CASH DIVIDEND with a stale coverage span — the AVGO case. It used to be "unmeasurable".
+ex = TODAY - timedelta(days=2)
+build({'AVGO': [376, 376, 376, 376, 360, 355]}, coverage=False,
+      dividends={'AVGO': [(ex, 0.65)]})
+result, events, receipts, outbox = run()
+check('a cash dividend no longer makes a window unmeasurable',
+      not [e for e in events if e.rule == 'unmeasurable'], rules(events))
+check('...the decline through it is measured (slow decline: -5.6% is under the pullback rung)',
+      ('slow_decline', 1) in rules(events), rules(events))
+check('...and the event records the dividend it added back',
+      all((e.evidence or {}).get('cash_dividends_added_back') for e in events if e.scope == 'symbol'),
+      [(e.rule, (e.evidence or {}).get('cash_dividends_added_back')) for e in events])
+
+# 9b. An ex-dividend drop that IS the whole move is not a decline.
+build({'DIVY': [100, 100, 100, 100, 100, 96]}, dividends={'DIVY': [(TODAY, 4.0)]})
+result, events, receipts, outbox = run()
+check('an ex-dividend drop alone produces no event', events == [], rules(events))
+
+# 9c. A dividend whose amount was never recorded is refused, with the reason named.
+build({'DIVN': [100, 100, 100, 100, 100, 96]}, dividends={'DIVN': [(TODAY, None)]})
+result, events, receipts, outbox = run()
+check('an unknown dividend amount is unmeasurable, never a measured decline',
+      rules(events) == [('unmeasurable', 0)], rules(events))
+check('...naming dividend_amount_unknown as the limit',
+      events and events[0].evidence.get('limiting_factor') == 'dividend_amount_unknown',
+      events and events[0].evidence)
+
+# 10. SLOW DECLINE: the NVDA shape, no day worse than -3%.
+build({'NVDA': [239.24, 237.47, 230.48, 229.28, 226.32, 225.33]})
+result, events, receipts, outbox = run()
+check('a slow bleed is detected', ('slow_decline', 1) in rules(events), rules(events))
+check('...without inventing a session decline', not any(e.rule == 'session_decline' for e in events))
+
+# 10b. Configurable, and a bad override is named rather than half-applied.
+build({'NVDA': [239.24, 237.47, 230.48, 229.28, 226.32, 225.33]})
+result, events, receipts, outbox = run(config={'slow_decline_steps': [7.0]})
+check('a raised threshold is honoured', not any(e.rule == 'slow_decline' for e in events), rules(events))
+build({'NVDA': [239.24, 237.47, 230.48, 229.28, 226.32, 225.33]})
+result, events, receipts, outbox = run(config={'slow_decline_steps': [8, 5], 'slow_decline_sessions': 99})
+check('an invalid override falls back to defaults and says so',
+      ('slow_decline', 1) in rules(events) and len(result['config_errors']) == 2, result)
+result, *_ = run(config=b'[1, 2]')
+check('a non-object override is named', result['config_errors'] == ['config must be a JSON object'], result)
+
+# 11. RECOVERY IS PERSISTED and a second decline alerts again. Three sessions run in order.
+def run_on(day_closes, day):
+    """Rewrite NVDA's bars to end on `day`, then run detection as of that evening."""
+    with Session(engine, autoflush=False) as s:
+        s.query(models.Price).delete(); s.commit()
+        start = day - timedelta(days=len(day_closes) - 1)
+        for i, c in enumerate(day_closes):
+            d = start + timedelta(days=i)
+            s.add(models.Price(id=i + 1, stock_id=1, ts=datetime(d.year, d.month, d.day),
+                               timeframe=models.TimeFrame.D1, open=c, high=c, low=c, close=c,
+                               volume=1)); s.commit()
+    return run(now=datetime(day.year, day.month, day.day, 23, 0, tzinfo=timezone.utc))
+
+build({'NVDA': [100, 100]})
+d1 = TODAY
+_, ev1, *_ = run_on([100, 100, 100, 100, 100, 91], d1)
+first = [e for e in ev1 if e.rule == 'pullback']
+check('first decline reported', len(first) == 1, rules(ev1))
+_, ev2, *_ = run_on([100, 100, 100, 100, 100, 91, 99], d1 + timedelta(days=1))
+with Session(engine, autoflush=False) as s:
+    stored = s.get(models.RiskEvent, first[0].id)
+    closed_flag = bool((stored.evidence or {}).get('episode_closed'))
+    closed_by = (stored.evidence or {}).get('episode_closed_by')
+check('recovery is WRITTEN to the event that opened the episode', closed_flag and closed_by == 'price_recovery',
+      stored.evidence)
+_, ev3, *_ = run_on([100, 100, 100, 100, 91, 99, 100, 100, 91], d1 + timedelta(days=3))
+second = [e for e in ev3 if e.rule == 'pullback' and e.observed_to == d1 + timedelta(days=3)]
+check('a second decline after recovery alerts again', len(second) == 1, rules(ev3))
+check('...and says it is a new episode',
+      second and second[0].evidence.get('emit_reason') == 'new episode after recovery',
+      second and second[0].evidence.get('emit_reason'))
+
+# 12. BASKET EVIDENCE: an unmeasurable member is unobserved, not a raw return.
+build({s: [100, 100, 100, 100, 100, 96] for s in ('NVDA', 'AMD', 'TSM')} |
+      {'AVGO': [100, 100, 100, 100, 100, 50]}, split_for='AVGO')
+result, events, receipts, outbox = run()
+b = [e for e in events if e.scope == 'theme' and e.subject.startswith('AI / GPU')]
+check('a basket with an unmeasurable member lacks coverage and does not fire', b == [],
+      [(e.rule, e.evidence.get('member_moves')) for e in b])
+
+# 12b. A STALE member (last bar a session behind) is unobserved for this session.
+build({s: [100, 100, 100, 100, 100, 96] for s in ('NVDA', 'AMD', 'TSM')} |
+      {'AVGO': [100, 100, 100, 100, 100, 96]}, end_for={'AVGO': TODAY - timedelta(days=1)})
+result, events, receipts, outbox = run()
+b = [e for e in events if e.scope == 'theme' and e.subject.startswith('AI / GPU')]
+check('a stale member is not counted for the newer session', b == [],
+      [(e.rule, e.evidence.get('member_moves')) for e in b])
+
+# 12c. Multi-day basket breadth: a sector grinding lower with no 2% day.
+build({s: [100, 99, 98, 97, 96, 95.5] for s in ('NVDA', 'AMD', 'AVGO', 'TSM')})
+result, events, receipts, outbox = run()
+kinds = sorted(e.rule for e in events if e.scope == 'theme' and e.subject.startswith('AI / GPU'))
+check('a basket grinding lower is caught by multi-day breadth, not the one-day rule',
+      kinds == ['basket_slow_decline'], kinds)
+
+# 13. INTRADAY: a live quote is today's price only when its previous close matches.
+MORNING = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)   # 11:00 ET, regular session
+build({'NVDA': [100, 100, 100, 100, 100, 100]})
+result, events, receipts, outbox = run(now=MORNING, quotes=[{'symbol': 'NVDA', 'price': 96.0,
+                                                             'prev_close': 100.0}])
+check('an intraday quote produces a same-session decline',
+      ('session_decline', 1) in rules(events) and result['intraday_quotes'] == 1, (rules(events), result))
+check('...labelled as an intraday quote',
+      all(e.evidence.get('price_source') == 'live_quote' for e in events))
+result, ev2, *_ = run(now=MORNING + timedelta(hours=3),
+                      quotes=[{'symbol': 'NVDA', 'price': 93.0, 'prev_close': 100.0}])
+check('a worse reading later the same session is an escalation, not a duplicate',
+      ('session_decline', 2) in rules(ev2), rules(ev2))
+result, ev3, *_ = run(now=MORNING + timedelta(hours=4),
+                      quotes=[{'symbol': 'NVDA', 'price': 93.5, 'prev_close': 100.0}])
+check('the same step again is not repeated', len(ev3) == len(ev2), (rules(ev2), rules(ev3)))
+
+build({'NVDA': [100, 100, 100, 100, 100, 100]})
+result, events, *_ = run(now=MORNING, quotes=[{'symbol': 'NVDA', 'price': 80.0, 'prev_close': 120.0}])
+check('a quote whose previous close does not match the bars is not used',
+      events == [] and result['intraday_quotes'] == 0, (rules(events), result))
+build({'NVDA': [100, 100, 100, 100, 100, 100]})
+result, events, *_ = run(quotes=[{'symbol': 'NVDA', 'price': 90.0, 'prev_close': 100.0}])
+check('outside the regular session the cache is ignored', events == [], rules(events))
 
 print('FAILURES:', failures)
 sys.exit(1 if failures else 0)

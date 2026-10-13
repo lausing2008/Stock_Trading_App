@@ -2645,20 +2645,21 @@ def run_corporate_action_refresh() -> None:
 
 
 def run_price_risk_detection() -> None:
-    """Detect measured price-risk events. SHADOW BY DEFAULT — detects, records, sends nothing.
+    """Detect measured price-risk events. Writes events and receipts; NEVER calls a mail provider.
 
-    DELIBERATELY NOT BEHIND `_is_alerting_enabled()`, and the reason is the point of the whole
-    shadow period: that guard stops MAIL, and this job's entire purpose right now is to
-    accumulate the detection record that decides whether mail should ever be enabled. Gating it
-    behind the mail switch would skip the measurement in exactly the environments where it is
-    being measured. It is classified on the non-alert side for the same reason it is safe to
-    run there: `detect()` writes rows and never enqueues or sends.
+    Runs intraday as well as after the close (2026-10-13). Intraday runs read today's price from
+    the shared live-price cache, and only when that quote is provably today's (see
+    `price_risk_watch.with_live_quote`). With the delivery flag absent — the default — every run
+    is shadow: detection is recorded and nothing is queued.
 
-    If a send path is ever added here, this job MOVES to the alerting side and into
-    `_ALERT_JOB_IDS`. A test asserts the no-send property rather than trusting this note.
+    With the flag set, a run QUEUES one digest per opted-in user in the notification outbox.
+    Queueing is not sending: `drain_price_risk_outbox` sends, and that job is registered on the
+    alerting side behind `_is_alerting_enabled()`. Detection stays on the non-alert side so a
+    development stack keeps accumulating the shadow measurement with mail switched off.
 
-    One event per subject per session by construction: the event key is session-scoped, so a
-    repeat within the day collides with the unique constraint instead of duplicating.
+    One event per subject, rule, session and ladder step: a re-run of the same step collides
+    with the unique constraint instead of duplicating; a worse step in the same session is a
+    new event, which is what intraday escalation needs.
     """
     import uuid as _uuid
     from .price_risk_watch import detect
@@ -2689,6 +2690,60 @@ def run_price_risk_detection() -> None:
                 rc.delete(lock_key)
         except Exception:  # noqa: BLE001
             pass
+
+
+def drain_price_risk_outbox() -> None:
+    """Send queued price-risk digests. The ONLY place this channel calls a mail provider.
+
+    Re-checks the email preference immediately before sending, so an opt-out between queueing
+    and sending is honoured; retries, expiry, the acceptance/crash gap and duplicate refusal are
+    the outbox's own (`common.outbox`, `earnings_outbox.deliver_batch`). Registered behind
+    `_is_alerting_enabled()`.
+    """
+    import os as _os
+    import uuid as _uuid
+    from .price_risk_watch import ALERT_TYPE_EMAIL
+    from . import earnings_outbox as _eo
+    from .email_service import send_email
+    started = time.monotonic()
+    lock_key = "stockai:lock:price_risk_outbox_drain"
+    lock_token = _uuid.uuid4().hex
+    try:
+        redis_client = _get_redis()
+        if not redis_client.set(lock_key, lock_token, nx=True, ex=300):
+            return
+    except Exception as exc:
+        log.warning("price_risk_outbox.lock_unavailable", error=str(exc))
+        return
+    try:
+        with SessionLocal() as session:
+            def _subscribed(row):
+                user = session.get(User, row.user_id) if row.user_id else None
+                if user is None or not user.is_active:
+                    return False
+                if not _may_send(session, user, ALERT_TYPE_EMAIL):
+                    return False
+                return True
+            delivered = _eo.deliver_batch(
+                session, owner=f"price-risk:{_os.getpid()}",
+                send=lambda row: send_email(row.recipient, row.subject, row.body_html, row.body_text),
+                is_subscribed=_subscribed,
+                activated_at=datetime.min, alert_types=(ALERT_TYPE_EMAIL,), limit=20,
+            )
+            if delivered.get("claimed"):
+                log.info("price_risk_outbox.drained", **delivered)
+        _record_job_status("drain_price_risk_outbox", "ok", time.monotonic() - started)
+    except Exception as exc:
+        log.error("price_risk_outbox.failed", error=str(exc))
+        _record_job_status("drain_price_risk_outbox", "error", time.monotonic() - started, str(exc))
+    finally:
+        try:
+            redis_client.eval(
+                "if redis.call('get', KEYS[1]) == ARGV[1] then "
+                "return redis.call('del', KEYS[1]) else return 0 end",
+                1, lock_key, lock_token)
+        except Exception as exc:
+            log.warning("price_risk_outbox.lock_release_failed", error=str(exc))
 
 
 def run_product_impact_watches() -> None:
@@ -14801,14 +14856,25 @@ def start_scheduler() -> None:
         max_instances=1, coalesce=True, misfire_grace_time=3600,
     )
 
-    # Price-risk detection. 20:10 ET on weekdays: after the close and after the options-income
-    # step above, so the session's daily bars are settled rather than mid-session partials.
-    # A partial bar would report a move that is not the day's move.
+    # Price-risk detection. 20:10 ET on weekdays reads SETTLED daily bars, after the close and
+    # after the options-income step above. The intraday fires (2026-10-13) exist because a once-
+    # a-day evening scan cannot warn during a selloff: four through the US session, two through
+    # HK's (morning and afternoon, either side of the lunch break). Each reads the live-price
+    # cache only for a venue that is in its regular session; holidays fall out of that check,
+    # not out of this trigger. A non-trading-day fire degrades to settled bars and the event
+    # keys make it a no-op.
     _scheduler.add_job(
         run_price_risk_detection,
-        CronTrigger(hour=20, minute=10, day_of_week="mon-fri", timezone="America/New_York"),
+        OrTrigger([
+            CronTrigger(hour=20, minute=10, day_of_week="mon-fri", timezone="America/New_York"),
+            CronTrigger(hour="10,12,14", minute=5, day_of_week="mon-fri",
+                        timezone="America/New_York"),
+            CronTrigger(hour=15, minute=40, day_of_week="mon-fri", timezone="America/New_York"),
+            CronTrigger(hour="11,15", minute=30, day_of_week="mon-fri",
+                        timezone="Asia/Hong_Kong"),
+        ]),
         id="price_risk_detection", replace_existing=True,
-        max_instances=1, coalesce=True, misfire_grace_time=3600,
+        max_instances=1, coalesce=True, misfire_grace_time=900,
     )
 
     _scheduler.add_job(
@@ -15273,6 +15339,14 @@ def start_scheduler() -> None:
             run_product_impact_watches, "interval", minutes=1,
             id="product_impact_watches", max_instances=1, coalesce=True,
             replace_existing=True, misfire_grace_time=60,
+        )
+
+        # Price-risk email: the sending half. Inert until a digest is queued, which needs both
+        # the delivery flag and an account that opted in (both default off).
+        _scheduler.add_job(
+            drain_price_risk_outbox, "interval", minutes=2,
+            id="price_risk_outbox_drain", max_instances=1, coalesce=True,
+            replace_existing=True, misfire_grace_time=120,
         )
 
         # ── M20: drain the earnings notification outbox — every minute ───────────

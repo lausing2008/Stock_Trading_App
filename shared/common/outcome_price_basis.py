@@ -13,6 +13,8 @@ METHOD = "cumulative_split_factor_v1"
 VERIFIED = "verified"
 PROVISIONAL = "provisional"
 UNVERIFIED = "unverified"
+#: Actions that change the share count, and therefore the meaning of a raw price.
+SHARE_COUNT_ACTIONS = ("split", "stock_dividend")
 
 
 def _get(obj, name, default=None):
@@ -44,7 +46,7 @@ def resolve_window(bars, actions, coverage, *, start: date, end: date) -> dict:
     window_actions = [a for a in actions
                       if start <= _get(a, "ex_date") <= end]
     splits = [a for a in window_actions
-              if _get(a, "action_type") in ("split", "stock_dividend")]
+              if _get(a, "action_type") in SHARE_COUNT_ACTIONS]
     if any(not _get(a, "split_ratio") for a in splits):
         return {"prices": [], "basis": BASIS, "method": METHOD,
                 "evidence_status": UNVERIFIED, "limiting_factor": "unapplied_action",
@@ -97,22 +99,39 @@ def classify_observation_window(resolved, actions, *, start: date, end: date) ->
     occurred, which is exactly why the result stays `unverified` and cannot reach a published
     rate. It is good enough to fit a weight on and not good enough to quote.
     """
+    # Cash dividends are NAMED, never silently dropped. They do not corrupt a price-return
+    # figure — the drop on the ex-date is real — but a caller measuring what a HOLDER lost may
+    # want to add them back, and a large special dividend can look like a decline. Which basis
+    # to apply is the caller's decision; hiding the fact is not an option either way.
+    dividends = [{"ex_date": _get(a, "ex_date"), "cash_amount": _get(a, "cash_amount")}
+                 for a in actions if start <= _get(a, "ex_date") <= end
+                 and _get(a, "action_type") == "cash_dividend"]
     if resolved.get("prices"):
         return {"usable": True, "basis": resolved.get("basis", BASIS),
                 "adjustment": ADJUSTED,
                 "evidence_status": resolved.get("evidence_status", PROVISIONAL),
-                "reason": resolved.get("reason", "")}
+                "reason": resolved.get("reason", ""), "cash_dividends": dividends}
 
-    in_window = [a for a in actions if start <= _get(a, "ex_date") <= end]
+    # Only SHARE-COUNT actions corrupt a split-adjusted price return. A cash dividend does not:
+    # the basis above is price return, `resolve_window` never adjusts for one, and the price
+    # drop on the ex-date is a fraction of a percent and real. Counting it here made AVGO
+    # "unmeasurable" through its whole 2026-10 decline, silencing every alert about it, because
+    # an ordinary quarterly dividend sat inside the window (AUD-PRICERISK-DIVIDEND, 2026-10-13).
+    in_window = [a for a in actions if start <= _get(a, "ex_date") <= end
+                 and _get(a, "action_type") in SHARE_COUNT_ACTIONS]
     if in_window:
         kinds = sorted({str(_get(a, "action_type")) for a in in_window})
         return {"usable": False, "basis": None, "adjustment": KNOWN_CORRUPT,
                 "evidence_status": UNVERIFIED,
-                "reason": f"corporate action in window could not be applied: {', '.join(kinds)}"}
+                "reason": f"corporate action in window could not be applied: {', '.join(kinds)}",
+                "cash_dividends": dividends}
 
     return {"usable": True, "basis": "raw_price", "adjustment": UNADJUSTED_NO_KNOWN_ACTION,
             "evidence_status": UNVERIFIED,
-            "reason": "no corporate action recorded in window; completeness unverified"}
+            "reason": ("no share-count action recorded in window; completeness unverified"
+                       + (f"; {len(dividends)} cash dividend(s) in window, not adjusted"
+                          if dividends else "")),
+            "cash_dividends": dividends}
 
 
 def best_achievable_status(completeness_basis: str | None) -> str:
