@@ -409,3 +409,22 @@ suite so it actually runs.
 
 **Not changed:** the badge uses EMA50/EMA200 while the sidebar uses SMA50/SMA200. They can
 disagree for a few days around a cross, legitimately; that is a labelling question, not this bug.
+
+**Deployed and verified (2026-10-13), commit `6ca422fb`.** market-data and signal-engine were
+rebuilt and recreated via `scripts/deploy.sh` (durable image rebuild, not `docker cp`); both
+healthy, and `check_deploy_drift.sh` reports 12/12 backend services drift-free. The running code
+contains the `desc` query in both files. Live `/signals/{symbol}/patterns` afterwards:
+
+| Symbol | Before | After |
+|---|---|---|
+| IONQ | Golden Cross • spread expanding (EMA200 9.44) | MACD Cross ↓ (0.426) |
+| NVDA | — | MACD Cross ↓ (3.522) |
+| MU | — | GC Spread Narrowing ⚠ (EMA200 755.58, current price scale) |
+
+**No alert state to repair.** All 51 GOLDEN_CROSS alerts read `triggered = False`; IONQ's is
+recurring and stays armed, with only `triggered_at` recording the false 01:26 UTC fire. With the
+fix it will next fire on a genuine cross of current data.
+
+Frontend rebuilt from `6ca422fb` via `scripts/deploy_frontend.sh`: healthy, and the SERVED chunk
+`/app/.next/static/chunks/pages/improvements-*.js` contains tier 436. Full deploy: 12 backends
+drift-free + frontend = 13/13.
