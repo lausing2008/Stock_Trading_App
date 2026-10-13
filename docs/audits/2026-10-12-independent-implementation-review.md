@@ -214,3 +214,48 @@ session a test re-implemented the rule it was meant to check.
 8,620 backend across twelve services, 573 frontend plus typecheck, 94 integration, and the 2 new
 PostgreSQL schema/lock tests. The review's note that `make test-all` stalls in an api-gateway
 async test under its sandbox did not reproduce here; the full run completed.
+
+## Deployment verification (commit `c1b082ed`)
+
+15/15 containers healthy, **0/12 drifted or errored**, tier 434 present in the served chunk
+(`/app/.next/static/chunks/pages/improvements-8cc9f6cbc9057808.js`), pages 200, 0 blocked
+sessions and 0 idle-in-transaction beyond five minutes.
+
+**The schema fix is confirmed by production data, not by inspection.** `news_impact_events`
+now reports `varchar(64)` on the already-existing table, and the table holds **1 event where it
+previously held 0** — the producer persisted for the first time. The receipt reads
+`historical_no_alert / event older than four hours when discovered`, and `notification_outbox`
+holds 0 `product_impact` rows, so nothing was sent.
+
+**The consent fix is confirmed against the live gate**, called with the production database:
+
+```
+sample account has a preference row: False
+product_impact    (opt-in, no row) -> False
+option_opportunity(opt-in)         -> False
+signal      (long-standing, no row)-> True      <- unchanged
+price_alert (essential)            -> True      <- unchanged
+```
+
+`alert_preferences` is **empty platform-wide**. That is what made this defect consequential
+rather than theoretical: with no rows anywhere, every account is governed purely by the default,
+so a sender that treated absence as consent would have enrolled every watchlist holder of the
+three symbols. It also means the opt-in channel currently has an audience of nobody, which is
+the correct starting state for a channel nobody has been offered yet.
+
+### A deploy warning that was worth checking and was not what it looked like
+
+The deploy script flagged `iowait 41.2%` and named the EBS credit-drain pattern that made this
+instance unreachable for ~50 minutes on 2026-09-10. Measured rather than assumed: disk
+utilisation was **0.8–4.2%** with reads under 1 MB/s, and three minutes later iowait was 0.00%
+with load falling 3.46 -> 1.24. Thirteen images had just been rebuilt, so every container was
+re-reading its working set through a cold page cache.
+
+High iowait with ~1% device utilisation is not an I/O shortage, and the two cases are worth
+telling apart: the real incident showed sustained high *utilisation*. The warning did its job by
+prompting a look, and no change was made to it on the strength of one benign occurrence.
+
+One pre-existing pattern was noticed in passing and deliberately not changed: the options-history
+capture holds a transaction open across per-symbol work, so `SELECT max(as_of) ...` sessions sit
+`idle in transaction` for 30–35s. They are well inside the new five-minute timeout and are not
+blocking anything; recorded because that is the shape the 2026-10-12 convoy's orphan had.
