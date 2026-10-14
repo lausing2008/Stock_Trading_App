@@ -102,3 +102,32 @@ in `shared/`, so changing it drifts all 12 backend images until the next full re
 So of the five, **one trigger is met (M24), one is blocked on evidence that was erased tonight
 (M13), and three are unchanged** (M14 awaits a decision, M20 awaits a cutover, M25 awaits a
 dispatcher).
+
+## Decisions and corrections, 2026-10-13 (operator)
+
+- **M21 recovery digest — CLOSED WITHOUT SENDING.** The 09-30 manifest is stale (signals from
+  09-25/09-28) and is not approved for any send. A fresh assessment, if wanted, starts from
+  current signals, not this manifest.
+- **M02 old recovery markers — closed by expiry.** **Portfolio 5's recovery-strategy review
+  remains OPEN.** Its 2026-10-13 re-entry (AMD) only shows the current rules permit it; it does
+  not answer whether the recovery branch should (its seven earlier recovery trades all lost,
+  −$452.92).
+- **M24 — trigger met ≠ passed.** The matrix runs in production; `option_prospective_capture` is
+  **degraded and needs investigation**. Starting point: the AQ11 analysis in
+  [2026-10-12-calibration-basis-and-capture-readiness.md](2026-10-12-calibration-basis-and-capture-readiness.md)
+  (quote size, account permission and buying-power facts have no source, and no job calls the gate).
+- **Oct 8 engineering review — COMPLETED**, with the unresolved outcomes recorded in the table above.
+- **HK 2027 — corrected against the government list (`6d1e5d2a`).** Exchange-specific
+  verification (HKEX half-day sessions, any market-only difference) **remains open** until HKEX
+  issues its 2027 circular.
+- **Deployment of `6d1e5d2a`: next coordinated deployment, complete before 2027-01-01.** Not an
+  immediate rebuild. **Scope follows the consumers, not the directory:** `common.market_calendar`
+  is imported by **market-data, decision-engine and research-engine** only; nothing imports
+  `metrics.register` at runtime, so register-only edits need no image rebuild. Caveat for whoever
+  deploys: `check_deploy_drift.sh` compares `/app/shared` as one unit, so it will report the
+  other nine services as drifted on `shared/` even though none of them runs the changed code.
+  That reading is expected until a full rebuild, and is not by itself a reason to rebuild nine
+  images. *(Correcting my own earlier statement that the change "needs all 12".)*
+- **Pushing ≠ deploying** in this repository: nothing deploys on push. Deploys are run by
+  `scripts/deploy.sh`, which pulls `prod` on EC2 — so a pushed `shared/` change ships with the
+  next deployment of any of the three consuming services.
