@@ -20,7 +20,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from common.config import get_settings
-from common.jwt_auth import get_current_username
+from common.jwt_auth import get_current_username, require_model_admin
 from common.logging import get_logger
 from db import Fundamental, Price, Ranking, Signal, SignalType, Stock, TimeFrame, TuneHistory, get_session
 
@@ -1158,7 +1158,9 @@ def _kscore_cross_sectional_ev(
 @router.post("/tune_kscore_weights")
 def tune_kscore_weights(
     days: int = Query(365, description="Look-back window in calendar days"),
-    _: str = Depends(get_current_username),
+    # RANK-AUTHZ: retuning K-Score changes rankings for every user. Admin or the scheduler's
+    # model-scoped service token only — the same guard as ml-prediction's training routes.
+    _: str = Depends(require_model_admin),
     session: Session = Depends(get_session),
 ):
     """Walk-forward validated sweep of K-Score's 6 factor weights (T288-KSCORE-WEIGHT-SWEEP).
@@ -1575,7 +1577,9 @@ def _kscore_curve_composite_fn(base_weights: dict, curve_cfg: dict, raw_cache: d
 @router.post("/tune_kscore_curve")
 def tune_kscore_curve(
     days: int = Query(365, description="Look-back window in calendar days"),
-    _: str = Depends(get_current_username),
+    # RANK-AUTHZ: retuning K-Score changes rankings for every user. Admin or the scheduler's
+    # model-scoped service token only — the same guard as ml-prediction's training routes.
+    _: str = Depends(require_model_admin),
     session: Session = Depends(get_session),
 ):
     """Walk-forward validated sweep of K-Score's curve-shape constants (T234-CONFIG-
@@ -1807,7 +1811,10 @@ def refresh(
     tasks: BackgroundTasks,
     market: str | None = None,
     session: Session = Depends(get_session),
-    _: str = Depends(get_current_username),
+    # RANK-AUTHZ: a full re-score of the shared universe (O(stocks x history)) that any
+    # signed-in user could previously trigger. Admin or the scheduler's service token only;
+    # both internal callers (market-data scheduler, admin add_stock) send _service_token().
+    _: str = Depends(require_model_admin),
 ):
     """Compute + persist rankings for the whole universe."""
     # BUG-DELISTED-GENERATION-BLIND: Stock.delisted (aud14-survivorship) never flips

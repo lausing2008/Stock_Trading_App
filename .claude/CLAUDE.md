@@ -209,6 +209,8 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/incidents/alert-email-spam-and-suppression.md`** — Signal Alert Email Spam — BUY→HOLD→BUY Oscillation; Alert Email Suppression — market:refresh_failed Flag (BUG-8); BUG-MORNINGDIGEST-SENDLOOP — Same Unguarded …
 
 - **`docs/incidents/auto-research-trigger-gating.md`** — A SECOND, Completely Independent Auto-Research Trigger — Never Gated By `auto_research_enabled` At All (Fixed 2026-07-29)
+- **`docs/incidents/authentication-used-as-authorization.md`** — a shared-state mutation guarded by `get_current_username` is open to every account. DA-08 (ml training), RANK-AUTHZ (ranking refresh/tune). Use `require_model_admin`; audit internal callers' `svc` scope first [authz]
+
 - **`docs/incidents/backtest-wall-clock-and-lookahead-bugs.md`** — BUG233-BACKTESTWALLCLOCK — Phase 2a/2b Backtest Harness Always Returned Zero Trades Unless Run During Real Live Market Hours (Fixed 2026-07-22)
 - **`docs/incidents/chart-drawing-bugs.md`** — BUG-TRENDLINE-STALEBARINDEX — Trendline Drawings Broke Across Timeframe Switches (Fixed 2026-07-21)
 - **`docs/incidents/dead-code-and-shadowing-bugs.md`** — A Redundant Local `from datetime import datetime` Made Two Hard Rejects Dead Code (BUG232-DEADCODE)
