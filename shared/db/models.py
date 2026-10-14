@@ -4532,9 +4532,35 @@ class CopilotMessage(Base):
     status: Mapped[str | None] = mapped_column(String(16), nullable=True)
     #: When the current claim on a user turn was taken. NULL on assistant turns.
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: User turns: a hash of the normalised (symbol, question) this request id was first used
+    #: with. R4: a replay or a retry carrying a DIFFERENT payload under the same id is refused,
+    #: so the stored question and the paid answer cannot disagree.
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     grounding: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class CopilotUsageDay(Base):
+    """Copilot answers ADMITTED per user per UTC day. The per-user limit is enforced here.
+
+    R2 (independent review, 2026-10-13). The first version counted stored assistant messages.
+    That missed answers still in flight (a limit of one admitted three concurrent requests),
+    and it forgot usage when a conversation was deleted (deleting restored the allowance).
+
+    This row holds only a count, so deleting conversation CONTENT does not touch it. It is
+    incremented by a conditional UPSERT before any model call, in the same transaction that
+    stores the question, so concurrent admissions serialise on the row. The settle policy is
+    in research-engine `copilot/store.py`: an admission is refunded only when no model call was
+    made for it.
+    """
+    __tablename__ = "copilot_usage_day"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"),
+                                         primary_key=True)
+    #: The UTC calendar day, stated rather than inherited from a server setting.
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    admitted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

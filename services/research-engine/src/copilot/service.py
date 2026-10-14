@@ -64,15 +64,23 @@ def _evidence_refs(packet, keys: list[str]) -> list[dict]:
         q = packet.quantities[k]
         f = packet.fields.get(q.field)
         evs = []
-        for eid in (heads[k]["evidence_id"],) if k in heads else (f.evidence_ids if f else []):
+        # A quantity's own evidence (an average's full input set, R6) wins over its field's.
+        ids = ((heads[k]["evidence_id"],) if k in heads
+               else (q.evidence_ids or (f.evidence_ids if f else [])))
+        for eid in ids:
             r = records.get(eid) or {}
             evs.append({"id": eid, "source": r.get("source"),
                         "observed_period": r.get("observed_period"),
-                        "published_at": r.get("published_at"), "note": r.get("note")})
+                        "published_at": r.get("published_at"), "note": r.get("note"),
+                        # The recorded value, so a reader can recompute a calculation from
+                        # its inputs (a bar's close, a calculation's method and result).
+                        "value": r.get("value")})
         out.append({"key": k, "label": (f.label if f else None) or q.field,
                     "display": q.display, "state": q.state, "note": q.note,
                     "url": heads[k].get("url") if k in heads else None,
-                    "evidence": evs[:3]})
+                    # COMPLETE. Stored whole; the API returns a preview and a count, and the
+                    # full list is retrievable (GET /copilot/messages/{id}/evidence).
+                    "evidence": evs})
     return out
 
 
@@ -97,9 +105,15 @@ def _alternating(hist: list[dict], *, exclude_request: str) -> list[dict]:
         if m.get("request_id") == exclude_request or not m["content"]:
             continue
         if m["role"] == "assistant":
-            # Re-wrapped in the output format. Measured: with prior answers as plain prose,
-            # every follow-up's first draft copied the prose and failed the format check.
-            m = {**m, "content": G.as_draft(m["content"])}
+            # Re-wrapped in the output format (measured: plain prose made every follow-up's
+            # first draft fail the format check), and marked as HISTORY (review): its figures
+            # were rendered from an earlier packet and are not current evidence. The current
+            # turn's packet is the only source of figures; the digit rule refuses copying these.
+            when = (m.get("created_at") or "")[:16].replace("T", " ")
+            m = {**m, "content": (f"[Earlier answer{' from ' + when + ' UTC' if when else ''}. "
+                                  f"Its figures are as of then and are NOT current evidence; "
+                                  f"use only the evidence packet in the latest question.]\n"
+                                  + G.as_draft(m["content"]))}
         if out and out[-1]["role"] == m["role"]:
             out[-1] = {"role": m["role"], "content": out[-1]["content"] + "\n\n" + m["content"]}
         else:
@@ -125,25 +139,31 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
     now = now or _utcnow()
 
     # ── Phase 1: admit and read ───────────────────────────────────────────────
+    fp = St.request_fingerprint(req.symbol, question)
     with session_factory() as s:
         user_id = St.user_id_for(s, req.username)
         if user_id is None:
             raise CopilotError(403, "user not found or inactive")
+        # The user turn may already exist: a replay, or a retry after a failed call.
+        existing_user = s.query(CopilotMessage).filter_by(
+            user_id=user_id, request_id=req.request_id, role="user").first()
+        if existing_user is not None:
+            # R4: a request id is bound to its first payload. A different question or symbol
+            # under the same id would make the stored question and the paid answer disagree.
+            if existing_user.request_fingerprint != fp:
+                raise CopilotError(409, "request_id was already used for a different question "
+                                        "or symbol; send the new question with a new id")
+            if (req.conversation_id is not None
+                    and req.conversation_id != existing_user.conversation_id):
+                raise CopilotError(409, "request_id belongs to a different conversation")
         prior = St.replay(s, user_id, req.request_id)
         if prior is not None:
             return {"conversation_id": prior.conversation_id,
                     "message": St.serialise_message(prior), "replayed": True}
-        limit = St.daily_answer_limit()
-        if St.answers_today(s, user_id, now) >= limit:
-            raise CopilotError(429, f"daily copilot limit reached ({limit} answers per UTC day)")
         packet = build_packet(s, req.symbol, now=now)
         if packet is None:
             raise CopilotError(404, f"{req.symbol} is not a tracked symbol")
-        # The user turn may already exist: a retry after a failed model call reuses it — and
-        # its conversation, because a failed FIRST turn never returned a conversation id to
-        # the client, so the retry arrives without one.
-        existing_user = s.query(CopilotMessage).filter_by(
-            user_id=user_id, request_id=req.request_id, role="user").first()
+        # A failed FIRST turn never returned a conversation id, so its retry arrives without one.
         conv_hint = req.conversation_id
         if existing_user is not None and conv_hint is None:
             conv_hint = existing_user.conversation_id
@@ -152,17 +172,21 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         if conv is None:
             raise CopilotError(404, "conversation not found")
         hist = St.history(s, conv)
-        if existing_user is None:
-            s.add(CopilotMessage(conversation_id=conv.id, user_id=user_id, role="user",
-                                 content=question, request_id=req.request_id, created_at=now,
-                                 status="pending", claimed_at=now))
-        elif existing_user.conversation_id != conv.id:
-            raise CopilotError(409, "request_id was already used in another conversation")
-        elif not St.claim_retry(s, existing_user, now):
+        if existing_user is not None and not St.claim_retry(s, existing_user, now):
             # Still being answered by an earlier attempt. Taking it over here is exactly how a
             # retry would pay for a second call; the client retries later and gets the replay.
             s.rollback()
             raise CopilotError(409, "this request is already being answered")
+        # R2: admitted in the SAME transaction as the question, so a refused admission leaves
+        # no claimed question behind, and a lost race leaves no admission behind.
+        limit = St.daily_answer_limit()
+        if not St.reserve_answer(s, user_id, now, limit):
+            s.rollback()
+            raise CopilotError(429, f"daily copilot limit reached ({limit} answers per UTC day)")
+        if existing_user is None:
+            s.add(CopilotMessage(conversation_id=conv.id, user_id=user_id, role="user",
+                                 content=question, request_id=req.request_id, created_at=now,
+                                 status="pending", claimed_at=now, request_fingerprint=fp))
         try:
             s.commit()
         except IntegrityError:
@@ -170,11 +194,21 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
             raise CopilotError(409, "this request is already being answered")
         conv_id = conv.id
         user_id_ = user_id
+    admitted_day = now.date()
+    calls_made = 0
 
     def _release(status: str) -> None:
-        """Give up the claim so a later retry can take it — on every path that stores no answer."""
+        """Give up the claim so a later retry can take it — on every path that stores no answer.
+
+        THE REFUND POLICY (R2): the day's admission is returned only when NO model call was
+        made for it. A call that was attempted may have been billed, even if it then failed,
+        so it keeps its admission; a retry of that question is a new admission.
+        """
         with session_factory() as s2:
-            St.set_user_turn_status(s2, user_id_, req.request_id, status, only_if=("pending",))
+            St.set_user_turn_status(s2, user_id_, req.request_id, status,
+                                    only_if=("pending", "cancelled"))
+            if calls_made == 0:
+                St.refund_answer(s2, user_id_, admitted_day)
             s2.commit()
 
     def _cancelled() -> bool:
@@ -204,6 +238,7 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
                 _release("failed")
                 raise CopilotError(429, f"copilot budget unavailable: {res.reason}")
         a0 = time.monotonic()
+        calls_made += 1          # counted BEFORE the call: a failed call may still be billed
         try:
             reply = await llm_call(req.provider, req.api_key, req.model, messages)
         except L.LlmError as exc:
@@ -238,7 +273,9 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
                                {"role": "user", "content": L.repair_turn(reasons)}]
 
     if result is None:
-        # Cancelled before any call was made: nothing was paid for and nothing is stored.
+        # Cancelled before any call was made: nothing was paid for, nothing is stored, and the
+        # admission is refunded. The question stays "cancelled" (claimable after the TTL).
+        _release("cancelled")
         raise CopilotError(409, "cancelled before the model was called")
     if cancelled and not result.accepted:
         reasons = reasons + ["cancelled by the user before the repair attempt"]
@@ -256,12 +293,24 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         lims = _limitations(packet, [])
     grounding = {
         "packet_version": PACKET_VERSION, "packet_fingerprint": packet.fingerprint,
-        "data_as_of": packet.data_as_of, "evidence_refs": refs, "limitations": lims,
+        "price_as_of": packet.price_as_of, "source_times": packet.source_times(),
+        "evidence_refs": refs, "limitations": lims,
         "rejection_reasons": [] if accepted else reasons,
     }
 
     # ── Phase 3: write ────────────────────────────────────────────────────────
+    deleted_msg = ("the conversation was deleted while this answer was being generated; the "
+                   "answer was discarded rather than restoring a deleted conversation")
     with session_factory() as s:
+        # DELETION DURING GENERATION: another tab may delete the conversation while a paid call
+        # runs. Lock the row and check it still exists; if it does not, discard the answer. It
+        # was paid for (the admission and budget stay spent) but deleted content is not revived.
+        from sqlalchemy import select as _select
+        conv = s.execute(_select(St.CopilotConversation)
+                         .where(St.CopilotConversation.id == conv_id)
+                         .with_for_update()).scalars().first()
+        if conv is None:
+            raise CopilotError(409, deleted_msg)
         msg = CopilotMessage(
             conversation_id=conv_id, user_id=St.user_id_for(s, req.username), role="assistant",
             content=content, request_id=req.request_id, status=status, grounding=grounding,
@@ -269,9 +318,7 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
             output_tokens=total_out or None, duration_ms=int((time.monotonic() - t0) * 1000),
             created_at=_utcnow())
         s.add(msg)
-        conv = s.get(St.CopilotConversation, conv_id)
-        if conv is not None:
-            conv.updated_at = _utcnow()
+        conv.updated_at = _utcnow()
         # Answered, in the same transaction as the answer. A paid answer is stored even when
         # the user cancelled meanwhile — it appears when they reopen the conversation.
         St.set_user_turn_status(s, msg.user_id, req.request_id, "answered")
@@ -282,6 +329,8 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
             s.rollback()
             prior = St.replay(s, msg.user_id, req.request_id)
             if prior is None:
+                if s.get(St.CopilotConversation, conv_id) is None:
+                    raise CopilotError(409, deleted_msg)
                 raise
             return {"conversation_id": prior.conversation_id,
                     "message": St.serialise_message(prior), "replayed": True}

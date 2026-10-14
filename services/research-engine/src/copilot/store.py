@@ -8,7 +8,10 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select, update
+import hashlib
+import re
+
+from sqlalchemy import delete, func, select, text, update
 
 from common.copilot_retention import COPILOT_RETENTION_DAYS, purge_expired  # noqa: F401
 from db import User
@@ -40,13 +43,43 @@ def user_id_for(session, username: str) -> int | None:
     return row[0] if row else None
 
 
+def reserve_answer(session, user_id: int, now: datetime, limit: int) -> bool:
+    """Admit one answer against the user's UTC-day limit. True if admitted. Caller commits.
+
+    ONE CONDITIONAL UPSERT (R2). Two concurrent admissions cannot both read "under the limit":
+    the increment happens only WHERE the stored count is still below it, and the second writer
+    waits on the first one's row lock. The row is not tied to any conversation, so deleting a
+    conversation does not give the allowance back.
+    """
+    if limit <= 0:
+        return False
+    row = session.execute(text(
+        "INSERT INTO copilot_usage_day (user_id, day, admitted) VALUES (:u, :d, 1) "
+        "ON CONFLICT (user_id, day) DO UPDATE SET admitted = copilot_usage_day.admitted + 1 "
+        "WHERE copilot_usage_day.admitted < :lim RETURNING admitted"),
+        {"u": user_id, "d": now.date(), "lim": limit}).first()
+    return row is not None
+
+
+def refund_answer(session, user_id: int, day) -> None:
+    """Return an admission. ONLY for a turn that made no model call — see service.py."""
+    session.execute(text(
+        "UPDATE copilot_usage_day SET admitted = admitted - 1 "
+        "WHERE user_id = :u AND day = :d AND admitted > 0"), {"u": user_id, "d": day})
+
+
 def answers_today(session, user_id: int, now: datetime | None = None) -> int:
+    """Admissions recorded today — in flight and completed, including deleted conversations."""
     now = now or _utcnow()
-    start = datetime(now.year, now.month, now.day)
-    return session.execute(
-        select(func.count(CopilotMessage.id))
-        .where(CopilotMessage.user_id == user_id, CopilotMessage.role == "assistant",
-               CopilotMessage.created_at >= start)).scalar_one()
+    return session.execute(text(
+        "SELECT admitted FROM copilot_usage_day WHERE user_id = :u AND day = :d"),
+        {"u": user_id, "d": now.date()}).scalar() or 0
+
+
+def request_fingerprint(symbol: str, question: str) -> str:
+    """What a request id is bound to (R4): the symbol and the question, whitespace-normalised."""
+    norm = re.sub(r"\s+", " ", question.strip())
+    return hashlib.sha256(f"{symbol.upper()}\n{norm}".encode()).hexdigest()
 
 
 def replay(session, user_id: int, request_id: str) -> CopilotMessage | None:
@@ -82,7 +115,8 @@ def history(session, conversation: CopilotConversation, limit: int = HISTORY_TUR
         select(CopilotMessage).where(CopilotMessage.conversation_id == conversation.id)
         .order_by(CopilotMessage.created_at.desc(), CopilotMessage.id.desc())
         .limit(limit)).scalars().all()
-    return [{"role": m.role, "content": m.content, "request_id": m.request_id}
+    return [{"role": m.role, "content": m.content, "request_id": m.request_id,
+             "created_at": m.created_at.isoformat() if m.created_at else None}
             for m in reversed(rows)]
 
 
@@ -152,15 +186,34 @@ def user_turn_status(session, user_id: int, request_id: str) -> str | None:
     return row[0] if row else None
 
 
+#: Evidence records returned inline per citation. The rest stay stored and retrievable.
+EVIDENCE_PREVIEW = 5
+
+
 def serialise_message(m: CopilotMessage) -> dict:
     g = m.grounding or {}
+    refs = [{**r, "evidence": (r.get("evidence") or [])[:EVIDENCE_PREVIEW],
+             "evidence_count": len(r.get("evidence") or [])}
+            for r in g.get("evidence_refs", [])]
     return {
         "id": m.id, "role": m.role, "content": m.content, "request_id": m.request_id,
         "status": m.status, "created_at": m.created_at.isoformat() if m.created_at else None,
-        "evidence_refs": g.get("evidence_refs", []), "limitations": g.get("limitations", []),
-        "data_as_of": g.get("data_as_of"), "rejection_reasons": g.get("rejection_reasons", []),
-        "model": m.model,
+        "evidence_refs": refs, "limitations": g.get("limitations", []),
+        "price_as_of": g.get("price_as_of"), "source_times": g.get("source_times", {}),
+        "rejection_reasons": g.get("rejection_reasons", []), "model": m.model,
     }
+
+
+def message_evidence(session, user_id: int, message_id: int, key: str) -> dict | None:
+    """The COMPLETE evidence for one citation of one of the owner's answers (R6)."""
+    m = session.get(CopilotMessage, message_id)
+    if m is None or m.user_id != user_id or m.role != "assistant":
+        return None
+    for r in (m.grounding or {}).get("evidence_refs", []):
+        if r.get("key") == key:
+            return {"message_id": m.id, "key": key, "label": r.get("label"),
+                    "display": r.get("display"), "evidence": r.get("evidence") or []}
+    return None
 
 
 def serialise_conversation(c: CopilotConversation) -> dict:

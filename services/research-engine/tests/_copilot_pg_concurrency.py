@@ -58,6 +58,8 @@ R["migration"] = {
     "has_claimed_at": "claimed_at" in cols,
     "unique": uqs.get("uq_copilot_msg_user_request_role"),
     "fk_ondelete": fks,
+    "usage_pk": insp.get_pk_constraint("copilot_usage_day")["constrained_columns"],
+    "usage_fk_ondelete": insp.get_foreign_keys("copilot_usage_day")[0]["options"].get("ondelete"),
     "first_run_s": round(first_s, 1),
     "second_run_ok": True,
 }
@@ -201,5 +203,61 @@ R["budget"] = {
     "unsettled_reservations": open_res,
 }
 del os.environ["LLM_BUDGET_COPILOT_CHAT"]
+# ── 5. Per-user daily limit under concurrency: DISTINCT request ids (review R2) ──
+os.environ["COPILOT_DAILY_ANSWERS_PER_USER"] = "2"
+with SessionLocal() as s:
+    s.execute(text("DELETE FROM copilot_usage_day WHERE user_id = 2")); s.commit()
+m5 = SlowModel(delay=1.0)
+_ids5 = itertools.count()
+
+
+def _quota_turn():
+    with _ids_lock:
+        i = next(_ids5)
+    return C.answer(turn(f"quota-race-{i:04d}", user="bob"), session_factory=SessionLocal,
+                    llm_call=m5, budget=None)
+
+
+outs5 = race(8, _quota_turn)
+with SessionLocal() as s:
+    admitted = s.execute(text("SELECT admitted FROM copilot_usage_day WHERE user_id = 2")).scalar()
+    conv_ids = [r[0] for r in s.execute(text(
+        "SELECT id FROM copilot_conversations WHERE user_id = 2")).all()]
+from src.copilot import store as St                                  # noqa: E402
+with SessionLocal() as s:
+    for cid in conv_ids:
+        St.delete_conversation(s, 2, cid)
+    s.commit()
+after_delete = race(1, lambda: C.answer(turn("quota-after-del", user="bob"),
+                                        session_factory=SessionLocal, llm_call=m5))
+R["quota_distinct_ids"] = {
+    "limit": 2, "model_calls": m5.n,
+    "ok": sum(1 for o in outs5 if o[0] == "ok"),
+    "refused_429": sum(1 for o in outs5 if o == ("err", 429, None)),
+    "ledger_admitted": admitted,
+    "after_delete": after_delete[0][:2],
+}
+del os.environ["COPILOT_DAILY_ANSWERS_PER_USER"]
+
+# ── 6. Deletion during generation, with PostgreSQL enforcing the foreign key ──
+class DeleteDuring(SlowModel):
+    async def __call__(self, *a):
+        with SessionLocal() as s2:
+            for cid in [r[0] for r in s2.execute(text(
+                    "SELECT conversation_id FROM copilot_messages "
+                    "WHERE request_id = 'del-mid-pg01'")).all()]:
+                St.delete_conversation(s2, 1, cid)
+            s2.commit()
+        return await super().__call__(*a)
+
+
+dm = DeleteDuring(delay=0)
+outs6 = race(1, lambda: C.answer(turn("del-mid-pg01"), session_factory=SessionLocal,
+                                 llm_call=dm))
+R["delete_during_generation"] = {
+    "outcome": outs6[0][:2], "model_calls": dm.n,
+    "rows_for_request": count("request_id = 'del-mid-pg01'"),
+}
+
 R["_meta"] = {"server": eng.dialect.name}
 print(json.dumps(R, default=str))

@@ -6,7 +6,7 @@ import type { CopilotMessage } from '@/lib/copilot';
 
 const base: CopilotMessage = {
   role: 'assistant', request_id: 'r1', content: 'The latest close was $130.00.',
-  status: 'grounded', data_as_of: '2026-10-09T21:00:00',
+  status: 'grounded', price_as_of: '2026-10-09T21:00:00',
   limitations: ['Stock report: unavailable — no stock intelligence report has been generated'],
   evidence_refs: [{
     key: 'price.close', label: 'Latest daily close', display: '$130.00', state: 'STALE',
@@ -22,7 +22,7 @@ const base: CopilotMessage = {
 describe('copilot answer', () => {
   it('shows the data time, limitations and every citation with its state and source', () => {
     const html = renderToStaticMarkup(<CopilotAnswer m={base} defaultOpen />);
-    for (const t of ['Figures from stored data', 'Data as of 2026-10-09 21:00 UTC', 'Limitations',
+    for (const t of ['Cited figures from stored data', 'Prices as of 2026-10-09 21:00 UTC', 'Limitations',
       'no stock intelligence report', 'Evidence (2)', 'STALE', 'latest daily bar is 9 calendar days old',
       'price:1:2026-10-09T21:00', 'https://example.com/a', 'published 2026-10-08 12:00 UTC'])
       expect(html).toContain(t);
@@ -33,11 +33,11 @@ describe('copilot answer', () => {
       rejection_reasons: ['the answer writes figures directly ($129.50)'] }} />);
     expect(html).toContain('Evidence check failed');
     expect(html).toContain('writes figures directly');
-    expect(html).not.toContain('Figures from stored data');
+    expect(html).not.toContain('Cited figures from stored data');
   });
 
   it('says the data time is unknown rather than inventing one', () => {
-    const html = renderToStaticMarkup(<CopilotAnswer m={{ ...base, data_as_of: null }} />);
-    expect(html).toContain('Data as of unknown');
+    const html = renderToStaticMarkup(<CopilotAnswer m={{ ...base, price_as_of: null }} />);
+    expect(html).toContain('Prices as of unknown');
   });
 });

@@ -1,0 +1,45 @@
+{
+  "unsupported_numbers": {
+    "The target is twenty dollars.": true,
+    "The target is 0700 dollars.": false,
+    "The target is 0700.HK dollars.": true,
+    "The price will double.": true,
+    "The target is $999.": false
+  },
+  "concurrent_quota": {
+    "daily_limit": 1,
+    "model_calls": 3,
+    "completed": 3
+  },
+  "reused_id_different_payload": {
+    "replayed": true,
+    "same_answer": true
+  },
+  "failed_retry_payload": {
+    "stored_question": "Original question",
+    "model_received_different_question": true
+  },
+  "quota_after_delete": {
+    "daily_limit": 1,
+    "second_answer_accepted": true
+  },
+  "old_report": {
+    "generated_at": "2026-09-10T21:00:00",
+    "packet_time": "2026-10-09T21:00:00",
+    "report_state": "OK",
+    "changes_state": "OK"
+  },
+  "sma50_provenance": {
+    "bars_used": 50,
+    "packet_evidence_records": 20,
+    "returned_evidence_records": 3
+  },
+  "missing_bar_return": {
+    "state": "OK",
+    "meaning": "close-to-close price return over the last 5 trading sessions",
+    "endpoint_dates": [
+      "2026-10-09",
+      "2026-10-03"
+    ]
+  }
+}

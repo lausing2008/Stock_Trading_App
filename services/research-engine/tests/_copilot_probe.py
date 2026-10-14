@@ -56,7 +56,8 @@ BENIGN = "Test Co opens a new plant in Ohio"
 
 def reset(*, bar_age_days=0, symbol="TESTCO"):
     with Session() as s:
-        for t in ("copilot_messages", "copilot_conversations", "realtime_news_items",
+        for t in ("copilot_usage_day", "copilot_messages", "copilot_conversations",
+                  "realtime_news_items",
                   "intelligence_reports",
                   "rankings", "signals", "prices", "stocks", "users"):
             s.execute(text(f"DELETE FROM {t}"))
@@ -116,10 +117,14 @@ class FakeBudget:
         self.settled.append((actual, outcome))
 
 
-GOOD = {"answer": "The latest close was {{price.close}} on {{price.date}}, {{return.5s}}. "
+GOOD = {"answer": "The latest close was {{price.close}} on {{price.date}}, {{return.5b}}. "
                   "The signal engine reads {{signal.action}} with {{signal.strength}}.",
         "limitations": ["The signal from {{signal.time}} may not reflect today's session."]}
 DIGITS = {"answer": "The stock closed at $129.50 and is up 3% this week.", "limitations": []}
+
+
+Q = "Explain this signal using its evidence"
+FP = St.request_fingerprint("TESTCO", Q)
 
 
 def turn(username="alice", rid="req-00000001", conv=None, symbol="TESTCO", key_shared=True,
@@ -164,7 +169,7 @@ def p1_packet_cites_resolvable_evidence():
                                       for q in p.quantities.values()),
         "injection_still_cited": any(h.get("withheld") and h["url"] for h in p.headlines),
         "every_quantity_has_meaning": all(q.meaning for q in p.quantities.values()),
-        "data_as_of": p.data_as_of,
+        "data_as_of": p.price_as_of,
         "unknown_symbol_is_none": build_packet(Session(), "NOPE", now=NOW) is None,
     }
 
@@ -174,7 +179,7 @@ def p2_stale_price_propagates():
     with Session() as s:
         p = build_packet(s, "TESTCO", now=NOW)
     R["p2"] = {"price_state": p.quantities["price.close"].state,
-               "return_state": p.quantities["return.5s"].state,
+               "return_state": p.quantities["return.5b"].state,
                "rendered": G.render("{{price.close}}", p)}
 
 
@@ -231,7 +236,7 @@ def p3_grounding_rules():
         "period_with_figure": ok("Q3 revenue rose 12%."),
         "negated_probability": ok("The score is not a probability of profit."),
         "asserted_probability": ok("This gives a high probability of profit."),
-        "data_as_of_key": ok("Data as of {{data.as_of}}."),
+        "data_as_of_key": ok("Data as of {{price.as_of}}."),
         "trading_sessions": ok("That is the return over the last 20 trading sessions."),
         "unknown_trading_window": ok("That is the return over the last 30 trading sessions."),
         # A window named only by a report label is allowed; one named nowhere is not.
@@ -258,7 +263,7 @@ def p4_grounded_turn_persists_and_replays():
     m = out["message"]
     R["p4"] = {"status": m["status"], "refs": [r["key"] for r in m["evidence_refs"]],
                "refs_have_evidence": all(r["evidence"] for r in m["evidence_refs"]),
-               "has_limitations": bool(m["limitations"]), "data_as_of": m["data_as_of"],
+               "has_limitations": bool(m["limitations"]), "data_as_of": m["price_as_of"],
                "model_calls": len(model.calls), "replayed": again["replayed"],
                "same_message": again["message"]["id"] == m["id"], "rows": n_msgs,
                "budget_reserved": budget.reserved, "budget_settled": budget.settled}
@@ -357,7 +362,7 @@ def p8_retention_purge():
         new = CopilotConversation(user_id=1, subject_key="stock:TESTCO", title="new",
                                   created_at=NOW, updated_at=NOW - timedelta(days=1))
         s.add_all([old, new]); s.flush()
-        s.add(CopilotMessage(conversation_id=old.id, user_id=1, role="user", content="q",
+        s.add(CopilotMessage(conversation_id=old.id, user_id=1, role="user", content=Q, request_fingerprint=FP,
                              request_id="old-1"))
         s.commit()
         n = St.purge_expired(s, now=NOW); s.commit()
@@ -396,13 +401,13 @@ def p10_inflight_claims_and_cancellation():
         conv = CopilotConversation(user_id=1, subject_key="stock:TESTCO", title="t",
                                    created_at=NOW, updated_at=NOW)
         s.add(conv); s.flush()
-        s.add(CopilotMessage(conversation_id=conv.id, user_id=1, role="user", content="q",
+        s.add(CopilotMessage(conversation_id=conv.id, user_id=1, role="user", content=Q, request_fingerprint=FP,
                              request_id="req-inflight-1", status="pending",
                              claimed_at=datetime.utcnow()))
-        s.add(CopilotMessage(conversation_id=conv.id, user_id=1, role="user", content="q",
+        s.add(CopilotMessage(conversation_id=conv.id, user_id=1, role="user", content=Q, request_fingerprint=FP,
                              request_id="req-abandoned", status="pending",
                              claimed_at=datetime.utcnow() - timedelta(seconds=St.CLAIM_TTL_S + 5)))
-        s.add(CopilotMessage(conversation_id=conv.id, user_id=1, role="user", content="q",
+        s.add(CopilotMessage(conversation_id=conv.id, user_id=1, role="user", content=Q, request_fingerprint=FP,
                              request_id="req-cancel-run", status="cancelled",
                              claimed_at=datetime.utcnow()))
         s.commit()
@@ -445,7 +450,175 @@ def p10_inflight_claims_and_cancellation():
                 "statuses": statuses, "failed_status": failed_status}
 
 
-for fn in (p10_inflight_claims_and_cancellation, p9_report_changes_and_private_reports, p1_packet_cites_resolvable_evidence, p2_stale_price_propagates, p3_grounding_rules,
+def p11_independent_review_regressions():
+    """Each finding of docs/audits/2026-10-13-copilot-independent-review.md, as reproduced there.
+    The R1 phrases were written AFTER the checker was tuned — held out, not fitted."""
+    out = {}
+    # ── R1: quantities without digits ──
+    reset(symbol="0700.HK")
+    with Session() as s:
+        pk = build_packet(s, "0700.HK", now=NOW)
+    acc = lambda t: G.check({"answer": t}, pk).accepted
+    out["r1_refused"] = {t: not acc(t) for t in (
+        "The target is twenty dollars.", "The price will double.",
+        "The target is 0700.HK dollars.", "Shares could rise threefold.",
+        "It trades at half its fair value.", "Expect a gain of a few percent.",
+        "Revenue was up by a third.", "Results for the fourth quarter are due.",
+        "The stock is worth fifty-five.", "It fell two points yesterday.",
+        "In one week the price moved.", "It rose two percentage points.",
+        "That is one dollar higher.")}
+    out["r1_allowed"] = {t: acc(t) for t in (
+        "Two headlines are withheld.", "One reading is that momentum is positive.",
+        "Both moving averages sit below the close.", "Two of three headlines are withheld.",
+        "No one can say what drove the move.", "The K-Score is not a return forecast.",
+        # From the 2026-10-13 held-out run: correct wording the first restructure refused.
+        # Added AFTER that run, so these are now tuned cases, not held out.
+        "This is a third-party headline.", "Two recent headlines are withheld.",
+        "The two should not be treated as equivalent.", "There are two percentage returns.",
+        "I cannot give a dollar figure.", "I cannot confirm whether it has doubled.")}
+
+    # ── R2: concurrency and deletion against a limit of one ──
+    reset()
+    os.environ["COPILOT_DAILY_ANSWERS_PER_USER"] = "1"
+
+    class Gate(ScriptedModel):
+        def __init__(self):
+            super().__init__(GOOD, GOOD, GOOD)
+            self.release = asyncio.Event()
+
+        async def __call__(self, *a):
+            await self.release.wait()
+            return await super().__call__(*a)
+
+    async def three():
+        gate = Gate()
+        tasks = [asyncio.ensure_future(C.answer(turn(rid=f"conc-{i:04d}x"), session_factory=Session,
+                                                llm_call=gate, budget=FakeBudget()))
+                 for i in range(3)]
+        await asyncio.sleep(0.2)            # every request has passed admission or been refused
+        gate.release.set()
+        res = await asyncio.gather(*tasks, return_exceptions=True)
+        return gate, res
+    gate, res = asyncio.new_event_loop().run_until_complete(three())
+    out["r2_concurrent"] = {
+        "model_calls": len(gate.calls),
+        "ok": sum(1 for r in res if isinstance(r, dict)),
+        "refused_429": sum(1 for r in res if isinstance(r, C.CopilotError) and r.status == 429)}
+    with Session() as s:
+        cid = s.query(CopilotConversation).first().id
+        St.delete_conversation(s, 1, cid); s.commit()
+    out["r2_after_delete"] = expect_error(C.answer(turn(rid="after-del-01"), session_factory=Session,
+                                                   llm_call=ScriptedModel(GOOD), budget=FakeBudget()))
+    os.environ["COPILOT_DAILY_ANSWERS_PER_USER"] = "5"
+    reset()
+    expect_error(C.answer(turn(rid="refused-0001"), session_factory=Session,
+                          llm_call=ScriptedModel(GOOD), budget=FakeBudget(allow=False)))
+    with Session() as s:
+        out["r2_refund_on_no_call"] = St.answers_today(s, 1, datetime.utcnow())
+    expect_error(C.answer(turn(rid="failed-0001"), session_factory=Session,
+                          llm_call=ScriptedModel(L.LlmError("down", status=500))))
+    with Session() as s:
+        out["r2_failed_call_keeps_admission"] = St.answers_today(s, 1, datetime.utcnow())
+    del os.environ["COPILOT_DAILY_ANSWERS_PER_USER"]
+
+    # ── R4: a request id is bound to its payload ──
+    reset()
+    run(C.answer(turn(rid="bound-0001"), session_factory=Session, llm_call=ScriptedModel(GOOD)))
+    out["r4_replay_other_question"] = expect_error(C.answer(
+        turn(rid="bound-0001", question="Something else entirely"), session_factory=Session,
+        llm_call=ScriptedModel(GOOD)))
+    out["r4_replay_other_symbol"] = expect_error(C.answer(
+        turn(rid="bound-0001", symbol="NOPE"), session_factory=Session,
+        llm_call=ScriptedModel(GOOD)))
+    out["r4_replay_other_conversation"] = expect_error(C.answer(
+        turn(rid="bound-0001", conv=999999), session_factory=Session, llm_call=ScriptedModel(GOOD)))
+    expect_error(C.answer(turn(rid="bound-0002"), session_factory=Session,
+                          llm_call=ScriptedModel(L.LlmError("down", status=500))))
+    m = ScriptedModel(GOOD)
+    out["r4_failed_retry_other_question"] = expect_error(C.answer(
+        turn(rid="bound-0002", question="A different question"), session_factory=Session,
+        llm_call=m))
+    out["r4_failed_retry_model_not_called"] = len(m.calls) == 0
+    same = run(C.answer(turn(rid="bound-0002"), session_factory=Session,
+                        llm_call=ScriptedModel(GOOD)))
+    out["r4_same_retry_ok"] = same["message"]["status"]
+
+    # ── R5: a missing bar is stated, and returns are labelled as bars ──
+    reset()
+    with Session() as s:
+        s.execute(text("DELETE FROM prices WHERE id IN (3, 4, 5, 6)")); s.commit()
+        pk = build_packet(s, "TESTCO", now=NOW)
+    q5 = pk.quantities["return.5b"]
+    out["r5"] = {"display": q5.display, "meaning": q5.meaning,
+                 "no_session_claim": "session" not in (q5.meaning or "")}
+
+    # ── R6: every average and return recomputes from its own evidence ──
+    reset()
+    with Session() as s:
+        pk = build_packet(s, "TESTCO", now=NOW)
+    recs = pk.book.records
+    rec6 = {}
+    for key, n in (("trend.sma20", 20), ("trend.sma50", 50)):
+        q = pk.quantities[key]
+        calc = recs[q.evidence_ids[0]]
+        closes = [recs[i]["value"]["close"] for i in calc["value"]["inputs"]]
+        rec6[key] = {"inputs": len(closes), "recomputed": round(sum(closes) / len(closes), 4),
+                     "stated": calc["value"]["result"]}
+    q = pk.quantities["return.5b"]
+    calc = recs[q.evidence_ids[0]]
+    a, b = (recs[i]["value"]["close"] for i in calc["value"]["inputs"])
+    rec6["return.5b"] = {"recomputed": round((a - b) / b * 100, 2), "stated": calc["value"]["result"]}
+    msgs = run(C.answer(turn(rid="cite-0001", question="Compare the averages"),
+                        session_factory=Session,
+                        llm_call=ScriptedModel({"answer": "Above {{trend.sma50}}."})))
+    ref = msgs["message"]["evidence_refs"][0]
+    with Session() as s:
+        full = St.message_evidence(s, 1, msgs["message"]["id"], "trend.sma50")
+        other = St.message_evidence(s, 2, msgs["message"]["id"], "trend.sma50")
+    rec6["preview"] = {"inline": len(ref["evidence"]), "count": ref["evidence_count"],
+                       "full": len(full["evidence"]), "other_user": other}
+    out["r6"] = rec6
+
+    # ── Freshness: an old report is STALE, with its age citable ──
+    reset()
+    with Session() as s:
+        f, e, m_, c = IG.stock_outlook(s, symbol="TESTCO", now=NOW - timedelta(days=29))
+        IS.save(s, f, e, m_, c, generated_at=NOW - timedelta(days=29))
+        s.commit()
+        pk = build_packet(s, "TESTCO", now=NOW)
+    out["freshness"] = {"report_state": pk.fields["report"].state.value,
+                        "report_age": pk.quantities.get("report.age").display,
+                        "source_times": pk.source_times()}
+
+    # ── Deletion during generation: discarded, never resurrected ──
+    reset()
+
+    class DeleteDuring(ScriptedModel):
+        async def __call__(self, *a):
+            with Session() as s2:
+                cid2 = s2.query(CopilotConversation).first().id
+                St.delete_conversation(s2, 1, cid2); s2.commit()
+            return await super().__call__(*a)
+    st_del = expect_error(C.answer(turn(rid="del-mid-001"), session_factory=Session,
+                                   llm_call=DeleteDuring(GOOD)))
+    with Session() as s:
+        out["deleted_mid_answer"] = {"status": st_del,
+                                     "conversations": s.query(CopilotConversation).count(),
+                                     "messages": s.query(CopilotMessage).count()}
+
+    # ── History is framed as history ──
+    reset()
+    first = run(C.answer(turn(rid="hist-0001"), session_factory=Session,
+                         llm_call=ScriptedModel(GOOD)))
+    hm = ScriptedModel(GOOD)
+    run(C.answer(turn(rid="hist-0002", conv=first["conversation_id"], question="And now?"),
+                 session_factory=Session, llm_call=hm))
+    prior = [x["content"] for x in hm.calls[0] if x["role"] == "assistant"]
+    out["history_framed"] = bool(prior) and "NOT current evidence" in prior[0]
+    R["p11"] = out
+
+
+for fn in (p11_independent_review_regressions, p10_inflight_claims_and_cancellation, p9_report_changes_and_private_reports, p1_packet_cites_resolvable_evidence, p2_stale_price_propagates, p3_grounding_rules,
            p4_grounded_turn_persists_and_replays, p5_repair_then_accept_and_double_reject,
            p6_owner_isolation, p7_admission_limits, p8_retention_purge):
     fn()

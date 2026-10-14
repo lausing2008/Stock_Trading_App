@@ -69,6 +69,68 @@ _PERIOD_LABEL = re.compile(r"\b(?:Q[1-4]|H[12]|FY\s?'?\d{2,4})\b")
 _SPELLED_MAGNITUDE = re.compile(
     r"\b(?:hundred|thousand|million|billion|trillion|percent|per cent|basis points?)\b", re.I)
 
+# ── R1 (independent review, 2026-10-13): quantities WITHOUT digits ─────────────
+# "The target is twenty dollars" and "The price will double" were accepted as grounded. A
+# quantity needs no digit and no magnitude word. Each family below names an amount, a ratio or
+# a period; every one is refused outside a placeholder. What remains allowed is a small count of
+# things IN THE PACKET ("two headlines", "one reading"), which is not a market quantity.
+
+#: SMALL counts (one..twelve) are mostly counts of things IN THE PACKET ("two headlines", "the
+#: two moving averages", "one reading"), so they are refused only when a UNIT follows ("two
+#: points", "one week", "three dollars"). Larger number words ("twenty", "fifty-five") are
+#: almost always amounts and are always refused. Measured on held-out questions (2026-10-13):
+#: a noun allow-list for small counts refused "Two recent headlines (...)" and "the two should
+#: not be treated as equal" — correct counts, not quantities.
+_SMALL = r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
+_LARGE = (r"zero|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|"
+          r"forty|fifty|sixty|seventy|eighty|ninety|dozen|dozens")
+_NUMBER_WORD = f"{_SMALL}|{_LARGE}"
+_NUMBER_WORD_RE = re.compile(rf"\b(?:{_NUMBER_WORD})(?:[- ](?:{_NUMBER_WORD}))*\b", re.I)
+_LARGE_RE = re.compile(rf"\b(?:{_LARGE})\b", re.I)
+_UNIT_AFTER = re.compile(
+    r"[- ](?:points?|weeks?|days?|months?|years?|sessions?|bars?|shares?|times|x|percentage[- ]points?|"
+    r"basis|cents?|dollars?|quarters?|lots?|units?|hundred|thousand|million|billion)\b", re.I)
+#: Multipliers say how much something changed ("will double", "rose threefold").
+_MULTIPLIER = re.compile(
+    r"\b(?:double[sd]?|doubling|triple[sd]?|tripling|quadruple[sd]?|halve[sd]?|halving|twice|"
+    r"thrice|\w+fold)\b", re.I)
+#: A multiplier the answer declines to assert ("cannot confirm whether it has doubled") is not a
+#: claim. Measured: the held-out "Has it doubled this year?" was refused for exactly that.
+_UNASSERTED_BEFORE = re.compile(
+    r"(?:\bnot\b|\bno\b|n't|\bnever\b|\bwhether\b|\bif\b)[^.;:!?]{0,40}$", re.I)
+#: "third-party" is not a fraction (measured: "a third-party headline" was refused).
+_FRACTION = re.compile(
+    r"\b(?:half|halves|(?:a|one)[- ]third(?![- ]party)|two[- ]thirds|a\s+quarter\s+of|"
+    r"three[- ]quarters|a\s+fifth|a\s+tenth|fraction\s+of)\b", re.I)
+#: A PLURAL currency word implies an amount ("twenty dollars", "0700.HK dollars"); a singular
+#: one is usually descriptive ("a dollar figure is not available") and is refused only after a
+#: number word.
+_CURRENCY_PLURAL = re.compile(r"\b(?:dollars|cents|bucks|euros|pounds)\b", re.I)
+_CURRENCY_SINGULAR = re.compile(r"\b(?:dollar|cent|euro|pound|yuan|renminbi|yen)\b", re.I)
+#: A fiscal period spelled out — the same invented-period risk as "Q4" (see _PERIOD_LABEL).
+_ORDINAL_PERIOD = re.compile(
+    r"\b(?:first|second|third|fourth)[- ](?:quarter|half|fiscal)\b|\bfiscal\s+year\b", re.I)
+
+
+def _quantity_words(text: str) -> list[str]:
+    """Quantities written without digits. Counts of packet items are not quantities."""
+    found: list[str] = []
+    for m in _NUMBER_WORD_RE.finditer(text):
+        w = m.group(0)
+        if _LARGE_RE.search(w) or _UNIT_AFTER.match(text, m.end()):
+            found.append(w)
+    for m in _MULTIPLIER.finditer(text):
+        if not _UNASSERTED_BEFORE.search(text[:m.start()]):
+            found.append(m.group(0))
+    found += [m.group(0) for m in _FRACTION.finditer(text)]
+    found += [m.group(0) for m in _CURRENCY_PLURAL.finditer(text)]
+    for m in _CURRENCY_SINGULAR.finditer(text):
+        if re.search(rf"\b(?:{_NUMBER_WORD})\s*$", text[:m.start()], re.I):
+            found.append(m.group(0))
+    found += [m.group(0) for m in _ORDINAL_PERIOD.finditer(text)]
+    return found
+
+
 #: A probability phrase is refused unless it is NEGATED — the platform's own display strings say
 #: "not a probability of profit", and a model repeating that disclaimer is doing the right thing.
 _NEGATION_BEFORE = re.compile(r"(?:\bnot\b|\bno\b|n't|\bnever\b|\bnor\b)[^.;:!?]{0,24}$", re.I)
@@ -101,6 +163,12 @@ def parse_draft(raw: str) -> dict | None:
     m = _ANSWER_TAG.search(raw)
     if m:
         return {"answer": m.group(1).strip(),
+                "limitations": [x.strip() for x in _LIMITATION_TAG.findall(raw) if x.strip()]}
+    lim_at = raw.lower().find("<limitation>")
+    if lim_at > 0 and raw[:lim_at].strip():
+        # Measured: a draft that used <limitation> tags but forgot to open <answer>. The text
+        # before the first limitation IS the answer; it still passes through every check.
+        return {"answer": raw[:lim_at].strip(),
                 "limitations": [x.strip() for x in _LIMITATION_TAG.findall(raw) if x.strip()]}
     s = raw.strip()
     fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", s, re.S)
@@ -163,10 +231,11 @@ def _check_text(text: str, packet: CopilotPacket, where: str, reasons: list[str]
     if nums:
         reasons.append(f"{where} writes figures directly ({', '.join(nums[:5])}); figures must "
                        f"come from {{{{key}}}} placeholders")
-    spelled = _SPELLED_MAGNITUDE.findall(_PLACEHOLDER.sub(" ", text))
+    prose = _PLACEHOLDER.sub(" ", text)
+    spelled = _SPELLED_MAGNITUDE.findall(prose) + _quantity_words(prose)
     if spelled:
-        reasons.append(f"{where} writes a figure in words ({', '.join(spelled[:3])}); figures "
-                       f"must come from {{{{key}}}} placeholders")
+        reasons.append(f"{where} writes a quantity in words ({', '.join(spelled[:3])}); "
+                       f"figures must come from {{{{key}}}} placeholders")
     low = text.lower()
     for w in _PROBABILITY_FRAMING:
         for m in re.finditer(re.escape(w), low):
@@ -213,7 +282,7 @@ def render(text: str, packet: CopilotPacket) -> str:
 #: What the deterministic fallback shows, with the label each bare value needs.
 FALLBACK_KEYS = (
     ("price.close", "Latest close"), ("price.date", "Session date"),
-    ("return.5s", "5-session return"), ("return.20s", "20-session return"),
+    ("return.5b", "5-bar return"), ("return.20b", "20-bar return"),
     ("trend.structure", "Trend"), ("signal.action", "AI signal"),
     ("signal.strength", "Signal strength"), ("signal.time", "Signal generated"),
     ("kscore.score", "K-Score"), ("earnings.date", "Next earnings date"),

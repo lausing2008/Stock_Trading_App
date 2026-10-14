@@ -8,7 +8,7 @@ the intelligence reports use, so it carries the same states (OK / STALE / UNAVAI
 the same evidence records.
 
 QUANTITIES ARE RENDERED HERE, NOT BY THE MODEL. Each citable figure becomes a `Quantity` with a
-stable key ("price.close", "return.5s") and a display string produced in code. The model writes
+stable key ("price.close", "return.5b") and a display string produced in code. The model writes
 `{{price.close}}` and `grounding.render()` substitutes the display string — the same rule as the
 N1 narration work: the narrator names quantities, it never writes numbers.
 
@@ -37,7 +37,10 @@ from ..intel_reports import store as S
 
 #: Bump when the MEANING of a packet changes (a new quantity, a changed rendering rule). Stored
 #: on every assistant turn so an old answer is read under the rules it was checked against.
-PACKET_VERSION = 2
+PACKET_VERSION = 3
+#: v3 (2026-10-13, independent review): N-BAR returns with endpoint dates (R5); every average
+#: and return cites ALL its inputs plus a calculation record (R6); report age and staleness;
+#: price.as_of / price.age replace data.as_of / data.age (they only ever described prices).
 #: v2 (2026-10-13): displays are bare values and each quantity's meaning travels separately
 #: (v1 rendered labels inside the value, so answers read "-6.18% over 20 sessions return is
 #: -6.18% over 20 sessions"); headlines addressed to AI systems are withheld.
@@ -62,6 +65,9 @@ class Quantity:
     #: What the value IS, for the model to reason with. Never rendered into the answer — the
     #: model writes its own words around a bare value.
     meaning: str | None = None
+    #: The evidence behind THIS value, when it is narrower or wider than its field's — e.g. the
+    #: 50-bar average cites all 50 closes, while the trend field it belongs to cites 20 (R6).
+    evidence_ids: tuple = ()
 
 
 @dataclass
@@ -78,12 +84,25 @@ class CopilotPacket:
     fingerprint: str = ""
 
     @property
-    def data_as_of(self) -> str | None:
-        """The newest observation the packet actually holds — NOT the time it was built."""
+    def price_as_of(self) -> str | None:
+        """The latest daily price bar's time. NOT the newest observation of every source: a
+        signal, report or headline can be newer or older — see source_times()."""
         p = self.fields.get("price")
         if p is not None and p.state in (FieldState.OK, FieldState.STALE) and p.value:
             return p.value.get("ts")
         return None
+
+    def source_times(self) -> dict:
+        """When each source's newest value was observed or generated, separately."""
+        def v(key, sub):
+            f = self.fields.get(key)
+            return (f.value or {}).get(sub) if f is not None and isinstance(f.value, dict) else None
+        return {
+            "price": self.price_as_of,
+            "signal": v("signal", "ts"),
+            "report_generated": v("report", "generated_at"),
+            "newest_headline": self.headlines[0]["published_at"] if self.headlines else None,
+        }
 
     def missing(self) -> list[dict]:
         """Every field that could not be used, with its reason. Deterministic limitations."""
@@ -96,7 +115,8 @@ class CopilotPacket:
             "symbol": self.symbol,
             "market": self.market,
             "currency": self.currency,
-            "data_as_of": self.data_as_of,
+            "price_as_of": self.price_as_of,
+            "source_times": self.source_times(),
             "quantities": {k: {"display": q.display, "state": q.state,
                                **({"meaning": q.meaning} if q.meaning else {}),
                                **({"note": q.note} if q.note else {})}
@@ -126,9 +146,46 @@ def _pct(v: float) -> str:
     return f"{v:+.2f}%"
 
 
-def _q(out: dict, key: str, display: str, fkey: str, f: Field, meaning: str | None = None) -> None:
+def _q(out: dict, key: str, display: str, fkey: str, f: Field, meaning: str | None = None,
+       evidence=()) -> None:
     out[key] = Quantity(key=key, display=display, field=fkey, state=f.state.value,
-                        note=f.reason if f.state is FieldState.STALE else None, meaning=meaning)
+                        note=f.reason if f.state is FieldState.STALE else None, meaning=meaning,
+                        evidence_ids=tuple(evidence))
+
+
+def _weekdays_between(a: datetime, b: datetime) -> int:
+    """Weekdays in (a, b]. Trading days on weekday exchanges can only be fewer (holidays)."""
+    from datetime import timedelta as _td
+    n, d = 0, a.date()
+    while d < b.date():
+        d += _td(days=1)
+        n += d.weekday() < 5
+    return n
+
+
+#: R5: N stored bars should span about N weekdays. More weekdays than N + 1 (one holiday of
+#: slack) means bars are probably MISSING. Without an exchange calendar this is a heuristic, so
+#: it is stated beside the value — never used to relabel the window as sessions.
+_HOLIDAY_SLACK = 1
+#: A report older than this describes its own time, not today.
+_REPORT_MAX_AGE_DAYS = 7
+
+
+def _calc(book: EvidenceBook, stock_id: int, name: str, bars: list, result, method: str) -> list[str]:
+    """Record a calculation and EVERY input it used; return [calc id, *input ids] (R6).
+
+    The trend adapter records only the first 20 bars (it is shared with the intelligence
+    reports, whose fingerprints would change if it recorded more), so the copilot records the
+    complete input set itself. A reader can recompute the value from these records alone.
+    """
+    ids = [A.record_bar(book, b) for b in bars]
+    cid = book.add(Evidence(
+        evidence_id=f"calc:{name}:{stock_id}:{bars[0].ts:%Y-%m-%d}",
+        source="copilot calculation", value={"method": method, "inputs": ids, "result": result},
+        units="price" if "sma" in name else "pct", basis="unadjusted closes",
+        observed_period=f"{bars[-1].ts:%Y-%m-%d}..{bars[0].ts:%Y-%m-%d}",
+        retrieved_at=_naive_utc(datetime.now(timezone.utc))))
+    return [cid, *ids]
 
 
 #: Text addressed to an AI system rather than to a reader. A HEURISTIC, and stated as one: it
@@ -303,42 +360,63 @@ def build_packet(session, symbol: str, *, now: datetime | None = None) -> Copilo
            f"latest daily closing price ({ccy}, unadjusted)")
         _q(qs, "price.date", price.value["ts"][:10], "price", price,
            "the session date of that close")
-        # The newest observation in the packet. Measured: the model reached for {{data_as_of}}
-        # when describing freshness and was refused for citing a key that did not exist.
-        _q(qs, "data.as_of", f"{price.value['ts'][:16].replace('T', ' ')} UTC", "price", price,
-           "timestamp of the newest observation in this packet (the latest daily bar)")
+        # Measured: the model reached for {{data_as_of}} when describing freshness and was
+        # refused for citing a key that did not exist. It describes PRICES only (review).
+        _q(qs, "price.as_of", f"{price.value['ts'][:16].replace('T', ' ')} UTC", "price", price,
+           "timestamp of the latest daily price bar (signals, reports and headlines carry their "
+           "own times)")
         # Its AGE as a citable value. Measured: on a stale symbol the model quoted the age from
         # the staleness reason ("12 calendar days old") and was refused for writing a figure.
         age = (now - _naive_utc(datetime.fromisoformat(price.value["ts"]))).days
-        _q(qs, "data.age", f"{age} calendar days", "price", price,
-           "how long ago, counted from TODAY, the latest daily bar was observed. Pair it with "
-           "today, never with the bar's own date")
+        _q(qs, "price.age", f"{age} calendar days", "price", price,
+           "how long ago, counted from TODAY, the latest daily price bar was observed. Pair it "
+           "with today, never with the bar's own date")
 
     for n in (5, 20):
-        f = A.session_return(bars, n, label=f"{n}-session return", book=book)
-        f.label = f"{n}-session return"
+        # R5: these are N STORED BARS apart, not N exchange sessions — the adapter does not
+        # check an exchange calendar, so a missing bar silently lengthens the window. Labelled
+        # as bars, with both endpoint dates, and a long span is stated rather than hidden.
+        f = A.session_return(bars, n, label=f"{n}-bar return", book=book)
+        f.label = f"{n}-bar return"
         if price.state is FieldState.STALE and f.state is FieldState.OK:
             f = stale(f.value, f"computed from the same bars as the price, which is stale: "
                                f"{price.reason}", evidence_ids=f.evidence_ids,
                       units="pct", label=f.label)
-        fields[f"return_{n}s"] = f
+        fields[f"return_{n}b"] = f
         if f.value is not None:
-            _q(qs, f"return.{n}s", _pct(f.value), f"return_{n}s", f,
-               f"close-to-close price return over the last {n} trading sessions")
+            latest, prior = bars[0], bars[n]
+            span = (_naive_utc(latest.ts) - _naive_utc(prior.ts)).days
+            gap = _weekdays_between(_naive_utc(prior.ts), _naive_utc(latest.ts)) > n + _HOLIDAY_SLACK
+            disp = (f"{_pct(f.value)} ({prior.ts:%Y-%m-%d} → {latest.ts:%Y-%m-%d}"
+                    + ("; possible missing bars" if gap else "") + ")")
+            ev = _calc(book, stock.id, f"return{n}b", [latest, prior], f.value,
+                       f"(close[0] - close[{n}]) / close[{n}] x 100 over stored daily bars")
+            _q(qs, f"return.{n}b", disp, f"return_{n}b", f,
+               f"close-to-close change between two stored daily closes {n} bars apart, "
+               f"unadjusted for splits and dividends. The bars are not checked against an "
+               f"exchange calendar; these endpoints span {span} calendar days"
+               + (", longer than usual, so bars may be missing" if gap else ""), evidence=ev)
 
     trend = A.trend_structure(bars, price_field=price, book=book)
     trend.label = "Trend structure"
     fields["trend"] = trend
     if trend.value:
         t = trend.value
-        _q(qs, "trend.structure", t["structure"], "trend", trend,
+        # The shared adapter's wording says "20-session average"; the copilot counts stored
+        # bars, not exchange sessions (R5), so its own display says bars. Measured: the old
+        # wording reached a held-out answer as "below the 20-session average".
+        _q(qs, "trend.structure", t["structure"].replace("-session", "-bar"), "trend", trend,
            "where the latest close sits relative to the moving averages (a description of "
            "past bars, not a forecast)")
         _q(qs, "trend.sma20", _money(t["sma20"], ccy), "trend", trend,
-           "20-session simple moving average of daily closes")
+           "simple moving average of the last 20 stored daily closes (unadjusted)",
+           evidence=_calc(book, stock.id, "sma20", bars[:20], t["sma20"],
+                          "arithmetic mean of the 20 most recent stored daily closes"))
         if t.get("sma50") is not None:
             _q(qs, "trend.sma50", _money(t["sma50"], ccy), "trend", trend,
-               "50-session simple moving average of daily closes")
+               "simple moving average of the last 50 stored daily closes (unadjusted)",
+               evidence=_calc(book, stock.id, "sma50", bars[:50], t["sma50"],
+                              "arithmetic mean of the 50 most recent stored daily closes"))
 
     sig = A.latest_signal(session, stock.id, now, book=book)
     sig.label = "Latest AI signal"
@@ -394,6 +472,19 @@ def build_packet(session, symbol: str, *, now: datetime | None = None) -> Copilo
                "price target")
 
     report, changes, cur = _report_fields(session, symbol, book)
+    # FRESHNESS (review): a 29-day-old report was marked OK. Its contents describe its own
+    # cutoff, not today, so past the age limit both it and its changes are STALE with the age
+    # stated — still readable as history, never presented as current analysis.
+    if report.value and report.value.get("generated_at"):
+        r_age = (now - _naive_utc(datetime.fromisoformat(report.value["generated_at"]))).days
+        if r_age > _REPORT_MAX_AGE_DAYS:
+            why = (f"report generated {r_age} calendar days ago; it describes that time, not "
+                   f"today")
+            report = stale(report.value, why, evidence_ids=report.evidence_ids,
+                           label=report.label)
+            if changes.value:
+                changes = stale(changes.value, why, evidence_ids=changes.evidence_ids,
+                                label=changes.label)
     fields["report"] = report
     fields["report_changes"] = changes
     if report.value:
@@ -403,6 +494,10 @@ def build_packet(session, symbol: str, *, now: datetime | None = None) -> Copilo
            "status")
         _q(qs, "report.generated", f"{(rv['generated_at'] or '')[:16].replace('T', ' ')} UTC",
            "report", report, "when that report was generated")
+        if rv.get("generated_at"):
+            r_age = (now - _naive_utc(datetime.fromisoformat(rv["generated_at"]))).days
+            _q(qs, "report.age", f"{r_age} calendar days", "report", report,
+               "how long before today that report was generated")
     if changes.value:
         labels = _report_labels(cur)
         for i, c in enumerate(changes.value["changed"][:12], 1):

@@ -80,6 +80,18 @@ def copilot_cancel(req: CopilotCancelRequest, username: str = Depends(get_curren
             "note": "a model call already in progress still completes and is counted"}
 
 
+@router.get("/messages/{message_id}/evidence")
+def message_evidence(message_id: int, key: str = Query(..., max_length=64),
+                     username: str = Depends(get_current_username)):
+    """Every evidence record behind one citation — answers return only a preview inline."""
+    with SessionLocal() as s:
+        uid = St.user_id_for(s, username)
+        out = St.message_evidence(s, uid, message_id, key) if uid is not None else None
+        if out is None:
+            raise HTTPException(404, "citation not found")
+        return out
+
+
 @router.get("/conversations")
 def list_conversations(symbol: str | None = None, limit: int = Query(20, ge=1, le=100),
                        username: str = Depends(get_current_username)):

@@ -7,8 +7,8 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  askCopilot, cancelCopilot, deleteCopilotConversation, getCopilotConversation, listCopilotConversations,
-  newRequestId, type CopilotMessage,
+  askCopilot, cancelCopilot, deleteCopilotConversation, getCopilotConversation, getCopilotEvidence,
+  listCopilotConversations, newRequestId, type CopilotEvidence, type CopilotMessage,
 } from '@/lib/copilot';
 import { isAiConfigured, getAiProviderLabel } from '@/lib/ai';
 
@@ -29,6 +29,7 @@ function fmtTime(iso?: string | null): string {
 /** One assistant turn with its evidence. Exported for tests. */
 export function CopilotAnswer({ m, defaultOpen = false }: { m: CopilotMessage; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
+  const [full, setFull] = useState<Record<string, CopilotEvidence[]>>({});
   const refs = m.evidence_refs ?? [];
   const lims = m.limitations ?? [];
   const rejected = m.status === 'rejected';
@@ -44,9 +45,13 @@ export function CopilotAnswer({ m, defaultOpen = false }: { m: CopilotMessage; d
           background: rejected ? 'rgba(251,191,36,0.15)' : 'rgba(74,222,128,0.12)',
           color: rejected ? '#fbbf24' : '#4ade80',
         }}>
-          {rejected ? 'Evidence check failed — showing stored data' : 'Figures from stored data'}
+          {rejected ? 'Evidence check failed — showing stored data' : 'Cited figures from stored data'}
         </span>
-        <span style={{ fontSize: '11px', color: '#64748b' }}>Data as of {fmtTime(m.data_as_of)}</span>
+        <span style={{ fontSize: '11px', color: '#64748b' }}>Prices as of {fmtTime(m.price_as_of)}</span>
+      </div>
+      <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '6px' }}>
+        {/* What the check proves, and what it does not (independent review R1). */}
+        Every figure was checked against stored data; the wording around the figures is the model&apos;s and is not verified.
       </div>
       <div style={{ whiteSpace: 'pre-wrap' }}>{m.content}</div>
       {rejected && (m.rejection_reasons ?? []).length > 0 && (
@@ -78,13 +83,22 @@ export function CopilotAnswer({ m, defaultOpen = false }: { m: CopilotMessage; d
                   <span style={{ color: '#e2e8f0' }}>{r.label}</span>: {r.display}
                   {r.note && <span style={{ color: '#fbbf24' }}> ({r.note})</span>}
                   <div style={{ color: '#64748b' }}>
-                    {r.evidence.map(e => (
+                    {(full[r.key] ?? r.evidence).map(e => (
                       <span key={e.id} style={{ marginRight: '10px' }}>
                         {r.url ? <a href={r.url} target="_blank" rel="noopener noreferrer" style={{ color: '#818cf8' }}>{e.id}</a> : e.id}
                         {e.observed_period ? ` · ${e.observed_period}` : ''}
                         {e.published_at ? ` · published ${fmtTime(e.published_at)}` : ''}
                       </span>
                     ))}
+                    {m.id !== undefined && (r.evidence_count ?? 0) > r.evidence.length && !full[r.key] && (
+                      <button
+                        onClick={() => getCopilotEvidence(m.id as number, r.key)
+                          .then(x => setFull(f => ({ ...f, [r.key]: x.evidence })))
+                          .catch(() => undefined)}
+                        style={{ background: 'transparent', border: 'none', color: '#a78bfa', cursor: 'pointer', fontSize: '11px', padding: 0 }}>
+                        show all {r.evidence_count}
+                      </button>
+                    )}
                   </div>
                 </li>
               ))}
@@ -106,39 +120,66 @@ export default function CopilotPanel({ symbol }: { symbol: string }) {
   const [retention, setRetention] = useState<number | null>(null);
   /** The question that failed, kept with its request id so a retry is idempotent. */
   const [pending, setPending] = useState<{ q: string; rid: string } | null>(null);
-  const [stopNote, setStopNote] = useState(false);
+  /** What Stop actually achieved — confirmed by the server, or only in this browser. */
+  const [stopNote, setStopNote] = useState<'' | 'confirmed' | 'nothing' | 'unconfirmed'>('');
+  /**
+   * 'resume' loads the latest conversation for this symbol when the panel opens; 'fresh' is set
+   * by New and must not. R3 (independent review): New used to clear the conversation, which
+   * satisfied the history effect's "nothing loaded" condition, so it reloaded the conversation
+   * the user had just left and the next question continued it.
+   */
+  const [mode, setMode] = useState<'resume' | 'fresh'>('resume');
+  /**
+   * Bumped whenever the panel's subject changes (symbol, New, Delete). Every async result
+   * carries the generation it started in and is dropped if the panel has moved on, so a late
+   * answer for AAPL can never land in MSFT's conversation.
+   */
+  const gen = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Reset on symbol change; resume the most recent conversation for this symbol when opened.
   useEffect(() => {
-    setConvId(null); setMsgs([]); setError(''); setPending(null);
+    gen.current += 1;
+    setConvId(null); setMsgs([]); setError(''); setPending(null); setStopNote(''); setMode('resume');
     abortRef.current?.abort();
   }, [symbol]);
+
+  // On every OPEN: resume the latest conversation (resume mode, nothing loaded yet), or refresh
+  // the one on screen — a stopped request's paid answer is saved server-side and must appear.
   useEffect(() => {
-    if (!open || convId !== null || msgs.length > 0) return;
+    if (!open || loading) return;
+    const g = gen.current;
     let live = true;
-    listCopilotConversations(symbol)
-      .then(async r => {
-        if (!live) return;
+    const load = async () => {
+      let id = convId;
+      if (id === null) {
+        if (mode !== 'resume') return;
+        const r = await listCopilotConversations(symbol);
+        if (!live || g !== gen.current) return;
         setRetention(r.retention_days);
-        const latest = r.conversations[0];
-        if (!latest) return;
-        const full = await getCopilotConversation(latest.id);
-        if (!live) return;
-        setConvId(latest.id);
-        setMsgs(full.messages);
-      })
-      .catch(() => { /* history is a convenience; asking still works */ });
+        id = r.conversations[0]?.id ?? null;
+        if (id === null) return;
+      }
+      const full = await getCopilotConversation(id);
+      if (!live || g !== gen.current) return;
+      setRetention(full.retention_days);
+      setConvId(id);
+      setMsgs(full.messages);
+    };
+    load().catch(() => { /* history is a convenience; asking still works */ });
     return () => { live = false; };
-  }, [open, symbol, convId, msgs.length]);
+    // Deliberately keyed on open/symbol/mode only: re-running on convId or msgs is exactly the
+    // reload-after-New defect this replaces.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, symbol, mode]);
 
   const scroll = () => setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 60);
 
   async function send(question: string, rid: string) {
     if (!question.trim() || loading) return;
+    const g = gen.current;
     setError('');
-    setStopNote(false);
+    setStopNote('');
     setLoading(true);
     if (!pending || pending.rid !== rid) {
       setMsgs(prev => [...prev, { role: 'user', content: question, request_id: rid }]);
@@ -150,42 +191,58 @@ export default function CopilotPanel({ symbol }: { symbol: string }) {
     abortRef.current = ctl;
     try {
       const out = await askCopilot({ symbol, question, requestId: rid, conversationId: convId }, ctl.signal);
+      if (g !== gen.current) return;          // the panel moved on; this result is not for it
+      // Mode is left alone: it only matters while no conversation is loaded, and flipping it
+      // here would re-run the load effect and replace the messages just received.
       setConvId(out.conversation_id);
       setMsgs(prev => prev.some(m => m.id === out.message.id) ? prev : [...prev, out.message]);
       setPending(null);
     } catch (e) {
+      if (g !== gen.current) return;
       setError(e instanceof Error ? e.message : 'Copilot request failed');
     } finally {
-      setLoading(false);
-      abortRef.current = null;
-      scroll();
+      if (g === gen.current) {
+        setLoading(false);
+        abortRef.current = null;
+        scroll();
+      }
     }
   }
 
-  /** Tell the server first (it can skip the repair call), then stop waiting in the browser. */
+  /** Ask the server to skip further model calls, then stop waiting. Report what happened. */
   async function stop() {
     const rid = pending?.rid;
-    if (rid) await cancelCopilot(rid).catch(() => undefined);
+    let outcome: 'confirmed' | 'nothing' | 'unconfirmed' = 'unconfirmed';
+    if (rid) {
+      try {
+        outcome = (await cancelCopilot(rid)).cancelled ? 'confirmed' : 'nothing';
+      } catch {
+        outcome = 'unconfirmed';
+      }
+    }
     abortRef.current?.abort();
     // No same-id Retry after a stop: the stopped call may still be running, and the server
     // refuses to start a second one for the same request. Asking again uses a new request id.
     setPending(null);
-    setStopNote(true);
+    setStopNote(outcome);
   }
 
   async function removeConversation() {
-    if (convId === null) { setMsgs([]); return; }
+    if (convId === null) { startNew(); return; }
     if (!window.confirm('Delete this conversation permanently?')) return;
     try {
       await deleteCopilotConversation(convId);
-      setConvId(null); setMsgs([]); setPending(null); setError('');
+      startNew();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Delete failed');
     }
   }
 
   function startNew() {
-    setConvId(null); setMsgs([]); setPending(null); setError('');
+    gen.current += 1;
+    setMode('fresh');
+    setConvId(null); setMsgs([]); setPending(null); setError(''); setStopNote('');
+    setLoading(false);
   }
 
   return (
@@ -216,7 +273,8 @@ export default function CopilotPanel({ symbol }: { symbol: string }) {
             <>
               <div style={{ padding: '8px 16px', fontSize: '11px', color: '#64748b', borderBottom: '1px solid #1e293b' }}>
                 Read-only. Answers use this platform&apos;s stored prices, signals, K-Score, earnings date, reports and headlines;
-                every figure is cited. It cannot place orders or change alerts, and its scores are not probabilities of profit.
+                figures are checked against that data and cited; the wording is the model&apos;s. It cannot place orders or change alerts,
+                and its scores are not probabilities of profit.
                 {retention !== null && ` Conversations are kept ${retention} days after last use.`}
               </div>
 
@@ -253,9 +311,10 @@ export default function CopilotPanel({ symbol }: { symbol: string }) {
                     </div>
                   )}
                   {stopNote && !loading && (
-                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>
-                      Stopped waiting. No further model call will be made for this question, but one already running
-                      still completes and counts toward usage — its answer appears when you reopen this conversation.
+                    <div style={{ fontSize: '11px', color: '#94a3b8' }} data-testid="stop-note">
+                      {stopNote === 'confirmed' && 'Cancellation confirmed: no further model call will be made for this question. A call already running still completes and counts toward usage; its answer appears when you reopen this conversation.'}
+                      {stopNote === 'nothing' && 'Stopped waiting. The server had nothing left to cancel — the answer may already be saved; reopen this conversation to see it.'}
+                      {stopNote === 'unconfirmed' && 'Stopped waiting in this browser only. Cancellation could not be confirmed with the server, so the answer may still be generated, counted and saved.'}
                     </div>
                   )}
                   {error && (

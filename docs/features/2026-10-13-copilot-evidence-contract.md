@@ -2,8 +2,8 @@
 
 Implements Orders 0 and 1 of [the TradingView Copilot / Tenji review](2026-10-12-tradingview-copilot-tenji-review.md):
 the evidence/context contract and a read-only stock copilot with citations and report comparison.
-**Status: validated locally (see [the validation report](../audits/2026-10-13-copilot-validation.md)),
-committed, not deployed. No independent review yet.**
+**Status: validated locally, independently reviewed, review findings remediated
+([remediation](../audits/2026-10-13-copilot-review-remediation.md)); not deployed. The remediation has not been re-reviewed.**
 
 ## What changed for the user
 
@@ -35,7 +35,7 @@ already running completes and is counted (the panel says so).
 | Identity | `api/copilot_routes.py` | User from the JWT only. Every store function takes `user_id`. Another user's conversation id returns 404, and another user's request id is not replayed. |
 | Idempotency and claims | `CopilotMessage` unique `(user_id, request_id, role)` plus `status`/`claimed_at` on user turns | A replay returns the stored answer. A retry takes over a question only through one conditional UPDATE, and only if it **failed**, or its claim (pending or cancelled) is older than 300 s. A retry while a call may still be running gets 409 and never a second call. |
 | Cancellation | `POST /copilot/cancel` | Marks the question cancelled; the service checks before every model call, so the **repair call** is skipped. An in-flight provider call cannot be recalled. A paid answer is always stored. |
-| Bounds | `copilot/service.py` | At most 2 model calls per answer; 1,200 output tokens; 1,000-character questions; 6 prior turns (re-wrapped in the output format). `llm_budget` scope `copilot_chat`: 600k tokens per UTC day, **sized against measured usage** (about 200 answers/day, about $2.50/day on Sonnet 4.6). It reserves before each call and reconciles afterwards; a timeout settles as ambiguous and is not refunded. The user's own API key bypasses the shared budget. Per-user limit: 60 answers per UTC day (`COPILOT_DAILY_ANSWERS_PER_USER`). |
+| Bounds | `copilot/service.py` | At most 2 model calls per answer; 1,200 output tokens; 1,000-character questions; 6 prior turns (re-wrapped in the output format). `llm_budget` scope `copilot_chat`: 600k tokens per UTC day, **a provisional TOKEN cap, not a dollar ceiling** (about 200 answers/day measured on Sonnet 4.6; about $75/month is an *estimate* that moves with model, input/output mix and repair calls). It reserves before each call and reconciles afterwards; a timeout settles as ambiguous and is not refunded. The user's own API key bypasses the shared budget. Per-user limit: 60 answers per UTC day (`COPILOT_DAILY_ANSWERS_PER_USER`). |
 | Model compatibility | `llm.claude_body` | `temperature` is sent only to models that accept it (not Opus 4.7/4.8 or the 5.x generation, which return 400). `stop_reason` is recorded. |
 | Connection use | `service.py` | No DB session is held during a model call (read → call → write), to avoid the 2026-09-22 pool-exhaustion shape. |
 | Usage logging | `llm_usage.CALL_SITE_COPILOT_CHAT` | One `llm_call_log` row per attempt. |
@@ -48,7 +48,24 @@ API (gateway prefix `copilot` in `_ROUTES`, 240 s POST timeout like `/ai`): `POS
 `POST /copilot/cancel`, `GET /copilot/conversations?symbol=`, `GET /copilot/conversations/{id}`
 (also the export format), `DELETE /copilot/conversations/{id}`.
 
-## Tests
+## Changes after the independent review (packet v3)
+
+See [the remediation report](../audits/2026-10-13-copilot-review-remediation.md). The rows above
+still hold, with these changes:
+
+- **Grounding** also refuses quantities without digits: number words, multipliers, fractions,
+  currency words and ordinal periods. What it proves is stated in the UI.
+- **Per-user limit:** the `copilot_usage_day` ledger (one conditional UPSERT, independent of
+  conversations; refunded only when no model call was made).
+- **Request ids** are bound to a `(symbol, question)` fingerprint.
+- **Returns** are `return.5b`/`return.20b` with endpoint dates.
+- **Complete calculation evidence** behind every average and return, retrievable at
+  `GET /copilot/messages/{id}/evidence`.
+- **Freshness:** STALE reports past 7 days; `price.as_of` plus per-source times.
+- **History:** earlier answers are marked as history.
+- **Deletion:** a conversation deleted mid-answer is not resurrected.
+
+
 
 | File | Engine | What it covers |
 |---|---|---|

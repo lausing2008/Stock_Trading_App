@@ -12,16 +12,21 @@ import { loadSettings } from './settings';
 
 export interface CopilotEvidence {
   id: string; source?: string | null; observed_period?: string | null;
-  published_at?: string | null; note?: string | null;
+  published_at?: string | null; note?: string | null; value?: unknown;
 }
 export interface CopilotEvidenceRef {
   key: string; label: string; display: string; state: string; note?: string | null;
   url?: string | null; evidence: CopilotEvidence[];
+  /** Total records behind this citation; `evidence` is a preview of the first few. */
+  evidence_count?: number;
 }
 export interface CopilotMessage {
   id?: number; role: 'user' | 'assistant'; content: string; request_id: string;
   status?: 'grounded' | 'rejected' | null; created_at?: string | null;
-  evidence_refs?: CopilotEvidenceRef[]; limitations?: string[]; data_as_of?: string | null;
+  evidence_refs?: CopilotEvidenceRef[]; limitations?: string[];
+  /** Time of the latest daily PRICE bar — other sources carry their own times. */
+  price_as_of?: string | null;
+  source_times?: { price?: string | null; signal?: string | null; report_generated?: string | null; newest_headline?: string | null };
   rejection_reasons?: string[]; model?: string | null;
 }
 export interface CopilotConversation {
@@ -89,6 +94,12 @@ export function cancelCopilot(requestId: string) {
   return call<{ cancelled: boolean; note: string }>('/copilot/cancel', {
     method: 'POST', body: JSON.stringify({ request_id: requestId }),
   });
+}
+
+/** Every evidence record behind one citation of one of your answers. */
+export function getCopilotEvidence(messageId: number, key: string) {
+  return call<{ message_id: number; key: string; label: string; display: string; evidence: CopilotEvidence[] }>(
+    `/copilot/messages/${messageId}/evidence?key=${encodeURIComponent(key)}`);
 }
 
 export function listCopilotConversations(symbol: string) {

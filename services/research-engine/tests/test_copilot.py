@@ -24,7 +24,7 @@ def r():
 
 def test_packet_citations_resolve_and_gaps_carry_reasons(r):
     p = r["p1"]
-    assert {"price.close", "return.5s", "signal.action", "kscore.score"} <= set(p["keys"])
+    assert {"price.close", "return.5b", "signal.action", "kscore.score"} <= set(p["keys"])
     assert p["every_field_ref_resolves"], "a citation that resolves to nothing is not evidence"
     assert p["missing_have_reasons"]
     assert p["report_state"] == "UNAVAILABLE"
@@ -144,3 +144,57 @@ def test_figures_written_in_words_are_refused(r):
     w = r["p3"]["words"]
     assert not w["five_hundred_dollars"] and not w["twelve_percent"]
     assert w["small_count"], "small counts in words remain allowed"
+
+
+# ── docs/audits/2026-10-13-copilot-independent-review.md, finding by finding ──
+
+def test_r1_quantities_without_digits_are_refused_and_counts_are_not(r):
+    p = r["p11"]
+    assert all(p["r1_refused"].values()), [t for t, ok in p["r1_refused"].items() if not ok]
+    assert all(p["r1_allowed"].values()), [t for t, ok in p["r1_allowed"].items() if not ok]
+
+
+def test_r2_daily_limit_counts_in_flight_answers_and_survives_deletion(r):
+    p = r["p11"]
+    assert p["r2_concurrent"] == {"model_calls": 1, "ok": 1, "refused_429": 2}
+    assert p["r2_after_delete"] == 429, "deleting a conversation must not restore the allowance"
+    assert p["r2_refund_on_no_call"] == 0, "no model call made, so the admission is returned"
+    assert p["r2_failed_call_keeps_admission"] == 1, "an attempted call may have been billed"
+
+
+def test_r4_a_request_id_is_bound_to_its_payload(r):
+    p = r["p11"]
+    assert p["r4_replay_other_question"] == 409
+    assert p["r4_replay_other_symbol"] == 409
+    assert p["r4_replay_other_conversation"] == 409
+    assert p["r4_failed_retry_other_question"] == 409 and p["r4_failed_retry_model_not_called"]
+    assert p["r4_same_retry_ok"] == "grounded"
+
+
+def test_r5_returns_are_labelled_as_bars_and_missing_bars_are_stated(r):
+    p = r["p11"]["r5"]
+    assert "possible missing bars" in p["display"] and "→" in p["display"]
+    assert p["no_session_claim"]
+
+
+def test_r6_every_average_and_return_recomputes_from_its_own_evidence(r):
+    p = r["p11"]["r6"]
+    assert p["trend.sma20"]["inputs"] == 20 and p["trend.sma50"]["inputs"] == 50
+    for k in ("trend.sma20", "trend.sma50", "return.5b"):
+        assert p[k]["recomputed"] == p[k]["stated"], k
+    assert p["preview"] == {"inline": 5, "count": 51, "full": 51, "other_user": None}
+
+
+def test_an_old_report_is_stale_and_each_source_keeps_its_own_time(r):
+    p = r["p11"]["freshness"]
+    assert p["report_state"] == "STALE" and p["report_age"] == "29 calendar days"
+    t = p["source_times"]
+    assert t["price"] != t["report_generated"] and t["signal"] and t["newest_headline"]
+
+
+def test_a_conversation_deleted_mid_answer_is_not_resurrected(r):
+    assert r["p11"]["deleted_mid_answer"] == {"status": 409, "conversations": 0, "messages": 0}
+
+
+def test_earlier_answers_are_framed_as_history_not_evidence(r):
+    assert r["p11"]["history_framed"]

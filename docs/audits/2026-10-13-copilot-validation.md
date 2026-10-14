@@ -133,21 +133,33 @@ A cancelled turn is claimable only after that same expiry, because its call may 
   - it **cannot recall a call already in flight**, which completes, is billed, and stores its answer.
 
   The panel's button is labelled **Stop** and says exactly this. After a stop, the same-id Retry is
-  removed and asking again uses a new request id. A paid answer is never discarded.
+  removed and asking again uses a new request id. A paid answer is stored even when the user
+  stopped waiting. The one exception, added after the independent review: if the conversation
+  is deleted while the answer is generated, the answer is discarded rather than reviving deleted content.
 
-## 5. Shared token cap: kept at 600,000 tokens per UTC day, now measured
+## 5. Shared token cap: kept PROVISIONALLY at 600,000 tokens per UTC day
 
-From the final Sonnet 4.6 run, 600k tokens admit about **200 answers/day at the mean and about 170
-at the observed maximum** (3,534 tokens). That is roughly **$2.50/day, about $75/month, as the
-spend ceiling** for answers made with the shared key. The per-user limit (60 answers/day) bounds
-one account to about $0.95/day at the observed maximum.
+**This is a TOKEN cap, not a dollar ceiling** (operator correction, 2026-10-13). It bounds the
+tokens admitted per UTC day. It does not bound cost: the cost of a token depends on the model
+selected, the input/output mix, and repair calls. A guaranteed dollar ceiling would need
+cost-based enforcement, which does not exist.
+
+| | |
+|---|---|
+| Measured, final Sonnet 4.6 run | 600k tokens admit about 200 answers/day at the mean and about 170 at the observed maximum (3,534 tokens) |
+| **Estimate** at that run's measured mix and price | about $2.50/day, **about $75/month** |
+| Per-user limit (60 answers/day) | about $0.95/day per account at the observed maximum, also an estimate |
+
+The estimate moves with model choice (Sonnet 5.5 used more output tokens per answer), the input/output
+split (output is priced several times input), and the share of answers that need a repair call
+(each one is a second full call).
 
 Admission reserves a conservative byte-based upper bound per call (several times the actual
 tokens) and settles to the actual figure. Under heavy concurrency the cap therefore refuses
-somewhat before actual spend reaches it, and it never admits beyond it.
+somewhat before actual token use reaches it, and it never admits tokens beyond it.
 
-**For the operator to decide:** whether $75/month is the intended ceiling. The cap is set by the
-`LLM_BUDGET_COPILOT_CHAT` environment variable.
+The cap is set by the `LLM_BUDGET_COPILOT_CHAT` environment variable. Re-measure from
+`llm_call_log WHERE call_site='copilot_chat'` once real use exists.
 
 ## 6. Remaining limitations
 
