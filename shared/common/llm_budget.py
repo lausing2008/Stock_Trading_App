@@ -35,6 +35,9 @@ log = get_logger("llm_budget")
 #: Scope names. Separate ceilings, because one runaway caller must not consume another's room.
 SCOPE_NEWS_CLASSIFY = "news_classify"
 SCOPE_RESOLVER_FALLBACK = "news_classify_resolver_fallback"
+#: Interactive copilot answers. Its own ceiling so a chatty day cannot starve news
+#: classification, and news classification cannot lock users out of the copilot.
+SCOPE_COPILOT_CHAT = "copilot_chat"
 
 #: SCOPES NEST. A resolver-fallback call spends news-classification budget too, so it must fit
 #: under BOTH ceilings. Treating them as independent allowances would permit 300k + 25k = 325k.
@@ -48,6 +51,11 @@ _DEFAULTS = {
     # Deliberately a small fraction: this path runs only when the resolver is broken, and its
     # whole purpose is to keep hot-news gating alive, not to classify the world.
     SCOPE_RESOLVER_FALLBACK: 25_000,
+    # NOT MEASURED — there is no copilot traffic yet. Sized from the request shape: a stock
+    # packet is roughly 3-6k input tokens and an answer is capped at 1,200 output tokens, so
+    # this admits on the order of 60-100 answers a day across all users. Revisit against
+    # llm_call_log once real usage exists; the per-user daily quota bounds any one account.
+    SCOPE_COPILOT_CHAT: 600_000,
 }
 
 

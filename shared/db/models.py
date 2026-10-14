@@ -4464,3 +4464,71 @@ class OptionStrategyResolution(Base):
     evidence: Mapped[dict] = mapped_column(JSON, nullable=False)
     result: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+# ── Copilot conversations (evidence-linked stock assistant) ───────────────────
+
+class CopilotConversation(Base):
+    """One user's conversation with the evidence-linked copilot about one subject.
+
+    OWNER-ONLY. `user_id` comes from the authenticated session, never from anything the model
+    or the request body supplies; every read and delete filters on it, so another user's id in
+    a URL resolves to "not found" rather than to someone else's history.
+
+    RETENTION IS STATED, NOT INHERITED. Conversations are kept for `COPILOT_RETENTION_DAYS`
+    (research-engine `copilot/store.py`) after their last activity and can be deleted by their
+    owner at any time. Deletion removes the messages with the conversation (CASCADE), not a
+    soft-delete flag — a "deleted" chat that is still stored has not been deleted.
+    """
+    __tablename__ = "copilot_conversations"
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"),
+                                    primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"),
+                                         nullable=False, index=True)
+    #: "stock:AAPL" — the same subject-key shape the intelligence reports use.
+    subject_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(),
+                                                 index=True)
+
+
+class CopilotMessage(Base):
+    """One turn. An assistant turn stores the RENDERED answer and how it was grounded.
+
+    `request_id` is the client's idempotency key: a retried POST with the same key returns the
+    stored turn instead of paying for a second model call. It is unique PER USER, not per
+    conversation: a retried FIRST message has no conversation id yet, and keying on the
+    conversation would let that retry open a second conversation and pay twice. Scoping it to
+    the user means one user cannot collide with (or probe for) another user's keys.
+
+    `grounding` records the evidence the answer cited, the packet fingerprint it was checked
+    against, and — for a rejected draft — why it was rejected. `status` separates an answer that
+    passed the evidence check ("grounded") from the deterministic fallback shown when it did
+    not ("rejected"); a rejected turn is kept so the failure rate is measurable.
+    """
+    __tablename__ = "copilot_messages"
+    __table_args__ = (
+        UniqueConstraint("user_id", "request_id", "role",
+                         name="uq_copilot_msg_user_request_role"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"),
+                                    primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("copilot_conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    #: Denormalised from the conversation so the per-user daily quota is one indexed count.
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"),
+                                         nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)          # user | assistant
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    request_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: grounded | rejected | error — NULL on user turns.
+    status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    grounding: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)

@@ -50,7 +50,8 @@ import { nearestActionableFvg, nearestPivotToFvg, classifyFvgVolumeContext } fro
 import { detectSwingPivots } from '@/lib/swingPivots';
 import { computeVolumeProfile } from '@/lib/volumeProfile';
 import { mutate as globalMutate } from 'swr';
-import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
+import { askAI, isAiConfigured } from '@/lib/ai';
+import CopilotPanel from '@/components/CopilotPanel';
 import { activeNewsSources, loadSettings } from '@/lib/settings';
 import { getUsername, getSession } from '@/lib/auth';
 import ResearchPage from '@/pages/research/[symbol]';
@@ -629,12 +630,6 @@ export default function StockDetail() {
   const [researchTriggerMsg, setResearchTriggerMsg] = useState<string | null>(null);
 
   // AI chat state
-  const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
-  const [aiInput, setAiInput] = useState('');
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState('');
-  const [aiOpen, setAiOpen] = useState(false);
-  const aiBottomRef = useRef<HTMLDivElement>(null);
 
   const { data: watchlists } = useSWR<WatchlistMeta[]>(`${u}:watchlists`, () => api.listWatchlists());
   const { data: fearGreed } = useSWR<FearGreed>('fear-greed', () => api.fearGreed(), { refreshInterval: 3_600_000 });
@@ -975,7 +970,6 @@ export default function StockDetail() {
     setGamePlanError('');
     setGamePlanOpen(true);
     setSavedToBoard(false);
-    setAiMessages([]);
     setMlResult(null);
     setResearchSummary(null);
   }, [symbol]);
@@ -1276,35 +1270,6 @@ Return ONLY valid JSON — no markdown, no prose:
       setMlError('Training started — takes ~30s, then run predict.');
     } finally {
       setMlLoading(false);
-    }
-  }
-
-  async function sendAiMessage() {
-    const text = aiInput.trim();
-    if (!text || aiLoading) return;
-    setAiError('');
-    const userMsg: AiMessage = { role: 'user', content: text };
-    const updated = [...aiMessages, userMsg];
-    setAiMessages(updated);
-    setAiInput('');
-    setAiLoading(true);
-    setTimeout(() => aiBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
-    try {
-      const systemCtx = [
-        `You are a financial analyst assistant for the stock ${symbol} (${(data as Overview & { price?: { name?: string } })?.price?.name ?? symbol}).`,
-        `Current price: ${data?.price ? JSON.stringify(data.price) : 'N/A'}`,
-        data?.signal ? `Signal: ${data.signal.signal} (direction ${((data.signal.bullish_probability ?? 0) * 100).toFixed(0)}/100, strength ${(data.signal.confidence ?? 0).toFixed(0)}/100; neither is a profit probability)` : '',
-        data?.ranking ? `K-Score: ${data.ranking.score?.toFixed(0)}, Fair Value: $${data.ranking.fair_price?.toFixed(2)}` : '',
-        `Recent headlines: ${(news ?? []).slice(0, 5).map(n => n.title).join(' | ')}`,
-        'Be concise, data-driven, and reference the above context in your answers.',
-      ].filter(Boolean).join('\n');
-      const reply = await askAI(updated, systemCtx);
-      setAiMessages(prev => [...prev, { role: 'assistant', content: reply }]);
-    } catch (e) {
-      setAiError(e instanceof Error ? e.message : 'AI request failed');
-    } finally {
-      setAiLoading(false);
-      setTimeout(() => aiBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
     }
   }
 
@@ -4417,144 +4382,8 @@ Return ONLY valid JSON — no markdown, no prose:
         );
       })()}
 
-      {/* AI Chat Panel */}
-      <div style={{ borderRadius: '12px', border: '1px solid rgba(167,139,250,0.25)', background: 'rgba(15,23,42,0.95)', overflow: 'hidden' }}>
-        <div style={{ height: '3px', background: 'linear-gradient(90deg,#a78bfa,#c4b5fd,#a78bfa)' }} />
-        <button
-          onClick={() => setAiOpen(o => !o)}
-          style={{
-            width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '14px 20px', background: 'transparent', border: 'none', cursor: 'pointer',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <span style={{ fontSize: '15px' }}>🤖</span>
-            <span style={{ fontSize: '14px', fontWeight: 700, color: '#c4b5fd' }}>
-              Ask AI about {symbol}
-            </span>
-            {isAiConfigured() && (
-              <span style={{
-                fontSize: '10px', padding: '1px 7px', borderRadius: '999px',
-                background: 'rgba(167,139,250,0.15)', color: '#a78bfa', fontWeight: 700,
-              }}>
-                {getAiProviderLabel()}
-              </span>
-            )}
-            {!isAiConfigured() && (
-              <span style={{ fontSize: '11px', color: '#475569' }}>— configure in Settings</span>
-            )}
-          </div>
-          <span style={{ color: '#475569', fontSize: '12px', transform: aiOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</span>
-        </button>
-
-        {aiOpen && (
-          <div style={{ borderTop: '1px solid #1e293b' }}>
-            {!isAiConfigured() ? (
-              <div style={{ padding: '20px', textAlign: 'center', fontSize: '13px', color: '#475569' }}>
-                No AI provider configured.{' '}
-                <a href="/settings" style={{ color: '#a78bfa', textDecoration: 'none' }}>Go to Settings → AI Assistant</a>
-                {' '}to set up Claude or DeepSeek.
-              </div>
-            ) : (
-              <>
-                {/* Suggested questions */}
-                {aiMessages.length === 0 && (
-                  <div style={{ padding: '12px 16px', display: 'flex', gap: '6px', flexWrap: 'wrap', borderBottom: '1px solid #1e293b' }}>
-                    {[
-                      `Should I buy ${symbol} now?`,
-                      `What are the key risks?`,
-                      `Summarise the latest news`,
-                      `What does the K-Score mean?`,
-                    ].map(q => (
-                      <button
-                        key={q}
-                        onClick={() => { setAiInput(q); }}
-                        style={{
-                          fontSize: '11px', padding: '4px 10px', borderRadius: '6px',
-                          background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.2)',
-                          color: '#a78bfa', cursor: 'pointer',
-                        }}
-                      >
-                        {q}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {/* Message history */}
-                {aiMessages.length > 0 && (
-                  <div style={{ maxHeight: '360px', overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    {aiMessages.map((m, i) => (
-                      <div key={i} style={{
-                        display: 'flex', flexDirection: m.role === 'user' ? 'row-reverse' : 'row', gap: '8px', alignItems: 'flex-start',
-                      }}>
-                        <div style={{
-                          maxWidth: '80%', padding: '10px 14px', borderRadius: '10px', fontSize: '13px', lineHeight: 1.6,
-                          background: m.role === 'user' ? 'rgba(167,139,250,0.15)' : 'rgba(255,255,255,0.04)',
-                          border: m.role === 'user' ? '1px solid rgba(167,139,250,0.3)' : '1px solid #1e293b',
-                          color: m.role === 'user' ? '#c4b5fd' : '#cbd5e1',
-                          whiteSpace: 'pre-wrap',
-                        }}>
-                          {m.content}
-                        </div>
-                      </div>
-                    ))}
-                    {aiLoading && (
-                      <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
-                        <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(255,255,255,0.04)', border: '1px solid #1e293b', color: '#475569', fontSize: '13px' }}>
-                          ⟳ Thinking…
-                        </div>
-                      </div>
-                    )}
-                    {aiError && (
-                      <div style={{ padding: '8px 12px', borderRadius: '8px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171', fontSize: '12px' }}>
-                        {aiError}
-                      </div>
-                    )}
-                    <div ref={aiBottomRef} />
-                  </div>
-                )}
-
-                {/* Input */}
-                <div style={{ padding: '12px 16px', borderTop: '1px solid #1e293b', display: 'flex', gap: '8px' }}>
-                  <input
-                    value={aiInput}
-                    onChange={e => setAiInput(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAiMessage(); } }}
-                    placeholder={`Ask anything about ${symbol}…`}
-                    style={{
-                      flex: 1, background: '#0f172a', border: '1px solid #1e293b',
-                      borderRadius: '8px', padding: '9px 12px', fontSize: '13px',
-                      color: '#e2e8f0', outline: 'none',
-                    }}
-                  />
-                  <button
-                    onClick={sendAiMessage}
-                    disabled={aiLoading || !aiInput.trim()}
-                    style={{
-                      padding: '9px 18px', borderRadius: '8px', fontSize: '13px', fontWeight: 700,
-                      cursor: aiLoading || !aiInput.trim() ? 'not-allowed' : 'pointer',
-                      background: aiLoading || !aiInput.trim() ? '#1e293b' : 'linear-gradient(135deg,#7c3aed,#a78bfa)',
-                      border: 'none', color: aiLoading || !aiInput.trim() ? '#475569' : '#fff',
-                      transition: 'all 0.15s',
-                    }}
-                  >
-                    Send
-                  </button>
-                  {aiMessages.length > 0 && (
-                    <button
-                      onClick={() => { setAiMessages([]); setAiError(''); }}
-                      style={{ padding: '9px 12px', borderRadius: '8px', background: 'transparent', border: '1px solid #1e293b', color: '#475569', cursor: 'pointer', fontSize: '12px' }}
-                    >
-                      Clear
-                    </button>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-      </div>
+      {/* Evidence-linked copilot — replaces the browser-built AI chat (see CopilotPanel) */}
+      <CopilotPanel symbol={symbol} />
 
       {/* Price Alerts */}
       <div style={{ marginBottom: '32px' }}>

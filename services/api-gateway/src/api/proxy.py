@@ -85,6 +85,9 @@ _ROUTES = {
     # T233-ARCH-AIPROXY-EXTRACT: ai_proxy.py moved to research-engine 2026-07-04 — was
     # previously served locally by this gateway's own ai_router, not proxied at all.
     "ai": _settings.research_engine_url,
+    # Evidence-linked copilot (stock Q&A with citations). A prefix absent from this map 404s
+    # at the gateway however complete the backend is — docs/incidents/gateway-proxy-route-gaps.md.
+    "copilot": _settings.research_engine_url,
     "decide":   _settings.decision_engine_url,
     "events":   _settings.event_intelligence_url,
     "catalyst": _settings.event_intelligence_url,
@@ -275,7 +278,7 @@ async def reverse_proxy(full_path: str, request: Request):
     # own more-informative timeout error, while research-engine keeps running the LLM call after
     # the gateway has already given up. Give /ai/* the same longer budget as /research/*.
     prefix = full_path.strip("/").split("/", 1)[0]
-    proxy_timeout = 240 if prefix in ("research", "ai") and request.method == "POST" else 120
+    proxy_timeout = 240 if prefix in ("research", "ai", "copilot") and request.method == "POST" else 120
     try:
         async with httpx.AsyncClient(timeout=proxy_timeout) as client:
             r = await client.request(

@@ -59,6 +59,7 @@ CALL_SITE_MACRO_REACTION = "macro_reaction"
 CALL_SITE_EARNINGS_IMPACT = "earnings_impact"
 CALL_SITE_EARNINGS_FORECAST = "earnings_forecast"
 CALL_SITE_NEWS_CLASSIFY = "news_classify"
+CALL_SITE_COPILOT_CHAT = "copilot_chat"
 
 
 def log_llm_call(

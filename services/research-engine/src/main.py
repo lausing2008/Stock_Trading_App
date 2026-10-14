@@ -2,6 +2,7 @@ from common.service import create_app
 from db import init_db
 
 from .api.ai_proxy import router as ai_router
+from .api.copilot_routes import router as copilot_router
 from .api.intelligence_routes import router as intelligence_router
 from .api.quality_value_routes import router as quality_value_router
 from .api.observation_routes import router as observation_router
@@ -17,5 +18,5 @@ async def on_startup():
 
 
 app = create_app("research-engine", routers=[router, ai_router, intelligence_router, quality_value_router,
-                          observation_router],
+                          observation_router, copilot_router],
                  on_startup=on_startup)
