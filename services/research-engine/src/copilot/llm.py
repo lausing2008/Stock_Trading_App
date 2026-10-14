@@ -44,8 +44,8 @@ Rules — a draft that breaks any of them is rejected automatically:
 _NO_TEMPERATURE = re.compile(r"claude-(?:opus-4-[78]|(?:opus|sonnet|haiku)-5|fable|mythos)")
 
 
-def claude_body(model: str, messages: list[dict]) -> dict:
-    body = {"model": model, "max_tokens": MAX_OUTPUT_TOKENS, "system": SYSTEM_PROMPT,
+def claude_body(model: str, messages: list[dict], system: str | None = None) -> dict:
+    body = {"model": model, "max_tokens": MAX_OUTPUT_TOKENS, "system": system or SYSTEM_PROMPT,
             "messages": messages}
     if not _NO_TEMPERATURE.search(model):
         body["temperature"] = 0
@@ -83,7 +83,8 @@ def repair_turn(reasons: list[str]) -> str:
               "must be a {{key}} placeholder.")
 
 
-async def call(provider: str, api_key: str, model: str, messages: list[dict]) -> LlmReply:
+async def call(provider: str, api_key: str, model: str, messages: list[dict],
+               system: str | None = None) -> LlmReply:
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
             if provider == "deepseek":
@@ -92,13 +93,14 @@ async def call(provider: str, api_key: str, model: str, messages: list[dict]) ->
                     headers={"Authorization": f"Bearer {api_key}",
                              "Content-Type": "application/json"},
                     json={"model": model, "max_tokens": MAX_OUTPUT_TOKENS, "temperature": 0,
-                          "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + messages})
+                          "messages": [{"role": "system", "content": system or SYSTEM_PROMPT}]
+                          + messages})
             else:
                 r = await client.post(
                     "https://api.anthropic.com/v1/messages",
                     headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
                              "content-type": "application/json"},
-                    json=claude_body(model, messages))
+                    json=claude_body(model, messages, system))
     except httpx.TimeoutException:
         raise LlmError(f"the model did not answer within {TIMEOUT_S} s", ambiguous=True)
     except httpx.RequestError as exc:

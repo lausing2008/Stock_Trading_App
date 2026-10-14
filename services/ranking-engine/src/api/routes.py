@@ -606,13 +606,24 @@ def screen(
     min_growth: float | None = Query(None, ge=0, le=100),
     sort_by: str = Query("score", description="score | momentum | technical | rs_score | confidence"),
     limit: int = Query(50, ge=1, le=200),
+    symbols: str | None = Query(None, max_length=8000,
+                                description="comma-separated scope; omitted = whole universe"),
     session: Session = Depends(get_session),
 ):
     """SCR-1: Multi-factor screener — filter stocks by K-Score, signal, and sub-scores.
 
     All filter params are optional. Results sorted by `sort_by` descending.
     Returns matching stocks with ranking sub-scores, latest signal, and confidence.
+
+    COPILOT-SCREEN (2026-10-13), additive: `symbols` restricts the universe (the copilot passes
+    a non-admin's own watchlist), and the response reports COVERAGE as well as matches —
+    `universe` (stocks in scope that had a ranking to screen), `requested` (symbols asked for)
+    and `unranked` (requested symbols with no ranking in the window, so never screened). A
+    "3 matches" means nothing without "out of how many". `total` and `items` are unchanged.
     """
+    scope = None
+    if symbols:
+        scope = sorted({x.strip().upper() for x in symbols.split(",") if x.strip()})
     # Latest ranking per stock — bounded to recent history for performance (PERF-5)
     _screen_cutoff = date.today() - timedelta(days=60)
     latest_subq = (
@@ -629,6 +640,11 @@ def screen(
               & (Ranking.as_of == latest_subq.c.max_as_of))
         .where(Stock.active.is_(True))
     )
+    if scope is not None:
+        stmt = stmt.where(Stock.symbol.in_(scope or [""]))
+    # The universe actually screened: in scope, active, ranked in the window — before filters.
+    universe_rows = session.execute(stmt.with_only_columns(Stock.symbol)).all()
+    universe_symbols = {r[0] for r in universe_rows}
 
     if market:
         stmt = stmt.where(Stock.market == market.upper())
@@ -725,7 +741,12 @@ def screen(
     }
     key_fn = sort_fields.get(sort_by, sort_fields["score"])
     results.sort(key=key_fn, reverse=True)
-    return {"total": len(results), "items": results[:limit]}
+    out = {"total": len(results), "items": results[:limit], "universe": len(universe_symbols),
+           "window_days": 60}
+    if scope is not None:
+        out["requested"] = len(scope)
+        out["unranked"] = [x for x in scope if x not in universe_symbols]
+    return out
 
 
 @router.get("/skipped")

@@ -115,3 +115,33 @@ export function getCopilotConversation(id: number) {
 export function deleteCopilotConversation(id: number) {
   return call<{ deleted: number }>(`/copilot/conversations/${id}`, { method: 'DELETE' });
 }
+
+export interface CopilotScreenResult {
+  question: string;
+  status: 'ok' | 'empty_scope' | 'nothing_applied' | 'not_understood';
+  message?: string;
+  scope: { kind: 'watchlist' | 'all_ranked'; description: string; requested?: number | null };
+  interpreted: { filter: string; value: string | number; label: string }[];
+  dropped: { filter: string; value: string; reason: string }[];
+  unsupported: string[];
+  sort_by?: string; limit?: number;
+  coverage: { universe: number | null; matched: number | null; shown: number; unranked: string[]; window_days?: number };
+  results: { symbol: string; name?: string; sector?: string | null; market?: string; score?: number | null;
+    momentum?: number | null; technical?: number | null; rs_score?: number | null; signal?: string | null;
+    confidence?: number | null }[];
+  basis?: string;
+}
+
+/** Natural-language screen in YOUR scope (admins: all ranked stocks; others: own watchlists). */
+export async function screenCopilot(question: string, requestId: string, signal?: AbortSignal) {
+  const s = loadSettings();
+  const provider = s.aiProvider === 'deepseek' ? 'deepseek' : 'claude';
+  return call<CopilotScreenResult>('/copilot/screen', {
+    method: 'POST',
+    body: JSON.stringify({
+      question, request_id: requestId, provider,
+      model: provider === 'claude' ? s.claudeModel : s.deepseekModel,
+      api_key: provider === 'claude' ? s.claudeApiKey : s.deepseekApiKey,
+    }),
+  }, signal);
+}

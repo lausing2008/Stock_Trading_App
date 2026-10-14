@@ -5,6 +5,7 @@ import { api, type RankingRow, type SignalSummary, type LatestPrice, type Watchl
 import WatchlistPickerButton from '@/components/WatchlistPickerButton';
 import { getSession } from '@/lib/auth';
 import { getSignalStyle, loadSettings } from '@/lib/settings';
+import CopilotScreen from '@/components/CopilotScreen';
 
 // ─── Merged row type ──────────────────────────────────────────────────────────
 
@@ -515,6 +516,9 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
           <div style={{ fontSize: '11px', color: '#f87171', paddingLeft: '2px' }}>⚠ {nlError}</div>
         )}
       </div>
+
+      {/* Copilot screen — validated filters, server-side scope, coverage shown */}
+      <CopilotScreen />
 
       {/* Filter panel */}
       <div style={{ background: '#0b1420', border: '1px solid #1e293b', borderRadius: '10px', padding: '14px 16px', marginBottom: '16px' }}>

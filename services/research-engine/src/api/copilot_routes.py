@@ -64,6 +64,51 @@ async def copilot_chat(req: CopilotChatRequest, username: str = Depends(get_curr
         raise HTTPException(exc.status, exc.message)
 
 
+class CopilotScreenRequest(BaseModel):
+    question: str = Field(..., max_length=C.MAX_QUESTION_CHARS)
+    request_id: str = Field(..., min_length=8, max_length=64)
+    provider: str = "claude"
+    model: str = ""
+    api_key: str = ""
+
+
+async def _fetch_screen(params: dict) -> dict:
+    """ranking-engine GET /rankings/screen (open read; Docker-internal)."""
+    import httpx
+    from common.config import get_settings
+    url = f"{get_settings().ranking_engine_url}/rankings/screen"
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(url, params={k: v for k, v in params.items() if v is not None})
+    r.raise_for_status()
+    return r.json()
+
+
+def _screen_usage_logger(**kw):
+    from common.llm_usage import CALL_SITE_COPILOT_SCREEN, log_llm_call
+    log_llm_call(service="research-engine", call_site=CALL_SITE_COPILOT_SCREEN, **kw)
+
+
+@router.post("/screen")
+async def copilot_screen(req: CopilotScreenRequest, username: str = Depends(get_current_username)):
+    """Screen in the caller's scope (admin: all ranked stocks; others: their watchlists)."""
+    if req.provider not in ("claude", "deepseek"):
+        raise HTTPException(400, f"Unknown provider: {req.provider!r}")
+    own_key = req.api_key.strip()
+    api_key = own_key or _admin_key(req.provider)
+    if not api_key:
+        raise HTTPException(400, "No AI API key configured.")
+    from common import llm_budget
+    try:
+        return await C.screen(C.ScreenRequest(
+            username=username, question=req.question, request_id=req.request_id,
+            provider=req.provider, model=req.model.strip() or _admin_model(req.provider),
+            api_key=api_key, uses_shared_key=not own_key),
+            session_factory=SessionLocal, fetch_screen=_fetch_screen, budget=llm_budget,
+            usage_logger=_screen_usage_logger)
+    except C.CopilotError as exc:
+        raise HTTPException(exc.status, exc.message)
+
+
 class CopilotCancelRequest(BaseModel):
     request_id: str = Field(..., min_length=8, max_length=64)
 

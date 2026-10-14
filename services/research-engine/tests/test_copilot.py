@@ -198,3 +198,37 @@ def test_a_conversation_deleted_mid_answer_is_not_resurrected(r):
 
 def test_earlier_answers_are_framed_as_history_not_evidence(r):
     assert r["p11"]["history_framed"]
+
+
+
+# ── Phase 2, slice 1: screening ──
+
+def test_screen_applies_exactly_what_was_asked(r):
+    a = r["p12"]["applied"]
+    assert a["interpreted"] == ["min_score", "sector", "signal"]
+    p = a["params"]
+    assert p["min_score"] == 70 and p["signal"] == "BUY" and p["sector"] == "Technology"
+    assert p["limit"] == 5 and p["symbols"] == "TESTCO", "non-admin: own watchlist only"
+    assert a["unsupported"] == ["P/E below 15"], "reported, never approximated"
+    assert a["coverage"]["universe"] == 1 and a["scope"] == "watchlist"
+
+
+def test_screen_drops_every_filter_the_user_did_not_ask_for(r):
+    i = r["p12"]["invented"]
+    assert i["interpreted"] == ["min_score"]
+    assert set(i["dropped"]) == {"min_momentum", "market", "sector", "symbols", "limit"}
+    assert "does not appear in your question" in i["dropped"]["min_momentum"]
+    assert "min_momentum" not in i["params"] and "market" not in i["params"]
+
+
+def test_screen_scope_comes_from_the_account_not_the_request(r):
+    assert r["p12"]["admin_scope"] == {"kind": "all_ranked", "symbols_param": False}
+    e = r["p12"]["empty_scope"]
+    assert e == {"status": "empty_scope", "model_calls": 0, "fetches": 0, "admitted": 0}
+    inj = r["p12"]["injection"]
+    assert inj["status"] == "nothing_applied" and inj["fetches"] == 0
+    assert inj["scope"] == "watchlist", "a request to widen scope cannot widen it"
+
+
+def test_screen_repairs_an_unparsed_reply_once(r):
+    assert r["p12"]["repair_on_unparsed"] == {"calls": 2, "status": "ok"}

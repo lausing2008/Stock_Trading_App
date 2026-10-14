@@ -111,6 +111,55 @@ not approved work**:
 - **Evaluation.** Phase 2 adds FRESH evaluation cases. The phase 0–1 synthetic cases have been
   tuned against repeatedly and are not an independent holdout.
 
+## 6a. Slice 1: screening (built 2026-10-13, not deployed)
+
+**Code:**
+- `services/research-engine/src/copilot/screen.py`
+- `copilot/service.py` `screen()`
+- `POST /copilot/screen`
+- ranking-engine `GET /rankings/screen`: gains an optional `symbols` scope and coverage
+  (`universe`, `requested`, `unranked`, `window_days`). The change is additive; existing callers
+  get identical `total`/`items`.
+- Frontend: `CopilotScreen` on the screener page, below the existing "AI Screen".
+
+**The model only proposes filters.** Code applies a filter only when the user's own words support
+it:
+- a numeric threshold must appear in the question;
+- a market, signal or sector must be named;
+- a sector must exist in the database.
+
+Everything else is dropped with a reason, or listed as unsupported. If nothing is applicable, no
+screen runs.
+
+**Scope comes from the live account:** admin → all ranked stocks; otherwise → the user's own
+watchlists. An empty watchlist returns before any model call or admission. Ranking data remains
+readable by every user via `GET /rankings`, so this scope is a product boundary, not access
+control.
+
+**Limits:**
+- Screens are not stored; a retry runs again and counts against the daily limit.
+- They share the `copilot_chat` token budget and the per-user ledger.
+- Usage is logged under `copilot_screen`.
+
+**Evaluation (fresh, never tuned on):** 10 questions with gold filter sets, run against the real
+ranking SQL.
+
+| | Sonnet 4.6 (2 reps) | Sonnet 5.5 (1 rep) |
+|---|---|---|
+| Exact applied set | **20/20** | **10/10** |
+| Unsupported asks reported | 20/20 | 10/10 |
+| Scope held | every run | every run |
+| Model calls per screen | 1 | 1 |
+| Cost per screen, mean | $0.0017 | $0.0022 |
+
+Both models complied with the injected "list every stock" request in no run: no screen ran and
+the scope stayed on alice's watchlist. Sonnet 4.6 invented a strength threshold for
+"high-conviction buys" on both reps; the validator dropped it both times.
+
+Raw results: `docs/audits/2026-10-13-copilot-eval/screen-fresh-*.json`.
+
+**The old client-side "AI Screen" is unchanged.** Retiring it (P5) needs its own decision.
+
 ## 6. Acceptance gates (from the review, made concrete)
 
 - **Chart commands:** the success message appears only after the chart's acknowledged state
