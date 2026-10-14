@@ -7,8 +7,9 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  askCopilot, cancelCopilot, deleteCopilotConversation, getCopilotConversation, getCopilotEvidence,
-  listCopilotConversations, newRequestId, type CopilotEvidence, type CopilotMessage,
+  askCopilot, cancelCopilot, confirmCopilotDraft, deleteCopilotConversation, getCopilotConversation,
+  getCopilotEvidence, listCopilotConversations, newRequestId, type CopilotDraft, type CopilotEvidence,
+  type CopilotMessage,
 } from '@/lib/copilot';
 import { isAiConfigured, getAiProviderLabel } from '@/lib/ai';
 
@@ -24,6 +25,53 @@ const STATE_COLOR: Record<string, string> = { OK: '#4ade80', STALE: '#fbbf24' };
 function fmtTime(iso?: string | null): string {
   if (!iso) return 'unknown';
   return iso.slice(0, 16).replace('T', ' ') + ' UTC';
+}
+
+/** A proposed action: exact parameters, disclosed effects, saved only on the user's click. */
+export function DraftCard({ messageId, draft }: { messageId?: number; draft: CopilotDraft }) {
+  const [d, setD] = useState(draft);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const expired = d.status !== 'saved' && Date.now() > Date.parse(d.expires_at + (d.expires_at.endsWith('Z') ? '' : 'Z'));
+  async function save() {
+    if (messageId === undefined) return;
+    setBusy(true); setErr('');
+    try {
+      setD((await confirmCopilotDraft(messageId, d.id)).draft);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not save');
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div data-testid="draft-card" style={{ marginTop: '8px', padding: '8px 10px', borderRadius: '8px', border: '1px dashed rgba(167,139,250,0.5)', background: 'rgba(167,139,250,0.06)', fontSize: '12px' }}>
+      <div style={{ fontWeight: 700, color: '#c4b5fd' }}>
+        {d.status === 'saved' ? 'Saved' : 'Draft — not saved'}: {d.summary}
+      </div>
+      {d.threshold_source && (
+        <div style={{ color: '#94a3b8' }}>
+          Threshold {d.threshold_source.display}
+          {d.threshold_source.kind === 'packet' ? ` — from stored ${d.threshold_source.key}${d.threshold_source.state === 'STALE' ? ' (stale)' : ''}` : ' — the number you typed'}
+        </div>
+      )}
+      <ul style={{ margin: '4px 0 0 16px', padding: 0, color: '#cbd5e1' }}>
+        {d.side_effects.map((x, i) => <li key={i}>{x}</li>)}
+      </ul>
+      {d.status !== 'saved' && (
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '6px' }}>
+          <button onClick={save} disabled={busy || expired || messageId === undefined}
+            style={{ padding: '4px 12px', borderRadius: '6px', border: '1px solid #7c3aed', background: 'rgba(124,58,237,0.25)', color: '#e9d5ff', cursor: busy || expired ? 'not-allowed' : 'pointer', fontSize: '12px' }}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+          <span style={{ color: '#64748b', fontSize: '11px' }}>
+            {expired ? 'Expired — ask again for a fresh draft.' : `Expires ${fmtTime(d.expires_at)}`}
+          </span>
+        </div>
+      )}
+      {err && <div style={{ color: '#f87171', marginTop: '4px' }}>{err}</div>}
+    </div>
+  );
 }
 
 /** One assistant turn with its evidence. Exported for tests. */
@@ -54,6 +102,12 @@ export function CopilotAnswer({ m, defaultOpen = false }: { m: CopilotMessage; d
         Every figure was checked against stored data; the wording around the figures is the model&apos;s and is not verified.
       </div>
       <div style={{ whiteSpace: 'pre-wrap' }}>{m.content}</div>
+      {(m.drafts ?? []).map(d => <DraftCard key={d.id} messageId={m.id} draft={d} />)}
+      {(m.dropped_drafts ?? []).length > 0 && (
+        <div style={{ marginTop: '6px', fontSize: '11px', color: '#94a3b8' }}>
+          Not drafted: {(m.dropped_drafts ?? []).map(x => `${x.kind} — ${x.reason}`).join('; ')}
+        </div>
+      )}
       {rejected && (m.rejection_reasons ?? []).length > 0 && (
         <div style={{ marginTop: '6px', fontSize: '11px', color: '#94a3b8' }}>
           Why the draft was rejected: {(m.rejection_reasons ?? []).join('; ')}

@@ -9,13 +9,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react';
 
 const api = vi.hoisted(() => ({
+  confirmCopilotDraft: vi.fn(),
   askCopilot: vi.fn(), cancelCopilot: vi.fn(), deleteCopilotConversation: vi.fn(),
   getCopilotConversation: vi.fn(), getCopilotEvidence: vi.fn(), listCopilotConversations: vi.fn(),
 }));
 vi.mock('@/lib/copilot', () => ({ ...api, newRequestId: () => `rid-${Math.random()}` }));
 vi.mock('@/lib/ai', () => ({ isAiConfigured: () => true, getAiProviderLabel: () => 'Claude' }));
 
-import CopilotPanel from './CopilotPanel';
+import CopilotPanel, { DraftCard } from './CopilotPanel';
 
 function deferred<T>() {
   let resolve!: (v: T) => void, reject!: (e: unknown) => void;
@@ -115,5 +116,48 @@ describe('copilot panel lifecycle', () => {
                  answer(4, 'answer saved after stop')] });
     await openPanel();
     expect(screen.getByText('answer saved after stop')).toBeTruthy();
+  });
+});
+
+
+describe('draft card', () => {
+  const draft = {
+    id: 'abc123def456', kind: 'price_alert' as const,
+    arguments: { symbol: 'AAPL', condition: 'below', threshold: 127.15 },
+    summary: 'Price alert: email me when AAPL closes below $127.15',
+    threshold_source: { kind: 'packet' as const, key: 'trend.sma50', display: '$127.15', state: 'OK' },
+    side_effects: ['Sends an email to your account address when the condition is met.'],
+    expires_at: new Date(Date.now() + 10 * 60_000).toISOString(), status: 'proposed' as const,
+  };
+
+  it('is not saved until the user clicks Save, then shows the saved state', async () => {
+    const d = deferred<unknown>();
+    api.confirmCopilotDraft.mockReturnValue(d.promise);
+    render(<DraftCard messageId={5} draft={draft} />);
+    expect(screen.getByTestId('draft-card').textContent).toMatch(/Draft — not saved/);
+    expect(screen.getByText(/Sends an email/)).toBeTruthy();
+    expect(screen.getByText(/from stored trend.sma50/)).toBeTruthy();
+    expect(api.confirmCopilotDraft).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('Save'));
+    expect(api.confirmCopilotDraft).toHaveBeenCalledWith(5, 'abc123def456');
+    d.resolve({ draft: { ...draft, status: 'saved' }, replayed: false });
+    await flush();
+    expect(screen.getByTestId('draft-card').textContent).toMatch(/^Saved/);
+    expect(screen.queryByText('Save')).toBeNull();
+  });
+
+  it('shows the server refusal (for example changed state) instead of claiming success', async () => {
+    api.confirmCopilotDraft.mockRejectedValue(new Error('your alerts or watchlist changed since this draft was made'));
+    render(<DraftCard messageId={5} draft={draft} />);
+    fireEvent.click(screen.getByText('Save'));
+    await flush();
+    expect(screen.getByText(/changed since this draft was made/)).toBeTruthy();
+    expect(screen.getByTestId('draft-card').textContent).toMatch(/Draft — not saved/);
+  });
+
+  it('an expired draft cannot be saved', () => {
+    render(<DraftCard messageId={5} draft={{ ...draft, expires_at: new Date(Date.now() - 60_000).toISOString() }} />);
+    expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Expired — ask again/)).toBeTruthy();
   });
 });

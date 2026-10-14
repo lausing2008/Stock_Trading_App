@@ -1,12 +1,15 @@
 """Price alert CRUD — create, list, delete alerts per authenticated user."""
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from common.logging import get_logger
@@ -53,6 +56,9 @@ class AlertCreate(BaseModel):
     recurring: bool = False
     webhook_url: str | None = Field(default=None, max_length=2048)
     compound_conditions: list[CompoundCondition] | None = None
+    #: D2: optional. The same key again returns the first alert; with different parameters, 409.
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=64,
+                                        pattern=r"^[A-Za-z0-9_\-]+$")
 
     @field_validator("symbol")
     @classmethod
@@ -101,9 +107,34 @@ class AlertOut(BaseModel):
         from_attributes = True
 
 
+def _alert_fingerprint(body: "AlertCreate", email: str | None) -> str:
+    """Everything that defines the alert, normalised. A key is bound to exactly this."""
+    payload = {
+        "symbol": body.symbol.upper(), "condition": body.condition,
+        "threshold": float(body.threshold), "email": (email or "").strip().lower(),
+        "note": body.note or "", "recurring": bool(body.recurring),
+        "webhook_url": body.webhook_url or "",
+        "compound": [c.model_dump() for c in (body.compound_conditions or [])],
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _replay_or_conflict(session, user_id: int, key: str, fp: str, response: Response):
+    """The alert already saved under this key — or a 409 if the key meant something else."""
+    prior = session.execute(select(PriceAlert).where(
+        PriceAlert.user_id == user_id, PriceAlert.idempotency_key == key)).scalars().first()
+    if prior is None:
+        return None
+    if prior.request_fingerprint != fp:
+        raise HTTPException(409, "idempotency_key was already used for a different alert")
+    response.status_code = 200          # 200, not 201: nothing new was created
+    return prior
+
+
 @router.post("", response_model=AlertOut, status_code=201)
 def create_alert(
     body: AlertCreate,
+    response: Response,
     session: Session = Depends(get_session),
     user=Depends(get_current_user),
 ):
@@ -115,6 +146,12 @@ def create_alert(
 
     email = body.email.strip() if body.email else user.email
 
+    fp = _alert_fingerprint(body, email) if body.idempotency_key else None
+    if body.idempotency_key:
+        prior = _replay_or_conflict(session, user.id, body.idempotency_key, fp, response)
+        if prior is not None:
+            return prior
+
     alert = PriceAlert(
         user_id=user.id,
         symbol=body.symbol.upper(),
@@ -125,9 +162,21 @@ def create_alert(
         recurring=body.recurring,
         webhook_url=body.webhook_url or None,
         compound_conditions=[c.model_dump() for c in body.compound_conditions] if body.compound_conditions else None,
+        idempotency_key=body.idempotency_key, request_fingerprint=fp,
     )
     session.add(alert)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        # A CONCURRENT save with the same key committed first (the partial unique index
+        # serialised us). Serve its row, or refuse if it was a different alert.
+        session.rollback()
+        if not body.idempotency_key:
+            raise
+        prior = _replay_or_conflict(session, user.id, body.idempotency_key, fp, response)
+        if prior is None:
+            raise
+        return prior
     session.refresh(alert)
     log.info("alert.created", symbol=alert.symbol, condition=body.condition, threshold=body.threshold, recurring=body.recurring,
               compound_conditions=alert.compound_conditions, user=user.username)

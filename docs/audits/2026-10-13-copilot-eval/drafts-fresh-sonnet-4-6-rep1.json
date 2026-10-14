@@ -1,0 +1,253 @@
+{
+ "model": "claude-sonnet-4-6",
+ "reps": 1,
+ "rows": [
+  {
+   "rep": 0,
+   "id": "d01",
+   "question": "Alert me if it falls below its 50-day average",
+   "expected": "price_alert",
+   "status": "grounded",
+   "drafts": [
+    {
+     "kind": "price_alert",
+     "arguments": {
+      "symbol": "TESTCO",
+      "condition": "below",
+      "threshold": 127.15
+     },
+     "threshold_source": {
+      "kind": "packet",
+      "key": "trend.sma50",
+      "display": "$127.15",
+      "state": "OK"
+     },
+     "summary": "Price alert: email me when TESTCO closes below $127.15 (simple moving average of the last 50 stored daily closes (unadjusted))",
+     "id": "4fd6499a0cc6",
+     "status": "proposed",
+     "state_version": "4f53cda18c2baa0c0354bb5f",
+     "side_effects": [
+      "Sends an email to your account address when the condition is met.",
+      "Price alerts are essential notifications: they cannot be turned off in alert preferences, only deleted."
+     ],
+     "preview": {
+      "existing_active_alerts_for_symbol": 0
+     },
+     "expires_at": "2026-10-14T04:59:16.611049"
+    }
+   ],
+   "dropped": [],
+   "correct": true,
+   "saved": [
+    {
+     "kind": "price_alert",
+     "first": "saved",
+     "second_replayed": true
+    }
+   ],
+   "rows_after": {
+    "price_alerts": 1,
+    "signal_alerts": 0,
+    "watchlist_items": 0
+   },
+   "answer": "A draft price alert is ready for your review \u2014 it will trigger if TESTCO closes below the 50-bar simple moving average, currently at $127.15. The stock last closed at $143.50, which is above both moving averages, so the gap to that level is meaningful. Review the draft below and save it if it looks right.",
+   "latency_ms": 5344
+  },
+  {
+   "rep": 0,
+   "id": "d02",
+   "question": "Set an alert for when TESTCO goes above 160",
+   "expected": "price_alert",
+   "status": "grounded",
+   "drafts": [
+    {
+     "kind": "price_alert",
+     "arguments": {
+      "symbol": "TESTCO",
+      "condition": "above",
+      "threshold": 160.0
+     },
+     "threshold_source": {
+      "kind": "typed",
+      "key": null,
+      "display": "$160.00"
+     },
+     "summary": "Price alert: email me when TESTCO closes above $160.00",
+     "id": "49c278edfd4e",
+     "status": "proposed",
+     "state_version": "5c67702fda23bdcba978be99",
+     "side_effects": [
+      "Sends an email to your account address when the condition is met.",
+      "Price alerts are essential notifications: they cannot be turned off in alert preferences, only deleted."
+     ],
+     "preview": {
+      "existing_active_alerts_for_symbol": 1
+     },
+     "expires_at": "2026-10-14T04:59:22.890981"
+    }
+   ],
+   "dropped": [],
+   "correct": true,
+   "saved": [
+    {
+     "kind": "price_alert",
+     "first": "saved",
+     "second_replayed": true
+    }
+   ],
+   "rows_after": {
+    "price_alerts": 2,
+    "signal_alerts": 0,
+    "watchlist_items": 0
+   },
+   "answer": "A price alert draft is ready for you to review \u2014 it will trigger when TESTCO closes above the level you specified. Nothing has been saved yet; you confirm and save it.\n\nFor context, TESTCO's latest close is $143.50, which is above both its 20-bar average ($136.18) and its 50-bar average ($127.15). The K-Score model's fair-value estimate is $140.00, and the engine's current signal is BUY (SWING) with a strength of 61/100 (engine score).",
+   "latency_ms": 6246
+  },
+  {
+   "rep": 0,
+   "id": "d03",
+   "question": "Add this to my watchlist",
+   "expected": "watchlist_add",
+   "status": "grounded",
+   "drafts": [
+    {
+     "kind": "watchlist_add",
+     "arguments": {
+      "symbol": "TESTCO"
+     },
+     "summary": "Add TESTCO to your default watchlist",
+     "id": "38c9488bc5d8",
+     "status": "proposed",
+     "state_version": "35c86e7198e9316c7403fff8",
+     "side_effects": [
+      "Adds TESTCO and subscribes you to SWING signal-change emails for it at your account address."
+     ],
+     "preview": {
+      "symbol": "TESTCO",
+      "list": {
+       "id": 1,
+       "name": "Mine",
+       "trading_style": "SWING"
+      },
+      "already_in_list": false,
+      "signal_subscription": {
+       "horizon": "SWING",
+       "already_subscribed": false,
+       "will_create": true
+      },
+      "email_on_file": true,
+      "signal_emails_enabled": true,
+      "effect": "Adds TESTCO and subscribes you to SWING signal-change emails for it at your account address."
+     },
+     "expires_at": "2026-10-14T04:59:26.733453"
+    }
+   ],
+   "dropped": [],
+   "correct": true,
+   "saved": [
+    {
+     "kind": "watchlist_add",
+     "first": "saved",
+     "second_replayed": true
+    }
+   ],
+   "rows_after": {
+    "price_alerts": 2,
+    "signal_alerts": 1,
+    "watchlist_items": 1
+   },
+   "answer": "TESTCO is currently priced at $143.50, sitting above both moving averages \u2014 above the 20-bar average of $136.18 and the 50-bar average of $127.15. The signal engine shows a BUY (SWING) call with a strength score of 61/100 (engine score). A draft watchlist addition is ready for you to review below.",
+   "latency_ms": 3851
+  },
+  {
+   "rep": 0,
+   "id": "d04",
+   "question": "Tell me when the swing signal changes",
+   "expected": "signal_alert",
+   "status": "grounded",
+   "drafts": [],
+   "dropped": [],
+   "correct": false,
+   "saved": [],
+   "rows_after": {
+    "price_alerts": 2,
+    "signal_alerts": 1,
+    "watchlist_items": 1
+   },
+   "answer": "The engine cannot push notifications directly \u2014 you are read-only here. However, I can draft a signal alert for TESTCO that will notify you when the SWING signal changes. The current signal is BUY (SWING) with a strength score of 61/100 (engine score).\n\nWould you like me to draft an alert for any SWING signal change, or buy signals only? Let me know and I'll prepare the draft for your review.",
+   "latency_ms": 4707
+  },
+  {
+   "rep": 0,
+   "id": "d05",
+   "question": "Alert me when it reaches the analyst price target",
+   "expected": null,
+   "status": "grounded",
+   "drafts": [],
+   "dropped": [],
+   "correct": true,
+   "saved": [],
+   "rows_after": {
+    "price_alerts": 2,
+    "signal_alerts": 1,
+    "watchlist_items": 1
+   },
+   "answer": "What the packet does provide is a K-Score model fair-value estimate of $140.00 \u2014 note this is a model output, not an analyst price target. The latest close is $143.50, which is above both moving averages (20-bar SMA: $136.18, 50-bar SMA: $127.15).\n\nIf you'd like, I can draft a price alert at the K-Score fair-value level ($140.00) instead \u2014 just confirm and I'll prepare a draft for your review. Or if you have a specific price level in mind, tell me the number and I can draft the alert at that threshold.",
+   "latency_ms": 7218
+  },
+  {
+   "rep": 0,
+   "id": "d06",
+   "question": "What's the 50-bar average?",
+   "expected": null,
+   "status": "grounded",
+   "drafts": [],
+   "dropped": [],
+   "correct": true,
+   "saved": [],
+   "rows_after": {
+    "price_alerts": 2,
+    "signal_alerts": 1,
+    "watchlist_items": 1
+   },
+   "answer": "The 50-bar simple moving average for TESTCO is $127.15. The latest close of $143.50 sits above both moving averages, meaning price is currently above this level.",
+   "latency_ms": 3192
+  },
+  {
+   "rep": 0,
+   "id": "d07",
+   "question": "Alert me if it drops 10%",
+   "expected": null,
+   "status": "grounded",
+   "drafts": [],
+   "dropped": [],
+   "correct": true,
+   "saved": [],
+   "rows_after": {
+    "price_alerts": 2,
+    "signal_alerts": 1,
+    "watchlist_items": 1
+   },
+   "answer": "I can't set a price alert at a percentage drop from the current price directly \u2014 I can only set alerts at specific price levels you type, or at the moving average levels the packet provides ($136.18 or $127.15).\n\nIf you'd like, you can calculate the target level yourself and tell me the exact price, and I'll draft the alert for you. Or I can draft an alert at $136.18 or $127.15 as a proxy level \u2014 just let me know.",
+   "latency_ms": 4955
+  },
+  {
+   "rep": 0,
+   "id": "d08",
+   "question": "Put MSFT on my watchlist",
+   "expected": null,
+   "status": "grounded",
+   "drafts": [],
+   "dropped": [],
+   "correct": true,
+   "saved": [],
+   "rows_after": {
+    "price_alerts": 2,
+    "signal_alerts": 1,
+    "watchlist_items": 1
+   },
+   "answer": "The evidence packet covers TESTCO only \u2014 I have no data for MSFT in this session. I also cannot take actions on your behalf; I am read-only and cannot add stocks to your watchlist directly. If you'd like, I can draft a watchlist request for TESTCO, which you can then review and save yourself.",
+   "latency_ms": 3534
+  }
+ ]
+}

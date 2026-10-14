@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 
 from db.models import CopilotMessage
 
+from . import drafts as D
 from . import grounding as G
 from . import llm as L
 from . import store as St
@@ -49,6 +50,8 @@ class TurnRequest:
     model: str
     api_key: str                  # resolved: the user's own, or the admin shared key
     uses_shared_key: bool
+    #: market-data with the USER'S credentials, for drafting actions. None = drafts disabled.
+    market: object | None = None
 
 
 def _utcnow() -> datetime:
@@ -265,7 +268,10 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         total_in += u.get("input_tokens") or 0
         total_out += u.get("output_tokens") or 0
         model_used = reply.model
-        result = G.check(G.parse_draft(reply.text), packet)
+        # Draft tags are removed BEFORE the grounding check: their thresholds are validated
+        # by drafts.validate (packet price or a number the user typed), not as answer prose.
+        clean_text, raw_drafts = D.strip_tags(reply.text)
+        result = G.check(G.parse_draft(clean_text), packet)
         if result.accepted:
             break
         reasons = result.reasons
@@ -291,7 +297,19 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         shown = [k for k, _ in G.FALLBACK_KEYS if k in packet.quantities]
         refs = _evidence_refs(packet, shown)
         lims = _limitations(packet, [])
+    # Drafts only on an ACCEPTED answer, bound to the user's current state through market-data
+    # (their credentials, no DB session held). A rejected answer proposes nothing.
+    drafts, dropped_drafts = [], []
+    if accepted and raw_drafts:
+        v = D.validate(raw_drafts, packet=packet, question=question)
+        if req.market is None:
+            dropped_drafts = v.dropped + [{"kind": d["kind"], "reason": "drafting is not "
+                                           "available here"} for d in v.drafts]
+        else:
+            fin = await D.finalise(req.market, v, _utcnow())
+            drafts, dropped_drafts = fin.drafts, fin.dropped
     grounding = {
+        "drafts": drafts, "dropped_drafts": dropped_drafts,
         "packet_version": PACKET_VERSION, "packet_fingerprint": packet.fingerprint,
         "price_as_of": packet.price_as_of, "source_times": packet.source_times(),
         "evidence_refs": refs, "limitations": lims,
@@ -336,6 +354,54 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
                     "message": St.serialise_message(prior), "replayed": True}
         return {"conversation_id": conv_id, "message": St.serialise_message(msg),
                 "replayed": False}
+
+
+async def confirm_draft(session_factory, username: str, message_id: int, draft_id: str,
+                        market, now: datetime | None = None) -> dict:
+    """Save one draft through market-data, as the user. Idempotent; refuses stale drafts.
+
+    Order: ownership → already saved (return it) → expiry → STATE (the user's alerts or list
+    membership must still be what the draft was bound to) → execute → record. A second
+    confirm of a saved draft returns the stored result without calling market-data; two
+    simultaneous confirms are safe because every save is idempotent on market-data's side
+    (price alerts by the draft's key, D2; watchlist adds and signal subscriptions by design).
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+    now = now or _utcnow()
+    with session_factory() as s:
+        uid = St.user_id_for(s, username)
+        m = s.get(CopilotMessage, message_id)
+        if uid is None or m is None or m.user_id != uid or m.role != "assistant":
+            raise CopilotError(404, "draft not found")
+        draft = next((d for d in (m.grounding or {}).get("drafts", []) if d["id"] == draft_id),
+                     None)
+        if draft is None:
+            raise CopilotError(404, "draft not found")
+    if draft.get("status") == "saved":
+        return {"draft": draft, "replayed": True}
+    if now > datetime.fromisoformat(draft["expires_at"]):
+        raise CopilotError(410, "this draft has expired; ask again for a fresh one")
+    try:
+        state, _effects, _p = await D.state_and_effects(market, draft)
+        if state != draft["state_version"]:
+            raise CopilotError(409, "your alerts or watchlist changed since this draft was made; "
+                                    "ask again so the draft reflects them")
+        result = await D.execute(market, draft)
+    except D.MarketError as exc:
+        raise CopilotError(exc.status if exc.status in (400, 404, 409) else 502,
+                           f"could not save: {exc.detail}")
+    saved = {**draft, "status": "saved", "saved_at": now.isoformat(),
+             "result": {k: result.get(k) for k in ("id", "symbol", "condition", "threshold",
+                                                   "horizon", "alert_mode", "added_at")
+                        if k in result}}
+    with session_factory() as s:
+        m = s.get(CopilotMessage, message_id)
+        g = dict(m.grounding or {})
+        g["drafts"] = [saved if d["id"] == draft_id else d for d in g.get("drafts", [])]
+        m.grounding = g
+        flag_modified(m, "grounding")
+        s.commit()
+    return {"draft": saved, "replayed": False}
 
 
 def cancel(session_factory, username: str, request_id: str) -> bool:

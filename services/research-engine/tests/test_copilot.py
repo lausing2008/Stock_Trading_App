@@ -232,3 +232,48 @@ def test_screen_scope_comes_from_the_account_not_the_request(r):
 
 def test_screen_repairs_an_unparsed_reply_once(r):
     assert r["p12"]["repair_on_unparsed"] == {"calls": 2, "status": "ok"}
+
+
+
+# ── Phase 2, slice 2: action drafts ──
+
+def test_a_draft_threshold_is_a_packet_price_or_a_number_the_user_typed(r):
+    p = r["p13"]["proposed"]
+    assert p["status"] == "grounded" and p["n"] == 1 and p["kind"] == "price_alert"
+    assert p["threshold"] == round(p["sma50"], 4) and p["source"] == "trend.sma50"
+    assert any("not a price" in x for x in p["dropped"]), "{{return.5b}} is not a price"
+    assert any("does not appear in your question" in x for x in p["dropped"]), "999 invented"
+    assert r["p13"]["typed"]["thresholds"] == [150.0]
+    assert any("this conversation's symbol" in x for x in r["p13"]["typed"]["dropped"])
+
+
+def test_drafting_discloses_and_binds_state_but_writes_nothing(r):
+    p = r["p13"]["proposed"]
+    assert p["has_effects"] and p["has_state"] and p["key_hidden"]
+    assert p["market_writes_while_drafting"] == [], "a draft must not save anything"
+
+
+def test_no_draft_without_intent_a_grounded_answer_or_a_market_client(r):
+    p = r["p13"]
+    assert p["no_intent"]["n"] == 0 and "you did not ask for this action" in p["no_intent"]["reasons"]
+    assert p["rejected_answer_drafts"] == 0
+    assert p["no_market"]["n"] == 0
+
+
+def test_confirming_saves_once_and_a_second_confirm_replays(r):
+    c = r["p13"]["confirm"]
+    assert c["status"] == "saved" and c["replay"] is True
+    assert c["creates"] == 1 and c["creates_after_replay"] == 1 and c["alert_rows"] == 1
+
+
+def test_confirm_refuses_other_users_stale_state_and_expiry(r):
+    p = r["p13"]
+    assert p["confirm_other_user"] == 404
+    assert p["confirm_stale_state"] == 409, "a draft bound to changed state must not apply"
+    assert p["confirm_expired"] == 410
+
+
+def test_a_watchlist_draft_discloses_the_signal_email_enrolment(r):
+    w = r["p13"]["watchlist"]
+    assert "signal-change emails" in w["effects"][0]
+    assert w["saved"] == "saved" and w["adds"] == 1

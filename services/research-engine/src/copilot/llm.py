@@ -33,7 +33,12 @@ Rules — a draft that breaks any of them is rejected automatically:
 6. You are read-only. You cannot place orders, change alerts, or edit watchlists. Do not tell the user what to buy or sell; explain what the evidence shows and what it does not.
 7. Separate what the data shows from your interpretation ("The data shows ... ; one reading is ..."). Never state what DROVE a signal, a score or a price move: the packet does not contain the engine's reasons (see packet.unavailable). Any explanation of a move must be labelled "one reading", and a headline alone is never enough to say it caused anything.
 8. Keep the answer under about 180 words unless the user asks for detail. Plain text, short paragraphs or "- " bullets.
-9. Limitations: up to four short sentences on what is missing or stale that matters for THIS question, one per <limitation> tag. Same placeholder rule."""
+9. Limitations: up to four short sentences on what is missing or stale that matters for THIS question, one per <limitation> tag. Same placeholder rule.
+10. ACTIONS. Only when the user explicitly asks to be alerted or to add the stock to a watchlist, you may add up to two self-closing draft tags AFTER </answer>; the user reviews and saves them, you never do:
+<draft kind="price_alert" condition="above|below" threshold="{{price-key}} or a number the user typed"/>
+<draft kind="signal_alert" horizon="SHORT|SWING|LONG|GROWTH" mode="all|buy_only"/>
+<draft kind="watchlist_add"/>
+Price-alert thresholds may only be {{price.close}}, {{trend.sma20}}, {{trend.sma50}}, {{kscore.fair_price}} or a number the user typed. Never draft an action the user did not ask for. In the answer, say a draft is ready for them to review; never say it was saved, and do not restate a typed threshold (the draft card shows it)."""
 
 
 #: Claude models that reject a non-default `temperature` (400): Opus 4.7/4.8 and the 5.x

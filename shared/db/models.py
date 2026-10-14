@@ -415,6 +415,13 @@ class AlertPreference(Base):
 
 class PriceAlert(Base):
     __tablename__ = "price_alerts"
+    __table_args__ = (
+        # Declared here so a FRESH database gets it from create_all(); existing databases get
+        # the identical index from session.py's isolated DDL (IF NOT EXISTS makes both safe).
+        Index("uq_price_alerts_user_idempotency", "user_id", "idempotency_key", unique=True,
+              postgresql_where=text("idempotency_key IS NOT NULL"),
+              sqlite_where=text("idempotency_key IS NOT NULL")),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
@@ -435,6 +442,13 @@ class PriceAlert(Base):
     # ALL must pass (AND) for the alert to fire — the base condition is always required too.
     # NULL/empty = old single-condition behavior, unchanged.
     compound_conditions: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    #: D2 (2026-10-13, copilot drafts): an optional client idempotency key, UNIQUE per user
+    #: (partial index `uq_price_alerts_user_idempotency`, created in session.py — this table
+    #: already exists in production, so create_all() would never add these). A retried save
+    #: returns the first alert; the same key with DIFFERENT parameters is refused, which is
+    #: what `request_fingerprint` is checked against.
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="price_alerts")
 

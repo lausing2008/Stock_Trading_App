@@ -20,6 +20,16 @@ export interface CopilotEvidenceRef {
   /** Total records behind this citation; `evidence` is a preview of the first few. */
   evidence_count?: number;
 }
+export interface CopilotDraft {
+  id: string; kind: 'price_alert' | 'watchlist_add' | 'signal_alert';
+  arguments: Record<string, string | number>;
+  summary: string;
+  threshold_source?: { kind: 'packet' | 'typed'; key: string | null; display: string; state?: string };
+  side_effects: string[];
+  expires_at: string;
+  status: 'proposed' | 'saved';
+  result?: Record<string, unknown>;
+}
 export interface CopilotMessage {
   id?: number; role: 'user' | 'assistant'; content: string; request_id: string;
   status?: 'grounded' | 'rejected' | null; created_at?: string | null;
@@ -28,6 +38,9 @@ export interface CopilotMessage {
   price_as_of?: string | null;
   source_times?: { price?: string | null; signal?: string | null; report_generated?: string | null; newest_headline?: string | null };
   rejection_reasons?: string[]; model?: string | null;
+  /** Actions proposed for the user to review and save. Nothing is saved until they confirm. */
+  drafts?: CopilotDraft[];
+  dropped_drafts?: { kind: string; reason: string }[];
 }
 export interface CopilotConversation {
   id: number; subject_key: string; title: string; created_at?: string; updated_at?: string;
@@ -93,6 +106,13 @@ export async function askCopilot(
 export function cancelCopilot(requestId: string) {
   return call<{ cancelled: boolean; note: string }>('/copilot/cancel', {
     method: 'POST', body: JSON.stringify({ request_id: requestId }),
+  });
+}
+
+/** Save a reviewed draft through the platform's normal endpoint, with your credentials. */
+export function confirmCopilotDraft(messageId: number, draftId: string) {
+  return call<{ draft: CopilotDraft; replayed: boolean }>('/copilot/drafts/confirm', {
+    method: 'POST', body: JSON.stringify({ message_id: messageId, draft_id: draftId }),
   });
 }
 

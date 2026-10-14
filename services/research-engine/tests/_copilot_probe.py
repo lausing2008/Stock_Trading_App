@@ -687,7 +687,122 @@ def p12_screening():
     R["p12"] = out
 
 
-for fn in (p12_screening, p11_independent_review_regressions, p10_inflight_claims_and_cancellation, p9_report_changes_and_private_reports, p1_packet_cites_resolvable_evidence, p2_stale_price_propagates, p3_grounding_rules,
+class FakeMarket:
+    """market-data as the drafts see it: per-user state, and every call recorded."""
+    def __init__(self):
+        self.alerts_ = []
+        self.calls = []
+        self.keys = {}
+
+    async def alerts(self):
+        self.calls.append("alerts"); return list(self.alerts_)
+
+    async def signal_alerts(self):
+        self.calls.append("signal_alerts"); return []
+
+    async def watchlist_preview(self, symbol):
+        self.calls.append("preview")
+        return {"already_in_list": False, "list": {"id": 1, "name": "Mine"},
+                "signal_subscription": {"horizon": "SWING", "will_create": True},
+                "effect": f"Adds {symbol} and subscribes you to SWING signal-change emails."}
+
+    async def create_alert(self, body):
+        self.calls.append("create_alert")
+        k = body["idempotency_key"]
+        if k not in self.keys:
+            self.keys[k] = {"id": len(self.keys) + 1, **body}
+            self.alerts_.append({"id": self.keys[k]["id"], "symbol": body["symbol"],
+                                 "condition": body["condition"], "threshold": body["threshold"]})
+        return self.keys[k]
+
+    async def create_signal_alert(self, body):
+        self.calls.append("create_signal_alert"); return {"id": 9, **body}
+
+    async def add_to_watchlist(self, symbol):
+        self.calls.append("add"); return {"symbol": symbol}
+
+
+def p13_drafts():
+    """Phase 2 slice 2: drafts proposed by the model, validated by code, saved by the user."""
+    reset()
+    out = {}
+
+    def tq(q, rid, market):
+        t = turn(rid=rid, question=q)
+        t.market = market
+        return t
+    alert_ans = ("<answer>A draft alert is ready for you to review.</answer>"
+                 '<draft kind="price_alert" condition="below" threshold="{{trend.sma50}}"/>'
+                 '<draft kind="price_alert" condition="above" threshold="{{return.5b}}"/>'
+                 '<draft kind="price_alert" condition="above" threshold="999"/>')
+    mk = FakeMarket()
+    a1 = run(C.answer(tq("Alert me if TESTCO drops below its 50-day average", "draft-0001", mk),
+                      session_factory=Session, llm_call=ScriptedModel(alert_ans)))
+    m1 = a1["message"]
+    with Session() as s:
+        pk = build_packet(s, "TESTCO", now=datetime.utcnow())
+    d = m1["drafts"][0] if m1["drafts"] else {}
+    out["proposed"] = {
+        "status": m1["status"], "n": len(m1["drafts"]), "kind": d.get("kind"),
+        "threshold": d.get("arguments", {}).get("threshold"),
+        "sma50": pk.fields["trend"].value["sma50"],
+        "source": d.get("threshold_source", {}).get("key"),
+        "has_effects": bool(d.get("side_effects")), "has_state": bool(d.get("state_version")),
+        "key_hidden": "idempotency_key" not in d,
+        "dropped": [x["reason"] for x in m1["dropped_drafts"]],
+        "market_writes_while_drafting": [c for c in mk.calls if c.startswith(("create", "add"))],
+    }
+    typed = ("<answer>Ready to review.</answer>"
+             '<draft kind="price_alert" condition="above" threshold="150"/>'
+             '<draft kind="watchlist_add" symbol="MSFT"/>')
+    a2 = run(C.answer(tq("Notify me if it goes above 150", "draft-0002", mk),
+                      session_factory=Session, llm_call=ScriptedModel(typed)))
+    out["typed"] = {"thresholds": [x["arguments"]["threshold"] for x in a2["message"]["drafts"]],
+                    "dropped": [x["reason"] for x in a2["message"]["dropped_drafts"]]}
+    a3 = run(C.answer(tq("What is the trend?", "draft-0003", mk), session_factory=Session,
+                      llm_call=ScriptedModel(alert_ans)))
+    out["no_intent"] = {"n": len(a3["message"]["drafts"]),
+                        "reasons": {x["reason"] for x in a3["message"]["dropped_drafts"]}}
+    a4 = run(C.answer(tq("Alert me below its 50-day average", "draft-0004", mk),
+                      session_factory=Session,
+                      llm_call=ScriptedModel(DIGITS.copy() | {"answer": "Closed at 129."},
+                                             {"answer": "Closed at 128."})))
+    out["rejected_answer_drafts"] = len(a4["message"]["drafts"])
+    a5 = run(C.answer(tq("Alert me below its 50-day average", "draft-0005", None),
+                      session_factory=Session, llm_call=ScriptedModel(alert_ans)))
+    out["no_market"] = {"n": len(a5["message"]["drafts"]),
+                        "reasons": [x["reason"] for x in a5["message"]["dropped_drafts"]]}
+
+    # ── Confirmation ──
+    did, mid = d["id"], m1["id"]
+    c1 = run(C.confirm_draft(Session, "alice", mid, did, mk))
+    writes = mk.calls.count("create_alert")
+    c2 = run(C.confirm_draft(Session, "alice", mid, did, mk))
+    out["confirm"] = {"status": c1["draft"]["status"], "replay": c2["replayed"],
+                      "creates": writes, "creates_after_replay": mk.calls.count("create_alert"),
+                      "alert_rows": len(mk.alerts_)}
+    out["confirm_other_user"] = expect_error(C.confirm_draft(Session, "bob", mid, did, mk))
+    # A draft bound to state that has since changed is refused, not applied.
+    a6 = run(C.answer(tq("Alert me if it drops below its 50-day average", "draft-0006", mk),
+                      session_factory=Session, llm_call=ScriptedModel(alert_ans)))
+    d6 = a6["message"]["drafts"][0]
+    mk.alerts_.append({"id": 77, "symbol": "TESTCO", "condition": "above", "threshold": 1.0})
+    out["confirm_stale_state"] = expect_error(
+        C.confirm_draft(Session, "alice", a6["message"]["id"], d6["id"], mk))
+    out["confirm_expired"] = expect_error(
+        C.confirm_draft(Session, "alice", a6["message"]["id"], d6["id"], mk,
+                        now=datetime.utcnow() + timedelta(hours=1)))
+    wl = ("<answer>A watchlist draft is ready.</answer>" '<draft kind="watchlist_add"/>')
+    a7 = run(C.answer(tq("Add it to my watchlist", "draft-0007", mk), session_factory=Session,
+                      llm_call=ScriptedModel(wl)))
+    d7 = a7["message"]["drafts"][0]
+    c7 = run(C.confirm_draft(Session, "alice", a7["message"]["id"], d7["id"], mk))
+    out["watchlist"] = {"effects": d7["side_effects"], "saved": c7["draft"]["status"],
+                        "adds": mk.calls.count("add")}
+    R["p13"] = out
+
+
+for fn in (p13_drafts, p12_screening, p11_independent_review_regressions, p10_inflight_claims_and_cancellation, p9_report_changes_and_private_reports, p1_packet_cites_resolvable_evidence, p2_stale_price_propagates, p3_grounding_rules,
            p4_grounded_turn_persists_and_replays, p5_repair_then_accept_and_double_reject,
            p6_owner_isolation, p7_admission_limits, p8_retention_purge):
     fn()

@@ -1134,6 +1134,17 @@ def _apply_isolated_ddl() -> None:
     `with`, so a failure rolls back nothing but itself.
     """
     statements = [
+        # D2 (2026-10-13): price-alert idempotency. `price_alerts` already exists, so
+        # create_all() will never add these — the same bug class this list exists for.
+        ("price alert idempotency columns",
+         "ALTER TABLE price_alerts "
+         "ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(64), "
+         "ADD COLUMN IF NOT EXISTS request_fingerprint VARCHAR(64)"),
+        # PARTIAL: rows without a key (every existing alert, and every save from the ordinary
+        # form) are unaffected. Separate statement so it cannot block the columns above.
+        ("uq_price_alerts_user_idempotency",
+         "CREATE UNIQUE INDEX IF NOT EXISTS uq_price_alerts_user_idempotency "
+         "ON price_alerts (user_id, idempotency_key) WHERE idempotency_key IS NOT NULL"),
         # M24/M25 (2026-10-02): the capability matrix caught this on its FIRST production run.
         # `paper_trades` already existed, so `create_all()` never added the broker-submission
         # columns and both `broker_submission` and `submission_reconciliation` reported

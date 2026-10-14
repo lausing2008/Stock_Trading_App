@@ -160,6 +160,71 @@ Raw results: `docs/audits/2026-10-13-copilot-eval/screen-fresh-*.json`.
 
 **The old client-side "AI Screen" is unchanged.** Retiring it (P5) needs its own decision.
 
+## 6b. Slice 2: watchlist and alert drafts (built 2026-10-13, not deployed)
+
+**The copilot gains no write authority.** An answer may carry up to two drafts (price alert,
+signal alert, watchlist add). Nothing is saved until the user presses Save. The save goes through
+market-data's EXISTING endpoint, with the user's own JWT and that endpoint's ownership checks.
+
+**Draft validation** (`copilot/drafts.py`):
+- the conversation's symbol only;
+- only when the question asks for an action;
+- a price threshold must be a packet price (`price.close`, `trend.sma20`, `trend.sma50`,
+  `kscore.fair_price`) or a number the user typed.
+
+Failures are listed as "Not drafted: reason". A rejected answer proposes nothing.
+
+**D1, disclosure.** Each draft carries its effects as the platform will apply them. A watchlist
+add's signal-email enrolment comes from the new read-only `GET /watchlist/{symbol}/preview`. The
+preview and the real add share one helper (`_add_effects`), so the disclosure cannot drift from
+the action. It covers:
+- no email on file;
+- signal emails turned off in preferences;
+- already subscribed;
+- already in the list.
+
+**D2, price-alert idempotency.**
+- `price_alerts.idempotency_key` and `request_fingerprint`, with partial unique index
+  `uq_price_alerts_user_idempotency (user_id, idempotency_key) WHERE key IS NOT NULL`;
+- migrated by `session.py`'s isolated DDL, because the table already exists;
+- a retry returns the first alert (200); the same key with different parameters → 409; no key →
+  unchanged behaviour.
+
+**Confirmation** (`POST /copilot/drafts/confirm`) checks, in order:
+1. ownership;
+2. already saved → return the stored result;
+3. expiry (15 minutes) → 410;
+4. **state binding** → 409 if the user's alerts or list membership changed since drafting.
+
+The draft's own idempotency key makes concurrent confirms safe.
+
+**Verification:**
+
+| Check | Result |
+|---|---|
+| PostgreSQL, alerts | migration from production's current shape (columns and unique index added, re-run a no-op); 8 simultaneous saves with one key → 1 row, one 201 |
+| Preview vs. add | match; the preview is read-only (creates no default list); another user's list → 404 |
+| Copilot probe | thresholds, intent, symbol, cap, no writes while drafting, confirm/replay/404/409/410 |
+| jsdom | the card stays "not saved" until Save; refusals are shown; an expired draft cannot be saved |
+
+**Fresh real-model evaluation** (`_copilot_draft_eval.py`, 8 cases, end to end through
+market-data's REAL route functions):
+
+| Model | Correct |
+|---|---|
+| Sonnet 4.6 | 7/8, then 8/8 |
+| Sonnet 5.5 | 8/8 |
+
+- Every proposed draft saved exactly once; every second confirm replayed.
+- The watchlist add created exactly the disclosed signal subscription.
+- No answer claimed a save.
+- The one miss (d04, rep 1): the model asked a clarifying question ("any change, or BUY only?")
+  instead of drafting.
+
+**Not built in this slice:**
+- watchlist REMOVE and MOVE drafts (move has no atomic endpoint, P3);
+- choosing a non-default list (drafts use the default list the preview names).
+
 ## 6. Acceptance gates (from the review, made concrete)
 
 - **Chart commands:** the success message appears only after the chart's acknowledged state

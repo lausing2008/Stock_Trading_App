@@ -202,6 +202,85 @@ def list_watchlist(
     return [_item_out(item, stock) for item, stock in rows]
 
 
+def _add_effects(session: Session, stock: Stock, wl: Watchlist | None, user: User) -> dict:
+    """What adding `stock` to `wl` WILL do — computed once, used by the add AND its preview.
+
+    D1 (2026-10-13): a watchlist add also enrols the user in signal-change emails for the
+    list's horizon. That side effect is preserved, and disclosed BEFORE saving, with its
+    EFFECTIVE result: a subscription is created either way, but whether mail is actually sent
+    depends on an email address on file and the user's alert preference for "signal" —
+    resolved by the same function the sender uses (common.alert_prefs.effective_enabled).
+    """
+    from common.alert_prefs import effective_enabled
+    from db import AlertPreference
+    horizon = (wl.trading_style if wl is not None else None) or "SWING"
+    in_list = wl is not None and session.execute(
+        select(WatchlistItem.id).where(WatchlistItem.stock_id == stock.id,
+                                       WatchlistItem.watchlist_id == wl.id)
+    ).first() is not None
+    subscribed = session.execute(
+        select(SignalAlert.id).where(SignalAlert.user_id == user.id,
+                                     SignalAlert.symbol == stock.symbol,
+                                     SignalAlert.horizon == horizon)).first() is not None
+    pref = session.execute(
+        select(AlertPreference.enabled).where(AlertPreference.user_id == user.id,
+                                              AlertPreference.alert_type == "signal")).first()
+    emails_on = effective_enabled("signal", pref[0] if pref else None)
+    has_email = bool(user.email)
+    creates = not in_list and not subscribed
+    if in_list:
+        effect = f"{stock.symbol} is already in this list; nothing changes."
+    elif subscribed:
+        effect = (f"Adds {stock.symbol}. You are already subscribed to {horizon} signal "
+                  f"alerts for it; no new subscription is created.")
+    elif not has_email:
+        effect = (f"Adds {stock.symbol} and creates a {horizon} signal-alert subscription, but "
+                  f"no email address is on your account, so no signal email can be sent.")
+    elif not emails_on:
+        effect = (f"Adds {stock.symbol} and creates a {horizon} signal-alert subscription, but "
+                  f"AI signal emails are turned off in your alert preferences, so none will "
+                  f"be sent unless you turn them on.")
+    else:
+        effect = (f"Adds {stock.symbol} and subscribes you to {horizon} signal-change emails "
+                  f"for it at your account address.")
+    return {
+        "symbol": stock.symbol,
+        "list": ({"id": wl.id, "name": wl.name, "trading_style": wl.trading_style}
+                 if wl is not None else {"id": None, "name": "My Watchlist", "created": True}),
+        "already_in_list": in_list,
+        "signal_subscription": {"horizon": horizon, "already_subscribed": subscribed,
+                                "will_create": creates},
+        "email_on_file": has_email,
+        "signal_emails_enabled": emails_on,
+        "effect": effect,
+    }
+
+
+@router.get("/{symbol}/preview")
+def preview_add(
+    symbol: str,
+    list_id: int | None = Query(None),
+    current: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """What POST /watchlist/{symbol} would do, WITHOUT doing it. Read-only: unlike the add, it
+    never creates a default list."""
+    stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
+    if not stock:
+        raise HTTPException(404, f"Unknown symbol: {symbol}")
+    if list_id is None:
+        # The same default _get_or_create_default() picks (oldest by created_at) — minus the
+        # create.
+        wl = session.execute(select(Watchlist).where(Watchlist.user_id == current.id)
+                             .order_by(Watchlist.created_at).limit(1)).scalar_one_or_none()
+    else:
+        wl = session.execute(select(Watchlist).where(
+            Watchlist.id == list_id, Watchlist.user_id == current.id)).scalar_one_or_none()
+        if wl is None:
+            raise HTTPException(404, "Watchlist not found")
+    return _add_effects(session, stock, wl, current)
+
+
 @router.post("/{symbol}", response_model=WatchlistItemOut)
 def add_to_watchlist(
     symbol: str,
@@ -221,19 +300,15 @@ def add_to_watchlist(
     ).scalar_one_or_none()
     if existing:
         return _item_out(existing, stock)
+    # Decided by the SAME helper the preview shows the user (D1), so what was disclosed and
+    # what is done cannot drift apart.
+    effects = _add_effects(session, stock, wl, current)
     item = WatchlistItem(stock_id=stock.id, watchlist_id=wl.id)
     session.add(item)
 
     # Auto-subscribe to signal alerts for this watchlist's horizon
-    horizon = wl.trading_style or "SWING"
-    existing_alert = session.execute(
-        select(SignalAlert).where(
-            SignalAlert.user_id == current.id,
-            SignalAlert.symbol == stock.symbol,
-            SignalAlert.horizon == horizon,
-        )
-    ).scalar_one_or_none()
-    if not existing_alert:
+    horizon = effects["signal_subscription"]["horizon"]
+    if effects["signal_subscription"]["will_create"]:
         session.add(SignalAlert(
             user_id=current.id, symbol=stock.symbol,
             email=current.email, horizon=horizon,

@@ -5,7 +5,7 @@ conversation returns every stored turn with its evidence, which is also the expo
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from common.jwt_auth import get_current_username
@@ -36,8 +36,15 @@ def _usage_logger(**kw):
     log_llm_call(service="research-engine", call_site=CALL_SITE_COPILOT_CHAT, **kw)
 
 
+def _market_client(authorization: str | None):
+    from common.config import get_settings
+    from ..copilot.drafts import MarketClient
+    return MarketClient(get_settings().market_data_url, authorization) if authorization else None
+
+
 @router.post("/chat")
-async def copilot_chat(req: CopilotChatRequest, username: str = Depends(get_current_username)):
+async def copilot_chat(req: CopilotChatRequest, username: str = Depends(get_current_username),
+                       authorization: str | None = Header(default=None)):
     try:
         sym = _sanitise_symbol(req.symbol)
     except ValueError:
@@ -54,7 +61,7 @@ async def copilot_chat(req: CopilotChatRequest, username: str = Depends(get_curr
         username=username, symbol=sym, question=req.question, request_id=req.request_id,
         conversation_id=req.conversation_id, provider=req.provider,
         model=req.model.strip() or _admin_model(req.provider), api_key=api_key,
-        uses_shared_key=not own_key)
+        uses_shared_key=not own_key, market=_market_client(authorization))
     try:
         return await C.answer(turn, session_factory=SessionLocal, budget=llm_budget,
                               usage_logger=_usage_logger)
@@ -105,6 +112,25 @@ async def copilot_screen(req: CopilotScreenRequest, username: str = Depends(get_
             api_key=api_key, uses_shared_key=not own_key),
             session_factory=SessionLocal, fetch_screen=_fetch_screen, budget=llm_budget,
             usage_logger=_screen_usage_logger)
+    except C.CopilotError as exc:
+        raise HTTPException(exc.status, exc.message)
+
+
+class CopilotDraftConfirm(BaseModel):
+    message_id: int
+    draft_id: str = Field(..., min_length=6, max_length=32)
+
+
+@router.post("/drafts/confirm")
+async def copilot_confirm_draft(req: CopilotDraftConfirm,
+                                username: str = Depends(get_current_username),
+                                authorization: str | None = Header(default=None)):
+    """Save a reviewed draft through market-data's existing endpoint, with YOUR credentials."""
+    market = _market_client(authorization)
+    if market is None:
+        raise HTTPException(401, "Not authenticated")
+    try:
+        return await C.confirm_draft(SessionLocal, username, req.message_id, req.draft_id, market)
     except C.CopilotError as exc:
         raise HTTPException(exc.status, exc.message)
 
