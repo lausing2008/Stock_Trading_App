@@ -86,7 +86,43 @@ Raw evaluation results (synthetic fixtures; no API key): `docs/audits/2026-10-13
 - **Production rejection and repair rates are unmeasured.** Watch `llm_call_log` for
   `copilot_chat` / `copilot_screen` and the per-user ledger.
 
-## Deployment
+## Deployment: 2026-10-14, verified
 
-Deployment status and the post-deploy verification are recorded in the section appended below
-after the deployment runs.
+Deployed from `13ab0dd3` with `scripts/deploy.sh` (one service at a time, `--no-deps`) and
+`scripts/deploy_frontend.sh` (under the deployment lock).
+
+**Order.** market-data went first, because it applies the `price_alerts` migration. Then the
+other 11 backends, with api-gateway last, then the frontend: 13 of 13.
+
+**Pre-session commits in the pull.** The deploy included 7 earlier commits between EC2's
+`2590aa20` and this session. Only one changes running code: `6d1e5d2a` (HK 2027 holidays). Its
+operator decision (2026-10-13) says to ship it with "the next coordinated deployment", which this
+was. The rest are documentation.
+
+**Verification**, each check run, not inferred:
+
+| Check | Result |
+|---|---|
+| Health | every container healthy after a 45 s settle; every declared service present; host 41 GB free, iowait about 3% |
+| `check_deploy_drift.sh` | 0 of 12 backends drifted against `13ab0dd3` |
+| Production DB, read-only | `price_alerts.idempotency_key` / `request_fingerprint` exist; `uq_price_alerts_user_idempotency` is `(user_id, idempotency_key) WHERE idempotency_key IS NOT NULL`; all four copilot tables exist; `idx_uq_wl_item` unchanged |
+| `copilot_draft_save` capability, evaluated in the research-engine container | **ready**, all 5 requirements |
+| Unauthenticated, through `https://lausing.com` | `/api/copilot/{conversations,chat,screen,drafts/confirm}`, `/api/signal-alerts/preview`, `/api/watchlist/{symbol}/preview`, `/api/rankings/{refresh,tune_kscore_weights}` → **401** (routed, gated; no 404) |
+| Served frontend chunks | contain the copilot screen, the new badge text, the unconfirmed-save state and tracker tier 441. The old AI Screen text survives only in the tracker page, which quotes it historically; the screener chunk does not contain it |
+| Pages | `/`, `/screener`, `/improvements`, `/stock/AAPL` → 200 |
+
+**Not verified:** an authenticated end-to-end copilot answer in production. That needs a user
+login, which was not used.
+
+**Found during verification, pre-existing, not changed.** market-data logs `ingest.adapter_failed`
+from the Unusual Whales bar adapter for many US symbols: "Invalid comparison between
+dtype=datetime64[ns, UTC] and Timestamp" at `unusual_whales_adapter.py:223`. The provider's
+timestamps parse as timezone-aware while the window bounds are naive.
+
+It is not caused by this deploy:
+- the adapter and its caller are unchanged in this deploy (the only scheduler change is the
+  copilot purge job);
+- prices still arrive through the fallback provider (GDX has bars up to 14:00 UTC today).
+
+Because the failure raises after the metered request, the adapter's failure counters do not
+record it. **Needs its own decision to fix.**
