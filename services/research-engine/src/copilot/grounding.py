@@ -35,6 +35,44 @@ _ORDER_LANGUAGE = ("place an order", "i have placed", "i've placed", "i bought",
 
 MAX_ANSWER_CHARS = 4000
 
+# ── Digits that are NAMES, not figures ──────────────────────────────────────
+# Measured on claude-sonnet-4-6 (docs/audits/2026-10-13-copilot-real-model-eval.md): 19 of 34
+# first drafts were refused and almost every refusal was one of these three, not an invented
+# figure. Each exemption is as narrow as the case that motivated it; every other digit is still
+# refused.
+
+#: Index names. Saying "the packet has no S&P 500 data" is the CORRECT answer to a benchmark
+#: question, and refusing it pushed the model toward vaguer wording.
+_INDEX_NAMES = re.compile(
+    r"S&P\s?500|S&P\s?400|S&P\s?600|Nasdaq[- ]100|NASDAQ[- ]100|Russell\s?(?:1000|2000|3000)|"
+    r"Dow\s?30|FTSE\s?100|Nikkei\s?225|Euro\s?Stoxx\s?50|CSI\s?300|Hang\s?Seng\s?Tech",
+    re.I)
+
+#: Window labels — ONLY windows the EVIDENCE itself names: the packet's own (5, 20, 50
+#: sessions) plus any "N-bar"/"N-session" window appearing in a packet display, such as a
+#: report field labelled "63-bar return". "Sessions"/"bars", never "days": a calendar-day label
+#: would misdescribe these values.
+_WINDOW_RE = r"\b({n})(?:[- ](?:trading|daily))?[- ](?:session|bar)s?\b"
+_WINDOW_IN_EVIDENCE = re.compile(r"\b(\d{1,3})(?:[- ](?:trading|daily))?[- ](?:session|bar)s?\b",
+                                 re.I)
+_PACKET_WINDOWS = {"5", "20", "50"}
+
+#: Period labels are exempt ONLY when the same label occurs in a headline in the packet, i.e.
+#: the model is quoting a period a source named. A period the model supplies itself is refused:
+#: a wrong fiscal-period label is a real failure here (MU's Q4 stored as "Q3", see
+#: docs/incidents/inferred-fiscal-period-mislabels-non-calendar-years.md).
+_PERIOD_LABEL = re.compile(r"\b(?:Q[1-4]|H[12]|FY\s?'?\d{2,4})\b")
+
+#: Figures written in WORDS. "a price target of five hundred dollars" passed the digit rule in
+#: the eval (q08) — the bypass the N1 review documented as "fifty billion dollars". A magnitude
+#: or unit word is refused outright; small counts ("two headlines") remain allowed.
+_SPELLED_MAGNITUDE = re.compile(
+    r"\b(?:hundred|thousand|million|billion|trillion|percent|per cent|basis points?)\b", re.I)
+
+#: A probability phrase is refused unless it is NEGATED — the platform's own display strings say
+#: "not a probability of profit", and a model repeating that disclaimer is doing the right thing.
+_NEGATION_BEFORE = re.compile(r"(?:\bnot\b|\bno\b|n't|\bnever\b|\bnor\b)[^.;:!?]{0,24}$", re.I)
+
 
 @dataclass
 class GroundingResult:
@@ -45,10 +83,25 @@ class GroundingResult:
     reasons: list[str] = dc_field(default_factory=list)
 
 
+_ANSWER_TAG = re.compile(r"<answer>(.*?)</answer>", re.S | re.I)
+_LIMITATION_TAG = re.compile(r"<limitation>(.*?)</limitation>", re.S | re.I)
+
+
 def parse_draft(raw: str) -> dict | None:
-    """The model's JSON object, tolerating a code fence or leading prose around it."""
+    """The model's draft as {"answer", "limitations"}.
+
+    TAGS FIRST, JSON AS A FALLBACK. The first protocol was a JSON object, and the eval measured
+    the failure that invites: Sonnet 4.6 quoted a headline inside the "answer" string with
+    unescaped double quotes, producing invalid JSON on every repetition of the same question.
+    Tagged sections have nothing to escape. Structured outputs would also fix it but are not
+    available on every model this platform can be configured with (not on Sonnet 4.6).
+    """
     if not raw:
         return None
+    m = _ANSWER_TAG.search(raw)
+    if m:
+        return {"answer": m.group(1).strip(),
+                "limitations": [x.strip() for x in _LIMITATION_TAG.findall(raw) if x.strip()]}
     s = raw.strip()
     fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", s, re.S)
     if fence:
@@ -63,9 +116,37 @@ def parse_draft(raw: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
+def as_draft(answer: str, limitations: list[str] | None = None) -> str:
+    """The output format, for re-presenting a stored answer in the conversation history."""
+    lims = "".join(f"\n<limitation>{x}</limitation>" for x in (limitations or []))
+    return f"<answer>\n{answer}\n</answer>{lims}"
+
+
 def _allowed_literals(packet: CopilotPacket) -> set[str]:
     """Digit sequences that are identifiers, not figures: the symbol itself (0700.HK)."""
     return {m.strip() for m in literal_numbers(packet.symbol)}
+
+
+def _headline_periods(packet: CopilotPacket) -> set[str]:
+    return {m.group(0) for h in packet.headlines for m in _PERIOD_LABEL.finditer(h["title"])}
+
+
+def _evidence_windows(packet: CopilotPacket) -> set[str]:
+    found = {m.group(1) for q in packet.quantities.values()
+             for m in _WINDOW_IN_EVIDENCE.finditer(q.display)}
+    return _PACKET_WINDOWS | found
+
+
+def _strip_names(text: str, packet: CopilotPacket) -> str:
+    """Remove the digit-bearing NAMES the rules above exempt; what remains must hold no digit."""
+    text = _INDEX_NAMES.sub(" ", text)
+    windows = "|".join(sorted(map(re.escape, _evidence_windows(packet))))
+    text = re.sub(_WINDOW_RE.format(n=windows), " ", text, flags=re.I)
+    # "SMA20" / "SMA 50": the same windows, abbreviated (measured on Sonnet 4.6). SMA only —
+    # the packet computes simple averages, so "EMA20" would name a value that is not in it.
+    text = re.sub(rf"\bSMA[- ]?(?:{windows})\b", " ", text, flags=re.I)
+    quoted = _headline_periods(packet)
+    return _PERIOD_LABEL.sub(lambda m: " " if m.group(0) in quoted else m.group(0), text)
 
 
 def _check_text(text: str, packet: CopilotPacket, where: str, reasons: list[str],
@@ -76,17 +157,23 @@ def _check_text(text: str, packet: CopilotPacket, where: str, reasons: list[str]
                            f"evidence packet")
         elif key not in used:
             used.append(key)
-    bare = _PLACEHOLDER.sub(" ", text).replace(packet.symbol, " ")
+    bare = _strip_names(_PLACEHOLDER.sub(" ", text).replace(packet.symbol, " "), packet)
     allowed = _allowed_literals(packet)
     nums = [n for n in literal_numbers(bare) if n not in allowed]
     if nums:
         reasons.append(f"{where} writes figures directly ({', '.join(nums[:5])}); figures must "
                        f"come from {{{{key}}}} placeholders")
+    spelled = _SPELLED_MAGNITUDE.findall(_PLACEHOLDER.sub(" ", text))
+    if spelled:
+        reasons.append(f"{where} writes a figure in words ({', '.join(spelled[:3])}); figures "
+                       f"must come from {{{{key}}}} placeholders")
     low = text.lower()
     for w in _PROBABILITY_FRAMING:
-        if w in low:
-            reasons.append(f"{where} uses '{w}', which presents a score as a probability of "
-                           f"profit")
+        for m in re.finditer(re.escape(w), low):
+            if not _NEGATION_BEFORE.search(low[:m.start()]):
+                reasons.append(f"{where} uses '{w}', which presents a score as a probability "
+                               f"of profit")
+                break
     for w in _ORDER_LANGUAGE:
         if w in low:
             reasons.append(f"{where} uses '{w}'; this assistant cannot place or report orders")
@@ -94,8 +181,7 @@ def _check_text(text: str, packet: CopilotPacket, where: str, reasons: list[str]
 
 def check(draft: dict | None, packet: CopilotPacket) -> GroundingResult:
     if draft is None:
-        return GroundingResult(False, reasons=["the model did not return the required JSON "
-                                               "object"])
+        return GroundingResult(False, reasons=["the model did not return an <answer> section"])
     answer = draft.get("answer")
     lims = draft.get("limitations") or []
     reasons: list[str] = []
@@ -124,6 +210,17 @@ def render(text: str, packet: CopilotPacket) -> str:
     return _PLACEHOLDER.sub(sub, text)
 
 
+#: What the deterministic fallback shows, with the label each bare value needs.
+FALLBACK_KEYS = (
+    ("price.close", "Latest close"), ("price.date", "Session date"),
+    ("return.5s", "5-session return"), ("return.20s", "20-session return"),
+    ("trend.structure", "Trend"), ("signal.action", "AI signal"),
+    ("signal.strength", "Signal strength"), ("signal.time", "Signal generated"),
+    ("kscore.score", "K-Score"), ("earnings.date", "Next earnings date"),
+    ("report.version", "Latest report"),
+)
+
+
 def fallback_answer(packet: CopilotPacket, reasons: list[str]) -> str:
     """What the user sees when no draft passed: the evidence itself, rendered deterministically.
 
@@ -132,10 +229,8 @@ def fallback_answer(packet: CopilotPacket, reasons: list[str]) -> str:
     """
     lines = ["I couldn't produce an answer that passed the evidence check, so here is the "
              "evidence on file instead."]
-    for key in ("price.close", "price.date", "return.5s", "return.20s", "trend.structure",
-                "signal.action", "signal.strength", "signal.time", "kscore.score",
-                "earnings.date", "report.version"):
+    for key, label in FALLBACK_KEYS:
         q = packet.quantities.get(key)
         if q is not None:
-            lines.append(f"• {key}: {q.display}" + (" [stale]" if q.state == "STALE" else ""))
+            lines.append(f"• {label}: {q.display}" + (" [stale]" if q.state == "STALE" else ""))
     return "\n".join(lines)

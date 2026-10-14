@@ -2,7 +2,8 @@
 
 Implements Orders 0 and 1 of [the TradingView Copilot / Tenji review](2026-10-12-tradingview-copilot-tenji-review.md):
 the evidence/context contract and a read-only stock copilot with citations and report comparison.
-**Status: built and tested locally. Not committed, not deployed.**
+**Status: validated locally (see [the validation report](../audits/2026-10-13-copilot-validation.md)),
+committed, not deployed. No independent review yet.**
 
 ## What changed for the user
 
@@ -18,67 +19,64 @@ question. The server builds the evidence, checks the answer against it, and retu
 - the limitations: what is missing or stale, each with its reason.
 
 Conversations persist per user and resume when the panel is reopened. A user can start a new
-conversation or permanently delete one. Retry reuses the same request id, so a retried request is
-answered once and billed once. Cancel aborts the browser request; see the limits below.
+conversation or permanently delete one. Retry after an error reuses the same request id, so it is
+answered once and billed once. **Stop** prevents further model calls for the question, but a call
+already running completes and is counted (the panel says so).
 
 ## The contract
 
 | Piece | Where | Rule |
 |---|---|---|
-| Evidence packet | `services/research-engine/src/copilot/packet.py` | Built server-side from the report adapters (`price_as_of`, `session_return`, `trend_structure`, `latest_signal`, `next_earnings_event`) plus K-Score, headlines (14 days), and the latest **public** stock report with its `store.diff()` against the predecessor. Every value is a `report_contract.Field` with a state and reason; `validate_evidence()` refuses a packet whose citations do not resolve. |
-| Quantities | same | Each citable value has a stable key (`price.close`, `return.5s`, `signal.strength`, `report_change.3`, `headline.1`, ...) and a **display string computed in code**. Staleness propagates: returns computed from stale bars are STALE too. |
-| Grounding | `copilot/grounding.py` | The model returns `{"answer", "limitations"}` JSON. Every figure must be a `{{key}}` placeholder. **Any digit outside a placeholder is refused** (`quantities.literal_numbers`, the N1 rule); the symbol's own digits (0700.HK) are allowed. Unknown keys, wording that presents a score as a probability of profit, and order language are also refused. All or nothing: a refused draft gets one repair attempt, then the deterministic fallback. |
-| Headlines | `packet.model_view()` | Passed as quoted data under `headlines_untrusted`, never inside the system prompt. Test p1 asserts this. |
+| Evidence packet (v2) | `services/research-engine/src/copilot/packet.py` | Built server-side from the report adapters (`price_as_of`, `session_return`, `trend_structure`, `latest_signal`, `next_earnings_event`) plus K-Score, headlines (14 days), and the latest **public** stock report with its `store.diff()` against the predecessor. Every value is a `report_contract.Field` with a state and reason; `validate_evidence()` refuses a packet whose citations do not resolve. `signal_drivers` and `fundamentals` are explicit UNAVAILABLE fields. |
+| Quantities | same | Stable keys (`price.close`, `data.age`, `return.5s`, `signal.strength`, `report_change.3`, `headline.1`, ...), each with a **bare display value computed in code** and a separate `meaning` that is sent to the model but never rendered. Staleness propagates to derived values. |
+| Output format | `copilot/llm.py`, `grounding.parse_draft` | `<answer>…</answer>` plus `<limitation>…</limitation>` tags, chosen because unescaped quotes broke a JSON protocol in the eval. JSON is still parsed as a fallback. |
+| Grounding | `copilot/grounding.py` | Every figure must be a `{{key}}` placeholder; **any other digit is refused**. The exceptions are names, not figures: the symbol, index names (S&P 500), session/bar windows **named by the evidence**, `SMA<n>` for computed averages, and a period label (Q3) **only when a packet headline uses it**. Also refused: figures written in words (hundred/million/percent), unknown keys, an un-negated "probability of profit", and order language. All or nothing: one repair attempt, then the deterministic fallback. |
+| Headlines | `packet.py` | Passed as quoted data under `headlines_untrusted`. A headline addressed to AI systems is **withheld** from the model and from rendering, and its source link is kept. This is a heuristic (see the validation report §6). |
 | Identity | `api/copilot_routes.py` | User from the JWT only. Every store function takes `user_id`. Another user's conversation id returns 404, and another user's request id is not replayed. |
-| Idempotency | `CopilotMessage` unique `(user_id, request_id, role)` | A replay returns the stored turn. A retry after a failed first turn reuses that conversation (bug found by the probe and fixed). |
-| Bounds | `copilot/service.py` | At most 2 model calls per answer; 1,200 output tokens; 1,000-character questions; 6 prior turns. `llm_budget` scope `copilot_chat` (600k tokens per UTC day, **sized, not measured**) reserves before each call and reconciles afterwards; a timeout settles as ambiguous and is not refunded. Calls using the user's own API key are not charged to the shared budget. Per-user limit: 60 answers per UTC day (`COPILOT_DAILY_ANSWERS_PER_USER`). |
-| Connection use | `service.py` | No DB session is held during the model call. The turn runs as read → call → write, to avoid the 2026-09-22 pool-exhaustion shape. |
+| Idempotency and claims | `CopilotMessage` unique `(user_id, request_id, role)` plus `status`/`claimed_at` on user turns | A replay returns the stored answer. A retry takes over a question only through one conditional UPDATE, and only if it **failed**, or its claim (pending or cancelled) is older than 300 s. A retry while a call may still be running gets 409 and never a second call. |
+| Cancellation | `POST /copilot/cancel` | Marks the question cancelled; the service checks before every model call, so the **repair call** is skipped. An in-flight provider call cannot be recalled. A paid answer is always stored. |
+| Bounds | `copilot/service.py` | At most 2 model calls per answer; 1,200 output tokens; 1,000-character questions; 6 prior turns (re-wrapped in the output format). `llm_budget` scope `copilot_chat`: 600k tokens per UTC day, **sized against measured usage** (about 200 answers/day, about $2.50/day on Sonnet 4.6). It reserves before each call and reconciles afterwards; a timeout settles as ambiguous and is not refunded. The user's own API key bypasses the shared budget. Per-user limit: 60 answers per UTC day (`COPILOT_DAILY_ANSWERS_PER_USER`). |
+| Model compatibility | `llm.claude_body` | `temperature` is sent only to models that accept it (not Opus 4.7/4.8 or the 5.x generation, which return 400). `stop_reason` is recorded. |
+| Connection use | `service.py` | No DB session is held during a model call (read → call → write), to avoid the 2026-09-22 pool-exhaustion shape. |
 | Usage logging | `llm_usage.CALL_SITE_COPILOT_CHAT` | One `llm_call_log` row per attempt. |
-| Retention | `copilot/store.py` | 180 days after last activity (`purge_expired()`). Owner delete is a hard delete of the conversation and its messages. |
+| Retention | `shared/common/copilot_retention.py` | 180 days after last activity, purged weekly by market-data's `copilot_retention_purge` job (Sunday 15:45 PT). Owner delete is a hard delete of the conversation and its messages. |
 
-Schema: new tables `copilot_conversations` and `copilot_messages` (`shared/db/models.py`). They are
-new tables, so `create_all()` creates them at research-engine startup; no column migration is needed.
+Schema: new tables `copilot_conversations` and `copilot_messages` (`shared/db/models.py`).
+`create_all()` creates them at startup; verified on a fresh PostgreSQL 16, and idempotent.
 
-API (gateway prefix `copilot` added to `_ROUTES`, 240 s POST timeout like `/ai`):
-`POST /copilot/chat`, `GET /copilot/conversations?symbol=`, `GET /copilot/conversations/{id}`
+API (gateway prefix `copilot` in `_ROUTES`, 240 s POST timeout like `/ai`): `POST /copilot/chat`,
+`POST /copilot/cancel`, `GET /copilot/conversations?symbol=`, `GET /copilot/conversations/{id}`
 (also the export format), `DELETE /copilot/conversations/{id}`.
 
-## Verification
+## Tests
 
-- `services/research-engine/tests/test_copilot.py`: 10 tests over `_copilot_probe.py`, 9 scenarios on a
-  real database with only the model scripted. Covered: packet citations resolve, staleness
-  propagates, the grounding rules, persistence and replay, the repair and fallback paths, owner
-  isolation, quota/budget/timeout accounting, retry after a timeout, retention purge, report
-  changes citing both versions, and private reports being ignored.
-- **Ran on SQLite only.** Setting `STOCKAI_INTEL_DB` would run the same probe on PostgreSQL; that
-  has not been done.
-- Sabotage check: disabling the digit refusal turns the suite red.
-- `make test`: all 12 backend services pass. Frontend: `tsc --noEmit` is clean and vitest passes
-  576/576, including the `CopilotPanel.test.tsx` render tests.
-- **Not exercised against a real model.** The rejection rate is the first thing to measure: the
-  digit rule refuses phrases like "S&P 500" or "Q3", and the repair turn exists for that.
+| File | Engine | What it covers |
+|---|---|---|
+| `tests/test_copilot.py` over `_copilot_probe.py` | SQLite, or PostgreSQL via `STOCKAI_INTEL_DB` | 14 tests: packet, grounding boundaries in both directions, persistence and replay, repair and fallback, owner isolation, admission limits, claims, cancellation, retention, report changes |
+| `tests/test_copilot_pg.py` over `_copilot_pg_concurrency.py` | PostgreSQL only (skipped otherwise; drops the schema of the database it is given) | Startup migration; same-id races; budget ceiling under concurrency |
+| `tests/_copilot_eval.py` | Manual only: calls a real model and spends money | 17 representative questions; results in `docs/audits/2026-10-13-copilot-eval/` |
 
-## Deliberately not built (later orders or follow-ups)
+## Not built (later orders or follow-ups)
 
-- **No `purge_expired()` schedule yet.** The retention rule is defined and tested, but nothing calls
-  it. Wire it into the market-data scheduler's purge jobs.
 - **No tool-calling loop.** Evidence is pre-fetched into one packet per turn. Model-driven tools
   (`screen_universe`, `get_existing_alerts`) arrive with Order 2's action drafts.
-- **No chart context or chart commands** (Order 2). The request does not carry timeframe or visible
-  range yet.
-- **No server-side cancellation.** Cancel aborts the browser request, but the server may finish and
-  bill the call. A retry with the same request id then serves the stored answer.
-- **Fundamentals and valuation are not in the packet.** The model is told to report them as
-  unavailable. Add them through `issuer_facts`/`valuation` only after their own readiness gates
-  (see the quality-value readiness inventory).
-- **The 600k budget is unmeasured.** Re-size it from `llm_call_log WHERE call_site='copilot_chat'`
-  after a week of use.
+- **No chart context or chart commands** (Order 2).
+- **Fundamentals and valuation are explicitly unavailable** in this phase. Add them through
+  `issuer_facts`/`valuation` only after their own readiness gates (see the quality-value readiness inventory).
+- **Not run against DeepSeek.**
+- **Re-measure the cap** from `llm_call_log WHERE call_site='copilot_chat'` after real use; the
+  current sizing comes from a synthetic evaluation.
 - Event connections (Order 3) and the DSL builder (Order 4) are not started.
 
 ## Deploying
 
-`shared/db/models.py`, `shared/db/__init__.py`, `shared/common/llm_budget.py` and
-`shared/common/llm_usage.py` changed, so **all 12 backend containers drift** until rebuilt
-(`docs/incidents/docker-deploy-staleness.md`). Services touched directly: research-engine (new
-package and router) and api-gateway (route map). Frontend: new panel. Use the deploy scripts; they
-hold the host lock.
+`shared/db/models.py`, `shared/db/__init__.py`, `shared/common/llm_budget.py`,
+`shared/common/llm_usage.py` and the new `shared/common/copilot_retention.py` changed, so **all 12
+backend containers drift** until rebuilt (`docs/incidents/docker-deploy-staleness.md`). Services
+touched directly:
+
+- research-engine: new package and router;
+- api-gateway: route map;
+- market-data: the purge job.
+
+Frontend: new panel. Use the deploy scripts; they hold the host lock.

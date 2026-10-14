@@ -96,6 +96,10 @@ def _alternating(hist: list[dict], *, exclude_request: str) -> list[dict]:
     for m in hist:
         if m.get("request_id") == exclude_request or not m["content"]:
             continue
+        if m["role"] == "assistant":
+            # Re-wrapped in the output format. Measured: with prior answers as plain prose,
+            # every follow-up's first draft copied the prose and failed the format check.
+            m = {**m, "content": G.as_draft(m["content"])}
         if out and out[-1]["role"] == m["role"]:
             out[-1] = {"role": m["role"], "content": out[-1]["content"] + "\n\n" + m["content"]}
         else:
@@ -150,15 +154,32 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         hist = St.history(s, conv)
         if existing_user is None:
             s.add(CopilotMessage(conversation_id=conv.id, user_id=user_id, role="user",
-                                 content=question, request_id=req.request_id, created_at=now))
+                                 content=question, request_id=req.request_id, created_at=now,
+                                 status="pending", claimed_at=now))
         elif existing_user.conversation_id != conv.id:
             raise CopilotError(409, "request_id was already used in another conversation")
+        elif not St.claim_retry(s, existing_user, now):
+            # Still being answered by an earlier attempt. Taking it over here is exactly how a
+            # retry would pay for a second call; the client retries later and gets the replay.
+            s.rollback()
+            raise CopilotError(409, "this request is already being answered")
         try:
             s.commit()
         except IntegrityError:
             s.rollback()
             raise CopilotError(409, "this request is already being answered")
         conv_id = conv.id
+        user_id_ = user_id
+
+    def _release(status: str) -> None:
+        """Give up the claim so a later retry can take it — on every path that stores no answer."""
+        with session_factory() as s2:
+            St.set_user_turn_status(s2, user_id_, req.request_id, status, only_if=("pending",))
+            s2.commit()
+
+    def _cancelled() -> bool:
+        with session_factory() as s2:
+            return St.user_turn_status(s2, user_id_, req.request_id) == "cancelled"
 
     # ── Phase 2: ask (no session open) ────────────────────────────────────────
     messages = _alternating(hist, exclude_request=req.request_id)
@@ -168,12 +189,19 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
     total_in = total_out = 0
     model_used = req.model
     t0 = time.monotonic()
+    cancelled = False
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        # CANCELLATION STOPS THE NEXT CALL, NOT THE CURRENT ONE. A provider request already in
+        # flight cannot be recalled and is billed; what a cancel can prevent is the repair call.
+        if _cancelled():
+            cancelled = True
+            break
         res = None
         if budget is not None and req.uses_shared_key:
             res = budget.reserve("\n".join(m["content"] for m in messages) + L.SYSTEM_PROMPT,
                                  L.MAX_OUTPUT_TOKENS, scope=budget.SCOPE_COPILOT_CHAT)
             if not res.allowed:
+                _release("failed")
                 raise CopilotError(429, f"copilot budget unavailable: {res.reason}")
         a0 = time.monotonic()
         try:
@@ -187,6 +215,7 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
                              duration_ms=int((time.monotonic() - a0) * 1000),
                              http_status=exc.status, error=str(exc),
                              context={"symbol": req.symbol, "attempt": attempt})
+            _release("failed")
             raise CopilotError(502, str(exc))
         u = reply.usage or {}
         if res is not None:
@@ -208,6 +237,11 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         messages = messages + [{"role": "assistant", "content": reply.text},
                                {"role": "user", "content": L.repair_turn(reasons)}]
 
+    if result is None:
+        # Cancelled before any call was made: nothing was paid for and nothing is stored.
+        raise CopilotError(409, "cancelled before the model was called")
+    if cancelled and not result.accepted:
+        reasons = reasons + ["cancelled by the user before the repair attempt"]
     accepted = bool(result and result.accepted)
     if accepted:
         content = result.answer
@@ -217,10 +251,7 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
     else:
         content = G.fallback_answer(packet, reasons)
         status = "rejected"
-        shown = [k for k in ("price.close", "price.date", "return.5s", "return.20s",
-                             "trend.structure", "signal.action", "signal.strength",
-                             "signal.time", "kscore.score", "earnings.date", "report.version")
-                 if k in packet.quantities]
+        shown = [k for k, _ in G.FALLBACK_KEYS if k in packet.quantities]
         refs = _evidence_refs(packet, shown)
         lims = _limitations(packet, [])
     grounding = {
@@ -241,6 +272,9 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         conv = s.get(St.CopilotConversation, conv_id)
         if conv is not None:
             conv.updated_at = _utcnow()
+        # Answered, in the same transaction as the answer. A paid answer is stored even when
+        # the user cancelled meanwhile — it appears when they reopen the conversation.
+        St.set_user_turn_status(s, msg.user_id, req.request_id, "answered")
         try:
             s.commit()
         except IntegrityError:
@@ -253,6 +287,17 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
                     "message": St.serialise_message(prior), "replayed": True}
         return {"conversation_id": conv_id, "message": St.serialise_message(msg),
                 "replayed": False}
+
+
+def cancel(session_factory, username: str, request_id: str) -> bool:
+    """Mark a pending question cancelled. True if there was a pending question to cancel."""
+    with session_factory() as s:
+        uid = St.user_id_for(s, username)
+        if uid is None:
+            return False
+        ok = St.set_user_turn_status(s, uid, request_id, "cancelled", only_if=("pending",))
+        s.commit()
+        return ok
 
 
 def new_request_id() -> str:

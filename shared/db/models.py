@@ -4476,7 +4476,8 @@ class CopilotConversation(Base):
     a URL resolves to "not found" rather than to someone else's history.
 
     RETENTION IS STATED, NOT INHERITED. Conversations are kept for `COPILOT_RETENTION_DAYS`
-    (research-engine `copilot/store.py`) after their last activity and can be deleted by their
+    (`shared/common/copilot_retention.py`, purged weekly by market-data's scheduler) after their
+    last activity and can be deleted by their
     owner at any time. Deletion removes the messages with the conversation (CASCADE), not a
     soft-delete flag — a "deleted" chat that is still stored has not been deleted.
     """
@@ -4524,8 +4525,13 @@ class CopilotMessage(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False)          # user | assistant
     content: Mapped[str] = mapped_column(Text, nullable=False)
     request_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    #: grounded | rejected | error — NULL on user turns.
+    #: Assistant turns: grounded | rejected. User turns: the CLAIM on answering them —
+    #: pending | answered | failed | cancelled. A retry may take over a user turn only through a
+    #: conditional UPDATE (failed, cancelled, or a pending claim older than the claim TTL), so
+    #: a retry arriving while the first attempt is still running cannot pay for a second call.
     status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: When the current claim on a user turn was taken. NULL on assistant turns.
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     grounding: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)

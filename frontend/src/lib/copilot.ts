@@ -81,6 +81,16 @@ export async function askCopilot(
   }, signal);
 }
 
+/**
+ * Stop any FURTHER model call for this question. A call already running still completes and
+ * is counted; its answer is stored and appears when the conversation is reopened.
+ */
+export function cancelCopilot(requestId: string) {
+  return call<{ cancelled: boolean; note: string }>('/copilot/cancel', {
+    method: 'POST', body: JSON.stringify({ request_id: requestId }),
+  });
+}
+
 export function listCopilotConversations(symbol: string) {
   return call<{ conversations: CopilotConversation[]; retention_days: number }>(
     `/copilot/conversations?symbol=${encodeURIComponent(symbol)}&limit=5`);

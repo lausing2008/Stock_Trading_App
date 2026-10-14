@@ -14891,6 +14891,12 @@ def start_scheduler() -> None:
                     timezone="America/Los_Angeles"),
         id="option_chain_history_purge", replace_existing=True, **_JOB_DEFAULTS,
     )
+    _scheduler.add_job(
+        _purge_copilot_conversations,
+        CronTrigger(day_of_week="sun", hour=15, minute=45,
+                    timezone="America/Los_Angeles"),
+        id="copilot_retention_purge", replace_existing=True, **_JOB_DEFAULTS,
+    )
 
     # ── T252-VALUE-AREA-BREAKDOWN-ALERT: daily POC/VAH/VAL computation — 18:00 ET ──
     # After US close (17:00 ET digest above) and before the next day's open; HK's own bars
@@ -15891,6 +15897,26 @@ def _run_options_income_step_safe() -> None:
         log.error("options_income.step_failed", error=str(exc), exc_info=True)
         _record_job_status("options_income_step", "error", time.monotonic() - _t0, str(exc))
 
+
+
+def _purge_copilot_conversations() -> None:
+    """Enforce the copilot's stated retention (shared/common/copilot_retention.py).
+
+    The period is documented to users in the panel itself, so a purge that never runs would
+    make that statement false. Weekly, beside the other retention purges.
+    """
+    from common.copilot_retention import COPILOT_RETENTION_DAYS, purge_expired
+    from db import SessionLocal as _SL
+    _t0 = time.monotonic()
+    try:
+        with _SL() as sess:
+            n = purge_expired(sess)
+            sess.commit()
+        log.info("copilot.purged", conversations=n, retention_days=COPILOT_RETENTION_DAYS)
+        _record_job_status("copilot_retention_purge", "ok", time.monotonic() - _t0)
+    except Exception as exc:
+        log.error("copilot.purge_failed", error=str(exc), exc_info=True)
+        _record_job_status("copilot_retention_purge", "error", time.monotonic() - _t0, str(exc))
 
 
 def _purge_option_chain_history() -> None:

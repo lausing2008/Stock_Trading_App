@@ -8,14 +8,15 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 
+from common.copilot_retention import COPILOT_RETENTION_DAYS, purge_expired  # noqa: F401
 from db import User
 from db.models import CopilotConversation, CopilotMessage
 
-#: Retention, stated rather than copied from another product: conversations idle for longer than
-#: this are purged by `purge_expired()`. Owners can delete any conversation sooner.
-COPILOT_RETENTION_DAYS = 180
+#: A pending claim older than this is treated as abandoned (the process died mid-answer) and
+#: may be taken over by a retry. Above the worst case of two model calls at llm.TIMEOUT_S each.
+CLAIM_TTL_S = 300
 #: Assistant answers per user per UTC day. Bounds one account; the token budget bounds them all.
 DEFAULT_DAILY_ANSWERS = 60
 #: Prior turns sent back to the model as conversation context.
@@ -111,15 +112,44 @@ def delete_conversation(session, user_id: int, conversation_id: int) -> bool:
     return True
 
 
-def purge_expired(session, now: datetime | None = None) -> int:
-    cutoff = (now or _utcnow()) - timedelta(days=COPILOT_RETENTION_DAYS)
-    ids = [r[0] for r in session.execute(
-        select(CopilotConversation.id).where(CopilotConversation.updated_at < cutoff)).all()]
-    if not ids:
-        return 0
-    session.execute(delete(CopilotMessage).where(CopilotMessage.conversation_id.in_(ids)))
-    session.execute(delete(CopilotConversation).where(CopilotConversation.id.in_(ids)))
-    return len(ids)
+def claim_retry(session, msg: CopilotMessage, now: datetime) -> bool:
+    """Take over a stored user turn for a retry. True only for the one caller that wins.
+
+    Claimable: a FAILED turn (no call is running), or a pending/cancelled one whose claim is
+    older than CLAIM_TTL_S (its process died). ONE CONDITIONAL UPDATE, so two simultaneous
+    retries cannot both win: the database applies
+    the WHERE clause to the current row, and the loser sees rowcount 0. A turn still being
+    answered (a pending claim younger than CLAIM_TTL_S) is never taken over.
+    """
+    stale = now - timedelta(seconds=CLAIM_TTL_S)
+    res = session.execute(
+        update(CopilotMessage)
+        .where(CopilotMessage.id == msg.id,
+               (CopilotMessage.status == "failed")
+               # A CANCELLED turn may still have a call running — cancel stops the NEXT call,
+               # not the current one — so it is claimable only once that call has timed out.
+               | (CopilotMessage.status.in_(("pending", "cancelled"))
+                  & (CopilotMessage.claimed_at < stale)))
+        .values(status="pending", claimed_at=now))
+    return res.rowcount == 1
+
+
+def set_user_turn_status(session, user_id: int, request_id: str, status: str,
+                         only_if: tuple[str, ...] | None = None) -> bool:
+    q = update(CopilotMessage).where(CopilotMessage.user_id == user_id,
+                                     CopilotMessage.request_id == request_id,
+                                     CopilotMessage.role == "user")
+    if only_if:
+        q = q.where(CopilotMessage.status.in_(only_if))
+    return session.execute(q.values(status=status)).rowcount == 1
+
+
+def user_turn_status(session, user_id: int, request_id: str) -> str | None:
+    row = session.execute(
+        select(CopilotMessage.status).where(CopilotMessage.user_id == user_id,
+                                            CopilotMessage.request_id == request_id,
+                                            CopilotMessage.role == "user")).first()
+    return row[0] if row else None
 
 
 def serialise_message(m: CopilotMessage) -> dict:

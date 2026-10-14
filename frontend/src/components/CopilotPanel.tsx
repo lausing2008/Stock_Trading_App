@@ -7,7 +7,7 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  askCopilot, deleteCopilotConversation, getCopilotConversation, listCopilotConversations,
+  askCopilot, cancelCopilot, deleteCopilotConversation, getCopilotConversation, listCopilotConversations,
   newRequestId, type CopilotMessage,
 } from '@/lib/copilot';
 import { isAiConfigured, getAiProviderLabel } from '@/lib/ai';
@@ -106,6 +106,7 @@ export default function CopilotPanel({ symbol }: { symbol: string }) {
   const [retention, setRetention] = useState<number | null>(null);
   /** The question that failed, kept with its request id so a retry is idempotent. */
   const [pending, setPending] = useState<{ q: string; rid: string } | null>(null);
+  const [stopNote, setStopNote] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -137,6 +138,7 @@ export default function CopilotPanel({ symbol }: { symbol: string }) {
   async function send(question: string, rid: string) {
     if (!question.trim() || loading) return;
     setError('');
+    setStopNote(false);
     setLoading(true);
     if (!pending || pending.rid !== rid) {
       setMsgs(prev => [...prev, { role: 'user', content: question, request_id: rid }]);
@@ -158,6 +160,17 @@ export default function CopilotPanel({ symbol }: { symbol: string }) {
       abortRef.current = null;
       scroll();
     }
+  }
+
+  /** Tell the server first (it can skip the repair call), then stop waiting in the browser. */
+  async function stop() {
+    const rid = pending?.rid;
+    if (rid) await cancelCopilot(rid).catch(() => undefined);
+    abortRef.current?.abort();
+    // No same-id Retry after a stop: the stopped call may still be running, and the server
+    // refuses to start a second one for the same request. Asking again uses a new request id.
+    setPending(null);
+    setStopNote(true);
   }
 
   async function removeConversation() {
@@ -232,10 +245,17 @@ export default function CopilotPanel({ symbol }: { symbol: string }) {
                   {loading && (
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center', fontSize: '13px', color: '#475569' }}>
                       ⟳ Checking the evidence…
-                      <button onClick={() => abortRef.current?.abort()}
+                      <button onClick={stop}
+                        title="Stops any further model call for this question. A call already running still completes and counts toward usage; its answer appears when you reopen this conversation."
                         style={{ fontSize: '11px', background: 'transparent', border: '1px solid #1e293b', color: '#64748b', borderRadius: '6px', padding: '2px 8px', cursor: 'pointer' }}>
-                        Cancel
+                        Stop
                       </button>
+                    </div>
+                  )}
+                  {stopNote && !loading && (
+                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                      Stopped waiting. No further model call will be made for this question, but one already running
+                      still completes and counts toward usage — its answer appears when you reopen this conversation.
                     </div>
                   )}
                   {error && (

@@ -64,6 +64,22 @@ async def copilot_chat(req: CopilotChatRequest, username: str = Depends(get_curr
         raise HTTPException(exc.status, exc.message)
 
 
+class CopilotCancelRequest(BaseModel):
+    request_id: str = Field(..., min_length=8, max_length=64)
+
+
+@router.post("/cancel")
+def copilot_cancel(req: CopilotCancelRequest, username: str = Depends(get_current_username)):
+    """Stop any FURTHER model call for this question.
+
+    A provider request already running cannot be recalled: it completes, is billed, and its
+    answer is stored (visible when the conversation is reopened). What this prevents is the
+    repair call that would otherwise follow a rejected draft.
+    """
+    return {"cancelled": C.cancel(SessionLocal, username, req.request_id),
+            "note": "a model call already in progress still completes and is counted"}
+
+
 @router.get("/conversations")
 def list_conversations(symbol: str | None = None, limit: int = Query(20, ge=1, le=100),
                        username: str = Depends(get_current_username)):
