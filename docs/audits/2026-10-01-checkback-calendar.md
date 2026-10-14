@@ -82,3 +82,23 @@ Read-only. Weekdays for the remaining dates (computed, not recalled): Thu Oct 15
 | Sat Oct 3 | **M02** recovery markers, portfolios 2 and 5 | **No decision was recorded, and none was taken** — the last note (2026-10-02) says deletion "remains unauthorised". **Moot by expiry, as the brief predicted:** neither original marker exists. The markers present today are NEW, written by the fixed code when a trade actually opened: portfolio 5 `consec_loss_recovery = 10` (AMD entered 2026-10-13 19:36 UTC), portfolio 7 `= 4` (SPCX, 14:10 UTC). Portfolio 2 has none. Note: the register advised holding portfolio 5 pending a recovery-strategy review; it has now re-entered through the recovery branch, legitimately, under the fixed logic. |
 | Sat Oct 3 | **M21** signal-outage recovery digest | **No approval or send recorded.** Register still "approval pending". The 18 consumed-and-current SELLs date from 09-25/09-28 — now over two weeks old, so the digest's value has decayed; re-run the manifest's refresh before any send, or close it. |
 | Thu Oct 8 | Engineering backlog M13, M14, M20, M24, M25 | **The review itself is not recorded.** Work on every item happened 2026-10-01/02 (base-training ledger, production model inventory, outbox — partial, capability readiness, broker lifecycle verification), but `shared/metrics/register.py` has not changed since and still lists them as open. Register status is stale, not verified. |
+
+## Oct 8 engineering review — reconciled 2026-10-13
+
+Each register entry (`shared/metrics/register.py`, last changed 2026-10-02) checked against its
+own trigger and against production, read-only. **The register text was not edited:** it lives
+in `shared/`, so changing it drifts all 12 backend images until the next full rebuild
+(AUD-REGISTER-POSTBUILD-DRIFT). The corrections below should land in the register with the next
+`shared/` rebuild, together with commit `6d1e5d2a` (HK 2027 calendar).
+
+| Item | Register says (as of 10-02) | Evidence 2026-10-13 | Reconciled status |
+| --- | --- | --- | --- |
+| **M13** ML attrition | Base ledger built 10-02; "NEITHER has yet run inside a real fit" | The ledger is wired into the trainer (`_base_ledger_boundary`, emits `train.base_ledger` per fit). Retrain jobs ran since (e.g. `position_scaling_gate_retrain` 10-11), but **the ml-prediction logs were reset by tonight's container recreation** (started 23:58 UTC), so no ledger line can be read today. | **Unverified — evidence gap, not a failure.** Read the next fit's `train.base_ledger` line. Purge/calibration/promotion ledgers are still unbuilt. |
+| **M14** OOS-suppression | Inventory run in prod 10-01/10-02; decision pending on absent `cv_auc_mean` | Nothing since. | **Unchanged — awaiting a decision**, not engineering. |
+| **M20** Outbox | "No job calls them and the flag is off" | **Out of date on wiring:** jobs now call the outbox for product impact (10-12), option opportunities and price risk (10-13); `earnings_outbox_drain` is registered. **But the production outbox has never held a row** (0 rows, every type), and `earnings_outbox_rollout` is still absent (off). | **Trigger NOT met** ("one alert family cut over with the flag moved off `off`"). Wiring is partially done; cutover, other families and provider callbacks remain. |
+| **M24** Capability readiness | "exposed on /health; NOT yet run in prod" | **Out of date:** market-data `/health` returns the matrix in production now — `all_ready: false`, one degraded capability: `option_prospective_capture` (no live sized quote, no account permission/buying-power facts, no job calls the gate). Entry-blocked: that one; exit/reconciliation-blocked: none. | **Trigger MET** (run against production). Remaining: read the full matrix, not just the degraded list. |
+| **M25** Broker lifecycle | Behind a disabled flag; A01-A03 + options marks open | `broker_submit_after_commit` flag absent (off). The 10-02 review's two control holes (NaN price, future-dated intent) were fixed the same day (`cd967916`). **`submit_pending` / `reconcile_submission` / `needs_reconciliation` still have no production caller.** | **Unchanged — the 10-02 blocker stands:** enabling the flag would stop broker entries. Keep disabled. |
+
+So of the five, **one trigger is met (M24), one is blocked on evidence that was erased tonight
+(M13), and three are unchanged** (M14 awaits a decision, M20 awaits a cutover, M25 awaits a
+dispatcher).
