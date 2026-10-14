@@ -233,25 +233,30 @@ def test_trading_day_checks_are_timezone_correct():
     assert is_hk_trading_day(inst) is True, "already the next trading day in HK"
 
 
+#: The repository's calendar source. It was looked up as `scheduler.py`'s parents[3], which is
+#: `services/`, not the repo root — so the boxing-day check silently did nothing and the
+#: provisional-dates check was skipped on every run (found 2026-10-13).
+_MARKET_CALENDAR_SRC = pathlib.Path(__file__).resolve().parents[3] / "shared/common/market_calendar.py"
+
+
 def test_boxing_day_2026_comment_is_now_accurate():
     """The old comment said '(Mon after Sat+Sun Christmas)'. Christmas 2026 is a FRIDAY. The
     date was right and the reasoning wrong, which is how a maintainer extending by copying the
     logic gets the next year wrong."""
     assert date(2026, 12, 25).weekday() == 4, "Christmas 2026 is a Friday"
     assert date(2026, 12, 26).weekday() == 5, "Boxing Day 2026 is a Saturday"
-    cal = pathlib.Path(sched.__file__).parents[3] / "shared/common/market_calendar.py"
-    if cal.exists():
-        src = cal.read_text()
-        assert "Sat+Sun Christmas" not in src, "the incorrect explanation must not be carried over"
+    cal = _MARKET_CALENDAR_SRC
+    assert cal.exists(), f"calendar source not found at {cal}"
+    src = cal.read_text()
+    assert "Sat+Sun Christmas" not in src, "the incorrect explanation must not be carried over"
 
 
 def test_hk_2027_lunar_dates_are_flagged_as_provisional():
     """Intellectual honesty about a real limitation: the lunar-driven dates are a
     reconstruction, not a transcription of HKEX's published notice. A future reader must not
     mistake them for authoritative."""
-    cal = pathlib.Path(sched.__file__).parents[3] / "shared/common/market_calendar.py"
-    if not cal.exists():
-        pytest.skip("shared module not on this path")
+    cal = _MARKET_CALENDAR_SRC
+    assert cal.exists(), f"calendar source not found at {cal}"
     src = cal.read_text()
     assert "PROVISIONAL" in src
     assert "VERIFY AGAINST HKEX" in src

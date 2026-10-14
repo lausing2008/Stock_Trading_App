@@ -70,3 +70,15 @@ Per `project_deferred_checks_calendar`, two checkpoints already exist: **2026-10
 fixes take effect) and **2026-12-04** (did they work). Those carry the `|t_day| < 2` rule —
 inside two days of a change, a result is **NOT YET MEASURABLE**, which is not the same as failure.
 The events above are additions, not replacements.
+
+## Status of the passed items, checked 2026-10-13
+
+Read-only. Weekdays for the remaining dates (computed, not recalled): Thu Oct 15, Wed Oct 21
+(price-risk review, added 2026-10-13), Mon Nov 2, Tue Dec 1, Thu Dec 31.
+
+| Date | Item | Status |
+| --- | --- | --- |
+| Oct 1 | MU-01 | Not re-checked here |
+| Sat Oct 3 | **M02** recovery markers, portfolios 2 and 5 | **No decision was recorded, and none was taken** — the last note (2026-10-02) says deletion "remains unauthorised". **Moot by expiry, as the brief predicted:** neither original marker exists. The markers present today are NEW, written by the fixed code when a trade actually opened: portfolio 5 `consec_loss_recovery = 10` (AMD entered 2026-10-13 19:36 UTC), portfolio 7 `= 4` (SPCX, 14:10 UTC). Portfolio 2 has none. Note: the register advised holding portfolio 5 pending a recovery-strategy review; it has now re-entered through the recovery branch, legitimately, under the fixed logic. |
+| Sat Oct 3 | **M21** signal-outage recovery digest | **No approval or send recorded.** Register still "approval pending". The 18 consumed-and-current SELLs date from 09-25/09-28 — now over two weeks old, so the digest's value has decayed; re-run the manifest's refresh before any send, or close it. |
+| Thu Oct 8 | Engineering backlog M13, M14, M20, M24, M25 | **The review itself is not recorded.** Work on every item happened 2026-10-01/02 (base-training ledger, production model inventory, outbox — partial, capability readiness, broker lifecycle verification), but `shared/metrics/register.py` has not changed since and still lists them as open. Register status is stale, not verified. |

@@ -145,6 +145,8 @@ no single name above ~15% of fires.
 
 ## 2. Confidence-calibration feedback — DECIDED: DO NOT PROMOTE
 
+> **⚠ WITHDRAWN READING — see the correction block at the top.** "Flat" was a pooling artifact (no market/horizon/direction split, wrong outcome, wrong bands, no 180-day window). Sliced as production slices it, dispersion is wide. **The decision stands — keep calibration feedback disabled — but not for the reason given below.** The table is kept as the record of what was measured.
+
 **The count blocker is gone.** Previously several bands were n<50, some n<10. Now **19,256 resolved
 outcomes**, every band ≥120:
 
@@ -177,6 +179,8 @@ data" to **closed on measurement**.
 
 ## 3. GEX corroboration — STILL DO NOT BUILD THE GATE (control group too small)
 
+> **⚠ WITHDRAWN READING — see the correction block at the top.** The returns below pool bullish calls with bearish puts. Thesis-signed, corroborated is **−1.87%** vs uncorroborated **+2.28%**. The decision (do not build the gate) stands.
+
 The decision rule was set in advance: *if corroborated alerts don't outperform, do NOT build the
 `gamma_flip` gate.*
 
@@ -200,6 +204,8 @@ stays at 91/9 that will take a long time, which is itself the finding.
 ---
 
 ## 4. Dark-pool relative threshold — MAJOR IMPROVEMENT, SHORT OF TARGET
+
+> **⚠ WITHDRAWN READING — see the correction block at the top.** The ~17%/~45% rates used lifetime coverage as the denominator; per session it is 81–88%, and the later [effectiveness check](2026-09-30-darkpool-relative-threshold-effectiveness.md) found the relative bar rejects 15 of 9,710 prints. "Major improvement" is not established.
 
 | | |
 |---|---|
@@ -226,7 +232,9 @@ step, and it is a question about the original spec, not about more data.
 
 ---
 
-## 5. Options-flow direction — UNBLOCKED, AND THE BEARISH HALF IS ANTI-PREDICTIVE
+## 5. Options-flow direction — UNBLOCKED (the "anti-predictive" reading is withdrawn)
+
+> **⚠ WITHDRAWN READING — see the correction block at the top.** Outcomes dedupe per option chain, so these rows are not independent bets; weighting each symbol/fire-date equally **reverses** the 5d gap (bullish 42.3%, bearish 47.1%), and the consumer gates on 10d. **Decision: leave options-flow direction unchanged — do not invert or suppress the bearish arm.**
 
 The gate was ≥30 resolved outcomes per direction. **Both directions are now ~1,000.**
 
@@ -327,18 +335,19 @@ The OOS gain (+0.33 pts) is likewise not confirmable from stored outcomes alone.
 
 | Item | Before | Now |
 |---|---|---|
-| Confidence calibration | n<50, some n<10 | **CLOSED — do not promote; bands are flat** |
-| Options-flow direction | 2 days resolved | **UNBLOCKED — bearish arm anti-predictive (29.1%)** |
+| Confidence calibration | n<50, some n<10 | **CLOSED — do not promote** (~~bands are flat~~ — withdrawn, pooling artifact) |
+| Options-flow direction | 2 days resolved | **Leave unchanged** (~~bearish arm anti-predictive~~ — withdrawn, not robust to dedup/weighting) |
 | Prebreakout | ~2–3 effective | Measurable (43 @5d) but **7 names**, negative beyond 3d |
-| Dark pool | 0 prints, 85–89% fire | 375k prints, ~17% or ~45% — **denominator unresolved** |
-| GEX corroboration | unmeasured | Control arm n=13 — **still do not build the gate** |
+| Dark pool | 0 prints, 85–89% fire | 375k prints; per-session 81–88% (~~~17% or ~45%~~ — wrong denominator) |
+| GEX corroboration | unmeasured | Control arm n=13 — **still do not build the gate** (thesis-signed returns, not raw) |
 | Squeeze ignition | 0 fires ever | 6 fires, 2/4 win, avg −5.3% — still undecidable |
 | Squeeze family total | ~107 | 481, but short_squeeze itself only 16 |
 | Anti-chase | OOS +0.33 | 30.1% of BUYs exposed; **realised block rate unmeasurable** |
 
-Nothing here establishes profitability. Two findings — flat confidence bands and an anti-predictive
-bearish flow arm — argue against components currently in the decision path, and both deserve their
-own follow-up rather than a line in a checkpoint.
+Nothing here establishes profitability. ~~Two findings — flat confidence bands and an
+anti-predictive bearish flow arm — argue against components currently in the decision path.~~
+**Both of those findings were withdrawn** (correction block, top). The decisions that remain are:
+keep calibration feedback disabled; leave options-flow direction unchanged.
 
 ---
 
@@ -357,13 +366,13 @@ new reading. Rule applied: if the count has not reached its trigger, the output 
 | `short_squeeze` itself | meaningfully more than ~16 | 16 | **18** (2 since 09-30) | Not met |
 | Anti-chase (counters shipped 09-30, `66add08a`) | realised block rate | unmeasurable | Since 10-01 (7,711 tallied scans, 9 days): **454 reached, 221 rejected (48.7%)** — **all 221 `shadow_only`, 0 authoritative**, all `reached_via_de` | See note |
 
-**Anti-chase note.** Every candidate that reached the local anti-chase check did so while the
-decision engine was authoritative, so the local rejections never controlled an entry. That is
-by design, not a gap: the decision engine applies its own `roc_10` hard reject
-(`AUD-ENTRY4-CHASEPARITY`, `hard_rejects.py`). So the counters now answer "how often would this
-gate fire" (about half of the candidates that get this far), but the *realised* block rate is
-the decision engine's, and it is not tallied here. Measuring it needs the decision engine's
-rejection reasons, not this table. No code change proposed.
+**Anti-chase note.** 48.7% is a **local shadow rejection rate** — how often `_should_enter()`'s
+own check would reject a candidate that reaches it — **not the trade-block rate.** Every one of
+those candidates arrived while the decision engine was authoritative, so the local rejection
+controlled no entry. That says nothing about what the decision engine did: it applies its own
+`roc_10` hard reject (`AUD-ENTRY4-CHASEPARITY`, `hard_rejects.py`), so **zero authoritative local
+rejections does NOT mean zero trades were blocked**. The actual block rate is unmeasured here and
+needs the decision engine's rejection reasons. No code change proposed.
 
 Unchanged and not re-measured: options-flow direction and confidence calibration (both
 **decided** 09-30), dark pool (Dec 31), squeeze ignition, regime (1 bear sample).
