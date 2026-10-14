@@ -1,7 +1,7 @@
 # Copilot phase 2: chart commands, screening, and action drafts. Design for review (2026-10-13)
 
 Builds on [phases 0–1](2026-10-13-copilot-evidence-contract.md) (commit `ab3c0dd7`).
-**Status: decisions recorded (§5). Implementation in progress, in the order screening → drafts → chart.** Facts below come from a read-only inventory of the current code; file:line
+**Status: slices 1 (screening) and 2 (drafts) built, independently reviewed, and remediated ([S1–S6](../audits/2026-10-14-copilot-phase2-review-remediation.md)). Slice 3 (chart commands) not started.** Facts below come from a read-only inventory of the current code; file:line
 references are as of `ab3c0dd7`.
 
 ## 1. What the inventory found

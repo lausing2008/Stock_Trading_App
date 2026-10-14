@@ -3,7 +3,7 @@
 Implements Orders 0 and 1 of [the TradingView Copilot / Tenji review](2026-10-12-tradingview-copilot-tenji-review.md):
 the evidence/context contract and a read-only stock copilot with citations and report comparison.
 **Status: validated locally, independently reviewed, review findings remediated
-([remediation](../audits/2026-10-13-copilot-review-remediation.md)); not deployed. The remediation has not been re-reviewed.**
+([remediation](../audits/2026-10-13-copilot-review-remediation.md)). Session index: [2026-10-14](../audits/2026-10-14-copilot-session-index.md).**
 
 ## What changed for the user
 
