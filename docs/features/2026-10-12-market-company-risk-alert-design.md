@@ -4,7 +4,7 @@
 
 | Part | State |
 | --- | --- |
-| Price & risk changes — detection | **Built.** Deployed in shadow 2026-10-12 (`8597f1b6`). The 2026-10-13 rework below is **committed locally, not deployed**. |
+| Price & risk changes — detection | **Deployed in shadow.** First version 2026-10-12 (`8597f1b6`); the Step 1b rework and its review fixes (`0b07193a`, `2590aa20`) deployed 2026-10-13 ~20:00 ET. Collecting the 5-session shadow sample. |
 | Price & risk changes — email/in-app delivery | **Built, not enabled.** The delivery flag is absent and no account is enrolled; nothing has been sent. |
 | Market & sector developments | Proposed only (basket breadth is the first piece of it). |
 | Company developments | Proposed only. |
@@ -490,10 +490,34 @@ receipts table:
 Then: set the delivery flag and opt in **one** account (email + in-app), watch one session,
 and only then consider anyone else.
 
+## Deployment (2026-10-13, commit `2590aa20`)
+
+`scripts/deploy.sh` (image rebuild + `--no-deps --force-recreate`, health-gated), in six
+batches so no two-digit fleet restart could repeat AUD-DEPLOY-MIGRATIONCONVOY: market-data →
+signal-engine → api-gateway → ml-prediction, research-engine, ranking-engine → strategy-engine,
+technical-analysis, portfolio-optimizer → event-intelligence, news-intelligence,
+decision-engine. Every batch exited 0 and healthy. Afterwards: **15/15 containers healthy,
+`check_deploy_drift.sh` 12/12 OK (0 drifted)**, site 200, `/api/alerts/risk-history` 401
+(routed, guarded). No schema change. Frontend not rebuilt (no frontend change).
+
+Verified inside market-data: the new code is loaded; the delivery flag is **absent** (shadow);
+`run_price_risk_detection` and `drain_price_risk_outbox` are registered — the drain has nothing
+to send, because nothing can be queued while the flag is absent.
+
+**First scheduled shadow run on the new code** (20:10 ET, settled bars): 157 subjects,
+35 events (15 session decline, 14 pullback, 5 slow decline, 1 basket slow decline),
+**0 unmeasurable**, 17 receipts all `shadow_suppressed`, **0 outbox rows**. The AI/GPU basket
+fired at −5.97%; MU at pullback step 2 (−12.4%). NVDA and AVGO were correctly *not* flagged:
+both bounced on Oct 13 and ended the 5-session window at −4.48% and −4.89%, just inside the
+−5% starting threshold, though intraday they had been below it. AMD and TSM were correctly not
+repeated (still step 1 of the pullback episodes opened Oct 12). Names hovering at the
+threshold is exactly the evidence the shadow review exists to weigh.
+
+**Not yet verifiable at deploy time:** the cache stamps. The deploy finished after the US close,
+when `stockai:live_prices` is empty, so `fetched_at`/`session_date` on real rows and the first
+`intraday_quotes` > 0 are checked at the next regular session (HK or US).
+
 ## Not done
 
-- Not deployed. `shared/common/outcome_price_basis.py` changed, so this is a rebuild of
-  all 12 backend images, not a one-container copy (see AUD-REGISTER-POSTBUILD-DRIFT); deploy
-  in a calm window and not 12-at-once (AUD-DEPLOY-MIGRATIONCONVOY). No schema change.
 - Benchmarks (SPY/QQQ/SOXX) are not yet subjects; only watchlist symbols and theme baskets.
 - Company-event and macro channels, morning brief, closing recap, quiet hours.
