@@ -251,12 +251,25 @@ def test_boxing_day_2026_comment_is_now_accurate():
     assert "Sat+Sun Christmas" not in src, "the incorrect explanation must not be carried over"
 
 
-def test_hk_2027_lunar_dates_are_flagged_as_provisional():
-    """Intellectual honesty about a real limitation: the lunar-driven dates are a
-    reconstruction, not a transcription of HKEX's published notice. A future reader must not
-    mistake them for authoritative."""
-    cal = _MARKET_CALENDAR_SRC
-    assert cal.exists(), f"calendar source not found at {cal}"
-    src = cal.read_text()
-    assert "PROVISIONAL" in src
-    assert "VERIFY AGAINST HKEX" in src
+def test_hk_2027_matches_the_gazetted_general_holidays():
+    """2027 was a PROVISIONAL reconstruction until 2026-10-13, when it was checked against the
+    Government's gazetted list and two lunar dates were found wrong (02-10 closed in error;
+    Chung Yeung on 10-15 instead of 10-08). Every WEEKDAY general holiday in the gazette must
+    be closed, and no other 2027 weekday may be, apart from the documented Christmas Eve
+    half-day policy. https://www.gov.hk/en/about/abouthk/holiday/2027.htm"""
+    from common.market_calendar import HK_HOLIDAYS
+    gazetted_weekdays = {
+        date(2027, 1, 1), date(2027, 2, 8), date(2027, 2, 9), date(2027, 3, 26),
+        date(2027, 3, 29), date(2027, 4, 5), date(2027, 5, 13), date(2027, 6, 9),
+        date(2027, 7, 1), date(2027, 9, 16), date(2027, 10, 1), date(2027, 10, 8),
+        date(2027, 12, 27),
+    }
+    assert all(d.weekday() < 5 for d in gazetted_weekdays)
+    hk_2027 = {(d if isinstance(d, date) else date(*d)) for d in HK_HOLIDAYS
+               if (d.year if isinstance(d, date) else d[0]) == 2027}
+    weekday_closures = {d for d in hk_2027 if d.weekday() < 5}
+    assert gazetted_weekdays <= weekday_closures, sorted(gazetted_weekdays - weekday_closures)
+    assert weekday_closures - gazetted_weekdays == {date(2027, 12, 24)}, \
+        sorted(weekday_closures - gazetted_weekdays)
+    src = _MARKET_CALENDAR_SRC.read_text()
+    assert "PROVISIONAL, VERIFY AGAINST HKEX" not in src

@@ -101,24 +101,21 @@ HK_HOLIDAYS: frozenset[date] = frozenset([
     date(2026, 10, 26),  # Chung Yeung Festival
     date(2026, 12, 25),  # Christmas Day (Fri)
     date(2026, 12, 28),  # Boxing Day observed (Mon; Boxing Day Dec 26 = Sat)
-    # 2027 — PROVISIONAL, VERIFY AGAINST HKEX BEFORE 2027-01-01.
+    # 2027 — VERIFIED 2026-10-13 against the Government's gazetted general holidays
+    # (https://www.gov.hk/en/about/abouthk/holiday/2027.htm, gazetted May 2026), which HKEX's
+    # securities-market closures follow. Weekend holidays (Lunar New Year's Day Sat 02-06, the
+    # day after Good Friday Sat 03-27, Christmas Sat 12-25) need no entry.
     #
-    # Honest accounting of confidence, because these are not all equal. Good Friday (03-26) and
-    # Easter Monday (03-29) are computed and confirmed against the Easter computus
-    # (Easter 2027 = Sun 03-28). The fixed-date holidays (01-01, 05-01, 07-01, 10-01, Christmas)
-    # follow directly from the calendar. But the LUNAR-driven dates — Lunar New Year, Ching
-    # Ming, Buddha's Birthday, Tuen Ng, Mid-Autumn, Chung Yeung — cannot be derived from any
-    # weekday rule and are a best reconstruction, not a transcription of HKEX's published
-    # notice. They land on plausible weekdays but MUST be reconciled with the official calendar
-    # when HKEX publishes it.
-    #
-    # This is still strictly better than the previous state (no 2027 HK coverage at all, which
-    # would have failed OPEN on every 2027 holiday). A slightly-wrong closure date costs one
-    # skipped refresh; a missing one runs a full cycle against a shut exchange.
+    # The earlier PROVISIONAL reconstruction had two lunar dates wrong, both caught by this check:
+    #   * it closed Wed 02-10 ("LNY day 3"). The gazette instead makes the FOURTH day, Tue 02-09,
+    #     the substitute for day 2 (Sun 02-07) — so 02-10 is a normal trading day;
+    #   * it put Chung Yeung on Fri 10-15. It is Fri 10-08.
+    # Left alone, the first would have skipped a real HK session and the second would have run a
+    # full cycle against a shut exchange. HKEX's own 2027 holiday circular should still be read
+    # when it is issued, for half-day sessions and any market-specific difference.
     date(2027,  1,  1),  # New Year's Day (Fri)
-    date(2027,  2,  8),  # Lunar New Year Day 1 (Mon)
-    date(2027,  2,  9),  # Lunar New Year Day 2 (Tue)
-    date(2027,  2, 10),  # Lunar New Year Day 3 (Wed)
+    date(2027,  2,  8),  # The third day of Lunar New Year (Mon)
+    date(2027,  2,  9),  # The fourth day of Lunar New Year (Tue) — substitute for day 2 (Sun)
     date(2027,  3, 26),  # Good Friday
     date(2027,  3, 29),  # Easter Monday
     date(2027,  4,  5),  # Ching Ming Festival (Mon)
@@ -128,9 +125,9 @@ HK_HOLIDAYS: frozenset[date] = frozenset([
     date(2027,  7,  1),  # HKSAR Establishment Day (Thu)
     date(2027,  9, 16),  # Day after Mid-Autumn Festival (Thu)
     date(2027, 10,  1),  # National Day (Fri)
-    date(2027, 10, 15),  # Chung Yeung Festival (Fri)
+    date(2027, 10,  8),  # Chung Yeung Festival (Fri)
     date(2027, 12, 24),  # Christmas Eve — HKEX half-day, treated as closed for scheduling
-    date(2027, 12, 27),  # Christmas Day observed (Dec 25 = Sat)
+    date(2027, 12, 27),  # The first weekday after Christmas Day (Mon; Dec 25 = Sat)
 ])
 
 # The last year both calendars are fully populated. assert_calendar_coverage() fails once the
