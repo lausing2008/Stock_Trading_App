@@ -1,0 +1,11 @@
+{
+  "_comment": "HISTORICAL RECORD — CREATED 2026-10-14T00:50Z in stockai2028@gmail.com (calendar primary), event id apfe1atvgvkps50dti2ojcehmc, Wed 2026-10-21 09:00-09:45 PT. DO NOT replay: create-event is not idempotent. The first attempt hit invalid_grant; the existing 'normal' account recovered on retry. Context: docs/features/2026-10-12-market-company-risk-alert-design.md",
+  "timeZone": "America/Los_Angeles",
+  "calendarId": "primary",
+  "event": {
+    "summary": "Review price-risk shadow data (email stays OFF until this passes)",
+    "start": "2026-10-21T09:00:00",
+    "end": "2026-10-21T09:45:00",
+    "description": "Shadow collection: Oct 14-20 (5 US sessions), after the Oct 20 20:10 ET closing scan. Deployed 2026-10-13 (0b07193a, 2590aa20).\n\n1. Five completed trading sessions, each with successful intraday scans (job ok; intraday_quotes > 0 in price_risk.scan).\n2. Quote freshness: live_prices rows carry fetched_at + session_date; quote_refusals by reason.\n3. Missed or borderline moves, especially NVDA and AVGO (Oct 13 closes: -4.48% / -4.89% vs the -5% start).\n4. Duplicate suppression, recovery (episode_closed_by) and re-alerting.\n5. Projected email volume per account (digests/day vs the 6/day cap).\n6. Shadow queued and sent nothing: 0 price_risk outbox rows; all receipts shadow_suppressed; delivery flag absent.\n\nKeep email disabled until the review passes. Fewer than five usable sessions (missing data / failed scans) -> extend the collection period."
+  }
+}
