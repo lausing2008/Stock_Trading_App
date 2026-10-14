@@ -339,3 +339,31 @@ The OOS gain (+0.33 pts) is likewise not confirmable from stored outcomes alone.
 Nothing here establishes profitability. Two findings — flat confidence bands and an anti-predictive
 bearish flow arm — argue against components currently in the decision path, and both deserve their
 own follow-up rather than a line in a checkpoint.
+
+---
+
+## Re-count, 2026-10-13 (read-only; no decision changed)
+
+Prompted by the original "3-week window" calendar entry resurfacing. That window was executed
+here on 2026-09-30 and its open items were re-dated in
+[`2026-10-01-checkback-calendar.md`](2026-10-01-checkback-calendar.md) (monthly data check
+**Nov 2**, GEX **Dec 1**, regime + dark pool **Dec 31**). This is a two-week trigger check, not a
+new reading. Rule applied: if the count has not reached its trigger, the output is a deferral.
+
+| Item | Trigger | 2026-09-30 | **2026-10-13** | Verdict |
+| --- | --- | --- | --- | --- |
+| Prebreakout | ≥20 distinct names, none >~15% of fires | 8 names, AI 42% | **8 names, AI 42.9%** (30 fires; BKSY 17, POET 9). 16 fires since 09-30, from **2 names** | Not met. Diversity is not growing — the new fires are the same names |
+| GEX control arm (`gex_corroborated = false`) | ~30 resolved (review trigger, not promotion) | 13 resolved | **20 resolved** (23 total) | Not met; on pace for the Dec 1 review |
+| `short_squeeze` itself | meaningfully more than ~16 | 16 | **18** (2 since 09-30) | Not met |
+| Anti-chase (counters shipped 09-30, `66add08a`) | realised block rate | unmeasurable | Since 10-01 (7,711 tallied scans, 9 days): **454 reached, 221 rejected (48.7%)** — **all 221 `shadow_only`, 0 authoritative**, all `reached_via_de` | See note |
+
+**Anti-chase note.** Every candidate that reached the local anti-chase check did so while the
+decision engine was authoritative, so the local rejections never controlled an entry. That is
+by design, not a gap: the decision engine applies its own `roc_10` hard reject
+(`AUD-ENTRY4-CHASEPARITY`, `hard_rejects.py`). So the counters now answer "how often would this
+gate fire" (about half of the candidates that get this far), but the *realised* block rate is
+the decision engine's, and it is not tallied here. Measuring it needs the decision engine's
+rejection reasons, not this table. No code change proposed.
+
+Unchanged and not re-measured: options-flow direction and confidence calibration (both
+**decided** 09-30), dark pool (Dec 31), squeeze ignition, regime (1 bear sample).
