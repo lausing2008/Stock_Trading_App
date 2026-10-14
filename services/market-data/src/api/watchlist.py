@@ -1,6 +1,7 @@
 """Watchlist endpoints — per-user, multi-list support."""
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -206,54 +207,34 @@ def _add_effects(session: Session, stock: Stock, wl: Watchlist | None, user: Use
     """What adding `stock` to `wl` WILL do — computed once, used by the add AND its preview.
 
     D1 (2026-10-13): a watchlist add also enrols the user in signal-change emails for the
-    list's horizon. That side effect is preserved, and disclosed BEFORE saving, with its
-    EFFECTIVE result: a subscription is created either way, but whether mail is actually sent
-    depends on an email address on file and the user's alert preference for "signal" —
-    resolved by the same function the sender uses (common.alert_prefs.effective_enabled).
+    list's horizon. That side effect is preserved and disclosed BEFORE saving with its
+    EFFECTIVE result, from the same subscription helper the signal-alert endpoints use
+    (`signal_alerts.subscription_effects`). Review S5: the disclosed fields are versioned
+    (`effects_version`), and the add can refuse a stale disclosure inside its transaction.
     """
-    from common.alert_prefs import effective_enabled
-    from db import AlertPreference
+    from .signal_alerts import describe_subscription, effects_version, subscription_effects
     horizon = (wl.trading_style if wl is not None else None) or "SWING"
     in_list = wl is not None and session.execute(
         select(WatchlistItem.id).where(WatchlistItem.stock_id == stock.id,
                                        WatchlistItem.watchlist_id == wl.id)
     ).first() is not None
-    subscribed = session.execute(
-        select(SignalAlert.id).where(SignalAlert.user_id == user.id,
-                                     SignalAlert.symbol == stock.symbol,
-                                     SignalAlert.horizon == horizon)).first() is not None
-    pref = session.execute(
-        select(AlertPreference.enabled).where(AlertPreference.user_id == user.id,
-                                              AlertPreference.alert_type == "signal")).first()
-    emails_on = effective_enabled("signal", pref[0] if pref else None)
-    has_email = bool(user.email)
-    creates = not in_list and not subscribed
-    if in_list:
-        effect = f"{stock.symbol} is already in this list; nothing changes."
-    elif subscribed:
-        effect = (f"Adds {stock.symbol}. You are already subscribed to {horizon} signal "
-                  f"alerts for it; no new subscription is created.")
-    elif not has_email:
-        effect = (f"Adds {stock.symbol} and creates a {horizon} signal-alert subscription, but "
-                  f"no email address is on your account, so no signal email can be sent.")
-    elif not emails_on:
-        effect = (f"Adds {stock.symbol} and creates a {horizon} signal-alert subscription, but "
-                  f"AI signal emails are turned off in your alert preferences, so none will "
-                  f"be sent unless you turn them on.")
-    else:
-        effect = (f"Adds {stock.symbol} and subscribes you to {horizon} signal-change emails "
-                  f"for it at your account address.")
-    return {
+    sub = subscription_effects(session, user, stock.symbol, horizon)
+    creates = not in_list and sub["will_create"]
+    effect = (f"{stock.symbol} is already in this list; nothing changes." if in_list
+              else f"Adds {stock.symbol}. " + describe_subscription(sub))
+    out = {
         "symbol": stock.symbol,
         "list": ({"id": wl.id, "name": wl.name, "trading_style": wl.trading_style}
                  if wl is not None else {"id": None, "name": "My Watchlist", "created": True}),
         "already_in_list": in_list,
-        "signal_subscription": {"horizon": horizon, "already_subscribed": subscribed,
+        "signal_subscription": {"horizon": horizon, "already_subscribed": sub["already_subscribed"],
                                 "will_create": creates},
-        "email_on_file": has_email,
-        "signal_emails_enabled": emails_on,
+        "email_on_file": sub["email_on_file"],
+        "signal_emails_enabled": sub["signal_emails_enabled"],
         "effect": effect,
     }
+    out["effects_version"] = effects_version(out)
+    return out
 
 
 @router.get("/{symbol}/preview")
@@ -287,6 +268,7 @@ def add_to_watchlist(
     list_id: int | None = Query(None),
     current: User = Depends(get_current_user),
     session: Session = Depends(get_session),
+    expected_effects: str | None = Query(None, max_length=64),
 ):
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
     if not stock:
@@ -303,6 +285,13 @@ def add_to_watchlist(
     # Decided by the SAME helper the preview shows the user (D1), so what was disclosed and
     # what is done cannot drift apart.
     effects = _add_effects(session, stock, wl, current)
+    # isinstance: a direct (non-HTTP) caller receives the Query() default object, not None.
+    if isinstance(expected_effects, str) and expected_effects \
+            and effects["effects_version"] != expected_effects:
+        # Review S5: the user confirmed a DIFFERENT disclosure (email address, preference or
+        # subscription changed since). Refused inside this transaction, before any write.
+        raise HTTPException(409, "what this add will do has changed since you reviewed it; "
+                                 "review it again")
     item = WatchlistItem(stock_id=stock.id, watchlist_id=wl.id)
     session.add(item)
 
@@ -314,7 +303,18 @@ def add_to_watchlist(
             email=current.email, horizon=horizon,
         ))
 
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        # A concurrent add won the unique (watchlist, stock) index — or the (user, symbol,
+        # horizon) subscription. The symbol is in the list either way: serve it, not a 500.
+        session.rollback()
+        existing = session.execute(select(WatchlistItem).where(
+            WatchlistItem.stock_id == stock.id,
+            WatchlistItem.watchlist_id == wl.id)).scalar_one_or_none()
+        if existing is None:
+            raise
+        return _item_out(existing, stock)
     session.refresh(item)
     return _item_out(item, stock)
 

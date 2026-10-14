@@ -57,12 +57,15 @@ def test_migration_adds_the_columns_and_unique_index_to_an_existing_table(r):
     assert m["columns_before"] == [] and m["columns_after"] == ["idempotency_key",
                                                                  "request_fingerprint"]
     assert m["index_unique"]
+    # Readiness is CHECKED, not inferred from startup: not ready before, ready after.
+    assert m["draft_save_ready_before"] == "not_ready"
+    assert m["draft_save_ready_after"] == "ready"
 
 
 def test_the_watchlist_preview_discloses_the_effective_email_result(r):
     p = r["preview"]
     assert p["alice"]["will_create"] and "signal-change emails" in p["alice"]["effect"]
-    assert "no email address is on your account" in p["bob_no_email_effect"]
+    assert "no email address is on your account" in p["bob_no_email_effect"].lower()
     assert "turned off in your alert preferences" in p["alice_prefs_off_effect"]
 
 
@@ -71,3 +74,17 @@ def test_the_preview_is_read_only_and_matches_what_the_add_does(r):
     assert p["preview_created_no_list"], "a preview must not create a default list"
     assert p["add_created_subscription"] == 1 and p["after_add"] is True
     assert p["foreign_list"] == 404
+
+
+def test_s5_a_consent_change_changes_the_version_and_a_stale_one_is_refused_in_the_write(r):
+    s = r["s5"]
+    assert s["watchlist_version_changes"] and s["signal_version_changes"]
+    assert s["stale_watchlist_add"] == 409 and s["rows_after_refusal"] == 0
+    assert s["stale_signal"] == 409
+    assert s["current_version_add"] == 1
+
+
+def test_simultaneous_watchlist_adds_and_signal_subscriptions_create_one_row_no_errors(r):
+    x = r["races"]
+    assert x["watchlist_outcomes"] == ["ok"] and x["watchlist_rows"] == 1
+    assert x["signal_outcomes"] == ["ok"] and x["signal_rows"] == 1

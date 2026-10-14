@@ -73,6 +73,9 @@ class InProcessMarket:
     async def watchlist_preview(self, symbol):
         return self._call(lambda s, u: self.W.preview_add(symbol, None, u, s))
 
+    async def signal_preview(self, symbol, horizon, mode):
+        return self._call(lambda s, u: self.SA.preview_signal_alert(symbol, horizon, mode, s, u))
+
     async def create_alert(self, body):
         def f(s, u):
             r = Response(); r.status_code = None
@@ -84,8 +87,9 @@ class InProcessMarket:
         return self._d(self._call(lambda s, u: self.SA.create_signal_alert(
             self.SA.SignalAlertCreate(**body), s, u)))
 
-    async def add_to_watchlist(self, symbol):
-        return self._d(self._call(lambda s, u: self.W.add_to_watchlist(symbol, None, u, s)))
+    async def add_to_watchlist(self, symbol, expected_effects=None):
+        return self._d(self._call(lambda s, u: self.W.add_to_watchlist(
+            symbol, None, u, s, expected_effects=expected_effects)))
 
 
 #: (id, question, expected kind or None, expected arguments subset)

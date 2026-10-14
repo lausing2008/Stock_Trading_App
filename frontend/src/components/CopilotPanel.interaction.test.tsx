@@ -155,6 +155,19 @@ describe('draft card', () => {
     expect(screen.getByTestId('draft-card').textContent).toMatch(/Draft — not saved/);
   });
 
+  it('an unconfirmed save can still be checked after expiry — it reconciles, not re-decides', async () => {
+    api.confirmCopilotDraft.mockResolvedValue({ draft: { ...draft, status: 'saved' }, replayed: false });
+    render(<DraftCard messageId={5} draft={{ ...draft, status: 'saving',
+      expires_at: new Date(Date.now() - 60_000).toISOString() }} />);
+    expect(screen.getByTestId('draft-card').textContent).toMatch(/Save not yet confirmed/);
+    expect(screen.getByText(/will not create a duplicate/)).toBeTruthy();
+    const btn = screen.getByText('Save') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    fireEvent.click(btn);
+    await flush();
+    expect(screen.getByTestId('draft-card').textContent).toMatch(/^Saved/);
+  });
+
   it('an expired draft cannot be saved', () => {
     render(<DraftCard messageId={5} draft={{ ...draft, expires_at: new Date(Date.now() - 60_000).toISOString() }} />);
     expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(true);

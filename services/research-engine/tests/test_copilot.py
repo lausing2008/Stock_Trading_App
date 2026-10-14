@@ -242,7 +242,7 @@ def test_a_draft_threshold_is_a_packet_price_or_a_number_the_user_typed(r):
     assert p["status"] == "grounded" and p["n"] == 1 and p["kind"] == "price_alert"
     assert p["threshold"] == round(p["sma50"], 4) and p["source"] == "trend.sma50"
     assert any("not a price" in x for x in p["dropped"]), "{{return.5b}} is not a price"
-    assert any("does not appear in your question" in x for x in p["dropped"]), "999 invented"
+    assert any("does not match what you asked for" in x for x in p["dropped"]), "999 invented"
     assert r["p13"]["typed"]["thresholds"] == [150.0]
     assert any("this conversation's symbol" in x for x in r["p13"]["typed"]["dropped"])
 
@@ -277,3 +277,87 @@ def test_a_watchlist_draft_discloses_the_signal_email_enrolment(r):
     w = r["p13"]["watchlist"]
     assert "signal-change emails" in w["effects"][0]
     assert w["saved"] == "saved" and w["adds"] == 1
+
+
+
+# ── Phase 2 review (S2/S3): WRONG proposals against correct questions ──
+
+def test_s3_screen_refuses_reversed_misattached_and_negated_proposals(r):
+    s = r["p14"]["screen"]
+    assert s["K-Score below 70 | min_score 70"] == {}, "direction reversed"
+    assert s["K-Score below 70 | max_score 70"] == {"max_score": 70.0}
+    assert s["Show 10 stocks with K-Score above 70 | min_confidence 10"] == {}, "count as threshold"
+    assert s["Show 10 stocks with K-Score above 70 | min_score 70"] == {"min_score": 70.0}
+    assert s["Technology stocks, excluding BUY signals | signal BUY"] == {}, "negation ignored"
+    assert s["Stocks not in Hong Kong | market HK"] == {}
+    assert s["technical score of at least 55 | min_score 55"] == {}, "wrong metric"
+    assert s["technical score of at least 55 | min_technical 55"] == {"min_technical": 55.0}
+    assert s["Momentum below 40 | min_momentum 40"] == {}
+    assert r["p14"]["momentum_below_unsupported"], "no max_momentum filter: reported, not guessed"
+    assert r["p14"]["limit_10"] == 10
+
+
+def test_s3_an_empty_or_none_proposal_runs_no_screen(r):
+    assert r["p14"]["empty_proposal"] == {"status": "nothing_applied", "fetches": 0}
+    assert r["p14"]["order_only"] == {"status": "ok", "sort": "rs_score", "limit": 5}
+
+
+def test_s2_drafts_refuse_wrong_unit_direction_source_and_negation(r):
+    d = r["p14"]["drafts"]
+    assert d["Alert me if it drops 10% | below 10"] == [], "a percentage is not a price"
+    assert d["Alert me below 100 | above 100"] == [], "direction reversed"
+    assert d["Alert me below 100 | below 100"] == [["below", 100.0]]
+    assert d["Alert me below its 50-bar average | below {{kscore.fair_price}}"] == [], "wrong source"
+    assert d["Alert me below its 50-bar average | below {{trend.sma50}}"] == [["below", "trend.sma50"]]
+    assert d["Don't alert me below 100 | below 100"] == [], "negated action"
+    assert d["Alert me when it hits 150 | above 150"] == [], "side not stated"
+    assert d["Alert me below 100 in 2 days | below 2"] == [], "a horizon number is not a level"
+    assert d["Put MSFT on my watchlist | watchlist_add"] == [], "another ticker"
+    assert d["Alert me below 100 and above 150 | below 100 + above 150"] == [["below", 100.0],
+                                                                           ["above", 150.0]]
+
+
+def test_s6_cards_describe_the_rule_the_checker_applies(r):
+    c = r["p14"]["card"]
+    assert "observed price" in c["summary"] and "at or below" in c["summary"]
+    assert "closes" not in c["summary"]
+    assert any("does not wait for a closing price" in n for n in c["notes"])
+    assert any("will NOT follow" in n for n in c["notes"]), "an average-derived level is fixed"
+
+
+
+# ── Phase 2 review (S1/S4/S5): save recovery, siblings, consent ──
+
+def test_s1_a_lost_acknowledgment_is_reconciled_not_refused(r):
+    l = r["p15"]["lost_ack"]
+    assert l["first"] == 502, "ambiguous: the user is told it may have completed"
+    assert l["second"] == "saved" and l["reconciled"] is True
+    assert l["alerts"] == 1, "the retry must not create a second alert"
+
+
+def test_s1_a_crash_after_commit_reconciles_even_after_expiry(r):
+    assert r["p15"]["crash_then_late_retry"] == {"status": "saved", "alerts": 1}
+
+
+def test_s4_both_sibling_drafts_save_in_either_order(r):
+    for k in ("siblings_01", "siblings_10"):
+        assert r["p15"][k] == {"results": ["saved", "saved"], "alerts": 2,
+                               "serialised": ["saved", "saved"]}, k
+
+
+def test_s4_a_genuinely_conflicting_external_change_still_refuses(r):
+    assert r["p15"]["external_identical_alert"] == 409
+
+
+def test_s5_a_changed_email_effect_refuses_the_old_card(r):
+    c = r["p15"]["consent_changed"]
+    assert c["status"] == 409 and c["adds"] == 0
+    assert "turned off" in c["disclosed"][0]
+
+
+def test_a_definite_refusal_is_recorded_as_failed_not_executing(r):
+    assert r["p15"]["definite_failure"] == {"status": 400, "receipt": "failed"}
+
+
+def test_saves_are_refused_before_any_write_when_the_migration_is_not_in_place(r):
+    assert r["p15"]["not_ready"] == {"status": 503, "writes": 0}

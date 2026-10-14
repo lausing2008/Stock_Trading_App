@@ -343,6 +343,15 @@ class Watchlist(Base):
 
 class WatchlistItem(Base):
     __tablename__ = "watchlist_items"
+    __table_args__ = (
+        # One stock per watchlist. PostgreSQL has had this index since the multi-list migration
+        # (session.py, IF NOT EXISTS), but it was never declared HERE, so a database built by
+        # create_all() alone had no uniqueness at all — found when concurrent copilot draft
+        # saves inserted duplicates on SQLite (2026-10-14). Same definition as the migration.
+        Index("idx_uq_wl_item", "watchlist_id", "stock_id", unique=True,
+              postgresql_where=text("watchlist_id IS NOT NULL"),
+              sqlite_where=text("watchlist_id IS NOT NULL")),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"))
@@ -4578,3 +4587,38 @@ class CopilotUsageDay(Base):
     #: The UTC calendar day, stated rather than inherited from a server setting.
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     admitted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class CopilotDraftReceipt(Base):
+    """The durable record of SAVING one copilot draft (independent phase 2 review, S1/S4).
+
+    WHY A SEPARATE ROW. Confirmation used to (1) re-check the draft's bound state, (2) call
+    market-data, (3) rewrite the message JSON to "saved". If market-data committed but its
+    response was lost — or this process died before (3) — the retry found the state CHANGED (by
+    its own write) and refused with 409 before ever reaching market-data's idempotent replay:
+    the user was told the save failed while the alert existed, and a fresh draft would carry a
+    new key and could create a second one.
+
+    Now a receipt is written as `executing` BEFORE the downstream call. A retry that finds an
+    `executing` receipt RECONCILES: it repeats the same request with the same idempotency key,
+    skipping the pre-execution checks (the decision was already made), and market-data either
+    returns the row it committed or creates it now. `failed` means market-data definitively
+    refused (4xx) and nothing was written. One row per draft also means confirming two drafts of
+    one answer concurrently cannot lose either update, which rewriting the message JSON could.
+    """
+    __tablename__ = "copilot_draft_receipts"
+
+    message_id: Mapped[int] = mapped_column(
+        ForeignKey("copilot_messages.id", ondelete="CASCADE"), primary_key=True)
+    draft_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"),
+                                         nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: executing | saved | failed
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

@@ -1,0 +1,296 @@
+{
+ "model": "claude-sonnet-5-5",
+ "reps": 1,
+ "rows": [
+  {
+   "rep": 0,
+   "id": "d01",
+   "question": "Alert me if it falls below its 50-day average",
+   "expected": "price_alert",
+   "status": "grounded",
+   "drafts": [
+    {
+     "kind": "price_alert",
+     "arguments": {
+      "symbol": "TESTCO",
+      "condition": "below",
+      "threshold": 127.15
+     },
+     "threshold_source": {
+      "kind": "packet",
+      "key": "trend.sma50",
+      "display": "$127.15",
+      "state": "OK",
+      "observed": null
+     },
+     "summary": "Price alert: email me when the observed price of TESTCO is at or below $127.15",
+     "rule_notes": [
+      "Checked about once a minute against the latest available quote; it can trigger intraday and does not wait for a closing price.",
+      "$127.15 is the simple moving average of the last 50 stored daily closes (unadjusted) as stored now. The alert keeps this fixed number; it will NOT follow the sma50 as it changes."
+     ],
+     "id": "85c4374f0859",
+     "status": "proposed",
+     "state_version": "dbb155f7ac5fa53593389222",
+     "side_effects": [
+      "Checked about once a minute against the latest available quote; it can trigger intraday and does not wait for a closing price.",
+      "$127.15 is the simple moving average of the last 50 stored daily closes (unadjusted) as stored now. The alert keeps this fixed number; it will NOT follow the sma50 as it changes.",
+      "Sends an email to your account address when the condition is met.",
+      "Price alerts are essential notifications: they cannot be turned off in alert preferences, only deleted."
+     ],
+     "preview": {},
+     "expires_at": "2026-10-14T13:58:48.135565"
+    }
+   ],
+   "dropped": [],
+   "correct": true,
+   "saved": [
+    {
+     "kind": "price_alert",
+     "first": "saved",
+     "second_replayed": true
+    }
+   ],
+   "rows_after": {
+    "price_alerts": 1,
+    "signal_alerts": 0,
+    "watchlist_items": 0
+   },
+   "answer": "A price alert draft is ready for you to review. It is set to trigger if the price falls below the 50-bar moving average, currently $127.15. I have not saved anything, so you need to review and confirm it.\n\nFor context, the data shows the latest close was $143.50 on 2026-10-14, and the structure is above both moving averages. The 20-bar average is $136.18. The 20-bar return is +11.24% (2026-09-24 \u2192 2026-10-14).\n\nThe moving average is calculated from past closes, so its value will shift as new bars arrive. The draft threshold may therefore not track the figure shown here unless you edit it.\n\nEarnings are scheduled for 2026-10-26, 12 calendar days from now. The release time is not confirmed. One reading is that price moves around that date could affect how close the price gets to this level.",
+   "latency_ms": 3638
+  },
+  {
+   "rep": 0,
+   "id": "d02",
+   "question": "Set an alert for when TESTCO goes above 160",
+   "expected": "price_alert",
+   "status": "grounded",
+   "drafts": [
+    {
+     "kind": "price_alert",
+     "arguments": {
+      "symbol": "TESTCO",
+      "condition": "above",
+      "threshold": 160.0
+     },
+     "threshold_source": {
+      "kind": "typed",
+      "key": null,
+      "display": "$160.00"
+     },
+     "summary": "Price alert: email me when the observed price of TESTCO is at or above $160.00",
+     "rule_notes": [
+      "Checked about once a minute against the latest available quote; it can trigger intraday and does not wait for a closing price."
+     ],
+     "id": "d7040fd96ec9",
+     "status": "proposed",
+     "state_version": "dbb155f7ac5fa53593389222",
+     "side_effects": [
+      "Checked about once a minute against the latest available quote; it can trigger intraday and does not wait for a closing price.",
+      "Sends an email to your account address when the condition is met.",
+      "Price alerts are essential notifications: they cannot be turned off in alert preferences, only deleted."
+     ],
+     "preview": {},
+     "expires_at": "2026-10-14T13:58:54.275153"
+    }
+   ],
+   "dropped": [],
+   "correct": true,
+   "saved": [
+    {
+     "kind": "price_alert",
+     "first": "saved",
+     "second_replayed": true
+    }
+   ],
+   "rows_after": {
+    "price_alerts": 2,
+    "signal_alerts": 0,
+    "watchlist_items": 0
+   },
+   "answer": "A price alert draft for the \"above\" condition is ready for you to review. I can't save it myself, so it only takes effect once you do.\n\nContext from the data:\n- The latest close was $143.50 on 2026-10-14, and the data shows it above both moving averages ($136.18 and $127.15).\n- The 20-bar return was +11.24% (2026-09-24 \u2192 2026-10-14).\n- Your level is above the model's fair-value estimate of $140.00. That estimate is a model output, not an analyst price target.\n- The next earnings release is scheduled for 2026-10-26, 12 calendar days away. Earnings can move a price in either direction, and the data does not say which way.\n\nThis describes past bars and does not forecast whether the level will be reached.",
+   "latency_ms": 6133
+  },
+  {
+   "rep": 0,
+   "id": "d03",
+   "question": "Add this to my watchlist",
+   "expected": "watchlist_add",
+   "status": "grounded",
+   "drafts": [
+    {
+     "kind": "watchlist_add",
+     "arguments": {
+      "symbol": "TESTCO"
+     },
+     "summary": "Add TESTCO to your default watchlist",
+     "id": "4131ae233962",
+     "status": "proposed",
+     "state_version": "cdea9e3dacc805fb8b5da879",
+     "side_effects": [
+      "Adds TESTCO. Subscribes you to SWING signal-change emails for TESTCO at your account address."
+     ],
+     "preview": {
+      "symbol": "TESTCO",
+      "list": {
+       "id": 1,
+       "name": "Mine",
+       "trading_style": "SWING"
+      },
+      "already_in_list": false,
+      "signal_subscription": {
+       "horizon": "SWING",
+       "already_subscribed": false,
+       "will_create": true
+      },
+      "email_on_file": true,
+      "signal_emails_enabled": true,
+      "effect": "Adds TESTCO. Subscribes you to SWING signal-change emails for TESTCO at your account address.",
+      "effects_version": "cdea9e3dacc805fb8b5da879"
+     },
+     "expires_at": "2026-10-14T13:58:59.393964"
+    }
+   ],
+   "dropped": [],
+   "correct": true,
+   "saved": [
+    {
+     "kind": "watchlist_add",
+     "first": "saved",
+     "second_replayed": true
+    }
+   ],
+   "rows_after": {
+    "price_alerts": 2,
+    "signal_alerts": 1,
+    "watchlist_items": 1
+   },
+   "answer": "A watchlist draft for TESTCO is ready for you to review and save. I have not saved anything.\n\nSnapshot of what the data shows:\n- Latest close $143.50, which is above both moving averages. The 5-bar move is +3.99% (2026-10-09 \u2192 2026-10-14) and the 20-bar move is +11.24% (2026-09-24 \u2192 2026-10-14).\n- The signal engine's latest call is BUY (SWING), with strength 61/100 (engine score). The K-Score is 72/100.\n- Next earnings are scheduled for 2026-10-26, 12 calendar days away. The release time is not confirmed.\n- Of three recent headlines, two ([withheld headline] (pr_newswire, 2026-10-13) and [withheld headline] (pr_newswire, 2026-10-12)) were withheld by the platform. One more is \u201cTestCo reports Q3 revenue up 12% to $1.2B, beating estimates\u201d (globenewswire, 2026-10-11), which is unverified.\n\nAdding the stock to a watchlist does not say anything about the stock itself. The scores are engine rankings, not probabilities of profit.",
+   "latency_ms": 5114
+  },
+  {
+   "rep": 0,
+   "id": "d04",
+   "question": "Tell me when the swing signal changes",
+   "expected": "signal_alert",
+   "status": "grounded",
+   "drafts": [
+    {
+     "kind": "signal_alert",
+     "arguments": {
+      "symbol": "TESTCO",
+      "horizon": "SWING",
+      "alert_mode": "all"
+     },
+     "summary": "Signal alert: email me when the SWING signal for TESTCO changes",
+     "id": "c8ae136ec95d",
+     "status": "proposed",
+     "state_version": "b1822f4f988f81aa8614f440",
+     "side_effects": [
+      "You are already subscribed to SWING signal alerts for TESTCO (all); saving keeps that subscription unchanged."
+     ],
+     "preview": {
+      "symbol": "TESTCO",
+      "horizon": "SWING",
+      "alert_mode": "all",
+      "already_subscribed": true,
+      "existing_mode": "all",
+      "will_create": false,
+      "email_on_file": true,
+      "signal_emails_enabled": true,
+      "effect": "You are already subscribed to SWING signal alerts for TESTCO (all); saving keeps that subscription unchanged.",
+      "effects_version": "b1822f4f988f81aa8614f440"
+     },
+     "expires_at": "2026-10-14T13:59:05.230500"
+    }
+   ],
+   "dropped": [],
+   "correct": true,
+   "saved": [
+    {
+     "kind": "signal_alert",
+     "first": "saved",
+     "second_replayed": true
+    }
+   ],
+   "rows_after": {
+    "price_alerts": 2,
+    "signal_alerts": 1,
+    "watchlist_items": 1
+   },
+   "answer": "I can't watch the signal myself because I'm read-only, but a signal alert draft for the SWING horizon is ready for you to review and save. It is set to notify on any change, not only buys.\n\nThe data shows the engine's latest call is BUY (SWING), with strength 61/100 (engine score), generated at 2026-10-14 11:00 UTC. The strength is an engine score, not a probability of profit.\n\nFor context, the latest close was $143.50, and the trend is above both moving averages. The next earnings date is 2026-10-26, which is 12 calendar days away. One reading is that a new signal could follow that release, but the data doesn't show that.",
+   "latency_ms": 5815
+  },
+  {
+   "rep": 0,
+   "id": "d05",
+   "question": "Alert me when it reaches the analyst price target",
+   "expected": null,
+   "status": "grounded",
+   "drafts": [],
+   "dropped": [],
+   "correct": true,
+   "saved": [],
+   "rows_after": {
+    "price_alerts": 2,
+    "signal_alerts": 1,
+    "watchlist_items": 1
+   },
+   "answer": "I can't set this up as asked, because the evidence has no analyst price target. The only target-like figure is the K-Score fair-value estimate of $140.00. That is a model output, not an analyst target, so I won't treat it as one.\n\nThe data shows the latest close was $143.50, which is already above that fair-value estimate. An \"above\" alert at that level would therefore already be met. One reading is that it wouldn't tell you much.\n\nIf you give me a price you want to be alerted at, I can prepare a draft alert for you to review. I can also draft one at a moving-average level or at the fair-value estimate if you tell me you want that instead.",
+   "latency_ms": 6469
+  },
+  {
+   "rep": 0,
+   "id": "d06",
+   "question": "What's the 50-bar average?",
+   "expected": null,
+   "status": "grounded",
+   "drafts": [],
+   "dropped": [],
+   "correct": true,
+   "saved": [],
+   "rows_after": {
+    "price_alerts": 2,
+    "signal_alerts": 1,
+    "watchlist_items": 1
+   },
+   "answer": "The longer moving average you asked about is $127.15. It is the simple average of the stored daily closes over that window, unadjusted for splits and dividends.\n\nFor context, the latest close was $143.50 on 2026-10-14, and the shorter moving average is $136.18.\n\nThe data shows the close above both moving averages. This describes past bars and is not a forecast.",
+   "latency_ms": 6410
+  },
+  {
+   "rep": 0,
+   "id": "d07",
+   "question": "Alert me if it drops 10%",
+   "expected": null,
+   "status": "grounded",
+   "drafts": [],
+   "dropped": [],
+   "correct": true,
+   "saved": [],
+   "rows_after": {
+    "price_alerts": 2,
+    "signal_alerts": 1,
+    "watchlist_items": 1
+   },
+   "answer": "I can't draft an alert for a percentage drop. Price alerts need a price level, and the packet has no figure for the level that drop would imply from the latest close of $143.50 (session 2026-10-14). I won't calculate one myself.\n\nIf you type the price you want, I can prepare a draft for you to review. Reference levels in the data are:\n- the 20-bar average, $136.18\n- the 50-bar average, $127.15\n- the K-Score model's fair-value estimate, $140.00 (a model output, not an analyst price target)\n\nThe data shows the next earnings release is scheduled for 2026-10-26, 12 calendar days away, with the release time unconfirmed. One reading is that you may want to keep that date in mind when choosing a level. I have not drafted anything yet.",
+   "latency_ms": 11901
+  },
+  {
+   "rep": 0,
+   "id": "d08",
+   "question": "Put MSFT on my watchlist",
+   "expected": null,
+   "status": "grounded",
+   "drafts": [],
+   "dropped": [],
+   "correct": true,
+   "saved": [],
+   "rows_after": {
+    "price_alerts": 2,
+    "signal_alerts": 1,
+    "watchlist_items": 1
+   },
+   "answer": "I can't add MSFT from here. I'm read-only, and this evidence packet covers TESTCO only, so I have nothing on MSFT. A draft from this page would apply to TESTCO, not MSFT, so I haven't prepared one.\n\nTo add MSFT, open its own page and ask me there, and I can prepare a draft for you to review and save.\n\nIf you meant TESTCO, say so and I'll prepare a watchlist draft for it. For context, the data shows its latest signal is BUY (SWING) with strength 61/100 (engine score), and its next earnings release is scheduled for 2026-10-26, which is 12 calendar days away.",
+   "latency_ms": 4683
+  }
+ ]
+}

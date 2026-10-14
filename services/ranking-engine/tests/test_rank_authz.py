@@ -24,8 +24,10 @@ import uuid
 from pathlib import Path
 
 import pytest
+import asyncio
+
+import httpx
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 from jose import jwt
 
 SECRET = "rank-authz-secret"
@@ -152,9 +154,28 @@ def client(monkeypatch):
     app = FastAPI()
     app.include_router(routes.router)
     app.dependency_overrides[routes.get_session] = lambda: _Session()
-    c = TestClient(app)
+    c = _Client(app)
     c.accounts = accounts.rows
     return c
+
+
+class _Client:
+    """In-process ASGI calls on ONE event loop — no TestClient portal thread.
+
+    The independent review (2026-10-13) saw TestClient stall on its first request in another
+    environment, waiting in the AnyIO portal. httpx's ASGITransport drives the same app, real
+    routes and real dependency, without that thread. Each call is bounded by a timeout so a
+    stall fails the test instead of hanging the suite.
+    """
+    def __init__(self, app):
+        self.app = app
+
+    def post(self, path, headers=None):
+        async def go():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),
+                                         base_url="http://test") as c:
+                return await asyncio.wait_for(c.post(path, headers=headers or {}), timeout=20)
+        return asyncio.run(go())
 
 
 def _bearer(**claims):

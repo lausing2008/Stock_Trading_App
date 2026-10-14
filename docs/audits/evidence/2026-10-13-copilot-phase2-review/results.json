@@ -1,0 +1,118 @@
+{
+  "screen_validation": [
+    {
+      "question": "K-Score below 70",
+      "accepted_params": {
+        "min_score": 70.0
+      }
+    },
+    {
+      "question": "Show 10 stocks with K-Score above 70",
+      "accepted_params": {
+        "min_confidence": 10.0
+      }
+    },
+    {
+      "question": "Technology stocks, excluding BUY signals",
+      "accepted_params": {
+        "signal": "BUY"
+      }
+    }
+  ],
+  "draft_validation": [
+    {
+      "question": "Alert me if it drops 10%",
+      "drafts": [
+        {
+          "kind": "price_alert",
+          "arguments": {
+            "symbol": "TESTCO",
+            "condition": "below",
+            "threshold": 10.0
+          },
+          "threshold_source": {
+            "kind": "typed",
+            "key": null,
+            "display": "$10.00"
+          },
+          "summary": "Price alert: email me when TESTCO closes below $10.00"
+        }
+      ],
+      "dropped": []
+    },
+    {
+      "question": "Alert me below 100",
+      "drafts": [
+        {
+          "kind": "price_alert",
+          "arguments": {
+            "symbol": "TESTCO",
+            "condition": "above",
+            "threshold": 100.0
+          },
+          "threshold_source": {
+            "kind": "typed",
+            "key": null,
+            "display": "$100.00"
+          },
+          "summary": "Price alert: email me when TESTCO closes above $100.00"
+        }
+      ],
+      "dropped": []
+    },
+    {
+      "question": "Alert me below its 50-bar average",
+      "drafts": [
+        {
+          "kind": "price_alert",
+          "arguments": {
+            "symbol": "TESTCO",
+            "condition": "below",
+            "threshold": 140.0
+          },
+          "threshold_source": {
+            "kind": "packet",
+            "key": "kscore.fair_price",
+            "display": "$140.00",
+            "state": "OK"
+          },
+          "summary": "Price alert: email me when TESTCO closes below $140.00 (the K-Score model's fair-value estimate; a model output, not an analyst price target)"
+        }
+      ],
+      "dropped": []
+    }
+  ],
+  "lost_save_ack": {
+    "errors": [
+      {
+        "status": 502,
+        "message": "could not save: response lost after committing"
+      },
+      {
+        "status": 409,
+        "message": "your alerts or watchlist changed since this draft was made; ask again so the draft reflects them"
+      }
+    ],
+    "alerts_created": 1,
+    "writes_attempted": 1
+  },
+  "two_sibling_drafts": {
+    "results": [
+      "saved",
+      {
+        "status": 409,
+        "message": "your alerts or watchlist changed since this draft was made; ask again so the draft reflects them"
+      }
+    ],
+    "alerts_created": 1
+  },
+  "changed_email_effect": {
+    "before": [
+      "Emails OFF"
+    ],
+    "after": [
+      "Emails ON"
+    ],
+    "same_state_version": true
+  }
+}

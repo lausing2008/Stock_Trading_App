@@ -28,7 +28,8 @@ def r():
 
 def test_startup_migration_creates_copilot_schema_idempotently(r):
     m = r["migration"]
-    assert m["tables"] == ["copilot_conversations", "copilot_messages", "copilot_usage_day"]
+    assert m["tables"] == ["copilot_conversations", "copilot_draft_receipts", "copilot_messages",
+                           "copilot_usage_day"]
     assert m["usage_pk"] == ["user_id", "day"] and m["usage_fk_ondelete"] == "CASCADE"
     assert m["has_claimed_at"] and m["unique"] == ["user_id", "request_id", "role"]
     assert m["fk_ondelete"] == {"copilot_conversations": "CASCADE", "users": "CASCADE"}
@@ -67,3 +68,11 @@ def test_a_conversation_deleted_mid_answer_is_not_resurrected_under_a_real_fk(r)
     d = r["delete_during_generation"]
     assert d["outcome"] == ["err", 409] and d["model_calls"] == 1
     assert d["rows_for_request"] == 0
+
+
+
+def test_concurrent_confirms_create_one_alert_and_one_receipt_per_draft(r):
+    c = r["confirm_races"]
+    assert c["alerts"] == 2, "8 confirms of one draft + its sibling: exactly two alerts"
+    assert c["receipt_rows"] == 2 and c["receipts"] == ["saved", "saved"]
+    assert all(o.startswith("('ok'") for o in c["same_draft_outcomes"]), c["same_draft_outcomes"]

@@ -58,6 +58,8 @@ if PG:
         c.execute(text("ALTER TABLE price_alerts DROP COLUMN idempotency_key, "
                        "DROP COLUMN request_fingerprint"))
     before = {c["name"] for c in inspect(eng).get_columns("price_alerts")}
+    from db.capability_checks import copilot_draft_save                # noqa: E402
+    ready_before = copilot_draft_save(eng).evaluate()["state"]
     from db import init_db                                            # noqa: E402
     init_db()
     init_db()                                                         # idempotent re-run
@@ -68,6 +70,8 @@ if PG:
         "columns_before": sorted({"idempotency_key", "request_fingerprint"} & before),
         "columns_after": sorted({"idempotency_key", "request_fingerprint"} & after),
         "index_unique": bool(idx.get("uq_price_alerts_user_idempotency", {}).get("unique")),
+        "draft_save_ready_before": ready_before,
+        "draft_save_ready_after": copilot_draft_save(eng).evaluate()["state"],
     }
 
 Session = sessionmaker(bind=eng)
@@ -177,4 +181,78 @@ R["preview"] = {
     "after_add": p_after["already_in_list"],
     "foreign_list": foreign,
 }
+# ── Review S5: consent-relevant changes change the version; a stale version is refused ──
+from src.api import signal_alerts as SA                              # noqa: E402
+with Session() as s:
+    s.add(M.Stock(symbol="NEWCO", name="N", market=M.Market.US, exchange=M.Exchange.NASDAQ,
+                  currency="USD"))
+    s.execute(text("DELETE FROM alert_preferences")); s.commit()
+with Session() as s:
+    v_on = W.preview_add("NEWCO", 10, user(1), s)["effects_version"]
+    sv_on = SA.preview_signal_alert("NEWCO", "LONG", "all", s, user(1))["effects_version"]
+    s.add(M.AlertPreference(user_id=1, alert_type="signal", enabled=False)); s.commit()
+    v_off = W.preview_add("NEWCO", 10, user(1), s)["effects_version"]
+    sv_off = SA.preview_signal_alert("NEWCO", "LONG", "all", s, user(1))["effects_version"]
+s5 = {"watchlist_version_changes": v_on != v_off, "signal_version_changes": sv_on != sv_off}
+with Session() as s:
+    try:
+        W.add_to_watchlist("NEWCO", 10, user(1), s, expected_effects=v_on)
+        s5["stale_watchlist_add"] = "accepted"
+    except HTTPException as e:
+        s5["stale_watchlist_add"] = e.status_code
+with Session() as s:
+    s5["rows_after_refusal"] = s.execute(text(
+        "SELECT count(*) FROM watchlist_items wi JOIN stocks st ON st.id = wi.stock_id "
+        "WHERE st.symbol='NEWCO'")).scalar()
+    try:
+        SA.create_signal_alert(SA.SignalAlertCreate(symbol="NEWCO", horizon="LONG",
+                                                    expected_effects_version=sv_on), s, user(1))
+        s5["stale_signal"] = "accepted"
+    except HTTPException as e:
+        s5["stale_signal"] = e.status_code
+with Session() as s:
+    W.add_to_watchlist("NEWCO", 10, user(1), s, expected_effects=v_off)
+    s5["current_version_add"] = s.execute(text(
+        "SELECT count(*) FROM watchlist_items wi JOIN stocks st ON st.id = wi.stock_id "
+        "WHERE st.symbol='NEWCO'")).scalar()
+R["s5"] = s5
+
+# ── Simultaneous watchlist adds and signal subscriptions (review follow-up) ──
+with Session() as s:
+    s.add(M.Stock(symbol="RACE1", name="R", market=M.Market.US, exchange=M.Exchange.NASDAQ,
+                  currency="USD")); s.commit()
+
+
+def race(fn, n=8):
+    outs, lk, bar = [], threading.Lock(), threading.Barrier(n)
+
+    def w():
+        bar.wait()
+        with Session() as s:
+            try:
+                fn(s); r = "ok"
+            except HTTPException as e:
+                r = e.status_code
+            except Exception as e:                       # noqa: BLE001 — an unhandled 500
+                r = type(e).__name__
+        with lk:
+            outs.append(r)
+    ts = [threading.Thread(target=w) for _ in range(n)]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    return outs
+
+
+wl_out = race(lambda s: W.add_to_watchlist("RACE1", 10, user(1), s))
+sig_out = race(lambda s: SA.create_signal_alert(SA.SignalAlertCreate(symbol="RACE1",
+                                                                     horizon="SHORT"), s, user(1)))
+with Session() as s:
+    R["races"] = {
+        "watchlist_outcomes": sorted(set(map(str, wl_out))),
+        "watchlist_rows": s.execute(text(
+            "SELECT count(*) FROM watchlist_items wi JOIN stocks st ON st.id = wi.stock_id "
+            "WHERE st.symbol='RACE1' AND wi.watchlist_id = 10")).scalar(),
+        "signal_outcomes": sorted(set(map(str, sig_out))),
+        "signal_rows": s.execute(text("SELECT count(*) FROM signal_alerts WHERE symbol='RACE1' "
+                                      "AND horizon='SHORT' AND user_id=1")).scalar(),
+    }
 print(json.dumps(R, default=str))

@@ -190,8 +190,20 @@ def user_turn_status(session, user_id: int, request_id: str) -> str | None:
 EVIDENCE_PREVIEW = 5
 
 
+def _receipts(m: CopilotMessage) -> dict:
+    """Draft save state lives in copilot_draft_receipts, not in the message JSON (review S4)."""
+    from sqlalchemy.orm import object_session
+    from db.models import CopilotDraftReceipt
+    sess = object_session(m)
+    if sess is None or m.id is None or not (m.grounding or {}).get("drafts"):
+        return {}
+    return {r.draft_id: r for r in sess.execute(
+        select(CopilotDraftReceipt).where(CopilotDraftReceipt.message_id == m.id)).scalars()}
+
+
 def serialise_message(m: CopilotMessage) -> dict:
     g = m.grounding or {}
+    rc = _receipts(m)
     refs = [{**r, "evidence": (r.get("evidence") or [])[:EVIDENCE_PREVIEW],
              "evidence_count": len(r.get("evidence") or [])}
             for r in g.get("evidence_refs", [])]
@@ -202,7 +214,11 @@ def serialise_message(m: CopilotMessage) -> dict:
         "price_as_of": g.get("price_as_of"), "source_times": g.get("source_times", {}),
         "rejection_reasons": g.get("rejection_reasons", []), "model": m.model,
         # The idempotency key stays server-side; the client confirms by draft id.
-        "drafts": [{k: v for k, v in d.items() if k != "idempotency_key"}
+        "drafts": [{**{k: v for k, v in d.items() if k != "idempotency_key"},
+                    **({"status": "saved", "result": rc[d["id"]].result}
+                       if d["id"] in rc and rc[d["id"]].status == "saved"
+                       else {"status": "saving"} if d["id"] in rc and rc[d["id"]].status == "executing"
+                       else {})}
                    for d in g.get("drafts", [])],
         "dropped_drafts": g.get("dropped_drafts", []),
     }

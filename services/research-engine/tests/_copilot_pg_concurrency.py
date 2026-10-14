@@ -116,7 +116,7 @@ def race(n, make_coro):
         barrier.wait()
         try:
             r = asyncio.new_event_loop().run_until_complete(make_coro())
-            res = ("ok", r["replayed"], r["message"]["id"])
+            res = ("ok", r.get("replayed"), (r.get("message") or r.get("draft") or {}).get("id"))
         except C.CopilotError as e:
             res = ("err", e.status, None)
         with lock:
@@ -257,6 +257,61 @@ outs6 = race(1, lambda: C.answer(turn("del-mid-pg01"), session_factory=SessionLo
 R["delete_during_generation"] = {
     "outcome": outs6[0][:2], "model_calls": dm.n,
     "rows_for_request": count("request_id = 'del-mid-pg01'"),
+}
+
+# ── 7. Concurrent CONFIRMATIONS (review S1/S4): receipt races on a real database ──
+from src.copilot import drafts as Dr                                 # noqa: E402
+
+
+class SafeMarket:
+    """Thread-safe market-data stand-in: alerts keyed by idempotency key, every write counted."""
+    def __init__(self):
+        self.lock, self.by_key, self.writes = threading.Lock(), {}, 0
+
+    async def alerts(self):
+        with self.lock:
+            return [{"id": v["id"], "symbol": v["symbol"], "condition": v["condition"],
+                     "threshold": v["threshold"]} for v in self.by_key.values()]
+
+    async def create_alert(self, body):
+        await asyncio.sleep(0.2)                 # widen the window for overlapping confirms
+        with self.lock:
+            self.writes += 1
+            k = body["idempotency_key"]
+            if k not in self.by_key:
+                self.by_key[k] = {"id": len(self.by_key) + 1, **body}
+            return self.by_key[k]
+
+
+sm = SafeMarket()
+two = ('<answer>Two alerts are ready to review.</answer>'
+       '<draft kind="price_alert" condition="below" threshold="90"/>'
+       '<draft kind="price_alert" condition="above" threshold="150"/>')
+
+
+class Text:
+    async def __call__(self, *a, **k):
+        return L.LlmReply(text=two, model="t", usage={"input_tokens": 1, "output_tokens": 1})
+
+
+t7 = C.TurnRequest(username="alice", symbol="TESTCO", question="Alert me below 90 and above 150",
+                   request_id="confirm-race-01", conversation_id=None, provider="claude",
+                   model="m", api_key="k", uses_shared_key=False, market=sm)
+msg = asyncio.new_event_loop().run_until_complete(
+    C.answer(t7, session_factory=SessionLocal, llm_call=Text()))["message"]
+d0, d1 = msg["drafts"][0]["id"], msg["drafts"][1]["id"]
+same = race(8, lambda: C.confirm_draft(SessionLocal, "alice", msg["id"], d0, sm))
+both = race(2, (lambda it=iter([d0, d1, d1]): (
+    lambda: C.confirm_draft(SessionLocal, "alice", msg["id"], next(it), sm)))())
+with SessionLocal() as s:
+    receipts = [tuple(r) for r in s.execute(text(
+        "SELECT draft_id, status FROM copilot_draft_receipts WHERE message_id = :m ORDER BY draft_id"),
+        {"m": msg["id"]}).all()]
+R["confirm_races"] = {
+    "same_draft_outcomes": sorted({str(o[:2]) for o in same}),
+    "alerts": len(sm.by_key),
+    "receipts": sorted(st for _, st in receipts),
+    "receipt_rows": len(receipts),
 }
 
 R["_meta"] = {"server": eng.dialect.name}

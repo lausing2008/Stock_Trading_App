@@ -47,7 +47,7 @@ export function DraftCard({ messageId, draft }: { messageId?: number; draft: Cop
   return (
     <div data-testid="draft-card" style={{ marginTop: '8px', padding: '8px 10px', borderRadius: '8px', border: '1px dashed rgba(167,139,250,0.5)', background: 'rgba(167,139,250,0.06)', fontSize: '12px' }}>
       <div style={{ fontWeight: 700, color: '#c4b5fd' }}>
-        {d.status === 'saved' ? 'Saved' : 'Draft — not saved'}: {d.summary}
+        {d.status === 'saved' ? 'Saved' : d.status === 'saving' ? 'Save not yet confirmed' : 'Draft — not saved'}: {d.summary}
       </div>
       {d.threshold_source && (
         <div style={{ color: '#94a3b8' }}>
@@ -60,12 +60,14 @@ export function DraftCard({ messageId, draft }: { messageId?: number; draft: Cop
       </ul>
       {d.status !== 'saved' && (
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '6px' }}>
-          <button onClick={save} disabled={busy || expired || messageId === undefined}
+          <button onClick={save} disabled={busy || (expired && d.status !== 'saving') || messageId === undefined}
             style={{ padding: '4px 12px', borderRadius: '6px', border: '1px solid #7c3aed', background: 'rgba(124,58,237,0.25)', color: '#e9d5ff', cursor: busy || expired ? 'not-allowed' : 'pointer', fontSize: '12px' }}>
             {busy ? 'Saving…' : 'Save'}
           </button>
           <span style={{ color: '#64748b', fontSize: '11px' }}>
-            {expired ? 'Expired — ask again for a fresh draft.' : `Expires ${fmtTime(d.expires_at)}`}
+            {d.status === 'saving'
+              ? 'A save was started but not confirmed. Press Save to check; it will not create a duplicate.'
+              : expired ? 'Expired — ask again for a fresh draft.' : `Expires ${fmtTime(d.expires_at)}`}
           </span>
         </div>
       )}

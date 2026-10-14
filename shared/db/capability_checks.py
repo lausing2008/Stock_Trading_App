@@ -143,6 +143,39 @@ def _unique_constraint(engine, table: str, column: str):
     return _check
 
 
+def _unique_key(engine, table: str, columns: tuple[str, ...]):
+    """A unique constraint or index on EXACTLY these columns, in any order (composite keys).
+
+    `_unique_constraint` deliberately accepts single-column keys only. An idempotency key scoped
+    to a user is (user_id, key) — composite by design — so it needs its own exact check. A
+    partial index is accepted only for `... IS NOT NULL`, the intended shape.
+    """
+    want = sorted(columns)
+
+    def _check():
+        from sqlalchemy import inspect as _sa_inspect
+        try:
+            insp = _sa_inspect(engine)
+            if table not in set(insp.get_table_names()):
+                return Readiness.NOT_READY, f"table {table!r} is absent"
+            keys = list(insp.get_unique_constraints(table)) + [
+                i for i in insp.get_indexes(table) if i.get("unique")]
+        except Exception as exc:                        # noqa: BLE001
+            return Readiness.UNKNOWN, f"could not inspect constraints: {type(exc).__name__}"[:200]
+        for k in keys:
+            if sorted(k.get("column_names") or []) != want:
+                continue
+            opts = k.get("dialect_options") or {}
+            pred = opts.get("postgresql_where") or opts.get("sqlite_where")
+            if pred is None or "isnotnull" in str(pred).lower().replace(" ", ""):
+                return Readiness.READY, f"unique key on {table}({', '.join(columns)})"
+            return Readiness.UNKNOWN, (f"{table}({', '.join(columns)}) unique only where "
+                                       f"{pred!r}; coverage cannot be established")
+        return Readiness.NOT_READY, (f"{table} has NO unique key on ({', '.join(columns)}) — "
+                                     f"concurrent saves could create duplicates")
+    return _check
+
+
 def _columns_exist(engine, table: str, columns: tuple[str, ...]):
     def _check():
         from sqlalchemy import inspect as _sa_inspect
@@ -158,6 +191,38 @@ def _columns_exist(engine, table: str, columns: tuple[str, ...]):
             return Readiness.NOT_READY, f"{table} is missing {', '.join(missing)}"
         return Readiness.READY, f"{table} has {', '.join(columns)}"
     return _check
+
+
+def copilot_draft_save(engine) -> Capability:
+    """Copilot drafts may be SAVED (independent phase 2 review, migration follow-up).
+
+    `_apply_isolated_ddl` logs a failed statement and carries on, so a successful startup does
+    not prove the price-alert idempotency migration ran. Saving a draft therefore requires the
+    structures its safety rests on, checked — not inferred from the service being up.
+    """
+    return Capability(
+        name="copilot_draft_save",
+        blocks="copilot drafts cannot be saved; the ordinary alert and watchlist screens still work",
+        impact=Impact.USER_WRITE,
+        recovery="the draft stays unsaved and can be saved once the prerequisite returns",
+        requirements=[
+            Requirement("price-alert idempotency columns", "a retried save returns the first alert",
+                        _columns_exist(engine, "price_alerts",
+                                       ("idempotency_key", "request_fingerprint")), Level.SCHEMA),
+            Requirement("price-alert idempotency key", "one alert per (user, key), even concurrently",
+                        _unique_key(engine, "price_alerts", ("user_id", "idempotency_key")),
+                        Level.SCHEMA),
+            Requirement("draft receipts", "a lost acknowledgment is reconciled, not refused",
+                        _table_exists(engine, "copilot_draft_receipts"), Level.SCHEMA),
+            Requirement("one stock per watchlist", "concurrent adds cannot duplicate a row",
+                        _unique_key(engine, "watchlist_items", ("watchlist_id", "stock_id")),
+                        Level.SCHEMA),
+            Requirement("one subscription per (user, symbol, horizon)",
+                        "concurrent subscribes cannot duplicate a row",
+                        _unique_key(engine, "signal_alerts", ("user_id", "symbol", "horizon")),
+                        Level.SCHEMA),
+        ],
+    )
 
 
 def build_matrix(engine) -> list[Capability]:
@@ -297,4 +362,6 @@ def build_matrix(engine) -> list[Capability]:
                                             "broker_submitted_at")), Level.SCHEMA),
             ],
         ),
+        # Appended LAST: consumers and tests read the matrix in its established order.
+        copilot_draft_save(engine),
     ]

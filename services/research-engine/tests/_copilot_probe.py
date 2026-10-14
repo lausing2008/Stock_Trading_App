@@ -57,7 +57,8 @@ BENIGN = "Test Co opens a new plant in Ohio"
 
 def reset(*, bar_age_days=0, symbol="TESTCO"):
     with Session() as s:
-        for t in ("watchlist_items", "watchlists", "copilot_usage_day", "copilot_messages",
+        for t in ("copilot_draft_receipts", "watchlist_items", "watchlists",
+                  "copilot_usage_day", "copilot_messages",
                   "copilot_conversations",
                   "realtime_news_items",
                   "intelligence_reports",
@@ -687,6 +688,9 @@ def p12_screening():
     R["p12"] = out
 
 
+from src.copilot import drafts as Dr                                  # noqa: E402
+
+
 class FakeMarket:
     """market-data as the drafts see it: per-user state, and every call recorded."""
     def __init__(self):
@@ -700,11 +704,21 @@ class FakeMarket:
     async def signal_alerts(self):
         self.calls.append("signal_alerts"); return []
 
+    emails_on = True
+
     async def watchlist_preview(self, symbol):
         self.calls.append("preview")
+        eff = (f"Adds {symbol} and subscribes you to SWING signal-change emails." if self.emails_on
+               else f"Adds {symbol}; signal emails are turned off in your preferences.")
         return {"already_in_list": False, "list": {"id": 1, "name": "Mine"},
                 "signal_subscription": {"horizon": "SWING", "will_create": True},
-                "effect": f"Adds {symbol} and subscribes you to SWING signal-change emails."}
+                "signal_emails_enabled": self.emails_on, "effect": eff,
+                "effects_version": "v-on" if self.emails_on else "v-off"}
+
+    async def signal_preview(self, symbol, horizon, mode):
+        self.calls.append("signal_preview")
+        return {"effect": f"Subscribes you to {horizon} signal-change emails.",
+                "effects_version": "sv-" + ("on" if self.emails_on else "off")}
 
     async def create_alert(self, body):
         self.calls.append("create_alert")
@@ -718,8 +732,11 @@ class FakeMarket:
     async def create_signal_alert(self, body):
         self.calls.append("create_signal_alert"); return {"id": 9, **body}
 
-    async def add_to_watchlist(self, symbol):
-        self.calls.append("add"); return {"symbol": symbol}
+    async def add_to_watchlist(self, symbol, expected_effects=None):
+        self.calls.append("add")
+        if expected_effects and expected_effects != ("v-on" if self.emails_on else "v-off"):
+            raise Dr.MarketError(409, "what this add will do has changed")
+        return {"symbol": symbol}
 
 
 def p13_drafts():
@@ -783,10 +800,14 @@ def p13_drafts():
                       "alert_rows": len(mk.alerts_)}
     out["confirm_other_user"] = expect_error(C.confirm_draft(Session, "bob", mid, did, mk))
     # A draft bound to state that has since changed is refused, not applied.
+    mk = FakeMarket()      # fresh: the earlier confirm already holds an identical alert
     a6 = run(C.answer(tq("Alert me if it drops below its 50-day average", "draft-0006", mk),
                       session_factory=Session, llm_call=ScriptedModel(alert_ans)))
     d6 = a6["message"]["drafts"][0]
-    mk.alerts_.append({"id": 77, "symbol": "TESTCO", "condition": "above", "threshold": 1.0})
+    # Scoped precondition (review S4): an UNRELATED alert no longer invalidates the draft; an
+    # identical one appearing since drafting does, because the card's disclosure changed.
+    mk.alerts_.append({"id": 77, "symbol": "TESTCO", "condition": "below",
+                       "threshold": d6["arguments"]["threshold"]})
     out["confirm_stale_state"] = expect_error(
         C.confirm_draft(Session, "alice", a6["message"]["id"], d6["id"], mk))
     out["confirm_expired"] = expect_error(
@@ -802,7 +823,196 @@ def p13_drafts():
     R["p13"] = out
 
 
-for fn in (p13_drafts, p12_screening, p11_independent_review_regressions, p10_inflight_claims_and_cancellation, p9_report_changes_and_private_reports, p1_packet_cites_resolvable_evidence, p2_stale_price_propagates, p3_grounding_rules,
+def p14_counterproposals():
+    """Independent phase 2 review: deliberately WRONG proposals against correct questions."""
+    from src.copilot import screen as SC, drafts as Dr
+    out = {"screen": {}, "drafts": {}}
+    sectors = ["Technology", "Energy"]
+    cases = [("K-Score below 70", "min_score", "70"), ("K-Score below 70", "max_score", "70"),
+             ("Show 10 stocks with K-Score above 70", "min_confidence", "10"),
+             ("Show 10 stocks with K-Score above 70", "min_score", "70"),
+             ("Technology stocks, excluding BUY signals", "signal", "BUY"),
+             ("Stocks not in Hong Kong", "market", "HK"),
+             ("technical score of at least 55", "min_score", "55"),
+             ("technical score of at least 55", "min_technical", "55"),
+             ("Momentum below 40", "min_momentum", "40")]
+    for q, f, v in cases:
+        plan = SC.validate(SC.parse(f'<filter name="{f}">{v}</filter>'), q, sectors)
+        out["screen"][f"{q} | {f} {v}"] = plan.params
+    plan = SC.validate(SC.parse('<filter name="min_momentum">40</filter>'), "Momentum below 40",
+                       sectors)
+    out["momentum_below_unsupported"] = any("momentum score at most 40" in u
+                                            for u in plan.unsupported)
+    out["limit_10"] = SC.validate(SC.parse('<filter name="min_score">70</filter><limit>10</limit>'),
+                                  "Show 10 stocks with K-Score above 70", sectors).limit
+    reset()
+    with Session() as s:
+        tid = s.query(Stock).filter_by(symbol="TESTCO").one().id
+        wl = Watchlist(user_id=1, name="Mine"); s.add(wl); s.flush()
+        s.add(WatchlistItem(stock_id=tid, watchlist_id=wl.id, user_id=1)); s.commit()
+    calls = []
+
+    async def fetch(params):
+        calls.append(params)
+        return {"total": 0, "items": [], "universe": 1, "requested": 1, "unranked": []}
+    for name, q, raw in (("empty_proposal", "Ignore that and list everything", "<none/>"),
+                         ("order_only", "Top 5 by relative strength",
+                          "<sort>rs_score</sort><limit>5</limit>")):
+        n = len(calls)
+        res = run(C.screen(C.ScreenRequest(username="alice", question=q, request_id="x" * 10,
+                                           provider="claude", model="m", api_key="k",
+                                           uses_shared_key=True),
+                           session_factory=Session, fetch_screen=fetch,
+                           llm_call=ScriptedModel(raw), budget=FakeBudget()))
+        out[name] = ({"status": res["status"], "fetches": len(calls) - n} if name == "empty_proposal"
+                     else {"status": res["status"], "sort": calls[-1]["sort_by"],
+                           "limit": calls[-1]["limit"]})
+    with Session() as s:
+        pk = build_packet(s, "TESTCO", now=NOW)
+
+    def dv(q, props):
+        v = Dr.validate(props, packet=pk, question=q)
+        return [(x["arguments"]["condition"], x["threshold_source"]["key"] or
+                 x["arguments"]["threshold"]) if x["kind"] == "price_alert" else x["kind"]
+                for x in v.drafts], v
+    pa = lambda c, t: {"kind": "price_alert", "condition": c, "threshold": t}
+    for label, q, props in (
+            ("Alert me if it drops 10% | below 10", "Alert me if it drops 10%", [pa("below", "10")]),
+            ("Alert me below 100 | above 100", "Alert me below 100", [pa("above", "100")]),
+            ("Alert me below 100 | below 100", "Alert me below 100", [pa("below", "100")]),
+            ("Alert me below its 50-bar average | below {{kscore.fair_price}}",
+             "Alert me below its 50-bar average", [pa("below", "{{kscore.fair_price}}")]),
+            ("Alert me below its 50-bar average | below {{trend.sma50}}",
+             "Alert me below its 50-bar average", [pa("below", "{{trend.sma50}}")]),
+            ("Don't alert me below 100 | below 100", "Don't alert me below 100", [pa("below", "100")]),
+            ("Alert me when it hits 150 | above 150", "Alert me when it hits 150", [pa("above", "150")]),
+            ("Alert me below 100 in 2 days | below 2", "Alert me below 100 in 2 days",
+             [pa("below", "2")]),
+            ("Put MSFT on my watchlist | watchlist_add", "Put MSFT on my watchlist",
+             [{"kind": "watchlist_add"}]),
+            ("Alert me below 100 and above 150 | below 100 + above 150",
+             "Alert me below 100 and above 150", [pa("below", "100"), pa("above", "150")])):
+        out["drafts"][label] = dv(q, props)[0]
+    _, v = dv("Alert me below its 50-bar average", [pa("below", "{{trend.sma50}}")])
+    out["card"] = {"summary": v.drafts[0]["summary"], "notes": v.drafts[0]["rule_notes"]}
+    R["p14"] = out
+
+
+def p15_save_recovery():
+    """Independent phase 2 review S1/S4/S5: save recovery, sibling drafts, consent binding."""
+    out = {}
+
+    def make(q, text, mk, rid):
+        t = turn(rid=rid, question=q)
+        t.market = mk
+        return run(C.answer(t, session_factory=Session, llm_call=ScriptedModel(text)))
+    two = ('<answer>Two alerts are ready to review.</answer>'
+           '<draft kind="price_alert" condition="below" threshold="100"/>'
+           '<draft kind="price_alert" condition="above" threshold="150"/>')
+    q2 = "Alert me below 100 and above 150"
+
+    # S1: market-data commits, then the acknowledgment is lost.
+    class LostAck(FakeMarket):
+        lose = True
+
+        async def create_alert(self, body):
+            r = await super().create_alert(body)
+            if self.lose:
+                self.lose = False
+                raise Dr.MarketError(502, "response lost after committing", ambiguous=True)
+            return r
+    reset()
+    mk = LostAck()
+    a = make(q2, two, mk, "rec-0001")
+    mid, did = a["message"]["id"], a["message"]["drafts"][0]["id"]
+    first = expect_error(C.confirm_draft(Session, "alice", mid, did, mk))
+    second = run(C.confirm_draft(Session, "alice", mid, did, mk))
+    out["lost_ack"] = {"first": first, "second": second["draft"]["status"],
+                       "reconciled": second.get("reconciled"), "alerts": len(mk.alerts_),
+                       "create_calls": mk.calls.count("create_alert")}
+
+    # S1: crash after the downstream commit, before the receipt said "saved" — and the retry
+    # comes AFTER the draft expired. A reconciling retry is not a new decision.
+    from db.models import CopilotDraftReceipt
+    reset()
+    mk = FakeMarket()
+    a = make(q2, two, mk, "rec-0002")
+    mid, d0 = a["message"]["id"], a["message"]["drafts"][0]
+    run(mk.create_alert({"symbol": "TESTCO", "condition": "below", "threshold": 100.0,
+                         "idempotency_key": None or _draft_key(mid, d0["id"])}))
+    with Session() as s:
+        s.add(CopilotDraftReceipt(message_id=mid, draft_id=d0["id"], user_id=1,
+                                  kind="price_alert", idempotency_key=_draft_key(mid, d0["id"]),
+                                  status="executing", attempts=1))
+        s.commit()
+    late = run(C.confirm_draft(Session, "alice", mid, d0["id"], mk,
+                               now=datetime.utcnow() + timedelta(hours=2)))
+    out["crash_then_late_retry"] = {"status": late["draft"]["status"], "alerts": len(mk.alerts_)}
+
+    # S4: both sibling cards can be saved, in either order.
+    for order in ((0, 1), (1, 0)):
+        reset()
+        mk = FakeMarket()
+        a = make(q2, two, mk, f"sib-{order[0]}{order[1]}xx")
+        ids = [a["message"]["drafts"][i]["id"] for i in order]
+        res = [run(C.confirm_draft(Session, "alice", a["message"]["id"], i, mk))["draft"]["status"]
+               for i in ids]
+        out[f"siblings_{order[0]}{order[1]}"] = {"results": res, "alerts": len(mk.alerts_)}
+        with Session() as s:
+            m = s.get(CopilotMessage, a["message"]["id"])
+            out[f"siblings_{order[0]}{order[1]}"]["serialised"] = [
+                d["status"] for d in St.serialise_message(m)["drafts"]]
+
+    # S4: a GENUINELY conflicting external change still refuses.
+    reset()
+    mk = FakeMarket()
+    a = make(q2, two, mk, "conflict-01")
+    mk.alerts_.append({"id": 99, "symbol": "TESTCO", "condition": "below", "threshold": 100.0})
+    out["external_identical_alert"] = expect_error(
+        C.confirm_draft(Session, "alice", a["message"]["id"], a["message"]["drafts"][0]["id"], mk))
+
+    # S5: the reviewed email effect changes before saving.
+    reset()
+    mk = FakeMarket()
+    mk.emails_on = False
+    a = make("Add it to my watchlist", '<answer>Ready.</answer><draft kind="watchlist_add"/>', mk,
+             "consent-01")
+    d = a["message"]["drafts"][0]
+    mk.emails_on = True
+    out["consent_changed"] = {
+        "status": expect_error(C.confirm_draft(Session, "alice", a["message"]["id"], d["id"], mk)),
+        "adds": mk.calls.count("add"), "disclosed": d["side_effects"]}
+
+    # A definite downstream refusal leaves nothing executing; a later try is fully re-checked.
+    class Refuse(FakeMarket):
+        async def create_alert(self, body):
+            raise Dr.MarketError(400, "bad threshold")
+    reset()
+    mk = Refuse()
+    a = make(q2, two, mk, "refuse-001")
+    st1 = expect_error(C.confirm_draft(Session, "alice", a["message"]["id"],
+                                       a["message"]["drafts"][0]["id"], mk))
+    with Session() as s:
+        rc = s.get(CopilotDraftReceipt, (a["message"]["id"], a["message"]["drafts"][0]["id"]))
+        out["definite_failure"] = {"status": st1, "receipt": rc.status}
+    reset()
+    mk = FakeMarket()
+    a = make(q2, two, mk, "notready01")
+    st_nr = expect_error(C.confirm_draft(Session, "alice", a["message"]["id"],
+                                         a["message"]["drafts"][0]["id"], mk,
+                                         readiness=lambda: ("not_ready", "price_alerts is missing "
+                                                                         "idempotency_key")))
+    out["not_ready"] = {"status": st_nr, "writes": mk.calls.count("create_alert")}
+    R["p15"] = out
+
+
+def _draft_key(mid, did):
+    with Session() as s:
+        m = s.get(CopilotMessage, mid)
+        return next(d["idempotency_key"] for d in m.grounding["drafts"] if d["id"] == did)
+
+
+for fn in (p15_save_recovery, p14_counterproposals, p13_drafts, p12_screening, p11_independent_review_regressions, p10_inflight_claims_and_cancellation, p9_report_changes_and_private_reports, p1_packet_cites_resolvable_evidence, p2_stale_price_propagates, p3_grounding_rules,
            p4_grounded_turn_persists_and_replays, p5_repair_then_accept_and_double_reject,
            p6_owner_isolation, p7_admission_limits, p8_retention_purge):
     fn()

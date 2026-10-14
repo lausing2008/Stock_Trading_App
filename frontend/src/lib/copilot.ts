@@ -27,7 +27,9 @@ export interface CopilotDraft {
   threshold_source?: { kind: 'packet' | 'typed'; key: string | null; display: string; state?: string };
   side_effects: string[];
   expires_at: string;
-  status: 'proposed' | 'saved';
+  /** 'saving' = a save was attempted and its outcome is not yet known; Save again checks it. */
+  status: 'proposed' | 'saving' | 'saved';
+  rule_notes?: string[];
   result?: Record<string, unknown>;
 }
 export interface CopilotMessage {

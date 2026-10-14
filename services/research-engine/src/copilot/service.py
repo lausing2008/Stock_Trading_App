@@ -356,17 +356,48 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
                 "replayed": False}
 
 
-async def confirm_draft(session_factory, username: str, message_id: int, draft_id: str,
-                        market, now: datetime | None = None) -> dict:
-    """Save one draft through market-data, as the user. Idempotent; refuses stale drafts.
+_READINESS_CACHE: dict = {}
 
-    Order: ownership → already saved (return it) → expiry → STATE (the user's alerts or list
-    membership must still be what the draft was bound to) → execute → record. A second
-    confirm of a saved draft returns the stored result without calling market-data; two
-    simultaneous confirms are safe because every save is idempotent on market-data's side
-    (price alerts by the draft's key, D2; watchlist adds and signal subscriptions by design).
+
+def draft_save_readiness() -> tuple[str, str]:
+    """(state, evidence) for the copilot_draft_save capability; cached 60 s per process."""
+    import time as _t
+    hit = _READINESS_CACHE.get("v")
+    if hit and _t.monotonic() - hit[0] < 60:
+        return hit[1]
+    try:
+        from db.capability_checks import copilot_draft_save
+        from db.session import engine
+        rep = copilot_draft_save(engine).evaluate()
+        bad = [f"{r['requirement']}: {r['evidence']}" for r in rep["requirements"]
+               if r["state"] != "ready"]
+        val = (rep["state"], "; ".join(bad) or "all prerequisites present")
+    except Exception as exc:                              # noqa: BLE001
+        val = ("unknown", f"readiness could not be checked: {type(exc).__name__}")
+    _READINESS_CACHE["v"] = (_t.monotonic(), val)
+    return val
+
+
+async def confirm_draft(session_factory, username: str, message_id: int, draft_id: str,
+                        market, now: datetime | None = None,
+                        readiness=draft_save_readiness) -> dict:
+    """Save one draft through market-data, as the user. Recovers from a lost acknowledgment.
+
+    THE RECEIPT DECIDES THE PATH (review S1):
+      saved      -> return the stored result; market-data is not called.
+      executing  -> a save was ATTEMPTED and its outcome is unknown (lost response, crash).
+                    RECONCILE: repeat the same request with the same idempotency key. No expiry
+                    or precondition re-check — the decision was already made, and re-checking
+                    would see our own write and refuse it.
+      failed     -> market-data definitively refused (4xx), nothing was written: a new attempt
+                    goes through the full checks again.
+      (none)     -> first attempt: expiry, then the scoped precondition, then write the
+                    `executing` receipt, then call market-data.
+    A concurrent second confirm loses the race to insert the receipt and reconciles instead —
+    safe, because every downstream write is idempotent.
     """
-    from sqlalchemy.orm.attributes import flag_modified
+    from sqlalchemy.exc import IntegrityError as _IE
+    from db.models import CopilotDraftReceipt as Rcpt
     now = now or _utcnow()
     with session_factory() as s:
         uid = St.user_id_for(s, username)
@@ -377,31 +408,78 @@ async def confirm_draft(session_factory, username: str, message_id: int, draft_i
                      None)
         if draft is None:
             raise CopilotError(404, "draft not found")
-    if draft.get("status") == "saved":
-        return {"draft": draft, "replayed": True}
-    if now > datetime.fromisoformat(draft["expires_at"]):
-        raise CopilotError(410, "this draft has expired; ask again for a fresh one")
-    try:
-        state, _effects, _p = await D.state_and_effects(market, draft)
+        rc = s.get(Rcpt, (message_id, draft_id))
+        rc_status = rc.status if rc is not None else None
+        rc_result = rc.result if rc is not None else None
+
+    if rc_status == "saved":
+        return {"draft": {**draft, "status": "saved", "result": rc_result}, "replayed": True}
+
+    # MIGRATION FOLLOW-UP: refuse BEFORE any write when the structures this save's safety rests
+    # on are absent or unverifiable — a successful startup does not prove the migration ran.
+    state_r, evidence_r = readiness()
+    if state_r != "ready":
+        raise CopilotError(503, f"saving drafts is unavailable right now ({state_r}): "
+                                f"{evidence_r}")
+
+    reconcile = rc_status == "executing"
+    if not reconcile:
+        if now > datetime.fromisoformat(draft["expires_at"]):
+            raise CopilotError(410, "this draft has expired; ask again for a fresh one")
+        try:
+            state, _effects, _p = await D.state_and_effects(market, draft)
+        except D.MarketError as exc:
+            raise CopilotError(502 if exc.ambiguous else exc.status,
+                               f"could not check your current state: {exc.detail}")
         if state != draft["state_version"]:
-            raise CopilotError(409, "your alerts or watchlist changed since this draft was made; "
-                                    "ask again so the draft reflects them")
+            raise CopilotError(409, "what this draft would do has changed since it was made "
+                                    "(your alerts, watchlist, email address or alert "
+                                    "preferences); ask again so the card shows the current effect")
+        with session_factory() as s:
+            row = s.get(Rcpt, (message_id, draft_id))
+            try:
+                if row is None:
+                    s.add(Rcpt(message_id=message_id, draft_id=draft_id, user_id=uid,
+                               kind=draft["kind"], idempotency_key=draft["idempotency_key"],
+                               status="executing", attempts=1, created_at=now, updated_at=now))
+                else:                                   # a previous DEFINITE failure
+                    row.status, row.attempts, row.updated_at = "executing", row.attempts + 1, now
+                s.commit()
+            except _IE:
+                s.rollback()
+                reconcile = True                        # a concurrent confirm got there first
+
+    try:
         result = await D.execute(market, draft)
     except D.MarketError as exc:
+        with session_factory() as s:
+            row = s.get(Rcpt, (message_id, draft_id))
+            if row is not None:
+                # Ambiguous (5xx, transport): stay `executing` so a retry reconciles.
+                # Definite (4xx): nothing was written; `failed` allows a fresh, fully checked try.
+                if not exc.ambiguous:
+                    row.status = "failed"
+                row.error, row.updated_at = exc.detail[:500], _utcnow()
+                s.commit()
+        if exc.ambiguous:
+            raise CopilotError(502, "the save may or may not have completed; press Save again "
+                                    "to check — it will not create a duplicate")
         raise CopilotError(exc.status if exc.status in (400, 404, 409) else 502,
                            f"could not save: {exc.detail}")
-    saved = {**draft, "status": "saved", "saved_at": now.isoformat(),
-             "result": {k: result.get(k) for k in ("id", "symbol", "condition", "threshold",
-                                                   "horizon", "alert_mode", "added_at")
-                        if k in result}}
+
+    keep = {k: result.get(k) for k in ("id", "symbol", "condition", "threshold", "horizon",
+                                       "alert_mode", "added_at") if k in result}
     with session_factory() as s:
-        m = s.get(CopilotMessage, message_id)
-        g = dict(m.grounding or {})
-        g["drafts"] = [saved if d["id"] == draft_id else d for d in g.get("drafts", [])]
-        m.grounding = g
-        flag_modified(m, "grounding")
+        row = s.get(Rcpt, (message_id, draft_id))
+        if row is None:                                  # receipt lost to deletion; recreate
+            row = Rcpt(message_id=message_id, draft_id=draft_id, user_id=uid, kind=draft["kind"],
+                       idempotency_key=draft["idempotency_key"], status="saved", attempts=1,
+                       created_at=now)
+            s.add(row)
+        row.status, row.result, row.error, row.updated_at = "saved", keep, None, _utcnow()
         s.commit()
-    return {"draft": saved, "replayed": False}
+    return {"draft": {**draft, "status": "saved", "result": keep},
+            "replayed": False, "reconciled": reconcile}
 
 
 def cancel(session_factory, username: str, request_id: str) -> bool:
@@ -532,7 +610,10 @@ async def screen(req: ScreenRequest, *, session_factory, fetch_screen, llm_call=
                 "coverage": {"universe": None, "matched": None, "shown": 0, "unranked": []}}
 
     plan = SC.validate(proposal, question, sectors)
-    if not plan.interpreted and (plan.dropped or plan.unsupported):
+    # Review S3: an EMPTY proposal (<screen/>, <none/>) used to count as parsed and run an
+    # unfiltered screen. With no validated filter, a screen runs only for a validated ordering
+    # or count ("top 5 by relative strength"); otherwise nothing runs.
+    if not plan.interpreted and not plan.validated_order:
         # Everything asked for was dropped or unsupported. Running the screen anyway would
         # return an UNFILTERED list under a "results" heading — exactly the misreading this
         # module exists to prevent — so nothing runs and the answer says why.

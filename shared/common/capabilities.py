@@ -64,6 +64,7 @@ class Impact(str, Enum):
     DELIVERY = "delivery"            # sending notifications
     EXIT = "exit"                    # closing or reducing exposure — risk REDUCING
     RECONCILIATION = "reconciliation"  # establishing what actually happened
+    USER_WRITE = "user_write"        # saving a change a user reviewed and confirmed
 
 
 def utcnow() -> datetime:
