@@ -521,3 +521,14 @@ when `stockai:live_prices` is empty, so `fetched_at`/`session_date` on real rows
 
 - Benchmarks (SPY/QQQ/SOXX) are not yet subjects; only watchlist symbols and theme baskets.
 - Company-event and macro channels, morning brief, closing recap, quiet hours.
+
+## Audit 2026-10-14 remediation (F1–F5)
+
+Five defects found by [the 2026-10-14 audit](../audits/2026-10-14-alerts-recommendations-audit.md),
+all reproduced through the real detector despite green suites, fixed on 2026-10-15 and recorded
+there in full: settled-session freshness and evidence-time expiry (F1), the drain pausing and
+rechecking the delivery flag before each send (F2), same-session recovery with episode-aware
+event keys (F3), an exclusion record for every subject that cannot be measured (F4), and
+full-window baskets carrying member evidence and the caveat (F5). **Delivery remains disabled.**
+These change shadow counts, so the Oct 21 review must treat pre- and post-deploy sessions as
+separate samples.

@@ -26,7 +26,7 @@ from sqlalchemy import func, select
 
 from common.outcome_price_basis import (best_achievable_status,
                                         classify_observation_window, resolve_window)
-from common.market_calendar import is_regular_session
+from common.market_calendar import is_regular_session, session_bounds
 from db import (AppNotification, CorporateAction, CorporateActionCoverage, NotificationOutbox,
                 Price, RiskEvent, RiskEventReceipt, Stock, TimeFrame, User, WatchlistItem)
 
@@ -64,8 +64,15 @@ EPISODE_MAX_AGE_DAYS = 14
 #: Per-user email ceiling over a rolling 24 hours. Each run sends at most one digest per user,
 #: so this bounds a bad day to a handful of emails however many symbols move.
 MAX_EMAILS_PER_USER_PER_DAY = 6
-#: A queued digest older than this describes a market that has moved on.
-DIGEST_MAX_AGE = timedelta(hours=12)
+#: The oldest EVIDENCE a digest may carry, measured from when the price was observed (the
+#: session close, or the live quote's fetch time) — not from when the digest was queued. 18h
+#: is the shortest span that still lets the 20:10 ET run report an HK close (04:00 ET).
+#: Enforced again at send time through the outbox row's `expires_at`.
+MAX_EVIDENCE_AGE = timedelta(hours=18)
+#: How many completed sessions the settled daily bars may lag the exchange calendar and still
+#: be measured. One absorbs ordinary ingest lag; anything older is excluded as stale, and an
+#: event about an older session is recorded as history, never delivered (AUD 2026-10-14 F1).
+SETTLED_LAG_SESSIONS = 1
 
 _NY = ZoneInfo("America/New_York")
 _HKT = ZoneInfo("Asia/Hong_Kong")
@@ -171,6 +178,38 @@ def _session_date(market: str, now: datetime) -> date:
     return now.astimezone(_HKT if str(market).upper() == "HK" else _NY).date()
 
 
+def last_completed_session(market: str, now: datetime) -> date | None:
+    """The venue's most recent session whose close is at or before `now`."""
+    d = _session_date(market, now)
+    for _ in range(20):
+        bounds = session_bounds(market, d)
+        if bounds and now >= bounds[1]:
+            return d
+        d -= timedelta(days=1)
+    return None
+
+
+def sessions_between(market: str, older: date, newer: date) -> int:
+    """Completed trading sessions after `older` up to and including `newer`."""
+    n, d = 0, newer
+    while d > older and n < 60:
+        if session_bounds(market, d):
+            n += 1
+        d -= timedelta(days=1)
+    return n
+
+
+def observed_at(market: str, as_of: date, quote_fetched_at: str | None) -> datetime | None:
+    """When the price behind an event was observed: the quote's fetch time, else the close."""
+    if quote_fetched_at:
+        try:
+            return datetime.fromisoformat(quote_fetched_at)
+        except ValueError:
+            return None
+    bounds = session_bounds(market, as_of)
+    return bounds[1] if bounds else None
+
+
 def live_quotes(redis_client) -> dict[str, dict]:
     """The shared `stockai:live_prices` cache, keyed by symbol. Empty on any failure.
 
@@ -251,7 +290,7 @@ def _prior_state(session, scope: str, subject: str, rule: str, as_of: date, mode
                                 RiskEvent.observed_to <= as_of)
     if rule in SESSION_RULES:
         q = q.where(RiskEvent.observed_to == as_of)
-    rows = session.execute(q.order_by(RiskEvent.observed_to.desc(), RiskEvent.step.desc())
+    rows = session.execute(q.order_by(RiskEvent.observed_to.desc(), RiskEvent.id.desc())
                            .limit(10)).scalars().all()
     if not rows:
         return None
@@ -264,16 +303,25 @@ def _prior_state(session, scope: str, subject: str, rule: str, as_of: date, mode
             since = [c for d, c in closes if latest.observed_to < d < as_of]
             closed = price_risk.episode_closed(latest.evidence, since)
     worst = max(abs(r.change_pct or 0.0) for r in rows)
-    return {"step": latest.step, "worst_pct": worst, "episode_closed": closed}
+    return {"step": latest.step, "worst_pct": worst, "episode_closed": closed,
+            "event_id": latest.id}
 
 
 def _latest_open_event(session, scope: str, subject: str, rule: str, mode: str,
                        as_of: date) -> RiskEvent | None:
-    ev = session.execute(
-        select(RiskEvent).where(RiskEvent.scope == scope, RiskEvent.subject == subject,
+    """The newest event for this subject+rule up to and INCLUDING `as_of`, if still open.
+
+    Inclusive since 2026-10-14 (F3): an intraday run can see a drop and its recovery inside one
+    session, and excluding today's events meant that recovery was never recorded. A session
+    rule only ever looks at its own session.
+    """
+    q = select(RiskEvent).where(RiskEvent.scope == scope, RiskEvent.subject == subject,
                                 RiskEvent.rule == rule, RiskEvent.delivery_mode == mode,
-                                RiskEvent.observed_to < as_of)
-        .order_by(RiskEvent.observed_to.desc(), RiskEvent.step.desc()).limit(1)).scalars().first()
+                                RiskEvent.observed_to <= as_of)
+    if rule in SESSION_RULES:
+        q = q.where(RiskEvent.observed_to == as_of)
+    ev = session.execute(q.order_by(RiskEvent.observed_to.desc(), RiskEvent.id.desc())
+                         .limit(1)).scalars().first()
     if ev is None or (ev.evidence or {}).get("episode_closed"):
         return None
     return ev
@@ -292,9 +340,14 @@ def _mark_closed(event: RiskEvent, on: date, why: str) -> None:
 
 
 def close_recovered_episodes(session, subject: str, closes: list, mode: str, as_of: date) -> int:
-    """For each episodic symbol rule, close the open episode if prices have recovered."""
+    """Close the open episode of each symbol rule whose price has recovered, and SAY so.
+
+    `closes` ends with the current reading (a live quote intraday). Readings after the event's
+    session count, and so does the current reading when it is from the event's own session —
+    that is the same-session recovery F3 found missing.
+    """
     closed = 0
-    for rule in EPISODIC_SYMBOL_RULES:
+    for rule in EPISODIC_SYMBOL_RULES + ("session_decline",):
         ev = _latest_open_event(session, "symbol", subject, rule, mode, as_of)
         if ev is None:
             continue
@@ -302,6 +355,8 @@ def close_recovered_episodes(session, subject: str, closes: list, mode: str, as_
             _mark_closed(ev, as_of, "age"); closed += 1
             continue
         since = [c for d, c in closes if d > ev.observed_to]
+        if closes and closes[-1][0] == ev.observed_to:
+            since.append(closes[-1][1])
         if price_risk.episode_closed(ev.evidence, since):
             _mark_closed(ev, as_of, "price_recovery"); closed += 1
     return closed
@@ -339,24 +394,62 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
 
     created = unmeasurable = receipts = intraday = episodes_closed = 0
     quote_refusals: dict[str, int] = {}
+    exclusions: dict[str, int] = {}
+    fresh_through: dict[str, date] = {}
+    markets: dict[str, str] = {}
     pending: dict[int, list] = {}
     #: Per symbol: {"as_of", "session", "window"} from ADJUSTED prices, or None when the symbol
     #: was unmeasurable or had no bars. Breadth reads only this — it must never re-derive a raw
     #: move for a symbol the evidence contract already refused.
     measured: dict[str, dict | None] = {}
 
+    def exclude(symbol: str, factor: str, reason: str, as_of: date | None) -> None:
+        """EVERY scanned subject is accounted for. A symbol that silently produced nothing
+        looked exactly like a quiet market (AUD 2026-10-14 F4)."""
+        nonlocal unmeasurable
+        unmeasurable += 1
+        exclusions[factor] = exclusions.get(factor, 0) + 1
+        measured[symbol] = None
+        _persist(session, {"scope": "symbol", "subject": symbol, "rule": price_risk.UNMEASURABLE,
+                           "step": 0, "evidence_status": "unverified",
+                           "limiting_factor": factor, "reason": reason,
+                           "as_of": as_of or today}, mode, today, now)
+
     for symbol in universe:
         stock = stocks.get(symbol)
-        series = bars.get(stock.id, []) if stock else []
+        if stock is None:
+            exclude(symbol, "no_stock_record", "symbol is followed but has no stock record", None)
+            continue
         market = getattr(getattr(stock, "market", None), "value", None) or "US"
-        series, quote_status = with_live_quote(series, quotes.get(symbol), market, now)
+        # SETTLED SESSIONS ONLY (F1). A daily row dated after the last completed session is a
+        # partial bar; it is dropped, and only a live quote that proves itself current may
+        # stand in for today. Refusing a stale quote used to fall back to that partial row.
+        settled_through = last_completed_session(market, now)
+        series = [b for b in bars.get(stock.id, [])
+                  if settled_through is not None and b[0] <= settled_through]
+        if not series:
+            exclude(symbol, "no_price_data",
+                    f"no settled daily bar in the last {_LOOKBACK_DAYS} days", None)
+            continue
+        lag = sessions_between(market, series[-1][0], settled_through)
+        if lag > SETTLED_LAG_SESSIONS:
+            exclude(symbol, "stale_observation",
+                    f"latest settled bar {series[-1][0].isoformat()} is {lag} sessions behind "
+                    f"the last completed session {settled_through.isoformat()}", series[-1][0])
+            continue
+        quote = quotes.get(symbol)
+        series, quote_status = with_live_quote(series, quote, market, now)
         if quote_status == "live_quote":
             intraday += 1
         elif quote_status:
             quote_refusals[quote_status] = quote_refusals.get(quote_status, 0) + 1
         if len(series) < 2:
-            measured[symbol] = None
+            exclude(symbol, "insufficient_history",
+                    f"{len(series)} settled bar(s); a move needs at least two", series[-1][0])
             continue
+        fresh_through[symbol] = settled_through
+        markets[symbol] = market
+        quote_time = quote.get("fetched_at") if quote_status == "live_quote" else None
         closes = [(d, c) for d, c, _ in series][-(_LOOKBACK_SESSIONS + 1):]
         opens = {d: o for d, _, o in series if o is not None}
         window_start, window_end = closes[0][0], closes[-1][0]
@@ -392,7 +485,12 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
             move = price_risk.session_move(list(usable))
             measured[symbol] = {"as_of": window_end,
                                 "session": move["change_pct"] if move else None,
-                                "window": price_risk.window_change(list(usable), slow_n)}
+                                "window": price_risk.window_change(list(usable), slow_n),
+                                "evidence_status": verdict.get("evidence_status"),
+                                "basis": verdict.get("basis"),
+                                "price_source": ("live_quote" if quote_status == "live_quote"
+                                                 else "settled_daily_bars"),
+                                "observed_at": observed_at(market, window_end, quote_time)}
         else:
             measured[symbol] = None
         if verdict.get("usable"):
@@ -401,11 +499,18 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
         candidates = price_risk.evaluate(symbol, "symbol", list(usable), verdict, opens=opens,
                                          slow_sessions=slow_n, slow_steps=slow_steps)
         for cand in candidates:
-            cand["price_source"] = quote_status or "settled_daily_bars"
+            cand["price_source"] = ("live_quote" if quote_status == "live_quote"
+                                    else "settled_daily_bars")
+            if quote_status and quote_status != "live_quote":
+                cand["quote_refused"] = quote_status
+            when = observed_at(market, cand["as_of"], quote_time) if cand.get("as_of") else None
+            cand["observed_at"] = when.isoformat() if when else None
             if div_applied:
                 cand["cash_dividends_added_back"] = div_applied
             if cand["rule"] == price_risk.UNMEASURABLE:
                 unmeasurable += 1
+                factor = cand.get("limiting_factor") or "unmeasurable"
+                exclusions[factor] = exclusions.get(factor, 0) + 1
                 _persist(session, cand, mode, today, now)
                 continue
             if cand["rule"] == "slow_decline":
@@ -420,10 +525,14 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
             emit, why = price_risk.should_emit(prior, cand)
             if not emit:
                 continue
+            if prior is not None and prior.get("episode_closed"):
+                cand["episode_after"] = prior["event_id"]
             event = _persist(session, cand, mode, today, now, note=why)
             if event is not None:
                 created += 1
-                receipts += _record_receipts(session, event, symbol, live, now, pending)
+                receipts += _record_receipts(
+                    session, event, symbol, live, now, pending,
+                    deliverable=_deliverable(cand, settled_through, now))
 
     for theme, members in price_risk_themes().items():
         present = [m for m in members if m in measured]
@@ -449,31 +558,72 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
                     if ev is not None:
                         _mark_closed(ev, reference, "breadth_receded"); episodes_closed += 1
                 continue
-            declined = [moves[m] for m in breadth["declined_symbols"]]
+            declined_syms = breadth["declined_symbols"]
+            declined = [moves[m] for m in declined_syms]
+            # MEMBER EVIDENCE travels with the basket (F5). The basket used to report a blanket
+            # "measured_from_member_prices", which hid that every member was unverified.
+            member_evidence = {m: {"evidence_status": measured[m]["evidence_status"],
+                                   "basis": measured[m]["basis"],
+                                   "price_source": measured[m]["price_source"]}
+                               for m in present if measured[m] and moves.get(m) is not None}
+            statuses = {member_evidence[m]["evidence_status"] for m in declined_syms}
+            status = ("verified" if statuses == {"verified"}
+                      else "unverified" if (not statuses or "unverified" in statuses
+                                            or None in statuses)
+                      else "provisional")
+            observed = [measured[m]["observed_at"] for m in declined_syms]
             cand = {"scope": "theme", "subject": theme, "rule": rule, "step": 1,
                     "direction": "down", "as_of": reference, "from_date": reference,
                     "change_pct": round(sum(declined) / len(declined), 2),
                     "window_sessions": 1 if key == "session" else slow_n,
-                    "evidence_status": "measured_from_member_prices",
-                    "reason": None, "breadth": breadth,
+                    "evidence_status": status,
+                    "reason": None, "breadth": breadth, "member_evidence": member_evidence,
+                    "price_source": ("live_quote" if any(
+                        member_evidence[m]["price_source"] == "live_quote" for m in declined_syms)
+                        else "settled_daily_bars"),
+                    "observed_at": (min(o for o in observed if o).isoformat()
+                                    if any(observed) else None),
                     "member_moves": {m: (None if v is None else round(v, 2))
                                      for m, v in moves.items()}}
             prior = _prior_state(session, "theme", theme, rule, reference, mode)
             emit, why = price_risk.should_emit(prior, cand)
             if not emit:
                 continue
+            if prior is not None and prior.get("episode_closed"):
+                cand["episode_after"] = prior["event_id"]
             event = _persist(session, cand, mode, today, now, note=why)
             if event is not None:
                 created += 1
-                receipts += _record_receipts(session, event, breadth["declined_symbols"], live,
-                                             now, pending)
+                newest_settled = max(fresh_through[m] for m in declined_syms)
+                receipts += _record_receipts(session, event, declined_syms, live, now, pending,
+                                             deliverable=_deliverable(cand, newest_settled, now))
 
     queued = _queue_digests(session, pending, now) if live else {"emails": 0, "in_app": 0}
     return {"mode": mode, "subjects": len(universe), "events": created,
             "unmeasurable": unmeasurable, "receipts": receipts,
             "intraday_quotes": intraday, "quote_refusals": quote_refusals,
+            "exclusions": exclusions,
             "episodes_closed": episodes_closed,
             "config_errors": cfg["errors"], **queued}
+
+
+def _deliverable(cand: dict, settled_through: date | None, now: datetime) -> str | None:
+    """None if this event may be delivered; otherwise WHY it is history only.
+
+    An event about a session older than the last completed one, or whose price was observed
+    longer ago than MAX_EVIDENCE_AGE, is a true record of the past and is kept as history. It
+    is never news (AUD 2026-10-14 F1: a run on Oct 12 queued a digest about Oct 5 prices).
+    """
+    as_of = cand.get("as_of")
+    if settled_through is not None and as_of is not None and as_of < settled_through:
+        return (f"describes the {as_of.isoformat()} session; the latest completed session is "
+                f"{settled_through.isoformat()}")
+    when = cand.get("observed_at")
+    if not when:
+        return "observation time unknown"
+    if now - datetime.fromisoformat(when) > MAX_EVIDENCE_AGE:
+        return f"observed at {when}, older than {MAX_EVIDENCE_AGE}"
+    return None
 
 
 def price_risk_themes() -> dict[str, list[str]]:
@@ -493,7 +643,7 @@ def _persist(session, cand: dict, mode: str, today: date, now: datetime,
              note: str | None = None) -> RiskEvent | None:
     as_of = cand.get("as_of") or today
     key = price_risk.event_key(cand["scope"], cand["subject"], cand["rule"], as_of,
-                               int(cand.get("step") or 0), mode)
+                               int(cand.get("step") or 0), mode, cand.get("episode_after"))
     if session.execute(select(RiskEvent).where(RiskEvent.event_key == key)).scalars().first():
         return None
     evidence = {k: v for k, v in cand.items()
@@ -516,7 +666,7 @@ def _persist(session, cand: dict, mode: str, today: date, now: datetime,
 
 
 def _record_receipts(session, event: RiskEvent, symbols, live: bool, now: datetime,
-                     pending: dict) -> int:
+                     pending: dict, deliverable: str | None = None) -> int:
     """One row per watching user, however many of `symbols` they watch.
 
     A theme event reaches a user through several members at once. Receipts used to be written
@@ -549,6 +699,8 @@ def _record_receipts(session, event: RiskEvent, symbols, live: bool, now: dateti
         user = users[uid]
         if not live:
             state, reason = "shadow_suppressed", "delivery disabled; detection recorded only"
+        elif deliverable is not None:
+            state, reason = "historical_no_alert", deliverable[:256]
         elif not (may_notify(session, user, ALERT_TYPE_EMAIL)
                   or may_notify(session, user, ALERT_TYPE_IN_APP)):
             state, reason = "preference_disabled", "price-risk email and in-app are both off"
@@ -605,17 +757,68 @@ def _queue_digests(session, pending: dict, now: datetime) -> dict:
                     f"{MAX_EMAILS_PER_USER_PER_DAY} price-risk emails already in 24h; "
                     "shown in the app and the risk-alert history")
             continue
+        # EXPIRY FROM THE EVIDENCE, not from the queue time (F1): the oldest observation in the
+        # digest bounds it, and the outbox refuses to send past `expires_at` at drain time.
+        observed = [datetime.fromisoformat(e.evidence["observed_at"]) for e in events
+                    if (e.evidence or {}).get("observed_at")]
+        if len(observed) != len(events):
+            for _, r in items:
+                r.state, r.reason = "historical_no_alert", "observation time unknown"
+            continue
+        expires = min(observed) + MAX_EVIDENCE_AGE
+        if expires <= now:
+            for _, r in items:
+                r.state, r.reason = "historical_no_alert", "evidence older than the delivery limit"
+            continue
         footer_html, footer_text = _unsubscribe_footer(user_id)
         digest_id = hashlib.sha1(",".join(sorted(e.event_key for e in events)).encode()).hexdigest()[:24]
         row, _ = enqueue(session, event_id=f"price-risk:{user_id}:{digest_id}", user_id=user_id,
                          recipient=user.email.strip(), alert_type=ALERT_TYPE_EMAIL,
                          subject=subject, body_text=text_body + footer_text,
                          body_html=html_body + footer_html,
-                         expires_at=naive_now + DIGEST_MAX_AGE)
+                         expires_at=expires.astimezone(timezone.utc).replace(tzinfo=None))
         for _, r in items:
             r.state, r.reason, r.outbox_event_id = "email_queued", None, row.event_id
         emails += 1
     return {"emails": emails, "in_app": in_app}
+
+
+def drain_outbox(session, redis_client, *, owner: str, send, limit: int = 20,
+                 now: datetime | None = None) -> dict:
+    """Send queued price-risk digests. The ONLY place this channel reaches a mail provider.
+
+    THE DELIVERY FLAG GOVERNS SENDING, not only queueing (AUD 2026-10-14 F2). It used to be read
+    by detection alone, so removing it stopped new digests while rows already queued kept
+    going out. Now:
+
+      * flag absent at the start of a drain -> the queue is PAUSED: nothing is claimed, rows stay
+        pending, and they still expire on their evidence-based `expires_at`. Re-enabling resumes
+        only rows that have not expired; stale ones never send.
+      * flag removed DURING a drain -> rechecked immediately before each send; a row reached
+        after that is suppressed by the outbox, not sent.
+
+    Preferences are rechecked at send time as well, so an opt-out between queueing and sending
+    is honoured.
+    """
+    from .alert_audience import may_send
+    from . import earnings_outbox as _eo
+
+    if not delivery_enabled(redis_client):
+        return {"paused": True, "reason": "price-risk delivery is disabled"}
+
+    def _subscribed(row) -> bool:
+        if not delivery_enabled(redis_client):
+            return False
+        user = session.get(User, row.user_id) if row.user_id else None
+        if user is None or not user.is_active:
+            return False
+        if not may_send(session, user, ALERT_TYPE_EMAIL):
+            return False
+        return True
+
+    return _eo.deliver_batch(session, owner=owner, send=send, is_subscribed=_subscribed,
+                             activated_at=datetime.min, alert_types=(ALERT_TYPE_EMAIL,),
+                             limit=limit, now=now)
 
 
 def _unsubscribe_footer(user_id: int) -> tuple[str, str]:
@@ -683,8 +886,8 @@ def render_digest(events: list) -> tuple[str, str, str, str]:
     head = ", ".join(names[:4]) + (f" +{len(names) - 4} more" if len(names) > 4 else "")
     subject = f"Price risk: {head}"
     lines = [describe(e) for e in events]
-    unverified = any(e.evidence_status not in ("verified",) for e in events
-                     if e.scope == "symbol")
+    # Basket events count too (F5): a theme-only digest used to carry no caveat at all.
+    unverified = any(e.evidence_status != "verified" for e in events)
     notes = [
         "These are MEASURED PRICE MOVES, not trade signals. The AI signal for these stocks may "
         "not have changed: it reports a direction label, and a label does not move just "
@@ -693,8 +896,8 @@ def render_digest(events: list) -> tuple[str, str, str, str]:
         "acting on it.",
     ]
     if unverified:
-        notes.append("Some figures are not verified against corporate-action records "
-                     "(splits); they are unlikely to be wrong but are labelled as such.")
+        notes.append("Some figures are not verified against complete corporate-action "
+                     "records (splits and similar). No error rate has been measured for them.")
     notes.append("Full history: Risk Alerts page (/risk-alerts).")
     text = "\n".join(["Price-risk alert", ""] + [f"- {l}" for l in lines] + [""] + notes)
     html = ("<h3>Price-risk alert</h3><ul>" + "".join(f"<li>{escape(l)}</li>" for l in lines)

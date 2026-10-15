@@ -450,5 +450,150 @@ result, events, *_ = run()
 check('an unresolved spinoff yields an unmeasurable record, not a 30% decline',
       rules(events) == [('unmeasurable', 0)], rules(events))
 
+# ── AUD 2026-10-14 F1–F5 ─────────────────────────────────────────────────────
+
+def outbox_rows():
+    with Session(engine, autoflush=False) as s:
+        return list(s.scalars(select(models.NotificationOutbox)))
+
+# F1a. Week-old prices: excluded as stale, nothing queued even for an opted-in live user.
+build({'NVDA': [100, 100, 100, 100, 100, 90]}, end_for={'NVDA': date(2026, 10, 5)},
+      opt_in=(ALERT_TYPE_EMAIL,))
+result, events, receipts, outbox = run(live=True)
+check('F1 week-old prices produce no event and no digest',
+      [e.rule for e in events] == ['unmeasurable'] and outbox == [], (rules(events), len(outbox)))
+check('F1 ...recorded as a stale observation with its dates',
+      events and events[0].evidence.get('limiting_factor') == 'stale_observation'
+      and '2026-10-05' in (events[0].evidence_reason or ''), events and events[0].evidence_reason)
+
+# F1b. Today's partial daily row at 90 while the afternoon quote is refused as stale.
+AFTERNOON2 = datetime(2026, 10, 12, 19, 0, tzinfo=timezone.utc)
+build({'NVDA': [100, 100, 100, 100, 100, 90]})
+result, events, *_ = run(now=AFTERNOON2, quotes=q(90.0, at=MORNING))
+check('F1 a refused quote does not fall back to the partial daily bar',
+      events == [] and result['quote_refusals'] == {'quote_stale': 1}, (rules(events), result))
+
+# F1c. One-session ingest lag is measured, but recorded as history and never delivered.
+build({'NVDA': [100, 100, 100, 100, 100, 90]}, end_for={'NVDA': date(2026, 10, 9)},
+      opt_in=(ALERT_TYPE_EMAIL,))
+result, events, receipts, outbox = run(live=True)
+check('F1 a lagging session is measured',
+      any(e.rule == 'session_decline' for e in events), rules(events))
+check('F1 ...but its receipts are history only and nothing is queued',
+      receipts and all(r.state == 'historical_no_alert' for r in receipts) and outbox == [],
+      [(r.state, r.reason) for r in receipts])
+
+# F1c'. Each guard on its own: an older session is history even with FRESH evidence (the
+#       evidence-age limit would otherwise mask this check in the case above).
+fresh = (NOW - timedelta(hours=1)).isoformat()
+check('F1 an older session is never deliverable, however fresh its timestamp',
+      prw._deliverable({'as_of': date(2026, 10, 9), 'observed_at': fresh}, date(2026, 10, 12), NOW)
+      is not None)
+check('F1 the latest session with fresh evidence is deliverable',
+      prw._deliverable({'as_of': date(2026, 10, 12), 'observed_at': fresh}, date(2026, 10, 12), NOW)
+      is None)
+check('F1 evidence older than the limit is not deliverable',
+      prw._deliverable({'as_of': date(2026, 10, 12),
+                        'observed_at': (NOW - prw.MAX_EVIDENCE_AGE - timedelta(minutes=1)).isoformat()},
+                       date(2026, 10, 12), NOW) is not None)
+
+# F1d. A queued digest expires from its EVIDENCE time, not its queue time.
+build({'NVDA': [100, 100, 100, 100, 100, 94]}, opt_in=(ALERT_TYPE_EMAIL,))
+result, events, receipts, outbox = run(live=True)
+close = datetime(2026, 10, 12, 20, 0)   # 16:00 ET in naive UTC
+check('F1 digest expiry is the observation time plus the evidence limit',
+      outbox and outbox[0].expires_at == close + prw.MAX_EVIDENCE_AGE,
+      outbox and outbox[0].expires_at)
+
+# F2. Disabling delivery pauses the queue; a mid-drain disable suppresses; enabled sends once.
+class Spy:
+    def __init__(self):
+        self.calls = 0
+    def __call__(self, row):
+        self.calls += 1
+        return True
+
+class Flip:
+    """Delivery on for the first read (the drain's start), off for every read after."""
+    def __init__(self):
+        self.reads = 0
+    def get(self, key):
+        if key == prw.DELIVERY_FLAG:
+            self.reads += 1
+            return b"1" if self.reads == 1 else None
+        return None
+
+SEND_AT = (NOW + timedelta(hours=1)).replace(tzinfo=None)
+for label, redis_, expect_calls, expect_state in (
+        ('F2 flag absent: nothing claimed, nothing sent, row stays pending', Redis(False), 0, 'pending'),
+        ('F2 flag removed mid-drain: the row is suppressed, not sent', Flip(), 0, 'suppressed'),
+        ('F2 flag present: the digest is sent exactly once', Redis(True), 1, 'accepted')):
+    build({'NVDA': [100, 100, 100, 100, 100, 94]}, opt_in=(ALERT_TYPE_EMAIL,))
+    run(live=True)
+    with Session(engine, autoflush=False) as s:   # fixture clock, not the wall clock
+        for row in s.scalars(select(models.NotificationOutbox)):
+            row.available_at = NOW.replace(tzinfo=None)
+        s.commit()
+    spy = Spy()
+    with Session(engine, autoflush=False) as s:
+        out = prw.drain_outbox(s, redis_, owner='probe', send=spy, now=SEND_AT)
+        s.commit()
+    rows = outbox_rows()
+    check(label, spy.calls == expect_calls and [r.state for r in rows] == [expect_state],
+          (spy.calls, [r.state for r in rows], out))
+
+# F3. Same session: drop -> recovery -> second drop alerts again; a repeat does not.
+build({'NVDA': [100, 100, 100, 100, 100, 100]})
+def scan(price, minutes):
+    at = MORNING + timedelta(minutes=minutes)
+    r, ev, *_ = run(now=at, quotes=q(price, at=at))
+    return r, ev
+_, ev_a = scan(91.0, 0)
+r_b, ev_b = scan(99.0, 60)
+_, ev_c = scan(91.0, 120)
+_, ev_d = scan(91.0, 180)
+pull = lambda ev: len([e for e in ev if e.rule == 'pullback'])
+sess = lambda ev: len([e for e in ev if e.rule == 'session_decline'])
+check('F3 the intraday recovery is recorded', r_b['episodes_closed'] >= 1, r_b)
+check('F3 the second drop in the same session is a new event',
+      (pull(ev_a), pull(ev_c)) == (1, 2) and (sess(ev_a), sess(ev_c)) == (1, 2),
+      (pull(ev_a), pull(ev_b), pull(ev_c), sess(ev_a), sess(ev_c)))
+check('F3 ...labelled as a new episode', any(
+      (e.evidence or {}).get('emit_reason') == 'new episode after recovery' for e in ev_c))
+check('F3 a repeated reading in the same episode adds nothing', len(ev_d) == len(ev_c),
+      (rules(ev_c), rules(ev_d)))
+
+# F4. Every scanned subject is accounted for.
+build({'THIN': [100]})
+with Session(engine, autoflush=False) as s:
+    r4 = detect(s, now=NOW, redis_client=Redis(), symbols=['THIN', 'GHOST'])
+    s.commit()
+    ex = {e.subject: e for e in s.scalars(select(models.RiskEvent).where(
+        models.RiskEvent.rule == 'unmeasurable'))}
+check('F4 one bar is an insufficient-history exclusion',
+      ex.get('THIN') is not None and ex['THIN'].evidence.get('limiting_factor') == 'insufficient_history',
+      {k: v.evidence.get('limiting_factor') for k, v in ex.items()})
+check('F4 a followed symbol with no stock record is an exclusion too',
+      ex.get('GHOST') is not None and ex['GHOST'].evidence.get('limiting_factor') == 'no_stock_record')
+check('F4 ...each with a reason the exclusions endpoint can show',
+      all(e.evidence_reason for e in ex.values()), [e.evidence_reason for e in ex.values()])
+check('F4 the run counts them', r4['unmeasurable'] == 2 and r4['exclusions'] ==
+      {'insufficient_history': 1, 'no_stock_record': 1}, r4)
+
+# F5. Two observations are not a five-session basket move; basket digests carry the caveat.
+build({s_: [100, 94] for s_ in ('NVDA', 'AMD', 'AVGO', 'TSM')})
+result, events, *_ = run()
+check('F5 two bars cannot make a five-session basket decline',
+      not any(e.rule == 'basket_slow_decline' for e in events), rules(events))
+build({s_: [100, 100, 100, 100, 100, 94] for s_ in ('NVDA', 'AMD', 'AVGO', 'TSM')})
+result, events, *_ = run()
+themes = [e for e in events if e.scope == 'theme']
+check('F5 a basket carries its members\' evidence, not a blanket label',
+      themes and all(e.evidence_status == 'provisional' and e.evidence.get('member_evidence')
+                     for e in themes), [(e.rule, e.evidence_status) for e in themes])
+subj, text_, html_, summ = prw.render_digest(themes)
+check('F5 a theme-only digest includes the unverified-data note',
+      'not verified' in text_ and 'unlikely to be wrong' not in text_, text_)
+
 print('FAILURES:', failures)
 sys.exit(1 if failures else 0)

@@ -156,10 +156,15 @@ def basket_breadth(member_moves: dict[str, float | None], member_count: int, *,
 
 
 def window_change(bars: list[tuple[date, float]], sessions: int = SLOW_DECLINE_SESSIONS) -> float | None:
-    """First-to-last change over the trailing window of SESSIONS; the basket-level slow move."""
-    if len(bars) < 2:
+    """First-to-last change over the trailing window of SESSIONS; the basket-level slow move.
+
+    None unless the FULL window exists. It used to accept two bars and still be labelled a
+    `sessions`-session move, so two observations read as "fallen together over 5 sessions"
+    (AUD 2026-10-14 F5).
+    """
+    if len(bars) <= sessions:
         return None
-    window = bars[-(sessions + 1):] if len(bars) > sessions else bars
+    window = bars[-(sessions + 1):]
     start = window[0][1]
     return None if start <= 0 else _pct(start, window[-1][1])
 
@@ -195,7 +200,7 @@ def dividend_adjust(bars: list[tuple[date, float]], dividends: list[dict]):
 
 
 def event_key(scope: str, subject: str, rule: str, as_of: date, step: int = 0,
-              mode: str = "shadow") -> str:
+              mode: str = "shadow", episode_after: int | None = None) -> str:
     """Identity for one detection. Two runs of the same session at the same step collide.
 
     Scoped to the SESSION rather than the wall clock, so a job that runs several times a day
@@ -207,7 +212,12 @@ def event_key(scope: str, subject: str, rule: str, as_of: date, step: int = 0,
     a duplicate. MODE is part of it so a live run can report an episode that a shadow run had
     already recorded — the shadow row proves detection, not that anybody was told.
     """
-    return f"risk:{scope}:{subject}:{rule}:{as_of.isoformat()}:s{int(step)}:{mode}"
+    # EPISODE: a drop, a recovery and a second drop inside ONE session reach the same step on
+    # the same date, so without an episode discriminator the second episode collided with the
+    # first and was silently refused (AUD 2026-10-14 F3). A new episode carries the id of the
+    # closed event it follows; repeated readings within an episode still collide as before.
+    key = f"risk:{scope}:{subject}:{rule}:{as_of.isoformat()}:s{int(step)}:{mode}"
+    return key if episode_after is None else f"{key}:after{int(episode_after)}"
 
 
 def episode_closed(prior_evidence: dict | None, closes_since: list[float]) -> bool:

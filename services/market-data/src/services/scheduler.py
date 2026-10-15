@@ -2693,17 +2693,15 @@ def run_price_risk_detection() -> None:
 
 
 def drain_price_risk_outbox() -> None:
-    """Send queued price-risk digests. The ONLY place this channel calls a mail provider.
+    """Send queued price-risk digests, through `price_risk_watch.drain_outbox`.
 
-    Re-checks the email preference immediately before sending, so an opt-out between queueing
-    and sending is honoured; retries, expiry, the acceptance/crash gap and duplicate refusal are
-    the outbox's own (`common.outbox`, `earnings_outbox.deliver_batch`). Registered behind
-    `_is_alerting_enabled()`.
+    That function owns the rules, including the delivery-flag check before the drain and before
+    each send; this wrapper only supplies the lock, the session and the mail provider.
+    Registered behind `_is_alerting_enabled()`.
     """
     import os as _os
     import uuid as _uuid
-    from .price_risk_watch import ALERT_TYPE_EMAIL
-    from . import earnings_outbox as _eo
+    from .price_risk_watch import drain_outbox
     from .email_service import send_email
     started = time.monotonic()
     lock_key = "stockai:lock:price_risk_outbox_drain"
@@ -2717,19 +2715,9 @@ def drain_price_risk_outbox() -> None:
         return
     try:
         with SessionLocal() as session:
-            def _subscribed(row):
-                user = session.get(User, row.user_id) if row.user_id else None
-                if user is None or not user.is_active:
-                    return False
-                if not _may_send(session, user, ALERT_TYPE_EMAIL):
-                    return False
-                return True
-            delivered = _eo.deliver_batch(
-                session, owner=f"price-risk:{_os.getpid()}",
-                send=lambda row: send_email(row.recipient, row.subject, row.body_html, row.body_text),
-                is_subscribed=_subscribed,
-                activated_at=datetime.min, alert_types=(ALERT_TYPE_EMAIL,), limit=20,
-            )
+            delivered = drain_outbox(
+                session, redis_client, owner=f"price-risk:{_os.getpid()}",
+                send=lambda row: send_email(row.recipient, row.subject, row.body_html, row.body_text))
             if delivered.get("claimed"):
                 log.info("price_risk_outbox.drained", **delivered)
         _record_job_status("drain_price_risk_outbox", "ok", time.monotonic() - started)
