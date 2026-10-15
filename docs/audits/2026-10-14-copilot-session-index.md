@@ -124,8 +124,23 @@ was. The rest are documentation.
 | Served frontend chunks | contain the copilot screen, the new badge text, the unconfirmed-save state and tracker tier 441. The old AI Screen text survives only in the tracker page, which quotes it historically; the screener chunk does not contain it |
 | Pages | `/`, `/screener`, `/improvements`, `/stock/AAPL` → 200 |
 
-**Not verified:** an authenticated end-to-end copilot answer in production. That needs a user
-login, which was not used.
+**Signed-in acceptance check (2026-10-14, as the operator's account `lausing`, authorised).**
+Run against production at `13ab0dd3`, before the re-review fixes were deployed.
+
+How it was done, without handling the password: a 15-minute token was minted INSIDE the
+market-data container with its own signing secret. It was used only against the internal gateway,
+never printed, and blacklisted at the end; a request with it afterwards returns 401.
+
+| Step | Result |
+|---|---|
+| Copilot answer (AAPL, "Explain this signal using its evidence") | 200, grounded, 11.1 s, 15 citations, 7 limitations; price as of 2026-10-14; signal and headline times reported separately |
+| Evidence expansion | 5 inline of 20; the detail endpoint returns all 20 |
+| Screen ("Top 5 by K-Score") | admin scope "every ranked stock", universe 192, 5 shown, sorted by score |
+| Draft ("Alert me if AAPL falls below 1") | one price-alert card with the S6 wording ("observed price … at or below $1.00", intraday) and its disclosures |
+| Confirm | first save 200 `saved`; second save 200 `replayed`; exactly 1 alert row |
+| Cleanup | alert deleted (204, 0 rows remain); test conversation deleted |
+
+Used 3 of the account's 60 daily copilot answers. The $1 alert could not trigger, so no email.
 
 **Found during verification, pre-existing, not changed.** market-data logs `ingest.adapter_failed`
 from the Unusual Whales bar adapter for many US symbols: "Invalid comparison between
