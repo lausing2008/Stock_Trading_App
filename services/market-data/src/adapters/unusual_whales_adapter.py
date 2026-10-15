@@ -201,29 +201,87 @@ class UnusualWhalesAdapter(DataAdapter):
             self._note("fail", f"other_{type(exc).__name__}")
             raise
 
-        if not rows:
-            return OHLCV(symbol, timeframe, pd.DataFrame(columns=["ts"]))
+        # AUD-UW-INTRADAY-TZ (2026-10-14): EVERYTHING AFTER THE RESPONSE IS METERED TOO.
+        # The window filter below used to raise `TypeError: Invalid comparison between
+        # dtype=datetime64[ns, UTC] and Timestamp` on EVERY intraday request, outside the
+        # request's own try block — so it was counted nowhere, and every 5m/15m/1h fetch fell
+        # back to yfinance silently. A processing failure is now recorded once, by type, and
+        # re-raised so the registry's fallback behaves exactly as before.
+        try:
+            return OHLCV(symbol, timeframe, self._process(rows, start, end, timeframe))
+        except Exception as exc:
+            self._note("fail", f"processing_{type(exc).__name__}")
+            raise
 
+    def _process(self, rows: list, start, end, timeframe: str) -> pd.DataFrame:
+        """Regular-session rows → canonical frame, filtered to the caller's window.
+
+        THE TWO PAYLOAD SHAPES (captured from production 2026-10-14, GDX):
+          * `1d`: `date` = the MARKET date ("2026-10-14"); `start_time`/`end_time` are None.
+          * intraday: `start_time`/`end_time` in UTC ("2026-10-14T19:00:00Z"); `date` is None.
+
+        WINDOW SEMANTICS. `start`/`end` are DATES (ingestion passes `date` objects), so both are
+        inclusive whole days:
+          * daily bars are kept when their market date is in [start, end];
+          * intraday bars are kept when their US/Eastern trading date is in [start, end] — the
+            whole end date, not just up to its midnight. Merely attaching UTC to the old naive
+            bounds would have compared against end-date 00:00 and dropped that day's bars.
+        A `datetime` bound (none today, accepted for safety) is an INSTANT: naive is UTC.
+        """
+        empty = pd.DataFrame(columns=["ts"])
+        if not rows:
+            return empty
         # Note 1: keep ONLY the regular session, else every date lands three times.
         rows = [x for x in rows if x.get("market_time") == _MARKET_TIME_REGULAR]
         if not rows:
-            return OHLCV(symbol, timeframe, pd.DataFrame(columns=["ts"]))
-
+            return empty
         df = pd.DataFrame(rows)
-        df = df.rename(columns={"date": "ts", "start_time": "ts"})
         for col in ("open", "high", "low", "close", "volume"):
             # UW returns prices as STRINGS ("316.22"); volume comes back as an int.
             df[col] = pd.to_numeric(df[col], errors="coerce")
         df["adj_close"] = df["close"]
-        df["ts"] = pd.to_datetime(df["ts"])
 
-        # The endpoint has no start/end params — it returns the most recent `limit` candles, so
-        # the caller's window is applied here. Inclusive of both ends, matching how the
-        # yfinance/Polygon adapters' windows behave for daily bars.
-        df = df[(df["ts"] >= pd.Timestamp(start)) & (df["ts"] <= pd.Timestamp(end))]
-
+        daily = timeframe == "1d"
+        if daily:
+            if "date" not in df or df["date"].isna().all():
+                raise ValueError("daily candles carry no `date`")
+            df["ts"] = pd.to_datetime(df["date"], errors="raise")      # naive market date
+            day = df["ts"].dt.date
+        else:
+            if "start_time" not in df or df["start_time"].isna().all():
+                raise ValueError("intraday candles carry no `start_time`")
+            df["ts"] = pd.to_datetime(df["start_time"], utc=True, errors="raise")
+            day = df["ts"].dt.tz_convert("America/New_York").dt.date
+        df = df[_within(df["ts"], day, start, end)]
         df = df.sort_values("ts").reset_index(drop=True)
-        return OHLCV(symbol, timeframe, self._to_canonical(df))
+        # Canonical: daily → naive market date; intraday → tz-aware UTC, which _to_canonical
+        # stores as a naive UTC timestamp with its time kept.
+        return self._to_canonical(df)
+
+
+def _within(ts: pd.Series, day: pd.Series, start, end) -> pd.Series:
+    """Inclusive window. Dates compare by (market) date; datetimes compare as UTC instants."""
+    from datetime import datetime as _dt
+
+    def bound(b, is_start):
+        if isinstance(b, _dt):
+            t = pd.Timestamp(b)
+            t = t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+            return ("instant", t)
+        return ("date", pd.Timestamp(b).date() if not isinstance(b, date) else b)
+
+    keep = pd.Series(True, index=ts.index)
+    aware = getattr(ts.dt, "tz", None) is not None
+    for b, is_start in ((start, True), (end, False)):
+        if b is None:
+            continue
+        kind, v = bound(b, is_start)
+        if kind == "date":
+            keep &= (day >= v) if is_start else (day <= v)
+        else:
+            t = ts if aware else ts.dt.tz_localize("UTC")
+            keep &= (t >= v) if is_start else (t <= v)
+    return keep
 
 
 register_adapter(UnusualWhalesAdapter())

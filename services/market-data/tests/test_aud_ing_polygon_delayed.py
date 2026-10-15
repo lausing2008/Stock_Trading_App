@@ -128,9 +128,22 @@ def test_prices_are_coerced_from_strings():
 
 def test_the_callers_window_is_applied():
     """The endpoint takes no start/end — it returns the newest `limit` candles. Without this
-    filter the adapter would ignore the requested window entirely."""
-    assert 'df["ts"] >= pd.Timestamp(start)' in UW_SRC
-    assert 'df["ts"] <= pd.Timestamp(end)' in UW_SRC
+    filter the adapter would ignore the requested window entirely.
+
+    AUD-UW-INTRADAY-TZ (2026-10-14): this used to assert the SOURCE TEXT of the comparison —
+    and that text was the defect (it raised on every intraday payload). Now it runs the real
+    window function on both payload shapes; full fetch-level tests are in
+    test_uw_adapter_processing.py."""
+    from datetime import date
+    import pandas as pd
+    from src.adapters.unusual_whales_adapter import _within
+    daily = pd.to_datetime(pd.Series(["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15"]))
+    keep = _within(daily, daily.dt.date, date(2026, 10, 13), date(2026, 10, 14))
+    assert keep.tolist() == [False, True, True, False]
+    intra = pd.to_datetime(pd.Series(["2026-10-12T19:00:00Z", "2026-10-14T19:00:00Z"]), utc=True)
+    keep = _within(intra, intra.dt.tz_convert("America/New_York").dt.date,
+                   date(2026, 10, 13), date(2026, 10, 14))
+    assert keep.tolist() == [False, True], "the whole end date is inside the window"
 
 
 def test_the_admin_enable_flag_is_honoured():
