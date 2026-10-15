@@ -302,9 +302,14 @@ def _prior_state(session, scope: str, subject: str, rule: str, as_of: date, mode
         elif closes:
             since = [c for d, c in closes if latest.observed_to < d < as_of]
             closed = price_risk.episode_closed(latest.evidence, since)
-    worst = max(abs(r.change_pct or 0.0) for r in rows)
+    # Severity is scoped to the CURRENT episode: an earlier, closed episode's worst reading must
+    # not set the bar for this one (review 2026-10-15).
+    episode = (latest.evidence or {}).get("episode_after")
+    in_episode = [r for r in rows if (r.evidence or {}).get("episode_after") == episode]
+    worst = max(abs(r.change_pct or 0.0) for r in in_episode)
     return {"step": latest.step, "worst_pct": worst, "episode_closed": closed,
-            "event_id": latest.id}
+            "event_id": latest.id,
+            "episode_after": (latest.evidence or {}).get("episode_after")}
 
 
 def _latest_open_event(session, scope: str, subject: str, rule: str, mode: str,
@@ -525,8 +530,7 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
             emit, why = price_risk.should_emit(prior, cand)
             if not emit:
                 continue
-            if prior is not None and prior.get("episode_closed"):
-                cand["episode_after"] = prior["event_id"]
+            cand["episode_after"] = _episode_for(prior)
             event = _persist(session, cand, mode, today, now, note=why)
             if event is not None:
                 created += 1
@@ -589,8 +593,7 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
             emit, why = price_risk.should_emit(prior, cand)
             if not emit:
                 continue
-            if prior is not None and prior.get("episode_closed"):
-                cand["episode_after"] = prior["event_id"]
+            cand["episode_after"] = _episode_for(prior)
             event = _persist(session, cand, mode, today, now, note=why)
             if event is not None:
                 created += 1
@@ -605,6 +608,21 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
             "exclusions": exclusions,
             "episodes_closed": episodes_closed,
             "config_errors": cfg["errors"], **queued}
+
+
+def _episode_for(prior: dict | None) -> int | None:
+    """The episode discriminator for an event about to be persisted.
+
+    A NEW episode (the prior one closed) is named after the closed event it follows. Every
+    ESCALATION inherits the discriminator of the episode it belongs to. Attaching it to the
+    first event only (the 2026-10-15 F3 fix) let the second episode's escalation collide with
+    the FIRST episode's key at the same step: 91 -> 85 -> 99 -> 91 -> 85 dropped the final 85.
+    """
+    if prior is None:
+        return None
+    if prior.get("episode_closed"):
+        return prior["event_id"]
+    return prior.get("episode_after")
 
 
 def _deliverable(cand: dict, settled_through: date | None, now: datetime) -> str | None:

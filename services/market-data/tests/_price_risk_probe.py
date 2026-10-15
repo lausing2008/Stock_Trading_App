@@ -563,6 +563,22 @@ check('F3 ...labelled as a new episode', any(
 check('F3 a repeated reading in the same episode adds nothing', len(ev_d) == len(ev_c),
       (rules(ev_c), rules(ev_d)))
 
+# F3'. Escalation INSIDE the second episode (review 2026-10-15): 91 -> 85 -> 99 -> 91 -> 85,
+#      then 85 again. The final 85 used to collide with the first episode's step-2 keys.
+build({'NVDA': [100, 100, 100, 100, 100, 100]})
+seq = [scan(p_, 30 * i) for i, p_ in enumerate((91.0, 85.0, 99.0, 91.0, 85.0, 85.0))]
+counts = [(pull(ev), sess(ev)) for _, ev in seq]
+check('F3 escalation inside the second episode is reported',
+      counts[4][0] > counts[3][0] and counts[4][1] > counts[3][1], counts)
+check('F3 ...and a repeated 85 in that episode adds nothing', counts[5] == counts[4], counts)
+with Session(engine, autoflush=False) as s_:
+    second = [e for e in s_.scalars(select(models.RiskEvent).where(
+        models.RiskEvent.rule == 'pullback').order_by(models.RiskEvent.id))][2:]
+check('F3 every event of the second episode carries the same episode identifier',
+      len(second) == 2 and len({(e.evidence or {}).get('episode_after') for e in second}) == 1
+      and (second[0].evidence or {}).get('episode_after') is not None,
+      [(e.step, (e.evidence or {}).get('episode_after')) for e in second])
+
 # F4. Every scanned subject is accounted for.
 build({'THIN': [100]})
 with Session(engine, autoflush=False) as s:
