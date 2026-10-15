@@ -502,3 +502,36 @@ self-explaining.** Four endpoints collapsed two very different conditions into o
 string, and three panels rendered that reason as silence. When a data source can return nothing,
 the code must be able to say *which kind of nothing* — and a daily job producing zero rows for
 three days should be loud on its own, not something a user discovers by accident.
+
+
+## AUD-UW-INTRADAY-TZ (2026-10-14): every intraday Unusual Whales fetch failed, uncounted
+
+**Found** during the copilot deployment's verification, and reproduced by the independent
+re-review. The UW bar adapter logged `Invalid comparison between dtype=datetime64[ns, UTC] and
+Timestamp` for many US symbols.
+
+**Payload shapes** (captured from production for GDX):
+
+| Candle | Fields |
+|---|---|
+| `1d` | a plain market `date` ("2026-10-14"), no times |
+| intraday | UTC `start_time`/`end_time` ("…T19:00:00Z"), no `date` |
+
+**Cause.** The window filter compared timezone-aware intraday timestamps with naive date bounds,
+so every 5m/15m/1h request raised. The failure happened AFTER the metered request, so no failure
+counter recorded it, and every intraday fetch fell back to yfinance silently. Daily bars were
+unaffected.
+
+**Fix** (`ae2765f3`):
+- Daily bars filter on the market date.
+- Intraday bars filter on their US/Eastern trading date, so the whole end date is included.
+  Attaching UTC to a midnight end bound would have dropped it.
+- Datetime bounds are compared as UTC instants.
+- Any post-response failure is counted once as `processing_<Type>` and re-raised, so fallback and
+  429 accounting are unchanged.
+
+**Tests** drive the real `fetch_ohlcv` with mocked HTTP and Redis, and assert the bars returned
+and the counters written. A source-text test that asserted the buggy expression was replaced.
+
+**Lesson.** A failure raised after a metered call needs its own counter, or it is invisible
+behind a working fallback. A source-text test can pin a defect in place.

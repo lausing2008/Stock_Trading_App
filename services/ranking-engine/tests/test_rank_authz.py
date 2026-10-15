@@ -127,7 +127,8 @@ class _Session:
 
 
 @pytest.fixture
-def client(monkeypatch):
+def wired(monkeypatch):
+    """The real routes module and the real jwt_auth, with only the database replaced."""
     jwt_auth = _load_real_jwt_auth()
     accounts = _Accounts()
     accounts.rows = {}
@@ -151,11 +152,35 @@ def client(monkeypatch):
     monkeypatch.setattr(routes, "_persist_rankings", lambda *_a, **_k: None)
     monkeypatch.setattr(kscore, "_load_active_weights", lambda: {})
     monkeypatch.setattr(kscore, "_load_active_curve_params", lambda: {})
+    return types.SimpleNamespace(routes=routes, jwt_auth=jwt_auth, accounts=accounts.rows)
+
+
+def _worker_threads_run() -> bool:
+    """FastAPI runs a SYNC dependency (require_model_admin is one) on an AnyIO worker thread.
+    The independent re-review (2026-10-14) saw that worker never complete in its environment,
+    so every HTTP case timed out. Probe it once, bounded."""
+    import anyio
+
+    async def go():
+        return await asyncio.wait_for(anyio.to_thread.run_sync(lambda: 1), timeout=5)
+    try:
+        return asyncio.run(go()) == 1
+    except Exception:
+        return False
+
+
+@pytest.fixture
+def client(wired):
+    # HONEST SKIP, never a pass: without worker threads these HTTP cases cannot run at all.
+    # The thread-free tests below still prove the wiring and every decision.
+    if not _worker_threads_run():
+        pytest.skip("AnyIO worker threads do not run in this environment; HTTP cases not run "
+                    "(thread-free wiring and decision tests still apply)")
     app = FastAPI()
-    app.include_router(routes.router)
-    app.dependency_overrides[routes.get_session] = lambda: _Session()
+    app.include_router(wired.routes.router)
+    app.dependency_overrides[wired.routes.get_session] = lambda: _Session()
     c = _Client(app)
-    c.accounts = accounts.rows
+    c.accounts = wired.accounts
     return c
 
 
@@ -239,3 +264,47 @@ def test_both_internal_callers_send_the_model_scoped_service_token():
     # admin.py: the add-stock refresh builds its headers from _service_token().
     seg = admin[admin.index("/rankings/refresh") - 600: admin.index("/rankings/refresh")]
     assert "_service_token()" in seg and "Authorization" in seg
+
+
+
+# ── THREAD-FREE proof (re-review 2026-10-14): no HTTP, no worker thread ──────────────────
+
+def _dependency_calls(dependant):
+    out = []
+    for d in dependant.dependencies:
+        out.append(d.call)
+        out += _dependency_calls(d)
+    return out
+
+
+@pytest.mark.parametrize("path", ROUTES)
+def test_each_route_is_wired_to_the_real_admin_dependency(wired, path):
+    """Introspects the REAL FastAPI route objects — not source text."""
+    route = next(r for r in wired.routes.router.routes
+                 if getattr(r, "path", None) == path and "POST" in r.methods)
+    calls = _dependency_calls(route.dependant)
+    assert wired.jwt_auth.require_model_admin in calls
+    assert wired.jwt_auth.get_current_username not in calls
+
+
+@pytest.mark.parametrize("who,claims,row,expect", [
+    ("signed out", None, None, 401),
+    ("ordinary user", {"sub": "alice", "role": "user"}, ("alice", "USER"), 403),
+    ("demoted admin", {"sub": "bob", "role": "admin"}, ("bob", "USER"), 403),
+    ("disabled admin", {"sub": "dan", "role": "admin"}, ("dan", "ADMIN", False), 403),
+    ("unscoped service", {"sub": "svc", "svc": ["other"]}, None, 403),
+    ("active admin", {"sub": "root", "role": "admin"}, ("root", "ADMIN"), "root"),
+    ("scheduler", {"sub": "scheduler", "svc": ["model"]}, None, "scheduler"),
+])
+def test_the_dependency_decides_every_role_without_http(wired, who, claims, row, expect):
+    from fastapi import HTTPException
+    if row:
+        wired.accounts[row[0]] = types.SimpleNamespace(
+            is_active=row[2] if len(row) > 2 else True, role=row[1])
+    auth = _bearer(**claims)["Authorization"] if claims else None
+    if isinstance(expect, int):
+        with pytest.raises(HTTPException) as e:
+            wired.jwt_auth.require_model_admin(auth)
+        assert e.value.status_code == expect, who
+    else:
+        assert wired.jwt_auth.require_model_admin(auth) == expect, who

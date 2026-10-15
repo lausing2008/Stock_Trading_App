@@ -361,3 +361,29 @@ def test_a_definite_refusal_is_recorded_as_failed_not_executing(r):
 
 def test_saves_are_refused_before_any_write_when_the_migration_is_not_in_place(r):
     assert r["p15"]["not_ready"] == {"status": 503, "writes": 0}
+
+
+
+# ── Independent re-review (2026-10-14) C1/C2 ──
+
+def test_c1_a_number_is_read_whole_and_a_window_is_never_a_price(r):
+    d = r["p16"]["drafts"]
+    for wrong in ("below 10% | below 1", "below 10% | below 10", "below 125% | below 12",
+                  "below 50-day average | below 5", "below 1,000 | below 1",
+                  "below 12.5 | below 12", "below 1,00 | below 1", "below 10k | below 10"):
+        assert d[wrong] == [], wrong
+    assert d["below 50-day average | below {{trend.sma50}}"] == [["below", "trend.sma50"]]
+    assert d["below its 50-day average | below {{trend.sma50}}"] == [["below", "trend.sma50"]]
+    assert d["below 1,000 | below 1000"] == [["below", 1000.0]]
+    assert d["below 1,000 | below 1,000"] == [["below", 1000.0]]
+    assert d["below 12.5 | below 12.5"] == [["below", 12.5]]
+
+
+def test_c2_negation_disjunction_and_percent_scores_are_refused_and_explained(r):
+    s = r["p16"]["screen"]
+    for case in ("not above 70 | min_score 70", "not above 70 | max_score 70",
+                 "below 70 or growth above 80 | both", "above 70% | min_score 70",
+                 "BUY or HOLD | signal BUY"):
+        assert s[case]["params"] == {}, case
+        assert s[case]["explained"], f"{case}: refused silently"
+    assert s["no more than 70 | max_score 70"]["params"] == {"max_score": 70.0}

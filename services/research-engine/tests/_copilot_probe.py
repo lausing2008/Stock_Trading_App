@@ -1012,7 +1012,57 @@ def _draft_key(mid, did):
         return next(d["idempotency_key"] for d in m.grounding["drafts"] if d["id"] == did)
 
 
-for fn in (p15_save_recovery, p14_counterproposals, p13_drafts, p12_screening, p11_independent_review_regressions, p10_inflight_claims_and_cancellation, p9_report_changes_and_private_reports, p1_packet_cites_resolvable_evidence, p2_stale_price_propagates, p3_grounding_rules,
+def p16_rereview():
+    """Independent re-review (2026-10-14) C1/C2: wrong AND correct proposals for each case."""
+    from src.copilot import screen as SC, drafts as Dr
+    reset()
+    with Session() as s:
+        pk = build_packet(s, "TESTCO", now=NOW)
+    pa = lambda c, t: {"kind": "price_alert", "condition": c, "threshold": t}
+
+    def dv(q, props):
+        v = Dr.validate(props, packet=pk, question=q)
+        return [[x["arguments"]["condition"], x["threshold_source"]["key"] or
+                 x["arguments"]["threshold"]] for x in v.drafts]
+    drafts = {}
+    for label, q, props in (
+            ("below 10% | below 1", "Alert me below 10%", [pa("below", "1")]),
+            ("below 10% | below 10", "Alert me below 10%", [pa("below", "10")]),
+            ("below 125% | below 12", "Alert me below 125%", [pa("below", "12")]),
+            ("below 50-day average | below 5", "Alert me below 50-day average", [pa("below", "5")]),
+            ("below 50-day average | below {{trend.sma50}}", "Alert me below 50-day average",
+             [pa("below", "{{trend.sma50}}")]),
+            ("below its 50-day average | below {{trend.sma50}}",
+             "Alert me below its 50-day average", [pa("below", "{{trend.sma50}}")]),
+            ("below 1,000 | below 1", "Alert me below 1,000", [pa("below", "1")]),
+            ("below 1,000 | below 1000", "Alert me below 1,000", [pa("below", "1000")]),
+            ("below 1,000 | below 1,000", "Alert me below 1,000", [pa("below", "1,000")]),
+            ("below 12.5 | below 12", "Alert me below 12.5", [pa("below", "12")]),
+            ("below 12.5 | below 12.5", "Alert me below 12.5", [pa("below", "12.5")]),
+            ("below 1,00 | below 1", "Alert me below 1,00", [pa("below", "1")]),
+            ("below 10k | below 10", "Alert me below 10k", [pa("below", "10")])):
+        drafts[label] = dv(q, props)
+    sectors = ["Technology"]
+    screen = {}
+    for label, q, raw in (
+            ("not above 70 | min_score 70", "K-Score not above 70",
+             '<filter name="min_score">70</filter>'),
+            ("not above 70 | max_score 70", "K-Score not above 70",
+             '<filter name="max_score">70</filter>'),
+            ("below 70 or growth above 80 | both", "K-Score below 70 or growth above 80",
+             '<filter name="max_score">70</filter><filter name="min_growth">80</filter>'),
+            ("above 70% | min_score 70", "K-Score above 70%",
+             '<filter name="min_score">70</filter>'),
+            ("no more than 70 | max_score 70", "K-Score no more than 70",
+             '<filter name="max_score">70</filter>'),
+            ("BUY or HOLD | signal BUY", "BUY or HOLD signals", '<filter name="signal">BUY</filter>')):
+        plan = SC.validate(SC.parse(raw), q, sectors)
+        screen[label] = {"params": plan.params,
+                         "explained": bool(plan.unsupported or plan.dropped)}
+    R["p16"] = {"drafts": drafts, "screen": screen}
+
+
+for fn in (p16_rereview, p15_save_recovery, p14_counterproposals, p13_drafts, p12_screening, p11_independent_review_regressions, p10_inflight_claims_and_cancellation, p9_report_changes_and_private_reports, p1_packet_cites_resolvable_evidence, p2_stale_price_propagates, p3_grounding_rules,
            p4_grounded_turn_persists_and_replays, p5_repair_then_accept_and_double_reject,
            p6_owner_isolation, p7_admission_limits, p8_retention_purge):
     fn()

@@ -121,7 +121,17 @@ def validate(p: Proposal, question: str, sectors: list[str]) -> Plan:
     """
     from .intent import parse_screen
     it = parse_screen(question)
-    plan = Plan(unsupported=list(p.unsupported))
+    plan = Plan(unsupported=list(p.unsupported) + list(it.refusals))
+    if it.disjunction:
+        # C2: the screen applies every filter together. "A or B" run as "A and B" returns the
+        # intersection of what was asked for — so nothing is applied, and the answer says why.
+        for name, value in p.filters:
+            plan.dropped.append({"filter": name, "value": value[:60],
+                                 "reason": "your question combines conditions with OR; the "
+                                           "screen can only apply them together (AND)"})
+        plan.unsupported.append("conditions joined by 'or' — ask for one condition at a time, "
+                                "or for conditions that must ALL hold")
+        return plan
     seen: set[str] = set()
     used_bounds: set = set()
     for name, value in p.filters:
@@ -141,6 +151,10 @@ def validate(p: Proposal, question: str, sectors: list[str]) -> Plan:
             metric, op = FILTER_BOUND[name]
             match = next((b for b in it.bounds if (b.metric, b.op, b.value) == (metric, op, v)),
                          None)
+            if match is None and any(b.value == v for b in it.negated):
+                drop("your question NEGATES this comparison; negated comparisons are not "
+                     "supported")
+                continue
             if match is None:
                 same_val = [b for b in it.bounds if b.value == v]
                 if same_val:

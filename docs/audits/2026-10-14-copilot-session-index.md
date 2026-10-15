@@ -36,6 +36,19 @@ commit and decision. The details live in the linked files.
 
 Raw evaluation results (synthetic fixtures; no API key): `docs/audits/2026-10-13-copilot-eval/`.
 
+## After the deployment: re-review round (2026-10-14, NOT YET DEPLOYED)
+
+- [Independent re-review](2026-10-14-copilot-remediation-independent-rereview.md) and its
+  [remediation (C1/C2)](2026-10-14-copilot-rereview-remediation.md):
+  - numbers are read as whole tokens, and named averages are matched before any number;
+  - negated comparisons, "or", and percentage scores are refused with a reason;
+  - the ranking authorization proof no longer needs a worker thread.
+- **AUD-UW-INTRADAY-TZ** (`ae2765f3`, separate commit, entry in
+  `docs/incidents/external-data-source-liveness.md`): every intraday Unusual Whales fetch had
+  been failing, uncounted, behind the yfinance fallback.
+- Tracker tiers 442 (Unusual Whales) and 443 (parser).
+- Chart commands remain on hold until this round is reviewed.
+
 ## Commits (`prod`)
 
 | Commit | What |

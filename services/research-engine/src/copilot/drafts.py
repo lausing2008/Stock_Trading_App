@@ -121,7 +121,7 @@ def validate(raw: list[dict], *, packet, question: str) -> DraftResult:
                           or (packet.fields.get(q.field).value or {}).get("as_of")}
             else:
                 try:
-                    value = float(t)
+                    value = float(t.replace(",", ""))
                 except ValueError:
                     drop("threshold must be a packet price or a number you typed"); continue
                 target = next((x for x in alert.targets if x.source == "typed"

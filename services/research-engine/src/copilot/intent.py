@@ -21,6 +21,15 @@ import re
 from dataclasses import dataclass, field as dc_field
 
 _NUM = r"(\d+(?:\.\d+)?)"
+#: A COMPLETE amount (re-review C1): grouped thousands are supported explicitly, and the
+#: lookahead forbids stopping inside a longer token — "1,000" cannot yield "1", "1.5" cannot
+#: yield "1" — while sentence punctuation after a number ("above 70, top 5") still ends it.
+#: Units ("10%", "50-day") are inspected by the caller from what follows the amount.
+_AMOUNT = r"(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?!\d|[.,]\d)"
+
+
+def amount_value(text: str) -> float:
+    return float(text.replace(",", ""))
 _UP = (r"(?:above|over|greater than|more than|higher than|at least|no less than|exceeding|"
        r"exceeds|minimum of|min(?:imum)?|>=|>)")
 _DOWN = (r"(?:below|under|less than|lower than|at most|no more than|maximum of|max(?:imum)?|"
@@ -48,6 +57,13 @@ class Bound:
 @dataclass
 class ScreenIntent:
     bounds: list[Bound] = dc_field(default_factory=list)
+    #: Comparisons the user NEGATED ("not above 70") — refused, never inverted or dropped
+    #: silently (re-review C2).
+    negated: list[Bound] = dc_field(default_factory=list)
+    #: Asks the grammar cannot represent exactly; each becomes an "unsupported" line.
+    refusals: list[str] = dc_field(default_factory=list)
+    #: The question joins conditions with OR. The screen can only AND, so nothing is applied.
+    disjunction: bool = False
     unattached: list[str] = dc_field(default_factory=list)   # a comparison with no metric
     count: int | None = None
     sort: str | None = None
@@ -86,16 +102,32 @@ def parse_screen(question: str) -> ScreenIntent:
         else:
             it.unattached.append(m.group(0))
         taken.append(m.span())
-    for m in re.finditer(rf"(?:\bof\s+)?({_UP}|{_DOWN})\s*\$?{_NUM}", q, re.I):
+    for m in re.finditer(rf"(?:\bof\s+)?({_UP}|{_DOWN})\s*\$?{_AMOUNT}(\s*(?:%|percent|per\s*cent))?",
+                         q, re.I):
         if any(a <= m.start() < b for a, b in taken):
             continue
         op = "ge" if re.fullmatch(_UP, m.group(1), re.I) else "le"
         metric = _metric_at(q, m.start())
-        if metric:
-            it.bounds.append(Bound(metric, op, float(m.group(2))))
-        else:
-            it.unattached.append(m.group(0))
+        value = amount_value(m.group(2))
         taken.append(m.span())
+        if not metric:
+            it.unattached.append(m.group(0))
+            continue
+        if m.group(3):
+            it.refusals.append(f"'{m.group(0).strip()}' — scores are 0-100 points, not "
+                               f"percentages; ask without the % sign")
+            continue
+        # NEGATION (C2): "not above 70" / "isn't below 40". The fixed comparators "no more
+        # than"/"no less than" are part of _UP/_DOWN and are not negations of a comparison.
+        if re.search(r"(?:\bnot|n't|\bnever)\s+$", q[max(0, m.start() - 12):m.start()], re.I):
+            it.negated.append(Bound(metric, op, value))
+            it.refusals.append(f"'not {m.group(1)} {m.group(2)}' — negated comparisons are not "
+                               f"supported; ask for the bound you want (e.g. 'at most …')")
+            continue
+        it.bounds.append(Bound(metric, op, value))
+    # OR (C2): the screen ANDs every filter, so "A or B" would silently become "A and B".
+    if re.search(r"\bor\b|\beither\b", q, re.I):
+        it.disjunction = True
     c = (re.search(rf"\b(?:top|first|show(?: me)?|list|give me|best)\s+{_NUM}\b", q, re.I)
          or re.search(rf"\b{_NUM}\s+(?:stocks|names|results|companies|tickers|picks)\b", q, re.I))
     if c:
@@ -152,6 +184,13 @@ class AlertIntent:
 
 
 def parse_alert(question: str) -> AlertIntent:
+    """Typed alert targets: (direction, named source | complete typed price).
+
+    ORDER MATTERS (re-review C1): a named source is matched BEFORE any number, so the window
+    in "50-day average" is never read as a price; a number must be a COMPLETE token; and a
+    percentage anywhere refuses price alerts outright rather than letting a partial target
+    through beside the refusal.
+    """
     q = question
     it = AlertIntent()
     if re.search(_NEG_ACTION, q, re.I):
@@ -160,19 +199,40 @@ def parse_alert(question: str) -> AlertIntent:
     if re.search(_PERCENT, q, re.I):
         it.refusals.append("percentage-change alerts are not supported — a price alert needs a "
                            "price, and a percentage is not read as one")
+        return it
     for m in re.finditer(rf"({_ALERT_DOWN}|{_ALERT_UP})", q, re.I):
         cond = "below" if re.search(r"below|under|beneath|less", m.group(0), re.I) else "above"
-        rest = q[m.end():m.end() + 60]
-        num = re.match(rf"\s*(?:HK)?\$?\s*{_NUM}(?!\s*(?:%|percent|per\s*cent|[- ]?(?:day|bar|session)))",
-                       rest, re.I)
-        if num:
-            it.targets.append(AlertTarget(cond, "typed", float(num.group(1))))
-            continue
+        rest = q[m.end():m.end() + 80]
+        src = None
         for key, pat in _SOURCES:
             if re.match(rf"\s*(?:its|the|their)?\s*(?:{pat})", rest, re.I):
-                it.targets.append(AlertTarget(cond, key))
+                src = key
                 break
-    if not it.targets and re.search(_AMBIGUOUS, q, re.I):
+        if src:
+            it.targets.append(AlertTarget(cond, src))
+            continue
+        num = re.match(rf"\s*(?:HK)?\$?\s*{_AMOUNT}", rest, re.I)
+        if not num:
+            if re.match(r"\s*(?:HK)?\$?\s*\d", rest, re.I):
+                # A number is there but is not a COMPLETE amount ("1,00"): never guess a prefix.
+                it.refusals.append(f"the number after '{m.group(0).strip()}' was not understood; "
+                                   f"write it as e.g. 1000 or 1,000")
+            continue
+        tail = rest[num.end():]
+        if re.match(r"\s*(?:%|percent|per\s*cent)", tail, re.I):
+            it.refusals.append("percentage-change alerts are not supported")
+            continue
+        if re.match(r"[- ]?(?:day|bar|session|d|week|month|year)s?\b", tail, re.I):
+            it.refusals.append(f"'{m.group(0).strip()} {num.group(0).strip()}{tail.split()[0] if tail.split() else ''}' "
+                               f"names a window, not a price — say which average (e.g. "
+                               f"'its 50-day average')")
+            continue
+        if re.match(r"[A-Za-z]", tail):
+            it.refusals.append(f"'{num.group(0).strip()}{tail.split()[0]}' is not a price this "
+                               f"can read; write the full number")
+            continue
+        it.targets.append(AlertTarget(cond, "typed", amount_value(num.group(1))))
+    if not it.targets and not it.refusals and re.search(_AMBIGUOUS, q, re.I):
         it.refusals.append("say whether the alert is for the price going above or below the "
                            "level; 'hits' or 'reaches' does not say which side")
     return it

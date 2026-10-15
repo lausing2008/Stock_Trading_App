@@ -1,0 +1,147 @@
+{
+  "alerts": [
+    {
+      "question": "Alert me below 10%",
+      "targets": [
+        {
+          "condition": "below",
+          "source": "typed",
+          "value": 1.0
+        }
+      ],
+      "refusals": [
+        "percentage-change alerts are not supported \u2014 a price alert needs a price, and a percentage is not read as one"
+      ],
+      "drafts": [
+        {
+          "kind": "price_alert",
+          "arguments": {
+            "symbol": "TESTCO",
+            "condition": "below",
+            "threshold": 1.0
+          },
+          "threshold_source": {
+            "kind": "typed",
+            "key": null,
+            "display": "$1.00"
+          },
+          "summary": "Price alert: email me when the observed price of TESTCO is at or below $1.00",
+          "rule_notes": [
+            "Checked about once a minute against the latest available quote; it can trigger intraday and does not wait for a closing price."
+          ]
+        }
+      ],
+      "dropped": []
+    },
+    {
+      "question": "Alert me below 50-day average",
+      "targets": [
+        {
+          "condition": "below",
+          "source": "typed",
+          "value": 5.0
+        }
+      ],
+      "refusals": [],
+      "drafts": [
+        {
+          "kind": "price_alert",
+          "arguments": {
+            "symbol": "TESTCO",
+            "condition": "below",
+            "threshold": 5.0
+          },
+          "threshold_source": {
+            "kind": "typed",
+            "key": null,
+            "display": "$5.00"
+          },
+          "summary": "Price alert: email me when the observed price of TESTCO is at or below $5.00",
+          "rule_notes": [
+            "Checked about once a minute against the latest available quote; it can trigger intraday and does not wait for a closing price."
+          ]
+        }
+      ],
+      "dropped": []
+    },
+    {
+      "question": "Alert me below 1,000",
+      "targets": [
+        {
+          "condition": "below",
+          "source": "typed",
+          "value": 1.0
+        }
+      ],
+      "refusals": [],
+      "drafts": [
+        {
+          "kind": "price_alert",
+          "arguments": {
+            "symbol": "TESTCO",
+            "condition": "below",
+            "threshold": 1.0
+          },
+          "threshold_source": {
+            "kind": "typed",
+            "key": null,
+            "display": "$1.00"
+          },
+          "summary": "Price alert: email me when the observed price of TESTCO is at or below $1.00",
+          "rule_notes": [
+            "Checked about once a minute against the latest available quote; it can trigger intraday and does not wait for a closing price."
+          ]
+        }
+      ],
+      "dropped": []
+    },
+    {
+      "question": "Alert me below -100",
+      "targets": [],
+      "refusals": [],
+      "drafts": [],
+      "dropped": [
+        {
+          "kind": "price_alert",
+          "reason": "this does not match what you asked for (no price level with above/below was found in your question)"
+        }
+      ]
+    }
+  ],
+  "screens": [
+    {
+      "question": "K-Score not above 70",
+      "params": {
+        "min_score": 70.0
+      },
+      "unsupported": [],
+      "dropped": []
+    },
+    {
+      "question": "K-Score below 70 or growth above 80",
+      "params": {
+        "max_score": 70.0,
+        "min_growth": 80.0
+      },
+      "unsupported": [],
+      "dropped": []
+    },
+    {
+      "question": "K-Score above 70%",
+      "params": {
+        "min_score": 70.0
+      },
+      "unsupported": [],
+      "dropped": []
+    }
+  ],
+  "correct_average_proposal": {
+    "drafts": [],
+    "dropped": [
+      {
+        "kind": "price_alert",
+        "reason": "this does not match what you asked for (you asked: below $5.00)"
+      }
+    ]
+  }
+}
