@@ -1,0 +1,311 @@
+"""Plan mode (forecast + textbook playbook) — behavioural acceptance through the real code.
+
+Scenarios live in `_copilot_plan_probe.py` and run against a real database (PostgreSQL when
+STOCKAI_INTEL_DB names one, otherwise SQLite); only the model is scripted. The fixture's bars
+make every level computable by hand: true range 2 on every bar, so ATR(14) = 2.00, the prior
+20-bar low/high = 99/101 and the 50-bar averages = 100.
+Design: docs/features/2026-10-14-copilot-plan-mode-design.md.
+"""
+import json
+import pathlib
+import subprocess
+import sys
+
+import pytest
+
+_PROBE = pathlib.Path(__file__).resolve().parent / "_copilot_plan_probe.py"
+
+
+@pytest.fixture(scope="module")
+def r():
+    proc = subprocess.run([sys.executable, str(_PROBE)], capture_output=True, text=True)
+    if proc.returncode != 0:
+        pytest.fail(f"probe failed:\n{proc.stdout[-3000:]}\n{proc.stderr[-3000:]}")
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+# ── Levels and entry rules, hand-computed ────────────────────────────────────
+
+def test_levels_are_the_hand_computed_values_and_cite_every_input(r):
+    p = r["pl1"]
+    assert p["packet_version"] == 4
+    assert p["atr"].startswith("$2.00 (14-bar ATR") and p["atr_calc"] == 2.0
+    assert (p["low20"], p["high20"]) == ("$99.00", "$101.00")
+    assert p["sma50"].startswith("$100.00, flat")
+    assert p["every_ref_resolves"] and p["every_field_ref_resolves"]
+    assert p["atr_cites_inputs"] == 101, "the ATR's calculation record plus all 100 input bars"
+
+
+def test_entry_rules_state_their_conditions_and_code_calculated_stops(r):
+    p = r["pl1"]
+    assert p["kind"] == "entry" and p["holding_rules"] == []
+    assert "20-bar low ($99.00)" in p["e1"] and "stop below that low at $98.00" in p["e1"]
+    assert p["e1"].startswith("If ")
+    assert "20-bar high ($101.00)" in p["e2"] and "stop at $99.00" in p["e2"]
+    assert p["e2"].startswith("If ")
+
+
+def test_reward_risk_rule_covers_every_branch(r):
+    p = r["pl1"]
+    # 100 -> stop 98, target 101: 1/2 = 0.5; the price that meets 2.0 is (101 + 2*98)/3 = 99.
+    assert "reward:risk 0.5, below the textbook minimum of 2" in p["e3"]
+    assert "at or below $99.00" in p["e3"]
+    assert "reward:risk 1.5" in p["e3_low_close"]
+    assert "breakout case" in p["e3_at_high"]
+    # A close below the pullback stop (reachable only because the 20-bar window EXCLUDES the
+    # latest bar — the first build included it, which made this branch dead code).
+    assert "has broken" in p["e3_broken"] and "$97.93" in p["e3_broken"]   # ATR 30/14
+    assert "has broken" in p["e3_broken_96"] and "$97.89" in p["e3_broken_96"]  # ATR 31/14
+
+
+def test_trend_filter_says_at_or_above_when_equal(r):
+    assert "at or above the 50-bar average ($100.00)" in r["pl1"]["e4"]
+
+
+def test_sizing_uses_the_typed_budget_or_says_how_to_give_one(r):
+    p = r["pl1"]
+    assert "250 shares ($25,000.00)" in p["e6"]             # floor(500 / 2)
+    assert "250 shares ($25,000.00)" in p["e6_pct"]         # 50,000 x 1% = 500
+    assert "Each 100 shares" in p["e6_no_budget"] and "$200.00" in p["e6_no_budget"]
+    assert "Each 100 shares" in p["e6_pct_no_account"], "a % with no account sizes nothing"
+    assert "needs an account size" in p["pct_no_account_refusal"]
+
+
+# ── Holding rules ───────────────────────────────────────────────────────────
+
+def test_holding_rules_for_a_typed_position(r):
+    p = r["pl2"]
+    assert p["kind"] == "holding"
+    assert p["position.entry"] == "$95.00" and p["position.shares"] == "100 shares"
+    assert p["position_source"] == "stated by you in this question"
+    assert "gain of $5.00 per share ($500.00 on 100 shares)" in p["rule.h1"]
+    assert "+5.3%" in p["rule.h1"] and "+2.5 ATRs" in p["rule.h1"]
+    assert "$91.00" in p["rule.h2"] and "$98.00" in p["rule.h2"] and "structure-based" in p["rule.h2"]
+    assert "up to at least your entry ($95.00)" in p["rule.h3"]
+    assert "stays at $98.00" in p["rule.h4"], "a stop never moves down"
+    assert "20-bar high ($101.00)" in p["rule.h5"]
+    assert "($98.00)" in p["rule.h6"]
+    assert "SWING BUY" in p["rule.h8"] and "LONG SELL" in p["rule.h8"]
+    assert p["rule.e1"], "entry rules stay available beside the holding rules"
+
+
+def test_a_losing_position_says_so_and_flags_a_reached_stop(r):
+    p = r["pl2"]
+    assert "loss of $4.00 per share ($40.00 on 10 shares)" in p["loss_h1"]
+    assert "entry-based" in p["loss_h2"] and "stop has been reached" in p["loss_h2"]
+    assert "once a close is above $106.00" in p["loss_h3"]
+
+
+def test_trailing_stop_rises_in_a_trend_and_drives_the_exit_level(r):
+    p = r["pl2"]
+    assert p["trend_low20"] == "$219.00"
+    assert "raises the stop to $226.00" in p["trail_h4"]
+    assert "($226.00)" in p["trail_h6"]
+    assert "$230.50" in p["trend_h5"] and "$231.00" in p["trend_h5"]
+
+
+def test_an_implausible_entry_or_none_builds_no_holding_rules(r):
+    p = r["pl2"]
+    assert "far from the latest close" in p["far_entry_refused"] and not p["far_entry_has_h"]
+    assert p["no_entry_kind"] == "holding" and not p["no_entry_has_h"]
+    assert "no entry price was found" in p["no_entry_refusal"]
+    assert "rules for a held position were not built" in p["no_entry_gap"]
+
+
+# ── Calls and track records ───────────────────────────────────────────────────
+
+def test_calls_carry_their_own_time_and_staleness(r):
+    p = r["pl3"]
+    assert p["kind"] == "forecast" and p["no_rules_for_forecast"]
+    assert p["call_swing"].startswith("BUY (SWING") and p["call_swing_state"] == "OK"
+    assert p["call_long"].startswith("SELL (LONG") and p["call_long_state"] == "STALE"
+    assert "no SHORT signal" in p["gaps"] and "no GROWTH signal" in p["gaps"]
+
+
+def test_records_state_count_span_and_verification(r):
+    p = r["pl3"]
+    # 24 + 5 correct of 40 + 7 resolved, every one unverified.
+    assert p["record"].startswith("all stocks, SWING BUY: ")
+    assert "in 62% of 47 past BUY calls" in p["record"]
+    assert "none verified" in p["record"] and "signals 2026-09-19 to 2026-09-19" in p["record"]
+    assert "3 of 47 verified" in p["verified_3"], "the status is computed, not hard-coded"
+    assert "too few" in p["record_10d"] and "at least 30" in p["record_10d"]
+    assert "too few" in p["long_record"]
+    assert "62% of 47 past SWING calls of either direction" in p["baseline"]
+
+
+def test_floors_cohort_30_and_stock_8(r):
+    p = r["pl3"]
+    assert "too few" in p["cohort_29"] and "29 resolved" in p["cohort_29"]
+    assert "of 30 past BUY calls" in p["cohort_30"]
+    assert "too few" in p["own"] and "7 resolved" in p["own"]
+    assert p["own_8"].startswith("TESTCO, SWING BUY: ") and "75% of 8 past BUY calls" in p["own_8"]
+
+
+def test_no_look_ahead_and_lookback_is_bounded(r):
+    assert r["pl3"]["with_late_and_old"] == r["pl3"]["record"]
+
+
+# ── Staleness and thin data ───────────────────────────────────────────────────
+
+def test_stale_prices_mark_levels_and_rules_but_not_fresh_calls(r):
+    p = r["pl4"]
+    assert p["price_stale_rule_state"] == "STALE" and p["price_stale_level_state"] == "STALE"
+    assert p["call_swing_state_when_price_stale"] == "OK"
+    assert p["rendered"].endswith("[stale]")
+
+
+def test_a_split_sized_jump_marks_levels_stale_with_the_reason(r):
+    p = r["pl4"]
+    assert p["split_state"] == "STALE" and "split or other corporate action" in p["split_note"]
+
+
+def test_thin_history_builds_no_rules_and_says_why(r):
+    p = r["pl4"]
+    assert not p["thin_has_rules"] and "no levels or rules can be computed" in p["thin_gap"]
+
+
+def test_earnings_rule_by_distance(r):
+    p = r["pl4"]
+    assert "4 calendar days away" in p["earnings_near"] and "wait until after" in p["earnings_near"]
+    assert "stop does not cap the loss" in p["earnings_near_holding"]
+    assert "does not apply yet" in p["earnings_far"]
+
+
+# ── Routing, refusals, turns ───────────────────────────────────────────────────
+
+def test_ordinary_questions_get_no_plan_and_no_extra_limitation(r):
+    p = r["pl5"]
+    assert not p["plain_has_plan_keys"] and p["plain_plan_kind"] is None
+    assert "not loaded for this question" in p["plain_playbook_note"]
+    assert not p["plain_limitations_mention_playbook"]
+
+
+def test_options_shorts_split_entries_and_incomplete_numbers_get_no_holding_rules(r):
+    p = r["pl5"]
+    for label in ("options", "short", "two_entries", "incomplete"):
+        assert not p[label]["has_h"] and p[label]["refusal"], label
+    assert "long stock positions only" in p["options"]["refusal"]
+    assert "average cost" in p["two_entries"]["refusal"]
+
+
+def test_a_plan_answer_cites_rules_and_records_and_renders_their_figures(r):
+    p = r["pl6"]
+    assert p["good_status"] == "grounded" and p["good_packet_version"] == 4
+    assert p["model_saw_rules"]
+    assert {"call.swing", "record.swing.5d", "rule.h1", "rule.h2"} <= set(p["good_refs"])
+    assert "$98.00" in p["good_content"] and "{{" not in p["good_content"]
+    assert "[stale]" not in p["good_content"].split("\n")[0]
+
+
+def test_a_price_prediction_is_refused_and_the_plan_is_shown_without_the_model(r):
+    p = r["pl6"]
+    assert p["predict_status"] == "rejected"
+    assert any("predicts a price move" in x for x in p["predict_reasons"])
+    assert p["predict_fallback_has_plan"]
+    assert "call.swing" in p["predict_fallback_refs"] and "record.swing.5d" in p["predict_fallback_refs"]
+
+
+def test_calendar_day_windows_pass_only_in_their_exact_wording(r):
+    p = r["pl6"]
+    assert p["good_status"] == "grounded", "'5 calendar days' names a window the evidence names"
+    # "5 days" beside a 5-BAR value is a mislabel and a figure; beside a 5-calendar-day RECORD
+    # it is an accurate label (test_held_out_fixes_are_narrow).
+    assert p["five_days_status"] == "rejected", "'5 days' beside a bar-based value is refused"
+
+
+def test_plan_view_is_deterministic_free_and_validated(r):
+    p = r["pl7"]
+    assert p["kind"] == "holding"
+    assert p["groups"] == ["calls", "levels", "moves", "position", "records", "rules"]
+    assert "rule.h2" in p["rule_keys"] and "rule.e1" in p["rule_keys"]
+    assert p["no_price_records_inline"] and p["price_bar_records"] > 200
+    assert "NOT tuned" in p["parameters_note"]
+    assert p["usage_rows"] == 0, "no model call, so nothing is charged to the daily ledger"
+    assert p["errors"] == {"neg_entry": 400, "pct_no_account": 400, "bad_kind": 400,
+                           "zero_shares": 400, "nan_risk": 400, "unknown_user": 403,
+                           "unknown_symbol": 404}
+
+
+# ── Grammar and forecast-language tables ──────────────────────────────────────
+
+_G = {
+    "I bought 100 shares at 182.50, what now?": ("holding", 182.5, 100, False),
+    "bought 100 at $182.5": ("holding", 182.5, 100, False),
+    "Bought 100 at 182.5. What next?": ("holding", 182.5, 100, False),
+    "I own it, avg cost 1,250.75 and 30 shares": ("holding", 1250.75, 30, False),
+    "I have 200 shares, cost basis 45.10": ("holding", 45.1, 200, False),
+    "I bought at 180, stop at 170?": ("holding", 180.0, None, False),     # a stop is not an entry
+    "I bought at 180 at 9:30 today": ("holding", 180.0, None, False),     # a time is not a price
+    "I bought 50 at 10 and 50 at 12": ("holding", None, None, True),
+    "I bought at 1,00": ("holding", None, None, True),
+    "I bought at 182.5k": ("holding", None, None, True),
+    "I bought calls at 5": ("holding", None, None, True),
+    "I shorted it at 120": ("entry", None, None, True),
+    "should I buy? risk $500": ("entry", None, None, False),
+    "risk 1% should I buy": ("entry", None, None, True),
+    "I don't own it, should I buy": ("entry", None, None, False),
+    "what is the prediction for next week": ("forecast", None, None, False),
+    "Explain this signal": (None, None, None, False),
+    "Alert me if it falls below 170": (None, None, None, False),
+    "What is the K-Score?": (None, None, None, False),
+}
+
+
+@pytest.mark.parametrize("q", list(_G))
+def test_position_grammar(r, q):
+    g = r["pl8"]["grammar"][q]
+    kind, entry, shares, refused = _G[q]
+    assert g["kind"] == kind
+    assert g["entry"] == entry
+    if shares is not None:
+        assert g["shares"] == shares
+    assert g["refused"] is refused
+
+
+def test_risk_grammar(r):
+    g = r["pl8"]["grammar"]
+    assert g["should I buy? risk $500"]["risk_amount"] == 500.0
+    assert g["account 50,000 risk 1% should I buy"]["account"] == 50000.0
+    assert g["account 50,000 risk 1% should I buy"]["risk_pct"] == 1.0
+    assert g["I can lose 300 dollars, where to buy"]["risk_amount"] == 300.0
+
+
+@pytest.mark.parametrize("text,refused", [
+    ("The stock will rise next week.", True),
+    ("It should bounce from support.", True),
+    ("It is expected to reach the high.", True),
+    ("Shares are poised to rally.", True),
+    ("The price will go up.", True),
+    ("If a close is above the high, it will likely climb.", False),
+    ("The data does not say the price will rise.", False),
+    ("Nothing here shows it is going to fall.", False),
+    ("The engine is set to recalculate tomorrow.", False),
+    ("Once it reaches the 20-bar high, take partial profit.", False),
+    ("The stop will trigger if a close is below it.", False),
+    ("Past BUY calls rose in most cases.", False),
+    ("Whether it will rise is not something the packet shows.", False),
+])
+def test_forecast_language(r, text, refused):
+    assert bool(r["pl8"]["forecast"][text]) is refused
+
+
+def test_held_out_fixes_are_narrow(r):
+    """From the plan-mode held-out run (2026-10-14): accurate window labels beside a record,
+    quoted examples, and citable refusals pass — and each neighbouring wrong case still fails."""
+    e = r["pl6"]["exempt"]
+    for k in ("label_beside_record", "words_beside_record", "calendar_beside_stock_record",
+              "baseline_label", "quoted_example", "position_note_citable", "gaps_citable"):
+        assert e[k], k
+    for k in ("mismatched_window", "bar_return_called_days", "days_without_record",
+              "other_figure_beside_record", "unquoted_first_person"):
+        assert not e[k], k
+
+
+def test_evidence_is_stored_once_per_message_and_served_unchanged(r):
+    p = r["pl6"]
+    assert p["refs_hold_ids"]
+    assert p["stored_bytes"] < 150_000, p["stored_bytes"]
+    assert p["api_preview"][0] == 5 and p["api_preview"][1] > 100
+    assert p["detail_full"] == p["api_preview"][1] and p["detail_ids_unique"]
+    assert tuple(p["legacy_preview"]) == (5, 7) and p["legacy_detail"] == 7

@@ -49,6 +49,22 @@ Raw evaluation results (synthetic fixtures; no API key): `docs/audits/2026-10-13
 - Tracker tiers 442 (Unusual Whales) and 443 (parser).
 - Chart commands remain on hold until this round is reviewed.
 
+## Plan mode, slice P1 (2026-10-14, NOT DEPLOYED, awaiting review)
+
+Asked for: forecasts for the next days or week, and a textbook playbook for "I want to buy" or
+"I bought at $X".
+
+Operator decisions:
+- conditional rules plus the platform's own calls with their records;
+- the position is typed by the user;
+- the Game Plan is rebuilt on these rules;
+- plan mode comes before chart commands.
+
+- [Design](../features/2026-10-14-copilot-plan-mode-design.md)
+- [Validation](2026-10-14-copilot-plan-mode-validation.md): held-out and tuned evaluation, and 12
+  of 12 sabotage checks.
+- Backend only. The Game Plan card (P2) comes after review.
+
 ## Commits (`prod`)
 
 | Commit | What |

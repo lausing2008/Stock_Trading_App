@@ -24,6 +24,7 @@ from db.models import CopilotMessage
 
 from . import drafts as D
 from . import grounding as G
+from . import intent as I
 from . import llm as L
 from . import store as St
 from .packet import PACKET_VERSION, build_packet
@@ -59,6 +60,27 @@ def _utcnow() -> datetime:
 
 
 def _evidence_refs(packet, keys: list[str]) -> list[dict]:
+    """Each cited key with its evidence INLINE — the shape the API serves (preview + count)."""
+    refs, records = _evidence_refs_compact(packet, keys)
+    return [{**{k: v for k, v in r.items() if k != "evidence_ids"},
+             "evidence": [records[i] for i in r["evidence_ids"]]} for r in refs]
+
+
+def _evidence_refs_compact(packet, keys: list[str]) -> tuple[list[dict], dict]:
+    """Each cited key with the IDS of its evidence, plus every record once (what is stored)."""
+    refs = _evidence_refs_inline(packet, keys)
+    records: dict[str, dict] = {}
+    out = []
+    for r in refs:
+        ids = []
+        for e in r.pop("evidence"):
+            records.setdefault(e["id"], e)
+            ids.append(e["id"])
+        out.append({**r, "evidence_ids": ids})
+    return out, records
+
+
+def _evidence_refs_inline(packet, keys: list[str]) -> list[dict]:
     """Each cited key, resolved to the evidence records behind it — what the UI links to."""
     records = packet.book.records
     heads = {h["key"]: h for h in packet.headlines}
@@ -163,7 +185,10 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         if prior is not None:
             return {"conversation_id": prior.conversation_id,
                     "message": St.serialise_message(prior), "replayed": True}
-        packet = build_packet(s, req.symbol, now=now)
+        # PLAN MODE (2026-10-14): a forecast / entry / holding question adds the plan engine's
+        # lines. The routing and the typed position are parsed by grammar, never by the model.
+        pi = I.parse_position(question)
+        packet = build_packet(s, req.symbol, now=now, plan_request=pi if pi.kind else None)
         if packet is None:
             raise CopilotError(404, f"{req.symbol} is not a tracked symbol")
         # A failed FIRST turn never returned a conversation id, so its retry arrives without one.
@@ -289,13 +314,13 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
     if accepted:
         content = result.answer
         status = "grounded"
-        refs = _evidence_refs(packet, result.used_keys)
+        refs, ev_records = _evidence_refs_compact(packet, result.used_keys)
         lims = _limitations(packet, result.limitations)
     else:
         content = G.fallback_answer(packet, reasons)
         status = "rejected"
-        shown = [k for k, _ in G.FALLBACK_KEYS if k in packet.quantities]
-        refs = _evidence_refs(packet, shown)
+        shown = G.fallback_keys(packet)
+        refs, ev_records = _evidence_refs_compact(packet, shown)
         lims = _limitations(packet, [])
     # Drafts only on an ACCEPTED answer, bound to the user's current state through market-data
     # (their credentials, no DB session held). A rejected answer proposes nothing.
@@ -312,7 +337,7 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         "drafts": drafts, "dropped_drafts": dropped_drafts,
         "packet_version": PACKET_VERSION, "packet_fingerprint": packet.fingerprint,
         "price_as_of": packet.price_as_of, "source_times": packet.source_times(),
-        "evidence_refs": refs, "limitations": lims,
+        "evidence_refs": refs, "evidence_records": ev_records, "limitations": lims,
         "rejection_reasons": [] if accepted else reasons,
     }
 
@@ -646,3 +671,53 @@ async def screen(req: ScreenRequest, *, session_factory, fetch_screen, llm_call=
         "basis": "K-Score and sub-scores from each stock's latest ranking in the window; signal "
                  "is the latest SWING signal. Scores are engine rankings, not return forecasts.",
     }
+
+
+# ── Plan view (the Game Plan card): deterministic, no model, no ledger charge ──────────────
+
+def plan_view(session_factory, username: str, symbol: str, *, kind: str | None = None,
+              entry: float | None = None, shares: int | None = None,
+              risk: float | None = None, account: float | None = None,
+              risk_pct: float | None = None, now: datetime | None = None) -> dict:
+    """The plan engine's lines for one symbol, as structured JSON.
+
+    The same lines the copilot cites, built by the same code; nothing here calls a model, so it
+    is not counted against the copilot's daily answers or the token budget. The position comes
+    from the query parameters the user typed — never from an account.
+    """
+    import math as _m
+    for name, v in (("entry", entry), ("risk", risk), ("account", account),
+                    ("risk_pct", risk_pct)):
+        if v is not None and (not _m.isfinite(v) or v <= 0):
+            raise CopilotError(400, f"{name} must be a positive number")
+    if risk_pct is not None and risk_pct > 100:
+        raise CopilotError(400, "risk_pct must be at most 100")
+    if risk_pct is not None and account is None:
+        raise CopilotError(400, "risk_pct needs an account size")
+    if shares is not None and shares <= 0:
+        raise CopilotError(400, "shares must be a whole number above zero")
+    if kind is None:
+        kind = "holding" if entry is not None else "entry"
+    if kind not in ("forecast", "entry", "holding"):
+        raise CopilotError(400, "kind must be forecast, entry or holding")
+    pi = I.PositionIntent(kind=kind, entry=entry, shares=shares, risk_amount=risk,
+                          account=account, risk_pct=risk_pct)
+    now = now or _utcnow()
+    with session_factory() as s:
+        if St.user_id_for(s, username) is None:
+            raise CopilotError(403, "user not found or inactive")
+        packet = build_packet(s, symbol, now=now, plan_request=pi)
+    if packet is None:
+        raise CopilotError(404, f"{symbol} is not a tracked symbol")
+    plan = packet.plan
+    records = packet.book.records
+    used = {e for it in plan.items.values() for e in it.evidence_ids}
+    # Calculation, signal, outcome and position records in full; the price bars they cite are
+    # counted (a year of bars per level would bloat every card load) and listed by id inside
+    # each calculation record.
+    evidence = {e: records[e] for e in sorted(used) if e in records and not e.startswith("price:")}
+    return {"symbol": symbol, "plan": plan.to_json(), "packet_version": PACKET_VERSION,
+            "packet_fingerprint": packet.fingerprint, "evidence": evidence,
+            "price_bar_records": sum(1 for e in used if e.startswith("price:")),
+            "limitations": [m for m in packet.missing() if m["field"].startswith("plan_")
+                            or m["field"] in ("price", "earnings")]}

@@ -254,3 +254,169 @@ def other_tickers(question: str, symbol: str) -> list[str]:
     toks = re.findall(r"\b[A-Z]{2,5}(?:\.[A-Z]{1,2})?\b|\b\d{4}\.HK\b", question)
     return [t for t in toks if t.upper() not in _NOT_TICKERS
             and t.upper() not in (symbol.upper(), base)]
+
+
+# ── Plan mode: what kind of plan, and the position the user TYPED ────────────
+# Design: docs/features/2026-10-14-copilot-plan-mode-design.md §2.3/§2.5. The position is never
+# read from an account; it is parsed from the question by this bounded grammar, and anything it
+# cannot read exactly is refused with a reason rather than guessed into a plan.
+
+_HOLD_VERB = (r"\b(?:i|we)\s*(?:'ve|have|had|already)?\s*(?:bought|purchased|own|hold|got in|"
+              r"entered|picked up|am holding|'m holding|am long|'m long)\b|\bi'?m\s+(?:in|long)\b|"
+              r"\bmy\s+(?:position|shares|entry|cost(?: basis)?|average(?: cost| price)?|avg)\b|"
+              r"\b(?:avg|average)\s+(?:cost|price)\b|\bcost\s+basis\b|\bholding\s+\d|"
+              r"\b(?:i|we)\s+(?:have|hold)\s+\d[\d,]*\s+shares?\b|"
+              # A sentence that STARTS with the verb: "Bought 100 at 182.5".
+              r"(?:^|(?<=[.;!?]))\s*(?:just\s+)?(?:bought|purchased|got\s+in|entered)\b")
+_HOLD_NEGATED = (r"\b(?:don'?t|do not|never|haven'?t|have not|didn'?t|did not|not)\s+"
+                 r"(?:yet\s+)?(?:own|hold|bought|buy|purchased|in)\b")
+_ENTRY_ASK = (r"\bshould\s+i\s+buy\b|\b(?:want|wanna|thinking|plan(?:ning)?|looking|considering)"
+              r"\s+(?:to\s+|of\s+|about\s+)?buy(?:ing)?\b|\bbuy\s+(?:point|zone|level|here|now)\b|"
+              r"\bwhere\s+(?:to|should\s+i)\s+buy\b|\bgood\s+(?:time|entry|price)\b|\bentry\b|"
+              r"\bstop[- ]?loss\b|\bplaybook\b|\bgame\s*plan\b|\btrading\s+plan\b|\bplan\b|"
+              r"\bwhat\s+(?:should|do|would)\s+i\s+do\b|\bwhat\s+to\s+do\b|\bnext\s+(?:step|move)\b|"
+              r"\bposition\s+siz|\bhow\s+many\s+shares\b")
+_HOLD_ASK = (r"\bshould\s+i\s+(?:sell|hold|exit|trim|take\s+profits?|add)\b|"
+             r"\btake\s+profits?\b|\bwhen\s+(?:to|should\s+i)\s+sell\b|\bexit\b|\btrailing\b")
+_FORECAST_ASK = (r"\bpredict(?:ion|ed|s)?\b|\bforecast\b|\boutlook\b|\bnext\s+(?:few\s+)?"
+                 r"(?:days?|weeks?|sessions?|month)\b|\bcoming\s+(?:days|weeks?)\b|"
+                 r"\bthis\s+week\b|\bwhere\s+(?:is|will|could)\s+(?:it|the\s+(?:stock|price))\s+"
+                 r"go(?:ing)?\b|\bgo(?:ing)?\s+(?:up|down)\b|\bdirection\b|\bexpect(?:ation)?s?\b|"
+                 r"\btrack\s+record\b|\bhow\s+(?:accurate|reliable|good)\b")
+#: Long stock only. A position in options or a short position gets no stock rules at all.
+_DERIVATIVE = (r"\b(?:bought|own|hold(?:ing)?|long|sold|wrote|writing|sell(?:ing)?)\s+(?:\d[\d,]*\s+)?"
+               r"(?:\w+\s+)?(?:calls?|puts?|options?|contracts?|leaps)\b|"
+               r"\b(?:call|put)\s+options?\b")
+_SHORT_POS = r"\b(?:shorted|shorting|sold\s+(?:it\s+)?short|short\s+(?:position|sale)|am\s+short|'m\s+short)\b"
+
+#: An amount introducing the ENTRY: "at 182.5", "@ $182.5", "avg cost 182.5", "entry 182.5".
+_ENTRY_LEAD = (r"(?:\bat\b|@|\b(?:avg|average)\s+(?:cost|price)(?:\s+(?:is|of|was))?|"
+               r"\bcost(?:\s+basis)?(?:\s+(?:is|of|was))?|\bentry(?:\s+price)?(?:\s+(?:is|of|was|at))?|"
+               r"\bpaid)")
+#: An amount after these words is a stop, a target or an order — never the entry.
+_NOT_ENTRY_BEFORE = (r"(?:stop(?:[- ]loss)?|target|sell|exit|alert|limit|take\s+profit|trail\w*|"
+                     r"support|resistance|average|sma|ma|low|high)\s*(?:is|of|at|@|near|around)?\s*$")
+_SHARES = rf"\b{_AMOUNT}\s*(?:shares?|shs)\b"
+
+
+@dataclass
+class PositionIntent:
+    kind: str | None = None                 # None | forecast | entry | holding
+    entry: float | None = None
+    shares: int | None = None
+    risk_amount: float | None = None
+    account: float | None = None
+    risk_pct: float | None = None
+    refusals: list[str] = dc_field(default_factory=list)
+
+
+def _clauses_with_holding(q: str) -> list[tuple[int, int]]:
+    """Sentence spans that contain a holding verb (commas do NOT split: '100 shares, avg cost
+    182' is one statement)."""
+    spans, start = [], 0
+    for m in re.finditer(r"[.;!?](?=\s|$)|\n", q):
+        spans.append((start, m.start()))
+        start = m.end()
+    spans.append((start, len(q)))
+    return [(a, b) for a, b in spans if re.search(_HOLD_VERB, q[a:b], re.I)]
+
+
+def parse_position(question: str) -> PositionIntent:
+    """The plan kind and any typed position. Refusals say why a figure was not read."""
+    q = question
+    it = PositionIntent()
+    holding_said = bool(re.search(_HOLD_VERB, q, re.I)) and not re.search(_HOLD_NEGATED, q, re.I)
+    if re.search(_DERIVATIVE, q, re.I) or re.search(_SHORT_POS, q, re.I):
+        it.kind = "entry" if not holding_said else "holding"
+        it.refusals.append("the playbook covers long stock positions only; options and short "
+                           "positions get no rules here (see the Options Game Plan for options)")
+        return it
+
+    # ENTRY — only inside a sentence that states a holding, so "stop at 170" or "alert me at
+    # 200" elsewhere is never read as a cost basis.
+    entries: list[float] = []
+    if holding_said:
+        for a, b in _clauses_with_holding(q):
+            clause = q[a:b]
+            for m in re.finditer(rf"{_ENTRY_LEAD}\s*(?:HK)?\$?\s*(\d[\d,.]*)", clause, re.I):
+                if re.search(_NOT_ENTRY_BEFORE, clause[:m.start()], re.I):
+                    continue
+                tok = m.group(1).rstrip(".,")
+                full = re.fullmatch(_AMOUNT.replace("(?!\\d|[.,]\\d)", ""), tok)
+                tail = clause[m.end():]
+                if full is None:
+                    it.refusals.append(f"the entry price '{tok}' was not understood; write it as "
+                                       f"e.g. 182.50 or 1,250")
+                    continue
+                if re.match(r"\s*(?:%|percent|per\s*cent)", tail, re.I):
+                    continue
+                if re.match(r"\s*(?:shares?|shs)\b", tail, re.I):
+                    continue
+                if re.match(r"[- ]?(?:day|bar|session|week|month|year)s?\b", tail, re.I):
+                    continue
+                if re.match(r"\s*(?::\d|[ap]\.?m\b)", tail, re.I):
+                    continue                     # a time of day ("at 9:30", "at 10am")
+                if re.match(r"[kKmM]\b", tail):
+                    it.refusals.append(f"'{tok}{tail[0]}' is not a price this can read; write "
+                                       f"the full number")
+                    continue
+                entries.append(amount_value(tok))
+    distinct = sorted(set(entries))
+    if len(distinct) > 1:
+        it.refusals.append("more than one entry price was given "
+                           f"({', '.join(f'{x:g}' for x in distinct)}); give your average cost "
+                           f"per share instead")
+    elif distinct:
+        if distinct[0] <= 0:
+            it.refusals.append("an entry price must be above zero")
+        else:
+            it.entry = distinct[0]
+
+    shares = {amount_value(m.group(1)) for m in re.finditer(_SHARES, q, re.I)}
+    if len(shares) > 1:
+        it.refusals.append("more than one share count was given; give the total you hold")
+    elif shares:
+        n = next(iter(shares))
+        if n != int(n) or n <= 0:
+            it.refusals.append("a share count must be a whole number above zero")
+        else:
+            it.shares = int(n)
+    elif holding_said:
+        # "bought 100 at 182.5": a bare count right after the verb.
+        m = re.search(rf"\b(?:bought|purchased|own|hold|holding|picked up)\s+{_AMOUNT}\s+(?:at|@)",
+                      q, re.I)
+        if m and float(m.group(1).replace(",", "")) == int(float(m.group(1).replace(",", ""))):
+            it.shares = int(amount_value(m.group(1)))
+
+    # RISK — "risk $500", "can lose 500 dollars", "account 50,000 risk 1%".
+    acct = re.search(rf"\b(?:account|portfolio|capital|equity)(?:\s+(?:size|is|of|=|value))*\s*"
+                     rf"(?:HK)?\$?\s*{_AMOUNT}(?![kKmM]\b)", q, re.I)
+    if acct:
+        it.account = amount_value(acct.group(1))
+    rp = re.search(rf"\brisk(?:ing)?\s+(?:of\s+)?{_AMOUNT}\s*(?:%|percent|per\s*cent)", q, re.I)
+    ra = (re.search(rf"\brisk(?:ing)?\s+(?:of\s+|up\s+to\s+)?(?:HK)?\$\s*{_AMOUNT}(?!\s*%)", q, re.I)
+          or re.search(rf"\brisk(?:ing)?\s+(?:of\s+|up\s+to\s+)?{_AMOUNT}\s*(?:dollars|usd|hkd)\b",
+                       q, re.I)
+          or re.search(rf"\b(?:can|could|willing\s+to|want\s+to|able\s+to)\s+(?:afford\s+to\s+)?"
+                       rf"lose\s+(?:up\s+to\s+)?(?:HK)?\$?\s*{_AMOUNT}(?!\s*%)", q, re.I))
+    if rp:
+        if it.account is None:
+            it.refusals.append("a percentage risk needs an account size (e.g. 'account 50,000, "
+                               "risk 1%'); no position size was computed")
+        elif not 0 < amount_value(rp.group(1)) <= 100:
+            it.refusals.append("a risk percentage must be between 0 and 100")
+        else:
+            it.risk_pct = amount_value(rp.group(1))
+    elif ra:
+        it.risk_amount = amount_value(ra.group(1))
+
+    if holding_said or (it.entry is not None) or re.search(_HOLD_ASK, q, re.I):
+        it.kind = "holding"
+        if it.entry is None and not any("entry price" in r for r in it.refusals):
+            it.refusals.append("no entry price was found; say e.g. 'I bought 100 shares at "
+                               "182.50' to get rules for your position")
+    elif re.search(_ENTRY_ASK, q, re.I) or it.risk_amount is not None or it.risk_pct is not None:
+        it.kind = "entry"
+    elif re.search(_FORECAST_ASK, q, re.I):
+        it.kind = "forecast"
+    return it

@@ -201,12 +201,28 @@ def _receipts(m: CopilotMessage) -> dict:
         select(CopilotDraftReceipt).where(CopilotDraftReceipt.message_id == m.id)).scalars()}
 
 
+def ref_evidence(g: dict, r: dict) -> list:
+    """One citation's evidence list, in either storage format.
+
+    Since packet v4 (plan mode) each record is stored ONCE per message in
+    `grounding["evidence_records"]` and a citation holds `evidence_ids`. Measured: a plan answer
+    citing ten rules stored 948 evidence entries (416 KB), because every rule repeated the same
+    hundred-odd price bars. Older messages carry the list inline under `evidence`.
+    """
+    if "evidence_ids" in r:
+        recs = g.get("evidence_records") or {}
+        return [recs[i] for i in r["evidence_ids"] if i in recs]
+    return r.get("evidence") or []
+
+
 def serialise_message(m: CopilotMessage) -> dict:
     g = m.grounding or {}
     rc = _receipts(m)
-    refs = [{**r, "evidence": (r.get("evidence") or [])[:EVIDENCE_PREVIEW],
-             "evidence_count": len(r.get("evidence") or [])}
-            for r in g.get("evidence_refs", [])]
+    refs = []
+    for r in g.get("evidence_refs", []):
+        ev = ref_evidence(g, r)
+        refs.append({**{k: v for k, v in r.items() if k != "evidence_ids"},
+                     "evidence": ev[:EVIDENCE_PREVIEW], "evidence_count": len(ev)})
     return {
         "id": m.id, "role": m.role, "content": m.content, "request_id": m.request_id,
         "status": m.status, "created_at": m.created_at.isoformat() if m.created_at else None,
@@ -229,10 +245,11 @@ def message_evidence(session, user_id: int, message_id: int, key: str) -> dict |
     m = session.get(CopilotMessage, message_id)
     if m is None or m.user_id != user_id or m.role != "assistant":
         return None
-    for r in (m.grounding or {}).get("evidence_refs", []):
+    g = m.grounding or {}
+    for r in g.get("evidence_refs", []):
         if r.get("key") == key:
             return {"message_id": m.id, "key": key, "label": r.get("label"),
-                    "display": r.get("display"), "evidence": r.get("evidence") or []}
+                    "display": r.get("display"), "evidence": ref_evidence(g, r)}
     return None
 
 

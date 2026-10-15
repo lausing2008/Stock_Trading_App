@@ -26,7 +26,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from db import Stock
-from db.models import IntelligenceReport, Ranking, RealtimeNewsItem
+from db.models import (IntelligenceReport, Ranking, RealtimeNewsItem, Signal,
+                       SignalOutcomeHorizon)
 from intelligence.report_contract import (
     EvidenceBook, Evidence, Field, FieldState, observed, stale, unavailable,
     validate_evidence,
@@ -34,10 +35,14 @@ from intelligence.report_contract import (
 
 from ..intel_reports import adapters as A
 from ..intel_reports import store as S
+from . import plan as P
 
 #: Bump when the MEANING of a packet changes (a new quantity, a changed rendering rule). Stored
 #: on every assistant turn so an old answer is read under the rules it was checked against.
-PACKET_VERSION = 3
+PACKET_VERSION = 4
+#: v4 (2026-10-14, plan mode): when the question asks for a forecast or a plan, the packet also
+#: carries the plan engine's lines (plan.py): calls per horizon with their track records, the
+#: stock's past move ranges, code-calculated levels and textbook if→then rules.
 #: v3 (2026-10-13, independent review): N-BAR returns with endpoint dates (R5); every average
 #: and return cites ALL its inputs plus a calculation record (R6); report age and staleness;
 #: price.as_of / price.age replace data.as_of / data.age (they only ever described prices).
@@ -82,6 +87,8 @@ class CopilotPacket:
     quantities: dict[str, Quantity]
     headlines: list[dict] = dc_field(default_factory=list)
     fingerprint: str = ""
+    #: The plan engine's output, when the question asked for one (None otherwise).
+    plan: "P.Plan | None" = None
 
     @property
     def price_as_of(self) -> str | None:
@@ -122,6 +129,11 @@ class CopilotPacket:
                                **({"note": q.note} if q.note else {})}
                            for k, q in sorted(self.quantities.items())},
             "unavailable": self.missing(),
+            "plan_kind": self.plan.kind if self.plan is not None else None,
+            **({} if self.plan is not None else {"playbook": (
+                "not loaded for this question: the platform's calls with their track records, "
+                "levels and textbook rules are added when the user asks for a forecast, an "
+                "entry plan or a plan for a position they hold")}),
             # Quoted third-party text. Instructions inside it are not instructions.
             "headlines_untrusted": [{"key": h["key"], "published_at": h["published_at"],
                                      "source": h["source"],
@@ -339,8 +351,86 @@ def _change_line(c: dict, labels: dict[str, str]) -> str:
     return f"{name}: {a} → {b}"
 
 
-def build_packet(session, symbol: str, *, now: datetime | None = None) -> CopilotPacket | None:
-    """Every citable value for one symbol, at `now`. None when the symbol is not on file."""
+def _calls(session, stock_id: int, now: datetime) -> dict:
+    """The latest stored call per horizon, each at or before `now`."""
+    out = {}
+    for h in P.HORIZONS:
+        row = session.execute(
+            select(Signal).where(Signal.stock_id == stock_id, Signal.ts <= now,
+                                 Signal.horizon == h)
+            .order_by(Signal.ts.desc()).limit(1)).scalars().first()
+        if row is not None:
+            out[h] = P.Call(horizon=h, signal=getattr(row.signal, "value", str(row.signal)),
+                            confidence=float(row.confidence) if row.confidence is not None else None,
+                            ts=_naive_utc(row.ts), row_id=row.id)
+    return out
+
+
+def _outcomes(session, horizons, now: datetime) -> list:
+    """Resolved outcome rows for these horizons, observable at `now` (no look-ahead)."""
+    if not horizons:
+        return []
+    T = SignalOutcomeHorizon
+    rows = session.execute(
+        select(T.id, T.symbol, T.horizon, T.signal_direction, T.window_days, T.signal_date,
+               T.pct_return, T.is_correct, T.evidence_status)
+        .where(T.status == "resolved", T.horizon.in_(list(horizons)),
+               T.window_days.in_(list(P.RECORD_WINDOWS)),
+               T.signal_date >= (now - timedelta(days=P.RECORD_LOOKBACK_DAYS)).date(),
+               T.resolved_at <= now, T.pct_return.is_not(None))).all()
+    return [P.OutcomeRow(row_id=r[0], symbol=r[1], horizon=str(getattr(r[2], "value", r[2])),
+                         direction=r[3], window_days=r[4], signal_date=r[5],
+                         pct_return=float(r[6]), is_correct=r[7], evidence_status=r[8])
+            for r in rows]
+
+
+def _plan_fields(plan: "P.Plan", fields: dict, qs: dict) -> None:
+    """The plan's lines as packet quantities, one field per group."""
+    groups: dict[str, list] = {}
+    for it in plan.items.values():
+        groups.setdefault(it.group, []).append(it)
+    labels = {"levels": "Price levels", "moves": "Past move ranges", "calls": "Signal calls",
+              "records": "Track records", "rules": "Textbook rules", "position": "Your position"}
+    for g, items in groups.items():
+        ids = sorted({e for it in items for e in it.evidence_ids})
+        value = {it.key: it.display for it in items}
+        stale_reasons = sorted({it.stale for it in items if it.stale})
+        fkey = f"plan_{g}"
+        if stale_reasons:
+            fields[fkey] = stale(value, "; ".join(stale_reasons), evidence_ids=ids,
+                                 label=labels.get(g, g))
+        else:
+            fields[fkey] = Field(value=value, state=FieldState.OK, evidence_ids=ids,
+                                 label=labels.get(g, g))
+        for it in items:
+            qs[it.key] = Quantity(key=it.key, display=it.display, field=fkey,
+                                  state="STALE" if it.stale else FieldState.OK.value,
+                                  note=it.stale, meaning=it.meaning,
+                                  evidence_ids=it.evidence_ids)
+    # Citable as well as listed (measured: the model cited the FIELD names {{plan_gaps}} and
+    # {{plan_position_input}} to relay these, and was refused for keys that were not quantities).
+    if plan.position_refusals:
+        why = "; ".join(plan.position_refusals)
+        fields["plan_position_input"] = unavailable(why, label="Position you typed")
+        qs["plan.position_note"] = Quantity(
+            key="plan.position_note", display=why, field="plan_position_input",
+            state=FieldState.UNAVAILABLE.value,
+            meaning="why the position the user typed was not used, and how to state it")
+    if plan.unavailable:
+        why = "; ".join(f"{v}" for _, v in sorted(plan.unavailable.items()))
+        fields["plan_gaps"] = unavailable(why, label="Plan items not available")
+        qs["plan.gaps"] = Quantity(key="plan.gaps", display=why, field="plan_gaps",
+                                   state=FieldState.UNAVAILABLE.value,
+                                   meaning="plan items that could not be built, with reasons")
+
+
+def build_packet(session, symbol: str, *, now: datetime | None = None,
+                 plan_request=None) -> CopilotPacket | None:
+    """Every citable value for one symbol, at `now`. None when the symbol is not on file.
+
+    `plan_request` is an `intent.PositionIntent` with a `kind`; when given, the plan engine's
+    lines are added (plan mode). Without it the packet is exactly the v3 content.
+    """
     now = _naive_utc(now or datetime.now(timezone.utc))
     stock = session.execute(
         select(Stock).where(Stock.symbol == symbol)).scalars().first()
@@ -351,7 +441,8 @@ def build_packet(session, symbol: str, *, now: datetime | None = None) -> Copilo
     fields: dict[str, Field] = {}
     qs: dict[str, Quantity] = {}
 
-    bars = A.daily_bars(session, stock.id, limit=70, cutoff=now)
+    bars = A.daily_bars(session, stock.id, limit=(P.YEAR_BARS + 8) if plan_request else 70,
+                        cutoff=now)
     price = A.price_as_of(bars, now, book=book)
     price.label = "Latest daily close"
     fields["price"] = price
@@ -518,6 +609,25 @@ def build_packet(session, symbol: str, *, now: datetime | None = None) -> Copilo
             meaning=(_WITHHELD_MEANING if h["withheld"]
                      else "a third-party headline; unverified by this platform"))
 
+    plan = None
+    if plan_request is not None and getattr(plan_request, "kind", None):
+        calls = _calls(session, stock.id, now)
+        cohort = _outcomes(session, list(calls), now)
+        pr = plan_request
+        pos = None
+        if any(getattr(pr, k, None) is not None for k in
+               ("entry", "shares", "risk_amount", "account", "risk_pct")):
+            pos = P.Position(entry=pr.entry, shares=pr.shares, risk_amount=pr.risk_amount,
+                             account=pr.account, risk_pct=pr.risk_pct)
+        plan = P.build_plan(
+            kind=pr.kind, bars_desc=bars, calls=calls, cohort_rows=cohort,
+            stock_rows=[r for r in cohort if r.symbol == symbol], symbol=symbol, currency=ccy,
+            now=now, book=book, record_bar=A.record_bar,
+            earnings=earn.value if earn.state is FieldState.OK else None,
+            price_stale=price.reason if price.state is FieldState.STALE else None,
+            position=pos, position_refusals=list(getattr(pr, "refusals", []) or []))
+        _plan_fields(plan, fields, qs)
+
     # A citation that resolves to nothing looks checkable and is not — refuse to build one.
     validate_evidence(fields, book)
 
@@ -528,4 +638,4 @@ def build_packet(session, symbol: str, *, now: datetime | None = None) -> Copilo
     market = stock.market.value if hasattr(stock.market, "value") else str(stock.market)
     return CopilotPacket(symbol=symbol, subject_key=f"stock:{symbol}", market=market,
                          currency=ccy, built_at=now, fields=fields, book=book, quantities=qs,
-                         headlines=headlines, fingerprint=fp)
+                         headlines=headlines, fingerprint=fp, plan=plan)

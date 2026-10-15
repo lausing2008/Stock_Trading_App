@@ -222,8 +222,12 @@ async def run(model: str, reps: int, out_path: pathlib.Path):
             except C.CopilotError as e:
                 msg, err = {}, f"{e.status} {e.message}"
             wall = int((time.monotonic() - t0) * 1000)
+            # The SAME routing the service applied (plan mode adds keys for plan questions);
+            # without it the first-draft check reported real plan keys as unknown.
+            from src.copilot import intent as _I
+            _pi = _I.parse_position(q)
             with Session() as s:
-                pk = build_packet(s, sym)
+                pk = build_packet(s, sym, plan_request=_pi if _pi.kind else None)
             first = G.check(G.parse_draft(rec.drafts[0]["raw"]), pk) if rec.drafts else None
             tin = sum((d["usage"] or {}).get("input_tokens") or 0 for d in rec.drafts)
             tout = sum((d["usage"] or {}).get("output_tokens") or 0 for d in rec.drafts)

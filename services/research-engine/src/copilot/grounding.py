@@ -56,6 +56,10 @@ _WINDOW_RE = r"\b({n})(?:[- ](?:trading|daily))?[- ](?:session|bar)s?\b"
 _WINDOW_IN_EVIDENCE = re.compile(r"\b(\d{1,3})(?:[- ](?:trading|daily))?[- ](?:session|bar)s?\b",
                                  re.I)
 _PACKET_WINDOWS = {"5", "20", "50"}
+#: Plan mode: outcome windows are CALENDAR days ("after 5 calendar days"). Exempt only in that
+#: exact wording and only for windows a packet display itself names — never "5 days".
+_CAL_WINDOW_RE = r"\b({n})[- ]calendar[- ]days?\b"
+_CAL_WINDOW_IN_EVIDENCE = re.compile(r"\b(\d{1,3})[- ]calendar[- ]days?\b", re.I)
 
 #: Period labels are exempt ONLY when the same label occurs in a headline in the packet, i.e.
 #: the model is quoting a period a source named. A period the model supplies itself is refused:
@@ -136,6 +140,36 @@ def _quantity_words(text: str) -> list[str]:
 _NEGATION_BEFORE = re.compile(r"(?:\bnot\b|\bno\b|n't|\bnever\b|\bnor\b)[^.;:!?]{0,24}$", re.I)
 
 
+# ── Plan mode: conditions, not predictions ─────────────────────────────────────
+# The platform stores no price forecast (docs/features/2026-10-14-copilot-plan-mode-design.md
+# §1). An answer may report the engine's CALLS and how past calls turned out; it may not say
+# where the price WILL go. A sentence is refused when it asserts a future move without a
+# condition ("if", "once", "unless", "when") and without a negation ("does not say it will
+# rise"). Applies to every answer, not only plan answers.
+_FUTURE_MOVE = re.compile(
+    r"\b(?:will|(?:is|are|'s|'re)\s+(?:going|set|poised|expected|likely|bound|sure|certain)\s+to|"
+    r"should|bound\s+to|sure\s+to|certain\s+to|expected\s+to)\s+(?:likely\s+|probably\s+|"
+    r"soon\s+|continue\s+to\s+|keep\s+)?(?:rise|rises|fall|falls|drop|climb|rally|decline|"
+    r"go\s+(?:up|down|higher|lower)|move\s+(?:up|down|higher|lower)|hit|reach|break\s+(?:out|"
+    r"down|above|below)|bounce|recover|rebound|surge|soar|plunge|crash|tank|outperform|"
+    r"underperform|gain|lose\s+value|trend\s+(?:up|down|higher|lower)|head\s+(?:up|down|"
+    r"higher|lower))\b", re.I)
+_CONDITION = re.compile(r"\b(?:if|once|unless|when|whether|in\s+case)\b", re.I)
+_FUTURE_NEGATED = re.compile(
+    r"(?:\bnot\b|n't|\bno\b|\bnever\b|\bcannot\b|\bnor\b|\bnothing\b)[^.;:!?]{0,40}$", re.I)
+
+
+def _unconditional_forecasts(text: str) -> list[str]:
+    found = []
+    for sent in re.split(r"(?<=[.;!?])\s+|\n+", text):
+        if _CONDITION.search(sent):
+            continue
+        for m in _FUTURE_MOVE.finditer(sent):
+            if not _FUTURE_NEGATED.search(sent[:m.start()]):
+                found.append(m.group(0))
+    return found
+
+
 @dataclass
 class GroundingResult:
     accepted: bool
@@ -205,9 +239,18 @@ def _evidence_windows(packet: CopilotPacket) -> set[str]:
     return _PACKET_WINDOWS | found
 
 
+def _calendar_windows(packet: CopilotPacket) -> set[str]:
+    return {m.group(1) for q in packet.quantities.values()
+            for m in _CAL_WINDOW_IN_EVIDENCE.finditer(q.display)}
+
+
 def _strip_names(text: str, packet: CopilotPacket) -> str:
     """Remove the digit-bearing NAMES the rules above exempt; what remains must hold no digit."""
     text = _INDEX_NAMES.sub(" ", text)
+    cal = _calendar_windows(packet)
+    if cal:
+        text = re.sub(_CAL_WINDOW_RE.format(n="|".join(sorted(map(re.escape, cal)))), " ", text,
+                      flags=re.I)
     windows = "|".join(sorted(map(re.escape, _evidence_windows(packet))))
     text = re.sub(_WINDOW_RE.format(n=windows), " ", text, flags=re.I)
     # "SMA20" / "SMA 50": the same windows, abbreviated (measured on Sonnet 4.6). SMA only —
@@ -215,6 +258,32 @@ def _strip_names(text: str, packet: CopilotPacket) -> str:
     text = re.sub(rf"\bSMA[- ]?(?:{windows})\b", " ", text, flags=re.I)
     quoted = _headline_periods(packet)
     return _PERIOD_LABEL.sub(lambda m: " " if m.group(0) in quoted else m.group(0), text)
+
+
+#: A track record's WINDOW named beside that record. Measured on the plan-mode held-out run
+#: (2026-10-14, Sonnet 4.6): 7 of 9 refusals were "SWING BUY, 5-day: {{record.swing.5d}}" or
+#: "over five days: {{record.swing.5d}}" — an ACCURATE label (those records are 5 calendar
+#: days), refused by a rule written for model-invented figures. Exempt ONLY within the same
+#: sentence or bullet as a record/baseline placeholder whose key carries that window, so
+#: "5-day return" beside a 5-BAR return is still refused.
+_RECORD_KEY_WINDOW = re.compile(r"\{\{\s*(?:record|baseline)\.[a-z]+\.(\d{1,3})d(?:\.stock)?\s*\}\}")
+_WINDOW_WORDS = {"5": "five", "7": "seven", "10": "ten", "14": "fourteen", "20": "twenty"}
+
+
+def _strip_record_windows(text: str) -> str:
+    out = []
+    for seg in re.split(r"(\n|(?<=[.;!?])\s+)", text):
+        ns = set(_RECORD_KEY_WINDOW.findall(seg))
+        for n in ns:
+            alt = re.escape(n) + (f"|{_WINDOW_WORDS[n]}" if n in _WINDOW_WORDS else "")
+            seg = re.sub(rf"\b(?:{alt})(?:[- ]calendar)?[- ]days?\b", " ", seg, flags=re.I)
+        out.append(seg)
+    return "".join(out)
+
+
+#: "i bought" opening a QUOTED example of how to phrase a position ("say \"I bought 100 shares
+#: at …\"") is not a report of an order. Measured on the same run (p06/p07/p14).
+_QUOTED_FIRST_PERSON = re.compile(r"[\"“'‘]\s*i (?:bought|sold)\b", re.I)
 
 
 def _check_text(text: str, packet: CopilotPacket, where: str, reasons: list[str],
@@ -225,13 +294,14 @@ def _check_text(text: str, packet: CopilotPacket, where: str, reasons: list[str]
                            f"evidence packet")
         elif key not in used:
             used.append(key)
-    bare = _strip_names(_PLACEHOLDER.sub(" ", text).replace(packet.symbol, " "), packet)
+    text_w = _strip_record_windows(text)
+    bare = _strip_names(_PLACEHOLDER.sub(" ", text_w).replace(packet.symbol, " "), packet)
     allowed = _allowed_literals(packet)
     nums = [n for n in literal_numbers(bare) if n not in allowed]
     if nums:
         reasons.append(f"{where} writes figures directly ({', '.join(nums[:5])}); figures must "
                        f"come from {{{{key}}}} placeholders")
-    prose = _PLACEHOLDER.sub(" ", text)
+    prose = _PLACEHOLDER.sub(" ", text_w)
     spelled = _SPELLED_MAGNITUDE.findall(prose) + _quantity_words(prose)
     if spelled:
         reasons.append(f"{where} writes a quantity in words ({', '.join(spelled[:3])}); "
@@ -243,8 +313,14 @@ def _check_text(text: str, packet: CopilotPacket, where: str, reasons: list[str]
                 reasons.append(f"{where} uses '{w}', which presents a score as a probability "
                                f"of profit")
                 break
+    fc = _unconditional_forecasts(_PLACEHOLDER.sub(" ", text))
+    if fc:
+        reasons.append(f"{where} predicts a price move ('{fc[0]}'); the platform stores no price "
+                       f"forecast — state the engine's calls and their records, or a condition "
+                       f"('if a close is above …')")
+    low_orders = _QUOTED_FIRST_PERSON.sub(" ", low)
     for w in _ORDER_LANGUAGE:
-        if w in low:
+        if w in low_orders:
             reasons.append(f"{where} uses '{w}'; this assistant cannot place or report orders")
 
 
@@ -290,6 +366,22 @@ FALLBACK_KEYS = (
 )
 
 
+#: Plan lines shown in the fallback, in reading order. They are code-written, so they need no
+#: model to be shown — a plan question still gets its plan when the wording fails the check.
+_PLAN_ORDER = ("call.", "record.", "baseline.", "moves.", "position.", "rule.")
+
+
+def plan_fallback_keys(packet: CopilotPacket) -> list[str]:
+    if packet.plan is None:
+        return []
+    keys = list(packet.plan.items)
+    return [k for p in _PLAN_ORDER for k in keys if k.startswith(p)]
+
+
+def fallback_keys(packet: CopilotPacket) -> list[str]:
+    return [k for k, _ in FALLBACK_KEYS if k in packet.quantities] + plan_fallback_keys(packet)
+
+
 def fallback_answer(packet: CopilotPacket, reasons: list[str]) -> str:
     """What the user sees when no draft passed: the evidence itself, rendered deterministically.
 
@@ -302,4 +394,10 @@ def fallback_answer(packet: CopilotPacket, reasons: list[str]) -> str:
         q = packet.quantities.get(key)
         if q is not None:
             lines.append(f"• {label}: {q.display}" + (" [stale]" if q.state == "STALE" else ""))
+    plan_keys = plan_fallback_keys(packet)
+    if plan_keys:
+        lines.append("Plan (calculated by the platform, not by the model):")
+        for k in plan_keys:
+            q = packet.quantities[k]
+            lines.append(f"• {q.display}" + (" [stale]" if q.state == "STALE" else ""))
     return "\n".join(lines)
