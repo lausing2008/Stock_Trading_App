@@ -18,6 +18,7 @@ parse is reported as not understood or unsupported, never guessed into a filter.
 from __future__ import annotations
 
 import re
+import math
 from dataclasses import dataclass, field as dc_field
 
 _NUM = r"(\d+(?:\.\d+)?)"
@@ -284,10 +285,70 @@ _FORECAST_ASK = (r"\bpredict(?:ion|ed|s)?\b|\bforecast\b|\boutlook\b|\bnext\s+(?
                  r"go(?:ing)?\b|\bgo(?:ing)?\s+(?:up|down)\b|\bdirection\b|\bexpect(?:ation)?s?\b|"
                  r"\btrack\s+record\b|\bhow\s+(?:accurate|reliable|good)\b")
 #: Long stock only. A position in options or a short position gets no stock rules at all.
-_DERIVATIVE = (r"\b(?:bought|own|hold(?:ing)?|long|sold|wrote|writing|sell(?:ing)?)\s+(?:\d[\d,]*\s+)?"
-               r"(?:\w+\s+)?(?:calls?|puts?|options?|contracts?|leaps)\b|"
-               r"\b(?:call|put)\s+options?\b")
+#: REVIEW C2 (2026-10-15): the first pattern allowed one word between the verb and "calls", so
+#: "I bought 2 AAPL January calls at 50" became a stock holding at $50. Now any derivative WORD
+#: in a sentence that states a position counts — except the platform's own "BUY/SELL calls".
+_DERIV_WORD = re.compile(
+    r"\b(?:calls|puts|options?|contracts?|leaps|strikes?|expir(?:y|ies|ation|ing|es)|premiums?|"
+    r"spreads?|covered|straddles?|strangles?)\b|"
+    r"\b(?:a|an|one|\d+)\s+(?:[\w$.-]+\s+){0,4}(?:call|put)\b|"
+    r"\b(?:call|put)\s+(?:option|contract|leg)s?\b|"
+    r"\$?\d+(?:\.\d+)?\s?[cCpP]\b(?!\w)", re.I)
+#: "calls" that are the PLATFORM's (signal) calls, not option contracts.
+_PLATFORM_CALLS = re.compile(
+    r"\b(?:BUY|SELL|HOLD|WAIT|SWING|GROWTH)\s+calls\b|"
+    r"\b(?i:(?:platform'?s?|engine'?s?|signals'?|AI|horizon)\s+"
+    r"(?:(?:SHORT|SWING|LONG|GROWTH)\s+)?calls)\b")
+_POSITION_VERB = re.compile(r"\b(?:bought|buy(?:ing)?|have|own|hold(?:ing)?|long|sold|sell(?:ing)?|"
+                            r"wrote|writing|got\s+in|entered|purchased|position)\b", re.I)
 _SHORT_POS = r"\b(?:shorted|shorting|sold\s+(?:it\s+)?short|short\s+(?:position|sale)|am\s+short|'m\s+short)\b"
+
+
+def _derivative_position(q: str) -> bool:
+    for sent in re.split(r"(?<=[.;!?])\s+|\n+", q):
+        cleaned = _PLATFORM_CALLS.sub(" ", sent)
+        if _DERIV_WORD.search(cleaned) and _POSITION_VERB.search(cleaned):
+            return True
+    return False
+
+
+#: A money amount, COMPLETE (review C3): "$10k" was read as $10. k/m suffixes are supported
+#: explicitly; anything else glued to the number is refused, never truncated.
+_MONEY = re.compile(r"(?:HK)?\$?\s*(\d[\d,.]*)(\s*(?:k|m|thousand|million)\b)?",
+                    re.I)
+
+
+def _typed_amount(text: str, *, percent=False) -> tuple[float | None, str, str | None]:
+    """Read a whole quantity; a numeric prefix is never a complete amount."""
+    m = _MONEY.match(text)
+    if not m:
+        return None, "money", "the amount was not understood; write a positive complete number"
+    raw, suf = m.group(1), m.group(2)
+    # Sentence punctuation may end an amount, but not an amount with a glued suffix.
+    tok = raw[:-1] if not suf and raw.endswith((".", ",")) else raw
+    tail = text[m.end():]
+    unit = re.match(r"\s*(%|percent\b|per\s*cent\b)", tail, re.I)
+    bad = (not re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?", tok)
+           or bool(re.match(r"[\w.]|[,\.]\d", tail)))
+    # USD/HKD are supported explicit currency units, including $500USD.
+    if re.match(r"(?:usd|hkd|dollars|bucks)\b", tail, re.I):
+        bad = not bool(re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?", tok))
+    if bad:
+        return None, "money", f"the amount '{text[:m.end() + 8].strip()}' was not understood; write the full number"
+    if unit and (not percent or suf or "$" in text[:m.end()]):
+        return None, "percent", "a percentage is not an absolute price or money amount"
+    v = amount_value(tok)
+    if suf:
+        v *= 1_000_000 if suf.strip().lower() in ("m", "million") else 1_000
+    if not math.isfinite(v) or v <= 0:
+        return None, "money", "an amount must be finite and above zero"
+    return v, "percent" if unit else "money", None
+
+
+def money_amount(text: str) -> tuple[float | None, str | None]:
+    value, _, why = _typed_amount(text)
+    return value, why
+
 
 #: An amount introducing the ENTRY: "at 182.5", "@ $182.5", "avg cost 182.5", "entry 182.5".
 _ENTRY_LEAD = (r"(?:\bat\b|@|\b(?:avg|average)\s+(?:cost|price)(?:\s+(?:is|of|was))?|"
@@ -307,6 +368,9 @@ class PositionIntent:
     risk_amount: float | None = None
     account: float | None = None
     risk_pct: float | None = None
+    stop: float | None = None
+    #: An options or short position: no stock rules may be built for it (review C2).
+    unsupported: bool = False
     refusals: list[str] = dc_field(default_factory=list)
 
 
@@ -326,8 +390,9 @@ def parse_position(question: str) -> PositionIntent:
     q = question
     it = PositionIntent()
     holding_said = bool(re.search(_HOLD_VERB, q, re.I)) and not re.search(_HOLD_NEGATED, q, re.I)
-    if re.search(_DERIVATIVE, q, re.I) or re.search(_SHORT_POS, q, re.I):
+    if _derivative_position(q) or re.search(_SHORT_POS, q, re.I):
         it.kind = "entry" if not holding_said else "holding"
+        it.unsupported = True
         it.refusals.append("the playbook covers long stock positions only; options and short "
                            "positions get no rules here (see the Options Game Plan for options)")
         return it
@@ -388,27 +453,53 @@ def parse_position(question: str) -> PositionIntent:
         if m and float(m.group(1).replace(",", "")) == int(float(m.group(1).replace(",", ""))):
             it.shares = int(amount_value(m.group(1)))
 
-    # RISK — "risk $500", "can lose 500 dollars", "account 50,000 risk 1%".
-    acct = re.search(rf"\b(?:account|portfolio|capital|equity)(?:\s+(?:size|is|of|=|value))*\s*"
-                     rf"(?:HK)?\$?\s*{_AMOUNT}(?![kKmM]\b)", q, re.I)
-    if acct:
-        it.account = amount_value(acct.group(1))
-    rp = re.search(rf"\brisk(?:ing)?\s+(?:of\s+)?{_AMOUNT}\s*(?:%|percent|per\s*cent)", q, re.I)
-    ra = (re.search(rf"\brisk(?:ing)?\s+(?:of\s+|up\s+to\s+)?(?:HK)?\$\s*{_AMOUNT}(?!\s*%)", q, re.I)
-          or re.search(rf"\brisk(?:ing)?\s+(?:of\s+|up\s+to\s+)?{_AMOUNT}\s*(?:dollars|usd|hkd)\b",
-                       q, re.I)
-          or re.search(rf"\b(?:can|could|willing\s+to|want\s+to|able\s+to)\s+(?:afford\s+to\s+)?"
-                       rf"lose\s+(?:up\s+to\s+)?(?:HK)?\$?\s*{_AMOUNT}(?!\s*%)", q, re.I))
-    if rp:
+    # RISK — "risk $500", "risk $10k", "can lose 500 dollars", "account 50,000 risk 1%". Every
+    # amount is read WHOLE (review C3) through money_amount(); a malformed one is refused.
+    def _amounts_after(pattern: str, *, percent=False):
+        values, failed = set(), False
+        for m in re.finditer(pattern, q, re.I):
+            v, unit, why = _typed_amount(q[m.end():], percent=percent)
+            if why:
+                it.refusals.append(why)
+                failed = True
+            elif v is not None:
+                values.add((v, unit))
+        if len(values) > 1:
+            it.refusals.append("conflicting amounts were given; state one account size and one risk budget")
+            failed = True
+        return None if failed or not values else next(iter(values))
+    _acct_lead = r"\b(?:account|portfolio|capital|equity)(?:\s+(?:size|is|of|=|value))*\s*"
+    if re.search(_acct_lead + r"(?:HK)?\$?\s*\d", q, re.I):
+        acct = _amounts_after(_acct_lead)
+        it.account = acct[0] if acct else None
+    risk = _amounts_after(
+        r"(?:\brisk(?:ing)?\s+(?:of\s+|up\s+to\s+)?|"
+        r"\b(?:can|could|willing\s+to|want\s+to|able\s+to)\s+(?:afford\s+to\s+)?lose\s+(?:up\s+to\s+)?)"
+        r"(?=(?:HK)?\$?\s*\d)", percent=True)
+    if risk and risk[1] == "percent":
         if it.account is None:
             it.refusals.append("a percentage risk needs an account size (e.g. 'account 50,000, "
                                "risk 1%'); no position size was computed")
-        elif not 0 < amount_value(rp.group(1)) <= 100:
+        elif not 0 < risk[0] <= 100:
             it.refusals.append("a risk percentage must be between 0 and 100")
         else:
-            it.risk_pct = amount_value(rp.group(1))
-    elif ra:
-        it.risk_amount = amount_value(ra.group(1))
+            it.risk_pct = risk[0]
+    elif risk:
+        it.risk_amount = risk[0]
+
+    # STOP the user says they hold (review C1): "my stop is 95", "stop at 95", "stop-loss $95".
+    stops = []
+    for m in re.finditer(r"\b(?:my\s+)?stop(?:[- ]?loss)?\s*(?:is|at|of|@|=|:)?\s*(?:at\s+)?(?=(?:HK)?\$?\s*\d)",
+                         q, re.I):
+        v, why = money_amount(q[m.end():])
+        if why:
+            it.refusals.append("the stop: " + why)
+        elif v is not None:
+            stops.append(v)
+    if len(set(stops)) > 1:
+        it.refusals.append("more than one stop was given; say the one you hold now")
+    elif stops:
+        it.stop = stops[0]
 
     if holding_said or (it.entry is not None) or re.search(_HOLD_ASK, q, re.I):
         it.kind = "holding"

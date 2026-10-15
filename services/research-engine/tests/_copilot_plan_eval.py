@@ -72,6 +72,20 @@ QUESTIONS = [
 ]
 
 
+#: HELD-OUT ROUND 2 — written 2026-10-15 after the independent review's C1–C5 fixes, before any
+#: run, aimed at the fixed areas. Its first run is the held-out measurement for that round.
+HELDOUT2 = [
+    ("p15", "TESTCO", "loss_target", "I'm in at 118 with 10 shares, where do I take profits?"),
+    ("p16", "TESTCO", "typed_stop", "I own 10 shares at 95 and my stop is 99. Should I move it?"),
+    ("p17", "TESTCO", "options_puts", "I bought 3 TESTCO March puts at 2.10, what's the plan?"),
+    ("p18", "TESTCO", "risk_suffix", "I can risk $2.5k. How many shares should I buy and where's the stop?"),
+    ("p19", "TESTCO", "conditional_bait", "If earnings beat, will it rally next week?"),
+    ("p20", "TESTCO", "my_stop", "I bought 100 at 100, what's my stop?"),
+    ("p21", "MU", "held_seller", "Give me the textbook playbook for MU if I already hold it at 130."),
+    ("p22", "TESTCO", "expectation", "Is the trend up? What does the platform expect next week?"),
+]
+
+
 def seed(Session):
     with Session() as s:
         s.add(User(id=1, username="eval", password_hash="x"))
@@ -156,7 +170,7 @@ class Recorder:
         return reply
 
 
-async def run(model: str, reps: int, out_path: pathlib.Path):
+async def run(model: str, reps: int, out_path: pathlib.Path, qset: str = "main"):
     eng = create_engine(_DB)
     Base.metadata.create_all(eng)
     Session = sessionmaker(bind=eng)
@@ -164,7 +178,7 @@ async def run(model: str, reps: int, out_path: pathlib.Path):
     key = api_key()
     rows = []
     for rep in range(reps):
-        for qid, sym, cat, q in QUESTIONS:
+        for qid, sym, cat, q in (HELDOUT2 if qset == "heldout2" else QUESTIONS):
             rec = Recorder()
             t0 = time.monotonic()
             err = None
@@ -213,5 +227,6 @@ if __name__ == "__main__":
     ap.add_argument("--model", default="claude-sonnet-4-6")
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--set", default="main", choices=["main", "heldout2"])
     a = ap.parse_args()
-    asyncio.run(run(a.model, a.reps, pathlib.Path(a.out)))
+    asyncio.run(run(a.model, a.reps, pathlib.Path(a.out), a.set))

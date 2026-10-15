@@ -39,7 +39,9 @@ from . import plan as P
 
 #: Bump when the MEANING of a packet changes (a new quantity, a changed rendering rule). Stored
 #: on every assistant turn so an old answer is read under the rules it was checked against.
-PACKET_VERSION = 4
+PACKET_VERSION = 5
+#: v5 (2026-10-15): stateless stop candidates versus a user-stated held stop, explicit
+#: unsupported-position refusal, and complete typed risk units. Old messages retain v4.
 #: v4 (2026-10-14, plan mode): when the question asks for a forecast or a plan, the packet also
 #: carries the plan engine's lines (plan.py): calls per horizon with their track records, the
 #: stock's past move ranges, code-calculated levels and textbook if→then rules.
@@ -616,16 +618,18 @@ def build_packet(session, symbol: str, *, now: datetime | None = None,
         pr = plan_request
         pos = None
         if any(getattr(pr, k, None) is not None for k in
-               ("entry", "shares", "risk_amount", "account", "risk_pct")):
+               ("entry", "shares", "risk_amount", "account", "risk_pct", "stop")):
             pos = P.Position(entry=pr.entry, shares=pr.shares, risk_amount=pr.risk_amount,
-                             account=pr.account, risk_pct=pr.risk_pct)
+                             account=pr.account, risk_pct=pr.risk_pct,
+                             stop=getattr(pr, "stop", None))
         plan = P.build_plan(
             kind=pr.kind, bars_desc=bars, calls=calls, cohort_rows=cohort,
             stock_rows=[r for r in cohort if r.symbol == symbol], symbol=symbol, currency=ccy,
             now=now, book=book, record_bar=A.record_bar,
             earnings=earn.value if earn.state is FieldState.OK else None,
             price_stale=price.reason if price.state is FieldState.STALE else None,
-            position=pos, position_refusals=list(getattr(pr, "refusals", []) or []))
+            position=pos, position_refusals=list(getattr(pr, "refusals", []) or []),
+            unsupported=bool(getattr(pr, "unsupported", False)))
         _plan_fields(plan, fields, qs)
 
     # A citation that resolves to nothing looks checkable and is not — refuse to build one.

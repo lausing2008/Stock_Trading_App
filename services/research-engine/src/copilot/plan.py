@@ -100,6 +100,8 @@ class Position:
     risk_amount: float | None = None
     account: float | None = None
     risk_pct: float | None = None
+    #: The stop the user says they currently hold. The platform keeps no stop state (C1).
+    stop: float | None = None
 
     @property
     def risk_budget(self) -> float | None:
@@ -155,6 +157,9 @@ class Plan:
     unavailable: dict[str, str] = dc_field(default_factory=dict)
     position: Position | None = None
     position_refusals: list[str] = dc_field(default_factory=list)
+    #: The question is about an options or short position (review C2). No stock entry, sizing
+    #: or holding rule is built — the calls and records may still be shown.
+    unsupported: bool = False
 
     def add(self, item: Item) -> None:
         self.items[item.key] = item
@@ -170,7 +175,8 @@ class Plan:
         return {"kind": self.kind, "currency": self.currency, "price_as_of": self.as_of,
                 "position": (None if self.position is None else
                              {k: getattr(self.position, k) for k in
-                              ("entry", "shares", "risk_amount", "account", "risk_pct")}),
+                              ("entry", "shares", "risk_amount", "account", "risk_pct", "stop")}),
+                "unsupported": self.unsupported,
                 "position_refusals": list(self.position_refusals),
                 "groups": groups, "unavailable": dict(self.unavailable),
                 "parameters": PARAMETERS}
@@ -368,12 +374,12 @@ def build_plan(*, kind: str, bars_desc: list, calls: dict[str, Call | None],
                cohort_rows: list[OutcomeRow], stock_rows: list[OutcomeRow], symbol: str,
                currency: str | None, now: datetime, book: EvidenceBook, record_bar,
                earnings: dict | None, price_stale: str | None, position: Position | None = None,
-               position_refusals: list[str] | None = None) -> Plan:
+               position_refusals: list[str] | None = None, unsupported: bool = False) -> Plan:
     """All plan lines for one symbol. `record_bar` mints a bar's evidence id (shared adapter)."""
     now = _naive(now)
     plan = Plan(kind=kind, currency=currency,
                 as_of=bars_desc[0].ts.isoformat() if bars_desc else None,
-                position_refusals=list(position_refusals or []))
+                position_refusals=list(position_refusals or []), unsupported=unsupported)
     jump, jump_bar = largest_jump(bars_desc[:YEAR_BARS])
     stale = price_stale
     if jump > JUMP_LIMIT and jump_bar is not None:
@@ -392,7 +398,10 @@ def build_plan(*, kind: str, bars_desc: list, calls: dict[str, Call | None],
     _move_items(ctx, bars_desc, record_bar)
     _call_items(ctx, calls, cohort_rows, stock_rows, symbol)
 
-    if kind in ("entry", "holding") and lv is not None:
+    if unsupported and kind in ("entry", "holding"):
+        plan.unavailable["rules"] = ("the question is about an options or short position; the "
+                                     "playbook's rules are for long stock only, so none were built")
+    elif kind in ("entry", "holding") and lv is not None:
         _entry_rules(ctx, lv, lv_ids, earnings, position)
         if kind == "holding":
             if position is not None and position.entry is not None:
@@ -403,6 +412,14 @@ def build_plan(*, kind: str, bars_desc: list, calls: dict[str, Call | None],
                         f"latest close ({ctx.m(lv.close)}); a typo or a pre-split price would make "
                         f"every holding rule wrong, so none were built")
                     position = Position(shares=position.shares,
+                                        risk_amount=position.risk_amount,
+                                        account=position.account, risk_pct=position.risk_pct)
+            if position is not None and position.entry is not None and position.stop is not None:
+                if not (0 < position.stop < max(position.entry, lv.close) * ENTRY_MAX_RATIO):
+                    plan.position_refusals.append(
+                        f"the stop you typed ({ctx.m(position.stop)}) is not usable for a long "
+                        f"position; the rules below use today's candidates instead")
+                    position = Position(entry=position.entry, shares=position.shares,
                                         risk_amount=position.risk_amount,
                                         account=position.account, risk_pct=position.risk_pct)
             if position is not None and position.entry is not None:
@@ -731,54 +748,97 @@ def _holding_rules(ctx: _Ctx, lv: Levels, ids: dict, earnings: dict | None, pos:
             f"{(P - E) / E * 100:+.1f}% from your entry ({m(E)}), which is "
             f"{(P - E) / A:+.1f} ATRs.", "where the typed position stands at the latest close",
             "rules", base)
+    # THE STOP CONTRACT (independent review C1, 2026-10-15). The platform keeps no position
+    # state between requests, so it cannot know the stop the user is actually holding. Every
+    # stop here is a CANDIDATE computed from today's data. "A stop never moves down" is only
+    # asserted against a stop the user TYPED ("my stop is 222"); without one, the answer says the
+    # current stop is unknown and states the rule for combining the two. The first build said a
+    # recalculated (lower) stop was "the active stop" that "never moves down" — measured falling
+    # from $226 to $220.50 between two snapshots of the same position.
     s_atr, s_sup = E - ENTRY_STOP_ATR * A, lv.pullback_stop
-    tight = max(s_atr, s_sup)
+    initial = max(s_atr, s_sup)
     which = "entry-based" if s_atr >= s_sup else "structure-based"
-    h2 = (f"Two textbook stops: entry − {ENTRY_STOP_ATR:g} × ATR = {m(s_atr)}, and below the "
-          f"20-bar low = {m(s_sup)}. The higher one ({m(tight)}, {which}) is the tighter stop; "
-          f"at it the position would show {_gain(ctx, tight - E, Q)}.")
-    if P <= tight:
-        h2 += f" The latest close is already at or below {m(tight)}: by this rule the stop has been reached."
-    ctx.add("rule.h2", h2, "textbook protective stops for the typed position", "rules",
-            base + ids["low"])
-    active = tight
+    ctx.add("rule.h2",
+            f"Two textbook initial-stop candidates from today's data: entry − {ENTRY_STOP_ATR:g} × "
+            f"ATR = {m(s_atr)}, and below the 20-bar low = {m(s_sup)}. The higher one "
+            f"({m(initial)}, {which}) is the tighter; at it the position would show "
+            f"{_gain(ctx, initial - E, Q)}.",
+            "textbook initial-stop candidates for the typed position (calculated today, not a "
+            "stop the platform maintains)", "rules", base + ids["low"])
+    candidate = initial
     if P - E > BREAKEVEN_ATR * A:
-        active = max(active, E)
+        candidate = max(candidate, E)
         h3 = (f"The latest close is more than {BREAKEVEN_ATR:g} ATR ({m(A)}) above your entry, so "
-              f"a textbook rule moves the stop up to at least your entry ({m(E)}).")
+              f"a textbook rule raises the stop to at least your entry ({m(E)}).")
     else:
         h3 = (f"The latest close is not yet {BREAKEVEN_ATR:g} ATR ({m(A)}) above your entry; the "
               f"breakeven rule applies once a close is above {m(E + BREAKEVEN_ATR * A)}.")
     ctx.add("rule.h3", h3, "textbook breakeven-stop rule", "rules", base)
     trail = P - TRAIL_ATR * A
-    if trail > active:
-        h4 = (f"A trailing stop at the latest close − {TRAIL_ATR:g} × ATR is {m(trail)}, above "
-              f"the current stop ({m(active)}), so a textbook trailing rule raises the stop to "
-              f"{m(trail)}.")
-        active = trail
+    if trail > candidate:
+        h4 = (f"Today's trailing candidate (latest close − {TRAIL_ATR:g} × ATR) is {m(trail)}, "
+              f"above the other candidates, so today's stop candidate is {m(trail)}.")
+        candidate = trail
     else:
-        h4 = (f"A trailing stop at the latest close − {TRAIL_ATR:g} × ATR is {m(trail)}, not above "
-              f"the current stop ({m(active)}); a stop never moves down, so it stays at "
-              f"{m(active)}.")
-    ctx.add("rule.h4", h4, "textbook trailing-stop rule", "rules", base)
-    if P < lv.high20:
-        h5 = (f"If the price reaches the 20-bar high ({m(lv.high20)}), a textbook rule takes "
-              f"partial profit there and raises the stop.")
-        if lv.high252 is not None and lv.high252 > lv.high20:
-            h5 += f" The 252-bar high ({m(lv.high252)}) is the next stored level above it."
-        ev = base + ids["high"] + ids.get("year", [])
-    elif lv.high252 is not None and P < lv.high252:
-        h5 = (f"The latest close is at or above the 20-bar high; the next stored level above is "
-              f"the 252-bar high ({m(lv.high252)}), where a textbook rule takes partial profit.")
-        ev = base + ids.get("year", [])
+        h4 = (f"Today's trailing candidate (latest close − {TRAIL_ATR:g} × ATR) is {m(trail)}, "
+              f"not above the other candidates, so today's stop candidate stays {m(candidate)}.")
+    ctx.add("rule.h4", h4, "textbook trailing-stop candidate, calculated from today's data",
+            "rules", base)
+    held = pos.stop
+    if held is not None:
+        sid = ctx.book.add(Evidence(
+            evidence_id=f"position:typed-stop:{ctx.now:%Y%m%dT%H%M%S}",
+            source="stated by you in this question", value={"stop": held},
+            retrieved_at=ctx.now, note="typed by the user; the platform keeps no stop state"))
+        ctx.add("position.stop", m(held), "the stop the user typed as currently held",
+                "position", [sid])
+        active = max(held, candidate)
+        if candidate > held:
+            h6 = (f"Your stated stop is {m(held)} and today's candidate is {m(candidate)}: "
+                  f"textbook practice raises the stop to {m(candidate)}. If a daily close is "
+                  f"below {m(active)}, the rule says exit.")
+        else:
+            h6 = (f"Your stated stop is {m(held)}; today's candidate ({m(candidate)}) is not above "
+                  f"it, and a stop is never lowered, so it stays at {m(held)}. If a daily close is "
+                  f"below {m(held)}, the rule says exit.")
+        if P < active:
+            h6 += f" The latest close ({m(P)}) is already below {m(active)}: the exit rule has been met."
+        ev6 = base + ids["low"] + [sid]
     else:
+        h6 = (f"The platform does not keep your stop between requests, so your current stop is "
+              f"unknown. Today's candidate is {m(candidate)}. Textbook practice keeps the higher "
+              f"of your existing stop and this candidate and never lowers a stop; if a daily "
+              f"close is below the stop you hold, the rule says exit. Tell me your stop (e.g. "
+              f"'my stop is 95') to apply this to it.")
+        if P < candidate:
+            h6 += (f" The latest close ({m(P)}) is already below today's candidate "
+                   f"({m(candidate)}).")
+        ev6 = base + ids["low"]
+    ctx.add("rule.h6", h6, "textbook exit rule against the stop the user holds", "rules", ev6)
+    # TARGETS vs the typed cost basis (review C5): a level below the entry is a LOSS reduction,
+    # never "partial profit". Measured: entry 104, 20-bar high 101 -> "take partial profit at 101".
+    targets = [(lbl, lvl, idl) for lbl, lvl, idl in
+               (("20-bar high", lv.high20, ids["high"]),
+                ("252-bar high", lv.high252, ids.get("year", [])))
+               if lvl is not None and lvl > P]
+    targets = [t for i, t in enumerate(targets) if not any(t[1] == u[1] for u in targets[:i])]
+    if not targets:
         h5 = ("The latest close is at or above every stored high, so no level lies above it. "
               "Textbook practice trails the stop rather than setting a target.")
         ev = base + ids["high"]
-    ctx.add("rule.h5", h5, "textbook profit-taking rule", "rules", ev)
-    ctx.add("rule.h6",
-            f"If a daily close is below the active stop ({m(active)}), the rule says exit. A stop "
-            f"is not moved down to avoid it.", "textbook exit rule", "rules", base + ids["low"])
+    else:
+        parts, ev = [], list(base)
+        for lbl, lvl, idl in targets:
+            ev += idl
+            if lvl > E:
+                parts.append(f"at the {lbl} ({m(lvl)}), above your entry, a textbook rule takes "
+                             f"partial profit and raises the stop")
+            else:
+                parts.append(f"the {lbl} ({m(lvl)}) is at or below your entry ({m(E)}): reaching "
+                             f"it would at best get back to your cost, not take a profit, so "
+                             f"textbook practice reviews the position there as resistance")
+        h5 = "If the price rises: " + "; ".join(parts) + "."
+    ctx.add("rule.h5", h5, "textbook targets compared with the typed entry", "rules", ev)
     el = _earnings_line(ctx, earnings, holding=True)
     if el:
         ctx.add(el[0], el[1], "textbook earnings rule for a held position", "rules", ())

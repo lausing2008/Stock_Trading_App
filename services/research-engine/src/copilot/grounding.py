@@ -140,32 +140,45 @@ def _quantity_words(text: str) -> list[str]:
 _NEGATION_BEFORE = re.compile(r"(?:\bnot\b|\bno\b|n't|\bnever\b|\bnor\b)[^.;:!?]{0,24}$", re.I)
 
 
-# ── Plan mode: conditions, not predictions ─────────────────────────────────────
+# ── Plan mode: no model-authored price predictions ─────────────────────────────
 # The platform stores no price forecast (docs/features/2026-10-14-copilot-plan-mode-design.md
-# §1). An answer may report the engine's CALLS and how past calls turned out; it may not say
-# where the price WILL go. A sentence is refused when it asserts a future move without a
-# condition ("if", "once", "unless", "when") and without a negation ("does not say it will
-# rise"). Applies to every answer, not only plan answers.
+# §1). An answer may report the engine's CALLS and how past calls turned out; conditional
+# levels come from the code-rendered rules ({{rule.e1}}). Model prose may not assert where the
+# price WILL go — conditionally or not.
+#
+# REVIEW C4 (2026-10-15): the first version exempted a whole SENTENCE when it contained "if",
+# "once", "unless" or "when", so "If you are wondering about next week, the stock will rise"
+# passed. A condition word does not show the prediction depends on it. Conditions are no longer
+# an exemption at all; only bounded denials of the prediction ("I cannot say whether it will
+# rise") are exempt. Unrelated negation or "whether" cannot excuse a forecast. "Will not fall"
+# is a prediction too, and is refused.
 _FUTURE_MOVE = re.compile(
-    r"\b(?:will|(?:is|are|'s|'re)\s+(?:going|set|poised|expected|likely|bound|sure|certain)\s+to|"
-    r"should|bound\s+to|sure\s+to|certain\s+to|expected\s+to)\s+(?:likely\s+|probably\s+|"
-    r"soon\s+|continue\s+to\s+|keep\s+)?(?:rise|rises|fall|falls|drop|climb|rally|decline|"
-    r"go\s+(?:up|down|higher|lower)|move\s+(?:up|down|higher|lower)|hit|reach|break\s+(?:out|"
-    r"down|above|below)|bounce|recover|rebound|surge|soar|plunge|crash|tank|outperform|"
-    r"underperform|gain|lose\s+value|trend\s+(?:up|down|higher|lower)|head\s+(?:up|down|"
-    r"higher|lower))\b", re.I)
-_CONDITION = re.compile(r"\b(?:if|once|unless|when|whether|in\s+case)\b", re.I)
+    r"\b(?:will(?:\s+not|\s+never)?|won't|(?:is|are|'s|'re)\s+(?:going|set|poised|expected|likely|"
+    r"bound|sure|certain)\s+to|should|bound\s+to|sure\s+to|certain\s+to|expected\s+to)\s+"
+    r"(?:likely\s+|probably\s+|soon\s+|continue\s+to\s+|keep\s+)?(?:rise|rises|fall|falls|drop|"
+    r"climb|rally|decline|go\s+(?:up|down|higher|lower)|move\s+(?:up|down|higher|lower)|hit|reach|"
+    r"break\s+(?:out|down|above|below)|bounce|recover|rebound|surge|soar|plunge|crash|tank|"
+    r"outperform|underperform|gain|lose\s+value|trend\s+(?:up|down|higher|lower)|head\s+(?:up|"
+    r"down|higher|lower))\b", re.I)
 _FUTURE_NEGATED = re.compile(
-    r"(?:\bnot\b|n't|\bno\b|\bnever\b|\bcannot\b|\bnor\b|\bnothing\b)[^.;:!?]{0,40}$", re.I)
+    r"(?:\b(?:cannot|can't|can not|could not|couldn't|do not|don't|does not|doesn't|"
+    r"did not|didn't|never)\s+(?:say|predict|forecast|claim|show|establish|know|tell|"
+    r"guarantee|conclude)\s+(?:(?:that|whether|if)\s+)?|"
+    r"\bnothing\s+(?:here\s+)?(?:shows|establishes|says|predicts)\s+)"
+    r"(?:(?:the|this)\s+)?(?:stock|price|shares|it|[A-Z]{1,5})\s*$", re.I)
 
 
 def _unconditional_forecasts(text: str) -> list[str]:
     found = []
-    for sent in re.split(r"(?<=[.;!?])\s+|\n+", text):
-        if _CONDITION.search(sent):
-            continue
-        for m in _FUTURE_MOVE.finditer(sent):
-            if not _FUTURE_NEGATED.search(sent[:m.start()]):
+    for clause in re.split(r"[.;:!?,\n]|—|–", text):
+        for m in _FUTURE_MOVE.finditer(clause):
+            prefix, suffix = clause[:m.start()], clause[m.end():]
+            denied = _FUTURE_NEGATED.search(prefix)
+            # A bounded indirect question with an explicit denial, not arbitrary "whether".
+            denied = denied or (re.fullmatch(r"\s*whether\s+it\s+", prefix, re.I)
+                                and re.match(r"\s+is not something (?:the packet|the data) shows\s*$",
+                                             suffix, re.I))
+            if not denied:
                 found.append(m.group(0))
     return found
 
@@ -316,8 +329,8 @@ def _check_text(text: str, packet: CopilotPacket, where: str, reasons: list[str]
     fc = _unconditional_forecasts(_PLACEHOLDER.sub(" ", text))
     if fc:
         reasons.append(f"{where} predicts a price move ('{fc[0]}'); the platform stores no price "
-                       f"forecast — state the engine's calls and their records, or a condition "
-                       f"('if a close is above …')")
+                       f"forecast — cite the engine's calls and records or the code-written "
+                       f"rule keys; do not write a price prediction")
     low_orders = _QUOTED_FIRST_PERSON.sub(" ", low)
     for w in _ORDER_LANGUAGE:
         if w in low_orders:

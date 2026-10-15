@@ -34,6 +34,22 @@ interface Item {
 // ── Data ─────────────────────────────────────────────────────────────────────
 
 const ITEMS: Item[] = [
+  {
+    id: 'COPILOT-PLAN-REVIEW-C1-C5', tier: 444, severity: 'high', defaultStatus: 'done',
+    title: 'Copilot plans use explicit stop state, complete risk amounts and code-written conditions',
+    file: 'docs/audits/2026-10-15-copilot-plan-final-remediation.md', effort: 'M',
+    impact: 'A calculated stop could be presented as maintained, options could receive stock rules, abbreviated risk amounts could be truncated, and forecast wording could bypass grounding.',
+    what: 'Stops are candidates unless the user supplies their held stop. Options and short positions get no stock rules. Whole risk amounts preserve units and conflicting budgets are refused. Unsupported price predictions fall back to the deterministic plan. Targets below cost are described as loss reduction.',
+    fix: 'Regression cases exercise parsing, actual packet sizing, typed stops, evidence, retry and fallback. The backend and deterministic plan endpoint are complete. The stock-page Game Plan card, chart overlays and confirmed alert drafts remain future work.',
+  },
+  {
+    id: 'PRICE-RISK-SHADOW-F1-F5', tier: 445, severity: 'high', defaultStatus: 'done',
+    title: 'Price-risk shadow scans explain exclusions and preserve recovery and escalation episodes',
+    file: 'docs/audits/2026-10-14-alerts-recommendations-audit.md', effort: 'M',
+    impact: 'Stale prices could queue alerts, disabling delivery did not pause queued mail, and new intraday episodes could lose escalation events.',
+    what: 'Completed-session freshness and evidence-based expiry, delivery checks at drain time, stable episode identities, named exclusions and full-window basket evidence are implemented. Price-risk email delivery remains disabled.',
+    fix: 'Post-fix observations are a separate cohort: Oct 16, 19, 20, 21 and 22, reviewed Oct 23. This completed engineering work does not close the live shadow review, MU-02 earnings verification or broker-fill checkpoint.',
+  },
   // Tier 443 - copilot re-review: number and negation parsing (2026-10-14)
   {
     id: "COPILOT-REREVIEW-C1-C2",
@@ -21589,6 +21605,8 @@ const ITEMS: Item[] = [
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = {
+  445: 'Tier 445 — Price-risk shadow audit fixes (2026-10-15)',
+  444: 'Tier 444 — Copilot forecast and playbook review fixes (2026-10-15)',
   1: 'Tier 1 — Fix Before Trusting Signals',
   2: 'Tier 2 — Analytical Improvements',
   3: 'Tier 3 — New Features',
@@ -22030,6 +22048,8 @@ const TIER_LABEL: Record<Tier, string> = {
 };
 
 const TIER_COLOR: Record<Tier, string> = {
+  445: '#38bdf8',
+  444: '#a78bfa',
   1: '#f87171',
   2: '#fbbf24',
   3: '#818cf8',

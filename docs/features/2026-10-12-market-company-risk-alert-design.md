@@ -540,7 +540,7 @@ delivery flag **absent**. The image also carries the already-pushed HK 2027 cale
 (`6d1e5d2a`); decision-engine and research-engine do not yet. Deployment finished **09:57 ET,
 inside the Oct 15 session**, so Oct 15 is not a complete session for the new cohort.
 
-**Post-fix cohort: Thu Oct 16 – Thu Oct 22 (5 US sessions). Review Fri Oct 23** (calendar event
+**Post-fix cohort: Fri Oct 16 – Thu Oct 22 (5 US sessions). Review Fri Oct 23** (calendar event
 moved from Oct 21). Do not pool with shadow data from before 09:57 ET on Oct 15.
 
 First post-fix scan (10:05 ET): 158 subjects, 66 events, **115 intraday quotes, 0 refusals**

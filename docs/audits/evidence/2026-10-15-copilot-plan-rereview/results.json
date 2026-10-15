@@ -1,0 +1,256 @@
+{
+  "options": [
+    {
+      "question": "I have 2 AAPL January calls at 50. What should I do?",
+      "parsed": {
+        "kind": "entry",
+        "entry": null,
+        "shares": null,
+        "risk_amount": null,
+        "account": null,
+        "risk_pct": null,
+        "stop": null,
+        "unsupported": false,
+        "refusals": []
+      },
+      "rules": [
+        "rule.e1",
+        "rule.e2",
+        "rule.e3",
+        "rule.e4",
+        "rule.e6"
+      ],
+      "fallback_rules": [
+        "rule.e1",
+        "rule.e2",
+        "rule.e3",
+        "rule.e4",
+        "rule.e6"
+      ]
+    },
+    {
+      "question": "I bought long calls at 50. What should I do?",
+      "parsed": {
+        "kind": "holding",
+        "entry": 50.0,
+        "shares": null,
+        "risk_amount": null,
+        "account": null,
+        "risk_pct": null,
+        "stop": null,
+        "unsupported": false,
+        "refusals": []
+      },
+      "rules": [
+        "rule.e1",
+        "rule.e2",
+        "rule.e3",
+        "rule.e4",
+        "rule.e6",
+        "rule.h1",
+        "rule.h2",
+        "rule.h3",
+        "rule.h4",
+        "rule.h5",
+        "rule.h6",
+        "rule.h8"
+      ],
+      "fallback_rules": [
+        "rule.e1",
+        "rule.e2",
+        "rule.e3",
+        "rule.e4",
+        "rule.e6",
+        "rule.h1",
+        "rule.h2",
+        "rule.h3",
+        "rule.h4",
+        "rule.h6",
+        "rule.h5",
+        "rule.h8"
+      ]
+    },
+    {
+      "question": "I bought 2 AAPL January calls at 50. What should I do?",
+      "parsed": {
+        "kind": "holding",
+        "entry": null,
+        "shares": null,
+        "risk_amount": null,
+        "account": null,
+        "risk_pct": null,
+        "stop": null,
+        "unsupported": true,
+        "refusals": [
+          "the playbook covers long stock positions only; options and short positions get no rules here (see the Options Game Plan for options)"
+        ]
+      },
+      "rules": [],
+      "fallback_rules": []
+    },
+    {
+      "question": "I bought 100 shares at 95, are the SWING calls still BUY?",
+      "parsed": {
+        "kind": "holding",
+        "entry": 95.0,
+        "shares": 100,
+        "risk_amount": null,
+        "account": null,
+        "risk_pct": null,
+        "stop": null,
+        "unsupported": false,
+        "refusals": []
+      },
+      "rules": [
+        "rule.e1",
+        "rule.e2",
+        "rule.e3",
+        "rule.e4",
+        "rule.e6",
+        "rule.h1",
+        "rule.h2",
+        "rule.h3",
+        "rule.h4",
+        "rule.h5",
+        "rule.h6",
+        "rule.h8"
+      ],
+      "fallback_rules": [
+        "rule.e1",
+        "rule.e2",
+        "rule.e3",
+        "rule.e4",
+        "rule.e6",
+        "rule.h1",
+        "rule.h2",
+        "rule.h3",
+        "rule.h4",
+        "rule.h6",
+        "rule.h5",
+        "rule.h8"
+      ]
+    }
+  ],
+  "risk": [
+    {
+      "question": "I want to buy. I can lose 10%",
+      "parsed": {
+        "kind": "entry",
+        "entry": null,
+        "shares": null,
+        "risk_amount": 10.0,
+        "account": null,
+        "risk_pct": null,
+        "stop": null,
+        "unsupported": false,
+        "refusals": []
+      },
+      "sizing": "Risking $10.00 with the stop at $98.00 ($2.00 per share at the latest close) sizes the position at 5 shares ($500.00).",
+      "exit": null
+    },
+    {
+      "question": "I want to buy. I can lose 10%, account 50000",
+      "parsed": {
+        "kind": "entry",
+        "entry": null,
+        "shares": null,
+        "risk_amount": 10.0,
+        "account": 50000.0,
+        "risk_pct": null,
+        "stop": null,
+        "unsupported": false,
+        "refusals": []
+      },
+      "sizing": "Risking $10.00 with the stop at $98.00 ($2.00 per share at the latest close) sizes the position at 5 shares ($500.00).",
+      "exit": null
+    },
+    {
+      "question": "I want to buy, risk $10k",
+      "parsed": {
+        "kind": "entry",
+        "entry": null,
+        "shares": null,
+        "risk_amount": 10000.0,
+        "account": null,
+        "risk_pct": null,
+        "stop": null,
+        "unsupported": false,
+        "refusals": []
+      },
+      "sizing": "Risking $10,000.00 with the stop at $98.00 ($2.00 per share at the latest close) sizes the position at 5,000 shares ($500,000.00).",
+      "exit": null
+    },
+    {
+      "question": "I want to buy, risk $500, actually risk $1000",
+      "parsed": {
+        "kind": "entry",
+        "entry": null,
+        "shares": null,
+        "risk_amount": 500.0,
+        "account": null,
+        "risk_pct": null,
+        "stop": null,
+        "unsupported": false,
+        "refusals": []
+      },
+      "sizing": "Risking $500.00 with the stop at $98.00 ($2.00 per share at the latest close) sizes the position at 250 shares ($25,000.00).",
+      "exit": null
+    },
+    {
+      "question": "I want to buy, risk $1.2.3k",
+      "parsed": {
+        "kind": "entry",
+        "entry": null,
+        "shares": null,
+        "risk_amount": 1.2,
+        "account": null,
+        "risk_pct": null,
+        "stop": null,
+        "unsupported": false,
+        "refusals": []
+      },
+      "sizing": "Risking $1.20 with the stop at $98.00 ($2.00 per share) is not enough for one share.",
+      "exit": null
+    },
+    {
+      "question": "I bought 10 shares at 95, my stop is 5%",
+      "parsed": {
+        "kind": "holding",
+        "entry": 95.0,
+        "shares": 10,
+        "risk_amount": null,
+        "account": null,
+        "risk_pct": null,
+        "stop": 5.0,
+        "unsupported": false,
+        "refusals": []
+      },
+      "sizing": "Each 100 shares bought at the latest close ($100.00) would lose $200.00 if the stop at $98.00 is hit. State a risk budget (e.g. 'risk $500') to size the position.",
+      "exit": "Your stated stop is $5.00 and today's candidate is $98.00: textbook practice raises the stop to $98.00. If a daily close is below $98.00, the rule says exit."
+    }
+  ],
+  "forecasts": [
+    {
+      "draft": "There is no doubt the stock will rise.",
+      "accepted": true,
+      "reasons": []
+    },
+    {
+      "draft": "I do not own shares and the stock will rise.",
+      "accepted": true,
+      "reasons": []
+    },
+    {
+      "draft": "If you are wondering about next week, the stock will rise.",
+      "accepted": false,
+      "reasons": [
+        "the answer predicts a price move ('will rise'); the platform stores no price forecast \u2014 state the engine's calls and their records, or a condition ('if a close is above \u2026')"
+      ]
+    },
+    {
+      "draft": "I cannot say whether it will rise.",
+      "accepted": true,
+      "reasons": []
+    }
+  ]
+}

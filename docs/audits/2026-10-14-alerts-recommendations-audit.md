@@ -152,6 +152,15 @@ Python path passed. This was a test invocation issue, not a product failure.
 
 ## Remediation of F1–F5 (2026-10-15) — committed, NOT deployed; delivery still disabled
 
+**Independent closure check of `d8aa9b33` (2026-10-15): F3 residual resolved.** Episode identity
+is inherited by subsequent escalations and severity is scoped to the current episode. The
+independent `91 → 85 → 99 → 91 → 85 → 85` detector reproduction now creates two events at the
+second 85 and zero at the repeated 85. The focused suites pass **32 tests**. This closes the
+code finding; production deployment, disabled delivery and scan counts below are supplied
+operator evidence, not independently remeasured here. The measurement cohort is **Friday
+October 16 through Thursday October 22**, with review **Friday October 23**. Earlier request-
+changes/deployment advice below is retained as the historical review record.
+
 **Independent re-review of `ebed80d3` (2026-10-15): request one further change before deploying.**
 F1/F2/F4/F5 are addressed in the reviewed paths; F3 is only partially resolved. The existing
 focused detector/end-to-end suites pass **32 tests**, including the added remediation probe.

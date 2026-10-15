@@ -177,12 +177,12 @@ renders the same sentences with no model at all.
   The rule names the higher one as the tighter stop, and the loss at each (× shares when given).
 - **H3 breakeven.** Once the close is more than 1×ATR above entry, a textbook rule moves the stop
   to the entry price. The display says whether that is already true.
-- **H4 trailing.** Trailing stop today = latest close − 2×ATR, used only if it is above the
-  current stop; a stop never moves down.
-- **H5 targets.** At the 20-bar high, and at the 52-week high when above it, a textbook rule
-  takes partial profit and raises the stop.
-- **H6 exit.** A daily close below the active stop means exit. Do not move the stop down to
-  avoid it.
+- **H4 trailing.** Latest close − 2×ATR is a candidate, not a maintained stop. With a stop typed
+  by the user, the proposed stop is kept or raised; without one the current stop is unknown.
+- **H5 targets.** Stored highs above cost are profit-taking candidates; levels at or below
+  cost are described as breakeven or loss reduction, never as taking profit.
+- **H6 exit.** The daily-close condition is evaluated against the user's stated stop. Without
+  one, only an illustrative candidate is shown; the platform does not retain or maintain it.
 - **H7 earnings.** Same as E5, for a held position: reduce or accept the gap risk knowingly.
 - **H8 signal check.** If the platform's call for the user's horizon turns SELL, the rule says
   review the position. The current calls are cited from the forecast block.
@@ -301,3 +301,49 @@ Independent review after each slice; nothing is deployed until its review's find
 
 Evaluation results (held-out first run, then tuned) are in
 `docs/audits/2026-10-14-copilot-plan-mode-validation.md`.
+
+## 6. Stop contract and review fixes (2026-10-15, independent review C1–C5)
+
+**The stop contract, settled.** The platform keeps no position state, and the operator chose
+typed positions over reading accounts. So:
+
+| User typed | What the plan says |
+|---|---|
+| No stop | Every stop is a **candidate calculated from today's data**. H6 says the current stop is **unknown**, gives today's candidate, and states the rule: keep the higher of your existing stop and the candidate, never lower it, and exit on a daily close below the stop you hold. |
+| A stop ("my stop is 95", or `stop=` on the endpoint) | It is evidence ("stated by you"). H6 raises it to the candidate when the candidate is higher, keeps it otherwise ("a stop is never lowered"), and says when the latest close is already below it. |
+
+The first build called a recalculated value "the active stop" that "never moves down". The
+reviewer measured it falling from $226 to $220.50 between two snapshots of the same position.
+
+**The other fixes:**
+- **C2, options and shorts.** Any derivative word in a sentence that states a position marks
+  the request unsupported, except the platform's own "BUY/SELL/SWING calls". An unsupported
+  request gets **no** stock rules, in the packet or the fallback. The calls and records are
+  still shown.
+- **C3, amounts.** Read whole. `k` and `m` suffixes are supported explicitly ($10k = 10,000).
+  Malformed or glued amounts are refused, never truncated.
+- **C4, forecasts.** A condition word no longer exempts a prediction. Model prose may not
+  assert a future move at all; conditions come from the rule keys. Only a negation or "whether"
+  in the same clause exempts. "Will not fall" counts as a prediction.
+- **C5, targets.** Each target is compared with the typed entry. A level at or below cost is
+  "at best gets back to your cost … resistance", never "partial profit".
+
+The Game Plan card (P2) must render this distinction: a calculated candidate versus a stop the
+user holds.
+
+
+## Final audit remediation — 2026-10-15
+
+The independent C1–C5 review and follow-up are resolved in the final remediation record:
+`docs/audits/2026-10-15-copilot-plan-final-remediation.md`. Packet v5 distinguishes a calculated
+stop candidate from the stop the user says they hold. The API includes `position.stop` and an
+explicit `unsupported` flag. No account or broker state is inferred. Options/short requests
+get no stock rules, including in fallback. Complete risk quantities preserve money/percentage
+units; malformed amounts and conflicting budgets are refused. Percentage risk requires an
+account size; percentage stops are not treated as absolute prices. Model price predictions
+are refused even after unrelated conditional or negative phrases; code-rendered rule keys
+provide the conditions. Targets below entry are loss reduction, not profit-taking.
+
+P2 (the stock-page Game Plan card, chart overlays and confirmed alert drafts) remains future
+work. The October 23 price-risk review, MU-02 and broker-fill evidence remain separate open
+checks. No alert enrollment or delivery setting changes are part of this release.

@@ -678,7 +678,8 @@ async def screen(req: ScreenRequest, *, session_factory, fetch_screen, llm_call=
 def plan_view(session_factory, username: str, symbol: str, *, kind: str | None = None,
               entry: float | None = None, shares: int | None = None,
               risk: float | None = None, account: float | None = None,
-              risk_pct: float | None = None, now: datetime | None = None) -> dict:
+              risk_pct: float | None = None, stop: float | None = None,
+              now: datetime | None = None) -> dict:
     """The plan engine's lines for one symbol, as structured JSON.
 
     The same lines the copilot cites, built by the same code; nothing here calls a model, so it
@@ -687,7 +688,7 @@ def plan_view(session_factory, username: str, symbol: str, *, kind: str | None =
     """
     import math as _m
     for name, v in (("entry", entry), ("risk", risk), ("account", account),
-                    ("risk_pct", risk_pct)):
+                    ("risk_pct", risk_pct), ("stop", stop)):
         if v is not None and (not _m.isfinite(v) or v <= 0):
             raise CopilotError(400, f"{name} must be a positive number")
     if risk_pct is not None and risk_pct > 100:
@@ -701,7 +702,9 @@ def plan_view(session_factory, username: str, symbol: str, *, kind: str | None =
     if kind not in ("forecast", "entry", "holding"):
         raise CopilotError(400, "kind must be forecast, entry or holding")
     pi = I.PositionIntent(kind=kind, entry=entry, shares=shares, risk_amount=risk,
-                          account=account, risk_pct=risk_pct)
+                          account=account, risk_pct=risk_pct, stop=stop)
+    if stop is not None and entry is None:
+        raise CopilotError(400, "stop needs an entry price")
     now = now or _utcnow()
     with session_factory() as s:
         if St.user_id_for(s, username) is None:

@@ -1,0 +1,7 @@
+{
+  "services/research-engine/src/copilot/intent.py": "e20a43d86ee51a1602a0fc8215cfa19d70e386c083431ddfb70a00bbd8a1056f",
+  "services/research-engine/src/copilot/grounding.py": "b6729eecf2b43af0121ef556355ef339f1c6be42a8ebb316ce08b07d4c00ab71",
+  "services/research-engine/src/copilot/plan.py": "d2586e27236cf5be69744840914ff19383c65bf41ed984422871bb6ffe78d5bc",
+  "services/research-engine/src/copilot/packet.py": "76e4624d91efc6a16b0262a6c104e2a0ade6021e1c903dddc38a8d58fc81f866",
+  "services/research-engine/src/copilot/service.py": "32936308b52f57d48a8e915729efa71070741dee59d52ff350b2dd38c2ef8f69"
+}

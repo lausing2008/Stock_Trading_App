@@ -7,6 +7,9 @@ commit and decision. The details live in the linked files.
 
 ## What exists now
 
+October 15 continuation: [Plan P1 final remediation and deployment](2026-10-15-copilot-plan-final-remediation.md)
+records C1–C5 and the follow-up fixes, packet v5, tracker 444–445, validation and open P2 work.
+
 | Capability | Where the user sees it | Tracker |
 |---|---|---|
 | Evidence-linked copilot: server-built evidence, figures inserted by code, citations, data age, limitations | Stock page, "Ask the copilot" | 437 |

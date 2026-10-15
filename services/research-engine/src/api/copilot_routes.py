@@ -167,7 +167,7 @@ def message_evidence(message_id: int, key: str = Query(..., max_length=64),
 def copilot_plan(symbol: str, kind: str | None = Query(None, max_length=16),
                  entry: float | None = None, shares: int | None = None,
                  risk: float | None = None, account: float | None = None,
-                 risk_pct: float | None = None,
+                 risk_pct: float | None = None, stop: float | None = None,
                  username: str = Depends(get_current_username)):
     """The stock's plan (calls, records, levels, textbook rules), built by code — no model.
 
@@ -180,7 +180,7 @@ def copilot_plan(symbol: str, kind: str | None = Query(None, max_length=16),
         raise HTTPException(400, f"Invalid symbol: {symbol!r}")
     try:
         return C.plan_view(SessionLocal, username, sym, kind=kind, entry=entry, shares=shares,
-                           risk=risk, account=account, risk_pct=risk_pct)
+                           risk=risk, account=account, risk_pct=risk_pct, stop=stop)
     except C.CopilotError as exc:
         raise HTTPException(exc.status, exc.message)
 

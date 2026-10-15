@@ -28,7 +28,7 @@ def r():
 
 def test_levels_are_the_hand_computed_values_and_cite_every_input(r):
     p = r["pl1"]
-    assert p["packet_version"] == 4
+    assert p["packet_version"] == 5
     assert p["atr"].startswith("$2.00 (14-bar ATR") and p["atr_calc"] == 2.0
     assert (p["low20"], p["high20"]) == ("$99.00", "$101.00")
     assert p["sma50"].startswith("$100.00, flat")
@@ -81,10 +81,10 @@ def test_holding_rules_for_a_typed_position(r):
     assert "gain of $5.00 per share ($500.00 on 100 shares)" in p["rule.h1"]
     assert "+5.3%" in p["rule.h1"] and "+2.5 ATRs" in p["rule.h1"]
     assert "$91.00" in p["rule.h2"] and "$98.00" in p["rule.h2"] and "structure-based" in p["rule.h2"]
-    assert "up to at least your entry ($95.00)" in p["rule.h3"]
-    assert "stays at $98.00" in p["rule.h4"], "a stop never moves down"
-    assert "20-bar high ($101.00)" in p["rule.h5"]
-    assert "($98.00)" in p["rule.h6"]
+    assert "raises the stop to at least your entry ($95.00)" in p["rule.h3"]
+    assert "today's stop candidate stays $98.00" in p["rule.h4"]
+    assert "20-bar high ($101.00), above your entry" in p["rule.h5"] and "partial profit" in p["rule.h5"]
+    assert "current stop is unknown" in p["rule.h6"] and "candidate is $98.00" in p["rule.h6"]
     assert "SWING BUY" in p["rule.h8"] and "LONG SELL" in p["rule.h8"]
     assert p["rule.e1"], "entry rules stay available beside the holding rules"
 
@@ -92,15 +92,15 @@ def test_holding_rules_for_a_typed_position(r):
 def test_a_losing_position_says_so_and_flags_a_reached_stop(r):
     p = r["pl2"]
     assert "loss of $4.00 per share ($40.00 on 10 shares)" in p["loss_h1"]
-    assert "entry-based" in p["loss_h2"] and "stop has been reached" in p["loss_h2"]
+    assert "entry-based" in p["loss_h2"] and "$100.00" in p["loss_h2"]
     assert "once a close is above $106.00" in p["loss_h3"]
 
 
 def test_trailing_stop_rises_in_a_trend_and_drives_the_exit_level(r):
     p = r["pl2"]
     assert p["trend_low20"] == "$219.00"
-    assert "raises the stop to $226.00" in p["trail_h4"]
-    assert "($226.00)" in p["trail_h6"]
+    assert "today's stop candidate is $226.00" in p["trail_h4"]
+    assert "candidate is $226.00" in p["trail_h6"] and "unknown" in p["trail_h6"]
     assert "$230.50" in p["trend_h5"] and "$231.00" in p["trend_h5"]
 
 
@@ -191,7 +191,7 @@ def test_options_shorts_split_entries_and_incomplete_numbers_get_no_holding_rule
 
 def test_a_plan_answer_cites_rules_and_records_and_renders_their_figures(r):
     p = r["pl6"]
-    assert p["good_status"] == "grounded" and p["good_packet_version"] == 4
+    assert p["good_status"] == "grounded" and p["good_packet_version"] == 5
     assert p["model_saw_rules"]
     assert {"call.swing", "record.swing.5d", "rule.h1", "rule.h2"} <= set(p["good_refs"])
     assert "$98.00" in p["good_content"] and "{{" not in p["good_content"]
@@ -277,7 +277,9 @@ def test_risk_grammar(r):
     ("It is expected to reach the high.", True),
     ("Shares are poised to rally.", True),
     ("The price will go up.", True),
-    ("If a close is above the high, it will likely climb.", False),
+    # Review C4: a condition word no longer exempts a model-authored prediction; conditions
+    # come from the code-rendered rule keys.
+    ("If a close is above the high, it will likely climb.", True),
     ("The data does not say the price will rise.", False),
     ("Nothing here shows it is going to fall.", False),
     ("The engine is set to recalculate tomorrow.", False),
@@ -309,3 +311,98 @@ def test_evidence_is_stored_once_per_message_and_served_unchanged(r):
     assert p["api_preview"][0] == 5 and p["api_preview"][1] > 100
     assert p["detail_full"] == p["api_preview"][1] and p["detail_ids_unique"]
     assert tuple(p["legacy_preview"]) == (5, 7) and p["legacy_detail"] == 7
+
+
+# ── Independent review C1–C5 (2026-10-15), reviewer reproductions ─────────────
+
+def test_c1_a_calculated_stop_is_a_candidate_and_only_a_typed_stop_is_held(r):
+    p = r["pl9"]
+    # Two snapshots of the same position: the candidate may fall ($226 -> lower), and the
+    # answer must not present it as a maintained stop that "never moves down".
+    assert "candidate is $226.00" in p["c1_first_h6"] and "unknown" in p["c1_first_h6"]
+    assert "unknown" in p["c1_second_h6"] and "$226.00" not in p["c1_second_h6"]
+    assert not p["c1_any_maintains_claim"]
+    # With the stop the user holds, a lower candidate never lowers it, and the breach is named.
+    assert p["c1_typed_stop_shown"] == "$226.00"
+    assert "stays at $226.00" in p["c1_typed_kept_h6"] and "exit rule has been met" in p["c1_typed_kept_h6"]
+    assert "raises the stop to $226.00" in p["c1_typed_raised_h6"]
+
+
+@pytest.mark.parametrize("label", ["c2_aapl_calls", "c2_calls", "c2_150c", "c2_covered"])
+def test_c2_options_positions_get_no_stock_rules_anywhere(r, label):
+    p = r["pl9"][label]
+    assert p["unsupported"] and p["rules"] == [] and p["fallback_rules"] == []
+    assert p["calls_kept"], "the platform's calls and records are still shown"
+
+
+def test_c2_the_platforms_own_calls_are_not_options(r):
+    assert r["pl9"]["c2_platform_calls_ok"] and r["pl9"]["c2_platform_calls_ok2"]
+
+
+def test_c3_amounts_are_read_whole_through_sizing(r):
+    p = r["pl9"]
+    assert "5,000 shares" in p["c3_10k"]["e6"] and "$10,000.00" in p["c3_10k"]["e6"]
+    assert "750 shares" in p["c3_1_5k"]["e6"]
+    assert "1,000 shares" in p["c3_lose_2k"]["e6"]
+    assert "250 shares" in p["c3_500"]["e6"]
+    assert "not understood" in p["c3_bad"]["refusal"] and "Each 100 shares" in p["c3_bad"]["e6"]
+    assert "not understood" in p["c3_glued"]["refusal"] and "Each 100 shares" in p["c3_glued"]["e6"]
+
+
+def test_c4_a_condition_word_does_not_license_a_prediction(r):
+    c = r["pl9"]["c4"]
+    assert not c["If you are wondering about next week, the stock will rise."]
+    assert not c["When considering the evidence, it will rally."]
+    assert not c["If you ask me the stock will rise."], "condition in the same clause"
+    assert not c["Whether or not you agree, it will rise."]
+    assert not c["It will not fall."]
+    assert c["I cannot say whether it will rise."]
+    assert c["The data does not say the price will rise."]
+
+
+def test_c5_a_level_below_cost_is_never_called_profit(r):
+    p = r["pl9"]
+    for k in ("c5_loss_h5", "c5_endpoint_h5"):
+        assert "partial profit" not in p[k] and "not take a profit" in p[k], k
+    assert "above your entry" in p["c5_gain_h5"] and "partial profit" in p["c5_gain_h5"]
+    assert "at best get back to your cost" in p["c5_even_h5"]
+
+
+def test_endpoint_accepts_a_typed_stop_and_requires_an_entry_for_it(r):
+    p = r["pl9"]
+    assert "Your stated stop is $99.50" in p["endpoint_stop_h6"]
+    assert p["endpoint_stop_without_entry"] == 400
+
+
+def test_residual_options_are_blocked_in_packets_and_fallbacks(r):
+    for p in r["pl10"]["options"]:
+        assert p["unsupported"] and p["rules"] == [] and p["fallback"] == []
+
+
+def test_residual_money_units_conflicts_and_stops(r):
+    a = r["pl10"]["amounts"]
+    no_account = a["I want to buy. I can lose 10%"]
+    assert no_account["refused"] and no_account["risk"] is None and "Each 100 shares" in no_account["sizing"]
+    pct = a["I want to buy. I can lose 10%, account 50000"]
+    assert pct["risk"] is None and pct["percent"] == 10 and "500 shares" in pct["sizing"]
+    assert "$5,000.00" in pct["sizing"] and "capped" in pct["sizing"]
+    for question in ("I want to buy, risk $1.2.3k", "I want to buy, risk $1...", "I want to buy, risk $10kfoo",
+                     "I want to buy, risk $500, actually risk $1000",
+                     "I want to buy, risk $500 and I can lose $1000"):
+        assert a[question]["refused"] and a[question]["risk"] is None
+        assert "Each 100 shares" in a[question]["sizing"]
+    stop = a["I bought 10 shares at 95, my stop is 5%"]
+    assert stop["refused"] and stop["stop"] is None and "unknown" in stop["exit"]
+    valid = a["I bought 10 shares at 95, my stop is 99.5"]
+    assert not valid["refused"] and valid["stop"] == 99.5 and "$99.50" in valid["exit"]
+    repeated = a["I want to buy, account 50000, risk $500, risk $500"]
+    assert not repeated["refused"] and repeated["risk"] == 500
+
+
+def test_unrelated_negation_cannot_license_forecasts_even_after_retry(r):
+    p = r["pl10"]
+    assert not p["forecasts"]["There is no doubt the stock will rise."]
+    assert not p["forecasts"]["I do not own shares and the stock will rise."]
+    assert p["forecasts"]["I cannot say whether it will rise."]
+    for i in range(2):
+        assert p[f"fallback_{i}"] == {"status": "rejected", "calls": 2, "has_plan": True}

@@ -53,7 +53,7 @@ SYM = "TESTCO"
 
 
 def reset(*, bar_age_days=0, bars=260, last_close=None, split_at=None, earnings_in=None,
-          trend=False,
+          trend=False, last_bar=None,
           cohort=(("SWING", "BUY", 5, 40, 24),), own=(("SWING", "BUY", 5, 7, 5),),
           verified=0, late_row=False, old_row=False):
     """Fixture: one stock, 260 hand-computable bars, calls on SWING (fresh BUY) and LONG
@@ -74,7 +74,9 @@ def reset(*, bar_age_days=0, bars=260, last_close=None, split_at=None, earnings_
             if split_at is not None and i > split_at:
                 px = 200.0                       # before the split, unadjusted closes doubled
             hi, lo, cl = px + 1, px - 1, px
-            if i == 0 and last_close is not None:
+            if i == 0 and last_bar is not None:
+                hi, lo, cl = last_bar
+            elif i == 0 and last_close is not None:
                 cl = last_close
                 hi, lo = max(hi, cl), min(lo, cl)
             s.add(Price(id=i + 1, stock_id=st.id, ts=NOW - timedelta(days=i + bar_age_days),
@@ -465,7 +467,125 @@ def pl8_tables():
     R["pl8"] = {"grammar": grammar, "forecast": forecast}
 
 
-for fn in (pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
+def pl9_review_c1_c5():
+    """The independent review's reproductions (2026-10-15), through the real packet/grounding."""
+    out = {}
+    # C1 — stops across two snapshots of the same position, and a typed stop.
+    reset(trend=True)
+    a = pkt("I own 10 shares, avg cost 200")
+    out["c1_first_h6"] = disp(a, "rule.h6")
+    reset(trend=True, last_bar=(226.0, 224.0, 225.0))
+    b = pkt("I own 10 shares, avg cost 200")
+    out["c1_second_h6"] = disp(b, "rule.h6")
+    out["c1_second_h4"] = disp(b, "rule.h4")
+    c = pkt("I own 10 shares, avg cost 200, my stop is 226")
+    out["c1_typed_kept_h6"] = disp(c, "rule.h6")
+    out["c1_typed_stop_shown"] = disp(c, "position.stop")
+    reset(trend=True)
+    d = pkt("I own 10 shares, avg cost 200, my stop is 218")
+    out["c1_typed_raised_h6"] = disp(d, "rule.h6")
+    out["c1_any_maintains_claim"] = any(
+        "active stop" in (q.display or "") for p_ in (a, b) for q in p_.quantities.values())
+    # C2 — options positions get no stock rules at all, packet or fallback.
+    reset()
+    for label, q in (("c2_aapl_calls", "I bought 2 AAPL January calls at 50. What should I do?"),
+                     ("c2_calls", "I bought calls at 5, what now?"),
+                     ("c2_150c", "I bought the 150c at 3"),
+                     ("c2_covered", "I hold 100 shares at 95 and sold a covered call")):
+        p_ = pkt(q)
+        out[label] = {"rules": sorted(k for k in p_.quantities if k.startswith("rule.")),
+                      "unsupported": p_.plan.unsupported,
+                      "fallback_rules": [k for k in G.fallback_keys(p_) if k.startswith("rule.")],
+                      "calls_kept": "call.swing" in p_.quantities}
+    # Same SENTENCE as the position verb, so the exclusion is what decides it.
+    p_ = pkt("I bought 100 shares at 95, are the SWING calls still BUY?")
+    out["c2_platform_calls_ok"] = any(k.startswith("rule.h") for k in p_.quantities)
+    p_ = pkt("I own 100 shares at 95 and the platform's calls are BUY, what now?")
+    out["c2_platform_calls_ok2"] = any(k.startswith("rule.h") for k in p_.quantities)
+    # C3 — whole amounts through the real sizing path (stop 98, close 100: $2 a share).
+    for label, q in (("c3_10k", "I want to buy, risk $10k"), ("c3_1_5k", "risk $1.5k, should I buy?"),
+                     ("c3_bad", "risk $10,00, should I buy?"), ("c3_lose_2k", "I can lose 2k, where to buy?"),
+                     ("c3_500", "should I buy? risk $500"),
+                     ("c3_glued", "risk $5bn, should I buy?")):
+        p_ = pkt(q)
+        out[label] = {"e6": disp(p_, "rule.e6"),
+                      "refusal": (p_.fields["plan_position_input"].reason
+                                  if "plan_position_input" in p_.fields else None)}
+    # C4 — through G.check, with a valid citation present.
+    fp = pkt("forecast?")
+    def chk(t):
+        return G.check({"answer": t + " {{call.swing}}", "limitations": []}, fp).accepted
+    out["c4"] = {t: chk(t) for t in (
+        "If you are wondering about next week, the stock will rise.",
+        "When considering the evidence, it will rally.",
+        "If you ask me the stock will rise.",
+        "Whether or not you agree, it will rise.",
+        "It will not fall.",
+        "I cannot say whether it will rise.",
+        "The data does not say the price will rise.")}
+    # C5 — targets against the typed entry, packet and endpoint.
+    reset()
+    out["c5_loss_h5"] = disp(pkt("I bought 10 shares at 104"), "rule.h5")
+    out["c5_gain_h5"] = disp(pkt("I bought 10 shares at 95"), "rule.h5")
+    out["c5_even_h5"] = disp(pkt("I bought 10 shares at 101"), "rule.h5")
+    v = C.plan_view(Session, "alice", SYM, entry=104, shares=10, now=NOW)
+    out["c5_endpoint_h5"] = next(x["display"] for x in v["plan"]["groups"]["rules"]
+                                 if x["key"] == "rule.h5")
+    v2 = C.plan_view(Session, "alice", SYM, entry=95, shares=10, stop=99.5, now=NOW)
+    out["endpoint_stop_h6"] = next(x["display"] for x in v2["plan"]["groups"]["rules"]
+                                   if x["key"] == "rule.h6")
+    try:
+        C.plan_view(Session, "alice", SYM, stop=99.5, now=NOW)
+        out["endpoint_stop_without_entry"] = None
+    except C.CopilotError as e:
+        out["endpoint_stop_without_entry"] = e.status
+    R["pl9"] = out
+
+
+def pl10_review_residuals():
+    reset()
+    out = {"options": [], "amounts": {}, "forecasts": {}}
+    for question in ("I have 2 AAPL January calls at 50. What should I do?",
+                     "I bought long calls at 50. What should I do?",
+                     "I bought LONG calls at 50. What should I do?"):
+        p = pkt(question)
+        out["options"].append({"unsupported": p.plan.unsupported,
+                               "rules": [k for k in p.quantities if k.startswith("rule.")],
+                               "fallback": [k for k in G.fallback_keys(p) if k.startswith("rule.")]})
+    for question in ("I want to buy. I can lose 10%",
+                     "I want to buy. I can lose 10%, account 50000",
+                     "I want to buy, risk $1.2.3k",
+                     "I want to buy, risk $1...",
+                     "I want to buy, risk $10kfoo",
+                     "I want to buy, risk $500, actually risk $1000",
+                     "I want to buy, risk $500 and I can lose $1000",
+                     "I bought 10 shares at 95, my stop is 5%",
+                     "I bought 10 shares at 95, my stop is 99.5",
+                     "I want to buy, account 50000, risk $500, risk $500"):
+        p = pkt(question)
+        it = I.parse_position(question)
+        out["amounts"][question] = {"risk": it.risk_amount, "percent": it.risk_pct,
+                                    "stop": it.stop, "refused": bool(it.refusals),
+                                    "sizing": disp(p, "rule.e6"), "exit": disp(p, "rule.h6")}
+    p = pkt("forecast?")
+    for text_ in ("There is no doubt the stock will rise.",
+                  "I do not own shares and the stock will rise.",
+                  "I cannot say whether it will rise."):
+        out["forecasts"][text_] = G.check(
+            {"answer": text_ + " {{call.swing}}", "limitations": []}, p).accepted
+    # Exercise the real retry and deterministic fallback, not just the checker.
+    for i, text_ in enumerate(("There is no doubt the stock will rise.",
+                               "I do not own shares and the stock will rise.")):
+        raw = "<answer>" + text_ + " {{call.swing}}</answer>"
+        model = ScriptedModel(raw, raw)
+        msg = run(C.answer(turn("forecast for next week?", f"residual-{i:04d}"),
+                           session_factory=Session, llm_call=model, now=NOW))["message"]
+        out[f"fallback_{i}"] = {"status": msg["status"], "calls": len(model.calls),
+                                  "has_plan": "Plan (calculated by the platform" in msg["content"]}
+    R["pl10"] = out
+
+
+for fn in (pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
            pl4_staleness, pl5_routing_and_refusals, pl6_turns, pl7_plan_view):
     fn()
 R["_meta"] = {"server": ENGINE.dialect.name}
