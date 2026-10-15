@@ -33,7 +33,7 @@ remains authenticated, with no model call for the deterministic plan endpoint.
   expect 500 shares capped by a $50,000 account, while preserving the $5,000 risk budget.
 - Full research-engine suite on disposable PostgreSQL 15: **700 passed**.
 - Final expanded plan suite: **71 passed on SQLite and 71 passed on PostgreSQL**, including
-  the last malformed-token regression. Both temporary PostgreSQL containers were removed.
+  the last malformed-token regression. All temporary PostgreSQL containers were removed.
 
 Historical independent review evidence is retained under
 `evidence/2026-10-15-copilot-plan-rereview/`; those hashes/results describe the earlier reviewed
@@ -56,4 +56,29 @@ the host's `scripts/deploy_lock.sh` lock for the whole operation. Verify health,
 backend hashes, served tracker entries, route authentication and the deterministic plan against
 the production database without sending alerts or invoking a paid model.
 
-Deployment evidence follows after the release is verified.
+## Production verification — 2026-10-15
+
+Release **`89756b83`** was pushed to `prod`. Research-engine and frontend were rebuilt and
+recreated sequentially under the host deployment lock; no session-only file copies were used.
+The frontend image is `a04da63e8cb7`. Served tracker bundle contains both new item IDs for
+**tiers 444 and 445**, and `/improvements` responds successfully.
+
+A deterministic read-only smoke in the running research-engine container used production
+stock data and the real plan service. Packet v5 and the typed-stop payload round-trip passed;
+options requests exposed zero stock rules; the audited forecast assertion was refused; `$10k`
+remained 10,000 and malformed `$1.2.3k` produced no risk budget. No model call, conversation,
+draft, order or alert was created. The unauthenticated gateway plan route returns **401**.
+
+All **15 containers are healthy**. Redis confirms the price-risk delivery flag is absent;
+this release did not change preferences or enrollment. The post-fix shadow cohort remains
+October 16, 19, 20, 21 and 22, with review Friday October 23. MU-02 and broker-fill checks
+remain occurrence-gated and open.
+
+The deploy health gate confirms both rebuilt services healthy and every declared service
+present. The final source sweep reports **0/12 backend drift**. Host checks after the health
+settle: **38 GB free, 5.7% iowait**. The frontend is verified by its served bundle, rather than
+counted as a backend source tree. Dangling-image cleanup runs under the same host lock.
+
+The locked deploy completed successfully (exit 0). Cleanup reclaimed 2.456 GB and restored
+40 GB free. The final documentation-only commit records these observations; application
+images remain the source built from `89756b83`.

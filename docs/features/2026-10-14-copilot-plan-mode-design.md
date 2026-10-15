@@ -1,8 +1,9 @@
 # Copilot Plan mode: forecasts with track records, and a textbook playbook
 
-**Status:** 2026-10-14. Slice P1 (backend) is built and committed for independent review; it
-is NOT deployed. P2 (frontend) has not started. The changes made while building are listed
-in §5.
+**Status:** updated 2026-10-15. Slice P1 (backend), including C1–C5 and follow-up fixes, is
+deployed in research-engine from `89756b83`; tracker tiers 444–445 are served. P2 (stock-page
+Game Plan, chart overlays and confirmed alert drafts) has not started. Final validation and
+deployment evidence: `docs/audits/2026-10-15-copilot-plan-final-remediation.md`.
 
 **Asked for (2026-10-14).** The user wants to ask the same copilot:
 - for a prediction for the next few days or the next week;

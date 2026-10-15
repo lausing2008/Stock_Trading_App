@@ -1,5 +1,9 @@
 # Independent re-review: Copilot Plan C1–C5 remediation
 
+**Resolution (2026-10-15):** implemented and deployed in `89756b83`; see
+[final remediation and verification](2026-10-15-copilot-plan-final-remediation.md).
+The findings below are the historical review record.
+
 Reviewed October 15, 2026, against the uncommitted research-engine changes on top of `ebed80d3`. The previous plan implementation is `410a238c`. This review leaves application code, the original independent review, and unrelated price-risk changes untouched. Reviewed source hashes are saved with the evidence because the fixes do not yet have a commit ID.
 
 **Decision: request changes on C2, C3 and C4 before deploying this plan slice.** The original counterexamples now pass the regression tests, and C1/C5 behave as specified for the reviewed cases. Nearby cases still reproduce the same classes of failure in options exclusion, amount handling and forecast grounding. No paid model calls or production access were used.

@@ -1,5 +1,9 @@
 # Independent review: Copilot Plan P1, commit 410a238c
 
+**Resolution (2026-10-15):** implemented and deployed in `89756b83`; see
+[final remediation and verification](2026-10-15-copilot-plan-final-remediation.md).
+The findings below are the historical review record.
+
 Reviewed 2026-10-15. Scope: forecast/playbook backend, its request parsing, grounding,
 deterministic rules, endpoint and evidence storage. This review did not deploy, push, run paid
 model evaluations, or change application code. The Game Plan frontend remains outside this
