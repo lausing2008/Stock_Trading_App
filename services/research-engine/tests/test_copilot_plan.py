@@ -423,3 +423,18 @@ def test_plan_level_drafts_are_free_confirmed_scoped_and_replay_safe(r):
     assert p["saved_once"] and p["owner"] == 404 and p["expired"] == 410
     assert p["replay_conflict"] == 409 and p["changed_plan"] == 409
     assert p["wrong_key"] == 400 and p["stale"] == 400
+
+
+def test_dual_plan_uses_typed_inputs_and_exact_snapshot_with_safe_replay(r):
+    x = r["pl12"]
+    assert x["status"] == "grounded" and x["same_snapshot"] and x["held_stop"]
+    assert x["model"] == "scripted" and x["replay"] and x["calls"] == 1 and x["context_stored"]
+    assert x["changed_replay"] == 409 and x["changed_snapshot"] == 409
+    assert x["invalid_risk"] == 400 and x["quota_after_denials"] == 1
+    assert x["options"] == 400 and x["stale"] == 400
+
+
+def test_dual_plan_retains_rejection_status_and_cannot_propose_actions(r):
+    x = r["pl12"]
+    assert x["fallback_status"] == "rejected" and x["fallback_same_snapshot"]
+    assert x["drafts"] == []

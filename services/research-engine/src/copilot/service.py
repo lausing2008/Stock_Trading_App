@@ -14,6 +14,7 @@ charged to the shared budget — it exists to bound the platform's spend, not th
 from __future__ import annotations
 
 import time
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -53,6 +54,8 @@ class TurnRequest:
     uses_shared_key: bool
     #: market-data with the USER'S credentials, for drafting actions. None = drafts disabled.
     market: object | None = None
+    #: Optional typed Game Plan inputs plus the snapshot being compared. Never model input.
+    plan_context: dict | None = None
 
 
 def _utcnow() -> datetime:
@@ -164,7 +167,10 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
     now = now or _utcnow()
 
     # ── Phase 1: admit and read ───────────────────────────────────────────────
-    fp = St.request_fingerprint(req.symbol, question)
+    binding = question
+    if req.plan_context is not None:
+        binding += "\nGAME_PLAN_CONTEXT:" + json.dumps(req.plan_context, sort_keys=True)
+    fp = St.request_fingerprint(req.symbol, binding)
     with session_factory() as s:
         user_id = St.user_id_for(s, req.username)
         if user_id is None:
@@ -187,10 +193,24 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
                     "message": St.serialise_message(prior), "replayed": True}
         # PLAN MODE (2026-10-14): a forecast / entry / holding question adds the plan engine's
         # lines. The routing and the typed position are parsed by grammar, never by the model.
-        pi = I.parse_position(question)
+        if req.plan_context is not None:
+            context = dict(req.plan_context)
+            expected = context.pop("fingerprint", None)
+            if not expected or set(context) - {"kind", "entry", "shares", "risk", "account", "risk_pct", "stop"}:
+                raise CopilotError(400, "invalid plan comparison context")
+            if I.parse_position(question).unsupported:
+                raise CopilotError(400, "Game Plan comparison supports stock positions only")
+            pi = _typed_plan_intent(**context)
+        else:
+            pi = I.parse_position(question)
         packet = build_packet(s, req.symbol, now=now, plan_request=pi if pi.kind else None)
         if packet is None:
             raise CopilotError(404, f"{req.symbol} is not a tracked symbol")
+        if req.plan_context is not None and packet.fingerprint != expected:
+            raise CopilotError(409, "plan changed; refresh it before requesting an LLM alternative")
+        if req.plan_context is not None and (packet.plan.unsupported or packet.plan.position_refusals
+                or not any(not packet.plan.items[k].stale for k in packet.plan.level_prices)):
+            raise CopilotError(400, "a fresh, supported plan is required for comparison")
         # A failed FIRST turn never returned a conversation id, so its retry arrives without one.
         conv_hint = req.conversation_id
         if existing_user is not None and conv_hint is None:
@@ -245,6 +265,13 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
 
     # ── Phase 2: ask (no session open) ────────────────────────────────────────
     messages = _alternating(hist, exclude_request=req.request_id)
+    if req.plan_context is not None:
+        question += ("\nCompare the typed Game Plan using this exact evidence snapshot. Choose a preferred "
+                     "conditional scenario or explain why waiting is preferable; include invalidation "
+                     "and the strongest alternative. You may agree with the rules-based plan. "
+                     "Use only packet placeholders for levels and intact rule conditions. "
+                     "Distinguish your interpretation from facts. Do not invent levels, forecasts, "
+                     "probabilities, or account facts. Do not propose action drafts.")
     messages.append({"role": "user", "content": L.user_turn(packet.model_view(), question)})
     result: G.GroundingResult | None = None
     reasons: list[str] = []
@@ -325,7 +352,7 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
     # Drafts only on an ACCEPTED answer, bound to the user's current state through market-data
     # (their credentials, no DB session held). A rejected answer proposes nothing.
     drafts, dropped_drafts = [], []
-    if accepted and raw_drafts:
+    if accepted and raw_drafts and req.plan_context is None:
         v = D.validate(raw_drafts, packet=packet, question=question)
         if req.market is None:
             dropped_drafts = v.dropped + [{"kind": d["kind"], "reason": "drafting is not "
@@ -335,6 +362,7 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
             drafts, dropped_drafts = fin.drafts, fin.dropped
     grounding = {
         "drafts": drafts, "dropped_drafts": dropped_drafts,
+        **({"plan_context": req.plan_context} if req.plan_context is not None else {}),
         "packet_version": PACKET_VERSION, "packet_fingerprint": packet.fingerprint,
         "price_as_of": packet.price_as_of, "source_times": packet.source_times(),
         "evidence_refs": refs, "evidence_records": ev_records, "limitations": lims,
@@ -675,17 +703,9 @@ async def screen(req: ScreenRequest, *, session_factory, fetch_screen, llm_call=
 
 # ── Plan view (the Game Plan card): deterministic, no model, no ledger charge ──────────────
 
-def _plan_packet(session_factory, username: str, symbol: str, *, kind: str | None = None,
-              entry: float | None = None, shares: int | None = None,
-              risk: float | None = None, account: float | None = None,
-              risk_pct: float | None = None, stop: float | None = None,
-              now: datetime | None = None) -> dict:
-    """The plan engine's lines for one symbol, as structured JSON.
-
-    The same lines the copilot cites, built by the same code; nothing here calls a model, so it
-    is not counted against the copilot's daily answers or the token budget. The position comes
-    from the query parameters the user typed — never from an account.
-    """
+def _typed_plan_intent(*, kind=None, entry=None, shares=None, risk=None, account=None,
+                       risk_pct=None, stop=None):
+    """One validation contract for deterministic and LLM comparison plans."""
     import math as _m
     for name, v in (("entry", entry), ("risk", risk), ("account", account),
                     ("risk_pct", risk_pct), ("stop", stop)):
@@ -705,6 +725,22 @@ def _plan_packet(session_factory, username: str, symbol: str, *, kind: str | Non
                           account=account, risk_pct=risk_pct, stop=stop)
     if stop is not None and entry is None:
         raise CopilotError(400, "stop needs an entry price")
+    return pi
+
+
+def _plan_packet(session_factory, username: str, symbol: str, *, kind: str | None = None,
+              entry: float | None = None, shares: int | None = None,
+              risk: float | None = None, account: float | None = None,
+              risk_pct: float | None = None, stop: float | None = None,
+              now: datetime | None = None) -> dict:
+    """The plan engine's lines for one symbol, as structured JSON.
+
+    The same lines the copilot cites, built by the same code; nothing here calls a model, so it
+    is not counted against the copilot's daily answers or the token budget. The position comes
+    from the query parameters the user typed — never from an account.
+    """
+    pi = _typed_plan_intent(kind=kind, entry=entry, shares=shares, risk=risk, account=account,
+                            risk_pct=risk_pct, stop=stop)
     now = now or _utcnow()
     with session_factory() as s:
         if St.user_id_for(s, username) is None:

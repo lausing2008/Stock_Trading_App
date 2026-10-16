@@ -35,6 +35,14 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'DUAL-GAME-PLAN', tier: 450, severity: 'feature', defaultStatus: 'done',
+    title: 'Game Plan compares a rules-based plan with an optional LLM alternative',
+    file: 'docs/features/2026-10-16-dual-game-plan.md', effort: 'M',
+    impact: 'Users want a second scenario alongside the deterministic rules, with clear model provenance and consistent inputs.',
+    what: 'Two labeled panels share the same snapshot and typed position. The configured LLM selects a conditional scenario on explicit request, within the existing grounded copilot and budget limits.',
+    fix: 'Changed snapshots fail before billing or admission; retries bind the typed inputs and reuse the request id. Actual model names and rejected fallbacks are explicit. Stale or refused positions cannot request a comparison. Model output creates no action drafts, and agreement is not independent confirmation.',
+  },
+  {
     id: 'COPILOT-PLAN-CARD-P2', tier: 446, severity: 'feature', defaultStatus: 'done',
     title: 'Game Plan uses code-calculated rules, chart levels and confirmed alert drafts',
     file: 'docs/features/2026-10-15-completable-followups.md', effort: 'M',
@@ -21637,6 +21645,7 @@ const ITEMS: Item[] = [
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = {
+  450: 'Tier 450 — Rules-based and LLM Game Plans (2026-10-16)',
   449: 'Tier 449 — Chronological calibration research (2026-10-15)',
   448: 'Tier 448 — General company-event shadow coverage (2026-10-15)',
   447: 'Tier 447 — Price-risk quiet hours (2026-10-15)',
@@ -22084,7 +22093,7 @@ const TIER_LABEL: Record<Tier, string> = {
 };
 
 const TIER_COLOR: Record<Tier, string> = {
-  449: '#fb923c', 448: '#22d3ee', 447: '#818cf8', 446: '#a78bfa',
+  450: '#c084fc', 449: '#fb923c', 448: '#22d3ee', 447: '#818cf8', 446: '#a78bfa',
   445: '#38bdf8',
   444: '#a78bfa',
   1: '#f87171',

@@ -3,6 +3,7 @@ import { api } from '@/lib/api';
 import { draftPlanLevel, getStockPlan, newRequestId, type CopilotMessage, type PlanInputs,
   type PlanItem, type PlanLevel, type StockPlan } from '@/lib/copilot';
 import { DraftCard } from './CopilotPanel';
+import LLMAlternativePlan from './LLMAlternativePlan';
 
 export interface PlanChartLine { price: number; label: string; role: string }
 const fieldStyle = { width: '100%', padding: '6px', background: '#0f172a', color: '#e2e8f0', border: '1px solid #334155', borderRadius: 5 };
@@ -97,7 +98,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
   }
   return <section aria-label="Game Plan" style={{ padding: 14, background: '#0f172a', border: '1px solid #334155', borderRadius: 10, color: '#cbd5e1', fontSize: 12 }}>
     <h3 style={{ margin: '0 0 6px', color: '#c4b5fd' }}>Game Plan</h3>
-    <p>Code-calculated levels and conditional rules. No model call or AI key required.</p>
+    <p>Compare a rules-based plan with an optional LLM alternative. The rules-based plan needs no AI key.</p>
     <label>Plan for <select aria-label="Plan for" disabled={busy || actionBusy} value={mode} onChange={e => { reset(); setMode(e.target.value as typeof mode); }} style={fieldStyle}>
       <option value="entry">A potential purchase</option><option value="holding">A position I hold</option><option value="forecast">Calls and history</option>
     </select></label>
@@ -111,6 +112,9 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
     <button style={buttonStyle} disabled={busy || actionBusy} onClick={load}>{busy ? 'Loading plan…' : data ? 'Refresh plan' : 'Build plan'}</button>
     {error && <p role="alert" style={{ color: '#fca5a5' }}>{error}</p>}
     {data && <>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))', gap: 12, marginTop: 12 }}>
+      <section aria-label="Rules-based plan" style={{ minWidth: 0 }}>
+      <h4>Rules-based plan</h4>
       <p>Prices as of {data.plan.price_as_of?.slice(0, 16).replace('T', ' ') ?? 'unknown'} UTC · {data.plan.currency ?? 'currency unknown'}</p>
       <p>{data.plan.parameters.note}</p>
       {data.plan.position_refusals.map((why, i) => <p key={i} role="alert">{why}</p>)}
@@ -137,6 +141,11 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
         {draft?.drafts?.map(d => <DraftCard key={d.id} messageId={draft.id} draft={d} />)}
         {mode !== 'forecast' && <button style={{ ...buttonStyle, marginTop: 10 }} disabled={actionBusy || saved || !data.plan.levels.some(x => x.state === 'OK' && x.role === 'stop')} onClick={saveBoard}>{saved ? 'Saved to Trade Board' : 'Save plan to Trade Board'}</button>}
       </>}
+      </section>
+      <LLMAlternativePlan key={data.packet_fingerprint} symbol={symbol} inputs={inputs}
+        fingerprint={data.packet_fingerprint} unavailable={data.plan.unsupported || !!data.plan.position_refusals.length ||
+          !data.plan.levels.some(x => x.state === 'OK')} />
+      </div>
     </>}
   </section>;
 }

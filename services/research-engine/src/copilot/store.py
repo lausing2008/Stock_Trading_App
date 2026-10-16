@@ -228,6 +228,8 @@ def serialise_message(m: CopilotMessage) -> dict:
         "status": m.status, "created_at": m.created_at.isoformat() if m.created_at else None,
         "evidence_refs": refs, "limitations": g.get("limitations", []),
         "price_as_of": g.get("price_as_of"), "source_times": g.get("source_times", {}),
+        "packet_fingerprint": g.get("packet_fingerprint"),
+        **({"plan_context": g["plan_context"]} if "plan_context" in g else {}),
         "rejection_reasons": g.get("rejection_reasons", []), "model": m.model,
         # The idempotency key stays server-side; the client confirms by draft id.
         "drafts": [{**{k: v for k, v in d.items() if k != "idempotency_key"},

@@ -40,6 +40,7 @@ export interface CopilotMessage {
   price_as_of?: string | null;
   source_times?: { price?: string | null; signal?: string | null; report_generated?: string | null; newest_headline?: string | null };
   rejection_reasons?: string[]; model?: string | null;
+  packet_fingerprint?: string | null;
   /** Actions proposed for the user to review and save. Nothing is saved until they confirm. */
   drafts?: CopilotDraft[];
   dropped_drafts?: { kind: string; reason: string }[];
@@ -119,7 +120,8 @@ export function newRequestId(): string {
 }
 
 export async function askCopilot(
-  args: { symbol: string; question: string; requestId: string; conversationId?: number | null },
+  args: { symbol: string; question: string; requestId: string; conversationId?: number | null;
+    planContext?: PlanInputs & { fingerprint: string } },
   signal?: AbortSignal,
 ): Promise<{ conversation_id: number; message: CopilotMessage; replayed: boolean }> {
   const s = loadSettings();
@@ -131,6 +133,7 @@ export async function askCopilot(
       conversation_id: args.conversationId ?? null, provider,
       model: provider === 'claude' ? s.claudeModel : s.deepseekModel,
       api_key: provider === 'claude' ? s.claudeApiKey : s.deepseekApiKey,
+      ...(args.planContext ? { plan_context: args.planContext } : {}),
     }),
   }, signal);
 }

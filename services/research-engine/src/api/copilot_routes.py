@@ -21,6 +21,17 @@ log = get_logger("research-engine.copilot")
 router = APIRouter(prefix="/copilot", tags=["copilot"])
 
 
+class PlanComparisonContext(BaseModel):
+    fingerprint: str = Field(..., min_length=24, max_length=64)
+    kind: str = Field(..., max_length=16)
+    entry: float | None = None
+    shares: int | None = None
+    risk: float | None = None
+    account: float | None = None
+    risk_pct: float | None = None
+    stop: float | None = None
+
+
 class CopilotChatRequest(BaseModel):
     symbol: str
     question: str = Field(..., max_length=C.MAX_QUESTION_CHARS)
@@ -29,6 +40,7 @@ class CopilotChatRequest(BaseModel):
     provider: str = "claude"
     model: str = ""
     api_key: str = ""     # optional — falls back to the admin shared key, as /ai/chat does
+    plan_context: PlanComparisonContext | None = None
 
 
 def _usage_logger(**kw):
@@ -61,7 +73,8 @@ async def copilot_chat(req: CopilotChatRequest, username: str = Depends(get_curr
         username=username, symbol=sym, question=req.question, request_id=req.request_id,
         conversation_id=req.conversation_id, provider=req.provider,
         model=req.model.strip() or _admin_model(req.provider), api_key=api_key,
-        uses_shared_key=not own_key, market=_market_client(authorization))
+        uses_shared_key=not own_key, market=_market_client(authorization),
+        plan_context=req.plan_context.model_dump() if req.plan_context is not None else None)
     try:
         return await C.answer(turn, session_factory=SessionLocal, budget=llm_budget,
                               usage_logger=_usage_logger)

@@ -639,7 +639,59 @@ def pl11_card_and_drafts():
     out["stale"] = status(request_id="card-stale-0001", fingerprint=old["packet_fingerprint"], now=late)
     R["pl11"] = out
 
-for fn in (pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
+def pl12_dual_plan():
+    reset()
+    inputs = dict(kind="holding", entry=95.0, shares=10, stop=97.0, risk=400.0)
+    view = C.plan_view(Session, "alice", SYM, now=NOW, **inputs)
+    context = {**inputs, "fingerprint": view["packet_fingerprint"]}
+    model = ScriptedModel('<answer>One reading favors protecting the held position: {{rule.h1}} {{rule.h6}}</answer>')
+    req = turn("Compare alternative scenarios", "dual-plan-0001")
+    req.plan_context = context
+    first = run(C.answer(req, session_factory=Session, llm_call=model, now=NOW))
+    replay = run(C.answer(req, session_factory=Session, llm_call=model, now=NOW))
+    out = dict(status=first["message"]["status"], same_snapshot=first["message"]["packet_fingerprint"] == view["packet_fingerprint"],
+               held_stop="$97.00" in first["message"]["content"], context_stored=first["message"]["plan_context"] == context, model=first["message"]["model"],
+               replay=replay["replayed"], calls=len(model.calls))
+    def denied(rid, ctx):
+        bad = turn("Compare alternative scenarios", rid); bad.plan_context = ctx
+        try:
+            run(C.answer(bad, session_factory=Session, llm_call=model, now=NOW))
+            return None
+        except C.CopilotError as exc: return exc.status
+    out["changed_replay"] = denied(req.request_id, {**context, "stop": 96.0})
+    out["changed_snapshot"] = denied("dual-plan-0002", {**context, "fingerprint": "0"*24})
+    out["invalid_risk"] = denied("dual-plan-0003", {**context, "risk": -1.0})
+    derivative = turn("I bought call options at 5, what now?", "dual-plan-options")
+    derivative.plan_context = context
+    try:
+        run(C.answer(derivative, session_factory=Session, llm_call=model, now=NOW))
+        out["options"] = None
+    except C.CopilotError as exc: out["options"] = exc.status
+    later = NOW + timedelta(days=20)
+    old = C.plan_view(Session, "alice", SYM, now=later, **inputs)
+    stale_req = turn("Compare alternative scenarios", "dual-plan-stale")
+    stale_req.plan_context = {**inputs, "fingerprint": old["packet_fingerprint"]}
+    try:
+        run(C.answer(stale_req, session_factory=Session, llm_call=model, now=later))
+        out["stale"] = None
+    except C.CopilotError as exc: out["stale"] = exc.status
+    with Session() as ss: out["quota_after_denials"] = St.answers_today(ss, 1, NOW)
+    bad = turn("Compare alternative scenarios", "dual-plan-0004"); bad.plan_context = context
+    rejected = run(C.answer(bad, session_factory=Session, llm_call=ScriptedModel(PREDICT,PREDICT), now=NOW))
+    out["fallback_status"] = rejected["message"]["status"]
+    out["fallback_same_snapshot"] = rejected["message"]["packet_fingerprint"] == view["packet_fingerprint"]
+    class NoActions:
+        async def alerts(self): raise AssertionError("comparison reached alert settings")
+        async def create_alert(self, *args): raise AssertionError("comparison wrote an alert")
+    draft_req = turn("Compare alternative scenarios", "dual-plan-0005")
+    draft_req.plan_context = context; draft_req.market = NoActions()
+    attempt = ScriptedModel('<answer>One reading favors waiting: {{rule.h1}}</answer><draft kind="price_alert" condition="below" threshold="{{price.close}}"/>')
+    ignored = run(C.answer(draft_req, session_factory=Session, llm_call=attempt, now=NOW))
+    out["drafts"] = ignored["message"]["drafts"]
+    R["pl12"] = out
+
+
+for fn in (pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
            pl4_staleness, pl5_routing_and_refusals, pl6_turns, pl7_plan_view):
     fn()
 R["_meta"] = {"server": ENGINE.dialect.name}
