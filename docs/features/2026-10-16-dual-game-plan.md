@@ -1,5 +1,7 @@
 # Two Game Plan perspectives — 2026-10-16
 
+**Status: implemented and validated locally, not pushed or deployed.** Implementation commit: `3a85df69`. GitHub returned HTTP 403 on two attempts to push `prod`; a read-only remote check confirmed it remained at `f8c21a79`. The deployment was not started. Tracker 450 remains in progress until publication and production verification. Repository write access must be restored, then push `prod` and deploy research-engine plus frontend under the host lock.
+
 Tracker 450 adds two labeled panels to the stock-page Game Plan card:
 
 - **Rules-based plan:** the existing deterministic rules, numeric levels, sources, daily-chart overlays, Board snapshot and explicitly confirmed alert drafts. No AI key, model call or copilot quota is required to build it.
@@ -21,4 +23,4 @@ The request identity binds the full typed context and fingerprint as well as que
 
 Behavioral checks cover the actual packet, service, quota, stored messages and grounding on SQLite and PostgreSQL with a scripted provider boundary. They exercise typed held-stop inputs, fingerprint matching, replay without another call, conflicts on changed inputs, snapshot changes without admission, invalid inputs, stale and derivative requests, rejected predictions and ignored action tags. UI checks cover explicit generation, provider/stale gating, actual model labels, fallback labels, mismatch refusal, retry identity and late results after cancellation/unmount. Transport tests verify structured context reaches chat while ordinary requests remain unchanged.
 
-Validation passed: research-engine 696 / 8 skipped; frontend 608 and TypeScript; PostgreSQL plan probe 75. After the final context-persistence refinement, all 120 copilot tests and the 75 PostgreSQL plan tests passed again; the two transport tests and final TypeScript check also passed. Production verification follows deployment. No paid provider evaluation is run as part of this change, so real-model scenario quality remains unmeasured; this release establishes the comparison flow and grounding contract.
+Validation passed: research-engine 696 / 8 skipped; frontend 608 and TypeScript; PostgreSQL plan probe 75. After the final context-persistence refinement, all 120 copilot tests and the 75 PostgreSQL plan tests passed again; the two transport tests and final TypeScript check also passed. Production verification is blocked on publishing; see the status above. No paid provider evaluation is run as part of this change, so real-model scenario quality remains unmeasured; this release establishes the comparison flow and grounding contract.
