@@ -1,3 +1,4 @@
+import CalibrationCandidateCard from '@/components/CalibrationCandidateCard';
 /**
  * Signal Accuracy Tracker page (/signal-accuracy) — measures how often the
  * AI signal engine's BUY and SELL calls predicted the correct direction.
@@ -1864,6 +1865,8 @@ export default function SignalAccuracyPage() {
           })()}
         </div>
       )}
+
+      <CalibrationCandidateCard />
 
       {/* ML Weight Validation */}
   {mlWeight && mlWeight.curve.length > 0 && (

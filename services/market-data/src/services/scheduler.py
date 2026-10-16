@@ -2577,6 +2577,34 @@ def _send_early_earnings_stage(session, sym, phase, headline, subject, body_text
                      symbol=sym, phase=phase, user=u_obj.username)
 
 
+def run_company_event_watches() -> None:
+    """General company headlines, evidence and per-user receipts. Always shadow; no mail."""
+    import uuid as _uuid
+    from .company_impact_watch import process_recent
+    started = time.monotonic()
+    token = _uuid.uuid4().hex
+    key = 'stockai:lock:company_event_watches'
+    rc = None
+    try:
+        rc = _get_redis()
+        if not rc.set(key, token, nx=True, ex=600):
+            return
+        with SessionLocal() as session:
+            result = process_recent(session)
+            session.commit()
+        log.info('company_events.shadow', **result)
+        _record_job_status('run_company_event_watches', 'ok', time.monotonic()-started)
+    except Exception as exc:
+        log.error('company_events.failed', error=str(exc))
+        _record_job_status('run_company_event_watches', 'error', time.monotonic()-started, str(exc))
+    finally:
+        if rc is not None:
+            try:
+                rc.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", 1, key, token)
+            except Exception:
+                pass
+
+
 def run_corporate_action_refresh() -> None:
     """Extend corporate-action coverage to today for the symbols people actually follow.
 
@@ -14837,6 +14865,12 @@ def start_scheduler() -> None:
     # Corporate-action coverage refresh, 19:50 ET weekdays — AFTER the close and BEFORE
     # price-risk detection at 20:10, so the evening's detections read coverage extended to
     # today rather than to whenever the last sweep happened to run.
+    _scheduler.add_job(
+        run_company_event_watches, "interval", minutes=3,
+        id="company_event_watches", replace_existing=True,
+        max_instances=1, coalesce=True, misfire_grace_time=180,
+    )
+
     _scheduler.add_job(
         run_corporate_action_refresh,
         CronTrigger(hour=19, minute=50, day_of_week="mon-fri", timezone="America/New_York"),

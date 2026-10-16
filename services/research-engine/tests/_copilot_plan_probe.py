@@ -585,7 +585,61 @@ def pl10_review_residuals():
     R["pl10"] = out
 
 
-for fn in (pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
+
+def pl11_card_and_drafts():
+    reset()
+    out = {}
+    view = C.plan_view(Session, "alice", SYM, kind="entry", include_bars=True, now=NOW)
+    out["numeric"] = {x["key"]: x["price"] for x in view["plan"]["levels"]}
+    out["all_evidence"] = all(e in view["evidence"] for items in view["plan"]["groups"].values()
+                              for item in items for e in item["evidence_ids"])
+    class Market:
+        def __init__(self): self.rows, self.keys = [], {}
+        async def alerts(self): return list(self.rows)
+        async def create_alert(self, body):
+            key = body["idempotency_key"]
+            if key not in self.keys:
+                self.keys[key] = {"id": len(self.keys) + 1, **body}
+                self.rows.append(self.keys[key])
+            return self.keys[key]
+    market = Market()
+    args = dict(level_key="level.pullback_stop", fingerprint=view["packet_fingerprint"],
+                request_id="card-draft-0001", market=market, kind="entry", now=NOW)
+    first = run(C.plan_level_draft(Session, "alice", SYM, **args))
+    replay = run(C.plan_level_draft(Session, "alice", SYM, **args))
+    out["draft"] = first["message"]["drafts"][0]
+    out["no_write_before_confirm"] = len(market.rows) == 0
+    out["replayed"] = replay["replayed"] and first["message"]["id"] == replay["message"]["id"]
+    with Session() as ss: out["answer_quota"] = St.answers_today(ss, 1, NOW)
+    def status(**overrides):
+        try:
+            run(C.plan_level_draft(Session, "alice", SYM, **{**args, **overrides}))
+            return None
+        except C.CopilotError as exc: return exc.status
+    out["replay_conflict"] = status(level_key="level.high20")
+    out["changed_plan"] = status(request_id="card-draft-0002", fingerprint="0" * 24)
+    out["wrong_key"] = status(request_id="card-draft-0003", level_key="rule.e1")
+    confirm = dict(message_id=first["message"]["id"], draft_id=out["draft"]["id"], market=market,
+                   now=NOW, readiness=lambda: ("ready", "probe schema exists"))
+    run(C.confirm_draft(Session, "alice", **confirm))
+    run(C.confirm_draft(Session, "alice", **confirm))
+    out["saved_once"] = len(market.rows) == 1
+    try:
+        run(C.confirm_draft(Session, "nobody", **confirm)); out["owner"] = None
+    except C.CopilotError as exc: out["owner"] = exc.status
+    exp = run(C.plan_level_draft(Session, "alice", SYM, **{**args, "request_id": "card-expire-0001"}))
+    try:
+        run(C.confirm_draft(Session, "alice", message_id=exp["message"]["id"],
+            draft_id=exp["message"]["drafts"][0]["id"], market=market,
+            now=NOW+timedelta(minutes=20), readiness=lambda: ("ready", "probe schema exists")))
+        out["expired"] = None
+    except C.CopilotError as exc: out["expired"] = exc.status
+    late = NOW + timedelta(days=10)
+    old = C.plan_view(Session, "alice", SYM, kind="entry", now=late)
+    out["stale"] = status(request_id="card-stale-0001", fingerprint=old["packet_fingerprint"], now=late)
+    R["pl11"] = out
+
+for fn in (pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
            pl4_staleness, pl5_routing_and_refusals, pl6_turns, pl7_plan_view):
     fn()
 R["_meta"] = {"server": ENGINE.dialect.name}

@@ -611,5 +611,33 @@ subj, text_, html_, summ = prw.render_digest(themes)
 check('F5 a theme-only digest includes the unverified-data note',
       'not verified' in text_ and 'unlikely to be wrong' not in text_, text_)
 
+# Quiet hours defer the real outbox, then release it when the local window ends.
+from src.services.risk_delivery_schedule import PREFIX as SCHEDULE_PREFIX
+class QuietRedis(Redis):
+    def __init__(self, broken=False): super().__init__(True); self.broken = broken
+    def get(self, key):
+        if key.startswith(SCHEDULE_PREFIX):
+            if self.broken: raise RuntimeError('preference store unavailable')
+            return json.dumps({'enabled': True, 'timezone': 'UTC', 'start': '20:00', 'end': '23:00'}).encode()
+        return super().get(key)
+for broken in (False, True):
+    build({'NVDA': [100, 100, 100, 100, 100, 94]}, opt_in=(ALERT_TYPE_EMAIL,))
+    run(live=True)
+    with Session(engine, autoflush=False) as ss:
+        for row in ss.scalars(select(models.NotificationOutbox)): row.available_at = NOW.replace(tzinfo=None)
+        ss.commit()
+    spy = Spy()
+    with Session(engine, autoflush=False) as ss:
+        result = prw.drain_outbox(ss, QuietRedis(broken), owner='quiet-probe', send=spy, now=SEND_AT)
+        ss.commit()
+    check('quiet hours / unreadable preferences defer without a send',
+          spy.calls == 0 and result['deferred'] == 1 and outbox_rows()[0].state == 'pending', result)
+    if not broken:
+        with Session(engine, autoflush=False) as ss:
+            result = prw.drain_outbox(ss, QuietRedis(), owner='quiet-probe', send=spy,
+                                     now=SEND_AT + timedelta(hours=2))
+            ss.commit()
+        check('quiet hours resume an unexpired email after the window', spy.calls == 1 and result['accepted'] == 1, result)
+
 print('FAILURES:', failures)
 sys.exit(1 if failures else 0)

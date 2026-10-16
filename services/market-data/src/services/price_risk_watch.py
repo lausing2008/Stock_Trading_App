@@ -824,7 +824,7 @@ def drain_outbox(session, redis_client, *, owner: str, send, limit: int = 20,
     if not delivery_enabled(redis_client):
         return {"paused": True, "reason": "price-risk delivery is disabled"}
 
-    def _subscribed(row) -> bool:
+    def _subscribed(row) -> bool | None:
         if not delivery_enabled(redis_client):
             return False
         user = session.get(User, row.user_id) if row.user_id else None
@@ -832,6 +832,11 @@ def drain_outbox(session, redis_client, *, owner: str, send, limit: int = 20,
             return False
         if not may_send(session, user, ALERT_TYPE_EMAIL):
             return False
+        from .risk_delivery_schedule import load_schedule, is_quiet
+        # None makes the durable outbox DEFER, rather than permanently suppressing this row.
+        # Read failures also defer through its existing exception/unknown preference policy.
+        if is_quiet(load_schedule(redis_client, user.id), now or datetime.now(timezone.utc)):
+            return None
         return True
 
     return _eo.deliver_batch(session, owner=owner, send=send, is_subscribed=_subscribed,

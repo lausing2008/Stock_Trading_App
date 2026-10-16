@@ -359,6 +359,8 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/features/fed-watch.md`** — T405: market-implied FOMC hike/cut odds from CBOT 30-day Fed Funds futures (the CME method). FOMC was only a BLACKOUT GATE before. The Fed moves in 25bp steps, so -12bp = 50% of a 25bp cut, not a 12bp cut [FOMC, rates, macro]
 - **`docs/features/learning-section.md`** — the Learning nav group is advanced-tier/admin only, enforced by `isGroupVisible()` in `_app.tsx` AND a page-level guard on all 7 pages; plus the QQQ-LEAPS and squeeze playbooks (tiers 353-354)
 
+- **`docs/features/2026-10-15-completable-followups.md`** — Tracker 446–449: deterministic Game Plan P2, risk quiet hours, company-event shadow coverage and frozen-input calibration research; evidence gates remain open.
+
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
 - **`docs/features/2026-10-13-corporate-action-freshness-cadence.md`** — measured 2 calls/0.58s per symbol; daily refresh of 157 followed symbols = 314 calls. Refreshing fixes FRESHNESS only: yfinance is `response_only`, so the ceiling is provisional, never verified [coverage, cadence]

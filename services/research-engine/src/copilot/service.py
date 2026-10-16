@@ -675,7 +675,7 @@ async def screen(req: ScreenRequest, *, session_factory, fetch_screen, llm_call=
 
 # ── Plan view (the Game Plan card): deterministic, no model, no ledger charge ──────────────
 
-def plan_view(session_factory, username: str, symbol: str, *, kind: str | None = None,
+def _plan_packet(session_factory, username: str, symbol: str, *, kind: str | None = None,
               entry: float | None = None, shares: int | None = None,
               risk: float | None = None, account: float | None = None,
               risk_pct: float | None = None, stop: float | None = None,
@@ -712,15 +712,103 @@ def plan_view(session_factory, username: str, symbol: str, *, kind: str | None =
         packet = build_packet(s, symbol, now=now, plan_request=pi)
     if packet is None:
         raise CopilotError(404, f"{symbol} is not a tracked symbol")
+    return packet
+
+
+def plan_view(session_factory, username: str, symbol: str, *, include_bars: bool = False, **kwargs) -> dict:
+    packet = _plan_packet(session_factory, username, symbol, **kwargs)
     plan = packet.plan
     records = packet.book.records
     used = {e for it in plan.items.values() for e in it.evidence_ids}
     # Calculation, signal, outcome and position records in full; the price bars they cite are
     # counted (a year of bars per level would bloat every card load) and listed by id inside
     # each calculation record.
-    evidence = {e: records[e] for e in sorted(used) if e in records and not e.startswith("price:")}
+    evidence = {e: records[e] for e in sorted(used) if e in records and (include_bars or not e.startswith("price:"))}
     return {"symbol": symbol, "plan": plan.to_json(), "packet_version": PACKET_VERSION,
             "packet_fingerprint": packet.fingerprint, "evidence": evidence,
             "price_bar_records": sum(1 for e in used if e.startswith("price:")),
             "limitations": [m for m in packet.missing() if m["field"].startswith("plan_")
                             or m["field"] in ("price", "earnings")]}
+
+
+async def plan_level_draft(session_factory, username: str, symbol: str, *, level_key: str,
+                           fingerprint: str, request_id: str, market, now=None, **position) -> dict:
+    """Freeze a user-requested level as an ordinary confirmed draft. No model or alert write."""
+    from sqlalchemy import select, func
+    from db.models import User
+    now = now or _utcnow()
+    payload = dict(symbol=symbol, level_key=level_key, fingerprint=fingerprint, position=position)
+
+    def replay(session, uid):
+        previous = St.replay(session, uid, request_id)
+        if previous is None:
+            return None
+        if (previous.grounding or {}).get("plan_request") != payload:
+            raise CopilotError(409, "request id belongs to a different draft; start a new request")
+        return {"message": St.serialise_message(previous), "replayed": True}
+
+    with session_factory() as s:
+        uid = St.user_id_for(s, username)
+        if uid is None:
+            raise CopilotError(403, "user not found or inactive")
+        old = replay(s, uid)
+        if old:
+            return old
+    packet = _plan_packet(session_factory, username, symbol, now=now, **position)
+    if packet.fingerprint != fingerprint:
+        raise CopilotError(409, "plan changed; reload it before drafting this level")
+    level = packet.plan.level_prices.get(level_key)
+    item = packet.plan.items.get(level_key)
+    if packet.plan.unsupported or level is None or item is None or item.stale:
+        raise CopilotError(400, "this level is unavailable or stale; no alert was drafted")
+    if market is None:
+        raise CopilotError(400, "drafting requires your authenticated alert connection")
+    condition = "below" if level["role"] in ("stop", "support") else "above"
+    value = level["price"]
+    question = f"Alert me when {symbol} is {condition} {value:.12g}"
+    validated = D.validate([{"kind": "price_alert", "condition": condition,
+                             "threshold": f"{value:.12g}"}], packet=packet, question=question)
+    if not validated.drafts:
+        raise CopilotError(400, "this level could not be drafted")
+    draft = validated.drafts[0]
+    draft["threshold_source"] = {"kind": "packet", "key": level_key,
+                                 "display": item.display, "state": "OK"}
+    draft["rule_notes"].append("This fixed price comes from the plan. It does not follow recalculated levels.")
+    draft["rule_notes"].append("An intraday crossing is not proof that a daily-close exit condition occurred.")
+    final = await D.finalise(market, validated, now)
+    if not final.drafts:
+        raise CopilotError(409, "could not preview your alert settings; no alert was drafted")
+    refs, evidence = _evidence_refs_compact(packet, [level_key])
+    with session_factory() as s:
+        user = s.execute(select(User).where(User.id == uid).with_for_update()).scalars().first()
+        if user is None or not user.is_active:
+            raise CopilotError(403, "user not found or inactive")
+        old = replay(s, uid)
+        if old:
+            return old
+        count = s.execute(select(func.count(CopilotMessage.id)).where(
+            CopilotMessage.user_id == uid, CopilotMessage.model == "deterministic-plan",
+            CopilotMessage.created_at >= now.replace(hour=0, minute=0, second=0, microsecond=0))).scalar()
+        if count >= St.daily_answer_limit():
+            raise CopilotError(429, "daily plan-draft limit reached")
+        conv = St.open_conversation(s, uid, packet.subject_key, f"{symbol} plan alert drafts", None)
+        s.add(CopilotMessage(conversation_id=conv.id, user_id=uid, role="user", content=question,
+                             request_id=request_id, status="answered", created_at=now,
+                             request_fingerprint=St.request_fingerprint(symbol, question)))
+        msg = CopilotMessage(conversation_id=conv.id, user_id=uid, role="assistant",
+            content=f"Review the fixed {level['label']} alert below. Nothing is saved until you confirm.",
+            request_id=request_id, status="grounded", model="deterministic-plan", created_at=now,
+            grounding={"drafts": final.drafts, "plan_request": payload, "evidence_refs": refs,
+                       "evidence_records": evidence, "packet_version": PACKET_VERSION,
+                       "packet_fingerprint": packet.fingerprint, "price_as_of": packet.price_as_of,
+                       "limitations": ["This observes intraday quotes; it does not evaluate a daily close."]})
+        s.add(msg)
+        try:
+            s.commit()
+        except IntegrityError:
+            s.rollback()
+            old = replay(s, uid)
+            if old:
+                return old
+            raise CopilotError(409, "a draft request is already in progress")
+        return {"message": St.serialise_message(msg), "replayed": False}

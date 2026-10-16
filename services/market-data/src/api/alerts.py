@@ -21,6 +21,37 @@ router = APIRouter(prefix="/alerts", tags=["alerts"])
 
 _SYMBOL_RE = re.compile(r'^[A-Z0-9.\^\-]{1,20}$')
 
+
+@router.get("/risk-delivery")
+def risk_delivery_preferences(user=Depends(get_current_user)):
+    from common.redis_client import get_redis
+    from ..services.risk_delivery_schedule import load_schedule
+    try:
+        return load_schedule(get_redis(), user.id)
+    except Exception:
+        raise HTTPException(503, "Quiet-hour preferences are unavailable; delivery will defer")
+
+
+class RiskDeliverySchedule(BaseModel):
+    enabled: bool
+    timezone: str = Field(..., max_length=80)
+    start: str = Field(..., max_length=5)
+    end: str = Field(..., max_length=5)
+
+
+@router.put("/risk-delivery")
+def update_risk_delivery_preferences(body: RiskDeliverySchedule, user=Depends(get_current_user)):
+    from common.redis_client import get_redis
+    from ..services.risk_delivery_schedule import save_schedule, validate_schedule
+    try:
+        values = validate_schedule(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    try:
+        return save_schedule(get_redis(), user.id, values)
+    except Exception:
+        raise HTTPException(503, "Quiet-hour preferences could not be saved")
+
 # T230-ALERTING-COMPOUND-CONDITIONS
 _COMPOUND_METRICS = {"volume_ratio", "rsi", "signal"}
 _COMPOUND_OPS = {"gte", "lte", "eq"}

@@ -345,6 +345,6 @@ account size; percentage stops are not treated as absolute prices. Model price p
 are refused even after unrelated conditional or negative phrases; code-rendered rule keys
 provide the conditions. Targets below entry are loss reduction, not profit-taking.
 
-P2 (the stock-page Game Plan card, chart overlays and confirmed alert drafts) remains future
-work. The October 23 price-risk review, MU-02 and broker-fill evidence remain separate open
+P2 (the stock-page Game Plan card, chart overlays and confirmed alert drafts) is implemented
+in packet v6; see `docs/features/2026-10-15-completable-followups.md` for validation and release status. The October 23 price-risk review, MU-02 and broker-fill evidence remain separate open
 checks. No alert enrollment or delivery setting changes are part of this release.

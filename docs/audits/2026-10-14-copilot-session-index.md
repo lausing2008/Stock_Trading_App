@@ -10,6 +10,8 @@ commit and decision. The details live in the linked files.
 October 15 continuation: [Plan P1 final remediation and deployment](2026-10-15-copilot-plan-final-remediation.md)
 records C1–C5 and the follow-up fixes, packet v5, tracker 444–445, validation and open P2 work.
 
+The [October 15 follow-up release](../features/2026-10-15-completable-followups.md) implements P2 with packet v6, chart levels and confirmed alert drafts (446), plus quiet hours, company-event shadow coverage and calibration research (447–449). Older "not deployed" sections below describe the original checkpoints; consult these release records for current status.
+
 | Capability | Where the user sees it | Tracker |
 |---|---|---|
 | Evidence-linked copilot: server-built evidence, figures inserted by code, citations, data age, limitations | Stock page, "Ask the copilot" | 437 |

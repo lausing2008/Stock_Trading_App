@@ -160,6 +160,7 @@ class Plan:
     #: The question is about an options or short position (review C2). No stock entry, sizing
     #: or holding rule is built — the calls and records may still be shown.
     unsupported: bool = False
+    level_prices: dict[str, dict] = dc_field(default_factory=dict)
 
     def add(self, item: Item) -> None:
         self.items[item.key] = item
@@ -177,6 +178,9 @@ class Plan:
                              {k: getattr(self.position, k) for k in
                               ("entry", "shares", "risk_amount", "account", "risk_pct", "stop")}),
                 "unsupported": self.unsupported,
+                "levels": [{**v, "key": k, "state": "STALE" if self.items[k].stale else "OK",
+                            "evidence_ids": list(self.items[k].evidence_ids)}
+                           for k, v in self.level_prices.items()],
                 "position_refusals": list(self.position_refusals),
                 "groups": groups, "unavailable": dict(self.unavailable),
                 "parameters": PARAMETERS}
@@ -361,6 +365,11 @@ class _Ctx:
                            evidence_ids=tuple(dict.fromkeys(ev))))
 
 
+    def level(self, key, price, label, role):
+        if math.isfinite(price) and price > 0:
+            self.plan.level_prices[key] = {"price": price, "label": label, "role": role}
+
+
 def _calc(ctx: _Ctx, name: str, inputs: list[str], result, method: str, period: str) -> str:
     return ctx.book.add(Evidence(
         evidence_id=f"plan:{name}:{period}", source="copilot plan calculation",
@@ -460,6 +469,8 @@ def _level_items(ctx: _Ctx, lv: Levels, bars: list, record_bar, ids: dict) -> No
             ids["low"])
     ctx.add("level.high20", m(lv.high20), "highest high of the 20 stored daily bars before the "
             "latest one (a structural resistance level)", "levels", ids["high"])
+    ctx.level("level.low20", lv.low20, "20-bar low", "support")
+    ctx.level("level.high20", lv.high20, "20-bar high", "resistance")
     if lv.sma50 is not None:
         sm_ids = [record_bar(ctx.book, b) for b in bars[:50 + SLOPE_LAG_BARS]]
         sid = _calc(ctx, "sma50", sm_ids, [lv.sma50, lv.sma50_prev],
@@ -481,6 +492,8 @@ def _level_items(ctx: _Ctx, lv: Levels, bars: list, record_bar, ids: dict) -> No
                 "(about a year)", "levels", ids["year"])
         ctx.add("level.low252", m(lv.low252), "lowest low of the last 252 stored daily bars",
                 "levels", ids["year"])
+        ctx.level("level.high252", lv.high252, "Year high", "resistance")
+        ctx.level("level.low252", lv.low252, "Year low", "support")
     else:
         ctx.plan.unavailable["level.high252"] = (
             f"fewer than {MIN_YEAR_BARS} daily bars stored; no year range computed")
@@ -639,6 +652,11 @@ def _entry_rules(ctx: _Ctx, lv: Levels, ids: dict, earnings: dict | None,
                  position: Position | None) -> None:
     m, P = ctx.m, lv.close
     stop1 = lv.pullback_stop
+    for key, price, label in (("level.pullback_stop", stop1, "Pullback stop candidate"),
+                              ("level.breakout_stop", lv.breakout_stop, "Breakout stop candidate")):
+        ctx.add(key, m(price), label + "; calculated today, not a maintained stop", "levels",
+                ids["low" if key.endswith("pullback_stop") else "high"] + ids["atr"])
+        ctx.level(key, price, label, "stop")
     ctx.add("rule.e1",
             f"If the price pulls back toward the 20-bar low ({m(lv.low20)}) and a daily close "
             f"holds above it, a textbook pullback entry puts the stop below that low at "
@@ -784,6 +802,9 @@ def _holding_rules(ctx: _Ctx, lv: Levels, ids: dict, earnings: dict | None, pos:
               f"not above the other candidates, so today's stop candidate stays {m(candidate)}.")
     ctx.add("rule.h4", h4, "textbook trailing-stop candidate, calculated from today's data",
             "rules", base)
+    ctx.add("level.stop_candidate", m(candidate), "Today's holding stop candidate; not maintained",
+            "levels", base + ids["low"])
+    ctx.level("level.stop_candidate", candidate, "Holding stop candidate", "stop")
     held = pos.stop
     if held is not None:
         sid = ctx.book.add(Evidence(
@@ -792,6 +813,7 @@ def _holding_rules(ctx: _Ctx, lv: Levels, ids: dict, earnings: dict | None, pos:
             retrieved_at=ctx.now, note="typed by the user; the platform keeps no stop state"))
         ctx.add("position.stop", m(held), "the stop the user typed as currently held",
                 "position", [sid])
+        ctx.level("position.stop", held, "Your stated stop", "stop")
         active = max(held, candidate)
         if candidate > held:
             h6 = (f"Your stated stop is {m(held)} and today's candidate is {m(candidate)}: "

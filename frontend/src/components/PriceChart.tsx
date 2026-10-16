@@ -36,6 +36,7 @@ type Props = {
   levels?: Levels;
   signalMarkers?: SignalHistoryPoint[];
   patterns?: PatternSignal[];
+  planLines?: { price: number; label: string; role: string }[];
   gamePlanLevels?: {
     entryLow?: number | null;
     entryHigh?: number | null;
@@ -44,7 +45,7 @@ type Props = {
     target2?: number | null;
   } | null;
   /** T252: ATR/Position-Sizer-derived entry/stop/target — always available (no LLM call
-   * required, unlike gamePlanLevels), drawn distinctly so it doesn't visually collide with
+   * required, independent of the user-loaded plan), drawn distinctly so it doesn't visually collide with
    * an active game plan overlay. */
   riskRewardLevels?: {
     entry?: number | null;
@@ -133,7 +134,7 @@ function computeVolMA(priceData: Price[], period = 20): (number | null)[] {
 type SmaVals  = { sma_20: number|null; sma_50: number|null; sma_200: number|null; ema_20: number|null; ema_50: number|null; ema_200: number|null };
 type MacdVals = { macd: number|null; signal: number|null; hist: number|null };
 
-export default function PriceChart({ symbol, prices, indicators, levels, signalMarkers, patterns, gamePlanLevels, riskRewardLevels, maxPainLevel, intradayOverride, compareData }: Props) {
+export default function PriceChart({ symbol, prices, indicators, levels, signalMarkers, patterns, gamePlanLevels, planLines, riskRewardLevels, maxPainLevel, intradayOverride, compareData }: Props) {
   const mainRef = useRef<HTMLDivElement>(null);
   const rsiRef  = useRef<HTMLDivElement>(null);
   const macdRef = useRef<HTMLDivElement>(null);
@@ -688,6 +689,14 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     }
 
     // ── Game Plan levels (daily only) ─────────────────────────────────────
+    if (!isIntraday && planLines) {
+      for (const level of planLines) {
+        if (!Number.isFinite(level.price) || level.price <= 0) continue;
+        candles.createPriceLine({ price: level.price,
+          color: level.role === 'stop' ? '#f87171' : level.role === 'support' ? '#4ade80' : '#a78bfa',
+          lineWidth: 1 as const, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: level.label });
+      }
+    }
     if (!isIntraday && gamePlanLevels) {
       const gpl = gamePlanLevels;
       if (gpl.entryLow && gpl.entryLow > 0) {
@@ -721,11 +730,11 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
 
     // ── T252: Risk/Reward levels — ATR stop / nearest support / analyst target, the same
     // values already shown as numbers in the Position Sizer card, drawn on the chart itself.
-    // Only shown when there's no active LLM game plan overlay (gamePlanLevels) — the two
+    // Only shown when there's no code-calculated plan overlay (gamePlanLevels) — the two
     // are alternative "where's my entry/stop/target" views and would visually collide if
-    // both rendered at once; gamePlanLevels (user-triggered, LLM-backed) takes priority when
+    // both rendered at once; gamePlanLevels (user-triggered, code-calculated) takes priority when
     // it exists since it's a more deliberate, specific plan than the always-on ATR default.
-    if (!isIntraday && !gamePlanLevels && riskRewardLevels) {
+    if (!isIntraday && !gamePlanLevels && !planLines?.length && riskRewardLevels) {
       const rrl = riskRewardLevels;
       if (rrl.entry && rrl.entry > 0) {
         candles.createPriceLine({ price: rrl.entry, color: '#facc15', lineWidth: 2 as const, lineStyle: LineStyle.Solid, axisLabelVisible: true, title: 'Entry' });
@@ -911,7 +920,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, riskRewardLevels, maxPainLevel, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showAnchoredVwap, anchoredVwapIdx, showRSI, showMACD, showSignals, showFVG, showSR, show52W, showSwingPivots, swingPivots, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
+  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, planLines, riskRewardLevels, maxPainLevel, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showAnchoredVwap, anchoredVwapIdx, showRSI, showMACD, showSignals, showFVG, showSR, show52W, showSwingPivots, swingPivots, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
 
   // ── Fixed Range VP: click-to-pick start/end selection ───────────────────
   // Deliberately a SEPARATE, lightweight effect from the main chart-rebuild effect above —

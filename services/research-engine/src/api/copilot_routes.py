@@ -167,7 +167,7 @@ def message_evidence(message_id: int, key: str = Query(..., max_length=64),
 def copilot_plan(symbol: str, kind: str | None = Query(None, max_length=16),
                  entry: float | None = None, shares: int | None = None,
                  risk: float | None = None, account: float | None = None,
-                 risk_pct: float | None = None, stop: float | None = None,
+                 risk_pct: float | None = None, stop: float | None = None, include_bars: bool = False,
                  username: str = Depends(get_current_username)):
     """The stock's plan (calls, records, levels, textbook rules), built by code — no model.
 
@@ -180,7 +180,36 @@ def copilot_plan(symbol: str, kind: str | None = Query(None, max_length=16),
         raise HTTPException(400, f"Invalid symbol: {symbol!r}")
     try:
         return C.plan_view(SessionLocal, username, sym, kind=kind, entry=entry, shares=shares,
-                           risk=risk, account=account, risk_pct=risk_pct, stop=stop)
+                           risk=risk, account=account, risk_pct=risk_pct, stop=stop,
+                           include_bars=include_bars)
+    except C.CopilotError as exc:
+        raise HTTPException(exc.status, exc.message)
+
+
+class PlanDraftRequest(BaseModel):
+    level_key: str = Field(..., max_length=64)
+    fingerprint: str = Field(..., min_length=24, max_length=64)
+    request_id: str = Field(..., min_length=8, max_length=64)
+    kind: str | None = None
+    entry: float | None = None
+    shares: int | None = None
+    risk: float | None = None
+    account: float | None = None
+    risk_pct: float | None = None
+    stop: float | None = None
+
+
+@router.post("/plan/{symbol}/draft")
+async def copilot_plan_draft(symbol: str, body: PlanDraftRequest,
+                              authorization: str | None = Header(None),
+                              username: str = Depends(get_current_username)):
+    try:
+        sym = _sanitise_symbol(symbol)
+    except ValueError:
+        raise HTTPException(400, "Invalid symbol")
+    try:
+        return await C.plan_level_draft(SessionLocal, username, sym,
+            market=_market_client(authorization), **body.model_dump())
     except C.CopilotError as exc:
         raise HTTPException(exc.status, exc.message)
 

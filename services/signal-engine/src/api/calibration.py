@@ -3089,3 +3089,13 @@ def confidence_calibration_map(
         "latest_signal_outcome_date": latest_outcome_date.isoformat() if latest_outcome_date else None,
     }
 
+
+
+@router.get('/calibration-candidates')
+def calibration_candidates(include_provisional: bool = False,
+                           username: str = Depends(get_current_username),
+                           session: Session = Depends(get_session)):
+    """Read-only chronological calibration research; never publishes model parameters."""
+    from ..calibration_store import load_comparison
+    return load_comparison(session, now=datetime.now(timezone.utc).replace(tzinfo=None),
+                           include_provisional=include_provisional)

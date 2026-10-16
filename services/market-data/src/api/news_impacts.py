@@ -10,9 +10,12 @@ router = APIRouter(prefix="/news-impact", tags=["news-impact"])
 
 @router.get("")
 def list_impacts(current: User = Depends(get_current_user),
-                 session: Session = Depends(get_session)):
-    events = session.execute(select(NewsImpactEvent)
-        .order_by(NewsImpactEvent.published_at.desc()).limit(30)).scalars().all()
+                 session: Session = Depends(get_session), followed_only: bool = False):
+    query = select(NewsImpactEvent)
+    if followed_only:
+        query = query.join(NewsImpactReceipt, NewsImpactReceipt.event_id == NewsImpactEvent.id).where(
+            NewsImpactReceipt.user_id == current.id)
+    events = session.execute(query.order_by(NewsImpactEvent.published_at.desc()).limit(30)).scalars().all()
     if not events:
         return []
     receipts = {r.event_id: r for r in session.execute(select(NewsImpactReceipt).where(

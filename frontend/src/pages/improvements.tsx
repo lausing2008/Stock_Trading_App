@@ -35,12 +35,44 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'COPILOT-PLAN-CARD-P2', tier: 446, severity: 'feature', defaultStatus: 'done',
+    title: 'Game Plan uses code-calculated rules, chart levels and confirmed alert drafts',
+    file: 'docs/features/2026-10-15-completable-followups.md', effort: 'M',
+    impact: 'The old stock-page plan asked a model to invent entries, stops and targets and hid plans for SELL or WAIT calls.',
+    what: 'A deterministic plan card works without an AI key for entry, holding and historical-call questions. It shows source evidence, stale inputs, candidate versus user-held stops, and fresh daily-chart levels.',
+    fix: 'Board snapshots preserve numeric levels and breakout alert direction. Level alerts are frozen as ordinary copilot drafts, disclose intraday versus daily-close semantics and save only on confirmation, with expiry, ownership and idempotency checks.',
+  },
+  {
+    id: 'PRICE-RISK-QUIET-HOURS', tier: 447, severity: 'feature', defaultStatus: 'done',
+    title: 'Price-risk email has per-account quiet hours without enabling delivery',
+    file: 'docs/features/2026-10-15-completable-followups.md', effort: 'M',
+    impact: 'A live opt-in digest channel needs to respect local quiet hours and avoid replaying expired evidence afterward.',
+    what: 'The Risk Alerts page saves an account-owned timezone and quiet window. The sender defers while quiet, or while preferences cannot be read; it retains evidence-based expiry.',
+    fix: 'Cross-midnight, same-day and DST boundaries are tested. The real outbox probe confirms zero sends while quiet and one send after an unexpired window. Global delivery and enrollment remain off.',
+  },
+  {
+    id: 'COMPANY-EVENT-SHADOW-COVERAGE', tier: 448, severity: 'feature', defaultStatus: 'done',
+    title: 'Company developments are recorded beyond the single product-launch rule',
+    file: 'docs/features/2026-10-15-completable-followups.md', effort: 'M',
+    impact: 'The reviewed product watcher covered one launch and could not explain other company developments or associated suppliers.',
+    what: 'General guidance, regulatory, contract, partnership, product, leadership and earnings headlines now produce sourced shadow events and per-user receipts. Reported supplier and displaced-supplier roles remain unverified hypotheses with unmeasured stock effects.',
+    fix: 'Company/news history can filter followed companies before limiting results. Duplicate headlines are idempotent. General company coverage has no notification or email path; live accuracy and source corroboration remain prerequisites for promotion.',
+  },
+  {
+    id: 'CHRONOLOGICAL-CALIBRATION-RESEARCH', tier: 449, severity: 'feature', defaultStatus: 'done',
+    title: 'Longer-history and pooled calibration candidates are compared chronologically',
+    file: 'docs/features/2026-10-15-completable-followups.md', effort: 'M',
+    impact: 'Better confidence labels alone do not establish improved predictions. Mutable scores and labels resolved after prediction can create misleading historical results.',
+    what: 'Signal Accuracy offers a read-only comparison of recent-market, longer-market and longer pooled candidates. It uses frozen first-call scores, past-only label availability and a common held-out set. Provisional research is explicitly optional.',
+    fix: 'Missing snapshots and unverifiable labels are excluded with reasons. Raw engine scores are binning inputs, not probabilities. No production weights, confidence, orders or candidate promotions change; qualifying evidence still has to accumulate.',
+  },
+  {
     id: 'COPILOT-PLAN-REVIEW-C1-C5', tier: 444, severity: 'high', defaultStatus: 'done',
     title: 'Copilot plans use explicit stop state, complete risk amounts and code-written conditions',
     file: 'docs/audits/2026-10-15-copilot-plan-final-remediation.md', effort: 'M',
     impact: 'A calculated stop could be presented as maintained, options could receive stock rules, abbreviated risk amounts could be truncated, and forecast wording could bypass grounding.',
     what: 'Stops are candidates unless the user supplies their held stop. Options and short positions get no stock rules. Whole risk amounts preserve units and conflicting budgets are refused. Unsupported price predictions fall back to the deterministic plan. Targets below cost are described as loss reduction.',
-    fix: 'Regression cases exercise parsing, actual packet sizing, typed stops, evidence, retry and fallback. The backend and deterministic plan endpoint are complete. The stock-page Game Plan card, chart overlays and confirmed alert drafts remain future work.',
+    fix: 'Regression cases exercise parsing, actual packet sizing, typed stops, evidence, retry and fallback. The backend and deterministic plan endpoint are complete. The stock-page Game Plan card, chart overlays and confirmed alert drafts are tracked separately in tier 446.',
   },
   {
     id: 'PRICE-RISK-SHADOW-F1-F5', tier: 445, severity: 'high', defaultStatus: 'done',
@@ -21605,6 +21637,10 @@ const ITEMS: Item[] = [
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = {
+  449: 'Tier 449 — Chronological calibration research (2026-10-15)',
+  448: 'Tier 448 — General company-event shadow coverage (2026-10-15)',
+  447: 'Tier 447 — Price-risk quiet hours (2026-10-15)',
+  446: 'Tier 446 — Deterministic Game Plan card (2026-10-15)',
   445: 'Tier 445 — Price-risk shadow audit fixes (2026-10-15)',
   444: 'Tier 444 — Copilot forecast and playbook review fixes (2026-10-15)',
   1: 'Tier 1 — Fix Before Trusting Signals',
@@ -22048,6 +22084,7 @@ const TIER_LABEL: Record<Tier, string> = {
 };
 
 const TIER_COLOR: Record<Tier, string> = {
+  449: '#fb923c', 448: '#22d3ee', 447: '#818cf8', 446: '#a78bfa',
   445: '#38bdf8',
   444: '#a78bfa',
   1: '#f87171',

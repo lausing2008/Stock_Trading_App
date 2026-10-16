@@ -28,7 +28,7 @@ def r():
 
 def test_levels_are_the_hand_computed_values_and_cite_every_input(r):
     p = r["pl1"]
-    assert p["packet_version"] == 5
+    assert p["packet_version"] == 6
     assert p["atr"].startswith("$2.00 (14-bar ATR") and p["atr_calc"] == 2.0
     assert (p["low20"], p["high20"]) == ("$99.00", "$101.00")
     assert p["sma50"].startswith("$100.00, flat")
@@ -191,7 +191,7 @@ def test_options_shorts_split_entries_and_incomplete_numbers_get_no_holding_rule
 
 def test_a_plan_answer_cites_rules_and_records_and_renders_their_figures(r):
     p = r["pl6"]
-    assert p["good_status"] == "grounded" and p["good_packet_version"] == 5
+    assert p["good_status"] == "grounded" and p["good_packet_version"] == 6
     assert p["model_saw_rules"]
     assert {"call.swing", "record.swing.5d", "rule.h1", "rule.h2"} <= set(p["good_refs"])
     assert "$98.00" in p["good_content"] and "{{" not in p["good_content"]
@@ -406,3 +406,20 @@ def test_unrelated_negation_cannot_license_forecasts_even_after_retry(r):
     assert p["forecasts"]["I cannot say whether it will rise."]
     for i in range(2):
         assert p[f"fallback_{i}"] == {"status": "rejected", "calls": 2, "has_plan": True}
+
+
+def test_plan_card_prices_and_expanded_evidence_are_from_the_engine(r):
+    p = r["pl11"]
+    assert p["numeric"]["level.low20"] == 99 and p["numeric"]["level.high20"] == 101
+    assert p["numeric"]["level.pullback_stop"] == 98 and p["all_evidence"]
+
+
+def test_plan_level_drafts_are_free_confirmed_scoped_and_replay_safe(r):
+    p = r["pl11"]
+    assert p["no_write_before_confirm"] and p["replayed"] and p["answer_quota"] == 0
+    assert p["draft"]["arguments"]["threshold"] == 98
+    assert p["draft"]["threshold_source"]["key"] == "level.pullback_stop"
+    assert any("daily-close" in x for x in p["draft"]["side_effects"])
+    assert p["saved_once"] and p["owner"] == 404 and p["expired"] == 410
+    assert p["replay_conflict"] == 409 and p["changed_plan"] == 409
+    assert p["wrong_key"] == 400 and p["stale"] == 400

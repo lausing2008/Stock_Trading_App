@@ -1,3 +1,4 @@
+import RiskDeliveryScheduleCard from '@/components/RiskDeliveryScheduleCard';
 import { useCallback, useEffect, useState } from 'react';
 import { api, RiskAlertEvent, RiskAlertSummaryResponse } from '@/lib/api';
 
@@ -13,6 +14,8 @@ const RULE_LABEL: Record<string, string> = {
   pullback: 'Pullback from recent peak',
   basket_breadth: 'Theme-wide decline',
   unmeasurable: 'Could not be measured',
+  slow_decline: 'Multi-session decline',
+  basket_slow_decline: 'Multi-session theme decline',
 };
 
 const STATE_LABEL: Record<string, string> = {
@@ -20,6 +23,10 @@ const STATE_LABEL: Record<string, string> = {
   preference_disabled: 'Not sent — turned off',
   in_app_only: 'In-app only',
   eligible_for_email: 'Eligible for email',
+  pending_digest: 'Waiting for a digest',
+  email_queued: 'Queued for email; delivery rules still apply',
+  historical_no_alert: 'History only — too old to notify',
+  email_capped: 'Daily email limit reached',
 };
 
 function pct(v: number | null): string {
@@ -62,6 +69,7 @@ export default function RiskAlertsPage() {
         Measured moves in stocks you follow, independent of the AI signal&apos;s direction label —
         a label does not change merely because a price falls.
       </p>
+      <RiskDeliveryScheduleCard />
 
       {shadowCount > 0 && (
         <div style={{ border: '1px solid #f59e0b', background: '#f59e0b18', borderRadius: 8,

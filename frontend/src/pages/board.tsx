@@ -46,7 +46,7 @@ function relDate(iso: string) {
 /* ── Card ─────────────────────────────────────────────── */
 type StoredGamePlan = {
   title?: string;
-  entries?: { label: string; price: number; rationale: string }[];
+  entries?: { label: string; price: number; rationale: string; condition?: 'above' | 'below' }[];
   stop_loss?: { price: number; rationale: string };
   take_profit?: { price: number; rationale: string } | null;
   catalysts?: string[];
@@ -451,7 +451,7 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
   const suggestions = useMemo<Suggestion[]>(() => {
     const s: Suggestion[] = [];
     if (gp?.entries?.length) {
-      gp.entries.forEach(e => s.push({ label: e.label, price: e.price, condition: 'below', color: '#818cf8', rationale: e.rationale }));
+      gp.entries.forEach(e => s.push({ label: e.label, price: e.price, condition: e.condition === 'above' ? 'above' : 'below', color: '#818cf8', rationale: e.rationale }));
     } else if (plan.entry_price != null) {
       s.push({ label: 'Entry', price: plan.entry_price, condition: 'below', color: '#818cf8', rationale: undefined });
     }

@@ -48,8 +48,9 @@ export default function NewsPage() {
     { refreshInterval: 60_000 }
   );
 
+  const [followedImpacts, setFollowedImpacts] = useState(true);
   const { data: impactWatches, error: impactError } = useSWR(
-    'news-impact', api.newsImpacts, { refreshInterval: 60_000 }
+    ['news-impact', followedImpacts], () => api.newsImpacts(followedImpacts), { refreshInterval: 60_000 }
   );
 
   const items = (data ?? []).filter(it => {
@@ -71,15 +72,17 @@ export default function NewsPage() {
         </div>
       </div>
 
-      <section aria-label="Product impact watches" style={{ marginBottom: 20 }}>
-        <h2 style={{ color: '#e2e8f0', fontSize: 16, margin: '0 0 8px' }}>Product impact watches</h2>
+      <section aria-label="Company impact watches" style={{ marginBottom: 20 }}>
+        <h2 style={{ color: '#e2e8f0', fontSize: 16, margin: '0 0 8px' }}>Company and product impact watches</h2>
+        <p style={{ color: '#94a3b8', fontSize: 12 }}>General company headlines are shadow observations, not verified facts or stock-return forecasts. No company-event emails are sent.</p>
+        <label style={{ color: '#cbd5e1', fontSize: 12 }}><input type="checkbox" checked={followedImpacts} onChange={e => setFollowedImpacts(e.target.checked)} /> Followed companies only</label>
         {impactError && <p style={{ color: '#f87171' }}>Impact watch status is unavailable.</p>}
-        {impactWatches?.length === 0 && <p style={{ color: '#94a3b8' }}>No reviewed product events recorded yet.</p>}
+        {impactWatches?.length === 0 && <p style={{ color: '#94a3b8' }}>No matching company events recorded yet.</p>}
         {impactWatches?.map(event => (
           <article key={event.event_key} style={{ padding: 14, marginBottom: 10, border: '1px solid #334155', borderRadius: 10, background: '#0f172a' }}>
             <strong style={{ color: '#f1f5f9' }}>{event.title}</strong>
             <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 4 }}>
-              {new Date(event.published_at).toLocaleString()} · Your alert: {event.state.replaceAll('_', ' ')}
+              {new Date(event.published_at).toLocaleString()} · {event.evidence_status.replaceAll('_', ' ')} · Your alert: {event.state.replaceAll('_', ' ')}
               {event.reason ? ` — ${event.reason}` : ''}
               {event.email_state ? ` · Email provider: ${event.email_state.replaceAll('_', ' ')}` : ''}
             </div>
@@ -88,7 +91,7 @@ export default function NewsPage() {
                 <strong>{impact.symbol}</strong>: {impact.direction.replaceAll('_', ' ')} — {impact.reason}
               </li>)}
             </ul>
-            <a href={event.source_url} target="_blank" rel="noopener noreferrer" style={{ color: '#38bdf8', fontSize: 12 }}>Official source</a>
+            <a href={event.source_url} target="_blank" rel="noopener noreferrer" style={{ color: '#38bdf8', fontSize: 12 }}>{event.evidence_status === 'official_spec_and_provider_observation' ? 'Reviewed source' : 'Provider source — unverified'}</a>
             <p style={{ color: '#64748b', fontSize: 12, marginBottom: 0 }}>Research watch. Revenue, share-price and option-return effects have not been measured.</p>
           </article>
         ))}

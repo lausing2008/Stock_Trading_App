@@ -39,7 +39,8 @@ from . import plan as P
 
 #: Bump when the MEANING of a packet changes (a new quantity, a changed rendering rule). Stored
 #: on every assistant turn so an old answer is read under the rules it was checked against.
-PACKET_VERSION = 5
+PACKET_VERSION = 6
+#: v6: numeric plan levels and deterministic level-draft requests for the stock-page card.
 #: v5 (2026-10-15): stateless stop candidates versus a user-stated held stop, explicit
 #: unsupported-position refusal, and complete typed risk units. Old messages retain v4.
 #: v4 (2026-10-14, plan mode): when the question asks for a forecast or a plan, the packet also

@@ -49,6 +49,40 @@ export interface CopilotConversation {
 }
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api';
+
+export interface PlanInputs {
+  kind?: 'entry' | 'holding' | 'forecast'; entry?: number; shares?: number;
+  risk?: number; account?: number; risk_pct?: number; stop?: number;
+}
+export interface PlanItem {
+  key: string; display: string; meaning: string; state: string; note?: string | null;
+  evidence_ids: string[];
+}
+export interface PlanLevel {
+  key: string; price: number; label: string; role: 'stop' | 'support' | 'resistance';
+  state: string; evidence_ids: string[];
+}
+export interface StockPlan {
+  symbol: string; packet_version: number; packet_fingerprint: string;
+  plan: { kind: string; currency: string | null; price_as_of: string | null;
+    unsupported: boolean; position_refusals: string[]; unavailable: Record<string, string>;
+    groups: Record<string, PlanItem[]>; levels: PlanLevel[];
+    parameters: { note: string }; position: Record<string, number | null> | null };
+  evidence: Record<string, unknown>; limitations: { field: string; reason: string }[];
+}
+
+/** Free, deterministic data. Includes source bars so every displayed level can be inspected. */
+export function getStockPlan(symbol: string, inputs: PlanInputs = {}, signal?: AbortSignal) {
+  const query = new URLSearchParams({ include_bars: 'true' });
+  Object.entries(inputs).forEach(([key, value]) => { if (value !== undefined) query.set(key, String(value)); });
+  return call<StockPlan>(`/copilot/plan/${encodeURIComponent(symbol)}?${query}`, {}, signal);
+}
+
+export function draftPlanLevel(symbol: string, inputs: PlanInputs, level: string, fingerprint: string, requestId: string) {
+  return call<{ message: CopilotMessage; replayed: boolean }>(`/copilot/plan/${encodeURIComponent(symbol)}/draft`, {
+    method: 'POST', body: JSON.stringify({ ...inputs, level_key: level, fingerprint, request_id: requestId }),
+  });
+}
 /** Above the server's two-attempt worst case, below the gateway's 240 s. */
 const TIMEOUT_MS = 200_000;
 

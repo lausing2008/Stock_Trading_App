@@ -55,6 +55,7 @@ export function DraftCard({ messageId, draft }: { messageId?: number; draft: Cop
           {d.threshold_source.kind === 'packet' ? ` — from stored ${d.threshold_source.key}${d.threshold_source.state === 'STALE' ? ' (stale)' : ''}` : ' — the number you typed'}
         </div>
       )}
+      {(d.rule_notes ?? []).map((note, i) => <div key={`rule-${i}`} style={{ color: '#94a3b8', marginTop: '4px' }}>{note}</div>)}
       <ul style={{ margin: '4px 0 0 16px', padding: 0, color: '#cbd5e1' }}>
         {d.side_effects.map((x, i) => <li key={i}>{x}</li>)}
       </ul>

@@ -237,6 +237,10 @@ export interface StockOutcomes {
 }
 
 export const api = {
+  calibrationCandidates: (includeProvisional = false) => request<CalibrationComparison>(`/signals/calibration-candidates?include_provisional=${includeProvisional}`),
+  getRiskDeliverySchedule: () => request<{ enabled: boolean; timezone: string; start: string; end: string }>('/alerts/risk-delivery'),
+  setRiskDeliverySchedule: (body: { enabled: boolean; timezone: string; start: string; end: string }) =>
+    request<{ enabled: boolean; timezone: string; start: string; end: string }>('/alerts/risk-delivery', { method: 'PUT', body: JSON.stringify(body) }),
   listStocks: (market?: string) => request<Stock[]>(`/stocks${market ? `?market=${market}` : ''}`),
   latestPrices: () => request<LatestPrice[]>(`/stocks/latest_prices`),
   latestPricesFor: (symbols: string[]) => request<LatestPrice[]>(`/stocks/latest_prices?symbols=${symbols.join(',')}`),
@@ -1212,7 +1216,7 @@ export const api = {
     return request<RealtimeNewsItem[]>(`/news${qs ? `?${qs}` : ''}`);
   },
   newsHot: (symbol: string) => request<HotNewsFlag>(`/news/hot/${symbol}`),
-  newsImpacts: () => request<NewsImpactWatch[]>(`/news-impact`),
+  newsImpacts: (followedOnly = true) => request<NewsImpactWatch[]>(`/news-impact?followed_only=${followedOnly}`),
   optionsFlowDelivery: () => request<OptionsFlowDelivery>(`/options-flow-delivery`),
   longOptionPlaybook: (optionChain: string, firedDate: string) => request<LongOptionPlaybook>(
     `/long-option-playbook?option_chain=${encodeURIComponent(optionChain)}&fired_date=${encodeURIComponent(firedDate)}`),
@@ -4754,3 +4758,12 @@ export type LongOptionPlaybook = {
   confirmation_rule: string; invalidation_rule: string; exit_policy: string;
   blockers: string[]; note: string;
 };
+
+
+export interface CalibrationComparison {
+  status: string; reason: string; mode?: string; production_changed: false;
+  evidence_counts?: Record<string, number>; excluded?: Record<string, number>; eligible?: number;
+  test_first?: string | null; test_last?: string | null; test_signals?: number;
+  note?: string; limitations?: string[];
+  candidates: { candidate: string; scope: string; forecast_count: number; paired_count: number; paired_brier: number | null }[];
+}

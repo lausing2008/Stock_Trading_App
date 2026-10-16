@@ -251,6 +251,7 @@ _NON_ALERT_JOB_IDS = {
     # `evidenced_to` level with the price bars so figures are computable rather than permanently
     # unverifiable; belongs with the other ingest jobs for the same reason they do.
     "corporate_action_refresh",
+    "company_event_watches",
     "live_price_cache_refresh", "avg_volume_cache_refresh", "avg_volume_startup_check",
     "signal_watchdog_daily", "db_purge_weekly", "meta_model_monthly_retrain",
     "backfill_realized_ev_monthly", "position_scaling_gate_weekly_retrain",
