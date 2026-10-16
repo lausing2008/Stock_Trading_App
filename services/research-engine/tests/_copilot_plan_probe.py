@@ -644,7 +644,7 @@ def pl12_dual_plan():
     inputs = dict(kind="holding", entry=95.0, shares=10, stop=97.0, risk=400.0)
     view = C.plan_view(Session, "alice", SYM, now=NOW, **inputs)
     context = {**inputs, "fingerprint": view["packet_fingerprint"]}
-    model = ScriptedModel('<answer>One reading favors protecting the held position: {{rule.h1}} {{rule.h6}}</answer>')
+    model = ScriptedModel('<answer>One reading favors protecting the held position: {{rule.h1}} {{rule.h6}} {{setup.holding}}</answer><plan_setup id="holding"/>')
     req = turn("Compare alternative scenarios", "dual-plan-0001")
     req.plan_context = context
     first = run(C.answer(req, session_factory=Session, llm_call=model, now=NOW))
@@ -685,13 +685,63 @@ def pl12_dual_plan():
         async def create_alert(self, *args): raise AssertionError("comparison wrote an alert")
     draft_req = turn("Compare alternative scenarios", "dual-plan-0005")
     draft_req.plan_context = context; draft_req.market = NoActions()
-    attempt = ScriptedModel('<answer>One reading favors waiting: {{rule.h1}}</answer><draft kind="price_alert" condition="below" threshold="{{price.close}}"/>')
+    attempt = ScriptedModel('<answer>One reading favors waiting: {{rule.h1}}</answer><plan_setup id="wait"/><draft kind="price_alert" condition="below" threshold="{{price.close}}"/>')
     ignored = run(C.answer(draft_req, session_factory=Session, llm_call=attempt, now=NOW))
     out["drafts"] = ignored["message"]["drafts"]
     R["pl12"] = out
 
 
-for fn in (pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
+def pl13_trade_setups():
+    reset()
+    entry = C.plan_view(Session, "alice", SYM, kind="entry", risk=400, now=NOW)
+    out = {"entry": entry["plan"]["setups"], "target_prices": {x["key"]:x["price"] for x in entry["plan"]["levels"] if x["role"]=="target"}}
+    out["held"] = C.plan_view(Session, "alice", SYM, kind="holding", entry=95, shares=10, stop=97, now=NOW)["plan"]["setups"]
+    out["underwater"] = C.plan_view(Session, "alice", SYM, kind="holding", entry=104, shares=10, now=NOW)["plan"]["setups"]
+    out["tiny_budget"] = C.plan_view(Session, "alice", SYM, kind="entry", risk=.5, now=NOW)["plan"]["setups"]
+    other = C.plan_view(Session, "alice", SYM, kind="entry", risk=400.1, now=NOW)
+    out["precision_bound"] = entry["packet_fingerprint"] != other["packet_fingerprint"]
+    class ReadOnlyMarket:
+        async def alerts(self): return []
+    target_draft = run(C.plan_level_draft(Session, "alice", SYM, kind="entry", risk=400,
+        fingerprint=entry["packet_fingerprint"], request_id="setup-target-draft", market=ReadOnlyMarket(),
+        level_key="level.breakout_target1", now=NOW))
+    out["target_draft"] = target_draft["message"]["drafts"][0]
+    context = dict(kind="entry", risk=400, fingerprint=entry["packet_fingerprint"])
+    req = turn("Compare detailed scenarios", "setups-select-0001"); req.plan_context = context
+    # The first answer selects breakout but cites pullback. Repair must bind the chosen setup.
+    wrong = '<answer>One reading favors this setup: {{setup.pullback}}</answer><plan_setup id="breakout"/>'
+    good = '<answer>One reading favors the breakout alternative: {{setup.breakout}}</answer><plan_setup id="breakout"/>'
+    model = ScriptedModel(wrong,good)
+    response = run(C.answer(req, session_factory=Session, llm_call=model, now=NOW))["message"]
+    out["selected"] = {"id":response["selected_setup_id"], "status":response["status"], "calls":len(model.calls), "setups":response["plan_setups"]}
+    req2 = turn("Compare detailed scenarios", "setups-missing-0001"); req2.plan_context = context
+    missing = '<answer>One reading favors this setup: {{setup.pullback}}</answer>'
+    out["missing_tag_status"] = run(C.answer(req2, session_factory=Session, llm_call=ScriptedModel(missing,missing), now=NOW))["message"]["status"]
+    reset(last_bar=(91,89,90))
+    blocked = C.plan_view(Session, "alice", SYM, kind="entry", risk=400, now=NOW)
+    out["blocked"] = blocked["plan"]["setups"]
+    req3 = turn("Compare detailed scenarios", "setups-wait-0001")
+    req3.plan_context = dict(kind="entry",risk=400,fingerprint=blocked["packet_fingerprint"])
+    wait = '<answer>One reading favors waiting: {{rule.e3}}</answer><plan_setup id="wait"/>'
+    chosen = run(C.answer(req3, session_factory=Session, llm_call=ScriptedModel(missing.replace('</answer>','</answer><plan_setup id="pullback"/>'),wait), now=NOW))["message"]
+    out["wait"] = {"id":chosen["selected_setup_id"], "status":chosen["status"]}
+    reset(last_bar=(102,98,100))
+    out["low_rr"] = C.plan_view(Session, "alice", SYM, kind="entry", risk=400, now=NOW)["plan"]["setups"]
+    reset()
+    with Session() as ss:
+        for bar in ss.query(Price).all():
+            for field in ('open','high','low','close'):
+                setattr(bar,field,getattr(bar,field)*1.3115)
+        ss.commit()
+    out["decimal"] = C.plan_view(Session, "alice", SYM, kind="entry", risk=400, now=NOW)["plan"]["setups"]
+    reset(last_bar=(10000,99,100))
+    out["invalid_stop"] = C.plan_view(Session, "alice", SYM, kind="entry", risk=400, now=NOW)["plan"]["setups"]
+    unmeasurable = C.plan_view(Session, "alice", SYM, kind="holding", entry=100, shares=10, now=NOW)["plan"]
+    out["invalid_held_stop"] = {"setups": unmeasurable["setups"], "reason": unmeasurable["unavailable"].get("setups")}
+    R["pl13"] = out
+
+
+for fn in (pl13_trade_setups, pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
            pl4_staleness, pl5_routing_and_refusals, pl6_turns, pl7_plan_view):
     fn()
 R["_meta"] = {"server": ENGINE.dialect.name}

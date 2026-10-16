@@ -161,6 +161,7 @@ class Plan:
     #: or holding rule is built — the calls and records may still be shown.
     unsupported: bool = False
     level_prices: dict[str, dict] = dc_field(default_factory=dict)
+    setups: list[dict] = dc_field(default_factory=list)
 
     def add(self, item: Item) -> None:
         self.items[item.key] = item
@@ -174,6 +175,8 @@ class Plan:
                  "state": "STALE" if it.stale else "OK", "note": it.stale,
                  "evidence_ids": list(it.evidence_ids)})
         return {"kind": self.kind, "currency": self.currency, "price_as_of": self.as_of,
+                "setups": [{**s, "state": "stale" if self.items[s["key"]].stale else s["state"],
+                            "evidence_ids": list(self.items[s["key"]].evidence_ids)} for s in self.setups],
                 "position": (None if self.position is None else
                              {k: getattr(self.position, k) for k in
                               ("entry", "shares", "risk_amount", "account", "risk_pct", "stop")}),
@@ -440,6 +443,8 @@ def build_plan(*, kind: str, bars_desc: list, calls: dict[str, Call | None],
                     "position were not built; say e.g. 'I bought 100 shares at 182.50'")
         elif position is not None:
             plan.position = position
+    if not unsupported and not plan.position_refusals and lv is not None:
+        _trade_setups(ctx, lv, lv_ids)
     return plan
 
 
@@ -872,3 +877,111 @@ def _holding_rules(ctx: _Ctx, lv: Levels, ids: dict, earnings: dict | None, pos:
                 f"The platform's current calls: {', '.join(parts)}. If the call on the horizon "
                 f"you trade turns SELL, a textbook rule reviews the position.",
                 "the platform's calls, as a review trigger", "rules", ())
+
+
+def _trade_setups(ctx, lv, ids):
+    """Explicit reference-price setups. Targets are conditional objectives, not forecasts."""
+    plan, pos, m = ctx.plan, ctx.plan.position, ctx.m
+    if plan.kind == 'entry':
+        specs = [('pullback', 'Pullback entry', lv.low20, lv.pullback_stop, 'rule.e1'),
+                 ('breakout', 'Breakout entry', lv.high20, lv.breakout_stop, 'rule.e2')]
+    elif plan.kind == 'holding' and pos is not None and 'position.entry' in plan.items:
+        candidate = plan.level_prices.get('level.stop_candidate', {}).get('price')
+        if candidate is None and pos.stop is None:
+            plan.unavailable['setups'] = 'No positive holding stop candidate can be calculated from these inputs.'
+            return
+        stop = candidate if candidate is not None else pos.stop
+        specs = [('holding', 'Held-position management', pos.entry, max(stop, pos.stop or stop), 'rule.h6')]
+    else:
+        return
+    resistance = sorted(set(x for x in (lv.high20, lv.high252) if x is not None and x > 0))
+    for name, title, entry, stop, trigger_key in specs:
+        held = name == 'holding'
+        reasons, targets = [], []
+        valid = math.isfinite(entry) and math.isfinite(stop) and entry > 0 and stop > 0 and (held or stop < entry)
+        per = entry-stop if valid and entry > stop else None
+        budget = pos.risk_budget if pos else None
+        shares = pos.shares if held and pos else (math.floor(budget/per) if budget is not None and per else None)
+        state = 'conditional'
+        if not valid or (not held and per is None):
+            state = 'unavailable'; reasons.append('No positive entry/stop risk distance can be calculated.')
+        if valid:
+            # Respect nearer resistance. If absent, use explicitly labeled mechanical objectives.
+            floor = max(entry, lv.close) if held else entry
+            above = [x for x in resistance if x > floor]
+            first = above[0] if above else (entry+2*per if per else floor+2*lv.atr)
+            if first <= floor:
+                first = floor+2*lv.atr
+            targets.append({'price': first, 'label': 'Structural resistance' if above else
+                            ('2R objective' if per and first == entry+2*per else 'ATR-based objective'),
+                            'reward_risk': (first-entry)/per if per else None})
+            second = next((x for x in above if x > first), None)
+            if second is None:
+                second = max(entry+3*per, first+per) if per else max(floor+3*lv.atr, first+lv.atr)
+            targets.append({'price': second, 'label': 'Structural resistance' if second in above else
+                            'Calculated stretch objective', 'reward_risk': (second-entry)/per if per else None})
+            if not held and targets[0]['reward_risk'] + 1e-9 < MIN_REWARD_RISK:
+                state = 'blocked'; reasons.append('First target is below the minimum reward-to-risk; wait for a different setup.')
+            if not held and lv.close <= stop and name == 'pullback':
+                state = 'blocked'; reasons.append('Latest close is already at or below the pullback stop; wait for a new base.')
+            if held and lv.close < stop:
+                state = 'exit_triggered'; reasons.append('Latest daily close is already below the assessed stop; the exit rule is met.')
+        if not held:
+            if lv.sma50 is None or lv.sma50_prev is None:
+                state = 'unavailable'; reasons.append('Insufficient history to assess the trend filter.')
+            elif lv.close < lv.sma50 and lv.sma50 < lv.sma50_prev:
+                state = 'blocked'; reasons.append('Latest close is below a falling 50-bar average; no new long under the trend rule.')
+            if name == 'breakout' and lv.avg_volume20 <= 0:
+                state = 'unavailable'; reasons.append('Average volume is unavailable for breakout confirmation.')
+            if shares == 0:
+                state = 'blocked'; reasons.append('The risk budget cannot cover one whole share at this stop distance.')
+        risk_note = ('Stop gaps, slippage and fees can exceed the calculated loss. Sizing does not check buying power.'
+                     if per else 'Stop is at or above cost; original risk and R-multiples are unknown. Gap risk remains.')
+        if not valid:
+            risk_note = 'Entry/stop inputs are unusable; sizing and reward-to-risk are unavailable.'
+        recovery = [{'price': x, 'label': 'Resistance / loss reduction, not profit'} for x in resistance
+                    if held and lv.close < x <= entry]
+        setup = dict(id=name, key=f'setup.{name}', title=title, entry=entry, stop=stop if valid else None,
+            targets=targets, risk_per_share=per, risk_budget=budget, shares=shares,
+            shares_basis='held' if held else 'risk_budget',
+            capital=entry*shares if shares is not None else None,
+            cash_at_stop=(stop-entry)*shares if valid and shares is not None else None,
+            trigger=plan.items[trigger_key].display if valid else 'No usable long setup; recompute with valid market inputs.',
+            state=state, reasons=reasons, risk_note=risk_note,
+            invalidation=('If a daily close is below the assessed stop, the exit condition is met.' if held else
+                          'No entry until the daily-close rule confirms; after entry, a daily close below the stop invalidates the setup.'),
+            earnings=plan.items.get('rule.h7' if held else 'rule.e5').display
+                     if ('rule.h7' if held else 'rule.e5') in plan.items else 'Next earnings date is unavailable.',
+            recovery_levels=recovery)
+        inputs = list(dict.fromkeys(ids['low']+ids['high']+ids['atr']+ids.get('year', [])+
+                                    ids.get('sma50', [])+ids['vol']))
+        for k in ('position.entry', 'position.stop', 'position.shares'):
+            if held and k in plan.items: inputs.extend(plan.items[k].evidence_ids)
+        if budget is not None:
+            inputs.append(ctx.book.add(Evidence(evidence_id=f'position:risk-budget:{name}',
+                source='stated position risk budget', value={'risk_budget': budget, 'currency': plan.currency},
+                retrieved_at=ctx.now, note='Typed cash or account × risk percentage; not broker buying power.')))
+        eid = _calc(ctx, f'setup_{name}', inputs, setup,
+                    'Entry and stop from existing structural/ATR rules; first target is nearest higher resistance '
+                    'or a 2R objective, second is next resistance or a stretch objective. '
+                    'R=(target-entry)/(entry-stop) only for positive risk; whole-share sizing=floor(budget/risk).',
+                    str(plan.as_of))
+        target_line = '; '.join(f'take profit {i+1}: {m(t["price"])} ({t["label"]}, '
+                               + (f'{t["reward_risk"]:.2f}R)' if t['reward_risk'] is not None else 'R unknown)')
+                               for i,t in enumerate(targets)) or 'targets unavailable'
+        display = (f'{title}: {"original entry cost" if held else "entry reference"} {m(entry)}; '
+                   f'stop {m(setup["stop"])}; {target_line}; '
+                   f'{"held" if held else "risk-sized"} shares {shares if shares is not None else "unknown"}. '
+                   f'Status: {state}. {setup["trigger"]} {setup["invalidation"]} '
+                   + ' '.join(reasons) + ' ' + risk_note)
+        ctx.add(setup['key'], display, 'code-calculated conditional trade setup, not a price forecast', 'setups', [eid]+inputs)
+        if valid:
+            for i, target in enumerate(targets, 1):
+                key = f'level.{name}_target{i}'
+                label = f'{title} take profit {i} — {target["label"]}'
+                ctx.add(key, m(target['price']), label + '; conditional objective, not forecast', 'levels', [eid]+inputs)
+                ctx.level(key, target['price'], label, 'target')
+            if held:
+                ctx.add('level.holding_assessed_stop', m(stop), 'Higher of stated stop and calculated candidate; not maintained', 'levels', [eid]+inputs)
+                ctx.level('level.holding_assessed_stop', stop, 'Holding stop to assess', 'stop')
+        plan.setups.append(setup)

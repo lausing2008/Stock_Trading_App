@@ -41,6 +41,8 @@ export interface CopilotMessage {
   source_times?: { price?: string | null; signal?: string | null; report_generated?: string | null; newest_headline?: string | null };
   rejection_reasons?: string[]; model?: string | null;
   packet_fingerprint?: string | null;
+  selected_setup_id?: string | null;
+  plan_setups?: TradeSetup[];
   /** Actions proposed for the user to review and save. Nothing is saved until they confirm. */
   drafts?: CopilotDraft[];
   dropped_drafts?: { kind: string; reason: string }[];
@@ -60,14 +62,23 @@ export interface PlanItem {
   evidence_ids: string[];
 }
 export interface PlanLevel {
-  key: string; price: number; label: string; role: 'stop' | 'support' | 'resistance';
+  key: string; price: number; label: string; role: 'stop' | 'support' | 'resistance' | 'target';
   state: string; evidence_ids: string[];
+}
+export interface TradeSetup {
+  id: string; key: string; title: string; state: 'conditional' | 'blocked' | 'unavailable' | 'stale' | 'exit_triggered';
+  entry: number; stop: number | null; targets: { price: number; label: string; reward_risk: number | null }[];
+  risk_per_share: number | null; risk_budget: number | null; shares: number | null;
+  shares_basis: 'held' | 'risk_budget'; capital: number | null; cash_at_stop: number | null;
+  trigger: string; invalidation: string; earnings: string; risk_note: string; reasons: string[];
+  recovery_levels: { price: number; label: string }[]; evidence_ids: string[];
 }
 export interface StockPlan {
   symbol: string; packet_version: number; packet_fingerprint: string;
   plan: { kind: string; currency: string | null; price_as_of: string | null;
     unsupported: boolean; position_refusals: string[]; unavailable: Record<string, string>;
     groups: Record<string, PlanItem[]>; levels: PlanLevel[];
+    setups?: TradeSetup[];
     parameters: { note: string }; position: Record<string, number | null> | null };
   evidence: Record<string, unknown>; limitations: { field: string; reason: string }[];
 }

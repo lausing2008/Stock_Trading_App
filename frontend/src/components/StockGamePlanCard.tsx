@@ -4,6 +4,7 @@ import { draftPlanLevel, getStockPlan, newRequestId, type CopilotMessage, type P
   type PlanItem, type PlanLevel, type StockPlan } from '@/lib/copilot';
 import { DraftCard } from './CopilotPanel';
 import LLMAlternativePlan from './LLMAlternativePlan';
+import TradeSetupSummary from './TradeSetupSummary';
 
 export interface PlanChartLine { price: number; label: string; role: string }
 const fieldStyle = { width: '100%', padding: '6px', background: '#0f172a', color: '#e2e8f0', border: '1px solid #334155', borderRadius: 5 };
@@ -23,6 +24,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
   const [draft, setDraft] = useState<CopilotMessage | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [boardSetupId, setBoardSetupId] = useState('');
   const [evidence, setEvidence] = useState<PlanItem | null>(null);
   const generation = useRef(0);
   const abort = useRef<AbortController | null>(null);
@@ -58,6 +60,8 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
       const result = await getStockPlan(symbol, request, abort.current.signal);
       if (!alive.current || token !== generation.current) return;
       setData(result); setInputs(request); lines(result, chart);
+      const setups = result.plan.setups ?? [];
+      setBoardSetupId((setups.find(s => ['conditional', 'exit_triggered'].includes(s.state)) ?? setups[0])?.id ?? '');
     } catch (e) {
       if (alive.current && token === generation.current) setError(e instanceof Error ? e.message : 'Could not load plan');
     } finally { if (alive.current && token === generation.current) setBusy(false); }
@@ -75,16 +79,19 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
   async function saveBoard() {
     if (!data) return;
     const at = (key: string) => data.plan.levels.find(x => x.key === key && x.state === 'OK')?.price;
-    const entry = inputs.entry ?? at('level.low20');
-    const stop = inputs.stop ?? at('level.stop_candidate') ?? at('level.pullback_stop');
+    const setup = data.plan.setups?.find(s => s.id === boardSetupId);
+    if (setup && !['conditional', 'exit_triggered'].includes(setup.state)) { setError('This setup is blocked or unavailable.'); return; }
+    const entry = setup?.entry ?? inputs.entry ?? at('level.low20');
+    const stop = setup ? setup.stop ?? undefined : inputs.stop ?? at('level.stop_candidate') ?? at('level.pullback_stop');
     if (entry === undefined || stop === undefined) { setError('Fresh entry and stop levels are required to save a plan.'); return; }
-    const target = [at('level.high20'), at('level.high252')].find(x => x !== undefined && x > entry);
+    const target = setup ? setup.targets.find(t => t.price > entry)?.price : [at('level.high20'), at('level.high252')].find(x => x !== undefined && x > entry);
     const snapshot = {
-      title: `${symbol} — code-calculated plan`,
-      entries: [{ label: 'Pullback reference', condition: 'below', price: at('level.low20'), rationale: 'Daily-close confirmation required' },
+      title: `${symbol} — ${setup?.title ?? 'code-calculated plan'}`,
+      entries: setup ? (setup.shares_basis === 'held' ? [] : [{ label: setup.title, condition: setup.id === 'pullback' ? 'below' : 'above', price: entry, rationale: setup.trigger }]) : [{ label: 'Pullback reference', condition: 'below', price: at('level.low20'), rationale: 'Daily-close confirmation required' },
         { label: 'Breakout reference', condition: 'above', price: at('level.high20'), rationale: 'Daily close and volume confirmation required' }],
-      stop_loss: { price: stop, rationale: inputs.stop ? 'User-stated held stop' : 'Candidate, not maintained' },
-      take_profit: target === undefined ? null : { price: target, rationale: 'Stored resistance above entry; not a forecast' },
+      stop_loss: { price: stop, rationale: setup ? 'Assessed candidate, not maintained' : inputs.stop ? 'User-stated held stop' : 'Candidate, not maintained' },
+      take_profit: target === undefined ? null : { price: target, rationale: 'Conditional objective above entry, not a forecast' },
+      setup,
       rules: data.plan.groups.rules, price_as_of: data.plan.price_as_of, currency: data.plan.currency,
       packet_fingerprint: data.packet_fingerprint, parameters: data.plan.parameters,
     };
@@ -104,7 +111,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
     </select></label>
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, margin: '8px 0' }}>
       {(mode === 'holding' ? ['entry', 'shares', 'stop', 'risk'] : mode === 'entry' ? ['risk'] : []).map(key =>
-        <label key={key}>{({ entry: 'Average cost', shares: 'Shares held', stop: 'Your held stop (optional)', risk: 'Risk budget (cash)' } as Record<string, string>)[key]}
+        <label key={key}>{({ entry: 'Average cost', shares: 'Shares held', stop: 'Your held stop (optional)', risk: 'Risk budget (stock currency)' } as Record<string, string>)[key]}
           <input aria-label={key} disabled={busy || actionBusy} type="number" min="0" step={key === 'shares' ? '1' : 'any'} value={values[key as keyof typeof values]}
             onChange={e => { reset(); setValues(v => ({ ...v, [key]: e.target.value })); }} style={fieldStyle} />
         </label>)}
@@ -117,10 +124,11 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
       <h4>Rules-based plan</h4>
       <p>Prices as of {data.plan.price_as_of?.slice(0, 16).replace('T', ' ') ?? 'unknown'} UTC · {data.plan.currency ?? 'currency unknown'}</p>
       <p>{data.plan.parameters.note}</p>
+      <TradeSetupSummary setups={data.plan.setups ?? []} currency={data.plan.currency} />
       {data.plan.position_refusals.map((why, i) => <p key={i} role="alert">{why}</p>)}
       {Object.entries(data.plan.unavailable).map(([key, why]) => <p key={key} style={{ color: '#fbbf24' }}>{why}</p>)}
       <label><input type="checkbox" checked={chart} onChange={e => { setChart(e.target.checked); lines(data, e.target.checked); }} /> Show fresh levels on the daily chart</label>
-      {Object.entries(data.plan.groups).map(([group, items]) => <details key={group} open={['calls', 'rules', 'position'].includes(group)} style={{ marginTop: 10 }}>
+      {Object.entries(data.plan.groups).filter(([group]) => group !== 'setups').map(([group, items]) => <details key={group} open={['calls', 'rules', 'position'].includes(group)} style={{ marginTop: 10 }}>
         <summary style={{ textTransform: 'capitalize', cursor: 'pointer', color: '#c4b5fd' }}>{group === 'moves' ? 'Past moves — history' : group}</summary>
         {items.map(item => <div key={item.key} style={{ padding: '7px 0', borderBottom: '1px solid #1e293b' }}>
           <span title={item.meaning}>{item.display}</span>
@@ -135,15 +143,24 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
       {!data.plan.unsupported && <>
         <p>Alert drafts use fixed prices and can trigger intraday. They do not confirm a daily-close rule.</p>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {data.plan.levels.filter(x => x.state === 'OK' && ['stop', 'resistance'].includes(x.role)).map(level =>
+          {data.plan.levels.filter(x => x.state === 'OK' && ['stop', 'resistance', 'target'].includes(x.role)).map(level =>
             <button key={level.key} style={buttonStyle} disabled={actionBusy} onClick={() => propose(level)}>Draft alert: {level.label}</button>)}
         </div>
         {draft?.drafts?.map(d => <DraftCard key={d.id} messageId={draft.id} draft={d} />)}
-        {mode !== 'forecast' && <button style={{ ...buttonStyle, marginTop: 10 }} disabled={actionBusy || saved || !data.plan.levels.some(x => x.state === 'OK' && x.role === 'stop')} onClick={saveBoard}>{saved ? 'Saved to Trade Board' : 'Save plan to Trade Board'}</button>}
+        {mode !== 'forecast' && <>
+          {!!data.plan.setups?.length && <label>Setup to save <select aria-label="Setup to save" disabled={actionBusy} value={boardSetupId} onChange={e => { setBoardSetupId(e.target.value); setSaved(false); }}>
+            {data.plan.setups.map(s => <option key={s.id} value={s.id}>{s.title} — {s.state.replaceAll('_', ' ')}</option>)}
+          </select></label>}
+          <button style={{ ...buttonStyle, marginTop: 10 }} disabled={actionBusy || saved ||
+            (data.plan.setups?.length ? !data.plan.setups.some(s => s.id === boardSetupId && ['conditional', 'exit_triggered'].includes(s.state)) : !data.plan.levels.some(x => x.state === 'OK' && x.role === 'stop'))}
+            onClick={saveBoard}>{saved ? 'Saved to Trade Board' : 'Save plan to Trade Board'}</button>
+        </>}
       </>}
       </section>
       <LLMAlternativePlan key={data.packet_fingerprint} symbol={symbol} inputs={inputs}
+        currency={data.plan.currency}
         fingerprint={data.packet_fingerprint} unavailable={data.plan.unsupported || !!data.plan.position_refusals.length ||
+          (mode !== 'forecast' && !data.plan.setups?.length) ||
           !data.plan.levels.some(x => x.state === 'OK')} />
       </div>
     </>}

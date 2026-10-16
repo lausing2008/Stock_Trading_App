@@ -7,7 +7,8 @@ vi.mock('@/lib/copilot', () => ({ ...mocks, newRequestId: () => 'stable-request-
 vi.mock('@/lib/api', () => ({ api: { createBoardPlan: mocks.createBoardPlan } }));
 vi.mock('@/lib/ai', () => ({ isAiConfigured: () => false, getAiProviderLabel: () => '' }));
 import StockGamePlanCard from './StockGamePlanCard';
-const fixture = () => ({ symbol: 'AAPL', packet_version: 6, packet_fingerprint: 'abc'.repeat(8),
+import { setupFixture } from './__fixtures__/tradeSetup';
+const fixture = () => ({ symbol: 'AAPL', packet_version: 7, packet_fingerprint: 'abc'.repeat(8),
   evidence: { calc1: { source: 'stored prices', value: 99 } }, limitations: [],
   plan: { kind: 'entry', currency: 'HKD', price_as_of: '2026-10-15T20:00:00', unsupported: false,
     position: null, position_refusals: [], unavailable: {}, parameters: { note: 'Textbook conventions; not tuned' },
@@ -58,4 +59,20 @@ it('ignores a completed request from the symbol that was left', async () => {
   fireEvent.click(screen.getByText('Build plan')); view.rerender(<StockGamePlanCard key="MSFT" symbol="MSFT" onLevelsChange={levels} />);
   await act(async () => { resolve(fixture()); }); expect(screen.queryByText('If a daily close holds above HK$99, consider the pullback rule.')).toBeNull();
   expect(levels.mock.calls.every(([lines]) => lines.length === 0)).toBe(true);
+});
+
+it('shows both detailed setups and saves the selected breakout with matching entry, stop and take profit', async () => {
+  const p = fixture(); mocks.getStockPlan.mockResolvedValue({ ...p, plan: { ...p.plan, setups: [setupFixture(), setupFixture('breakout')] } });
+  render(<StockGamePlanCard symbol="AAPL" onLevelsChange={vi.fn()} />); await build();
+  expect(screen.getByLabelText('Pullback entry')).toBeTruthy(); expect(screen.getByLabelText('Breakout entry')).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('Setup to save'), { target: { value: 'breakout' } });
+  fireEvent.click(screen.getByText('Save plan to Trade Board')); await screen.findByText('Saved to Trade Board');
+  expect(mocks.createBoardPlan.mock.calls[0][0]).toMatchObject({ entry_price: 101, stop_loss: 99, take_profit: 105,
+    game_plan: { setup: { id: 'breakout' }, entries: [{ price: 101, condition: 'above' }] } });
+});
+it('does not save a blocked setup even when reference prices are fresh', async () => {
+  const p = fixture(); mocks.getStockPlan.mockResolvedValue({ ...p, plan: { ...p.plan, setups: [{ ...setupFixture(), state: 'blocked', reasons: ['Wait for a new base.'] }] } });
+  render(<StockGamePlanCard symbol="AAPL" onLevelsChange={vi.fn()} />); await build();
+  expect((screen.getByText('Save plan to Trade Board') as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText('Wait for a new base.')).toBeTruthy(); expect(mocks.createBoardPlan).not.toHaveBeenCalled();
 });

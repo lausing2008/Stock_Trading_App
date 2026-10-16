@@ -36,11 +36,11 @@ interface Item {
 const ITEMS: Item[] = [
   {
     id: 'DUAL-GAME-PLAN', tier: 450, severity: 'feature', defaultStatus: 'in-progress',
-    implementedNote: 'Implemented and validated locally in 3a85df69. Not pushed or deployed: GitHub returned HTTP 403 on both push attempts. Publishing requires restored repository write access.',
+    implementedNote: 'Implemented locally, including detailed entry/stop/target setups in packet v7. Not pushed or deployed: GitHub returned HTTP 403 on both push attempts. Publishing requires restored repository write access.',
     title: 'Game Plan compares a rules-based plan with an optional LLM alternative',
     file: 'docs/features/2026-10-16-dual-game-plan.md', effort: 'M',
     impact: 'Users want a second scenario alongside the deterministic rules, with clear model provenance and consistent inputs.',
-    what: 'Two labeled panels share the same snapshot and typed position. The configured LLM selects a conditional scenario on explicit request, within the existing grounded copilot and budget limits.',
+    what: 'Both panels show structured entry, stop, two profit objectives, reward-to-risk, sizing, capital and invalidation from the same snapshot. The configured LLM selects and cites an eligible setup or wait; all numeric levels come from code.',
     fix: 'Changed snapshots fail before billing or admission; retries bind the typed inputs and reuse the request id. Actual model names and rejected fallbacks are explicit. Stale or refused positions cannot request a comparison. Model output creates no action drafts, and agreement is not independent confirmation.',
   },
   {

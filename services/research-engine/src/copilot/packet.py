@@ -39,7 +39,8 @@ from . import plan as P
 
 #: Bump when the MEANING of a packet changes (a new quantity, a changed rendering rule). Stored
 #: on every assistant turn so an old answer is read under the rules it was checked against.
-PACKET_VERSION = 6
+PACKET_VERSION = 7
+#: v7: structured entry/stop/target setups and exact numeric setup fingerprint binding.
 #: v6: numeric plan levels and deterministic level-draft requests for the stock-page card.
 #: v5 (2026-10-15): stateless stop candidates versus a user-stated held stop, explicit
 #: unsupported-position refusal, and complete typed risk units. Old messages retain v4.
@@ -392,7 +393,7 @@ def _plan_fields(plan: "P.Plan", fields: dict, qs: dict) -> None:
     groups: dict[str, list] = {}
     for it in plan.items.values():
         groups.setdefault(it.group, []).append(it)
-    labels = {"levels": "Price levels", "moves": "Past move ranges", "calls": "Signal calls",
+    labels = {"setups": "Conditional trade setups", "levels": "Price levels", "moves": "Past move ranges", "calls": "Signal calls",
               "records": "Track records", "rules": "Textbook rules", "position": "Your position"}
     for g, items in groups.items():
         ids = sorted({e for it in items for e in it.evidence_ids})
@@ -636,7 +637,7 @@ def build_packet(session, symbol: str, *, now: datetime | None = None,
     # A citation that resolves to nothing looks checkable and is not — refuse to build one.
     validate_evidence(fields, book)
 
-    body = {"v": PACKET_VERSION, "symbol": symbol,
+    body = {"v": PACKET_VERSION, "symbol": symbol, "setups": plan.setups if plan else None,
             "fields": {k: {"state": f.state.value, "value": f.value, "reason": f.reason}
                        for k, f in sorted(fields.items())}}
     fp = hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()[:24]

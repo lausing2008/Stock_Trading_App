@@ -209,6 +209,7 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         if req.plan_context is not None and packet.fingerprint != expected:
             raise CopilotError(409, "plan changed; refresh it before requesting an LLM alternative")
         if req.plan_context is not None and (packet.plan.unsupported or packet.plan.position_refusals
+                or (packet.plan.kind != 'forecast' and not packet.plan.setups)
                 or not any(not packet.plan.items[k].stale for k in packet.plan.level_prices)):
             raise CopilotError(400, "a fresh, supported plan is required for comparison")
         # A failed FIRST turn never returned a conversation id, so its retry arrives without one.
@@ -271,7 +272,13 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
                      "and the strongest alternative. You may agree with the rules-based plan. "
                      "Use only packet placeholders for levels and intact rule conditions. "
                      "Distinguish your interpretation from facts. Do not invent levels, forecasts, "
-                     "probabilities, or account facts. Do not propose action drafts.")
+                     "probabilities, or account facts. Do not propose action drafts. "
+                     "Append exactly one <plan_setup id=\"SCENARIO\"/> tag after the answer; "
+                     "SCENARIO is an eligible setup ID or wait. Cite the chosen {{setup.ID}} "
+                     "unchanged in the answer so its entry, stop, targets and sizing are shown. "
+                     "Blocked or unavailable entries require waiting. Available setups: "
+                     + json.dumps([{k: s[k] for k in ('id', 'state', 'reasons')}
+                                   for s in packet.plan.to_json()['setups']]))
     messages.append({"role": "user", "content": L.user_turn(packet.model_view(), question)})
     result: G.GroundingResult | None = None
     reasons: list[str] = []
@@ -279,6 +286,7 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
     model_used = req.model
     t0 = time.monotonic()
     cancelled = False
+    selected_setup = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
         # CANCELLATION STOPS THE NEXT CALL, NOT THE CURRENT ONE. A provider request already in
         # flight cannot be recalled and is billed; what a cancel can prevent is the repair call.
@@ -323,7 +331,17 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         # Draft tags are removed BEFORE the grounding check: their thresholds are validated
         # by drafts.validate (packet price or a number the user typed), not as answer prose.
         clean_text, raw_drafts = D.strip_tags(reply.text)
+        choice_error = None
+        if req.plan_context is not None:
+            from .setup_choice import extract
+            clean_text, selected_setup, choice_error = extract(clean_text, packet.plan.to_json()['setups'])
         result = G.check(G.parse_draft(clean_text), packet)
+        if req.plan_context is not None:
+            if not choice_error and selected_setup != 'wait' and f'setup.{selected_setup}' not in result.used_keys:
+                choice_error = 'Cite the chosen {{setup.ID}} unchanged in the answer.'
+            if choice_error:
+                result.accepted = False
+                result.reasons.append(choice_error)
         if result.accepted:
             break
         reasons = result.reasons
@@ -362,7 +380,8 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
             drafts, dropped_drafts = fin.drafts, fin.dropped
     grounding = {
         "drafts": drafts, "dropped_drafts": dropped_drafts,
-        **({"plan_context": req.plan_context} if req.plan_context is not None else {}),
+        **({"plan_context": req.plan_context, "plan_setups": packet.plan.to_json()['setups'],
+            "selected_setup_id": selected_setup if accepted else None} if req.plan_context is not None else {}),
         "packet_version": PACKET_VERSION, "packet_fingerprint": packet.fingerprint,
         "price_as_of": packet.price_as_of, "source_times": packet.source_times(),
         "evidence_refs": refs, "evidence_records": ev_records, "limitations": lims,

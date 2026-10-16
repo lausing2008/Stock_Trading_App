@@ -28,7 +28,7 @@ def r():
 
 def test_levels_are_the_hand_computed_values_and_cite_every_input(r):
     p = r["pl1"]
-    assert p["packet_version"] == 6
+    assert p["packet_version"] == 7
     assert p["atr"].startswith("$2.00 (14-bar ATR") and p["atr_calc"] == 2.0
     assert (p["low20"], p["high20"]) == ("$99.00", "$101.00")
     assert p["sma50"].startswith("$100.00, flat")
@@ -191,7 +191,7 @@ def test_options_shorts_split_entries_and_incomplete_numbers_get_no_holding_rule
 
 def test_a_plan_answer_cites_rules_and_records_and_renders_their_figures(r):
     p = r["pl6"]
-    assert p["good_status"] == "grounded" and p["good_packet_version"] == 6
+    assert p["good_status"] == "grounded" and p["good_packet_version"] == 7
     assert p["model_saw_rules"]
     assert {"call.swing", "record.swing.5d", "rule.h1", "rule.h2"} <= set(p["good_refs"])
     assert "$98.00" in p["good_content"] and "{{" not in p["good_content"]
@@ -217,7 +217,7 @@ def test_calendar_day_windows_pass_only_in_their_exact_wording(r):
 def test_plan_view_is_deterministic_free_and_validated(r):
     p = r["pl7"]
     assert p["kind"] == "holding"
-    assert p["groups"] == ["calls", "levels", "moves", "position", "records", "rules"]
+    assert p["groups"] == ["calls", "levels", "moves", "position", "records", "rules", "setups"]
     assert "rule.h2" in p["rule_keys"] and "rule.e1" in p["rule_keys"]
     assert p["no_price_records_inline"] and p["price_bar_records"] > 200
     assert "NOT tuned" in p["parameters_note"]
@@ -438,3 +438,42 @@ def test_dual_plan_retains_rejection_status_and_cannot_propose_actions(r):
     x = r["pl12"]
     assert x["fallback_status"] == "rejected" and x["fallback_same_snapshot"]
     assert x["drafts"] == []
+
+
+def test_trade_setup_entry_stop_targets_sizing_and_chart_prices_are_consistent(r):
+    x=r["pl13"]; pull, breakout = x["entry"]
+    assert (pull["entry"],pull["stop"],pull["shares"],pull["capital"],pull["cash_at_stop"]) == (99,98,400,39600,-400)
+    assert [(t["price"],t["reward_risk"]) for t in pull["targets"]] == [(101,2),(102,3)]
+    assert (breakout["entry"],breakout["stop"],breakout["shares"]) == (101,99,200)
+    assert [(t["price"],t["reward_risk"]) for t in breakout["targets"]] == [(105,2),(107,3)]
+    assert x["target_prices"]["level.breakout_target1"] == 105
+    assert x["target_draft"]["arguments"]["threshold"] == 105 and x["target_draft"]["arguments"]["condition"] == "above"
+    assert x["target_draft"]["threshold_source"]["key"] == "level.breakout_target1"
+    assert x["precision_bound"] and all(s["state"] == "conditional" for s in x["entry"])
+    assert all(s["state"] == "blocked" and s["shares"] == 0 for s in x["tiny_budget"])
+
+
+def test_held_setup_uses_higher_stop_and_does_not_invent_original_risk_or_profit_below_cost(r):
+    x=r["pl13"]; held=x["held"][0]; underwater=x["underwater"][0]
+    assert held["entry"] == 95 and held["stop"] == 98 and held["shares_basis"] == "held"
+    assert held["risk_per_share"] is None and all(t["reward_risk"] is None for t in held["targets"])
+    assert held["cash_at_stop"] == 30
+    assert all(t["price"] > underwater["entry"] for t in underwater["targets"])
+    assert underwater["recovery_levels"] == [{"price":101,"label":"Resistance / loss reduction, not profit"}]
+
+
+def test_llm_setup_choice_requires_matching_citation_and_cannot_override_blocked_entries(r):
+    x=r["pl13"]
+    assert x["selected"]["status"] == "grounded" and x["selected"]["id"] == "breakout" and x["selected"]["calls"] == 2
+    assert x["selected"]["setups"] == x["entry"]
+    assert x["missing_tag_status"] == "rejected"
+    assert all(s["state"] == "blocked" for s in x["blocked"])
+    assert x["wait"] == {"id":"wait","status":"grounded"}
+
+
+def test_trade_setups_enforce_first_target_rr_and_handle_roundoff_and_nonpositive_stops(r):
+    x = r["pl13"]
+    assert x["low_rr"][0]["state"] == "blocked" and x["low_rr"][0]["targets"][0]["reward_risk"] < 2
+    assert all(s["state"] == "conditional" for s in x["decimal"])
+    assert all(s["state"] == "unavailable" and s["stop"] is None and s["shares"] is None for s in x["invalid_stop"])
+    assert x["invalid_held_stop"]["setups"] == [] and x["invalid_held_stop"]["reason"]

@@ -2,10 +2,11 @@ import React, { useEffect, useRef, useState } from 'react';
 import { askCopilot, cancelCopilot, newRequestId, type CopilotMessage, type PlanInputs } from '@/lib/copilot';
 import { isAiConfigured, getAiProviderLabel } from '@/lib/ai';
 import { CopilotAnswer } from './CopilotPanel';
+import TradeSetupSummary from './TradeSetupSummary';
 
 /** A second interpretation of the same snapshot, never independent corroboration. */
-export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavailable }: {
-  symbol: string; inputs: PlanInputs; fingerprint: string; unavailable: boolean;
+export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavailable, currency = null }: {
+  symbol: string; inputs: PlanInputs; fingerprint: string; unavailable: boolean; currency?: string | null;
 }) {
   const [message, setMessage] = useState<CopilotMessage | null>(null);
   const [busy, setBusy] = useState(false);
@@ -47,6 +48,11 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
       if (out.message.packet_fingerprint !== fingerprint) {
         throw new Error('The plan snapshot changed. Refresh the rules-based plan before comparing.');
       }
+      if (out.message.status === 'grounded' && (!Array.isArray(out.message.plan_setups) ||
+          (out.message.selected_setup_id !== 'wait' && !out.message.plan_setups.some(s =>
+            s.id === out.message.selected_setup_id && ['conditional', 'exit_triggered'].includes(s.state))))) {
+        throw new Error('The model did not select a validated trade setup. Generate a new comparison.');
+      }
       setMessage(out.message); request.current = null;
     } catch (e) {
       if (alive.current && active.current === pending) setError(e instanceof Error ? e.message : 'Could not generate alternative');
@@ -69,6 +75,9 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
     {error && <p role="alert">{error}</p>}
     {message && <>
       <p>Model: {message.model ?? 'not reported'}</p>
+      {message.status === 'grounded' && message.selected_setup_id === 'wait' && <p>LLM selected wait: no new entry recommended. Conditional alternatives are shown below.</p>}
+      {message.status === 'grounded' && <TradeSetupSummary currency={currency}
+        setups={(message.plan_setups ?? []).filter(s => message.selected_setup_id === 'wait' || s.id === message.selected_setup_id)} />}
       {message.status === 'rejected' && <p role="alert">The model failed the evidence check. The stored-data fallback below is not a second plan.</p>}
       <CopilotAnswer m={message} defaultOpen />
     </>}
