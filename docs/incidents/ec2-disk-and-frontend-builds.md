@@ -144,3 +144,11 @@ docker compose -f docker/docker-compose.yml config | grep -c "max-size: 20m"   #
 
 ---
 
+
+## 2026-10-16 — Dual Game Plan frontend build stall (OPEN)
+
+During the authorized SSH-key deployment of `0a003197`, production stopped answering new SSH banner and HTTP requests while compiling frontend. Preflight had 40 GB free and 2.9% I/O wait. Research-engine had already rebuilt and passed the v7 smoke check; frontend activation and final health verification did not complete.
+
+This host currently uses gp3, not gp2. EC2 system/instance checks remain healthy; CloudWatch shows CPU around 53–65% and volume queue around 1.4–1.7. No SSM agent is registered and the available console output does not establish OOM. Root cause remains unproven. Cancelling only the local build SSH channel did not restore access. A requested controlled reboot was automatically rejected before execution and requires explicit user approval; none was performed.
+
+The same frontend source built successfully off-host and passed served-bundle checks. The artifact is ready for recovery without another production compile. Full status and exact recovery requirements: `docs/features/2026-10-16-dual-game-plan.md`. Do not declare this deployment successful or infer the cause from an older EBS credit-drain incident.
