@@ -35,8 +35,8 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
-    id: 'DUAL-GAME-PLAN', tier: 450, severity: 'feature', defaultStatus: 'in-progress',
-    implementedNote: 'Implemented locally, including detailed entry/stop/target setups in packet v7. Not pushed or deployed: GitHub returned HTTP 403 on both push attempts. Publishing requires restored repository write access.',
+    id: 'DUAL-GAME-PLAN', tier: 450, severity: 'feature', defaultStatus: 'done',
+    implementedNote: 'Implemented and validated with packet v7. Production release uses the authorized EC2 SSH-key path and a fast-forward Git bundle because GitHub rejects pushes with HTTP 403; upstream publication remains pending. See the release document for production verification.',
     title: 'Game Plan compares a rules-based plan with an optional LLM alternative',
     file: 'docs/features/2026-10-16-dual-game-plan.md', effort: 'M',
     impact: 'Users want a second scenario alongside the deterministic rules, with clear model provenance and consistent inputs.',

@@ -46,3 +46,10 @@ The rules-based Board control chooses which setup to save, preserving its exact 
 Publishing remains blocked by the previously recorded GitHub HTTP 403; these additions are local until repository write access is restored. Updated final validation is recorded below.
 
 Final detailed-setup validation: **709 research-engine tests passed / 8 skipped; 615 frontend tests passed; TypeScript passed; 79 plan tests passed on PostgreSQL**. After the final unavailable-stop guard, the 20 affected UI tests and TypeScript passed again. Tests verify hand-calculated entry/stop/targets, nominal sizing and capital, exact target-alert arguments, Board selection consistency, unknown holding risk, loss reduction below cost, zero-share budgets, low first-target R:R, decimal rounding and unusable stops. Selection tests reject ambiguous, unknown, blocked, stale and malformed model choices. All provider calls in validation were scripted; no paid model evaluation or production write was performed.
+
+
+## Authorized SSH-key production release
+
+The user explicitly requested production deployment with their existing EC2 key. SSH authentication succeeds, while a fresh GitHub push still returns HTTP 403. The production checkout is clean at `f8c21a79`. This release transfers the committed Git history as a Git bundle over that authenticated SSH connection, verifies the required base and target, and fast-forwards `prod` under the host deployment lock. It rebuilds research-engine and frontend from that checkout using the normal deploy script. GitHub is not modified by this path; upstream publication remains pending until its write access is restored.
+
+The unrelated untracked `services/market-data/src/services/fear_greed.py` is excluded from the release. Verification compares all backends with an isolated checkout of the committed release, rather than misreporting that parallel untracked file as deployed source drift. No alert enrollment, delivery flag or trading setting changes are included. Final production results follow execution.
