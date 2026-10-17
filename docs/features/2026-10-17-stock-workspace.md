@@ -1,6 +1,6 @@
 # Stock detail workspace — 2026-10-17
 
-Status: implemented locally; not deployed. Tracker: `STOCK-WORKSPACE`, tier 451.
+Status: deployed and verified in production on 2026-10-17. Tracker: `STOCK-WORKSPACE`, tier 451, complete.
 
 ## Design
 
@@ -37,4 +37,20 @@ Previews use sample data, not current market recommendations: [desktop](assets/s
 - Cross-device/account-server layout sync; this slice is browser-local.
 - Free-form resizing and pixel-positioned masonry; meaningful default grouping and stable reading order take precedence here.
 - Splitting every research subcard and the full financial section into independently movable widgets.
-- Production deployment, using an off-host frontend build after review. Do not compile this frontend on the production host; see the 2026-10-16 incident record.
+- Future releases must retain the off-host frontend build pattern; see the 2026-10-16 incident record.
+
+## Production release
+
+The user authorized production deployment. UI commit `80780a22` and tracker preparation `81b5598e` were built from an isolated committed checkout as `stockai-frontend:workspace-81b5598e` (linux/amd64). Local served-bundle checks verified the workspace and tracker before export. The transferred archive passed SHA-256 verification, and production verified the loaded image's configuration digest before activation: `sha256:838e8f59e1c6840f616b7632c4cf46cc57c5441147a45479df3909a8aa36d913`.
+
+Deployment used the authorized EC2 SSH key and a verified fast-forward Git bundle from the already-deployed `e2fd8b71`, under the host deployment lock. Only frontend was recreated with `--no-deps --no-build`; all other container start times were checked and unchanged. The previous frontend image remains tagged `stockai-frontend:rollback-before-workspace-81b5598e`. No reboot or production compile was required.
+
+Acceptance passed:
+
+- **15/15 containers healthy**; all **12 backend source trees matched** the isolated release in preflight, and no backend/shared paths changed in the release bundle.
+- Public `https://lausing.com/stock/AAPL` returned successfully with build ID **`7RufCpUEogOhiyAwbHpvp`**, matching the verified local image. Served stock and improvements bundles contain the workspace controls, compact plans and tracker 451.
+- The unauthenticated Game Plan API returned **401**. Risk-delivery flag remained absent/off; deployment generated no model answers, enrollments, orders or alert drafts.
+- Database checks found **0 blocked sessions** and **0 idle transactions over 60 seconds**.
+- Host samples following activation settled from 14.38% disk utilization / 7.51% iowait to 0.6% disk utilization / 0.2–0.3% iowait.
+
+The Git push attempt was rejected by automatic approval review because ownership/trust of the configured remote and renewed publication authorization were not established. No GitHub push was executed. Production deployment completed through the independently authorized SSH path; optional GitHub publication was separately requested and is not a prerequisite for the running release.
