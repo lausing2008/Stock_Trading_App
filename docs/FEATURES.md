@@ -397,7 +397,7 @@ For daily ranges (1D–All), all data is loaded once on page open; switching bet
 - **AI Signal** — BUY/SELL/HOLD, confidence, bullish probability bar
 - **Signal Alert button** — subscribe to email notifications for both entry signals (AI Signal improving) and exit warnings (AI Signal deteriorating from BUY). See [Signal Change Email Notifications](#signal-change-email-notifications) below. Shows 🔔 "Signal alert on" (purple, active) or 🔕 "Notify on signal improvement" (grey, inactive). Displays the last known signal as a badge when active.
 - **K-Score** — composite + five sub-scores + fair price
-- **Fear & Greed Index gauge** — semi-circular dial (0–100) with five color zones: red (Extreme Fear) → orange (Fear) → yellow (Neutral) → light green (Greed) → green (Extreme Greed). Computed every hour from VIX + S&P 500 data. Shows previous close, 1-week, 1-month, and 1-year historical scores below the dial. Includes a **Market Regime** sub-section:
+- **Fear & Greed Index gauge** — semi-circular dial (0–100) with five color zones: red (Extreme Fear) → orange (Fear) → yellow (Neutral) → light green (Greed) → green (Extreme Greed). Fetched from CNN every five minutes, with its source timestamp displayed. Shows previous close, 1-week, 1-month, and 1-year historical scores below the dial. Includes a **Market Regime** sub-section:
   - Green dot + "Bull Market" — S&P 500 is currently **above** its 200-day MA
   - Red dot + "Bear Market" — S&P 500 is currently **below** its 200-day MA
   - Percentage shown (e.g. "+9.8% vs 200MA") indicates how far above or below
@@ -693,7 +693,7 @@ Click the 🔔 "Signal alert on" button on the stock detail page to unsubscribe.
 
 ## Fear & Greed Index
 
-A market sentiment gauge (0–100) shown on the stock detail page sidebar. Based on CNN's Fear & Greed methodology, computed from VIX levels and S&P 500 price data. Updated hourly.
+A market sentiment gauge (0–100) shown on the stock detail page sidebar. Uses CNN’s published score, rating, and historical comparisons from its public data feed. Cached for five minutes, with CNN’s source timestamp displayed. Missing or invalid CNN responses return 503; no custom estimate is substituted. The separate S&P 500 vs 200-day average context still uses Yahoo data. Existing signal consumers receive CNN scores; the scheduler’s legacy high-volatility threshold remains below 30.
 
 ### Score interpretation
 
@@ -1829,7 +1829,7 @@ GET  /stocks                           # list all tracked stocks
 GET  /stocks/{symbol}/prices           # OHLCV history from DB
 GET  /stocks/latest_prices             # live prices (yfinance fast_info, Redis 60 s cache)
 GET  /stocks/market_overview           # live index quotes: S&P 500, NASDAQ, DJI, VIX, HSI (Redis 60 s)
-GET  /stocks/fear_greed                # computed Fear & Greed index (Redis 1 h cache)
+GET  /stocks/fear_greed                # CNN Fear & Greed index (Redis 5 min cache)
                                        #   → score, rating, history, sp500_regime, sp500_vs_ma200_pct
 GET  /stocks/{symbol}/fundamentals     # company financials (yfinance .info, Redis 24 h cache)
                                        #   ?refresh=true to bypass cache
@@ -2004,8 +2004,8 @@ ATR is used in the Research Engine for: stop loss calculation (`entry − ATR`),
 | AI Signal | DB `signals` table (TA + ML) | Refreshed 5× per trading day, immediately after K-Scores — same schedule |
 | ML prediction | Trained model inference | Retrained once per day at post-close (16:30); intra-day runs use the previous close model |
 | **Research report** | research-engine (Claude AI + all services) | Cached in-memory 24 h per symbol; POST to generate, GET to retrieve, DELETE to force refresh |
-| **Fear & Greed Index** | Computed from yfinance ^GSPC + ^VIX | Redis 1 h TTL; SWR 1 h refresh on stock detail page |
-| **Market Regime (S&P vs 200MA)** | Computed alongside Fear & Greed | Redis 1 h TTL (same cache entry) |
+| **Fear & Greed Index** | CNN published index | Redis 5 min TTL; SWR 5 min refresh on stock detail page |
+| **Market Regime (S&P vs 200MA)** | Computed alongside Fear & Greed | Redis 5 min TTL (same cache entry) |
 
 ---
 
@@ -2015,7 +2015,7 @@ ATR is used in the Research Engine for: stop loss calculation (`entry − ATR`),
 |-----|----------|-----|
 | `stockai:live_prices` | Array of live price objects for all active stocks | 60 s |
 | `stockai:market_overview` | Array of index quotes (^GSPC, ^IXIC, ^DJI, ^VIX, ^HSI) | 60 s |
-| `stockai:fear_greed` | Computed Fear & Greed score, rating, history, S&P regime | 1 h |
+| `stockai:fear_greed` | CNN score, rating, history, source timestamp, optional S&P regime | 5 min |
 | `stockai:fundamentals:v2:{SYMBOL}` | Company fundamentals JSON — includes analyst ratings, earnings calendar, and insider activity | 24 h |
 | `stockai:news:{SYMBOL}:{sources}` | News articles for one symbol + source combination | 30 min |
 

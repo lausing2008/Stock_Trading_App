@@ -74,7 +74,7 @@ function RegimeBanner({ market }: { market: 'US' | 'HK' }) {
   const { data: regime, isLoading: regimeLoading } = useSWR(
     ['pulse-regime', market], () => api.regime(market), { refreshInterval: 300_000 }
   );
-  const { data: fg, isLoading: fgLoading } = useSWR(
+  const { data: fg, isLoading: fgLoading, error: fgError } = useSWR(
     market === 'US' ? 'pulse-fear-greed' : null, () => api.fearGreed(), { refreshInterval: 300_000 }
   );
 
@@ -115,11 +115,13 @@ function RegimeBanner({ market }: { market: 'US' | 'HK' }) {
             </div>
           </div>
         )}
-        {!fgLoading && fg && (
+        {fgError && <div style={{ color: '#9ca3af', fontSize: 11 }}>CNN Fear &amp; Greed unavailable</div>}
+        {!fgLoading && !fgError && fg && (
           <div>
-            <div style={{ color: '#6b7280', fontSize: 11 }}>Fear &amp; Greed</div>
+            <div style={{ color: '#6b7280', fontSize: 11 }}>CNN Fear &amp; Greed</div>
             <div style={{ color: '#e5e7eb', fontSize: 14, fontWeight: 600 }}>
-              {fg.score} <span style={{ color: '#9ca3af', fontWeight: 500 }}>({fg.rating})</span>
+              {Math.round(fg.score)} <span style={{ color: '#9ca3af', fontWeight: 500 }}>({fg.rating})</span>
+              <div style={{ color: '#9ca3af', fontSize: 11 }}>Updated: {new Date(fg.updated_at).toLocaleString()}</div>
             </div>
           </div>
         )}

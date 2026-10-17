@@ -448,103 +448,39 @@ def market_overview():
 
 
 _FEAR_GREED_KEY = "stockai:fear_greed"
-_FEAR_GREED_TTL = 60 * 60  # 1 hour
+_FEAR_GREED_TTL = 5 * 60  # CNN snapshot refreshed at most every five minutes
 
 
 def _compute_fear_greed() -> dict:
-    """Compute a market Fear & Greed score (0–100) from VIX + S&P momentum.
+    """Fetch CNN sentiment and independently enrich it with S&P vs 200-day MA."""
+    from ..services.fear_greed import fetch_snapshot
 
-    Components (equal weight):
-    1. VIX: low VIX → greed (inverted scale)
-    2. S&P 500 vs 125-day MA: above → greed
-    3. S&P 500 momentum (20-day return)
-    4. Put/Call proxy: VIX vs 20-day VIX avg (spike → fear)
-    """
-    import pandas as pd
-
-    def _rating(s: float) -> str:
-        if s < 25: return "Extreme Fear"
-        if s < 45: return "Fear"
-        if s < 55: return "Neutral"
-        if s < 75: return "Greed"
-        return "Extreme Greed"
-
-    spx = yf.download("^GSPC", period="14mo", interval="1d", progress=False, auto_adjust=True)
-    vix = yf.download("^VIX",  period="14mo", interval="1d", progress=False, auto_adjust=True)
-
-    if spx.empty or vix.empty:
-        raise ValueError("no data")
-
-    spx_close = spx["Close"].squeeze()
-    vix_close = vix["Close"].squeeze()
-
-    # 1. VIX component: VIX 10→100, 10=max greed 40=max fear
-    vix_now = float(vix_close.iloc[-1])
-    vix_score = float(100 - min(max((vix_now - 10) / 30 * 100, 0), 100))
-
-    # 2. S&P vs 125-day MA
-    ma125 = spx_close.rolling(125).mean().iloc[-1]
-    spx_now = float(spx_close.iloc[-1])
-    ma_score = 75.0 if spx_now > float(ma125) else 25.0
-
-    # 3. 20-day momentum
-    r20 = float(spx_close.iloc[-1] / spx_close.iloc[-21] - 1) if len(spx_close) >= 21 else 0.0
-    mom_score = float(min(max(50 + r20 * 300, 0), 100))
-
-    # 4. VIX spike vs 20-day avg (spike = fear)
-    vix_ma20 = float(vix_close.rolling(20).mean().iloc[-1])
-    spike_ratio = vix_now / vix_ma20 if vix_ma20 else 1.0
-    spike_score = float(min(max(100 - (spike_ratio - 1) * 200, 0), 100))
-
-    score = round((vix_score + ma_score + mom_score + spike_score) / 4, 1)
-
-    # History: same calc on shifted dates
-    def _score_at(offset: int) -> float | None:
-        try:
-            i = -1 - offset
-            v = float(vix_close.iloc[i])
-            s = float(spx_close.iloc[i])
-            ma = float(spx_close.rolling(125).mean().iloc[i])
-            r = float(spx_close.iloc[i] / spx_close.iloc[i - 20] - 1) if abs(i - 20) <= len(spx_close) else 0.0
-            vm = float(vix_close.rolling(20).mean().iloc[i])
-            vs = 100 - min(max((v - 10) / 30 * 100, 0), 100)
-            ms = 75.0 if s > ma else 25.0
-            mo = min(max(50 + r * 300, 0), 100)
-            sp = min(max(100 - (v / vm - 1) * 200 if vm else 100, 0), 100)
-            return round((vs + ms + mo + sp) / 4, 1)
-        except Exception:
-            return None
-
-    # Market regime: S&P 500 vs 200-day MA
-    ma200 = spx_close.rolling(200).mean().iloc[-1]
-    sp500_vs_ma200_pct = round((spx_now / float(ma200) - 1) * 100, 2) if not pd.isna(ma200) else None
-    sp500_regime = "bull" if (sp500_vs_ma200_pct is not None and sp500_vs_ma200_pct > 0) else "bear"
-
-    return {
-        "score": score,
-        "rating": _rating(score),
-        "previous_close": _score_at(1),
-        "previous_1_week": _score_at(5),
-        "previous_1_month": _score_at(21),
-        "previous_1_year": _score_at(252),
-        "sp500_regime": sp500_regime,
-        "sp500_vs_ma200_pct": sp500_vs_ma200_pct,
-        "components": {
-            "vix": round(vix_score, 1),
-            "sp500_vs_ma": round(ma_score, 1),
-            "momentum": round(mom_score, 1),
-            "vix_spike": round(spike_score, 1),
-        },
-    }
+    result = fetch_snapshot()
+    # Optional context: Yahoo failure must not hide a valid CNN snapshot.
+    try:
+        spx = yf.download("^GSPC", period="14mo", interval="1d", progress=False,
+                          auto_adjust=True, timeout=3)
+        close = spx["Close"].squeeze()
+        ma200 = float(close.rolling(200).mean().iloc[-1])
+        current = float(close.iloc[-1])
+        if pd.notna(ma200) and pd.notna(current) and ma200 > 0:
+            result["sp500_vs_ma200_pct"] = round((current / ma200 - 1) * 100, 2)
+            result["sp500_regime"] = "bull" if current > ma200 else "bear"
+    except Exception as exc:
+        log.warning("fear_greed.regime_unavailable", error=str(exc))
+    return result
 
 
 @router.get("/fear_greed")
 def fear_greed():
-    """Computed Fear & Greed Index (0–100) from VIX + S&P momentum. Redis-cached 1 h."""
+    """CNN published Fear & Greed Index (0–100), cached five minutes."""
     try:
         cached = _get_redis().get(_FEAR_GREED_KEY)
         if cached:
-            return json.loads(cached)
+            snapshot = json.loads(cached)
+            # Ignore pre-migration custom estimates under the same shared key.
+            if snapshot.get("source") == "CNN" and snapshot.get("updated_at"):
+                return snapshot
     except Exception:
         pass
 

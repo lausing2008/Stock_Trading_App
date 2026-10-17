@@ -603,7 +603,7 @@ export default function StockDetail() {
   // AI chat state
 
   const { data: watchlists } = useSWR<WatchlistMeta[]>(`${u}:watchlists`, () => api.listWatchlists());
-  const { data: fearGreed } = useSWR<FearGreed>('fear-greed', () => api.fearGreed(), { refreshInterval: 3_600_000 });
+  const { data: fearGreed, error: fearGreedError } = useSWR<FearGreed>('fear-greed', () => api.fearGreed(), { refreshInterval: 300_000 });
   const { data: signalAlerts, mutate: mutateSignalAlerts } = useSWR<SignalAlertItem[]>(
     `${u}:signal-alerts`, () => api.listSignalAlerts(),
   );
@@ -2212,7 +2212,8 @@ export default function StockDetail() {
               })()}
 
               {/* Fear & Greed */}
-              {fearGreed && (() => {
+              {fearGreedError && <div className="rounded-md border border-slate-800 bg-slate-900 p-4 text-sm text-slate-400">CNN Fear &amp; Greed is temporarily unavailable.</div>}
+              {fearGreed && !fearGreedError && (() => {
                 const score = fearGreed.score;
                 const ratingColor: Record<string, string> = {
                   'Extreme Fear': '#ef4444', 'Fear': '#f97316',
@@ -2224,8 +2225,9 @@ export default function StockDetail() {
                   <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                       <h3 className="text-sm font-semibold text-slate-300">Fear &amp; Greed Index</h3>
-                      <span style={{ fontSize: '10px', color: '#475569' }}>CNN · 1 h cache</span>
+                      <span style={{ fontSize: '10px', color: '#475569' }}>CNN · Refreshes every 5 min</span>
                     </div>
+                    <div className="mb-3 text-xs text-slate-400">CNN updated: {new Date(fearGreed.updated_at).toLocaleString('en-US', { timeZone: 'America/New_York', timeZoneName: 'short' })}</div>
                     <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
                       {/* Gauge */}
                       <div style={{ flexShrink: 0 }}>
@@ -2252,7 +2254,7 @@ export default function StockDetail() {
                           </svg>
                         </div>
                         <div style={{ textAlign: 'center', marginTop: 2 }}>
-                          <div style={{ fontSize: '22px', fontWeight: 800, color, lineHeight: 1 }}>{score}</div>
+                          <div style={{ fontSize: '22px', fontWeight: 800, color, lineHeight: 1 }}>{Math.round(score)}</div>
                           <div style={{ fontSize: '11px', fontWeight: 700, color, marginTop: '2px' }}>{fearGreed.rating}</div>
                         </div>
                       </div>
@@ -2262,7 +2264,7 @@ export default function StockDetail() {
                           {[['Prev close', fearGreed.previous_close], ['1 Week ago', fearGreed.previous_1_week], ['1 Month ago', fearGreed.previous_1_month], ['1 Year ago', fearGreed.previous_1_year]].map(([lbl, val]) => (
                             <div key={lbl as string} style={{ background: '#0f172a', borderRadius: 5, padding: '5px 8px' }}>
                               <div style={{ fontSize: '9px', color: '#475569', fontWeight: 700, textTransform: 'uppercase' }}>{lbl}</div>
-                              <div style={{ fontSize: '13px', fontWeight: 700, color: '#94a3b8' }}>{val != null ? (val as number).toFixed(0) : '—'}</div>
+                              <div style={{ fontSize: '13px', fontWeight: 700, color: '#94a3b8' }}>{val != null ? Math.trunc(val as number) : '—'}</div>
                             </div>
                           ))}
                         </div>

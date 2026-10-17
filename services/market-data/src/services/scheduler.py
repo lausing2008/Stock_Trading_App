@@ -1071,6 +1071,8 @@ def _get_current_regime() -> str:
         data = _get_redis().get("stockai:fear_greed")
         if data:
             d = json.loads(data)
+            if d.get("source") != "CNN":
+                return "unknown"
             sp500 = d.get("sp500_regime", "unknown")
             fg = d.get("score")
             if sp500 == "bear":

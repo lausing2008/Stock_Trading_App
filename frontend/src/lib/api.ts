@@ -1946,7 +1946,7 @@ export type OptionsExpirationRow = {
 };
 export type OptionsExpirationsResponse = { symbol: string; available: boolean; reason?: string; expirations?: OptionsExpirationRow[] };
 export type QuickScanResult = { symbol: string; price: number; change_pct: number | null; change_5d: number | null; rsi: number | null; sma20: number | null; sma50: number | null; above_sma20: boolean | null; above_sma50: boolean | null; vol_ratio: number | null; range_pos_20d: number | null };
-export type FearGreed = { score: number; rating: string; previous_close: number | null; previous_1_week: number | null; previous_1_month: number | null; previous_1_year: number | null; sp500_regime?: 'bull' | 'bear'; sp500_vs_ma200_pct?: number | null; components?: { vix: number; sp500_vs_ma: number; momentum: number; vix_spike: number } };
+export type FearGreed = { source: 'CNN'; updated_at: string; score: number; rating: string; previous_close: number | null; previous_1_week: number | null; previous_1_month: number | null; previous_1_year: number | null; sp500_regime?: 'bull' | 'bear'; sp500_vs_ma200_pct?: number | null };
 export type MarketBreadth = { breadth_pct: number | null; above_200ma: number; below_200ma: number; total: number; label: string; color: string; updated_at: string };
 export type HkConnectFlowLeaderboardItem = { symbol: string; net_buy_hkd: number };
 

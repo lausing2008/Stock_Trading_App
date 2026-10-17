@@ -58,7 +58,7 @@ const sectionTitle: React.CSSProperties = { fontSize: 13, fontWeight: 700, color
 // ── Market Trend ───────────────────────────────────────────────────────────────
 function TrendTab({ market }: { market: Market }) {
   const { data: regime } = useSWR(`regime-${market}`, () => api.regime(market));
-  const { data: fearGreed } = useSWR('fear-greed', () => api.fearGreed());
+  const { data: fearGreed, error: fearGreedError } = useSWR('fear-greed', () => api.fearGreed(), { refreshInterval: 300_000 });
   const { data: breadth } = useSWR(`breadth-${market}`, () => api.marketBreadth(market));
 
   return (
@@ -81,17 +81,18 @@ function TrendTab({ market }: { market: Market }) {
 
       <div style={card}>
         <div style={sectionTitle}>Fear &amp; Greed Index</div>
-        {fearGreed ? (
+        {fearGreed && !fearGreedError ? (
           <>
             <div style={{ fontSize: 22, fontWeight: 700, color: fearGreed.score >= 55 ? '#4ade80' : fearGreed.score <= 45 ? '#f87171' : '#f59e0b' }}>
-              {fearGreed.score.toFixed(1)} <span style={{ fontSize: 14, fontWeight: 400, color: '#9ca3af' }}>{fearGreed.rating}</span>
+              {Math.round(fearGreed.score)} <span style={{ fontSize: 14, fontWeight: 400, color: '#9ca3af' }}>{fearGreed.rating}</span>
             </div>
             <div style={{ fontSize: 13, color: '#9ca3af', marginTop: 8, lineHeight: 1.8 }}>
+              <div>CNN updated: {new Date(fearGreed.updated_at).toLocaleString()}</div>
               {fearGreed.sp500_regime && <div>S&amp;P 500: <span style={{ textTransform: 'capitalize' }}>{fearGreed.sp500_regime} market</span></div>}
               {fearGreed.sp500_vs_ma200_pct != null && <div>vs. 200MA: <span style={{ color: pctColor(fearGreed.sp500_vs_ma200_pct) }}>{fmtPct(fearGreed.sp500_vs_ma200_pct)}</span></div>}
             </div>
           </>
-        ) : <div style={{ color: '#6b7280' }}>Loading…</div>}
+        ) : <div style={{ color: '#6b7280' }}>{fearGreedError ? "CNN data temporarily unavailable" : "Loading…"}</div>}
       </div>
 
       <div style={card}>
