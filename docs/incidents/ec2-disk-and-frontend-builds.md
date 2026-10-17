@@ -145,10 +145,10 @@ docker compose -f docker/docker-compose.yml config | grep -c "max-size: 20m"   #
 ---
 
 
-## 2026-10-16 — Dual Game Plan frontend build stall (OPEN)
+## 2026-10-16 — Dual Game Plan frontend build stall (RECOVERED; cause unproven)
 
 During the authorized SSH-key deployment of `0a003197`, production stopped answering new SSH banner and HTTP requests while compiling frontend. Preflight had 40 GB free and 2.9% I/O wait. Research-engine had already rebuilt and passed the v7 smoke check; frontend activation and final health verification did not complete.
 
-This host currently uses gp3, not gp2. EC2 system/instance checks remain healthy; CloudWatch shows CPU around 53–65% and volume queue around 1.4–1.7. No SSM agent is registered and the available console output does not establish OOM. Root cause remains unproven. Cancelling only the local build SSH channel did not restore access. A requested controlled reboot was automatically rejected before execution and requires explicit user approval; none was performed.
+This host currently uses gp3, not gp2. EC2 system/instance checks remained healthy; CloudWatch showed CPU around 53–65% and volume queue around 1.4–1.7. No SSM agent is registered and the available console output does not establish OOM. Root cause remains unproven. Cancelling only the local build SSH channel did not restore access. A requested controlled reboot was initially automatically rejected before execution. The user subsequently explicitly approved rebooting production; AWS accepted the request at 17:29:11 PDT, and SSH recovered with fresh guest uptime. Recovery installed the checksum-verified off-host image under the host lock, retaining the old frontend image for rollback. Acceptance passed: 15/15 healthy, 0/12 backend drift, served plan/tracker bundles and public HTTPS page verified, delivery off. PostgreSQL reads briefly reached 125 MiB/s after reboot, then the next samples settled to 0–2.2% disk utilization and 0–0.9% iowait. This does not prove the cause of the original stall. See [the handoff](2026-10-16-deployment-handoff.md).
 
-The same frontend source built successfully off-host and passed served-bundle checks. The artifact is ready for recovery without another production compile. Full status and exact recovery requirements: `docs/features/2026-10-16-dual-game-plan.md`. Do not declare this deployment successful or infer the cause from an older EBS credit-drain incident.
+The same frontend source built successfully off-host, passed served-bundle checks and was installed without another production compile. Full status and acceptance evidence: `docs/features/2026-10-16-dual-game-plan.md`. Do not infer the cause from an older EBS credit-drain incident.
