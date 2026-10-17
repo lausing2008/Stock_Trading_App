@@ -35,6 +35,15 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'STOCK-WORKSPACE', tier: 451, severity: 'feature', defaultStatus: 'in-progress',
+    title: 'Compact stock workspace with movable widgets and summary-first Game Plans',
+    file: 'docs/features/2026-10-17-stock-workspace.md', effort: 'M',
+    impact: 'Independent chart and sidebar stacks leave large blank areas; long playbooks bury actionable levels.',
+    what: 'One responsive grid puts chart, Game Plan and signals first. Browser/account-scoped order and collapse state persist across stocks. Arrange mode supports handle dragging, move buttons and reset.',
+    fix: 'Plans show a selected scenario, entry, stop, two targets, shares and guidance. Rules/history/evidence, sizing detail, model explanation and alert drafts expand on demand. Financial research starts collapsed.',
+    implementedNote: 'Implemented locally; production deployment pending. Existing numeric rules, model admission and explicit alert/Board confirmations are preserved. Cloud-synced layouts and free-form resizing are deferred.',
+  },
+  {
     id: 'DUAL-GAME-PLAN', tier: 450, severity: 'feature', defaultStatus: 'done',
     implementedNote: 'Implemented and validated with packet v7. Production release uses the authorized EC2 SSH-key path and a fast-forward Git bundle because GitHub rejects pushes with HTTP 403; upstream publication remains pending. See the release document for production verification.',
     title: 'Game Plan compares a rules-based plan with an optional LLM alternative',
@@ -21646,6 +21655,7 @@ const ITEMS: Item[] = [
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = {
+  451: 'Tier 451 — Compact stock workspace (2026-10-17)',
   450: 'Tier 450 — Rules-based and LLM Game Plans (2026-10-16)',
   449: 'Tier 449 — Chronological calibration research (2026-10-15)',
   448: 'Tier 448 — General company-event shadow coverage (2026-10-15)',
@@ -22094,6 +22104,7 @@ const TIER_LABEL: Record<Tier, string> = {
 };
 
 const TIER_COLOR: Record<Tier, string> = {
+  451: '#38bdf8',
   450: '#c084fc', 449: '#fb923c', 448: '#22d3ee', 447: '#818cf8', 446: '#a78bfa',
   445: '#38bdf8',
   444: '#a78bfa',

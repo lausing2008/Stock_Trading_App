@@ -64,8 +64,9 @@ it('ignores a completed request from the symbol that was left', async () => {
 it('shows both detailed setups and saves the selected breakout with matching entry, stop and take profit', async () => {
   const p = fixture(); mocks.getStockPlan.mockResolvedValue({ ...p, plan: { ...p.plan, setups: [setupFixture(), setupFixture('breakout')] } });
   render(<StockGamePlanCard symbol="AAPL" onLevelsChange={vi.fn()} />); await build();
-  expect(screen.getByLabelText('Pullback entry')).toBeTruthy(); expect(screen.getByLabelText('Breakout entry')).toBeTruthy();
+  expect(screen.getByLabelText('Pullback entry')).toBeTruthy(); expect(screen.queryByLabelText('Breakout entry')).toBeNull();
   fireEvent.change(screen.getByLabelText('Setup to save'), { target: { value: 'breakout' } });
+  expect(screen.getByLabelText('Breakout entry')).toBeTruthy(); expect(screen.queryByLabelText('Pullback entry')).toBeNull();
   fireEvent.click(screen.getByText('Save plan to Trade Board')); await screen.findByText('Saved to Trade Board');
   expect(mocks.createBoardPlan.mock.calls[0][0]).toMatchObject({ entry_price: 101, stop_loss: 99, take_profit: 105,
     game_plan: { setup: { id: 'breakout' }, entries: [{ price: 101, condition: 'above' }] } });
@@ -75,4 +76,18 @@ it('does not save a blocked setup even when reference prices are fresh', async (
   render(<StockGamePlanCard symbol="AAPL" onLevelsChange={vi.fn()} />); await build();
   expect((screen.getByText('Save plan to Trade Board') as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByText('Wait for a new base.')).toBeTruthy(); expect(mocks.createBoardPlan).not.toHaveBeenCalled();
+});
+
+it('starts with a compact rules view and opens the model perspective only on selection', async () => {
+  const p = fixture(); mocks.getStockPlan.mockResolvedValue({ ...p, plan: { ...p.plan, setups: [setupFixture()] } });
+  render(<StockGamePlanCard symbol="AAPL" onLevelsChange={vi.fn()} />); await build();
+  expect(screen.getByText('Show rules, history & evidence').closest('details')?.open).toBe(false);
+  expect(screen.getByText('Create price-alert drafts').closest('details')?.open).toBe(false);
+  expect(screen.getByText('Sizing, risk & supporting levels').closest('details')?.open).toBe(false);
+  expect(screen.queryByRole('button', { name: 'Generate LLM alternative' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'LLM alternative plan' }));
+  expect(screen.getByRole('button', { name: 'Generate LLM alternative' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Save plan to Trade Board' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Rules-based plan' }));
+  expect(screen.getByRole('button', { name: 'Save plan to Trade Board' })).toBeTruthy();
 });

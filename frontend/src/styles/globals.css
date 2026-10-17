@@ -16,15 +16,45 @@ a { color: inherit; text-decoration: none; }
   .desktop-nav-row { display: none; }
   .mobile-nav-toggle { display: flex; }
 }
-/* T230-UX-MOBILE-RESPONSIVE (Phase 2, stock detail page): the main chart+sidebar layout is a
-   fixed two-column grid (1fr 320px) that clips the sidebar off-screen on a phone — inline
-   `style={{gridTemplateColumns}}` can't respond to a media query directly, so this class
-   exists purely to give that one grid a breakpoint. Above 768px this is a no-op (matches the
-   existing inline style exactly); below it, the sidebar drops below the chart as a single
-   column instead of being cut off. */
-.stock-detail-main-grid { grid-template-columns: 1fr 320px; }
+/* Stock workspace: one responsive grid replaces the independent chart/sidebar stacks. */
+.stock-detail-header { flex-wrap: wrap; gap: 14px; }
+.stock-detail-quotes { min-width: 0; flex: 1; flex-wrap: wrap; }
+.stock-detail-header-actions { max-width: 100%; }
+.stock-detail-refresh-actions { flex-wrap: wrap; }
+.stock-workspace-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.stock-workspace-toolbar, .stock-workspace-actions, .stock-workspace-widget-header { display: flex; align-items: center; gap: 8px; }
+.stock-workspace-toolbar { justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; }
+.stock-workspace-toolbar h2 { font-size: 16px; margin: 0; }
+.stock-workspace-toolbar p, .stock-workspace-hint { color: #94a3b8; font-size: 12px; margin: 6px 0; }
+.stock-workspace-toolbar button, .stock-workspace-widget-header button { background: #101a2d; border: 1px solid #334155; border-radius: 6px; color: #cbd5e1; cursor: pointer; padding: 7px 10px; }
+.stock-workspace-widget-header button:disabled { opacity: .35; cursor: default; }
+.stock-workspace-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.stock-workspace-widget { min-width: 0; border: 1px solid #263348; border-radius: 10px; overflow: hidden; background: #0b1120; }
+.stock-workspace-wide { grid-column: span 2; }
+.stock-workspace-widget-header { padding: 8px; }
+.stock-workspace-widget-header[data-arranging="true"] { outline: 1px dashed #64748b; outline-offset: -3px; background: #152039; }
+.stock-workspace-widget-header .stock-workspace-toggle { display: flex; justify-content: space-between; flex: 1; min-width: 0; font-size: 12px; font-weight: 600; background: transparent; border: 0; text-align: left; }
+.stock-workspace-widget-body { padding: 0 8px 8px; min-width: 0; }
+.stock-workspace-widget-body > * { max-width: 100%; }
+.stock-research-details { border: 1px solid #263348; border-radius: 10px; padding: 14px; }
+.stock-research-details > summary { cursor: pointer; color: #cbd5e1; font-weight: 600; font-size: 14px; }
+.stock-research-details[open] > summary { margin-bottom: 16px; }
+.game-plan-inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 8px 0; }
+.trade-setup-levels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 10px 0; }
+.trade-setup-level { padding: 8px; border: 1px solid #334155; background: #0b1221; border-radius: 7px; }
+.trade-setup-level dt { color: #94a3b8; font-size: 11px; }
+.trade-setup-level dd { margin: 4px 0 0; color: #e2e8f0; font-size: 14px; font-weight: 600; }
+.trade-setup-level small { display: block; color: #94a3b8; font-size: 10px; font-weight: 400; margin-top: 3px; }
+.trade-setup-steps { padding-left: 18px; line-height: 1.6; }
+@media (max-width: 1100px) {
+  .stock-workspace-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stock-workspace-wide { grid-column: span 2; }
+}
 @media (max-width: 767px) {
-  .stock-detail-main-grid { grid-template-columns: 1fr !important; }
+  .stock-detail-quotes { flex-basis: 100%; gap: 12px; }
+  .stock-detail-header-actions { align-items: flex-start !important; }
+  .stock-workspace-grid { grid-template-columns: minmax(0, 1fr); }
+  .stock-workspace-wide { grid-column: auto; }
 }
 
 /* T230-UX-MOBILE-RESPONSIVE (follow-up pass): 4 more rigid, page-width multi-column grids on

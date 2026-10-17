@@ -79,7 +79,9 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
       {message.status === 'grounded' && <TradeSetupSummary currency={currency}
         setups={(message.plan_setups ?? []).filter(s => message.selected_setup_id === 'wait' || s.id === message.selected_setup_id)} />}
       {message.status === 'rejected' && <p role="alert">The model failed the evidence check. The stored-data fallback below is not a second plan.</p>}
-      <CopilotAnswer m={message} defaultOpen />
+      <details><summary style={{ cursor: 'pointer', color: '#a5b4fc' }}>Model explanation & evidence</summary>
+        <CopilotAnswer m={message} defaultOpen />
+      </details>
     </>}
   </section>;
 }

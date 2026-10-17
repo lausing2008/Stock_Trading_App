@@ -636,7 +636,7 @@ function buildReasons(r: Reasons): Factor[] {
   return factors;
 }
 
-export default function SignalCard({ signal }: { signal: Signal }) {
+export default function SignalCard({ signal, compact = false }: { signal: Signal; compact?: boolean }) {
   const reasons = signal.reasons as Reasons;
   const factors = buildReasons(reasons ?? {});
   const strengthReducers = activeStrengthReducers(reasons ?? {});
@@ -758,8 +758,8 @@ export default function SignalCard({ signal }: { signal: Signal }) {
         />
       </div>
 
-      <div className="mb-3 rounded-md border border-slate-800 bg-slate-950/50 px-3 py-2 text-xs">
-        <div className="font-medium text-slate-300">Why this strength?</div>
+      <details open={!compact} className="mb-3 rounded-md border border-slate-800 bg-slate-950/50 px-3 py-2 text-xs">
+        <summary className="font-medium text-slate-300" style={{ cursor: 'pointer' }}>Why this strength?</summary>
         <div className="mt-1 text-slate-500">
           {(signal.confidence ?? 0).toFixed(0)}/100 is the final distance from neutral:
           {' '}|{(signal.bullish_probability ?? 0.5).toFixed(3)} − 0.500| × 200.
@@ -785,7 +785,7 @@ export default function SignalCard({ signal }: { signal: Signal }) {
         <div className="mt-1 text-slate-600">
           A low value means the evidence stayed near neutral or safeguards pulled it toward neutral. It is a valid abstention state, not a number to fill upward.
         </div>
-      </div>
+      </details>
 
       {/* T223/T232-OC5: Historical win rate from outcome calibration, keyed by horizon+direction+market */}
       {reasons?.calibrated_win_rate != null && (
@@ -815,6 +815,7 @@ export default function SignalCard({ signal }: { signal: Signal }) {
 
       {/* Reasoning factors */}
       {factors.length > 0 && (
+        <details open={!compact}><summary style={{ cursor: 'pointer', fontSize: 12 }}>Signal factors & pillar scores</summary>
         <div className="space-y-1.5">
           <div className="text-xs font-medium text-slate-400 mb-1">Why this signal:</div>
           {factors.map((f, i) => (
@@ -868,7 +869,7 @@ export default function SignalCard({ signal }: { signal: Signal }) {
               )}
             </div>
           )}
-        </div>
+        </div></details>
       )}
     </div>
   );
