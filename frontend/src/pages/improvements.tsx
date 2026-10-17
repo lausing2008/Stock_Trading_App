@@ -35,13 +35,13 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
-    id: 'STOCK-WORKSPACE', tier: 451, severity: 'feature', defaultStatus: 'in-progress',
+    id: 'STOCK-WORKSPACE', tier: 451, severity: 'feature', defaultStatus: 'done',
     title: 'Compact stock workspace with movable widgets and summary-first Game Plans',
     file: 'docs/features/2026-10-17-stock-workspace.md', effort: 'M',
     impact: 'Independent chart and sidebar stacks leave large blank areas; long playbooks bury actionable levels.',
     what: 'One responsive grid puts chart, Game Plan and signals first. Browser/account-scoped order and collapse state persist across stocks. Arrange mode supports handle dragging, move buttons and reset.',
     fix: 'Plans show a selected scenario, entry, stop, two targets, shares and guidance. Rules/history/evidence, sizing detail, model explanation and alert drafts expand on demand. Financial research starts collapsed.',
-    implementedNote: 'Implemented locally; production deployment pending. Existing numeric rules, model admission and explicit alert/Board confirmations are preserved. Cloud-synced layouts and free-form resizing are deferred.',
+    implementedNote: 'Implemented and validated with 620 frontend tests, TypeScript and desktop/mobile browser checks. Existing numeric rules, model admission and explicit alert/Board confirmations are preserved. See the feature document for production verification. Cloud-synced layouts and free-form resizing are deferred.',
   },
   {
     id: 'DUAL-GAME-PLAN', tier: 450, severity: 'feature', defaultStatus: 'done',
