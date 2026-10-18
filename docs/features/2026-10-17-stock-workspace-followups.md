@@ -1,6 +1,6 @@
 # Stock workspace follow-ups — 2026-10-17
 
-Status: implementation validated locally; production release pending. Tracker 452: `STOCK-WORKSPACE-CONTROLS`.
+Status: deployed and verified in production on 2026-10-17. Tracker 452: `STOCK-WORKSPACE-CONTROLS`, complete.
 
 The remaining practical workspace controls are implemented:
 
@@ -26,3 +26,13 @@ Sample-data previews: [desktop](assets/stock-workspace-controls/desktop.png), [p
 Automatic cross-device sync still needs an authenticated account-preferences API with persistence and conflict/version handling. There is no existing general layout-storage endpoint to reuse. Portable export/import provides a manual cross-device path now; automatic sync is explicitly not claimed. Arbitrary pixel resizing/masonry remains a separate layout-engine change rather than a requirement for moving and sizing these widgets.
 
 Future production releases must be built off-host. This change affects frontend only; no database schema, alert delivery, backend trading logic or model provider is changed.
+
+## Production evidence
+
+Release `7cee46a6` was built off-host from an isolated committed checkout as `stockai-frontend:workspace-7cee46a6`. The exact optimized image passed the desktop/mobile fixture browser checks, including import/export and absence of hydration/runtime errors. The transferred archive passed SHA-256 verification; loaded image configuration digest was `sha256:30e3583b19319054be4292b028360e625f5b5b28d447d08c7c8326a8e5777a9e`.
+
+Activation used the authorized SSH key, a verified fast-forward bundle from `daca1ac0`, and the host deployment lock. Only frontend was recreated with `--no-deps --no-build`. The previous image remains `stockai-frontend:rollback-before-workspace-7cee46a6`. No production build or reboot was needed.
+
+Acceptance: **15/15 healthy**; preflight **0/12 backend drift**, with no backend/shared changes in the bundle and all other container start times unchanged. Public stock-page build ID **`1EbPrAsQiDi-eS4ZG8y7l`** matched the verified local image. Served stock and tracker bundles contain the new controls and tracker 452. The unauthenticated Game Plan route returned **401**; the risk-delivery flag stayed absent/off. Database checks measured **0 blocked sessions** and **0 idle transactions over 60 seconds**. Host I/O settled to 0.2% disk utilization and 0–0.1% iowait after image activation.
+
+Deployment generated no model answers, trading actions or alert drafts. GitHub publication remains dependent on a repository login with write access, as recorded in the initial workspace release; production and its documentation were delivered through SSH.
