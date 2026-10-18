@@ -1,19 +1,16 @@
 {
   "date": "2026-10-18",
   "base_commit": "c6ead3fc",
-  "production_verified": false,
+  "production_verified": true,
   "frontend": {
-    "full_suite_passed": 633,
-    "subsequent_chart_tests_passed": 4,
+    "full_suite_passed": 635,
+    "chart_tests_included": 4,
     "typecheck": "passed"
   },
   "market_data": {
-    "initial_broad_passed": 5428,
-    "initial_broad_failed": 1,
+    "full_suite_passed": 5431,
     "skipped": 20,
-    "initial_failure": "new scheduler job missing alert classification",
-    "affected_final_passed": 20,
-    "full_suite_repeated_after_final_changes": false
+    "full_suite_repeated_after_final_changes": true
   },
   "other_backend_suites": {
     "technical-analysis": 66,
@@ -31,9 +28,8 @@
   "model_api_cost_usd": 0,
   "new_real_model_runs": false,
   "limitations": [
-    "Synthetic browser API responses",
-    "No live-provider close validation",
-    "No production login validation",
-    "Semantic model review still required"
+    "No paid real-model quality run",
+    "Live-provider daily-close trigger behavior not exercised",
+    "Production smoke used authenticated read-only APIs, not browser login"
   ]
 }

@@ -1,8 +1,9 @@
 # Copilot and workspace improvements — implementation record
 
-October 18, 2026. Local changes based on `c6ead3fc`; not committed, pushed or deployed.
+October 18, 2026. Release `7afcf622`, based on `c6ead3fc`, is committed and deployed.
 Implements the five improvements in the [roadmap](2026-10-17-copilot-next-improvements.md).
-No new paid model calls, production writes or alert-delivery activation were performed.
+No new paid model calls or test enrollments were performed. The production schema and application
+images were updated; existing price-risk delivery settings remain off.
 
 ## Chart commands and state
 
@@ -132,11 +133,10 @@ copies; it stops future synchronization.
 Validation artifacts are in
 [the evidence directory](../audits/evidence/2026-10-18-workspace-workflows).
 
-- Frontend: full suite passed 633 tests; four chart-controller interaction tests subsequently
-  passed, including two added navigation/undo cases. TypeScript checking passed after changes.
-- Market-data: the broad suite initially passed 5,428 tests with one failure for the new job's
-  missing alert classification. Classification was corrected; the twenty affected scheduler and
-  workflow tests pass. The entire 5,449-test suite was not repeated after the final changes; affected workflow checks were rerun.
+- Frontend: full suite passed 635 tests, including four chart-controller interaction cases.
+  TypeScript and the optimized Docker build passed.
+- Market-data: the final full suite passed 5,431 tests with twenty skipped. The earlier scheduler
+  classification failure is fixed. The affected twenty scheduler/workflow tests also passed.
 - The other eleven backend service suites passed. Gateway, decision-engine and event-intelligence
   needed execution outside the restricted process sandbox because existing thread tests stalled.
 - Disposable PostgreSQL 16: owner isolation, request replay, real route behavior, review gating,
@@ -156,6 +156,30 @@ and uses a synthetic login. PostgreSQL probe runs require a disposable database 
 
 Four new tables are created through the existing startup schema path: `workspace_preferences`,
 `daily_close_alerts`, `research_relationships`, `event_connections`. No existing price-alert
-columns are altered. Shared models changed, so a later coordinated rollout should rebuild all
-twelve backend services plus the frontend. Review these local changes before any rollout.
-Production login, provider-close behavior and real-model wording remain unverified here.
+columns are altered. Shared models changed, so the coordinated rollout rebuilt all twelve backend application images
+and the frontend. Production browser login, provider-close trigger behavior and real-model wording
+remain unverified here; authenticated production read-only API checks did pass.
+
+## Production release verification
+
+Release `7afcf622` was installed October 18, 2026 under the production deployment lock. The exact
+frontend image was built off-host and passed the synthetic desktop/mobile browser suite before
+transfer. Backend Dockerfiles and requirements were unchanged: durable images were rebuilt from
+pinned prior production images plus the committed shared and service sources, preserving working
+dependencies. All thirteen application images retain tagged pre-release rollback images.
+
+The first installer attempt stopped before activation because local Docker's image ID differed
+from the exported configuration ID. The archive checksum and exported configuration digest were
+verified; compiled frontend files matched on both hosts. Activation then used the archive's actual
+configuration digest. No running containers changed during the refused attempt.
+
+Acceptance passed: fifteen of fifteen containers healthy; zero of twelve backend/shared source
+hashes drifted; four new tables present; five authenticated read-only requests returned 200 and
+five signed-out counterparts returned 401. No alerts, layouts or research cards were created by
+verification. The daily-close scheduler job is registered. The separate price-risk delivery flag
+remains absent/off.
+
+Public stock and connections pages return 200 and serve build `mFjTv-FY14E4GzUf5gFHS`, matching the
+verified image. Public account API routes return 401 without login. The production checkout was
+fast-forwarded using an authenticated Git bundle; GitHub was not pushed in this session. See
+[deployment evidence](../audits/evidence/2026-10-18-workspace-workflows/deployment.json).

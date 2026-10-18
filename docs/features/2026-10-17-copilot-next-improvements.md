@@ -1,8 +1,8 @@
 # Next copilot and stock-workspace improvements
 
 Prepared October 17, 2026, from local source and release records through `c6ead3fc`.
-Status: all five items have local implementations. See the
-[implementation and validation record](2026-10-18-workspace-workflows.md). Nothing is committed, pushed or deployed in this work.
+Status: all five items are committed and deployed in release `7afcf622`. See the
+[implementation and validation record](2026-10-18-workspace-workflows.md). Production verification completed October 18, 2026. GitHub was not pushed in this work.
 
 The earlier C1–C5 and follow-up fixes are recorded as completed in the
 [final plan remediation](../audits/2026-10-15-copilot-plan-final-remediation.md).
