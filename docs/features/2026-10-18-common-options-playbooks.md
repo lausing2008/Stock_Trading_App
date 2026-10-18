@@ -8,8 +8,8 @@ available in a disclosure. Existing Advanced/admin access rules are unchanged.
 Each priced strategy has its contract strike/expiry, archive premium, expiry
 breakeven, capital, maximum expiry profit/loss, entry condition, profit objective,
 exit/invalidation rule and before-entry/while-open/expiration playbook. Expiry payoff
-diagrams and leg details expand on demand. No additional provider or model call is
-introduced. The request now runs without a stock stop or analyst target; those
+diagrams and leg details expand on demand. It uses the existing game-plan request;
+no new provider endpoint or model call is introduced. The request now runs without a stock stop or analyst target; those
 missing references previously hid the entire comparison unnecessarily. Late
 responses from another symbol are ignored, and inputs reset on symbol changes.
 
@@ -82,7 +82,25 @@ emails or broker operations occur.
 [Phone preview](assets/common-options-playbooks/options-strategy-mobile.png).
 These screenshots use sample data.
 
-Release build and production verification are recorded after execution.
-Deployment is frontend-only, built off the production host.
-The release also contains the preceding full-width chart/Game Plan workspace commit
-`5ab91daa`, which had not yet been deployed. Alert delivery stays off.
+The optimized production image build passed, and the same desktop/mobile checks
+passed against that compiled image before deployment. Release `97e5a63d` was
+deployed over `ebda6638` through the approved SSH path under the host deployment
+lock, with archive SHA verification, image configuration identity checks and a
+retained rollback image. Compilation ran locally, not on EC2.
+
+Production acceptance: public and loopback stock/tracker pages return 200 and serve
+build `JHNVxMyjtjl8AIXdHi4Tp`, including the new strategy and tracker markers. The
+options game-plan endpoint returns 401 without authentication. All 15 services are
+healthy, backend start times are unchanged, and the price-risk delivery switch is
+off. All 12 backend source/shared comparisons passed with zero drift. No backend
+image or schema was changed. The preceding chart workspace release was deployed
+separately during this work; its production documentation is preserved.
+
+[Production evidence](../audits/evidence/2026-10-18-common-options-playbooks/deployment.json).
+The preference interaction was validated with mocked data against the compiled
+image; production acceptance verifies the served artifact and existing route guard,
+not a live authenticated strategy submission or a broker operation.
+
+GitHub push was attempted and rejected with HTTP 403. The configured account reports
+repository `push:false`; publishing these commits requires a GitHub account with
+write access. This does not affect the verified production deployment or local commits.
