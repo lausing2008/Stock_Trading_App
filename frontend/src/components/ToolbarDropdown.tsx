@@ -6,7 +6,7 @@
  * adapted for checkboxes instead of navigation links.
  */
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 export type ToolbarDropdownOption = {
   key: string;

@@ -1,5 +1,7 @@
 /** Stock detail page. Game Plan uses the deterministic copilot rules and stored evidence. */
 import { useRouter } from 'next/router';
+import ChartCommandBar from '@/components/ChartCommandBar';
+import type { ChartController } from '@/lib/chartCommands';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import useSWR from 'swr';
 import dynamic from 'next/dynamic';
@@ -627,6 +629,7 @@ export default function StockDetail() {
   useEffect(() => { if (pageStyle) setSelectedHorizon(pageStyle); }, [pageStyle]);
 
   // T230-CHARTING-TIMEFRAMES: chart timeframe selector state
+  const chartController = useRef<ChartController>(null);
   const [chartTf, setChartTf] = useState<'5m' | '15m' | '1h' | '4h' | '1d'>('1d');
   const { data: tfPrices } = useSWR(
     symbol && chartTf !== '1d' && chartTf !== '5m' ? `prices-tf-${symbol}-${chartTf}` : null,
@@ -1905,8 +1908,12 @@ export default function StockDetail() {
                   )}
                 </div>
 
+                <ChartCommandBar key={symbol as string} symbol={symbol as string} run={(c, expected) => chartController.current ? chartController.current.applyCommand(c, expected) : Promise.reject(new Error('Chart unavailable'))} />
                 {/* Chart */}
                 <PriceChart
+                  commandRef={chartController}
+                  timeframe={chartTf}
+                  onTimeframeChange={setChartTf}
                   symbol={symbol as string}
                   prices={data.prices}
                   indicators={chartTf === '1d' ? data.indicators : undefined}
@@ -3950,7 +3957,7 @@ export default function StockDetail() {
       })()}
 </StockDetailWidget>
 <StockDetailWidget id="copilot" title="Research copilot" full>
-<CopilotPanel symbol={symbol} />
+<CopilotPanel symbol={symbol} onChartCommand={(command, expected) => chartController.current ? chartController.current.applyCommand(command, expected) : Promise.reject(new Error('Open the chart before applying commands'))} />
 </StockDetailWidget>
 <StockDetailWidget id="price-alerts" title="Price alerts" full>
 <div style={{ marginBottom: '32px' }}>

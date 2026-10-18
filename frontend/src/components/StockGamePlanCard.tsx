@@ -1,3 +1,4 @@
+import DailyCloseAlerts from './DailyCloseAlerts';
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { draftPlanLevel, getStockPlan, newRequestId, type CopilotMessage, type PlanInputs,
@@ -105,6 +106,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
     finally { if (alive.current && token === generation.current) setActionBusy(false); }
   }
   return <section aria-label="Game Plan" style={{ padding: 14, background: '#0f172a', border: '1px solid #334155', borderRadius: 10, color: '#cbd5e1', fontSize: 12 }}>
+    <details><summary>Daily-close monitoring</summary><DailyCloseAlerts symbol={symbol} currency={data?.plan.currency} levels={data?.plan.levels} asOf={data?.plan.price_as_of} /></details>
     <h3 style={{ margin: '0 0 6px', color: '#c4b5fd' }}>Game Plan</h3>
     <p style={{ color: '#94a3b8', margin: '4px 0 12px' }}>Entry, targets, stop and next steps. Build the rules-based plan first; compare an LLM alternative if useful.</p>
     <label>Plan for <select aria-label="Plan for" disabled={busy || actionBusy} value={mode} onChange={e => { reset(); setMode(e.target.value as typeof mode); }} style={fieldStyle}>

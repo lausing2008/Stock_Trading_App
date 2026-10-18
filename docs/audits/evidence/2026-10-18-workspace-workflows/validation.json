@@ -1,0 +1,39 @@
+{
+  "date": "2026-10-18",
+  "base_commit": "c6ead3fc",
+  "production_verified": false,
+  "frontend": {
+    "full_suite_passed": 633,
+    "subsequent_chart_tests_passed": 4,
+    "typecheck": "passed"
+  },
+  "market_data": {
+    "initial_broad_passed": 5428,
+    "initial_broad_failed": 1,
+    "skipped": 20,
+    "initial_failure": "new scheduler job missing alert classification",
+    "affected_final_passed": 20,
+    "full_suite_repeated_after_final_changes": false
+  },
+  "other_backend_suites": {
+    "technical-analysis": 66,
+    "ml-prediction": 457,
+    "ranking-engine": 183,
+    "signal-engine": 610,
+    "strategy-engine": 62,
+    "portfolio-optimizer": 83,
+    "research-engine": 709,
+    "api-gateway": 54,
+    "decision-engine": 390,
+    "event-intelligence": 632,
+    "news-intelligence": 200
+  },
+  "model_api_cost_usd": 0,
+  "new_real_model_runs": false,
+  "limitations": [
+    "Synthetic browser API responses",
+    "No live-provider close validation",
+    "No production login validation",
+    "Semantic model review still required"
+  ]
+}

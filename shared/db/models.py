@@ -4622,3 +4622,55 @@ class CopilotDraftReceipt(Base):
     error: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class WorkspacePreference(Base):
+    """Account-wide layout only; optimistic revision prevents cross-device lost updates."""
+    __tablename__ = 'workspace_preferences'
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    layout: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class DailyCloseAlert(Base):
+    """An explicitly saved fixed threshold. Never derives or silently updates a held stop."""
+    __tablename__ = 'daily_close_alerts'
+    __table_args__ = (UniqueConstraint('user_id', 'request_id', name='uq_close_alert_request'),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    condition: Mapped[str] = mapped_column(String(8), nullable=False)
+    threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    request_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    origin: Mapped[str] = mapped_column(String(16), default='typed')
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    observation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class ResearchRelationship(Base):
+    __tablename__ = 'research_relationships'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    reviewed_by: Mapped[int | None] = mapped_column(ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
+
+class EventConnection(Base):
+    """Review-only research. No signal-engine, alert-delivery or execution consumer."""
+    __tablename__ = 'event_connections'
+    __table_args__ = (UniqueConstraint('event_key', 'relationship_id', name='uq_connection_event_edge'),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    relationship_id: Mapped[int] = mapped_column(ForeignKey('research_relationships.id'), nullable=False)
+    event_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default='pending')
+    reviewed_by: Mapped[int | None] = mapped_column(ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    baseline: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    outcome: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

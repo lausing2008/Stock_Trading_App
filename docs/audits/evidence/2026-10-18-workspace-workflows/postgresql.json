@@ -1,0 +1,60 @@
+{
+  "layout": {
+    "created": 1,
+    "stale_create": null,
+    "updated": 2,
+    "owner_layout": {
+      "version": 1,
+      "order": [
+        "plan",
+        "chart"
+      ],
+      "closed": {},
+      "hidden": {},
+      "widths": {
+        "chart": "wide"
+      }
+    },
+    "other_missing": true
+  },
+  "extra_refused": true,
+  "intraday": "waiting",
+  "confirmed": "triggered",
+  "stale_observation": "stale",
+  "missing": "unavailable",
+  "weekend": "2026-10-09",
+  "holiday": "2026-12-24",
+  "hk_close": "2026-10-09",
+  "calendar_gap": null,
+  "one_notification": 1,
+  "deactivated": true,
+  "unapproved_no_candidates": 0,
+  "approved_candidates": 1,
+  "duplicate_candidates": 0,
+  "pending": "pending",
+  "has_falsifier": true,
+  "relationships_frozen": "https://example.com/filing",
+  "new_tables": [
+    "workspace_preferences",
+    "daily_close_alerts",
+    "research_relationships",
+    "event_connections"
+  ],
+  "route_idempotent": true,
+  "route_other_empty": true,
+  "route_other_delete": true,
+  "route_key_conflict": true,
+  "route_disabled_replay": true,
+  "unpublished_hidden": true,
+  "review_queue_guard": true,
+  "frozen_baseline": 50.0,
+  "second_review_refused": true,
+  "prospective_return": 10.000000000000009,
+  "revision_links_previous": true,
+  "history_preserved": true,
+  "skipped_revision_supersedes": true,
+  "old_pending_refused": true,
+  "postgres_conflict_winners": 1,
+  "postgres_notification_count": 1,
+  "postgres_enrollment_ids": 1
+}

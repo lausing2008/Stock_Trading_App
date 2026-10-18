@@ -1,3 +1,4 @@
+import WorkspaceSyncControls from './WorkspaceSyncControls';
 import React, { useEffect, useRef, useState } from 'react';
 
 import { emptyWorkspaceLayout, parseWorkspaceLayout, type WorkspaceLayout as Layout } from '@/lib/stockWorkspaceLayout';
@@ -85,6 +86,7 @@ export default function StockDetailWorkspace({ storageKey, children }: { storage
           onChange={e => { void importLayout(e.target.files?.[0]); e.target.value = ''; }} />
       </div>
     </div>
+    {loadedKey === storageKey && <WorkspaceSyncControls key={storageKey} storageKey={storageKey} layout={active} onLoad={update} />}
     {arranging && <p className="stock-workspace-hint">Drag a handle onto another widget&apos;s title bar, or use the move buttons. Layout is shared across stocks in this browser for your account.</p>}
     {layoutError && <p role="alert">{layoutError}</p>}
     {storageWarning && <p className="stock-workspace-hint">{storageWarning}</p>}

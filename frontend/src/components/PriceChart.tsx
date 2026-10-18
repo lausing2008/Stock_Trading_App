@@ -17,7 +17,8 @@
  * daily prices[].
  */
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import React, { forwardRef, type Ref, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { CHART_INDICATORS, CHART_RANGES, CHART_TIMEFRAMES, type ChartTimeframe, type ChartController, type ChartSnapshot, type ChartCommand, type ChartIndicator } from '@/lib/chartCommands';
 import { createChart, CandlestickData, IChartApi, LineData, Time, LineStyle, LogicalRange, UTCTimestamp } from 'lightweight-charts';
 import type { Price, Overview, Levels, SignalHistoryPoint, PatternSignal } from '@/lib/api';
 import { api } from '@/lib/api';
@@ -31,6 +32,9 @@ import { computeRiskReward } from '@/lib/riskReward';
 
 type Props = {
   symbol: string;
+  commandRef?: Ref<ChartController>;
+  timeframe?: string;
+  onTimeframeChange?: (tf: ChartTimeframe) => void;
   prices: Price[];
   indicators?: Overview['indicators'];
   levels?: Levels;
@@ -134,7 +138,7 @@ function computeVolMA(priceData: Price[], period = 20): (number | null)[] {
 type SmaVals  = { sma_20: number|null; sma_50: number|null; sma_200: number|null; ema_20: number|null; ema_50: number|null; ema_200: number|null };
 type MacdVals = { macd: number|null; signal: number|null; hist: number|null };
 
-export default function PriceChart({ symbol, prices, indicators, levels, signalMarkers, patterns, gamePlanLevels, planLines, riskRewardLevels, maxPainLevel, intradayOverride, compareData }: Props) {
+const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symbol, commandRef, timeframe, onTimeframeChange, prices, indicators, levels, signalMarkers, patterns, gamePlanLevels, planLines, riskRewardLevels, maxPainLevel, intradayOverride, compareData }: Props, controllerRef) {
   const mainRef = useRef<HTMLDivElement>(null);
   const rsiRef  = useRef<HTMLDivElement>(null);
   const macdRef = useRef<HTMLDivElement>(null);
@@ -202,17 +206,61 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     setDrawings(loadDrawings(symbol));
   }, [symbol]);
 
+  const viewport = useRef<{key: string; range: LogicalRange | null} | null>(null);
+  const undo = useRef<ChartSnapshot[]>([]);
+  const restoredViewport = useRef<LogicalRange | null>(null);
+  const pendingCommand = useRef<{resolve: (s: ChartSnapshot) => void; reject: (e: Error) => void; symbol: string; command: ChartCommand; timer: ReturnType<typeof setTimeout>} | null>(null);
+  const setters: Record<ChartIndicator, (v: boolean) => void> = { SMA20:setShowSMA20,SMA50:setShowSMA50,SMA200:setShowSMA200,EMA20:setShowEMA20,EMA50:setShowEMA50,EMA200:setShowEMA200,BB:setShowBB,VOL:setShowVol,VWAP:setShowVWAP,RSI:setShowRSI,MACD:setShowMACD,SIGNALS:setShowSignals,FVG:setShowFVG,SR:setShowSR,'52W':setShow52W,PIVOTS:setShowSwingPivots };
+  const snapshot: ChartSnapshot = { symbol, range, timeframe:(range === '5m' ? '5m' : timeframe ?? '1d') as ChartTimeframe, indicators:{SMA20:showSMA20,SMA50:showSMA50,SMA200:showSMA200,EMA20:showEMA20,EMA50:showEMA50,EMA200:showEMA200,BB:showBB,VOL:showVol,VWAP:showVWAP,RSI:showRSI,MACD:showMACD,SIGNALS:showSignals,FVG:showFVG,SR:showSR,'52W':show52W,PIVOTS:showSwingPivots} };
+  useEffect(() => {
+    undo.current = []; viewport.current = null;
+    const p = pendingCommand.current;
+    if (p) { clearTimeout(p.timer); p.reject(new Error('Chart symbol changed')); pendingCommand.current = null; }
+    return () => { const p = pendingCommand.current; if (p) { clearTimeout(p.timer); p.reject(new Error('Chart closed')); pendingCommand.current = null; } };
+  }, [symbol]);
+  useEffect(() => {
+    if (timeframe === '5m' && range !== '5m') setRange('5m');
+    else if (timeframe === '1d' && range === '5m') setRange('3M');
+  }, [timeframe]);
+  useImperativeHandle(commandRef ?? controllerRef, () => ({ applyCommand(command, expectedSymbol) {
+    if (expectedSymbol !== symbol) return Promise.reject(new Error('Chart symbol changed'));
+    if (!chartRef.current && command.kind === 'indicator') return Promise.reject(new Error('Chart bars are unavailable'));
+    if (pendingCommand.current) return Promise.reject(new Error('A chart command is still running'));
+    if (command.kind === 'timeframe' && (!CHART_TIMEFRAMES.includes(command.timeframe) || !onTimeframeChange)) return Promise.reject(new Error('Unsupported chart timeframe'));
+    if (command.kind === 'indicator' && !CHART_INDICATORS.includes(command.indicator)) return Promise.reject(new Error('Unsupported indicator'));
+    if (command.kind === 'range' && !CHART_RANGES.includes(command.range)) return Promise.reject(new Error('Unsupported range'));
+    if (command.kind === 'timeframe' && snapshot.timeframe === command.timeframe && !!chartRef.current) return Promise.resolve(snapshot);
+    if (command.kind === 'indicator' && snapshot.indicators[command.indicator] === command.enabled) return Promise.resolve(snapshot);
+    if (command.kind === 'range' && range === command.range && !intradayOverride && !!chartRef.current) return Promise.resolve(snapshot);
+    const previous = command.kind === 'undo' ? undo.current.pop() : null;
+    if (command.kind === 'undo' && !previous) return Promise.reject(new Error('No chart command to undo'));
+    if (previous && chartRef.current && previous.range === snapshot.range && previous.timeframe === snapshot.timeframe && CHART_INDICATORS.every(k => previous.indicators[k] === snapshot.indicators[k])) {
+      if (previous.viewport) chartRef.current.timeScale().setVisibleLogicalRange(previous.viewport as LogicalRange);
+      return Promise.resolve(snapshot);
+    }
+    if (command.kind !== 'undo') undo.current = [...undo.current.slice(-19), {...snapshot, viewport:chartRef.current?.timeScale().getVisibleLogicalRange() ?? undefined}];
+    return new Promise<ChartSnapshot>((resolve, reject) => {
+      const timer = setTimeout(() => { pendingCommand.current = null; reject(new Error('The chart could not load the requested data')); }, 20000);
+      pendingCommand.current = { resolve, reject, symbol, command, timer };
+      if (previous) { restoredViewport.current = previous.viewport as LogicalRange ?? null; CHART_INDICATORS.forEach(k => setters[k](previous.indicators[k])); setRange(previous.range); onTimeframeChange?.(previous.timeframe ?? (previous.range === '5m' ? '5m' : '1d')); }
+      else if (command.kind === 'indicator') setters[command.indicator](command.enabled);
+      else if (command.kind === 'timeframe') { setRange(command.timeframe === '5m' ? '5m' : '3M'); onTimeframeChange?.(command.timeframe); }
+      else if (command.kind === 'range') { setRange(command.range); onTimeframeChange?.(command.range === '5m' ? '5m' : '1d'); }
+    });
+  } }));
+
   // ── Intraday 5m state ─────────────────────────────────────────────────────
   const [intradayPrices, setIntradayPrices] = useState<Price[] | null>(null);
   const [intradayLoading, setIntradayLoading] = useState(false);
   // intradayOverride: externally provided intraday bars (15m/1h/4h) force intraday mode
-  const isIntraday = range === '5m' || (intradayOverride != null && intradayOverride.length > 0);
+  const isIntraday = range === '5m' || (!!timeframe && timeframe !== '1d') || (intradayOverride != null && intradayOverride.length > 0);
 
   useEffect(() => {
     // When intradayOverride is active, skip the internal 5m fetch
-    if (intradayOverride != null) { setIntradayPrices(null); return; }
+    if (intradayOverride != null || (timeframe && !['1d','5m'].includes(timeframe))) { setIntradayPrices(null); return; }
     if (!isIntraday) { setIntradayPrices(null); return; }
-    setIntradayLoading(true);
+    let live = true;
+    setIntradayPrices(null); setIntradayLoading(true);
     // Pass today's UTC date so only the current session is returned — prevents
     // the overnight gap from appearing as a disconnection and avoids showing
     // yesterday's higher prices as a false spike in the Y-axis range.
@@ -222,13 +270,14 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
         // Safety: if today returned very few bars (< 5, e.g. pre-market),
         // fall back to 100 bars without the date filter to show recent history.
         if (data.length < 5) {
-          return api.getPrices(symbol, '5m', 100).then(d => setIntradayPrices(d));
+          return api.getPrices(symbol, '5m', 100).then(d => { if (live) setIntradayPrices(d); });
         }
-        setIntradayPrices(data);
+        if (live) setIntradayPrices(data);
       })
-      .catch(() => setIntradayPrices([]))
-      .finally(() => setIntradayLoading(false));
-  }, [isIntraday, symbol, intradayOverride]);
+      .catch(() => { if (live) setIntradayPrices([]); })
+      .finally(() => { if (live) setIntradayLoading(false); });
+    return () => { live = false; };
+  }, [isIntraday, symbol, intradayOverride, timeframe]);
 
   // ── Daily slice (memoised to avoid chart flicker on SWR polls) ────────────
   const dailyConfig = DAILY_RANGES.find(r => r.label === range);
@@ -804,7 +853,10 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     }
     updateSrLabels();
     chart.timeScale().subscribeVisibleTimeRangeChange(updateSrLabels);
-    chart.timeScale().fitContent();
+    const viewportKey = `${symbol}:${range}:${timeframe ?? ''}:${isIntraday}`;
+    if (restoredViewport.current) { chart.timeScale().setVisibleLogicalRange(restoredViewport.current); restoredViewport.current = null; }
+    else if (viewport.current?.key === viewportKey && viewport.current.range) chart.timeScale().setVisibleLogicalRange(viewport.current.range);
+    else chart.timeScale().fitContent();
 
     // ── RSI chart — daily reads server-computed values, intraday computes locally ──
     let rsiChart: IChartApi | null = null;
@@ -914,6 +966,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
 
     return () => {
       ro.disconnect();
+      viewport.current = { key: viewportKey, range: chart.timeScale().getVisibleLogicalRange() };
       chart.remove();
       rsiChart?.remove();
       macdChart?.remove();
@@ -921,6 +974,17 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       setSrLabels([]);
     };
   }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, planLines, riskRewardLevels, maxPainLevel, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showAnchoredVwap, anchoredVwapIdx, showRSI, showMACD, showSignals, showFVG, showSR, show52W, showSwingPivots, swingPivots, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
+
+  useEffect(() => {
+    const p = pendingCommand.current;
+    if (!p || p.symbol !== symbol || !chartRef.current) return;
+    if (intradayLoading || (range === '5m' && (!intradayPrices?.length || intradayOverride != null))) return;
+    if (timeframe && !['1d','5m'].includes(timeframe) && !intradayOverride?.length) return;
+    if (p.command.kind === 'timeframe' && snapshot.timeframe !== p.command.timeframe) return;
+    if (p.command.kind === 'range' && p.command.range !== range) return;
+    if (p.command.kind === 'indicator' && snapshot.indicators[p.command.indicator] !== p.command.enabled) return;
+    clearTimeout(p.timer); pendingCommand.current = null; p.resolve(snapshot);
+  }, [chartInstanceVersion, intradayLoading]);
 
   // ── Fixed Range VP: click-to-pick start/end selection ───────────────────
   // Deliberately a SEPARATE, lightweight effect from the main chart-rebuild effect above —
@@ -1048,7 +1112,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-3 pt-2 pb-1.5 border-b border-slate-800">
         {/* Intraday button */}
         <button
-          onClick={() => setRange('5m')}
+          onClick={() => { setRange('5m'); onTimeframeChange?.('5m'); }}
           className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors ${
             range === '5m'
               ? 'bg-indigo-600 text-white'
@@ -1061,7 +1125,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
         {DAILY_RANGES.map(r => (
           <button
             key={r.label}
-            onClick={() => setRange(r.label)}
+            onClick={() => { setRange(r.label); onTimeframeChange?.('1d'); }}
             className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors ${
               range === r.label
                 ? 'bg-indigo-600 text-white'
@@ -1377,4 +1441,5 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       )}
     </div>
   );
-}
+});
+export default PriceChart;

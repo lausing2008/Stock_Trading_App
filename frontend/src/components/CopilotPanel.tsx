@@ -13,6 +13,8 @@ import {
 } from '@/lib/copilot';
 import { isAiConfigured, getAiProviderLabel } from '@/lib/ai';
 
+import { parseChartCommand, type ChartCommand, type ChartSnapshot } from '@/lib/chartCommands';
+
 const SUGGESTIONS = [
   'Explain this signal using its evidence',
   'What changed since the previous report?',
@@ -167,7 +169,7 @@ export function CopilotAnswer({ m, defaultOpen = false }: { m: CopilotMessage; d
   );
 }
 
-export default function CopilotPanel({ symbol }: { symbol: string }) {
+export default function CopilotPanel({ symbol, onChartCommand }: { symbol: string; onChartCommand?: (command: ChartCommand, symbol: string) => Promise<ChartSnapshot> }) {
   const [open, setOpen] = useState(false);
   const [convId, setConvId] = useState<number | null>(null);
   const [msgs, setMsgs] = useState<CopilotMessage[]>([]);
@@ -235,6 +237,17 @@ export default function CopilotPanel({ symbol }: { symbol: string }) {
   async function send(question: string, rid: string) {
     if (!question.trim() || loading) return;
     const g = gen.current;
+    const chartCommand = parseChartCommand(question);
+    if (chartCommand && onChartCommand) {
+      setLoading(true); setInput(''); setError('');
+      try {
+        const state = await onChartCommand(chartCommand, symbol);
+        if (g !== gen.current) return;
+        setMsgs(prev => [...prev, {role:'user', content:question, request_id:rid}, {role:'assistant',localAction:true,content:`Chart updated for ${state.symbol}. Range: ${state.range}.`,request_id:rid}]);
+      } catch (e) { if (g === gen.current) setError(e instanceof Error ? e.message : 'Chart command failed'); }
+      finally { if (g === gen.current) setLoading(false); }
+      return;
+    }
     setError('');
     setStopNote('');
     setLoading(true);
@@ -329,7 +342,7 @@ export default function CopilotPanel({ symbol }: { symbol: string }) {
           ) : (
             <>
               <div style={{ padding: '8px 16px', fontSize: '11px', color: '#64748b', borderBottom: '1px solid #1e293b' }}>
-                Read-only. Answers use this platform&apos;s stored prices, signals, K-Score, earnings date, reports and headlines;
+                Chart commands: “show RSI”, “hide MACD”, “show 1Y”, “set 5m”, “undo chart”. Trading objects still require confirmation. Answers use this platform&apos;s stored prices, signals, K-Score, earnings date, reports and headlines;
                 figures are checked against that data and cited; the wording is the model&apos;s. It cannot place orders or change alerts,
                 and its scores are not probabilities of profit.
                 {retention !== null && ` Conversations are kept ${retention} days after last use.`}
@@ -354,7 +367,7 @@ export default function CopilotPanel({ symbol }: { symbol: string }) {
                         <div style={{ maxWidth: '80%', padding: '10px 14px', borderRadius: '10px', fontSize: '13px', background: 'rgba(167,139,250,0.15)', border: '1px solid rgba(167,139,250,0.3)', color: '#c4b5fd', whiteSpace: 'pre-wrap' }}>
                           {m.content}
                         </div>
-                      ) : <CopilotAnswer m={m} />}
+                      ) : m.localAction ? <p role="status">{m.content}</p> : <CopilotAnswer m={m} />}
                     </div>
                   ))}
                   {loading && (

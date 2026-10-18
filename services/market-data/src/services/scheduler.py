@@ -9106,6 +9106,31 @@ def _is_usable_price(p) -> bool:
     return p is not None and p > 0
 
 
+def check_daily_close_workflows():
+    """Explicit in-app close alerts and review-only research; never generates model calls."""
+    from .workspace_workflows import check_close_alerts, propose_connections, resolve_connections, utcnow
+    from ..adapters.registry import get_adapters
+    from datetime import timedelta
+    def fetch_daily(symbol, market, day):
+        for adapter in get_adapters(market, '1d'):
+            try:
+                result = adapter.fetch_ohlcv(symbol, day, day + timedelta(days=1), '1d')
+                rows = result.df
+                matching = rows[rows['ts'].dt.date == day]
+                if not matching.empty:
+                    return {'session':day.isoformat(), 'close':float(matching.iloc[-1]['close']),
+                            'fetched_at':utcnow().isoformat(),'provider':adapter.name}
+            except Exception as exc:
+                log.warning('daily_close.provider_failed', symbol=symbol, provider=adapter.name, error=type(exc).__name__)
+        return None
+    try:
+        check_close_alerts(SessionLocal, fetch_daily)
+        with SessionLocal() as s:
+            propose_connections(s); resolve_connections(s); s.commit()
+    except Exception as exc:
+        log.exception('daily_close.workflow_failed', error=str(exc))
+
+
 def check_price_alerts() -> None:
     """Check all untriggered alerts against latest live prices and fire emails.
 
@@ -15046,6 +15071,9 @@ def start_scheduler() -> None:
     # emails when it fires — gated behind _is_alerting_enabled() as a block (they're all
     # alert-emitting, no data-only jobs interleaved in this contiguous stretch).
     if _is_alerting_enabled():
+        _scheduler.add_job(check_daily_close_workflows, 'interval', minutes=5,
+                           id='daily_close_workflows', replace_existing=True,
+                           max_instances=1, coalesce=True, misfire_grace_time=60)
         # ── Price alert checker — every minute ──────────────────────────────────
         _scheduler.add_job(
             check_price_alerts,

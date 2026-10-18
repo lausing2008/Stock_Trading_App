@@ -33,6 +33,7 @@ export interface CopilotDraft {
   result?: Record<string, unknown>;
 }
 export interface CopilotMessage {
+  localAction?: boolean;
   id?: number; role: 'user' | 'assistant'; content: string; request_id: string;
   status?: 'grounded' | 'rejected' | null; created_at?: string | null;
   evidence_refs?: CopilotEvidenceRef[]; limitations?: string[];
