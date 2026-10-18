@@ -507,3 +507,10 @@ a { color: inherit; text-decoration: none; }
 
 /* Backdrop */
 .backdrop-blur-sm { backdrop-filter: blur(4px); }
+.common-option-strategy-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+.option-strategy-inputs { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+.option-strategy-inputs label { display: flex; flex: 1 1 190px; flex-direction: column; gap: 5px; min-width: 0; }
+.option-strategy-inputs input, .option-strategy-inputs select { min-width: 0; width: 100%; background: #0f172a; color: #cbd5e1; border: 1px solid #475569; border-radius: 5px; padding: 6px; }
+.option-strategy-playbook { font-size: 12px; color: #cbd5e1; line-height: 1.6; }
+.option-strategy-playbook summary { cursor: pointer; color: #a5b4fc; }
+.option-strategy-blockers { color: #fbbf24; }

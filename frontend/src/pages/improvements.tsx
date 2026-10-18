@@ -35,6 +35,15 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'COMMON-OPTIONS-PLAYBOOKS', tier: 454, severity: 'feature', defaultStatus: 'done',
+    title: 'Four common options strategies with conditional preference and management playbooks',
+    file: 'docs/features/2026-10-18-common-options-playbooks.md', effort: 'M',
+    impact: 'The options comparison could disappear without stock levels and lacked entry, exit and management steps for each strategy.',
+    what: 'Long call, protective put, covered call and cash-secured put each show contract economics, entry references, objectives, exit reviews and playbooks. Objective and declared capital/coverage inputs produce an explained research preference or wait.',
+    fix: 'Premium-loss, share/cash coverage, assignment, expiry, quote and chain-date checks gate the preference. Protection uses hedge management rather than a premium stop. Missing contracts stay visible. Entry remains WAIT for fresh quotes and broker checks.',
+    implementedNote: 'Frontend-only deterministic policies; no new model calls, orders or delivery changes. See feature record for validation and production status.',
+  },
+  {
     id: 'TRADING-WORKSPACE', tier: 453, severity: 'feature', defaultStatus: 'done',
     title: 'Full-width chart with an attached, selected-scenario Game Plan',
     file: 'docs/features/2026-10-18-trading-workspace.md', effort: 'M',
@@ -21673,6 +21682,7 @@ const ITEMS: Item[] = [
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = {
+  454: 'Tier 454 — Four common options playbooks (2026-10-18)',
   453: 'Tier 453 — Chart and Game Plan workspace (2026-10-18)',
   452: 'Tier 452 — Stock workspace controls (2026-10-17)',
   451: 'Tier 451 — Compact stock workspace (2026-10-17)',
@@ -22124,6 +22134,7 @@ const TIER_LABEL: Record<Tier, string> = {
 };
 
 const TIER_COLOR: Record<Tier, string> = {
+  454: '#a78bfa',
   453: '#38bdf8',
   452: '#22d3ee',
   451: '#38bdf8',

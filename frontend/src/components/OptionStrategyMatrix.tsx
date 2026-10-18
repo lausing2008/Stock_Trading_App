@@ -9,7 +9,8 @@
  *
  * Every number comes from a REAL currently-listed contract. Nothing here predicts direction.
  */
-import { useState } from 'react';
+import React, { useState } from 'react';
+import { COMMON_OPTION_KEYS, COMMON_OPTION_NAMES, recommendCommonOption, type OptionPlanContext, type OptionGoal, type CommonOptionKey } from '@/lib/commonOptionPlans';
 import type { OptionStrategy, OptionStrategyMatrix } from '@/lib/api';
 
 const CARD: React.CSSProperties = {
@@ -65,7 +66,8 @@ function PayoffChart({ s, spot }: { s: OptionStrategy; spot: number }) {
   );
 }
 
-function StrategyCard({ s, spot, highlight }: { s: OptionStrategy; spot: number; highlight: boolean }) {
+function StrategyCard({ s, spot, highlight, review }: { s: OptionStrategy; spot: number; highlight: boolean;
+  review?: ReturnType<typeof recommendCommonOption>['plans'][CommonOptionKey] }) {
   const [open, setOpen] = useState(false);
   return (
     <div style={{ ...CARD, borderColor: highlight ? '#22c55e' : '#1e293b' }}>
@@ -79,6 +81,11 @@ function StrategyCard({ s, spot, highlight }: { s: OptionStrategy; spot: number;
       </div>
 
       <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6, lineHeight: 1.5 }}>{s.what_it_does}</div>
+      <p style={{ fontSize: 12, color: '#cbd5e1' }}>{s.legs.map((leg, i) => <span key={i}>
+        {i > 0 && ' + '}{leg.action.toUpperCase()} {fmtUSD(leg.strike)} {leg.right} · expires {leg.expiry ?? 'unknown'}
+        {leg.days_to_expiry != null && ` (${leg.days_to_expiry} days)`}
+      </span>)}</p>
+      <p style={{ fontSize: 10, color: '#94a3b8' }}>Expiry economics per standard contract, before fees. Stock legs use the reference spot.</p>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(88px,1fr))', gap: 8, marginTop: 10 }}>
         <div><div style={LABEL}>Max loss</div>
@@ -93,7 +100,14 @@ function StrategyCard({ s, spot, highlight }: { s: OptionStrategy; spot: number;
           <div style={{ fontSize: 12, color: '#cbd5e1' }}>{fmtUSD(s.collateral_per_contract)}</div></div>
       </div>
 
-      <PayoffChart s={s} spot={spot} />
+      {review && <div className="option-strategy-playbook">
+        <p><strong>Entry:</strong> {review.entry}</p>
+        <p><strong>Take profit / objective:</strong> {review.target}</p>
+        <p><strong>Stop / invalidation:</strong> {review.stop}</p>
+        {!!review.blockers.length && <p className="option-strategy-blockers"><strong>Not eligible for preference:</strong> {review.blockers.join(' ')}</p>}
+        <details><summary>Playbook — before entry, while open & exit</summary><ol>{review.steps.map(step => <li key={step}>{step}</li>)}</ol></details>
+      </div>}
+      <details><summary>Expiry payoff illustration</summary><PayoffChart s={s} spot={spot} /></details>
 
       <button onClick={() => setOpen(o => !o)} style={{
         marginTop: 4, background: 'transparent', border: 'none', color: '#38bdf8',
@@ -135,98 +149,55 @@ function StrategyCard({ s, spot, highlight }: { s: OptionStrategy; spot: number;
   );
 }
 
-export default function OptionStrategyMatrixPanel({ matrix, spot }: { matrix: OptionStrategyMatrix; spot: number }) {
-  const rec = matrix.recommendation;
-  const all = { ...matrix.singles, ...matrix.combos };
-  const singleKeys = ['long_call', 'covered_call', 'protective_put', 'cash_secured_put'].filter(k => matrix.singles[k]);
+export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, takeProfit, chainAsOf }: {
+  matrix: OptionStrategyMatrix; spot: number; stopLoss?: number; takeProfit?: number; chainAsOf?: string | null;
+}) {
+  const [goal, setGoal] = useState<OptionGoal>('compare');
+  const [shares, setShares] = useState('');
+  const [cash, setCash] = useState('');
+  const [premiumBudget, setPremiumBudget] = useState('');
+  const [acceptAssignment, setAcceptAssignment] = useState(false);
+  const amount = (text: string) => text.trim() && Number.isFinite(Number(text)) && Number(text) >= 0 ? Number(text) : null;
+  const context: OptionPlanContext = { goal, shares: amount(shares), cash: amount(cash), premiumBudget: amount(premiumBudget), acceptAssignment, stop: stopLoss, target: takeProfit };
+  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const review = recommendCommonOption(matrix, context, today, chainAsOf);
   const comboKeys = Object.keys(matrix.combos);
-  // SR-07: structures withheld because their payoff cannot honestly be summarised.
-  const unavailableKeys = Object.keys(matrix.unavailable ?? {});
-
-  return (
-    <div style={{ marginTop: 16 }}>
-      <p style={{ color: '#fbbf24', fontSize: 13 }}>Research comparison only. Fresh quotes, contract deliverables,
-        event coverage, account permissions and portfolio risk have not been verified. No trade quantity is recommended.</p>
-      {rec.primary && (
-        <div style={{ ...CARD, borderColor: '#22c55e', marginBottom: 14 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: '#22c55e' }}>
-            Structure comparison: {rec.name}
-          </div>
-          <div style={{ fontSize: 12, color: '#cbd5e1', marginTop: 6, lineHeight: 1.6 }}>{rec.reason}</div>
-          {/* SF-04: "Best fit RIGHT NOW" is the strongest claim on this page. If the structure
-              it names is priced from a trade that already happened rather than a live quote,
-              that qualifier belongs next to the claim, not only down in the leg detail. */}
-          {rec.primary && (all[rec.primary]?.legs ?? []).some(l => l.price_source === 'last_trade') && (
-            <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 8, lineHeight: 1.6 }}>
-              ⚠ At least one leg here is priced from its last traded price, not a live
-              two-sided quote — treat the figures as research estimates rather than a cost you
-              can obtain right now.
-            </div>
-          )}
-          {rec.iv_note && (
-            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8, lineHeight: 1.6 }}>
-              <strong style={{ color: '#64748b' }}>Volatility:</strong> {rec.iv_note}
-              {matrix.iv_rank != null && <> (IV rank {matrix.iv_rank.toFixed(0)}/100)</>}
-            </div>
-          )}
-          {rec.constraint && (
-            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6, lineHeight: 1.6 }}>
-              <strong style={{ color: '#64748b' }}>Your position:</strong> {rec.constraint}
-            </div>
-          )}
-          {!!rec.alternatives?.length && (
-            <div style={{ marginTop: 10, borderTop: '1px solid #1e293b', paddingTop: 8 }}>
-              <div style={LABEL}>Also reasonable</div>
-              {rec.alternatives.map(a => (
-                <div key={a.key} style={{ fontSize: 11, color: '#94a3b8', marginTop: 5, lineHeight: 1.5 }}>
-                  <strong style={{ color: '#cbd5e1' }}>{a.name}</strong> — {a.reason}
-                </div>
-              ))}
-            </div>
-          )}
-          <div style={{ fontSize: 10, color: '#64748b', marginTop: 10, lineHeight: 1.5 }}>
-            This ranks structures against your position and the current volatility regime. It is
-            not a prediction that the trade wins, and it cannot know your tax or margin situation.
-          </div>
-        </div>
-      )}
-
-      <div style={{ ...LABEL, marginBottom: 8 }}>The four legs</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 12 }}>
-        {singleKeys.map(k => <StrategyCard key={k} s={all[k]} spot={spot} highlight={rec.primary === k} />)}
-      </div>
-
-      {!!comboKeys.length && (
-        <>
-          <div style={{ ...LABEL, margin: '18px 0 8px' }}>Combinations</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 12 }}>
-            {comboKeys.map(k => <StrategyCard key={k} s={all[k]} spot={spot} highlight={rec.primary === k} />)}
-          </div>
-        </>
-      )}
-      {/* SR-07 (2026-10-02): a structure the chain could price but whose payoff cannot be
-          stated honestly. Shown WITH its reason rather than omitted: a reader who expects a
-          collar and sees nothing concludes the chain had no contracts, which is a different
-          and wrong diagnosis. The common case is a collar whose legs expire on different
-          dates — the put and call selection windows (25-60 and 14-45 DTE) routinely disagree,
-          and a floor, cap and breakeven are only defined when both legs expire together. */}
-      {!!unavailableKeys.length && (
-        <>
-          <div style={{ ...LABEL, margin: '18px 0 8px' }}>Not shown, and why</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 12 }}>
-            {unavailableKeys.map(k => (
-              <div key={k} style={{ ...CARD, borderStyle: 'dashed', opacity: 0.85 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8' }}>
-                  {matrix.unavailable![k].name}
-                </div>
-                <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6, lineHeight: 1.6 }}>
-                  {matrix.unavailable![k].reason}
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
+  return <section aria-label="Four common option strategies" style={{ marginTop: 16 }}>
+    <h3>Four common strategies & conditional preference</h3>
+    <p>Compare one standard 100-share contract. These are research illustrations using settled provider prices
+      {chainAsOf ? ` observed ${chainAsOf}` : ' with an unknown observation date'}, not live executable quotes.</p>
+    <div className="option-strategy-inputs">
+      <label>Objective<select aria-label="Objective" value={goal} onChange={e => setGoal(e.target.value as OptionGoal)}>
+        <option value="compare">Compare only — choose an objective</option><option value="upside">Upside / bullish exposure</option>
+        <option value="income">Income / willing to own stock</option><option value="protect">Protect existing shares</option><option value="bearish">Bearish / reduce stock risk</option>
+      </select></label>
+      <label>Unencumbered shares<input type="number" min="0" value={shares} onChange={e => setShares(e.target.value)} /></label>
+      <label>Cash reserved for assignment ($)<input type="number" min="0" value={cash} onChange={e => setCash(e.target.value)} /></label>
+      <label>Option premium-loss budget ($)<input type="number" min="0" value={premiumBudget} onChange={e => setPremiumBudget(e.target.value)} /></label>
     </div>
-  );
+    <label><input type="checkbox" checked={acceptAssignment} onChange={e => setAcceptAssignment(e.target.checked)} /> I accept buying or selling 100 shares at the listed strike if assigned.</label>
+    <div role="status" style={{ ...CARD, borderColor: review.primary ? '#38bdf8' : '#475569', margin: '14px 0' }}>
+      <strong>{review.primary ? `Preferred strategy to research: ${COMMON_OPTION_NAMES[review.primary]}` : 'Wait / no strategy preference yet'}</strong>
+      <p>{review.reason}</p><p>{review.ivNote}</p>
+      <p>Entry status: WAIT for fresh quotes and broker checks. Holdings and budgets above are your declarations;
+        account permissions, deliverables, event coverage and portfolio risk are unverified. No quantity or order is recommended.</p>
+      <p>Premium targets and exits below are illustrative policies, not calibrated forecasts or guaranteed fills.
+        For hedges and covered calls, the premium budget does not cap stock losses.</p>
+    </div>
+    <div className="common-option-strategy-grid">
+      {COMMON_OPTION_KEYS.map(key => matrix.singles[key]
+        ? <StrategyCard key={key} s={matrix.singles[key]} spot={spot} highlight={review.primary === key} review={review.plans[key]} />
+        : <article key={key} style={CARD}><h4>{COMMON_OPTION_NAMES[key]}</h4>
+          <p>No usable priced contract. Entry, premium targets and stops are unavailable; refresh the chain.</p>
+          <p>{review.plans[key].blockers.join(' ')}</p><details><summary>Playbook — before entry, while open & exit</summary><ol>{review.plans[key].steps.map(step => <li key={step}>{step}</li>)}</ol></details>
+        </article>)}
+    </div>
+    {!!comboKeys.length && <details style={{ marginTop: 16 }}><summary>More strategies — combinations</summary><div className="common-option-strategy-grid">
+      {comboKeys.map(key => <StrategyCard key={key} s={matrix.combos[key]} spot={spot} highlight={false} />)}
+    </div></details>}
+    {!!Object.keys(matrix.unavailable ?? {}).length && <details><summary>Unavailable combinations and reasons</summary>
+      {Object.entries(matrix.unavailable ?? {}).map(([key, item]) => <p key={key}><strong>{item.name}:</strong> {item.reason}</p>)}
+    </details>}
+    <p>Strategy mechanics: <a href="https://www.optionseducation.org/strategies/all-strategies/long-call">OIC long call</a>, <a href="https://www.optionseducation.org/strategies/all-strategies/protective-put">protective put</a>, <a href="https://www.optionseducation.org/strategies/all-strategies/covered-call-buy-write">covered call</a>, <a href="https://www.optionseducation.org/strategies/all-strategies/cash-secured-put">cash-secured put</a>.</p>
+  </section>;
 }

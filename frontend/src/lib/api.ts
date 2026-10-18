@@ -2517,6 +2517,8 @@ export type OptionStrategyMatrix = {
 export type OptionsGamePlan = {
   symbol: string;
   available: boolean;
+  chain_as_of?: string | null;
+  chain_source?: string | null;
   /** 'no_options_listed' = this symbol has none. 'options_feed_unavailable' = the upstream
    *  chain feed is down and EVERY symbol is empty — a very different thing (AUD-T403). */
   reason?: string;

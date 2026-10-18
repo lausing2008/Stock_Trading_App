@@ -1161,7 +1161,7 @@ export default function StockDetail() {
           <div style={{ marginBottom: 4 }}>
             <h2 style={{ fontSize: 15, fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Options — {symbol}</h2>
             <p style={{ fontSize: 12, color: '#64748b', margin: '4px 0 0' }}>
-              Flow, dealer positioning, open-interest structure, and the hedge/income game plan.{' '}
+              Four strategy playbooks, a conditional preference, flow, dealer positioning and the options chain.{' '}
               <a href="/option-trading-guide" style={{ color: '#38bdf8', textDecoration: 'none' }}>Options guide →</a>
             </p>
           </div>

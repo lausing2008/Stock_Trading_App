@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/api';
 import type { OptionsGamePlan } from '@/lib/api';
@@ -26,15 +26,13 @@ export default function OptionsGamePlanCard({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!stopLoss && !takeProfit) {
-      setPlan(null); // nothing to hedge/collect against yet — don't even fetch
-      return;
-    }
+    let active = true;
     setPlan(undefined);
     setError(null);
     api.getOptionsGamePlan(symbol, { stopLoss, takeProfit })
-      .then(setPlan)
+      .then(value => { if (active) setPlan(value); })
       .catch((e) => {
+        if (!active) return;
         // A 403 here means the caller isn't Advanced-tier — a real, expected case for a basic
         // user viewing this page before the gate above them (in stock/[symbol].tsx) even mounts
         // this component in some code paths; fail silently to "nothing to show" rather than a
@@ -43,9 +41,10 @@ export default function OptionsGamePlanCard({
         setError('Failed to load the options game plan.');
         setPlan(null);
       });
+    return () => { active = false; };
   }, [symbol, stopLoss, takeProfit]);
 
-  if (plan === undefined) {
+  if (plan === undefined || (plan && plan.symbol !== symbol)) {
     return (
       <div style={{ background: '#1e293b', borderRadius: 10, padding: '14px 18px', border: '1px solid #334155', marginTop: 12 }}>
         <div style={{ fontSize: 12, color: '#64748b' }}>Loading options game plan…</div>
@@ -59,39 +58,20 @@ export default function OptionsGamePlanCard({
       </div>
     );
   }
-  // AUD-T403-SILENTFEEDOUTAGE: this used to `return null` for every unavailable reason, and so
-  // did MarketPressurePanel and the Options Chain section. When the upstream chain feed went
-  // down, all three vanished at once and the page looked like a deploy had broken it — which is
-  // exactly how a multi-day outage went unnoticed. A feed outage now SAYS SO. A symbol that
-  // genuinely has no listed options still renders nothing, because that is not news.
-  if (plan && !plan.available && plan.reason === 'options_feed_unavailable') {
-    return (
-      <div style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.35)',
-                    borderRadius: 10, padding: '12px 16px', marginTop: 12 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b' }}>
-          Options data feed unavailable
-        </div>
-        <div style={{ fontSize: 11.5, color: '#cbd5e1', marginTop: 6, lineHeight: 1.6 }}>
-          The upstream options-chain provider is not returning contracts right now, so the game
-          plan, options flow, open-interest structure and chain are all unavailable for every
-          symbol — not just {plan.symbol}. This is a data-source outage, not a change to this
-          stock and not a problem with your view.
-          {plan.last_known_chain_date && (
-            <> The last chain we recorded for {plan.symbol} was <b>{plan.last_known_chain_date}</b>.</>
-          )}
-        </div>
-        <div style={{ fontSize: 10.5, color: '#64748b', marginTop: 8 }}>
-          Dealer gamma, dark-pool prints and NOPE come from a different provider and are still live.
-        </div>
-      </div>
-    );
-  }
-  if (!plan || !plan.available) return null;
+  if (!plan) return null;
+  if (!plan.available) return <div role="status" style={{ marginTop: 12 }}>
+    <h3>Options Game Plan — data unavailable</h3>
+    <p>{plan.reason === 'options_feed_unavailable' ? 'The options provider is unavailable. Refresh when the feed recovers.'
+      : plan.reason === 'no_options_listed' ? 'No listed option contracts were returned for this symbol.'
+      : `No priced option plan is available (${plan.reason ?? 'no usable contracts'}). Refresh the chain before entry.`}</p>
+    {plan.last_known_chain_date && <p>Last recorded chain: {plan.last_known_chain_date}.</p>}
+    <OptionStrategyMatrixPanel key={symbol} spot={currentPrice ?? 0} matrix={{ singles: {}, combos: {}, recommendation: { primary: null, reason: 'No contract data' }, iv_rank: null, iv_regime: 'unknown' }} />
+  </div>;
 
   const pp = plan.protective_put;
   const cc = plan.covered_call;
   const matrix = plan.strategy_matrix;
-  const hasMatrix = !!matrix && (Object.keys(matrix.singles).length > 0 || Object.keys(matrix.combos).length > 0);
+  const hasMatrix = !!matrix;
   // T402: previously `if (!pp && !cc) return null`. That now also hides the four-leg matrix in
   // the case where the two original legs could not be priced but other structures could —
   // e.g. no stop-loss set, so there is nothing to anchor a protective put to, yet a long call
@@ -103,7 +83,6 @@ export default function OptionsGamePlanCard({
   // right now", which are different situations with different next steps.
   const ppWhy = plan.protective_put_unavailable;
   const ccWhy = plan.covered_call_unavailable;
-  if (!pp && !cc && !hasMatrix && !ppWhy && !ccWhy) return null;
 
   return (
     <div style={{ background: '#1e293b', borderRadius: 10, padding: '14px 18px', border: '1px solid #334155', marginTop: 12 }}>
@@ -127,12 +106,12 @@ export default function OptionsGamePlanCard({
         )}
       </div>
       <div style={{ fontSize: 11, color: '#64748b', marginBottom: 12 }}>
-        Real, currently-listed contracts priced against your own stop-loss/take-profit levels —
-        not a prediction of where the stock will go, just what protecting or collecting income
-        against your existing plan would cost right now.
+        Compare four common strategies, choose an objective, then review a conditional preference
+        and each strategy's entry, exit and management playbook. Prices are research references,
+        not an executable trade recommendation.
       </div>
 
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+      {!hasMatrix && <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         {pp && (
           <div style={{ flex: '1 1 260px', minWidth: 240, background: '#0f172a', borderRadius: 8, padding: '10px 14px', border: '1px solid rgba(239,68,68,0.25)' }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: '#f87171', marginBottom: 6 }}>
@@ -167,14 +146,14 @@ export default function OptionsGamePlanCard({
             </div>
           </div>
         )}
-      </div>
-      {hasMatrix && plan.current_price != null && (
-        <OptionStrategyMatrixPanel matrix={matrix!} spot={plan.current_price} />
+      </div>}
+      {plan.current_price != null && (
+        <OptionStrategyMatrixPanel key={symbol} matrix={matrix ?? { singles: {}, combos: {}, recommendation: { primary: null, reason: 'Strategy matrix unavailable' }, iv_rank: null, iv_regime: 'unknown' }} spot={plan.current_price} stopLoss={stopLoss} takeProfit={takeProfit} chainAsOf={plan.chain_as_of} />
       )}
       {currentPrice != null && (
         <div style={{ fontSize: 10.5, color: '#475569', marginTop: 10 }}>
-          The two legs above require owning shares; the four-leg grid says for each structure
-          whether it does. This card shows numbers, it doesn't place trades. See{' '}
+          Protective puts and covered calls require shares; cash-secured puts require reserved cash.
+          This card compares plans and does not place trades. See{' '}
           <a href="/option-trading-guide" style={{ color: '#818cf8' }}>Option Trading Guide</a>{' '}
           for how to read them, or{' '}
           <Link href={`/options-calculator?symbol=${plan.symbol}&spot=${plan.current_price ?? ''}`} style={{ color: '#818cf8' }}>
