@@ -179,7 +179,6 @@ function ConfidenceTrend({ history }: { history: SignalHistoryPoint[] }) {
   );
 }
 
-
 function fmtBigMoney(v: number | null | undefined): string {
   if (v == null) return '—';
   const abs = Math.abs(v);
@@ -734,12 +733,12 @@ export default function StockDetail() {
     { revalidateOnFocus: false },
   );
 
-  const { data: dividendData } = useSWR<DividendData>(
+  const { data: dividendData, error: dividendError } = useSWR<DividendData>(
     symbol && divOpen ? `dividends-${symbol}` : null,
     () => api.getDividends(symbol),
     { revalidateOnFocus: false },
   );
-  const { data: instData } = useSWR<InstitutionalData>(
+  const { data: instData, error: instError } = useSWR<InstitutionalData>(
     symbol && instOpen ? `institutional-${symbol}` : null,
     () => api.getInstitutional(symbol),
     { revalidateOnFocus: false },
@@ -887,7 +886,6 @@ export default function StockDetail() {
       .catch(() => { if (!ignore) setResearchSummary(null); });
     return () => { ignore = true; };
   }, [symbol]);
-
 
   useEffect(() => {
     if (!watchMenuOpen) return;
@@ -2296,12 +2294,8 @@ export default function StockDetail() {
             );
           })()}
 </StockDetailWidget>
-<StockDetailWidget id="scores-sentiment" title="K-Score & market sentiment" wide collapsed>
-{(ranking || fearGreed) && (
-            <div className="stock-detail-kscore-feargreed-grid" style={{ display: 'grid', gridTemplateColumns: ranking && fearGreed ? '1fr 1fr' : '1fr', gap: '16px', alignItems: 'stretch' }}>
-
-              {/* K-Score with progress bars */}
-              {ranking && (() => {
+<StockDetailWidget id="scores-sentiment" title="K-Score breakdown" collapsed>
+{ranking && (() => {
                 const s = ranking.score ?? 0;
                 const scoreColor = s >= 70 ? '#4ade80' : s >= 50 ? '#facc15' : '#f87171';
                 const bars: [string, number | null | undefined, string][] = [
@@ -2376,9 +2370,9 @@ export default function StockDetail() {
                   </div>
                 );
               })()}
-
-              {/* Snowflake Radar */}
-              {ranking && (() => {
+</StockDetailWidget>
+<StockDetailWidget id="ranking-radar" title="K-Score radar" collapsed>
+{ranking && (() => {
                 const axes = [
                   { label: 'Technical', value: ranking.technical ?? 0, color: '#38bdf8' },
                   { label: 'Momentum',  value: ranking.momentum  ?? 0, color: '#fb923c' },
@@ -2453,10 +2447,10 @@ export default function StockDetail() {
                   </div>
                 );
               })()}
-
-              {/* Fear & Greed */}
-              {fearGreedError && <div className="rounded-md border border-slate-800 bg-slate-900 p-4 text-sm text-slate-400">CNN Fear &amp; Greed is temporarily unavailable.</div>}
-              {fearGreed && !fearGreedError && (() => {
+</StockDetailWidget>
+<StockDetailWidget id="market-sentiment" title="Market sentiment" collapsed>
+{fearGreedError && <div className="rounded-md border border-slate-800 bg-slate-900 p-4 text-sm text-slate-400">CNN Fear &amp; Greed is temporarily unavailable.</div>}
+{fearGreed && !fearGreedError && (() => {
                 const score = fearGreed.score;
                 const ratingColor: Record<string, string> = {
                   'Extreme Fear': '#ef4444', 'Fear': '#f97316',
@@ -2534,14 +2528,9 @@ export default function StockDetail() {
                   </div>
                 );
               })()}
-            </div>
-          )}
 </StockDetailWidget>
-<StockDetailWidget id="technical-levels" title="Technical levels & patterns" wide collapsed>
-{(srLevels.length > 0 || Object.keys(fibLevels).length > 0 || (data.patterns?.patterns && data.patterns.patterns.length > 0) || (livePatterns && livePatterns.patterns.length > 0)) && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', alignItems: 'start' }}>
-
-              {srLevels.length > 0 && (
+<StockDetailWidget id="technical-levels" title="Support & resistance" collapsed>
+{srLevels.length > 0 && (
                 <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
                   <h3 className="text-sm font-semibold text-slate-300 mb-2">Support &amp; Resistance</h3>
                   <div className="space-y-1">
@@ -2558,8 +2547,9 @@ export default function StockDetail() {
                   <SrWatchButton symbol={symbol} />
                 </div>
               )}
-
-              {Object.keys(fibLevels).length > 0 && (
+</StockDetailWidget>
+<StockDetailWidget id="fibonacci" title="Fibonacci levels" collapsed>
+{Object.keys(fibLevels).length > 0 && (
                 <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
                   <h3 className="text-sm font-semibold text-slate-300 mb-2">Fibonacci Levels</h3>
                   <div className="space-y-1">
@@ -2572,8 +2562,9 @@ export default function StockDetail() {
                   </div>
                 </div>
               )}
-
-              {data.patterns?.patterns && data.patterns.patterns.length > 0 && (
+</StockDetailWidget>
+<StockDetailWidget id="detected-patterns" title="Historical patterns" collapsed>
+{data.patterns?.patterns && data.patterns.patterns.length > 0 && (
                 <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
                   <h3 className="text-sm font-semibold text-slate-300 mb-2">Chart Patterns</h3>
                   <div className="space-y-1">
@@ -2586,8 +2577,9 @@ export default function StockDetail() {
                   </div>
                 </div>
               )}
-
-              {livePatterns && livePatterns.patterns.length > 0 && (
+</StockDetailWidget>
+<StockDetailWidget id="live-patterns" title="Live patterns" collapsed>
+{livePatterns && livePatterns.patterns.length > 0 && (
                 <div className="rounded-md p-4" style={{ border: '1px solid rgba(99,102,241,0.35)', background: 'rgba(99,102,241,0.06)' }}>
                   <h3 className="text-sm font-semibold mb-3" style={{ color: '#a5b4fc' }}>Live Pattern Signals</h3>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -2604,9 +2596,6 @@ export default function StockDetail() {
                   <div style={{ fontSize: '10px', color: '#334155', marginTop: '8px' }}>Detected in last 3–5 sessions</div>
                 </div>
               )}
-
-            </div>
-          )}
 </StockDetailWidget>
 <StockDetailWidget id="research" title="Research intelligence" collapsed>
 {(() => {
@@ -3249,13 +3238,8 @@ export default function StockDetail() {
             );
           })()}
 </StockDetailWidget>
-</StockDetailWorkspace>
-
-
-      {/* Company Financials — full width */}
-      <details className="stock-research-details">
-        <summary>Company financials & analyst research</summary>
-      {data.fundamentals && (() => {
+<StockDetailWidget id="financials" title="Company financials & analyst research" full collapsed>
+{data.fundamentals && (() => {
         const f = data.fundamentals!;
 
         function fmtBig(n: number | null | undefined): string {
@@ -3964,14 +3948,12 @@ export default function StockDetail() {
           </div>
         );
       })()}
-
-      </details>
-
-      {/* Evidence-linked copilot — replaces the browser-built AI chat (see CopilotPanel) */}
-      <CopilotPanel symbol={symbol} />
-
-      {/* Price Alerts */}
-      <div style={{ marginBottom: '32px' }}>
+</StockDetailWidget>
+<StockDetailWidget id="copilot" title="Research copilot" full>
+<CopilotPanel symbol={symbol} />
+</StockDetailWidget>
+<StockDetailWidget id="price-alerts" title="Price alerts" full>
+<div style={{ marginBottom: '32px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
           <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Price Alerts</h2>
           <button
@@ -4163,19 +4145,12 @@ export default function StockDetail() {
           <div style={{ fontSize: '11px', color: '#f87171', marginTop: '6px' }}>{deleteAlertError}</div>
         )}
       </div>
-
-      {/* Dividends */}
-      <div style={{ borderRadius: '12px', border: '1px solid #1e293b', overflow: 'hidden' }}>
-        <button
-          onClick={() => setDivOpen((o: boolean) => !o)}
-          style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', background: 'rgba(255,255,255,0.02)', border: 'none', cursor: 'pointer' }}
-        >
-          <span style={{ fontSize: '14px', fontWeight: 700, color: '#cbd5e1' }}>Dividends</span>
-          <span style={{ color: '#475569', fontSize: '12px', transform: divOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</span>
-        </button>
-        {divOpen && (
+</StockDetailWidget>
+<StockDetailWidget id="dividends" title="Dividends" collapsed onExpandedChange={setDivOpen}>
+{divOpen && (
           <div style={{ padding: '16px 18px', borderTop: '1px solid #1e293b' }}>
-            {!dividendData && <div style={{ fontSize: '12px', color: '#475569' }}>Loading dividend data…</div>}
+            {dividendError && <p role="status">Dividend data unavailable. Close and reopen to retry.</p>}
+            {!dividendData && !dividendError && <div style={{ fontSize: '12px', color: '#475569' }}>Loading dividend data…</div>}
             {dividendData?.error && <div style={{ fontSize: '12px', color: '#f87171' }}>Error: {dividendData.error}</div>}
             {dividendData && !dividendData.error && (
               <>
@@ -4251,20 +4226,12 @@ export default function StockDetail() {
             )}
           </div>
         )}
-      </div>
-
-      {/* Institutional Holdings */}
-      <div style={{ borderRadius: '12px', border: '1px solid #1e293b', overflow: 'hidden' }}>
-        <button
-          onClick={() => setInstOpen(o => !o)}
-          style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', background: 'rgba(255,255,255,0.02)', border: 'none', cursor: 'pointer' }}
-        >
-          <span style={{ fontSize: '14px', fontWeight: 700, color: '#cbd5e1' }}>Institutional Holdings</span>
-          <span style={{ color: '#475569', fontSize: '12px', transform: instOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</span>
-        </button>
-        {instOpen && (
+</StockDetailWidget>
+<StockDetailWidget id="ownership" title="Institutional ownership" wide collapsed onExpandedChange={setInstOpen}>
+{instOpen && (
           <div style={{ padding: '16px 18px', borderTop: '1px solid #1e293b' }}>
-            {!instData && <div style={{ fontSize: '12px', color: '#475569' }}>Loading institutional data…</div>}
+            {instError && <p role="status">Institutional data unavailable. Close and reopen to retry.</p>}
+            {!instData && !instError && <div style={{ fontSize: '12px', color: '#475569' }}>Loading institutional data…</div>}
             {instData?.error && <div style={{ fontSize: '12px', color: '#f87171' }}>Error: {instData.error}</div>}
             {instData && !instData.error && (
               <>
@@ -4318,22 +4285,22 @@ export default function StockDetail() {
             )}
           </div>
         )}
-      </div>
-
-
-      {/* News feed — full width below chart */}
-      <div>
+</StockDetailWidget>
+<StockDetailWidget id="news" title="News & sentiment" full collapsed>
+<div>
         <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', marginBottom: '12px' }}>
           News &amp; Sentiment
         </h2>
         {!news && <div style={{ fontSize: '12px', color: '#475569' }}>Loading news…</div>}
         {news && news.length === 0 && <div style={{ fontSize: '12px', color: '#475569' }}>No recent news found.</div>}
         {news && news.length > 0 && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '10px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: '10px' }}>
             {news.map((item, i) => <NewsCard key={i} item={item} />)}
           </div>
         )}
       </div>
+</StockDetailWidget>
+</StockDetailWorkspace>
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 

@@ -505,25 +505,13 @@ function MobileNavDrawer({
 
 export default function App({ Component, pageProps }: AppProps) {
   const router = useRouter();
-  // Initialise synchronously from localStorage to prevent blank-flash on page load.
-  // getSession() is a pure localStorage read — safe to call during render.
-  const [username, setUsername] = useState<string | null>(() =>
-    typeof window !== 'undefined' ? (getSession()?.username ?? null) : null
-  );
-  const [role, setRole] = useState<string | null>(() =>
-    typeof window !== 'undefined' ? (getSession()?.role ?? null) : null
-  );
-  const [tier, setTier] = useState<string | null>(() =>
-    typeof window !== 'undefined' ? (getSession()?.tier ?? null) : null
-  );
-  const [checked, setChecked] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    const path = window.location.pathname;
-    return PUBLIC_PATHS.includes(path) || Boolean(getSession());
-  });
-  const [impersonating, setImpersonating] = useState<string | null>(() =>
-    typeof window !== 'undefined' ? getImpersonatedUser() : null
-  );
+  // Server and first browser render must agree. The existing auth effect hydrates
+  // browser-only session data before rendering protected content.
+  const [username, setUsername] = useState<string | null>(null);
+  const [role, setRole] = useState<string | null>(null);
+  const [tier, setTier] = useState<string | null>(null);
+  const [checked, setChecked] = useState(false);
+  const [impersonating, setImpersonating] = useState<string | null>(null);
   const alertTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [freshness, setFreshness] = useState<{ hours_ago: number | null; status: string } | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);

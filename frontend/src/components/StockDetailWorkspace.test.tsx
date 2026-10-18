@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React, { useState } from 'react';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import StockDetailWorkspace, { StockDetailWidget } from './StockDetailWorkspace';
 
@@ -61,4 +61,55 @@ it('isolates accounts and handles corrupt or unavailable storage', () => {
   expect(screen.getByRole('button', { name: 'Research' }).getAttribute('aria-expanded')).toBe('true');
   localStorage.clear(); view.unmount();
   vi.restoreAllMocks(); localStorage.setItem('alice:layout', '{bad json'); render(<View />); expect(order()[0]).toBe('Chart widget');
+});
+
+it('persists width and hide preferences without losing mounted widget state', () => {
+  const view = render(<View />); fireEvent.click(screen.getByRole('button', { name: 'Count 0' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Arrange widgets' }));
+  fireEvent.change(screen.getByLabelText('Width for Chart'), { target: { value: 'full' } });
+  expect(screen.getByRole('region', { name: 'Chart widget' }).className).toContain('stock-workspace-full');
+  fireEvent.click(screen.getByRole('button', { name: 'Hide Chart' }));
+  expect(screen.queryByRole('button', { name: 'Count 1' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Show Chart' }));
+  expect(screen.getByRole('button', { name: 'Count 1' })).toBeTruthy();
+  view.unmount(); render(<View />);
+  expect(screen.getByRole('region', { name: 'Chart widget' }).className).toContain('stock-workspace-full');
+});
+
+it('imports validated layout files and refuses late results after account changes', async () => {
+  const view = render(<View />);
+  const json = JSON.stringify({ version: 1, order: ['plan', 'chart'], hidden: { research: true }, widths: { plan: 'full' } });
+  await act(async () => fireEvent.change(screen.getByLabelText('Import workspace layout'), { target: { files: [{ size: json.length, text: async () => json }] } }));
+  expect(order()[0]).toBe('Plan widget');
+  expect(screen.getByRole('region', { name: 'Plan widget' }).className).toContain('stock-workspace-full');
+  expect(screen.getByRole('button', { name: 'Show Research' })).toBeTruthy();
+  await act(async () => fireEvent.change(screen.getByLabelText('Import workspace layout'), { target: { files: [{ size: 40000 }] } }));
+  expect(screen.getByRole('alert').textContent).toContain('32 KB'); expect(order()[0]).toBe('Plan widget');
+  let resolve!: (text: string) => void;
+  fireEvent.change(screen.getByLabelText('Import workspace layout'), { target: { files: [{ size: 100, text: () => new Promise<string>(r => { resolve = r; }) }] } });
+  view.rerender(<View account="bob" />);
+  await act(async () => resolve(json));
+  expect(order()[0]).toBe('Chart widget'); expect(localStorage.getItem('bob:layout')).toBeNull();
+});
+
+it('notifies lazy widgets when expanded, collapsed or hidden', () => {
+  const onExpandedChange = vi.fn();
+  render(<StockDetailWorkspace storageKey="lazy"><StockDetailWidget id="ownership" title="Ownership" collapsed onExpandedChange={onExpandedChange}><p>Data</p></StockDetailWidget></StockDetailWorkspace>);
+  expect(onExpandedChange).toHaveBeenLastCalledWith(false);
+  fireEvent.click(screen.getByRole('button', { name: 'Ownership' })); expect(onExpandedChange).toHaveBeenLastCalledWith(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Arrange widgets' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Hide Ownership' })); expect(onExpandedChange).toHaveBeenLastCalledWith(false);
+});
+
+it('keeps an initially empty lazy panel reachable so expansion can load its content', () => {
+  function LazyPanel() {
+    const [open, setOpen] = useState(false);
+    return <StockDetailWorkspace storageKey="lazy-empty"><StockDetailWidget id="dividends" title="Dividends" collapsed onExpandedChange={setOpen}>
+      {open && <p>Dividend data requested</p>}
+    </StockDetailWidget></StockDetailWorkspace>;
+  }
+  render(<LazyPanel />);
+  expect(screen.queryByText('Dividend data requested')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Dividends' }));
+  expect(screen.getByText('Dividend data requested')).toBeTruthy();
 });

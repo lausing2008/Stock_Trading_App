@@ -34,6 +34,8 @@ Previews use sample data, not current market recommendations: [desktop](assets/s
 
 ## Deferred
 
+The [workspace follow-up](2026-10-17-stock-workspace-followups.md) implements independent panels, bounded widths, hide/restore and portable export/import. The list below records the initial release's scope; automatic cloud sync and arbitrary pixel masonry remain optional future work.
+
 - Cross-device/account-server layout sync; this slice is browser-local.
 - Free-form resizing and pixel-positioned masonry; meaningful default grouping and stable reading order take precedence here.
 - Splitting every research subcard and the full financial section into independently movable widgets.

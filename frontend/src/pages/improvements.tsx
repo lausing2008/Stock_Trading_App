@@ -35,6 +35,15 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'STOCK-WORKSPACE-CONTROLS', tier: 452, severity: 'feature', defaultStatus: 'done',
+    title: 'Stock widgets gain widths, hide/restore, portable layouts and independent research panels',
+    file: 'docs/features/2026-10-17-stock-workspace-followups.md', effort: 'M',
+    impact: 'The first redesign left fixed widths, grouped research cards and browser-only arrangements without a transfer path.',
+    what: 'All main page panels can move. Users choose one/two-column or full-row widths, hide/restore panels, and import/export validated layout files. Lazy panels remain reachable and report provider failures.',
+    fix: 'Mounted state survives hiding/reordering. Imported files are bounded, versioned and account-race guarded. App authentication now hydrates consistently. Automatic cloud sync and pixel-positioned masonry remain explicitly deferred.',
+    implementedNote: 'Validated with frontend tests, TypeScript and strict desktop/mobile browser checks. See the release document for deployment evidence. No backend, delivery or model rules changed.',
+  },
+  {
     id: 'STOCK-WORKSPACE', tier: 451, severity: 'feature', defaultStatus: 'done',
     title: 'Compact stock workspace with movable widgets and summary-first Game Plans',
     file: 'docs/features/2026-10-17-stock-workspace.md', effort: 'M',
@@ -21655,6 +21664,7 @@ const ITEMS: Item[] = [
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = {
+  452: 'Tier 452 — Stock workspace controls (2026-10-17)',
   451: 'Tier 451 — Compact stock workspace (2026-10-17)',
   450: 'Tier 450 — Rules-based and LLM Game Plans (2026-10-16)',
   449: 'Tier 449 — Chronological calibration research (2026-10-15)',
@@ -22104,6 +22114,7 @@ const TIER_LABEL: Record<Tier, string> = {
 };
 
 const TIER_COLOR: Record<Tier, string> = {
+  452: '#22d3ee',
   451: '#38bdf8',
   450: '#c084fc', 449: '#fb923c', 448: '#22d3ee', 447: '#818cf8', 446: '#a78bfa',
   445: '#38bdf8',
