@@ -101,6 +101,8 @@ The preference interaction was validated with mocked data against the compiled
 image; production acceptance verifies the served artifact and existing route guard,
 not a live authenticated strategy submission or a broker operation.
 
-GitHub push was attempted and rejected with HTTP 403. The configured account reports
-repository `push:false`; publishing these commits requires a GitHub account with
-write access. This does not affect the verified production deployment or local commits.
+The initial GitHub push failed with HTTP 403 because the configured credential
+helper selected a different account. Direct verification of the origin credential
+confirmed owner `lausing2008` with repository write access. An explicit authenticated
+push succeeded, and the remote `prod` head was verified against the local release.
+The earlier push blocker is resolved; production behavior and image are unchanged.

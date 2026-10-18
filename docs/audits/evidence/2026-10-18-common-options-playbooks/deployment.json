@@ -61,8 +61,9 @@
   },
   "github_push": {
     "attempted": true,
-    "succeeded": false,
-    "http_status": 403,
-    "repository_push_permission": false
+    "succeeded": true,
+    "remote_head_verified": true,
+    "initial_http_status": 403,
+    "resolution": "Explicit origin credential bypassed mismatched credential helper; verified lausing2008 has repository write access."
   }
 }
