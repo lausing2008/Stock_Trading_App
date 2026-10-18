@@ -1,6 +1,6 @@
 # Chart and Game Plan workspace
 
-Implemented locally on 2026-10-18. This record does not assert production deployment.
+Release `5ab91daa` was committed, deployed and pushed to GitHub on October 18, 2026.
 
 The stock page now opens with a full-width price chart and an attached Game Plan.
 The plan shows one scenario, entry, stop, two targets, shares, next step and an
@@ -50,6 +50,20 @@ intercepts all API calls with fixtures. Screenshots show sample data, not live t
 
 ## Remaining work
 
-Production deployment and authenticated live acceptance remain separate release steps.
+Authenticated live browser acceptance remains a separate check; the production release passed
+public build verification and the exact optimized image passed fixture browser acceptance.
 Free-form pixel resizing and masonry are not part of this change; supporting widgets
 retain the existing responsive grid and width controls.
+
+## Production verification
+
+The exact committed frontend was built off-host; 642 frontend tests, optimized type-check/build,
+and the desktop/mobile browser suite passed. The checksummed image was activated under the host
+deployment lock with a retained rollback image. Only frontend was recreated; backend and database
+container start times were unchanged. All fifteen containers are healthy. Both localhost and public
+stock pages serve build `ZJkRFsGhu9pAS5XevFpyz`, matching the tested image.
+
+GitHub publication succeeded using the existing repository-owner token explicitly with a clean
+repository URL, bypassing conflicting stored Git credentials. No token was written to these docs.
+Concurrent option-panel edits were excluded by building from the isolated committed snapshot.
+See [deployment evidence](../audits/evidence/2026-10-18-trading-workspace/deployment.json).
