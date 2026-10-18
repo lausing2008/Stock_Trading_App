@@ -113,3 +113,25 @@ it('keeps an initially empty lazy panel reachable so expansion can load its cont
   fireEvent.click(screen.getByRole('button', { name: 'Dividends' }));
   expect(screen.getByText('Dividend data requested')).toBeTruthy();
 });
+
+it('pins the full-width chart/plan and preserves research state through tabs and Focus mode', () => {
+  localStorage.setItem('trade', JSON.stringify({ order: ['company', 'game-plan', 'chart'], closed: { chart: true }, hidden: { chart: true }, widths: { chart: 'compact' } }));
+  render(<StockDetailWorkspace storageKey="trade" trading>
+    <StockDetailWidget id="chart" title="Chart"><p>Chart data</p></StockDetailWidget>
+    <StockDetailWidget id="game-plan" title="Plan"><p>Plan data</p></StockDetailWidget>
+    <StockDetailWidget id="signal" title="Signal" group="signals"><p>Signal data</p></StockDetailWidget>
+    <StockDetailWidget id="technical" title="Technical" group="technicals"><Counter /></StockDetailWidget>
+    <StockDetailWidget id="company" title="Company" group="company"><p>Company data</p></StockDetailWidget>
+  </StockDetailWorkspace>);
+  expect(order().slice(0, 2)).toEqual(['Chart widget', 'Plan widget']);
+  expect(screen.getByRole('region', { name: 'Chart widget' }).className).toContain('stock-workspace-full');
+  expect(screen.queryByRole('region', { name: 'Technical widget' })).toBeNull();
+  fireEvent.click(screen.getByRole('tab', { name: 'Technicals' })); fireEvent.click(screen.getByRole('button', { name: 'Count 0' }));
+  fireEvent.click(screen.getByRole('tab', { name: 'Company' })); fireEvent.keyDown(screen.getByRole('tab', { name: 'Company' }), { key: 'ArrowLeft' });
+  expect(screen.getByRole('button', { name: 'Count 1' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Focus mode' }));
+  expect(screen.queryByRole('tabpanel')).toBeNull(); expect(document.body.style.overflow).toBe('hidden');
+  fireEvent.keyDown(document, { key: 'Escape' });
+  expect(screen.getByRole('button', { name: 'Count 1' })).toBeTruthy(); expect(document.body.style.overflow).toBe('');
+  expect(JSON.parse(localStorage.getItem('trade')!).hidden.chart).toBe(true);
+});

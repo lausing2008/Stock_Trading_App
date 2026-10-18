@@ -2,7 +2,7 @@
 import { useRouter } from 'next/router';
 import ChartCommandBar from '@/components/ChartCommandBar';
 import type { ChartController } from '@/lib/chartCommands';
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import useSWR from 'swr';
 import dynamic from 'next/dynamic';
 import SignalCard from '@/components/SignalCard';
@@ -648,6 +648,16 @@ export default function StockDetail() {
   );
 
   const [planChartLevels, setPlanChartLevels] = useState<PlanChartLine[]>([]);
+  const [focusedPlanLevel, setFocusedPlanLevel] = useState<PlanChartLine | null>(null);
+  const [showContextOverlays, setShowContextOverlays] = useState(false);
+  const handlePlanLevels = useCallback((lines: PlanChartLine[]) => {
+    setPlanChartLevels(lines);
+    setFocusedPlanLevel(previous => previous && lines.some(l => l.price === previous.price) ? previous : null);
+  }, []);
+  function focusPlanLevel(line: PlanChartLine) {
+    setChartTf('1d'); setFocusedPlanLevel(line);
+    document.getElementById('stock-widget-chart')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 
   const { data: allAlerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>(
     `${u}:alerts`,
@@ -874,7 +884,7 @@ export default function StockDetail() {
   }, [symbol]);
 
   useEffect(() => {
-    setPlanChartLevels([]);
+    setPlanChartLevels([]); setFocusedPlanLevel(null);
     setMlResult(null);
     setResearchSummary(null);
   }, [symbol]);
@@ -1801,7 +1811,7 @@ export default function StockDetail() {
       })()}
 
       {/* One responsive workspace instead of independent chart/sidebar stacks. */}
-      <StockDetailWorkspace storageKey={`${u}:stock-workspace:v1`}>
+      <StockDetailWorkspace trading storageKey={`${u}:stock-workspace:v1`}>
 <StockDetailWidget id="chart" title="Price chart" wide>
 {data.prices && data.prices.length > 0 && (() => {
             // Compute compare stat for the badge (% change over the shared visible period)
@@ -1908,6 +1918,9 @@ export default function StockDetail() {
                   )}
                 </div>
 
+                {chartTf === '1d' && focusedPlanLevel && <p role="status" className="chart-plan-highlight">Chart highlight: {focusedPlanLevel.label} · {focusedPlanLevel.price.toLocaleString()} <button type="button" onClick={() => setFocusedPlanLevel(null)}>Clear highlight</button></p>}
+                {planChartLevels.length > 0 && chartTf !== '1d' && <p className="chart-plan-highlight">Plan levels use daily-close rules. <button type="button" onClick={() => setChartTf('1d')}>Show plan on daily chart</button></p>}
+                <label className="chart-context-toggle"><input type="checkbox" checked={showContextOverlays} onChange={e => setShowContextOverlays(e.target.checked)} /> Position-sizing and max-pain overlays</label>
                 <ChartCommandBar key={symbol as string} symbol={symbol as string} run={(c, expected) => chartController.current ? chartController.current.applyCommand(c, expected) : Promise.reject(new Error('Chart unavailable'))} />
                 {/* Chart */}
                 <PriceChart
@@ -1921,8 +1934,10 @@ export default function StockDetail() {
                   signalMarkers={chartTf === '1d' ? signalHistory : undefined}
                   patterns={livePatterns?.patterns}
                   planLines={chartTf === '1d' ? planChartLevels : undefined}
-                  maxPainLevel={chartTf === '1d' ? nearestMaxPain : null}
-                  riskRewardLevels={chartTf === '1d' ? (() => {
+                  cleanDefault
+                  highlightedPlanPrice={chartTf === '1d' ? focusedPlanLevel?.price : undefined}
+                  maxPainLevel={chartTf === '1d' && showContextOverlays ? nearestMaxPain : null}
+                  riskRewardLevels={chartTf === '1d' && showContextOverlays ? (() => {
                     const lpChart = allPrices?.find(p => p.symbol === symbol);
                     const chartCurPx = lpChart?.price ?? data.prices?.at(-1)?.close ?? null;
                     const chartNearestSupport = data.levels?.support_resistance
@@ -1956,9 +1971,9 @@ export default function StockDetail() {
 </StockDetailWidget>
 <StockDetailWidget id="game-plan" title="Game Plan">
 <StockGamePlanCard key={symbol as string} symbol={symbol as string}
-            onLevelsChange={setPlanChartLevels} onBoardSaved={() => globalMutate(`${u}:board`)} />
+            onLevelsChange={handlePlanLevels} onLevelFocus={focusPlanLevel} onBoardSaved={() => globalMutate(`${u}:board`)} />
 </StockDetailWidget>
-<StockDetailWidget id="signals" title="AI signals">
+<StockDetailWidget id="signals" title="AI signals" group="signals">
 {(() => {
             const SIG_C: Record<string, string> = { BUY: '#4ade80', SELL: '#f87171', WAIT: '#fbbf24', HOLD: '#94a3b8' };
             const HORIZON_COLOR: Record<string, string> = { SHORT: '#38bdf8', SWING: '#818cf8', LONG: '#4ade80', GROWTH: '#a78bfa' };
@@ -2101,7 +2116,7 @@ export default function StockDetail() {
             );
           })()}
 </StockDetailWidget>
-<StockDetailWidget id="confluence" title="Signal confluence">
+<StockDetailWidget id="confluence" title="Signal confluence" group="signals">
 {(() => {
             const ranking = data.ranking;
             if (!ranking) return null;
@@ -2191,7 +2206,7 @@ export default function StockDetail() {
             );
           })()}
 </StockDetailWidget>
-<StockDetailWidget id="consensus" title="Signal consensus & alerts">
+<StockDetailWidget id="consensus" title="Signal consensus & alerts" group="signals">
 {(() => {
             const SIG_C: Record<string, string> = { BUY: '#4ade80', SELL: '#f87171', WAIT: '#fbbf24', HOLD: '#94a3b8' };
             const SIG_BG: Record<string, string> = { BUY: 'rgba(74,222,128,0.1)', SELL: 'rgba(239,68,68,0.1)', WAIT: 'rgba(251,191,36,0.08)', HOLD: 'rgba(148,163,184,0.06)' };
@@ -2281,7 +2296,7 @@ export default function StockDetail() {
             );
           })()}
 </StockDetailWidget>
-<StockDetailWidget id="position-sizer" title="Position sizing" collapsed>
+<StockDetailWidget id="position-sizer" title="Position sizing" collapsed group="signals">
 {(() => {
             const lp2 = allPrices?.find(p => p.symbol === symbol);
             const curPx = lp2?.price ?? data.prices?.at(-1)?.close ?? undefined;
@@ -2301,7 +2316,7 @@ export default function StockDetail() {
             );
           })()}
 </StockDetailWidget>
-<StockDetailWidget id="scores-sentiment" title="K-Score breakdown" collapsed>
+<StockDetailWidget id="scores-sentiment" title="K-Score breakdown" collapsed group="company">
 {ranking && (() => {
                 const s = ranking.score ?? 0;
                 const scoreColor = s >= 70 ? '#4ade80' : s >= 50 ? '#facc15' : '#f87171';
@@ -2378,7 +2393,7 @@ export default function StockDetail() {
                 );
               })()}
 </StockDetailWidget>
-<StockDetailWidget id="ranking-radar" title="K-Score radar" collapsed>
+<StockDetailWidget id="ranking-radar" title="K-Score radar" collapsed group="company">
 {ranking && (() => {
                 const axes = [
                   { label: 'Technical', value: ranking.technical ?? 0, color: '#38bdf8' },
@@ -2455,7 +2470,7 @@ export default function StockDetail() {
                 );
               })()}
 </StockDetailWidget>
-<StockDetailWidget id="market-sentiment" title="Market sentiment" collapsed>
+<StockDetailWidget id="market-sentiment" title="Market sentiment" collapsed group="company">
 {fearGreedError && <div className="rounded-md border border-slate-800 bg-slate-900 p-4 text-sm text-slate-400">CNN Fear &amp; Greed is temporarily unavailable.</div>}
 {fearGreed && !fearGreedError && (() => {
                 const score = fearGreed.score;
@@ -2536,7 +2551,7 @@ export default function StockDetail() {
                 );
               })()}
 </StockDetailWidget>
-<StockDetailWidget id="technical-levels" title="Support & resistance" collapsed>
+<StockDetailWidget id="technical-levels" title="Support & resistance" collapsed group="technicals">
 {srLevels.length > 0 && (
                 <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
                   <h3 className="text-sm font-semibold text-slate-300 mb-2">Support &amp; Resistance</h3>
@@ -2555,7 +2570,7 @@ export default function StockDetail() {
                 </div>
               )}
 </StockDetailWidget>
-<StockDetailWidget id="fibonacci" title="Fibonacci levels" collapsed>
+<StockDetailWidget id="fibonacci" title="Fibonacci levels" collapsed group="technicals">
 {Object.keys(fibLevels).length > 0 && (
                 <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
                   <h3 className="text-sm font-semibold text-slate-300 mb-2">Fibonacci Levels</h3>
@@ -2570,7 +2585,7 @@ export default function StockDetail() {
                 </div>
               )}
 </StockDetailWidget>
-<StockDetailWidget id="detected-patterns" title="Historical patterns" collapsed>
+<StockDetailWidget id="detected-patterns" title="Historical patterns" collapsed group="technicals">
 {data.patterns?.patterns && data.patterns.patterns.length > 0 && (
                 <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
                   <h3 className="text-sm font-semibold text-slate-300 mb-2">Chart Patterns</h3>
@@ -2585,7 +2600,7 @@ export default function StockDetail() {
                 </div>
               )}
 </StockDetailWidget>
-<StockDetailWidget id="live-patterns" title="Live patterns" collapsed>
+<StockDetailWidget id="live-patterns" title="Live patterns" collapsed group="technicals">
 {livePatterns && livePatterns.patterns.length > 0 && (
                 <div className="rounded-md p-4" style={{ border: '1px solid rgba(99,102,241,0.35)', background: 'rgba(99,102,241,0.06)' }}>
                   <h3 className="text-sm font-semibold mb-3" style={{ color: '#a5b4fc' }}>Live Pattern Signals</h3>
@@ -2604,7 +2619,7 @@ export default function StockDetail() {
                 </div>
               )}
 </StockDetailWidget>
-<StockDetailWidget id="research" title="Research intelligence" collapsed>
+<StockDetailWidget id="research" title="Research intelligence" collapsed group="company">
 {(() => {
             const REC_COLOR: Record<string, string> = { 'STRONG BUY': '#4ade80', BUY: '#86efac', WATCH: '#facc15', AVOID: '#fb923c', SELL: '#f87171' };
             const REC_BG: Record<string, string> = { 'STRONG BUY': 'rgba(74,222,128,0.12)', BUY: 'rgba(74,222,128,0.08)', WATCH: 'rgba(250,204,21,0.12)', AVOID: 'rgba(251,146,60,0.12)', SELL: 'rgba(248,113,113,0.12)' };
@@ -2717,7 +2732,7 @@ export default function StockDetail() {
             );
           })()}
 </StockDetailWidget>
-<StockDetailWidget id="events" title="Company catalysts" collapsed>
+<StockDetailWidget id="events" title="Company catalysts" collapsed group="company">
 {(() => {
             const r = data?.signal?.reasons as Record<string, unknown> | null | undefined;
             if (!r) return null;
@@ -2757,7 +2772,7 @@ export default function StockDetail() {
             );
           })()}
 </StockDetailWidget>
-<StockDetailWidget id="history" title="Signal history" collapsed>
+<StockDetailWidget id="history" title="Signal history" collapsed group="signals">
 {signalHistory && signalHistory.length >= 2 && (
             <ConfidenceTrend history={signalHistory} />
           )}
@@ -2799,7 +2814,7 @@ export default function StockDetail() {
             );
           })()}
 </StockDetailWidget>
-<StockDetailWidget id="fair-value" title="Fair value" collapsed>
+<StockDetailWidget id="fair-value" title="Fair value" collapsed group="signals">
 {ranking?.fair_price != null && (() => {
             const lp2 = allPrices?.find(p => p.symbol === symbol);
             const curPx = lp2?.price ?? data.prices?.at(-1)?.close ?? null;
@@ -2825,7 +2840,7 @@ export default function StockDetail() {
             );
           })()}
 </StockDetailWidget>
-<StockDetailWidget id="peers" title="Sector peers" collapsed>
+<StockDetailWidget id="peers" title="Sector peers" collapsed group="company">
 {sectorPeers.length > 0 && (
             <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
@@ -2882,7 +2897,7 @@ export default function StockDetail() {
             </div>
           )}
 </StockDetailWidget>
-<StockDetailWidget id="ml" title="ML model details" wide collapsed>
+<StockDetailWidget id="ml" title="ML model details" wide collapsed group="technicals">
 <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
               <h3 className="text-sm font-semibold text-slate-300">ML Prediction</h3>
@@ -3031,7 +3046,7 @@ export default function StockDetail() {
             </div>
           </div>
 </StockDetailWidget>
-<StockDetailWidget id="volume" title="Trading volume" wide collapsed>
+<StockDetailWidget id="volume" title="Trading volume" wide collapsed group="technicals">
 {data.prices && data.prices.length >= 5 && (() => {
             const dailyBars = [...data.prices!]
               .filter(p => p.volume > 0)
@@ -3133,7 +3148,7 @@ export default function StockDetail() {
             );
           })()}
 </StockDetailWidget>
-<StockDetailWidget id="fvg" title="Fair value gap scenario" collapsed>
+<StockDetailWidget id="fvg" title="Fair value gap scenario" collapsed group="technicals">
 {(() => {
             const lp3 = allPrices?.find(p => p.symbol === symbol);
             const curPx = lp3?.price ?? data.prices?.at(-1)?.close ?? undefined;
@@ -3205,7 +3220,7 @@ export default function StockDetail() {
             );
           })()}
 </StockDetailWidget>
-<StockDetailWidget id="volume-pattern" title="Volume pattern read" collapsed>
+<StockDetailWidget id="volume-pattern" title="Volume pattern read" collapsed group="technicals">
 {(() => {
             const ad = data.levels?.accumulation_distribution;
             const bq = data.levels?.breakout_quality;
@@ -3245,7 +3260,7 @@ export default function StockDetail() {
             );
           })()}
 </StockDetailWidget>
-<StockDetailWidget id="financials" title="Company financials & analyst research" full collapsed>
+<StockDetailWidget id="financials" title="Company financials & analyst research" full collapsed group="company">
 {data.fundamentals && (() => {
         const f = data.fundamentals!;
 
@@ -3956,10 +3971,10 @@ export default function StockDetail() {
         );
       })()}
 </StockDetailWidget>
-<StockDetailWidget id="copilot" title="Research copilot" full>
+<StockDetailWidget id="copilot" title="Research copilot" full group="company">
 <CopilotPanel symbol={symbol} onChartCommand={(command, expected) => chartController.current ? chartController.current.applyCommand(command, expected) : Promise.reject(new Error('Open the chart before applying commands'))} />
 </StockDetailWidget>
-<StockDetailWidget id="price-alerts" title="Price alerts" full>
+<StockDetailWidget id="price-alerts" title="Price alerts" full group="signals">
 <div style={{ marginBottom: '32px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
           <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Price Alerts</h2>
@@ -4153,7 +4168,7 @@ export default function StockDetail() {
         )}
       </div>
 </StockDetailWidget>
-<StockDetailWidget id="dividends" title="Dividends" collapsed onExpandedChange={setDivOpen}>
+<StockDetailWidget id="dividends" title="Dividends" collapsed onExpandedChange={setDivOpen} group="company">
 {divOpen && (
           <div style={{ padding: '16px 18px', borderTop: '1px solid #1e293b' }}>
             {dividendError && <p role="status">Dividend data unavailable. Close and reopen to retry.</p>}
@@ -4234,7 +4249,7 @@ export default function StockDetail() {
           </div>
         )}
 </StockDetailWidget>
-<StockDetailWidget id="ownership" title="Institutional ownership" wide collapsed onExpandedChange={setInstOpen}>
+<StockDetailWidget id="ownership" title="Institutional ownership" wide collapsed onExpandedChange={setInstOpen} group="company">
 {instOpen && (
           <div style={{ padding: '16px 18px', borderTop: '1px solid #1e293b' }}>
             {instError && <p role="status">Institutional data unavailable. Close and reopen to retry.</p>}
@@ -4293,7 +4308,7 @@ export default function StockDetail() {
           </div>
         )}
 </StockDetailWidget>
-<StockDetailWidget id="news" title="News & sentiment" full collapsed>
+<StockDetailWidget id="news" title="News & sentiment" full collapsed group="company">
 <div>
         <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', marginBottom: '12px' }}>
           News &amp; Sentiment

@@ -19,7 +19,7 @@
 'use client';
 import React, { forwardRef, type Ref, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { CHART_INDICATORS, CHART_RANGES, CHART_TIMEFRAMES, type ChartTimeframe, type ChartController, type ChartSnapshot, type ChartCommand, type ChartIndicator } from '@/lib/chartCommands';
-import { createChart, CandlestickData, IChartApi, LineData, Time, LineStyle, LogicalRange, UTCTimestamp } from 'lightweight-charts';
+import { createChart, CandlestickData, IChartApi, LineData, Time, LineStyle, LogicalRange, UTCTimestamp, type AutoscaleInfo } from 'lightweight-charts';
 import type { Price, Overview, Levels, SignalHistoryPoint, PatternSignal } from '@/lib/api';
 import { api } from '@/lib/api';
 import { computeVolumeProfile, sessionBars } from '@/lib/volumeProfile';
@@ -32,6 +32,8 @@ import { computeRiskReward } from '@/lib/riskReward';
 
 type Props = {
   symbol: string;
+  cleanDefault?: boolean;
+  highlightedPlanPrice?: number;
   commandRef?: Ref<ChartController>;
   timeframe?: string;
   onTimeframeChange?: (tf: ChartTimeframe) => void;
@@ -138,14 +140,14 @@ function computeVolMA(priceData: Price[], period = 20): (number | null)[] {
 type SmaVals  = { sma_20: number|null; sma_50: number|null; sma_200: number|null; ema_20: number|null; ema_50: number|null; ema_200: number|null };
 type MacdVals = { macd: number|null; signal: number|null; hist: number|null };
 
-const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symbol, commandRef, timeframe, onTimeframeChange, prices, indicators, levels, signalMarkers, patterns, gamePlanLevels, planLines, riskRewardLevels, maxPainLevel, intradayOverride, compareData }: Props, controllerRef) {
+const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symbol, cleanDefault = false, highlightedPlanPrice, commandRef, timeframe, onTimeframeChange, prices, indicators, levels, signalMarkers, patterns, gamePlanLevels, planLines, riskRewardLevels, maxPainLevel, intradayOverride, compareData }: Props, controllerRef) {
   const mainRef = useRef<HTMLDivElement>(null);
   const rsiRef  = useRef<HTMLDivElement>(null);
   const macdRef = useRef<HTMLDivElement>(null);
 
   const [range, setRange] = useState<RangeLabel>('3M');
-  const [showSMA20,   setShowSMA20]   = useState(true);
-  const [showSMA50,   setShowSMA50]   = useState(true);
+  const [showSMA20,   setShowSMA20]   = useState(!cleanDefault);
+  const [showSMA50,   setShowSMA50]   = useState(!cleanDefault);
   const [showSMA200,  setShowSMA200]  = useState(true);
   const [showEMA20,   setShowEMA20]   = useState(false);
   const [showEMA50,   setShowEMA50]   = useState(false);
@@ -154,8 +156,8 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
   const [showVol,     setShowVol]     = useState(true);
   const [showVWAP,    setShowVWAP]    = useState(false);
   const [showRSI,     setShowRSI]     = useState(false);
-  const [showMACD,    setShowMACD]    = useState(true);
-  const [showSignals, setShowSignals] = useState(true);
+  const [showMACD,    setShowMACD]    = useState(!cleanDefault);
+  const [showSignals, setShowSignals] = useState(!cleanDefault);
   const [showFVG,      setShowFVG]     = useState(false);
   // T252-DECLUTTER: S/R levels + 52W High/Low used to always render — combined with FVG,
   // Entry/Stop/Target, and indicator curves, this stacked up to 15+ overlapping lines with
@@ -163,7 +165,7 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
   // High/Low off by default (least commonly needed); S/R back on by default per explicit
   // user request — it's the most broadly useful of the three, FVG stays off by default since
   // it was the actual source of the reported clutter (up to 20 gaps rendered as 40 lines).
-  const [showSR,       setShowSR]      = useState(true);
+  const [showSR,       setShowSR]      = useState(!cleanDefault);
   const [show52W,      setShow52W]     = useState(false);
   const [showSwingPivots, setShowSwingPivots] = useState(false);
   // Volume profile: 'off' | 'session' (current trading session only) | 'range' (whole visible
@@ -352,7 +354,7 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
     const chart = createChart(mainRef.current, {
       ...theme,
       autoSize: true,
-      height: 600,
+      height: cleanDefault ? 460 : 600,
     });
 
     const candles = chart.addCandlestickSeries({
@@ -742,9 +744,15 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
       for (const level of planLines) {
         if (!Number.isFinite(level.price) || level.price <= 0) continue;
         candles.createPriceLine({ price: level.price,
-          color: level.role === 'stop' ? '#f87171' : level.role === 'support' ? '#4ade80' : '#a78bfa',
-          lineWidth: 1 as const, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: level.label });
+          color: level.price === highlightedPlanPrice ? '#fbbf24' : level.role === 'stop' ? '#f87171' : level.role === 'support' ? '#4ade80' : '#a78bfa',
+          lineWidth: level.price === highlightedPlanPrice ? 3 : 1, lineStyle: level.price === highlightedPlanPrice ? LineStyle.Solid : LineStyle.Dashed, axisLabelVisible: true, title: level.price === highlightedPlanPrice ? `Selected: ${level.label}` : level.label });
       }
+    }
+    if (!isIntraday && highlightedPlanPrice && planLines?.some(l => l.price === highlightedPlanPrice)) {
+      candles.applyOptions({ autoscaleInfoProvider: (original: () => AutoscaleInfo | null) => {
+        const info = original();
+        return info ? { ...info, priceRange: { minValue: Math.min(info.priceRange.minValue, highlightedPlanPrice), maxValue: Math.max(info.priceRange.maxValue, highlightedPlanPrice) } } : null;
+      } });
     }
     if (!isIntraday && gamePlanLevels) {
       const gpl = gamePlanLevels;
@@ -973,7 +981,7 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, planLines, riskRewardLevels, maxPainLevel, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showAnchoredVwap, anchoredVwapIdx, showRSI, showMACD, showSignals, showFVG, showSR, show52W, showSwingPivots, swingPivots, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
+  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, planLines, highlightedPlanPrice, riskRewardLevels, maxPainLevel, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showAnchoredVwap, anchoredVwapIdx, showRSI, showMACD, showSignals, showFVG, showSR, show52W, showSwingPivots, swingPivots, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
 
   useEffect(() => {
     const p = pendingCommand.current;

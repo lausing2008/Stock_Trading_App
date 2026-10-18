@@ -35,6 +35,15 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'TRADING-WORKSPACE', tier: 453, severity: 'feature', defaultStatus: 'done',
+    title: 'Full-width chart with an attached, selected-scenario Game Plan',
+    file: 'docs/features/2026-10-18-trading-workspace.md', effort: 'M',
+    impact: 'A narrow chart beside a long playbook limits chart readability and separates prices from guidance.',
+    what: 'Chart and compact Game Plan share the full row. Entry, stop and two targets link to the daily chart. Signals, Technicals and Company tabs organize supporting widgets; Focus mode isolates chart and plan.',
+    fix: 'Only the selected actionable rules or grounded LLM scenario supplies overlays. Wait, blocked and stale scenarios clear them. Existing layouts, account sync, monitoring, chart commands and explicit confirmations remain available.',
+    implementedNote: 'Implemented locally; desktop/mobile mocked browser acceptance passed. See the feature record for test results and release status.',
+  },
+  {
     id: 'STOCK-WORKSPACE-CONTROLS', tier: 452, severity: 'feature', defaultStatus: 'done',
     title: 'Stock widgets gain widths, hide/restore, portable layouts and independent research panels',
     file: 'docs/features/2026-10-17-stock-workspace-followups.md', effort: 'M',
@@ -21664,6 +21673,7 @@ const ITEMS: Item[] = [
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = {
+  453: 'Tier 453 — Chart and Game Plan workspace (2026-10-18)',
   452: 'Tier 452 — Stock workspace controls (2026-10-17)',
   451: 'Tier 451 — Compact stock workspace (2026-10-17)',
   450: 'Tier 450 — Rules-based and LLM Game Plans (2026-10-16)',
@@ -22114,6 +22124,7 @@ const TIER_LABEL: Record<Tier, string> = {
 };
 
 const TIER_COLOR: Record<Tier, string> = {
+  453: '#38bdf8',
   452: '#22d3ee',
   451: '#38bdf8',
   450: '#c084fc', 449: '#fb923c', 448: '#22d3ee', 447: '#818cf8', 446: '#a78bfa',

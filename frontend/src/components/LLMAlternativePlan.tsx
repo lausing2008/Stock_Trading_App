@@ -1,12 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { askCopilot, cancelCopilot, newRequestId, type CopilotMessage, type PlanInputs } from '@/lib/copilot';
+import { askCopilot, cancelCopilot, newRequestId, type CopilotMessage, type PlanInputs, type TradeSetup } from '@/lib/copilot';
+import type { SelectedPlanLine } from '@/lib/selectedPlanLines';
 import { isAiConfigured, getAiProviderLabel } from '@/lib/ai';
 import { CopilotAnswer } from './CopilotPanel';
 import TradeSetupSummary from './TradeSetupSummary';
 
 /** A second interpretation of the same snapshot, never independent corroboration. */
-export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavailable, currency = null }: {
+export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavailable, currency = null, compact = false, onSelectionChange, onLevelSelect }: {
   symbol: string; inputs: PlanInputs; fingerprint: string; unavailable: boolean; currency?: string | null;
+  compact?: boolean; onSelectionChange?: (setups: TradeSetup[]) => void; onLevelSelect?: (line: SelectedPlanLine) => void;
 }) {
   const [message, setMessage] = useState<CopilotMessage | null>(null);
   const [busy, setBusy] = useState(false);
@@ -33,6 +35,7 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
     active.current = null; pending.ctl.abort();
     void cancelCopilot(pending.id).catch(() => {});
     setBusy(false); setCancelled(true);
+    onSelectionChange?.([]);
     request.current = null;
   }
   async function generate() {
@@ -40,6 +43,7 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
     const id = request.current ?? newRequestId(); request.current = id;
     const pending = { id, ctl: new AbortController() }; active.current = pending;
     setBusy(true); setError(''); setCancelled(false); setMessage(null);
+    onSelectionChange?.([]);
     try {
       const out = await askCopilot({ symbol, requestId: id,
         question: 'Give an alternative conditional Game Plan, including your preferred scenario, invalidation and when to wait.',
@@ -54,6 +58,8 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
         throw new Error('The model did not select a validated trade setup. Generate a new comparison.');
       }
       setMessage(out.message); request.current = null;
+      onSelectionChange?.(out.message.status === 'grounded' && out.message.selected_setup_id !== 'wait'
+        ? (out.message.plan_setups ?? []).filter(s => s.id === out.message.selected_setup_id) : []);
     } catch (e) {
       if (alive.current && active.current === pending) setError(e instanceof Error ? e.message : 'Could not generate alternative');
     } finally {
@@ -76,8 +82,11 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
     {message && <>
       <p>Model: {message.model ?? 'not reported'}</p>
       {message.status === 'grounded' && message.selected_setup_id === 'wait' && <p>LLM selected wait: no new entry recommended. Conditional alternatives are shown below.</p>}
-      {message.status === 'grounded' && <TradeSetupSummary currency={currency}
-        setups={(message.plan_setups ?? []).filter(s => message.selected_setup_id === 'wait' || s.id === message.selected_setup_id)} />}
+      {message.status === 'grounded' && message.selected_setup_id !== 'wait' && <TradeSetupSummary currency={currency} compact={compact} onLevelSelect={onLevelSelect}
+        setups={(message.plan_setups ?? []).filter(s => s.id === message.selected_setup_id)} />}
+      {message.status === 'grounded' && message.selected_setup_id === 'wait' && <details><summary>Conditional alternatives — no active entry</summary>
+        <TradeSetupSummary currency={currency} compact={compact} setups={message.plan_setups ?? []} />
+      </details>}
       {message.status === 'rejected' && <p role="alert">The model failed the evidence check. The stored-data fallback below is not a second plan.</p>}
       <details><summary style={{ cursor: 'pointer', color: '#a5b4fc' }}>Model explanation & evidence</summary>
         <CopilotAnswer m={message} defaultOpen />

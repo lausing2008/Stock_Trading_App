@@ -69,12 +69,21 @@ it('ignores a late result after explicit cancellation', async () => {
 });
 
 it('shows entry, stop and profit targets for the exact setup chosen by the LLM', async () => {
+  const onSelectionChange = vi.fn();
   const out = answer(); out.message.selected_setup_id = 'breakout'; out.message.plan_setups = [setupFixture(), setupFixture('breakout')];
-  mocks.askCopilot.mockResolvedValue(out); render(<LLMAlternativePlan {...props} currency="USD" />);
+  mocks.askCopilot.mockResolvedValue(out); render(<LLMAlternativePlan {...props} currency="USD" onSelectionChange={onSelectionChange} />);
   fireEvent.click(screen.getByText('Generate LLM alternative')); await screen.findByLabelText('Breakout entry');
   expect(screen.queryByLabelText('Pullback entry')).toBeNull();
   expect(screen.getByText('Entry reference')).toBeTruthy(); expect(screen.getByText('Stop loss to assess')).toBeTruthy();
   expect(screen.getByText(/USD\s+105\.00.*2\.00R/)).toBeTruthy(); expect(screen.getByText('200')).toBeTruthy();
+  expect(onSelectionChange).toHaveBeenLastCalledWith([out.message.plan_setups[1]]);
+});
+it.each(['grounded', 'rejected'])('publishes no chart setup for a %s wait response', async status => {
+  const onSelectionChange = vi.fn(); mocks.askCopilot.mockResolvedValue(answer(status));
+  render(<LLMAlternativePlan {...props} onSelectionChange={onSelectionChange} />);
+  fireEvent.click(screen.getByText('Generate LLM alternative'));
+  await screen.findByText(status === 'rejected' ? 'Stored-data fallback' : 'One reading favors waiting.');
+  expect(onSelectionChange).toHaveBeenLastCalledWith([]);
 });
 it('rejects an unknown or blocked selected setup instead of displaying invented model levels', async () => {
   const out = answer(); out.message.selected_setup_id = 'breakout'; out.message.plan_setups = [{ ...setupFixture('breakout'), state: 'blocked' }];

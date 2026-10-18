@@ -2,7 +2,8 @@ import DailyCloseAlerts from './DailyCloseAlerts';
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { draftPlanLevel, getStockPlan, newRequestId, type CopilotMessage, type PlanInputs,
-  type PlanItem, type PlanLevel, type StockPlan } from '@/lib/copilot';
+  type PlanItem, type PlanLevel, type StockPlan, type TradeSetup } from '@/lib/copilot';
+import { selectedPlanLines } from '@/lib/selectedPlanLines';
 import { DraftCard } from './CopilotPanel';
 import LLMAlternativePlan from './LLMAlternativePlan';
 import TradeSetupSummary from './TradeSetupSummary';
@@ -12,8 +13,9 @@ const fieldStyle = { width: '100%', padding: '6px', background: '#0f172a', color
 const buttonStyle = { padding: '6px 10px', border: '1px solid #475569', background: '#1e293b', color: '#e2e8f0', borderRadius: 6, cursor: 'pointer' };
 
 /** Same code-written rules as the copilot; no AI key or model call. */
-export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved }: {
+export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved, onLevelFocus }: {
   symbol: string; onLevelsChange: (lines: PlanChartLine[]) => void; onBoardSaved?: () => void;
+  onLevelFocus?: (line: PlanChartLine) => void;
 }) {
   const [mode, setMode] = useState<'entry' | 'holding' | 'forecast'>('entry');
   const [values, setValues] = useState({ entry: '', shares: '', stop: '', risk: '' });
@@ -28,6 +30,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
   const [boardSetupId, setBoardSetupId] = useState('');
   const [evidence, setEvidence] = useState<PlanItem | null>(null);
   const [perspective, setPerspective] = useState<'rules' | 'llm'>('rules');
+  const [llmSetups, setLlmSetups] = useState<TradeSetup[]>([]);
   const generation = useRef(0);
   const abort = useRef<AbortController | null>(null);
   const alive = useRef(true);
@@ -38,12 +41,17 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
   }, []);
   function reset() {
     generation.current++; abort.current?.abort(); setBusy(false);
-    setData(null); setDraft(null); setEvidence(null); setSaved(false); setError(''); setPerspective('rules');
+    setData(null); setDraft(null); setEvidence(null); setSaved(false); setError(''); setPerspective('rules'); setLlmSetups([]);
     draftRequest.current = null; onLevelsChange([]);
   }
-  function lines(result: StockPlan, visible: boolean) {
-    onLevelsChange(visible && !result.plan.unsupported ? result.plan.levels.filter(x => x.state === 'OK') : []);
-  }
+  useEffect(() => {
+    if (!data || !chart || data.plan.unsupported || data.plan.position_refusals.length) { onLevelsChange([]); return; }
+    const selected = perspective === 'llm' ? llmSetups[0] : data.plan.setups?.find(s => s.id === boardSetupId);
+    // Historical packets without structured setups keep their original fresh references.
+    onLevelsChange(perspective === 'rules' && data.plan.setups === undefined
+      ? data.plan.levels.filter(x => x.state === 'OK') : selectedPlanLines(selected));
+  }, [data, chart, boardSetupId, perspective, llmSetups, onLevelsChange]);
+  function focusLevel(line: PlanChartLine) { setChart(true); onLevelFocus?.(line); }
   async function load() {
     const request: PlanInputs = { kind: mode };
     for (const [key, text] of Object.entries(values)) {
@@ -61,7 +69,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
     try {
       const result = await getStockPlan(symbol, request, abort.current.signal);
       if (!alive.current || token !== generation.current) return;
-      setData(result); setInputs(request); lines(result, chart);
+      setData(result); setInputs(request);
       const setups = result.plan.setups ?? [];
       setBoardSetupId((setups.find(s => ['conditional', 'exit_triggered'].includes(s.state)) ?? setups[0])?.id ?? '');
     } catch (e) {
@@ -105,11 +113,10 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
     } catch (e) { if (alive.current && token === generation.current) setError(e instanceof Error ? e.message : 'Could not save to board'); }
     finally { if (alive.current && token === generation.current) setActionBusy(false); }
   }
-  return <section aria-label="Game Plan" style={{ padding: 14, background: '#0f172a', border: '1px solid #334155', borderRadius: 10, color: '#cbd5e1', fontSize: 12 }}>
-    <details><summary>Daily-close monitoring</summary><DailyCloseAlerts symbol={symbol} currency={data?.plan.currency} levels={data?.plan.levels} asOf={data?.plan.price_as_of} /></details>
+  return <section aria-label="Game Plan" className="stock-plan-dock" style={{ padding: 14, background: '#0f172a', border: '1px solid #334155', borderRadius: 10, color: '#cbd5e1', fontSize: 12 }}>
     <h3 style={{ margin: '0 0 6px', color: '#c4b5fd' }}>Game Plan</h3>
     <p style={{ color: '#94a3b8', margin: '4px 0 12px' }}>Entry, targets, stop and next steps. Build the rules-based plan first; compare an LLM alternative if useful.</p>
-    <label>Plan for <select aria-label="Plan for" disabled={busy || actionBusy} value={mode} onChange={e => { reset(); setMode(e.target.value as typeof mode); }} style={fieldStyle}>
+    <div className="game-plan-build-controls"><label>Plan for <select aria-label="Plan for" disabled={busy || actionBusy} value={mode} onChange={e => { reset(); setMode(e.target.value as typeof mode); }} style={fieldStyle}>
       <option value="entry">A potential purchase</option><option value="holding">A position I hold</option><option value="forecast">Calls and history</option>
     </select></label>
     <div className="game-plan-inputs">
@@ -120,12 +127,16 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
         </label>)}
     </div>
     <button style={buttonStyle} disabled={busy || actionBusy} onClick={load}>{busy ? 'Loading plan…' : data ? 'Refresh plan' : 'Build plan'}</button>
+    </div>
     {error && <p role="alert" style={{ color: '#fca5a5' }}>{error}</p>}
     {data && <>
+      {data.plan.position_refusals.map((why, i) => <p key={i} role="alert">{why}</p>)}
+      {Object.entries(data.plan.unavailable).map(([key, why]) => <p key={key} style={{ color: '#fbbf24' }}>{why}</p>)}
       <div role="group" aria-label="Plan perspective" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 12 }}>
         <button style={buttonStyle} aria-pressed={perspective === 'rules'} onClick={() => setPerspective('rules')}>Rules-based plan</button>
         <button style={buttonStyle} aria-pressed={perspective === 'llm'} onClick={() => setPerspective('llm')}>LLM alternative plan</button>
       </div>
+      <label><input type="checkbox" checked={chart} onChange={e => setChart(e.target.checked)} /> Show selected plan levels on the daily chart</label>
       <div style={{ marginTop: 12 }}>
       <div hidden={perspective !== 'rules'}>
       <section aria-label="Rules-based plan" style={{ minWidth: 0 }}>
@@ -133,10 +144,9 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
       {!!data.plan.setups?.length && <label>Scenario <select aria-label="Setup to save" style={fieldStyle} disabled={actionBusy} value={boardSetupId} onChange={e => { setBoardSetupId(e.target.value); setSaved(false); }}>
         {data.plan.setups.map(s => <option key={s.id} value={s.id}>{s.title} — {s.state.replaceAll('_', ' ')}</option>)}
       </select></label>}
-      <TradeSetupSummary setups={(data.plan.setups ?? []).filter(s => s.id === boardSetupId)} currency={data.plan.currency} />
-      {data.plan.position_refusals.map((why, i) => <p key={i} role="alert">{why}</p>)}
-      {Object.entries(data.plan.unavailable).map(([key, why]) => <p key={key} style={{ color: '#fbbf24' }}>{why}</p>)}
-      <label><input type="checkbox" checked={chart} onChange={e => { setChart(e.target.checked); lines(data, e.target.checked); }} /> Show fresh levels on the daily chart</label>
+      <TradeSetupSummary compact setups={(data.plan.setups ?? []).filter(s => s.id === boardSetupId)} currency={data.plan.currency} onLevelSelect={onLevelFocus ? focusLevel : undefined} />
+
+
       <details style={{ marginTop: 12 }}><summary style={{ cursor: 'pointer', color: '#a5b4fc' }}>Show rules, history & evidence</summary>
       <p>{data.plan.parameters.note}</p>
       {Object.entries(data.plan.groups).filter(([group]) => group !== 'setups').map(([group, items]) => <details key={group} style={{ marginTop: 10 }}>
@@ -171,11 +181,12 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
       </div>
       <div hidden={perspective !== 'llm'}>
       <LLMAlternativePlan key={data.packet_fingerprint} symbol={symbol} inputs={inputs}
-        currency={data.plan.currency}
+        currency={data.plan.currency} compact onSelectionChange={setLlmSetups} onLevelSelect={onLevelFocus ? focusLevel : undefined}
         fingerprint={data.packet_fingerprint} unavailable={data.plan.unsupported || !!data.plan.position_refusals.length ||
           (mode !== 'forecast' && !data.plan.setups?.length) ||
           !data.plan.levels.some(x => x.state === 'OK')} />
       </div>
+      <details style={{ marginTop: 10 }}><summary>Daily-close monitoring</summary><DailyCloseAlerts symbol={symbol} currency={data?.plan.currency} levels={data?.plan.levels} asOf={data?.plan.price_as_of} /></details>
       </div>
     </>}
   </section>;

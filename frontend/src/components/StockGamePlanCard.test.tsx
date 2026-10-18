@@ -83,11 +83,29 @@ it('starts with a compact rules view and opens the model perspective only on sel
   render(<StockGamePlanCard symbol="AAPL" onLevelsChange={vi.fn()} />); await build();
   expect(screen.getByText('Show rules, history & evidence').closest('details')?.open).toBe(false);
   expect(screen.getByText('Create price-alert drafts').closest('details')?.open).toBe(false);
-  expect(screen.getByText('Sizing, risk & supporting levels').closest('details')?.open).toBe(false);
+  expect(screen.getByText('Steps, sizing & risks').closest('details')?.open).toBe(false);
   expect(screen.queryByRole('button', { name: 'Generate LLM alternative' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'LLM alternative plan' }));
   expect(screen.getByRole('button', { name: 'Generate LLM alternative' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Save plan to Trade Board' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Rules-based plan' }));
   expect(screen.getByRole('button', { name: 'Save plan to Trade Board' })).toBeTruthy();
+});
+
+it('updates chart levels with the selected scenario, focuses its target, and clears the overlay for an ungenerated LLM view', async () => {
+  const p = fixture(); mocks.getStockPlan.mockResolvedValue({ ...p, plan: { ...p.plan, setups: [setupFixture(), setupFixture('breakout')] } });
+  const levels = vi.fn(), focus = vi.fn();
+  render(<StockGamePlanCard symbol="AAPL" onLevelsChange={levels} onLevelFocus={focus} />); await build();
+  expect(levels.mock.calls.at(-1)?.[0].map((l: { price: number }) => l.price)).toEqual([99, 98, 101, 102]);
+  fireEvent.change(screen.getByLabelText('Setup to save'), { target: { value: 'breakout' } });
+  expect(levels.mock.calls.at(-1)?.[0].map((l: { price: number }) => l.price)).toEqual([101, 99, 105, 107]);
+  fireEvent.click(screen.getByRole('button', { name: 'Highlight TP1 on chart' })); expect(focus).toHaveBeenCalledWith({ price: 105, label: 'TP1', role: 'target' });
+  fireEvent.click(screen.getByRole('button', { name: 'LLM alternative plan' })); expect(levels.mock.calls.at(-1)?.[0]).toEqual([]);
+  fireEvent.click(screen.getByRole('button', { name: 'Rules-based plan' })); expect(levels.mock.calls.at(-1)?.[0]).toHaveLength(4);
+});
+
+it('does not plot a blocked setup even when other reference levels are fresh', async () => {
+  const p = fixture(); mocks.getStockPlan.mockResolvedValue({ ...p, plan: { ...p.plan, setups: [{ ...setupFixture(), state: 'blocked' }] } });
+  const levels = vi.fn(); render(<StockGamePlanCard symbol="AAPL" onLevelsChange={levels} />); await build();
+  expect(levels.mock.calls.at(-1)?.[0]).toEqual([]);
 });
