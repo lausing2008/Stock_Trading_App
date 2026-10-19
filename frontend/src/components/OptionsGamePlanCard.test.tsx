@@ -51,3 +51,29 @@ it('ignores a late response for a previous symbol', async () => {
   await act(async () => { resolve(packet()); });
   expect(screen.getByRole('region', { name: 'Four common option strategies' })).toBeTruthy();
 });
+
+it('qualifies a preference with settled-price provenance and refuses last-trade-only candidates', async () => {
+  const data = packet();
+  for (const strategy of Object.values(data.strategy_matrix!.singles)) {
+    if (strategy) strategy.legs[0].price_source = 'last_trade';
+  }
+  mocks.getOptionsGamePlan.mockResolvedValue(data);
+  render(<OptionsGamePlanCard {...props} />);
+  await screen.findByRole('region', { name: 'Four common option strategies' });
+  fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'upside' } });
+  fireEvent.change(screen.getByLabelText('Option premium-loss budget ($)'), { target: { value: '400' } });
+  expect(screen.getByText(/research illustrations using settled provider prices/)).toBeTruthy();
+  expect(screen.getByText(/Entry status: WAIT for fresh quotes/)).toBeTruthy();
+  expect(screen.getByText('Wait / no strategy preference yet')).toBeTruthy();
+  expect(screen.queryByText('Preferred strategy to research: Long Call')).toBeNull();
+});
+it('keeps unusable-quote reasons visible when both legacy contracts are absent', async () => {
+  mocks.getOptionsGamePlan.mockResolvedValue({ symbol: 'AAPL', available: true, current_price: 100,
+    protective_put: null, covered_call: null,
+    protective_put_unavailable: 'crossed quote', covered_call_unavailable: 'one-sided quote' });
+  render(<OptionsGamePlanCard {...props} />);
+  const warning = await screen.findByText(/quote unusable/);
+  expect(warning.getAttribute('title')).toContain('crossed quote');
+  expect(warning.getAttribute('title')).toContain('one-sided quote');
+  expect(screen.getByText('Options Game Plan', { exact: true })).toBeTruthy();
+});

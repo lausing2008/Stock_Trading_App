@@ -167,12 +167,8 @@ def test_a_last_trade_price_is_labelled_in_the_ui():
     assert "l.price_source === 'last_trade'" in _MATRIX_TSX
 
 
-def test_the_primary_recommendation_itself_is_qualified():
-    """The structure comparison must carry quote provenance beside the result."""
-    i = _MATRIX_TSX.index("Structure comparison:")
-    block = _MATRIX_TSX[i:i + 1400]
-    assert "price_source === 'last_trade'" in block
-    assert "research estimates" in block
+# Recommendation provenance is rendered and tested behaviorally in
+# frontend/src/components/OptionsGamePlanCard.test.tsx.
 
 
 @pytest.mark.parametrize("quote,expected", [
@@ -325,9 +321,5 @@ _CARD_TSX = (pathlib.Path(__file__).resolve().parents[3]
              / "frontend/src/components/OptionsGamePlanCard.tsx").read_text()
 
 
-def test_the_legacy_card_does_not_render_nothing_for_an_unusable_quote():
-    """Replacing a wrong number with a blank space is not a fix: the reader cannot tell
-    'no such contract' from 'the quote is unusable right now'."""
-    assert "protective_put_unavailable" in _CARD_TSX
-    assert "!ppWhy && !ccWhy" in _CARD_TSX, "the null-guard must account for the reasons"
-    assert "quote unusable" in _CARD_TSX
+# Unusable-quote rendering is tested in OptionsGamePlanCard.test.tsx.
+# The former source assertion required a null-guard that no longer exists.

@@ -1,3 +1,4 @@
+import LittleRzyPanel from '@/components/LittleRzyPanel';
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { loadSettings, saveSettings, type AppSettings } from '@/lib/settings';
@@ -1482,6 +1483,7 @@ export default function SettingsPage() {
       <div style={section('#0ea5e9')}>
         <div style={sectionBar('linear-gradient(90deg,#0ea5e9,#38bdf8,#0ea5e9)')} />
         <div style={sectionHead}>Notifications</div>
+        <LittleRzyPanel />
         {/* AUD-ALERTPREFS: until this existed the only way to stop any alert email was to
             delete your price alerts — which also stopped the alerts you wanted, because the
             audience for every scheduled alert was "anyone holding an untriggered price alert"
@@ -1489,7 +1491,7 @@ export default function SettingsPage() {
         <div style={{ padding: '16px 18px 4px' }}>
           <label style={lbl}>Email alerts</label>
           <div style={hint}>
-            Every alert below is on unless you turn it off. Your own price alerts, order fills and
+            Each optional channel shows its saved setting; new trading/research channels require opt-in. Your own price alerts, order fills and
             broker re-auth emails are not listed — those are unsubscribed by deleting the alert
             itself, and switching them off silently would leave you waiting on mail that never comes.
           </div>
@@ -1509,7 +1511,7 @@ export default function SettingsPage() {
                 <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', letterSpacing: '0.04em', marginBottom: 6 }}>
                   {group.toUpperCase()}
                 </div>
-                {alertPrefs.filter(p => p.group === group).map(p => (
+                {alertPrefs.filter(p => p.group === group && !['little_rzy','short_term_digest'].includes(p.key)).map(p => (
                   <div key={p.key} style={{
                     display: 'flex', alignItems: 'flex-start', gap: 10,
                     padding: '7px 0', borderTop: '1px solid rgba(99,102,241,0.12)',

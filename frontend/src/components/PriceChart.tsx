@@ -29,6 +29,7 @@ import { ToolbarDropdown } from './ToolbarDropdown';
 import { computeSMA, computeEMA, computeRSI, computeMACD, computeBollingerBands } from '@/lib/indicators';
 import { loadDrawings, addDrawing, removeDrawing, clearDrawings, nextDrawingId, nearestBarIndexByTimestamp, type ChartDrawing } from '@/lib/chartDrawings';
 import { computeRiskReward } from '@/lib/riskReward';
+import { rzyLinePoints, rzyPriceGridMatches, rzyTime, type RzyResponse } from '@/lib/rzy';
 
 type Props = {
   symbol: string;
@@ -137,7 +138,7 @@ function computeVolMA(priceData: Price[], period = 20): (number | null)[] {
   });
 }
 
-type SmaVals  = { sma_20: number|null; sma_50: number|null; sma_200: number|null; ema_20: number|null; ema_50: number|null; ema_200: number|null };
+type SmaVals  = { sma_5: number|null; sma_10: number|null; sma_20: number|null; sma_50: number|null; sma_200: number|null; ema_20: number|null; ema_50: number|null; ema_200: number|null };
 type MacdVals = { macd: number|null; signal: number|null; hist: number|null };
 
 const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symbol, cleanDefault = false, highlightedPlanPrice, commandRef, timeframe, onTimeframeChange, prices, indicators, levels, signalMarkers, patterns, gamePlanLevels, planLines, riskRewardLevels, maxPainLevel, intradayOverride, compareData }: Props, controllerRef) {
@@ -146,6 +147,20 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
   const macdRef = useRef<HTMLDivElement>(null);
 
   const [range, setRange] = useState<RangeLabel>('3M');
+  const [showRzy, setShowRzy] = useState(false);
+  const [rzy, setRzy] = useState<RzyResponse | null>(null);
+  const [rzyError, setRzyError] = useState('');
+  const rzyTf = range === '5m' ? '5m' : timeframe ?? '1d';
+  useEffect(() => {
+    let active = true; setRzy(null); setRzyError('');
+    if (showRzy) {
+      if (!['5m','15m','1h','1d'].includes(rzyTf)) setRzyError('Little RZY supports 5m, 15m, 1h and daily candles; 4h is not available.');
+      else api.rzyReview(symbol, rzyTf).then(data => { if (active) setRzy(data); }).catch(() => { if (active) setRzyError('Little RZY data unavailable; no pattern overlay is shown.'); });
+    }
+    return () => { active = false; };
+  }, [symbol, showRzy, rzyTf, prices, intradayOverride]);
+  const [showSMA5, setShowSMA5] = useState(false);
+  const [showSMA10, setShowSMA10] = useState(false);
   const [showSMA20,   setShowSMA20]   = useState(!cleanDefault);
   const [showSMA50,   setShowSMA50]   = useState(!cleanDefault);
   const [showSMA200,  setShowSMA200]  = useState(true);
@@ -212,8 +227,8 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
   const undo = useRef<ChartSnapshot[]>([]);
   const restoredViewport = useRef<LogicalRange | null>(null);
   const pendingCommand = useRef<{resolve: (s: ChartSnapshot) => void; reject: (e: Error) => void; symbol: string; command: ChartCommand; timer: ReturnType<typeof setTimeout>} | null>(null);
-  const setters: Record<ChartIndicator, (v: boolean) => void> = { SMA20:setShowSMA20,SMA50:setShowSMA50,SMA200:setShowSMA200,EMA20:setShowEMA20,EMA50:setShowEMA50,EMA200:setShowEMA200,BB:setShowBB,VOL:setShowVol,VWAP:setShowVWAP,RSI:setShowRSI,MACD:setShowMACD,SIGNALS:setShowSignals,FVG:setShowFVG,SR:setShowSR,'52W':setShow52W,PIVOTS:setShowSwingPivots };
-  const snapshot: ChartSnapshot = { symbol, range, timeframe:(range === '5m' ? '5m' : timeframe ?? '1d') as ChartTimeframe, indicators:{SMA20:showSMA20,SMA50:showSMA50,SMA200:showSMA200,EMA20:showEMA20,EMA50:showEMA50,EMA200:showEMA200,BB:showBB,VOL:showVol,VWAP:showVWAP,RSI:showRSI,MACD:showMACD,SIGNALS:showSignals,FVG:showFVG,SR:showSR,'52W':show52W,PIVOTS:showSwingPivots} };
+  const setters: Record<ChartIndicator, (v: boolean) => void> = { RZY:setShowRzy,SMA5:setShowSMA5,SMA10:setShowSMA10,SMA20:setShowSMA20,SMA50:setShowSMA50,SMA200:setShowSMA200,EMA20:setShowEMA20,EMA50:setShowEMA50,EMA200:setShowEMA200,BB:setShowBB,VOL:setShowVol,VWAP:setShowVWAP,RSI:setShowRSI,MACD:setShowMACD,SIGNALS:setShowSignals,FVG:setShowFVG,SR:setShowSR,'52W':setShow52W,PIVOTS:setShowSwingPivots };
+  const snapshot: ChartSnapshot = { symbol, range, timeframe:(range === '5m' ? '5m' : timeframe ?? '1d') as ChartTimeframe, indicators:{RZY:showRzy,SMA5:showSMA5,SMA10:showSMA10,SMA20:showSMA20,SMA50:showSMA50,SMA200:showSMA200,EMA20:showEMA20,EMA50:showEMA50,EMA200:showEMA200,BB:showBB,VOL:showVol,VWAP:showVWAP,RSI:showRSI,MACD:showMACD,SIGNALS:showSignals,FVG:showFVG,SR:showSR,'52W':show52W,PIVOTS:showSwingPivots} };
   useEffect(() => {
     undo.current = []; viewport.current = null;
     const p = pendingCommand.current;
@@ -302,7 +317,7 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
     };
   }, [indicators, visiblePrices]);
 
-  const [smaVals,   setSmaVals]   = useState<SmaVals>({ sma_20: null, sma_50: null, sma_200: null, ema_20: null, ema_50: null, ema_200: null });
+  const [smaVals,   setSmaVals]   = useState<SmaVals>({ sma_5: null, sma_10: null, sma_20: null, sma_50: null, sma_200: null, ema_20: null, ema_50: null, ema_200: null });
   const [rsiVal,    setRsiVal]    = useState<number|null>(null);
   const [macdCross, setMacdCross] = useState<MacdVals>({ macd: null, signal: null, hist: null });
 
@@ -473,6 +488,46 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
         }
       }
 
+      if (showRzy && rzy?.status === 'research_only' && rzyPriceGridMatches(rzy.price_grid, activePrices)) {
+        const stamps = activePrices.map(p => p.ts);
+        const key = (value: string) => isIntraday ? rzyTime(value) / 1000 : value.slice(0, 10);
+        const shown = new Map(stamps.map(t => [key(t), t]));
+        const at = (value: string) => { const t = shown.get(key(value)); return t ? (isIntraday ? toIntradayTime(t) : toTime(t)) as unknown as Time : null; };
+        for (const band of ['middle_band','upper_band','lower_band'] as const) {
+          const data = (rzy.price_grid ?? []).filter(b => at(b.time) != null && b[band] != null).map(b => ({ time: at(b.time)!, value: b[band]! }));
+          if (data.length) chart.addLineSeries({ color: '#2dd4bf88', lineWidth: 1, lineStyle: band === 'middle_band' ? LineStyle.Dashed : LineStyle.Solid, lastValueVisible: false, priceLineVisible: false, title: `RZY ${band}` }).setData(data);
+        }
+        for (const structure of rzy.structures.slice(-5)) {
+          // Endpoint and chart must share the exact bar grid and price basis.
+          const points = rzyLinePoints(structure, (rzy.price_grid ?? []).map(b => b.time));
+          if (!points.length) continue;
+          const color = structure.direction === 'long' ? '#2dd4bf' : '#fb7185';
+          const line = chart.addLineSeries({ color, lineWidth: 2, lastValueVisible: false, priceLineVisible: false });
+          line.setData(points.filter(p => at(p.time) != null).map(p => ({ time: at(p.time)!, value: p.value })));
+          for (const anchor of structure.anchors) {
+            const time = at(anchor.pivot_time);
+            if (time) allMarkers.push({ time, position: anchor.kind === 'low' ? 'belowBar' : 'aboveBar', color, shape: 'circle', text: `RZY pivot · known ${anchor.confirmed_at}` });
+          }
+          const extreme = at(structure.extreme.time);
+          if (extreme) {
+            const i = structure.anchors[0].index + points.findIndex(p => key(p.time) === key(structure.extreme.time));
+            const a = structure.anchors[0], c = structure.anchors[2];
+            const measured = a.price+(c.price-a.price)*(i-a.index)/(c.index-a.index);
+            const segment = chart.addHistogramSeries({ color: `${color}99`, base: structure.extreme.price, priceScaleId: 'right', lastValueVisible: false, priceLineVisible: false });
+            segment.setData([{ time: extreme, value: measured }]);
+          }
+          if (['ARMED','TRIGGERED'].includes(structure.state)) {
+            for (const [label, price] of [['RZY primary',structure.target],['RZY runner (experimental)',structure.runner],['RZY stop',structure.stop]] as const) {
+              if (price && Number.isFinite(price) && price > 0) candles.createPriceLine({ price, color, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: label });
+            }
+          }
+        }
+        for (const event of rzy.events) {
+          const time = at(event.bar_time ?? event.signal_time);
+          if (time && ['TRIGGERED','PAPER_FILL','INVALIDATED','EXPIRED','REJECTED','REVERSAL_WATCH','PAPER_EXIT'].includes(event.event_type)) allMarkers.push({ time, position: event.direction === 'long' ? 'belowBar' : 'aboveBar', color: '#fbbf24', shape: event.event_type === 'TRIGGERED' ? (event.direction === 'long' ? 'arrowUp' : 'arrowDown') : 'circle', text: `RZY ${event.event_type}` });
+        }
+      }
+      allMarkers.sort((a,b) => String(a.time).localeCompare(String(b.time)));
       if (allMarkers.length > 0) candles.setMarkers(allMarkers);
     }
 
@@ -544,6 +599,8 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
       // render until enough bars exist, same graceful-null behavior as every other overlay.
       const closes = activePrices.map(p => +p.close);
       const intraLineConfig: { key: string; color: string; show: boolean; vals: (number | null)[] }[] = [
+        { key: 'sma_5', color: '#facc15', show: showSMA5, vals: computeSMA(closes, 5) },
+        { key: 'sma_10', color: '#fb7185', show: showSMA10, vals: computeSMA(closes, 10) },
         { key: 'sma_20',  color: '#38bdf8', show: showSMA20,  vals: computeSMA(closes, 20) },
         { key: 'sma_50',  color: '#f59e0b', show: showSMA50,  vals: computeSMA(closes, 50) },
         { key: 'sma_200', color: '#a78bfa', show: showSMA200, vals: computeSMA(closes, 200) },
@@ -578,19 +635,21 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
 
       chart.subscribeCrosshairMove((param) => {
         if (!param.time) {
-          setSmaVals({ sma_20: null, sma_50: null, sma_200: null, ema_20: null, ema_50: null, ema_200: null });
+          setSmaVals({ sma_5: null, sma_10: null, sma_20: null, sma_50: null, sma_200: null, ema_20: null, ema_50: null, ema_200: null });
           return;
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const v = (key: string) => lineSeries[key] ? (param.seriesData.get(lineSeries[key]) as any)?.value ?? null : null;
         setSmaVals({
-          sma_20: v('sma_20'), sma_50: v('sma_50'), sma_200: v('sma_200'),
+          sma_5: v('sma_5'), sma_10: v('sma_10'), sma_20: v('sma_20'), sma_50: v('sma_50'), sma_200: v('sma_200'),
           ema_20: v('ema_20'), ema_50: v('ema_50'), ema_200: v('ema_200'),
         });
       });
     }
     if (!isIntraday && visibleIndicators) {
       const lineConfig: { key: string; color: string; show: boolean }[] = [
+        { key: 'sma_5', color: '#facc15', show: showSMA5 },
+        { key: 'sma_10', color: '#fb7185', show: showSMA10 },
         { key: 'sma_20',  color: '#38bdf8', show: showSMA20  },
         { key: 'sma_50',  color: '#f59e0b', show: showSMA50  },
         { key: 'sma_200', color: '#a78bfa', show: showSMA200 },
@@ -632,16 +691,26 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
 
       chart.subscribeCrosshairMove((param) => {
         if (!param.time) {
-          setSmaVals({ sma_20: null, sma_50: null, sma_200: null, ema_20: null, ema_50: null, ema_200: null });
+          setSmaVals({ sma_5: null, sma_10: null, sma_20: null, sma_50: null, sma_200: null, ema_20: null, ema_50: null, ema_200: null });
           return;
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const v = (key: string) => lineSeries[key] ? (param.seriesData.get(lineSeries[key]) as any)?.value ?? null : null;
         setSmaVals({
-          sma_20: v('sma_20'), sma_50: v('sma_50'), sma_200: v('sma_200'),
+          sma_5: v('sma_5'), sma_10: v('sma_10'), sma_20: v('sma_20'), sma_50: v('sma_50'), sma_200: v('sma_200'),
           ema_20: v('ema_20'), ema_50: v('ema_50'), ema_200: v('ema_200'),
         });
       });
+    }
+
+    if (!isIntraday) {
+      for (const [key, length, show, color] of [['sma_5', 5, showSMA5, '#facc15'], ['sma_10', 10, showSMA10, '#fb7185']] as const) {
+        if (!show || lineSeries[key]) continue;
+        const values = computeSMA(prices.map(p => +p.close), length);
+        const byDay = new Map(prices.map((p, i) => [p.ts.slice(0, 10), values[i]]));
+        const data = visiblePrices.map(p => ({ time: toTime(p.ts), value: byDay.get(p.ts.slice(0, 10)) })).filter((d): d is LineData<Time> => d.value != null);
+        if (data.length) { const line = chart.addLineSeries({ color, lineWidth: 1 }); line.setData(data); lineSeries[key] = line; }
+      }
     }
 
     // ── S/R levels (daily mode only) ───────────────────────────────────────
@@ -981,7 +1050,7 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, planLines, highlightedPlanPrice, riskRewardLevels, maxPainLevel, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showAnchoredVwap, anchoredVwapIdx, showRSI, showMACD, showSignals, showFVG, showSR, show52W, showSwingPivots, swingPivots, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
+  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, planLines, highlightedPlanPrice, riskRewardLevels, maxPainLevel, showRzy, rzy, showSMA5, showSMA10, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showAnchoredVwap, anchoredVwapIdx, showRSI, showMACD, showSignals, showFVG, showSR, show52W, showSwingPivots, swingPivots, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
 
   useEffect(() => {
     const p = pendingCommand.current;
@@ -1129,6 +1198,9 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
         >
           5m
         </button>
+        {showRzy && <p role="status" style={{ width: '100%', color: '#94a3b8', fontSize: 11 }}>
+          {rzyError || (rzy ? `Little RZY-inspired: ${rzy.status}. Data ${rzy.evidence?.data_as_of ?? 'unknown'}; provider delay ${rzy.evidence?.delay ?? 'unknown'}. Population-standard-deviation Bollinger Bands; independent of AI signals. Pivot confirmation is delayed (default 7 candles). ${rzy.reason ?? ''} ${rzy.status === 'research_only' && !rzyPriceGridMatches(rzy.price_grid, activePrices) ? 'Overlay withheld: chart OHLC basis/grid differs from the strategy bars.' : ''}` : 'Loading Little RZY structures…')}
+        </p>}
         {/* Daily range buttons */}
         {DAILY_RANGES.map(r => (
           <button
@@ -1161,6 +1233,9 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
         <ToolbarDropdown
           label="Indicators"
           options={[
+            { key: 'rzy', label: 'Little RZY-inspired', checked: showRzy, onToggle: () => setShowRzy(v => !v), color: '#2dd4bf' },
+            { key: 'sma5', label: 'SMA 5', checked: showSMA5, onToggle: () => setShowSMA5(v => !v), color: '#facc15' },
+            { key: 'sma10', label: 'SMA 10', checked: showSMA10, onToggle: () => setShowSMA10(v => !v), color: '#fb7185' },
             { key: 'sma20',  label: 'SMA 20',  checked: showSMA20,  onToggle: () => setShowSMA20(v => !v),  color: '#38bdf8' },
             { key: 'sma50',  label: 'SMA 50',  checked: showSMA50,  onToggle: () => setShowSMA50(v => !v),  color: '#f59e0b' },
             { key: 'sma200', label: 'SMA 200', checked: showSMA200, onToggle: () => setShowSMA200(v => !v), color: '#a78bfa' },
@@ -1307,6 +1382,8 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
               <span className="inline-block w-2.5 h-2.5 rounded-sm bg-green-500 opacity-40" />Extended Hours
             </span>
           )}
+          {showSMA5 && <span style={{ color: '#facc15' }}>SMA 5</span>}
+          {showSMA10 && <span style={{ color: '#fb7185' }}>SMA 10</span>}
           {showSMA20   && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-sky-400" />SMA 20</span>}
           {showSMA50   && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-amber-400" />SMA 50</span>}
           {showSMA200  && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-violet-400" />SMA 200</span>}
@@ -1353,6 +1430,8 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
       {/* Crosshair readout — line values at cursor */}
       {(isIntraday ? activePrices.length > 0 : !!visibleIndicators) && (
         <div className="flex flex-wrap items-center gap-4 px-3 py-1.5 text-xs font-mono bg-slate-900/60 border-b border-slate-800/50 min-h-[26px]">
+          {smaVals.sma_5 != null && showSMA5 && <span style={{ color: '#facc15' }}>SMA 5 = {f2(smaVals.sma_5)}</span>}
+          {smaVals.sma_10 != null && showSMA10 && <span style={{ color: '#fb7185' }}>SMA 10 = {f2(smaVals.sma_10)}</span>}
           {smaVals.sma_20   != null && showSMA20   && <span style={{ color: '#38bdf8' }}>SMA 20 = {f2(smaVals.sma_20)}</span>}
           {smaVals.sma_50   != null && showSMA50   && <span style={{ color: '#f59e0b' }}>SMA 50 = {f2(smaVals.sma_50)}</span>}
           {smaVals.sma_200  != null && showSMA200  && <span style={{ color: '#a78bfa' }}>SMA 200 = {f2(smaVals.sma_200)}</span>}

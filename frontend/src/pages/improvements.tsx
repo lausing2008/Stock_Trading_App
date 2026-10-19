@@ -35,6 +35,15 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'LITTLE-RZY-WATCHLIST', tier: 455, severity: 'feature', defaultStatus: 'done',
+    title: 'Little RZY-inspired signals, morning watchlist preparation and SMA 5/10',
+    file: 'docs/2026-10-19/little-rzy-implementation.md', effort: 'L',
+    impact: 'Adds an independent, deterministic short-term research workflow with explicit email consent.',
+    what: 'Completed-bar continuation structures, frozen measured targets, conditional entries/stops, exhaustion and reversal watches, chart overlays, persistent research paper ledger, replay and cost-aware chronological comparisons. Watchlist digest is due 20 minutes before US regular open.',
+    fix: 'Both email channels default off, share the central send gate, recheck consent before dispatch and suppress historical bootstrap alerts. SMA 5/10 are opt-in chart indicators. No broker execution.',
+    implementedNote: 'Validation covers SQLite/PostgreSQL workflows and streamed/replayed engine parity. Market-performance evidence remains open: stored bars lack verified provider delay/execution basis and short borrow evidence, so paper fills are blocked. See the dated validation and deployment records.',
+  },
+  {
     id: 'COMMON-OPTIONS-PLAYBOOKS', tier: 454, severity: 'feature', defaultStatus: 'done',
     title: 'Four common options strategies with conditional preference and management playbooks',
     file: 'docs/features/2026-10-18-common-options-playbooks.md', effort: 'M',
@@ -21682,6 +21691,7 @@ const ITEMS: Item[] = [
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = {
+  455: 'Tier 455 — Little RZY short-term research (2026-10-19)',
   454: 'Tier 454 — Four common options playbooks (2026-10-18)',
   453: 'Tier 453 — Chart and Game Plan workspace (2026-10-18)',
   452: 'Tier 452 — Stock workspace controls (2026-10-17)',
@@ -22134,6 +22144,7 @@ const TIER_LABEL: Record<Tier, string> = {
 };
 
 const TIER_COLOR: Record<Tier, string> = {
+  455: '#2dd4bf',
   454: '#a78bfa',
   453: '#38bdf8',
   452: '#22d3ee',

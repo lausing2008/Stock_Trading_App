@@ -77,4 +77,5 @@ async def main():
   assert not errors,errors
   print('TRADING_BROWSER_PASSED full-width joined chart/plan, scenario focus, tabs, input retention, Focus/Escape, phone width; no runtime errors')
   await browser.close()
-asyncio.run(main())
+if __name__ == '__main__':
+ asyncio.run(main())

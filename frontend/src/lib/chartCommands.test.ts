@@ -2,6 +2,9 @@ import {describe,it,expect} from 'vitest';
 import {parseChartCommand} from './chartCommands';
 describe('closed chart command grammar',()=>{
  it('only accepts supported UI changes',()=>{
+  expect(parseChartCommand('show SMA 5')).toEqual({kind:'indicator',indicator:'SMA5',enabled:true});
+  expect(parseChartCommand('add SMA10')).toEqual({kind:'indicator',indicator:'SMA10',enabled:true});
+  expect(parseChartCommand('show RZY')).toEqual({kind:'indicator',indicator:'RZY',enabled:true});
   expect(parseChartCommand('show RSI')).toEqual({kind:'indicator',indicator:'RSI',enabled:true});
   expect(parseChartCommand('hide EMA 200')).toEqual({kind:'indicator',indicator:'EMA200',enabled:false});
   expect(parseChartCommand('show 5M')).toEqual({kind:'range',range:'5m'});

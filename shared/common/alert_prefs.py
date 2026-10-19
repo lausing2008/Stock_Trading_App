@@ -34,6 +34,13 @@ import hmac
 # module knowing anything about the UI.
 
 ALERT_TYPES: list[dict] = [
+    # Separate, explicit opt-in channels; neither inherits AI-signal enrolment.
+    {"key": "little_rzy", "group": "Signals", "label": "Little RZY-inspired pattern alerts",
+     "desc": "Completed-candle continuation signals and separate reversal watches for your US watchlist.",
+     "default_enabled": False},
+    {"key": "short_term_digest", "group": "Digests", "label": "Short-term watchlist morning digest",
+     "desc": "Conditional day-trading preparation 20 minutes before US regular open, separate from AI signals.",
+     "default_enabled": False},
     # Trading signals
     {"key": "signal",              "group": "Signals",   "label": "AI Signal changes",
      "desc": "A watchlist stock's AI signal flips (e.g. HOLD to BUY).",

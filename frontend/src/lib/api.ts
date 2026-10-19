@@ -237,6 +237,12 @@ export interface StockOutcomes {
 }
 
 export const api = {
+  rzyReview: (symbol: string, timeframe: string) => request<import('./rzy').RzyResponse>(`/stocks/rzy/${encodeURIComponent(symbol)}?timeframe=${timeframe}`),
+  rzyPreferences: () => request<import('./rzy').RzyPreferences>('/stocks/rzy/preferences'),
+  saveRzyPreferences: (body: import('./rzy').RzyPreferences) => request<import('./rzy').RzyPreferences>('/stocks/rzy/preferences', { method: 'PUT', body: JSON.stringify(body) }),
+  rzyDigest: () => request<{ candidates: { symbol: string; direction: string; timeframe: string; target: number; entry_reference?: number; provisional_stop?: number; planned_reward_risk?: number; guidance: string }[]; exclusions: { symbol: string; timeframe: string; reason: string }[]; note: string }>('/stocks/rzy/digest'),
+  rzyPaper: () => request<{ note: string; positions: { symbol: string; timeframe: string; state: string; cancelled?: boolean; reason?: string; fill?: number; net?: number }[] }>('/stocks/rzy/paper'),
+
   calibrationCandidates: (includeProvisional = false) => request<CalibrationComparison>(`/signals/calibration-candidates?include_provisional=${includeProvisional}`),
   getRiskDeliverySchedule: () => request<{ enabled: boolean; timezone: string; start: string; end: string }>('/alerts/risk-delivery'),
   setRiskDeliverySchedule: (body: { enabled: boolean; timezone: string; start: string; end: string }) =>

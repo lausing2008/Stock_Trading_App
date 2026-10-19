@@ -1,5 +1,5 @@
 /** Closed, local UI commands. Never executes model output or writes a trading object. */
-export const CHART_INDICATORS = ['SMA20','SMA50','SMA200','EMA20','EMA50','EMA200','BB','VOL','VWAP','RSI','MACD','SIGNALS','FVG','SR','52W','PIVOTS'] as const;
+export const CHART_INDICATORS = ['RZY','SMA5','SMA10','SMA20','SMA50','SMA200','EMA20','EMA50','EMA200','BB','VOL','VWAP','RSI','MACD','SIGNALS','FVG','SR','52W','PIVOTS'] as const;
 export type ChartIndicator = typeof CHART_INDICATORS[number];
 export const CHART_RANGES = ['5D','1M','3M','6M','1Y','5Y','All','5m'] as const;
 export type ChartRange = typeof CHART_RANGES[number];
@@ -11,7 +11,7 @@ export type ChartController = { applyCommand(command: ChartCommand, symbol: stri
 export function parseChartCommand(text: string): ChartCommand | null {
   const q = text.trim();
   if (/^undo(?: (?:the )?(?:last )?chart(?: change)?)?$/i.test(q)) return { kind: 'undo' };
-  const m = /^(show|hide|add|remove)\s+(SMA\s*(?:20|50|200)|EMA\s*(?:20|50|200)|RSI|MACD|BB|VWAP|VOL|SIGNALS|FVG|SR|52W|PIVOTS)(?:\s+(?:on|from)\s+(?:the\s+)?chart)?$/i.exec(q);
+  const m = /^(show|hide|add|remove)\s+(SMA\s*(?:5|10|20|50|200)|EMA\s*(?:20|50|200)|RZY|RSI|MACD|BB|VWAP|VOL|SIGNALS|FVG|SR|52W|PIVOTS)(?:\s+(?:on|from)\s+(?:the\s+)?chart)?$/i.exec(q);
   if (m) return { kind: 'indicator', indicator: m[2].replace(/\s/g,'').toUpperCase() as ChartIndicator, enabled: /show|add/i.test(m[1]) };
   const tf = /^(?:set|switch(?: to)?)\s+(1d|5m|15m|1h|4h)(?:\s+(?:chart|timeframe))?$/i.exec(q);
   if(tf)return {kind:'timeframe',timeframe:tf[1].toLowerCase() as ChartTimeframe};

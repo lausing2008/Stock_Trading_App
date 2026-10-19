@@ -175,6 +175,7 @@ _ALERT_JOB_IDS = {
     # never sends); this drain is the only place the channel calls a mail provider.
     "price_risk_outbox_drain",
     "broker_auth_check",
+    "little_rzy_workflows",
     "morning_digest_us",
     "morning_digest_hk",
     "premarket_brief_us",

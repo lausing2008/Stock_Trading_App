@@ -54,6 +54,8 @@ def get_indicators(
 ):
     df = _load_prices(session, symbol, timeframe, days)
     out = {
+        "sma_5": sma(df["close"], 5),
+        "sma_10": sma(df["close"], 10),
         "sma_20": sma(df["close"], 20),
         "sma_50": sma(df["close"], 50),
         "sma_200": sma(df["close"], 200),

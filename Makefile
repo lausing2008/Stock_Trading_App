@@ -113,7 +113,10 @@ test-integration-pg-schema:
 	 NEWS_IMPACT_PG_REQUIRED=1 \
 	 DDL_GUARD_PG_URL=postgresql+psycopg2://postgres:probe@localhost:55439/schemaprobe \
 	 DDL_GUARD_PG_REQUIRED=1 \
+	 RZY_PG_URL=postgresql+psycopg2://postgres:probe@localhost:55439/schemaprobe \
+	 RZY_PG_REQUIRED=1 \
 	 python3 -m pytest -q -p no:randomly \
 		services/market-data/tests/test_news_impact_postgres.py \
-		services/market-data/tests/test_ddl_guard_postgres.py; \
+		services/market-data/tests/test_ddl_guard_postgres.py \
+		services/market-data/tests/test_little_rzy_postgres.py; \
 	 rc=$$?; docker rm -f stockai-schema-pg >/dev/null 2>&1; exit $$rc

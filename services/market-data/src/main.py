@@ -4,6 +4,7 @@ import asyncio
 from common.service import create_app
 from db import init_db
 
+from .api.little_rzy import router as rzy_router
 from .api.routes import router as data_router
 from .api.admin import router as admin_router
 from .api.auth import router as auth_router
@@ -49,6 +50,6 @@ async def on_startup():
 
 app = create_app(
     "market-data-service",
-    routers=[workspace_router, close_router, connections_router, data_router, admin_router, auth_router, watchlists_router, watchlist_router, news_router, alerts_router, signal_alerts_router, journal_router, board_router, positions_router, app_notifications_router, news_impacts_router, flow_delivery_router, long_option_playbook_router, paper_portfolio_router, broker_router, rl_router, push_router, conditional_orders_router, risk_snapshots_router, options_income_router, fed_watch_router],
+    routers=[rzy_router, workspace_router, close_router, connections_router, data_router, admin_router, auth_router, watchlists_router, watchlist_router, news_router, alerts_router, signal_alerts_router, journal_router, board_router, positions_router, app_notifications_router, news_impacts_router, flow_delivery_router, long_option_playbook_router, paper_portfolio_router, broker_router, rl_router, push_router, conditional_orders_router, risk_snapshots_router, options_income_router, fed_watch_router],
     on_startup=on_startup,
 )

@@ -9106,6 +9106,29 @@ def _is_usable_price(p) -> bool:
     return p is not None and p > 0
 
 
+def check_little_rzy_workflows():
+    """One opt-in watchlist channel; no AI signals or broker execution."""
+    import uuid
+    from . import rzy_workflow as rzy
+    from .email_service import send_email
+    token = uuid.uuid4().hex
+    lock_key = 'stockai:lock:little_rzy_workflows'
+    redis_client = _get_redis()
+    if not redis_client.set(lock_key, token, nx=True, ex=600):
+        return
+    try:
+        with SessionLocal() as session:
+            scan = rzy.scan(session)
+            digest = rzy.morning_digest(session)
+            session.commit()
+            delivered = rzy.drain(session, send_email)
+            log.info('little_rzy.workflows', scan=scan, digest=digest, delivery=delivered)
+    except Exception as exc:
+        log.error('little_rzy.failed', error=str(exc), exc_info=True)
+    finally:
+        redis_client.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", 1, lock_key, token)
+
+
 def check_daily_close_workflows():
     """Explicit in-app close alerts and review-only research; never generates model calls."""
     from .workspace_workflows import check_close_alerts, propose_connections, resolve_connections, utcnow
@@ -14691,6 +14714,8 @@ def start_scheduler() -> None:
     # production only if an admin has explicitly set the force-enable flag). See that
     # function's own docstring for the full rationale (T270-DBSYNC-PROD-TO-LOCAL-WEEKLY).
     if _is_alerting_enabled():
+        _scheduler.add_job(check_little_rzy_workflows, 'interval', minutes=1,
+                           id='little_rzy_workflows', replace_existing=True, **_JOB_DEFAULTS)
         # ── Morning digests — one email per market, 40 min before that market opens ─────
         # US 08:50 ET (open 09:30 ET); HK 08:50 HKT (open 09:30 HKT). Each covers only its
         # own market's opportunities/positions — see send_morning_digest's market scoping.
