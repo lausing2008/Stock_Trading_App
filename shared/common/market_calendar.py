@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 
 __all__ = [
     "NYSE_HOLIDAYS",
+    "NYSE_EARLY_CLOSES",
     "HK_HOLIDAYS",
     "MIN_COVERAGE_YEAR",
     "is_us_trading_day",
@@ -169,6 +170,16 @@ def is_trading_day(market: str, dt: datetime | None = None) -> bool:
 #   US    09:30-16:00            -> 570 .. 960
 #   HK    09:30-12:00 (morning)  -> 570 .. 720
 #         13:00-16:00 (afternoon)-> 780 .. 960   (the lunch break is a real closure)
+# Cash-equity 13:00 ET closes for the supported 2024–2027 calendar window.
+# Official NYSE/ICE notices: 2023 (2024–26) and 2025 (2026–28).
+# https://ir.theice.com/press/news-details/2023/NYSE-Group-Announces-2024-2025-and-2026-Holiday-and-Early-Closings-Calendar/default.aspx
+# https://ir.theice.com/press/news-details/2025/NYSE-Group-Announces-2026-2027-and-2028-Holiday-and-Early-Closings-Calendar/default.aspx
+NYSE_EARLY_CLOSES: frozenset[date] = frozenset([
+    date(2024,7,3), date(2024,11,29), date(2024,12,24),
+    date(2025,7,3), date(2025,11,28), date(2025,12,24),
+    date(2026,11,27), date(2026,12,24), date(2027,11,26),
+])
+
 _US_SESSION = ((570, 960),)
 _HK_SESSION = ((570, 720), (780, 960))
 
@@ -187,6 +198,9 @@ def is_regular_session(market: str, dt: datetime | None = None) -> bool:
     if not (is_hk_trading_day(now) if hk else is_us_trading_day(now)):
         return False
     local = now.astimezone(_HKT if hk else _NY)
+    if not hk:
+        bounds=session_bounds('US',local.date())
+        return bool(bounds and bounds[0]<=local<bounds[1])
     mins = local.hour * 60 + local.minute
     return any(lo <= mins < hi for lo, hi in (_HK_SESSION if hk else _US_SESSION))
 
@@ -212,6 +226,7 @@ def session_bounds(market: str, d: date) -> tuple[datetime, datetime] | None:
     tz = _HKT if hk else _NY
     spans = _HK_SESSION if hk else _US_SESSION
     lo, hi = spans[0][0], spans[-1][1]
+    if not hk and d in NYSE_EARLY_CLOSES: hi=13*60
     start = datetime(d.year, d.month, d.day, lo // 60, lo % 60, tzinfo=tz)
     end = datetime(d.year, d.month, d.day, hi // 60, hi % 60, tzinfo=tz)
     return start, end

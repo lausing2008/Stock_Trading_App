@@ -30,7 +30,7 @@ Defaults are engineering assumptions, not calibrated estimates. Periods are bars
 | `commission_per_share` | `0.005` | Commission per share per execution, in quote-currency units |
 | `spread_bps` | `2.0` | Full spread; half charged per execution |
 | `slippage_bps` | `2.0` | Adverse slippage per execution |
-| `min_bar_volume` | `1.0` | Minimum completed-bar volume for simulated entry |
+| `min_bar_volume` | `1.0` | Minimum volume of the already completed trigger candle; the entry candle’s final volume is not used |
 | `reversal_window` | `20` | Maximum bars from completion/exhaustion context to reversal watch |
 
 Example reproduction (from repository root):

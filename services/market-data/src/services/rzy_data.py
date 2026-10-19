@@ -74,3 +74,39 @@ def prepare_bars(rows, timeframe, now, *, session_bounds, resolve_ohlc):
         gaps=gaps,exclusions=excluded,provider='stored_prices_upstream_not_retained',data_as_of=latest.isoformat(),
         delay='unknown',price_basis=basis['basis'],price_basis_reason=basis['reason'],stale=stale,
         paper_blockers=['provider_delay_unverified','borrow_availability_not_stored','execution_basis_unverified'])
+
+
+def aggregate_completed_bars(source, evidence, timeframe, now, *, session_bounds):
+    """Derive session-anchored 15m/1h candles only from complete, contiguous 5m bins."""
+    if timeframe not in ('15m','1h'): raise ValueError('Only 15m/1h aggregation is supported')
+    evidence=dict(evidence,derived_from_timeframe='5m')
+    if not source or evidence['status'] not in ('research_only','stale'): return [],evidence
+    now=utc(now); buckets={}; bounds_cache={}; excluded=[]; gaps=[]; result=[]
+    for bar in source:
+        stamp=utc(datetime.fromisoformat(bar['time'])); day=stamp.astimezone(NY).date()
+        if day not in bounds_cache: bounds_cache[day]=tuple(utc(v) for v in session_bounds('US',day))
+        start,end=bounds_cache[day]
+        offset=int((stamp-start).total_seconds()//(60*MINUTES[timeframe]))
+        opening=start+timedelta(minutes=offset*MINUTES[timeframe])
+        buckets.setdefault((opening,end),[]).append(bar)
+    first_time=utc(datetime.fromisoformat(source[0]['time']))
+    for (opening,end),members in sorted(buckets.items()):
+        closing=min(opening+timedelta(minutes=MINUTES[timeframe]),end)
+        if closing+timedelta(minutes=2)>now:
+            excluded.append(dict(time=opening.isoformat(),reason='incomplete_aggregate'));continue
+        expected=[opening+timedelta(minutes=5*i) for i in range(int((closing-opening).total_seconds()//300))]
+        observed=[utc(datetime.fromisoformat(b['time'])) for b in members]
+        if observed!=expected:
+            # A bounded history query may start part-way through its oldest bin. This is
+            # excluded warmup, never an invented candle. Any later missing bin fails closed.
+            if opening<first_time and observed and observed[-1]+timedelta(minutes=5)==closing:
+                excluded.append(dict(time=opening.isoformat(),reason='truncated_history_warmup_bin'));continue
+            gaps.append(dict(time=opening.isoformat(),reason='missing_aggregate_constituents'));continue
+        bar=dict(members[0]);bar.update(time=opening.isoformat(),closed_at=closing.isoformat(),
+            open=members[0]['open'],high=max(b['high'] for b in members),low=min(b['low'] for b in members),
+            close=members[-1]['close'],volume=sum(b['volume'] for b in members))
+        result.append(bar)
+    evidence.update(exclusions=evidence.get('exclusions',[])+excluded,gaps=evidence.get('gaps',[])+gaps)
+    evidence['status']='missing_candles' if gaps else evidence['status'] if result else 'no_completed_bars'
+    if result:evidence['data_as_of']=result[-1]['closed_at']
+    return result,evidence

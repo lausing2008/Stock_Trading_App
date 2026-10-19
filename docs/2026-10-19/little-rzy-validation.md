@@ -31,3 +31,12 @@ After the causal fix, all 33 engine/SQLite workflow checks pass. Reinstating the
 A final database-load review found that persisting every scan rewrote the full checkpoint JSON even when no candle arrived. Persistence now advances only after a new bar (including bars that produce no signal), while unchanged scans issue no checkpoint UPDATE. A SQLAlchemy statement listener verifies the actual SQL in the shared SQLite/PostgreSQL probe. All 33 focused checks and all 3 required PostgreSQL suites pass with this guard; channels remain off until this patch is deployed.
 
 Reinstating the unconditional checkpoint write makes the real-SQL regression fail. The shipped guard was restored before commit.
+
+
+The first production scan covered 342 streams for 114 symbols: 95 research-only 5m streams, 18 gapped 5m histories, one absent 5m history, and no stored 15m/1h rows for any symbol. This exposed a source-availability gap, not a strategy result. The adapter now derives missing 15m/1h frames from completed 5m constituents with a bounded per-symbol cache. Tests verify actual OHLCV aggregation, session alignment, forming-bin refusal, missing constituent refusal, truncated-oldest-bin handling and preservation of unverified/stale metadata. The real ORM probe checks both fallback timeframes on SQLite and PostgreSQL.
+
+The shortened-session aggregation test failed against the shared calendar because all trading days ended at 16:00. Published NYSE early closes now live in that central module and drive both `session_bounds` and `is_regular_session`. Regression cases cover every supported early-close date, full-day/holiday contrasts and unchanged Hong Kong lunch behavior, with a coverage ratchet requiring early-close years and holiday years to agree. The shared change requires rebuilding all backend source layers; no dependency upgrade or frontend rebuild is necessary.
+
+Final aggregation/calendar checks: 310 existing calendar-consuming cases passed across market-data, decision-engine and research-engine; required PostgreSQL gates passed 3/3. The focused engine/workflow/aggregation cases also exercise the real derived-timeframe adapter rather than a separate signal implementation.
+
+Final engine/workflow/aggregation subset: 51 passed after the shared early-close correction. No first-scan availability counts are represented as a daily alert rate or a strategy win rate.

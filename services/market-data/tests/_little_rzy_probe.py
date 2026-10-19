@@ -51,6 +51,13 @@ with Session() as s:
     now=base+timedelta(minutes=5*57+2)
     a=W.evaluate(s,'TEST','5m',now,persist=True);s.commit()
     assert a['bootstrap'] and a['status']=='research_only' and a['structures'][-1]['state']=='ARMED'
+    # Real ORM contains only M5 rows: larger frames must use the shipped adapter fallback.
+    cache={}
+    fifteen=W.evaluate(s,'TEST','15m',now,bars_cache=cache)
+    hourly=W.evaluate(s,'TEST','1h',now,bars_cache=cache)
+    assert fifteen['evidence']['derived_from_timeframe']=='5m' and len(fifteen['price_grid'])==19
+    assert hourly['evidence']['derived_from_timeframe']=='5m' and len(hourly['price_grid'])==4
+    assert ('TEST','5m') in cache
     count=s.scalar(select(func.count()).select_from(RzyEvent))
     writes=[]
     def capture_update(conn,cursor,statement,parameters,context,executemany):

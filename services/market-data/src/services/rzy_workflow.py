@@ -16,7 +16,7 @@ from common.market_calendar import session_bounds,calendar_coverage
 from common.price_basis import resolve_ohlc
 from common.outbox import enqueue
 from .little_rzy import Engine,Config,VERSION,stable,planning_reference
-from .rzy_data import prepare_bars,MINUTES,utc
+from .rzy_data import prepare_bars,aggregate_completed_bars,MINUTES,utc
 from .rzy_models import RzyStream,RzyEvent,RzyPreference
 
 NY=ZoneInfo('America/New_York')
@@ -29,19 +29,25 @@ def watchlist_symbols(session,user_id):
         .where(((WatchlistItem.watchlist_id.is_(None)) & (WatchlistItem.user_id==user_id)) | (Watchlist.user_id==user_id),Stock.market=='US',Stock.active.is_(True),Stock.delisted.is_(False))).all())
 
 
-def load_bars(session,symbol,timeframe,now):
+def load_bars(session,symbol,timeframe,now,cache=None):
+    if cache is not None and (symbol,timeframe) in cache: return cache[(symbol,timeframe)]
     if timeframe not in MINUTES: return [],{'status':'unsupported_timeframe'}
     if now.astimezone(NY).year>calendar_coverage()['nyse']: return [],{'status':'calendar_coverage_expired'}
     stock=session.scalar(select(Stock).where(Stock.symbol==symbol))
     if stock is None or stock.market!='US': return [],{'status':'US_stocks_only_or_unknown_symbol'}
     tf={'5m':TimeFrame.M5,'15m':TimeFrame.M15,'1h':TimeFrame.H1,'1d':TimeFrame.D1}[timeframe]
     rows=session.scalars(select(Price).where(Price.stock_id==stock.id,Price.timeframe==tf).order_by(Price.ts.desc()).limit(6000)).all()
-    return prepare_bars(list(reversed(rows)),timeframe,now,session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)
+    if not rows and timeframe in ('15m','1h'):
+        source,evidence=load_bars(session,symbol,'5m',now,cache)
+        result=aggregate_completed_bars(source,evidence,timeframe,now,session_bounds=session_bounds)
+    else: result=prepare_bars(list(reversed(rows)),timeframe,now,session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)
+    if cache is not None: cache[(symbol,timeframe)]=result
+    return result
 
 
-def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None):
+def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_cache=None):
     now=utc(now or datetime.now(timezone.utc)); cfg=config or Config(**json.loads(os.environ.get('LITTLE_RZY_CONFIG','{}')))
-    bars,evidence=load_bars(session,symbol,timeframe,now)
+    bars,evidence=load_bars(session,symbol,timeframe,now,bars_cache)
     key=f'{symbol}:{timeframe}:{cfg.hash}'
     row=session.scalar(select(RzyStream).where(RzyStream.stream_key==key).with_for_update().execution_options(populate_existing=True)) if persist else session.get(RzyStream,key)
     prior=copy.deepcopy(row.checkpoint) if row else None
@@ -120,9 +126,10 @@ def scan(session,now=None):
         symbols=watchlist_symbols(session,pref.user_id)
         audience[pref.user_id]=(user,pref,symbols)
         jobs.update((symbol,tf) for symbol in symbols for tf in pref.timeframes if tf in MINUTES)
-    queued=0; statuses={}
+    queued=0; statuses={}; cache={}; previous_symbol=None
     for symbol,tf in sorted(jobs):
-        try: result=evaluate(session,symbol,tf,now,persist=True)
+        if symbol!=previous_symbol: cache.clear(); previous_symbol=symbol
+        try: result=evaluate(session,symbol,tf,now,persist=True,bars_cache=cache)
         except (ValueError,TypeError) as exc:
             session.rollback();statuses[f'{symbol}:{tf}']='data_rejected: '+str(exc)[:160];continue
         statuses[f'{symbol}:{tf}']=result['status']
@@ -151,8 +158,9 @@ def digest_preview(session,user_id,now=None):
     now=utc(now or datetime.now(timezone.utc)); pref=session.get(RzyPreference,user_id)
     symbols=watchlist_symbols(session,user_id); candidates=[]; exclusions=[]
     for symbol in sorted(symbols):
+        cache={}
         for tf in (pref.timeframes if pref else ['5m','15m','1h']):
-            try: result=evaluate(session,symbol,tf,now)
+            try: result=evaluate(session,symbol,tf,now,bars_cache=cache)
             except (ValueError,TypeError) as exc:
                 exclusions.append({'symbol':symbol,'timeframe':tf,'reason':'data_rejected: '+str(exc)[:160]});continue
             if result['status']!='research_only': exclusions.append({'symbol':symbol,'timeframe':tf,'reason':result['status']}); continue
