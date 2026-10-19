@@ -26,6 +26,7 @@ import re
 import pathlib
 
 import pytest
+from src.api.proxy import _upstream
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 SERVICES_DIR = REPO_ROOT / "services"
@@ -101,12 +102,13 @@ def test_found_a_realistic_number_of_services():
 @pytest.mark.parametrize("service_dir", SERVICES, ids=lambda d: d.name)
 def test_every_registered_router_prefix_has_a_gateway_route(service_dir: pathlib.Path):
     prefixes = _extract_router_prefixes(service_dir)
-    missing = prefixes - GATEWAY_ROUTES
+    # The shipped resolver routes by the first segment; nested routers share it.
+    missing = {prefix for prefix in prefixes if _upstream(prefix) is None}
     assert not missing, (
         f"{service_dir.name}: router prefix(es) {missing} are declared with APIRouter(prefix=...) "
         f"and registered in main.py's routers=[...], but have no entry in api-gateway's "
         f"proxy.py _ROUTES table — every request under {sorted(missing)} will 404 at the "
-        f"gateway despite the backend fully implementing the feature. Add an entry to _ROUTES "
+        f"gateway despite the backend fully implementing the feature. Add the owning first-segment entry to _ROUTES "
         f"(same fix as rl-agent/conditional-orders/options-income)."
     )
 

@@ -21,3 +21,5 @@ Completed checks before release staging:
 - Offline browser acceptance passed on desktop and mobile with no page exceptions.
 
 The remaining backend suite results and actual rollout are recorded in the deployment record; no deployment claim is made by these test results.
+
+The broader gateway gate initially rejected the nested `/stocks/rzy` router by comparing its entire prefix against a table keyed by the first path segment. The coverage test now calls the shipped `_upstream` resolver; four behavioral cases also prove the nested routes use the existing `stocks` upstream and reject unauthenticated callers. No gateway runtime routing change was needed. Sandboxed asyncio tests stalled creating their local event-loop sockets; the gateway suite was rerun with the required local socket permissions.

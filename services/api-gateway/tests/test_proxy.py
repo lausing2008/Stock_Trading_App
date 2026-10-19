@@ -284,3 +284,11 @@ def test_query_params_multi_items_preserves_repeated_keys():
     assert multi.count(("symbol", "MSFT")) == 1
     assert ("tag", "a") in multi
     assert len(multi) == 3
+
+
+@pytest.mark.parametrize('path', ['stocks/rzy/preferences', 'stocks/rzy/digest', 'stocks/rzy/paper', 'stocks/rzy/AAPL'])
+def test_nested_rzy_routes_use_the_existing_stocks_upstream_and_require_auth(path):
+    assert _upstream(path) is _ROUTES['stocks']
+    with pytest.raises(HTTPException) as error:
+        _require_auth(path, _FakeRequest())
+    assert error.value.status_code == 401
