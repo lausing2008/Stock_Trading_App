@@ -27,3 +27,7 @@ The broader gateway gate initially rejected the nested `/stocks/rzy` router by c
 Final causal review found that the next-open liquidity check read that entry candle's final volume. It now uses only the completed trigger candle's volume. The new regression replays the same trigger/open with sharply different eventual entry-bar volumes and requires identical fills, alongside a low-trigger-volume refusal. Rollout was paused during frontend staging before any service restart to include this fix.
 
 After the causal fix, all 33 engine/SQLite workflow checks pass. Reinstating the original next-bar-volume expression makes the new causal regression fail; the shipped implementation was restored immediately. The checked-in synthetic report remains reproducible and establishes no real-market performance.
+
+A final database-load review found that persisting every scan rewrote the full checkpoint JSON even when no candle arrived. Persistence now advances only after a new bar (including bars that produce no signal), while unchanged scans issue no checkpoint UPDATE. A SQLAlchemy statement listener verifies the actual SQL in the shared SQLite/PostgreSQL probe. All 33 focused checks and all 3 required PostgreSQL suites pass with this guard; channels remain off until this patch is deployed.
+
+Reinstating the unconditional checkpoint write makes the real-SQL regression fail. The shipped guard was restored before commit.

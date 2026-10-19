@@ -48,7 +48,7 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None):
     engine=Engine(symbol,timeframe,cfg,prior)
     if evidence['status'] in ('missing_candles','no_completed_bars','unsupported_timeframe','US_stocks_only_or_unknown_symbol','calendar_coverage_expired'):
         return dict(status=evidence['status'],evidence=evidence,events=[],structures=[],paper_positions=[],strategy_version=VERSION,config_hash=cfg.hash)
-    events=[]
+    events=[]; processed=False
     last=engine.s['bars'][-1]['time'] if engine.s['bars'] else None
     # An overlapping stored candle changing after checkpoint requires explicit audited replay.
     known={b['time']:b for b in engine.s['bars'][-len(bars):]}
@@ -57,8 +57,8 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None):
             if bar['time'] in known and known[bar['time']]!=bar:
                 return dict(status='stored_bar_revised_replay_required',evidence=evidence,events=[],structures=[],paper_positions=[],strategy_version=VERSION,config_hash=cfg.hash)
             continue
-        events.extend(engine.step(bar))
-    if persist:
+        events.extend(engine.step(bar)); processed=True
+    if persist and (row is None or processed):
         if row is None:
             row=RzyStream(stream_key=key,symbol=symbol,timeframe=timeframe,config_hash=cfg.hash,checkpoint={},updated_at=now.replace(tzinfo=None)); session.add(row)
         row.checkpoint=engine.s; flag_modified(row,'checkpoint'); row.updated_at=now.replace(tzinfo=None)

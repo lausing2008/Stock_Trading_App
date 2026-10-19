@@ -1,7 +1,7 @@
 """Real ORM, production engine/adapter/outbox and sender; no network or real mail."""
 import importlib.util,json,pathlib,sys,tempfile,types,math,os
 from datetime import datetime,timedelta,timezone
-from sqlalchemy import create_engine,select,func
+from sqlalchemy import create_engine,select,func,event
 from sqlalchemy.orm import sessionmaker
 ROOT=pathlib.Path(__file__).resolve().parents[3]
 sys.path[:0]=[str(ROOT/'shared'),str(ROOT/'services/market-data')]
@@ -52,7 +52,14 @@ with Session() as s:
     a=W.evaluate(s,'TEST','5m',now,persist=True);s.commit()
     assert a['bootstrap'] and a['status']=='research_only' and a['structures'][-1]['state']=='ARMED'
     count=s.scalar(select(func.count()).select_from(RzyEvent))
-    repeated=W.evaluate(s,'TEST','5m',now,persist=True);s.commit()
+    writes=[]
+    def capture_update(conn,cursor,statement,parameters,context,executemany):
+        if statement.lstrip().upper().startswith('UPDATE LITTLE_RZY_STREAMS'): writes.append(statement)
+    event.listen(engine,'before_cursor_execute',capture_update)
+    try:
+        repeated=W.evaluate(s,'TEST','5m',now,persist=True);s.commit()
+        assert writes==[], 'A scan without a new candle rewrote the entire JSON checkpoint'
+    finally: event.remove(engine,'before_cursor_execute',capture_update)
     assert not repeated['events'];assert s.scalar(select(func.count()).select_from(RzyEvent))==count
     # Real persistence/reload retains frozen geometry and charts retain historical events.
     preview=W.evaluate(s,'TEST','5m',now);assert preview['events'] and preview['structures']==a['structures']
