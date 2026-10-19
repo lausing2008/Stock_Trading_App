@@ -23,3 +23,7 @@ Completed checks before release staging:
 The remaining backend suite results and actual rollout are recorded in the deployment record; no deployment claim is made by these test results.
 
 The broader gateway gate initially rejected the nested `/stocks/rzy` router by comparing its entire prefix against a table keyed by the first path segment. The coverage test now calls the shipped `_upstream` resolver; four behavioral cases also prove the nested routes use the existing `stocks` upstream and reject unauthenticated callers. No gateway runtime routing change was needed. Sandboxed asyncio tests stalled creating their local event-loop sockets; the gateway suite was rerun with the required local socket permissions.
+
+Final causal review found that the next-open liquidity check read that entry candle's final volume. It now uses only the completed trigger candle's volume. The new regression replays the same trigger/open with sharply different eventual entry-bar volumes and requires identical fills, alongside a low-trigger-volume refusal. Rollout was paused during frontend staging before any service restart to include this fix.
+
+After the causal fix, all 33 engine/SQLite workflow checks pass. Reinstating the original next-bar-volume expression makes the new causal regression fail; the shipped implementation was restored immediately. The checked-in synthetic report remains reproducible and establishes no real-market performance.

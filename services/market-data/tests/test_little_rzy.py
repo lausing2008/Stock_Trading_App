@@ -25,11 +25,12 @@ def armed(config=None):
     raise AssertionError('The real default thresholds cannot arm this qualified structure')
 
 
-def triggered(config=None,fill=True):
+def triggered(config=None,fill=True,trigger_volume=10000):
     e,bars,st=armed(config)
     for off in (1,2):
         i=len(bars);line=e.line(st,i)
         b=candle(i); b.update(open=line+.2,close=line+.1,low=line-.1,high=line+.4) if off==1 else b.update(open=line+.3,close=line+.7,low=line-.1,high=line+.8)
+        if off==2: b['volume']=trigger_volume
         bars.append(b);events=e.step(b)
     assert any(x['event_type']=='TRIGGERED' for x in events)
     if fill:
@@ -84,7 +85,8 @@ def test_entries_wait_for_the_bar_after_trigger_and_charge_costs():
 
 @pytest.mark.parametrize('field,value,reason',[('execution_eligible',False,'data_basis'),('volume',0,'liquidity')])
 def test_actual_fill_requires_data_and_liquidity(field,value,reason):
-    e,bars,st=triggered(fill=False);b=candle(len(bars));b[field]=value
+    e,bars,st=triggered(fill=False,trigger_volume=value if field=='volume' else 10000);b=candle(len(bars))
+    if field!='volume': b[field]=value
     events=e.step(b);cancel=next(x for x in events if x['event_type']=='ENTRY_CANCELLED')
     assert reason in cancel['rejection_reason'];assert e.s['positions'][st['id']]['state']=='CLOSED';assert st['state']=='REJECTED'
 
@@ -239,3 +241,16 @@ def test_replay_orders_actual_instants_and_refuses_boolean_prices():
     with pytest.raises(ValueError,match='Invalid volume'): engine.step(invalid)
     naive=candle(1);naive['time']='2026-01-01T00:05:00'
     with pytest.raises(ValueError,match='explicit timezone'): engine.step(naive)
+
+
+def test_next_open_liquidity_uses_only_already_completed_trigger_volume():
+    cfg=Config(min_bar_volume=5000)
+    engine,bars,st=triggered(cfg,fill=False)
+    checkpoint=copy.deepcopy(engine.s);fills=[]
+    for final_entry_volume in (1,1000000):
+        replayed=Engine('TEST','5m',cfg,copy.deepcopy(checkpoint))
+        i=len(bars);line=replayed.line(st,i);bar=candle(i)
+        bar.update(open=line+.8,close=line+1,low=line+.3,high=line+1.2,volume=final_entry_volume)
+        events=replayed.step(bar)
+        fills.append(next(x['actual_paper_fill'] for x in events if x['event_type']=='PAPER_FILL'))
+    assert fills[0]==fills[1]

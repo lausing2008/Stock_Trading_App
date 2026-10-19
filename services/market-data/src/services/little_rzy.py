@@ -307,7 +307,8 @@ class Engine:
                 failures=[]
                 if st['trend_epoch_id']!=self.s['epoch']: failures.append('trend_epoch_changed')
                 if not b.get('execution_eligible',False): failures.append('data_basis_or_freshness_unverified')
-                if b['volume']<cfg.min_bar_volume: failures.append('liquidity_requirement')
+                # At the next open, only the trigger candle's completed volume is known.
+                if self.s['bars'][pos['trigger_index']]['volume']<cfg.min_bar_volume: failures.append('liquidity_requirement')
                 if sign==-1 and (b.get('shortable') is not True or b.get('borrow_rate_annual') is None): failures.append('shortability_or_borrow_cost_unverified')
                 borrow=b.get('borrow_rate_annual')
                 if sign==-1 and (not isinstance(borrow,(float,int)) or not math.isfinite(borrow) or borrow<0):
