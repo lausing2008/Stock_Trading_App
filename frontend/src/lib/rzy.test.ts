@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { rzyLinePoints, rzyPriceGridMatches, rzyTime, type RzyStructure } from './rzy';
+import { rzyLinePoints, rzyPriceGridMatches, rzyStructuresToDraw, rzyTime, type RzyEvent, type RzyStructure } from './rzy';
 const times=['2026-10-16T13:30:00Z','2026-10-16T13:35:00Z','2026-10-16T13:40:00Z','2026-10-16T13:45:00Z'];
 const s: RzyStructure = { id:'fixture',direction:'long',state:'ARMED',anchors:[{index:100,price:10,pivot_time:times[0],confirmed_at:times[3],kind:'low'},{index:101,price:15,pivot_time:times[1],confirmed_at:times[3],kind:'high'},{index:102,price:12,pivot_time:times[2],confirmed_at:times[3],kind:'low'}],extreme:{time:times[1],price:15},D:4,target:19,runner:23,sequence_number:1,sequence_confidence:'unknown' };
 it('draws the frozen line with trading-bar indices and refuses a missing candle grid',()=>{
@@ -25,4 +25,17 @@ it('tolerates storage-noise restatements but not a basis change',()=>{
  const noisy=[{ts:'2026-10-16T13:30:00',open:100.0001,high:102,low:99,close:100.99995}];
  expect(rzyPriceGridMatches(grid,noisy)).toBe(true);
  expect(rzyPriceGridMatches(grid,[{...noisy[0],close:101*0.995}])).toBe(false);
+});
+
+it('clips an ended structure at its ending bar instead of extending it to the right edge',()=>{
+ expect(rzyLinePoints(s,times,times[2]).map(p=>p.value)).toEqual([10,11,12]);
+ expect(rzyLinePoints(s,times,null)).toHaveLength(4);
+});
+it('draws live structures and only the latest armed-then-ended ones with a known end',()=>{
+ const st=(id:string,state:string)=>({...s,id,state});
+ const ev=(structure_id:string,event_type:string,t=times[3]):RzyEvent=>({event_id:structure_id+event_type,structure_id,event_type,position_action:'WATCH_ONLY',signal_time:t,bar_time:t});
+ const structures=[st('old1','INVALIDATED'),st('old2','EXPIRED'),st('old3','COMPLETED'),st('never','REJECTED'),st('noend','INVALIDATED'),st('live','ARMED')];
+ const events=[ev('old1','ARMED'),ev('old1','INVALIDATED'),ev('old2','ARMED'),ev('old2','EXPIRED'),ev('old3','ARMED'),ev('old3','COMPLETED',times[2]),ev('never','REJECTED'),ev('noend','ARMED'),ev('live','ARMED')];
+ const drawn=rzyStructuresToDraw(structures,events);
+ expect(drawn.map(d=>[d.structure.id,d.live,d.until])).toEqual([['old2',false,times[3]],['old3',false,times[2]],['live',true,null]]);
 });

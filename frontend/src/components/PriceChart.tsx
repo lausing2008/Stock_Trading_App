@@ -29,7 +29,7 @@ import { ToolbarDropdown } from './ToolbarDropdown';
 import { computeSMA, computeEMA, computeRSI, computeMACD, computeBollingerBands } from '@/lib/indicators';
 import { loadDrawings, addDrawing, removeDrawing, clearDrawings, nextDrawingId, nearestBarIndexByTimestamp, type ChartDrawing } from '@/lib/chartDrawings';
 import { computeRiskReward } from '@/lib/riskReward';
-import { rzyLinePoints, rzyPriceGridMatches, rzyTime, type RzyResponse } from '@/lib/rzy';
+import { rzyLinePoints, rzyPriceGridMatches, rzyStructuresToDraw, rzyTime, RZY_EVENT_LABEL, type RzyResponse } from '@/lib/rzy';
 
 type Props = {
   symbol: string;
@@ -328,6 +328,7 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
     };
   }, [indicators, visiblePrices]);
 
+  const [rzyVals, setRzyVals] = useState<{ upper: number|null; middle: number|null; lower: number|null; lines: { dir: 'long'|'short'; value: number }[] } | null>(null);
   const [smaVals,   setSmaVals]   = useState<SmaVals>({ sma_5: null, sma_10: null, sma_20: null, sma_50: null, sma_200: null, ema_20: null, ema_50: null, ema_200: null });
   const [rsiVal,    setRsiVal]    = useState<number|null>(null);
   const [macdCross, setMacdCross] = useState<MacdVals>({ macd: null, signal: null, hist: null });
@@ -504,39 +505,59 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
         const key = (value: string) => isIntraday ? rzyTime(value) / 1000 : value.slice(0, 10);
         const shown = new Map(stamps.map(t => [key(t), t]));
         const at = (value: string) => { const t = shown.get(key(value)); return t ? (isIntraday ? toIntradayTime(t) : toTime(t)) as unknown as Time : null; };
+        // Overlays never stretch the price axis: off-screen geometry used to squash the candles.
+        const noAutoscale = { autoscaleInfoProvider: () => null };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const hover: { bands: Record<string, any>; lines: { dir: 'long'|'short'; series: any }[] } = { bands: {}, lines: [] };
         for (const band of ['middle_band','upper_band','lower_band'] as const) {
           const data = (rzy.price_grid ?? []).filter(b => at(b.time) != null && b[band] != null).map(b => ({ time: at(b.time)!, value: b[band]! }));
-          if (data.length) chart.addLineSeries({ color: '#2dd4bf88', lineWidth: 1, lineStyle: band === 'middle_band' ? LineStyle.Dashed : LineStyle.Solid, lastValueVisible: false, priceLineVisible: false, title: `RZY ${band}` }).setData(data);
+          if (!data.length) continue;
+          const series = chart.addLineSeries({ color: '#2dd4bf88', lineWidth: 1, lineStyle: band === 'middle_band' ? LineStyle.Dashed : LineStyle.Solid, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false });
+          series.setData(data); hover.bands[band] = series;
         }
-        for (const structure of rzy.structures.slice(-5)) {
+        const grid = (rzy.price_grid ?? []).map(b => b.time);
+        const drawn = rzyStructuresToDraw(rzy.structures, rzy.events);
+        for (const { structure, live, until } of drawn) {
           // Endpoint and chart must share the exact bar grid and price basis.
-          const points = rzyLinePoints(structure, (rzy.price_grid ?? []).map(b => b.time));
+          const points = rzyLinePoints(structure, grid, until).filter(p => at(p.time) != null);
           if (!points.length) continue;
           const color = structure.direction === 'long' ? '#2dd4bf' : '#fb7185';
-          const line = chart.addLineSeries({ color, lineWidth: 2, lastValueVisible: false, priceLineVisible: false });
-          line.setData(points.filter(p => at(p.time) != null).map(p => ({ time: at(p.time)!, value: p.value })));
-          for (const anchor of structure.anchors) {
+          const line = chart.addLineSeries({ color: live ? color : `${color}77`, lineWidth: live ? 2 : 1, lineStyle: live ? LineStyle.Solid : LineStyle.Dashed, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, ...noAutoscale });
+          line.setData(points.map(p => ({ time: at(p.time)!, value: p.value })));
+          if (live) hover.lines.push({ dir: structure.direction, series: line });
+          structure.anchors.forEach((anchor, n) => {
             const time = at(anchor.pivot_time);
-            if (time) allMarkers.push({ time, position: anchor.kind === 'low' ? 'belowBar' : 'aboveBar', color, shape: 'circle', text: `RZY pivot · known ${anchor.confirmed_at}` });
-          }
+            if (time && live) allMarkers.push({ time, position: anchor.kind === 'low' ? 'belowBar' : 'aboveBar', color, shape: 'circle', size: 0.6, text: 'ABC'[n] });
+          });
           const extreme = at(structure.extreme.time);
-          if (extreme) {
-            const i = structure.anchors[0].index + points.findIndex(p => key(p.time) === key(structure.extreme.time));
+          if (extreme && live) {
             const a = structure.anchors[0], c = structure.anchors[2];
+            const i = structure.extreme.index ?? a.index;
             const measured = a.price+(c.price-a.price)*(i-a.index)/(c.index-a.index);
-            const segment = chart.addHistogramSeries({ color: `${color}99`, base: structure.extreme.price, priceScaleId: 'right', lastValueVisible: false, priceLineVisible: false });
+            const segment = chart.addHistogramSeries({ color: `${color}99`, base: structure.extreme.price, priceScaleId: 'right', lastValueVisible: false, priceLineVisible: false, ...noAutoscale });
             segment.setData([{ time: extreme, value: measured }]);
           }
-          if (['ARMED','TRIGGERED'].includes(structure.state)) {
-            for (const [label, price] of [['RZY primary',structure.target],['RZY runner (experimental)',structure.runner],['RZY stop',structure.stop]] as const) {
+          if (live) {
+            for (const [label, price] of [['RZY target',structure.target],['RZY stop',structure.stop]] as const) {
               if (price && Number.isFinite(price) && price > 0) candles.createPriceLine({ price, color, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: label });
             }
           }
         }
+        const drawnIds = new Set(drawn.map(d => d.structure.id));
         for (const event of rzy.events) {
           const time = at(event.bar_time ?? event.signal_time);
-          if (time && ['TRIGGERED','PAPER_FILL','INVALIDATED','EXPIRED','REJECTED','REVERSAL_WATCH','PAPER_EXIT'].includes(event.event_type)) allMarkers.push({ time, position: event.direction === 'long' ? 'belowBar' : 'aboveBar', color: '#fbbf24', shape: event.event_type === 'TRIGGERED' ? (event.direction === 'long' ? 'arrowUp' : 'arrowDown') : 'circle', text: `RZY ${event.event_type}` });
+          const label = RZY_EVENT_LABEL[event.event_type];
+          // Only events of drawn structures (watches stand alone), so markers match visible lines.
+          if (!time || !label || (event.event_type !== 'REVERSAL_WATCH' && !drawnIds.has(event.structure_id ?? ''))) continue;
+          allMarkers.push({ time, position: event.direction === 'long' ? 'belowBar' : 'aboveBar', color: '#fbbf24', shape: event.event_type === 'TRIGGERED' ? (event.direction === 'long' ? 'arrowUp' : 'arrowDown') : 'circle', size: event.event_type === 'TRIGGERED' ? 1 : 0.6, text: label });
         }
+        chart.subscribeCrosshairMove(param => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const v = (series: any) => series ? (param.seriesData.get(series) as any)?.value ?? null : null;
+          if (!param.time) { setRzyVals(null); return; }
+          setRzyVals({ upper: v(hover.bands.upper_band), middle: v(hover.bands.middle_band), lower: v(hover.bands.lower_band),
+            lines: hover.lines.map(l => ({ dir: l.dir, value: v(l.series) })).filter(l => l.value != null) });
+        });
       }
       allMarkers.sort((a,b) => String(a.time).localeCompare(String(b.time)));
       if (allMarkers.length > 0) candles.setMarkers(allMarkers);
@@ -1439,7 +1460,7 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
       )}
 
       {/* Crosshair readout — line values at cursor */}
-      {(isIntraday ? activePrices.length > 0 : !!visibleIndicators) && (
+      {((isIntraday ? activePrices.length > 0 : !!visibleIndicators) || (showRzy && rzyVals)) && (
         <div className="flex flex-wrap items-center gap-4 px-3 py-1.5 text-xs font-mono bg-slate-900/60 border-b border-slate-800/50 min-h-[26px]">
           {smaVals.sma_5 != null && showSMA5 && <span style={{ color: '#facc15' }}>SMA 5 = {f2(smaVals.sma_5)}</span>}
           {smaVals.sma_10 != null && showSMA10 && <span style={{ color: '#fb7185' }}>SMA 10 = {f2(smaVals.sma_10)}</span>}
@@ -1449,6 +1470,8 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
           {smaVals.ema_20   != null && showEMA20   && <span style={{ color: '#34d399' }}>EMA 20 = {f2(smaVals.ema_20)}</span>}
           {smaVals.ema_50   != null && showEMA50   && <span style={{ color: '#f472b6' }}>EMA 50 = {f2(smaVals.ema_50)}</span>}
           {smaVals.ema_200  != null && showEMA200  && <span style={{ color: '#e879f9' }}>EMA 200 = {f2(smaVals.ema_200)}</span>}
+          {showRzy && rzyVals && rzyVals.middle != null && <span style={{ color: '#2dd4bf' }} title="Little RZY Bollinger Bands (20, 2σ population): upper / middle / lower">RZY bands = {f2(rzyVals.upper)} / {f2(rzyVals.middle)} / {f2(rzyVals.lower)}</span>}
+          {showRzy && rzyVals?.lines.map((l, i) => <span key={i} style={{ color: l.dir === 'long' ? '#2dd4bf' : '#fb7185' }} title="Live Little RZY structure line at the cursor bar: entries trigger on a bounce off it, a close through it ends the setup">RZY {l.dir} line = {f2(l.value)}</span>)}
         </div>
       )}
 
