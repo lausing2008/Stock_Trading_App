@@ -75,5 +75,71 @@ def test_random_walk_shows_no_false_edge_and_every_variant_is_reported():
 
 
 def test_small_samples_are_labelled_insufficient():
-    trades = [dict(r=1., ret=.01, holding_bars=3, exit_time='2026-01-01', exit_reason='target', control_mean_r=0.)] * 5
+    trades = [dict(symbol='S', r=1., ret=.01, holding_bars=3, exit_time='2026-01-01', exit_reason='target', control_mean_r=0.)] * 5
     assert summarize(trades, random.Random(1))['verdict'] == 'insufficient sample (<30 trades)'
+
+
+def _short_case(cfg):
+    from datetime import datetime as _d
+    bars = flat(12); inds = [dict(atr=1.0)] * 12
+    bars[1].update(open=100, high=101.5, low=99.9, close=101.2)   # short stop 101 hit on the entry bar
+    return bars, inds
+
+
+def test_rza09_short_control_borrow_stops_at_the_actual_exit_bar():
+    cfg = Config(commission_per_share=0, spread_bps=0, slippage_bps=0)
+    bars, inds = _short_case(cfg)
+    r5 = simulate_control(bars, inds, 0, 'short', 1.0, 2.0, 5, cfg, borrow=.5)
+    r10 = simulate_control(bars, inds, 0, 'short', 1.0, 2.0, 10, cfg, borrow=.5)
+    # Exit on bar 1 after 300 s whatever the cap; borrow = 100 * 0.5 * 300 / year.
+    expected = -1 - 100 * .5 * 300 / (365 * 86400)
+    assert r5 == pytest.approx(expected) and r10 == pytest.approx(expected)
+    # A time exit still accrues borrow for its full window.
+    bars = flat(12)
+    held = simulate_control(bars, [dict(atr=1.0)] * 12, 0, 'short', 1.0, 2.0, 5, cfg, borrow=.5)
+    assert held == pytest.approx(-100 * .5 * 1500 / (365 * 86400))
+
+
+def test_rza10_controls_never_use_a_shortened_window():
+    cfg = Config(); bars = flat(12); inds = [dict(atr=1.0)] * 12
+    assert simulate_control(bars, inds, 10, 'long', 1.0, 2.0, 10, cfg) is None
+    assert simulate_control(bars, inds, 1, 'long', 1.0, 2.0, 10, cfg) is not None
+    from src.services.rzy_evaluation import matched_controls
+    trade = dict(holding_bars=10, trigger_index=-1, direction='long', stop_atr=1.0, target_atr=2.0)
+    picked = []
+    class Spy(random.Random):
+        def sample(self, pop, k): picked.extend(pop); return super().sample(pop, k)
+    matched_controls(trade, bars, inds, cfg, Spy(3), k=50)
+    assert picked and max(picked) + 10 <= len(bars) - 1
+
+
+def test_stop_target_only_research_variant_drops_only_the_line_exit():
+    from src.services.rzy_evaluation import _FullHistoryStopTargetOnly
+    from src.services.little_rzy import Engine
+    assert Engine.LINE_EXIT is True and _FullHistoryStopTargetOnly.LINE_EXIT is False
+    cfg = Config(); reasons = set(); base = set()
+    for seed in range(4):
+        bars = research_bars(walk(seed))
+        _, tr, _, _ = run_segment('X', '5m', bars, cfg, _FullHistoryStopTargetOnly); reasons |= {t['exit_reason'] for t in tr}
+        _, tr, _, _ = run_segment('X', '5m', bars, cfg); base |= {t['exit_reason'] for t in tr}
+    assert 'line_invalidation' in base and 'line_invalidation' not in reasons and reasons <= {'target', 'stop'}
+
+
+def test_edge_statistic_detects_a_planted_edge_and_widens_under_symbol_dependence():
+    rng = random.Random(5)
+    def trades(edge, symbols, per):
+        out = []
+        for s in range(symbols):
+            shared = rng.gauss(0, .6)            # symbol-level effect: trades within a symbol co-move
+            for _ in range(per):
+                c = rng.gauss(-.1, .3); out.append(dict(symbol=f'S{s}', r=c + edge + shared + rng.gauss(0, .8), control_mean_r=c,
+                                                        ret=.0, holding_bars=4, exit_time='2026-01-01', exit_reason='stop', cost_r=.1))
+        return out
+    planted = summarize(trades(.6, 60, 10), random.Random(1))
+    assert planted['verdict'] == 'better than control'
+    null = [summarize(trades(0., 60, 10), random.Random(i))['verdict'] for i in range(5)]
+    assert 'better than control' not in null
+    s = summarize(trades(0., 20, 30), random.Random(2))
+    by_trade, by_symbol = s['edge_ci95_by_trade'], s['edge_ci95_by_symbol']
+    assert (by_symbol[1] - by_symbol[0]) > 2 * (by_trade[1] - by_trade[0])
+    assert s['min_detectable_edge_r'] > 0

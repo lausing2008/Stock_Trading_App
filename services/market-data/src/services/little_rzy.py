@@ -81,6 +81,9 @@ class Engine:
     KEEP_PIVOTS = 12
     KEEP_STRUCTURES = 60
     KEEP_CLOSED_POSITIONS = 200
+    # Research switch, deliberately NOT a Config field: live streams and their config hash never
+    # change. Only the evaluation's separately named stop/target-only variant turns it off.
+    LINE_EXIT = True
 
     def __init__(self, symbol, timeframe, config=None, checkpoint=None):
         self.config = config or Config()
@@ -387,7 +390,7 @@ class Engine:
                     elif b['high']>=st['runner'] if sign==1 else b['low']<=st['runner']:
                         self._exit(st,pos,st['runner']*(1-sign*friction),pos['remaining'],'runner_target',i)
                 else: self._exit(st,pos,target*(1-sign*friction),pos['remaining'],'primary_target' if pos['state']=='OPEN' else 'runner_target',i)
-            if pos['state']!='CLOSED' and sign*(b['close']-self.line(st,i))<0:
+            if self.LINE_EXIT and pos['state']!='CLOSED' and sign*(b['close']-self.line(st,i))<0:
                 pos['exit_pending']=True
                 context=self.s['reversal_context'].get(st['direction'],{})
                 if context.get('structure_id')==ident: context['invalidated_index']=i

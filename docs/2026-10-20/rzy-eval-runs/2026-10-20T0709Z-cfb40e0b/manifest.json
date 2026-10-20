@@ -1,0 +1,17 @@
+{
+  "run": "2026-10-20T07:09Z first real-data evaluation (superseded: control borrow/window defects RZA-09/RZA-10)",
+  "code_revision": "cfb40e0b (evaluation code identical to the version executed; engine/data source in the running container verified byte-identical)",
+  "code_sha256": {
+    "services/market-data/src/services/little_rzy.py": "dc88f92d5ed96f6cc0299a6b45bafdc9a8ef595418bf1168017f36ce85c75c62",
+    "services/market-data/src/services/rzy_data.py": "a2b8d8bc1afbc5e2780ca301b45cf34882efc1353df1e7c22486de84fd44abc1",
+    "services/market-data/src/services/rzy_evaluation.py": "557eb5a150cb851e7fbb8a6bbc2f30e29f91eddf70990d03176c4161f12f2154",
+    "scripts/evaluate_little_rzy.py": "50edf20f64a56d80da74e1212b7e13ae49600e727d5be2b2ed7b383a422d83b9"
+  },
+  "outputs_sha256": {
+    "report.json": "06a56201a914e775f9d80a6ed7f0486219bd57badee3a71d9a24b99f534cb5fe",
+    "trades.csv": "387b02d7c0226f116ae64535fcf96c0829294b978c51295faa6ff844a66ce0bb"
+  },
+  "configuration": "Config() defaults (see report.json variants.*.config), controls=20, seed=7, report seed=11, MIN_SEGMENT=60",
+  "input_snapshot": "NOT captured at run time. The input bars were read live from production stored prices on 2026-10-20 07:00 UTC; later provider restatements mean they cannot be reproduced exactly. Subsequent runs use a saved snapshot.",
+  "durable_copies": ["this directory (git)", "EC2 /home/ec2-user/rzy-eval-runs/2026-10-20T0709Z-cfb40e0b/"]
+}
