@@ -1,0 +1,179 @@
+{
+  "application_release": "a959c5dc",
+  "served": {
+    "build_id": "u1Ln70rVm8D7qTdnE1jNy",
+    "pages": [
+      {
+        "origin": "http://127.0.0.1:3000",
+        "page": "/stock/AAPL",
+        "status": 200,
+        "markers_verified": true
+      },
+      {
+        "origin": "http://127.0.0.1:3000",
+        "page": "/settings",
+        "status": 200,
+        "markers_verified": true
+      },
+      {
+        "origin": "http://127.0.0.1:3000",
+        "page": "/improvements",
+        "status": 200,
+        "markers_verified": true
+      },
+      {
+        "origin": "https://lausing.com",
+        "page": "/stock/AAPL",
+        "status": 200,
+        "markers_verified": true
+      },
+      {
+        "origin": "https://lausing.com",
+        "page": "/settings",
+        "status": 200,
+        "markers_verified": true
+      },
+      {
+        "origin": "https://lausing.com",
+        "page": "/improvements",
+        "status": 200,
+        "markers_verified": true
+      }
+    ],
+    "auth_guards": {
+      "/stocks/rzy/preferences": 401,
+      "/stocks/rzy/digest": 401,
+      "/stocks/rzy/paper": 401,
+      "/stocks/rzy/AAPL?timeframe=5m": 401
+    },
+    "healthy_services": 15,
+    "source_commit": "a959c5dc6484c2a1ca574eaf198d8c89225ab62c",
+    "service_states": [
+      "stockai-market-data-1 Up 42 seconds (healthy)",
+      "stockai-api-gateway-1 Up 57 minutes (healthy)",
+      "stockai-news-intelligence-1 Up 58 minutes (healthy)",
+      "stockai-event-intelligence-1 Up 58 minutes (healthy)",
+      "stockai-decision-engine-1 Up 59 minutes (healthy)",
+      "stockai-ml-prediction-1 Up About an hour (healthy)",
+      "stockai-research-engine-1 Up About an hour (healthy)",
+      "stockai-portfolio-optimizer-1 Up About an hour (healthy)",
+      "stockai-strategy-engine-1 Up About an hour (healthy)",
+      "stockai-ranking-engine-1 Up About an hour (healthy)",
+      "stockai-signal-engine-1 Up About an hour (healthy)",
+      "stockai-technical-analysis-1 Up About an hour (healthy)",
+      "stockai-frontend-1 Up 11 hours (healthy)",
+      "stockai-redis-1 Up 3 days (healthy)",
+      "stockai-postgres-1 Up 3 days (healthy)"
+    ],
+    "price_risk_delivery_enabled": false
+  },
+  "optin": {
+    "username": "lausing",
+    "preferences": {
+      "pattern_email": true,
+      "morning_digest": true,
+      "timeframes": [
+        "5m",
+        "15m",
+        "1h"
+      ],
+      "schedule": "20 minutes before US regular open (normally 09:10 America/New_York)",
+      "scope": "my US watchlist",
+      "strategy_version": "LITTLE_RZY_INSPIRED_V1"
+    },
+    "other_accounts_changed": false,
+    "watchlist_US_symbols": 114,
+    "tables": {
+      "little_rzy_streams": true,
+      "little_rzy_events": true,
+      "little_rzy_preferences": true
+    }
+  },
+  "runtime": {
+    "blocked_sessions": 0,
+    "streams": 275,
+    "events": 44758,
+    "outbox": [
+      {
+        "alert_type": "little_rzy",
+        "state": "accepted",
+        "count": 2
+      }
+    ],
+    "other_users_enabled": 0
+  },
+  "history_initialization": {
+    "timestamp": "2026-10-20T00:31:15.669958+00:00",
+    "subjects": 114,
+    "streams_checked": 342,
+    "stream_states": {
+      "stored_bar_revised_replay_required": 95,
+      "research_only": 180,
+      "missing_candles": 64,
+      "no_completed_bars": 3
+    },
+    "new_history_streams": 170,
+    "total_persisted_streams": 275,
+    "recorded_history_events": 44758,
+    "preview_candidates": 16,
+    "preview_exclusions": {
+      "stored_bar_revised_replay_required": 95,
+      "no_armed_structure": 161,
+      "missing_candles": 64,
+      "insufficient_planned_reward_risk": 3,
+      "no_completed_bars": 3
+    },
+    "new_emails_enqueued": 0
+  },
+  "backend_suites": {
+    "market-data": {
+      "passed": 5460,
+      "skipped": 21
+    },
+    "technical-analysis": {
+      "passed": 67,
+      "skipped": 0
+    },
+    "ml-prediction": {
+      "passed": 457,
+      "skipped": 0
+    },
+    "ranking-engine": {
+      "passed": 183,
+      "skipped": 18
+    },
+    "signal-engine": {
+      "passed": 610,
+      "skipped": 1
+    },
+    "strategy-engine": {
+      "passed": 62,
+      "skipped": 0
+    },
+    "portfolio-optimizer": {
+      "passed": 83,
+      "skipped": 0
+    },
+    "research-engine": {
+      "passed": 709,
+      "skipped": 8
+    },
+    "api-gateway": {
+      "passed": 58,
+      "skipped": 0
+    },
+    "decision-engine": {
+      "passed": 390,
+      "skipped": 0
+    },
+    "event-intelligence": {
+      "passed": 632,
+      "skipped": 0
+    },
+    "news-intelligence": {
+      "passed": 200,
+      "skipped": 0
+    }
+  },
+  "backend_drift": 0
+}

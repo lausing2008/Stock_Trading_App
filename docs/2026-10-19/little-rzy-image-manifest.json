@@ -1,0 +1,68 @@
+{
+  "market-data": {
+    "parent": "sha256:9a708261a5f495f87a83d683da3878067d778a97a1af9f76295965b8ba3abd60",
+    "tag": "stockai-market-data:rzy-a959c5dc",
+    "id": "sha256:013bc161e7a78758bb0872537b5d85242d58cf60c42aa995e1d3b2596168f6ef",
+    "previous_id": "sha256:9a708261a5f495f87a83d683da3878067d778a97a1af9f76295965b8ba3abd60"
+  },
+  "technical-analysis": {
+    "parent": "sha256:74b9e7d16047e32d0b78ef110fb4e101a59eb2f666ffba08614456b95b1236d8",
+    "tag": "stockai-technical-analysis:rzy-6d9d72eb",
+    "id": "sha256:3c5762094197e0e945f3484986d90f5ab000f0ac2f6d411b607a66ad1845c6ef"
+  },
+  "signal-engine": {
+    "parent": "sha256:04c8a1a957d860972e4540d2a18bfd9250525d887a3e7dffff24469d519427c2",
+    "tag": "stockai-signal-engine:rzy-6d9d72eb",
+    "id": "sha256:2697b8a05e0ca44e9ba6e7c323d1ec1bb785f690876728ff7841b8ae66e69cd2"
+  },
+  "ranking-engine": {
+    "parent": "sha256:49b9811b95cff68c8f386cdb72caced6c1cb66ca13070330b630e79e49021516",
+    "tag": "stockai-ranking-engine:rzy-6d9d72eb",
+    "id": "sha256:41828982d9ac5b39dbcbb4b02d5d11a8157545f959442cb370e60b5269b2cf04"
+  },
+  "strategy-engine": {
+    "parent": "sha256:6a37fd4a49cb93b6e09c443f63e6d3683d4d524473261300d6314b5cb7a4c975",
+    "tag": "stockai-strategy-engine:rzy-6d9d72eb",
+    "id": "sha256:724d93bff5553d57ab18baf81232029882c68bf553d261bfed3b194a99573e4c"
+  },
+  "portfolio-optimizer": {
+    "parent": "sha256:971d55383e9538bd16073a29e67acd9183ee5ee8fe6f8ebf7a078f9e621ef7fe",
+    "tag": "stockai-portfolio-optimizer:rzy-6d9d72eb",
+    "id": "sha256:51dfbc128ec96066ffedb60a1a5386dd415abd6b47794d27fa4d73b25e9fd393"
+  },
+  "research-engine": {
+    "parent": "sha256:7ed37433ba25d079cc96b0d94480a40ec7fcf3ce7938b3e2c4aa4ad58117efe8",
+    "tag": "stockai-research-engine:rzy-6d9d72eb",
+    "id": "sha256:002da00c981c4ebc50fe71f4fbb903677e960d8f6d885e35d08198c3bea82221"
+  },
+  "ml-prediction": {
+    "parent": "sha256:095d4038ef93c5020025c2c6438d21553a49d918ed9729a02c00fd29a8216602",
+    "tag": "stockai-ml-prediction:rzy-6d9d72eb",
+    "id": "sha256:923b14f5a8fe22df165a3f62d42e74a484dc86f50c61a72292fae13709033190"
+  },
+  "decision-engine": {
+    "parent": "sha256:72a83fcf1b4f75a3c956bdc2edcc387a19a8c93aed95d8c6f2873dda1860b46e",
+    "tag": "stockai-decision-engine:rzy-6d9d72eb",
+    "id": "sha256:50bdcb6b79bb9b6e07dc9ed17a15aae9261188aa893ff4a88c503902d52ec57c"
+  },
+  "event-intelligence": {
+    "parent": "sha256:ac34fd5361c729552d6732418cd76c7328bbef6bb0173c0116e2b1f87f6da3e8",
+    "tag": "stockai-event-intelligence:rzy-6d9d72eb",
+    "id": "sha256:6a2a167a737009a4f9944cf4a85dbf72d87680a448e531362600a198c037252b"
+  },
+  "news-intelligence": {
+    "parent": "sha256:b87cd5e41c0dc40d681945ead5d2f2c46f0c9524318235311d2865bf053cc375",
+    "tag": "stockai-news-intelligence:rzy-6d9d72eb",
+    "id": "sha256:5d71038c36ea448c768c0a0c6c53150dcc1ae4921b90a04d8900078b327dc6a9"
+  },
+  "api-gateway": {
+    "parent": "sha256:e44f30e8a71748d1ac08ec7fe229d2624c70731c02d1c493064d197641f516b2",
+    "tag": "stockai-api-gateway:rzy-6d9d72eb",
+    "id": "sha256:91be053a5df31b6d67665c23d3bf0fb9694e7fa5b82f4c3a9a4600b8a2c5f269"
+  },
+  "frontend": {
+    "parent": "sha256:53374dca983c5a90323f92d0bd1d6a9b000a65f3303e9b3d45397142419f39e8",
+    "tag": "stockai-frontend:rzy-db1e8f28",
+    "id": "sha256:5610442767b2fb3b8ea2bcfae9869135668cc5957509b4bb699cf73af55d4bbb"
+  }
+}
