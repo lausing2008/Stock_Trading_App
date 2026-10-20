@@ -30,3 +30,14 @@ class RzyPreference(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), primary_key=True)
     timeframes: Mapped[list] = mapped_column(JSON, default=lambda: ['5m','15m','1h'])
     updated_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class RzyStreamGeneration(Base):
+    """Summary of a superseded stream state, kept when stored history forces a rebuild."""
+    __tablename__ = 'little_rzy_stream_generations'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stream_key: Mapped[str] = mapped_column(String(96), index=True)
+    generation: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(64))
+    detail: Mapped[dict] = mapped_column(JSON)
+    archived_at: Mapped[datetime] = mapped_column(DateTime, index=True)

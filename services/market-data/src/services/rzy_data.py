@@ -72,10 +72,35 @@ def prepare_bars(rows, timeframe, now, *, session_bounds, resolve_ohlc):
                 expected=min(hi,now-timedelta(minutes=2)); break
         day-=timedelta(days=1)
     stale=expected is None or (expected-latest)>timedelta(minutes=MINUTES[timeframe] if timeframe!='1d' else 2)
-    return bars,dict(status='missing_candles' if gaps else 'stale' if stale else 'research_only',
+    # Gaps are reported, not fatal: the workflow evaluates only the latest contiguous segment
+    # (see break_indices) instead of excluding a symbol for months over one old missing bar.
+    return bars,dict(status='stale' if stale else 'research_only',
         gaps=gaps,exclusions=excluded,provider='stored_prices_upstream_not_retained',data_as_of=latest.isoformat(),
         delay='unknown',price_basis=basis['basis'],price_basis_reason=basis['reason'],stale=stale,
         paper_blockers=['provider_delay_unverified','borrow_availability_not_stored','execution_basis_unverified'])
+
+
+def break_indices(bars, timeframe, session_bounds):
+    """Indices k where bars[k] does not directly follow bars[k-1]; never bridged or filled."""
+    out=[]
+    for k in range(1,len(bars)):
+        prev,cur=bars[k-1],bars[k]
+        pt=utc(datetime.fromisoformat(prev['time'])); pc=utc(datetime.fromisoformat(prev['closed_at']))
+        ct=utc(datetime.fromisoformat(cur['time']))
+        if timeframe=='1d':
+            pd_,cd=pt.date(),ct.date()
+        else:
+            pd_,cd=pt.astimezone(NY).date(),ct.astimezone(NY).date()
+            if pd_==cd:
+                if ct!=pc: out.append(k)
+                continue
+            pb,cb=session_bounds('US',pd_),session_bounds('US',cd)
+            if not pb or not cb or pc!=utc(pb[1]) or ct!=utc(cb[0]): out.append(k); continue
+        d=pd_+timedelta(days=1)
+        while d<cd:
+            if session_bounds('US',d): out.append(k); break
+            d+=timedelta(days=1)
+    return out
 
 
 def aggregate_completed_bars(source, evidence, timeframe, now, *, session_bounds):
@@ -109,6 +134,6 @@ def aggregate_completed_bars(source, evidence, timeframe, now, *, session_bounds
             close=members[-1]['close'],volume=sum(b['volume'] for b in members))
         result.append(bar)
     evidence.update(exclusions=evidence.get('exclusions',[])+excluded,gaps=evidence.get('gaps',[])+gaps)
-    evidence['status']='missing_candles' if gaps else evidence['status'] if result else 'no_completed_bars'
+    evidence['status']=evidence['status'] if result else 'no_completed_bars'
     if result:evidence['data_as_of']=result[-1]['closed_at']
     return result,evidence

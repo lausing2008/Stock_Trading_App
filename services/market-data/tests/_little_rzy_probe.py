@@ -1,5 +1,5 @@
 """Real ORM, production engine/adapter/outbox and sender; no network or real mail."""
-import importlib.util,json,pathlib,sys,tempfile,types,math,os
+import importlib.util,json,pathlib,sys,tempfile,types,math,os,copy
 from datetime import datetime,timedelta,timezone
 from sqlalchemy import create_engine,select,func,event
 from sqlalchemy.orm import sessionmaker
@@ -118,25 +118,60 @@ with Session() as s:
     p=s.scalar(select(models.AlertPreference).where(models.AlertPreference.alert_type=='short_term_digest'));p.enabled=False;s.commit()
     W.drain(s,send,monday);s.commit();assert len(sent)==1
     result['digest_optout']=True
-    # A real source correction persistently quarantines the stream, even if a provider
-    # later flips back to its former values. Already queued research must not send.
-    changed=s.get(models.Price,1);original_open=changed.open;changed.open+=.01;s.commit()
-    revised=W.evaluate(s,'TEST','5m',now,persist=True);s.commit()
-    assert revised['status']=='stored_bar_revised_replay_required'
-    changed.open=original_open;s.commit()
-    still_blocked=W.evaluate(s,'TEST','5m',now,persist=True);s.commit()
-    assert still_blocked['status']=='stored_bar_revised_replay_required'
-    outbox.enqueue(s,event_id=f'rzy:quarantine:1:{event.event_id}',user_id=1,recipient=user.email,alert_type='little_rzy',subject='quarantine',body_html='fixture',body_text='fixture',expires_at=(monday+timedelta(minutes=5)).replace(tzinfo=None));s.commit()
+    # Restatements: storage noise and volume restatements keep the point-in-time state; a
+    # material OHLC change rebuilds a new generation, archives the old one, and blocks mail
+    # queued from the superseded history. Nothing is silently patched in place.
+    from src.services.rzy_models import RzyStreamGeneration
+    key=f"TEST:5m:{Config().hash}"
+    changed=s.get(models.Price,10)
+    changed.open*=1+1e-9;changed.volume=12345;s.commit()
+    noisy=W.evaluate(s,'TEST','5m',now,persist=True);s.commit()
+    assert noisy['status']=='research_only' and not noisy['rebuilt'] and noisy['generation']==1
+    outbox.enqueue(s,event_id=f'rzy:superseded:1:{event.event_id}',user_id=1,recipient=user.email,alert_type='little_rzy',subject='superseded',body_html='fixture',body_text='fixture',expires_at=(monday+timedelta(minutes=5)).replace(tzinfo=None));s.commit()
+    clock[0]=now+timedelta(minutes=1)
+    changed.open+=.05;s.commit()
+    revised=W.evaluate(s,'TEST','5m',now+timedelta(minutes=1),persist=True);s.commit()
+    assert revised['status']=='research_only' and revised['rebuilt'] and revised['rebuild_reason']=='stored_completed_bar_changed' and revised['generation']==2
+    archived=s.scalars(select(RzyStreamGeneration).where(RzyStreamGeneration.stream_key==key)).all()
+    assert len(archived)==1 and archived[0].generation==1 and archived[0].detail['detail']['before']['open']!=archived[0].detail['detail']['after']['open']
+    assert archived[0].detail['checkpoint_sha256'] and archived[0].detail['structures']
+    assert s.scalar(select(func.count()).select_from(RzyEvent))>=count, 'Superseded events must be retained'
+    clock[0]=monday
     W.drain(s,send,monday);s.commit();assert len(sent)==1
-    blocked=s.scalar(select(models.NotificationOutbox).where(models.NotificationOutbox.subject=='quarantine'))
-    assert blocked.state=='suppressed'
+    assert s.scalar(select(models.NotificationOutbox).where(models.NotificationOutbox.subject=='superseded')).state=='suppressed'
+    # A rebuild replays history, so it must not mail anything already stale.
+    assert W.scan(s,now+timedelta(minutes=1))['queued']==0
+    # A legacy quarantine from the previous release rebuilds instead of staying locked forever.
+    row=s.get(RzyStream,key);cp=copy.deepcopy(row.checkpoint);cp['requires_audited_replay']={'reason':'stored_completed_bar_changed','observed_at':'x'}
+    row.checkpoint=cp;s.commit()
+    legacy=W.evaluate(s,'TEST','5m',now+timedelta(minutes=1),persist=True);s.commit()
+    assert legacy['rebuilt'] and legacy['rebuild_reason']=='legacy_quarantine' and legacy['generation']==3
+    assert not s.get(RzyStream,key).checkpoint.get('requires_audited_replay')
     result['persistent_revision_quarantine']=True
+    # A bar missing after the checkpoint waits for backfill, then rebuilds on the new segment.
+    add(60,110,110.5,109.5,110.2)   # slot 59 never arrives
+    soon=base+timedelta(minutes=5*61+2)
+    waiting=W.evaluate(s,'TEST','5m',soon,persist=True);s.commit()
+    assert waiting['status']=='awaiting_backfill' and s.get(RzyStream,key).checkpoint['bars'][-1]['time']<waiting['evidence']['latest_gap']['before']
+    later=base+timedelta(minutes=5*61+40)
+    gapped=W.evaluate(s,'TEST','5m',later,persist=True);s.commit()
+    assert gapped['rebuilt'] and gapped['rebuild_reason']=='gap_after_checkpoint' and gapped['status'] in ('research_only','stale')
+    assert gapped['evidence']['segment_start']==(base+timedelta(minutes=5*60)).isoformat() and gapped['evidence']['segment_bars']==1
+    result['gap_segment_rebuild']=True
+    # Cancellations caused only by standing data blockers are not re-mailed; real ones are.
+    standing=dict(event_type='ENTRY_CANCELLED',failed_rules=['data_basis_or_freshness_unverified'])
+    assert not W.emailable(standing) and W.emailable(dict(standing,failed_rules=['data_basis_or_freshness_unverified','liquidity_requirement']))
+    body=W.render_event(dict(event.payload),('provider_delay_unverified',))
+    assert 'Paper execution unavailable' in body and 'provider_delay_unverified' in body
+    result['email_noise_gating']=True
 # Whole OHLC adjustment and missing/forming/stale data are tested at the shipped adapter.
 rows=[types.SimpleNamespace(ts=base+timedelta(minutes=5*i),open=100,high=102,low=98,close=100,adj_close=50,volume=10,session='REGULAR') for i in range(3)]
 bars,ev=prepare_bars(rows,'5m',base+timedelta(minutes=17),session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)
 assert bars[0]['open']==50 and bars[0]['high']==51 and bars[0]['low']==49
 assert bars[0]['execution_eligible'] is False and bars[0]['provider']=='stored_prices_upstream_not_retained'
-_,ev=prepare_bars([rows[0],rows[2]],'5m',base+timedelta(minutes=17),session_bounds=session_bounds,resolve_ohlc=resolve_ohlc);assert ev['status']=='missing_candles'
+from src.services.rzy_data import break_indices
+gapped,ev=prepare_bars([rows[0],rows[2]],'5m',base+timedelta(minutes=17),session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)
+assert ev['gaps'] and break_indices(gapped,'5m',session_bounds)==[1], 'A gap is reported and splits segments, never bridged'
 bars,ev=prepare_bars(rows,'5m',base+timedelta(minutes=11),session_bounds=session_bounds,resolve_ohlc=resolve_ohlc);assert len(bars)==1 and any(x['reason']=='incomplete_or_settling' for x in ev['exclusions'])
 _,ev=prepare_bars(rows,'5m',base+timedelta(minutes=45),session_bounds=session_bounds,resolve_ohlc=resolve_ohlc);assert ev['status']=='stale'
 result['price_basis_completion_gaps']=True

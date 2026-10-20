@@ -74,6 +74,14 @@ def stable(*parts):
 
 
 class Engine:
+    # Bars/indicators are retained by absolute index with s['offset'] dropped from the front.
+    # 1,200 covers the 1,000-bar chart grid plus warmup; live references are never dropped.
+    RETAIN = 1200
+    TRIM_BATCH = 100
+    KEEP_PIVOTS = 12
+    KEEP_STRUCTURES = 60
+    KEEP_CLOSED_POSITIONS = 200
+
     def __init__(self, symbol, timeframe, config=None, checkpoint=None):
         self.config = config or Config()
         self.symbol, self.timeframe = symbol, timeframe
@@ -83,7 +91,18 @@ class Engine:
         if self.s.get('config_hash', self.config.hash) != self.config.hash:
             raise ValueError('Checkpoint configuration mismatch')
         self.s['config_hash'] = self.config.hash
+        self.s.setdefault('offset', 0)
         self.events = []
+
+    def bar(self, i):
+        return self.s['bars'][i - self.s['offset']]
+
+    def ind(self, i):
+        return self.s['indicators'][i - self.s['offset']]
+
+    @property
+    def last_index(self):
+        return self.s['offset'] + len(self.s['bars']) - 1
 
     def emit(self, kind, structure=None, **extra):
         b = self.s['bars'][-1]
@@ -123,12 +142,13 @@ class Engine:
         prev = bars[-2]['close'] if len(bars) > 1 else b['close']
         tr = max(b['high'] - b['low'], abs(b['high'] - prev), abs(b['low'] - prev))
         atr = None
-        if len(bars) == cfg.atr_length:
+        total = self.s['offset'] + len(bars)
+        if total == cfg.atr_length:
             atr = mean([v['tr'] for v in self.s['indicators']] + [tr])
-        elif len(bars) > cfg.atr_length:
+        elif total > cfg.atr_length:
             atr = (self.s['indicators'][-1]['atr'] * (cfg.atr_length - 1) + tr) / cfg.atr_length
         mid = upper = lower = pct = width = None
-        if len(bars) >= cfg.bb_length:
+        if total >= cfg.bb_length:
             closes = [x['close'] for x in bars[-cfg.bb_length:]]
             mid, sd = mean(closes), pstdev(closes)
             upper, lower = mid + cfg.bb_std * sd, mid - cfg.bb_std * sd
@@ -160,29 +180,52 @@ class Engine:
         self.events = []
         self.s['bars'].append(b)
         self.s['indicators'].append(self.indicators())
-        i = len(self.s['bars']) - 1
+        i = self.last_index
         self._positions(i)
         self._pivots(i)
         self._active(i)
         if self.s['structures']:
             self._exhaustion(list(self.s['structures'].values())[-1], i)
         self._reversal(i)
+        self._trim()
         return self.events
 
+    def _trim(self):
+        """Bound checkpoint size without dropping anything a live object still references."""
+        s = self.s
+        keep = self.last_index + 1 - self.RETAIN
+        if len(s['pivots']) >= 3: keep = min(keep, s['pivots'][-3]['index'])
+        for p in s['positions'].values():
+            if p['state'] != 'CLOSED': keep = min(keep, p['trigger_index'])
+        if keep - s['offset'] >= self.TRIM_BATCH:
+            drop = keep - s['offset']
+            del s['bars'][:drop]; del s['indicators'][:drop]
+            s['offset'] = keep
+        if len(s['pivots']) > self.KEEP_PIVOTS: del s['pivots'][:-self.KEEP_PIVOTS]
+        if len(s['positions']) > self.KEEP_CLOSED_POSITIONS:
+            closed = [k for k, p in s['positions'].items() if p['state'] == 'CLOSED']
+            for k in closed[:len(closed) - self.KEEP_CLOSED_POSITIONS]: del s['positions'][k]
+        if len(s['structures']) > self.KEEP_STRUCTURES:
+            live = {s['active']} | {c.get('structure_id') for c in s['reversal_context'].values()} | set(s['positions'])
+            ids = list(s['structures'])
+            for k in ids[:len(ids) - self.KEEP_STRUCTURES]:
+                if k not in live: del s['structures'][k]
+
     def _pivots(self, i):
-        cfg, bars = self.config, self.s['bars']
+        cfg = self.config
         j = i - cfg.pivot_right
         if j < cfg.pivot_left: return
-        window = bars[j - cfg.pivot_left:i + 1]
+        window = [self.bar(k) for k in range(j - cfg.pivot_left, i + 1)]
+        candidate = self.bar(j)
         # Earliest equal extreme wins; an outside candle that is both types is ambiguous.
         kinds = []
         for kind, field, sign in [('high', 'high', 1), ('low', 'low', -1)]:
-            value = sign * bars[j][field]
-            if all(value >= sign*x[field] for x in window) and all(value > sign*x[field] for x in bars[j-cfg.pivot_left:j]):
+            value = sign * candidate[field]
+            if all(value >= sign*x[field] for x in window) and all(value > sign*x[field] for x in window[:cfg.pivot_left]):
                 kinds.append((kind, field))
         if len(kinds) != 1: return
         kind, field = kinds[0]
-        pivot = dict(kind=kind, price=bars[j][field], index=j, pivot_time=bars[j]['time'], confirmed_at=bars[i]['closed_at'])
+        pivot = dict(kind=kind, price=candidate[field], index=j, pivot_time=candidate['time'], confirmed_at=self.bar(i)['closed_at'])
         pivots = self.s['pivots']
         if pivots and pivots[-1]['kind'] == kind:
             improves = pivot['price'] > pivots[-1]['price'] if kind == 'high' else pivot['price'] < pivots[-1]['price']
@@ -203,7 +246,7 @@ class Engine:
             if trend != 'neutral':
                 self.s['epoch_known'] = self.s['seen_trend'] or self.s['neutral_observed']
                 self.s['seen_trend'] = True
-                self.s['epoch'] = stable(self.symbol, self.timeframe, trend, bars[i]['closed_at'])
+                self.s['epoch'] = stable(self.symbol, self.timeframe, trend, self.bar(i)['closed_at'])
                 self.s['sequence'], self.s['last_structure'] = 0, None
             else: self.s['epoch'] = None
             self.s['trend'] = trend
@@ -213,7 +256,7 @@ class Engine:
                 self._detect(a, b, c, i)
 
     def _detect(self, a, b, c, i):
-        cfg, bars, ind = self.config, self.s['bars'], self.s['indicators']
+        cfg, bar, ind = self.config, self.bar, self.ind
         direction = self.s['trend']; sign = 1 if direction == 'long' else -1
         ident = stable(self.symbol, self.timeframe, direction, a['pivot_time'], b['pivot_time'], c['pivot_time'])
         if ident in self.s['structures']: return
@@ -221,35 +264,36 @@ class Engine:
         if previous and not (a['index'] > previous[0] and b['index'] > previous[1] and c['index'] > previous[2]): return
         impulse = sign*(b['price'] - a['price'])
         retrace = sign*(b['price'] - c['price']) / impulse if impulse > 0 else -1
-        atr_b, atr_c = ind[b['index']]['atr'], ind[c['index']]['atr']
+        atr_b, atr_c = ind(b['index'])['atr'], ind(c['index'])['atr']
         if atr_b is None or atr_c is None or impulse < cfg.min_impulse_atr*atr_b or not cfg.retracement_min <= retrace <= cfg.retracement_max: return
         if sign*(c['price'] - a['price']) <= 0: return
         field = 'high' if direction == 'long' else 'low'
-        extreme_i = max(range(a['index'], c['index']+1), key=lambda k: sign*bars[k][field])
+        extreme_i = max(range(a['index'], c['index']+1), key=lambda k: sign*bar(k)[field])
         if not a['index'] < extreme_i < c['index']: return
         st = dict(id=ident, direction=direction, anchors=[dict(a), dict(b), dict(c)], trend_epoch_id=self.s['epoch'], state='DETECTED', armed_index=i,
-            sequence_confidence='known' if self.s['epoch_known'] else 'unknown', extreme=dict(index=extreme_i,time=bars[extreme_i]['time'],price=bars[extreme_i][field]))
-        distance = sign*(bars[extreme_i][field] - self.line(st, extreme_i))
-        target = bars[extreme_i][field] + sign*distance
+            sequence_confidence='known' if self.s['epoch_known'] else 'unknown', extreme=dict(index=extreme_i,time=bar(extreme_i)['time'],price=bar(extreme_i)[field]))
+        distance = sign*(bar(extreme_i)[field] - self.line(st, extreme_i))
+        target = bar(extreme_i)[field] + sign*distance
         if distance <= 0 or target <= 0: return
         self.s['sequence'] += 1
         self.s['last_structure'] = [a['index'], b['index'], c['index']]
-        st.update(D=distance, target=target, runner=bars[extreme_i][field]+sign*cfg.runner_multiple*distance, sequence_number=self.s['sequence'])
-        st['context_at_C']={k:ind[c['index']][k] for k in ('atr','middle_band','upper_band','lower_band','percent_b','bandwidth')}
+        st.update(D=distance, target=target, runner=bar(extreme_i)[field]+sign*cfg.runner_multiple*distance, sequence_number=self.s['sequence'])
+        cind,cbar=ind(c['index']),bar(c['index'])
+        st['context_at_C']={k:cind[k] for k in ('atr','middle_band','upper_band','lower_band','percent_b','bandwidth')}
         self.s['structures'][ident] = st
         self.emit('DETECTED', st)
         if cfg.partial_runner and st['runner']<=0:
             self.finish_structure(st,'REJECTED','runner_target_not_positive'); return
-        mid = ind[c['index']]['middle_band']
+        mid = cind['middle_band']
         if mid is None: self.finish_structure(st, 'REJECTED', 'insufficient_bollinger_history'); return
-        st['outer_band_proximity_atr'] = (bars[c['index']]['high']-ind[c['index']]['upper_band'])/atr_c if direction=='short' and atr_c>0 else (ind[c['index']]['lower_band']-bars[c['index']]['low'])/atr_c if atr_c>0 else None
+        st['outer_band_proximity_atr'] = (cbar['high']-cind['upper_band'])/atr_c if direction=='short' and atr_c>0 else (cind['lower_band']-cbar['low'])/atr_c if atr_c>0 else None
         # Increment sequence BEFORE context/sequence rejection, once per advancing structure.
-        if cfg.bollinger_context and (bars[c['index']]['high'] < mid-cfg.near_band_atr*atr_c if direction=='short' else bars[c['index']]['low'] > mid+cfg.near_band_atr*atr_c):
+        if cfg.bollinger_context and (cbar['high'] < mid-cfg.near_band_atr*atr_c if direction=='short' else cbar['low'] > mid+cfg.near_band_atr*atr_c):
             self.finish_structure(st,'REJECTED','bollinger_pullback_context'); return
         for j in range(c['index']+1, i+1):
-            if sign*(bars[j]['close']-self.line(st,j)) < 0:
+            if sign*(bar(j)['close']-self.line(st,j)) < 0:
                 self.finish_structure(st,'INVALIDATED','invalidated_before_confirmation'); return
-            if sign*(bars[j][field]-target) >= 0:
+            if sign*(bar(j)[field]-target) >= 0:
                 self.finish_structure(st,'COMPLETED','target_before_arming_no_trade'); return
         if cfg.sequence_filter and st['sequence_confidence']=='known' and st['sequence_number'] not in cfg.preferred_sequences:
             self.finish_structure(st,'REJECTED','sequence_filter'); return
@@ -263,8 +307,8 @@ class Engine:
         ident=self.s['active']
         if not ident: return
         st=self.s['structures'][ident]; cfg=self.config
-        b, prev=self.s['bars'][i], self.s['bars'][i-1]
-        ind=self.s['indicators'][i]; sign=1 if st['direction']=='long' else -1
+        b, prev=self.bar(i), self.bar(i-1)
+        ind=self.ind(i); sign=1 if st['direction']=='long' else -1
         line=self.line(st,i)
         if sign*(b['close']-line)<0:
             context=self.s['reversal_context'].get(st['direction'],{})
@@ -290,12 +334,12 @@ class Engine:
         if any(p['state'] in ('OPEN','PARTIAL','PENDING_ENTRY') for p in self.s['positions'].values()):
             self.finish_structure(st,'REJECTED','overlapping_paper_position'); return
         st['state']='TRIGGERED'; self.s['active']=None
-        self.s['positions'][ident]=dict(state='PENDING_ENTRY',trigger_index=i,remaining=1.,gross=0.,fees=0.)
+        self.s['positions'][ident]=dict(state='PENDING_ENTRY',trigger_index=i,trigger_volume=b['volume'],remaining=1.,gross=0.,fees=0.)
         self.emit('TRIGGERED',st,position_action='OPEN_LONG' if sign==1 else 'OPEN_SHORT',trendline_value=line,
             passed_rules=['confirmed_structure','line_touch','directional_close','previous_bar_break','planned_reward_risk'],paper_state='PENDING_ENTRY')
 
     def _positions(self, i):
-        b=self.s['bars'][i]; cfg=self.config
+        b=self.bar(i); cfg=self.config
         friction=(cfg.spread_bps/2+cfg.slippage_bps)/10000
         for ident,pos in self.s['positions'].items():
             if pos['state']=='CLOSED': continue
@@ -308,7 +352,9 @@ class Engine:
                 if st['trend_epoch_id']!=self.s['epoch']: failures.append('trend_epoch_changed')
                 if not b.get('execution_eligible',False): failures.append('data_basis_or_freshness_unverified')
                 # At the next open, only the trigger candle's completed volume is known.
-                if self.s['bars'][pos['trigger_index']]['volume']<cfg.min_bar_volume: failures.append('liquidity_requirement')
+                trigger_volume=pos.get('trigger_volume')
+                if trigger_volume is None: trigger_volume=self.bar(pos['trigger_index'])['volume']
+                if trigger_volume<cfg.min_bar_volume: failures.append('liquidity_requirement')
                 if sign==-1 and (b.get('shortable') is not True or b.get('borrow_rate_annual') is None): failures.append('shortability_or_borrow_cost_unverified')
                 borrow=b.get('borrow_rate_annual')
                 if sign==-1 and (not isinstance(borrow,(float,int)) or not math.isfinite(borrow) or borrow<0):
@@ -320,7 +366,7 @@ class Engine:
                     pos.update(state='CLOSED',cancelled=True,reason=','.join(failures))
                     st.update(state='REJECTED',reason=','.join(failures))
                     self.emit('ENTRY_CANCELLED',st,failed_rules=failures,rejection_reason=','.join(failures),actual_paper_fill=None); continue
-                pos.update(state='OPEN',fill=fill,entry_index=i,stop=st['stop'],fees=cfg.commission_per_share)
+                pos.update(state='OPEN',fill=fill,entry_index=i,entry_time=b['time'],borrow_rate_annual=borrow if sign==-1 else 0.,stop=st['stop'],fees=cfg.commission_per_share)
                 self.emit('PAPER_FILL',st,actual_paper_fill=fill,paper_fill_time=b['time'],paper_state='OPEN',reward_risk=rr,position_action='OPEN_LONG' if sign==1 else 'OPEN_SHORT')
             if pos['state'] not in ('OPEN','PARTIAL'): continue
             if pos.get('exit_pending'):
@@ -334,7 +380,7 @@ class Engine:
             if target_hit:
                 if cfg.partial_runner and pos['state']=='OPEN':
                     self._exit(st,pos,target*(1-sign*friction),cfg.partial_fraction,'primary_partial',i)
-                    pos['state']='PARTIAL'; pos['stop']=pos['fill']+sign*(2*cfg.commission_per_share+pos['fill']*2*friction)
+                    pos['state']='PARTIAL'; pos['partial_done']=True; pos['stop']=pos['fill']+sign*(2*cfg.commission_per_share+pos['fill']*2*friction)
                     # Unknown order after partial: count the new protective stop first.
                     if b['low']<=pos['stop'] if sign==1 else b['high']>=pos['stop']:
                         self._exit(st,pos,pos['stop']*(1-sign*friction),pos['remaining'],'partial_stop_conservative_order',i)
@@ -352,15 +398,18 @@ class Engine:
         pos['gross']+=sign*(price-pos['fill'])*quantity
         pos['fees']+=self.config.commission_per_share*quantity
         if sign==-1:
-            start=datetime.fromisoformat(self.s['bars'][pos['entry_index']]['time'])
-            end=datetime.fromisoformat(self.s['bars'][i]['closed_at'])
-            pos['fees']+=pos['fill']*quantity*self.s['bars'][pos['entry_index']].get('borrow_rate_annual',0)*max(0,(end-start).total_seconds())/(365*86400)
+            start=datetime.fromisoformat(pos.get('entry_time') or self.bar(pos['entry_index'])['time'])
+            end=datetime.fromisoformat(self.bar(i)['closed_at'])
+            rate=pos.get('borrow_rate_annual')
+            if rate is None: rate=self.bar(pos['entry_index']).get('borrow_rate_annual') or 0.
+            pos['fees']+=pos['fill']*quantity*rate*max(0,(end-start).total_seconds())/(365*86400)
         pos['remaining']=max(0.,pos['remaining']-quantity)
         if reason=='primary_partial':
             self.s['reversal_context'][st['direction']]=dict(context_index=i,structure_id=st['id'])
         if pos['remaining']==0:
             pos.update(state='CLOSED',exit_index=i,net=pos['gross']-pos['fees'])
-            st['state']='COMPLETED' if 'target' in reason else 'INVALIDATED'
+            # A runner stopped after the primary target was banked still completed the measured move.
+            st['state']='COMPLETED' if 'target' in reason or pos.get('partial_done') else 'INVALIDATED'
             if 'target' in reason:
                 self.s['reversal_context'][st['direction']]=dict(context_index=i,structure_id=st['id'])
         self.emit('PAPER_EXIT',st,actual_paper_fill=pos['fill'],exit_price=price,exit_quantity=quantity,reason=reason,
@@ -368,12 +417,14 @@ class Engine:
 
     def _exhaustion(self,st,i):
         if st['sequence_number']<self.config.exhaustion_min_sequence or st.get('exhaustion_emitted'): return
+        # "Current structure" means the current trend epoch; an old epoch's last structure is not.
+        if st.get('trend_epoch_id')!=self.s['epoch']: return
         older=[s for s in self.s['structures'].values() if s['direction']==st['direction'] and s['id']!=st['id'] and s['trend_epoch_id']==st['trend_epoch_id']]
         if not older or st['D']>=older[-1]['D']: return
-        sign=1 if st['direction']=='long' else -1; bars=self.s['bars']; inds=self.s['indicators']
+        sign=1 if st['direction']=='long' else -1; bar=self.bar; ind=self.ind
         band='upper_band' if sign==1 else 'lower_band'
-        previous=any(inds[j][band] is not None and sign*(bars[j]['close']-inds[j][band])>0 for j in range(max(0,i-self.config.exhaustion_lookback),i))
-        if previous and inds[i][band] is not None and sign*(bars[i]['close']-inds[i][band])<=0:
+        previous=any(ind(j)[band] is not None and sign*(bar(j)['close']-ind(j)[band])>0 for j in range(max(self.s['offset'],i-self.config.exhaustion_lookback),i))
+        if previous and ind(i)[band] is not None and sign*(bar(i)['close']-ind(i)[band])<=0:
             self.s['reversal_context'][st['direction']]=dict(context_index=i,structure_id=st['id'])
             st['exhaustion_emitted']=True
             self.emit('EXHAUSTION_WATCH',st,reason='research_heuristic_sequence_outer_band_smaller_D')
@@ -385,13 +436,13 @@ class Engine:
             st=self.s['structures'].get(context.get('structure_id'))
             if origin is not None and st and i>origin and invalid is None:
                 direction_sign=1 if direction=='long' else -1
-                if direction_sign*(self.s['bars'][i]['close']-self.line(st,i))<0:
+                if direction_sign*(self.bar(i)['close']-self.line(st,i))<0:
                     context['invalidated_index']=i; invalid=i
             if origin is None or invalid is None or invalid<origin or i<=invalid or i-origin>self.config.reversal_window or context.get('emitted'): continue
-            before,now=self.s['indicators'][i-1]['middle_band'],self.s['indicators'][i]['middle_band']
+            before,now=self.ind(i-1)['middle_band'],self.ind(i)['middle_band']
             if before is None or now is None: continue
             sign=1 if direction=='short' else -1
-            if sign*(self.s['bars'][i-1]['close']-before)<=0 and sign*(self.s['bars'][i]['close']-now)>0:
+            if sign*(self.bar(i-1)['close']-before)<=0 and sign*(self.bar(i)['close']-now)>0:
                 context['emitted']=True
                 self.emit('REVERSAL_WATCH',self.s['structures'].get(context['structure_id']),direction='long' if sign==1 else 'short',reason='midline_cross_after_completed_or_exhausted_invalidated_structure')
 

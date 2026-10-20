@@ -20,3 +20,9 @@ it('withholds an overlay when raw/adjusted OHLC differ, including wick-only diff
  expect(rzyPriceGridMatches(grid,[{...chart[0],close:22}])).toBe(false);
  expect(rzyPriceGridMatches([],chart)).toBe(false);
 });
+it('tolerates storage-noise restatements but not a basis change',()=>{
+ const grid=[{time:times[0],open:100,high:102,low:99,close:101}];
+ const noisy=[{ts:'2026-10-16T13:30:00',open:100.0001,high:102,low:99,close:100.99995}];
+ expect(rzyPriceGridMatches(grid,noisy)).toBe(true);
+ expect(rzyPriceGridMatches(grid,[{...noisy[0],close:101*0.995}])).toBe(false);
+});

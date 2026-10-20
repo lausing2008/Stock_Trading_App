@@ -8,5 +8,5 @@ def evidence():
     assert run.returncode==0,run.stderr[-5000:]
     return json.loads(run.stdout.strip().splitlines()[-1])
 
-@pytest.mark.parametrize('check',['persistence_and_sender_optout','one_provider_acceptance','calendar_scope_digest_dedup','digest_optout','price_basis_completion_gaps','persistent_revision_quarantine'])
+@pytest.mark.parametrize('check',['persistence_and_sender_optout','one_provider_acceptance','calendar_scope_digest_dedup','digest_optout','price_basis_completion_gaps','persistent_revision_quarantine','gap_segment_rebuild','email_noise_gating'])
 def test_real_workflow(evidence,check):assert evidence[check]

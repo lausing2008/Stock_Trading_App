@@ -11,7 +11,7 @@ def helper(name):
 calendar=helper('market_calendar')
 session_bounds=calendar.session_bounds
 resolve_ohlc=helper('price_basis').resolve_ohlc
-from src.services.rzy_data import prepare_bars,aggregate_completed_bars
+from src.services.rzy_data import prepare_bars,aggregate_completed_bars,break_indices
 
 
 def source(day=datetime(2026,10,16,tzinfo=timezone.utc), count=78):
@@ -45,9 +45,11 @@ def test_forming_aggregate_is_never_emitted():
 
 def test_missing_constituent_is_not_interpolated():
     bars,evidence,now=source();bars.pop(4)
-    _,info=aggregate_completed_bars(bars,evidence,'15m',now,session_bounds=session_bounds)
-    assert info['status']=='missing_candles'
+    grouped,info=aggregate_completed_bars(bars,evidence,'15m',now,session_bounds=session_bounds)
     assert info['gaps'][-1]['reason']=='missing_aggregate_constituents'
+    # The incomplete bin is withheld, and the hole splits segments instead of being bridged.
+    assert bars[3]['time'] not in [g['time'] for g in grouped]
+    assert break_indices(grouped,'15m',session_bounds)==[1]
 
 
 def test_old_truncated_query_bin_is_excluded_warmup():

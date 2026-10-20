@@ -27,6 +27,8 @@ export function rzyPriceGridMatches(grid: RzyResponse['price_grid'], candles: { 
   const overlap = candles.filter(b => reference.has(rzyTime(b.ts)));
   return overlap.length > 0 && overlap.every(b => {
     const other = reference.get(rzyTime(b.ts))!;
-    return (['open','high','low','close'] as const).every(k => Math.abs(b[k]-other[k]) <= Math.max(1e-7, Math.abs(other[k])*1e-7));
+    // 1e-4 relative: stored bars are re-fetched with ~1e-6 storage noise after checkpointing,
+    // while a different price basis (adjusted vs raw) differs by whole percents.
+    return (['open','high','low','close'] as const).every(k => Math.abs(b[k]-other[k]) <= Math.max(1e-7, Math.abs(other[k])*1e-4));
   });
 }

@@ -281,6 +281,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 ### Features — shipped feature documentation (`docs/features/`)
 
 - **`docs/2026-10-19/little-rzy-deployment.md`** — T455: SMA 5/10, independent RZY alerts and watchlist digest; release/evidence, live mail, 5m quarantine, unfinished real-data validation and post-session checkpoint.
+- **`docs/2026-10-19/little-rzy-deep-review.md`** — RZY deep review: entry/exit logic verified; exact-match quarantine locked all 5m, one old gap excluded a stream for months, checkpoints grew unbounded. Rebuild-by-generation + segments + bounded state [RZY, revisions]
 
 - **`docs/features/admin-and-settings.md`** — Admin AI Assistant Features Page; AUD-ALERTPREFS (2026-09-24): every alert used to go to anyone holding ANY untriggered price alert, symbol never matched. Per-type prefs + HMAC unsubscribe. Absence = subscribed, filter fails OPEN [alerts, email, unsubscribe]
 - **`docs/features/aud250-small-fixes.md`** — AUD250-PORTFOLIOOPTIMIZER-SILENT-FALLBACK-NO-FLAG — Fallback Reason Now Visible in Response (Built 2026-07-19)

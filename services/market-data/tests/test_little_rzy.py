@@ -254,3 +254,62 @@ def test_next_open_liquidity_uses_only_already_completed_trigger_volume():
         events=replayed.step(bar)
         fills.append(next(x['actual_paper_fill'] for x in events if x['event_type']=='PAPER_FILL'))
     assert fills[0]==fills[1]
+
+
+def test_runner_stopped_after_banked_primary_target_is_completed_not_invalidated():
+    cfg=Config(partial_runner=True);e,bars,st=triggered(cfg);p=e.s['positions'][st['id']]
+    b=candle(len(bars));b.update(open=p['fill']+1,low=p['fill']+.05,high=st['runner']+1,close=st['target'])
+    e.step(b)
+    assert p['state']=='CLOSED' and p.get('partial_done');assert st['state']=='COMPLETED'
+
+
+def _random_stream(seed,n=3000):
+    import random
+    rng=random.Random(seed);p=100.;t=datetime(2026,1,5,14,30,tzinfo=timezone.utc);out=[]
+    for k in range(n):
+        o=p*(1+rng.gauss(0,.002)) if rng.random()<.05 else p
+        c=max(1,o+rng.gauss(.02*((k//300)%2*2-1),.5));h=max(o,c)+abs(rng.gauss(0,.25));l=min(o,c)-abs(rng.gauss(0,.25));p=c
+        out.append(dict(time=t.isoformat(),closed_at=(t+timedelta(minutes=5)).isoformat(),complete=True,open=o,high=h,low=l,close=c,
+            volume=1000.,execution_eligible=True,shortable=True,borrow_rate_annual=.02));t+=timedelta(minutes=5)
+    return out
+
+
+@pytest.mark.parametrize('cfg',[Config(),Config(partial_runner=True),Config(sequence_filter=False,no_chase_filter=False,bollinger_context=False)])
+def test_bounded_checkpoint_is_event_identical_to_unbounded_history(cfg):
+    class Small(Engine): RETAIN=60;TRIM_BATCH=7;KEEP_PIVOTS=6;KEEP_STRUCTURES=5;KEEP_CLOSED_POSITIONS=3
+    class Big(Engine): RETAIN=10**9;KEEP_PIVOTS=10**9;KEEP_STRUCTURES=10**9;KEEP_CLOSED_POSITIONS=10**9
+    for seed in range(3):
+        bars=_random_stream(seed);a=Big('X','5m',cfg);b=Small('X','5m',cfg);ea=[];eb=[]
+        for k,x in enumerate(bars):
+            ea+=a.step(x)
+            if k and k%997==0: b=Small('X','5m',cfg,json.loads(json.dumps(b.s)))
+            eb+=b.step(x)
+        assert ea==eb and any(e['event_type']=='PAPER_EXIT' for e in ea)
+        assert len(b.s['bars'])<=Small.RETAIN+Small.TRIM_BATCH+3*cfg.pivot_left+cfg.pivot_right
+        assert len(json.dumps(b.s))<len(json.dumps(a.s))/10
+
+
+def test_paper_trades_obey_entry_fill_and_exit_invariants_on_random_streams():
+    for cfg in (Config(),Config(partial_runner=True),Config(structural_stop=False)):
+        fr=(cfg.spread_bps/2+cfg.slippage_bps)/1e4;trades=0
+        for seed in range(8):
+            e=Engine('X','5m',cfg);trig={}
+            for i,b in enumerate(_random_stream(seed,2500)):
+                busy=any(p['state'] in ('OPEN','PARTIAL','PENDING_ENTRY') for p in e.s['positions'].values())
+                for ev in e.step(b):
+                    t=ev['event_type'];sid=ev['structure_id'];s=1 if ev['direction']=='long' else -1
+                    if t=='TRIGGERED':
+                        assert not busy and ev['reward_risk']>=cfg.min_rr
+                        assert s*(ev['planned_entry']-ev['stop'])>0 and s*(ev['primary_target']-ev['planned_entry'])>0
+                        line,tol=ev['trendline_value'],cfg.touch_atr*ev['atr']
+                        assert b['low']<=line+tol and b['high']>=line-tol and s*(b['close']-line)>0 and s*(b['close']-b['open'])>0
+                        trig[sid]=i
+                    if t in ('PAPER_FILL','ENTRY_CANCELLED'): assert trig[sid]==i-1
+                    if t=='PAPER_FILL':
+                        trades+=1;assert ev['actual_paper_fill']==pytest.approx(b['open']*(1+s*fr))
+                        assert s*(ev['actual_paper_fill']-ev['stop'])>0 and s*(ev['primary_target']-ev['actual_paper_fill'])>0
+                    if t=='PAPER_EXIT':
+                        raw=ev['exit_price']/(1-s*fr);assert b['low']-1e-9<=raw<=b['high']+1e-9
+                        if 'stop' in ev['reason']: assert s*(raw-e.s['positions'][sid]['stop'])<=1e-9
+                    if t=='EXHAUSTION_WATCH': assert ev['trend_epoch_id']==e.s['epoch']
+        assert trades>5
