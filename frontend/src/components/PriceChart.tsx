@@ -239,6 +239,17 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
     if (timeframe === '5m' && range !== '5m') setRange('5m');
     else if (timeframe === '1d' && range === '5m') setRange('3M');
   }, [timeframe]);
+  // 5m defaults (user request 2026-10-19): entering the 5m chart turns on Little RZY, SMA 5/10
+  // and Bollinger Bands. Each stays individually toggleable; an undo restores its own snapshot.
+  const previousRange = useRef(range);
+  const restoringSnapshot = useRef(false);
+  useEffect(() => {
+    const entered = range === '5m' && previousRange.current !== '5m';
+    previousRange.current = range;
+    if (!entered) return;
+    if (restoringSnapshot.current) { restoringSnapshot.current = false; return; }
+    setShowRzy(true); setShowSMA5(true); setShowSMA10(true); setShowBB(true);
+  }, [range]);
   useImperativeHandle(commandRef ?? controllerRef, () => ({ applyCommand(command, expectedSymbol) {
     if (expectedSymbol !== symbol) return Promise.reject(new Error('Chart symbol changed'));
     if (!chartRef.current && command.kind === 'indicator') return Promise.reject(new Error('Chart bars are unavailable'));
@@ -259,7 +270,7 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
     return new Promise<ChartSnapshot>((resolve, reject) => {
       const timer = setTimeout(() => { pendingCommand.current = null; reject(new Error('The chart could not load the requested data')); }, 20000);
       pendingCommand.current = { resolve, reject, symbol, command, timer };
-      if (previous) { restoredViewport.current = previous.viewport as LogicalRange ?? null; CHART_INDICATORS.forEach(k => setters[k](previous.indicators[k])); setRange(previous.range); onTimeframeChange?.(previous.timeframe ?? (previous.range === '5m' ? '5m' : '1d')); }
+      if (previous) { restoredViewport.current = previous.viewport as LogicalRange ?? null; restoringSnapshot.current = previous.range === '5m' && range !== '5m'; CHART_INDICATORS.forEach(k => setters[k](previous.indicators[k])); setRange(previous.range); onTimeframeChange?.(previous.timeframe ?? (previous.range === '5m' ? '5m' : '1d')); }
       else if (command.kind === 'indicator') setters[command.indicator](command.enabled);
       else if (command.kind === 'timeframe') { setRange(command.timeframe === '5m' ? '5m' : '3M'); onTimeframeChange?.(command.timeframe); }
       else if (command.kind === 'range') { setRange(command.range); onTimeframeChange?.(command.range === '5m' ? '5m' : '1d'); }
