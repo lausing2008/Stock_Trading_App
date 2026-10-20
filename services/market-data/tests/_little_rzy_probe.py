@@ -118,6 +118,19 @@ with Session() as s:
     p=s.scalar(select(models.AlertPreference).where(models.AlertPreference.alert_type=='short_term_digest'));p.enabled=False;s.commit()
     W.drain(s,send,monday);s.commit();assert len(sent)==1
     result['digest_optout']=True
+    # A real source correction persistently quarantines the stream, even if a provider
+    # later flips back to its former values. Already queued research must not send.
+    changed=s.get(models.Price,1);original_open=changed.open;changed.open+=.01;s.commit()
+    revised=W.evaluate(s,'TEST','5m',now,persist=True);s.commit()
+    assert revised['status']=='stored_bar_revised_replay_required'
+    changed.open=original_open;s.commit()
+    still_blocked=W.evaluate(s,'TEST','5m',now,persist=True);s.commit()
+    assert still_blocked['status']=='stored_bar_revised_replay_required'
+    outbox.enqueue(s,event_id=f'rzy:quarantine:1:{event.event_id}',user_id=1,recipient=user.email,alert_type='little_rzy',subject='quarantine',body_html='fixture',body_text='fixture',expires_at=(monday+timedelta(minutes=5)).replace(tzinfo=None));s.commit()
+    W.drain(s,send,monday);s.commit();assert len(sent)==1
+    blocked=s.scalar(select(models.NotificationOutbox).where(models.NotificationOutbox.subject=='quarantine'))
+    assert blocked.state=='suppressed'
+    result['persistent_revision_quarantine']=True
 # Whole OHLC adjustment and missing/forming/stale data are tested at the shipped adapter.
 rows=[types.SimpleNamespace(ts=base+timedelta(minutes=5*i),open=100,high=102,low=98,close=100,adj_close=50,volume=10,session='REGULAR') for i in range(3)]
 bars,ev=prepare_bars(rows,'5m',base+timedelta(minutes=17),session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)

@@ -40,3 +40,8 @@ The shortened-session aggregation test failed against the shared calendar becaus
 Final aggregation/calendar checks: 310 existing calendar-consuming cases passed across market-data, decision-engine and research-engine; required PostgreSQL gates passed 3/3. The focused engine/workflow/aggregation cases also exercise the real derived-timeframe adapter rather than a separate signal implementation.
 
 Final engine/workflow/aggregation subset: 51 passed after the shared early-close correction. No first-scan availability counts are represented as a daily alert rate or a strategy win rate.
+
+
+Final live inspection found off-grid rows at session open plus one second alongside real five-minute bars. They are not additional five-minute candles. The adapter now excludes such snapshot rows with `off_session_bar_grid`; a regression proves a snapshot with extreme price/volume cannot alter actual candle aggregation. Separately, real stored bars were revised after checkpointing (including material volume/open changes), so existing affected 5m streams correctly require an audited replay. These source revisions are not suppressed with a numeric tolerance or silently reset; stable canonical history and explicit replay remain data prerequisites.
+
+Revision quarantine is now durable in the checkpoint and is checked again by the sender. Restoring a provider's former values cannot silently unlock a quarantined stream, and an already queued alert cannot send after quarantine. The real ORM/outbox probe verifies both behaviors, including zero fake-provider sends from the blocked item. Final affected engine/workflow/grid cases: 53 passed. These checks do not authorize resetting original event history or mixing outcomes across data revisions.

@@ -91,3 +91,15 @@ def test_full_days_and_hong_kong_lunch_are_preserved():
 
 def test_early_close_dates_cover_the_same_years_as_the_holiday_table():
     assert {d.year for d in calendar.NYSE_EARLY_CLOSES}=={d.year for d in calendar.NYSE_HOLIDAYS}
+
+
+def test_off_grid_snapshot_is_excluded_instead_of_becoming_a_second_candle():
+    start,end=session_bounds('US',datetime(2026,10,16).date())
+    rows=[SimpleNamespace(ts=start+timedelta(minutes=5*i),open=100,high=102,low=99,close=101,adj_close=None,volume=10,session='REGULAR') for i in range(78)]
+    rows.insert(1,SimpleNamespace(ts=start+timedelta(seconds=1),open=100,high=999,low=99,close=101,adj_close=None,volume=1000000,session='REGULAR'))
+    bars,evidence=prepare_bars(rows,'5m',end+timedelta(minutes=2),session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)
+    assert len(bars)==78 and max(b['high'] for b in bars)==102
+    assert evidence['exclusions'][0]['reason']=='off_session_bar_grid'
+    grouped,info=aggregate_completed_bars(bars,evidence,'15m',end+timedelta(minutes=2),session_bounds=session_bounds)
+    assert len(grouped)==26 and sum(b['volume'] for b in grouped)==780
+    assert info['status']=='research_only'

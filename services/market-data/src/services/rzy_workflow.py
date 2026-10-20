@@ -51,6 +51,13 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_
     key=f'{symbol}:{timeframe}:{cfg.hash}'
     row=session.scalar(select(RzyStream).where(RzyStream.stream_key==key).with_for_update().execution_options(populate_existing=True)) if persist else session.get(RzyStream,key)
     prior=copy.deepcopy(row.checkpoint) if row else None
+    def revision_required(reason):
+        if persist and row is not None and not prior.get('requires_audited_replay'):
+            prior['requires_audited_replay']={'reason':reason,'observed_at':now.isoformat()}
+            row.checkpoint=prior;flag_modified(row,'checkpoint');row.updated_at=now.replace(tzinfo=None)
+        return dict(status='stored_bar_revised_replay_required',reason=reason,evidence=evidence,events=[],structures=[],paper_positions=[],strategy_version=VERSION,config_hash=cfg.hash)
+    if prior and prior.get('requires_audited_replay'):
+        return revision_required(prior['requires_audited_replay']['reason'])
     engine=Engine(symbol,timeframe,cfg,prior)
     if evidence['status'] in ('missing_candles','no_completed_bars','unsupported_timeframe','US_stocks_only_or_unknown_symbol','calendar_coverage_expired'):
         return dict(status=evidence['status'],evidence=evidence,events=[],structures=[],paper_positions=[],strategy_version=VERSION,config_hash=cfg.hash)
@@ -58,10 +65,12 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_
     last=engine.s['bars'][-1]['time'] if engine.s['bars'] else None
     # An overlapping stored candle changing after checkpoint requires explicit audited replay.
     known={b['time']:b for b in engine.s['bars'][-len(bars):]}
+    if any(x.get('reason')=='off_session_bar_grid' and x.get('time') in known for x in evidence.get('exclusions',[])):
+        return revision_required('checkpoint_contains_excluded_off_grid_bar')
     for bar in bars:
         if last and bar['time']<=last:
             if bar['time'] in known and known[bar['time']]!=bar:
-                return dict(status='stored_bar_revised_replay_required',evidence=evidence,events=[],structures=[],paper_positions=[],strategy_version=VERSION,config_hash=cfg.hash)
+                return revision_required('stored_completed_bar_changed')
             continue
         events.extend(engine.step(bar)); processed=True
     if persist and (row is None or processed):
@@ -216,7 +225,8 @@ def drain(session,send,now=None):
         if not eligible(session,user,pref,row.alert_type): return False
         if row.alert_type=='little_rzy':
             event=session.get(RzyEvent,row.event_id.split(':')[-1])
-            return bool(event and event.symbol in watchlist_symbols(session,row.user_id) and event.timeframe in (pref.timeframes if pref else ['5m','15m','1h']))
+            stream=session.get(RzyStream,f'{event.symbol}:{event.timeframe}:{event.payload["config_hash"]}') if event else None
+            return bool(event and stream and not stream.checkpoint.get('requires_audited_replay') and event.symbol in watchlist_symbols(session,row.user_id) and event.timeframe in (pref.timeframes if pref else ['5m','15m','1h']))
         return True
     return deliver_batch(session,owner='little-rzy:'+uuid4().hex,send=lambda row: send(row.recipient,row.subject,row.body_html,row.body_text),is_subscribed=subscribed,
         activated_at=datetime.min,alert_types=EMAIL_TYPES,limit=20,now=now.replace(tzinfo=None) if now else None)

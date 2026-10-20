@@ -24,6 +24,8 @@ def prepare_bars(rows, timeframe, now, *, session_bounds, resolve_ohlc):
         closed=end if timeframe=='1d' else min(stamp+timedelta(minutes=MINUTES[timeframe]),end)
         if timeframe!='1d' and (getattr(row,'session','REGULAR')!='REGULAR' or not start<=stamp<end):
             excluded.append({'time':stamp.isoformat(),'reason':'outside_regular_session'}); continue
+        if timeframe!='1d' and (stamp-start).total_seconds() % (MINUTES[timeframe]*60) != 0:
+            excluded.append({'time':stamp.isoformat(),'reason':'off_session_bar_grid'}); continue
         if closed+timedelta(minutes=2)>now:
             excluded.append({'time':stamp.isoformat(),'reason':'incomplete_or_settling'}); continue
         accepted.append((row,stamp,closed))
