@@ -1,28 +1,30 @@
 # Little RZY post-session checkpoint
 
-**When:** Tuesday October 20, 2026, 13:30–14:00 America/Los_Angeles (16:30–17:00 Eastern; 20:30–21:00 UTC), after the first complete session following release `a959c5dc`.
+**When:** Tuesday October 20, 2026, 13:30–14:00 America/Los_Angeles (16:30–17:00 Eastern; 20:30–21:00 UTC), the first session after the deep-review release `afcba909` (backend) / `b79ec9cf` (5m chart defaults).
 
-**Calendar status:** importable [event](little-rzy-checkpoint.ics) prepared. Google Calendar is not connected in this session; no external calendar event has been created. Import once, or connect Google Calendar and create the event once using UID `stockai-rzy-post-session-20261020@lausing.com`. Do not do both without checking for a duplicate.
+**Calendar:** created in the connected Google Calendar (`stockai2028@gmail.com`); do not also import the `.ics`.
 
-This is an evidence checkpoint, not a deployment or a replay/unlock authorization. Do not send a test message, reset checkpoints, rewrite event history, change consent, or relax the exact-bar comparison as part of this check.
+**Superseded baseline.** The original checklist measured growth of exact-match quarantines. The deep review ([little-rzy-deep-review.md](little-rzy-deep-review.md)) replaced quarantine with deterministic rebuilds, so this check now verifies that the rebuild path behaved. Read-only; do not send a test message or edit checkpoints.
 
-1. Verify the October 20 digest for `lausing`, scheduled 09:10 ET / 06:10 PT. Read the outbox, scheduler logs and provider observations: distinguish enqueue, provider acceptance, actual inbox delivery, expiry, suppression and failure. Ask for receipt confirmation if delivery remains unobserved. A valid empty-candidate digest is not a scanner failure. Record candidate/exclusion counts and which timeframes contributed.
-2. Count persisted streams and quarantines by timeframe. Baseline: 95/95 persisted 5m streams quarantined, 0/90 derived 15m, 0/90 derived 1h; 275 persisted streams total. Across all 342 scanned streams, 64 had missing candles and 3 had no completed bars. Distinguish new persisted streams from newly quarantined existing streams. A rise beyond 95 quarantined streams is a review trigger, not a reason to clear the flags.
-3. For each new quarantine, retain original checkpoint and event IDs, observation time, reason and changed OHLCV fields. Separate material provider revisions, off-grid snapshot corrections, precision changes and source/config changes. Confirm queued alerts from quarantined streams are suppressed. Do not introduce a tolerance before measuring the actual changes.
-4. GFS and GOOG 5m messages sent October 19 remain historical watches: their streams are quarantined and their original geometry has not been revalidated. Do not use them as verified trading outcomes. Read their preserved records alongside the source revisions if investigating them.
-5. Recheck data readiness: verified provider timestamps/delay and borrow evidence remain unavailable; current streams are research-only, so no paper fills are possible. Keep §11 real-data backtest plus five comparisons, prospective results and chronological out-of-sample results open. Synthetic fixture results close none of those gates.
-6. Save a dated read-only evidence snapshot and update the deployment record. If derived streams also quarantine, scope a separate canonical-data and audited-replay design; preserve old evidence and make any future replay version explicit.
+1. **Pre-open maintenance (08:40–09:09 ET).** Expect 95 `little_rzy_stream_generations` rows with reason `legacy_quarantine` and zero checkpoints still holding `requires_audited_replay`. Scheduler logs show `scan.status=maintenance` runs and no email from them.
+2. **Digest (09:10 ET / 06:10 PT).** Distinguish enqueue, provider acceptance, inbox delivery, expiry and suppression. Dry-run expectation was 24 candidates across 5m/15m/1h; record the actual count, exclusion reasons and which timeframes contributed. Ask for receipt confirmation if delivery is unobserved.
+3. **Rebuild rate during the session.** Count new generation rows by reason (`stored_completed_bar_changed`, `checkpoint_bar_missing_from_source`, `gap_after_checkpoint`, `checkpoint_contains_excluded_off_grid_bar`) and by timeframe. Frequent mid-session rebuilds of the same streams mean bars are restated shortly after the 2-minute settle; measure the restatement delay before changing anything.
+4. **Statuses.** Expect ~333/342 `research_only`; note `awaiting_backfill`, `stale`, short segments (`segment_bars` < 60).
+5. **Mail.** Pattern emails only for fresh new events; no ENTRY_CANCELLED mail caused solely by standing blockers; any mail queued before a rebuild suppressed at send.
+6. **Checkpoint size.** 5m checkpoints should trend to ≈ 1,200 bars (well under the previous 1.9 MB average) once each stream processes new bars.
+7. **Chart.** On a stock page at 5m, Little RZY, SMA 5/10 and Bollinger Bands are on by default and the RZY overlay draws (status `research_only`, grid matches).
+8. GFS and GOOG 5m messages of October 19 remain historical watches from superseded state; not verified outcomes.
 
-Read-only PostgreSQL baseline query:
+Read-only PostgreSQL queries:
 
 ```sql
-SELECT timeframe, count(*) AS persisted,
-       count(*) FILTER (
-         WHERE checkpoint->'requires_audited_replay' IS NOT NULL
-       ) AS quarantined
-FROM little_rzy_streams
-GROUP BY timeframe
-ORDER BY timeframe;
+SELECT timeframe, count(*) AS streams,
+       count(*) FILTER (WHERE checkpoint->'requires_audited_replay' IS NOT NULL) AS legacy_locked,
+       pg_size_pretty(avg(octet_length(checkpoint::text))::bigint) AS avg_checkpoint
+FROM little_rzy_streams GROUP BY timeframe ORDER BY timeframe;
+
+SELECT reason, split_part(stream_key, ':', 2) AS timeframe, count(*)
+FROM little_rzy_stream_generations GROUP BY 1, 2 ORDER BY 3 DESC;
 ```
 
-Sources: [corrected deployment record](little-rzy-deployment.md), [audit evidence](little-rzy-audit-followup.json), and [original release evidence](little-rzy-production-evidence.json). Provider acceptance is not proof of inbox delivery.
+Sources: [deep review](little-rzy-deep-review.md), [deployment record](little-rzy-deployment.md).

@@ -9,13 +9,11 @@ DTSTAMP:20261020T004606Z
 DTSTART:20261020T203000Z
 DTEND:20261020T210000Z
 SUMMARY:StockAI: verify RZY digest and quarantine growth
-DESCRIPTION:Read-only post-session check. Verify the Oct 20 09:10 ET digest
-  for lausing: distinguish enqueue/provider acceptance/inbox delivery. Coun
- t quarantines by timeframe against baseline 5m 95/95\; 15m 0/90\; 1h 0/90.
-  Investigate any growth beyond 95 without clearing flags. Preserve origina
- l GFS/GOOG watches and revised bars. Paper fills and real-data comparisons
-  remain blocked. Follow docs/2026-10-19/little-rzy-checkpoint.md. No test 
- email\, automatic replay\, unlock\, consent changes or broker orders.
+DESCRIPTION:Read-only post-session check after the RZY deep-review releas
+ e (afcba909/b79ec9cf). Follow docs/2026-10-19/little-rzy-checkpoint.md: 9
+ 5 legacy rebuilds in pre-open maintenance\, digest delivery\, rebuild rat
+ e by reason\, ~333/342 research_only\, mail gating\, checkpoint size\, 5m
+  chart defaults. No test email or checkpoint edits.
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
 BEGIN:VALARM
