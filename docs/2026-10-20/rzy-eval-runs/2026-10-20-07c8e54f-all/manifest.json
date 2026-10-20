@@ -1,0 +1,37 @@
+{
+ "created_at": "2026-10-20T14:33:33.398518+00:00",
+ "git_revision": "07c8e54fe13c9781b3682757d565ec874b0eb8b6",
+ "git_dirty": false,
+ "code_sha256": {
+  "services/market-data/src/services/little_rzy.py": "5aabb32efb084a325abebe9ef71017fc17d0b01fed0daa156007ac5658b9e6f1",
+  "services/market-data/src/services/rzy_data.py": "a2b8d8bc1afbc5e2780ca301b45cf34882efc1353df1e7c22486de84fd44abc1",
+  "services/market-data/src/services/rzy_evaluation.py": "8360546301fc774152dd10a66352dae522b6522077a2bb7cb117d769d54d7b2e",
+  "scripts/evaluate_little_rzy.py": "665eabe7d8790e18e99a593be78c3309ca42ae198a2efe4e194673f6fc697543"
+ },
+ "snapshot_bars_sha256": "6cef50d0f80547434597e435295afa117a23b4bf399743a683f4b25656fb012a",
+ "snapshot_exported_at": "2026-10-20T14:04:54.607096+00:00",
+ "variants": [
+  "baseline",
+  "no_bollinger_context",
+  "no_chase_filter_off",
+  "unrestricted_sequence",
+  "partial_runner",
+  "line_stop",
+  "research_stop_target_only"
+ ],
+ "controls": 20,
+ "seeds": {
+  "evaluate": 7,
+  "report": 11
+ },
+ "assumptions": {
+  "execution_eligible": "assumed True for research (stored prices carry no verified provider delay)",
+  "shortable": "assumed True for research; long-only results reported separately",
+  "borrow_rate_annual": 0.005,
+  "note": "Assumptions make paper fills possible; they are not verified execution or borrow data."
+ },
+ "outputs_sha256": {
+  "report.json": "ff616588eae0166b0a2d7b008d76b7a1c5819b1d81d2914d668dc404e5b97c00",
+  "trades.csv": "c6b65413362e6d144c983dd09b0b9265b318958861f4e53c168473695beedddd"
+ }
+}

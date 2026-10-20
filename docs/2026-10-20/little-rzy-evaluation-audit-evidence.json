@@ -1,0 +1,19 @@
+{
+  "short_borrow_exit_time": {
+    "holding_cap_bars": 5,
+    "actual_stop_exit_bar": 1,
+    "actual_seconds_held": 300,
+    "charged_seconds": 1500,
+    "reported_r": -1.000023782343988,
+    "r_using_actual_exit_time": -1.0000047564687975,
+    "difference_r": -1.9025875190425978e-05
+  },
+  "truncated_control_window": {
+    "requested_holding_bars": 10,
+    "available_holding_bars": 1,
+    "returned_controls": [
+      0.20000000000000284
+    ],
+    "last_control_trigger_index": 4
+  }
+}

@@ -1,0 +1,115 @@
+{
+  "audit_commit": "f51fdb2c49ed354f9fac1112725b7c5561c75cb0",
+  "observed_at_utc": "2026-10-20T05:36:57.563298+00:00",
+  "pure": {
+    "backtest_retention": {
+      "bars": 26000,
+      "closed_trade_events": 293,
+      "reported_trades": 199,
+      "unbounded_reported_trades": 293,
+      "bounded_drawdown": 18.651231176659373,
+      "unbounded_drawdown": 23.356868568097468,
+      "identical_events": true
+    },
+    "aggregate_staleness": {
+      "latest_source": "2026-10-16T20:00:00+00:00",
+      "latest_aggregate": "2026-10-16T14:00:00+00:00",
+      "status": "research_only",
+      "stale": false,
+      "missing_bins": 24
+    }
+  },
+  "workflow": {
+    "generation_provenance": {
+      "rebuilt": true,
+      "generation": 2,
+      "old_target": 121.22631630924367,
+      "current_target": 121.62631630924368,
+      "returned_armed_event_target": 121.22631630924367,
+      "returned_event_generation": null,
+      "rebuild_new_events": 0
+    },
+    "stale_native_disables_fallback": {
+      "derived_before": 19,
+      "native_after": 1,
+      "status_after": "stale",
+      "data_as_of_after": "2026-10-16T13:45:00+00:00"
+    },
+    "standing_short_cancel": {
+      "failed_rules": [
+        "data_basis_or_freshness_unverified",
+        "shortability_or_borrow_cost_unverified",
+        "borrow_cost_invalid"
+      ],
+      "emailable": true
+    }
+  },
+  "entry": {
+    "string_false_execution_gate": {
+      "input": "false",
+      "paper_fill": true
+    },
+    "missing_entry_bars": {
+      "minutes_between_trigger_close_and_entry_open": 45,
+      "paper_fill": true,
+      "entry_cancelled": false
+    }
+  },
+  "ui": {
+    "triggered_structures_drawn": 1,
+    "after_standing_cancellation_structures_drawn": 0,
+    "prior_trigger_marker_allowed": false,
+    "cancellation_has_label": false
+  },
+  "production_readonly": {
+    "streams": [
+      {
+        "timeframe": "15m",
+        "streams": 90,
+        "quarantined": 0,
+        "min_generation": null,
+        "max_generation": null
+      },
+      {
+        "timeframe": "1h",
+        "streams": 90,
+        "quarantined": 0,
+        "min_generation": null,
+        "max_generation": null
+      },
+      {
+        "timeframe": "5m",
+        "streams": 95,
+        "quarantined": 95,
+        "min_generation": null,
+        "max_generation": null
+      }
+    ],
+    "latest_event_provenance": {
+      "sampled": 100,
+      "with_generation": 0
+    },
+    "source_hashes": {
+      "little_rzy.py": "dc88f92d5ed96f6cc0299a6b45bafdc9a8ef595418bf1168017f36ce85c75c62",
+      "rzy_workflow.py": "3bcdbc3bf81328408d048fc20fd307c9a8e99f78883b43d6c9d82f3383a1188b",
+      "rzy_data.py": "a2b8d8bc1afbc5e2780ca301b45cf34882efc1353df1e7c22486de84fd44abc1",
+      "rzy_backtest.py": "89054cca91fa81af4de734457eb3531d1d63569a2ba0865d394fd26b310c7ef4"
+    },
+    "source_matches_local": true,
+    "container_release_label": "a959c5dc",
+    "image_id": "sha256:99cc3559779351d388c5cb0528e119a0d77ac67dd0b89970028ee25fa32f44c3",
+    "market_data_health": "healthy",
+    "checkout": "f51fdb2c4"
+  },
+  "tests": {
+    "backend_focused": {
+      "passed": 60,
+      "seconds": 23.6
+    },
+    "frontend_focused": {
+      "passed": 18,
+      "files": 4
+    },
+    "postgresql_rerun": false
+  }
+}

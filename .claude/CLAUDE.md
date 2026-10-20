@@ -283,6 +283,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/2026-10-19/little-rzy-deployment.md`** — T455: SMA 5/10, independent RZY alerts and watchlist digest; release/evidence, live mail, 5m quarantine, unfinished real-data validation and post-session checkpoint.
 - **`docs/2026-10-19/little-rzy-deep-review.md`** — RZY deep review: entry/exit logic verified; exact-match quarantine locked all 5m, one old gap excluded a stream for months, checkpoints grew unbounded. Rebuild-by-generation + segments + bounded state [RZY, revisions]
 - **`docs/2026-10-19/little-rzy-evaluation-results.md`** — first real-data RZY test vs random-timing controls: 693 trades, −0.09R, edge −0.001R (CI spans 0). 90% exit on a close through the line within ~4 bars; targets rarely reached [RZY, backtest]
+- **`docs/2026-10-20/little-rzy-evaluation-rerun.md`** — corrected RZY controls (RZA-09/10), hashed input snapshot: still no edge (+0.001R, by-symbol CI spans 0). Stop/target-only variant is worse (−0.20R, 2.3× drawdown) [RZY, backtest]
 
 - **`docs/features/admin-and-settings.md`** — Admin AI Assistant Features Page; AUD-ALERTPREFS (2026-09-24): every alert used to go to anyone holding ANY untriggered price alert, symbol never matched. Per-type prefs + HMAC unsubscribe. Absence = subscribed, filter fails OPEN [alerts, email, unsubscribe]
 - **`docs/features/aud250-small-fixes.md`** — AUD250-PORTFOLIOOPTIMIZER-SILENT-FALLBACK-NO-FLAG — Fallback Reason Now Visible in Response (Built 2026-07-19)
@@ -367,6 +368,8 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/features/2026-10-15-completable-followups.md`** — Tracker 446–449: deterministic Game Plan P2, risk quiet hours, company-event shadow coverage and frozen-input calibration research; evidence gates remain open.
 
 ### Audits — dated audit/review/session reports (`docs/audits/`)
+
+- **`docs/2026-10-20/little-rzy-audit-addendum.md`** — RZY audit through cfb40e0b: ten findings across two reports; new control borrow/window defects, real-data evaluation caveats and outstanding acceptance. Documentation only.
 
 - **`docs/2026-10-19/little-rzy-independent-audit.md`** — RZY audit of f51fdb2c: eight reproduced findings in generations, freshness, backtest retention, replay and chart/mail behavior; evidence and recommended regressions. No fixes.
 

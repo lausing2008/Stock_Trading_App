@@ -1,5 +1,7 @@
 # Little RZY evaluation results — run 2026-10-20 07:09 UTC
 
+> **Superseded** by the [corrected rerun](../2026-10-20/little-rzy-evaluation-rerun.md): this run's controls accrued short borrow after early exits (RZA-09) and accepted shortened windows (RZA-10). The conclusion (no edge) is unchanged; use the rerun's figures. Raw outputs preserved in [`rzy-eval-runs/2026-10-20T0709Z-cfb40e0b/`](../2026-10-20/rzy-eval-runs/2026-10-20T0709Z-cfb40e0b/).
+
 First real-data run of the [evaluation framework](little-rzy-evaluation-framework.md) for `LITTLE_RZY_INSPIRED_V1` (config `Config().hash` defaults, no tuning). Read-only against production stored bars; runtime 18 min. Raw outputs were `report.json` and `trades.csv` (kept on EC2 under `/tmp/rzy-eval/`, not committed).
 
 ## Coverage
