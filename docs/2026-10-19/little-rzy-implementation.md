@@ -2,7 +2,7 @@
 
 ## Scope and source contract
 
-Implements the accepted specification in [Little RZY Integration](../Little%20RZY%20Integration.md), named `LITTLE_RZY_INSPIRED_V1`. This is a testable engineering interpretation, not a claim of exact reproduction, endorsement, or profitable performance.
+Implements the rule engine, indicators and workflows from the accepted specification in [Little RZY Integration](../Little%20RZY%20Integration.md), named `LITTLE_RZY_INSPIRED_V1`. This is a testable engineering interpretation, not a claim of exact reproduction, endorsement, or profitable performance.
 
 Source concepts: [Chart Fanatics measured-move trend strategy](https://www.chartfanatics.com/strategies/measured-move-trend-strategy) motivates structural trend, measured moves and continuation; [Bollinger's rules](https://www.bollingerbands.com/bollinger-band-rules) distinguish band context from standalone buy/sell instructions. Numerical thresholds, pivot confirmation, execution ordering, costs, sequence policy and data gates below are the accepted research implementation assumptions.
 
@@ -43,3 +43,7 @@ Stored Price rows do not retain reliable upstream provider/delay or borrow avail
 The backtest CLI uses the same streaming engine, costs and conservative ordering. It reports samples, Wilson hit-rate intervals, expectancy, profit factor, mark-to-market drawdown, exposure, unresolved/censored trades and grouping. Chronological 70/30 and expanding walk-forward partitions start fresh engines with no crossing positions or tuned winner selection. Report caveats include dependent observations and borrow charges accrued at exit.
 
 Next evidence work: retain/verify provider timestamps and execution basis, source real shortability and borrow costs, collect an audited completed-bar archive, then run prospective shadow and chronological comparisons. The included synthetic CSV/report establish reproducibility only; they establish no market edge. Live execution remains outside scope. Existing price-risk delivery must remain OFF.
+
+## Current production limitation — October 19 audit correction
+
+Running application release: `a959c5dc`; `f88535a0` is a documentation-only checkout. All 95 previously usable 5m streams are quarantined and have no unlock path; derived 15m/1h provide 180 usable research streams. No current stream can produce a paper fill with the unknown execution metadata. Real-data comparison runs and prospective validation remain unfinished. See the [corrected deployment record](little-rzy-deployment.md), including the two real pattern emails sent under the earlier `8636b52d` release.

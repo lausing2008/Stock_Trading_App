@@ -175,5 +175,19 @@
       "skipped": 0
     }
   },
-  "backend_drift": 0
+  "backend_drift": 0,
+  "audit_followup": {
+    "path": "little-rzy-audit-followup.json",
+    "application_release": "a959c5dc",
+    "documentation_only_checkout": "f88535a0",
+    "live_pattern_messages_provider_accepted": 2,
+    "inbox_delivery_observed": false,
+    "usable_5m_streams": 0,
+    "quarantined_5m_streams": 95,
+    "usable_derived_15m": 90,
+    "usable_derived_1h": 90,
+    "missing_candles": 64,
+    "no_completed_bars": 3,
+    "paper_fills_possible_with_current_metadata": false
+  }
 }

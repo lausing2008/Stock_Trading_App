@@ -1,0 +1,27 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//StockAI//Little RZY Evidence Check//EN
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+BEGIN:VEVENT
+UID:stockai-rzy-post-session-20261020@lausing.com
+DTSTAMP:20261020T004606Z
+DTSTART:20261020T203000Z
+DTEND:20261020T210000Z
+SUMMARY:StockAI: verify RZY digest and quarantine growth
+DESCRIPTION:Read-only post-session check. Verify the Oct 20 09:10 ET digest
+  for lausing: distinguish enqueue/provider acceptance/inbox delivery. Coun
+ t quarantines by timeframe against baseline 5m 95/95\; 15m 0/90\; 1h 0/90.
+  Investigate any growth beyond 95 without clearing flags. Preserve origina
+ l GFS/GOOG watches and revised bars. Paper fills and real-data comparisons
+  remain blocked. Follow docs/2026-10-19/little-rzy-checkpoint.md. No test 
+ email\, automatic replay\, unlock\, consent changes or broker orders.
+STATUS:CONFIRMED
+TRANSP:TRANSPARENT
+BEGIN:VALARM
+ACTION:DISPLAY
+TRIGGER:-PT15M
+DESCRIPTION:Review RZY digest receipt and quarantine counts
+END:VALARM
+END:VEVENT
+END:VCALENDAR

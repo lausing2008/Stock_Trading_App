@@ -1,0 +1,93 @@
+{
+  "stream_counts": [
+    {
+      "timeframe": "15m",
+      "state": "not_quarantined",
+      "count": 90
+    },
+    {
+      "timeframe": "1h",
+      "state": "not_quarantined",
+      "count": 90
+    },
+    {
+      "timeframe": "5m",
+      "state": "quarantined",
+      "count": 95
+    }
+  ],
+  "mail": [
+    {
+      "id": "1",
+      "event_id": "rzy:1:6b92dd1469c4dd4f21fe7090a058c37eacde2ebf314f122fec7cdb493823d68d",
+      "subject": "RZY WATCH_ONLY \u00b7 GFS \u00b7 5m",
+      "state": "accepted",
+      "created_at": "2026-10-19 14:56:57.300127",
+      "accepted_at": "2026-10-19 14:58:44.406584",
+      "delivery_status": null,
+      "delivery_observed_at": null,
+      "username": "lausing",
+      "matching_events": [
+        {
+          "event_id": "6b92dd1469c4dd4f21fe7090a058c37eacde2ebf314f122fec7cdb493823d68d",
+          "symbol": "GFS",
+          "timeframe": "5m",
+          "signal_time": "2026-10-19T14:50:00+00:00",
+          "event_type": "REVERSAL_WATCH",
+          "config_hash": "8ceb8cf780c3eb981983",
+          "position_action": "WATCH_ONLY"
+        }
+      ],
+      "matching_stream_quarantine": [
+        {
+          "symbol": "GFS",
+          "reason": {
+            "reason": "stored_completed_bar_changed",
+            "observed_at": "2026-10-20T00:31:15.669958+00:00"
+          }
+        }
+      ]
+    },
+    {
+      "id": "2",
+      "event_id": "rzy:1:8321ed6ab912d79cde19d1d9abbdbdf827c366a7adff0cc884b4a5386dc3cb2a",
+      "subject": "RZY WATCH_ONLY \u00b7 GOOG \u00b7 5m",
+      "state": "accepted",
+      "created_at": "2026-10-19 16:19:59.366513",
+      "accepted_at": "2026-10-19 16:23:10.479662",
+      "delivery_status": null,
+      "delivery_observed_at": null,
+      "username": "lausing",
+      "matching_events": [
+        {
+          "event_id": "8321ed6ab912d79cde19d1d9abbdbdf827c366a7adff0cc884b4a5386dc3cb2a",
+          "symbol": "GOOG",
+          "timeframe": "5m",
+          "signal_time": "2026-10-19T16:15:00+00:00",
+          "event_type": "EXHAUSTION_WATCH",
+          "config_hash": "8ceb8cf780c3eb981983",
+          "position_action": "WATCH_ONLY"
+        }
+      ],
+      "matching_stream_quarantine": [
+        {
+          "symbol": "GOOG",
+          "reason": {
+            "reason": "checkpoint_contains_excluded_off_grid_bar",
+            "observed_at": "2026-10-20T00:31:15.669958+00:00"
+          }
+        }
+      ]
+    }
+  ],
+  "verified_at_utc": "2026-10-20T00:45:45.725497+00:00",
+  "application_release": "a959c5dc",
+  "documentation_checkout_at_review": "f88535a0",
+  "mail_code_attribution": {
+    "release": "8636b52d",
+    "basis": "EC2 deployment reflog, matching image label and creation, successful rollout record; not per-message build provenance",
+    "checkout_utc": "2026-10-19T13:52:55Z",
+    "image_created_utc": "2026-10-19T13:52:57.000531221Z",
+    "next_release_checkout_utc": "2026-10-19T23:25:26Z"
+  }
+}
