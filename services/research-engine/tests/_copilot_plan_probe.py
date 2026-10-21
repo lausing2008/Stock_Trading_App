@@ -644,7 +644,7 @@ def pl12_dual_plan():
     inputs = dict(kind="holding", entry=95.0, shares=10, stop=97.0, risk=400.0)
     view = C.plan_view(Session, "alice", SYM, now=NOW, **inputs)
     context = {**inputs, "fingerprint": view["packet_fingerprint"]}
-    model = ScriptedModel('<answer>One reading favors protecting the held position: {{rule.h1}} {{rule.h6}} {{setup.holding}}</answer><plan_proposal kind="hold" stop="level.low20-0.5atr" target1="level.high20" target2="level.high20+1atr"/>')
+    model = ScriptedModel('<answer>One reading favors protecting the held position: {{rule.h1}} {{rule.h6}} {{setup.holding}} The stop is {{proposal.stop_derivation}}.</answer><plan_proposal kind="hold" stop="level.low20-0.5atr" target1="level.high20" target2="level.high20+1atr"/>')
     req = turn("Compare alternative scenarios", "dual-plan-0001")
     req.plan_context = context
     first = run(C.answer(req, session_factory=Session, llm_call=model, now=NOW))
@@ -712,16 +712,17 @@ def pl13_trade_setups():
     # The first proposal is a "pullback" above the latest close: code rejects it and the one
     # repair turn carries the reason; the second is a valid breakout with code-computed prices.
     wrong = '<answer>One reading favors a pullback near {{level.high20}}.</answer><plan_proposal kind="pullback" entry="level.high20" stop="level.low20" target1="level.high20+2atr" target2="level.high20+3atr"/>'
-    good = '<answer>One reading favors a breakout above {{level.high20}}.</answer><plan_proposal kind="breakout" entry="level.high20" stop="level.high20-1atr" target1="level.high20+2atr" target2="level.high20+3atr"/>'
+    good = '<answer>One reading favors a breakout above {{level.high20}}; stop {{proposal.stop_derivation}}, the first target at {{proposal.reward_risk}}.</answer><plan_proposal kind="breakout" entry="level.high20" stop="level.high20-1atr" target1="level.high20+2atr" target2="level.high20+3atr"/>'
     model = ScriptedModel(wrong,good)
     response = run(C.answer(req, session_factory=Session, llm_call=model, now=NOW))["message"]
     out["selected"] = {"proposal":response["plan_proposal"], "status":response["status"], "calls":len(model.calls),
+                       "content": response["content"], "reasons": response.get("rejection_reasons"),
                        "repair_text": json.dumps(model.calls[1]) if len(model.calls) > 1 else ""}
     # A playbook answer: each case cites the code-written branch; the model adds words only.
     book = ('<answer>One reading favors the breakout alternative: {{setup.breakout}}\n'
             'If it rises: {{playbook.breakout.rises}} The flat trend makes confirmation matter.\n'
             'If it falls: {{playbook.breakout.falls}}\nIf it goes sideways: {{playbook.breakout.sideways}}\n'
-            'After a fill: {{playbook.breakout.after_entry}}</answer><plan_proposal kind="breakout" entry="level.high20" stop="level.high20-1atr" target1="level.high20+2atr" target2="level.high20+3atr"/>')
+            'After a fill: {{playbook.breakout.after_entry}} Stop: {{proposal.stop}}.</answer><plan_proposal kind="breakout" entry="level.high20" stop="level.high20-1atr" target1="level.high20+2atr" target2="level.high20+3atr"/>')
     req4 = turn("Compare detailed scenarios", "setups-playbook-0001"); req4.plan_context = context
     pmodel = ScriptedModel(book)
     pb = run(C.answer(req4, session_factory=Session, llm_call=pmodel, now=NOW))["message"]

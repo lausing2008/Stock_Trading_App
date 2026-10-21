@@ -232,3 +232,37 @@ def _build_hold(plan, base, prices, derivation, blocks, close, atr, m):
                      "text": f"A daily close below {m(stop)} meets the exit rule: sell rather than wait for a recovery."},
                     {"case": "sideways", "kind": "manage", "title": "If it goes sideways",
                      "text": f"Hold while daily closes stay above {m(stop)}; a sideways market does not move the stop."}]))
+
+
+_LEVEL_WORDS = {"entry": "entry", "stop": "stop", "target1": "first target", "target2": "second target"}
+_ANCHOR_WORDS = {"level.close": "the latest close", "level.low20": "the 20-bar low",
+                 "level.high20": "the 20-bar high", "level.sma50": "the 50-bar average",
+                 "level.high252": "the year high", "level.low252": "the year low"}
+CITABLE = ("proposal.entry", "proposal.stop", "proposal.target1", "proposal.target2",
+           "proposal.entry_derivation", "proposal.stop_derivation",
+           "proposal.target1_derivation", "proposal.target2_derivation", "proposal.reward_risk")
+
+
+def citable(plan, proposal: dict) -> dict[str, tuple[str, str, tuple]]:
+    """key -> (display, meaning, evidence ids) for the proposal's CODE-COMPUTED values.
+
+    Lets the model explain its own levels ("the stop is {{proposal.stop_derivation}}") with
+    figures the platform wrote; its prose may not describe an offset in its own words.
+    """
+    m = lambda v: P.money(v, plan.currency)
+    atr_ids = tuple(plan.items["level.atr"].evidence_ids) if "level.atr" in plan.items else ()
+    out = {}
+    for d in proposal.get("derivation", []):
+        ids = tuple(plan.items[d["anchor"]].evidence_ids) if d["anchor"] in plan.items else ()
+        ids = ids + (atr_ids if d["atr_multiple"] else ())
+        name = _LEVEL_WORDS[d["level"]]
+        out[f"proposal.{d['level']}"] = (m(d["price"]), f"the model-proposed {name}, computed by code", ids)
+        k = d["atr_multiple"]
+        expr = (f"{_ANCHOR_WORDS[d['anchor']]} ({m(d['anchor_price'])})"
+                + (f" {'+' if k > 0 else '−'} {abs(k):g} × ATR ({m(d['atr'])})" if k else "")
+                + f" = {m(d['price'])}")
+        out[f"proposal.{d['level']}_derivation"] = (expr, f"how the {name} was computed", ids)
+    t1 = (proposal.get("targets") or [{}])[0].get("reward_risk")
+    if t1 is not None:
+        out["proposal.reward_risk"] = (f"{t1:.2f}R", "first-target reward:risk, computed by code", ())
+    return out

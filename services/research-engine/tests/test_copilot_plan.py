@@ -473,6 +473,8 @@ def test_llm_proposes_its_own_levels_and_code_computes_and_checks_them(r):
     assert [(t["price"], round(t["reward_risk"], 2)) for t in p["targets"]] == [(105, 2.0), (107, 3.0)]
     assert p["shares"] == 200 and p["max_fill"] == 101
     assert [d["anchor"] for d in p["derivation"]] == ["level.high20"] * 4
+    # The explanation cites the CODE-computed derivation, rendered by the platform.
+    assert "the 20-bar high ($101.00) − 1 × ATR ($2.00) = $99.00" in sel["content"] and "2.00R" in sel["content"]
     assert x["missing_tag_status"] == "rejected"
     assert all(s["state"] == "blocked" for s in x["blocked"])
     assert x["wait"] == {"kind": "wait", "status": "grounded"}

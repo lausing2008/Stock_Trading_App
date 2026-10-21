@@ -29,7 +29,7 @@ from . import intent as I
 from . import llm as L
 from . import plan as P
 from . import store as St
-from .packet import PACKET_VERSION, build_packet
+from .packet import PACKET_VERSION, Quantity, build_packet
 from intelligence.report_contract import FieldState
 
 MAX_QUESTION_CHARS = 1000
@@ -290,7 +290,15 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
                      "when to wait, and a short playbook under the headings If it rises, If it falls, "
                      "If it goes sideways and After a fill — conditionally (if ..., then ...), never "
                      "saying where the price will go. Do NOT write any price or number in the prose: "
-                     "refer to levels by packet placeholders such as {{level.low20}} or in words. "
+                     "refer to levels by packet placeholders such as {{level.low20}}. Your OWN levels, "
+                     "once computed from your tag, are citable as {{proposal.entry}}, "
+                     "{{proposal.stop}}, {{proposal.target1}}, {{proposal.target2}}, "
+                     "{{proposal.reward_risk}} and, to explain an offset, "
+                     "{{proposal.entry_derivation}}, {{proposal.stop_derivation}}, "
+                     "{{proposal.target1_derivation}}, {{proposal.target2_derivation}}; cite at "
+                     "least the stop this way. Never describe an offset or count in words "
+                     "(no 'half an ATR', 'twenty') and write no numerals at all — say 'the first "
+                     "target', not 'target 1'. "
                      "Distinguish interpretation from facts. No forecasts, probabilities, account "
                      "facts or action drafts. " + PR.FORMAT_HELP + " "
                      "Anchor values: " + json.dumps(anchors) + f"; ATR {packet.plan.atr!r}. "
@@ -353,16 +361,28 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         if req.plan_context is not None:
             from . import proposal as PR
             clean_text, spec, choice_error = PR.extract(clean_text)
+            # The previous attempt's proposal values are not citable for this one.
+            for k in PR.CITABLE:
+                packet.quantities.pop(k, None)
+            proposal = None
             if spec is not None:
                 price_f = packet.fields.get("price")
                 proposal = PR.build(packet.plan, spec, price_stale=(
                     price_f.reason if price_f is not None and price_f.state is FieldState.STALE else None))
+                for k, (display, meaning, ids) in PR.citable(packet.plan, proposal).items():
+                    packet.quantities[k] = Quantity(key=k, display=display, field="plan_proposal",
+                                                    state="OK", meaning=meaning, evidence_ids=ids)
                 # One repair for a proposal the code rejects; a final rejection is SHOWN, not hidden.
                 if proposal["state"] == "rejected" and attempt < MAX_ATTEMPTS:
                     choice_error = ("Your proposal failed the code checks: " + " ".join(proposal["reasons"])
                                     + " Propose corrected anchors or kind=\"wait\".")
         result = G.check(G.parse_draft(clean_text), packet)
         if req.plan_context is not None:
+            # The explanation must refer to the levels code computed, not to its own numbers.
+            if (not choice_error and proposal is not None and proposal.get("derivation")
+                    and not {"proposal.stop", "proposal.stop_derivation"} & set(result.used_keys)):
+                choice_error = ("Explain your levels by citing {{proposal.stop}} or "
+                                "{{proposal.stop_derivation}} (and the entry and the targets the same way).")
             if choice_error:
                 result.accepted = False
                 result.reasons.append(choice_error)
