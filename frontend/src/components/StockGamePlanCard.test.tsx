@@ -109,3 +109,13 @@ it('does not plot a blocked setup even when other reference levels are fresh', a
   const levels = vi.fn(); render(<StockGamePlanCard symbol="AAPL" onLevelsChange={levels} />); await build();
   expect(levels.mock.calls.at(-1)?.[0]).toEqual([]);
 });
+
+it('defaults to a calculated entry plan that needs no inputs, with sizing tucked away as optional', async () => {
+  render(<StockGamePlanCard symbol="AAPL" onLevelsChange={vi.fn()} />);
+  expect((screen.getByRole('combobox', { name: 'Plan for' }) as HTMLSelectElement).value).toBe('entry');
+  expect(screen.getByText(/calculated from the price data — you don’t enter them/)).toBeTruthy();
+  expect(screen.queryByLabelText('entry')).toBeNull(); expect(screen.queryByLabelText('shares')).toBeNull();
+  expect(screen.getByText('Optional: size the position in shares').closest('details')?.open).toBe(false);
+  await build();
+  expect(mocks.getStockPlan.mock.calls[0][1]).toEqual({ kind: 'entry' });
+});

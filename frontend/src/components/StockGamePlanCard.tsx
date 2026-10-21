@@ -118,17 +118,29 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
     <h3 style={{ margin: '0 0 6px', color: '#c4b5fd' }}>Game Plan</h3>
     <p style={{ color: '#94a3b8', margin: '4px 0 12px' }}>Entry, targets, stop and next steps. Build the rules-based plan first; compare an LLM alternative if useful.</p>
     <div className="game-plan-build-controls"><label>Plan for <select aria-label="Plan for" disabled={busy || actionBusy} value={mode} onChange={e => { reset(); setMode(e.target.value as typeof mode); }} style={fieldStyle}>
-      <option value="entry">A potential purchase</option><option value="holding">A position I hold</option><option value="forecast">Calls and history</option>
+      <option value="entry">Find an entry (calculated for you)</option><option value="holding">Manage shares I already own</option><option value="forecast">Calls and history</option>
     </select></label>
-    <div className="game-plan-inputs">
-      {(mode === 'holding' ? ['entry', 'shares', 'stop', 'risk'] : mode === 'entry' ? ['risk'] : []).map(key =>
-        <label key={key}>{({ entry: 'Average cost', shares: 'Shares held', stop: 'Your held stop (optional)', risk: 'Risk budget (stock currency)' } as Record<string, string>)[key]}
+    {mode !== 'entry' && <div className="game-plan-inputs">
+      {(mode === 'holding' ? ['entry', 'shares', 'stop', 'risk'] : []).map(key =>
+        <label key={key}>{({ entry: 'Average cost (required)', shares: 'Shares held (optional)', stop: 'Your current stop (optional)', risk: 'Max loss you accept (optional)' } as Record<string, string>)[key]}
           <input aria-label={key} disabled={busy || actionBusy} type="number" min="0" step={key === 'shares' ? '1' : 'any'} value={values[key as keyof typeof values]}
             onChange={e => { reset(); setValues(v => ({ ...v, [key]: e.target.value })); }} style={fieldStyle} />
         </label>)}
-    </div>
+    </div>}
     <button style={buttonStyle} disabled={busy || actionBusy} onClick={() => void load()}>{busy ? 'Loading plan…' : data ? 'Refresh plan' : 'Build plan'}</button>
     </div>
+    <p style={{ color: '#94a3b8', margin: '6px 0 0', fontSize: 12 }}>{mode === 'entry'
+      ? 'Entry price, stop loss and profit targets are calculated from the price data — you don\u2019t enter them. Just press Build plan.'
+      : mode === 'holding'
+        ? 'For shares you already own: your average cost lets the plan measure the stop and targets against what you paid and flag an exit if the stop is already broken. Shares held turns per-share numbers into dollars.'
+        : 'Shows the stored signal calls and how similar calls worked out, without an entry plan.'}</p>
+    {mode === 'entry' && <details style={{ marginTop: 6 }}><summary style={{ cursor: 'pointer', color: '#a5b4fc', fontSize: 12 }}>Optional: size the position in shares</summary>
+      <label style={{ display: 'inline-block', marginTop: 6 }}>Max loss you accept if the stop is hit (stock currency)
+        <input aria-label="risk" disabled={busy || actionBusy} type="number" min="0" step="any" value={values.risk}
+          onChange={e => { reset(); setValues(v => ({ ...v, risk: e.target.value })); }} style={fieldStyle} />
+      </label>
+      <p style={{ color: '#94a3b8', fontSize: 12, margin: '4px 0 0' }}>Shares = this amount ÷ (entry − stop), rounded down. Leave empty to see the plan per share. Too small an amount to cover one share marks the setup blocked.</p>
+    </details>}
     {error && <p role="alert" style={{ color: '#fca5a5' }}>{error}</p>}
     {data && <>
       {data.plan.position_refusals.map((why, i) => <p key={i} role="alert">{why}</p>)}
