@@ -174,11 +174,15 @@ async def run_one(sc, username, key, model, now):
         pi = I.PositionIntent(kind=sc["ctx"]["kind"], **{k: v for k, v in {
             "entry": sc["ctx"].get("entry"), "shares": sc["ctx"].get("shares"), "stop": sc["ctx"].get("stop"),
             "risk_amount": sc["ctx"].get("risk")}.items() if v is not None})
-        packet = build_packet(s, sc["symbol"], now=now, plan_request=pi)
+        # The SAME frozen evidence the request used (C.build_packet), never a fresh live rebuild:
+        # 2026-10-21 a 13:30 UTC daily fetch restated MU's past closes mid-run (sma50 984.22686 ->
+        # 984.23126) and a live re-check flagged a correctly priced anchor as a violation.
+        packet = C.build_packet(s, sc["symbol"], now=now, plan_request=pi)
     p = msg.get("plan_proposal")
     mine = CALLS[before:]
     return {
         "scenario": sc["name"], "arm": "rules_hidden" if sc.get("hide_rules") else "rules_visible",
+        "narration_rejection_reasons": msg.get("narration_rejection_reasons"),
         "symbol": sc["symbol"], "inputs": sc["ctx"], "status": msg["status"], "narration": msg.get("narration"),
         "fingerprint": msg.get("packet_fingerprint"), "view_fingerprint": view["packet_fingerprint"],
         "model": msg.get("model"), "price_as_of": msg.get("price_as_of"),

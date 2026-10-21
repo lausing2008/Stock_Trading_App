@@ -50,3 +50,33 @@ Total: 11 calls, about 106k input / 8.4k output tokens (≈ $0.44 at Sonnet list
 **Hidden-rules experiment — prepared, not run.** `TurnRequest.hide_rules_reference` (evaluation only; unreachable from the API) withholds the rules plan — setups, rules, playbook and rule-derived stop/target levels — while keeping the same market evidence, constraints and typed inputs. A test confirms the rules are absent and the evidence present. Fixed matrix (`EVAL_SET=matrix` in the script): MU, NVDA, AAPL, 0005.HK and 0700.HK entries plus MU and 0700.HK holdings, each with rules visible and hidden = 14 requests, **cap 28 calls and about $2** (≈ $0.04 per call measured). Metrics per arm: valid-plan rate, fallback rate, code-narration rate, independent constraint violations, prose-digit answers, and save fidelity (one replayed browser save per arm). Price differences are reported only descriptively; matching prices are acceptable. **Awaiting approval of the matrix and cap.**
 
 **Browser-test token.** The token minted for the save/reload test was deleted from disk but **not revoked**: its unique ID was not kept, and the only revocation that does not need it (`revoke_user_tokens`) would sign the account out everywhere. It expires one day after issue (about 07:05 UTC on 2026-10-22; `JWT_EXPIRE_DAYS=1`). The E2E script now calls `/auth/logout` at the end, which blacklists that run's own token ID.
+
+## Hidden-rules experiment (run 2026-10-21 13:24 UTC, approved matrix)
+
+Seven cases × two arms (rules shown / hidden), **18 provider calls, ≈ $0.65** (137,194 input / 16,202 output tokens). Neither the 28-call nor the $2 cap was reached; retries counted. Each case's evidence packet was built **once** and deep-copied to every request, so all 7 pairs had identical evidence (fingerprints equal) while live signals refreshed. Model `claude-sonnet-4-6` at temperature 0 in both arms. **Preflight exclusions: none.** The production prompt is unchanged. Raw: `llm-plan-eval/eval-20261021T132424Z.json`.
+
+| Case | Rules shown | Rules hidden |
+|---|---|---|
+| MU entry | conditional: low20 / low20 − 0.5 ATR / high20 / high252 (model prose) | conditional: low20 / **low20 − 0.75 ATR** / **sma50** / high20 (code narration) |
+| NVDA entry | blocked (trend rule), same levels as rules | **fallback**: first reply had no tag and a numeral ("52"); repair still failed the prose check |
+| AAPL entry | conditional: low20 / low20 − 0.5 ATR / high20 / high20 + 0.5 ATR | conditional: same stop, **target 1 = high20 − 1.5 ATR** (code narration, after a missing-tag repair) |
+| 0005.HK entry | blocked (trend rule) | blocked (trend rule), different stop/targets |
+| 0700.HK entry | wait | wait |
+| MU holding | **rejected**: kind=pullback for a held position, twice | **rejected**: same |
+| 0700.HK holding | wait | wait |
+
+| Metric | shown | hidden |
+|---|---|---|
+| Valid plan (conditional / blocked / wait) | 6/7 | 5/7 |
+| Fallback (prose failed with no accepted proposal) | 0/7 | 1/7 |
+| Code-written explanation | 3/7 | 3/7 |
+| Constraint violations (independent check) | 0 | 0 — see note |
+| Save fidelity | proven for this flow in the earlier E2E; not re-run per arm | same |
+
+**Note on the one flagged "violation".** The checker re-built the evidence live instead of using the frozen packet. Between the two, a 13:30 UTC yfinance daily fetch **restated MU's past completed closes** (sma50 984.22686 → 984.23126). The proposal had been priced correctly from the frozen evidence (price = anchor + k × ATR held). The checker now uses the frozen packet. That daily restatement after a provider fetch belongs with OD-01's evidence (tracker 457); so far OD-01 has covered 5m bars.
+
+**Reading (preliminary, 7 pairs; not a superiority claim).** With the rules hidden, the model chose different, still-valid levels in 3 of 4 priced entry cases (wider stop, nearer targets such as the 50-bar average), so the earlier convergence was at least partly anchoring on the shown rules. Both arms agreed on every wait and blocked case. Hidden had one more fallback. Both arms failed the same way on holdings.
+
+**Defects found (not changed, for decision):**
+1. **Holding mode is not stated in the proposal prompt.** The model proposed `kind=pullback` for a held position in both arms, and the repair did not fix it. In the first evaluation it chose `hold` only by reading the format help. The fix is to state the mode and the allowed kinds explicitly per mode.
+2. **Prose still fails often** (6/14 code-narrated, 1 fallback). The common causes are numerals in window names ("52-week", "5-bar") and missing tags. Frozen proposals now protect the plan; the explanation quality is the remaining gap.
