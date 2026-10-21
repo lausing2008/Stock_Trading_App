@@ -121,7 +121,7 @@ async function call<T>(path: string, init: RequestInit = {}, signal?: AbortSigna
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || `Copilot request failed (${res.status})`);
+    throw Object.assign(new Error((err as { detail?: string }).detail || `Copilot request failed (${res.status})`), { status: res.status });
   }
   return (await res.json()) as T;
 }

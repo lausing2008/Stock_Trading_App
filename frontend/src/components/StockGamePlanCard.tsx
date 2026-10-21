@@ -31,6 +31,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
   const [evidence, setEvidence] = useState<PlanItem | null>(null);
   const [perspective, setPerspective] = useState<'rules' | 'llm'>('rules');
   const [llmSetups, setLlmSetups] = useState<TradeSetup[]>([]);
+  const [llmNotice, setLlmNotice] = useState('');
   const generation = useRef(0);
   const abort = useRef<AbortController | null>(null);
   const alive = useRef(true);
@@ -52,7 +53,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
       ? data.plan.levels.filter(x => x.state === 'OK') : selectedPlanLines(selected));
   }, [data, chart, boardSetupId, perspective, llmSetups, onLevelsChange]);
   function focusLevel(line: PlanChartLine) { setChart(true); onLevelFocus?.(line); }
-  async function load() {
+  async function load(keepLlm = false) {
     const request: PlanInputs = { kind: mode };
     for (const [key, text] of Object.entries(values)) {
       if (!text.trim()) continue;
@@ -64,7 +65,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
     }
     if (mode === 'holding' && request.entry === undefined) { setError('Enter your average cost for a held position.'); return; }
     if (mode !== 'holding') { delete request.entry; delete request.shares; delete request.stop; }
-    reset(); const token = ++generation.current;
+    reset(); if (keepLlm) setPerspective('llm'); else setLlmNotice(''); const token = ++generation.current;
     abort.current = new AbortController(); setBusy(true);
     try {
       const result = await getStockPlan(symbol, request, abort.current.signal);
@@ -126,7 +127,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
             onChange={e => { reset(); setValues(v => ({ ...v, [key]: e.target.value })); }} style={fieldStyle} />
         </label>)}
     </div>
-    <button style={buttonStyle} disabled={busy || actionBusy} onClick={load}>{busy ? 'Loading plan…' : data ? 'Refresh plan' : 'Build plan'}</button>
+    <button style={buttonStyle} disabled={busy || actionBusy} onClick={() => void load()}>{busy ? 'Loading plan…' : data ? 'Refresh plan' : 'Build plan'}</button>
     </div>
     {error && <p role="alert" style={{ color: '#fca5a5' }}>{error}</p>}
     {data && <>
@@ -180,7 +181,9 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
       </section>
       </div>
       <div hidden={perspective !== 'llm'}>
+      {llmNotice && <p role="status" style={{ color: '#fbbf24' }}>{llmNotice}</p>}
       <LLMAlternativePlan key={data.packet_fingerprint} symbol={symbol} inputs={inputs}
+        onPlanChanged={() => { setLlmNotice('New data arrived after the plan was built (for example a fresh signal), so the server refused to compare against it. The rules-based plan has been refreshed with the same inputs; generate the LLM alternative again.'); void load(true); }}
         currency={data.plan.currency} compact onSelectionChange={setLlmSetups} onLevelSelect={onLevelFocus ? focusLevel : undefined}
         fingerprint={data.packet_fingerprint} unavailable={data.plan.unsupported || !!data.plan.position_refusals.length ||
           (mode !== 'forecast' && !data.plan.setups?.length) ||

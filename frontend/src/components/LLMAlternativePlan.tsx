@@ -6,9 +6,12 @@ import { CopilotAnswer } from './CopilotPanel';
 import TradeSetupSummary from './TradeSetupSummary';
 
 /** A second interpretation of the same snapshot, never independent corroboration. */
-export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavailable, currency = null, compact = false, onSelectionChange, onLevelSelect }: {
+export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavailable, currency = null, compact = false, onSelectionChange, onLevelSelect, onPlanChanged }: {
   symbol: string; inputs: PlanInputs; fingerprint: string; unavailable: boolean; currency?: string | null;
   compact?: boolean; onSelectionChange?: (setups: TradeSetup[]) => void; onLevelSelect?: (line: SelectedPlanLine) => void;
+  /** The server refused the comparison because the plan's data changed since it was built (409).
+   *  Retrying with the same snapshot can never succeed, so the parent rebuilds the plan. */
+  onPlanChanged?: () => void;
 }) {
   const [message, setMessage] = useState<CopilotMessage | null>(null);
   const [busy, setBusy] = useState(false);
@@ -61,6 +64,9 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
       onSelectionChange?.(out.message.status === 'grounded' && out.message.selected_setup_id !== 'wait'
         ? (out.message.plan_setups ?? []).filter(s => s.id === out.message.selected_setup_id) : []);
     } catch (e) {
+      if (alive.current && active.current === pending && (e as { status?: number }).status === 409 && onPlanChanged) {
+        active.current = null; setBusy(false); request.current = null; onPlanChanged(); return;
+      }
       if (alive.current && active.current === pending) setError(e instanceof Error ? e.message : 'Could not generate alternative');
     } finally {
       if (alive.current && active.current === pending) { active.current = null; setBusy(false); }
