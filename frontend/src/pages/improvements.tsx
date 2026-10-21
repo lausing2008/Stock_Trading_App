@@ -35,12 +35,12 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
-    id: 'RZY-ALERT-LATENCY', tier: 458, severity: 'high', defaultStatus: 'todo',
+    id: 'RZY-ALERT-LATENCY', tier: 458, severity: 'high', defaultStatus: 'in-progress',
     title: 'Little RZY alert latency and digest preview cost',
     file: 'docs/2026-10-21/little-rzy-operational-defects.md', effort: 'M',
     impact: 'Research alerts must arrive while still actionable and be measurable end to end.',
     what: 'On 2026-10-20 5m events were recorded a median 4.8 min after candle close (p90 16.4); 30% fell outside the email freshness window and were never mailed. The bulk digest preview takes ~209 s and times out (504).',
-    fix: 'Planned as separate reviewed changes: incremental scan reads verified against full replay; cached digest preview with snapshot time and freshness; delivery-path measurement (close -> ingestion -> evaluation -> queue -> provider acceptance, plus suppressed and paused). Provider acceptance is not confirmed inbox delivery.',
+    fix: 'Done: cached digest preview from saved scan snapshots (time, age, coverage, exclusions, or not available yet) and a per-scan run record. Remaining as separate reviewed changes: incremental scan reads verified against full replay; delivery-path measurement (close -> ingestion -> evaluation -> queue -> provider acceptance, plus suppressed and paused). Provider acceptance is not confirmed inbox delivery.',
   },
   {
     id: 'INTRADAY-BAR-RESTATEMENTS', tier: 457, severity: 'high', defaultStatus: 'in-progress',
