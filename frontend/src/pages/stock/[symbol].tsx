@@ -1,5 +1,6 @@
 /** Stock detail page. Game Plan uses the deterministic copilot rules and stored evidence. */
 import { useRouter } from 'next/router';
+import { optionsFlowUnavailableText } from '@/lib/optionsFlowStatus';
 import ChartCommandBar from '@/components/ChartCommandBar';
 import type { ChartController } from '@/lib/chartCommands';
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
@@ -1233,6 +1234,11 @@ export default function StockDetail() {
         })()}
 
         {/* Options Flow */}
+        {optionsFlow && !optionsFlow.available && (
+          <div role="status" aria-label="Options Flow status" style={{ marginBottom: 24, padding: '10px 14px', border: '1px solid #334155', borderRadius: 8, color: '#94a3b8', fontSize: 13 }}>
+            <strong style={{ color: '#cbd5e1' }}>Options Flow</strong> — {optionsFlowUnavailableText(optionsFlow)}
+          </div>
+        )}
         {optionsFlow && optionsFlow.available && (
           <div style={{ marginBottom: 24 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>

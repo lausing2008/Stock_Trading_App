@@ -3431,8 +3431,11 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         else:
             sentiment = "neutral"
 
-        # Sort unusual by premium desc, keep top 10
-        unusual.sort(key=lambda x: x["premium"], reverse=True)
+        # Rank by CONTRACT VOLUME, never by premium: the settled UW chain has no tape premium, so
+        # `premium` is None, and sorting two Nones raised TypeError — turning every symbol with
+        # 2+ unusual rows into "fetch_error" and hiding the card (options review F1, 2026-10-21:
+        # 9,571 errors in one day). Unknown premium stays unknown.
+        unusual = rank_unusual(unusual)
 
         # A COUNT OVER UNKNOWNS IS NOT A COUNT. Where no contract has a tape premium, the whale
         # count is UNAVAILABLE rather than zero — the pressure score and the stored ML feature
@@ -3453,6 +3456,7 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
             "cp_ratio":          cp_ratio,
             "sentiment":         sentiment,
             "unusual_count":     len(unusual),
+            "unusual_ranking":   "contract volume (premium is not a ranking basis: often unavailable)",
             "unusual":           unusual[:10],
             "expiries_used":     received_expiries,
             "expiries_attempted": list(expiries[:4]),
@@ -3526,6 +3530,15 @@ def _options_flow_gex_component(symbol: str) -> dict | None:
         "distance_to_flip_pct": round(abs(live_price - levels.gamma_flip) / live_price * 100, 2),
         "above_flip": live_price >= levels.gamma_flip,
     }
+
+
+def rank_unusual(rows: list) -> list:
+    """Unusual contracts ranked by volume, then volume/OI; ties broken by expiry, side, strike.
+
+    Total order over always-present fields, so missing premiums can never raise and the order
+    is reproducible."""
+    return sorted(rows, key=lambda r: (-(r.get("volume") or 0), -(r.get("vol_oi") or 0.0),
+                                       str(r.get("expiry")), str(r.get("side")), float(r.get("strike") or 0.0)))
 
 
 def unusual_premium_fields(volume, last_price, bid, ask, *, last_price_available=None) -> dict:
