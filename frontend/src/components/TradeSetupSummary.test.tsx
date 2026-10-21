@@ -31,3 +31,17 @@ it('preserves blocked/stale states and avoids implying an unknown currency is US
   expect(within(screen.getByLabelText('Pullback entry')).getAllByText(/currency unknown/).length).toBeGreaterThan(0);
   v.rerender(<TradeSetupSummary setups={[{ ...s, state: 'stale' }]} currency="USD" />); expect(screen.getByText('stale')).toBeTruthy();
 });
+it('shows the playbook branches when present and nothing extra for older plans without one', () => {
+  const s = { ...setupFixture(), playbook: [
+    { case: 'rises' as const, title: 'If it rises', text: 'Do not chase above 99.67.' },
+    { case: 'falls' as const, title: 'If it falls', text: 'A close below 98 cancels the setup.' },
+    { case: 'sideways' as const, title: 'If it goes sideways', text: 'No trade between the edges.' },
+    { case: 'after_entry' as const, title: 'After you are filled', text: 'Move the stop to the entry.' }] };
+  render(<TradeSetupSummary setups={[s]} currency="USD" compact />);
+  const book = screen.getByRole('region', { name: 'Pullback entry playbook' });
+  for (const t of ['If it rises', 'If it falls', 'If it goes sideways', 'After you are filled']) expect(within(book).getByText(t)).toBeTruthy();
+  expect(within(book).getByText('A close below 98 cancels the setup.')).toBeTruthy();
+  cleanup();
+  render(<TradeSetupSummary setups={[setupFixture()]} currency="USD" compact />);
+  expect(screen.queryByRole('region', { name: 'Pullback entry playbook' })).toBeNull();
+});

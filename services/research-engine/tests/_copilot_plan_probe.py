@@ -714,6 +714,16 @@ def pl13_trade_setups():
     model = ScriptedModel(wrong,good)
     response = run(C.answer(req, session_factory=Session, llm_call=model, now=NOW))["message"]
     out["selected"] = {"id":response["selected_setup_id"], "status":response["status"], "calls":len(model.calls), "setups":response["plan_setups"]}
+    # A playbook answer: each case cites the code-written branch; the model adds words only.
+    book = ('<answer>One reading favors the breakout alternative: {{setup.breakout}}\n'
+            'If it rises: {{playbook.breakout.rises}} The flat trend makes confirmation matter.\n'
+            'If it falls: {{playbook.breakout.falls}}\nIf it goes sideways: {{playbook.breakout.sideways}}\n'
+            'After a fill: {{playbook.breakout.after_entry}}</answer><plan_setup id="breakout"/>')
+    req4 = turn("Compare detailed scenarios", "setups-playbook-0001"); req4.plan_context = context
+    pmodel = ScriptedModel(book)
+    pb = run(C.answer(req4, session_factory=Session, llm_call=pmodel, now=NOW))["message"]
+    out["playbook_answer"] = {"status": pb["status"], "calls": len(pmodel.calls), "content": pb["content"],
+                              "prompt_asks": "If it goes sideways" in json.dumps(pmodel.calls[0])}
     req2 = turn("Compare detailed scenarios", "setups-missing-0001"); req2.plan_context = context
     missing = '<answer>One reading favors this setup: {{setup.pullback}}</answer>'
     out["missing_tag_status"] = run(C.answer(req2, session_factory=Session, llm_call=ScriptedModel(missing,missing), now=NOW))["message"]["status"]

@@ -73,6 +73,8 @@ export interface TradeSetup {
   shares_basis: 'held' | 'risk_budget'; capital: number | null; cash_at_stop: number | null;
   trigger: string; invalidation: string; earnings: string; risk_note: string; reasons: string[];
   recovery_levels: { price: number; label: string }[]; evidence_ids: string[];
+  /** Conditional what-to-do branches (packet v8+); absent on older stored plans. */
+  playbook?: { case: 'rises' | 'falls' | 'sideways' | 'after_entry'; title: string; text: string }[];
 }
 export interface StockPlan {
   symbol: string; packet_version: number; packet_fingerprint: string;

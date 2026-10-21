@@ -121,15 +121,20 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
     {message && <>
       <p>Model: {message.model ?? 'not reported'}</p>
       {message.status === 'grounded' && message.selected_setup_id === 'wait' && <p>LLM selected wait: no new entry recommended. Conditional alternatives are shown below.</p>}
+      {message.status === 'grounded' && message.selected_setup_id !== 'wait' && <p style={{ color: '#94a3b8' }}>
+        The model chose the {(message.plan_setups ?? []).find(s => s.id === message.selected_setup_id)?.title ?? 'selected'} setup.
+        Its prices are the same code-calculated levels the rules-based plan uses (the model is not allowed to invent prices), so they can match exactly.
+        What differs is the model&apos;s reasoning and its reading of the playbook, below.</p>}
+      {message.status === 'rejected' && <p role="alert">The model failed the evidence check. The stored-data fallback below is not a second plan.</p>}
+      <section aria-label="Model reasoning and playbook">
+        <p style={{ margin: '8px 0 4px' }}><strong>Model&apos;s reasoning and playbook</strong></p>
+        <CopilotAnswer m={message} defaultOpen />
+      </section>
       {message.status === 'grounded' && message.selected_setup_id !== 'wait' && <TradeSetupSummary currency={currency} compact={compact} onLevelSelect={onLevelSelect}
         setups={(message.plan_setups ?? []).filter(s => s.id === message.selected_setup_id)} />}
       {message.status === 'grounded' && message.selected_setup_id === 'wait' && <details><summary>Conditional alternatives — no active entry</summary>
         <TradeSetupSummary currency={currency} compact={compact} setups={message.plan_setups ?? []} />
       </details>}
-      {message.status === 'rejected' && <p role="alert">The model failed the evidence check. The stored-data fallback below is not a second plan.</p>}
-      <details><summary style={{ cursor: 'pointer', color: '#a5b4fc' }}>Model explanation & evidence</summary>
-        <CopilotAnswer m={message} defaultOpen />
-      </details>
     </>}
   </section>;
 }

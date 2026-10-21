@@ -39,8 +39,9 @@ from . import plan as P
 
 #: Bump when the MEANING of a packet changes (a new quantity, a changed rendering rule). Stored
 #: on every assistant turn so an old answer is read under the rules it was checked against.
-PACKET_VERSION = 7
+PACKET_VERSION = 8
 #: v7: structured entry/stop/target setups and exact numeric setup fingerprint binding.
+#: v8: per-setup conditional playbook (rises / falls / sideways / after entry).
 #: v6: numeric plan levels and deterministic level-draft requests for the stock-page card.
 #: v5 (2026-10-15): stateless stop candidates versus a user-stated held stop, explicit
 #: unsupported-position refusal, and complete typed risk units. Old messages retain v4.
@@ -394,7 +395,7 @@ def _plan_fields(plan: "P.Plan", fields: dict, qs: dict) -> None:
     for it in plan.items.values():
         groups.setdefault(it.group, []).append(it)
     labels = {"setups": "Conditional trade setups", "levels": "Price levels", "moves": "Past move ranges", "calls": "Signal calls",
-              "records": "Track records", "rules": "Textbook rules", "position": "Your position"}
+              "records": "Track records", "rules": "Textbook rules", "playbook": "Scenario playbook", "position": "Your position"}
     for g, items in groups.items():
         ids = sorted({e for it in items for e in it.evidence_ids})
         value = {it.key: it.display for it in items}

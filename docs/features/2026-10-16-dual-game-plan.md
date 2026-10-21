@@ -70,3 +70,15 @@ Recovery completed on 2026-10-16. CloudTrail records the approved reboot request
 Final evidence: 15/15 healthy; 0/12 backend source drift against the isolated committed release; packet-v7 smoke 0.456 seconds with typed stops and two holding targets; served two-perspective plan and tracker 446–450; all six guarded-route probes returned 401; `/risk-alerts`, `/news`, and `/signal-accuracy` returned 200; public `https://lausing.com/stock/AAPL` returned 200; risk-delivery flag absent/off. Database checks found no blocked sessions or idle transactions over 60 seconds. Post-reboot PostgreSQL reads briefly reached the gp3 volume's 125 MiB/s throughput limit; the next three samples settled to 0–2.2% disk utilization and 0–0.9% iowait. That transient observation does not establish the cause of the original stall.
 
 Concurrent uncommitted CNN Fear & Greed changes remain outside this release and intact for their owning session. Their focused 23 tests and frontend TypeScript check passed; review and integration acceptance remain separate. See [the handoff](../incidents/2026-10-16-deployment-handoff.md).
+
+## Scenario playbook (packet v8, 2026-10-21)
+
+User question: "why are both plans exactly the same?" By design the LLM may only **select** one of the code-calculated setups (it cannot write prices), so when it picks the rules plan's scenario every number matches. What differed was hidden: its reasoning sat in a collapsed section. The LLM view now shows the reasoning openly and states why the prices can match.
+
+Each valid setup now carries a code-written `playbook` — conditional branches, never a forecast:
+
+- **Pullback:** *falls* (the 20-bar low is the entry zone; a close below the stop cancels; next stored support), *rises* (do not chase above `(T1 + 2 × stop) / 3`, where T1 drops under 2R; a confirmed close above the 20-bar high switches to the breakout), *sideways* (no trade between the edges; levels roll daily; alerts at both edges), *after entry* (breakeven at entry + 1 ATR, partial at TP1, trail at close − 2 ATR toward TP2).
+- **Breakout:** *rises* (confirmed close above the high on 1.5× volume triggers; light volume is unconfirmed; same no-chase limit), *falls* (pullback setup applies; a close back below the stop is a failed breakout), *sideways*, *after entry*.
+- **Held position:** *rises* (trail, never lower a stop; partial at TP1), *falls* (close below the assessed stop exits; gap risk), *sideways* (hold above the stop).
+
+Each branch is a citable `playbook.<setup>.<case>` quantity, so the LLM is asked to write the same three headings citing them and to add its own reading of which case matters, in words only. The existing no-forecast check still applies. Tests: hand-computed branch values on the fixture (ATR 2, low/high 99/101 → pullback no-chase $99.00, breakout $101.00), a grounded playbook answer, and UI rendering. research-engine 713 passed / 8 skipped (SQLite); frontend 696 + TypeScript.

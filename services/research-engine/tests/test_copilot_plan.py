@@ -28,7 +28,7 @@ def r():
 
 def test_levels_are_the_hand_computed_values_and_cite_every_input(r):
     p = r["pl1"]
-    assert p["packet_version"] == 7
+    assert p["packet_version"] == 8
     assert p["atr"].startswith("$2.00 (14-bar ATR") and p["atr_calc"] == 2.0
     assert (p["low20"], p["high20"]) == ("$99.00", "$101.00")
     assert p["sma50"].startswith("$100.00, flat")
@@ -191,7 +191,7 @@ def test_options_shorts_split_entries_and_incomplete_numbers_get_no_holding_rule
 
 def test_a_plan_answer_cites_rules_and_records_and_renders_their_figures(r):
     p = r["pl6"]
-    assert p["good_status"] == "grounded" and p["good_packet_version"] == 7
+    assert p["good_status"] == "grounded" and p["good_packet_version"] == 8
     assert p["model_saw_rules"]
     assert {"call.swing", "record.swing.5d", "rule.h1", "rule.h2"} <= set(p["good_refs"])
     assert "$98.00" in p["good_content"] and "{{" not in p["good_content"]
@@ -217,7 +217,7 @@ def test_calendar_day_windows_pass_only_in_their_exact_wording(r):
 def test_plan_view_is_deterministic_free_and_validated(r):
     p = r["pl7"]
     assert p["kind"] == "holding"
-    assert p["groups"] == ["calls", "levels", "moves", "position", "records", "rules", "setups"]
+    assert p["groups"] == ["calls", "levels", "moves", "playbook", "position", "records", "rules", "setups"]
     assert "rule.h2" in p["rule_keys"] and "rule.e1" in p["rule_keys"]
     assert p["no_price_records_inline"] and p["price_bar_records"] > 200
     assert "NOT tuned" in p["parameters_note"]
@@ -491,3 +491,27 @@ def test_inflight_reask_waits_instead_of_reporting_a_changed_plan(r):
     assert p["plan_changed_meanwhile"] is True
     assert p["reask"] == [409, "this request is already being answered"]
     assert p["first_status"] == "grounded" and p["replayed"] is True and p["model_calls"] == 1
+
+
+def test_each_setup_carries_a_hand_checkable_rises_falls_sideways_playbook(r):
+    """ATR 2, 20-bar low/high 99/101: pullback 99/98 -> T1 101; breakout 101/99 -> T1 105."""
+    x = r["pl13"]; pull, breakout = x["entry"]
+    assert [b["case"] for b in pull["playbook"]] == ["falls", "rises", "sideways", "after_entry"]
+    assert [b["case"] for b in breakout["playbook"]] == ["rises", "falls", "sideways", "after_entry"]
+    pb = {b["case"]: b["text"] for b in pull["playbook"]}
+    # No-chase limit: (T1 + 2 x stop) / 3 = (101 + 196) / 3 = 99.00; breakeven = 99 + 1 ATR = 101.
+    assert "Above $99.00, the first target ($101.00) is less than 2R away" in pb["rises"]
+    assert "below $98.00 instead cancels the setup" in pb["falls"]
+    assert "above $101.00 from the $99.00 reference" in pb["after_entry"]
+    bb = {b["case"]: b["text"] for b in breakout["playbook"]}
+    assert "Do not chase above $101.00" in bb["rises"]       # (105 + 198) / 3 = 101.00
+    assert "back below $99.00 is a failed breakout" in bb["falls"]
+    held = {b["case"]: b["text"] for b in x["held"][0]["playbook"]}
+    assert set(held) == {"rises", "falls", "sideways"} and "below the assessed stop ($98.00)" in held["falls"]
+    assert all(s["playbook"] == [] for s in x["invalid_stop"])
+
+
+def test_llm_playbook_cites_the_code_written_branches_and_is_asked_for(r):
+    p = r["pl13"]["playbook_answer"]
+    assert p["status"] == "grounded" and p["calls"] == 1 and p["prompt_asks"]
+    assert "Do not chase above $101.00" in p["content"] and "{{" not in p["content"]

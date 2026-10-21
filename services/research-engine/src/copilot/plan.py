@@ -984,4 +984,88 @@ def _trade_setups(ctx, lv, ids):
             if held:
                 ctx.add('level.holding_assessed_stop', m(stop), 'Higher of stated stop and calculated candidate; not maintained', 'levels', [eid]+inputs)
                 ctx.level('level.holding_assessed_stop', stop, 'Holding stop to assess', 'stop')
+        if valid:
+            setup['playbook'] = _playbook(ctx, lv, setup, name)
+            for branch in setup['playbook']:
+                ctx.add(f"playbook.{name}.{branch['case']}", branch['text'],
+                        f"{title} playbook — {branch['title']}; code-written conditional rule, "
+                        f"not a forecast", 'playbook', [eid]+inputs)
+        else:
+            setup['playbook'] = []
         plan.setups.append(setup)
+
+
+def _no_chase_limit(target1: float, stop: float) -> float:
+    """Highest entry whose first target still meets MIN_REWARD_RISK: (T1 - e) / (e - stop) >= R."""
+    return (target1 + MIN_REWARD_RISK * stop) / (1 + MIN_REWARD_RISK)
+
+
+def _playbook(ctx, lv, setup, name):
+    """What to do if the price rises, falls or goes sideways, and how to manage a filled entry.
+
+    Every branch is a CONDITIONAL rule built from the setup's own code-calculated levels and the
+    fixed textbook constants above — never a statement about which branch will happen.
+    """
+    m, A = ctx.m, lv.atr
+    entry, stop = setup['entry'], setup['stop']
+    t1, t2 = setup['targets'][0]['price'], setup['targets'][1]['price']
+    vol_line = f"{BREAKOUT_VOLUME_MULT:g} × the 20-bar average volume ({lv.avg_volume20 * BREAKOUT_VOLUME_MULT:,.0f} shares)"
+    below = [x for x in (lv.low252,) if x is not None and x < min(stop, lv.low20)]
+    next_support = (f" The next stored support below is the year low ({m(below[0])})." if below else "")
+    sideways = (f"While daily closes stay between the 20-bar low ({m(lv.low20)}) and the 20-bar high "
+                f"({m(lv.high20)}) without a trigger, there is no trade. The 20-bar window rolls forward "
+                f"each day, so these levels are recalculated: refresh the plan after each close. Price "
+                f"alerts at the two edges tell you when either case starts.")
+    if name == 'holding':
+        trail = lv.close - TRAIL_ATR * A
+        return [
+            {'case': 'rises', 'title': 'If it rises',
+             'text': (f"Keep holding while daily closes stay above the stop. As closes rise, a textbook "
+                      f"trailing stop follows the latest close − {TRAIL_ATR:g} × ATR (today {m(trail)}); "
+                      f"raise the stop to it only when that is higher — never lower a stop. Take profit 1 "
+                      f"is {m(t1)}; a common approach takes part of the position there and keeps the "
+                      f"rest toward take profit 2 ({m(t2)}) with the trailing stop.")},
+            {'case': 'falls', 'title': 'If it falls',
+             'text': (f"A daily close below the assessed stop ({m(stop)}) meets the exit rule: sell rather "
+                      f"than wait for a recovery. An overnight gap, especially around earnings, can fill "
+                      f"below the stop.{next_support}")},
+            {'case': 'sideways', 'title': 'If it goes sideways',
+             'text': (f"Hold while daily closes stay above the stop ({m(stop)}); a sideways market does not "
+                      f"move the stop. {sideways}")},
+        ]
+    chase = _no_chase_limit(t1, stop)
+    breakeven = entry + BREAKEVEN_ATR * A
+    after = {'case': 'after_entry', 'title': 'After you are filled',
+             'text': (f"Recalculate risk at your actual fill. Once a daily close is {BREAKEVEN_ATR:g} ATR "
+                      f"above the entry (above {m(breakeven)} from the {m(entry)} reference), move the stop "
+                      f"up to the entry. At take profit 1 ({m(t1)}) a common approach takes part of the "
+                      f"position and trails the rest at the latest close − {TRAIL_ATR:g} × ATR toward take "
+                      f"profit 2 ({m(t2)}). A daily close below the stop exits.")}
+    if name == 'pullback':
+        return [
+            {'case': 'falls', 'title': 'If it falls',
+             'text': (f"A pullback to the 20-bar low ({m(lv.low20)}) is this setup's entry zone: buy only "
+                      f"after a daily close holds above it, with the stop at {m(stop)}. A daily close "
+                      f"below {m(stop)} instead cancels the setup — do not buy; wait for a new 20-bar base "
+                      f"to form.{next_support}")},
+            {'case': 'rises', 'title': 'If it rises',
+             'text': (f"If the price rises without pulling back, this entry does not trigger — do not chase. "
+                      f"Above {m(chase)}, the first target ({m(t1)}) is less than {MIN_REWARD_RISK:g}R away "
+                      f"with this stop. A daily close above the 20-bar high ({m(lv.high20)}) on volume above "
+                      f"{vol_line} switches to the breakout setup instead.")},
+            {'case': 'sideways', 'title': 'If it goes sideways', 'text': sideways},
+            after,
+        ]
+    return [
+        {'case': 'rises', 'title': 'If it rises',
+         'text': (f"A daily close above the 20-bar high ({m(lv.high20)}) on volume above {vol_line} is "
+                  f"this setup's entry trigger, with the stop at {m(stop)}. A close above the high on "
+                  f"lighter volume is unconfirmed: wait for a confirming close. Do not chase above "
+                  f"{m(chase)}, where the first target ({m(t1)}) is less than {MIN_REWARD_RISK:g}R away.")},
+        {'case': 'falls', 'title': 'If it falls',
+         'text': (f"If the price falls back toward the 20-bar low ({m(lv.low20)}), the breakout does not "
+                  f"apply and the pullback setup is the relevant one. After a breakout entry, a daily close "
+                  f"back below {m(stop)} is a failed breakout: exit.{next_support}")},
+        {'case': 'sideways', 'title': 'If it goes sideways', 'text': sideways},
+        after,
+    ]

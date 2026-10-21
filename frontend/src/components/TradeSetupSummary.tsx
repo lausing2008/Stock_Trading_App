@@ -33,6 +33,15 @@ export default function TradeSetupSummary({ setups, currency, compact = false, o
       {!compact && <ol className="trade-setup-steps" aria-label={`${s.title} guidance`}>
         <li>{s.trigger}</li><li>{s.invalidation}</li><li>{s.earnings}</li>
       </ol>}
+      {!!s.playbook?.length && <section aria-label={`${s.title} playbook`} className="trade-playbook">
+        <p style={{ margin: '8px 0 4px' }}><strong>Playbook</strong> <span style={{ color: '#94a3b8' }}>· what to do in each case; rules, not a forecast</span></p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 6 }}>
+          {s.playbook.map(b => <div key={b.case} style={{ padding: 8, border: '1px solid #334155', borderRadius: 6 }}>
+            <strong style={{ color: b.case === 'rises' ? '#4ade80' : b.case === 'falls' ? '#f87171' : b.case === 'sideways' ? '#fbbf24' : '#a5b4fc' }}>{b.title}</strong>
+            <p style={{ margin: '4px 0 0' }}>{b.text}</p>
+          </div>)}
+        </div>
+      </section>}
       <details><summary style={{ cursor: 'pointer', color: '#a5b4fc' }}>{compact ? 'Steps, sizing & risks' : 'Sizing, risk & supporting levels'}</summary>
       {compact && <ol className="trade-setup-steps" aria-label={`${s.title} guidance`}><li>{s.trigger}</li><li>{s.invalidation}</li><li>{s.earnings}</li></ol>}
       <dl style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>

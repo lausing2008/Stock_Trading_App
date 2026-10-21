@@ -126,3 +126,12 @@ it('rejects an unknown or blocked selected setup instead of displaying invented 
   fireEvent.click(screen.getByText('Generate LLM alternative')); await screen.findByRole('alert');
   expect(screen.queryByLabelText('Breakout entry')).toBeNull();
 });
+it('shows the model reasoning and playbook openly, and explains why its prices match the rules', async () => {
+  const out = answer(); out.message.selected_setup_id = 'pullback'; out.message.plan_setups = [setupFixture()];
+  mocks.askCopilot.mockResolvedValue(out); render(<LLMAlternativePlan {...props} currency="USD" />);
+  fireEvent.click(screen.getByText('Generate LLM alternative')); await screen.findByLabelText('Pullback entry');
+  const reasoning = screen.getByRole('region', { name: 'Model reasoning and playbook' });
+  expect(reasoning.closest('details')).toBeNull();
+  expect(reasoning.textContent).toContain('One reading favors waiting.');
+  expect(screen.getByText(/The model chose the Pullback entry setup/).textContent).toMatch(/not allowed to invent prices/);
+});

@@ -174,7 +174,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
 
       <details style={{ marginTop: 12 }}><summary style={{ cursor: 'pointer', color: '#a5b4fc' }}>Show rules, history & evidence</summary>
       <p>{data.plan.parameters.note}</p>
-      {Object.entries(data.plan.groups).filter(([group]) => group !== 'setups').map(([group, items]) => <details key={group} style={{ marginTop: 10 }}>
+      {Object.entries(data.plan.groups).filter(([group]) => group !== 'setups' && group !== 'playbook').map(([group, items]) => <details key={group} style={{ marginTop: 10 }}>
         <summary style={{ textTransform: 'capitalize', cursor: 'pointer', color: '#c4b5fd' }}>{group === 'moves' ? 'Past moves — history' : group}</summary>
         {items.map(item => <div key={item.key} style={{ padding: '7px 0', borderBottom: '1px solid #1e293b' }}>
           <span title={item.meaning}>{item.display}</span>
