@@ -35,6 +35,22 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'RZY-ALERT-LATENCY', tier: 458, severity: 'high', defaultStatus: 'todo',
+    title: 'Little RZY alert latency and digest preview cost',
+    file: 'docs/2026-10-21/little-rzy-operational-defects.md', effort: 'M',
+    impact: 'Research alerts must arrive while still actionable and be measurable end to end.',
+    what: 'On 2026-10-20 5m events were recorded a median 4.8 min after candle close (p90 16.4); 30% fell outside the email freshness window and were never mailed. The bulk digest preview takes ~209 s and times out (504).',
+    fix: 'Planned as separate reviewed changes: incremental scan reads verified against full replay; cached digest preview with snapshot time and freshness; delivery-path measurement (close -> ingestion -> evaluation -> queue -> provider acceptance, plus suppressed and paused). Provider acceptance is not confirmed inbox delivery.',
+  },
+  {
+    id: 'INTRADAY-BAR-RESTATEMENTS', tier: 457, severity: 'high', defaultStatus: 'in-progress',
+    title: 'Completed intraday bars restated during the session',
+    file: 'docs/2026-10-21/little-rzy-operational-defects.md', effort: 'M',
+    impact: 'Charts and every 5m consumer see bars change after completion; Little RZY rebuilt 3,956 times in one session and its cap can pause a stream for up to 30 minutes.',
+    what: 'Changes median 0.077%, all four OHLC fields, mostly on bars 1-6 h old. Hypothesis (unconfirmed): UW -> yfinance -> Polygon fallback fetches overwrite whole days; corrections within one provider are the alternative.',
+    fix: 'Step 1 deployed: observation-only bar provenance and revision trace (provider, candle time, fetch time, old/new OHLCV, class cross_provider / same_provider). Step 2 after the evidence: a consistent source policy that prevents silent cross-provider replacement of completed bars while preserving legitimate corrections.',
+  },
+  {
     id: 'LITTLE-RZY-AUDIT-FIXES', tier: 456, severity: 'high', defaultStatus: 'done',
     title: 'Little RZY audit fixes: generation-safe events, derived-bar freshness and replay/report correctness',
     file: 'docs/2026-10-20/little-rzy-audit-resolution.md', effort: 'M',

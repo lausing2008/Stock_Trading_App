@@ -18,6 +18,7 @@ from common.redis_client import get_redis
 from db import Price, SessionLocal, Stock, TimeFrame
 
 from ..adapters import get_adapter, get_adapters
+from .bar_provenance import observe_bar_writes
 
 log = get_logger("ingestion")
 
@@ -468,6 +469,15 @@ def ingest_symbol(
         # `ingest.done` — which is precisely how 4 US symbols sat frozen at 2026-09-04 for four
         # days with no error and no alert anywhere. "Success" must mean the head moved.
         _head_before = head
+        # Observation only (2026-10-20 intraday restatement investigation): record which provider
+        # wrote each intraday bar and any change to an existing bar. Never alters what is written
+        # and never fails the ingest — it runs in its own SAVEPOINT.
+        _bar_trace = None
+        try:
+            with session.begin_nested():
+                _bar_trace = observe_bar_writes(session, stock, timeframe, rows, adapter.name)
+        except Exception as exc:  # noqa: BLE001 - instrumentation must not break ingestion
+            log.warning("ingest.bar_trace_failed", symbol=symbol, tf=timeframe, error=str(exc)[:300])
         result = session.execute(stmt)
         session.commit()
 
@@ -483,7 +493,7 @@ def ingest_symbol(
                  head_before=str(_head_before)[:19] if _head_before else None,
                  head_after=str(_head_after)[:19] if _head_after else None,
                  newest_bar=str(_newest_written)[:19] if _newest_written else None,
-                 adapter=adapter.name)
+                 adapter=adapter.name, bar_trace=_bar_trace)
         return {
             "symbol": symbol,
             "inserted": result.rowcount,
