@@ -32,7 +32,18 @@ from src.api.ai_proxy import _admin_key, _admin_model  # noqa: E402
 from src.api.copilot_routes import _usage_logger  # noqa: E402
 
 MAX_CALLS = int(os.environ.get("EVAL_MAX_CALLS", "12"))
+MAX_USD = float(os.environ.get("EVAL_MAX_USD", "2.0"))
+#: Sonnet list prices (USD per token) and a worst-case single call, so a call that could cross
+#: the dollar cap is refused BEFORE it is made (retries included).
+USD_IN, USD_OUT = 3e-6, 15e-6
+WORST_CALL_USD = float(os.environ.get("EVAL_WORST_CALL_USD", "0.12"))
 CALLS: list[dict] = []
+STOPPED = {"reason": None}
+
+
+def spent_usd():
+    return sum(((c.get("usage") or {}).get("input_tokens", 0) * USD_IN
+                + (c.get("usage") or {}).get("output_tokens", 0) * USD_OUT) for c in CALLS if not c.get("scripted"))
 
 # Forces the retry path: a "pullback" entry above the latest close, which proposal.py rejects.
 FORCED_BAD = ('<answer>Initial reading favours a pullback near {{level.high20}}.</answer>'
@@ -72,7 +83,11 @@ def make_call(forced_first: bool):
                 if hasattr(L, "LlmReply") else type("R", (), dict(text=FORCED_BAD, model="scripted", usage=None, http_status=200))()
         real = [c for c in CALLS if not c.get("scripted")]
         if len(real) >= MAX_CALLS:
+            STOPPED["reason"] = f"call cap {MAX_CALLS} reached"
             raise L.LlmError(f"eval budget of {MAX_CALLS} provider calls exhausted; not called")
+        if spent_usd() + WORST_CALL_USD > MAX_USD:
+            STOPPED["reason"] = f"dollar cap ${MAX_USD:.2f} would be exceeded (spent ${spent_usd():.3f})"
+            raise L.LlmError("eval dollar cap would be exceeded; not called")
         t0 = time.monotonic()
         reply = await L.call(provider, api_key, model, messages)
         CALLS.append({"scripted": False, "model": reply.model, "usage": reply.usage,
@@ -130,7 +145,10 @@ async def run_one(sc, username, key, model, now):
         out = await C.answer(req, session_factory=SessionLocal, llm_call=make_call(sc.get("forced_first", False)),
                              budget=llm_budget, usage_logger=_usage_logger, now=now)
     except C.CopilotError as exc:
-        return {"scenario": sc["name"], "error": f"{exc.status} {exc.message}", "calls": CALLS[before:]}
+        made = [c for c in CALLS[before:] if not c.get("scripted")]
+        return {"scenario": sc["name"], "arm": "rules_hidden" if sc.get("hide_rules") else "rules_visible",
+                "error": f"{exc.status} {exc.message}", "preflight_excluded": not made,
+                "fingerprint": view["packet_fingerprint"], "provider_calls": len(made)}
     msg = out["message"]
     with SessionLocal() as s:
         pi = I.PositionIntent(kind=sc["ctx"]["kind"], **{k: v for k, v in {
@@ -142,6 +160,7 @@ async def run_one(sc, username, key, model, now):
     return {
         "scenario": sc["name"], "arm": "rules_hidden" if sc.get("hide_rules") else "rules_visible",
         "symbol": sc["symbol"], "inputs": sc["ctx"], "status": msg["status"], "narration": msg.get("narration"),
+        "fingerprint": msg.get("packet_fingerprint"), "view_fingerprint": view["packet_fingerprint"],
         "model": msg.get("model"), "price_as_of": msg.get("price_as_of"),
         "price_state": packet.fields["price"].state.value, "price_reason": packet.fields["price"].reason,
         "rules_setups": [(x["id"], x["state"]) for x in view["plan"]["setups"]],
@@ -167,10 +186,13 @@ async def main(out_path):
     pool = ([dict(x, hide_rules=h) for x in MATRIX for h in (False, True)]
             if os.environ.get("EVAL_SET") == "matrix" else SCENARIOS)
     for sc in [x for x in pool if not only or x["name"] in only]:
+        if STOPPED["reason"]:
+            results.append({"scenario": sc["name"], "arm": "rules_hidden" if sc.get("hide_rules") else "rules_visible",
+                            "not_run": STOPPED["reason"]}); continue
         results.append(await run_one(sc, username, key, model, now))
     real = [c for c in CALLS if not c.get("scripted")]
     def rates(arm):
-        rs = [r for r in results if r.get("arm") == arm and "error" not in r]
+        rs = [r for r in results if r.get("arm") == arm and "error" not in r and "not_run" not in r]
         n = len(rs) or 1
         st = lambda r: (r.get("proposal") or {}).get("state")
         return {"requests": len(rs),
@@ -181,6 +203,13 @@ async def main(out_path):
                 "prose_digit_answers": sum(any(d for d in r["prose_digits_by_call"][-1:]) for r in rs)}
     report = {"run_at": now.isoformat(), "model_requested": model, "max_calls": MAX_CALLS,
               "metrics": {a: rates(a) for a in ("rules_visible", "rules_hidden")},
+              "spent_usd_estimate": round(spent_usd(), 4), "stopped": STOPPED["reason"],
+              "preflight_excluded": [r["scenario"] + ":" + r["arm"] for r in results if r.get("preflight_excluded")],
+              "errors_after_calls": [r["scenario"] + ":" + r["arm"] for r in results if r.get("error") and not r.get("preflight_excluded")],
+              "pairs": {name: {"same_evidence": len({r.get("fingerprint") for r in results if r["scenario"] == name}) == 1,
+                               "visible": [(r.get("proposal") or {}).get("state"), r.get("status")] if (r := next((x for x in results if x["scenario"] == name and x["arm"] == "rules_visible"), {})) else None,
+                               "hidden": [(r.get("proposal") or {}).get("state"), r.get("status")] if (r := next((x for x in results if x["scenario"] == name and x["arm"] == "rules_hidden"), {})) else None}
+                        for name in dict.fromkeys(r["scenario"] for r in results)},
               "provider_calls": len(real), "usage_total": {
                   "input_tokens": sum((c.get("usage") or {}).get("input_tokens", 0) for c in real),
                   "output_tokens": sum((c.get("usage") or {}).get("output_tokens", 0) for c in real)},
@@ -188,12 +217,16 @@ async def main(out_path):
     with open(out_path, "w") as f:
         json.dump(report, f, indent=1, default=str)
     for r in results:
+        if "not_run" in r:
+            print(r["scenario"], r["arm"], "| NOT RUN:", r["not_run"]); continue
         p = r.get("proposal") or {}
-        print(r["scenario"], "|", r.get("error") or r["status"], "| calls", r.get("provider_calls"),
+        print(r["scenario"], r.get("arm"), "|", r.get("error") or r["status"], "| narration", r.get("narration"), "| calls", r.get("provider_calls"),
               "| proposal", p.get("kind"), p.get("state"), p.get("entry"), p.get("stop"),
               [t["price"] for t in p.get("targets", [])], "| problems", r.get("independent_problems"),
               "| prose digits", r.get("prose_digits_by_call"))
-    print("provider calls", len(real), "tokens", report["usage_total"])
+    print("provider calls", len(real), "tokens", report["usage_total"], "usd≈", report["spent_usd_estimate"], "stopped:", report["stopped"])
+    print("metrics", json.dumps(report["metrics"]))
+    print("pairs", json.dumps(report["pairs"]))
 
 
 if __name__ == "__main__":
