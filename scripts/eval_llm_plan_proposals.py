@@ -72,6 +72,26 @@ SCENARIOS = [
 ]
 
 
+# FROZEN EVIDENCE: each case's packet is built ONCE and every request for that case (plan view
+# and both arms) receives a deep copy, so a shown/hidden pair sees byte-identical evidence even
+# while live signals refresh. A copy per request: answer() mutates the packet (proposal values).
+_FROZEN: dict = {}
+_real_build = C.build_packet
+
+
+def _frozen_build(session, symbol, *, now, plan_request=None):
+    import copy
+    key = (symbol, now) + tuple(getattr(plan_request, k, None) for k in
+                                ("kind", "entry", "shares", "risk_amount", "account", "risk_pct", "stop"))
+    if key not in _FROZEN:
+        _FROZEN[key] = _real_build(session, symbol, now=now, plan_request=plan_request)
+    return copy.deepcopy(_FROZEN[key])
+
+
+if os.environ.get("EVAL_FREEZE", "1") == "1":
+    C.build_packet = _frozen_build
+
+
 def make_call(forced_first: bool):
     state = {"forced": forced_first}
 
