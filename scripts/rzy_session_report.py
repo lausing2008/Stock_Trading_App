@@ -1,4 +1,4 @@
-"""Read-only session evidence: intraday bar revisions and the Little RZY research-alert path.
+"""Read-only session evidence: intraday and daily bar revisions and the Little RZY research-alert path.
 
 Run inside the market-data container after a session, then copy OUT to durable storage:
 
@@ -14,6 +14,14 @@ Nothing is written to the database (READ ONLY transaction).
 Reading rules built into the report:
 - Completed-bar revisions and forming-bar updates are separate sections; only completed-bar
   revisions bear on the restatement question.
+- Intraday (5m/15m/1h) and daily (1d) revisions are reported separately: a daily bar is completed
+  only after that session's regular close, and its restatement has a different cause space.
+- Completed-bar revisions are split by magnitude (rounding vs material, see
+  bar_provenance.revision_magnitude: max(0.005, 2e-5 relative) per changed OHLC field) crossed with
+  the provider classification. Rounding-scale changes are precision noise between sources; only
+  material ones are real restatements. Magnitude is recomputed from stored before/after values.
+- Revisions are selected by fetched_at inside the 08:00-24:00 UTC window; a fetch outside it (e.g.
+  an HK daily refresh before 08:00 UTC) is not in this report.
 - previous_provider_unknown is its own category and counts toward NEITHER hypothesis
   (cross-provider replacement vs same-provider correction).
 - Latency covers every emailable 5m event, mailed or not, with median / p90 / p95, alongside the
@@ -32,7 +40,7 @@ from pathlib import Path
 sys.path[:0] = [os.environ.get('RZY_EVAL_ROOT', '/app'), '/app/shared']
 from sqlalchemy import select, text  # noqa: E402
 from db import SessionLocal, NotificationOutbox, Stock  # noqa: E402
-from src.services.bar_provenance import BarProvenance, BarRevision  # noqa: E402
+from src.services.bar_provenance import BarProvenance, BarRevision, revision_magnitude  # noqa: E402
 from src.services.rzy_models import RzyEvent, RzyStream, RzyStreamGeneration, RzyScanRun, RzyOccurrence, RzyRebuild  # noqa: E402
 from src.services.rzy_workflow import emailable, current_config, MINUTES  # noqa: E402
 from src.services.little_rzy import VERSION  # noqa: E402
@@ -48,7 +56,9 @@ def pct(values):
     return dict(n=len(v), median=q(.5), p90=q(.9), p95=q(.95), max=round(v[-1], 2))
 
 
-def age_bucket(m):
+def age_bucket(m, timeframe='5m'):
+    if timeframe == '1d':   # minutes since that session's close
+        return '<6h' if m < 360 else '<1d' if m < 1440 else '<3d' if m < 4320 else '<7d' if m < 10080 else '>=7d'
     return '<15m' if m < 15 else '<60m' if m < 60 else '<6h' if m < 360 else '>=6h'
 
 
@@ -59,10 +69,32 @@ def revision_section(revs):
         by_timeframe=dict(Counter(r.timeframe for r in revs)),
         provider_pairs=Counter(f'{r.previous_provider or "unknown"}->{r.provider}' for r in revs).most_common(12),
         bar_age_minutes=pct([r.bar_age_minutes for r in revs]),
-        by_classification_and_age=dict(Counter(f"{r.classification.replace('_forming_bar', '')}:{age_bucket(r.bar_age_minutes)}" for r in revs)),
+        by_classification_and_age=dict(Counter(f"{r.classification.replace('_forming_bar', '')}:{age_bucket(r.bar_age_minutes, r.timeframe)}" for r in revs)),
         max_rel_change_pct=pct([r.max_rel_change * 100 for r in revs]),
         changed_fields=Counter(','.join(r.changed_fields) for r in revs).most_common(8),
         symbols=len({r.symbol for r in revs}), top_symbols=Counter(r.symbol for r in revs).most_common(10))
+
+
+def tf_group(r):
+    return 'daily' if r.timeframe == '1d' else 'intraday'
+
+
+def magnitude(r):
+    try:
+        return revision_magnitude(r.before, r.after)
+    except (KeyError, TypeError, ValueError):
+        return 'unknown'
+
+
+def completed_tally(revs):
+    """Hypothesis tally crossed with magnitude; unknown previous provider counts toward neither."""
+    t = Counter((magnitude(r), r.classification) for r in revs)
+    by = {m: dict(cross_provider=t.get((m, 'cross_provider'), 0), same_provider=t.get((m, 'same_provider'), 0),
+                  previous_provider_unknown_not_counted=t.get((m, 'previous_provider_unknown'), 0))
+          for m in ('material', 'rounding', 'unknown') if any(k[0] == m for k in t)}
+    return dict(by_magnitude=by, total_by_magnitude=dict(Counter(magnitude(r) for r in revs)),
+                reading='material cross_provider supports vendor replacement; material same_provider supports corrections '
+                        'within one vendor; rounding-scale changes are precision noise and support neither; unknown supports neither.')
 
 
 def main(day, out_dir):
@@ -80,8 +112,15 @@ def main(day, out_dir):
         report['completed_bar_hypothesis_tally'] = dict(
             cross_provider=tally.get('cross_provider', 0), same_provider=tally.get('same_provider', 0),
             previous_provider_unknown_not_counted=tally.get('previous_provider_unknown', 0),
-            reading='cross_provider supports vendor replacement; same_provider supports corrections within one vendor; unknown supports neither.')
+            reading='All timeframes and magnitudes pooled; read completed_bar_revisions_by_timeframe instead.')
+        report['completed_bar_revisions_by_timeframe'] = {
+            g: dict(revision_section(rs), by_magnitude=dict(Counter(magnitude(r) for r in rs)),
+                    material=revision_section([r for r in rs if magnitude(r) == 'material']),
+                    hypothesis_tally=completed_tally(rs))
+            for g in ('intraday', 'daily') for rs in [[r for r in completed if tf_group(r) == g]]}
         report['forming_bar_updates'] = revision_section(forming)
+        report['forming_bar_updates_by_timeframe'] = {
+            g: revision_section([r for r in forming if tf_group(r) == g]) for g in ('intraday', 'daily')}
         prov = s.scalars(select(BarProvenance).where(BarProvenance.ts >= start, BarProvenance.ts < end)).all()
         report['bar_provenance'] = dict(
             bars=len(prov), provider_of_last_write=dict(Counter(p.provider for p in prov)),
@@ -170,8 +209,9 @@ def main(day, out_dir):
             w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore'); w.writeheader(); w.writerows(rows)
     write('bar_revisions.csv', [dict(symbol=r.symbol, timeframe=r.timeframe, ts=r.ts.isoformat(), fetched_at=r.fetched_at.isoformat(), bar_age_minutes=round(r.bar_age_minutes, 2),
           previous_provider=r.previous_provider, provider=r.provider, classification=r.classification, changed_fields=','.join(r.changed_fields),
-          max_rel_change=r.max_rel_change, before=json.dumps(r.before), after=json.dumps(r.after)) for r in revs],
-          ['symbol', 'timeframe', 'ts', 'fetched_at', 'bar_age_minutes', 'previous_provider', 'provider', 'classification', 'changed_fields', 'max_rel_change', 'before', 'after'])
+          max_rel_change=r.max_rel_change, magnitude=magnitude(r), before=json.dumps(r.before), after=json.dumps(r.after)) for r in revs],
+          ['symbol', 'timeframe', 'ts', 'fetched_at', 'bar_age_minutes', 'previous_provider', 'provider', 'classification', 'changed_fields',
+           'max_rel_change', 'magnitude', 'before', 'after'])
     write('bar_provenance.csv', [dict(symbol=symbols.get(p.stock_id), timeframe=p.timeframe, ts=p.ts.isoformat(), provider=p.provider, first_written_at=p.first_written_at.isoformat(),
           last_written_at=p.last_written_at.isoformat(), ohlc_revisions=p.ohlc_revisions, volume_only_revisions=p.volume_only_revisions,
           provider_switches_same_values=p.provider_switches_same_values, off_grid=p.off_grid) for p in prov],

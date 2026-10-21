@@ -14,6 +14,20 @@ This module records, BEFORE the ingestion upsert and without changing what is wr
   cross_provider | same_provider | previous_provider_unknown.
 Volume-only changes and same-value provider switches are counted on the provenance row.
 
+Daily bars ('1d', tracker 457 follow-up, 2026-10-21): a 13:30 UTC yfinance daily fetch moved MU's
+past completed closes slightly (50-bar mean 984.22686 -> 984.23126). Daily ingest re-fetches from
+6 days before the last stored bar on every refresh, possibly from a different provider, so '1d' is
+traced too. A daily row's key is the session's wall-clock date at 00:00 with the offset DROPPED
+(not converted) - exactly how PostgreSQL stores a tz-aware value in a naive column - so its key is
+`ts.replace(tzinfo=None)`, not a UTC conversion. A daily bar is completed once that session's
+regular close (common.market_calendar.session_bounds, early closes included) has passed; a
+non-session date counts as completed. Only rows inside RETENTION are traced (bounded), there is no
+off-grid check, and bar_age_minutes is minutes since that session's close.
+
+Magnitude (rounding vs material) is derived from the stored before/after values by
+revision_magnitude(); it is not a column, because bar_revisions already exists in production and
+create_all() never adds columns to an existing table.
+
 It must never break ingestion: callers wrap it, and it runs inside a SAVEPOINT.
 """
 from __future__ import annotations
@@ -26,9 +40,24 @@ from sqlalchemy.orm import Mapped, mapped_column
 from db import Base, Price
 
 NOISE_REL = 1e-6
-TRACKED = {'5m', '15m', '1h'}
+TRACKED = {'5m', '15m', '1h', '1d'}
 MINUTES = {'5m': 5, '15m': 15, '1h': 60}
 RETENTION = timedelta(days=35)
+OHLC = ('open', 'high', 'low', 'close')
+
+#: Rounding-scale bound for ONE changed OHLC field: |after - before| <= max(ROUNDING_ABS,
+#: ROUNDING_REL * max(|before|, |after|)). Anything larger is 'material'.
+#: - ROUNDING_ABS = 0.005: half a cent, the most a value can move when one source rounds to the
+#:   cent and another does not (or rounds the other way). Dominates below $250.
+#: - ROUNDING_REL = 2e-5: float32 has a 24-bit mantissa (eps ~6e-8, so ~1.2e-7 per round trip)
+#:   and providers that recompute split/dividend-adjusted prices from a factor quoted to ~5-6
+#:   significant digits move a price by up to ~1e-5 relative. 2e-5 sits above both with margin,
+#:   while staying well under a real tick-level correction on low-priced names (one cent on a
+#:   $10 stock is 1e-3, 50x the bound). Dominates above $250 (e.g. $0.0197 at MU's ~$984).
+#: These are reading thresholds, not trading ones: every revision row keeps max_rel_change and
+#: the full before/after, so the cut can be re-drawn later without a re-trace.
+ROUNDING_ABS = 0.005
+ROUNDING_REL = 2e-5
 
 
 class BarProvenance(Base):
@@ -85,25 +114,59 @@ def classify(previous_provider, provider):
     return 'same_provider' if previous_provider == provider else 'cross_provider'
 
 
+def revision_magnitude(before, after):
+    """'rounding' if every OHLC field that changed beyond NOISE_REL moved by at most
+    max(ROUNDING_ABS, ROUNDING_REL * scale), else 'material'. Pure; reads stored dicts.
+    The 1e-9 slack keeps a change of exactly the bound (10.105 - 10.1 = 0.0050000000000008 in
+    binary floating point) on the rounding side. A revision with no OHLC field changed (cannot
+    be recorded) is reported as 'rounding'."""
+    for k in OHLC:
+        a, b = float(before[k]), float(after[k])
+        if _rel(a, b) > NOISE_REL and abs(a - b) > max(ROUNDING_ABS, ROUNDING_REL * max(abs(a), abs(b))) + 1e-9:
+            return 'material'
+    return 'rounding'
+
+
+def _market(stock):
+    m = getattr(stock, 'market', None)
+    return str(getattr(m, 'value', m) or 'US').upper()
+
+
+def _daily_close_utc(market, day_ts):
+    """Naive-UTC instant the session dated `day_ts` closed; None for a non-session date."""
+    from common.market_calendar import session_bounds
+    bounds = session_bounds(market, day_ts.date())
+    return None if bounds is None else bounds[1].astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def observe_bar_writes(session, stock, timeframe, rows, provider, now=None):
     """Record provenance/revisions for `rows` about to be upserted. Returns counts."""
     if timeframe not in TRACKED or not rows:
         return {}
     now = _naive_utc(now or datetime.now(timezone.utc))
+    daily = timeframe == '1d'
+    key = (lambda v: v.replace(tzinfo=None)) if daily else _naive_utc
+    if daily:
+        # Bounded: a first/full-history fetch would otherwise add (then prune) thousands of rows.
+        rows = [r for r in rows if key(r['ts']) >= now - RETENTION]
+        if not rows:
+            return {}
+        market = _market(stock)
     tf_value = rows[0]['timeframe']
-    keys = sorted({_naive_utc(r['ts']) for r in rows})
+    keys = sorted({key(r['ts']) for r in rows})
     lo, hi = keys[0], keys[-1]
     stored = {_naive_utc(p.ts): p for p in session.scalars(select(Price).where(
         Price.stock_id == stock.id, Price.timeframe == tf_value, Price.ts >= lo, Price.ts <= hi))}
     prov = {p.ts: p for p in session.scalars(select(BarProvenance).where(
         BarProvenance.stock_id == stock.id, BarProvenance.timeframe == timeframe,
         BarProvenance.ts >= lo, BarProvenance.ts <= hi))}
-    step = timedelta(minutes=MINUTES[timeframe])
+    step = None if daily else timedelta(minutes=MINUTES[timeframe])
     counts = dict(new=0, unchanged=0, ohlc_revisions=0, volume_only=0, provider_switch_same_values=0, off_grid=0)
     for r in rows:
-        ts = _naive_utc(r['ts'])
+        ts = key(r['ts'])
         new = {k: float(r[k]) for k in ('open', 'high', 'low', 'close', 'volume')}
-        off_grid = ts.second != 0 or ts.microsecond != 0 or (ts.minute % MINUTES[timeframe] != 0 and timeframe != '1h')
+        off_grid = False if daily else (ts.second != 0 or ts.microsecond != 0
+                                        or (ts.minute % MINUTES[timeframe] != 0 and timeframe != '1h'))
         counts['off_grid'] += off_grid
         p = prov.get(ts)
         old = stored.get(ts)
@@ -124,9 +187,14 @@ def observe_bar_writes(session, stock, timeframe, rows, provider, now=None):
                               provider_switches_same_values=0, **before)
             session.add(p)
         if changed:
-            completed = now >= ts + step
+            if daily:
+                # Non-session date: no close to wait for; age is measured from the date's end.
+                closes_at = _daily_close_utc(market, ts) or ts + timedelta(days=1)
+            else:
+                closes_at = ts + step
+            completed = now >= closes_at
             session.add(BarRevision(stock_id=stock.id, symbol=stock.symbol, timeframe=timeframe, ts=ts, fetched_at=now,
-                bar_age_minutes=(now - (ts + step)).total_seconds() / 60, previous_provider=previous, provider=provider,
+                bar_age_minutes=(now - closes_at).total_seconds() / 60, previous_provider=previous, provider=provider,
                 classification=classify(previous, provider) + ('' if completed else '_forming_bar'),
                 changed_fields=changed + (['volume'] if volume_changed else []),
                 max_rel_change=max(_rel(before[k], new[k]) for k in changed), before=before, after=new))
