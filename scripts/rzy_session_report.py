@@ -7,7 +7,8 @@ Run inside the market-data container after a session, then copy OUT to durable s
     docker cp stockai-market-data-1:/tmp/rzy-session /home/ec2-user/rzy-session-evidence/2026-10-21
 
 Writes report.json, manifest.json (release, config hash, code sha256, row counts) and raw CSVs:
-bar_revisions.csv, bar_provenance.csv, rzy_alert_path.csv, scan_runs.csv, outbox.csv.
+bar_revisions.csv, bar_provenance.csv, rzy_alert_path.csv, scan_runs.csv, outbox.csv, occurrences.csv,
+rebuilds.csv.
 Nothing is written to the database (READ ONLY transaction).
 
 Reading rules built into the report:
@@ -182,6 +183,14 @@ def main(day, out_dir):
     write('outbox.csv', [dict(alert_type=r.alert_type, state=r.state, created_at=r.created_at.isoformat(), accepted_at=r.accepted_at.isoformat() if r.accepted_at else None,
           expires_at=r.expires_at.isoformat() if r.expires_at else None, subject=r.subject) for r in outbox],
           ['alert_type', 'state', 'created_at', 'accepted_at', 'expires_at', 'subject'])
+    write('occurrences.csv', [dict(occurrence_id=o.occurrence_id, symbol=o.symbol, timeframe=o.timeframe, event_type=o.event_type,
+          signal_time=o.signal_time.isoformat() if o.signal_time else None, first_cutoff=o.first_cutoff.isoformat(),
+          first_seen_at=o.first_seen_at.isoformat(), first_generation=o.first_generation, observed_in=o.observed_in,
+          latest_generation=o.latest_generation, queued_at=o.queued_at.isoformat() if o.queued_at else None) for o in occs],
+          ['occurrence_id', 'symbol', 'timeframe', 'event_type', 'signal_time', 'first_cutoff', 'first_seen_at',
+           'first_generation', 'observed_in', 'latest_generation', 'queued_at'])
+    write('rebuilds.csv', [dict(stream_key=g.stream_key, generation=g.generation, reason=g.reason, rebuilt_at=g.rebuilt_at.isoformat())
+          for g in log_rows], ['stream_key', 'generation', 'reason', 'rebuilt_at'])
     (out / 'report.json').write_text(json.dumps(report, indent=1, default=str))
     root = Path(os.environ.get('RZY_EVAL_ROOT', '/app'))
     code = {f: hashlib.sha256((root / 'src/services' / f).read_bytes()).hexdigest() for f in
@@ -189,7 +198,8 @@ def main(day, out_dir):
     manifest = dict(created_at=datetime.now(timezone.utc).isoformat(), session_day=day, release=os.environ.get('RZY_RELEASE', 'unknown'),
                     config_hash=current_config().hash, strategy_version=VERSION, code_sha256=code,
                     files={p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(out.glob('*')) if p.name != 'manifest.json'},
-                    rows=dict(bar_revisions=len(revs), bar_provenance=len(prov), scan_runs=len(runs), alert_path=len(path_rows), outbox=len(outbox)))
+                    rows=dict(bar_revisions=len(revs), bar_provenance=len(prov), scan_runs=len(runs), alert_path=len(path_rows), outbox=len(outbox),
+                              occurrences=len(occs), rebuilds=len(log_rows)))
     (out / 'manifest.json').write_text(json.dumps(manifest, indent=1))
     print(json.dumps(dict(report_dir=str(out), rows=manifest['rows'])))
 
