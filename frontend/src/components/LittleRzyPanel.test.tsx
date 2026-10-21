@@ -9,7 +9,7 @@ import LittleRzyPanel from './LittleRzyPanel';
 const prefs={pattern_email:false,morning_digest:false,timeframes:['5m','15m','1h']};
 beforeEach(()=>{Object.values(api).forEach(m=>m.mockReset());api.rzyPreferences.mockResolvedValue(prefs);api.saveRzyPreferences.mockImplementation(async x=>x);});
 afterEach(cleanup);
-const view=(paperOnly=false)=>render(<SWRConfig value={{provider:()=>new Map(),dedupingInterval:0}}><LittleRzyPanel paperOnly={paperOnly}/></SWRConfig>);
+const view=()=>render(<SWRConfig value={{provider:()=>new Map(),dedupingInterval:0}}><LittleRzyPanel/></SWRConfig>);
 it('starts both channels off and writes only an explicit selected preference',async()=>{
  view();const digest=await screen.findByLabelText('Morning short-term watchlist digest');
  expect((digest as HTMLInputElement).checked).toBe(false);
@@ -23,28 +23,8 @@ it('keeps the prior setting visible after a failed save and never displays a suc
  await screen.findByText('Offline');expect((screen.getByLabelText('Little RZY continuation and reversal-watch emails') as HTMLInputElement).checked).toBe(false);
  expect(screen.queryByText('Preferences saved.')).toBeNull();
 });
-it('previews no-candidate and exclusion reasons without sending mail or enabling a channel',async()=>{
- api.rzyDigest.mockResolvedValue({candidates:[],exclusions:[{symbol:'TEST',timeframe:'5m',reason:'stale'}],note:'Prior completed data only'});
- view();fireEvent.click(screen.getByText('Preview morning candidates'));
- await screen.findByText('No qualifying candidates. Do not force a trade.');expect(screen.getByText('TEST 5m: stale')).toBeTruthy();
- expect(api.saveRzyPreferences).not.toHaveBeenCalled();
-});
-it('exposes an independent research paper ledger without writing existing portfolio balances',async()=>{
- api.rzyPaper.mockResolvedValue({note:'Research only',positions:[{symbol:'TEST',timeframe:'5m',state:'CLOSED',cancelled:true,reason:'data_unverified'}]});
- view(true);expect(api.rzyPreferences).not.toHaveBeenCalled();
- fireEvent.click(screen.getByText('Show RZY research paper ledger'));await screen.findByText(/data_unverified/);
- expect(api.saveRzyPreferences).not.toHaveBeenCalled();
-});
-
-it('shows the saved snapshot time and freshness, or says the preview is not available yet',async()=>{
- api.rzyDigest.mockResolvedValueOnce({available:false,candidates:[],exclusions:[],note:'n',message:'Preview not available yet: no scan snapshot exists for your watchlist.'});
- view();fireEvent.click(screen.getByText('Preview morning candidates'));
- await screen.findByText(/Preview not available yet/);
- expect(screen.queryByText('No qualifying candidates. Do not force a trade.')).toBeNull();
- api.rzyDigest.mockResolvedValueOnce({available:true,snapshot_from:'2026-10-21T13:00:00',snapshot_to:'2026-10-21T13:05:00',snapshot_age_minutes:12.5,streams_with_snapshot:3,streams_expected:4,
-   candidates:[],exclusions:[{symbol:'TEST',timeframe:'15m',reason:'stale_15m_aggregate'},{symbol:'NEW',timeframe:'5m',reason:'not_evaluated_yet'}],note:'Prior completed data only'});
- fireEvent.click(screen.getByText('Preview morning candidates'));
- await screen.findByText(/Saved scan snapshot, not recomputed now/);
- expect(screen.getByText(/12.5 min ago/)).toBeTruthy();expect(screen.getByText(/3 of 4 streams/)).toBeTruthy();
- expect(screen.getByText('TEST 15m: stale_15m_aggregate')).toBeTruthy();expect(screen.getByText('NEW 5m: not_evaluated_yet')).toBeTruthy();
+it('keeps only email preferences here and links admins to the Little RZY page',async()=>{
+ view();await screen.findByLabelText('Morning short-term watchlist digest');
+ expect(screen.queryByText('Preview morning candidates')).toBeNull();expect(screen.queryByText('Show RZY research paper ledger')).toBeNull();
+ expect(api.rzyDigest).not.toHaveBeenCalled();expect(api.rzyPaper).not.toHaveBeenCalled();
 });

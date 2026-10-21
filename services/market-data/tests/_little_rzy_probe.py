@@ -11,6 +11,7 @@ spec=importlib.util.spec_from_file_location('db.models',ROOT/'shared/db/models.p
 models=importlib.util.module_from_spec(spec);sys.modules['db.models']=models;spec.loader.exec_module(models)
 for key in vars(models):setattr(db,key,getattr(models,key))
 from src.services import rzy_workflow as W
+from src.services import bar_provenance as _bar_provenance  # register its tables before create_all
 from src.services.rzy_models import RzyStream,RzyEvent,RzyPreference
 from common import outbox
 from common.price_basis import resolve_ohlc
@@ -96,6 +97,16 @@ with Session() as s:
     assert run and run.mode=='session' and run.streams==1 and run.duration_seconds>=0 and run.queued==1 and run.new_emailable_events>=1
     assert sum(run.statuses.values())==1
     result['scan_run_recorded']=True
+    # The route module only needs db.get_session at import; the probe passes its own session.
+    for name in ('get_session','SessionLocal'):
+        if not hasattr(db,name): setattr(db,name,lambda: None)
+    from src.api.little_rzy import admin_overview
+    ov=admin_overview(_admin=None,session=s)
+    assert ov['streams']['total']==1 and sum(ov['streams']['by_status'].values())==1
+    assert ov['scans']['latest'] and ov['scans']['latest'][0]['queued']==1
+    assert ov['alerts']['recent'] and all('recipient' not in m for m in ov['alerts']['recent'])
+    assert 'not a validated trade recommendation' in ov['positioning'].lower()
+    result['admin_overview']=True
     rows=s.scalars(select(models.NotificationOutbox)).all();assert len(rows)==1
     assert 'Bullish setup triggered' in rows[0].subject and 'Research only' in rows[0].body_text and 'No broker order' in rows[0].body_text
     assert '/alerts/unsubscribe' in rows[0].body_text or 'Turn off' in rows[0].body_text

@@ -1,4 +1,3 @@
-import LittleRzyPanel from '@/components/LittleRzyPanel';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
@@ -2063,7 +2062,7 @@ export default function PaperPortfolioPage() {
           </div>
         </div>
 
-        <details><summary>Little RZY research paper ledger</summary><LittleRzyPanel paperOnly /></details>
+        <p style={{ fontSize: 12, color: '#94a3b8' }}>The Little RZY research paper ledger moved to <Link href="/little-rzy" style={{ color: '#2dd4bf' }}>Admin → Little RZY</Link>.</p>
 
         {/* Disclosure banner */}
         <div style={{ background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: 6, padding: '8px 14px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10 }}>

@@ -182,6 +182,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Squeeze Alert Performance', href: '/squeeze-alert-performance', color: '#ef4444', tag: 'new' },
       { label: 'Fix Effectiveness', href: '/fix-effectiveness', color: '#4ade80', tag: 'new' },
       { label: 'Options Flow Alerts', href: '/options-flow-alerts', color: '#6d28d9', tag: 'new' },
+      { label: 'Little RZY',       href: '/little-rzy',       color: '#2dd4bf', tag: 'new' },
       { label: 'Signal Log',       href: '/admin-signals',    color: '#f87171' },
       { label: 'System Health',    href: '/admin-health',     color: '#38bdf8' },
       { label: 'Data Pipeline',    href: '/data-pipeline',    color: '#38bdf8', tag: 'new' },

@@ -5,7 +5,7 @@ from fastapi import APIRouter,Depends,HTTPException,Query
 from pydantic import BaseModel,Field,field_validator
 from sqlalchemy import select
 from db import get_session,AlertPreference
-from .auth import get_current_user
+from .auth import get_current_user,get_admin_user
 from ..services import rzy_workflow as W
 from ..services.rzy_models import RzyPreference,RzyStream
 from ..services.little_rzy import Config,VERSION
@@ -53,7 +53,7 @@ def paper(user=Depends(get_current_user),session=Depends(get_session)):
     streams=session.scalars(select(RzyStream).where(RzyStream.symbol.in_(symbols))).all() if symbols else []
     return dict(strategy_version=VERSION,note='Separate deterministic research paper ledger, one-share units. No live broker execution or changes to existing portfolio balances.',
         positions=[dict(symbol=row.symbol,timeframe=row.timeframe,config_hash=row.config_hash,generation=row.checkpoint.get('generation',1),structure_id=k,**p)
-                   for row in streams if row.config_hash==Config().hash for k,p in row.checkpoint.get('positions',{}).items()][-100:],
+                   for row in streams if row.config_hash==W.current_config().hash for k,p in row.checkpoint.get('positions',{}).items()][-100:],
         provenance='Current configuration only; each row names its stream generation. A rebuilt stream replaces its open-position cache; superseded history is in the event log.')
 
 class ReplayIn(BaseModel):
@@ -73,6 +73,43 @@ def replay_endpoint(body:ReplayIn,_user=Depends(get_current_user)):
         segments=[dict(first=s['first'],last=s['last'],bars=s['bars']) for s in segments],
         events=[dict(e,segment=i) for i,s in enumerate(segments) for e in s['events']],
         positions={f'{i}:{k}':p for i,s in enumerate(segments) for k,p in s['positions'].items()})
+
+@router.get('/admin/overview')
+def admin_overview(_admin=Depends(get_admin_user),session=Depends(get_session)):
+    """Operational view for the Little RZY admin page. Reads stored records only; never evaluates."""
+    from collections import Counter
+    from datetime import timedelta
+    from db import NotificationOutbox
+    from ..services.rzy_models import RzyScanRun,RzyStreamSnapshot,RzyStreamGeneration
+    from ..services.bar_provenance import BarRevision
+    now=datetime.now(timezone.utc).replace(tzinfo=None); since=now-timedelta(hours=20)
+    cfg=W.current_config()
+    runs=session.scalars(select(RzyScanRun).order_by(RzyScanRun.scan_time.desc()).limit(40)).all()
+    recent=[r for r in runs if r.scan_time>=since and r.mode=='session']
+    durations=sorted(r.duration_seconds for r in recent)
+    snaps=session.scalars(select(RzyStreamSnapshot).where(RzyStreamSnapshot.config_hash==cfg.hash)).all()
+    gens=session.scalars(select(RzyStreamGeneration).where(RzyStreamGeneration.archived_at>=since)).all()
+    revs=session.scalars(select(BarRevision).where(BarRevision.fetched_at>=since)).all()
+    mail=session.scalars(select(NotificationOutbox).where(NotificationOutbox.alert_type.in_(('little_rzy','short_term_digest')))
+        .order_by(NotificationOutbox.created_at.desc()).limit(60)).all()
+    q=lambda v,p: v[min(len(v)-1,int(len(v)*p))] if v else None
+    return dict(strategy_version=VERSION,config_hash=cfg.hash,generated_at=now.isoformat(),
+        positioning='Research overlay and watch alert. Not a validated trade recommendation; paper execution is disabled.',
+        scans=dict(recent_session_scans=len(recent),duration_seconds=dict(median=q(durations,.5),p95=q(durations,.95),max=durations[-1] if durations else None),
+            too_late_to_mail=sum(r.too_late_to_mail for r in recent),queued=sum(r.queued for r in recent),
+            latest=[dict(scan_time=r.scan_time.isoformat(),mode=r.mode,duration_seconds=r.duration_seconds,streams=r.streams,statuses=r.statuses,
+                         new_emailable_events=r.new_emailable_events,too_late_to_mail=r.too_late_to_mail,queued=r.queued) for r in runs[:20]]),
+        streams=dict(total=len(snaps),by_status=dict(Counter(x.status for x in snaps)),
+            by_timeframe_status={tf:dict(Counter(x.status for x in snaps if x.timeframe==tf)) for tf in sorted({x.timeframe for x in snaps})},
+            oldest_snapshot=min((x.checked_at for x in snaps),default=None),newest_snapshot=max((x.checked_at for x in snaps),default=None)),
+        rebuilds_last_20h=dict(total=len(gens),by_reason=dict(Counter(g.reason for g in gens))),
+        bar_revisions_last_20h=dict(total=len(revs),completed=dict(Counter(r.classification for r in revs if not r.classification.endswith('_forming_bar'))),
+            forming=dict(Counter(r.classification.replace('_forming_bar','') for r in revs if r.classification.endswith('_forming_bar')))),
+        alerts=dict(states=dict(Counter(f'{m.alert_type}:{m.state}' for m in mail)),
+            recent=[dict(alert_type=m.alert_type,state=m.state,subject=m.subject,created_at=m.created_at.isoformat(),
+                         accepted_at=m.accepted_at.isoformat() if m.accepted_at else None,expires_at=m.expires_at.isoformat() if m.expires_at else None,
+                         terminal_reason=m.terminal_reason) for m in mail[:40]]))
+
 
 @router.get('/{symbol}')
 def review(symbol:str,timeframe:str=Query('5m',pattern=r'^(5m|15m|1h|1d)$'),include_superseded:bool=False,_user=Depends(get_current_user),session=Depends(get_session)):

@@ -241,7 +241,8 @@ export const api = {
   rzyPreferences: () => request<import('./rzy').RzyPreferences>('/stocks/rzy/preferences'),
   saveRzyPreferences: (body: import('./rzy').RzyPreferences) => request<import('./rzy').RzyPreferences>('/stocks/rzy/preferences', { method: 'PUT', body: JSON.stringify(body) }),
   rzyDigest: () => request<{ candidates: { symbol: string; direction: string; timeframe: string; target: number; entry_reference?: number; provisional_stop?: number; planned_reward_risk?: number; guidance: string }[]; exclusions: { symbol: string; timeframe: string; reason: string; checked_at?: string }[]; note: string; available?: boolean; message?: string; snapshot_from?: string; snapshot_to?: string; snapshot_age_minutes?: number; streams_with_snapshot?: number; streams_expected?: number; total_candidates?: number; freshness_note?: string }>('/stocks/rzy/digest'),
-  rzyPaper: () => request<{ note: string; positions: { symbol: string; timeframe: string; state: string; cancelled?: boolean; reason?: string; fill?: number; net?: number }[] }>('/stocks/rzy/paper'),
+  rzyAdminOverview: () => request<RzyAdminOverview>('/stocks/rzy/admin/overview'),
+  rzyPaper: () => request<{ note: string; provenance?: string; positions: { symbol: string; timeframe: string; state: string; cancelled?: boolean; reason?: string; fill?: number; net?: number; generation?: number; config_hash?: string; trigger_index?: number; entry_time?: string }[] }>('/stocks/rzy/paper'),
 
   calibrationCandidates: (includeProvisional = false) => request<CalibrationComparison>(`/signals/calibration-candidates?include_provisional=${includeProvisional}`),
   getRiskDeliverySchedule: () => request<{ enabled: boolean; timezone: string; start: string; end: string }>('/alerts/risk-delivery'),
@@ -4774,4 +4775,14 @@ export interface CalibrationComparison {
   test_first?: string | null; test_last?: string | null; test_signals?: number;
   note?: string; limitations?: string[];
   candidates: { candidate: string; scope: string; forecast_count: number; paired_count: number; paired_brier: number | null }[];
+}
+
+export interface RzyScanRunRow { scan_time: string; mode: string; duration_seconds: number; streams: number; statuses: Record<string, number>; new_emailable_events: number; too_late_to_mail: number; queued: number }
+export interface RzyAdminOverview {
+  strategy_version: string; config_hash: string; generated_at: string; positioning: string;
+  scans: { recent_session_scans: number; duration_seconds: { median: number | null; p95: number | null; max: number | null }; too_late_to_mail: number; queued: number; latest: RzyScanRunRow[] };
+  streams: { total: number; by_status: Record<string, number>; by_timeframe_status: Record<string, Record<string, number>>; oldest_snapshot: string | null; newest_snapshot: string | null };
+  rebuilds_last_20h: { total: number; by_reason: Record<string, number> };
+  bar_revisions_last_20h: { total: number; completed: Record<string, number>; forming: Record<string, number> };
+  alerts: { states: Record<string, number>; recent: { alert_type: string; state: string; subject: string; created_at: string; accepted_at: string | null; expires_at: string | null; terminal_reason: string | null }[] };
 }
