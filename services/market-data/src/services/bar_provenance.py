@@ -150,3 +150,40 @@ def observe_bar_writes(session, stock, timeframe, rows, provider, now=None):
         session.execute(delete(BarProvenance).where(BarProvenance.stock_id == stock.id, BarProvenance.ts < now - RETENTION))
         session.execute(delete(BarRevision).where(BarRevision.stock_id == stock.id, BarRevision.fetched_at < now - RETENTION))
     return counts
+
+
+class DailyIngestRecord(Base):
+    """Per-symbol daily-bar fetch evidence: is THIS symbol's latest close refreshed?
+
+    A scheduler batch recorded "ok" proves only that the batch ran; ingest_universe logs a
+    failing symbol and carries on. Consumers that must not read a forming or unrefreshed daily
+    row as a close (Game Plan, reports) check this row: a successful fetch at or after a
+    session's post-close ingest start whose provider response contained that session.
+    One row per stock, overwritten by each fetch; failures keep the last success.
+    """
+    __tablename__ = 'daily_ingest_records'
+    stock_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: newest session date present in that successful provider response
+    last_observed_session: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
+def record_daily_fetch(session, stock, *, fetched_at, ok, observed_session=None, provider=None, error=None):
+    """Upsert the stock's fetch evidence. Callers wrap it; it must never break ingestion."""
+    row = session.get(DailyIngestRecord, stock.id)
+    if row is None:
+        row = DailyIngestRecord(stock_id=stock.id, symbol=stock.symbol)
+        session.add(row)
+    when = _naive_utc(fetched_at)
+    if ok:
+        row.last_success_at, row.last_provider = when, provider
+        # Stored like Price.ts: the session's wall-clock date, offset dropped (not converted),
+        # so it compares directly with the D1 row keys.
+        row.last_observed_session = (observed_session.replace(tzinfo=None)
+                                     if observed_session is not None and observed_session.tzinfo else observed_session)
+    else:
+        row.last_failure_at, row.last_error = when, (error or '')[:300]

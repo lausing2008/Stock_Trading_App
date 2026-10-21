@@ -46,6 +46,9 @@ export interface CopilotMessage {
   plan_setups?: TradeSetup[];
   /** The model's own levels (anchors + ATR offsets), priced and checked by code. */
   plan_proposal?: PlanProposal | null;
+  /** Who wrote the explanation: the model, or code when the model's prose failed the evidence check. */
+  narration?: 'model' | 'code' | null;
+  narration_rejection_reasons?: string[];
   /** Actions proposed for the user to review and save. Nothing is saved until they confirm. */
   drafts?: CopilotDraft[];
   dropped_drafts?: { kind: string; reason: string }[];

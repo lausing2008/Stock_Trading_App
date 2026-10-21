@@ -159,7 +159,10 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
           setups={(message.plan_setups ?? []).filter(s => s.id === message.selected_setup_id)} />}
       </>}
       <section aria-label="Model reasoning and playbook">
-        <p style={{ margin: '8px 0 4px' }}><strong>Model&apos;s reasoning and playbook</strong></p>
+        <p style={{ margin: '8px 0 4px' }}><strong>{message.narration === 'code' ? 'Explanation (written by the platform)' : 'Model\u2019s reasoning and playbook'}</strong></p>
+        {message.narration === 'code' && <p role="status" style={{ color: '#fbbf24' }}>
+          The model&apos;s own explanation failed the evidence check ({(message.narration_rejection_reasons ?? []).join('; ') || 'no detail'}).
+          Its proposal had already passed the code checks, so the numbers are unchanged; this explanation is written by the platform from that validated plan.</p>}
         <CopilotAnswer m={message} defaultOpen />
       </section>
     </>}

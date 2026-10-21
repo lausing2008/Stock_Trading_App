@@ -266,3 +266,28 @@ def citable(plan, proposal: dict) -> dict[str, tuple[str, str, tuple]]:
     if t1 is not None:
         out["proposal.reward_risk"] = (f"{t1:.2f}R", "first-target reward:risk, computed by code", ())
     return out
+
+
+def narrate(plan, proposal: dict) -> str:
+    """A CODE-WRITTEN explanation of an accepted proposal (used when the model's prose failed)."""
+    if proposal.get("state") == "wait":
+        return ("The model proposed waiting: no new entry now. Its written explanation did not pass "
+                "the evidence check, so this summary is written by the platform.")
+    c = citable(plan, proposal)
+    line = lambda k: c[k][0] if k in c else "not available"
+    kind = {"hold": "management of the position you hold", "breakout": "a breakout entry",
+            "pullback": "a pullback entry", "limit": "a limit-order entry"}.get(proposal.get("kind"), "an entry")
+    out = [f"The model proposed {kind}. Its written explanation did not pass the evidence check, so "
+           f"this explanation is written by the platform from the validated plan; the levels "
+           f"below are the model's choices, priced and checked by code."]
+    for lvl, name in (("entry", "Entry"), ("stop", "Stop"), ("target1", "First target"), ("target2", "Second target")):
+        if f"proposal.{lvl}_derivation" in c:
+            out.append(f"• {name}: {line(f'proposal.{lvl}_derivation')}")
+    if "proposal.reward_risk" in c:
+        out.append(f"• First-target reward:risk: {line('proposal.reward_risk')}")
+    for k in ("trigger", "invalidation"):
+        if proposal.get(k):
+            out.append(f"• {proposal[k]}")
+    if proposal.get("state") == "blocked":
+        out.append("• Blocked now: " + " ".join(proposal.get("reasons") or []))
+    return "\n".join(out)

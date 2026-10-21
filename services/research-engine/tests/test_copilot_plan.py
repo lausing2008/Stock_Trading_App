@@ -594,7 +594,9 @@ def test_a_close_is_used_only_after_the_post_close_ingest_is_recorded_ok(r):
     p = r["pl18"]
     ok = p["ok"]
     assert (ok["close"], ok["state"], ok["report_close"], ok["report_state"]) == (150, "OK", 150, "OK")
-    assert ok["verification"].startswith("us_post_close recorded ok at 2026-10-12 20:33")
+    # Without a per-symbol fetch record the batch record alone never calls the close verified.
+    assert ok["verification"].startswith("batch only — us_post_close recorded ok at 2026-10-12 20:33")
+    assert "this symbol's close is not verified" in ok["verification"]
     for case, why in (("ok_but_old", "predates this session"), ("failed", "failed (ingest_failed)"),
                       ("unreadable", "could not be read")):
         x = p[case]
@@ -603,3 +605,37 @@ def test_a_close_is_used_only_after_the_post_close_ingest_is_recorded_ok(r):
         assert x["setups"] == ["stale"], case
     before = p["before_expected"]
     assert (before["close"], before["state"]) == (100, "OK"), "at 16:20 Monday is not yet expected"
+
+
+def test_a_symbol_close_is_verified_only_by_its_own_successful_fetch(r):
+    """A batch 'ok' does not prove each symbol refreshed: the symbol's own fetch must have run
+    after the session's post-close start AND returned that session."""
+    p = r["pl18"]
+    v = p["symbol_verified"]
+    assert (v["close"], v["state"]) == (150, "OK") and v["verification"].startswith("this symbol fetched ok at 2026-10-12 20:31")
+    for case, why in (("symbol_old_fetch", "does not cover it"), ("symbol_not_in_response", "newest session 2026-10-09"),
+                      ("symbol_failed_after", "the latest fetch failed (All adapters failed)")):
+        x = p[case]
+        assert (x["close"], x["state"], x["report_state"]) == (100, "STALE", "STALE"), case
+        assert "not verified for this symbol" in x["reason"] and why in x["reason"], x["reason"]
+
+
+def test_a_validated_proposal_is_frozen_and_narrated_by_code_when_only_the_prose_fails(r):
+    """Proposal checks and prose checks are separate: no model call restates accepted numbers."""
+    x = r["pl13"]
+    a = x["code_narration"]
+    assert (a["status"], a["calls"], a["narration"]) == ("grounded", 1, "code")
+    assert any("in words (half)" in m for m in a["narration_reasons"])
+    assert (a["proposal"]["state"], a["proposal"]["entry"], a["proposal"]["stop"]) == ("conditional", 101, 99)
+    assert "written by the platform" in a["content"] and "the 20-bar high ($101.00) − 1 × ATR ($2.00) = $99.00" in a["content"]
+    b = x["code_narration_after_rejection"]       # the eval's forced case: rejection, then valid
+    assert (b["status"], b["calls"], b["narration"], b["proposal"]["state"]) == ("grounded", 2, "code", "conditional")
+    w = x["code_narration_wait"]
+    assert (w["status"], w["calls"], w["narration"], w["proposal"]["state"]) == ("grounded", 1, "code", "wait")
+    assert x["selected"]["status"] == "grounded"   # a clean answer is still narrated by the model
+
+
+def test_evaluation_can_withhold_the_rules_plan_but_not_the_market_evidence(r):
+    x = r["pl13"]
+    assert x["hidden"] == {"rules_absent": True, "evidence_present": True}
+    assert x["normal_shows_rules"]

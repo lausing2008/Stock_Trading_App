@@ -71,4 +71,8 @@ with sync_playwright() as p:
     print(json.dumps({"board_id": created.get("id"), "identical_after_reload": result,
                       "shown_card_excerpt": shown[:400], "board_page_mentions": on_board,
                       "fingerprint_saved": gpl.get("packet_fingerprint"), "log": log[-8:]}, indent=1))
+    # Revoke THIS test session's token (blacklists its jti). Deleting the token file does not.
+    status = pg.evaluate("async t => (await fetch('/api/auth/logout',{method:'POST',headers:{Authorization:'Bearer '+t}})).status", tok)
+    still = pg.evaluate("async t => (await fetch('/api/board',{headers:{Authorization:'Bearer '+t}})).status", tok)
+    print(json.dumps({"logout_status": status, "board_status_after_logout": still}))
     b.close()

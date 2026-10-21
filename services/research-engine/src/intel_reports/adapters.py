@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 
 from db import Price, Signal, Stock, EarningsEvent
 from db.models import TimeFrame
@@ -194,11 +194,57 @@ def session_window(market: str, ref: datetime, *, record=_UNSET) -> dict:
     return out
 
 
+def read_symbol_fetch(session, stock_id: int) -> dict | None:
+    """market-data's per-symbol daily fetch evidence (`daily_ingest_records`), or None."""
+    try:
+        with session.begin_nested():          # a missing table must not poison the transaction
+            row = session.execute(text(
+                "SELECT last_success_at, last_observed_session, last_provider, last_failure_at, "
+                "last_error FROM daily_ingest_records WHERE stock_id = :i"), {"i": stock_id}).first()
+    except Exception:                          # noqa: BLE001 — absent evidence, not a failure
+        return None
+    if row is None:
+        return None
+    return dict(zip(("last_success_at", "last_observed_session", "last_provider",
+                     "last_failure_at", "last_error"), row))
+
+
+def _symbol_verification(market: str, window: dict, fetch: dict | None) -> dict:
+    """Narrow a batch-verified window to what THIS symbol's own fetch evidence supports."""
+    expected = window["expected_session"]
+    if fetch is None:
+        window["verification"] = (f"batch only — {window['verification']}; no per-symbol fetch "
+                                  f"record exists yet, so this symbol's close is not verified")
+        window["per_symbol"] = "missing"
+        return window
+    ok_at, seen = fetch["last_success_at"], fetch["last_observed_session"]
+    seen_d = seen.date() if hasattr(seen, "date") else seen
+    started = ingest_started_at(market, expected).replace(tzinfo=None)
+    if ok_at is not None and _naive(ok_at) >= started and seen_d is not None and seen_d >= expected:
+        window["verification"] = (f"this symbol fetched ok at {_naive(ok_at):%Y-%m-%d %H:%M} UTC "
+                                  f"({fetch['last_provider']}, newest session {seen_d})")
+        window["per_symbol"] = "verified"
+        return window
+    why = (f"its last successful fetch ({_naive(ok_at):%Y-%m-%d %H:%M} UTC, newest session {seen_d}) "
+           f"does not cover it" if ok_at is not None else "it has no successful fetch on record")
+    if fetch.get("last_failure_at") and (ok_at is None or _naive(fetch["last_failure_at"]) > _naive(ok_at)):
+        why += f"; the latest fetch failed ({fetch.get('last_error') or 'no detail'})"
+    window["usable_through"] = _previous_session(market, expected)
+    window["unverified"] = (f"the {expected.isoformat()} close is not verified for this symbol: "
+                            f"{why}; the previous session's close is shown instead")
+    window["per_symbol"] = "not_covered"
+    return window
+
+
 def completed_daily_bars(session, stock, limit: int, *, now: datetime,
-                         record=_UNSET) -> tuple[list[Price], dict]:
+                         record=_UNSET, fetch=_UNSET) -> tuple[list[Price], dict]:
     """Daily bars of COMPLETED, verified sessions only, plus the window they are judged by."""
     market = getattr(stock.market, "value", stock.market)
     window = session_window(market, now, record=record)
+    if (window.get("expected_session") is not None and not window.get("unverified")
+            and window.get("verification") and not window["verification"].startswith("historical")):
+        window = _symbol_verification(market, window, read_symbol_fetch(session, stock.id)
+                                      if fetch is _UNSET else fetch)
     if window["expected_session"] is None or window["usable_through"] is None:
         return [], {**window, "expected_session": None,
                     "reason": window.get("reason") or "no usable completed session"}

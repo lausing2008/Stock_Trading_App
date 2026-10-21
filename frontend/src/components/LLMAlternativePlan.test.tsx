@@ -153,3 +153,11 @@ it('shows the model reasoning and playbook openly beside its proposal', async ()
   expect(reasoning.textContent).toContain('One reading favors waiting.');
   expect(screen.getByText(/code computes every price and checks/)).toBeTruthy();
 });
+it('labels a platform-written explanation when the model prose failed but its proposal passed', async () => {
+  const out = answer(); out.message.plan_proposal = proposalFixture();
+  Object.assign(out.message, { narration: 'code', narration_rejection_reasons: ['the answer writes a quantity in words (half)'] });
+  mocks.askCopilot.mockResolvedValue(out); render(<LLMAlternativePlan {...props} currency="USD" />);
+  fireEvent.click(screen.getByText('Generate LLM alternative')); await screen.findByLabelText('LLM-proposed plan');
+  expect(screen.getByText('Explanation (written by the platform)')).toBeTruthy();
+  expect(screen.getByText(/failed the evidence check \(the answer writes a quantity in words \(half\)\)/)).toBeTruthy();
+});

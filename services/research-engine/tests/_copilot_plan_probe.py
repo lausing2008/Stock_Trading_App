@@ -715,6 +715,28 @@ def pl13_trade_setups():
     good = '<answer>One reading favors a breakout above {{level.high20}}; stop {{proposal.stop_derivation}}, the first target at {{proposal.reward_risk}}.</answer><plan_proposal kind="breakout" entry="level.high20" stop="level.high20-1atr" target1="level.high20+2atr" target2="level.high20+3atr"/>'
     model = ScriptedModel(wrong,good)
     response = run(C.answer(req, session_factory=Session, llm_call=model, now=NOW))["message"]
+    # Valid proposal, prose fails the evidence check ("half an ATR"): no second call; the frozen
+    # proposal is shown with a code-written explanation.
+    prose_bad = ('<answer>One reading favors a breakout; the stop sits half an ATR under it.</answer>'
+                 '<plan_proposal kind="breakout" entry="level.high20" stop="level.high20-1atr" '
+                 'target1="level.high20+2atr" target2="level.high20+3atr"/>')
+    for tag, script in (("code_narration", [prose_bad]), ("code_narration_after_rejection", [wrong, prose_bad]),
+                        ("code_narration_wait", ['<answer>Wait for twenty sessions.</answer><plan_proposal kind="wait"/>'])):
+        rq = turn("Compare detailed scenarios", f"setups-{tag}"[:40]); rq.plan_context = context
+        sm = ScriptedModel(*script)
+        msg = run(C.answer(rq, session_factory=Session, llm_call=sm, now=NOW))["message"]
+        out[tag] = {"status": msg["status"], "calls": len(sm.calls), "content": msg["content"],
+                    "proposal": msg["plan_proposal"], "narration": msg.get("narration"),
+                    "narration_reasons": msg.get("narration_rejection_reasons")}
+    # Evaluation-only: the rules plan is withheld from the model; market evidence is not.
+    hid = turn("Compare detailed scenarios", "setups-hidden-0001"); hid.plan_context = context; hid.hide_rules_reference = True
+    hm = ScriptedModel(good)
+    run(C.answer(hid, session_factory=Session, llm_call=hm, now=NOW))
+    sent = json.dumps(hm.calls[0])
+    out["hidden"] = {"rules_absent": not any(k in sent for k in ('rule.e1', 'setup.pullback', 'playbook.', 'level.pullback_stop', 'Rules-based setups')),
+                     "evidence_present": all(k in sent for k in ('level.low20', 'level.high20', 'level.atr', 'price.close'))}
+    shown = json.dumps(model.calls[0])
+    out["normal_shows_rules"] = 'rule.e1' in shown and 'Rules-based setups' in shown
     out["selected"] = {"proposal":response["plan_proposal"], "status":response["status"], "calls":len(model.calls),
                        "content": response["content"], "reasons": response.get("rejection_reasons"),
                        "repair_text": json.dumps(model.calls[1]) if len(model.calls) > 1 else ""}
@@ -880,11 +902,12 @@ def pl18_verified_post_close_ingest():
     from src.intel_reports import adapters as A
     from src.intel_reports import generators as GEN
     out = {}
-    real_now, real_read = A._real_now, A.read_post_close_record
+    real_now, real_read, real_fetch = A._real_now, A.read_post_close_record, A.read_symbol_fetch
     utc = lambda *a: datetime(*a, tzinfo=_tz.utc)
-    def at(t, record):
+    def at(t, record, fetch=None):
         A._real_now = lambda: utc(t.year, t.month, t.day, t.hour, t.minute)   # a LIVE request
         A.read_post_close_record = lambda market: record
+        A.read_symbol_fetch = lambda session, stock_id: fetch
         try:
             with Session() as s:
                 p = build_packet(s, SYM, now=t, plan_request=I.PositionIntent(kind="entry"))
@@ -895,7 +918,7 @@ def pl18_verified_post_close_ingest():
                     "setups": sorted({x["state"] for x in p.plan.to_json()["setups"]}),
                     "report_close": (f["price_as_of"].value or {}).get("close"), "report_state": f["price_as_of"].state.value}
         finally:
-            A._real_now, A.read_post_close_record = real_now, real_read
+            A._real_now, A.read_post_close_record, A.read_symbol_fetch = real_now, real_read, real_fetch
     reset()   # daily bars through Fri 2026-10-09 (close 100)
     with Session() as s:
         sid = s.execute(text("SELECT id FROM stocks WHERE symbol = :s"), {"s": SYM}).scalar()
@@ -907,6 +930,16 @@ def pl18_verified_post_close_ingest():
     out["ok_but_old"] = at(after, {"status": "ok", "last_run": utc(2026, 10, 9, 20, 33)})
     out["failed"] = at(after, {"status": "error", "error": "ingest_failed", "last_run": utc(2026, 10, 12, 20, 33)})
     out["unreadable"] = at(after, {"status": "unreadable", "error": "redis down"})
+    batch_ok = {"status": "ok", "last_run": utc(2026, 10, 12, 20, 33)}
+    fresh = {"last_success_at": datetime(2026, 10, 12, 20, 31), "last_observed_session": datetime(2026, 10, 12),
+             "last_provider": "unusual_whales", "last_failure_at": None, "last_error": None}
+    out["symbol_verified"] = at(after, batch_ok, fresh)
+    out["symbol_old_fetch"] = at(after, batch_ok, {**fresh, "last_success_at": datetime(2026, 10, 12, 19, 0)})
+    out["symbol_not_in_response"] = at(after, batch_ok, {**fresh, "last_observed_session": datetime(2026, 10, 9)})
+    out["symbol_failed_after"] = at(after, batch_ok, {**fresh, "last_success_at": datetime(2026, 10, 9, 20, 31),
+                                                      "last_observed_session": datetime(2026, 10, 9),
+                                                      "last_failure_at": datetime(2026, 10, 12, 20, 31),
+                                                      "last_error": "All adapters failed"})
     out["before_expected"] = at(datetime(2026, 10, 12, 20, 20),   # Mon 16:20 EDT: Monday not yet expected
                                 {"status": "ok", "last_run": utc(2026, 10, 9, 20, 33)})
     R["pl18"] = out

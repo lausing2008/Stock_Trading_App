@@ -18,7 +18,7 @@ from common.redis_client import get_redis
 from db import Price, SessionLocal, Stock, TimeFrame
 
 from ..adapters import get_adapter, get_adapters
-from .bar_provenance import observe_bar_writes
+from .bar_provenance import observe_bar_writes, record_daily_fetch
 
 log = get_logger("ingestion")
 
@@ -344,12 +344,15 @@ def ingest_symbol(
         # canonical "is this stock still alive" check (see _snapshot_fundamentals()'s own
         # `WHERE delisted = false` filter, which assumes a daily-granularity signal).
         _track_delisting = (timeframe == "1d")
+        _fetched_at = None
         for adapter in adapters:
             try:
+                _attempt_at = datetime.now(timezone.utc)
                 ohlcv = adapter.fetch_ohlcv(symbol, start, end, timeframe)
                 candidate = validate_ohlcv(ohlcv.df, symbol, allow_zero_volume=allow_zero_volume)
                 if not candidate.empty:
                     df = candidate
+                    _fetched_at = _attempt_at
                     if _track_delisting and adapter.name == "yfinance":
                         # AUD-ING7-DELISTNEVERFIRES: a successful fetch is NOT proof the symbol
                         # is alive, and treating it as such made the whole delisting mechanism
@@ -402,6 +405,9 @@ def ingest_symbol(
                 log.warning("ingest.adapter_failed", adapter=adapter.name, symbol=symbol, error=str(exc))
                 last_err = exc
         if df is None:
+            if timeframe == "1d":
+                _record_daily(session, stock, fetched_at=datetime.now(timezone.utc), ok=False,
+                              error=str(last_err) if last_err else "no bars returned")
             if last_err:
                 raise IngestionError(f"All adapters failed for {symbol}: {last_err}")
             return {"symbol": symbol, "inserted": 0, "skipped": "no_bars"}
@@ -480,6 +486,11 @@ def ingest_symbol(
             log.warning("ingest.bar_trace_failed", symbol=symbol, tf=timeframe, error=str(exc)[:300])
         result = session.execute(stmt)
         session.commit()
+        if timeframe == "1d" and rows:
+            # Per-symbol evidence that THIS close was refreshed after a session ended (stamped
+            # with the time the provider was asked, and the newest session it returned).
+            _record_daily(session, stock, fetched_at=_fetched_at, ok=True, provider=adapter.name,
+                          observed_session=max(r["ts"] for r in rows))
 
         _head_after = _last_bar_ts(session, stock.id, tf)
         _advanced = bool(
@@ -504,6 +515,15 @@ def ingest_symbol(
             "head_after": _head_after,
             "adapter": adapter.name,
         }
+
+
+def _record_daily(session, stock, **kw) -> None:
+    try:
+        record_daily_fetch(session, stock, **kw)
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 - evidence must not break ingestion
+        session.rollback()
+        log.warning("ingest.daily_record_failed", symbol=stock.symbol, error=str(exc)[:300])
 
 
 def _write_parquet(df: pd.DataFrame, symbol: str, timeframe: str) -> None:

@@ -140,6 +140,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
       stop_loss: { price: p.stop, rationale: 'Model-chosen evidence anchor, priced and checked by code; not maintained' },
       take_profit: target === undefined ? null : { price: target, rationale: 'Model-chosen objective, code-checked; not a forecast' },
       setup: p, derivation: p.derivation, playbook: p.playbook, reasoning: message.content, model: message.model ?? null,
+      explanation_written_by: message.narration ?? 'model',
       request_id: message.request_id, price_as_of: p.price_as_of ?? message.price_as_of ?? null, currency: data.plan.currency,
       packet_fingerprint: message.packet_fingerprint, rules_based_alternative: data.plan.setups ?? [],
     };

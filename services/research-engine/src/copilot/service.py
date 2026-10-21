@@ -58,6 +58,18 @@ class TurnRequest:
     market: object | None = None
     #: Optional typed Game Plan inputs plus the snapshot being compared. Never model input.
     plan_context: dict | None = None
+    #: EVALUATION ONLY (not reachable from the API): withhold the rules-based plan — its setups,
+    #: rules, playbook and rule-derived stop/target levels — from the model, keeping the same
+    #: market evidence, constraints and typed inputs. Tests whether proposals are justified
+    #: independently rather than anchored on the rules' levels.
+    hide_rules_reference: bool = False
+
+
+def _rules_reference(key: str) -> bool:
+    """A quantity that is the rules-based PLAN rather than market evidence."""
+    return (key.startswith(("rule.", "setup.", "playbook.")) or key in (
+        "level.pullback_stop", "level.breakout_stop", "level.stop_candidate",
+        "level.holding_assessed_stop") or (key.startswith("level.") and "_target" in key))
 
 
 def _utcnow() -> datetime:
@@ -302,10 +314,14 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
                      "Distinguish interpretation from facts. No forecasts, probabilities, account "
                      "facts or action drafts. " + PR.FORMAT_HELP + " "
                      "Anchor values: " + json.dumps(anchors) + f"; ATR {packet.plan.atr!r}. "
-                     "Rules-based setups for reference: "
-                     + json.dumps([{k: s[k] for k in ('id', 'state', 'reasons')}
-                                   for s in packet.plan.to_json()['setups']]))
-    messages.append({"role": "user", "content": L.user_turn(packet.model_view(), question)})
+                     + ("" if req.hide_rules_reference else
+                        "Rules-based setups for reference: "
+                        + json.dumps([{k: s[k] for k in ('id', 'state', 'reasons')}
+                                      for s in packet.plan.to_json()['setups']])))
+    view = packet.model_view()
+    if req.plan_context is not None and req.hide_rules_reference:
+        view["quantities"] = {k: v for k, v in view["quantities"].items() if not _rules_reference(k)}
+    messages.append({"role": "user", "content": L.user_turn(view, question)})
     result: G.GroundingResult | None = None
     reasons: list[str] = []
     total_in = total_out = 0
@@ -313,6 +329,7 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
     t0 = time.monotonic()
     cancelled = False
     proposal = None
+    code_narration: list[str] | None = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
         # CANCELLATION STOPS THE NEXT CALL, NOT THE CURRENT ONE. A provider request already in
         # flight cannot be recalled and is billed; what a cancel can prevent is the repair call.
@@ -386,6 +403,12 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
             if choice_error:
                 result.accepted = False
                 result.reasons.append(choice_error)
+            # PROPOSAL AND PROSE ARE VALIDATED SEPARATELY. Once code accepts a proposal its numbers
+            # are frozen; if only the explanation fails, a code-written explanation is shown
+            # beside the validated plan — no model call is spent restating accepted arithmetic.
+            if (not result.accepted and proposal is not None and proposal["state"] != "rejected"):
+                code_narration = list(result.reasons)
+                break
         if result.accepted:
             break
         reasons = result.reasons
@@ -400,7 +423,15 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
     if cancelled and not result.accepted:
         reasons = reasons + ["cancelled by the user before the repair attempt"]
     accepted = bool(result and result.accepted)
-    if accepted:
+    if code_narration is not None:
+        from . import proposal as PR
+        accepted = True
+        content = PR.narrate(packet.plan, proposal)
+        status = "grounded"
+        shown = [k for k in PR.CITABLE if k in packet.quantities]
+        refs, ev_records = _evidence_refs_compact(packet, shown)
+        lims = _limitations(packet, [])
+    elif accepted:
         content = result.answer
         status = "grounded"
         refs, ev_records = _evidence_refs_compact(packet, result.used_keys)
@@ -426,7 +457,11 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         "drafts": drafts, "dropped_drafts": dropped_drafts,
         **({"plan_context": req.plan_context, "plan_setups": packet.plan.to_json()['setups'],
             "selected_setup_id": None,
-            "plan_proposal": proposal if accepted else None} if req.plan_context is not None else {}),
+            "plan_proposal": proposal if accepted else None,
+            # Who wrote the explanation: "model", or "code" when the model's prose failed the
+            # evidence check after code had accepted its proposal (reasons kept for review).
+            "narration": ("code" if code_narration is not None else "model") if accepted else None,
+            "narration_rejection_reasons": code_narration or []} if req.plan_context is not None else {}),
         "packet_version": PACKET_VERSION, "packet_fingerprint": packet.fingerprint,
         "price_as_of": packet.price_as_of, "source_times": packet.source_times(),
         "evidence_refs": refs, "evidence_records": ev_records, "limitations": lims,
