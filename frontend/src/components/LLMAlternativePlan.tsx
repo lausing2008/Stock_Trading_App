@@ -9,12 +9,14 @@ const RECOVERY_DELAY_MS = 4000;
 const RECOVERY_ATTEMPTS = 60;   // about 4 minutes, longer than the server's model timeout
 
 /** A second interpretation of the same snapshot, never independent corroboration. */
-export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavailable, currency = null, compact = false, onSelectionChange, onLevelSelect, onPlanChanged }: {
+export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavailable, currency = null, compact = false, onSelectionChange, onLevelSelect, onPlanChanged, autoStart = false }: {
   symbol: string; inputs: PlanInputs; fingerprint: string; unavailable: boolean; currency?: string | null;
   compact?: boolean; onSelectionChange?: (setups: TradeSetup[]) => void; onLevelSelect?: (line: SelectedPlanLine) => void;
   /** The server refused the comparison because the plan's data changed since it was built (409).
    *  Retrying with the same snapshot can never succeed, so the parent rebuilds the plan. */
   onPlanChanged?: () => void;
+  /** Start one generation on mount (used once, right after an automatic plan refresh). */
+  autoStart?: boolean;
 }) {
   const [message, setMessage] = useState<CopilotMessage | null>(null);
   const [busy, setBusy] = useState(false);
@@ -98,6 +100,11 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
     }
   }
   const configured = isAiConfigured();
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (autoStart && !autoStarted.current && configured && !unavailable) { autoStarted.current = true; void generate(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart, configured, unavailable]);
   return <section aria-label="LLM alternative plan" style={{ minWidth: 0, padding: 12, border: '1px solid #475569', borderRadius: 8 }}>
     <h4 style={{ marginTop: 0 }}>LLM alternative plan</h4>
     <p>A model-selected scenario using the same prices and position inputs. It may agree with the rules-based plan; agreement is not independent confirmation.</p>

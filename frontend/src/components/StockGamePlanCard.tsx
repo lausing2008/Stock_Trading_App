@@ -32,6 +32,9 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
   const [perspective, setPerspective] = useState<'rules' | 'llm'>('rules');
   const [llmSetups, setLlmSetups] = useState<TradeSetup[]>([]);
   const [llmNotice, setLlmNotice] = useState('');
+  // Automatic re-generations after a "plan changed" refusal, capped so moving data cannot loop.
+  const [llmAutoRuns, setLlmAutoRuns] = useState(0);
+  const MAX_LLM_AUTO_RUNS = 2;
   const generation = useRef(0);
   const abort = useRef<AbortController | null>(null);
   const alive = useRef(true);
@@ -65,7 +68,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
     }
     if (mode === 'holding' && request.entry === undefined) { setError('Enter your average cost for a held position.'); return; }
     if (mode !== 'holding') { delete request.entry; delete request.shares; delete request.stop; }
-    reset(); if (keepLlm) setPerspective('llm'); else setLlmNotice(''); const token = ++generation.current;
+    reset(); if (keepLlm) setPerspective('llm'); else { setLlmNotice(''); setLlmAutoRuns(0); } const token = ++generation.current;
     abort.current = new AbortController(); setBusy(true);
     try {
       const result = await getStockPlan(symbol, request, abort.current.signal);
@@ -195,7 +198,15 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
       <div hidden={perspective !== 'llm'}>
       {llmNotice && <p role="status" style={{ color: '#fbbf24' }}>{llmNotice}</p>}
       <LLMAlternativePlan key={data.packet_fingerprint} symbol={symbol} inputs={inputs}
-        onPlanChanged={() => { setLlmNotice('New data arrived after the plan was built (for example a fresh signal), so the server refused to compare against it. The rules-based plan has been refreshed with the same inputs; generate the LLM alternative again.'); void load(true); }}
+        autoStart={llmAutoRuns > 0 && llmAutoRuns <= MAX_LLM_AUTO_RUNS && !!llmNotice}
+        onPlanChanged={() => {
+          const next = llmAutoRuns + 1;
+          setLlmAutoRuns(next);
+          setLlmNotice(next <= MAX_LLM_AUTO_RUNS
+            ? 'New data arrived after the plan was built (for example a fresh signal). The rules-based plan was refreshed with the same inputs and the LLM alternative is being generated again automatically.'
+            : 'The plan data kept changing while generating (signals are updating). Wait a minute, then press Generate LLM alternative.');
+          void load(true);
+        }}
         currency={data.plan.currency} compact onSelectionChange={setLlmSetups} onLevelSelect={onLevelFocus ? focusLevel : undefined}
         fingerprint={data.packet_fingerprint} unavailable={data.plan.unsupported || !!data.plan.position_refusals.length ||
           (mode !== 'forecast' && !data.plan.setups?.length) ||

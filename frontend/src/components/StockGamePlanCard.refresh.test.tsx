@@ -18,17 +18,31 @@ beforeEach(() => { Object.values(mocks).forEach(m => m.mockReset()); mocks.cance
   mocks.askCopilot.mockRejectedValueOnce(Object.assign(new Error('plan changed; refresh it before requesting an LLM alternative'), { status: 409 }))
     .mockReturnValue(new Promise(() => {})); });
 afterEach(cleanup);
-it('refreshes the rules-based plan on 409 instead of retrying a stale snapshot, and stays on the LLM view', async () => {
+it('refreshes the plan on a plan-changed 409 and generates again by itself against the new snapshot', async () => {
   render(<StockGamePlanCard symbol="AAPL" onLevelsChange={vi.fn()} />);
   fireEvent.click(screen.getByRole('button', { name: 'Build plan' })); await screen.findByText('Pullback rule text');
   fireEvent.click(screen.getByRole('button', { name: 'LLM alternative plan' }));
   fireEvent.click(screen.getByRole('button', { name: 'Generate LLM alternative' }));
-  await screen.findByText(/New data arrived after the plan was built/);
+  await screen.findByText(/generated again automatically/);
   await waitFor(() => expect(mocks.getStockPlan).toHaveBeenCalledTimes(2));
   expect(mocks.getStockPlan.mock.calls[1][1]).toEqual(mocks.getStockPlan.mock.calls[0][1]);
   expect(screen.queryByText('plan changed; refresh it before requesting an LLM alternative')).toBeNull();
-  fireEvent.click(await screen.findByRole('button', { name: 'Generate LLM alternative' }));
+  // One click is enough: the refreshed plan's generation starts by itself.
   await waitFor(() => expect(mocks.askCopilot).toHaveBeenCalledTimes(2));
   expect(mocks.askCopilot.mock.calls[0][0].planContext.fingerprint).toBe('a'.repeat(24));
   expect(mocks.askCopilot.mock.calls[1][0].planContext.fingerprint).toBe('b'.repeat(24));
+});
+
+it('stops after two automatic regenerations when the data keeps changing and asks the user to wait', async () => {
+  mocks.getStockPlan.mockReset();
+  ['a', 'b', 'c', 'd', 'e'].forEach(x => mocks.getStockPlan.mockResolvedValueOnce(plan(x.repeat(24))));
+  mocks.askCopilot.mockReset().mockRejectedValue(Object.assign(new Error('plan changed; refresh it before requesting an LLM alternative'), { status: 409 }));
+  render(<StockGamePlanCard symbol="AAPL" onLevelsChange={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Build plan' })); await screen.findByText('Pullback rule text');
+  fireEvent.click(screen.getByRole('button', { name: 'LLM alternative plan' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Generate LLM alternative' }));
+  await screen.findByText(/kept changing while generating/);
+  await new Promise(r => setTimeout(r, 50));
+  expect(mocks.askCopilot).toHaveBeenCalledTimes(3);
+  expect(mocks.getStockPlan).toHaveBeenCalledTimes(4);
 });
