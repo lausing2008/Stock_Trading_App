@@ -42,14 +42,49 @@ it('refuses a response from a different evidence snapshot', async () => {
   render(<LLMAlternativePlan {...props} />); fireEvent.click(screen.getByText('Generate LLM alternative'));
   await screen.findByRole('alert'); expect(screen.queryByText('One reading favors waiting.')).toBeNull();
 });
-it('retries an ambiguous failure with the same id and uses a new id for an explicit new generation', async () => {
-  mocks.askCopilot.mockRejectedValueOnce(new Error('Connection lost'));
+const err = (message: string, status?: number) => Object.assign(new Error(message), status === undefined ? {} : { status });
+async function tick(ms = 4000) { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
+it('recovers a dropped connection by re-asking the same request id, then uses a new id for a new generation', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    mocks.askCopilot.mockRejectedValueOnce(err('NetworkError when attempting to fetch resource.'));
+    render(<LLMAlternativePlan {...props} />); fireEvent.click(screen.getByText('Generate LLM alternative'));
+    await screen.findByText(/Connection dropped while the model was answering/);
+    await tick(); await screen.findByText('One reading favors waiting.');
+    expect(mocks.askCopilot.mock.calls.slice(0, 2).map(([x]) => x.requestId)).toEqual(['request-0001', 'request-0001']);
+    expect(screen.queryByText(/NetworkError/)).toBeNull();
+    fireEvent.click(screen.getByText('Generate another LLM alternative'));
+    await waitFor(() => expect(mocks.askCopilot).toHaveBeenCalledTimes(3));
+    expect(mocks.askCopilot.mock.calls[2][0].requestId).toBe('request-0002');
+  } finally { vi.useRealTimers(); }
+});
+it('waits while the server is still answering and never treats that 409 as a changed plan', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const onPlanChanged = vi.fn();
+    mocks.askCopilot.mockRejectedValueOnce(err('NetworkError when attempting to fetch resource.'))
+      .mockRejectedValueOnce(err('this request is already being answered', 409)).mockResolvedValueOnce(answer());
+    render(<LLMAlternativePlan {...props} onPlanChanged={onPlanChanged} />); fireEvent.click(screen.getByText('Generate LLM alternative'));
+    await tick(); await tick(); await screen.findByText('One reading favors waiting.');
+    expect(mocks.askCopilot).toHaveBeenCalledTimes(3);
+    expect(new Set(mocks.askCopilot.mock.calls.map(([x]) => x.requestId))).toEqual(new Set(['request-0001']));
+    expect(onPlanChanged).not.toHaveBeenCalled();
+  } finally { vi.useRealTimers(); }
+});
+it('does not retry an error that re-asking cannot fix', async () => {
+  mocks.askCopilot.mockRejectedValueOnce(err('daily copilot limit reached (20 answers per UTC day)', 429));
   render(<LLMAlternativePlan {...props} />); fireEvent.click(screen.getByText('Generate LLM alternative'));
-  fireEvent.click(await screen.findByText('Retry LLM alternative')); await screen.findByText('One reading favors waiting.');
-  expect(mocks.askCopilot.mock.calls.slice(0, 2).map(([x]) => x.requestId)).toEqual(['request-0001', 'request-0001']);
-  fireEvent.click(screen.getByText('Generate another LLM alternative'));
-  await waitFor(() => expect(mocks.askCopilot).toHaveBeenCalledTimes(3));
-  expect(mocks.askCopilot.mock.calls[2][0].requestId).toBe('request-0002');
+  await screen.findByText(/daily copilot limit reached/); expect(mocks.askCopilot).toHaveBeenCalledTimes(1);
+});
+it('stops recovering when the user cancels', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    mocks.askCopilot.mockRejectedValue(err('NetworkError when attempting to fetch resource.'));
+    render(<LLMAlternativePlan {...props} />); fireEvent.click(screen.getByText('Generate LLM alternative'));
+    await screen.findByText(/Connection dropped/);
+    fireEvent.click(screen.getByText('Cancel generation')); await tick(); await tick();
+    expect(mocks.askCopilot).toHaveBeenCalledTimes(1); expect(mocks.cancelCopilot).toHaveBeenCalledWith('request-0001');
+  } finally { vi.useRealTimers(); }
 });
 it('cancels repair attempts and ignores a late result after leaving the card', async () => {
   let resolve!: (value: ReturnType<typeof answer>) => void;

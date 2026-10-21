@@ -5,6 +5,9 @@ import { isAiConfigured, getAiProviderLabel } from '@/lib/ai';
 import { CopilotAnswer } from './CopilotPanel';
 import TradeSetupSummary from './TradeSetupSummary';
 
+const RECOVERY_DELAY_MS = 4000;
+const RECOVERY_ATTEMPTS = 60;   // about 4 minutes, longer than the server's model timeout
+
 /** A second interpretation of the same snapshot, never independent corroboration. */
 export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavailable, currency = null, compact = false, onSelectionChange, onLevelSelect, onPlanChanged }: {
   symbol: string; inputs: PlanInputs; fingerprint: string; unavailable: boolean; currency?: string | null;
@@ -17,6 +20,7 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [cancelled, setCancelled] = useState(false);
+  const [recovering, setRecovering] = useState(0);
   const alive = useRef(true);
   const request = useRef<string | null>(null);
   const active = useRef<{ id: string; ctl: AbortController } | null>(null);
@@ -48,9 +52,29 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
     setBusy(true); setError(''); setCancelled(false); setMessage(null);
     onSelectionChange?.([]);
     try {
-      const out = await askCopilot({ symbol, requestId: id,
+      const ask = () => askCopilot({ symbol, requestId: id,
         question: 'Give an alternative conditional Game Plan, including your preferred scenario, invalidation and when to wait.',
         planContext: { ...inputs, fingerprint } }, pending.ctl.signal);
+      let out: Awaited<ReturnType<typeof askCopilot>> | null = null;
+      // A dropped connection does not stop the server: the answer is stored under this request
+      // id, and re-sending the SAME id returns it (no second model call) or reports that it is
+      // still being answered. So recover by re-asking with the same id instead of failing.
+      for (let attempt = 0; out === null; attempt++) {
+        try {
+          out = await ask();
+        } catch (e) {
+          if (!alive.current || active.current !== pending || pending.ctl.signal.aborted) throw e;
+          const status = (e as { status?: number }).status;
+          const text = e instanceof Error ? e.message : '';
+          const stillRunning = status === 409 && /already being answered/i.test(text);
+          const dropped = (status === undefined && !/cancelled|took too long/i.test(text)) || status === 502 || status === 504;
+          if (!(stillRunning || dropped) || attempt >= RECOVERY_ATTEMPTS) throw e;
+          setRecovering(attempt + 1);
+          await new Promise(r => setTimeout(r, RECOVERY_DELAY_MS));
+          if (!alive.current || active.current !== pending || pending.ctl.signal.aborted) return;
+        }
+      }
+      setRecovering(0);
       if (!alive.current || active.current !== pending) return;
       if (out.message.packet_fingerprint !== fingerprint) {
         throw new Error('The plan snapshot changed. Refresh the rules-based plan before comparing.');
@@ -64,12 +88,13 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
       onSelectionChange?.(out.message.status === 'grounded' && out.message.selected_setup_id !== 'wait'
         ? (out.message.plan_setups ?? []).filter(s => s.id === out.message.selected_setup_id) : []);
     } catch (e) {
-      if (alive.current && active.current === pending && (e as { status?: number }).status === 409 && onPlanChanged) {
+      if (alive.current && active.current === pending && (e as { status?: number }).status === 409
+          && /plan changed/i.test(e instanceof Error ? e.message : '') && onPlanChanged) {
         active.current = null; setBusy(false); request.current = null; onPlanChanged(); return;
       }
       if (alive.current && active.current === pending) setError(e instanceof Error ? e.message : 'Could not generate alternative');
     } finally {
-      if (alive.current && active.current === pending) { active.current = null; setBusy(false); }
+      if (alive.current && active.current === pending) { active.current = null; setBusy(false); setRecovering(0); }
     }
   }
   const configured = isAiConfigured();
@@ -82,6 +107,7 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
     <button disabled={busy || !configured || unavailable} onClick={generate}>
       {busy ? 'Generating alternative…' : error ? 'Retry LLM alternative' : message || cancelled ? 'Generate another LLM alternative' : 'Generate LLM alternative'}
     </button>
+    {busy && recovering > 0 && <p role="status">Connection dropped while the model was answering. The answer is still being generated on the server; waiting for it (check {recovering} of {RECOVERY_ATTEMPTS}). This re-asks for the same answer and does not start a new model call.</p>}
     {busy && <><button onClick={cancel}>Cancel generation</button><p>A model call already started may still be billed and stored in Copilot history.</p></>}
     {cancelled && <p role="status">Generation cancelled here. A call already started may still be billed and stored in Copilot history.</p>}
     {error && <p role="alert">{error}</p>}
