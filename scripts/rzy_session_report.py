@@ -40,7 +40,20 @@ from pathlib import Path
 sys.path[:0] = [os.environ.get('RZY_EVAL_ROOT', '/app'), '/app/shared']
 from sqlalchemy import select, text  # noqa: E402
 from db import SessionLocal, NotificationOutbox, Stock  # noqa: E402
-from src.services.bar_provenance import BarProvenance, BarRevision, revision_magnitude  # noqa: E402
+from src.services.bar_provenance import BarProvenance, BarRevision  # noqa: E402
+try:
+    from src.services.bar_provenance import revision_magnitude  # noqa: E402
+except ImportError:
+    # The capture job copies THIS script into whichever market-data release is running, which may
+    # predate revision_magnitude (2026-10-21). Same rule, kept identical to bar_provenance.py.
+    def revision_magnitude(before, after, _abs=0.005, _rel=2e-5, _noise=1e-6):
+        def rel(a, b):
+            return abs(a - b) / max(abs(a), abs(b)) if max(abs(a), abs(b)) else 0.0
+        for k in ('open', 'high', 'low', 'close'):
+            a, b = float(before[k]), float(after[k])
+            if rel(a, b) > _noise and abs(a - b) > max(_abs, _rel * max(abs(a), abs(b))) + 1e-9:
+                return 'material'
+        return 'rounding'
 from src.services.rzy_models import RzyEvent, RzyStream, RzyStreamGeneration, RzyScanRun, RzyOccurrence, RzyRebuild  # noqa: E402
 from src.services.rzy_workflow import emailable, current_config, MINUTES  # noqa: E402
 from src.services.little_rzy import VERSION  # noqa: E402
