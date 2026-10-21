@@ -35,6 +35,14 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'RZY-GAMEPLAN-AUDIT-F01-F09', tier: 459, severity: 'high', defaultStatus: 'done',
+    title: 'Little RZY and Game Plan audit F01–F09: delivery, completed sessions, guidance consistency',
+    file: 'docs/2026-10-21/rzy-game-plan-audit-resolution.md', effort: 'M',
+    impact: 'RZY alerts keep sending at any generation with accurate refusal reasons; Game Plans never use a forming daily bar or stale sessions; guidance never offers a buy branch a gate forbids.',
+    what: 'F02 sender found events only for generations 1-128 (then "recipient opted out"); F01 forming daily rows used as closes; F03 calendar-day freshness; F04 blocked/stale playbooks; F05 account cap ignored; F06 trigger equals the no-chase ceiling; F07-F09 snapshot freshness, pruning and scan-time evidence.',
+    fix: 'Occurrence-based delivery, append-only occurrence/rebuild records, actual-time freshness, expiring snapshots; completed-session bars with session freshness (packet v9); state-aware playbook, one sizing rule, explicit max fill. Trading rules unchanged.',
+  },
+  {
     id: 'RZY-ALERT-LATENCY', tier: 458, severity: 'high', defaultStatus: 'in-progress',
     title: 'Little RZY alert latency and digest preview cost',
     file: 'docs/2026-10-21/little-rzy-operational-defects.md', effort: 'M',
