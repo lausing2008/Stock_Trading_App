@@ -415,7 +415,12 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
                 if proposal["state"] == "rejected" and attempt < MAX_ATTEMPTS:
                     choice_error = ("Your proposal failed the code checks: " + " ".join(proposal["reasons"])
                                     + " Propose corrected anchors or kind=\"wait\".")
-        result = G.check(G.parse_draft(clean_text), packet)
+        draft = G.parse_draft(clean_text)
+        if draft is None and req.plan_context is not None and clean_text.strip():
+            # Proposal turns only: prose without its <answer> wrapper (measured twice) is still the
+            # answer; it passes through every numeric and wording check unchanged.
+            draft = {"answer": clean_text.strip(), "limitations": []}
+        result = G.check(draft, packet)
         if req.plan_context is not None:
             # The explanation must refer to the levels code computed, not to its own numbers.
             if (not choice_error and proposal is not None and proposal.get("derivation")

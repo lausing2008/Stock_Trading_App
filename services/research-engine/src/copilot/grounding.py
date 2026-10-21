@@ -257,6 +257,13 @@ def _calendar_windows(packet: CopilotPacket) -> set[str]:
             for m in _CAL_WINDOW_IN_EVIDENCE.finditer(q.display)}
 
 
+_PLATFORM_PHRASE = re.compile(r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten)\s+bars?\s+earlier\b", re.I)
+
+
+def _platform_phrases(packet: CopilotPacket) -> set[str]:
+    return {m.group(0).lower() for q in packet.quantities.values() for m in _PLATFORM_PHRASE.finditer(q.display)}
+
+
 def _strip_names(text: str, packet: CopilotPacket) -> str:
     """Remove the digit-bearing NAMES the rules above exempt; what remains must hold no digit."""
     text = _INDEX_NAMES.sub(" ", text)
@@ -269,6 +276,10 @@ def _strip_names(text: str, packet: CopilotPacket) -> str:
     # "SMA20" / "SMA 50": the same windows, abbreviated (measured on Sonnet 4.6). SMA only —
     # the packet computes simple averages, so "EMA20" would name a value that is not in it.
     text = re.sub(rf"\bSMA[- ]?(?:{windows})\b", " ", text, flags=re.I)
+    # "52-week high/low" is the conventional NAME of the year range, exempt only when the packet
+    # carries that range (measured 2026-10-21: 2 answers refused for it). "up 52%" still fails.
+    if "level.high252" in packet.quantities or "level.low252" in packet.quantities:
+        text = re.sub(r"\b52[- ]week[- ](?=high|low|range)", " ", text, flags=re.I)
     quoted = _headline_periods(packet)
     return _PERIOD_LABEL.sub(lambda m: " " if m.group(0) in quoted else m.group(0), text)
 
@@ -315,6 +326,10 @@ def _check_text(text: str, packet: CopilotPacket, where: str, reasons: list[str]
         reasons.append(f"{where} writes figures directly ({', '.join(nums[:5])}); figures must "
                        f"come from {{{{key}}}} placeholders")
     prose = _PLACEHOLDER.sub(" ", text_w)
+    # The platform's OWN wording repeated verbatim (e.g. the 50-bar average "five bars earlier")
+    # is not a model-authored quantity; any other spelled count still fails.
+    for phrase in _platform_phrases(packet):
+        prose = re.sub(rf"\b{re.escape(phrase)}\b", " ", prose, flags=re.I)
     spelled = _SPELLED_MAGNITUDE.findall(prose) + _quantity_words(prose)
     if spelled:
         reasons.append(f"{where} writes a quantity in words ({', '.join(spelled[:3])}); "

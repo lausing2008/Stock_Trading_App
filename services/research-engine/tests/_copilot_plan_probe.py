@@ -974,7 +974,31 @@ def pl19_holding_mode():
     R["pl19"] = out
 
 
-for fn in (pl19_holding_mode, pl18_verified_post_close_ingest, pl17_guidance_and_sizing, pl16_completed_sessions, pl15_inflight_reask_after_plan_change, pl14_signal_timestamp_tie, pl13_trade_setups, pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
+def pl20_narrow_explanation_checks():
+    """Paired acceptance/rejection for the three measured false refusals; nothing else loosened."""
+    reset()   # 260 bars: year range present; sma50 display says "... five bars earlier"
+    TAG = ('<plan_proposal kind="breakout" entry="level.high20" stop="level.high20-1atr" '
+           'target1="level.high20+2atr" target2="level.high20+3atr"/>')
+    view = C.plan_view(Session, "alice", SYM, now=NOW, kind="entry", risk=400)
+    ctx = dict(kind="entry", risk=400, fingerprint=view["packet_fingerprint"])
+    cases = {
+        "year_name_ok": "<answer>Stop {{proposal.stop_derivation}}; the year high {{level.high252}} is the 52-week high.</answer>",
+        "year_number_bad": "<answer>Stop {{proposal.stop_derivation}}; the stock is up 52 percent this year.</answer>",
+        "platform_phrase_ok": "<answer>Stop {{proposal.stop_derivation}}; the 50-bar average is flat from five bars earlier.</answer>",
+        "other_count_bad": "<answer>Stop {{proposal.stop_derivation}}; wait five sessions before buying.</answer>",
+        "no_wrapper_ok": "Stop {{proposal.stop_derivation}}; one reading favours the breakout.",
+        "no_wrapper_number_bad": "Stop {{proposal.stop_derivation}}; buy near 101 dollars.",
+    }
+    out = {}
+    for name, text in cases.items():
+        rq = turn("Compare detailed scenarios", f"narrow-{name}"[:40]); rq.plan_context = ctx
+        sm = ScriptedModel(text + TAG)
+        msg = run(C.answer(rq, session_factory=Session, llm_call=sm, now=NOW))["message"]
+        out[name] = {"narration": msg.get("narration"), "calls": len(sm.calls), "reasons": msg.get("narration_rejection_reasons")}
+    R["pl20"] = out
+
+
+for fn in (pl20_narrow_explanation_checks, pl19_holding_mode, pl18_verified_post_close_ingest, pl17_guidance_and_sizing, pl16_completed_sessions, pl15_inflight_reask_after_plan_change, pl14_signal_timestamp_tie, pl13_trade_setups, pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
            pl4_staleness, pl5_routing_and_refusals, pl6_turns, pl7_plan_view):
     fn()
 R["_meta"] = {"server": ENGINE.dialect.name}

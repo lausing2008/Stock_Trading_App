@@ -656,3 +656,16 @@ def test_holding_mode_is_stated_and_only_hold_or_wait_is_accepted(r):
     e = x["entry_kind_refused"]                          # a new-entry kind is refused, then repaired
     assert e["calls"] == 2 and 'kind=\\"pullback\\" is not allowed for this holding plan' in e["repair"]
     assert (e["state"], e["kind"]) == ("conditional", "hold")
+
+
+def test_explanation_check_accepts_the_measured_false_refusals_and_nothing_nearby(r):
+    """Each fix is paired: the legitimate phrasing passes, a real model-authored quantity still fails
+    (and then gets the code-written explanation, never a loosened check)."""
+    x = r["pl20"]
+    for ok in ("year_name_ok", "platform_phrase_ok", "no_wrapper_ok"):
+        assert (x[ok]["narration"], x[ok]["calls"]) == ("model", 1), (ok, x[ok])
+    assert any("figures directly (52" in m for m in x["year_number_bad"]["reasons"])
+    assert any("in words (five)" in m for m in x["other_count_bad"]["reasons"])
+    assert any("(101)" in m for m in x["no_wrapper_number_bad"]["reasons"])
+    for bad in ("year_number_bad", "other_count_bad", "no_wrapper_number_bad"):
+        assert x[bad]["narration"] == "code", bad
