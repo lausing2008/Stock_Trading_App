@@ -42,3 +42,12 @@ Bounded the same night (approved), with regressions that fail when reverted:
 Next (separate, reviewed change): confirm the provider-flip cause in the next session's ingest logs and stop a different provider from overwriting completed bars.
 
 Transitional: events rebuilt before this deploy were stored under the old identity scheme, so a stream's current-generation event list stays empty until its next rebuild or new bars.
+
+## Second deploy (`5f090894`, 00:36 UTC) and open performance findings
+
+Deployed healthy (15/15, drift 0, label `5f0908941`). Two measured performance problems remain open — they affect timeliness, not correctness:
+
+- **Alert latency.** On October 20, 5m events were recorded a median 4.8 minutes after the candle closed (p90 16.4, max 56.4). 320 of 1,072 (30%) fell outside the email freshness window (bar length + 3 minutes) and were recorded but not mailed. The scan is scheduled every minute but a full pass takes minutes; the rebuild storm contributed. Earlier statements that 5m alerts arrive 2–3 minutes after the close were wrong and the field guide is corrected.
+- **Digest preview cost.** The bulk preview took 209 s in-container (load_bars 141 s — up to 6,000 rows per symbol and timeframe — plus 67 s evaluation), beyond the gateway timeout (Settings preview returns 504). The scheduled 09:10 digest runs the same code inside its 5-minute window (accepted 13:12 UTC on October 20).
+
+Proposed next (performance, reviewed separately): load only bars from each checkpoint's retained window for incremental evaluations (full history only for rebuilds), then re-measure latency; and the ingest fix for intraday restatements.
