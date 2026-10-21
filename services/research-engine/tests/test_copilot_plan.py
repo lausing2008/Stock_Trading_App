@@ -584,3 +584,20 @@ def test_held_position_llm_proposal_is_priced_by_code_from_anchors(r):
     p = r["pl12"]["proposal"]
     assert (p["kind"], p["state"], p["entry"], p["stop"], p["shares"]) == ("hold", "conditional", 95.0, 98.0, 10)
     assert [t["price"] for t in p["targets"]] == [101.0, 103.0]
+
+
+def test_a_close_is_used_only_after_the_post_close_ingest_is_recorded_ok(r):
+    """Not the clock: the scheduler's post-close record must say ok, after this session's start.
+    The Game Plan and the stock report apply the same rule."""
+    p = r["pl18"]
+    ok = p["ok"]
+    assert (ok["close"], ok["state"], ok["report_close"], ok["report_state"]) == (150, "OK", 150, "OK")
+    assert ok["verification"].startswith("us_post_close recorded ok at 2026-10-12 20:33")
+    for case, why in (("ok_but_old", "predates this session"), ("failed", "failed (ingest_failed)"),
+                      ("unreadable", "could not be read")):
+        x = p[case]
+        assert x["close"] == 100 and x["state"] == "STALE" and x["report_close"] == 100 and x["report_state"] == "STALE", case
+        assert "2026-10-12 close is not verified as ingested" in x["reason"] and why in x["reason"], x["reason"]
+        assert x["setups"] == ["stale"], case
+    before = p["before_expected"]
+    assert (before["close"], before["state"]) == (100, "OK"), "at 16:20 Monday is not yet expected"

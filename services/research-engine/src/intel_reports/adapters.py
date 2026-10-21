@@ -39,7 +39,8 @@ def _naive(dt):
     return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
 
 
-def daily_bars(session, stock_id: int, limit: int = 70, *, cutoff: datetime) -> list[Price]:
+def daily_bars(session, stock_id: int, limit: int = 70, *, cutoff: datetime,
+               through: date | None = None) -> list[Price]:
     """Bars observable AT the report's cutoff. `cutoff` is required, not optional.
 
     THE LOOK-AHEAD HOLE THIS CLOSES. This used to select the latest bars unconditionally, so a
@@ -47,38 +48,68 @@ def daily_bars(session, stock_id: int, limit: int = 70, *, cutoff: datetime) -> 
     timestamp fields did nothing about it, because preventing hindsight is an input-selection
     rule, not a schema. Making the parameter required means a new caller cannot omit it and
     silently get the old behaviour.
+
+    `through` (from `session_window`) additionally drops rows of sessions that are not
+    completed and verified — a forming daily row is not a close (audit F01).
     """
-    return list(session.execute(
-        select(Price).where(Price.stock_id == stock_id, Price.timeframe == TimeFrame.D1,
+    q = select(Price).where(Price.stock_id == stock_id, Price.timeframe == TimeFrame.D1,
                             Price.ts <= cutoff)
-        .order_by(Price.ts.desc()).limit(limit)).scalars().all())
+    if through is not None:
+        q = q.where(Price.ts < datetime.combine(through + timedelta(days=1), time()))
+    return list(session.execute(q.order_by(Price.ts.desc()).limit(limit)).scalars().all())
 
 
-# ── Completed exchange sessions (audit F01/F03, 2026-10-21) ──────────────────────
+# ── Completed, VERIFIED exchange sessions (audit F01/F03, 2026-10-21) ─────────────
 # A stored D1 row is keyed by its session date at midnight and is REWRITTEN during that session
 # by the intraday refresh jobs, so `ts <= now` admits a forming bar as "the latest daily close"
-# (measured in production: HK rows dated the current day at 13:00 HKT). A session's row is
-# treated as final only after the post-close ingest (scheduler `us_post_close` / `hk_post_close`,
-# 16:30 local) has had time to run. Early-close days settle at the same post-close time.
+# (measured in production: HK rows dated the current day at 13:00 HKT).
+#
+# A session's row counts as final only when the scheduler's post-close ingest for that market
+# (`us_post_close` / `hk_post_close`, 16:30 local) is RECORDED as having succeeded after that
+# session's 16:30 start — the clock passing 16:30 is not evidence. The record is the
+# `scheduler:job:<name>` Redis key the scheduler writes on completion (latest run only).
+#
+# What this does NOT establish: that every symbol's fetch succeeded inside an "ok" batch
+# (ingest_universe logs per-symbol failures and still reports ok) — no per-row write time is
+# stored. Only the LATEST expected session needs the record: each daily ingest re-fetches from
+# six days before the last stored bar, so a later successful run finalises earlier sessions.
 POST_CLOSE_INGEST_LOCAL = time(16, 30)
+#: The post-close ingest is EXPECTED to have completed by 16:45 local (it took 2-3 minutes on
+#: 2026-10-20). Before then the previous session is the latest one expected, so a plan built at
+#: 16:10 is not marked stale merely because the ingest has not run yet.
 POST_CLOSE_SETTLE = timedelta(minutes=15)
+#: Verification applies to live requests; a historical cutoff is not judged by today's record.
+LIVE_WINDOW = timedelta(hours=36)
 _TZ = {"US": ZoneInfo("America/New_York"), "HK": ZoneInfo("Asia/Hong_Kong")}
+_POST_CLOSE_JOB = {"US": "us_post_close", "HK": "hk_post_close"}
+_UNSET = object()
+
+
+def _aware(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
+def _real_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def ingest_started_at(market: str, d: date) -> datetime:
+    return datetime.combine(d, POST_CLOSE_INGEST_LOCAL, tzinfo=_TZ[market]).astimezone(timezone.utc)
 
 
 def session_settled_at(market: str, d: date) -> datetime | None:
-    """UTC instant after which `d`'s stored daily row is final, or None if not a session."""
+    """UTC instant by which `d`'s post-close ingest is EXPECTED to be done, or None."""
     bounds = session_bounds(market, d)
     if bounds is None:
         return None
-    ingest = datetime.combine(d, POST_CLOSE_INGEST_LOCAL, tzinfo=_TZ[market])
-    return max(bounds[1], ingest).astimezone(timezone.utc) + POST_CLOSE_SETTLE
+    return max(bounds[1].astimezone(timezone.utc), ingest_started_at(market, d)) + POST_CLOSE_SETTLE
 
 
 def last_completed_session(market: str, now: datetime) -> date | None:
-    """Latest session whose stored daily row is final at `now`. None = cannot be determined."""
+    """Latest session expected to be complete at `now`. None = cannot be determined."""
     if market not in _TZ:
         return None
-    aware = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
+    aware = _aware(now)
     d = aware.astimezone(_TZ[market]).date()
     if d.year > calendar_coverage()["hkex" if market == "HK" else "nyse"]:
         return None
@@ -87,6 +118,14 @@ def last_completed_session(market: str, now: datetime) -> date | None:
         if settled is not None and aware >= settled:
             return d
         d -= timedelta(days=1)
+    return None
+
+
+def _previous_session(market: str, d: date) -> date | None:
+    for _ in range(15):
+        d -= timedelta(days=1)
+        if session_bounds(market, d) is not None:
+            return d
     return None
 
 
@@ -99,20 +138,72 @@ def sessions_after(market: str, start: date, end: date) -> int:
     return n
 
 
-def completed_daily_bars(session, stock, limit: int, *, now: datetime) -> tuple[list[Price], dict]:
-    """Daily bars of COMPLETED sessions only, plus the session expectation they are judged by."""
+def read_post_close_record(market: str) -> dict:
+    """The scheduler's latest post-close ingest record: status ok|error|missing|unreadable."""
+    import json
+    try:
+        from common.redis_client import get_redis
+        raw = get_redis().get(f"scheduler:job:{_POST_CLOSE_JOB[market]}")
+    except Exception as exc:                     # noqa: BLE001 — unverifiable, not "ok"
+        return {"status": "unreadable", "error": str(exc)[:160]}
+    if not raw:
+        return {"status": "missing"}
+    try:
+        rec = json.loads(raw)
+        return {"status": rec.get("status"), "error": rec.get("error"),
+                "last_run": _aware(datetime.fromisoformat(rec["last_run"]))}
+    except Exception as exc:                     # noqa: BLE001
+        return {"status": "unreadable", "error": f"malformed record: {exc}"[:160]}
+
+
+def session_window(market: str, ref: datetime, *, record=_UNSET) -> dict:
+    """Which daily rows are usable at `ref`, and whether the latest session is verified.
+
+    expected_session: the latest session whose post-close ingest should be done by `ref`.
+    usable_through:   the latest session whose row may be read as a close.
+    unverified:       why expected_session's row is not usable (None when it is).
+    """
+    expected = last_completed_session(market, ref)
+    if expected is None:
+        return {"market": market, "expected_session": None, "usable_through": None,
+                "reason": f"no exchange calendar covers {market} at this time, so completed "
+                          f"sessions cannot be determined"}
+    out = {"market": market, "expected_session": expected, "usable_through": expected,
+           "unverified": None, "verification": None}
+    if abs(_real_now() - _aware(ref)) > LIVE_WINDOW:
+        out["verification"] = ("historical cutoff: the latest ingest record is not evidence "
+                               "about it; a later daily ingest re-fetches the prior six days")
+        return out
+    rec = read_post_close_record(market) if record is _UNSET else record
+    job = _POST_CLOSE_JOB[market]
+    started = ingest_started_at(market, expected)
+    if rec.get("status") == "ok" and rec.get("last_run") is not None and rec["last_run"] >= started:
+        out["verification"] = f"{job} recorded ok at {rec['last_run']:%Y-%m-%d %H:%M} UTC"
+        return out
+    if rec.get("status") == "ok":
+        why = f"the last recorded {job} run ({rec['last_run']:%Y-%m-%d %H:%M} UTC) predates this session's"
+    elif rec.get("status") == "error":
+        why = f"the last {job} run failed ({rec.get('error') or 'no detail'})"
+    elif rec.get("status") == "missing":
+        why = f"no {job} completion is recorded"
+    else:
+        why = f"the {job} record could not be read ({rec.get('error') or rec.get('status')})"
+    out["usable_through"] = _previous_session(market, expected)
+    out["unverified"] = (f"the {expected.isoformat()} close is not verified as ingested: {why}; "
+                         f"the previous session's close is shown instead")
+    return out
+
+
+def completed_daily_bars(session, stock, limit: int, *, now: datetime,
+                         record=_UNSET) -> tuple[list[Price], dict]:
+    """Daily bars of COMPLETED, verified sessions only, plus the window they are judged by."""
     market = getattr(stock.market, "value", stock.market)
-    latest = last_completed_session(market, now)
-    if latest is None:
-        return [], {"market": market, "expected_session": None,
-                    "reason": f"no exchange calendar covers {market} at this time, so completed "
-                              f"sessions cannot be determined"}
-    end = datetime.combine(latest + timedelta(days=1), time())
-    bars = list(session.execute(
-        select(Price).where(Price.stock_id == stock.id, Price.timeframe == TimeFrame.D1,
-                            Price.ts < end, Price.ts <= _naive(now))
-        .order_by(Price.ts.desc()).limit(limit)).scalars().all())
-    return bars, {"market": market, "expected_session": latest}
+    window = session_window(market, now, record=record)
+    if window["expected_session"] is None or window["usable_through"] is None:
+        return [], {**window, "expected_session": None,
+                    "reason": window.get("reason") or "no usable completed session"}
+    return daily_bars(session, stock.id, limit, cutoff=_naive(now),
+                      through=window["usable_through"]), window
 
 
 def record_bar(book: EvidenceBook, bar: Price) -> str:
@@ -185,6 +276,10 @@ def price_as_of(bars: list[Price], now: datetime, *, book: EvidenceBook | None =
     if sessions is not None:
         expected, have = sessions["expected_session"], _naive(latest.ts).date()
         value["expected_session"] = expected.isoformat()
+        if sessions.get("verification"):
+            value["ingest_verification"] = sessions["verification"]
+        if sessions.get("unverified"):
+            return stale(value, sessions["unverified"], evidence_ids=ids)
         missing = sessions_after(sessions["market"], have, expected)
         if missing:
             return stale(value, f"the latest stored daily close is for {have.isoformat()}, but "
@@ -529,8 +624,9 @@ def breadth(session, market: str, today, *, cutoff: datetime) -> Field:
         return unavailable(f"no active {market} symbols in the universe")
     above = total = 0
     covered_ids = []
+    through = session_window(getattr(market, "value", market), cutoff)["usable_through"]
     for sid in stock_ids:
-        bars = daily_bars(session, sid, limit=21, cutoff=cutoff)
+        bars = daily_bars(session, sid, limit=21, cutoff=cutoff, through=through)
         if len(bars) < 21:
             continue
         closes = [float(b.close) for b in bars]
@@ -567,8 +663,9 @@ def sector_leadership(session, market: str, sessions: int = 20, *, cutoff: datet
     if not rows:
         return unavailable(f"no active {market} symbols carry a sector classification")
     by_sector: dict[str, list[float]] = {}
+    through = session_window(getattr(market, "value", market), cutoff)["usable_through"]
     for sid, sector in rows:
-        bars = daily_bars(session, sid, limit=sessions + 1, cutoff=cutoff)
+        bars = daily_bars(session, sid, limit=sessions + 1, cutoff=cutoff, through=through)
         if len(bars) < sessions + 1 or not bars[sessions].close:
             continue
         pct = (float(bars[0].close) - float(bars[sessions].close)) / float(bars[sessions].close) * 100
@@ -613,8 +710,9 @@ def peer_basket(session, stock, sessions: int = 20, *, cutoff: datetime) -> Fiel
             f"can be formed. A one-member basket is the subject itself.")
 
     members, returns = [], []
+    through = session_window(getattr(stock.market, "value", stock.market), cutoff)["usable_through"]
     for sid, sym in rows:
-        bars = daily_bars(session, sid, limit=sessions + 1, cutoff=cutoff)
+        bars = daily_bars(session, sid, limit=sessions + 1, cutoff=cutoff, through=through)
         if len(bars) < sessions + 1 or not bars[sessions].close:
             continue
         base = float(bars[sessions].close)

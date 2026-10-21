@@ -30,7 +30,9 @@ from intelligence.report_contract import (
 #: Bumped with the IR-01..IR-04 corrections: cutoff-bounded inputs, populated evidence, horizon
 #: outlooks no longer copied from one daily heuristic, and earnings comparisons bound to the
 #: frozen baseline. Reports written under policy 1 meant something different.
-POLICY_VERSION = "3"
+#: Policy 4 (2026-10-21): daily closes are read only for COMPLETED sessions whose post-close
+#: ingest is verified, and price freshness is judged in sessions — the same rule as the Game Plan.
+POLICY_VERSION = "4"
 
 
 def _retime(fields: dict[str, Field], mapping: dict[str, tuple]) -> None:
@@ -187,11 +189,11 @@ def market_outlook(session, *, market: str = "US", now: datetime | None = None):
         trend = unavailable("no benchmark symbol")
         fields["price_as_of"] = unavailable("no benchmark symbol")
     else:
-        bars = A.daily_bars(session, benchmark.id, limit=70, cutoff=now)
+        bars, sw = A.completed_daily_bars(session, benchmark, limit=70, now=now)
         fields["benchmark"] = observed(
             {"symbol": benchmark.symbol, "name": benchmark.name,
              "basis": "an ETF proxy for the market, not the index itself"})
-        fields["price_as_of"] = A.price_as_of(bars, now, book=book)
+        fields["price_as_of"] = A.price_as_of(bars, now, book=book, sessions=sw)
         for n in (1, 5, 20, 63):
             fields[f"return_{n}_bars"] = A.session_return(
                 bars, n, label=f"{n}-bar return", book=book)
@@ -342,14 +344,14 @@ def stock_outlook(session, *, symbol: str, now: datetime | None = None):
         raise LookupError(f"{symbol} is not in the universe")
 
     book = EvidenceBook()
-    bars = A.daily_bars(session, stock.id, limit=70, cutoff=now)
+    bars, sw = A.completed_daily_bars(session, stock, limit=70, now=now)
     fields: dict[str, Field] = {
         "issuer": observed({"symbol": stock.symbol, "name": stock.name,
                             "market": stock.market.value if hasattr(stock.market, "value") else str(stock.market),
                             "currency": stock.currency,
                             "sector": stock.sector or None,
                             "industry": stock.industry or None}),
-        "price_as_of": A.price_as_of(bars, now, book=book),
+        "price_as_of": A.price_as_of(bars, now, book=book, sessions=sw),
         "next_catalyst": A.next_earnings_event(session, stock.id, now.date(), book=book),
     }
     fields["trend_structure"] = A.trend_structure(
@@ -496,7 +498,7 @@ def pre_earnings(session, *, symbol: str, now: datetime | None = None):
 
     book = EvidenceBook()
     A.record_event(book, event)
-    bars = A.daily_bars(session, stock.id, limit=70, cutoff=now)
+    bars, sw = A.completed_daily_bars(session, stock, limit=70, now=now)
     actuals = A.earnings_actuals(event)
     fields: dict[str, Field] = {
         "issuer": observed({"symbol": stock.symbol, "name": stock.name}),
@@ -509,7 +511,7 @@ def pre_earnings(session, *, symbol: str, now: datetime | None = None):
         "release_time_certainty": unknown(
             "only a report DATE is stored; whether the release is before the open or after the "
             "close is not recorded, and that determines which session reacts"),
-        "pre_event_reference_price": A.price_as_of(bars, now, book=book),
+        "pre_event_reference_price": A.price_as_of(bars, now, book=book, sessions=sw),
         # STORED AS A PLAIN NUMBER ON PURPOSE. This is the value the post-earnings report
         # reads back as the frozen expectation, so its shape is part of the freeze contract and
         # must not drift with the presentation of the comparison table.
@@ -679,7 +681,7 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
     coverage_warning = _event_coverage_warning(session, stock.id, event, now)
 
     A.record_event(book, event)
-    bars = A.daily_bars(session, stock.id, limit=70, cutoff=now)
+    bars, sw = A.completed_daily_bars(session, stock, limit=70, now=now)
 
     # IR-04: THE SURPRISE TABLE AND THE VERDICT MUST USE THE SAME EXPECTATION.
     # `earnings_actuals(event)` reads the CURRENT stored estimate, which the provider revises —
@@ -715,7 +717,7 @@ def post_earnings(session, *, symbol: str, event_id: int | None = None,
             observed(event.management_tone, evidence_ids=[f"earnings_event:{event.id}"])
             if getattr(event, "management_tone", None)
             else unavailable("no management commentary is stored for this event")),
-        "price_as_of": A.price_as_of(bars, now, book=book),
+        "price_as_of": A.price_as_of(bars, now, book=book, sessions=sw),
         "options_reaction": unavailable(
             "fresh per-leg option quotes are required to state an option outcome; an unchanged "
             "quote after a move is not current P&L, and earnings IV decline can hurt a long "

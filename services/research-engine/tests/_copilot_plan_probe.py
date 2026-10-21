@@ -873,7 +873,45 @@ def pl17_guidance_and_sizing():
     R["pl17"] = out
 
 
-for fn in (pl17_guidance_and_sizing, pl16_completed_sessions, pl15_inflight_reask_after_plan_change, pl14_signal_timestamp_tie, pl13_trade_setups, pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
+def pl18_verified_post_close_ingest():
+    """A session's close is used only when the post-close ingest is RECORDED ok after its start."""
+    from datetime import timezone as _tz
+    from src.intel_reports import adapters as A
+    from src.intel_reports import generators as GEN
+    out = {}
+    real_now, real_read = A._real_now, A.read_post_close_record
+    utc = lambda *a: datetime(*a, tzinfo=_tz.utc)
+    def at(t, record):
+        A._real_now = lambda: utc(t.year, t.month, t.day, t.hour, t.minute)   # a LIVE request
+        A.read_post_close_record = lambda market: record
+        try:
+            with Session() as s:
+                p = build_packet(s, SYM, now=t, plan_request=I.PositionIntent(kind="entry"))
+                f, _, _, _ = GEN.stock_outlook(s, symbol=SYM, now=t)
+            px = p.fields["price"]
+            return {"close": (px.value or {}).get("close"), "state": px.state.value, "reason": px.reason,
+                    "verification": (px.value or {}).get("ingest_verification"),
+                    "setups": sorted({x["state"] for x in p.plan.to_json()["setups"]}),
+                    "report_close": (f["price_as_of"].value or {}).get("close"), "report_state": f["price_as_of"].state.value}
+        finally:
+            A._real_now, A.read_post_close_record = real_now, real_read
+    reset()   # daily bars through Fri 2026-10-09 (close 100)
+    with Session() as s:
+        sid = s.execute(text("SELECT id FROM stocks WHERE symbol = :s"), {"s": SYM}).scalar()
+        s.add(Price(id=9101, stock_id=sid, ts=datetime(2026, 10, 12), timeframe=TimeFrame.D1,
+                    open=100, high=151, low=99, close=150, volume=1_000_000))
+        s.commit()
+    after = datetime(2026, 10, 12, 21, 0)                     # Mon 17:00 EDT
+    out["ok"] = at(after, {"status": "ok", "last_run": utc(2026, 10, 12, 20, 33)})
+    out["ok_but_old"] = at(after, {"status": "ok", "last_run": utc(2026, 10, 9, 20, 33)})
+    out["failed"] = at(after, {"status": "error", "error": "ingest_failed", "last_run": utc(2026, 10, 12, 20, 33)})
+    out["unreadable"] = at(after, {"status": "unreadable", "error": "redis down"})
+    out["before_expected"] = at(datetime(2026, 10, 12, 20, 20),   # Mon 16:20 EDT: Monday not yet expected
+                                {"status": "ok", "last_run": utc(2026, 10, 9, 20, 33)})
+    R["pl18"] = out
+
+
+for fn in (pl18_verified_post_close_ingest, pl17_guidance_and_sizing, pl16_completed_sessions, pl15_inflight_reask_after_plan_change, pl14_signal_timestamp_tie, pl13_trade_setups, pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
            pl4_staleness, pl5_routing_and_refusals, pl6_turns, pl7_plan_view):
     fn()
 R["_meta"] = {"server": ENGINE.dialect.name}

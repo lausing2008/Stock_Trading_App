@@ -353,10 +353,12 @@ def t12_a_bearish_reading_is_invalidated_by_a_move_up():
     reset()
     with Session() as s:
         stock = s.query(Stock).filter_by(symbol="TESTCO").one()
-        s.add(Price(id=900_001, stock_id=stock.id, ts=NOW + timedelta(days=1),
+        # Monday 2026-10-05's session row (keyed at midnight, as stored), read after that
+        # session's post-close ingest window: a weekend-dated row is not a session close.
+        s.add(Price(id=900_001, stock_id=stock.id, ts=datetime(2026, 10, 5),
                     timeframe=TimeFrame.D1, open=10, high=11, low=9, close=10.0, volume=1e6))
         s.commit()
-        f, _, _, _ = G.stock_outlook(s, symbol="TESTCO", now=NOW + timedelta(days=1))
+        f, _, _, _ = G.stock_outlook(s, symbol="TESTCO", now=datetime(2026, 10, 5, 21, 0))
     v = f["observed_daily_structure"].value
     R["t12_a_bearish_reading_is_invalidated_by_a_move_up"] = {
         "reading": v["reading"], "what_would_change_it": v["what_would_change_this_reading"],
