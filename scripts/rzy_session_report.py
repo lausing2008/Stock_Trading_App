@@ -139,7 +139,8 @@ def main(day, out_dir):
         digest = [r for r in outbox if r.alert_type == 'short_term_digest']
         report['digest'] = [dict(created=r.created_at.isoformat(), accepted=r.accepted_at.isoformat() if r.accepted_at else None, state=r.state) for r in digest]
         symbols = {st.id: st.symbol for st in s.scalars(select(Stock)).all()}
-        s.rollback()
+        # No explicit rollback: it would expire the loaded rows used below. Closing the session
+        # discards the READ ONLY transaction and keeps the loaded values on the detached objects.
     def write(name, rows, fields):
         with open(out / name, 'w', newline='') as f:
             w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore'); w.writeheader(); w.writerows(rows)
