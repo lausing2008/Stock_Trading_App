@@ -119,3 +119,14 @@ it('defaults to a calculated entry plan that needs no inputs, with sizing tucked
   await build();
   expect(mocks.getStockPlan.mock.calls[0][1]).toEqual({ kind: 'entry' });
 });
+it('keeps the panel area as tall as the rules view when switching, so the page does not jump', async () => {
+  const p = fixture(); mocks.getStockPlan.mockResolvedValue({ ...p, plan: { ...p.plan, setups: [setupFixture()] } });
+  const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(640);
+  try {
+    render(<StockGamePlanCard symbol="AAPL" onLevelsChange={vi.fn()} />); await build();
+    const area = screen.getByRole('region', { name: 'Rules-based plan' }).parentElement!.parentElement!;
+    expect(area.style.minHeight).toBe('');
+    fireEvent.click(screen.getByRole('button', { name: 'LLM alternative plan' }));
+    expect(area.style.minHeight).toBe('640px');
+  } finally { height.mockRestore(); }
+});

@@ -30,6 +30,15 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
   const [boardSetupId, setBoardSetupId] = useState('');
   const [evidence, setEvidence] = useState<PlanItem | null>(null);
   const [perspective, setPerspective] = useState<'rules' | 'llm'>('rules');
+  // Switching to the shorter pane would shrink the page and the browser would move the scroll
+  // position; keep the panel area at least as tall as it was when the user switched.
+  const panes = useRef<HTMLDivElement>(null);
+  const [panesMinHeight, setPanesMinHeight] = useState(0);
+  function choosePerspective(next: 'rules' | 'llm') {
+    const height = panes.current?.offsetHeight ?? 0;
+    setPanesMinHeight(m => Math.max(m, height));
+    setPerspective(next);
+  }
   const [llmSetups, setLlmSetups] = useState<TradeSetup[]>([]);
   const [llmNotice, setLlmNotice] = useState('');
   // Automatic re-generations after a "plan changed" refusal, capped so moving data cannot loop.
@@ -45,7 +54,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
   }, []);
   function reset() {
     generation.current++; abort.current?.abort(); setBusy(false);
-    setData(null); setDraft(null); setEvidence(null); setSaved(false); setError(''); setPerspective('rules'); setLlmSetups([]);
+    setData(null); setDraft(null); setEvidence(null); setSaved(false); setError(''); setPerspective('rules'); setPanesMinHeight(0); setLlmSetups([]);
     draftRequest.current = null; onLevelsChange([]);
   }
   useEffect(() => {
@@ -149,11 +158,11 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
       {data.plan.position_refusals.map((why, i) => <p key={i} role="alert">{why}</p>)}
       {Object.entries(data.plan.unavailable).map(([key, why]) => <p key={key} style={{ color: '#fbbf24' }}>{why}</p>)}
       <div role="group" aria-label="Plan perspective" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 12 }}>
-        <button style={buttonStyle} aria-pressed={perspective === 'rules'} onClick={() => setPerspective('rules')}>Rules-based plan</button>
-        <button style={buttonStyle} aria-pressed={perspective === 'llm'} onClick={() => setPerspective('llm')}>LLM alternative plan</button>
+        <button style={buttonStyle} aria-pressed={perspective === 'rules'} onClick={() => choosePerspective('rules')}>Rules-based plan</button>
+        <button style={buttonStyle} aria-pressed={perspective === 'llm'} onClick={() => choosePerspective('llm')}>LLM alternative plan</button>
       </div>
       <label><input type="checkbox" checked={chart} onChange={e => setChart(e.target.checked)} /> Show selected plan levels on the daily chart</label>
-      <div style={{ marginTop: 12 }}>
+      <div ref={panes} style={{ marginTop: 12, minHeight: panesMinHeight || undefined }}>
       <div hidden={perspective !== 'rules'}>
       <section aria-label="Rules-based plan" style={{ minWidth: 0 }}>
       <p>Prices as of {data.plan.price_as_of?.slice(0, 16).replace('T', ' ') ?? 'unknown'} UTC · {data.plan.currency ?? 'currency unknown'}</p>
