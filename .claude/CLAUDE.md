@@ -284,6 +284,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/2026-10-19/little-rzy-deep-review.md`** — RZY deep review: entry/exit logic verified; exact-match quarantine locked all 5m, one old gap excluded a stream for months, checkpoints grew unbounded. Rebuild-by-generation + segments + bounded state [RZY, revisions]
 - **`docs/2026-10-19/little-rzy-evaluation-results.md`** — first real-data RZY test vs random-timing controls: 693 trades, −0.09R, edge −0.001R (CI spans 0). 90% exit on a close through the line within ~4 bars; targets rarely reached [RZY, backtest]
 - **`docs/2026-10-20/little-rzy-evaluation-rerun.md`** — corrected RZY controls (RZA-09/10), hashed input snapshot: still no edge (+0.001R, by-symbol CI spans 0). Stop/target-only variant is worse (−0.20R, 2.3× drawdown) [RZY, backtest]
+- **`docs/2026-10-20/little-rzy-audit-resolution.md`** — RZA-01..10 resolved (tier 456): generation-safe events/mail, derived-bar freshness, unpruned backtest, gap-safe replay, strict execution evidence. Live rules unchanged [RZY, audit]
 
 - **`docs/features/admin-and-settings.md`** — Admin AI Assistant Features Page; AUD-ALERTPREFS (2026-09-24): every alert used to go to anyone holding ANY untriggered price alert, symbol never matched. Per-type prefs + HMAC unsubscribe. Absence = subscribed, filter fails OPEN [alerts, email, unsubscribe]
 - **`docs/features/aud250-small-fixes.md`** — AUD250-PORTFOLIOOPTIMIZER-SILENT-FALLBACK-NO-FLAG — Fallback Reason Now Visible in Response (Built 2026-07-19)

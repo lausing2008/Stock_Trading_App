@@ -35,6 +35,15 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'LITTLE-RZY-AUDIT-FIXES', tier: 456, severity: 'high', defaultStatus: 'done',
+    title: 'Little RZY audit fixes: generation-safe events, derived-bar freshness and replay/report correctness',
+    file: 'docs/2026-10-20/little-rzy-audit-resolution.md', effort: 'M',
+    impact: 'Charts, digests and alerts show only current, internally consistent research data; backtests and evaluations no longer lose trades or mis-score controls.',
+    what: 'Independent audit RZA-01..RZA-10: rebuilt events lacked generation identity, stale 15m/1h aggregates looked fresh, backtest ledger pruned trades, replay filled across gaps and accepted "false", short standing cancellations mailed, stale native rows blocked derivation, cancelled entries vanished from the chart, and evaluation controls mis-accrued borrow/used shortened windows.',
+    fix: 'Events carry generation and occurrence ids; current views return one generation and history is explicit; mail is deduplicated per occurrence and suppressed when figures changed. 15m/1h freshness is computed from their own completed bins and stale aggregates are excluded from the digest with a reason. Unpruned backtest ledger, calendar-aware replay segments, strict boolean execution evidence, one canonical native/derived source, cancellation history kept on the chart with pivot confirmation times. Live trading rules unchanged.',
+    implementedNote: 'Research overlay and watch alert only: the corrected evaluation shows no demonstrated edge under the tested assumptions. Forward evidence must come from sessions after 2026-10-20.',
+  },
+  {
     id: 'LITTLE-RZY-WATCHLIST', tier: 455, severity: 'feature', defaultStatus: 'done',
     title: 'Little RZY-inspired signals, morning watchlist preparation and SMA 5/10',
     file: 'docs/2026-10-19/little-rzy-implementation.md', effort: 'L',

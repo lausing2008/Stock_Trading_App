@@ -313,3 +313,76 @@ def test_paper_trades_obey_entry_fill_and_exit_invariants_on_random_streams():
                         if 'stop' in ev['reason']: assert s*(raw-e.s['positions'][sid]['stop'])<=1e-9
                     if t=='EXHAUSTION_WATCH': assert ev['trend_epoch_id']==e.s['epoch']
         assert trades>5
+
+
+@pytest.mark.parametrize('value',['false','true',1,None,'missing'])
+def test_rza05_only_boolean_true_is_execution_evidence(value):
+    e,bars,st=triggered(fill=False);b=candle(len(bars))
+    if value=='missing': b.pop('execution_eligible')
+    else: b['execution_eligible']=value
+    events=e.step(b)
+    assert not any(x['event_type']=='PAPER_FILL' for x in events)
+    cancel=next(x for x in events if x['event_type']=='ENTRY_CANCELLED')
+    assert 'data_basis_or_freshness_unverified' in cancel['failed_rules']
+
+
+def _short_pending():
+    bars=[];e=Engine('TEST','5m')
+    for i in range(150):
+        b=candle(i,close=200-(100+.12*i+5*math.sin(i*.22))+100)
+        b.update(open=b['close']+.2,high=b['close']+.8,low=b['close']-.6);bars.append(b);e.step(b)
+        if e.s['active'] and e.s['structures'][e.s['active']]['direction']=='short': break
+    st=e.s['structures'][e.s['active']]
+    for off in (1,2):
+        i=len(bars);line=e.line(st,i);b=candle(i)
+        b.update(open=line-.2,close=line-.1,low=line-.4,high=line+.1) if off==1 else b.update(open=line-.3,close=line-.7,low=line-.8,high=line+.1)
+        bars.append(b);events=e.step(b)
+    assert any(x['event_type']=='TRIGGERED' for x in events)
+    return e,bars
+
+
+@pytest.mark.parametrize('borrow,invalid',[(None,False),('x',True),(True,True),(-.1,True),(.03,False)])
+def test_rza06_missing_borrow_is_standing_but_malformed_borrow_is_invalid(borrow,invalid):
+    e,bars=_short_pending();b=candle(len(bars));b.update(execution_eligible=False,shortable=None,borrow_rate_annual=borrow)
+    cancel=next(x for x in e.step(b) if x['event_type']=='ENTRY_CANCELLED')
+    assert ('borrow_cost_invalid' in cancel['failed_rules'])==invalid
+
+
+def test_rza03_backtest_ledger_survives_live_retention_caps(monkeypatch):
+    from src.services import little_rzy
+    from src.services.rzy_backtest import run
+    import random
+    rng=random.Random(0);p=100.;t=datetime(2026,1,5,14,30,tzinfo=timezone.utc);bars=[]
+    for k in range(6000):
+        o=p;c=max(1,o+rng.gauss(.02*((k//300)%2*2-1),.5));h=max(o,c)+abs(rng.gauss(0,.25));l=min(o,c)-abs(rng.gauss(0,.25));p=c
+        bars.append(dict(time=t.isoformat(),closed_at=(t+timedelta(minutes=5)).isoformat(),complete=True,open=o,high=h,low=l,close=c,volume=1000.,
+                         execution_eligible=True,shortable=True,borrow_rate_annual=.02));t+=timedelta(minutes=5)
+    cfg=Config(sequence_filter=False,no_chase_filter=False,bollinger_context=False)
+    monkeypatch.setattr(little_rzy.Engine,'KEEP_CLOSED_POSITIONS',3)
+    monkeypatch.setattr(little_rzy.Engine,'KEEP_STRUCTURES',3)
+    rep=run('X','5m',bars,cfg)
+    closed=[x for x in rep['events'] if x['event_type']=='PAPER_EXIT' and x['paper_state']=='CLOSED']
+    assert len(closed)>3 and rep['metrics']['trade_count']==len(rep['trades'])==len(closed)
+
+
+def test_rza04_replay_never_fills_across_a_missing_intraday_bar():
+    from src.services.rzy_backtest import replay_segments
+    e,bars,st=triggered(fill=False)
+    # The next supplied bar opens 45 minutes after the trigger closed: entry bars are missing.
+    nxt=candle(len(bars)+9);nxt.update(execution_eligible=True)
+    out=replay_segments('TEST','5m',[dict(b) for b in bars]+[nxt])
+    assert len(out)==2
+    assert not any(x['event_type']=='PAPER_FILL' for seg in out for x in seg['events'])
+    assert any(p['state']=='PENDING_ENTRY' for p in out[0]['positions'].values())
+
+
+def test_backtest_cli_runs_as_shipped_without_test_import_paths(tmp_path):
+    import os, subprocess, sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    env = {k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}
+    out = tmp_path / 'r.json'
+    run = subprocess.run([sys.executable, str(root / 'scripts/backtest_little_rzy.py'), str(root / 'docs/2026-10-19/little-rzy-synthetic.csv'),
+                          '--symbol', 'SYNTHETIC', '--timeframe', '5m', '--output', str(out)], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, run.stderr[-2000:]
+    assert json.loads(out.read_text())['variants']['baseline']['held_out']['contiguous_segments'] == 1

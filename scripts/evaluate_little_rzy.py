@@ -115,7 +115,7 @@ def evaluate(snapshot_dir, out_dir, only=None):
                method=dict(unit='R = net P&L per share / initial risk (fill to frozen stop)',
                            control='20 random-timing twins per trade inside the same segment, full holding window observable: same direction, stop/target in ATR, costs and borrow; borrow accrues only until the actual exit',
                            intervals='edge 95% CI bootstrapped by symbol (verdict); by-trade CI and minimum detectable edge reported alongside',
-                           periods='per timeframe, the last 30% of the covered span is held out; nothing is fitted on either period',
+                           periods='per timeframe, the last 30% of the covered span is a RETROSPECTIVE holdout (already visible to earlier runs); nothing is fitted on either period; unseen evidence requires later sessions',
                            fills='next bar open with half-spread + slippage; stop before target; gaps fill at the worse open',
                            tuning='none; all variants reported; research_stop_target_only is NOT a live default'),
                runtime_seconds=None, variants=report(results, cuts))

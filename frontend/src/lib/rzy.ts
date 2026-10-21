@@ -23,7 +23,9 @@ export function rzyLinePoints(structure: RzyStructure, timestamps: string[], unt
   return timestamps.slice(at).filter(t => rzyTime(t) <= stop).map((time, offset) => ({ time, value: a.price+(c.price-a.price)*offset/(c.index-a.index) }));
 }
 
-const RZY_TERMINAL = new Set(['INVALIDATED','EXPIRED','COMPLETED','REJECTED','PAPER_EXIT']);
+// ENTRY_CANCELLED ends a triggered setup whose paper fill failed (the normal path while execution
+// data are unverified); its trigger stays on the chart as research history (RZA-08).
+const RZY_TERMINAL = new Set(['INVALIDATED','EXPIRED','COMPLETED','REJECTED','PAPER_EXIT','ENTRY_CANCELLED']);
 
 /** What to draw: every live (armed/triggered) structure, plus the most recent structures that
  *  were armed and have since ended, each clipped at its ending bar. Never-armed rejections and
@@ -42,8 +44,14 @@ export function rzyStructuresToDraw(structures: RzyStructure[], events: RzyEvent
 /** Short chart labels; the full event name is in the events table and emails. */
 export const RZY_EVENT_LABEL: Record<string, string> = {
   TRIGGERED: 'RZY entry', PAPER_FILL: 'fill', PAPER_EXIT: 'exit', INVALIDATED: '✕',
-  EXPIRED: 'exp', REJECTED: 'rej', REVERSAL_WATCH: 'rev?',
+  EXPIRED: 'exp', REJECTED: 'rej', REVERSAL_WATCH: 'rev?', ENTRY_CANCELLED: 'no fill',
 };
+
+/** Pivot label with the moment the strategy knew it: chart axes are UTC for intraday bars. */
+export function rzyPivotLabel(letter: string, confirmedAt: string, intraday: boolean) {
+  const t = new Date(rzyTime(confirmedAt)).toISOString();
+  return `${letter} ✓${intraday ? t.slice(11, 16) : t.slice(5, 10)}`;
+}
 
 export function rzyPriceGridMatches(grid: RzyResponse['price_grid'], candles: { ts: string; open: number; high: number; low: number; close: number }[]) {
   if (!grid?.length || !candles.length) return false;

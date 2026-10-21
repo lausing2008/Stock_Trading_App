@@ -29,7 +29,7 @@ import { ToolbarDropdown } from './ToolbarDropdown';
 import { computeSMA, computeEMA, computeRSI, computeMACD, computeBollingerBands } from '@/lib/indicators';
 import { loadDrawings, addDrawing, removeDrawing, clearDrawings, nextDrawingId, nearestBarIndexByTimestamp, type ChartDrawing } from '@/lib/chartDrawings';
 import { computeRiskReward } from '@/lib/riskReward';
-import { rzyLinePoints, rzyPriceGridMatches, rzyStructuresToDraw, rzyTime, RZY_EVENT_LABEL, type RzyResponse } from '@/lib/rzy';
+import { rzyLinePoints, rzyPivotLabel, rzyPriceGridMatches, rzyStructuresToDraw, rzyTime, RZY_EVENT_LABEL, type RzyResponse } from '@/lib/rzy';
 
 type Props = {
   symbol: string;
@@ -527,7 +527,7 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
           if (live) hover.lines.push({ dir: structure.direction, series: line });
           structure.anchors.forEach((anchor, n) => {
             const time = at(anchor.pivot_time);
-            if (time && live) allMarkers.push({ time, position: anchor.kind === 'low' ? 'belowBar' : 'aboveBar', color, shape: 'circle', size: 0.6, text: 'ABC'[n] });
+            if (time && live) allMarkers.push({ time, position: anchor.kind === 'low' ? 'belowBar' : 'aboveBar', color, shape: 'circle', size: 0.6, text: rzyPivotLabel('ABC'[n], anchor.confirmed_at, isIntraday) });
           });
           const extreme = at(structure.extreme.time);
           if (extreme && live) {

@@ -134,6 +134,33 @@ def aggregate_completed_bars(source, evidence, timeframe, now, *, session_bounds
             close=members[-1]['close'],volume=sum(b['volume'] for b in members))
         result.append(bar)
     evidence.update(exclusions=evidence.get('exclusions',[])+excluded,gaps=evidence.get('gaps',[])+gaps)
-    evidence['status']=evidence['status'] if result else 'no_completed_bars'
-    if result:evidence['data_as_of']=result[-1]['closed_at']
+    if not result:
+        evidence['status']='no_completed_bars'; return result,evidence
+    # Freshness of the DERIVED frame from its own completed bars (RZA-02): the newest bin that
+    # should be complete by now must be present; a fresh 5m tail does not make old 15m/1h fresh.
+    latest=utc(datetime.fromisoformat(result[-1]['closed_at']))
+    expected=latest_completable_close(now,timeframe,session_bounds)
+    evidence['data_as_of']=latest.isoformat()
+    evidence['expected_latest_close']=expected.isoformat() if expected else None
+    lagging=expected is None or latest<expected
+    if lagging:
+        evidence['stale']=True
+        evidence['stale_reason']=f'stale_{timeframe}_aggregate'
+    evidence['status']='stale' if evidence.get('stale') else 'research_only'
+    if evidence['status']=='stale' and not evidence.get('stale_reason'): evidence['stale_reason']='stale_5m_source'
     return result,evidence
+
+
+def latest_completable_close(now,timeframe,session_bounds):
+    """Close time of the newest session-anchored bin that should be complete (2-min settle)."""
+    step=timedelta(minutes=MINUTES[timeframe]); cutoff=utc(now)-timedelta(minutes=2)
+    day=cutoff.astimezone(NY).date()
+    for _ in range(12):
+        bounds=session_bounds('US',day)
+        if bounds:
+            start,end=(utc(v) for v in bounds)
+            if cutoff>=end: return end
+            n=int((cutoff-start).total_seconds()//step.total_seconds()) if cutoff>start else 0
+            if n>=1: return start+n*step
+        day-=timedelta(days=1)
+    return None

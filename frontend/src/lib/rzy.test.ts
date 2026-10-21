@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { rzyLinePoints, rzyPriceGridMatches, rzyStructuresToDraw, rzyTime, type RzyEvent, type RzyStructure } from './rzy';
+import { RZY_EVENT_LABEL, rzyLinePoints, rzyPivotLabel, rzyPriceGridMatches, rzyStructuresToDraw, rzyTime, type RzyEvent, type RzyStructure } from './rzy';
 const times=['2026-10-16T13:30:00Z','2026-10-16T13:35:00Z','2026-10-16T13:40:00Z','2026-10-16T13:45:00Z'];
 const s: RzyStructure = { id:'fixture',direction:'long',state:'ARMED',anchors:[{index:100,price:10,pivot_time:times[0],confirmed_at:times[3],kind:'low'},{index:101,price:15,pivot_time:times[1],confirmed_at:times[3],kind:'high'},{index:102,price:12,pivot_time:times[2],confirmed_at:times[3],kind:'low'}],extreme:{time:times[1],price:15},D:4,target:19,runner:23,sequence_number:1,sequence_confidence:'unknown' };
 it('draws the frozen line with trading-bar indices and refuses a missing candle grid',()=>{
@@ -38,4 +38,16 @@ it('draws live structures and only the latest armed-then-ended ones with a known
  const events=[ev('old1','ARMED'),ev('old1','INVALIDATED'),ev('old2','ARMED'),ev('old2','EXPIRED'),ev('old3','ARMED'),ev('old3','COMPLETED',times[2]),ev('never','REJECTED'),ev('noend','ARMED'),ev('live','ARMED')];
  const drawn=rzyStructuresToDraw(structures,events);
  expect(drawn.map(d=>[d.structure.id,d.live,d.until])).toEqual([['old2',false,times[3]],['old3',false,times[2]],['live',true,null]]);
+});
+
+it('keeps a cancelled paper entry and its trigger as visible research history (RZA-08)',()=>{
+ const st={...s,id:'c',state:'REJECTED'};
+ const ev=(event_type:string,t:string):RzyEvent=>({event_id:event_type,structure_id:'c',event_type,position_action:'WATCH_ONLY',signal_time:t,bar_time:t});
+ const drawn=rzyStructuresToDraw([st],[ev('ARMED',times[1]),ev('TRIGGERED',times[2]),ev('ENTRY_CANCELLED',times[3])]);
+ expect(drawn.map(d=>[d.structure.id,d.live,d.until])).toEqual([['c',false,times[3]]]);
+ expect(RZY_EVENT_LABEL.ENTRY_CANCELLED).toBe('no fill');
+});
+it('labels pivots with their confirmation time',()=>{
+ expect(rzyPivotLabel('A','2026-10-19T16:05:00+00:00',true)).toBe('A ✓16:05');
+ expect(rzyPivotLabel('C','2026-10-19T00:00:00+00:00',false)).toBe('C ✓10-19');
 });

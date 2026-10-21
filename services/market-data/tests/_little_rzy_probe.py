@@ -80,7 +80,7 @@ with Session() as s:
     scanned=W.scan(s,now);s.commit()
     assert scanned['queued']==1,scanned
     rows=s.scalars(select(models.NotificationOutbox)).all();assert len(rows)==1
-    assert 'OPEN_LONG' in rows[0].body_text and 'not the AI signal' in rows[0].body_text
+    assert 'Bullish setup triggered' in rows[0].subject and 'Research only' in rows[0].body_text and 'No broker order' in rows[0].body_text
     assert '/alerts/unsubscribe' in rows[0].body_text or 'Turn off' in rows[0].body_text
     assert 'owner@example.invalid'==rows[0].recipient
     # De-duplicated on restart and same timestamp.
@@ -137,15 +137,42 @@ with Session() as s:
     assert archived[0].detail['checkpoint_sha256'] and archived[0].detail['structures']
     assert s.scalar(select(func.count()).select_from(RzyEvent))>=count, 'Superseded events must be retained'
     clock[0]=monday
-    W.drain(s,send,monday);s.commit();assert len(sent)==1
-    assert s.scalar(select(models.NotificationOutbox).where(models.NotificationOutbox.subject=='superseded')).state=='suppressed'
+    # The revision did not touch this setup: the same occurrence exists unchanged in the
+    # current generation, so the queued message is still accurate and is delivered once.
+    W.drain(s,send,monday);s.commit();assert len(sent)==2
+    assert s.scalar(select(models.NotificationOutbox).where(models.NotificationOutbox.subject=='superseded')).state=='accepted'
+    # RZA-01 (audit scenario): raise the extreme candle's high so D and the target change.
+    trig=s.scalar(select(RzyEvent).where(RzyEvent.event_type=='TRIGGERED'))
+    occ=trig.payload['occurrence_id'];old_target=trig.payload['primary_target']
+    assert trig.event_id==occ and trig.payload['generation']==1
+    outbox.enqueue(s,event_id=f'rzy:moved:1:{occ}',user_id=1,recipient=user.email,alert_type='little_rzy',subject='moved',body_html='fixture',body_text='fixture',expires_at=(monday+timedelta(minutes=5)).replace(tzinfo=None));s.commit()
+    extreme=s.get(models.Price,trig.payload['extreme']['index']+1);extreme.high+=.20;s.commit()
+    before=s.scalar(select(func.count()).select_from(RzyEvent))
+    moved=W.evaluate(s,'TEST','5m',now+timedelta(minutes=1),persist=True);s.commit()
+    assert moved['rebuilt'] and moved['generation']==3
+    assert s.scalar(select(func.count()).select_from(RzyEvent))>before, 'A rebuild must store its own generation of events'
+    versions=s.scalars(select(RzyEvent).where(RzyEvent.event_type=='TRIGGERED')).all()
+    new=[e for e in versions if e.payload['generation']==3 and e.payload['occurrence_id']==occ]
+    assert len(new)==1 and new[0].event_id!=occ and new[0].payload['primary_target']!=old_target
+    # Current views carry only generation 3, with the new target; history is explicit.
+    view=W.evaluate(s,'TEST','5m',now+timedelta(minutes=1))
+    assert {e.get('generation',1) for e in view['events']}=={3} and view['superseded_event_count']>0
+    assert [e['primary_target'] for e in view['events'] if e['event_type']=='TRIGGERED']==[new[0].payload['primary_target']]
+    hist=W.superseded_events(s,'TEST','5m')
+    assert hist['current_generation']==3 and old_target in [e['primary_target'] for e in hist['events'] if e['event_type']=='TRIGGERED']
+    # The queued message showed the old target: suppressed, and the new version shares the
+    # outbox key (occurrence), so it can never be mailed a second time.
+    W.drain(s,send,monday);s.commit();assert len(sent)==2
+    assert s.scalar(select(models.NotificationOutbox).where(models.NotificationOutbox.subject=='moved')).state=='suppressed'
+    assert new[0].payload['occurrence_id']==occ
+    result['generation_identity']=True
     # A rebuild replays history, so it must not mail anything already stale.
     assert W.scan(s,now+timedelta(minutes=1))['queued']==0
     # A legacy quarantine from the previous release rebuilds instead of staying locked forever.
     row=s.get(RzyStream,key);cp=copy.deepcopy(row.checkpoint);cp['requires_audited_replay']={'reason':'stored_completed_bar_changed','observed_at':'x'}
     row.checkpoint=cp;s.commit()
     legacy=W.evaluate(s,'TEST','5m',now+timedelta(minutes=1),persist=True);s.commit()
-    assert legacy['rebuilt'] and legacy['rebuild_reason']=='legacy_quarantine' and legacy['generation']==3
+    assert legacy['rebuilt'] and legacy['rebuild_reason']=='legacy_quarantine' and legacy['generation']==4
     assert not s.get(RzyStream,key).checkpoint.get('requires_audited_replay')
     result['persistent_revision_quarantine']=True
     # A bar missing after the checkpoint waits for backfill, then rebuilds on the new segment.
@@ -164,6 +191,28 @@ with Session() as s:
     body=W.render_event(dict(event.payload),('provider_delay_unverified',))
     assert 'Paper execution unavailable' in body and 'provider_delay_unverified' in body
     result['email_noise_gating']=True
+    # RZA-02: slot 59 (18:25-18:30) is missing, so the 15m bin closing 18:30 is incomplete while
+    # the 5m tail (slot 60, closed 18:35) is current. 15m freshness must come from 15m itself.
+    fresh5=base+timedelta(minutes=5*61+3)
+    five=W.evaluate(s,'TEST','5m',fresh5);fifteen=W.evaluate(s,'TEST','15m',fresh5)
+    assert five['evidence'].get('stale') is False
+    assert fifteen['status']=='stale' and fifteen['evidence']['stale_reason']=='stale_15m_aggregate'
+    assert fifteen['evidence']['expected_latest_close']==(base+timedelta(minutes=5*60)).isoformat()
+    assert fifteen['evidence']['data_as_of']<fifteen['evidence']['expected_latest_close']
+    pref=s.get(RzyPreference,1);pref.timeframes=['15m'];s.commit()
+    digest=W.digest_preview(s,1,fresh5)
+    assert not digest['candidates']
+    ex=[x for x in digest['exclusions'] if x['timeframe']=='15m']
+    assert ex and ex[0]['reason']=='stale_15m_aggregate' and ex[0]['expected_latest_close'] and ex[0]['source']=='derived_from_5m'
+    pref.timeframes=['5m'];s.commit()
+    result['derived_freshness']=True
+    # RZA-07: one stale native 15m row must not disable the fresh 5m-derived series.
+    s.add(models.Price(id=9001,stock_id=1,ts=base.replace(tzinfo=None),timeframe=models.TimeFrame.M15,open=100,high=101,low=99,close=100,volume=1,session='REGULAR'));s.commit()
+    chosen=W.evaluate(s,'TEST','15m',base+timedelta(minutes=5*58+3))
+    assert chosen['evidence']['source']=='derived_from_5m' and chosen['evidence']['alternative']['source']=='native'
+    assert chosen['evidence']['alternative']['status']=='stale' and len(chosen['price_grid'])>1
+    s.delete(s.get(models.Price,9001));s.commit()
+    result['native_derived_choice']=True
 # Whole OHLC adjustment and missing/forming/stale data are tested at the shipped adapter.
 rows=[types.SimpleNamespace(ts=base+timedelta(minutes=5*i),open=100,high=102,low=98,close=100,adj_close=50,volume=10,session='REGULAR') for i in range(3)]
 bars,ev=prepare_bars(rows,'5m',base+timedelta(minutes=17),session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)

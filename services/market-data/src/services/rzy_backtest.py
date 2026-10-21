@@ -2,36 +2,75 @@
 from dataclasses import asdict,replace
 from math import sqrt
 from statistics import mean
+from datetime import datetime
 from .little_rzy import Engine,Config
 
 
+class _Ledger(Engine):
+    # Reports need every position ever taken; the live retention caps (which prune closed
+    # positions from the operational cache) must never shorten a backtest's ledger (RZA-03).
+    RETAIN = 10 ** 9
+    KEEP_PIVOTS = 10 ** 9
+    KEEP_STRUCTURES = 10 ** 9
+    KEEP_CLOSED_POSITIONS = 10 ** 9
+
+
+def split_segments(bars,timeframe):
+    """Calendar-aware contiguous segments, the same contract as live evaluation (RZA-04)."""
+    from common.market_calendar import session_bounds
+    from .rzy_data import break_indices
+    if not bars: return []
+    norm=[dict(b,time=datetime.fromisoformat(b['time']).isoformat(),closed_at=datetime.fromisoformat(b['closed_at']).isoformat()) for b in bars]
+    if timeframe not in ('5m','15m','1h','1d') or any(datetime.fromisoformat(b['time']).tzinfo is None for b in norm):
+        return [bars]   # the engine itself rejects naive timestamps / unsupported frames
+    cuts=[0]+break_indices(norm,timeframe,session_bounds)+[len(bars)]
+    return [bars[a:b] for a,b in zip(cuts,cuts[1:]) if b>a]
+
+
+def replay_segments(symbol,timeframe,bars,config=None):
+    out=[]
+    for seg in split_segments(bars,timeframe):
+        engine=_Ledger(symbol,timeframe,config); events=[]
+        for bar in seg: events.extend(engine.step(bar))
+        out.append(dict(first=seg[0]['time'],last=seg[-1]['time'],bars=len(seg),events=events,positions=engine.s['positions']))
+    return out
+
+
 def run(symbol,timeframe,bars,config=None):
-    engine=Engine(symbol,timeframe,config); events=[]; equity=[]; exposed=0
-    for i,bar in enumerate(bars):
-        events.extend(engine.step(bar))
-        value=0.; any_exposure=False
+    events=[]; equity=[]; exposed=0; trades=[]; unresolved=cancelled=0; carried=0.; offset=0; engine=None; segments=0
+    for seg in split_segments(bars,timeframe):
+        segments+=1
+        engine=_Ledger(symbol,timeframe,config)
+        for j,bar in enumerate(seg):
+            i=offset+j
+            events.extend(engine.step(bar))
+            value=carried; any_exposure=False
+            for ident,p in engine.s['positions'].items():
+                if p.get('cancelled') or 'fill' not in p: continue
+                st=engine.s['structures'][ident]; sign=1 if st['direction']=='long' else -1
+                value+=p['gross']-p['fees']+sign*(bar['close']-p['fill'])*p['remaining']
+                if p['entry_index']<=j<=p.get('exit_index',j): any_exposure=True
+            exposed+=any_exposure; equity.append(value)
         for ident,p in engine.s['positions'].items():
-            if p.get('cancelled') or 'fill' not in p: continue
-            st=engine.s['structures'][ident]; sign=1 if st['direction']=='long' else -1
-            value+=p['gross']-p['fees']+sign*(bar['close']-p['fill'])*p['remaining']
-            if p['entry_index']<=i<=p.get('exit_index',i): any_exposure=True
-        exposed+=any_exposure; equity.append(value)
-    trades=[]; unresolved=cancelled=0
-    for ident,p in engine.s['positions'].items():
-        if p.get('cancelled'): cancelled+=1; continue
-        if p['state']!='CLOSED': unresolved+=1; continue
-        st=engine.s['structures'][ident]
-        trades.append(dict(net=p['net'],direction=st['direction'],sequence=st['sequence_number'],sequence_confidence=st['sequence_confidence'],
-            timeframe=timeframe,regime=f"{st['direction']}_trend",entry_index=p['entry_index'],exit_index=p['exit_index']))
+            if p.get('cancelled'): cancelled+=1; continue
+            if p['state']!='CLOSED': unresolved+=1; continue
+            st=engine.s['structures'][ident]
+            trades.append(dict(net=p['net'],direction=st['direction'],sequence=st['sequence_number'],sequence_confidence=st['sequence_confidence'],
+                timeframe=timeframe,regime=f"{st['direction']}_trend",entry_index=offset+p['entry_index'],exit_index=offset+p['exit_index']))
+        # Only realised P&L carries into the next segment; positions still open at a gap are
+        # censored (counted as unresolved), never marked into later equity.
+        carried+=sum(p['net'] for p in engine.s['positions'].values() if not p.get('cancelled') and p['state']=='CLOSED')
+        offset+=len(seg)
     metrics=summarize(trades)
     peak=0.; dd=0.
     for x in equity: peak=max(peak,x); dd=max(dd,peak-x)
     metrics.update(maximum_mark_to_market_drawdown_per_unit=dd,exposure_bar_fraction=exposed/len(bars) if bars else None,
-        unresolved_or_boundary_censored=unresolved,cancelled_entries=cancelled)
+        unresolved_or_boundary_censored=unresolved,cancelled_entries=cancelled,contiguous_segments=segments)
     groups={}
     for key in ('direction','timeframe','sequence','sequence_confidence','regime'):
         groups[key]={str(value):summarize([t for t in trades if t[key]==value]) for value in sorted({t[key] for t in trades},key=str)}
-    return dict(metrics=metrics,groups=groups,events=events,trades=trades,config=asdict(engine.config),config_hash=engine.config.hash,
+    cfg=engine.config if engine else (config or Config())
+    return dict(metrics=metrics,groups=groups,events=events,trades=trades,config=asdict(cfg),config_hash=cfg.hash,
         units='One-share research units; not returns on an actual portfolio',
         caveats=['No live execution','Unresolved trades are reported, not silently scored as wins or losses',
         'Intervals describe observed hit rate, not future performance; dependence and small samples can invalidate simple binomial interpretations',

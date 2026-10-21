@@ -15,8 +15,9 @@ Design:
   whole window is observable (RZA-10); its borrow accrues only while it is actually open (RZA-09).
 - Edge intervals are bootstrapped by SYMBOL (trades of one symbol are dependent); the
   minimum detectable edge says how large an effect the sample could have revealed.
-- Nothing is tuned or selected; every variant is reported. The development/held-out split is
-  chronological and descriptive: no parameter was fitted on either period.
+- Nothing is tuned or selected; every variant is reported. The development/holdout split is
+  chronological and descriptive, and RETROSPECTIVE: its dates were already visible to earlier
+  evaluations. Unseen evidence can only come from sessions after a run's snapshot.
 """
 from __future__ import annotations
 
@@ -291,7 +292,7 @@ def report(results, cuts=None, seed=11):
             values = sorted({key(t) for t in items} | {key(u) for u in unres if key(u) is not None}, key=str)
             return {str(v): summarize([t for t in items if key(t) == v], rng, sum(1 for u in unres if key(u) == v)) for v in values}
         period = lambda t: (None if t.get('entry_time') is None or t['timeframe'] not in cuts else
-                            f"{t['timeframe']}:{'held_out' if t['entry_time'] >= cuts[t['timeframe']] else 'development'}")
+                            f"{t['timeframe']}:{'retrospective_holdout' if t['entry_time'] >= cuts[t['timeframe']] else 'development'}")
         out[name] = dict(
             engine=res['engine'], line_exit=res['line_exit'],
             overall=summarize(trades, rng, len(unresolved)),

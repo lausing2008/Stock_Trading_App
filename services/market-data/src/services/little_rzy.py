@@ -73,6 +73,10 @@ def stable(*parts):
     return hashlib.sha256('|'.join(str(p) for p in parts).encode()).hexdigest()
 
 
+def generation_event_id(occurrence, generation):
+    return occurrence if generation in (None, 1) else stable(occurrence, 'generation', generation)
+
+
 class Engine:
     # Bars/indicators are retained by absolute index with s['offset'] dropped from the front.
     # 1,200 covers the 1,000-bar chart grid plus warmup; live references are never dropped.
@@ -123,8 +127,15 @@ class Engine:
             state=structure.get('state'), passed_rules=[], failed_rules=[], rejection_reason=None,
             **{k: v for k, v in self.s['indicators'][-1].items() if k != 'tr'})
         payload.update(extra)
-        payload['event_id'] = stable(VERSION, self.config.hash, self.symbol, self.timeframe,
+        # occurrence_id identifies "this event on this bar" across rebuilds (email dedup key);
+        # event_id adds the stream generation so a rebuilt event never collides with, or is
+        # silently replaced by, the superseded one (RZA-01). Generation 1 keeps the legacy id.
+        generation = self.s.get('generation', 1)
+        occurrence = stable(VERSION, self.config.hash, self.symbol, self.timeframe,
             structure.get('id', ''), kind, b['closed_at'], extra.get('reason', ''))
+        payload['generation'] = generation
+        payload['occurrence_id'] = occurrence
+        payload['event_id'] = generation_event_id(occurrence, generation)
         self.events.append(payload)
         return payload
 
@@ -353,16 +364,19 @@ class Engine:
                 risk=sign*(fill-st['stop']); reward=sign*(st['target']-fill)
                 failures=[]
                 if st['trend_epoch_id']!=self.s['epoch']: failures.append('trend_epoch_changed')
-                if not b.get('execution_eligible',False): failures.append('data_basis_or_freshness_unverified')
+                # Only the boolean True is verified evidence; "false", 1 or None are not (RZA-05).
+                if b.get('execution_eligible') is not True: failures.append('data_basis_or_freshness_unverified')
                 # At the next open, only the trigger candle's completed volume is known.
                 trigger_volume=pos.get('trigger_volume')
                 if trigger_volume is None: trigger_volume=self.bar(pos['trigger_index'])['volume']
                 if trigger_volume<cfg.min_bar_volume: failures.append('liquidity_requirement')
                 if sign==-1 and (b.get('shortable') is not True or b.get('borrow_rate_annual') is None): failures.append('shortability_or_borrow_cost_unverified')
                 borrow=b.get('borrow_rate_annual')
-                if sign==-1 and (not isinstance(borrow,(float,int)) or not math.isfinite(borrow) or borrow<0):
+                # Missing borrow evidence is the standing blocker above; only a SUPPLIED value
+                # that is not a finite non-negative number is "invalid" (RZA-06).
+                if sign==-1 and borrow is not None and (isinstance(borrow,bool) or not isinstance(borrow,(float,int)) or not math.isfinite(borrow) or borrow<0):
                     failures.append('borrow_cost_invalid')
-                total_cost=fill*friction+cfg.commission_per_share*2+(fill*borrow/365 if sign==-1 and isinstance(borrow,(float,int)) and math.isfinite(borrow) and borrow>=0 else 0)
+                total_cost=fill*friction+cfg.commission_per_share*2+(fill*borrow/365 if sign==-1 and isinstance(borrow,(float,int)) and not isinstance(borrow,bool) and math.isfinite(borrow) and borrow>=0 else 0)
                 rr=(reward-total_cost)/(risk+total_cost) if risk>0 else 0
                 if risk<=0 or reward<=0 or rr<cfg.min_rr: failures.append('actual_fill_reward_risk_or_gap')
                 if failures:

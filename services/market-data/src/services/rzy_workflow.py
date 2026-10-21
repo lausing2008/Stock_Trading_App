@@ -16,9 +16,10 @@ from .alert_audience import may_send
 from common.market_calendar import session_bounds,calendar_coverage
 from common.price_basis import resolve_ohlc
 from common.outbox import enqueue
-from .little_rzy import Engine,Config,VERSION,stable,planning_reference
+from .little_rzy import Engine,Config,VERSION,stable,planning_reference,generation_event_id
 from .rzy_data import prepare_bars,aggregate_completed_bars,break_indices,MINUTES,utc
 from .rzy_models import RzyStream,RzyEvent,RzyPreference,RzyStreamGeneration
+from .rzy_email import render_event,render_event_html,event_subject
 
 NY=ZoneInfo('America/New_York')
 EMAIL_TYPES=('little_rzy','short_term_digest')
@@ -84,9 +85,20 @@ def load_bars(session,symbol,timeframe,now,cache=None):
     if stock is None or stock.market!='US': return [],{'status':'US_stocks_only_or_unknown_symbol'}
     tf={'5m':TimeFrame.M5,'15m':TimeFrame.M15,'1h':TimeFrame.H1,'1d':TimeFrame.D1}[timeframe]
     rows=session.scalars(select(Price).where(Price.stock_id==stock.id,Price.timeframe==tf).order_by(Price.ts.desc()).limit(6000)).all()
-    if not rows and timeframe in ('15m','1h'):
+    if timeframe in ('15m','1h'):
+        # One canonical source per evaluation, never spliced (RZA-07): native rows win only when
+        # they are current and at least as recent as bars derived from complete 5m constituents.
         source,evidence=load_bars(session,symbol,'5m',now,cache)
-        result=aggregate_completed_bars(source,evidence,timeframe,now,session_bounds=session_bounds)
+        derived=aggregate_completed_bars(source,evidence,timeframe,now,session_bounds=session_bounds)
+        derived=(derived[0],dict(derived[1],source='derived_from_5m'))
+        result=derived
+        if rows:
+            native=prepare_bars(list(reversed(rows)),timeframe,now,session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)
+            native=(native[0],dict(native[1],source='native'))
+            if native[0] and native[1]['status']=='research_only' and (not derived[0] or native[1].get('data_as_of','')>=derived[1].get('data_as_of','')):
+                result=(native[0],dict(native[1],alternative=dict(source='derived_from_5m',status=derived[1].get('status'),data_as_of=derived[1].get('data_as_of'))))
+            else:
+                result=(derived[0],dict(derived[1],alternative=dict(source='native',status=native[1].get('status'),data_as_of=native[1].get('data_as_of'))))
     else: result=prepare_bars(list(reversed(rows)),timeframe,now,session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)
     if cache is not None: cache[(symbol,timeframe)]=result
     return result
@@ -148,16 +160,25 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_
         if row is None:
             row=RzyStream(stream_key=key,symbol=symbol,timeframe=timeframe,config_hash=cfg.hash,checkpoint={},updated_at=now.replace(tzinfo=None)); session.add(row)
         row.checkpoint=engine.s; flag_modified(row,'checkpoint'); row.updated_at=now.replace(tzinfo=None)
-        known=set(session.scalars(select(RzyEvent.event_id).where(RzyEvent.event_id.in_([e['event_id'] for e in events])))) if events else set()
-        for event in events:
+        # Pivots are kept in the structures; persisting every PIVOT_CONFIRMED (~65% of events)
+        # would multiply table growth on each generation rebuild for no reader.
+        stored=[e for e in events if e['event_type']!='PIVOT_CONFIRMED']
+        known=set(session.scalars(select(RzyEvent.event_id).where(RzyEvent.event_id.in_([e['event_id'] for e in stored])))) if stored else set()
+        for event in stored:
             if event['event_id'] in known: continue
             known.add(event['event_id']); new_events.append(event)
             session.add(RzyEvent(event_id=event['event_id'],symbol=symbol,timeframe=timeframe,event_type=event['event_type'],payload=event,created_at=now.replace(tzinfo=None)))
     last_index=engine.last_index
     structures=[dict(st,planning_reference=planning_reference(st,engine.s['bars'][-1],last_index,engine.s['indicators'][-1],cfg)) for st in list(engine.s['structures'].values())[-20:]] if engine.s['bars'] else []
+    generation=engine.s.get('generation',1)
+    superseded=0
     if not persist and row is not None:
-        saved=session.scalars(select(RzyEvent).where(RzyEvent.symbol==symbol,RzyEvent.timeframe==timeframe).order_by(RzyEvent.created_at.desc()).limit(200)).all()
-        merged={r.event_id:r.payload for r in reversed(saved) if r.payload.get('config_hash')==cfg.hash}
+        saved=session.scalars(select(RzyEvent).where(RzyEvent.symbol==symbol,RzyEvent.timeframe==timeframe).order_by(RzyEvent.created_at.desc()).limit(500)).all()
+        mine=[r for r in reversed(saved) if r.payload.get('config_hash')==cfg.hash]
+        # The current view never mixes generations (RZA-01): older generations stay stored and
+        # are counted, but are returned only on explicit request via superseded_events.
+        merged={r.event_id:r.payload for r in mine if r.payload.get('generation',1)==generation}
+        superseded=sum(1 for r in mine if r.payload.get('generation',1)!=generation)
         merged.update({e['event_id']:e for e in events}); events=list(merged.values())
     return dict(status=evidence['status'],evidence=evidence,events=events[-100:],new_events=new_events,structures=structures,
         paper_positions=[dict(structure_id=k,**p) for k,p in engine.s['positions'].items()][-50:],
@@ -165,7 +186,17 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_
         price_grid=[dict({k:b[k] for k in ('time','open','high','low','close')}, **{k:ind[k] for k in ('middle_band','upper_band','lower_band')}) for b,ind in list(zip(engine.s['bars'],engine.s['indicators']))[-1000:]],
         configuration=__import__('dataclasses').asdict(cfg),
         strategy_version=VERSION,config_hash=cfg.hash,bootstrap=prior is None,rebuilt=rebuilt,rebuild_reason=reason if rebuilt else None,
-        generation=engine.s.get('generation',1))
+        generation=generation,superseded_event_count=superseded)
+
+
+def superseded_events(session,symbol,timeframe,config=None,limit=200):
+    """Explicit historical view: stored events of generations other than the current one."""
+    cfg=config or current_config(); row=session.get(RzyStream,f'{symbol}:{timeframe}:{cfg.hash}')
+    current=row.checkpoint.get('generation',1) if row else 1
+    saved=session.scalars(select(RzyEvent).where(RzyEvent.symbol==symbol,RzyEvent.timeframe==timeframe).order_by(RzyEvent.created_at.desc()).limit(2000)).all()
+    rows=[dict(r.payload,generation=r.payload.get('generation',1),recorded_at=r.created_at.isoformat()) for r in saved
+          if r.payload.get('config_hash')==cfg.hash and r.payload.get('generation',1)!=current]
+    return dict(current_generation=current,events=rows[:limit])
 
 
 def eligible(session,user,pref,kind):
@@ -179,24 +210,6 @@ def eligible(session,user,pref,kind):
 def subscriptions(session,types):
     ids=session.scalars(select(AlertPreference.user_id).where(AlertPreference.alert_type.in_(types),AlertPreference.enabled.is_(True)).distinct()).all()
     return [session.get(RzyPreference,uid) or SimpleNamespace(user_id=uid,timeframes=['5m','15m','1h']) for uid in ids]
-
-
-def render_event(event,paper_blockers=()):
-    def number(key):
-        value=event.get(key); return 'not available' if value is None else f'{value:.4f}'
-    seq=str(event.get('sequence_number')) if event.get('sequence_confidence')=='known' else 'unknown (history begins mid-trend)'
-    status=(('Paper execution unavailable for this stream ('+', '.join(paper_blockers)+'); this is a research signal and the paper entry will be cancelled.' if paper_blockers else
-        'Paper entry pending next tradable bar, subject to all fill checks.') if event['event_type']=='TRIGGERED' else
-        'Watch only; no continuation entry or automatic reversal.' if event['event_type'] in ('REVERSAL_WATCH','EXHAUSTION_WATCH') else
-        'Paper market exit pending next bar open; protective stop remains active.' if event['event_type']=='EXIT_PENDING' else
-        'Paper entry cancelled: '+str(event.get('rejection_reason')) if event['event_type']=='ENTRY_CANCELLED' else
-        'Research paper exit recorded; consult the paper ledger for fill and net costs.')
-    return (f"{VERSION} {event.get('position_action')} {event['symbol']} {event['timeframe']} on completed close {event['signal_time']}.\n"
-        f"Sequence: {seq}. Entry reference: {number('planned_entry')}. Stop: {number('stop')}. Primary target: {number('primary_target')}. R/R: {number('reward_risk')}.\n"
-        f"Event: {event['event_type']}. Provider: {event['provider']}; delay {event.get('delay','unknown')}.\n"
-        f"Passed: {', '.join(event.get('passed_rules',[]))}. Failed: {', '.join(event.get('failed_rules',[])) or 'none recorded'}.\n"
-        'Manage these independent email preferences in Settings → Short-term trading & Little RZY.\n'
-        'Independent rule-based research signal, not the AI signal. Not a profitable-outcome claim. '+status+' No broker order.\n')
 
 
 def emailable(event,paper_blockers=()):
@@ -251,8 +264,9 @@ def scan(session,now=None):
                 body=render_event(event,blockers)
                 from .email_service import _unsubscribe_footer
                 footer_html,footer_text=_unsubscribe_footer('little_rzy',uid)
-                _,created=enqueue(session,event_id=f"rzy:{uid}:{event['event_id']}",user_id=uid,recipient=user.email.strip(),alert_type='little_rzy',
-                    subject=f"RZY {event['position_action']} · {symbol} · {tf}",body_text=body+footer_text,body_html='<pre>'+escape(body)+'</pre>'+footer_html,
+                # Keyed by occurrence, not generation: a rebuild never re-mails the same event.
+                _,created=enqueue(session,event_id=f"rzy:{uid}:{event.get('occurrence_id',event['event_id'])}",user_id=uid,recipient=user.email.strip(),alert_type='little_rzy',
+                    subject=event_subject(event),body_text=body+footer_text,body_html=render_event_html(event,blockers)+footer_html,
                     expires_at=(signal+timedelta(minutes=MINUTES[tf]+5)).replace(tzinfo=None))
                 queued+=int(created)
         # One stream is an atomic unit; do not retain every large JSON checkpoint or an idle
@@ -270,7 +284,10 @@ def digest_preview(session,user_id,now=None):
             try: result=evaluate(session,symbol,tf,now,bars_cache=cache)
             except (ValueError,TypeError) as exc:
                 exclusions.append({'symbol':symbol,'timeframe':tf,'reason':'data_rejected: '+str(exc)[:160]});continue
-            if result['status']!='research_only': exclusions.append({'symbol':symbol,'timeframe':tf,'reason':result['status']}); continue
+            if result['status']!='research_only':
+                ev=result.get('evidence') or {}
+                exclusions.append({'symbol':symbol,'timeframe':tf,'reason':ev.get('stale_reason') or result['status'],
+                    'data_as_of':ev.get('data_as_of'),'expected_latest_close':ev.get('expected_latest_close'),'source':ev.get('source')}); continue
             active=[s for s in result['structures'] if s['state']=='ARMED']
             if not active: exclusions.append({'symbol':symbol,'timeframe':tf,'reason':'no_armed_structure'}); continue
             for st in active:
@@ -322,12 +339,19 @@ def drain(session,send,now=None):
         user=session.get(User,row.user_id); pref=session.get(RzyPreference,row.user_id)
         if not eligible(session,user,pref,row.alert_type): return False
         if row.alert_type=='little_rzy':
-            event=session.get(RzyEvent,row.event_id.split(':')[-1])
-            stream=session.get(RzyStream,f'{event.symbol}:{event.timeframe}:{event.payload["config_hash"]}') if event else None
-            if not (event and stream) or stream.checkpoint.get('requires_audited_replay'): return False
-            # An event recorded before the stream was rebuilt belongs to a superseded history.
-            started=stream.checkpoint.get('generation_started_at')
-            if started and event.created_at<utc(datetime.fromisoformat(started)).replace(tzinfo=None): return False
+            occurrence=row.event_id.split(':')[-1]
+            found=session.scalars(select(RzyEvent).where(RzyEvent.event_id.in_([generation_event_id(occurrence,g) for g in range(1,129)]))).all()
+            if not found: return False
+            stream=session.get(RzyStream,f'{found[0].symbol}:{found[0].timeframe}:{found[0].payload["config_hash"]}')
+            if not stream or stream.checkpoint.get('requires_audited_replay'): return False
+            # Send only if this occurrence still exists in the stream's CURRENT generation.
+            current=stream.checkpoint.get('generation',1)
+            event=next((e for e in found if e.payload.get('generation',1)==current),None)
+            if event is None: return False
+            # The queued body was rendered from whichever generation was current at enqueue time;
+            # if any version's trade figures differ, the message may show superseded numbers.
+            figures=lambda p:tuple(p.get(k) for k in ('primary_target','stop','planned_entry','D','reward_risk','event_type','direction'))
+            if len({figures(e.payload) for e in found})>1: return False
             return event.symbol in watchlist_symbols(session,row.user_id) and event.timeframe in (pref.timeframes if pref else ['5m','15m','1h'])
         return True
     return deliver_batch(session,owner='little-rzy:'+uuid4().hex,send=lambda row: send(row.recipient,row.subject,row.body_html,row.body_text),is_subscribed=subscribed,

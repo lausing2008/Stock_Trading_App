@@ -2,7 +2,7 @@
 """Replay an explicit completed-bar JSON/CSV archive, with costs and chronological comparisons."""
 import argparse,csv,json,sys
 from pathlib import Path
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'services/market-data'))
+sys.path[:0]=[str(Path(__file__).resolve().parents[1]/'services/market-data'),str(Path(__file__).resolve().parents[1]/'shared')]
 from src.services.little_rzy import Config
 from src.services.rzy_backtest import compare
 
