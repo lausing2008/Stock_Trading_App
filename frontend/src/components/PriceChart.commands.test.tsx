@@ -3,7 +3,7 @@ import React,{createRef} from 'react';
 import {act,cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import type {ChartController} from '@/lib/chartCommands';
-const mocks=vi.hoisted(()=>({fit:vi.fn(),set:vi.fn(),get:vi.fn(()=>({from:10,to:30})),remove:vi.fn(),fetch:vi.fn(),lineOpts:[] as Record<string,unknown>[],chartOpts:[] as Record<string,unknown>[],crosshair:[] as ((p:unknown)=>void)[],series:null as unknown,rzy:vi.fn((..._args:unknown[]):Promise<unknown>=>Promise.resolve({strategy_version:'V1',status:'research_only',structures:[],events:[],paper_positions:[],price_grid:[]}))}));
+const mocks=vi.hoisted(()=>({fit:vi.fn(),set:vi.fn(),get:vi.fn(()=>({from:10,to:30})),remove:vi.fn(),fetch:vi.fn(),lineOpts:[] as Record<string,unknown>[],chartOpts:[] as Record<string,unknown>[],resize:[] as (()=>void)[],crosshair:[] as ((p:unknown)=>void)[],series:null as unknown,rzy:vi.fn((..._args:unknown[]):Promise<unknown>=>Promise.resolve({strategy_version:'V1',status:'research_only',structures:[],events:[],paper_positions:[],price_grid:[]}))}));
 vi.mock('lightweight-charts',()=>({LineStyle:{Solid:0,Dashed:2,Dotted:1},createChart:(_el:unknown,o:Record<string,unknown>)=>{mocks.chartOpts.push(o);
  const series={setData:vi.fn(),setMarkers:vi.fn(),createPriceLine:vi.fn(),priceToCoordinate:()=>20,coordinateToPrice:()=>100,attachPrimitive:vi.fn(),applyOptions:vi.fn()};
  mocks.series=series;
@@ -14,7 +14,7 @@ vi.mock('lightweight-charts',()=>({LineStyle:{Solid:0,Dashed:2,Dotted:1},createC
 vi.mock('@/lib/api',()=>({api:{getPrices:(...args:unknown[])=>mocks.fetch(...args),rzyReview:(...args:unknown[])=>mocks.rzy(...args)}}));
 import PriceChart from './PriceChart';
 const prices=Array.from({length:70},(_,i)=>({ts:new Date(Date.UTC(2026,6,i+1)).toISOString(),open:100,high:101,low:99,close:100,volume:1000}));
-beforeEach(()=>{vi.clearAllMocks();mocks.lineOpts.length=0;mocks.chartOpts.length=0;mocks.crosshair.length=0;localStorage.clear();vi.stubGlobal('ResizeObserver',class{observe(){}disconnect(){}});});
+beforeEach(()=>{vi.clearAllMocks();mocks.lineOpts.length=0;mocks.chartOpts.length=0;mocks.resize.length=0;mocks.crosshair.length=0;localStorage.clear();vi.stubGlobal('ResizeObserver',class{constructor(cb:()=>void){mocks.resize.push(cb);}observe(){}disconnect(){}});});
 afterEach(()=>{cleanup();vi.unstubAllGlobals();});
 it('acknowledges indicator changes after rendering and preserves the current zoom',async()=>{
  const ref=createRef<ChartController>();render(<PriceChart symbol="TEST" prices={prices} commandRef={ref}/>);
@@ -105,4 +105,17 @@ it('keeps the visible dates when the chart container is resized, so a narrow fir
  await act(async()=>{await new Promise(r=>setTimeout(r,0));});
  expect(mocks.chartOpts.length).toBeGreaterThan(0);
  for(const o of mocks.chartOpts) expect((o.timeScale as {lockVisibleTimeRangeOnResize?:boolean}).lockVisibleTimeRangeOnResize).toBe(true);
+});
+
+it('re-fits the candles when a resize leaves empty space before the first bar, and leaves a normal view alone',async()=>{
+ render(<PriceChart symbol="TEST" prices={prices}/>);
+ await act(async()=>{await new Promise(r=>setTimeout(r,0));});
+ const before=mocks.fit.mock.calls.length;
+ mocks.get.mockReturnValue({from:5,to:60});
+ await act(async()=>{mocks.resize.forEach(cb=>cb());});
+ expect(mocks.fit.mock.calls.length).toBe(before);
+ mocks.get.mockReturnValue({from:-190,to:62});
+ await act(async()=>{mocks.resize.forEach(cb=>cb());});
+ expect(mocks.fit.mock.calls.length).toBeGreaterThan(before);
+ mocks.get.mockReturnValue({from:10,to:30});
 });

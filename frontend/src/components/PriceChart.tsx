@@ -1074,7 +1074,13 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
       macdChart?.timeScale().setVisibleLogicalRange(range);
     });
 
-    const ro = new ResizeObserver(() => updateSrLabels());
+    const ro = new ResizeObserver(() => {
+      updateSrLabels();
+      // A chart first laid out narrow can be left with empty space before its first bar once
+      // the container widens. Nothing real lives left of bar 0, so re-fit in that case only.
+      const visible = chart.timeScale().getVisibleLogicalRange();
+      if (visible && visible.from < -2) chart.timeScale().fitContent();
+    });
     if (mainRef.current) ro.observe(mainRef.current);
 
     return () => {
