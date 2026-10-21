@@ -1,7 +1,7 @@
 import DailyCloseAlerts from './DailyCloseAlerts';
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
-import { draftPlanLevel, getStockPlan, newRequestId, type CopilotMessage, type PlanInputs,
+import { draftPlanLevel, getStockPlan, newRequestId, type CopilotMessage, type PlanInputs, type PlanProposal,
   type PlanItem, type PlanLevel, type StockPlan, type TradeSetup } from '@/lib/copilot';
 import { selectedPlanLines } from '@/lib/selectedPlanLines';
 import { DraftCard } from './CopilotPanel';
@@ -11,6 +11,7 @@ import TradeSetupSummary from './TradeSetupSummary';
 export interface PlanChartLine { price: number; label: string; role: string }
 const fieldStyle = { width: '100%', padding: '6px', background: '#0f172a', color: '#e2e8f0', border: '1px solid #334155', borderRadius: 5 };
 const buttonStyle = { padding: '6px 10px', border: '1px solid #475569', background: '#1e293b', color: '#e2e8f0', borderRadius: 6, cursor: 'pointer' };
+const selectedStyle = { border: '1px solid #a78bfa', background: '#312e81', color: '#ffffff' };
 
 /** Same code-written rules as the copilot; no AI key or model call. */
 export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved, onLevelFocus }: {
@@ -40,6 +41,8 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
     setPerspective(next);
   }
   const [llmSetups, setLlmSetups] = useState<TradeSetup[]>([]);
+  const [llmProposal, setLlmProposal] = useState<{ proposal: PlanProposal; message: CopilotMessage } | null>(null);
+  const [llmSaved, setLlmSaved] = useState(false);
   const [llmNotice, setLlmNotice] = useState('');
   // Automatic re-generations after a "plan changed" refusal, capped so moving data cannot loop.
   const [llmAutoRuns, setLlmAutoRuns] = useState(0);
@@ -54,7 +57,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
   }, []);
   function reset() {
     generation.current++; abort.current?.abort(); setBusy(false);
-    setData(null); setDraft(null); setEvidence(null); setSaved(false); setError(''); setPerspective('rules'); setPanesMinHeight(0); setLlmSetups([]);
+    setData(null); setDraft(null); setEvidence(null); setSaved(false); setError(''); setPerspective('rules'); setPanesMinHeight(0); setLlmSetups([]); setLlmProposal(null); setLlmSaved(false);
     draftRequest.current = null; onLevelsChange([]);
   }
   useEffect(() => {
@@ -126,6 +129,28 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
     } catch (e) { if (alive.current && token === generation.current) setError(e instanceof Error ? e.message : 'Could not save to board'); }
     finally { if (alive.current && token === generation.current) setActionBusy(false); }
   }
+  async function saveLlmBoard() {
+    if (!data || !llmProposal || llmProposal.proposal.state !== 'conditional') return;
+    const { proposal: p, message } = llmProposal;
+    const target = p.targets[0]?.price;
+    // The exact proposal, its reasoning, source model and snapshot. Always a NEW board row.
+    const snapshot = {
+      title: `${symbol} — LLM-proposed plan (${message.model ?? 'model not reported'})`, source: 'llm_proposal',
+      entries: [{ label: `LLM ${p.kind}`, condition: p.kind === 'breakout' ? 'above' : 'below', price: p.entry, rationale: p.trigger }],
+      stop_loss: { price: p.stop, rationale: 'Model-chosen evidence anchor, priced and checked by code; not maintained' },
+      take_profit: target === undefined ? null : { price: target, rationale: 'Model-chosen objective, code-checked; not a forecast' },
+      setup: p, derivation: p.derivation, playbook: p.playbook, reasoning: message.content, model: message.model ?? null,
+      request_id: message.request_id, price_as_of: p.price_as_of ?? message.price_as_of ?? null, currency: data.plan.currency,
+      packet_fingerprint: message.packet_fingerprint, rules_based_alternative: data.plan.setups ?? [],
+    };
+    setActionBusy(true); setError(''); const token = generation.current;
+    try {
+      await api.createBoardPlan({ symbol, stage: 'planning', game_plan: snapshot, entry_price: p.entry,
+        stop_loss: p.stop, take_profit: target ?? null, source: 'gameplan-llm', notes: 'LLM-proposed levels, code-checked; no orders placed.' });
+      if (alive.current && token === generation.current) { setLlmSaved(true); onBoardSaved?.(); }
+    } catch (e) { if (alive.current && token === generation.current) setError(e instanceof Error ? e.message : 'Could not save to board'); }
+    finally { if (alive.current && token === generation.current) setActionBusy(false); }
+  }
   return <section aria-label="Game Plan" className="stock-plan-dock" style={{ padding: 14, background: '#0f172a', border: '1px solid #334155', borderRadius: 10, color: '#cbd5e1', fontSize: 12 }}>
     <h3 style={{ margin: '0 0 6px', color: '#c4b5fd' }}>Game Plan</h3>
     <p style={{ color: '#94a3b8', margin: '4px 0 12px' }}>Entry, targets, stop and next steps. Build the rules-based plan first; compare an LLM alternative if useful.</p>
@@ -158,8 +183,8 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
       {data.plan.position_refusals.map((why, i) => <p key={i} role="alert">{why}</p>)}
       {Object.entries(data.plan.unavailable).map(([key, why]) => <p key={key} style={{ color: '#fbbf24' }}>{why}</p>)}
       <div role="group" aria-label="Plan perspective" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 12 }}>
-        <button style={buttonStyle} aria-pressed={perspective === 'rules'} onClick={() => choosePerspective('rules')}>Rules-based plan</button>
-        <button style={buttonStyle} aria-pressed={perspective === 'llm'} onClick={() => choosePerspective('llm')}>LLM alternative plan</button>
+        <button style={{ ...buttonStyle, ...(perspective === 'rules' ? selectedStyle : {}) }} aria-pressed={perspective === 'rules'} onClick={() => choosePerspective('rules')}>Select rules-based plan</button>
+        <button style={{ ...buttonStyle, ...(perspective === 'llm' ? selectedStyle : {}) }} aria-pressed={perspective === 'llm'} onClick={() => choosePerspective('llm')}>Select LLM plan</button>
       </div>
       <label><input type="checkbox" checked={chart} onChange={e => setChart(e.target.checked)} /> Show selected plan levels on the daily chart</label>
       <div ref={panes} style={{ marginTop: 12, minHeight: panesMinHeight || undefined }}>
@@ -199,7 +224,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
         {mode !== 'forecast' && <>
           <button style={{ ...buttonStyle, marginTop: 10 }} disabled={actionBusy || saved ||
             (data.plan.setups?.length ? !data.plan.setups.some(s => s.id === boardSetupId && ['conditional', 'exit_triggered'].includes(s.state)) : !data.plan.levels.some(x => x.state === 'OK' && x.role === 'stop'))}
-            onClick={saveBoard}>{saved ? 'Saved to Trade Board' : 'Save plan to Trade Board'}</button>
+            onClick={saveBoard}>{saved ? 'Saved to Trade Board' : 'Save selected plan to Trade Board'}</button>
         </>}
       </>}
       </section>
@@ -217,9 +242,20 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
           void load(true);
         }}
         currency={data.plan.currency} compact onSelectionChange={setLlmSetups} onLevelSelect={onLevelFocus ? focusLevel : undefined}
+        onProposal={v => { setLlmProposal(v); setLlmSaved(false); }}
         fingerprint={data.packet_fingerprint} unavailable={data.plan.unsupported || !!data.plan.position_refusals.length ||
           (mode !== 'forecast' && !data.plan.setups?.length) ||
           !data.plan.levels.some(x => x.state === 'OK')} />
+      {mode !== 'forecast' && <>
+        <button style={{ ...buttonStyle, marginTop: 10 }} disabled={actionBusy || llmSaved || llmProposal?.proposal.state !== 'conditional'}
+          onClick={saveLlmBoard}>{llmSaved ? 'Saved to Trade Board' : 'Save selected plan to Trade Board'}</button>
+        {!llmSaved && llmProposal?.proposal.state !== 'conditional' && <p style={{ color: '#94a3b8', margin: '4px 0 0' }}>{
+          !llmProposal ? 'Generate an LLM plan first; only a proposal that passes every code check can be saved.'
+            : llmProposal.proposal.state === 'wait' ? 'The model proposed waiting, so there is no plan to save.'
+            : llmProposal.proposal.state === 'blocked' ? 'This proposal is blocked by a mandatory rule (see above), so it cannot be saved.'
+            : 'This proposal failed the code checks (see above), so it cannot be saved.'}</p>}
+        {llmSaved && <p style={{ color: '#94a3b8', margin: '4px 0 0' }}>Saved as a new Trade Board plan. Generating another comparison never changes a saved plan.</p>}
+      </>}
       </div>
       <details style={{ marginTop: 10 }}><summary>Daily-close monitoring</summary><DailyCloseAlerts symbol={symbol} currency={data?.plan.currency} levels={data?.plan.levels} asOf={data?.plan.price_as_of} /></details>
       </div>

@@ -462,13 +462,20 @@ def test_held_setup_uses_higher_stop_and_does_not_invent_original_risk_or_profit
     assert underwater["recovery_levels"] == [{"price":101,"label":"Resistance / loss reduction, not profit"}]
 
 
-def test_llm_setup_choice_requires_matching_citation_and_cannot_override_blocked_entries(r):
-    x=r["pl13"]
-    assert x["selected"]["status"] == "grounded" and x["selected"]["id"] == "breakout" and x["selected"]["calls"] == 2
-    assert x["selected"]["setups"] == x["entry"]
+def test_llm_proposes_its_own_levels_and_code_computes_and_checks_them(r):
+    """The model names anchors + ATR offsets; code computes prices, repairs once on a rejection."""
+    x = r["pl13"]; sel = x["selected"]
+    assert sel["status"] == "grounded" and sel["calls"] == 2
+    assert "failed the code checks" in sel["repair_text"] and "must be at or below the latest close" in sel["repair_text"]
+    p = sel["proposal"]
+    # ATR 2, high20 101: entry 101, stop 99, targets 105 (2.00R) / 107; risk 400 -> 200 shares.
+    assert (p["kind"], p["state"], p["entry"], p["stop"]) == ("breakout", "conditional", 101, 99)
+    assert [(t["price"], round(t["reward_risk"], 2)) for t in p["targets"]] == [(105, 2.0), (107, 3.0)]
+    assert p["shares"] == 200 and p["max_fill"] == 101
+    assert [d["anchor"] for d in p["derivation"]] == ["level.high20"] * 4
     assert x["missing_tag_status"] == "rejected"
     assert all(s["state"] == "blocked" for s in x["blocked"])
-    assert x["wait"] == {"id":"wait","status":"grounded"}
+    assert x["wait"] == {"kind": "wait", "status": "grounded"}
 
 
 def test_trade_setups_enforce_first_target_rr_and_handle_roundoff_and_nonpositive_stops(r):
@@ -570,3 +577,10 @@ def test_structured_sizing_applies_the_stated_account_like_the_narrative(r):
     tiny = r["pl17"]["tiny_account"]
     assert all(s["state"] == "blocked" and s["shares"] == 0 for s in tiny)
     assert all("account cannot buy one whole share" in " ".join(s["reasons"]) for s in tiny)
+
+
+def test_held_position_llm_proposal_is_priced_by_code_from_anchors(r):
+    """Held 10 @ 95, stated stop 97: low20 99 - 0.5 ATR = 98 (raises, never lowers), targets 101 / 103."""
+    p = r["pl12"]["proposal"]
+    assert (p["kind"], p["state"], p["entry"], p["stop"], p["shares"]) == ("hold", "conditional", 95.0, 98.0, 10)
+    assert [t["price"] for t in p["targets"]] == [101.0, 103.0]

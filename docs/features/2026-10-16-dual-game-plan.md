@@ -82,3 +82,13 @@ Each valid setup now carries a code-written `playbook` — conditional branches,
 - **Held position:** *rises* (trail, never lower a stop; partial at TP1), *falls* (close below the assessed stop exits; gap risk), *sideways* (hold above the stop).
 
 Each branch is a citable `playbook.<setup>.<case>` quantity, so the LLM is asked to write the same three headings citing them and to add its own reading of which case matters, in words only. The existing no-forecast check still applies. Tests: hand-computed branch values on the fixture (ATR 2, low/high 99/101 → pullback no-chase $99.00, breakout $101.00), a grounded playbook answer, and UI rendering. research-engine 713 passed / 8 skipped (SQLite); frontend 696 + TypeScript.
+
+## LLM-proposed plan (packet v9, 2026-10-21)
+
+The LLM view no longer selects one of the rules' setups. It proposes **its own** entry, stop and two targets, but never writes a price: each level is an evidence anchor from the packet (`level.close`, `level.low20`, `level.high20`, `level.sma50`, `level.high252`, `level.low252`) plus at most ±3 ATR, in one tag, e.g. `<plan_proposal kind="pullback" entry="level.low20+0.5atr" stop="level.low20-0.5atr" target1="level.high252" target2="level.high252+2atr"/>`. Kinds: pullback / breakout / limit (new entry), hold (a held position: stop and targets only; the entry is the typed cost), wait.
+
+`copilot/proposal.py` computes every price and checks it. **Rejected** (shown with reasons; one repair turn carries them): wrong ordering, stop under 0.25 or over 4 ATR, entry over 3 ATR from the close, breakout below / pullback-limit above the close, target 1 under 2R, and for holds a stop at or above the close or below a stated stop. **Blocked** (the same mandatory gates as the rules): stale prices, the falling-trend rule, a budget or account that cannot buy one share. Sizing uses the rules' contract (F05). Max fill, trigger and invalidation text, and the playbook are code-written. The model's prose must contain no numbers.
+
+UI: "Select rules-based plan" / "Select LLM plan" switch the view and the plotted levels. The selected view's own "Save selected plan to Trade Board" button saves that exact plan as a **new** board row (`source: gameplan-llm`). The snapshot includes the derivation, playbook, reasoning, model, request id, price time and packet fingerprint. A blocked, rejected or wait proposal cannot be saved and says why. Generating another comparison never changes a saved plan. Answers stored before this release still show their selected rules setup, labelled as such.
+
+Different numbers are not evidence of a better plan; neither plan's outcome has been measured.

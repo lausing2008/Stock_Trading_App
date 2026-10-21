@@ -27,8 +27,10 @@ from . import drafts as D
 from . import grounding as G
 from . import intent as I
 from . import llm as L
+from . import plan as P
 from . import store as St
 from .packet import PACKET_VERSION, build_packet
+from intelligence.report_contract import FieldState
 
 MAX_QUESTION_CHARS = 1000
 MAX_ATTEMPTS = 2
@@ -275,26 +277,25 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
     # ── Phase 2: ask (no session open) ────────────────────────────────────────
     messages = _alternating(hist, exclude_request=req.request_id)
     if req.plan_context is not None:
-        question += ("\nCompare the typed Game Plan using this exact evidence snapshot. Choose a preferred "
-                     "conditional scenario or explain why waiting is preferable; include invalidation "
-                     "and the strongest alternative. You may agree with the rules-based plan. "
-                     "Then write a short playbook under three headings — If it rises, If it falls, "
-                     "If it goes sideways — plus how to manage the trade after a fill. Ground each "
-                     "heading by citing the matching {{playbook.SETUP.CASE}} placeholder for the "
-                     "chosen setup, using only the cases listed for it below; a blocked setup has "
-                     "only a wait case and no entry branch, then add your own "
-                     "reading of which case the trend, signal calls and track records make most "
-                     "relevant, in words only. Phrase every case conditionally (if ..., then ...); "
-                     "never say where the price will go. "
-                     "Use only packet placeholders for levels and intact rule conditions. "
-                     "Distinguish your interpretation from facts. Do not invent levels, forecasts, "
-                     "probabilities, or account facts. Do not propose action drafts. "
-                     "Append exactly one <plan_setup id=\"SCENARIO\"/> tag after the answer; "
-                     "SCENARIO is an eligible setup ID or wait. Cite the chosen {{setup.ID}} "
-                     "unchanged in the answer so its entry, stop, targets and sizing are shown. "
-                     "Blocked or unavailable entries require waiting. Available setups: "
-                     + json.dumps([{**{k: s[k] for k in ('id', 'state', 'reasons')},
-                                    "playbook_cases": [b["case"] for b in s.get("playbook", [])]}
+        from . import proposal as PR
+        anchors = {k: round(v, 4) for k, v in packet.plan.anchors.items()}
+        question += ("\nPropose YOUR OWN trade plan for this exact evidence snapshot, independent of "
+                     "the rules-based plan (which is shown for reference only; you may differ or "
+                     "agree). Choose kind pullback, breakout or limit, or wait. Choose entry, stop and "
+                     "two targets as evidence anchors plus ATR offsets in the tag below; code computes "
+                     "every price and checks direction, ordering, a stop between "
+                     f"{PR.MIN_STOP_ATR:g} and {PR.MAX_STOP_ATR:g} ATR, target 1 at least "
+                     f"{P.MIN_REWARD_RISK:g}R, sizing, freshness and the trend rule. "
+                     "In the answer explain why you chose those anchors, what would invalidate the plan, "
+                     "when to wait, and a short playbook under the headings If it rises, If it falls, "
+                     "If it goes sideways and After a fill — conditionally (if ..., then ...), never "
+                     "saying where the price will go. Do NOT write any price or number in the prose: "
+                     "refer to levels by packet placeholders such as {{level.low20}} or in words. "
+                     "Distinguish interpretation from facts. No forecasts, probabilities, account "
+                     "facts or action drafts. " + PR.FORMAT_HELP + " "
+                     "Anchor values: " + json.dumps(anchors) + f"; ATR {packet.plan.atr!r}. "
+                     "Rules-based setups for reference: "
+                     + json.dumps([{k: s[k] for k in ('id', 'state', 'reasons')}
                                    for s in packet.plan.to_json()['setups']]))
     messages.append({"role": "user", "content": L.user_turn(packet.model_view(), question)})
     result: G.GroundingResult | None = None
@@ -303,7 +304,7 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
     model_used = req.model
     t0 = time.monotonic()
     cancelled = False
-    selected_setup = None
+    proposal = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
         # CANCELLATION STOPS THE NEXT CALL, NOT THE CURRENT ONE. A provider request already in
         # flight cannot be recalled and is billed; what a cancel can prevent is the repair call.
@@ -350,12 +351,18 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         clean_text, raw_drafts = D.strip_tags(reply.text)
         choice_error = None
         if req.plan_context is not None:
-            from .setup_choice import extract
-            clean_text, selected_setup, choice_error = extract(clean_text, packet.plan.to_json()['setups'])
+            from . import proposal as PR
+            clean_text, spec, choice_error = PR.extract(clean_text)
+            if spec is not None:
+                price_f = packet.fields.get("price")
+                proposal = PR.build(packet.plan, spec, price_stale=(
+                    price_f.reason if price_f is not None and price_f.state is FieldState.STALE else None))
+                # One repair for a proposal the code rejects; a final rejection is SHOWN, not hidden.
+                if proposal["state"] == "rejected" and attempt < MAX_ATTEMPTS:
+                    choice_error = ("Your proposal failed the code checks: " + " ".join(proposal["reasons"])
+                                    + " Propose corrected anchors or kind=\"wait\".")
         result = G.check(G.parse_draft(clean_text), packet)
         if req.plan_context is not None:
-            if not choice_error and selected_setup != 'wait' and f'setup.{selected_setup}' not in result.used_keys:
-                choice_error = 'Cite the chosen {{setup.ID}} unchanged in the answer.'
             if choice_error:
                 result.accepted = False
                 result.reasons.append(choice_error)
@@ -398,7 +405,8 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
     grounding = {
         "drafts": drafts, "dropped_drafts": dropped_drafts,
         **({"plan_context": req.plan_context, "plan_setups": packet.plan.to_json()['setups'],
-            "selected_setup_id": selected_setup if accepted else None} if req.plan_context is not None else {}),
+            "selected_setup_id": None,
+            "plan_proposal": proposal if accepted else None} if req.plan_context is not None else {}),
         "packet_version": PACKET_VERSION, "packet_fingerprint": packet.fingerprint,
         "price_as_of": packet.price_as_of, "source_times": packet.source_times(),
         "evidence_refs": refs, "evidence_records": ev_records, "limitations": lims,

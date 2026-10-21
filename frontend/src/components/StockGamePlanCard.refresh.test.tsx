@@ -21,7 +21,7 @@ afterEach(cleanup);
 it('refreshes the plan on a plan-changed 409 and generates again by itself against the new snapshot', async () => {
   render(<StockGamePlanCard symbol="AAPL" onLevelsChange={vi.fn()} />);
   fireEvent.click(screen.getByRole('button', { name: 'Build plan' })); await screen.findByText('Pullback rule text');
-  fireEvent.click(screen.getByRole('button', { name: 'LLM alternative plan' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Select LLM plan' }));
   fireEvent.click(screen.getByRole('button', { name: 'Generate LLM alternative' }));
   await screen.findByText(/generated again automatically/);
   await waitFor(() => expect(mocks.getStockPlan).toHaveBeenCalledTimes(2));
@@ -39,7 +39,7 @@ it('stops after two automatic regenerations when the data keeps changing and ask
   mocks.askCopilot.mockReset().mockRejectedValue(Object.assign(new Error('plan changed; refresh it before requesting an LLM alternative'), { status: 409 }));
   render(<StockGamePlanCard symbol="AAPL" onLevelsChange={vi.fn()} />);
   fireEvent.click(screen.getByRole('button', { name: 'Build plan' })); await screen.findByText('Pullback rule text');
-  fireEvent.click(screen.getByRole('button', { name: 'LLM alternative plan' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Select LLM plan' }));
   fireEvent.click(screen.getByRole('button', { name: 'Generate LLM alternative' }));
   await screen.findByText(/kept changing while generating/);
   await new Promise(r => setTimeout(r, 50));

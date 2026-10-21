@@ -163,6 +163,13 @@ class Plan:
     unsupported: bool = False
     level_prices: dict[str, dict] = dc_field(default_factory=dict)
     setups: list[dict] = dc_field(default_factory=list)
+    #: Raw evidence levels an LLM proposal may anchor to (key -> price), the ATR its offsets are
+    #: measured in, and the trend gate the rules apply. Not serialised: proposals are rebuilt
+    #: from the same packet by code (copilot/proposal.py).
+    anchors: dict[str, float] = dc_field(default_factory=dict)
+    atr: float | None = None
+    avg_volume20: float | None = None
+    trend_blocked: bool | None = None
 
     def add(self, item: Item) -> None:
         self.items[item.key] = item
@@ -416,6 +423,13 @@ def build_plan(*, kind: str, bars_desc: list, calls: dict[str, Call | None],
                                       f"stored, so no levels or rules can be computed")
     else:
         _level_items(ctx, lv, bars_desc, record_bar, lv_ids)
+        plan.atr, plan.avg_volume20 = lv.atr, lv.avg_volume20
+        plan.anchors = {k: v for k, v in (
+            ("level.close", lv.close), ("level.low20", lv.low20), ("level.high20", lv.high20),
+            ("level.sma50", lv.sma50), ("level.high252", lv.high252), ("level.low252", lv.low252))
+            if v is not None}
+        plan.trend_blocked = (None if lv.sma50 is None or lv.sma50_prev is None
+                              else lv.close < lv.sma50 and lv.sma50 < lv.sma50_prev)
     _move_items(ctx, bars_desc, record_bar)
     _call_items(ctx, calls, cohort_rows, stock_rows, symbol)
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { askCopilot, cancelCopilot, newRequestId, type CopilotMessage, type PlanInputs, type TradeSetup } from '@/lib/copilot';
+import { askCopilot, cancelCopilot, newRequestId, type CopilotMessage, type PlanInputs, type PlanProposal, type TradeSetup } from '@/lib/copilot';
 import type { SelectedPlanLine } from '@/lib/selectedPlanLines';
 import { isAiConfigured, getAiProviderLabel } from '@/lib/ai';
 import { CopilotAnswer } from './CopilotPanel';
@@ -9,7 +9,22 @@ const RECOVERY_DELAY_MS = 4000;
 const RECOVERY_ATTEMPTS = 60;   // about 4 minutes, longer than the server's model timeout
 
 /** A second interpretation of the same snapshot, never independent corroboration. */
-export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavailable, currency = null, compact = false, onSelectionChange, onLevelSelect, onPlanChanged, autoStart = false }: {
+const LEVEL_NAMES: Record<string, string> = { entry: 'Entry', stop: 'Stop', target1: 'Target 1', target2: 'Target 2' };
+const ANCHOR_NAMES: Record<string, string> = { 'level.close': 'latest close', 'level.low20': '20-bar low', 'level.high20': '20-bar high',
+  'level.sma50': '50-bar average', 'level.high252': 'year high', 'level.low252': 'year low' };
+
+/** How each code-computed price follows from the model's chosen anchor. */
+function Derivation({ p, currency }: { p: PlanProposal; currency: string | null }) {
+  const f = (v: number) => v.toLocaleString('en-US', { maximumFractionDigits: 4 }) + (currency ? ` ${currency}` : '');
+  if (!p.derivation?.length) return null;
+  return <details open={p.state === 'rejected'}><summary style={{ cursor: 'pointer', color: '#a5b4fc' }}>How each price was derived</summary>
+    <ul aria-label="Proposal derivation">{p.derivation.map(d => <li key={d.level}>
+      {LEVEL_NAMES[d.level] ?? d.level}: {ANCHOR_NAMES[d.anchor] ?? d.anchor} ({f(d.anchor_price)}){d.atr_multiple ? ` ${d.atr_multiple > 0 ? '+' : '−'} ${Math.abs(d.atr_multiple)} × ATR (${f(d.atr)})` : ''} = {f(d.price)}
+    </li>)}</ul>
+  </details>;
+}
+
+export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavailable, currency = null, compact = false, onSelectionChange, onLevelSelect, onPlanChanged, onProposal, autoStart = false }: {
   symbol: string; inputs: PlanInputs; fingerprint: string; unavailable: boolean; currency?: string | null;
   compact?: boolean; onSelectionChange?: (setups: TradeSetup[]) => void; onLevelSelect?: (line: SelectedPlanLine) => void;
   /** The server refused the comparison because the plan's data changed since it was built (409).
@@ -17,6 +32,8 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
   onPlanChanged?: () => void;
   /** Start one generation on mount (used once, right after an automatic plan refresh). */
   autoStart?: boolean;
+  /** The latest generated proposal and its message (null while generating or cancelled). */
+  onProposal?: (value: { proposal: PlanProposal; message: CopilotMessage } | null) => void;
 }) {
   const [message, setMessage] = useState<CopilotMessage | null>(null);
   const [busy, setBusy] = useState(false);
@@ -44,7 +61,7 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
     active.current = null; pending.ctl.abort();
     void cancelCopilot(pending.id).catch(() => {});
     setBusy(false); setCancelled(true);
-    onSelectionChange?.([]);
+    onSelectionChange?.([]); onProposal?.(null);
     request.current = null;
   }
   async function generate() {
@@ -52,7 +69,7 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
     const id = request.current ?? newRequestId(); request.current = id;
     const pending = { id, ctl: new AbortController() }; active.current = pending;
     setBusy(true); setError(''); setCancelled(false); setMessage(null);
-    onSelectionChange?.([]);
+    onSelectionChange?.([]); onProposal?.(null);
     try {
       const ask = () => askCopilot({ symbol, requestId: id,
         question: 'Give an alternative conditional Game Plan, including your preferred scenario, invalidation and when to wait.',
@@ -81,14 +98,14 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
       if (out.message.packet_fingerprint !== fingerprint) {
         throw new Error('The plan snapshot changed. Refresh the rules-based plan before comparing.');
       }
-      if (out.message.status === 'grounded' && (!Array.isArray(out.message.plan_setups) ||
-          (out.message.selected_setup_id !== 'wait' && !out.message.plan_setups.some(s =>
-            s.id === out.message.selected_setup_id && ['conditional', 'exit_triggered'].includes(s.state))))) {
-        throw new Error('The model did not select a validated trade setup. Generate a new comparison.');
+      const proposal = out.message.plan_proposal ?? null;
+      if (out.message.status === 'grounded' && !proposal) {
+        throw new Error('The model did not return a plan proposal. Generate a new comparison.');
       }
       setMessage(out.message); request.current = null;
-      onSelectionChange?.(out.message.status === 'grounded' && out.message.selected_setup_id !== 'wait'
-        ? (out.message.plan_setups ?? []).filter(s => s.id === out.message.selected_setup_id) : []);
+      // Only a proposal that passed every code check is plotted or offered for saving.
+      onSelectionChange?.(proposal && proposal.state === 'conditional' ? [proposal as unknown as TradeSetup] : []);
+      onProposal?.(proposal ? { proposal, message: out.message } : null);
     } catch (e) {
       if (alive.current && active.current === pending && (e as { status?: number }).status === 409
           && /plan changed/i.test(e instanceof Error ? e.message : '') && onPlanChanged) {
@@ -107,7 +124,8 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
   }, [autoStart, configured, unavailable]);
   return <section aria-label="LLM alternative plan" style={{ minWidth: 0, padding: 12, border: '1px solid #475569', borderRadius: 8 }}>
     <h4 style={{ marginTop: 0 }}>LLM alternative plan</h4>
-    <p>A model-selected scenario using the same prices and position inputs. It may agree with the rules-based plan; agreement is not independent confirmation.</p>
+    <p>The model proposes its own entry, stop and targets from the same evidence snapshot. It may agree with the rules-based plan; agreement is not independent confirmation, and different numbers are not evidence of a better plan.</p>
+    <p style={{ color: '#94a3b8' }}>The model names evidence levels (for example the 20-bar low minus half an ATR); code computes every price and checks direction, reward:risk, sizing, freshness and the trend rule. A proposal that fails is shown with the reasons and cannot be saved.</p>
     <p>Generated on request using {configured ? getAiProviderLabel() : 'your configured model'} and your copilot quota.</p>
     {!configured && <p>Select an AI provider in Settings to generate this plan.</p>}
     {unavailable && <p>A fresh, supported rules-based plan is required before comparing.</p>}
@@ -120,21 +138,30 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
     {error && <p role="alert">{error}</p>}
     {message && <>
       <p>Model: {message.model ?? 'not reported'}</p>
-      {message.status === 'grounded' && message.selected_setup_id === 'wait' && <p>LLM selected wait: no new entry recommended. Conditional alternatives are shown below.</p>}
-      {message.status === 'grounded' && message.selected_setup_id !== 'wait' && <p style={{ color: '#94a3b8' }}>
-        The model chose the {(message.plan_setups ?? []).find(s => s.id === message.selected_setup_id)?.title ?? 'selected'} setup.
-        Its prices are the same code-calculated levels the rules-based plan uses (the model is not allowed to invent prices), so they can match exactly.
-        What differs is the model&apos;s reasoning and its reading of the playbook, below.</p>}
       {message.status === 'rejected' && <p role="alert">The model failed the evidence check. The stored-data fallback below is not a second plan.</p>}
+      {message.status === 'grounded' && message.plan_proposal && (() => {
+        const p = message.plan_proposal;
+        if (p.state === 'wait') return <p role="status">The model proposes waiting: no new entry now.</p>;
+        if (p.state === 'rejected') return <div role="alert" style={{ color: '#fca5a5' }}>
+          <p><strong>The model&apos;s proposal failed the code checks and cannot be selected or saved:</strong></p>
+          <ul>{p.reasons.map(r => <li key={r}>{r}</li>)}</ul>
+          <Derivation p={p} currency={currency} />
+        </div>;
+        return <>
+          <TradeSetupSummary currency={currency} compact={compact} onLevelSelect={onLevelSelect} setups={[p as unknown as TradeSetup]} />
+          <Derivation p={p} currency={currency} />
+        </>;
+      })()}
+      {message.status === 'grounded' && !message.plan_proposal && message.selected_setup_id && <>
+        {/* Answers stored before model-proposed levels: the model selected a rules-based setup. */}
+        <p style={{ color: '#94a3b8' }}>Earlier comparison: the model selected a rules-based setup ({message.selected_setup_id}); it did not propose its own levels.</p>
+        {message.selected_setup_id !== 'wait' && <TradeSetupSummary currency={currency} compact={compact}
+          setups={(message.plan_setups ?? []).filter(s => s.id === message.selected_setup_id)} />}
+      </>}
       <section aria-label="Model reasoning and playbook">
         <p style={{ margin: '8px 0 4px' }}><strong>Model&apos;s reasoning and playbook</strong></p>
         <CopilotAnswer m={message} defaultOpen />
       </section>
-      {message.status === 'grounded' && message.selected_setup_id !== 'wait' && <TradeSetupSummary currency={currency} compact={compact} onLevelSelect={onLevelSelect}
-        setups={(message.plan_setups ?? []).filter(s => s.id === message.selected_setup_id)} />}
-      {message.status === 'grounded' && message.selected_setup_id === 'wait' && <details><summary>Conditional alternatives — no active entry</summary>
-        <TradeSetupSummary currency={currency} compact={compact} setups={message.plan_setups ?? []} />
-      </details>}
     </>}
   </section>;
 }

@@ -44,6 +44,8 @@ export interface CopilotMessage {
   packet_fingerprint?: string | null;
   selected_setup_id?: string | null;
   plan_setups?: TradeSetup[];
+  /** The model's own levels (anchors + ATR offsets), priced and checked by code. */
+  plan_proposal?: PlanProposal | null;
   /** Actions proposed for the user to review and save. Nothing is saved until they confirm. */
   drafts?: CopilotDraft[];
   dropped_drafts?: { kind: string; reason: string }[];
@@ -80,6 +82,12 @@ export interface TradeSetup {
   sizing_note?: string | null;
   eligibility_needs?: string[];
 }
+export interface ProposalDerivation { level: string; anchor: string; anchor_price: number; atr_multiple: number; atr: number; price: number }
+/** state: conditional (saveable) | blocked (a mandatory gate) | rejected (failed code checks) | wait. */
+export type PlanProposal = Omit<TradeSetup, 'state'> & {
+  state: 'conditional' | 'blocked' | 'rejected' | 'wait'; kind: string; source: 'llm_proposal';
+  derivation: ProposalDerivation[]; price_as_of?: string | null;
+};
 export interface StockPlan {
   symbol: string; packet_version: number; packet_fingerprint: string;
   plan: { kind: string; currency: string | null; price_as_of: string | null;

@@ -644,14 +644,14 @@ def pl12_dual_plan():
     inputs = dict(kind="holding", entry=95.0, shares=10, stop=97.0, risk=400.0)
     view = C.plan_view(Session, "alice", SYM, now=NOW, **inputs)
     context = {**inputs, "fingerprint": view["packet_fingerprint"]}
-    model = ScriptedModel('<answer>One reading favors protecting the held position: {{rule.h1}} {{rule.h6}} {{setup.holding}}</answer><plan_setup id="holding"/>')
+    model = ScriptedModel('<answer>One reading favors protecting the held position: {{rule.h1}} {{rule.h6}} {{setup.holding}}</answer><plan_proposal kind="hold" stop="level.low20-0.5atr" target1="level.high20" target2="level.high20+1atr"/>')
     req = turn("Compare alternative scenarios", "dual-plan-0001")
     req.plan_context = context
     first = run(C.answer(req, session_factory=Session, llm_call=model, now=NOW))
     replay = run(C.answer(req, session_factory=Session, llm_call=model, now=NOW))
     out = dict(status=first["message"]["status"], same_snapshot=first["message"]["packet_fingerprint"] == view["packet_fingerprint"],
                held_stop="$97.00" in first["message"]["content"], context_stored=first["message"]["plan_context"] == context, model=first["message"]["model"],
-               replay=replay["replayed"], calls=len(model.calls))
+               replay=replay["replayed"], calls=len(model.calls), proposal=first["message"]["plan_proposal"])
     def denied(rid, ctx):
         bad = turn("Compare alternative scenarios", rid); bad.plan_context = ctx
         try:
@@ -685,7 +685,7 @@ def pl12_dual_plan():
         async def create_alert(self, *args): raise AssertionError("comparison wrote an alert")
     draft_req = turn("Compare alternative scenarios", "dual-plan-0005")
     draft_req.plan_context = context; draft_req.market = NoActions()
-    attempt = ScriptedModel('<answer>One reading favors waiting: {{rule.h1}}</answer><plan_setup id="wait"/><draft kind="price_alert" condition="below" threshold="{{price.close}}"/>')
+    attempt = ScriptedModel('<answer>One reading favors waiting: {{rule.h1}}</answer><plan_proposal kind="wait"/><draft kind="price_alert" condition="below" threshold="{{price.close}}"/>')
     ignored = run(C.answer(draft_req, session_factory=Session, llm_call=attempt, now=NOW))
     out["drafts"] = ignored["message"]["drafts"]
     R["pl12"] = out
@@ -709,16 +709,19 @@ def pl13_trade_setups():
     context = dict(kind="entry", risk=400, fingerprint=entry["packet_fingerprint"])
     req = turn("Compare detailed scenarios", "setups-select-0001"); req.plan_context = context
     # The first answer selects breakout but cites pullback. Repair must bind the chosen setup.
-    wrong = '<answer>One reading favors this setup: {{setup.pullback}}</answer><plan_setup id="breakout"/>'
-    good = '<answer>One reading favors the breakout alternative: {{setup.breakout}}</answer><plan_setup id="breakout"/>'
+    # The first proposal is a "pullback" above the latest close: code rejects it and the one
+    # repair turn carries the reason; the second is a valid breakout with code-computed prices.
+    wrong = '<answer>One reading favors a pullback near {{level.high20}}.</answer><plan_proposal kind="pullback" entry="level.high20" stop="level.low20" target1="level.high20+2atr" target2="level.high20+3atr"/>'
+    good = '<answer>One reading favors a breakout above {{level.high20}}.</answer><plan_proposal kind="breakout" entry="level.high20" stop="level.high20-1atr" target1="level.high20+2atr" target2="level.high20+3atr"/>'
     model = ScriptedModel(wrong,good)
     response = run(C.answer(req, session_factory=Session, llm_call=model, now=NOW))["message"]
-    out["selected"] = {"id":response["selected_setup_id"], "status":response["status"], "calls":len(model.calls), "setups":response["plan_setups"]}
+    out["selected"] = {"proposal":response["plan_proposal"], "status":response["status"], "calls":len(model.calls),
+                       "repair_text": json.dumps(model.calls[1]) if len(model.calls) > 1 else ""}
     # A playbook answer: each case cites the code-written branch; the model adds words only.
     book = ('<answer>One reading favors the breakout alternative: {{setup.breakout}}\n'
             'If it rises: {{playbook.breakout.rises}} The flat trend makes confirmation matter.\n'
             'If it falls: {{playbook.breakout.falls}}\nIf it goes sideways: {{playbook.breakout.sideways}}\n'
-            'After a fill: {{playbook.breakout.after_entry}}</answer><plan_setup id="breakout"/>')
+            'After a fill: {{playbook.breakout.after_entry}}</answer><plan_proposal kind="breakout" entry="level.high20" stop="level.high20-1atr" target1="level.high20+2atr" target2="level.high20+3atr"/>')
     req4 = turn("Compare detailed scenarios", "setups-playbook-0001"); req4.plan_context = context
     pmodel = ScriptedModel(book)
     pb = run(C.answer(req4, session_factory=Session, llm_call=pmodel, now=NOW))["message"]
@@ -732,9 +735,9 @@ def pl13_trade_setups():
     out["blocked"] = blocked["plan"]["setups"]
     req3 = turn("Compare detailed scenarios", "setups-wait-0001")
     req3.plan_context = dict(kind="entry",risk=400,fingerprint=blocked["packet_fingerprint"])
-    wait = '<answer>One reading favors waiting: {{rule.e3}}</answer><plan_setup id="wait"/>'
+    wait = '<answer>One reading favors waiting: {{rule.e3}}</answer><plan_proposal kind="wait"/>'
     chosen = run(C.answer(req3, session_factory=Session, llm_call=ScriptedModel(missing.replace('</answer>','</answer><plan_setup id="pullback"/>'),wait), now=NOW))["message"]
-    out["wait"] = {"id":chosen["selected_setup_id"], "status":chosen["status"]}
+    out["wait"] = {"kind":(chosen["plan_proposal"] or {}).get("kind"), "status":chosen["status"]}
     reset(last_bar=(102,98,100))
     out["low_rr"] = C.plan_view(Session, "alice", SYM, kind="entry", risk=400, now=NOW)["plan"]["setups"]
     reset()
@@ -787,7 +790,7 @@ def pl15_inflight_reask_after_plan_change():
         async def __call__(self, *a, **k):
             await gate.wait()
             return await ScriptedModel.__call__(self, *a, **k)
-    model = Slow('<answer>One reading favors waiting: {{rule.e1}}</answer><plan_setup id="wait"/>')
+    model = Slow('<answer>One reading favors waiting: {{rule.e1}}</answer><plan_proposal kind="wait"/>')
     out = {}
     async def scenario():
         nonlocal gate

@@ -44,14 +44,14 @@ it('freezes a draft first and saves only after explicit confirmation', async () 
 });
 it('saves a compatible board snapshot from backend values with currency and provenance', async () => {
   render(<StockGamePlanCard symbol="AAPL" onLevelsChange={vi.fn()} />); await build();
-  fireEvent.click(screen.getByText('Save plan to Trade Board')); await screen.findByText('Saved to Trade Board');
+  fireEvent.click(screen.getByRole('button', { name: 'Save selected plan to Trade Board' })); await screen.findByText('Saved to Trade Board');
   expect(mocks.createBoardPlan.mock.calls[0][0]).toMatchObject({ entry_price: 99, stop_loss: 98, take_profit: 101, game_plan: { currency: 'HKD', packet_fingerprint: 'abc'.repeat(8), entries: [{ condition: 'below', price: 99 }, { condition: 'above', price: 101 }] } });
 });
 it('never plots stale values or offers stale-level alert drafts', async () => {
   const p = fixture(); p.plan.levels.forEach(x => { x.state = 'STALE'; }); mocks.getStockPlan.mockResolvedValue(p);
   const levels = vi.fn(); render(<StockGamePlanCard symbol="AAPL" onLevelsChange={levels} />); await build();
   expect(levels.mock.calls.at(-1)?.[0]).toEqual([]); expect(screen.queryByText('Draft alert: Pullback stop candidate')).toBeNull();
-  expect((screen.getByText('Save plan to Trade Board') as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: 'Save selected plan to Trade Board' }) as HTMLButtonElement).disabled).toBe(true);
 });
 it('ignores a completed request from the symbol that was left', async () => {
   let resolve!: (p: ReturnType<typeof fixture>) => void; mocks.getStockPlan.mockReturnValue(new Promise(r => { resolve = r; }));
@@ -67,14 +67,14 @@ it('shows both detailed setups and saves the selected breakout with matching ent
   expect(screen.getByLabelText('Pullback entry')).toBeTruthy(); expect(screen.queryByLabelText('Breakout entry')).toBeNull();
   fireEvent.change(screen.getByLabelText('Setup to save'), { target: { value: 'breakout' } });
   expect(screen.getByLabelText('Breakout entry')).toBeTruthy(); expect(screen.queryByLabelText('Pullback entry')).toBeNull();
-  fireEvent.click(screen.getByText('Save plan to Trade Board')); await screen.findByText('Saved to Trade Board');
+  fireEvent.click(screen.getByRole('button', { name: 'Save selected plan to Trade Board' })); await screen.findByText('Saved to Trade Board');
   expect(mocks.createBoardPlan.mock.calls[0][0]).toMatchObject({ entry_price: 101, stop_loss: 99, take_profit: 105,
     game_plan: { setup: { id: 'breakout' }, entries: [{ price: 101, condition: 'above' }] } });
 });
 it('does not save a blocked setup even when reference prices are fresh', async () => {
   const p = fixture(); mocks.getStockPlan.mockResolvedValue({ ...p, plan: { ...p.plan, setups: [{ ...setupFixture(), state: 'blocked', reasons: ['Wait for a new base.'] }] } });
   render(<StockGamePlanCard symbol="AAPL" onLevelsChange={vi.fn()} />); await build();
-  expect((screen.getByText('Save plan to Trade Board') as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: 'Save selected plan to Trade Board' }) as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByText('Wait for a new base.')).toBeTruthy(); expect(mocks.createBoardPlan).not.toHaveBeenCalled();
 });
 
@@ -85,11 +85,13 @@ it('starts with a compact rules view and opens the model perspective only on sel
   expect(screen.getByText('Create price-alert drafts').closest('details')?.open).toBe(false);
   expect(screen.getByText('Steps, sizing & risks').closest('details')?.open).toBe(false);
   expect(screen.queryByRole('button', { name: 'Generate LLM alternative' })).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: 'LLM alternative plan' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Select LLM plan' }));
   expect(screen.getByRole('button', { name: 'Generate LLM alternative' })).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Save plan to Trade Board' })).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: 'Rules-based plan' }));
-  expect(screen.getByRole('button', { name: 'Save plan to Trade Board' })).toBeTruthy();
+  // The LLM view has its own save control, disabled until a proposal passes every code check.
+  expect((screen.getByRole('button', { name: 'Save selected plan to Trade Board' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText(/Generate an LLM plan first/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Select rules-based plan' }));
+  expect(screen.getByRole('button', { name: 'Save selected plan to Trade Board' })).toBeTruthy();
 });
 
 it('updates chart levels with the selected scenario, focuses its target, and clears the overlay for an ungenerated LLM view', async () => {
@@ -100,8 +102,8 @@ it('updates chart levels with the selected scenario, focuses its target, and cle
   fireEvent.change(screen.getByLabelText('Setup to save'), { target: { value: 'breakout' } });
   expect(levels.mock.calls.at(-1)?.[0].map((l: { price: number }) => l.price)).toEqual([101, 99, 105, 107]);
   fireEvent.click(screen.getByRole('button', { name: 'Highlight TP1 on chart' })); expect(focus).toHaveBeenCalledWith({ price: 105, label: 'TP1', role: 'target' });
-  fireEvent.click(screen.getByRole('button', { name: 'LLM alternative plan' })); expect(levels.mock.calls.at(-1)?.[0]).toEqual([]);
-  fireEvent.click(screen.getByRole('button', { name: 'Rules-based plan' })); expect(levels.mock.calls.at(-1)?.[0]).toHaveLength(4);
+  fireEvent.click(screen.getByRole('button', { name: 'Select LLM plan' })); expect(levels.mock.calls.at(-1)?.[0]).toEqual([]);
+  fireEvent.click(screen.getByRole('button', { name: 'Select rules-based plan' })); expect(levels.mock.calls.at(-1)?.[0]).toHaveLength(4);
 });
 
 it('does not plot a blocked setup even when other reference levels are fresh', async () => {
@@ -126,7 +128,7 @@ it('keeps the panel area as tall as the rules view when switching, so the page d
     render(<StockGamePlanCard symbol="AAPL" onLevelsChange={vi.fn()} />); await build();
     const area = screen.getByRole('region', { name: 'Rules-based plan' }).parentElement!.parentElement!;
     expect(area.style.minHeight).toBe('');
-    fireEvent.click(screen.getByRole('button', { name: 'LLM alternative plan' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Select LLM plan' }));
     expect(area.style.minHeight).toBe('640px');
   } finally { height.mockRestore(); }
 });
