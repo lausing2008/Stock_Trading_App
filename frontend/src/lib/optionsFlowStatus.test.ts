@@ -6,6 +6,7 @@ it('names each unavailable reason, and never words a server error as no activity
   expect(t('fetch_error')).toMatch(/server error\).*not the same as no options activity/);
   expect(t('options_feed_unavailable', { last_known_chain_date: '2026-10-20' })).toContain('last chain 2026-10-20');
   expect(t('no_volume')).toContain('No call or put volume');
+  expect(t('chain_read_failed')).toMatch(/data failure, not an absence of activity/);
   expect(t('no_options_listed')).toContain('No listed options');
   expect(t('something_new')).toBe('Unavailable (something_new).');
 });

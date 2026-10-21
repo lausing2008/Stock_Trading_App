@@ -33,13 +33,14 @@ def _frame(total, unusual_rows):
     return pd.DataFrame(rows)
 
 
-def _run(calls, puts, call_unusual, put_unusual=0):
+def _run(calls, puts, call_unusual, put_unusual=0, chain_fails=False):
     warnings = []
     ns = {"__package__": "t.api", "Session": object, "Depends": lambda v: None, "get_session": lambda: None,
           "json": json, "_OPTIONS_TTL": 900, "_get_redis": _Cache, "_uw_expiries": lambda *_: ["2099-01-16"],
           "_options_flow_gex_component": lambda *_: None,
           "log": SimpleNamespace(warning=lambda *a, **k: warnings.append(k)),
-          "_uw_option_chain": lambda *_: SimpleNamespace(calls=_frame(calls, call_unusual), puts=_frame(puts, put_unusual))}
+          "_uw_option_chain": (lambda *_: (_ for _ in ()).throw(RuntimeError("chain read failed"))) if chain_fails else
+                              (lambda *_: SimpleNamespace(calls=_frame(calls, call_unusual), puts=_frame(puts, put_unusual)))}
     for node in TREE.body:
         if isinstance(node, ast.FunctionDef) and node.name in NAMES:
             node.decorator_list = []
@@ -78,3 +79,8 @@ def test_ranking_is_deterministic_on_ties():
     assert [(r["expiry"], r["side"], r["strike"]) for r in out] == [
         ("2099-01-16", "call", 100.0), ("2099-01-09", "call", 110.0), ("2099-01-16", "call", 105.0), ("2099-01-16", "put", 95.0)]
     assert ns["rank_unusual"](list(reversed(rows))) == out
+
+
+def test_failed_chain_reads_are_a_data_failure_not_no_volume():
+    result, _ = _run(0, 0, 0, chain_fails=True)
+    assert result["available"] is False and result["reason"] == "chain_read_failed"

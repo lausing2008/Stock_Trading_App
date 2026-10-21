@@ -3410,6 +3410,10 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
                         **_pf,
                     })
 
+        if not received_expiries:
+            # Every expiry read failed: a data failure, never "no volume" (review of the F1 fix).
+            return {"symbol": sym, "available": False, "reason": "chain_read_failed",
+                    "expiries_attempted": list(expiries[:4])}
         if total_call_vol == 0 and total_put_vol == 0:
             result = {"symbol": sym, "available": False, "reason": "no_volume"}
             return result
