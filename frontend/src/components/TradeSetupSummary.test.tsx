@@ -45,3 +45,14 @@ it('shows the playbook branches when present and nothing extra for older plans w
   render(<TradeSetupSummary setups={[setupFixture()]} currency="USD" compact />);
   expect(screen.queryByRole('region', { name: 'Pullback entry playbook' })).toBeNull();
 });
+it('shows the highest acceptable fill, an account cap note, and a blocked setup only as wait guidance', () => {
+  const s = { ...setupFixture('breakout'), max_fill: 101, sizing_note: 'Capped at what the stated account of $1,000.00 can buy at the entry reference; not a broker buying-power check.' };
+  render(<TradeSetupSummary setups={[s]} currency="USD" />);
+  expect(screen.getByText('Highest acceptable fill')).toBeTruthy(); expect(screen.getByText(/Capped at what the stated account/)).toBeTruthy();
+  cleanup();
+  const blocked = { ...setupFixture(), state: 'blocked' as const, reasons: ['Latest close is below a falling 50-bar average.'],
+    playbook: [{ case: 'wait' as const, kind: 'wait' as const, title: 'Now: wait — not eligible', text: 'No entry from this setup now.' }] };
+  render(<TradeSetupSummary setups={[blocked]} currency="USD" compact />);
+  const book = screen.getByRole('region', { name: 'Pullback entry playbook' });
+  expect(within(book).getByText('Now: wait — not eligible')).toBeTruthy(); expect(within(book).queryByText('If it rises')).toBeNull();
+});

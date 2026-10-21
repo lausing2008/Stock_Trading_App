@@ -45,6 +45,7 @@ BREAKEVEN_ATR = 1.0              # move the stop to entry once a close is 1 x AT
 MIN_REWARD_RISK = 2.0
 EARNINGS_CAUTION_DAYS = 10
 BREAKOUT_VOLUME_MULT = 1.5
+BREAKOUT_RETEST_SESSIONS = 3      # a post-confirmation retest fill must occur within this many sessions
 SLOPE_LAG_BARS = 5               # SMA50 now vs SMA50 five bars earlier
 #: A single-bar move larger than this, in unadjusted closes, is probably a split or another
 #: corporate action: every level computed across it is suspect and marked STALE.
@@ -176,6 +177,14 @@ class Plan:
                  "evidence_ids": list(it.evidence_ids)})
         return {"kind": self.kind, "currency": self.currency, "price_as_of": self.as_of,
                 "setups": [{**s, "state": "stale" if self.items[s["key"]].stale else s["state"],
+                            # F04: stale prices give no current guidance, only the reason.
+                            **({"playbook": [{"case": "stale", "kind": "wait",
+                                              "title": "Prices are stale — no current guidance",
+                                              "text": f"This plan's prices are not current "
+                                                      f"({self.items[s['key']].stale}). No branch "
+                                                      f"applies until the data catches up; refresh "
+                                                      f"the plan then."}]}
+                               if self.items[s["key"]].stale else {}),
                             "evidence_ids": list(self.items[s["key"]].evidence_ids)} for s in self.setups],
                 "position": (None if self.position is None else
                              {k: getattr(self.position, k) for k in
@@ -897,11 +906,17 @@ def _trade_setups(ctx, lv, ids):
     resistance = sorted(set(x for x in (lv.high20, lv.high252) if x is not None and x > 0))
     for name, title, entry, stop, trigger_key in specs:
         held = name == 'holding'
-        reasons, targets = [], []
+        reasons, targets, needs = [], [], []
         valid = math.isfinite(entry) and math.isfinite(stop) and entry > 0 and stop > 0 and (held or stop < entry)
         per = entry-stop if valid and entry > stop else None
         budget = pos.risk_budget if pos else None
         shares = pos.shares if held and pos else (math.floor(budget/per) if budget is not None and per else None)
+        # F05: ONE sizing rule. A stated cash/account amount caps the proposed size here exactly as
+        # it does in the narrative (rule.e6); still not a broker buying-power check.
+        account = pos.account if pos is not None and not held else None
+        capped = False
+        if shares is not None and account is not None and valid and entry > 0 and shares * entry > account:
+            shares, capped = math.floor(account / entry), True
         state = 'conditional'
         if not valid or (not held and per is None):
             state = 'unavailable'; reasons.append('No positive entry/stop risk distance can be calculated.')
@@ -922,8 +937,11 @@ def _trade_setups(ctx, lv, ids):
                             'Calculated stretch objective', 'reward_risk': (second-entry)/per if per else None})
             if not held and targets[0]['reward_risk'] + 1e-9 < MIN_REWARD_RISK:
                 state = 'blocked'; reasons.append('First target is below the minimum reward-to-risk; wait for a different setup.')
+                needs.append(f'a first target at least {MIN_REWARD_RISK:g}R away: an entry at or below '
+                             f'{m(_no_chase_limit(targets[0]["price"], stop))} with this stop, or new levels after the 20-bar window rolls')
             if not held and lv.close <= stop and name == 'pullback':
                 state = 'blocked'; reasons.append('Latest close is already at or below the pullback stop; wait for a new base.')
+                needs.append('a new 20-bar base: daily closes holding above a fresh 20-bar low (the levels recalculate each day)')
             if held and lv.close < stop:
                 state = 'exit_triggered'; reasons.append('Latest daily close is already below the assessed stop; the exit rule is met.')
         if not held:
@@ -931,18 +949,32 @@ def _trade_setups(ctx, lv, ids):
                 state = 'unavailable'; reasons.append('Insufficient history to assess the trend filter.')
             elif lv.close < lv.sma50 and lv.sma50 < lv.sma50_prev:
                 state = 'blocked'; reasons.append('Latest close is below a falling 50-bar average; no new long under the trend rule.')
+                needs.append(f'the trend filter to clear: a daily close above the 50-bar average ({m(lv.sma50)}) '
+                             f'or that average to stop falling')
             if name == 'breakout' and lv.avg_volume20 <= 0:
                 state = 'unavailable'; reasons.append('Average volume is unavailable for breakout confirmation.')
             if shares == 0:
-                state = 'blocked'; reasons.append('The risk budget cannot cover one whole share at this stop distance.')
+                state = 'blocked'
+                if capped:
+                    reasons.append('The stated account cannot buy one whole share at the entry reference.')
+                    needs.append(f'an account amount of at least {m(entry)} (one share at the entry reference)')
+                else:
+                    reasons.append('The risk budget cannot cover one whole share at this stop distance.')
+                    needs.append(f'a risk budget of at least {m(per)} (one share at this stop distance)')
         risk_note = ('Stop gaps, slippage and fees can exceed the calculated loss. Sizing does not check buying power.'
                      if per else 'Stop is at or above cost; original risk and R-multiples are unknown. Gap risk remains.')
         if not valid:
             risk_note = 'Entry/stop inputs are unusable; sizing and reward-to-risk are unavailable.'
         recovery = [{'price': x, 'label': 'Resistance / loss reduction, not profit'} for x in resistance
                     if held and lv.close < x <= entry]
+        # F06: the confirmation level is not an acceptable fill. max_fill is the highest fill whose
+        # first target is still MIN_REWARD_RISK away with this stop; above it the setup fails.
+        max_fill = _no_chase_limit(targets[0]['price'], stop) if valid and per and not held and targets else None
+        sizing_note = (f'Capped at what the stated account of {m(account)} can buy at the entry reference; '
+                       f'not a broker buying-power check.' if capped else None)
         setup = dict(id=name, key=f'setup.{name}', title=title, entry=entry, stop=stop if valid else None,
-            targets=targets, risk_per_share=per, risk_budget=budget, shares=shares,
+            targets=targets, risk_per_share=per, risk_budget=budget, shares=shares, max_fill=max_fill,
+            sizing_note=sizing_note, eligibility_needs=needs,
             shares_basis='held' if held else 'risk_budget',
             capital=entry*shares if shares is not None else None,
             cash_at_stop=(stop-entry)*shares if valid and shares is not None else None,
@@ -985,7 +1017,7 @@ def _trade_setups(ctx, lv, ids):
                 ctx.add('level.holding_assessed_stop', m(stop), 'Higher of stated stop and calculated candidate; not maintained', 'levels', [eid]+inputs)
                 ctx.level('level.holding_assessed_stop', stop, 'Holding stop to assess', 'stop')
         if valid:
-            setup['playbook'] = _playbook(ctx, lv, setup, name)
+            setup['playbook'] = _state_playbook(ctx, lv, setup, name)
             for branch in setup['playbook']:
                 ctx.add(f"playbook.{name}.{branch['case']}", branch['text'],
                         f"{title} playbook — {branch['title']}; code-written conditional rule, "
@@ -998,6 +1030,25 @@ def _trade_setups(ctx, lv, ids):
 def _no_chase_limit(target1: float, stop: float) -> float:
     """Highest entry whose first target still meets MIN_REWARD_RISK: (T1 - e) / (e - stop) >= R."""
     return (target1 + MIN_REWARD_RISK * stop) / (1 + MIN_REWARD_RISK)
+
+
+def _state_playbook(ctx, lv, setup, name):
+    """F04: guidance follows the setup's state; no entry branch is shown while a gate forbids it."""
+    if setup['state'] == 'blocked':
+        needs = '; '.join(setup['eligibility_needs']) or 'the blocking condition above to clear'
+        return [{'case': 'wait', 'kind': 'wait', 'title': 'Now: wait — not eligible',
+                 'text': (f"No entry from this setup now: {' '.join(setup['reasons'])} It becomes eligible "
+                          f"only with {needs}. Refresh the plan after each daily close; until then no buy "
+                          f"branch applies.")}]
+    if setup['state'] == 'unavailable':
+        return []
+    book = _playbook(ctx, lv, setup, name)
+    if setup['state'] == 'exit_triggered':
+        return [{'case': 'now', 'kind': 'exit', 'title': 'Now: exit rule met',
+                 'text': (f"The latest daily close ({ctx.m(lv.close)}) is below the assessed stop "
+                          f"({ctx.m(setup['stop'])}): the exit rule is met. Waiting for a recovery is not part "
+                          f"of this plan.")}]
+    return book
 
 
 def _playbook(ctx, lv, setup, name):
@@ -1019,53 +1070,64 @@ def _playbook(ctx, lv, setup, name):
     if name == 'holding':
         trail = lv.close - TRAIL_ATR * A
         return [
-            {'case': 'rises', 'title': 'If it rises',
+            {'case': 'rises', 'kind': 'manage', 'title': 'If it rises',
              'text': (f"Keep holding while daily closes stay above the stop. As closes rise, a textbook "
                       f"trailing stop follows the latest close − {TRAIL_ATR:g} × ATR (today {m(trail)}); "
                       f"raise the stop to it only when that is higher — never lower a stop. Take profit 1 "
                       f"is {m(t1)}; a common approach takes part of the position there and keeps the "
                       f"rest toward take profit 2 ({m(t2)}) with the trailing stop.")},
-            {'case': 'falls', 'title': 'If it falls',
+            {'case': 'falls', 'kind': 'exit', 'title': 'If it falls',
              'text': (f"A daily close below the assessed stop ({m(stop)}) meets the exit rule: sell rather "
                       f"than wait for a recovery. An overnight gap, especially around earnings, can fill "
                       f"below the stop.{next_support}")},
-            {'case': 'sideways', 'title': 'If it goes sideways',
+            {'case': 'sideways', 'kind': 'manage', 'title': 'If it goes sideways',
              'text': (f"Hold while daily closes stay above the stop ({m(stop)}); a sideways market does not "
                       f"move the stop. {sideways}")},
         ]
-    chase = _no_chase_limit(t1, stop)
+    chase = setup['max_fill']
     breakeven = entry + BREAKEVEN_ATR * A
-    after = {'case': 'after_entry', 'title': 'After you are filled',
-             'text': (f"Recalculate risk at your actual fill. Once a daily close is {BREAKEVEN_ATR:g} ATR "
+    after = {'case': 'after_entry', 'kind': 'manage', 'title': 'Only after an eligible fill (hypothetical)',
+             'text': (f"Applies only once an entry above has actually filled; recalculate risk at that fill. Once a daily close is {BREAKEVEN_ATR:g} ATR "
                       f"above the entry (above {m(breakeven)} from the {m(entry)} reference), move the stop "
                       f"up to the entry. At take profit 1 ({m(t1)}) a common approach takes part of the "
                       f"position and trails the rest at the latest close − {TRAIL_ATR:g} × ATR toward take "
                       f"profit 2 ({m(t2)}). A daily close below the stop exits.")}
     if name == 'pullback':
         return [
-            {'case': 'falls', 'title': 'If it falls',
+            {'case': 'falls', 'kind': 'entry', 'title': 'If it falls',
              'text': (f"A pullback to the 20-bar low ({m(lv.low20)}) is this setup's entry zone: buy only "
                       f"after a daily close holds above it, with the stop at {m(stop)}. A daily close "
                       f"below {m(stop)} instead cancels the setup — do not buy; wait for a new 20-bar base "
                       f"to form.{next_support}")},
-            {'case': 'rises', 'title': 'If it rises',
+            {'case': 'rises', 'kind': 'entry', 'title': 'If it rises',
              'text': (f"If the price rises without pulling back, this entry does not trigger — do not chase. "
                       f"Above {m(chase)}, the first target ({m(t1)}) is less than {MIN_REWARD_RISK:g}R away "
                       f"with this stop. A daily close above the 20-bar high ({m(lv.high20)}) on volume above "
                       f"{vol_line} switches to the breakout setup instead.")},
-            {'case': 'sideways', 'title': 'If it goes sideways', 'text': sideways},
+            {'case': 'sideways', 'kind': 'wait', 'title': 'If it goes sideways', 'text': sideways},
             after,
         ]
+    if chase <= lv.high20 * (1 + 1e-9):
+        # F06: the trigger (a close ABOVE the high) is already past the highest acceptable fill.
+        fill = (f"A confirming close does not by itself allow a buy: any fill above {m(chase)} leaves the "
+                f"first target ({m(t1)}) less than {MIN_REWARD_RISK:g}R away, and {m(chase)} is at or below "
+                f"the breakout level. After confirmation, only a limit order at or below {m(chase)} on a "
+                f"retest qualifies; if it has not filled within {BREAKOUT_RETEST_SESSIONS} sessions, the setup "
+                f"lapses — refresh the plan.")
+    else:
+        fill = (f"Fill at or below {m(chase)}: above it the first target ({m(t1)}) is less than "
+                f"{MIN_REWARD_RISK:g}R away. If the confirming day closes or the next day opens above "
+                f"{m(chase)}, wait for a retest to {m(chase)} or below; if none within "
+                f"{BREAKOUT_RETEST_SESSIONS} sessions, the setup lapses.")
     return [
-        {'case': 'rises', 'title': 'If it rises',
-         'text': (f"A daily close above the 20-bar high ({m(lv.high20)}) on volume above {vol_line} is "
-                  f"this setup's entry trigger, with the stop at {m(stop)}. A close above the high on "
-                  f"lighter volume is unconfirmed: wait for a confirming close. Do not chase above "
-                  f"{m(chase)}, where the first target ({m(t1)}) is less than {MIN_REWARD_RISK:g}R away.")},
-        {'case': 'falls', 'title': 'If it falls',
+        {'case': 'rises', 'kind': 'entry', 'title': 'If it rises',
+         'text': (f"A daily close above the 20-bar high ({m(lv.high20)}) on volume above {vol_line} "
+                  f"confirms this setup, with the stop at {m(stop)}. A close above the high on lighter "
+                  f"volume is unconfirmed: wait for a confirming close. {fill}")},
+        {'case': 'falls', 'kind': 'wait', 'title': 'If it falls',
          'text': (f"If the price falls back toward the 20-bar low ({m(lv.low20)}), the breakout does not "
                   f"apply and the pullback setup is the relevant one. After a breakout entry, a daily close "
                   f"back below {m(stop)} is a failed breakout: exit.{next_support}")},
-        {'case': 'sideways', 'title': 'If it goes sideways', 'text': sideways},
+        {'case': 'sideways', 'kind': 'wait', 'title': 'If it goes sideways', 'text': sideways},
         after,
     ]

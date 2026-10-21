@@ -24,11 +24,12 @@ export default function TradeSetupSummary({ setups, currency, compact = false, o
       <dl className="trade-setup-levels">
         <div className="trade-setup-level"><dt>{s.shares_basis === 'held' ? 'Original entry cost' : 'Entry reference'}</dt><dd>{price(s.entry, 'Entry', 'support', s)}</dd></div>
         <div className="trade-setup-level"><dt>Stop loss to assess</dt><dd>{price(s.stop, 'Stop', 'stop', s)}</dd></div>
+        {s.max_fill != null && s.shares_basis !== 'held' && <div className="trade-setup-level"><dt>Highest acceptable fill</dt><dd>{cash(s.max_fill)}</dd></div>}
         {s.targets.map((t, i) => <React.Fragment key={i}>
           <div className="trade-setup-level"><dt>Take profit {i + 1}</dt><dd>{price(t.price, `TP${i + 1}`, 'target', s)} · {t.label}{t.reward_risk !== null ? ` · ${t.reward_risk.toFixed(2)}R` : ' · R unknown'}</dd></div>
         </React.Fragment>)}
       </dl>
-      <p><strong>{s.shares_basis === 'held' ? 'Shares held' : 'Risk-sized whole shares'}:</strong> <span>{s.shares ?? (s.shares_basis === 'held' ? 'Enter shares held' : 'Enter a risk budget')}</span></p>
+      <p><strong>{s.shares_basis === 'held' ? 'Shares held' : 'Risk-sized whole shares'}:</strong> <span>{s.shares ?? (s.shares_basis === 'held' ? 'Enter shares held' : 'Enter a risk budget')}</span>{s.sizing_note && <span style={{ color: '#94a3b8' }}> · {s.sizing_note}</span>}</p>
       {compact && <><p className="trade-next-step"><strong>Next step:</strong> {s.trigger}</p><p className="trade-earnings-caution">{s.earnings}</p></>}
       {!compact && <ol className="trade-setup-steps" aria-label={`${s.title} guidance`}>
         <li>{s.trigger}</li><li>{s.invalidation}</li><li>{s.earnings}</li>
@@ -37,7 +38,7 @@ export default function TradeSetupSummary({ setups, currency, compact = false, o
         <p style={{ margin: '8px 0 4px' }}><strong>Playbook</strong> <span style={{ color: '#94a3b8' }}>· what to do in each case; rules, not a forecast</span></p>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 6 }}>
           {s.playbook.map(b => <div key={b.case} style={{ padding: 8, border: '1px solid #334155', borderRadius: 6 }}>
-            <strong style={{ color: b.case === 'rises' ? '#4ade80' : b.case === 'falls' ? '#f87171' : b.case === 'sideways' ? '#fbbf24' : '#a5b4fc' }}>{b.title}</strong>
+            <strong style={{ color: b.kind === 'wait' || b.kind === 'exit' ? '#fbbf24' : b.case === 'rises' ? '#4ade80' : b.case === 'falls' ? '#f87171' : b.case === 'sideways' ? '#fbbf24' : '#a5b4fc' }}>{b.title}</strong>
             <p style={{ margin: '4px 0 0' }}>{b.text}</p>
           </div>)}
         </div>

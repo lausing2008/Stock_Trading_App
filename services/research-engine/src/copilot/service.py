@@ -281,7 +281,8 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
                      "Then write a short playbook under three headings — If it rises, If it falls, "
                      "If it goes sideways — plus how to manage the trade after a fill. Ground each "
                      "heading by citing the matching {{playbook.SETUP.CASE}} placeholder for the "
-                     "chosen setup (CASE is rises, falls, sideways or after_entry), then add your own "
+                     "chosen setup, using only the cases listed for it below; a blocked setup has "
+                     "only a wait case and no entry branch, then add your own "
                      "reading of which case the trend, signal calls and track records make most "
                      "relevant, in words only. Phrase every case conditionally (if ..., then ...); "
                      "never say where the price will go. "
@@ -292,7 +293,8 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
                      "SCENARIO is an eligible setup ID or wait. Cite the chosen {{setup.ID}} "
                      "unchanged in the answer so its entry, stop, targets and sizing are shown. "
                      "Blocked or unavailable entries require waiting. Available setups: "
-                     + json.dumps([{k: s[k] for k in ('id', 'state', 'reasons')}
+                     + json.dumps([{**{k: s[k] for k in ('id', 'state', 'reasons')},
+                                    "playbook_cases": [b["case"] for b in s.get("playbook", [])]}
                                    for s in packet.plan.to_json()['setups']]))
     messages.append({"role": "user", "content": L.user_turn(packet.model_view(), question)})
     result: G.GroundingResult | None = None

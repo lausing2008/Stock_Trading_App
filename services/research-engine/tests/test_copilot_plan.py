@@ -28,7 +28,7 @@ def r():
 
 def test_levels_are_the_hand_computed_values_and_cite_every_input(r):
     p = r["pl1"]
-    assert p["packet_version"] == 8
+    assert p["packet_version"] == 9
     assert p["atr"].startswith("$2.00 (14-bar ATR") and p["atr_calc"] == 2.0
     assert (p["low20"], p["high20"]) == ("$99.00", "$101.00")
     assert p["sma50"].startswith("$100.00, flat")
@@ -191,7 +191,7 @@ def test_options_shorts_split_entries_and_incomplete_numbers_get_no_holding_rule
 
 def test_a_plan_answer_cites_rules_and_records_and_renders_their_figures(r):
     p = r["pl6"]
-    assert p["good_status"] == "grounded" and p["good_packet_version"] == 8
+    assert p["good_status"] == "grounded" and p["good_packet_version"] == 9
     assert p["model_saw_rules"]
     assert {"call.swing", "record.swing.5d", "rule.h1", "rule.h2"} <= set(p["good_refs"])
     assert "$98.00" in p["good_content"] and "{{" not in p["good_content"]
@@ -503,8 +503,10 @@ def test_each_setup_carries_a_hand_checkable_rises_falls_sideways_playbook(r):
     assert "Above $99.00, the first target ($101.00) is less than 2R away" in pb["rises"]
     assert "below $98.00 instead cancels the setup" in pb["falls"]
     assert "above $101.00 from the $99.00 reference" in pb["after_entry"]
+    assert pull["max_fill"] == 99 and "Only after an eligible fill" in [b["title"] for b in pull["playbook"]][-1]
     bb = {b["case"]: b["text"] for b in breakout["playbook"]}
-    assert "Do not chase above $101.00" in bb["rises"]       # (105 + 198) / 3 = 101.00
+    # (105 + 2 x 99) / 3 = 101.00 = the breakout level itself: confirmation alone is not a fill (F06).
+    assert breakout["max_fill"] == 101 and "only a limit order at or below $101.00 on a retest qualifies" in bb["rises"]
     assert "back below $99.00 is a failed breakout" in bb["falls"]
     held = {b["case"]: b["text"] for b in x["held"][0]["playbook"]}
     assert set(held) == {"rises", "falls", "sideways"} and "below the assessed stop ($98.00)" in held["falls"]
@@ -514,7 +516,7 @@ def test_each_setup_carries_a_hand_checkable_rises_falls_sideways_playbook(r):
 def test_llm_playbook_cites_the_code_written_branches_and_is_asked_for(r):
     p = r["pl13"]["playbook_answer"]
     assert p["status"] == "grounded" and p["calls"] == 1 and p["prompt_asks"]
-    assert "Do not chase above $101.00" in p["content"] and "{{" not in p["content"]
+    assert "only a limit order at or below $101.00 on a retest" in p["content"] and "{{" not in p["content"]
 
 
 def test_forming_daily_row_never_counts_as_the_latest_close(r):
@@ -538,3 +540,33 @@ def test_freshness_is_measured_in_completed_sessions(r):
     assert (c["us_early_close_before"], c["us_early_close_after"]) == ("2026-11-25", "2026-11-27")
     assert (c["us_dst_end_before"], c["us_dst_end_after"]) == ("2026-10-30", "2026-11-02")
     assert c["beyond_coverage"] is None
+
+
+def test_blocked_stale_and_exit_setups_never_show_a_buy_branch(r):
+    """Audit F04: guidance follows eligibility; a blocked setup lists what would make it eligible."""
+    x = r["pl17"]
+    for st in x["blocked"]:
+        assert st["state"] == "blocked"
+        assert [b["case"] for b in st["playbook"]] == ["wait"] and st["playbook"][0]["kind"] == "wait"
+        assert "becomes eligible only with" in st["playbook"][0]["text"] and "buy only" not in st["playbook"][0]["text"]
+    pull = next(s for s in x["blocked"] if s["id"] == "pullback")
+    assert any("new 20-bar base" in n for n in pull["eligibility_needs"])
+    assert all(s["state"] == "stale" and [b["case"] for b in s["playbook"]] == ["stale"] for s in x["stale"])
+    held = x["exit"][0]
+    assert held["state"] == "exit_triggered" and [b["case"] for b in held["playbook"]] == ["now"]
+    entry_kinds = {b["kind"] for s in x["conditional"] for b in s["playbook"]}
+    assert entry_kinds <= {"entry", "wait", "manage"} and all(
+        b["title"].startswith("Only after an eligible fill") for s in x["conditional"] for b in s["playbook"] if b["kind"] == "manage")
+
+
+def test_structured_sizing_applies_the_stated_account_like_the_narrative(r):
+    """Audit F05: account 1,000 caps every proposed size; an account below one share blocks."""
+    plan = r["pl17"]["sized"]
+    pull, breakout = plan["setups"]
+    assert (pull["shares"], breakout["shares"]) == (10, 9)            # floor(1000/99), floor(1000/101)
+    assert pull["capital"] <= 1000 and breakout["capital"] <= 1000 and "stated account" in pull["sizing_note"]
+    e6 = next(i["display"] for i in plan["groups"]["rules"] if i["key"] == "rule.e6")
+    assert "capped at what the stated account" in e6
+    tiny = r["pl17"]["tiny_account"]
+    assert all(s["state"] == "blocked" and s["shares"] == 0 for s in tiny)
+    assert all("account cannot buy one whole share" in " ".join(s["reasons"]) for s in tiny)

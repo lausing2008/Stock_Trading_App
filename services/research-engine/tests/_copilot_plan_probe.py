@@ -854,7 +854,23 @@ def pl16_completed_sessions():
     R["pl16"] = out
 
 
-for fn in (pl16_completed_sessions, pl15_inflight_reask_after_plan_change, pl14_signal_timestamp_tie, pl13_trade_setups, pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
+def pl17_guidance_and_sizing():
+    """Audit F04 (state-aware playbook), F05 (one sizing rule), F06 (fill policy)."""
+    out = {}
+    view = lambda **k: C.plan_view(Session, "alice", SYM, now=NOW, **k)["plan"]
+    reset(last_bar=(91, 89, 90))                       # broken support + falling? (audit F04 case)
+    out["blocked"] = view(kind="entry", risk=400)["setups"]
+    reset(bar_age_days=9)
+    out["stale"] = view(kind="entry", risk=400)["setups"]
+    reset()
+    out["exit"] = view(kind="holding", entry=105, shares=10, stop=101)["setups"]
+    out["sized"] = view(kind="entry", risk=500, account=1000)
+    out["tiny_account"] = view(kind="entry", risk=500, account=50)["setups"]
+    out["conditional"] = view(kind="entry", risk=400)["setups"]
+    R["pl17"] = out
+
+
+for fn in (pl17_guidance_and_sizing, pl16_completed_sessions, pl15_inflight_reask_after_plan_change, pl14_signal_timestamp_tie, pl13_trade_setups, pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
            pl4_staleness, pl5_routing_and_refusals, pl6_turns, pl7_plan_view):
     fn()
 R["_meta"] = {"server": ENGINE.dialect.name}

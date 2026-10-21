@@ -74,7 +74,11 @@ export interface TradeSetup {
   trigger: string; invalidation: string; earnings: string; risk_note: string; reasons: string[];
   recovery_levels: { price: number; label: string }[]; evidence_ids: string[];
   /** Conditional what-to-do branches (packet v8+); absent on older stored plans. */
-  playbook?: { case: 'rises' | 'falls' | 'sideways' | 'after_entry'; title: string; text: string }[];
+  playbook?: { case: 'rises' | 'falls' | 'sideways' | 'after_entry' | 'wait' | 'stale' | 'now'; kind?: 'entry' | 'wait' | 'manage' | 'exit'; title: string; text: string }[];
+  /** Highest fill whose first target still meets the minimum reward:risk (entry setups). */
+  max_fill?: number | null;
+  sizing_note?: string | null;
+  eligibility_needs?: string[];
 }
 export interface StockPlan {
   symbol: string; packet_version: number; packet_fingerprint: string;
