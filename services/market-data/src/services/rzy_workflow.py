@@ -18,7 +18,7 @@ from common.price_basis import resolve_ohlc
 from common.outbox import enqueue
 from .little_rzy import Engine,Config,VERSION,stable,planning_reference,generation_event_id
 from .rzy_data import prepare_bars,aggregate_completed_bars,break_indices,MINUTES,utc
-from .rzy_models import RzyStream,RzyEvent,RzyPreference,RzyStreamGeneration,RzyStreamSnapshot,RzyScanRun
+from .rzy_models import RzyStream,RzyEvent,RzyPreference,RzyStreamGeneration,RzyStreamSnapshot,RzyScanRun,RzyOccurrence,RzyRebuild
 import time as _time
 from .rzy_email import render_event,render_event_html,event_subject
 
@@ -40,6 +40,18 @@ MAINTENANCE_START=timedelta(minutes=50)
 REBUILD_MIN_INTERVAL=timedelta(minutes=30)
 THROTTLED_REASONS={'stored_completed_bar_changed','checkpoint_bar_missing_from_source','checkpoint_contains_excluded_off_grid_bar'}
 KEEP_GENERATIONS=5
+# Occurrence/rebuild records are compact and outlive generation pruning (F08); bounded like scan runs.
+RECORD_RETENTION=timedelta(days=35)
+# The trade figures an email states; a rebuild that changes any of them must not send the old body.
+FIGURE_KEYS=('primary_target','stop','planned_entry','D','reward_risk','event_type','direction')
+
+
+def figures(payload):
+    return {k:payload.get(k) for k in FIGURE_KEYS}
+
+
+def _wall_clock():
+    return datetime.now(timezone.utc)
 MAINTENANCE_END=timedelta(minutes=21)
 MAINTENANCE_BATCH=60
 
@@ -112,13 +124,16 @@ def load_bars(session,symbol,timeframe,now,cache=None):
     return result
 
 
-def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_cache=None,allow_rebuild=True):
+def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_cache=None,allow_rebuild=True,clock=None):
     """Advance one stream on its latest contiguous completed-bar segment.
 
     Stored history that no longer matches the checkpoint (material OHLC revision, a removed bar,
     an off-grid snapshot consumed by older code, or a gap after the checkpoint) rebuilds the
     stream deterministically from current stored bars as a new generation; the superseded state
     is summarised in little_rzy_stream_generations and its events stay in little_rzy_events.
+
+    `now` is the DATA CUTOFF (deterministic replay); `clock` reads the actual wall time at which
+    records are persisted (F09). They differ whenever a scan takes time.
     """
     now=utc(now or datetime.now(timezone.utc)); cfg=config or current_config()
     bars,evidence=load_bars(session,symbol,timeframe,now,bars_cache)
@@ -173,7 +188,10 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_
     processed=bool(todo)
     new_events=[]
     if persist and (row is None or processed or rebuilt):
+        persisted_at=utc((clock or _wall_clock)()).replace(tzinfo=None)
         if rebuilt:
+            session.add(RzyRebuild(stream_key=key,symbol=symbol,timeframe=timeframe,generation=engine.s['generation'],
+                reason=(reason or '')[:64],rebuilt_at=persisted_at))
             session.add(RzyStreamGeneration(stream_key=key,generation=prior.get('generation') or 1,reason=reason,
                 detail=_archive_summary(prior,reason,detail,now),archived_at=now.replace(tzinfo=None)))
             session.flush()
@@ -188,7 +206,9 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_
         for event in stored:
             if event['event_id'] in known: continue
             known.add(event['event_id']); new_events.append(event)
-            session.add(RzyEvent(event_id=event['event_id'],symbol=symbol,timeframe=timeframe,event_type=event['event_type'],payload=event,created_at=now.replace(tzinfo=None)))
+            session.add(RzyEvent(event_id=event['event_id'],symbol=symbol,timeframe=timeframe,event_type=event['event_type'],payload=event,created_at=persisted_at))
+        _record_occurrences(session,key,symbol,timeframe,stored,now,persisted_at,
+            'bootstrap' if prior is None else 'rebuild' if rebuilt else 'incremental')
     last_index=engine.last_index
     structures=[dict(st,planning_reference=planning_reference(st,engine.s['bars'][-1],last_index,engine.s['indicators'][-1],cfg)) for st in list(engine.s['structures'].values())[-20:]] if engine.s['bars'] else []
     generation=engine.s.get('generation',1)
@@ -208,6 +228,24 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_
         configuration=__import__('dataclasses').asdict(cfg),
         strategy_version=VERSION,config_hash=cfg.hash,bootstrap=prior is None,rebuilt=rebuilt,rebuild_reason=reason if rebuilt else None,
         generation=generation,superseded_event_count=superseded)
+
+
+def _record_occurrences(session,key,symbol,timeframe,stored,cutoff,persisted_at,observed_in):
+    """First observation is written once; later generations only move latest_*."""
+    if not stored: return
+    ids=list({e['occurrence_id'] for e in stored})
+    rows={r.occurrence_id:r for r in session.scalars(select(RzyOccurrence).where(RzyOccurrence.occurrence_id.in_(ids)))}
+    for e in stored:
+        occ=e['occurrence_id']; row=rows.get(occ)
+        if row is None:
+            signal=e.get('signal_time')
+            row=RzyOccurrence(occurrence_id=occ,stream_key=key,symbol=symbol,timeframe=timeframe,event_type=e['event_type'][:32],
+                signal_time=utc(datetime.fromisoformat(signal)).replace(tzinfo=None) if signal else None,
+                first_cutoff=cutoff.replace(tzinfo=None),first_seen_at=persisted_at,first_generation=e.get('generation',1),
+                observed_in=observed_in,first_figures=dict(figures(e),failed_rules=list(e.get('failed_rules') or [])),latest_generation=e.get('generation',1),latest_event_id=e['event_id'])
+            session.add(row); rows[occ]=row
+        elif e.get('generation',1)>=row.latest_generation:
+            row.latest_generation=e.get('generation',1); row.latest_event_id=e['event_id']
 
 
 def _prune_generations(session,key,symbol,timeframe,config_hash,current):
@@ -254,9 +292,12 @@ def emailable(event,paper_blockers=()):
     return kind in ('TRIGGERED','REVERSAL_WATCH','EXHAUSTION_WATCH','EXIT_PENDING','PAPER_EXIT')
 
 
-def scan(session,now=None):
+def scan(session,now=None,clock=None):
     started=_time.monotonic()
     now=utc(now or datetime.now(timezone.utc)); local=now.astimezone(NY)
+    # `now` is the scan's data cutoff. Elapsed processing time is real (F09): later streams are
+    # evaluated, persisted and freshness-checked at their own actual time, not the scan start.
+    clock=clock or (lambda: now+timedelta(seconds=_time.monotonic()-started))
     if local.year>calendar_coverage()['nyse']: return {'status':'calendar_coverage_expired','queued':0}
     bounds=session_bounds('US',local.date())
     if not bounds: return {'status':'outside_regular_session','queued':0}
@@ -280,7 +321,7 @@ def scan(session,now=None):
     queued=0; statuses={}; cache={}; previous_symbol=None; emailable_new=0; too_late=0
     for symbol,tf in sorted(jobs):
         if symbol!=previous_symbol: cache.clear(); previous_symbol=symbol
-        try: result=evaluate(session,symbol,tf,now,persist=True,bars_cache=cache)
+        try: result=evaluate(session,symbol,tf,now,persist=True,bars_cache=cache,clock=clock)
         except (ValueError,TypeError) as exc:
             session.rollback();statuses[f'{symbol}:{tf}']='data_rejected: '+str(exc)[:160]
             save_snapshot(session,symbol,tf,current_config().hash,now,'data_rejected',stream_summary(symbol,tf,error=exc));session.commit();continue
@@ -296,7 +337,8 @@ def scan(session,now=None):
             emailable_new+=1
             signal=utc(datetime.fromisoformat(event['signal_time']))
             # Fresh only: a rebuild replays history, and a late scan must not mail stale signals.
-            if now-signal>timedelta(minutes=MINUTES[tf]+3):
+            # Measured at the actual time of this check, not the scan start (F09).
+            if utc(clock())-signal>timedelta(minutes=MINUTES[tf]+3):
                 too_late+=1; continue
             for uid,(user,pref,symbols) in audience.items():
                 if symbol not in symbols or tf not in pref.timeframes or not eligible(session,user,pref,'little_rzy'): continue
@@ -308,6 +350,11 @@ def scan(session,now=None):
                     subject=event_subject(event),body_text=body+footer_text,body_html=render_event_html(event,blockers)+footer_html,
                     expires_at=(signal+timedelta(minutes=MINUTES[tf]+5)).replace(tzinfo=None))
                 queued+=int(created)
+                if created:
+                    occ=session.get(RzyOccurrence,event['occurrence_id'])
+                    if occ is not None and occ.queued_generation is None:
+                        occ.queued_generation=event.get('generation',1); occ.queued_figures=figures(event)
+                        occ.queued_at=utc(clock()).replace(tzinfo=None)
         # One stream is an atomic unit; do not retain every large JSON checkpoint or an idle
         # transaction for the entire watchlist scan. No provider calls occur in this transaction.
         session.commit()
@@ -317,6 +364,9 @@ def scan(session,now=None):
     session.add(RzyScanRun(scan_time=now.replace(tzinfo=None),mode='maintenance' if maintenance else 'session',duration_seconds=round(duration,3),
         streams=len(jobs),statuses=counts,new_emailable_events=emailable_new,too_late_to_mail=too_late,queued=queued))
     session.execute(delete(RzyScanRun).where(RzyScanRun.scan_time<(now-timedelta(days=35)).replace(tzinfo=None)))
+    horizon=(now-RECORD_RETENTION).replace(tzinfo=None)
+    session.execute(delete(RzyOccurrence).where(RzyOccurrence.first_seen_at<horizon))
+    session.execute(delete(RzyRebuild).where(RzyRebuild.rebuilt_at<horizon))
     session.commit()
     return {'status':'maintenance' if maintenance else 'ok','streams':len(jobs),'queued':queued,'stream_status':statuses,
             'duration_seconds':round(duration,1),'too_late_to_mail':too_late}
@@ -353,6 +403,26 @@ def _rank(candidates):
     return sorted(candidates,key=lambda c:(c['sequence_confidence']!='known',c['sequence'],c['symbol'],c['timeframe']))
 
 
+# A snapshot is CURRENT only if a scan wrote it recently enough to reflect the latest completed
+# bars (F07): during a session, within this grace of now; outside one, no older than the last
+# in-session scan before that session's close. Older rows are historical, never "usable now".
+SNAPSHOT_GRACE=timedelta(minutes=15)
+
+
+def snapshot_current_since(now):
+    """Earliest checked_at (naive UTC) that still counts as a current snapshot at `now`."""
+    now=utc(now); day=now.astimezone(NY).date()
+    for back in range(0,15):
+        bounds=session_bounds('US',day-timedelta(days=back))
+        if not bounds: continue
+        opening,closing=utc(bounds[0]),utc(bounds[1])
+        if now<opening: continue          # before this session's open: the previous close governs
+        if now<=closing+timedelta(minutes=5):
+            return (now-SNAPSHOT_GRACE).replace(tzinfo=None)
+        return (closing-SNAPSHOT_GRACE).replace(tzinfo=None)
+    return (now-SNAPSHOT_GRACE).replace(tzinfo=None)
+
+
 def save_snapshot(session,symbol,tf,config_hash,now,status,summary):
     session.merge(RzyStreamSnapshot(stream_key=f'{symbol}:{tf}:{config_hash}',symbol=symbol,timeframe=tf,config_hash=config_hash,
         checked_at=now.replace(tzinfo=None),status=status[:48],summary=summary))
@@ -384,11 +454,16 @@ def digest_snapshot(session,user_id,now=None):
     if not rows:
         return dict(base,available=False,candidates=[],total_candidates=0,exclusions=[],
             message='Preview not available yet: no scan snapshot exists for your watchlist. Snapshots are saved by the scheduled scan before and during the US session.')
-    candidates=[]; exclusions=[]
+    candidates=[]; exclusions=[]; since=snapshot_current_since(now); expired=0
     for sym in symbols:
         for tf in tfs:
             r=rows.get(f'{sym}:{tf}:{cfg.hash}')
             if r is None: exclusions.append({'symbol':sym,'timeframe':tf,'reason':'not_evaluated_yet'}); continue
+            if r.checked_at<since:
+                # Historical only: an old 'research_only' result is not a current candidate.
+                expired+=1
+                exclusions.append({'symbol':sym,'timeframe':tf,'reason':'snapshot_expired','checked_at':r.checked_at.isoformat(),
+                    'historical_status':r.status,'historical_candidates':len(r.summary.get('candidates',[]))}); continue
             candidates.extend(r.summary.get('candidates',[]))
             if r.summary.get('exclusion'): exclusions.append(dict(r.summary['exclusion'],checked_at=r.checked_at.isoformat()))
     times=[r.checked_at for r in rows.values()]
@@ -396,9 +471,10 @@ def digest_snapshot(session,user_id,now=None):
     candidates=_rank(candidates)
     return dict(base,available=True,snapshot_from=oldest.isoformat(),snapshot_to=newest.isoformat(),
         snapshot_age_minutes=round((now.replace(tzinfo=None)-oldest).total_seconds()/60,1),
-        streams_with_snapshot=len(rows),streams_expected=len(keys),
+        streams_with_snapshot=len(rows),streams_expected=len(keys),streams_current=len(rows)-expired,streams_expired=expired,
+        current_since=since.isoformat(),
         candidates=candidates[:10],total_candidates=len(candidates),exclusions=exclusions,
-        freshness_note='Saved scan results, not recomputed for this request. Each stream reflects its last scan; check snapshot times before relying on a candidate.')
+        freshness_note='Saved scan results, not recomputed for this request. Only snapshots written by a scan since the time shown are used; older ones are listed as expired and their candidates are not shown.')
 
 
 def morning_digest(session,now=None):
@@ -426,28 +502,54 @@ def morning_digest(session,now=None):
     return {'status':'ok','queued':queued}
 
 
+def rzy_send_check(session,row):
+    """(send?, reason) for one queued little_rzy row, from its occurrence's CURRENT generation.
+
+    F02: the event is located through its occurrence record and the stream's current generation,
+    never by guessing a bounded range of generation ids. Each refusal names its real cause.
+    """
+    occurrence=row.event_id.split(':')[-1]
+    occ=session.get(RzyOccurrence,occurrence)
+    if occ is not None:
+        stream=session.get(RzyStream,occ.stream_key)
+    else:
+        # Queued before occurrence records existed: generation 1 kept the legacy id.
+        legacy=session.get(RzyEvent,occurrence)
+        stream=legacy and session.get(RzyStream,f'{legacy.symbol}:{legacy.timeframe}:{legacy.payload["config_hash"]}')
+    if stream is None: return False,'superseded: stream or occurrence record not found'
+    if stream.checkpoint.get('requires_audited_replay') or stream.checkpoint.get('restatement_pending'):
+        return False,'paused: stream awaiting a rebuild after restated bars'
+    current=stream.checkpoint.get('generation',1)
+    event=session.get(RzyEvent,generation_event_id(occurrence,current))
+    if event is None: return False,'superseded: occurrence absent from the current generation'
+    sent_figures=(occ.queued_figures or occ.first_figures) if occ is not None else None
+    if sent_figures is not None and figures(event.payload)!={k:sent_figures.get(k) for k in FIGURE_KEYS}:
+        return False,'superseded: a rebuild changed the trade figures in the queued message'
+    pref=session.get(RzyPreference,row.user_id)
+    if event.symbol not in watchlist_symbols(session,row.user_id): return False,'recipient removed the symbol from the watchlist'
+    if event.timeframe not in (pref.timeframes if pref else ['5m','15m','1h']): return False,'recipient turned off this timeframe'
+    return True,'subscribed'
+
+
 def drain(session,send,now=None):
     from .earnings_outbox import deliver_batch
+    from db import NotificationOutbox
+    why={}
     def subscribed(row):
         # The sender reads the same explicit per-channel opt-in as the enqueuer. Unknown => off.
         session.expire_all()
         user=session.get(User,row.user_id); pref=session.get(RzyPreference,row.user_id)
         if not eligible(session,user,pref,row.alert_type): return False
         if row.alert_type=='little_rzy':
-            occurrence=row.event_id.split(':')[-1]
-            found=session.scalars(select(RzyEvent).where(RzyEvent.event_id.in_([generation_event_id(occurrence,g) for g in range(1,129)]))).all()
-            if not found: return False
-            stream=session.get(RzyStream,f'{found[0].symbol}:{found[0].timeframe}:{found[0].payload["config_hash"]}')
-            if not stream or stream.checkpoint.get('requires_audited_replay') or stream.checkpoint.get('restatement_pending'): return False
-            # Send only if this occurrence still exists in the stream's CURRENT generation.
-            current=stream.checkpoint.get('generation',1)
-            event=next((e for e in found if e.payload.get('generation',1)==current),None)
-            if event is None: return False
-            # The queued body was rendered from whichever generation was current at enqueue time;
-            # if any version's trade figures differ, the message may show superseded numbers.
-            figures=lambda p:tuple(p.get(k) for k in ('primary_target','stop','planned_entry','D','reward_risk','event_type','direction'))
-            if len({figures(e.payload) for e in found})>1: return False
-            return event.symbol in watchlist_symbols(session,row.user_id) and event.timeframe in (pref.timeframes if pref else ['5m','15m','1h'])
+            ok,reason=rzy_send_check(session,row)
+            if not ok: why[row.id]=reason
+            return ok
         return True
-    return deliver_batch(session,owner='little-rzy:'+uuid4().hex,send=lambda row: send(row.recipient,row.subject,row.body_html,row.body_text),is_subscribed=subscribed,
+    out=deliver_batch(session,owner='little-rzy:'+uuid4().hex,send=lambda row: send(row.recipient,row.subject,row.body_html,row.body_text),is_subscribed=subscribed,
         activated_at=datetime.min,alert_types=EMAIL_TYPES,limit=20,now=now.replace(tzinfo=None) if now else None)
+    # The shared gate reports every refusal as an opt-out; record the real cause instead.
+    for row_id,reason in why.items():
+        session.execute(update(NotificationOutbox).where(NotificationOutbox.id==row_id,NotificationOutbox.state=='suppressed',
+            NotificationOutbox.terminal_reason=='recipient opted out').values(terminal_reason=reason[:200]))
+    if why: session.commit()
+    return out

@@ -32,7 +32,7 @@ sys.path[:0] = [os.environ.get('RZY_EVAL_ROOT', '/app'), '/app/shared']
 from sqlalchemy import select, text  # noqa: E402
 from db import SessionLocal, NotificationOutbox, Stock  # noqa: E402
 from src.services.bar_provenance import BarProvenance, BarRevision  # noqa: E402
-from src.services.rzy_models import RzyEvent, RzyStream, RzyStreamGeneration, RzyScanRun  # noqa: E402
+from src.services.rzy_models import RzyEvent, RzyStream, RzyStreamGeneration, RzyScanRun, RzyOccurrence, RzyRebuild  # noqa: E402
 from src.services.rzy_workflow import emailable, current_config, MINUTES  # noqa: E402
 from src.services.little_rzy import VERSION  # noqa: E402
 
@@ -100,16 +100,17 @@ def main(day, out_dir):
             paused_stream_scans=sum(r.statuses.get('restatement_pending', 0) for r in session_runs),
             too_late_to_mail=sum(r.too_late_to_mail for r in session_runs), new_emailable_events=sum(r.new_emailable_events for r in session_runs),
             queued=sum(r.queued for r in session_runs))
-        gens = s.scalars(select(RzyStreamGeneration).where(RzyStreamGeneration.archived_at >= start, RzyStreamGeneration.archived_at < end)).all()
-        report['rzy_rebuilds'] = dict(total=len(gens), by_reason=dict(Counter(g.reason for g in gens)),
-                                      by_timeframe=dict(Counter(g.stream_key.split(':')[1] for g in gens)))
+        # F08: the append-only rebuild log survives generation pruning; archives do not.
+        log_rows = s.scalars(select(RzyRebuild).where(RzyRebuild.rebuilt_at >= start, RzyRebuild.rebuilt_at < end)).all()
+        if log_rows:
+            report['rzy_rebuilds'] = dict(source='little_rzy_rebuilds (append-only)', total=len(log_rows),
+                by_reason=dict(Counter(g.reason for g in log_rows)), by_timeframe=dict(Counter(g.timeframe for g in log_rows)))
+        else:
+            gens = s.scalars(select(RzyStreamGeneration).where(RzyStreamGeneration.archived_at >= start, RzyStreamGeneration.archived_at < end)).all()
+            report['rzy_rebuilds'] = dict(source='retained generation archives (LOWER BOUND: older ones are pruned)', total=len(gens),
+                by_reason=dict(Counter(g.reason for g in gens)), by_timeframe=dict(Counter(g.stream_key.split(':')[1] for g in gens)))
         report['rzy_streams_paused_at_report_time'] = sum(1 for r in s.scalars(select(RzyStream)).all() if r.checkpoint.get('restatement_pending'))
-        events = s.scalars(select(RzyEvent).where(RzyEvent.created_at >= start, RzyEvent.created_at < end)).all()
-        first = {}
-        for e in events:
-            occ = e.payload.get('occurrence_id', e.event_id)
-            if occ not in first or e.created_at < first[occ][0]:
-                first[occ] = (e.created_at, e.payload)
+        occs = s.scalars(select(RzyOccurrence).where(RzyOccurrence.first_seen_at >= start, RzyOccurrence.first_seen_at < end)).all()
         outbox = s.scalars(select(NotificationOutbox).where(NotificationOutbox.alert_type.in_(('little_rzy', 'short_term_digest')),
                                                             NotificationOutbox.created_at >= start, NotificationOutbox.created_at < end)).all()
         mail = {}
@@ -117,18 +118,40 @@ def main(day, out_dir):
             if r.alert_type == 'little_rzy':
                 mail.setdefault(r.event_id.split(':')[-1], []).append(r)
         path_rows = []
-        for occ, (recorded, p) in first.items():
-            if not p.get('signal_time') or not emailable(p) or recorded - datetime.fromisoformat(p['signal_time']).replace(tzinfo=None) > timedelta(hours=2):
-                continue      # historical replay on rebuild, not a live signal
-            close = datetime.fromisoformat(p['signal_time']).replace(tzinfo=None)
+        if occs:
+            # F08: first observation comes from the immutable occurrence record. Replays found
+            # while rebuilding/bootstrapping are counted separately, never dropped by an age guess.
+            report['occurrence_source'] = 'little_rzy_occurrences (first observation, survives pruning)'
+            report['occurrences_by_observation'] = dict(Counter(o.observed_in for o in occs))
+            for o in occs:
+                p = dict(o.first_figures or {}, event_type=o.event_type)
+                if o.signal_time is None or not emailable(p) or o.observed_in != 'incremental':
+                    continue
+                path_rows.append((o.occurrence_id, o.first_seen_at, o.signal_time, o.symbol, o.timeframe, o.event_type))
+        else:
+            report['occurrence_source'] = ('earliest SURVIVING event version (pre-occurrence-record data): pruned versions can '
+                                           'move first observation later; events recorded >2 h after their signal are excluded as replay')
+            events = s.scalars(select(RzyEvent).where(RzyEvent.created_at >= start, RzyEvent.created_at < end)).all()
+            first = {}
+            for e in events:
+                occ = e.payload.get('occurrence_id', e.event_id)
+                if occ not in first or e.created_at < first[occ][0]:
+                    first[occ] = (e.created_at, e.payload)
+            for occ, (recorded, p) in first.items():
+                if not p.get('signal_time') or not emailable(p) or recorded - datetime.fromisoformat(p['signal_time']).replace(tzinfo=None) > timedelta(hours=2):
+                    continue
+                path_rows.append((occ, recorded, datetime.fromisoformat(p['signal_time']).replace(tzinfo=None), p['symbol'], p['timeframe'], p['event_type']))
+        rows_out = []
+        for occ, recorded, close, symbol, timeframe, event_type in path_rows:
             rows = mail.get(occ, [])
             q = min((r.created_at for r in rows), default=None); a = min((r.accepted_at for r in rows if r.accepted_at), default=None)
-            late = recorded - close > timedelta(minutes=MINUTES.get(p['timeframe'], 5) + 3)
-            path_rows.append(dict(occurrence_id=occ, symbol=p['symbol'], timeframe=p['timeframe'], event_type=p['event_type'],
+            late = recorded - close > timedelta(minutes=MINUTES.get(timeframe, 5) + 3)
+            rows_out.append(dict(occurrence_id=occ, symbol=symbol, timeframe=timeframe, event_type=event_type,
                 candle_close=close.isoformat(), recorded=recorded.isoformat(), queued=q.isoformat() if q else None, accepted=a.isoformat() if a else None,
                 close_to_recorded_min=round((recorded - close).total_seconds() / 60, 2),
                 close_to_accepted_min=round((a - close).total_seconds() / 60, 2) if a else None,
                 outcome=('accepted' if a else ','.join(sorted({r.state for r in rows})) if rows else 'recorded_too_late_not_queued' if late else 'not_queued')))
+        path_rows = rows_out
         def stage(tf):
             rows = [r for r in path_rows if r['timeframe'] == tf]
             return dict(signals=len(rows), close_to_recorded_minutes=pct([r['close_to_recorded_min'] for r in rows]),

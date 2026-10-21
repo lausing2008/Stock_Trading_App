@@ -1,0 +1,129 @@
+{
+  "unfinished_daily_bar": {
+    "evaluation_utc": "2026-10-09T15:00:00",
+    "session_close_utc": "2026-10-09T20:00:00",
+    "price": {
+      "close": 102.0,
+      "ts": "2026-10-09T00:00:00",
+      "basis": "unadjusted close",
+      "session": "regular"
+    },
+    "price_state": "OK",
+    "plan_price_as_of": "2026-10-09T00:00:00",
+    "setup_states": [
+      "blocked",
+      "blocked"
+    ]
+  },
+  "four_day_old_close": {
+    "price_state": "OK",
+    "price_as_of": "2026-10-05T21:00:00",
+    "states": [
+      "conditional",
+      "conditional"
+    ]
+  },
+  "conflicting_sizing": {
+    "rule": "Risking $500.00 with the stop at $98.00 ($2.00 per share at the latest close) sizes the position at 10 shares ($1,000.00), capped at what the stated account of $1,000.00 can buy.",
+    "setups": [
+      {
+        "id": "pullback",
+        "shares": 500,
+        "capital": 49500.0,
+        "state": "conditional",
+        "risk_note": "Stop gaps, slippage and fees can exceed the calculated loss. Sizing does not check buying power."
+      },
+      {
+        "id": "breakout",
+        "shares": 250,
+        "capital": 25250.0,
+        "state": "conditional",
+        "risk_note": "Stop gaps, slippage and fees can exceed the calculated loss. Sizing does not check buying power."
+      }
+    ]
+  },
+  "breakout_reference": {
+    "entry": 101.0,
+    "stop": 99.0,
+    "first_target": {
+      "price": 105.0,
+      "label": "2R objective",
+      "reward_risk": 2.0
+    },
+    "playbook": "A daily close above the 20-bar high ($101.00) on volume above 1.5 \u00d7 the 20-bar average volume (1,500,000 shares) is this setup's entry trigger, with the stop at $99.00. A close above the high on lighter volume is unconfirmed: wait for a confirming close. Do not chase above $101.00, where the first target ($105.00) is less than 2R away."
+  },
+  "blocked_playbook": [
+    {
+      "id": "pullback",
+      "state": "blocked",
+      "reasons": [
+        "First target is below the minimum reward-to-risk; wait for a different setup.",
+        "Latest close is already at or below the pullback stop; wait for a new base.",
+        "Latest close is below a falling 50-bar average; no new long under the trend rule."
+      ],
+      "playbook": [
+        {
+          "case": "falls",
+          "title": "If it falls",
+          "text": "A pullback to the 20-bar low ($99.00) is this setup's entry zone: buy only after a daily close holds above it, with the stop at $97.68. A daily close below $97.68 instead cancels the setup \u2014 do not buy; wait for a new 20-bar base to form. The next stored support below is the year low ($90.00)."
+        },
+        {
+          "case": "rises",
+          "title": "If it rises",
+          "text": "If the price rises without pulling back, this entry does not trigger \u2014 do not chase. Above $98.79, the first target ($101.00) is less than 2R away with this stop. A daily close above the 20-bar high ($101.00) on volume above 1.5 \u00d7 the 20-bar average volume (1,500,000 shares) switches to the breakout setup instead."
+        },
+        {
+          "case": "sideways",
+          "title": "If it goes sideways",
+          "text": "While daily closes stay between the 20-bar low ($99.00) and the 20-bar high ($101.00) without a trigger, there is no trade. The 20-bar window rolls forward each day, so these levels are recalculated: refresh the plan after each close. Price alerts at the two edges tell you when either case starts."
+        },
+        {
+          "case": "after_entry",
+          "title": "After you are filled",
+          "text": "Recalculate risk at your actual fill. Once a daily close is 1 ATR above the entry (above $101.64 from the $99.00 reference), move the stop up to the entry. At take profit 1 ($101.00) a common approach takes part of the position and trails the rest at the latest close \u2212 2 \u00d7 ATR toward take profit 2 ($102.96). A daily close below the stop exits."
+        }
+      ]
+    },
+    {
+      "id": "breakout",
+      "state": "blocked",
+      "reasons": [
+        "Latest close is below a falling 50-bar average; no new long under the trend rule."
+      ],
+      "playbook": [
+        {
+          "case": "rises",
+          "title": "If it rises",
+          "text": "A daily close above the 20-bar high ($101.00) on volume above 1.5 \u00d7 the 20-bar average volume (1,500,000 shares) is this setup's entry trigger, with the stop at $98.36. A close above the high on lighter volume is unconfirmed: wait for a confirming close. Do not chase above $101.00, where the first target ($106.29) is less than 2R away."
+        },
+        {
+          "case": "falls",
+          "title": "If it falls",
+          "text": "If the price falls back toward the 20-bar low ($99.00), the breakout does not apply and the pullback setup is the relevant one. After a breakout entry, a daily close back below $98.36 is a failed breakout: exit. The next stored support below is the year low ($90.00)."
+        },
+        {
+          "case": "sideways",
+          "title": "If it goes sideways",
+          "text": "While daily closes stay between the 20-bar low ($99.00) and the 20-bar high ($101.00) without a trigger, there is no trade. The 20-bar window rolls forward each day, so these levels are recalculated: refresh the plan after each close. Price alerts at the two edges tell you when either case starts."
+        },
+        {
+          "case": "after_entry",
+          "title": "After you are filled",
+          "text": "Recalculate risk at your actual fill. Once a daily close is 1 ATR above the entry (above $103.64 from the $101.00 reference), move the stop up to the entry. At take profit 1 ($106.29) a common approach takes part of the position and trails the rest at the latest close \u2212 2 \u00d7 ATR toward take profit 2 ($108.93). A daily close below the stop exits."
+        }
+      ]
+    }
+  ],
+  "stale_playbook": [
+    {
+      "id": "pullback",
+      "state": "stale",
+      "playbook_count": 4
+    },
+    {
+      "id": "breakout",
+      "state": "stale",
+      "playbook_count": 4
+    }
+  ]
+}

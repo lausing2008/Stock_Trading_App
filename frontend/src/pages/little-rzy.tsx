@@ -54,7 +54,7 @@ export default function LittleRzyAdminPage() {
 
     {overviewError && <p role="alert" className="text-red-400">Overview unavailable: {String(overviewError.message ?? overviewError)}</p>}
     <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-      <Tile label="Streams usable now" value={overview ? `${usable} / ${overview.streams.total}` : '…'} note="research_only: complete, current bars" tone="text-teal-300" />
+      <Tile label="Streams usable now" value={overview ? `${usable} / ${overview.streams.total}` : '…'} note={`research_only in a current snapshot${overview?.streams.expired ? ` · ${overview.streams.expired} expired snapshot(s) not counted` : ''}`} tone="text-teal-300" />
       <Tile label="Paused or rebuilding" value={overview ? paused : '…'} note="bars restated by the data source" tone={paused ? 'text-amber-300' : 'text-slate-100'} />
       <Tile label="Scan time (median / p95)" value={overview ? `${fmt(overview.scans.duration_seconds.median, 0)}s / ${fmt(overview.scans.duration_seconds.p95, 0)}s` : '…'} note={overview ? `${overview.scans.recent_session_scans} session scans in the last 20 h` : undefined} />
       <Tile label="Signals too late to email" value={overview ? overview.scans.too_late_to_mail : '…'} note={overview ? `${overview.scans.queued} queued in the last 20 h` : undefined} tone={overview?.scans.too_late_to_mail ? 'text-red-300' : 'text-slate-100'} />
@@ -64,7 +64,7 @@ export default function LittleRzyAdminPage() {
       {digestError && <p role="alert" className="text-red-400">Preview unavailable.</p>}
       {digest && digest.available === false && <p role="status" className={card}>{digest.message ?? 'Preview not available yet.'}</p>}
       {digest && digest.available !== false && <>
-        <p role="status" className="text-xs text-slate-400">Snapshot: oldest stream checked {when(digest.snapshot_from)} ({digest.snapshot_age_minutes} min ago), newest {when(digest.snapshot_to)} · {digest.streams_with_snapshot} of {digest.streams_expected} streams have a snapshot · {digest.total_candidates ?? digest.candidates.length} candidate(s), showing up to 10.</p>
+        <p role="status" className="text-xs text-slate-400">Snapshot: oldest stream checked {when(digest.snapshot_from)} ({digest.snapshot_age_minutes} min ago), newest {when(digest.snapshot_to)} · {digest.streams_with_snapshot} of {digest.streams_expected} streams have a snapshot{digest.streams_expired ? `, ${digest.streams_expired} expired (not used)` : ''} · {digest.total_candidates ?? digest.candidates.length} candidate(s), showing up to 10.</p>
         <div className={`${card} overflow-x-auto`}>
           {digest.candidates.length ? <table className="w-full tabular-nums"><thead><tr>{['Symbol', 'Direction', 'TF', 'Entry ref', 'Provisional stop', 'Target', 'Planned R/R'].map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
             <tbody>{digest.candidates.map(c => <tr key={`${c.symbol}:${c.timeframe}:${c.direction}`} className="border-t border-slate-800">
@@ -104,6 +104,7 @@ export default function LittleRzyAdminPage() {
         <div className={card}><h3 className="mb-2 font-semibold text-slate-200">Restated bars (last 20 h)</h3>
           <p>Rebuilds: <span className="tabular-nums">{overview.rebuilds_last_20h.total}</span></p>
           <ul className="mb-3 text-xs text-slate-400">{Object.entries(overview.rebuilds_last_20h.by_reason).map(([k, v]) => <li key={k}><span className="font-mono">{k}</span>: {v}</li>)}</ul>
+          {overview.occurrences_last_20h && <p className="mb-3 text-xs text-slate-400">New signal occurrences: {overview.occurrences_last_20h.total} ({Object.entries(overview.occurrences_last_20h.by_observation).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}; incremental = seen on a newly completed bar, rebuild/bootstrap = found while replaying stored history), {overview.occurrences_last_20h.queued} queued for email.</p>}
           <p>Completed-bar revisions by source: <span className="tabular-nums">{Object.values(overview.bar_revisions_last_20h.completed).reduce((a, b) => a + b, 0)}</span></p>
           <ul className="text-xs text-slate-400">{Object.entries(overview.bar_revisions_last_20h.completed).map(([k, v]) => <li key={k}><span className="font-mono">{k}</span>: {v}</li>)}</ul>
           <p className="mt-2 text-xs text-slate-500">cross_provider: a different data provider rewrote the bar. same_provider: the same provider corrected it. previous_provider_unknown: the bar predates the trace and counts toward neither. Forming-bar updates ({Object.values(overview.bar_revisions_last_20h.forming).reduce((a, b) => a + b, 0)}) are normal and listed separately.</p>

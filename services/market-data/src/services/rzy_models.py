@@ -67,3 +67,43 @@ class RzyScanRun(Base):
     new_emailable_events: Mapped[int] = mapped_column(Integer)
     too_late_to_mail: Mapped[int] = mapped_column(Integer)
     queued: Mapped[int] = mapped_column(Integer)
+
+
+class RzyOccurrence(Base):
+    """Immutable first-observation record per RZY occurrence, independent of generation pruning.
+
+    Generation archives and their event rows are pruned to the last few generations, so they
+    cannot answer "when was this first seen" or "which event is current" (audit F02/F08). This
+    small row is written once per occurrence and only its latest_* and queued_* fields move.
+    """
+    __tablename__ = 'little_rzy_occurrences'
+    occurrence_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    stream_key: Mapped[str] = mapped_column(String(96), index=True)
+    symbol: Mapped[str] = mapped_column(String(32))
+    timeframe: Mapped[str] = mapped_column(String(8))
+    event_type: Mapped[str] = mapped_column(String(32))
+    signal_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: data cutoff of the scan that first produced it, and the wall-clock time it was persisted
+    first_cutoff: Mapped[datetime] = mapped_column(DateTime)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    first_generation: Mapped[int] = mapped_column(Integer)
+    #: incremental (a newly processed bar) | rebuild | bootstrap — replayed history vs new
+    observed_in: Mapped[str] = mapped_column(String(16))
+    first_figures: Mapped[dict] = mapped_column(JSON)
+    latest_generation: Mapped[int] = mapped_column(Integer)
+    latest_event_id: Mapped[str] = mapped_column(String(64))
+    queued_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    queued_figures: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class RzyRebuild(Base):
+    """Append-only rebuild log; generation archives are pruned, these counts are not (F08)."""
+    __tablename__ = 'little_rzy_rebuilds'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stream_key: Mapped[str] = mapped_column(String(96), index=True)
+    symbol: Mapped[str] = mapped_column(String(32))
+    timeframe: Mapped[str] = mapped_column(String(8))
+    generation: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(64))
+    rebuilt_at: Mapped[datetime] = mapped_column(DateTime, index=True)

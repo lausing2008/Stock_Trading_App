@@ -1,0 +1,42 @@
+{
+  "audit_date_local": "2026-10-20",
+  "timezone": "America/Los_Angeles",
+  "starting_head": "8b69e5e647dc6f5bd31d9e0103606aec6c196748",
+  "final_head": "c5eca912615f08cd523b5e4df17ea4319be22dd2",
+  "production_checked": false,
+  "application_code_modified_by_audit": false,
+  "code_sha256": {
+    "services/research-engine/src/copilot/plan.py": "503ed5a3b93f9bc1cf29581d8d31782dd69258ed2ce658b8f04889026516ad9b",
+    "services/research-engine/src/copilot/packet.py": "609179f5a340fafc933076956537d7e62927c964025b2d62efab5706a66619f8",
+    "services/research-engine/src/copilot/service.py": "e154ad8773fbf28545c983a369de1c035f743d6c19902c6b51e3a451cf0ba79f",
+    "services/research-engine/src/intel_reports/adapters.py": "360eaac7402d82cf3a6e08115aa9339e2506ee2a4cb678eaef690a237ffb68db",
+    "services/market-data/src/services/little_rzy.py": "945b62341d5b1dd2e77e26b6733864dd473475372a16ec89dd28cb26fb5e3810",
+    "services/market-data/src/services/rzy_workflow.py": "759f16b6266787083c09835cba2902632aaac0116be4a9f0dd6c5ecf381ec7a1",
+    "services/market-data/src/services/rzy_data.py": "168cc37eb3ae8d0b0aae0ab39ee6106755562a103788ee5d8b869ae39452a010",
+    "services/market-data/src/services/rzy_backtest.py": "50c8c26e226d1112ae0425ef32dbb5a5343f6bb820fa35353a39b66454163060",
+    "services/market-data/src/services/rzy_email.py": "61aaabcca821439e3f2bc13553140dc959ab388a2763d59ea0c10c535ff873f3",
+    "services/market-data/src/api/little_rzy.py": "65b4e9d51c20eecbc986292f09fd0a9c82a54d2dee8c32cac6a813ee074e639a",
+    "frontend/src/components/StockGamePlanCard.tsx": "4b8bcbec53cd7356995965cfe81a34532ff4a9bf6476c105d29828037cd2d00c",
+    "frontend/src/components/TradeSetupSummary.tsx": "2ad7f5d6530df239eb1d30be53a5c0180273410dc038ca5d279fc56ff7d076c7",
+    "frontend/src/components/LLMAlternativePlan.tsx": "daf308b079abdc4ac711140de95deb1efff60139e7a196113bfda44f08e025ff",
+    "frontend/src/lib/rzy.ts": "25da0d775beb2fa320a41435f2835d87cfe8847d4188d8d6d4b9ec0bf1983595",
+    "frontend/src/pages/little-rzy.tsx": "120a65898df211a1bfc54d989e1c1621e5624467779af2b08c73236f32393584",
+    "scripts/rzy_session_report.py": "a1870c04a5ad0b02cfdccd69b7301c2f8558aa30d2e6294d3ce8a3d47f7df494"
+  },
+  "validation": {
+    "rzy": 86,
+    "plan": 83,
+    "frontend": 45,
+    "postgres_rerun": false,
+    "full_repository_suite": false
+  },
+  "evidence_sha256": {
+    "workflow_probe.py": "78768bc9c2e9f7b90cb511aaac6796882e1c76e7ef946827a92b5a5b5576df63",
+    "workflow-results.json": "a7e8f16cee2a6491623968749a431838a8f41a771c62cfd5814bf2e808d2d980",
+    "plan-results.json": "5ab47dd2a8df37d9adf0eedbc5843bc239d0745027232f43ab3c031748dbac52",
+    "plan-tests.log": "726767bd307aa95bd153af29b77564352b2ee4992d2c74f24bb03423138d3596",
+    "frontend-tests.log": "4d255a023e82939c99d5c3d4ba2babf24a9a6bb6bc15bf1833b5aa95f94d740c",
+    "market-tests.log": "07f271f62d3d0bc107143b5c88190029740fed7f9368679afb3a31191adc404b",
+    "plan_probe.py": "6d2a73bdb81be09d6d149b2df0768237417850b13f6b4826780b9ada238b0832"
+  }
+}

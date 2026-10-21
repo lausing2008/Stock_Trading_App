@@ -102,7 +102,9 @@ with Session() as s:
         if not hasattr(db,name): setattr(db,name,lambda: None)
     from src.api.little_rzy import admin_overview
     ov=admin_overview(_admin=None,session=s)
-    assert ov['streams']['total']==1 and sum(ov['streams']['by_status'].values())==1
+    # Status counts cover CURRENT snapshots only (F07); this fixture's are dated 2026-10-16.
+    assert ov['streams']['total']==1 and ov['streams']['current']+ov['streams']['expired']==1
+    assert sum(ov['streams']['by_status'].values())==ov['streams']['current']
     assert ov['scans']['latest'] and ov['scans']['latest'][0]['queued']==1
     assert ov['alerts']['recent'] and all('recipient' not in m for m in ov['alerts']['recent'])
     assert 'not a validated trade recommendation' in ov['positioning'].lower()
@@ -196,6 +198,7 @@ with Session() as s:
     W.drain(s,send,monday);s.commit();assert len(sent)==2
     assert s.scalar(select(models.NotificationOutbox).where(models.NotificationOutbox.subject=='moved')).state=='suppressed'
     assert new[0].payload['occurrence_id']==occ
+    template=copy.deepcopy(new[0].payload)     # its row is pruned later; F02 below reuses the payload
     result['generation_identity']=True
     # A rebuild replays history, so it must not mail anything already stale.
     assert W.scan(s,now+timedelta(minutes=1))['queued']==0
@@ -279,6 +282,95 @@ with Session() as s:
     gens={e.payload.get('generation',1) for e in s.scalars(select(RzyEvent).where(RzyEvent.symbol=='TEST',RzyEvent.timeframe=='5m')).all()}
     assert all(g>=current-W.KEEP_GENERATIONS+1 for g in gens), (sorted(gens),current)
     result['generation_retention']=True
+    # ── F02: delivery finds the current event through its occurrence record at ANY generation ──
+    from src.services.rzy_models import RzyOccurrence,RzyRebuild
+    from src.services.little_rzy import generation_event_id
+    row=s.get(RzyStream,key); cur=row.checkpoint['generation']
+    occ_id=template['occurrence_id']; occ_row=s.get(RzyOccurrence,occ_id)
+    assert occ_row is not None and occ_row.latest_generation>=3
+    occ_row.queued_figures=W.figures(template); s.commit()      # what scan records at enqueue
+    t_send=later_t+timedelta(minutes=30); clock[0]=t_send
+    def queue(tag): 
+        outbox.enqueue(s,event_id=f'rzy:{tag}:1:{occ_id}',user_id=1,recipient=user.email,alert_type='little_rzy',subject=tag,body_html='x',body_text='x',expires_at=(t_send+timedelta(minutes=5)).replace(tzinfo=None)); s.commit()
+        return s.scalar(select(models.NotificationOutbox).where(models.NotificationOutbox.subject==tag))
+    def at_generation(G):
+        cp=copy.deepcopy(row.checkpoint); cp['generation']=G; cp.pop('restatement_pending',None); row.checkpoint=cp
+        payload=dict(template,generation=G,event_id=generation_event_id(occ_id,G))
+        if s.get(RzyEvent,payload['event_id']) is None:
+            s.add(RzyEvent(event_id=payload['event_id'],symbol='TEST',timeframe='5m',event_type=template['event_type'],payload=payload,created_at=t_send.replace(tzinfo=None)))
+        s.commit()
+    outcomes={}
+    for G in (128,129,1000):
+        at_generation(G); r=queue(f'gen{G}'); n=len(sent)
+        W.drain(s,send,t_send);s.commit(); s.refresh(r)
+        outcomes[G]=(len(sent)-n,r.state)
+    assert outcomes=={128:(1,'accepted'),129:(1,'accepted'),1000:(1,'accepted')}, outcomes
+    n=len(sent); W.drain(s,send,t_send);s.commit(); assert len(sent)==n, 'no duplicate send'
+    # Each refusal records its real cause instead of "recipient opted out".
+    occ_row.queued_figures=dict(W.figures(template),stop=-1.0); s.commit()
+    r=queue('changed'); W.drain(s,send,t_send);s.commit(); s.refresh(r)
+    assert r.state=='suppressed' and r.terminal_reason.startswith('superseded: a rebuild changed the trade figures'), r.terminal_reason
+    occ_row.queued_figures=W.figures(template)
+    cp=copy.deepcopy(row.checkpoint); cp['generation']=1001; row.checkpoint=cp; s.commit()
+    r=queue('absent'); W.drain(s,send,t_send);s.commit(); s.refresh(r)
+    assert r.state=='suppressed' and r.terminal_reason=='superseded: occurrence absent from the current generation', r.terminal_reason
+    at_generation(1000)
+    pref_mail=s.scalar(select(models.AlertPreference).where(models.AlertPreference.alert_type=='little_rzy')); pref_mail.enabled=False; s.commit()
+    r=queue('optout'); W.drain(s,send,t_send);s.commit(); s.refresh(r)
+    assert r.state=='suppressed' and r.terminal_reason=='recipient opted out'
+    pref_mail.enabled=True; s.commit()
+    result['delivery_any_generation']=True
+    # ── F08: rebuild counts and first observation survive generation pruning ──
+    logged=s.scalars(select(RzyRebuild).where(RzyRebuild.stream_key==key)).all()
+    archives=s.scalar(select(func.count()).select_from(RzyStreamGeneration).where(RzyStreamGeneration.stream_key==key))
+    assert len(logged)==cur-1 and archives<=W.KEEP_GENERATIONS<len(logged), (len(logged),archives,cur)
+    first_trig=s.get(RzyOccurrence,occ)
+    assert first_trig.first_generation==1 and first_trig.observed_in=='incremental'
+    assert first_trig.first_seen_at>=now.replace(tzinfo=None) and first_trig.first_seen_at<(now+timedelta(minutes=1)).replace(tzinfo=None)
+    assert s.get(RzyEvent,occ) is None, 'its generation-1 event row was pruned, yet first observation is intact'
+    replayed=s.scalars(select(RzyOccurrence).where(RzyOccurrence.observed_in.in_(('rebuild','bootstrap')))).all()
+    assert replayed, 'occurrences found while replaying history are labelled, not mixed with new ones'
+    result['records_survive_pruning']=True
+    # ── F09: a slow earlier stream makes the next one late; times are actual, cutoff kept ──
+    for sid,sym in ((3,'EARLY'),(4,'LATE')):
+        s.add(models.Stock(id=sid,symbol=sym,market=models.Market.US,exchange=models.Exchange.NASDAQ,name=sym,active=True,delisted=False)); s.commit()
+        s.add(models.WatchlistItem(user_id=1,stock_id=sid)); s.commit()
+        for i in range(57):
+            c=100+.12*i+5*math.sin(i*.22)
+            s.add(models.Price(id=sid*10000+i,stock_id=sid,ts=(base+timedelta(minutes=5*i)).replace(tzinfo=None),timeframe=models.TimeFrame.M5,open=c-.2,high=c+.6,low=c-.8,close=c,volume=10000,session='REGULAR'))
+        s.commit()
+        assert W.evaluate(s,sym,'5m',base+timedelta(minutes=5*57+2),persist=True)['bootstrap']; s.commit()
+        for i,(do,dh,dl,dc) in ((57,(.2,.4,-.1,.1)),(58,(.3,.8,-.1,.7))):
+            p=line(i); s.add(models.Price(id=sid*10000+i,stock_id=sid,ts=(base+timedelta(minutes=5*i)).replace(tzinfo=None),timeframe=models.TimeFrame.M5,open=p+do,high=p+dh,low=p+dl,close=p+dc,volume=10000,session='REGULAR'))
+        s.commit()
+    fake=[now]; clock[0]=now; real_eval=W.evaluate
+    def slow(session,symbol,*a,**k):
+        if symbol=='LATE': fake[0]=now+timedelta(minutes=9)    # EARLY's processing took 9 minutes
+        return real_eval(session,symbol,*a,**k)
+    W.evaluate=slow
+    try: late_scan=W.scan(s,now,clock=lambda: fake[0]); s.commit()
+    finally: W.evaluate=real_eval
+    trig={o.symbol:o for o in s.scalars(select(RzyOccurrence).where(RzyOccurrence.symbol.in_(('EARLY','LATE')),RzyOccurrence.event_type=='TRIGGERED')).all()}
+    assert set(trig)=={'EARLY','LATE'}
+    assert trig['EARLY'].first_seen_at==now.replace(tzinfo=None) and trig['EARLY'].queued_at is not None
+    assert trig['LATE'].first_seen_at==(now+timedelta(minutes=9)).replace(tzinfo=None) and trig['LATE'].first_cutoff==now.replace(tzinfo=None)
+    assert trig['LATE'].queued_at is None and late_scan['too_late_to_mail']>=1
+    queued_ids={x.event_id.split(':')[-1] for x in s.scalars(select(models.NotificationOutbox)).all()}
+    assert trig['EARLY'].occurrence_id in queued_ids and trig['LATE'].occurrence_id not in queued_ids
+    result['actual_time_freshness']=True
+    # ── F07: an old snapshot is history, never a current candidate ──
+    fresh=W.digest_snapshot(s,1,now+timedelta(minutes=4))
+    assert fresh['streams_current']>=2 and fresh['streams_expired']<=1
+    week=W.digest_snapshot(s,1,now+timedelta(days=7))
+    assert week['available'] and week['candidates']==[] and week['streams_current']==0
+    assert week['streams_expired']==week['streams_with_snapshot'] and all(x['reason']=='snapshot_expired' for x in week['exclusions'])
+    utc_=lambda *a: datetime(*a,tzinfo=timezone.utc)
+    friday_close_cut=datetime(2026,10,16,19,45)                     # 16:00 EDT close − 15 min
+    assert W.snapshot_current_since(utc_(2026,10,17,16,0))==friday_close_cut       # Saturday
+    assert W.snapshot_current_since(utc_(2026,10,19,12,30))==friday_close_cut      # Monday 08:30 ET, pre-open
+    assert W.snapshot_current_since(utc_(2026,10,19,15,0))==datetime(2026,10,19,14,45)   # in session
+    assert W.snapshot_current_since(utc_(2026,11,27,20,0))==datetime(2026,11,27,17,45)   # early close 13:00 EST
+    result['snapshot_expiry']=True
 # Whole OHLC adjustment and missing/forming/stale data are tested at the shipped adapter.
 rows=[types.SimpleNamespace(ts=base+timedelta(minutes=5*i),open=100,high=102,low=98,close=100,adj_close=50,volume=10,session='REGULAR') for i in range(3)]
 bars,ev=prepare_bars(rows,'5m',base+timedelta(minutes=17),session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)

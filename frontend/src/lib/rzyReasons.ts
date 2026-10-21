@@ -18,6 +18,7 @@ export const RZY_EXCLUSION: Record<string, string> = {
   stale_1h_aggregate: 'The newest 1-hour bar that should be complete is missing (1h bars are built from 5m bars).',
   stale_5m_source: 'The 5-minute bars used to build this timeframe are late.',
   not_evaluated_yet: 'No scan has evaluated this stream yet (for example, a symbol just added to the watchlist).',
+  snapshot_expired: 'The last saved scan of this stream is older than the latest completed session or scan window, so its result is history, not a current candidate.',
   unsupported_timeframe: 'This timeframe is not supported.',
   US_stocks_only_or_unknown_symbol: 'Little RZY covers US stocks only.',
   calendar_coverage_expired: 'The exchange calendar does not cover this date.',

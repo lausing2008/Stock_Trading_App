@@ -80,7 +80,7 @@ def admin_overview(_admin=Depends(get_admin_user),session=Depends(get_session)):
     from collections import Counter
     from datetime import timedelta
     from db import NotificationOutbox
-    from ..services.rzy_models import RzyScanRun,RzyStreamSnapshot,RzyStreamGeneration
+    from ..services.rzy_models import RzyScanRun,RzyStreamSnapshot,RzyRebuild,RzyOccurrence
     from ..services.bar_provenance import BarRevision
     now=datetime.now(timezone.utc).replace(tzinfo=None); since=now-timedelta(hours=20)
     cfg=W.current_config()
@@ -88,7 +88,11 @@ def admin_overview(_admin=Depends(get_admin_user),session=Depends(get_session)):
     recent=[r for r in runs if r.scan_time>=since and r.mode=='session']
     durations=sorted(r.duration_seconds for r in recent)
     snaps=session.scalars(select(RzyStreamSnapshot).where(RzyStreamSnapshot.config_hash==cfg.hash)).all()
-    gens=session.scalars(select(RzyStreamGeneration).where(RzyStreamGeneration.archived_at>=since)).all()
+    # Append-only rebuild log: generation archives are pruned and would undercount (F08).
+    gens=session.scalars(select(RzyRebuild).where(RzyRebuild.rebuilt_at>=since)).all()
+    occs=session.scalars(select(RzyOccurrence).where(RzyOccurrence.first_seen_at>=since)).all()
+    current_since=W.snapshot_current_since(datetime.now(timezone.utc))
+    current=[x for x in snaps if x.checked_at>=current_since]
     revs=session.scalars(select(BarRevision).where(BarRevision.fetched_at>=since)).all()
     mail=session.scalars(select(NotificationOutbox).where(NotificationOutbox.alert_type.in_(('little_rzy','short_term_digest')))
         .order_by(NotificationOutbox.created_at.desc()).limit(60)).all()
@@ -99,10 +103,14 @@ def admin_overview(_admin=Depends(get_admin_user),session=Depends(get_session)):
             too_late_to_mail=sum(r.too_late_to_mail for r in recent),queued=sum(r.queued for r in recent),
             latest=[dict(scan_time=r.scan_time.isoformat(),mode=r.mode,duration_seconds=r.duration_seconds,streams=r.streams,statuses=r.statuses,
                          new_emailable_events=r.new_emailable_events,too_late_to_mail=r.too_late_to_mail,queued=r.queued) for r in runs[:20]]),
-        streams=dict(total=len(snaps),by_status=dict(Counter(x.status for x in snaps)),
-            by_timeframe_status={tf:dict(Counter(x.status for x in snaps if x.timeframe==tf)) for tf in sorted({x.timeframe for x in snaps})},
+        streams=dict(total=len(snaps),current=len(current),expired=len(snaps)-len(current),current_since=current_since.isoformat(),
+            # Status counts use CURRENT snapshots only; an expired row is not "usable now" (F07).
+            by_status=dict(Counter(x.status for x in current)),
+            by_timeframe_status={tf:dict(Counter(x.status for x in current if x.timeframe==tf)) for tf in sorted({x.timeframe for x in current})},
             oldest_snapshot=min((x.checked_at for x in snaps),default=None),newest_snapshot=max((x.checked_at for x in snaps),default=None)),
         rebuilds_last_20h=dict(total=len(gens),by_reason=dict(Counter(g.reason for g in gens))),
+        occurrences_last_20h=dict(total=len(occs),by_observation=dict(Counter(o.observed_in for o in occs)),
+            queued=sum(1 for o in occs if o.queued_at is not None)),
         bar_revisions_last_20h=dict(total=len(revs),completed=dict(Counter(r.classification for r in revs if not r.classification.endswith('_forming_bar'))),
             forming=dict(Counter(r.classification.replace('_forming_bar','') for r in revs if r.classification.endswith('_forming_bar')))),
         alerts=dict(states=dict(Counter(f'{m.alert_type}:{m.state}' for m in mail)),
