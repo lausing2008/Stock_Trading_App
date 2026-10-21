@@ -1,48 +1,171 @@
 """Email must distinguish research triggers, execution and follow-up expectations."""
-from src.services.rzy_email import render_event, render_event_html, event_subject
+from datetime import datetime, timezone
+from src.services.little_rzy import Config
+from src.services.rzy_email import render_event, render_event_html, event_subject, chart_url
+
+CFG = Config()
+CLOSE = '2026-10-20T19:05:00+00:00'
+RENDERED = datetime(2026, 10, 20, 19, 7, 30, tzinfo=timezone.utc)
+CHECKED = datetime(2026, 10, 20, 19, 7, 5, tzinfo=timezone.utc)
+BLOCKERS = ('provider_delay_unverified', 'borrow_availability_not_stored', 'execution_basis_unverified')
+TIMES = dict(evaluated_at=CHECKED, rendered_at=RENDERED)
 
 
 def sample(**changes):
-    return dict(dict(event_type='TRIGGERED',position_action='OPEN_SHORT',symbol='ANF',timeframe='5m',
-                     signal_time='2026-10-20T19:05:00+00:00',planned_entry=161.26,stop=161.6751,
-                     primary_target=157.2525,reward_risk=9.6553,sequence_number=1,sequence_confidence='known'),**changes)
+    # Shape follows Engine.emit()'s payload for a TRIGGERED event.
+    base = dict(event_type='TRIGGERED', position_action='OPEN_SHORT', direction='short', symbol='ANF', timeframe='5m',
+                signal_time=CLOSE, data_as_of=CLOSE, planned_entry=161.26, stop=161.6751, primary_target=157.2525,
+                runner_target=None, reward_risk=9.6553, trendline_value=161.40, atr=0.52, middle_band=162.0,
+                upper_band=163.1, lower_band=160.9, D=6.1, sequence_number=1, sequence_confidence='known',
+                anchors=[dict(price=165.0), dict(price=158.9), dict(price=162.3)], provider='yfinance', delay='unknown',
+                price_basis='raw', data_freshness='historical_completed', config_hash=CFG.hash, strategy_version='rzy-1',
+                structure_id='st1', generation=2, occurrence_id='occ123', event_id='occ123:g2', paper_state='PENDING_ENTRY',
+                passed_rules=['confirmed_structure', 'line_touch', 'directional_close', 'previous_bar_break', 'planned_reward_risk'],
+                failed_rules=[])
+    base.update(changes)
+    return base
 
 
-def test_blocked_trigger_explains_levels_and_no_exit_followup():
-    text=render_event(sample(),('provider_delay_unverified',))
-    assert 'Bearish setup triggered' in event_subject(sample())
-    for expected in ('9.66:1','0.4151','4.0075','03:05 PM EDT','not a win probability',
-                     'do not expect a corresponding trade-exit email','provider_delay_unverified'):
-        assert expected in text
-    assert 'Paper entry is pending' not in text
+def test_subject_format_for_each_event_type():
+    assert event_subject(sample()) == 'RZY research | ANF | bearish trigger | 5m'
+    assert event_subject(sample(position_action='OPEN_LONG', direction='long')) == 'RZY research | ANF | bullish trigger | 5m'
+    assert event_subject(sample(event_type='REVERSAL_WATCH', position_action='WATCH_ONLY')) == 'RZY research | ANF | reversal watch | 5m'
+    assert event_subject(sample(event_type='EXHAUSTION_WATCH')) == 'RZY research | ANF | exhaustion watch | 5m'
+    assert event_subject(sample(event_type='EXIT_PENDING')) == 'RZY research | ANF | paper exit pending | 5m'
+    assert event_subject(sample(event_type='PAPER_EXIT', paper_state='PARTIAL')) == 'RZY research | ANF | partial paper exit | 5m'
+    assert event_subject(sample(event_type='PAPER_EXIT', paper_state='CLOSED')) == 'RZY research | ANF | paper position closed | 5m'
+    assert event_subject(sample(event_type='ENTRY_CANCELLED')) == 'RZY research | ANF | paper entry cancelled | 5m'
 
 
-def test_unblocked_trigger_is_not_a_fill_or_guaranteed_exit():
-    text=render_event(sample())
-    assert 'not a confirmed fill' in text and 'Delivery is not guaranteed' in text
+def test_blocked_bearish_trigger_status_panel_comes_first_with_freshness():
+    text = render_event(sample(), BLOCKERS, config=CFG, **TIMES)
+    status = text.split('\n\nWhy this triggered')[0]
+    assert 'Status & freshness\nResearch trigger — paper execution blocked' in status
+    assert 'Candle close: Oct 20, 2026 · 03:05:00 PM EDT (19:05:00 UTC)' in status
+    assert 'Freshness check before queueing: Oct 20, 2026 · 03:07:05 PM EDT' in status
+    assert 'Email rendered (not inbox arrival): Oct 20, 2026 · 03:07:30 PM EDT' in status
+    assert 'Signal age when rendered: 2 min 30 s.' in status
+    # Readable meaning in the status panel; raw ids only in the technical footer.
+    assert 'Data verification: execution unverified — provider delay is not verified' in status
+    assert 'provider_delay_unverified' not in status
+    # 5m: expiry = close + 5 + 5 min = 19:15 UTC; enqueue window +3 named as such.
+    assert 'Notification expiry: Oct 20, 2026 · 03:15:00 PM EDT' in status and 'timeframe + 3 min' in status
+    assert 'not how long the setup stays tradable' in status
+    assert 'snapshot and cannot update itself' in status
+    assert 'Follow-up emails are not guaranteed' in status
+    assert 'Paper execution unavailable' in status and 'do not expect a corresponding trade-exit email' in status
+    assert 'Research only' in status and 'No broker order' in status
+    assert 'inbox arrival' not in text.replace('not inbox arrival', '')
 
 
-def test_watch_and_cancellation_are_not_entry_instructions():
-    watch=render_event(sample(event_type='REVERSAL_WATCH',position_action='WATCH_ONLY'))
-    assert 'not an entry trigger' in watch
-    cancelled=render_event(sample(event_type='ENTRY_CANCELLED'))
-    assert 'No paper position was opened' in cancelled
+def test_trigger_reasons_are_measured_and_levels_labelled():
+    text = render_event(sample(), BLOCKERS, config=CFG, **TIMES)
+    assert 'touched the A-C trendline at 161.4000; tolerance ±0.0520 (touch 0.1 × ATR 0.5200)' in text
+    assert 'closed at 161.2600, below the trendline (161.4000)' in text
+    assert "the prior-candle-break rule (beyond the prior candle's low) passed, but that prior-candle low is not recorded" in text
+    assert "above its open (open not recorded" not in text and "the directional-close rule (below its open) passed" in text
+    assert 'Planned reward:risk 9.66:1 before costs, at or above the configured minimum (1.5:1)' in text
+    assert 'anchor prices 165.0000, 158.9000, 162.3000' in text
+    assert 'Quote currency: currency not recorded.' in text
+    assert 'Entry reference (trigger close, not a fill): 161.2600' in text and 'Structural stop: 161.6751' in text
+    assert 'Risk distance: 0.4151 per share (0.26% of entry); target reward distance: 4.0075' in text
+    assert '9.66:1, gross before costs' in text and 'not a win probability' in text
+    assert 'a high reward:risk is not a high probability' in text and 'does not cap losses' in text
+    assert 'fill range' not in text.lower() and 'acceptable range' not in text.lower()
+    assert 'Original setup reference levels' not in text
 
 
-def test_exit_uses_actual_exit_and_distinguishes_partial_from_closed():
-    event=sample(event_type='PAPER_EXIT',exit_price=157.1,paper_state='PARTIAL',reason='primary_partial')
-    assert 'Partial paper exit' in event_subject(event)
-    assert '157.1000' in render_event(event) and 'paper position remains' in render_event(event)
-    event['paper_state']='CLOSED'
-    assert 'Paper position closed' in event_subject(event)
-    assert 'Original setup reference levels' in render_event(event)
-    pending=render_event(sample(event_type='EXIT_PENDING'))
-    assert 'exit fill is not yet confirmed' in pending
+def test_bullish_trigger_and_unknown_rule_and_mismatched_config():
+    event = sample(position_action='OPEN_LONG', direction='long', passed_rules=['previous_bar_break', 'planned_reward_risk', 'new_rule_x'], currency='USD')
+    text = render_event(event, (), config=Config(min_rr=2.0), **TIMES)   # different hash -> minimum not shown
+    assert 'Bullish setup triggered' in text
+    assert "beyond the prior candle's high) passed" in text
+    assert 'configured minimum (not available)' in text
+    assert 'new_rule_x (unrecognised rule identifier, shown raw)' in text
+    assert 'Quote currency: USD.' in text
+    assert 'Research trigger — paper entry pending checks, not a fill' in text and 'not a confirmed fill' in text
+    assert 'no execution-grade verification is recorded' in text
 
 
-def test_html_escapes_provider_and_symbol_and_preserves_key_status():
-    event=sample(symbol='<ANF>',provider='<script>alert(1)</script>')
-    html=render_event_html(event,('provider_delay_unverified',))
+def test_missing_measurements_are_explicit():
+    event = sample(stop=None, reward_risk=None, trendline_value=None, atr=None, occurrence_id=None)
+    text = render_event(event, BLOCKERS, rendered_at=RENDERED)
+    assert 'Structural stop: not available' in text and 'Risk distance: not available.' in text
+    assert 'Planned reward : risk: not available' in text
+    assert 'Freshness check before queueing: not available.' in text
+    assert 'trendline at not available; tolerance not available' in text
+    assert 'Occurrence: not available' in text
+    bad_time = render_event(sample(signal_time='garbage'), BLOCKERS, **TIMES)
+    assert 'Candle close: not available' in bad_time and 'Signal age when rendered: not available' in bad_time
+    assert 'Notification expiry: not available.' in bad_time
+
+
+def test_watch_shows_watched_level_and_missing_confirmation_not_entry_rows():
+    rev = render_event(sample(event_type='REVERSAL_WATCH', position_action='WATCH_ONLY', direction='long', passed_rules=[],
+                              reason='midline_cross_after_completed_or_exhausted_invalidated_structure'), BLOCKERS, config=CFG, **TIMES)
+    assert 'Research watch — not an entry trigger' in rev and 'not an entry trigger' in rev
+    assert 'Watched level: Bollinger middle band 162.0000' in rev and 'possible new direction: long' in rev
+    assert 'Still missing:' in rev and 'at least 1.5:1' in rev
+    assert 'Entry reference' not in rev and 'Structural stop' not in rev
+    exh = render_event(sample(event_type='EXHAUSTION_WATCH', position_action='WATCH_ONLY', direction='long', sequence_number=3,
+                              reason='research_heuristic_sequence_outer_band_smaller_D'), BLOCKERS, **TIMES)
+    assert 'Watched level: upper Bollinger band 163.1000; measured move D 6.1000; sequence 3' in exh
+    assert 'Entry reference' not in exh
+    odd = render_event(sample(event_type='EXHAUSTION_WATCH', reason='mystery'), (), **TIMES)
+    assert 'mystery (unrecognised reason identifier, shown raw)' in odd
+
+
+def test_exit_leads_with_exit_and_keeps_setup_secondary():
+    event = sample(event_type='PAPER_EXIT', position_action='COVER_SHORT', exit_price=157.1, exit_quantity=1.0, actual_paper_fill=161.2,
+                   net_pnl_per_unit=4.05, paper_state='PARTIAL', reason='primary_partial')
+    text = render_event(event, BLOCKERS, **TIMES)
+    assert '157.1000' in text and 'paper position remains' in text
+    assert text.index('\nExit\n') < text.index('Original setup levels') and 'Original setup reference levels' in text
+    assert 'Exit reason: the primary target was reached; partial exit.' in text
+    assert 'Paper entry fill: 161.2000; net P&L per unit so far: 4.0500' in text
+    event['paper_state'] = 'CLOSED'
+    assert 'paper position closed' in event_subject(event) and 'The paper position is closed.' in render_event(event, **TIMES)
+    pending = render_event(sample(event_type='EXIT_PENDING', position_action='COVER_SHORT', paper_state='OPEN'), **TIMES)
+    assert 'exit fill is not yet confirmed' in pending and 'Planned exit: next bar open' in pending
+    assert 'Paper entry fill: not available' in pending
+
+
+def test_cancellation_lists_readable_reasons():
+    text = render_event(sample(event_type='ENTRY_CANCELLED', failed_rules=['data_basis_or_freshness_unverified', 'liquidity_requirement', 'zzz']), BLOCKERS, **TIMES)
+    assert 'No paper position was opened' in text and 'Why the paper entry was cancelled' in text
+    assert 'completed volume was below the configured minimum' in text
+    assert 'not verified as execution-grade data' in text
+    assert 'zzz (unrecognised identifier, shown raw)' in text
+
+
+def test_chart_link_format_and_current_validity_note():
+    assert chart_url(sample()) == 'https://lausing.com/stock/ANF?tf=5m&rzy_event=occ123'
+    assert chart_url(sample(symbol='BRK.B', occurrence_id=None)) == 'https://lausing.com/stock/BRK.B?tf=5m'
+    text = render_event(sample(), BLOCKERS, **TIMES)
+    assert 'Open the stock chart: https://lausing.com/stock/ANF?tf=5m&rzy_event=occ123' in text
+    assert 'CURRENT state, which may differ from this archived email' in text
+    tech = text.split('Technical details\n')[1]
+    assert 'Occurrence: occ123' in tech and 'generation: 2' in tech and CFG.hash in tech
+
+
+def test_html_escapes_and_matches_text_content():
+    event = sample(symbol='<ANF>', provider='<script>alert(1)</script>', occurrence_id='a"b')
+    html = render_event_html(event, BLOCKERS, **TIMES)
     assert '<script>' not in html and '&lt;script&gt;' in html and '&lt;ANF&gt;' in html
-    assert 'do not expect a corresponding trade-exit email' in html
+    assert 'href="https://lausing.com/stock/%3CANF%3E?tf=5m&amp;rzy_event=a%22b"' in html
+    assert 'Research trigger — paper execution blocked' in html and 'Follow-up emails are not guaranteed' in html
+    assert 'do not expect a corresponding trade-exit email' in html and 'Signal age when rendered: 2 min 30 s.' in html
     assert '<pre>' not in html
+    # Every plain-text line (other than the link) appears escaped in the HTML.
+    text = render_event(sample(), BLOCKERS, **TIMES)
+    html = render_event_html(sample(), BLOCKERS, **TIMES)
+    from html import escape
+    for line in text.splitlines()[2:]:
+        if line and not line.startswith('Open the stock chart'):
+            assert escape(line) in html, line
+
+
+def test_the_engine_standing_blocker_ids_are_readable_too():
+    text = render_event(sample(), ('data_basis_or_freshness_unverified', 'shortability_or_borrow_cost_unverified'), config=CFG, **TIMES)
+    assert 'unrecognised identifier' not in text.split('Technical details')[0]
+    assert 'the price data basis and freshness are not verified for execution' in text

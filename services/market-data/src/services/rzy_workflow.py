@@ -338,16 +338,19 @@ def scan(session,now=None,clock=None):
             signal=utc(datetime.fromisoformat(event['signal_time']))
             # Fresh only: a rebuild replays history, and a late scan must not mail stale signals.
             # Measured at the actual time of this check, not the scan start (F09).
-            if utc(clock())-signal>timedelta(minutes=MINUTES[tf]+3):
+            checked=utc(clock())
+            if checked-signal>timedelta(minutes=MINUTES[tf]+3):
                 too_late+=1; continue
+            cfg=current_config()
             for uid,(user,pref,symbols) in audience.items():
                 if symbol not in symbols or tf not in pref.timeframes or not eligible(session,user,pref,'little_rzy'): continue
-                body=render_event(event,blockers)
+                shown=dict(evaluated_at=checked,rendered_at=utc(clock()),config=cfg)
+                body=render_event(event,blockers,**shown)
                 from .email_service import _unsubscribe_footer
                 footer_html,footer_text=_unsubscribe_footer('little_rzy',uid)
                 # Keyed by occurrence, not generation: a rebuild never re-mails the same event.
                 _,created=enqueue(session,event_id=f"rzy:{uid}:{event.get('occurrence_id',event['event_id'])}",user_id=uid,recipient=user.email.strip(),alert_type='little_rzy',
-                    subject=event_subject(event),body_text=body+footer_text,body_html=render_event_html(event,blockers)+footer_html,
+                    subject=event_subject(event),body_text=body+footer_text,body_html=render_event_html(event,blockers,**shown)+footer_html,
                     expires_at=(signal+timedelta(minutes=MINUTES[tf]+5)).replace(tzinfo=None))
                 queued+=int(created)
                 if created:

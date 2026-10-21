@@ -110,7 +110,7 @@ with Session() as s:
     assert 'not a validated trade recommendation' in ov['positioning'].lower()
     result['admin_overview']=True
     rows=s.scalars(select(models.NotificationOutbox)).all();assert len(rows)==1
-    assert 'Bullish setup triggered' in rows[0].subject and 'Research only' in rows[0].body_text and 'No broker order' in rows[0].body_text
+    assert rows[0].subject.startswith('RZY research | ') and 'bullish trigger' in rows[0].subject and 'Bullish setup triggered' in rows[0].body_text and 'Research only' in rows[0].body_text and 'No broker order' in rows[0].body_text
     assert '/alerts/unsubscribe' in rows[0].body_text or 'Turn off' in rows[0].body_text
     assert 'owner@example.invalid'==rows[0].recipient
     # De-duplicated on restart and same timestamp.
