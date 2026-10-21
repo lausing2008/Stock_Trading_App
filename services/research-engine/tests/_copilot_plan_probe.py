@@ -764,7 +764,48 @@ def pl14_signal_timestamp_tie():
                  "plan_view_matches_packet": view["packet_fingerprint"] in prints}
 
 
-for fn in (pl14_signal_timestamp_tie, pl13_trade_setups, pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
+def pl15_inflight_reask_after_plan_change():
+    # Production 2026-10-21: the browser dropped a chat request mid-answer and re-asked with the
+    # same request id. The plan had changed meanwhile, and the server answered 409 "plan changed"
+    # before noticing the request was still being answered, so the page abandoned an answer
+    # that was about to be stored. The in-progress check must come first.
+    reset()
+    view = C.plan_view(Session, "alice", SYM, kind="entry", now=NOW)
+    context = {"kind": "entry", "fingerprint": view["packet_fingerprint"]}
+    gate = None
+    class Slow(ScriptedModel):
+        async def __call__(self, *a, **k):
+            await gate.wait()
+            return await ScriptedModel.__call__(self, *a, **k)
+    model = Slow('<answer>One reading favors waiting: {{rule.e1}}</answer><plan_setup id="wait"/>')
+    out = {}
+    async def scenario():
+        nonlocal gate
+        gate = asyncio.Event()
+        first = turn("Compare alternative scenarios", "inflight-0001"); first.plan_context = context
+        task = asyncio.ensure_future(C.answer(first, session_factory=Session, llm_call=model, now=NOW))
+        await asyncio.sleep(0.2)
+        with Session() as s:
+            st = s.query(Stock).filter_by(symbol=SYM).one()
+            s.add(Signal(id=77, stock_id=st.id, ts=NOW - timedelta(minutes=1), signal=SignalType.SELL,
+                         horizon=SignalHorizon.SWING, confidence=70.0, source="signal-engine"))
+            s.commit()
+        out["plan_changed_meanwhile"] = C.plan_view(Session, "alice", SYM, kind="entry", now=NOW)["packet_fingerprint"] != context["fingerprint"]
+        again = turn("Compare alternative scenarios", "inflight-0001"); again.plan_context = context
+        try:
+            await C.answer(again, session_factory=Session, llm_call=model, now=NOW); out["reask"] = "answered"
+        except C.CopilotError as exc:
+            out["reask"] = [exc.status, exc.message]
+        gate.set()
+        done = await task
+        out["first_status"] = done["message"]["status"]
+        replay = await C.answer(again, session_factory=Session, llm_call=model, now=NOW)
+        out["replayed"] = replay["replayed"]; out["model_calls"] = len(model.calls)
+    asyncio.new_event_loop().run_until_complete(scenario())
+    R["pl15"] = out
+
+
+for fn in (pl15_inflight_reask_after_plan_change, pl14_signal_timestamp_tie, pl13_trade_setups, pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
            pl4_staleness, pl5_routing_and_refusals, pl6_turns, pl7_plan_view):
     fn()
 R["_meta"] = {"server": ENGINE.dialect.name}

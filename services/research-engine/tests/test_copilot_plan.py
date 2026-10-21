@@ -484,3 +484,10 @@ def test_signal_timestamp_tie_gives_one_stable_fingerprint(r):
     p = r["pl14"]
     assert len(p["fingerprints"]) == 1 and p["plan_view_matches_packet"]
     assert p["horizons"] == ["SHORT"]          # the newest row by id wins the tie
+
+
+def test_inflight_reask_waits_instead_of_reporting_a_changed_plan(r):
+    p = r["pl15"]
+    assert p["plan_changed_meanwhile"] is True
+    assert p["reask"] == [409, "this request is already being answered"]
+    assert p["first_status"] == "grounded" and p["replayed"] is True and p["model_calls"] == 1

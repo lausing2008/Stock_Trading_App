@@ -17,7 +17,7 @@ import time
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.exc import IntegrityError
 
@@ -191,6 +191,14 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         if prior is not None:
             return {"conversation_id": prior.conversation_id,
                     "message": St.serialise_message(prior), "replayed": True}
+        # A re-ask of a request that is STILL being answered (the browser dropped the connection
+        # and asked again) must learn that first. Checking the plan snapshot first told it
+        # "plan changed" whenever new data arrived mid-answer, and the page abandoned an answer
+        # that was about to be stored (production, 2026-10-21).
+        if (existing_user is not None and existing_user.status == "pending"
+                and existing_user.claimed_at is not None
+                and existing_user.claimed_at >= now - timedelta(seconds=St.CLAIM_TTL_S)):
+            raise CopilotError(409, "this request is already being answered")
         # PLAN MODE (2026-10-14): a forecast / entry / holding question adds the plan engine's
         # lines. The routing and the typed position are parsed by grammar, never by the model.
         if req.plan_context is not None:
