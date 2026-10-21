@@ -77,8 +77,25 @@ with Session() as s:
     p=line(58);add(58,p+.3,p+.8,p-.1,p+.7)
     now=base+timedelta(minutes=5*59+2)
     clock[0]=now
+    pre=W.digest_snapshot(s,1,now)
+    assert pre['available'] is False and 'not available yet' in pre['message']
     scanned=W.scan(s,now);s.commit()
     assert scanned['queued']==1,scanned
+    # The interactive preview reads saved snapshots only; evaluating during the request fails.
+    real_evaluate=W.evaluate
+    def forbidden(*a,**k): raise AssertionError('preview must not evaluate streams')
+    W.evaluate=forbidden
+    try: snap=W.digest_snapshot(s,1,now+timedelta(minutes=4))
+    finally: W.evaluate=real_evaluate
+    assert snap['available'] and snap['snapshot_from']==now.replace(tzinfo=None).isoformat() and snap['snapshot_age_minutes']==4.0
+    assert snap['streams_with_snapshot']==1 and snap['streams_expected']==1
+    assert snap['candidates'] or snap['exclusions'], snap
+    result['snapshot_preview']=True
+    from src.services.rzy_models import RzyScanRun
+    run=s.scalars(select(RzyScanRun).order_by(RzyScanRun.id.desc())).first()
+    assert run and run.mode=='session' and run.streams==1 and run.duration_seconds>=0 and run.queued==1 and run.new_emailable_events>=1
+    assert sum(run.statuses.values())==1
+    result['scan_run_recorded']=True
     rows=s.scalars(select(models.NotificationOutbox)).all();assert len(rows)==1
     assert 'Bullish setup triggered' in rows[0].subject and 'Research only' in rows[0].body_text and 'No broker order' in rows[0].body_text
     assert '/alerts/unsubscribe' in rows[0].body_text or 'Turn off' in rows[0].body_text

@@ -8,7 +8,7 @@ from uuid import uuid4
 from datetime import datetime,timedelta,timezone
 from html import escape
 from zoneinfo import ZoneInfo
-from sqlalchemy import select,update
+from sqlalchemy import select,update,delete
 from sqlalchemy.orm.attributes import flag_modified
 from db import Stock,Price,TimeFrame,WatchlistItem,Watchlist,User,AlertPreference
 from types import SimpleNamespace
@@ -18,7 +18,8 @@ from common.price_basis import resolve_ohlc
 from common.outbox import enqueue
 from .little_rzy import Engine,Config,VERSION,stable,planning_reference,generation_event_id
 from .rzy_data import prepare_bars,aggregate_completed_bars,break_indices,MINUTES,utc
-from .rzy_models import RzyStream,RzyEvent,RzyPreference,RzyStreamGeneration
+from .rzy_models import RzyStream,RzyEvent,RzyPreference,RzyStreamGeneration,RzyStreamSnapshot,RzyScanRun
+import time as _time
 from .rzy_email import render_event,render_event_html,event_subject
 
 NY=ZoneInfo('America/New_York')
@@ -254,6 +255,7 @@ def emailable(event,paper_blockers=()):
 
 
 def scan(session,now=None):
+    started=_time.monotonic()
     now=utc(now or datetime.now(timezone.utc)); local=now.astimezone(NY)
     if local.year>calendar_coverage()['nyse']: return {'status':'calendar_coverage_expired','queued':0}
     bounds=session_bounds('US',local.date())
@@ -275,12 +277,14 @@ def scan(session,now=None):
         keys={f'{sym}:{tf}:{cfg.hash}':(sym,tf) for sym,tf in jobs}
         fresh=set(session.scalars(select(RzyStream.stream_key).where(RzyStream.stream_key.in_(list(keys)),RzyStream.updated_at>=window))) if keys else set()
         jobs=set(sorted(v for k,v in keys.items() if k not in fresh)[:MAINTENANCE_BATCH])
-    queued=0; statuses={}; cache={}; previous_symbol=None
+    queued=0; statuses={}; cache={}; previous_symbol=None; emailable_new=0; too_late=0
     for symbol,tf in sorted(jobs):
         if symbol!=previous_symbol: cache.clear(); previous_symbol=symbol
         try: result=evaluate(session,symbol,tf,now,persist=True,bars_cache=cache)
         except (ValueError,TypeError) as exc:
-            session.rollback();statuses[f'{symbol}:{tf}']='data_rejected: '+str(exc)[:160];continue
+            session.rollback();statuses[f'{symbol}:{tf}']='data_rejected: '+str(exc)[:160]
+            save_snapshot(session,symbol,tf,current_config().hash,now,'data_rejected',stream_summary(symbol,tf,error=exc));session.commit();continue
+        save_snapshot(session,symbol,tf,result['config_hash'],now,result['status'],stream_summary(symbol,tf,result))
         statuses[f'{symbol}:{tf}']=result['status']+(f" rebuilt:{result['rebuild_reason']}" if result.get('rebuilt') else '')
         if maintenance:
             session.execute(update(RzyStream).where(RzyStream.stream_key==f"{symbol}:{tf}:{result['config_hash']}").values(updated_at=now.replace(tzinfo=None)))
@@ -289,9 +293,11 @@ def scan(session,now=None):
         blockers=tuple(result['evidence'].get('paper_blockers') or ())
         for event in result['new_events']:
             if not emailable(event,blockers): continue
+            emailable_new+=1
             signal=utc(datetime.fromisoformat(event['signal_time']))
             # Fresh only: a rebuild replays history, and a late scan must not mail stale signals.
-            if now-signal>timedelta(minutes=MINUTES[tf]+3): continue
+            if now-signal>timedelta(minutes=MINUTES[tf]+3):
+                too_late+=1; continue
             for uid,(user,pref,symbols) in audience.items():
                 if symbol not in symbols or tf not in pref.timeframes or not eligible(session,user,pref,'little_rzy'): continue
                 body=render_event(event,blockers)
@@ -305,38 +311,94 @@ def scan(session,now=None):
         # One stream is an atomic unit; do not retain every large JSON checkpoint or an idle
         # transaction for the entire watchlist scan. No provider calls occur in this transaction.
         session.commit()
-    return {'status':'maintenance' if maintenance else 'ok','streams':len(jobs),'queued':queued,'stream_status':statuses}
+    duration=_time.monotonic()-started
+    counts={}
+    for v in statuses.values(): k=v.split(' ')[0].split(':')[0]; counts[k]=counts.get(k,0)+1
+    session.add(RzyScanRun(scan_time=now.replace(tzinfo=None),mode='maintenance' if maintenance else 'session',duration_seconds=round(duration,3),
+        streams=len(jobs),statuses=counts,new_emailable_events=emailable_new,too_late_to_mail=too_late,queued=queued))
+    session.execute(delete(RzyScanRun).where(RzyScanRun.scan_time<(now-timedelta(days=35)).replace(tzinfo=None)))
+    session.commit()
+    return {'status':'maintenance' if maintenance else 'ok','streams':len(jobs),'queued':queued,'stream_status':statuses,
+            'duration_seconds':round(duration,1),'too_late_to_mail':too_late}
+
+
+GUIDANCE='Wait for a completed trendline-rejection candle after the open; recheck gap, fresh data, stop and actual-fill R/R >={minimum:g}. Stop and entry shown here are provisional references, not confirmed orders.'
+DIGEST_RANKING='Known early sequences first, then sequence/symbol/timeframe. Not a measured quality or win-rate score.'
+DIGEST_NOTE='Uses prior completed-session structures. Intraday confirmation is required; a gap may invalidate every candidate. No qualifying candidates is a valid digest.'
+
+
+def stream_summary(symbol,tf,result=None,error=None):
+    """One stream's digest contribution: candidates, or the single reason it has none."""
+    if error is not None:
+        return dict(candidates=[],exclusion={'symbol':symbol,'timeframe':tf,'reason':'data_rejected: '+str(error)[:160]})
+    if result['status']!='research_only':
+        ev=result.get('evidence') or {}
+        return dict(candidates=[],exclusion={'symbol':symbol,'timeframe':tf,'reason':ev.get('stale_reason') or result['status'],
+            'data_as_of':ev.get('data_as_of'),'expected_latest_close':ev.get('expected_latest_close'),'source':ev.get('source')})
+    active=[s for s in result['structures'] if s['state']=='ARMED']
+    if not active: return dict(candidates=[],exclusion={'symbol':symbol,'timeframe':tf,'reason':'no_armed_structure'})
+    minimum=result['configuration']['min_rr']; candidates=[]
+    for st in active:
+        reference=st['planning_reference']
+        if reference['reward_risk'] is None or reference['reward_risk']<minimum or not reference['stop'] or reference['stop']<=0: continue
+        candidates.append(dict(symbol=symbol,timeframe=tf,direction=st['direction'],structure_id=st['id'],target=st['target'],
+            provisional_stop=reference['stop'],entry_reference=reference['entry_reference'],trigger_line=reference['trendline'],planned_reward_risk=reference['reward_risk'],
+            sequence=st['sequence_number'],sequence_confidence=st['sequence_confidence'],data_as_of=result['evidence'].get('data_as_of'),
+            guidance=GUIDANCE.format(minimum=minimum)))
+    return dict(candidates=candidates,exclusion=None if candidates else {'symbol':symbol,'timeframe':tf,'reason':'insufficient_planned_reward_risk'})
+
+
+def _rank(candidates):
+    # Known early structures first, not a win-probability ranking. Then stable symbol order.
+    return sorted(candidates,key=lambda c:(c['sequence_confidence']!='known',c['sequence'],c['symbol'],c['timeframe']))
+
+
+def save_snapshot(session,symbol,tf,config_hash,now,status,summary):
+    session.merge(RzyStreamSnapshot(stream_key=f'{symbol}:{tf}:{config_hash}',symbol=symbol,timeframe=tf,config_hash=config_hash,
+        checked_at=now.replace(tzinfo=None),status=status[:48],summary=summary))
 
 
 def digest_preview(session,user_id,now=None):
+    """Live computation, used by the scheduled 09:10 digest (not by the interactive preview)."""
     now=utc(now or datetime.now(timezone.utc)); pref=session.get(RzyPreference,user_id)
     symbols=watchlist_symbols(session,user_id); candidates=[]; exclusions=[]
     for symbol in sorted(symbols):
         cache={}
         for tf in (pref.timeframes if pref else ['5m','15m','1h']):
-            try: result=evaluate(session,symbol,tf,now,bars_cache=cache,allow_rebuild=False)
-            except (ValueError,TypeError) as exc:
-                exclusions.append({'symbol':symbol,'timeframe':tf,'reason':'data_rejected: '+str(exc)[:160]});continue
-            if result['status']!='research_only':
-                ev=result.get('evidence') or {}
-                exclusions.append({'symbol':symbol,'timeframe':tf,'reason':ev.get('stale_reason') or result['status'],
-                    'data_as_of':ev.get('data_as_of'),'expected_latest_close':ev.get('expected_latest_close'),'source':ev.get('source')}); continue
-            active=[s for s in result['structures'] if s['state']=='ARMED']
-            if not active: exclusions.append({'symbol':symbol,'timeframe':tf,'reason':'no_armed_structure'}); continue
-            for st in active:
-                reference=st['planning_reference'];minimum=result['configuration']['min_rr']
-                if reference['reward_risk'] is None or reference['reward_risk']<minimum or not reference['stop'] or reference['stop']<=0:
-                    exclusions.append({'symbol':symbol,'timeframe':tf,'reason':'insufficient_planned_reward_risk'});continue
-                candidates.append(dict(symbol=symbol,timeframe=tf,direction=st['direction'],structure_id=st['id'],target=st['target'],
-                    provisional_stop=reference['stop'],entry_reference=reference['entry_reference'],trigger_line=reference['trendline'],planned_reward_risk=reference['reward_risk'],
-                    sequence=st['sequence_number'],sequence_confidence=st['sequence_confidence'],data_as_of=result['evidence'].get('data_as_of'),
-                    guidance=f'Wait for a completed trendline-rejection candle after the open; recheck gap, fresh data, stop and actual-fill R/R >={minimum:g}. Stop and entry shown here are provisional references, not confirmed orders.'))
-    # Known early structures first, not a win-probability ranking. Then stable symbol order.
-    candidates.sort(key=lambda c:(c['sequence_confidence']!='known',c['sequence'],c['symbol'],c['timeframe']))
+            try: summary=stream_summary(symbol,tf,evaluate(session,symbol,tf,now,bars_cache=cache,allow_rebuild=False))
+            except (ValueError,TypeError) as exc: summary=stream_summary(symbol,tf,error=exc)
+            candidates.extend(summary['candidates'])
+            if summary['exclusion']: exclusions.append(summary['exclusion'])
+    candidates=_rank(candidates)
     return dict(strategy_version=VERSION,scope='my US watchlist',schedule='20 minutes before US regular open',
+        candidates=candidates[:10],total_candidates=len(candidates),exclusions=exclusions,ranking=DIGEST_RANKING,note=DIGEST_NOTE)
+
+
+def digest_snapshot(session,user_id,now=None):
+    """Interactive preview: reads the latest per-stream scan snapshots; never evaluates streams."""
+    now=utc(now or datetime.now(timezone.utc)); cfg=current_config(); pref=session.get(RzyPreference,user_id)
+    symbols=sorted(watchlist_symbols(session,user_id)); tfs=pref.timeframes if pref else ['5m','15m','1h']
+    keys=[f'{sym}:{tf}:{cfg.hash}' for sym in symbols for tf in tfs]
+    rows={r.stream_key:r for r in session.scalars(select(RzyStreamSnapshot).where(RzyStreamSnapshot.stream_key.in_(keys)))} if keys else {}
+    base=dict(strategy_version=VERSION,scope='my US watchlist',schedule='20 minutes before US regular open',ranking=DIGEST_RANKING,note=DIGEST_NOTE)
+    if not rows:
+        return dict(base,available=False,candidates=[],total_candidates=0,exclusions=[],
+            message='Preview not available yet: no scan snapshot exists for your watchlist. Snapshots are saved by the scheduled scan before and during the US session.')
+    candidates=[]; exclusions=[]
+    for sym in symbols:
+        for tf in tfs:
+            r=rows.get(f'{sym}:{tf}:{cfg.hash}')
+            if r is None: exclusions.append({'symbol':sym,'timeframe':tf,'reason':'not_evaluated_yet'}); continue
+            candidates.extend(r.summary.get('candidates',[]))
+            if r.summary.get('exclusion'): exclusions.append(dict(r.summary['exclusion'],checked_at=r.checked_at.isoformat()))
+    times=[r.checked_at for r in rows.values()]
+    oldest,newest=min(times),max(times)
+    candidates=_rank(candidates)
+    return dict(base,available=True,snapshot_from=oldest.isoformat(),snapshot_to=newest.isoformat(),
+        snapshot_age_minutes=round((now.replace(tzinfo=None)-oldest).total_seconds()/60,1),
+        streams_with_snapshot=len(rows),streams_expected=len(keys),
         candidates=candidates[:10],total_candidates=len(candidates),exclusions=exclusions,
-        ranking='Known early sequences first, then sequence/symbol/timeframe. Not a measured quality or win-rate score.',
-        note='Uses prior completed-session structures. Intraday confirmation is required; a gap may invalidate every candidate. No qualifying candidates is a valid digest.')
+        freshness_note='Saved scan results, not recomputed for this request. Each stream reflects its last scan; check snapshot times before relying on a candidate.')
 
 
 def morning_digest(session,now=None):

@@ -44,7 +44,8 @@ def save_preferences(body:Preferences,user=Depends(get_current_user),session=Dep
 
 @router.get('/digest')
 def digest(user=Depends(get_current_user),session=Depends(get_session)):
-    return W.digest_preview(session,user.id)
+    # Saved scan snapshots only: a request never re-evaluates hundreds of streams (OD-02).
+    return W.digest_snapshot(session,user.id)
 
 @router.get('/paper')
 def paper(user=Depends(get_current_user),session=Depends(get_session)):

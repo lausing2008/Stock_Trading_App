@@ -35,3 +35,16 @@ it('exposes an independent research paper ledger without writing existing portfo
  fireEvent.click(screen.getByText('Show RZY research paper ledger'));await screen.findByText(/data_unverified/);
  expect(api.saveRzyPreferences).not.toHaveBeenCalled();
 });
+
+it('shows the saved snapshot time and freshness, or says the preview is not available yet',async()=>{
+ api.rzyDigest.mockResolvedValueOnce({available:false,candidates:[],exclusions:[],note:'n',message:'Preview not available yet: no scan snapshot exists for your watchlist.'});
+ view();fireEvent.click(screen.getByText('Preview morning candidates'));
+ await screen.findByText(/Preview not available yet/);
+ expect(screen.queryByText('No qualifying candidates. Do not force a trade.')).toBeNull();
+ api.rzyDigest.mockResolvedValueOnce({available:true,snapshot_from:'2026-10-21T13:00:00',snapshot_to:'2026-10-21T13:05:00',snapshot_age_minutes:12.5,streams_with_snapshot:3,streams_expected:4,
+   candidates:[],exclusions:[{symbol:'TEST',timeframe:'15m',reason:'stale_15m_aggregate'},{symbol:'NEW',timeframe:'5m',reason:'not_evaluated_yet'}],note:'Prior completed data only'});
+ fireEvent.click(screen.getByText('Preview morning candidates'));
+ await screen.findByText(/Saved scan snapshot, not recomputed now/);
+ expect(screen.getByText(/12.5 min ago/)).toBeTruthy();expect(screen.getByText(/3 of 4 streams/)).toBeTruthy();
+ expect(screen.getByText('TEST 15m: stale_15m_aggregate')).toBeTruthy();expect(screen.getByText('NEW 5m: not_evaluated_yet')).toBeTruthy();
+});

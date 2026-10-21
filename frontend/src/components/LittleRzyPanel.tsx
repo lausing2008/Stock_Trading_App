@@ -33,7 +33,10 @@ export default function LittleRzyPanel({ paperOnly = false }: { paperOnly?: bool
         }} /> {tf}</label>)}
       </fieldset>}
       <p><button disabled={busy} onClick={() => void loadPreview()}>Preview morning candidates</button></p>
-      {preview && <div><p>{preview.note}</p>{preview.candidates.length ? preview.candidates.map(c => <p key={`${c.symbol}:${c.timeframe}`}><strong>{c.symbol} · {c.direction.toUpperCase()} · {c.timeframe}</strong> · entry reference {c.entry_reference?.toFixed(2) ?? "unavailable"} · provisional stop {c.provisional_stop?.toFixed(2) ?? "unavailable"} · target {c.target.toFixed(2)} · planned R/R {c.planned_reward_risk?.toFixed(2) ?? "unavailable"}. {c.guidance}</p>) : <p>No qualifying candidates. Do not force a trade.</p>}
+      {preview && preview.available === false && <p role="status">{preview.message ?? 'Preview not available yet.'}</p>}
+      {preview && preview.available !== false && <div>
+        {preview.snapshot_from && <p role="status">Saved scan snapshot, not recomputed now: oldest stream checked {new Date(preview.snapshot_from).toLocaleString()} ({preview.snapshot_age_minutes} min ago){preview.snapshot_to && preview.snapshot_to !== preview.snapshot_from ? `, newest ${new Date(preview.snapshot_to).toLocaleString()}` : ''}; {preview.streams_with_snapshot} of {preview.streams_expected} streams have a snapshot.</p>}
+        <p>{preview.note}</p>{preview.candidates.length ? preview.candidates.map(c => <p key={`${c.symbol}:${c.timeframe}`}><strong>{c.symbol} · {c.direction.toUpperCase()} · {c.timeframe}</strong> · entry reference {c.entry_reference?.toFixed(2) ?? "unavailable"} · provisional stop {c.provisional_stop?.toFixed(2) ?? "unavailable"} · target {c.target.toFixed(2)} · planned R/R {c.planned_reward_risk?.toFixed(2) ?? "unavailable"}. {c.guidance}</p>) : <p>No qualifying candidates. Do not force a trade.</p>}
         <details><summary>Excluded symbols and reasons ({preview.exclusions.length})</summary>{preview.exclusions.map((x,i) => <p key={i}>{x.symbol} {x.timeframe}: {x.reason}</p>)}</details></div>}
     </>}
     <button disabled={busy} onClick={() => void loadPaper()}>Show RZY research paper ledger</button>
