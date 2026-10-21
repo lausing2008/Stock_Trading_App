@@ -815,7 +815,46 @@ def pl15_inflight_reask_after_plan_change():
     R["pl15"] = out
 
 
-for fn in (pl15_inflight_reask_after_plan_change, pl14_signal_timestamp_tie, pl13_trade_setups, pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
+def pl16_completed_sessions():
+    """Audit F01/F03: forming daily rows never count; freshness is in completed sessions."""
+    from src.intel_reports import adapters as A
+    out = {}
+    def at(t, kind="entry"):
+        with Session() as s:
+            p = build_packet(s, SYM, now=t, plan_request=I.PositionIntent(kind=kind))
+            return {"close": (p.fields["price"].value or {}).get("close"), "state": p.fields["price"].state.value,
+                    "expected": (p.fields["price"].value or {}).get("expected_session"),
+                    "reason": p.fields["price"].reason,
+                    "setups": [x["state"] for x in p.plan.to_json()["setups"]] if p.plan else None}
+    reset()   # bars daily through Fri 2026-10-09 (closes at 100)
+    with Session() as s:
+        sid = s.execute(text("SELECT id FROM stocks WHERE symbol = :s"), {"s": SYM}).scalar()
+        # Monday's row, keyed at the session date's midnight as production stores it, rewritten
+        # intraday by the refresh jobs: a FORMING bar until the post-close ingest settles.
+        s.add(Price(id=9001, stock_id=sid, ts=datetime(2026, 10, 12), timeframe=TimeFrame.D1,
+                    open=100, high=151, low=99, close=150, volume=1_000_000))
+        s.commit()
+    out["in_session"] = at(datetime(2026, 10, 12, 15, 0))        # 11:00 EDT
+    out["after_close_before_settle"] = at(datetime(2026, 10, 12, 20, 35))   # 16:35 EDT
+    out["after_settle"] = at(datetime(2026, 10, 12, 20, 50))     # 16:50 EDT
+    reset()
+    out["weekend"] = at(datetime(2026, 10, 11, 18, 0))           # Sunday: Friday stays current
+    reset(bar_age_days=4)                                        # latest bar Mon 2026-10-05
+    out["four_sessions_old"] = at(NOW)
+    utc = lambda *a: datetime(*a)
+    out["calendar"] = {
+        "hk_mid_session": str(A.last_completed_session("HK", utc(2026, 10, 21, 5, 0))),     # 13:00 HKT
+        "hk_after_settle": str(A.last_completed_session("HK", utc(2026, 10, 21, 8, 50))),   # 16:50 HKT
+        "us_early_close_before": str(A.last_completed_session("US", utc(2026, 11, 27, 19, 0))),
+        "us_early_close_after": str(A.last_completed_session("US", utc(2026, 11, 27, 21, 50))),
+        "us_dst_end_before": str(A.last_completed_session("US", utc(2026, 11, 2, 21, 40))),   # 16:40 EST
+        "us_dst_end_after": str(A.last_completed_session("US", utc(2026, 11, 2, 21, 50))),
+        "beyond_coverage": A.last_completed_session("US", utc(2099, 1, 5, 23, 0)),
+    }
+    R["pl16"] = out
+
+
+for fn in (pl16_completed_sessions, pl15_inflight_reask_after_plan_change, pl14_signal_timestamp_tie, pl13_trade_setups, pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
            pl4_staleness, pl5_routing_and_refusals, pl6_turns, pl7_plan_view):
     fn()
 R["_meta"] = {"server": ENGINE.dialect.name}

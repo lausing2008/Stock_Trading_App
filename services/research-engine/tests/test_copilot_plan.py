@@ -515,3 +515,26 @@ def test_llm_playbook_cites_the_code_written_branches_and_is_asked_for(r):
     p = r["pl13"]["playbook_answer"]
     assert p["status"] == "grounded" and p["calls"] == 1 and p["prompt_asks"]
     assert "Do not chase above $101.00" in p["content"] and "{{" not in p["content"]
+
+
+def test_forming_daily_row_never_counts_as_the_latest_close(r):
+    """Audit F01: Monday's row exists mid-session; only the settled Friday close is used."""
+    p = r["pl16"]
+    assert p["in_session"]["close"] == 100 and p["in_session"]["expected"] == "2026-10-09"
+    assert p["after_close_before_settle"]["close"] == 100, "before the post-close ingest settles"
+    assert p["after_settle"]["close"] == 150 and p["after_settle"]["expected"] == "2026-10-12"
+    assert p["in_session"]["state"] == "OK" and set(p["in_session"]["setups"]) <= {"conditional", "blocked"}
+
+
+def test_freshness_is_measured_in_completed_sessions(r):
+    """Audit F03: a Monday close on Friday evening is four sessions behind -> stale plan."""
+    p = r["pl16"]
+    old = p["four_sessions_old"]
+    assert old["state"] == "STALE" and "4 later completed session(s)" in old["reason"]
+    assert old["setups"] and all(x == "stale" for x in old["setups"])
+    assert p["weekend"]["state"] == "OK" and p["weekend"]["expected"] == "2026-10-09"
+    c = p["calendar"]
+    assert (c["hk_mid_session"], c["hk_after_settle"]) == ("2026-10-20", "2026-10-21")
+    assert (c["us_early_close_before"], c["us_early_close_after"]) == ("2026-11-25", "2026-11-27")
+    assert (c["us_dst_end_before"], c["us_dst_end_after"]) == ("2026-10-30", "2026-11-02")
+    assert c["beyond_coverage"] is None

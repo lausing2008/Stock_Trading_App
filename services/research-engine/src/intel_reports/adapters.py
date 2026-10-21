@@ -11,12 +11,14 @@ need a live call is reported UNAVAILABLE with that as its reason, rather than qu
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, func
 
 from db import Price, Signal, Stock, EarningsEvent
 from db.models import TimeFrame
+from common.market_calendar import calendar_coverage, session_bounds
 from intelligence.report_contract import (
     Evidence, EvidenceBook, Field, FieldState, StatementClass,
     calculated, observed, stale, unavailable, unknown,
@@ -50,6 +52,67 @@ def daily_bars(session, stock_id: int, limit: int = 70, *, cutoff: datetime) -> 
         select(Price).where(Price.stock_id == stock_id, Price.timeframe == TimeFrame.D1,
                             Price.ts <= cutoff)
         .order_by(Price.ts.desc()).limit(limit)).scalars().all())
+
+
+# ── Completed exchange sessions (audit F01/F03, 2026-10-21) ──────────────────────
+# A stored D1 row is keyed by its session date at midnight and is REWRITTEN during that session
+# by the intraday refresh jobs, so `ts <= now` admits a forming bar as "the latest daily close"
+# (measured in production: HK rows dated the current day at 13:00 HKT). A session's row is
+# treated as final only after the post-close ingest (scheduler `us_post_close` / `hk_post_close`,
+# 16:30 local) has had time to run. Early-close days settle at the same post-close time.
+POST_CLOSE_INGEST_LOCAL = time(16, 30)
+POST_CLOSE_SETTLE = timedelta(minutes=15)
+_TZ = {"US": ZoneInfo("America/New_York"), "HK": ZoneInfo("Asia/Hong_Kong")}
+
+
+def session_settled_at(market: str, d: date) -> datetime | None:
+    """UTC instant after which `d`'s stored daily row is final, or None if not a session."""
+    bounds = session_bounds(market, d)
+    if bounds is None:
+        return None
+    ingest = datetime.combine(d, POST_CLOSE_INGEST_LOCAL, tzinfo=_TZ[market])
+    return max(bounds[1], ingest).astimezone(timezone.utc) + POST_CLOSE_SETTLE
+
+
+def last_completed_session(market: str, now: datetime) -> date | None:
+    """Latest session whose stored daily row is final at `now`. None = cannot be determined."""
+    if market not in _TZ:
+        return None
+    aware = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
+    d = aware.astimezone(_TZ[market]).date()
+    if d.year > calendar_coverage()["hkex" if market == "HK" else "nyse"]:
+        return None
+    for _ in range(15):
+        settled = session_settled_at(market, d)
+        if settled is not None and aware >= settled:
+            return d
+        d -= timedelta(days=1)
+    return None
+
+
+def sessions_after(market: str, start: date, end: date) -> int:
+    """Number of sessions in (start, end]."""
+    n, d = 0, start + timedelta(days=1)
+    while d <= end:
+        n += session_bounds(market, d) is not None
+        d += timedelta(days=1)
+    return n
+
+
+def completed_daily_bars(session, stock, limit: int, *, now: datetime) -> tuple[list[Price], dict]:
+    """Daily bars of COMPLETED sessions only, plus the session expectation they are judged by."""
+    market = getattr(stock.market, "value", stock.market)
+    latest = last_completed_session(market, now)
+    if latest is None:
+        return [], {"market": market, "expected_session": None,
+                    "reason": f"no exchange calendar covers {market} at this time, so completed "
+                              f"sessions cannot be determined"}
+    end = datetime.combine(latest + timedelta(days=1), time())
+    bars = list(session.execute(
+        select(Price).where(Price.stock_id == stock.id, Price.timeframe == TimeFrame.D1,
+                            Price.ts < end, Price.ts <= _naive(now))
+        .order_by(Price.ts.desc()).limit(limit)).scalars().all())
+    return bars, {"market": market, "expected_session": latest}
 
 
 def record_bar(book: EvidenceBook, bar: Price) -> str:
@@ -102,8 +165,16 @@ def session_return(bars: list[Price], sessions: int, *, label: str,
     return calculated(round(pct, 2), units="pct", evidence_ids=ids)
 
 
-def price_as_of(bars: list[Price], now: datetime, *, book: EvidenceBook | None = None) -> Field:
-    """The latest close, with its own age checked rather than assumed current."""
+def price_as_of(bars: list[Price], now: datetime, *, book: EvidenceBook | None = None,
+                sessions: dict | None = None) -> Field:
+    """The latest close, with its own age checked rather than assumed current.
+
+    With `sessions` (from `completed_daily_bars`) freshness is judged in completed exchange
+    sessions: the latest bar must BE the latest completed session. Calendar-day age (the
+    generic report rule) let a four-session-old close read as current (audit F03).
+    """
+    if sessions is not None and sessions.get("expected_session") is None:
+        return unavailable(sessions["reason"])
     if not bars:
         return unavailable("no daily bars ingested for this symbol")
     latest = bars[0]
@@ -111,6 +182,16 @@ def price_as_of(bars: list[Price], now: datetime, *, book: EvidenceBook | None =
     value = {"close": round(float(latest.close), 4), "ts": latest.ts.isoformat(),
              "basis": "unadjusted close", "session": "regular"}
     ids = [record_bar(book, latest)] if book is not None else []
+    if sessions is not None:
+        expected, have = sessions["expected_session"], _naive(latest.ts).date()
+        value["expected_session"] = expected.isoformat()
+        missing = sessions_after(sessions["market"], have, expected)
+        if missing:
+            return stale(value, f"the latest stored daily close is for {have.isoformat()}, but "
+                                f"{missing} later completed session(s) exist (latest "
+                                f"{expected.isoformat()}); the data has not caught up",
+                         evidence_ids=ids)
+        return observed(value, evidence_ids=ids)
     if age_days > _MAX_BAR_AGE_DAYS:
         return stale(value, f"latest daily bar is {age_days} calendar days old",
                      evidence_ids=ids)

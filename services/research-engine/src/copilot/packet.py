@@ -446,9 +446,11 @@ def build_packet(session, symbol: str, *, now: datetime | None = None,
     fields: dict[str, Field] = {}
     qs: dict[str, Quantity] = {}
 
-    bars = A.daily_bars(session, stock.id, limit=(P.YEAR_BARS + 8) if plan_request else 70,
-                        cutoff=now)
-    price = A.price_as_of(bars, now, book=book)
+    # Completed sessions only (audit F01/F03): a forming daily row is never "the latest close",
+    # and freshness is measured against the latest completed exchange session.
+    bars, sessions = A.completed_daily_bars(
+        session, stock, limit=(P.YEAR_BARS + 8) if plan_request else 70, now=now)
+    price = A.price_as_of(bars, now, book=book, sessions=sessions)
     price.label = "Latest daily close"
     fields["price"] = price
     if price.value:
