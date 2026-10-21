@@ -39,6 +39,18 @@ FORCED_BAD = ('<answer>Initial reading favours a pullback near {{level.high20}}.
               '<plan_proposal kind="pullback" entry="level.high20" stop="level.low20" '
               'target1="level.high20+1atr" target2="level.high20+2atr"/>')
 
+#: FIXED matrix for the hidden-rules experiment (approval required before running): 7 cases x
+#: 2 arms (rules visible / hidden) = 14 requests, <= 2 calls each => cap 28 calls.
+MATRIX = [
+    dict(name="m_entry_MU", symbol="MU", ctx=dict(kind="entry", risk=500.0)),
+    dict(name="m_entry_NVDA", symbol="NVDA", ctx=dict(kind="entry", risk=500.0)),
+    dict(name="m_entry_AAPL", symbol="AAPL", ctx=dict(kind="entry", risk=500.0)),
+    dict(name="m_entry_0005HK", symbol="0005.HK", ctx=dict(kind="entry", risk=5000.0)),
+    dict(name="m_entry_0700HK", symbol="0700.HK", ctx=dict(kind="entry", risk=5000.0)),
+    dict(name="m_hold_MU", symbol="MU", ctx=dict(kind="holding", entry=800.0, shares=10, stop=780.0)),
+    dict(name="m_hold_0700HK", symbol="0700.HK", ctx=dict(kind="holding", entry=500.0, shares=100)),
+]
+
 SCENARIOS = [
     dict(name="us_entry_MU", symbol="MU", ctx=dict(kind="entry", risk=500.0)),
     dict(name="us_entry_NVDA", symbol="NVDA", ctx=dict(kind="entry", risk=500.0)),
@@ -109,6 +121,7 @@ async def run_one(sc, username, key, model, now):
     view = C.plan_view(SessionLocal, username, sc["symbol"], now=now, **sc["ctx"])
     ctx = {**sc["ctx"], "fingerprint": view["packet_fingerprint"]}
     req = C.TurnRequest(username=username, symbol=sc["symbol"], request_id="eval-" + uuid.uuid4().hex[:20],
+                        hide_rules_reference=bool(sc.get("hide_rules")),
                         question=f"[eval] Propose your own conditional Game Plan for {sc['symbol']}.",
                         conversation_id=None, provider="claude", model=model, api_key=key,
                         uses_shared_key=True, plan_context=ctx)
@@ -127,7 +140,8 @@ async def run_one(sc, username, key, model, now):
     p = msg.get("plan_proposal")
     mine = CALLS[before:]
     return {
-        "scenario": sc["name"], "symbol": sc["symbol"], "inputs": sc["ctx"], "status": msg["status"],
+        "scenario": sc["name"], "arm": "rules_hidden" if sc.get("hide_rules") else "rules_visible",
+        "symbol": sc["symbol"], "inputs": sc["ctx"], "status": msg["status"], "narration": msg.get("narration"),
         "model": msg.get("model"), "price_as_of": msg.get("price_as_of"),
         "price_state": packet.fields["price"].state.value, "price_reason": packet.fields["price"].reason,
         "rules_setups": [(x["id"], x["state"]) for x in view["plan"]["setups"]],
@@ -150,10 +164,23 @@ async def main(out_path):
     assert key, "no admin Claude key"
     results = []
     only = set(filter(None, os.environ.get("EVAL_ONLY", "").split(",")))
-    for sc in [x for x in SCENARIOS if not only or x["name"] in only]:
+    pool = ([dict(x, hide_rules=h) for x in MATRIX for h in (False, True)]
+            if os.environ.get("EVAL_SET") == "matrix" else SCENARIOS)
+    for sc in [x for x in pool if not only or x["name"] in only]:
         results.append(await run_one(sc, username, key, model, now))
     real = [c for c in CALLS if not c.get("scripted")]
+    def rates(arm):
+        rs = [r for r in results if r.get("arm") == arm and "error" not in r]
+        n = len(rs) or 1
+        st = lambda r: (r.get("proposal") or {}).get("state")
+        return {"requests": len(rs),
+                "valid_plan_rate": sum(st(r) in ("conditional", "blocked", "wait") for r in rs) / n,
+                "fallback_rate": sum(r["status"] == "rejected" for r in rs) / n,
+                "code_narration_rate": sum(r.get("narration") == "code" for r in rs) / n,
+                "constraint_violations": sum(len(r["independent_problems"]) for r in rs),
+                "prose_digit_answers": sum(any(d for d in r["prose_digits_by_call"][-1:]) for r in rs)}
     report = {"run_at": now.isoformat(), "model_requested": model, "max_calls": MAX_CALLS,
+              "metrics": {a: rates(a) for a in ("rules_visible", "rules_hidden")},
               "provider_calls": len(real), "usage_total": {
                   "input_tokens": sum((c.get("usage") or {}).get("input_tokens", 0) for c in real),
                   "output_tokens": sum((c.get("usage") or {}).get("output_tokens", 0) for c in real)},
