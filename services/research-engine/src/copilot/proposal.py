@@ -38,8 +38,26 @@ FORMAT_HELP = ('Append exactly one <plan_proposal kind="pullback|breakout|limit|
                'hold use kind="hold" with stop, target1 and target2 only (the entry is the stated cost).')
 
 
-def extract(text: str):
-    """(clean_text, spec | None, format_error | None)."""
+#: Which proposal kinds each plan mode accepts. A held position is managed (hold) or left as is
+#: (wait); it is never silently turned into a new-entry plan.
+ALLOWED_KINDS = {"entry": ("pullback", "breakout", "limit", "wait"), "holding": ("hold", "wait")}
+
+
+def format_help(mode: str | None) -> str:
+    if mode == "holding":
+        return ('This is a HELD POSITION. Append exactly one <plan_proposal kind="hold" stop="ANCHOR-Katr" '
+                'target1="ANCHOR" target2="ANCHOR"/> tag (the entry is the stated cost; never propose a new '
+                'entry), or <plan_proposal kind="wait"/> to leave the position unchanged. ANCHOR is one of '
+                + ", ".join(ANCHORS) + f", optionally +/- up to {MAX_ATR_MULT:g} ATRs.")
+    if mode == "entry":
+        return ('This is a NEW ENTRY. Append exactly one <plan_proposal kind="pullback|breakout|limit|wait" '
+                'entry="ANCHOR" stop="ANCHOR-Katr" target1="ANCHOR" target2="ANCHOR"/> tag. ANCHOR is one of '
+                + ", ".join(ANCHORS) + f', optionally +/- up to {MAX_ATR_MULT:g} ATRs. kind="wait" takes no levels.')
+    return FORMAT_HELP
+
+
+def extract(text: str, mode: str | None = None):
+    """(clean_text, spec | None, format_error | None). `mode` restricts the allowed kinds."""
     tags = _TAG.findall(text)
     clean = _TAG.sub("", text)
     if len(tags) != 1 or "<plan_proposal" in clean.lower():
@@ -47,7 +65,10 @@ def extract(text: str):
     attrs = {k.lower(): v for k, v in _ATTR.findall(tags[0])}
     kind = attrs.get("kind", "").lower()
     if kind not in KINDS:
-        return clean, None, FORMAT_HELP
+        return clean, None, format_help(mode)
+    if mode in ALLOWED_KINDS and kind not in ALLOWED_KINDS[mode]:
+        return clean, None, (f'kind="{kind}" is not allowed for this {mode} plan; allowed: '
+                             + ", ".join(ALLOWED_KINDS[mode]) + ". " + format_help(mode))
     if kind == "wait":
         return clean, {"kind": "wait"}, None
     spec = {"kind": kind}
@@ -81,8 +102,16 @@ def build(plan, spec: dict, *, price_stale: str | None) -> dict:
     m = lambda v: P.money(v, plan.currency)
     base = dict(id="llm", key="proposal.llm", title="LLM-proposed plan", source="llm_proposal",
                 kind=spec.get("kind"), derivation=[], reasons=[], playbook=[], eligibility_needs=[])
+    pos = plan.position
+    if plan.kind == "holding" and pos is not None and pos.stop is not None and plan.anchors.get("level.close") is not None \
+            and plan.anchors["level.close"] < pos.stop and not price_stale:
+        # The user's own stop is already broken: no model choice (hold OR wait) overrides it.
+        return dict(base, state="exit_triggered", reasons=[
+            f"The latest daily close ({P.money(plan.anchors['level.close'], plan.currency)}) is below your stated stop "
+            f"({P.money(pos.stop, plan.currency)}): the exit rule is met. A model proposal does not override it."])
     if spec.get("kind") == "wait":
-        return dict(base, state="wait", reasons=["The model proposed waiting: no entry now."])
+        return dict(base, state="wait", reasons=["The model proposed waiting: no entry now." if plan.kind != "holding"
+                                                 else "The model proposed leaving the position unchanged."])
     reasons, blocks = [], []
     if (spec["kind"] == "hold") != (plan.kind == "holding") or plan.kind not in ("entry", "holding"):
         return dict(base, state="rejected", reasons=[

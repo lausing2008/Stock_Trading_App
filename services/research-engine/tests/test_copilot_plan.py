@@ -639,3 +639,20 @@ def test_evaluation_can_withhold_the_rules_plan_but_not_the_market_evidence(r):
     x = r["pl13"]
     assert x["hidden"] == {"rules_absent": True, "evidence_present": True}
     assert x["normal_shows_rules"]
+
+
+def test_holding_mode_is_stated_and_only_hold_or_wait_is_accepted(r):
+    """Held 10 @ 95; low20 99 - 0.5 ATR = 98; targets 101 / 103. The user's stop governs."""
+    x = r["pl19"]
+    for case in ("stop_below_cost", "stop_above_cost", "no_stop"):
+        c = x[case]
+        assert (c["status"], c["state"], c["kind"], c["entry"], c["stop"], c["calls"]) == ("grounded", "conditional", "hold", 95.0, 98.0, 1), case
+        assert c["prompt_mode"], case
+    lo = x["lowering_stop"]                               # 99 - 3 = 96 < stated 97
+    assert lo["state"] == "rejected" and any("never lowered" in m for m in lo["reasons"])
+    for case in ("broken_stop_hold", "broken_stop_wait"):  # close 100 < stated stop 101
+        b = x[case]
+        assert b["state"] == "exit_triggered" and "exit rule is met" in b["reasons"][0], case
+    e = x["entry_kind_refused"]                          # a new-entry kind is refused, then repaired
+    assert e["calls"] == 2 and 'kind=\\"pullback\\" is not allowed for this holding plan' in e["repair"]
+    assert (e["state"], e["kind"]) == ("conditional", "hold")

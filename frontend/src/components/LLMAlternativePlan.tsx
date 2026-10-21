@@ -141,7 +141,8 @@ export default function LLMAlternativePlan({ symbol, inputs, fingerprint, unavai
       {message.status === 'rejected' && <p role="alert">The model failed the evidence check. The stored-data fallback below is not a second plan.</p>}
       {message.status === 'grounded' && message.plan_proposal && (() => {
         const p = message.plan_proposal;
-        if (p.state === 'wait') return <p role="status">The model proposes waiting: no new entry now.</p>;
+        if (p.state === 'wait') return <p role="status">{p.reasons?.[0] ?? 'The model proposes waiting: no new entry now.'}</p>;
+        if (p.state === 'exit_triggered') return <p role="alert" style={{ color: '#fca5a5' }}><strong>Exit rule met:</strong> {p.reasons.join(' ')}</p>;
         if (p.state === 'rejected') return <div role="alert" style={{ color: '#fca5a5' }}>
           <p><strong>The model&apos;s proposal failed the code checks and cannot be selected or saved:</strong></p>
           <ul>{p.reasons.map(r => <li key={r}>{r}</li>)}</ul>

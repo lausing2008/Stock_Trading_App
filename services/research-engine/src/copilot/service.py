@@ -65,6 +65,26 @@ class TurnRequest:
     hide_rules_reference: bool = False
 
 
+def _mode_block(plan, ctx: dict) -> str:
+    """State the plan MODE, the typed position inputs and what may be proposed (measured: without
+    it the model proposed a new-entry pullback for a held position in 2 of 2 runs)."""
+    if plan.kind == "holding":
+        pos = plan.position
+        parts = [f"entry cost {pos.entry}" if pos and pos.entry is not None else "entry cost not stated",
+                 f"{pos.shares} shares" if pos and pos.shares else "share count not stated",
+                 f"stated stop {pos.stop}" if pos and pos.stop is not None else "no stop stated"]
+        return ("\nMODE: HOLDING — the user already holds this stock (" + "; ".join(parts) + "). "
+                "Manage the held position (kind=hold: choose the stop and two objectives; never lower a "
+                "stated stop) or propose wait to leave it unchanged. Do NOT propose a new entry, and do not "
+                "turn this into a new-entry plan. If the latest close is below the stated stop, the exit rule "
+                "is already met and no proposal overrides it.")
+    if plan.kind == "entry":
+        budget = ctx.get("risk")
+        return ("\nMODE: NEW ENTRY — the user holds no position" + (f"; risk budget {budget}" if budget is not None else "")
+                + ". Propose a pullback, breakout or limit entry, or wait.")
+    return "\nMODE: " + str(plan.kind) + " — no model-proposed levels; propose wait."
+
+
 def _rules_reference(key: str) -> bool:
     """A quantity that is the rules-based PLAN rather than market evidence."""
     return (key.startswith(("rule.", "setup.", "playbook.")) or key in (
@@ -291,10 +311,12 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
     if req.plan_context is not None:
         from . import proposal as PR
         anchors = {k: round(v, 4) for k, v in packet.plan.anchors.items()}
+        question += _mode_block(packet.plan, req.plan_context)
         question += ("\nPropose YOUR OWN trade plan for this exact evidence snapshot, independent of "
                      "the rules-based plan (which is shown for reference only; you may differ or "
-                     "agree). Choose kind pullback, breakout or limit, or wait. Choose entry, stop and "
-                     "two targets as evidence anchors plus ATR offsets in the tag below; code computes "
+                     "agree). Allowed kinds for this plan: "
+                     + ", ".join(PR.ALLOWED_KINDS.get(packet.plan.kind, ("wait",))) + ". "
+                     "Choose the levels as evidence anchors plus ATR offsets in the tag below; code computes "
                      "every price and checks direction, ordering, a stop between "
                      f"{PR.MIN_STOP_ATR:g} and {PR.MAX_STOP_ATR:g} ATR, target 1 at least "
                      f"{P.MIN_REWARD_RISK:g}R, sizing, freshness and the trend rule. "
@@ -312,7 +334,7 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
                      "(no 'half an ATR', 'twenty') and write no numerals at all — say 'the first "
                      "target', not 'target 1'. "
                      "Distinguish interpretation from facts. No forecasts, probabilities, account "
-                     "facts or action drafts. " + PR.FORMAT_HELP + " "
+                     "facts or action drafts. " + PR.format_help(packet.plan.kind) + " "
                      "Anchor values: " + json.dumps(anchors) + f"; ATR {packet.plan.atr!r}. "
                      + ("" if req.hide_rules_reference else
                         "Rules-based setups for reference: "
@@ -377,7 +399,7 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
         choice_error = None
         if req.plan_context is not None:
             from . import proposal as PR
-            clean_text, spec, choice_error = PR.extract(clean_text)
+            clean_text, spec, choice_error = PR.extract(clean_text, packet.plan.kind)
             # The previous attempt's proposal values are not citable for this one.
             for k in PR.CITABLE:
                 packet.quantities.pop(k, None)

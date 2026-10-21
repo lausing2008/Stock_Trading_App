@@ -88,7 +88,7 @@ export interface TradeSetup {
 export interface ProposalDerivation { level: string; anchor: string; anchor_price: number; atr_multiple: number; atr: number; price: number }
 /** state: conditional (saveable) | blocked (a mandatory gate) | rejected (failed code checks) | wait. */
 export type PlanProposal = Omit<TradeSetup, 'state'> & {
-  state: 'conditional' | 'blocked' | 'rejected' | 'wait'; kind: string; source: 'llm_proposal';
+  state: 'conditional' | 'blocked' | 'rejected' | 'wait' | 'exit_triggered'; kind: string; source: 'llm_proposal';
   derivation: ProposalDerivation[]; price_as_of?: string | null;
 };
 export interface StockPlan {

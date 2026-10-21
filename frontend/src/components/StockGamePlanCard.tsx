@@ -253,6 +253,7 @@ export default function StockGamePlanCard({ symbol, onLevelsChange, onBoardSaved
         {!llmSaved && llmProposal?.proposal.state !== 'conditional' && <p style={{ color: '#94a3b8', margin: '4px 0 0' }}>{
           !llmProposal ? 'Generate an LLM plan first; only a proposal that passes every code check can be saved.'
             : llmProposal.proposal.state === 'wait' ? 'The model proposed waiting, so there is no plan to save.'
+            : llmProposal.proposal.state === 'exit_triggered' ? 'Your stated stop is already broken: the exit rule is met, so there is no plan to save.'
             : llmProposal.proposal.state === 'blocked' ? 'This proposal is blocked by a mandatory rule (see above), so it cannot be saved.'
             : 'This proposal failed the code checks (see above), so it cannot be saved.'}</p>}
         {llmSaved && <p style={{ color: '#94a3b8', margin: '4px 0 0' }}>Saved as a new Trade Board plan. Generating another comparison never changes a saved plan.</p>}

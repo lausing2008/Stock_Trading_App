@@ -945,7 +945,36 @@ def pl18_verified_post_close_ingest():
     R["pl18"] = out
 
 
-for fn in (pl18_verified_post_close_ingest, pl17_guidance_and_sizing, pl16_completed_sessions, pl15_inflight_reask_after_plan_change, pl14_signal_timestamp_tie, pl13_trade_setups, pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
+def pl19_holding_mode():
+    """Holding mode is stated to the model; only hold/wait are accepted; the user's stop rules."""
+    out = {}
+    reset()   # close 100, ATR 2, low20 99, high20 101
+    HOLD = '<plan_proposal kind="hold" stop="level.low20-0.5atr" target1="level.high20" target2="level.high20+1atr"/>'
+    LOWER = '<plan_proposal kind="hold" stop="level.low20-1.5atr" target1="level.high20" target2="level.high20+1atr"/>'
+    ENTRY = '<plan_proposal kind="pullback" entry="level.low20" stop="level.low20-0.5atr" target1="level.high20" target2="level.high20+1atr"/>'
+    say = lambda tag: f"<answer>One reading favours managing the position; stop {{{{proposal.stop_derivation}}}}.</answer>{tag}"
+    def ask(rid, inputs, *replies):
+        view = C.plan_view(Session, "alice", SYM, now=NOW, **inputs)
+        rq = turn("Compare alternative scenarios", rid); rq.plan_context = {**inputs, "fingerprint": view["packet_fingerprint"]}
+        sm = ScriptedModel(*replies)
+        msg = run(C.answer(rq, session_factory=Session, llm_call=sm, now=NOW))["message"]
+        p = msg["plan_proposal"] or {}
+        return {"status": msg["status"], "calls": len(sm.calls), "state": p.get("state"), "kind": p.get("kind"),
+                "stop": p.get("stop"), "entry": p.get("entry"), "reasons": p.get("reasons"),
+                "prompt_mode": "MODE: HOLDING" in json.dumps(sm.calls[0]),
+                "repair": json.dumps(sm.calls[1]) if len(sm.calls) > 1 else ""}
+    out["stop_below_cost"] = ask("hold-below-0001", dict(kind="holding", entry=95.0, shares=10, stop=93.0), say(HOLD))
+    out["stop_above_cost"] = ask("hold-above-0001", dict(kind="holding", entry=95.0, shares=10, stop=97.0), say(HOLD))
+    out["lowering_stop"] = ask("hold-lower-0001", dict(kind="holding", entry=95.0, shares=10, stop=97.0), say(LOWER), say(LOWER))
+    out["broken_stop_hold"] = ask("hold-broken-0001", dict(kind="holding", entry=105.0, shares=10, stop=101.0), say(HOLD))
+    out["broken_stop_wait"] = ask("hold-brokenw-001", dict(kind="holding", entry=105.0, shares=10, stop=101.0),
+                                  "<answer>Leave it.</answer><plan_proposal kind=\"wait\"/>")
+    out["no_stop"] = ask("hold-nostop-0001", dict(kind="holding", entry=95.0, shares=10), say(HOLD))
+    out["entry_kind_refused"] = ask("hold-entry-0001", dict(kind="holding", entry=95.0, shares=10, stop=93.0), say(ENTRY), say(HOLD))
+    R["pl19"] = out
+
+
+for fn in (pl19_holding_mode, pl18_verified_post_close_ingest, pl17_guidance_and_sizing, pl16_completed_sessions, pl15_inflight_reask_after_plan_change, pl14_signal_timestamp_tie, pl13_trade_setups, pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
            pl4_staleness, pl5_routing_and_refusals, pl6_turns, pl7_plan_view):
     fn()
 R["_meta"] = {"server": ENGINE.dialect.name}

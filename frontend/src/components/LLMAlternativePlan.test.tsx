@@ -161,3 +161,13 @@ it('labels a platform-written explanation when the model prose failed but its pr
   expect(screen.getByText('Explanation (written by the platform)')).toBeTruthy();
   expect(screen.getByText(/failed the evidence check \(the answer writes a quantity in words \(half\)\)/)).toBeTruthy();
 });
+it('shows an exit-rule-met proposal as an alert and never plots it', async () => {
+  const onSelectionChange = vi.fn();
+  const out = answer(); out.message.plan_proposal = { ...waitProposal, state: 'exit_triggered', kind: 'hold',
+    reasons: ['The latest daily close ($100.00) is below your stated stop ($101.00): the exit rule is met. A model proposal does not override it.'] } as PlanProposal;
+  mocks.askCopilot.mockResolvedValue(out); render(<LLMAlternativePlan {...props} onSelectionChange={onSelectionChange} />);
+  fireEvent.click(screen.getByText('Generate LLM alternative'));
+  expect((await screen.findByText(/Exit rule met/)).closest('[role="alert"]')?.textContent).toContain('below your stated stop');
+  expect(screen.queryByLabelText('LLM-proposed plan')).toBeNull();
+  expect(onSelectionChange).toHaveBeenLastCalledWith([]);
+});
