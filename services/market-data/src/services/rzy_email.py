@@ -228,7 +228,7 @@ def _reasons(event, cfg):
         else:
             band = 'lower' if _bearish(event) else 'upper'
             lines.append(f'Watched level: {band} Bollinger band {_num(event.get(f"{band}_band"))}; '
-                         f'measured move D {_num(event.get("D"))}; sequence {event.get("sequence_number") if event.get("sequence_number") is not None else NA}.')
+                         f'measured move D {_num(event.get("D"))}; sequence {event.get("sequence_number") if event.get("sequence_number") is not None and event.get("sequence_confidence") == "known" else "unknown"}.')
             lines.append('Still missing: a confirmed reversal (a later close across the middle band, which is itself only a watch). '
                          'Exhaustion is a research heuristic, not an exit instruction.')
         return lines
@@ -276,12 +276,12 @@ def _exit_lines(event):
     lines = []
     if event['event_type'] == 'PAPER_EXIT':
         qty = event.get('exit_quantity')
-        lines += [f'Paper exit price: {_num(event.get("exit_price"))}. Reason: {event.get("reason") or NA}.',
+        lines += [f'Paper exit price: {_num(event.get("exit_price"))}.',
                   f'Exit quantity (fraction of position): {_num(qty)}; paper state after exit: {event.get("paper_state") or NA}.',
                   f'Paper entry fill: {_num(event.get("actual_paper_fill"))}; net P&L per unit so far: {_num(event.get("net_pnl_per_unit"))} (paper, after modelled costs).']
     else:
         lines += [f'Planned exit: next bar open (price not yet known). Action code: {event.get("position_action") or NA}.',
-                  f'Paper entry fill: {_num(event.get("actual_paper_fill"))}.']
+                  'Paper entry fill: not recorded in this event (see the chart for the position).']
     return lines
 
 

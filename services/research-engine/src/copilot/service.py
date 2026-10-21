@@ -13,6 +13,7 @@ charged to the shared budget — it exists to bound the platform's spend, not th
 """
 from __future__ import annotations
 
+import re
 import time
 import json
 import uuid
@@ -79,8 +80,11 @@ def _mode_block(plan, ctx: dict) -> str:
                 "turn this into a new-entry plan. If the latest close is below the stated stop, the exit rule "
                 "is already met and no proposal overrides it.")
     if plan.kind == "entry":
-        budget = ctx.get("risk")
+        pos = plan.position
+        budget = pos.risk_budget if pos is not None else None
+        account = pos.account if pos is not None else None
         return ("\nMODE: NEW ENTRY — the user holds no position" + (f"; risk budget {budget}" if budget is not None else "")
+                + (f"; stated account {account}" if account is not None else "")
                 + ". Propose a pullback, breakout or limit entry, or wait.")
     return "\nMODE: " + str(plan.kind) + " — no model-proposed levels; propose wait."
 
@@ -416,7 +420,9 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
                     choice_error = ("Your proposal failed the code checks: " + " ".join(proposal["reasons"])
                                     + " Propose corrected anchors or kind=\"wait\".")
         draft = G.parse_draft(clean_text)
-        if draft is None and req.plan_context is not None and clean_text.strip():
+        if (draft is None and req.plan_context is not None and clean_text.strip()
+                and not re.search(r"</?answer|<limitation", clean_text, re.I)
+                and not clean_text.lstrip().startswith("{")):
             # Proposal turns only: prose without its <answer> wrapper (measured twice) is still the
             # answer; it passes through every numeric and wording check unchanged.
             draft = {"answer": clean_text.strip(), "limitations": []}
@@ -450,6 +456,9 @@ async def answer(req: TurnRequest, *, session_factory, llm_call=L.call, budget=N
     if cancelled and not result.accepted:
         reasons = reasons + ["cancelled by the user before the repair attempt"]
     accepted = bool(result and result.accepted)
+    if proposal is not None and proposal.get("state") == "exit_triggered" and (accepted or code_narration is not None):
+        # The user's stop is broken: never show the model's prose (it may say "hold") beside it.
+        code_narration = code_narration or ["exit rule met: the model's explanation is not shown"]
     if code_narration is not None:
         from . import proposal as PR
         accepted = True

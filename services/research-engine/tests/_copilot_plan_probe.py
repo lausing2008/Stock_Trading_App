@@ -960,6 +960,7 @@ def pl19_holding_mode():
         msg = run(C.answer(rq, session_factory=Session, llm_call=sm, now=NOW))["message"]
         p = msg["plan_proposal"] or {}
         return {"status": msg["status"], "calls": len(sm.calls), "state": p.get("state"), "kind": p.get("kind"),
+                "content": msg["content"], "narration": msg.get("narration"),
                 "stop": p.get("stop"), "entry": p.get("entry"), "reasons": p.get("reasons"),
                 "prompt_mode": "MODE: HOLDING" in json.dumps(sm.calls[0]),
                 "repair": json.dumps(sm.calls[1]) if len(sm.calls) > 1 else ""}
@@ -988,13 +989,21 @@ def pl20_narrow_explanation_checks():
         "other_count_bad": "<answer>Stop {{proposal.stop_derivation}}; wait five sessions before buying.</answer>",
         "no_wrapper_ok": "Stop {{proposal.stop_derivation}}; one reading favours the breakout.",
         "no_wrapper_number_bad": "Stop {{proposal.stop_derivation}}; buy near 101 dollars.",
+        "unclosed_answer": "<answer>Stop {{proposal.stop_derivation}}; one reading favours the breakout.",
     }
     out = {}
     for name, text in cases.items():
         rq = turn("Compare detailed scenarios", f"narrow-{name}"[:40]); rq.plan_context = ctx
         sm = ScriptedModel(text + TAG)
         msg = run(C.answer(rq, session_factory=Session, llm_call=sm, now=NOW))["message"]
-        out[name] = {"narration": msg.get("narration"), "calls": len(sm.calls), "reasons": msg.get("narration_rejection_reasons")}
+        out[name] = {"narration": msg.get("narration"), "calls": len(sm.calls), "content": msg["content"],
+                     "reasons": msg.get("narration_rejection_reasons")}
+    # The missing-wrapper fallback is for proposal turns ONLY: an ordinary turn is still refused.
+    plain = turn("Is the trend up?", "narrow-plain-nowrap")
+    sm = ScriptedModel("One reading: the trend is described by {{trend.structure}}.",
+                       "One reading: the trend is described by {{trend.structure}}.")
+    msg = run(C.answer(plain, session_factory=Session, llm_call=sm, now=NOW))["message"]
+    out["ordinary_turn_nowrap"] = {"status": msg["status"], "reasons": msg.get("rejection_reasons")}
     R["pl20"] = out
 
 

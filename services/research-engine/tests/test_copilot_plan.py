@@ -653,6 +653,9 @@ def test_holding_mode_is_stated_and_only_hold_or_wait_is_accepted(r):
     for case in ("broken_stop_hold", "broken_stop_wait"):  # close 100 < stated stop 101
         b = x[case]
         assert b["state"] == "exit_triggered" and "exit rule is met" in b["reasons"][0], case
+        # The model's prose ("managing the position", "Leave it") is never shown beside it.
+        assert b["narration"] == "code" and "not applied" in b["content"], case
+        assert "managing the position" not in b["content"] and "Leave it" not in b["content"], case
     e = x["entry_kind_refused"]                          # a new-entry kind is refused, then repaired
     assert e["calls"] == 2 and 'kind=\\"pullback\\" is not allowed for this holding plan' in e["repair"]
     assert (e["state"], e["kind"]) == ("conditional", "hold")
@@ -669,3 +672,11 @@ def test_explanation_check_accepts_the_measured_false_refusals_and_nothing_nearb
     assert any("(101)" in m for m in x["no_wrapper_number_bad"]["reasons"])
     for bad in ("year_number_bad", "other_count_bad", "no_wrapper_number_bad"):
         assert x[bad]["narration"] == "code", bad
+
+
+def test_missing_answer_fallback_is_proposal_only_and_never_displays_tags(r):
+    x = r["pl20"]
+    assert x["ordinary_turn_nowrap"]["status"] == "rejected"
+    assert any("did not return an <answer> section" in m for m in x["ordinary_turn_nowrap"]["reasons"])
+    u = x["unclosed_answer"]
+    assert u["narration"] == "code" and "<answer>" not in u["content"]

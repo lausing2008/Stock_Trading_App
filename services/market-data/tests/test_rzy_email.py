@@ -127,7 +127,7 @@ def test_exit_leads_with_exit_and_keeps_setup_secondary():
     assert 'paper position closed' in event_subject(event) and 'The paper position is closed.' in render_event(event, **TIMES)
     pending = render_event(sample(event_type='EXIT_PENDING', position_action='COVER_SHORT', paper_state='OPEN'), **TIMES)
     assert 'exit fill is not yet confirmed' in pending and 'Planned exit: next bar open' in pending
-    assert 'Paper entry fill: not available' in pending
+    assert 'Paper entry fill: not recorded in this event' in pending
 
 
 def test_cancellation_lists_readable_reasons():

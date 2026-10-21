@@ -61,7 +61,7 @@ def extract(text: str, mode: str | None = None):
     tags = _TAG.findall(text)
     clean = _TAG.sub("", text)
     if len(tags) != 1 or "<plan_proposal" in clean.lower():
-        return clean, None, FORMAT_HELP
+        return clean, None, format_help(mode)
     attrs = {k.lower(): v for k, v in _ATTR.findall(tags[0])}
     kind = attrs.get("kind", "").lower()
     if kind not in KINDS:
@@ -75,10 +75,10 @@ def extract(text: str, mode: str | None = None):
     for name in (("stop", "target1", "target2") if kind == "hold" else ("entry", "stop", "target1", "target2")):
         m = _EXPR.match(attrs.get(name, ""))
         if not m or m.group(1).lower() not in ANCHORS:
-            return clean, None, f"{name} must be an anchor from the list, optionally +/- K atr. " + FORMAT_HELP
+            return clean, None, f"{name} must be an anchor from the list, optionally +/- K atr. " + format_help(mode)
         mult = float(m.group(3) or 0) * (-1 if m.group(2) == "-" else 1)
         if abs(mult) > MAX_ATR_MULT:
-            return clean, None, f"{name} offset {mult:g} ATR exceeds {MAX_ATR_MULT:g}. " + FORMAT_HELP
+            return clean, None, f"{name} offset {mult:g} ATR exceeds {MAX_ATR_MULT:g}. " + format_help(mode)
         spec[name] = {"anchor": m.group(1).lower(), "atr_multiple": mult}
     return clean, spec, None
 
@@ -104,7 +104,7 @@ def build(plan, spec: dict, *, price_stale: str | None) -> dict:
                 kind=spec.get("kind"), derivation=[], reasons=[], playbook=[], eligibility_needs=[])
     pos = plan.position
     if plan.kind == "holding" and pos is not None and pos.stop is not None and plan.anchors.get("level.close") is not None \
-            and plan.anchors["level.close"] < pos.stop and not price_stale:
+            and plan.anchors["level.close"] < pos.stop:
         # The user's own stop is already broken: no model choice (hold OR wait) overrides it.
         return dict(base, state="exit_triggered", reasons=[
             f"The latest daily close ({P.money(plan.anchors['level.close'], plan.currency)}) is below your stated stop "
@@ -298,10 +298,16 @@ def citable(plan, proposal: dict) -> dict[str, tuple[str, str, tuple]]:
 
 
 def narrate(plan, proposal: dict) -> str:
-    """A CODE-WRITTEN explanation of an accepted proposal (used when the model's prose failed)."""
+    """A CODE-WRITTEN explanation of an accepted proposal (used when the model's prose failed, and
+    always when the exit rule is met — the model's prose must not sit beside that result)."""
+    if proposal.get("state") == "exit_triggered":
+        return (" ".join(proposal.get("reasons") or ["The exit rule is met."])
+                + " The model's proposal is not applied, and its written explanation is not shown; "
+                  "this summary is written by the platform.")
     if proposal.get("state") == "wait":
-        return ("The model proposed waiting: no new entry now. Its written explanation did not pass "
-                "the evidence check, so this summary is written by the platform.")
+        what = ("leaving the held position unchanged" if plan.kind == "holding" else "waiting: no new entry now")
+        return (f"The model proposed {what}. Its written explanation did not pass the evidence check, "
+                f"so this summary is written by the platform.")
     c = citable(plan, proposal)
     line = lambda k: c[k][0] if k in c else "not available"
     kind = {"hold": "management of the position you hold", "breakout": "a breakout entry",
