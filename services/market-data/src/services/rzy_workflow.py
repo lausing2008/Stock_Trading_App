@@ -32,6 +32,13 @@ GAP_GRACE=timedelta(minutes=30)
 # by these are recorded but not emailed (the trigger email already says execution is unavailable).
 STANDING_BLOCKERS={'data_basis_or_freshness_unverified','shortability_or_borrow_cost_unverified'}
 MAINTENANCE_START=timedelta(minutes=50)
+# Completed 5m bars are restated intraday (measured 2026-10-20: 3,956 rebuilds in one session,
+# median 11 min apart per stream). A stream rebuilds at most once per interval; in between it
+# pauses (no bars processed on a known-restated history, no mail) instead of thrashing.
+# Simulated on that session: 30 min -> 1,868 rebuilds, 60 -> 1,279, 120 -> 927.
+REBUILD_MIN_INTERVAL=timedelta(minutes=30)
+THROTTLED_REASONS={'stored_completed_bar_changed','checkpoint_bar_missing_from_source','checkpoint_contains_excluded_off_grid_bar'}
+KEEP_GENERATIONS=5
 MAINTENANCE_END=timedelta(minutes=21)
 MAINTENANCE_BATCH=60
 
@@ -104,7 +111,7 @@ def load_bars(session,symbol,timeframe,now,cache=None):
     return result
 
 
-def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_cache=None):
+def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_cache=None,allow_rebuild=True):
     """Advance one stream on its latest contiguous completed-bar segment.
 
     Stored history that no longer matches the checkpoint (material OHLC revision, a removed bar,
@@ -139,6 +146,17 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_
                 reason,detail='gap_after_checkpoint',evidence.get('latest_gap')
     if (prior is None or reason=='gap_after_checkpoint') and recent_gap:
         return empty('awaiting_backfill',reason='recent_missing_bar_within_grace')
+    if prior and reason in THROTTLED_REASONS and prior.get('generation_started_at'):
+        due=utc(datetime.fromisoformat(prior['generation_started_at']))+REBUILD_MIN_INTERVAL
+        if now<due:
+            if persist and not prior.get('restatement_pending'):
+                prior['restatement_pending']=dict(reason=reason,detail=detail,observed_at=now.isoformat())
+                row.checkpoint=prior; flag_modified(row,'checkpoint'); row.updated_at=now.replace(tzinfo=None)
+            return empty('restatement_pending',reason=reason,rebuild_after=due.isoformat())
+    if prior and reason is not None and not persist and not allow_rebuild:
+        # Bulk read paths (digest preview) never rebuild hundreds of streams in memory; the
+        # scheduled scan / pre-open maintenance persists rebuilds.
+        return empty('rebuild_pending',reason=reason)
     rebuilt=prior is not None and reason is not None
     if prior is None or rebuilt:
         engine=Engine(symbol,timeframe,cfg)
@@ -157,6 +175,8 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_
         if rebuilt:
             session.add(RzyStreamGeneration(stream_key=key,generation=prior.get('generation') or 1,reason=reason,
                 detail=_archive_summary(prior,reason,detail,now),archived_at=now.replace(tzinfo=None)))
+            session.flush()
+            _prune_generations(session,key,symbol,timeframe,cfg.hash,engine.s['generation'])
         if row is None:
             row=RzyStream(stream_key=key,symbol=symbol,timeframe=timeframe,config_hash=cfg.hash,checkpoint={},updated_at=now.replace(tzinfo=None)); session.add(row)
         row.checkpoint=engine.s; flag_modified(row,'checkpoint'); row.updated_at=now.replace(tzinfo=None)
@@ -187,6 +207,19 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_
         configuration=__import__('dataclasses').asdict(cfg),
         strategy_version=VERSION,config_hash=cfg.hash,bootstrap=prior is None,rebuilt=rebuilt,rebuild_reason=reason if rebuilt else None,
         generation=generation,superseded_event_count=superseded)
+
+
+def _prune_generations(session,key,symbol,timeframe,config_hash,current):
+    """Keep the last KEEP_GENERATIONS generations of archives and stored events per stream."""
+    keep_ids=session.scalars(select(RzyStreamGeneration.id).where(RzyStreamGeneration.stream_key==key)
+        .order_by(RzyStreamGeneration.id.desc()).limit(KEEP_GENERATIONS)).all()
+    if keep_ids:
+        for old in session.scalars(select(RzyStreamGeneration).where(RzyStreamGeneration.stream_key==key,RzyStreamGeneration.id.notin_(keep_ids))).all():
+            session.delete(old)
+    oldest=current-KEEP_GENERATIONS+1
+    for ev in session.scalars(select(RzyEvent).where(RzyEvent.symbol==symbol,RzyEvent.timeframe==timeframe)).all():
+        if ev.payload.get('config_hash')==config_hash and ev.payload.get('generation',1)<oldest:
+            session.delete(ev)
 
 
 def superseded_events(session,symbol,timeframe,config=None,limit=200):
@@ -281,7 +314,7 @@ def digest_preview(session,user_id,now=None):
     for symbol in sorted(symbols):
         cache={}
         for tf in (pref.timeframes if pref else ['5m','15m','1h']):
-            try: result=evaluate(session,symbol,tf,now,bars_cache=cache)
+            try: result=evaluate(session,symbol,tf,now,bars_cache=cache,allow_rebuild=False)
             except (ValueError,TypeError) as exc:
                 exclusions.append({'symbol':symbol,'timeframe':tf,'reason':'data_rejected: '+str(exc)[:160]});continue
             if result['status']!='research_only':
@@ -343,7 +376,7 @@ def drain(session,send,now=None):
             found=session.scalars(select(RzyEvent).where(RzyEvent.event_id.in_([generation_event_id(occurrence,g) for g in range(1,129)]))).all()
             if not found: return False
             stream=session.get(RzyStream,f'{found[0].symbol}:{found[0].timeframe}:{found[0].payload["config_hash"]}')
-            if not stream or stream.checkpoint.get('requires_audited_replay'): return False
+            if not stream or stream.checkpoint.get('requires_audited_replay') or stream.checkpoint.get('restatement_pending'): return False
             # Send only if this occurrence still exists in the stream's CURRENT generation.
             current=stream.checkpoint.get('generation',1)
             event=next((e for e in found if e.payload.get('generation',1)==current),None)

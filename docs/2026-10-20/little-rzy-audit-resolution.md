@@ -26,3 +26,19 @@ Also resolved from the audit's additional gaps:
 Still open (not code defects): verified provider delay / execution basis and short-borrow sources (paper fills stay blocked), prospective outcomes from future sessions, and an input archive sufficient to replay an archived generation exactly (generation summaries hold state and hashes, not full input bars).
 
 The audit's own probes were written to demonstrate the defects; after the fixes `workflow_probe.py` and `pure_probe.py` (needs `shared/` on `PYTHONPATH`) no longer reproduce them, `entry_probe.py` shows the `"false"` gate fixed and still fills across a hole only because it calls the bare engine directly.
+
+## Production verification and the restatement finding (2026-10-21 00:04 UTC deploy)
+
+Verified after deploying `e00630d8`: market-data and frontend healthy (15/15), market-data source drift 0, image label `e00630d8e`, frontend build `ShUrChd1W87DeCuD4PW93` with 0 `localhost:8000` chunks and the new chart/tracker code served. Through the real API: MU/NVDA 5m/15m/1h return `research_only`, one generation per view, `superseded_event_count` plus explicit `superseded_events`, and 15m/1h `expected_latest_close` equal to their newest completed bar (20:00 UTC). The October 20 09:10 ET digest was **provider-accepted at 13:12 UTC**; 19 pattern emails were accepted during the session (3 expired unsent). Legacy quarantines: 0 (all 95 rebuilt in the 08:40 ET maintenance pass).
+
+**New finding: completed 5m bars are restated intraday.** The October 20 session produced **3,956 rebuilds** for `stored_completed_bar_changed` across 314 streams (median 11 minutes apart per stream, up to 30 per stream). The changed values are material (median 0.077%, p90 0.50%, all four OHLC fields together), mostly on bars 1–6 hours old. US 5m routing is UW → yfinance → Polygon; the likely cause (not yet confirmed in ingest logs) is fallback fetches from a different vendor overwriting whole days of completed bars. Charts and other 5m consumers see the same flips.
+
+Bounded the same night (approved), with regressions that fail when reverted:
+
+- **Rebuild cap**: at most one rebuild per stream per 30 minutes. Inside the window a restated stream pauses (`restatement_pending`: no bars processed on a known-restated history, no mail, queued mail blocked at send) and rebuilds once after. Simulated on October 20: 3,956 → 1,868 rebuilds (60 min → 1,279; 120 → 927).
+- **Retention**: last 5 generations of archives and stored events per stream.
+- **Digest preview** never rebuilds in memory (`rebuild_pending` exclusion) — the bulk preview previously exceeded the gateway timeout (504).
+
+Next (separate, reviewed change): confirm the provider-flip cause in the next session's ingest logs and stop a different provider from overwriting completed bars.
+
+Transitional: events rebuilt before this deploy were stored under the old identity scheme, so a stream's current-generation event list stays empty until its next rebuild or new bars.

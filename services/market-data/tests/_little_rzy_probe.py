@@ -123,6 +123,9 @@ with Session() as s:
     # queued from the superseded history. Nothing is silently patched in place.
     from src.services.rzy_models import RzyStreamGeneration
     key=f"TEST:5m:{Config().hash}"
+    # The restatement scenarios below exercise rebuild semantics back to back; the rebuild cap
+    # has its own section further down.
+    W.REBUILD_MIN_INTERVAL=timedelta(0)
     changed=s.get(models.Price,10)
     changed.open*=1+1e-9;changed.volume=12345;s.commit()
     noisy=W.evaluate(s,'TEST','5m',now,persist=True);s.commit()
@@ -213,6 +216,41 @@ with Session() as s:
     assert chosen['evidence']['alternative']['status']=='stale' and len(chosen['price_grid'])>1
     s.delete(s.get(models.Price,9001));s.commit()
     result['native_derived_choice']=True
+    # Rebuild cap: a second restatement within the interval pauses the stream instead of
+    # rebuilding; the sender blocks its queued mail; after the interval it rebuilds once.
+    W.REBUILD_MIN_INTERVAL=timedelta(minutes=30)
+    t0=base+timedelta(minutes=5*61+80)   # after the gap rebuild at +5*61+40
+    s.get(models.Price,61).close+=.07;s.commit()
+    first=W.evaluate(s,'TEST','5m',t0,persist=True);s.commit()
+    assert first['rebuilt'];g=first['generation']
+    s.get(models.Price,61).close-=.03;s.commit()
+    paused=W.evaluate(s,'TEST','5m',t0+timedelta(minutes=5),persist=True);s.commit()
+    assert paused['status']=='restatement_pending' and paused['reason']=='stored_completed_bar_changed'
+    assert s.get(RzyStream,key).checkpoint['restatement_pending'] and s.get(RzyStream,key).checkpoint['generation']==g
+    any_ev=s.scalar(select(RzyEvent).where(RzyEvent.event_type=='TRIGGERED'))
+    clock[0]=t0
+    outbox.enqueue(s,event_id=f"rzy:pending:1:{any_ev.payload['occurrence_id']}",user_id=1,recipient=user.email,alert_type='little_rzy',subject='pending',body_html='x',body_text='x',expires_at=(t0+timedelta(days=1)).replace(tzinfo=None));s.commit()
+    W.drain(s,send,t0+timedelta(minutes=6));s.commit()
+    assert s.scalar(select(models.NotificationOutbox).where(models.NotificationOutbox.subject=='pending')).state=='suppressed'
+    # Bulk digest preview never rebuilds in memory.
+    pref=s.get(RzyPreference,1)
+    assert any(x['reason'] in ('restatement_pending','rebuild_pending') for x in W.digest_preview(s,1,t0+timedelta(minutes=6))['exclusions'] if x['timeframe']=='5m')
+    later_t=t0+timedelta(minutes=31)
+    resumed=W.evaluate(s,'TEST','5m',later_t,persist=True);s.commit()
+    assert resumed['rebuilt'] and resumed['generation']==g+1 and not s.get(RzyStream,key).checkpoint.get('restatement_pending')
+    result['rebuild_cap']=True
+    # Retention: only the last 5 generations of archives and stored events survive.
+    W.REBUILD_MIN_INTERVAL=timedelta(0)
+    before_gens={e.payload.get('generation',1) for e in s.scalars(select(RzyEvent).where(RzyEvent.symbol=='TEST',RzyEvent.timeframe=='5m')).all()}
+    assert before_gens and min(before_gens)<s.get(RzyStream,key).checkpoint['generation']+6-W.KEEP_GENERATIONS+1
+    for k in range(6):
+        s.get(models.Price,61).close+=.05*(-1)**k;s.commit()
+        assert W.evaluate(s,'TEST','5m',later_t+timedelta(minutes=k+1),persist=True)['rebuilt'];s.commit()
+    current=s.get(RzyStream,key).checkpoint['generation']
+    assert s.scalar(select(func.count()).select_from(RzyStreamGeneration).where(RzyStreamGeneration.stream_key==key))<=W.KEEP_GENERATIONS
+    gens={e.payload.get('generation',1) for e in s.scalars(select(RzyEvent).where(RzyEvent.symbol=='TEST',RzyEvent.timeframe=='5m')).all()}
+    assert all(g>=current-W.KEEP_GENERATIONS+1 for g in gens), (sorted(gens),current)
+    result['generation_retention']=True
 # Whole OHLC adjustment and missing/forming/stale data are tested at the shipped adapter.
 rows=[types.SimpleNamespace(ts=base+timedelta(minutes=5*i),open=100,high=102,low=98,close=100,adj_close=50,volume=10,session='REGULAR') for i in range(3)]
 bars,ev=prepare_bars(rows,'5m',base+timedelta(minutes=17),session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)
