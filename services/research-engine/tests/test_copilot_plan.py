@@ -477,3 +477,10 @@ def test_trade_setups_enforce_first_target_rr_and_handle_roundoff_and_nonpositiv
     assert all(s["state"] == "conditional" for s in x["decimal"])
     assert all(s["state"] == "unavailable" and s["stop"] is None and s["shares"] is None for s in x["invalid_stop"])
     assert x["invalid_held_stop"]["setups"] == [] and x["invalid_held_stop"]["reason"]
+
+
+def test_signal_timestamp_tie_gives_one_stable_fingerprint(r):
+    """Same-timestamp horizons must not make the plan fingerprint flip (409 "plan changed")."""
+    p = r["pl14"]
+    assert len(p["fingerprints"]) == 1 and p["plan_view_matches_packet"]
+    assert p["horizons"] == ["SHORT"]          # the newest row by id wins the tie

@@ -168,7 +168,10 @@ def latest_signal(session, stock_id: int, now: datetime, *,
     """
     row = session.execute(
         select(Signal).where(Signal.stock_id == stock_id, Signal.ts <= now)
-        .order_by(Signal.ts.desc()).limit(1)).scalars().first()
+        # signal-engine writes every horizon with the same timestamp; without a tie-break the
+        # database may return any of them, so copilot/report fingerprints flipped between calls
+        # (409 "plan changed" on the Game Plan's LLM alternative, 2026-10-21). Newest id wins.
+        .order_by(Signal.ts.desc(), Signal.id.desc()).limit(1)).scalars().first()
     if row is None:
         return unavailable("no signal has been generated for this symbol")
     age_h = (_naive(now) - _naive(row.ts)).total_seconds() / 3600

@@ -741,7 +741,30 @@ def pl13_trade_setups():
     R["pl13"] = out
 
 
-for fn in (pl13_trade_setups, pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
+def pl14_signal_timestamp_tie():
+    # signal-engine writes every horizon with the SAME timestamp. "Latest signal" must resolve the
+    # tie deterministically, or the packet fingerprint flips between the card's plan and the LLM
+    # request and the comparison is refused with 409 "plan changed" (production, 2026-10-21).
+    reset()
+    tie = NOW - timedelta(hours=1)
+    with Session() as s:
+        st = s.query(Stock).filter_by(symbol=SYM).one()
+        # Inserted lower id last so plain ts ordering is free to return either row.
+        s.add(Signal(id=31, stock_id=st.id, ts=tie, signal=SignalType.HOLD, horizon=SignalHorizon.SHORT,
+                     confidence=44.0, source="signal-engine"))
+        s.add(Signal(id=30, stock_id=st.id, ts=tie, signal=SignalType.HOLD, horizon=SignalHorizon.GROWTH,
+                     confidence=23.96, source="signal-engine"))
+        s.commit()
+    prints = set(); horizons = set()
+    for _ in range(6):
+        p = pkt(kind="entry")
+        prints.add(p.fingerprint); horizons.add(p.fields["signal"].value["horizon"])
+    view = C.plan_view(Session, "alice", SYM, kind="entry", now=NOW)
+    R["pl14"] = {"fingerprints": sorted(prints), "horizons": sorted(horizons),
+                 "plan_view_matches_packet": view["packet_fingerprint"] in prints}
+
+
+for fn in (pl14_signal_timestamp_tie, pl13_trade_setups, pl12_dual_plan, pl11_card_and_drafts, pl10_review_residuals, pl9_review_c1_c5, pl8_tables, pl1_entry_arithmetic, pl2_holding_arithmetic, pl3_records_and_floors,
            pl4_staleness, pl5_routing_and_refusals, pl6_turns, pl7_plan_view):
     fn()
 R["_meta"] = {"server": ENGINE.dialect.name}

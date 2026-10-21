@@ -362,7 +362,7 @@ def _calls(session, stock_id: int, now: datetime) -> dict:
         row = session.execute(
             select(Signal).where(Signal.stock_id == stock_id, Signal.ts <= now,
                                  Signal.horizon == h)
-            .order_by(Signal.ts.desc()).limit(1)).scalars().first()
+            .order_by(Signal.ts.desc(), Signal.id.desc()).limit(1)).scalars().first()
         if row is not None:
             out[h] = P.Call(horizon=h, signal=getattr(row.signal, "value", str(row.signal)),
                             confidence=float(row.confidence) if row.confidence is not None else None,
