@@ -3,8 +3,8 @@ import React,{createRef} from 'react';
 import {act,cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import type {ChartController} from '@/lib/chartCommands';
-const mocks=vi.hoisted(()=>({fit:vi.fn(),set:vi.fn(),get:vi.fn(()=>({from:10,to:30})),remove:vi.fn(),fetch:vi.fn(),lineOpts:[] as Record<string,unknown>[],crosshair:[] as ((p:unknown)=>void)[],series:null as unknown,rzy:vi.fn((..._args:unknown[]):Promise<unknown>=>Promise.resolve({strategy_version:'V1',status:'research_only',structures:[],events:[],paper_positions:[],price_grid:[]}))}));
-vi.mock('lightweight-charts',()=>({LineStyle:{Solid:0,Dashed:2,Dotted:1},createChart:()=>{
+const mocks=vi.hoisted(()=>({fit:vi.fn(),set:vi.fn(),get:vi.fn(()=>({from:10,to:30})),remove:vi.fn(),fetch:vi.fn(),lineOpts:[] as Record<string,unknown>[],chartOpts:[] as Record<string,unknown>[],crosshair:[] as ((p:unknown)=>void)[],series:null as unknown,rzy:vi.fn((..._args:unknown[]):Promise<unknown>=>Promise.resolve({strategy_version:'V1',status:'research_only',structures:[],events:[],paper_positions:[],price_grid:[]}))}));
+vi.mock('lightweight-charts',()=>({LineStyle:{Solid:0,Dashed:2,Dotted:1},createChart:(_el:unknown,o:Record<string,unknown>)=>{mocks.chartOpts.push(o);
  const series={setData:vi.fn(),setMarkers:vi.fn(),createPriceLine:vi.fn(),priceToCoordinate:()=>20,coordinateToPrice:()=>100,attachPrimitive:vi.fn(),applyOptions:vi.fn()};
  mocks.series=series;
  return {addCandlestickSeries:()=>series,addLineSeries:(o:Record<string,unknown>)=>{mocks.lineOpts.push(o);return series;},addHistogramSeries:()=>series,remove:mocks.remove,
@@ -14,7 +14,7 @@ vi.mock('lightweight-charts',()=>({LineStyle:{Solid:0,Dashed:2,Dotted:1},createC
 vi.mock('@/lib/api',()=>({api:{getPrices:(...args:unknown[])=>mocks.fetch(...args),rzyReview:(...args:unknown[])=>mocks.rzy(...args)}}));
 import PriceChart from './PriceChart';
 const prices=Array.from({length:70},(_,i)=>({ts:new Date(Date.UTC(2026,6,i+1)).toISOString(),open:100,high:101,low:99,close:100,volume:1000}));
-beforeEach(()=>{vi.clearAllMocks();mocks.lineOpts.length=0;mocks.crosshair.length=0;localStorage.clear();vi.stubGlobal('ResizeObserver',class{observe(){}disconnect(){}});});
+beforeEach(()=>{vi.clearAllMocks();mocks.lineOpts.length=0;mocks.chartOpts.length=0;mocks.crosshair.length=0;localStorage.clear();vi.stubGlobal('ResizeObserver',class{observe(){}disconnect(){}});});
 afterEach(()=>{cleanup();vi.unstubAllGlobals();});
 it('acknowledges indicator changes after rendering and preserves the current zoom',async()=>{
  const ref=createRef<ChartController>();render(<PriceChart symbol="TEST" prices={prices} commandRef={ref}/>);
@@ -98,4 +98,11 @@ it('keeps RZY geometry from stretching the price axis and shows RZY values under
  await act(async()=>{mocks.crosshair.forEach(f=>f({time:1,seriesData:new Map([[mocks.series,{value:100}]])}));});
  expect(screen.getByText('RZY bands = 100.00 / 100.00 / 100.00')).toBeTruthy();
  expect(screen.getByText('RZY short line = 100.00')).toBeTruthy();
+});
+
+it('keeps the visible dates when the chart container is resized, so a narrow first layout cannot squeeze the candles',async()=>{
+ render(<PriceChart symbol="TEST" prices={prices}/>);
+ await act(async()=>{await new Promise(r=>setTimeout(r,0));});
+ expect(mocks.chartOpts.length).toBeGreaterThan(0);
+ for(const o of mocks.chartOpts) expect((o.timeScale as {lockVisibleTimeRangeOnResize?:boolean}).lockVisibleTimeRangeOnResize).toBe(true);
 });

@@ -82,16 +82,20 @@ const DAILY_RANGES = [
 type DailyLabel = typeof DAILY_RANGES[number]['label'];
 type RangeLabel = '5m' | DailyLabel;
 
+// lockVisibleTimeRangeOnResize: the chart is often created while its container is still
+// narrow (workspace layout settling, a side panel, a window resize). By default the library
+// keeps bar spacing and the right edge on resize, so the extra width became empty space on the
+// left and the candles looked squeezed into the right quarter. Keep the visible dates instead.
 const CHART_THEME = {
   layout: { background: { color: '#0b1020' }, textColor: '#94a3b8' },
   grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
   rightPriceScale: { borderColor: '#1e293b' },
-  timeScale: { borderColor: '#1e293b', timeVisible: true, secondsVisible: false },
+  timeScale: { borderColor: '#1e293b', timeVisible: true, secondsVisible: false, lockVisibleTimeRangeOnResize: true },
 };
 
 const INTRADAY_THEME = {
   ...CHART_THEME,
-  timeScale: { borderColor: '#1e293b', timeVisible: true, secondsVisible: false },
+  timeScale: { borderColor: '#1e293b', timeVisible: true, secondsVisible: false, lockVisibleTimeRangeOnResize: true },
 };
 
 function toTime(ts: string): Time { return ts.slice(0, 10) as Time; }
