@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
+import { relDate, utcMs } from '@/lib/boardDates';
 import { createPortal } from 'react-dom';
 import useSWR from 'swr';
 import Link from 'next/link';
@@ -18,6 +19,7 @@ const STAGE_META: Record<Stage, { label: string; color: string; bg: string; bord
 
 const SOURCE_LABEL: Record<string, string> = {
   gameplan: '📋 Game Plan',
+  'gameplan-llm': '🤖 LLM plan',
   forecast: '🔮 Forecast',
   manual:   '✏️ Manual',
 };
@@ -36,12 +38,6 @@ function fmt(n: number | null | undefined) {
   return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function relDate(iso: string) {
-  const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
-  if (d === 0) return 'Today';
-  if (d === 1) return 'Yesterday';
-  return `${d}d ago`;
-}
 
 /* ── Card ─────────────────────────────────────────────── */
 type StoredGamePlan = {
@@ -749,7 +745,7 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
           const stopBreached = stop != null && cur < stop;
           const nearStop = !stopBreached && stop != null && cur <= stop * 1.02;
           const nearTarget = target != null && cur >= target * 0.98;
-          const daysInTrade = Math.floor((Date.now() - new Date(plan.created_at).getTime()) / 86400000);
+          const daysInTrade = Math.floor((Date.now() - utcMs(plan.created_at)) / 86400000);
           const stalled = daysInTrade > 15 && Math.abs(pnlPct) < 3;
 
           const breakEvenSuggestion = pnlPct >= 3 && pnlPct < 5 && stop != null && stop < effectiveEntry;
@@ -861,7 +857,7 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
             {plan.stage === 'active' && plan.trading_style && (() => {
               const maxDays: Record<string, number> = { SHORT: 5, SWING: 14, LONG: 30, GROWTH: 20 };
               const max = maxDays[plan.trading_style] ?? 14;
-              const daysHeld = Math.floor((Date.now() - new Date(plan.updated_at).getTime()) / 86400000);
+              const daysHeld = Math.floor((Date.now() - utcMs(plan.updated_at)) / 86400000);
               const pct = Math.min(1, daysHeld / max);
               const color = pct >= 0.9 ? '#f87171' : pct >= 0.7 ? '#fbbf24' : '#475569';
               return (

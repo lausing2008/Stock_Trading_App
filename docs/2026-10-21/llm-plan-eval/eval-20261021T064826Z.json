@@ -1,0 +1,471 @@
+{
+ "run_at": "2026-10-21T06:48:28.165550",
+ "model_requested": "claude-sonnet-4-6",
+ "max_calls": 12,
+ "provider_calls": 8,
+ "usage_total": {
+  "input_tokens": 73457,
+  "output_tokens": 5719
+ },
+ "results": [
+  {
+   "scenario": "us_entry_MU",
+   "symbol": "MU",
+   "inputs": {
+    "kind": "entry",
+    "risk": 500.0
+   },
+   "status": "rejected",
+   "model": "claude-sonnet-4-6",
+   "price_as_of": "2026-10-20T00:00:00",
+   "price_state": "OK",
+   "price_reason": null,
+   "rules_setups": [
+    [
+     "pullback",
+     "conditional"
+    ],
+    [
+     "breakout",
+     "conditional"
+    ]
+   ],
+   "proposal": null,
+   "rejection_reasons": [
+    "the answer writes a quantity in words (fraction of); figures must come from {{key}} placeholders"
+   ],
+   "independent_problems": [],
+   "prose_digits_by_call": [
+    [
+     "20",
+     "50",
+     "20",
+     "20",
+     "20",
+     "50",
+     "20"
+    ],
+    [
+     "20",
+     "50",
+     "20",
+     "20",
+     "20",
+     "50",
+     "20"
+    ]
+   ],
+   "provider_calls": 2,
+   "scripted_calls": 0,
+   "repair_after_code_rejection": false,
+   "answer": "I couldn't produce an answer that passed the evidence check, so here is the evidence on file instead.\n\u2022 Latest close: $895.85\n\u2022 Session date: 2026-10-20\n\u2022 5-bar return: -6.02% (2026-10-13 \u2192 2026-10-20)\n\u2022 20-bar return: -18.26% (2026-09-22 \u2192 2026-10-20)\n\u2022 Trend: below the 20-bar average\n\u2022 AI signal: WAIT (GROWTH)\n\u2022 Signal strength: 24/100 (engine score)\n\u2022 Signal generated: 2026-10-21 06:45 UTC\n\u2022 K-Score: 74/100\n\u2022 Next earnings date: 2026-12-23\n\u2022 Latest report: version 10 (partial) [stale]\nPlan (calculated by the platform, not by the model):\n\u2022 WAIT (SHORT, generated 2026-10-21 06:45 UTC, strength 44/100 engine score)\n\u2022 WAIT (SWING, generated 2026-10-21 06:45 UTC, strength 33/100 engine score)\n\u2022 SELL (LONG, generated 2026-10-21 06:45 UTC, strength 43/100 engine score)\n\u2022 WAIT (GROWTH, generated 2026-10-21 06:45 UTC, strength 24/100 engine score)\n\u2022 all stocks, LONG SELL: lower by more than 0.5% after 5 calendar days in 50% of 1181 past SELL calls (median move -0.5%, mean -0.5%; signals 2026-09-03 to 2026-10-14; none verified)\n\u2022 MU: 0 resolved SELL calls on the LONG horizon, too few to judge this stock alone (at least 8 needed)\n\u2022 all stocks, LONG SELL: lower by more than 0.5% after 10 calendar days in 53% of 1009 past SELL calls (median move -0.9%, mean -1.2%; signals 2026-09-03 to 2026-10-08; none verified)\n\u2022 MU: 0 resolved SELL calls on the LONG horizon, too few to judge this stock alone (at least 8 needed)\n\u2022 35% of 2259 past SHORT calls of either direction were followed by a rise of more than 0.5% after 5 calendar days (median move -1.4%; none verified)\n\u2022 39% of 1895 past SHORT calls of either direction were followed by a rise of more than 0.5% after 10 calendar days (median move -1.1%; none verified)\n\u2022 31% of 2058 past SWING calls of either direction were followed by a rise of more than 0.5% after 5 calendar days (median move -1.7%; none verified)\n\u2022 32% of 1660 past SWING calls of either direction were followed by a rise of more than 0.5% after 10 calendar days (median move -2.3%; none verified)\n\u2022 36% of 3699 past LONG calls of either direction were followed by a rise of more than 0.5% after 5 calendar days (median move -1.1%; none verified)\n\u2022 38% of 3142 past LONG calls of either direction were followed by a rise of more than 0.5% after 10 calendar days (median move -1.2%; none verified)\n\u2022 34% of 1803 past GROWTH calls of either direction were followed by a rise of more than 0.5% after 5 calendar days (median move -1.5%; none verified)\n\u2022 34% of 1541 past GROWTH calls of either direction were followed by a rise of more than 0.5% after 10 calendar days (median move -2.2%; none verified)\n\u2022 -11.9% to +17.4% in 8 of 10 past 5-bar spans (median +3.4%; 245 spans, 2025-10-22 to 2026-10-20)\n\u2022 -12.1% to +25.2% in 8 of 10 past 10-bar spans (median +5.9%; 240 spans, 2025-10-22 to 2026-10-20)\n\u2022 If the price pulls back toward the 20-bar low ($858.00) and a daily close holds above it, a textbook pullback entry puts the stop below that low at $833.86 (low \u2212 0.5 \u00d7 ATR).\n\u2022 If a daily close is above the 20-bar high ($1,108.55) on volume above 1.5 \u00d7 its 20-bar average (26,852,178 shares), a textbook breakout entry puts the stop at $1,060.27 (high \u2212 1 \u00d7 ATR).\n\u2022 Buying at the latest close ($895.85) with the stop at $833.86 risks $61.99 per share for $212.70 to the 20-bar high: reward:risk 3.4, which meets the textbook minimum of 2.\n\u2022 The latest close ($895.85) is below the 50-bar average ($984.23), which is not falling: the trend filter is a caution, not a block.\n\u2022 The next earnings date (2026-12-23) is 63 calendar days away, beyond the 10-day caution window, so the earnings rule does not apply yet.\n\u2022 Risking $500.00 with the stop at $833.86 ($61.99 per share at the latest close) sizes the position at 8 shares ($7,166.80).",
+   "raw_replies": [
+    "<answer>\n**MU \u2014 Proposed Entry Plan (Pullback)**\n\n**Why this anchor set:**\nThe data shows MU closed at {{price.close}}, sitting below both the 20-bar average ({{trend.sma20}}) and the 50-bar average ({{trend.sma50}}), and has returned {{return.20b}} over the past 20-bar span. The 20-bar low ({{level.low20}}) is the nearest structural support visible in the packet. One reading: price is in a pullback zone, and a confirmed hold above that low would be the textbook trigger. The stop is placed just below that low by half an ATR, consistent with {{rule.e1}}. The 20-bar high ({{level.high20}}) is the natural first resistance target; the year high ({{level.high252}}) is the second. {{rule.e3}} confirms reward-to-risk meets the textbook minimum at the current close.\n\n**Trend caution:** {{rule.e4}} \u2014 the close is below the rising 50-bar average; this is a caution, not a block.\n\n**Earnings:** {{rule.e5}} \u2014 the earnings date is beyond the near-term caution window.\n\n**What invalidates the plan:** A daily close below the stop level cancels the setup per {{playbook.pullback.falls}}.\n\n**If it rises** \u2014 without pulling back to the entry zone, the setup does not trigger; per {{playbook.pullback.rises}}, do not chase. A confirmed close above {{level.high20}} on volume above the threshold switches to the breakout setup.\n\n**If it falls** \u2014 wait for a daily close that holds above {{level.low20}}; if price closes below the stop instead, the setup is cancelled per {{playbook.pullback.falls}}.\n\n**If it goes sideways** \u2014 no trigger exists while price stays between {{level.low20}} and {{level.high20}}; per {{playbook.pullback.sideways}}, recalculate after each close as the 20-bar window rolls forward.\n\n**After a fill** \u2014 per {{playbook.pullback.after_entry}}: once a daily close is one ATR above the entry reference, move the stop up to the entry. At take profit one, a common approach reduces the position and trails the remainder toward take profit two. A daily close below the stop exits.\n\n**Signals for reference:** The engine shows {{call.long}} and {{call.growth}}; the LONG record across all stocks is {{record.long.10d}} \u2014 none verified, and MU's own record ({{record.long.10d.stock}}) is too thin to judge alone.\n\n**Recent headlines (unverified third-party):** {{headline.3}}, {{headline.5}}.\n</answer>\n\n<limitation>The stock intelligence report is possibly out of date \u2014 it is {{report.age}} old ({{report.generated}}), so business-performance and structural observations from it describe an earlier snapshot.</limitation>\n<limitation>Fundamentals and valuation multiples are not available in this evidence packet, so no fundamental context can be applied to the plan.</limitation>\n<limitation>MU's own signal track record ({{record.long.10d.stock}}) has too few resolved calls to assess; only the cross-stock baseline is available, and none of it is verified.</limitation>\n\n<plan_proposal kind=\"pullback\" entry=\"level.low20\" stop=\"level.low20-0.5atr\" target1=\"level.high20\" target2=\"level.high252\"/>",
+    "<answer>\n**MU \u2014 Proposed Entry Plan (Pullback)**\n\n**Why this anchor set:**\nThe data shows MU closed at {{price.close}}, sitting below both the 20-bar average ({{trend.sma20}}) and the 50-bar average ({{trend.sma50}}), and has returned {{return.20b}} over the past 20-bar span. The 20-bar low ({{level.low20}}) is the nearest structural support visible in the packet. One reading: price is in a pullback zone, and a confirmed hold above that low would be the textbook trigger. The stop is placed just below that low by a fraction of ATR, consistent with {{rule.e1}}. The 20-bar high ({{level.high20}}) is the natural first resistance target; the year high ({{level.high252}}) is the second. {{rule.e3}} confirms reward-to-risk meets the textbook minimum at the current close.\n\n**Trend caution:** {{rule.e4}} \u2014 the close is below the rising 50-bar average; this is a caution, not a block.\n\n**Earnings:** {{rule.e5}} \u2014 the earnings date is beyond the near-term caution window.\n\n**What invalidates the plan:** A daily close below the stop level cancels the setup per {{playbook.pullback.falls}}.\n\n**If it rises** \u2014 without pulling back to the entry zone, the setup does not trigger; per {{playbook.pullback.rises}}, do not chase. A confirmed close above {{level.high20}} on volume above the threshold switches to the breakout setup.\n\n**If it falls** \u2014 wait for a daily close that holds above {{level.low20}}; if price closes below the stop instead, the setup is cancelled per {{playbook.pullback.falls}}.\n\n**If it goes sideways** \u2014 no trigger exists while price stays between {{level.low20}} and {{level.high20}}; per {{playbook.pullback.sideways}}, recalculate after each close as the 20-bar window rolls forward.\n\n**After a fill** \u2014 per {{playbook.pullback.after_entry}}: once a daily close is one ATR above the entry reference, move the stop up to the entry. At take profit one ({{level.pullback_target1}}), a common approach reduces the position and trails the remainder toward take profit two ({{level.pullback_target2}}). A daily close below the stop exits.\n\n**Signals for reference:** The engine shows {{call.long}} and {{call.growth}}; the LONG record across all stocks is {{record.long.10d}} \u2014 none verified, and MU's own record ({{record.long.10d.stock}}) is too thin to judge alone.\n\n**Recent headlines (unverified third-party):** {{headline.3}}, {{headline.5}}.\n</answer>\n\n<limitation>The stock intelligence report is possibly out of date \u2014 it is {{report.age}} old ({{report.generated}}), so business-performance and structural observations from it describe an earlier snapshot.</limitation>\n<limitation>Fundamentals and valuation multiples are not available in this evidence packet, so no fundamental context can be applied to the plan.</limitation>\n<limitation>MU's own signal track record ({{record.long.10d.stock}}) has too few resolved calls to assess; only the cross-stock baseline is available, and none of it is verified.</limitation>\n\n<plan_proposal kind=\"pullback\" entry=\"level.low20\" stop=\"level.low20-0.5atr\" target1=\"level.high20\" target2=\"level.high252\"/>"
+   ],
+   "usage": [
+    {
+     "input_tokens": 10277,
+     "cache_creation_input_tokens": 0,
+     "cache_read_input_tokens": 0,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+     },
+     "output_tokens": 814,
+     "service_tier": "standard",
+     "inference_geo": "global",
+     "speed": "standard"
+    },
+    {
+     "input_tokens": 11155,
+     "cache_creation_input_tokens": 0,
+     "cache_read_input_tokens": 0,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+     },
+     "output_tokens": 835,
+     "service_tier": "standard",
+     "inference_geo": "global",
+     "speed": "standard"
+    }
+   ]
+  },
+  {
+   "scenario": "us_entry_NVDA",
+   "symbol": "NVDA",
+   "inputs": {
+    "kind": "entry",
+    "risk": 500.0
+   },
+   "status": "rejected",
+   "model": "claude-sonnet-4-6",
+   "price_as_of": "2026-10-20T00:00:00",
+   "price_state": "OK",
+   "price_reason": null,
+   "rules_setups": [
+    [
+     "pullback",
+     "blocked"
+    ],
+    [
+     "breakout",
+     "blocked"
+    ]
+   ],
+   "proposal": null,
+   "rejection_reasons": [
+    "the answer writes a quantity in words (fraction of); figures must come from {{key}} placeholders"
+   ],
+   "independent_problems": [],
+   "prose_digits_by_call": [
+    [
+     "20",
+     "50",
+     "20",
+     "5",
+     "20"
+    ],
+    [
+     "20",
+     "50",
+     "20",
+     "5",
+     "20"
+    ]
+   ],
+   "provider_calls": 2,
+   "scripted_calls": 0,
+   "repair_after_code_rejection": false,
+   "answer": "I couldn't produce an answer that passed the evidence check, so here is the evidence on file instead.\n\u2022 Latest close: $216.48\n\u2022 Session date: 2026-10-20\n\u2022 5-bar return: -5.27% (2026-10-13 \u2192 2026-10-20)\n\u2022 20-bar return: -5.41% (2026-09-22 \u2192 2026-10-20)\n\u2022 Trend: below the 20-bar average\n\u2022 AI signal: WAIT (GROWTH)\n\u2022 Signal strength: 10/100 (engine score)\n\u2022 Signal generated: 2026-10-20 20:39 UTC\n\u2022 K-Score: 63/100\n\u2022 Next earnings date: 2026-11-17\nPlan (calculated by the platform, not by the model):\n\u2022 WAIT (SHORT, generated 2026-10-20 20:39 UTC, strength 25/100 engine score)\n\u2022 WAIT (SWING, generated 2026-10-20 20:39 UTC, strength 20/100 engine score)\n\u2022 WAIT (LONG, generated 2026-10-20 20:39 UTC, strength 23/100 engine score)\n\u2022 WAIT (GROWTH, generated 2026-10-20 20:39 UTC, strength 10/100 engine score)\n\u2022 35% of 2259 past SHORT calls of either direction were followed by a rise of more than 0.5% after 5 calendar days (median move -1.4%; none verified)\n\u2022 39% of 1895 past SHORT calls of either direction were followed by a rise of more than 0.5% after 10 calendar days (median move -1.1%; none verified)\n\u2022 31% of 2058 past SWING calls of either direction were followed by a rise of more than 0.5% after 5 calendar days (median move -1.7%; none verified)\n\u2022 32% of 1660 past SWING calls of either direction were followed by a rise of more than 0.5% after 10 calendar days (median move -2.3%; none verified)\n\u2022 36% of 3699 past LONG calls of either direction were followed by a rise of more than 0.5% after 5 calendar days (median move -1.1%; none verified)\n\u2022 38% of 3142 past LONG calls of either direction were followed by a rise of more than 0.5% after 10 calendar days (median move -1.2%; none verified)\n\u2022 34% of 1803 past GROWTH calls of either direction were followed by a rise of more than 0.5% after 5 calendar days (median move -1.5%; none verified)\n\u2022 34% of 1541 past GROWTH calls of either direction were followed by a rise of more than 0.5% after 10 calendar days (median move -2.2%; none verified)\n\u2022 -6.0% to +7.4% in 8 of 10 past 5-bar spans (median +0.1%; 245 spans, 2025-10-22 to 2026-10-20)\n\u2022 -6.0% to +8.6% in 8 of 10 past 10-bar spans (median -0.3%; 240 spans, 2025-10-22 to 2026-10-20)\n\u2022 If the price pulls back toward the 20-bar low ($212.85) and a daily close holds above it, a textbook pullback entry puts the stop below that low at $209.89 (low \u2212 0.5 \u00d7 ATR).\n\u2022 If a daily close is above the 20-bar high ($243.37) on volume above 1.5 \u00d7 its 20-bar average (104,325,669 shares), a textbook breakout entry puts the stop at $237.46 (high \u2212 1 \u00d7 ATR).\n\u2022 Buying at the latest close ($216.48) with the stop at $209.89 risks $6.59 per share for $26.89 to the 20-bar high: reward:risk 4.1, which meets the textbook minimum of 2.\n\u2022 The latest close ($216.48) is below a falling 50-bar average ($222.81, down from $222.90 five bars earlier): textbook trend-following rules do not open a new long here.\n\u2022 The next earnings date (2026-11-17) is 27 calendar days away, beyond the 10-day caution window, so the earnings rule does not apply yet.\n\u2022 Risking $500.00 with the stop at $209.89 ($6.59 per share at the latest close) sizes the position at 75 shares ($16,236.00).",
+   "raw_replies": [
+    "<answer>\n**NVDA \u2014 Proposed Game Plan (Pullback Setup)**\n\n**Why this anchor:**\nThe data shows the latest close at {{price.close}}, sitting between the 20-bar low ({{level.low20}}) and the 50-bar average ({{level.sma50}}). The 20-bar low is the nearest structural support visible in the packet. A pullback entry anchored there, with a stop below it by half an ATR, matches the textbook rule {{rule.e1}}. The reward-to-risk check {{rule.e3}} shows the ratio meets the textbook minimum. I agree with the rules-based plan on the anchor choice; my proposal differs only in accepting the setup conditionally once the trend filter clears.\n\n**What would invalidate the plan:**\nThe trend filter ({{rule.e4}}) is the primary block \u2014 the close is below a falling {{level.sma50}}. The plan becomes eligible only if a daily close moves above {{level.sma50}}, or that average stops falling, per {{playbook.pullback.wait}}. A daily close below the stop after a fill also invalidates it.\n\n**Earnings note:** {{rule.e5}} \u2014 earnings are {{earnings.days_away}} away, outside the caution window for now, but a SHORT or SWING horizon fill could overlap it.\n\n**Playbook (all conditional):**\n\n*If it rises:* If the close clears {{level.sma50}} and the average flattens, the trend block lifts and the pullback setup becomes eligible \u2014 refresh the plan then.\n\n*If it falls:* If the close approaches {{level.low20}} and holds above it on a daily close, that is the textbook entry trigger per {{rule.e1}}; if it closes below {{level.low20}}, the support is broken and no entry applies.\n\n*If it goes sideways:* If price consolidates between {{level.low20}} and {{level.sma50}} with the average still falling, the trend filter remains active and no entry applies \u2014 wait and refresh daily.\n\n*After a fill:* If filled, a daily close below {{level.pullback_stop}} invalidates the setup per the rules; conditional objectives are {{level.pullback_target1}} and {{level.pullback_target2}}.\n\n**Recent headlines (unverified third-party):** {{headline.1}}, {{headline.2}}, and {{headline.3}} relate to chip demand and a potential investment. One reading is that demand context is active in the news flow; a headline alone is never enough to say it caused or will cause any price move.\n\nThe K-Score is {{kscore.score}} with a model fair-value estimate of {{kscore.fair_price}} \u2014 an engine score and model output, not a price target or probability.\n</answer>\n<limitation>Both rules-based setups are currently blocked by the trend filter ({{rule.e4}}); this proposal is also conditional on that filter clearing.</limitation>\n<limitation>Fundamentals and valuation are not available in this packet, so the plan rests on price structure alone.</limitation>\n<limitation>The 5-bar and 20-bar returns ({{return.5b}}, {{return.20b}}) show recent weakness; past move ranges ({{moves.5b}}, {{moves.10b}}) are history, not forecasts.</limitation>\n\n<plan_proposal kind=\"pullback\" entry=\"level.low20\" stop=\"level.low20-0.5atr\" target1=\"level.high20\" target2=\"level.high20+0.5atr\"/>",
+    "<answer>\n**NVDA \u2014 Proposed Game Plan (Pullback Setup)**\n\n**Why this anchor:**\nThe data shows the latest close at {{price.close}}, sitting between the 20-bar low ({{level.low20}}) and the 50-bar average ({{level.sma50}}). The 20-bar low is the nearest structural support visible in the packet. A pullback entry anchored there, with a stop below it by a fraction of an ATR, matches the textbook rule {{rule.e1}}. The reward-to-risk check {{rule.e3}} shows the ratio meets the textbook minimum. I agree with the rules-based plan on the anchor choice; my proposal differs only in accepting the setup conditionally once the trend filter clears.\n\n**What would invalidate the plan:**\nThe trend filter ({{rule.e4}}) is the primary block \u2014 the close is below a falling {{level.sma50}}. The plan becomes eligible only if a daily close moves above {{level.sma50}}, or that average stops falling, per {{playbook.pullback.wait}}. A daily close below the stop after a fill also invalidates it.\n\n**Earnings note:** {{rule.e5}} \u2014 earnings are {{earnings.days_away}} away, outside the caution window for now, but a SHORT or SWING horizon fill could overlap it.\n\n**Playbook (all conditional):**\n\n*If it rises:* If the close clears {{level.sma50}} and the average flattens, the trend block lifts and the pullback setup becomes eligible \u2014 refresh the plan then.\n\n*If it falls:* If the close approaches {{level.low20}} and holds above it on a daily close, that is the textbook entry trigger per {{rule.e1}}; if it closes below {{level.low20}}, the support is broken and no entry applies.\n\n*If it goes sideways:* If price consolidates between {{level.low20}} and {{level.sma50}} with the average still falling, the trend filter remains active and no entry applies \u2014 wait and refresh daily.\n\n*After a fill:* If filled, a daily close below {{level.pullback_stop}} invalidates the setup per the rules; conditional objectives are {{level.pullback_target1}} and {{level.pullback_target2}}.\n\n**Recent headlines (unverified third-party):** {{headline.1}}, {{headline.2}}, and {{headline.3}} relate to chip demand and a potential investment. One reading is that demand context is active in the news flow; a headline alone is never enough to say it caused or will cause any price move.\n\nThe K-Score is {{kscore.score}} with a model fair-value estimate of {{kscore.fair_price}} \u2014 an engine score and model output, not a price target or probability.\n</answer>\n<limitation>Both rules-based setups are currently blocked by the trend filter ({{rule.e4}}); this proposal is also conditional on that filter clearing.</limitation>\n<limitation>Fundamentals and valuation are not available in this packet, so the plan rests on price structure alone.</limitation>\n<limitation>The 5-bar and 20-bar returns ({{return.5b}}, {{return.20b}}) show recent weakness; past move ranges ({{moves.5b}}, {{moves.10b}}) are history, not forecasts.</limitation>\n\n<plan_proposal kind=\"pullback\" entry=\"level.low20\" stop=\"level.low20-0.5atr\" target1=\"level.high20\" target2=\"level.high20+0.5atr\"/>"
+   ],
+   "usage": [
+    {
+     "input_tokens": 7816,
+     "cache_creation_input_tokens": 0,
+     "cache_read_input_tokens": 0,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+     },
+     "output_tokens": 822,
+     "service_tier": "standard",
+     "inference_geo": "global",
+     "speed": "standard"
+    },
+    {
+     "input_tokens": 8702,
+     "cache_creation_input_tokens": 0,
+     "cache_read_input_tokens": 0,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+     },
+     "output_tokens": 824,
+     "service_tier": "standard",
+     "inference_geo": "global",
+     "speed": "standard"
+    }
+   ]
+  },
+  {
+   "scenario": "us_holding_MU",
+   "symbol": "MU",
+   "inputs": {
+    "kind": "holding",
+    "entry": 800.0,
+    "shares": 10,
+    "stop": 780.0
+   },
+   "status": "grounded",
+   "model": "claude-sonnet-4-6",
+   "price_as_of": "2026-10-20T00:00:00",
+   "price_state": "OK",
+   "price_reason": null,
+   "rules_setups": [
+    [
+     "holding",
+     "conditional"
+    ]
+   ],
+   "proposal": {
+    "id": "llm",
+    "key": "proposal.llm",
+    "title": "LLM-proposed plan",
+    "source": "llm_proposal",
+    "kind": "hold",
+    "derivation": [
+     {
+      "level": "stop",
+      "anchor": "level.low20",
+      "anchor_price": 858.0,
+      "atr_multiple": -0.5,
+      "atr": 48.27493258758244,
+      "price": 833.8625
+     },
+     {
+      "level": "target1",
+      "anchor": "level.high20",
+      "anchor_price": 1108.545522504377,
+      "atr_multiple": 0.0,
+      "atr": 48.27493258758244,
+      "price": 1108.5455
+     },
+     {
+      "level": "target2",
+      "anchor": "level.high252",
+      "anchor_price": 1254.6095437059498,
+      "atr_multiple": 0.0,
+      "atr": 48.27493258758244,
+      "price": 1254.6095
+     }
+    ],
+    "reasons": [],
+    "playbook": [
+     {
+      "case": "rises",
+      "kind": "manage",
+      "title": "If it rises",
+      "text": "Keep holding; a textbook trailing stop follows the latest close \u2212 2 \u00d7 ATR (today $799.30) and is raised only when higher. Objective 1 is $1,108.55, objective 2 $1,254.61."
+     },
+     {
+      "case": "falls",
+      "kind": "exit",
+      "title": "If it falls",
+      "text": "A daily close below $833.86 meets the exit rule: sell rather than wait for a recovery."
+     },
+     {
+      "case": "sideways",
+      "kind": "manage",
+      "title": "If it goes sideways",
+      "text": "Hold while daily closes stay above $833.86; a sideways market does not move the stop."
+     }
+    ],
+    "eligibility_needs": [],
+    "state": "conditional",
+    "entry": 800.0,
+    "stop": 833.8625,
+    "targets": [
+     {
+      "price": 1108.5455,
+      "label": "Model-chosen objective",
+      "reward_risk": null
+     },
+     {
+      "price": 1254.6095,
+      "label": "Model-chosen stretch objective",
+      "reward_risk": null
+     }
+    ],
+    "risk_per_share": null,
+    "risk_budget": null,
+    "shares": 10,
+    "shares_basis": "held",
+    "capital": 8000.0,
+    "cash_at_stop": 338.62499999999955,
+    "max_fill": null,
+    "sizing_note": null,
+    "trigger": "Hold while daily closes stay above $833.86; raise the stop as closes rise, never lower it.",
+    "invalidation": "A daily close below $833.86 meets the exit rule.",
+    "earnings": "The next earnings date (2026-12-23) is 63 calendar days away, beyond the 10-day caution window, so the earnings rule does not apply yet.",
+    "risk_note": "An overnight gap can fill below the stop. Original risk is unknown when the stop is at or above cost.",
+    "recovery_levels": [],
+    "evidence_ids": [],
+    "price_as_of": "2026-10-20T00:00:00"
+   },
+   "rejection_reasons": [],
+   "independent_problems": [],
+   "prose_digits_by_call": [
+    [
+     "20",
+     "20",
+     "50",
+     "20",
+     "50"
+    ]
+   ],
+   "provider_calls": 1,
+   "scripted_calls": 0,
+   "repair_after_code_rejection": false,
+   "answer": "**MU \u2014 Held-Position Plan (independent assessment)**\n\n**Why these anchors**\n\nThe data shows the close at $895.85, above the 20-bar low at $858.00 but well below the 20-bar average at $1,015.93 and the 50-bar average at $984.23. One reading: the stock is in a pullback within a longer structure, and the 20-bar low is the nearest structural floor worth defending.\n\nYour stated stop is $780.00 and today's candidate is $833.86: textbook practice raises the stop to $833.86. If a daily close is below $833.86, the rule says exit. flags that the stated stop at $780.00 is below today's candidate at $833.86; textbook practice raises it. The latest close is more than 1 ATR ($48.27) above your entry, so a textbook rule raises the stop to at least your entry ($800.00). notes the close is more than one ATR above entry, supporting a breakeven-or-better stop.\n\n**What would invalidate the plan**\n\nA daily close below $858.00 would undercut the structural floor. Your stated stop is $780.00 and today's candidate is $833.86: textbook practice raises the stop to $833.86. If a daily close is below $833.86, the rule says exit. states the exit condition clearly.\n\n**When to wait**\n\nThe platform's current calls: SHORT WAIT, SWING WAIT, LONG SELL, GROWTH WAIT. If the call on the horizon you trade turns SELL, a textbook rule reviews the position. \u2014 if the LONG call remains SELL, that is a reason to review rather than add. The latest close ($895.85) is below the 50-bar average ($984.23), which is not falling: the trend filter is a caution, not a block. notes the close is below the 50-bar average, which is a caution.\n\n---\n\n**If it rises:** Per Keep holding while daily closes stay above the stop. As closes rise, a textbook trailing stop follows the latest close \u2212 2 \u00d7 ATR (today $799.30); raise the stop to it only when that is higher \u2014 never lower a stop. Take profit 1 is $1,108.55; a common approach takes part of the position there and keeps the rest toward take profit 2 ($1,254.61) with the trailing stop., hold while closes stay above the stop; raise the trailing stop only when the formula produces a higher value \u2014 never lower it. If the price rises: at the 20-bar high ($1,108.55), above your entry, a textbook rule takes partial profit and raises the stop; at the 252-bar high ($1,254.61), above your entry, a textbook rule takes partial profit and raises the stop. describes the two structural targets.\n\n**If it falls:** Per A daily close below the assessed stop ($833.86) meets the exit rule: sell rather than wait for a recovery. An overnight gap, especially around earnings, can fill below the stop. The next stored support below is the year low ($192.18)., a daily close below the assessed stop meets the exit rule; do not wait for a recovery.\n\n**If it goes sideways:** Per Hold while daily closes stay above the stop ($833.86); a sideways market does not move the stop. While daily closes stay between the 20-bar low ($858.00) and the 20-bar high ($1,108.55) without a trigger, there is no trade. The 20-bar window rolls forward each day, so these levels are recalculated: refresh the plan after each close. Price alerts at the two edges tell you when either case starts., hold while closes stay above the stop; no action while price stays between $858.00 and $1,108.55.\n\n**After a fill:** Reassess after each close; The next earnings date (2026-12-23) is 63 calendar days away, beyond the 10-day caution window, so the earnings rule does not apply yet. confirms earnings are beyond the caution window for now.",
+   "raw_replies": [
+    "<answer>\n**MU \u2014 Held-Position Plan (independent assessment)**\n\n**Why these anchors**\n\nThe data shows the close at {{price.close}}, above the 20-bar low at {{level.low20}} but well below the 20-bar average at {{trend.sma20}} and the 50-bar average at {{trend.sma50}}. One reading: the stock is in a pullback within a longer structure, and the 20-bar low is the nearest structural floor worth defending.\n\n{{rule.h6}} flags that the stated stop at {{position.stop}} is below today's candidate at {{level.stop_candidate}}; textbook practice raises it. {{rule.h3}} notes the close is more than one ATR above entry, supporting a breakeven-or-better stop.\n\n**What would invalidate the plan**\n\nA daily close below {{level.low20}} would undercut the structural floor. {{rule.h6}} states the exit condition clearly.\n\n**When to wait**\n\n{{rule.h8}} \u2014 if the LONG call remains SELL, that is a reason to review rather than add. {{rule.e4}} notes the close is below the 50-bar average, which is a caution.\n\n---\n\n**If it rises:** Per {{playbook.holding.rises}}, hold while closes stay above the stop; raise the trailing stop only when the formula produces a higher value \u2014 never lower it. {{rule.h5}} describes the two structural targets.\n\n**If it falls:** Per {{playbook.holding.falls}}, a daily close below the assessed stop meets the exit rule; do not wait for a recovery.\n\n**If it goes sideways:** Per {{playbook.holding.sideways}}, hold while closes stay above the stop; no action while price stays between {{level.low20}} and {{level.high20}}.\n\n**After a fill:** Reassess after each close; {{rule.h7}} confirms earnings are beyond the caution window for now.\n</answer>\n<limitation>The stock report is possibly out of date \u2014 {{report.age}} old \u2014 so business-context details may not reflect current conditions.</limitation>\n<limitation>Signal drivers are not available; why the engine issued LONG SELL cannot be stated.</limitation>\n\n<plan_proposal kind=\"hold\" stop=\"level.low20-0.5atr\" target1=\"level.high20\" target2=\"level.high252\"/>"
+   ],
+   "usage": [
+    {
+     "input_tokens": 10020,
+     "cache_creation_input_tokens": 0,
+     "cache_read_input_tokens": 0,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+     },
+     "output_tokens": 545,
+     "service_tier": "standard",
+     "inference_geo": "global",
+     "speed": "standard"
+    }
+   ]
+  },
+  {
+   "scenario": "hk_entry_trend_blocked_0005",
+   "symbol": "0005.HK",
+   "inputs": {
+    "kind": "entry",
+    "risk": 5000.0
+   },
+   "status": "grounded",
+   "model": "claude-sonnet-4-6",
+   "price_as_of": "2026-10-20T00:00:00",
+   "price_state": "OK",
+   "price_reason": null,
+   "rules_setups": [
+    [
+     "pullback",
+     "blocked"
+    ],
+    [
+     "breakout",
+     "blocked"
+    ]
+   ],
+   "proposal": {
+    "id": "llm",
+    "key": "proposal.llm",
+    "title": "LLM-proposed plan",
+    "source": "llm_proposal",
+    "kind": "wait",
+    "derivation": [],
+    "reasons": [
+     "The model proposed waiting: no entry now."
+    ],
+    "playbook": [],
+    "eligibility_needs": [],
+    "state": "wait"
+   },
+   "rejection_reasons": [],
+   "independent_problems": [],
+   "prose_digits_by_call": [
+    [
+     "50",
+     "20",
+     "20",
+     "5",
+     "20",
+     "50",
+     "50",
+     "50",
+     "50"
+    ],
+    [
+     "50",
+     "50"
+    ]
+   ],
+   "provider_calls": 2,
+   "scripted_calls": 0,
+   "repair_after_code_rejection": false,
+   "answer": "The data shows the latest close at HK$144.70, below the 20-bar average, with the 50-bar average at HK$158.48 falling (The latest close (HK$144.70) is below a falling 50-bar average (HK$158.48, down from HK$159.94 five bars earlier): textbook trend-following rules do not open a new long here.). All four signal horizons read WAIT \u2014 the strongest is WAIT (LONG, generated 2026-10-21 06:46 UTC, strength 24/100 engine score). Earnings arrive in 6 calendar days, adding gap risk (Earnings are due on 2026-10-27, 6 calendar days away. Textbook practice is to wait until after the release or open a smaller position, because an earnings gap can jump past a stop.).\n\nOne reading: the trend filter alone is sufficient to block any new long. The pullback reward-to-risk at Buying at the latest close (HK$144.70) with the stop at HK$140.32 risks HK$4.38 per share for HK$19.50 to the 20-bar high: reward:risk 4.5, which meets the textbook minimum of 2. is structurally sound, but The latest close (HK$144.70) is below a falling 50-bar average (HK$158.48, down from HK$159.94 five bars earlier): textbook trend-following rules do not open a new long here. overrides it, and Earnings are due on 2026-10-27, 6 calendar days away. Textbook practice is to wait until after the release or open a smaller position, because an earnings gap can jump past a stop. adds a second reason to stand aside.\n\n**Conditional playbook**\n- **If it rises:** the condition to watch is a daily close above HK$158.48, or that average stopping its decline \u2014 per No entry from this setup now: Latest close is below a falling 50-bar average; no new long under the trend rule. It becomes eligible only with the trend filter to clear: a daily close above the 50-bar average (HK$158.48) or that average to stop falling. Refresh the plan after each daily close; until then no buy branch applies., those are the only gates that re-open the pullback setup.\n- **If it falls:** a daily close below HK$142.00 removes the pullback anchor; the setup would need reassessment with new levels.\n- **If it goes sideways:** the trend filter stays in force; no setup becomes eligible until the 50-bar condition clears.\n- **After a fill:** not applicable \u2014 revisit after each daily close and after the earnings release per Earnings are due on 2026-10-27, 6 calendar days away. Textbook practice is to wait until after the release or open a smaller position, because an earnings gap can jump past a stop..\n\nMy proposal is WAIT.",
+   "raw_replies": [
+    "I'll walk through the evidence, then explain my reasoning.\n\n**What the data shows**\n\nThe latest close is {{level.close}}, sitting {{trend.structure}} and below a falling 50-bar average ({{trend.sma50}}, down from five bars earlier). The 20-bar low is {{level.low20}} and the 20-bar high is {{level.high20}}. The 5-bar return is {{return.5b}} and the 20-bar return is {{return.20b}}. The K-Score is {{kscore.score}} with a model fair-value of {{kscore.fair_price}}. All four horizons read WAIT. Earnings are due in {{earnings.days_away}}.\n\n**Why I am proposing WAIT**\n\nOne reading: the trend filter is the decisive blocker. The close is below a falling {{trend.sma50}}; textbook trend-following rules do not open a new long here ({{rule.e4}}). The pullback setup's reward-to-risk at {{rule.e3}} is attractive, but {{rule.e4}} overrides it. The breakout setup is doubly blocked ({{playbook.breakout.wait}}). Earnings in {{earnings.days_away}} add gap risk that can jump past any stop ({{rule.e5}}).\n\n**Conditional playbook**\n\n- **If it rises:** watch for a daily close above {{trend.sma50}} or that average to stop falling \u2014 those are the conditions in {{playbook.pullback.wait}} that would make the pullback setup eligible again.\n- **If it falls:** watch whether {{level.low20}} holds on a closing basis; a close below it would remove the pullback anchor entirely.\n- **If it goes sideways:** the trend filter remains in force; no setup becomes eligible until the 50-bar average condition clears.\n- **After a fill:** not applicable \u2014 no entry is proposed; revisit after each daily close and after the earnings release per {{rule.e5}}.\n\n**What would invalidate even a future plan:** a close below {{level.low20}}, a gap on earnings, or the 50-bar average continuing to fall.\n\n<plan_proposal kind=\"wait\"/>\n\n<answer>\nThe data shows the latest close at {{level.close}}, {{trend.structure}}, with the 50-bar average at {{trend.sma50}} falling ({{rule.e4}}). All four signal horizons read WAIT \u2014 the strongest is {{call.long}} at {{signal.strength}}. Earnings arrive in {{earnings.days_away}}, adding gap risk ({{rule.e5}}).\n\nOne reading: the trend filter alone is sufficient to block any new long. The pullback reward-to-risk at {{rule.e3}} is structurally sound, but {{rule.e4}} overrides it, and {{rule.e5}} adds a second reason to stand aside.\n\n**Conditional playbook**\n- **If it rises:** the condition to watch is a daily close above {{trend.sma50}}, or that average stopping its decline \u2014 per {{playbook.pullback.wait}}, those are the only gates that re-open the pullback setup.\n- **If it falls:** a daily close below {{level.low20}} removes the pullback anchor; the setup would need reassessment with new levels.\n- **If it goes sideways:** the trend filter stays in force; no setup becomes eligible until the 50-bar condition clears.\n- **After a fill:** not applicable \u2014 revisit after each daily close and after the earnings release per {{rule.e5}}.\n\nMy proposal is WAIT.\n</answer>\n<limitation>Signal drivers are not available, so what the engine weighted cannot be stated.</limitation>\n<limitation>No headlines or fundamentals are available for additional context.</limitation>\n<limitation>{{return.20b}} notes possible missing bars, so the recent return figure may be imprecise.</limitation>\n\n<plan_proposal kind=\"wait\"/>",
+    "<answer>\nThe data shows the latest close at {{level.close}}, {{trend.structure}}, with the 50-bar average at {{trend.sma50}} falling ({{rule.e4}}). All four signal horizons read WAIT \u2014 the strongest is {{call.long}}. Earnings arrive in {{earnings.days_away}}, adding gap risk ({{rule.e5}}).\n\nOne reading: the trend filter alone is sufficient to block any new long. The pullback reward-to-risk at {{rule.e3}} is structurally sound, but {{rule.e4}} overrides it, and {{rule.e5}} adds a second reason to stand aside.\n\n**Conditional playbook**\n- **If it rises:** the condition to watch is a daily close above {{trend.sma50}}, or that average stopping its decline \u2014 per {{playbook.pullback.wait}}, those are the only gates that re-open the pullback setup.\n- **If it falls:** a daily close below {{level.low20}} removes the pullback anchor; the setup would need reassessment with new levels.\n- **If it goes sideways:** the trend filter stays in force; no setup becomes eligible until the 50-bar condition clears.\n- **After a fill:** not applicable \u2014 revisit after each daily close and after the earnings release per {{rule.e5}}.\n\nMy proposal is WAIT.\n</answer>\n<limitation>Signal drivers are not available, so what the engine weighted cannot be stated.</limitation>\n<limitation>No headlines or fundamentals are available for additional context.</limitation>\n<limitation>{{return.20b}} notes possible missing bars, so the recent return figure may be imprecise.</limitation>\n\n<plan_proposal kind=\"wait\"/>"
+   ],
+   "usage": [
+    {
+     "input_tokens": 6940,
+     "cache_creation_input_tokens": 0,
+     "cache_read_input_tokens": 0,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+     },
+     "output_tokens": 906,
+     "service_tier": "standard",
+     "inference_geo": "global",
+     "speed": "standard"
+    },
+    {
+     "input_tokens": 8041,
+     "cache_creation_input_tokens": 0,
+     "cache_read_input_tokens": 0,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+     },
+     "output_tokens": 396,
+     "service_tier": "standard",
+     "inference_geo": "global",
+     "speed": "standard"
+    }
+   ]
+  },
+  {
+   "scenario": "stale_entry_SSNLF",
+   "error": "400 a fresh, supported plan is required for comparison",
+   "calls": []
+  },
+  {
+   "scenario": "forced_rejection_then_real_repair_MU",
+   "symbol": "MU",
+   "inputs": {
+    "kind": "entry",
+    "risk": 500.0
+   },
+   "status": "rejected",
+   "model": "claude-sonnet-4-6",
+   "price_as_of": "2026-10-20T00:00:00",
+   "price_state": "OK",
+   "price_reason": null,
+   "rules_setups": [
+    [
+     "pullback",
+     "conditional"
+    ],
+    [
+     "breakout",
+     "conditional"
+    ]
+   ],
+   "proposal": null,
+   "rejection_reasons": [
+    "the answer writes a quantity in words (twenty, half); figures must come from {{key}} placeholders"
+   ],
+   "independent_problems": [],
+   "prose_digits_by_call": [
+    [
+     "20",
+     "50",
+     "20",
+     "50"
+    ]
+   ],
+   "provider_calls": 1,
+   "scripted_calls": 1,
+   "repair_after_code_rejection": true,
+   "answer": "I couldn't produce an answer that passed the evidence check, so here is the evidence on file instead.\n\u2022 Latest close: $895.85\n\u2022 Session date: 2026-10-20\n\u2022 5-bar return: -6.02% (2026-10-13 \u2192 2026-10-20)\n\u2022 20-bar return: -18.26% (2026-09-22 \u2192 2026-10-20)\n\u2022 Trend: below the 20-bar average\n\u2022 AI signal: WAIT (GROWTH)\n\u2022 Signal strength: 24/100 (engine score)\n\u2022 Signal generated: 2026-10-21 06:45 UTC\n\u2022 K-Score: 74/100\n\u2022 Next earnings date: 2026-12-23\n\u2022 Latest report: version 10 (partial) [stale]\nPlan (calculated by the platform, not by the model):\n\u2022 WAIT (SHORT, generated 2026-10-21 06:45 UTC, strength 44/100 engine score)\n\u2022 WAIT (SWING, generated 2026-10-21 06:45 UTC, strength 33/100 engine score)\n\u2022 SELL (LONG, generated 2026-10-21 06:45 UTC, strength 43/100 engine score)\n\u2022 WAIT (GROWTH, generated 2026-10-21 06:45 UTC, strength 24/100 engine score)\n\u2022 all stocks, LONG SELL: lower by more than 0.5% after 5 calendar days in 50% of 1181 past SELL calls (median move -0.5%, mean -0.5%; signals 2026-09-03 to 2026-10-14; none verified)\n\u2022 MU: 0 resolved SELL calls on the LONG horizon, too few to judge this stock alone (at least 8 needed)\n\u2022 all stocks, LONG SELL: lower by more than 0.5% after 10 calendar days in 53% of 1009 past SELL calls (median move -0.9%, mean -1.2%; signals 2026-09-03 to 2026-10-08; none verified)\n\u2022 MU: 0 resolved SELL calls on the LONG horizon, too few to judge this stock alone (at least 8 needed)\n\u2022 35% of 2259 past SHORT calls of either direction were followed by a rise of more than 0.5% after 5 calendar days (median move -1.4%; none verified)\n\u2022 39% of 1895 past SHORT calls of either direction were followed by a rise of more than 0.5% after 10 calendar days (median move -1.1%; none verified)\n\u2022 31% of 2058 past SWING calls of either direction were followed by a rise of more than 0.5% after 5 calendar days (median move -1.7%; none verified)\n\u2022 32% of 1660 past SWING calls of either direction were followed by a rise of more than 0.5% after 10 calendar days (median move -2.3%; none verified)\n\u2022 36% of 3699 past LONG calls of either direction were followed by a rise of more than 0.5% after 5 calendar days (median move -1.1%; none verified)\n\u2022 38% of 3142 past LONG calls of either direction were followed by a rise of more than 0.5% after 10 calendar days (median move -1.2%; none verified)\n\u2022 34% of 1803 past GROWTH calls of either direction were followed by a rise of more than 0.5% after 5 calendar days (median move -1.5%; none verified)\n\u2022 34% of 1541 past GROWTH calls of either direction were followed by a rise of more than 0.5% after 10 calendar days (median move -2.2%; none verified)\n\u2022 -11.9% to +17.4% in 8 of 10 past 5-bar spans (median +3.4%; 245 spans, 2025-10-22 to 2026-10-20)\n\u2022 -12.1% to +25.2% in 8 of 10 past 10-bar spans (median +5.9%; 240 spans, 2025-10-22 to 2026-10-20)\n\u2022 If the price pulls back toward the 20-bar low ($858.00) and a daily close holds above it, a textbook pullback entry puts the stop below that low at $833.86 (low \u2212 0.5 \u00d7 ATR).\n\u2022 If a daily close is above the 20-bar high ($1,108.55) on volume above 1.5 \u00d7 its 20-bar average (26,852,178 shares), a textbook breakout entry puts the stop at $1,060.27 (high \u2212 1 \u00d7 ATR).\n\u2022 Buying at the latest close ($895.85) with the stop at $833.86 risks $61.99 per share for $212.70 to the 20-bar high: reward:risk 3.4, which meets the textbook minimum of 2.\n\u2022 The latest close ($895.85) is below the 50-bar average ($984.23), which is not falling: the trend filter is a caution, not a block.\n\u2022 The next earnings date (2026-12-23) is 63 calendar days away, beyond the 10-day caution window, so the earnings rule does not apply yet.\n\u2022 Risking $500.00 with the stop at $833.86 ($61.99 per share at the latest close) sizes the position at 8 shares ($7,166.80).",
+   "raw_replies": [
+    "<answer>Initial reading favours a pullback near {{level.high20}}.</answer><plan_proposal kind=\"pullback\" entry=\"level.high20\" stop=\"level.low20\" target1=\"level.high20+1atr\" target2=\"level.high20+2atr\"/>",
+    "<answer>\n**Why this setup**\n\nThe data shows MU closed at {{price.close}}, below both the 20-bar average ({{trend.sma20}}) and the 50-bar average ({{trend.sma50}}), and {{return.20b}} over the past twenty bars. The 20-bar low ({{level.low20}}) is the nearest structural support. One reading: price is in a pullback phase, and a hold above {{level.low20}} on a daily close would be the textbook confirmation for a pullback entry.\n\n**Anchor choices**\n\n- Entry: {{level.low20}} \u2014 structural support, the lowest low of the recent range\n- Stop: {{level.low20}} minus half an ATR ({{level.pullback_stop}}) \u2014 below the support, consistent with {{rule.e1}}\n- Target one: {{level.high20}} \u2014 the top of the recent range, a structural resistance\n- Target two: {{level.high252}} \u2014 the year high, next stored resistance above\n\n**Reward-to-risk check:** {{rule.e3}} confirms the reward-to-risk from the current close meets the textbook minimum.\n\n**Trend filter:** {{rule.e4}} \u2014 the close is below the rising 50-bar average; this is a caution, not a block.\n\n**Earnings:** {{rule.e5}} \u2014 no earnings caution applies yet.\n\n**What would invalidate the plan**\n\nA daily close below {{level.pullback_stop}} cancels the setup \u2014 do not enter; wait for a new base.\n\n**If it rises**\n\nIf price rises without touching {{level.low20}}, the pullback entry does not trigger \u2014 do not chase. {{playbook.pullback.rises}}\n\n**If it falls**\n\n{{playbook.pullback.falls}}\n\n**If it goes sideways**\n\n{{playbook.pullback.sideways}}\n\n**After a fill**\n\n{{playbook.pullback.after_entry}}\n</answer>\n<limitation>The stock intelligence report is possibly out of date ({{report.age}} old); business and fundamental context may have changed.</limitation>\n<limitation>MU has {{record.long.5d.stock}}, so the engine's LONG SELL record rests entirely on cross-stock history, none of it verified.</limitation>\n\n<plan_proposal kind=\"pullback\" entry=\"level.low20\" stop=\"level.low20-0.5atr\" target1=\"level.high20\" target2=\"level.high252\"/>"
+   ],
+   "usage": [
+    {
+     "input_tokens": 10506,
+     "cache_creation_input_tokens": 0,
+     "cache_read_input_tokens": 0,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+     },
+     "output_tokens": 577,
+     "service_tier": "standard",
+     "inference_geo": "global",
+     "speed": "standard"
+    }
+   ]
+  }
+ ]
+}
