@@ -219,9 +219,14 @@ async def main(out_path):
         rs = [r for r in results if r.get("arm") == arm and "error" not in r and "not_run" not in r]
         n = len(rs) or 1
         st = lambda r: (r.get("proposal") or {}).get("state")
+        # Each outcome separately: a pooled "valid plan" rate hid eligible vs blocked vs wait.
         return {"requests": len(rs),
-                "valid_plan_rate": sum(st(r) in ("conditional", "blocked", "wait") for r in rs) / n,
-                "fallback_rate": sum(r["status"] == "rejected" for r in rs) / n,
+                "eligible": sum(st(r) == "conditional" for r in rs),
+                "blocked": sum(st(r) == "blocked" for r in rs),
+                "wait": sum(st(r) == "wait" for r in rs),
+                "exit_triggered": sum(st(r) == "exit_triggered" for r in rs),
+                "rejected_by_code": sum(st(r) == "rejected" for r in rs),
+                "fallback": sum(r["status"] == "rejected" for r in rs),
                 "code_narration_rate": sum(r.get("narration") == "code" for r in rs) / n,
                 "constraint_violations": sum(len(r["independent_problems"]) for r in rs),
                 "prose_digit_answers": sum(any(d for d in r["prose_digits_by_call"][-1:]) for r in rs)}
