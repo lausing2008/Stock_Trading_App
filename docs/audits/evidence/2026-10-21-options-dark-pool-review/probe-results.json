@@ -1,0 +1,103 @@
+{
+  "evidence_kind": "synthetic_offline_route_execution",
+  "cases": [
+    {
+      "fixture": {
+        "calls": 3000,
+        "puts": 1000,
+        "unusual_call_rows": 2
+      },
+      "result": {
+        "available": false,
+        "reason": "fetch_error",
+        "call_volume": null,
+        "put_volume": null,
+        "cp_ratio": null,
+        "sentiment": null,
+        "activity_composition": null,
+        "directional_intent": null,
+        "chain_as_of": null
+      },
+      "warning_errors": [
+        "'<' not supported between instances of 'NoneType' and 'NoneType'"
+      ]
+    },
+    {
+      "fixture": {
+        "calls": 3000,
+        "puts": 1000,
+        "unusual_call_rows": 1
+      },
+      "result": {
+        "available": true,
+        "reason": null,
+        "call_volume": 3000,
+        "put_volume": 1000,
+        "cp_ratio": 3.0,
+        "sentiment": "strongly_bullish",
+        "activity_composition": "call_heavy",
+        "directional_intent": "not_established",
+        "chain_as_of": "2026-10-20"
+      },
+      "warning_errors": []
+    },
+    {
+      "fixture": {
+        "calls": 1000,
+        "puts": 0,
+        "unusual_call_rows": 0
+      },
+      "result": {
+        "available": true,
+        "reason": null,
+        "call_volume": 1000,
+        "put_volume": 0,
+        "cp_ratio": 10.0,
+        "sentiment": "neutral",
+        "activity_composition": "call_heavy",
+        "directional_intent": "not_established",
+        "chain_as_of": "2026-10-20"
+      },
+      "warning_errors": []
+    },
+    {
+      "fixture": {
+        "calls": 10,
+        "puts": 100,
+        "unusual_call_rows": 0
+      },
+      "result": {
+        "available": true,
+        "reason": null,
+        "call_volume": 10,
+        "put_volume": 100,
+        "cp_ratio": 0.1,
+        "sentiment": "bearish",
+        "activity_composition": "put_heavy",
+        "directional_intent": "not_established",
+        "chain_as_of": "2026-10-20"
+      },
+      "warning_errors": []
+    },
+    {
+      "fixture": {
+        "calls": 1296,
+        "puts": 1000,
+        "unusual_call_rows": 0
+      },
+      "result": {
+        "available": true,
+        "reason": null,
+        "call_volume": 1296,
+        "put_volume": 1000,
+        "cp_ratio": 1.3,
+        "sentiment": "bullish",
+        "activity_composition": "call_heavy",
+        "directional_intent": "not_established",
+        "chain_as_of": "2026-10-20"
+      },
+      "warning_errors": []
+    }
+  ],
+  "dark_pool_future_timestamp_accepted": true
+}

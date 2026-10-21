@@ -1,0 +1,21 @@
+{
+  "review_date": "2026-10-21",
+  "head": "58d449c4bc01a86bded79e2936f5615cc76eb5c2",
+  "files": {
+    "frontend/src/pages/stock/[symbol].tsx": "5314ff64d871c7c65eb349f73fd3eaebe57d1d6764f46f9ba6e8eb11fe76068b",
+    "frontend/src/components/MarketPressurePanel.tsx": "a8cb22f3552b018ecb0fb494722feb9fc72da80deac70856dc73c50c0ca61f05",
+    "frontend/src/components/OptionsGamePlanCard.tsx": "09e1acc133c5a2f7bf4d8fff022f2e635865dc5aa4728022feef251e5f799698",
+    "frontend/src/lib/api.ts": "8cc07b9b1aff1f012ad075d28b969ee628e82e46c112b1aba6bb2e509c8510bf",
+    "frontend/src/lib/commonOptionPlans.ts": "b54955c1ef65b3447ed060e3a7532f2f6d8c00dfa63b1574fab98f3d81194e81",
+    "frontend/src/lib/optionsTabCharts.ts": "b664bbb66d048b8c033a4c8e33c0b29494a3214be224d57bb53d49426a477578",
+    "services/market-data/src/api/routes.py": "d4e6c8eb416e61e5444a9c7628e548a246beabbc29c363712ff18f138b1bccf2",
+    "services/market-data/src/services/unusual_whales.py": "9e1f7af88d888f06a336c164dca39bb931231483740c902d671e558949447863",
+    "services/market-data/src/services/uw_option_chain.py": "a5db735177b9be8459fa2228991426f4a26e81a5ff7c6833590d78a83ad21251",
+    "services/market-data/src/services/options_flow_snapshot.py": "25d25ba8f684c4260541b3c932aac8701dba9818c97d368b2a3bd1ec165b417d",
+    "services/market-data/src/services/option_evidence.py": "324a394d72df1f39d1728e103ca78ee519a1d0b50d640b2a8369f4d4b60ff329",
+    "services/market-data/src/services/options_strategies.py": "c6251a51d2a7142cc20de6e5c41f983eb94745e13fa43a26c8f627afa2755048",
+    "services/market-data/src/services/option_strategy_ledger.py": "86512551499f4a54fb511e06af1f9701f96e5d09c5a2e2891312c726f3979acf",
+    "services/market-data/src/services/scheduler.py": "7364ee34d4a7ec60dfabccfbe451168f30c2d5df09a5bb2e82c781a579e046ff",
+    "shared/db/models.py": "c263142fcc493433b15cbacb9ba07298cb56ee05f0439074b57b8570d75e3420"
+  }
+}
