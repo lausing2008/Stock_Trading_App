@@ -37,3 +37,15 @@ Research candidates: liquidity/spread-to-risk limits, gap/entry-distance checks,
 ## Separate LLM hidden-rules experiment
 
 Recommended protocol: the proposed seven cases paired shown/hidden (14 requests), same frozen input packet and model settings per pair, predeclared metrics, and stop at the first of 28 provider calls or USD 2. Include retries in both limits and reserve cost before launching each call. Stale/unsupported cases should be reported as preflight exclusions. Do not spend leftover budget expanding the matrix; do not infer significance from one answer per case. No production prompt change follows automatically. This experiment tests proposal behavior, not RZY profitability. No paid evaluation was run in this review.
+
+## Implementation status (2026-10-21, commits `b6a55374`, `67e3adcc`)
+
+Implemented (presentation only; eligibility, delivery and expiry unchanged):
+- Recommendations 1–5: status and freshness first, subject `RZY research | SYM | <event> | <tf>`; measured trigger reasons from passed rules and recorded values, with absent values named "not recorded"; labelled levels with risk distance and %, gross R:R, and no-probability and gap notes; event-specific watch, exit and cancellation layouts; chart link.
+- Notification expiry is shown as a delivery limit, not trading validity.
+- "Follow-up emails are not guaranteed" replaces any implication that a trigger will be followed by an exit or invalidation email.
+
+Not implemented (separate follow-up work): research lifecycle notifications (#6), the actual-fill acceptable range, and cost-assumption figures. Known gaps:
+- Quote currency is not in the RZY payload ("currency not recorded").
+- Prior-candle high/low and the trigger open are not recorded in events.
+- The stock page does not read the link's `tf`/`rzy_event` parameters, so the email says to select the timeframe there.

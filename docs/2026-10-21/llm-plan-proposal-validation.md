@@ -80,3 +80,21 @@ Seven cases × two arms (rules shown / hidden), **18 provider calls, ≈ $0.65**
 **Defects found (not changed, for decision):**
 1. **Holding mode is not stated in the proposal prompt.** The model proposed `kind=pullback` for a held position in both arms, and the repair did not fix it. In the first evaluation it chose `hold` only by reading the format help. The fix is to state the mode and the allowed kinds explicitly per mode.
 2. **Prose still fails often** (6/14 code-narrated, 1 fallback). The common causes are numerals in window names ("52-week", "5-bar") and missing tags. Frozen proposals now protect the plan; the explanation quality is the remaining gap.
+
+## Fixes from the hidden-rules findings (commits `8866fe4b`, `4c834061`, `67e3adcc`)
+
+**Plan mode is stated.** The prompt now carries `MODE: HOLDING` (cost, shares, stated stop or "no stop stated") or `MODE: NEW ENTRY` (risk budget, account), plus the kinds allowed for that mode. Holding accepts `hold` or `wait` only; an entry kind is refused with a mode-specific repair message. Entry mode accepts pullback, breakout, limit or wait. If the latest close is already below the stated stop, the result is `exit_triggered`: neither hold nor wait overrides it, and the model's prose is never shown beside it (an exit-specific platform explanation is used). Tests: stop below cost, stop above cost, an attempted lowering of a stated stop (rejected), a broken stop with hold and with wait, no stated stop, and an entry kind refused then repaired to hold. Rules visibility in production is unchanged.
+
+**Explanation checking — three narrow exemptions, each paired with a rejection that still fails:**
+
+| Accepted now | Still rejected |
+|---|---|
+| "52-week high" when the packet carries the year range | "up 52 percent" |
+| the platform's own wording "five bars earlier" | "wait five sessions" |
+| proposal-turn prose missing its `<answer>` wrapper (no tags or JSON left in it) | "101 dollars" in such prose; any ordinary (non-proposal) turn without `<answer>`; an unclosed `<answer>` (narrated by code, tag never shown) |
+
+Numeric grounding is otherwise unchanged; a failed explanation keeps the code-written fallback. Pre-deployment review found the exit-triggered prose gap (S1) and the unguarded fallback (S2); both were fixed in `67e3adcc`, with tests that fail when the fixes are removed.
+
+**Evaluation metrics** now report eligible, blocked, wait, exit-triggered, rejected-by-code and fallback separately; the pooled "valid plan" rate is gone. Re-read with this split, the hidden-rules run gives: shown — 2 eligible, 2 blocked, 2 wait, 1 rejected (the holding mode defect), 0 fallback; hidden — 2 eligible, 1 blocked, 2 wait, 1 rejected, 1 fallback.
+
+What this evaluation supports: fixing the mode communication and reducing anchoring on the shown rules. It does not show improved trading performance.

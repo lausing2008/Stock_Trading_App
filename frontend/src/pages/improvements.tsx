@@ -56,7 +56,7 @@ const ITEMS: Item[] = [
     file: 'docs/2026-10-21/little-rzy-operational-defects.md', effort: 'M',
     impact: 'Charts and every 5m consumer see bars change after completion; Little RZY rebuilt 3,956 times in one session and its cap can pause a stream for up to 30 minutes.',
     what: 'Changes median 0.077%, all four OHLC fields, mostly on bars 1-6 h old. Hypothesis (unconfirmed): UW -> yfinance -> Polygon fallback fetches overwrite whole days; corrections within one provider are the alternative.',
-    fix: 'Step 1 deployed: observation-only bar provenance and revision trace (provider, candle time, fetch time, old/new OHLCV, class cross_provider / same_provider). Step 2 after the evidence: a consistent source policy that prevents silent cross-provider replacement of completed bars while preserving legitimate corrections.',
+    fix: 'Step 1 deployed: observation-only bar provenance and revision trace (provider, candle time, fetch time, old/new OHLCV, class cross_provider / same_provider). Step 1b (2026-10-21): daily bars traced too (a yfinance daily fetch restated MU past closes mid-session), each revision read as rounding-scale or material. Step 2 after the evidence: a consistent source policy that prevents silent cross-provider replacement of completed bars while preserving legitimate corrections.',
   },
   {
     id: 'LITTLE-RZY-AUDIT-FIXES', tier: 456, severity: 'high', defaultStatus: 'done',

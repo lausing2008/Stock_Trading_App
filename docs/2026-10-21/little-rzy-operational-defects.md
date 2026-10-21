@@ -33,3 +33,15 @@ Note for reading day one: bars written before the trace was deployed have no pro
 - **Smoke run on 2026-10-20** (trace tables empty that day; delivery path from existing timestamps): 5m had 11 emailable research signals — 4 provider-accepted (median 7.8 min after close), 3 expired, 4 recorded too late to queue; close → recorded median 4.8, p90 56.4, p95 61.4 min. 15m: 9 of 9 accepted, median 16.4 min after close. 1h: 3 of 3, median 18.7. Digest queued and accepted 13:12 UTC (09:12 EDT).
 
 Provider policy (OD-01 step 2) waits for the trace evidence. RZY stays research-only while timing is unreliable.
+
+## OD-01 extension: daily-bar revisions (2026-10-21, commit `2609ca93`)
+
+During the hidden-rules evaluation, a 13:30 UTC yfinance daily fetch restated MU's past **completed daily** closes (50-bar mean 984.22686 → 984.23126, about 4.5e-6 relative). Daily ingest re-fetches from six days before the last stored bar on every refresh, possibly from a different provider, so `observe_bar_writes` now traces `1d` too. Details:
+
+- A daily key is the session's wall-clock date (offset dropped, as stored).
+- A daily bar is completed once its session's regular close has passed (early closes included); revisions before that are `_forming_bar`.
+- Bar age is measured from the close, and only rows inside the 35-day retention window are traced.
+
+**Rounding vs material**, computed from the stored before/after (no schema change): a revision is *rounding* if every changed OHLC field moved by at most max(0.005, 2e-5 × price), otherwise *material*. These are reading thresholds: half a cent and float/adjustment-factor precision. Note that half a cent is 0.25% of a $2 stock. Every row keeps the full before/after values, so the cut can be redrawn.
+
+The session report now splits completed revisions by timeframe (intraday / daily) × magnitude × provider class (cross / same / previous unknown), with forming updates kept separate. Observation only: what ingestion writes is unchanged. The first daily revision rows appear from the second daily fetch after deployment.
