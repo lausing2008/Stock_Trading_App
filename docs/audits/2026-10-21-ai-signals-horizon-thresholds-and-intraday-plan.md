@@ -380,3 +380,13 @@ An independent source review of this report changed two things. It found no othe
 2. **The evidence-population mismatch is recorded with sources** (§4 A), including the third population used by `calibrate_ml_weight`.
 
 Re-verified by the review: the cap/floor ordering and the calibrator's simplified fusion, at the lines cited; the missing evidence filter in `outcomes_calibrate_apply`; the strict BUY boundary; the offline inspection output (reproduced: SWING weight .15 at global cap 0, and the §3.2 effective thresholds). **Not re-verified, and attributed to the original report:** the 123 passing tests, the eight deployed-source hash matches, and all production counts (24,434 resolved outcomes, the evidence-status and regime breakdowns, and the 106 of 197 SWING rows).
+
+## Stage 1 follow-up: ML-weight dry runs (October 22, 2026)
+
+Stage 1, item 1 shipped in `4e357289` (calibration replays the production weight calculation). `f5b91c38` then made `GET /signals/ml-weight-validation` a read-only preview of `POST /calibrate_ml_weight`: the same observations, style hold windows, 70/30 chronological split, train-slice selection and live-cap comparison, with train and validation fired counts per cap. Both were deployed by an image rebuild of signal-engine. No live calibration has run, and the global cap remains 0.
+
+- **v1 is superseded for calibration decisions** ([capture](evidence/2026-10-21-ai-signals-horizons/2026-10-22-ml-weight-validation-dryrun.json)). It measured each signal from entry to the most recent close, not over the calibrator's hold window, so its 0.5 "optimum" and its −12% to −15% means do not describe what calibration evaluates.
+- **v2 rejects a change** ([capture](evidence/2026-10-21-ai-signals-horizons/2026-10-22-ml-weight-validation-dryrun-v2.json)). Of 3,712 SWING observations (2,598 train, 1,114 validation), the train slice selects cap 0.5. On the validation slice it fires 13 signals averaging −1.25%, against 10 at +0.11% for the live cap of 0. The calibrator would therefore record an unpromoted run (`ev_lift_not_positive_on_validation`) and leave the cap unchanged.
+- **The sample is too thin to support any cap.** Every cap fires only 10–17 of 1,114 validation observations, and the candidate's 13 is below the calibrator's own 15-observation minimum. Keeping 0 is the outcome of the gate, not evidence that 0, or any other cap, is optimal.
+- **Live calibration stays on hold.** It would change nothing operationally.
+- **The negative returns remain unexplained.** Train-slice mean returns are negative at every cap (−3.4% to −5.6% over 14 days). This stage omits later production adjustments and gates, and no cause has been established.

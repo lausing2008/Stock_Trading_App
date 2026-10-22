@@ -1,0 +1,399 @@
+{
+ "captured_at_utc": "2026-10-22T06:48:10Z",
+ "deployed_commit": "f5b91c38",
+ "image": "sha256:eb6995274962694e77dd6ce35684a0491dd1c9ed1cad723361b02aa8139f4e47 (rebuilt via scripts/deploy.sh signal-engine; all 69 .py files match HEAD)",
+ "call": "GET /signals/ml-weight-validation?lookback_days=180 (in-container, localhost:8005)",
+ "live_global_cap_after_call": "0.0 (unchanged; no calibration run)",
+ "convention": "same as POST /calibrate_ml_weight: style hold window (SWING 14d), 70/30 chronological split, train-slice selection, live-cap comparison",
+ "supersedes": "2026-10-22-ml-weight-validation-dryrun.json (entry -> most-recent-close convention; not comparable)",
+ "response": {
+  "evaluation": {
+   "candidate_parameter": "global_ml_weight_cap",
+   "policy": {
+    "SWING": {
+     "floor": 0.15,
+     "buy_thresholds": {
+      "bull": 0.81,
+      "neutral": 0.81,
+      "choppy": 0.8300000000000001,
+      "risk_off": 0.85,
+      "bear": 0.85,
+      "unknown": 0.81
+     }
+    }
+   },
+   "scope": "ML/TA fusion and BUY boundary; later adjustments/gates are not replayed",
+   "excluded": {
+    "style_not_governed_by_global_cap": 16744,
+    "ta_score_not_stored_for_style": 0,
+    "missing_or_invalid_auc": 162,
+    "missing_or_invalid_scores": 703
+   }
+  },
+  "lookback_days": 180,
+  "signal_count": 3712,
+  "optimal_weight": 0.5,
+  "optimal_accuracy": 38.5,
+  "current_formula_range": [
+   0.0,
+   0.75
+  ],
+  "curve": [
+   {
+    "weight": 0.0,
+    "accuracy": 40.0,
+    "avg_return_pct": 0.11,
+    "train": {
+     "fired": 54,
+     "accuracy": 37.0,
+     "avg_return_pct": -5.56
+    },
+    "validation": {
+     "fired": 10,
+     "accuracy": 40.0,
+     "avg_return_pct": 0.11
+    }
+   },
+   {
+    "weight": 0.05,
+    "accuracy": 40.0,
+    "avg_return_pct": 0.11,
+    "train": {
+     "fired": 53,
+     "accuracy": 37.7,
+     "avg_return_pct": -5.44
+    },
+    "validation": {
+     "fired": 10,
+     "accuracy": 40.0,
+     "avg_return_pct": 0.11
+    }
+   },
+   {
+    "weight": 0.1,
+    "accuracy": 40.0,
+    "avg_return_pct": 0.11,
+    "train": {
+     "fired": 49,
+     "accuracy": 38.8,
+     "avg_return_pct": -3.73
+    },
+    "validation": {
+     "fired": 10,
+     "accuracy": 40.0,
+     "avg_return_pct": 0.11
+    }
+   },
+   {
+    "weight": 0.15,
+    "accuracy": 40.0,
+    "avg_return_pct": 0.11,
+    "train": {
+     "fired": 48,
+     "accuracy": 39.6,
+     "avg_return_pct": -3.62
+    },
+    "validation": {
+     "fired": 10,
+     "accuracy": 40.0,
+     "avg_return_pct": 0.11
+    }
+   },
+   {
+    "weight": 0.2,
+    "accuracy": 40.0,
+    "avg_return_pct": 0.11,
+    "train": {
+     "fired": 48,
+     "accuracy": 37.5,
+     "avg_return_pct": -4.01
+    },
+    "validation": {
+     "fired": 10,
+     "accuracy": 40.0,
+     "avg_return_pct": 0.11
+    }
+   },
+   {
+    "weight": 0.25,
+    "accuracy": 40.0,
+    "avg_return_pct": 0.11,
+    "train": {
+     "fired": 47,
+     "accuracy": 38.3,
+     "avg_return_pct": -3.66
+    },
+    "validation": {
+     "fired": 10,
+     "accuracy": 40.0,
+     "avg_return_pct": 0.11
+    }
+   },
+   {
+    "weight": 0.3,
+    "accuracy": 40.0,
+    "avg_return_pct": 0.11,
+    "train": {
+     "fired": 47,
+     "accuracy": 38.3,
+     "avg_return_pct": -3.65
+    },
+    "validation": {
+     "fired": 10,
+     "accuracy": 40.0,
+     "avg_return_pct": 0.11
+    }
+   },
+   {
+    "weight": 0.35,
+    "accuracy": 40.0,
+    "avg_return_pct": 0.11,
+    "train": {
+     "fired": 52,
+     "accuracy": 38.5,
+     "avg_return_pct": -3.37
+    },
+    "validation": {
+     "fired": 10,
+     "accuracy": 40.0,
+     "avg_return_pct": 0.11
+    }
+   },
+   {
+    "weight": 0.4,
+    "accuracy": 33.3,
+    "avg_return_pct": -1.97,
+    "train": {
+     "fired": 52,
+     "accuracy": 38.5,
+     "avg_return_pct": -3.45
+    },
+    "validation": {
+     "fired": 12,
+     "accuracy": 33.3,
+     "avg_return_pct": -1.97
+    }
+   },
+   {
+    "weight": 0.45,
+    "accuracy": 38.5,
+    "avg_return_pct": -1.25,
+    "train": {
+     "fired": 57,
+     "accuracy": 38.6,
+     "avg_return_pct": -3.54
+    },
+    "validation": {
+     "fired": 13,
+     "accuracy": 38.5,
+     "avg_return_pct": -1.25
+    }
+   },
+   {
+    "weight": 0.5,
+    "accuracy": 38.5,
+    "avg_return_pct": -1.25,
+    "train": {
+     "fired": 59,
+     "accuracy": 40.7,
+     "avg_return_pct": -3.41
+    },
+    "validation": {
+     "fired": 13,
+     "accuracy": 38.5,
+     "avg_return_pct": -1.25
+    }
+   },
+   {
+    "weight": 0.55,
+    "accuracy": 38.5,
+    "avg_return_pct": -1.25,
+    "train": {
+     "fired": 59,
+     "accuracy": 40.7,
+     "avg_return_pct": -3.41
+    },
+    "validation": {
+     "fired": 13,
+     "accuracy": 38.5,
+     "avg_return_pct": -1.25
+    }
+   },
+   {
+    "weight": 0.6,
+    "accuracy": 38.5,
+    "avg_return_pct": -1.25,
+    "train": {
+     "fired": 60,
+     "accuracy": 40.0,
+     "avg_return_pct": -3.39
+    },
+    "validation": {
+     "fired": 13,
+     "accuracy": 38.5,
+     "avg_return_pct": -1.25
+    }
+   },
+   {
+    "weight": 0.65,
+    "accuracy": 33.3,
+    "avg_return_pct": -2.46,
+    "train": {
+     "fired": 68,
+     "accuracy": 33.8,
+     "avg_return_pct": -4.55
+    },
+    "validation": {
+     "fired": 15,
+     "accuracy": 33.3,
+     "avg_return_pct": -2.46
+    }
+   },
+   {
+    "weight": 0.7,
+    "accuracy": 31.2,
+    "avg_return_pct": -2.58,
+    "train": {
+     "fired": 77,
+     "accuracy": 31.2,
+     "avg_return_pct": -4.64
+    },
+    "validation": {
+     "fired": 16,
+     "accuracy": 31.2,
+     "avg_return_pct": -2.58
+    }
+   },
+   {
+    "weight": 0.75,
+    "accuracy": 29.4,
+    "avg_return_pct": -2.66,
+    "train": {
+     "fired": 80,
+     "accuracy": 32.5,
+     "avg_return_pct": -4.44
+    },
+    "validation": {
+     "fired": 17,
+     "accuracy": 29.4,
+     "avg_return_pct": -2.66
+    }
+   },
+   {
+    "weight": 0.8,
+    "accuracy": 29.4,
+    "avg_return_pct": -2.66,
+    "train": {
+     "fired": 80,
+     "accuracy": 32.5,
+     "avg_return_pct": -4.44
+    },
+    "validation": {
+     "fired": 17,
+     "accuracy": 29.4,
+     "avg_return_pct": -2.66
+    }
+   },
+   {
+    "weight": 0.85,
+    "accuracy": 29.4,
+    "avg_return_pct": -2.66,
+    "train": {
+     "fired": 80,
+     "accuracy": 32.5,
+     "avg_return_pct": -4.44
+    },
+    "validation": {
+     "fired": 17,
+     "accuracy": 29.4,
+     "avg_return_pct": -2.66
+    }
+   },
+   {
+    "weight": 0.9,
+    "accuracy": 29.4,
+    "avg_return_pct": -2.66,
+    "train": {
+     "fired": 80,
+     "accuracy": 32.5,
+     "avg_return_pct": -4.44
+    },
+    "validation": {
+     "fired": 17,
+     "accuracy": 29.4,
+     "avg_return_pct": -2.66
+    }
+   },
+   {
+    "weight": 0.95,
+    "accuracy": 29.4,
+    "avg_return_pct": -2.66,
+    "train": {
+     "fired": 80,
+     "accuracy": 32.5,
+     "avg_return_pct": -4.44
+    },
+    "validation": {
+     "fired": 17,
+     "accuracy": 29.4,
+     "avg_return_pct": -2.66
+    }
+   },
+   {
+    "weight": 1.0,
+    "accuracy": 29.4,
+    "avg_return_pct": -2.66,
+    "train": {
+     "fired": 80,
+     "accuracy": 32.5,
+     "avg_return_pct": -4.44
+    },
+    "validation": {
+     "fired": 17,
+     "accuracy": 29.4,
+     "avg_return_pct": -2.66
+    }
+   }
+  ],
+  "preview": {
+   "status": "not_validated",
+   "reason": "candidate weight did not beat the live cap (0.0) on the validation slice",
+   "would_apply": false,
+   "previous_cap": 0.0,
+   "baseline_weight": 0.0,
+   "candidate_validation_fired": 13,
+   "baseline_validation_fired": 10,
+   "candidate_validation_accuracy": 38.5,
+   "baseline_validation_accuracy": 40.0,
+   "candidate_validation_ev_pct": -1.25,
+   "baseline_validation_ev_pct": 0.11,
+   "would_record": {
+    "train_window": [
+     "2026-06-12",
+     "2026-08-20"
+    ],
+    "validation_window": [
+     "2026-08-20",
+     "2026-10-07"
+    ],
+    "validation_ev_pct": -1.25,
+    "baseline_validation_ev_pct": 0.11,
+    "validation_n": 13,
+    "promoted": false,
+    "gate_failures": [
+     "ev_lift_not_positive_on_validation"
+    ]
+   }
+  },
+  "split": {
+   "train_n": 2598,
+   "validation_n": 1114
+  },
+  "return_basis": {
+   "basis": "split_adjusted_price where evidenced, raw price otherwise",
+   "observations_used": 3712,
+   "dropped_unadjustable_action": 0,
+   "used_unverified_completeness": 32
+  }
+ }
+}

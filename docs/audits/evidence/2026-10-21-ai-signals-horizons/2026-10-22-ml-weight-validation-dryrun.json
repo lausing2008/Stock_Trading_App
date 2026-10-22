@@ -1,0 +1,181 @@
+{
+ "superseded_by": "2026-10-22-ml-weight-validation-dryrun-v2.json",
+ "superseded_reason": "measured entry -> most recent close, not the calibrator's style hold window, split or selection; not valid for calibration decisions (preview fixed in f5b91c38)",
+ "captured_at_utc": "2026-10-22T06:06:00Z",
+ "deployed_commit": "4e357289",
+ "call": "GET /signals/ml-weight-validation?lookback_days=180 (in-container, localhost:8005)",
+ "live_global_cap_after_call": "0.0 (unchanged)",
+ "fired_counts_source": "read-only rerun of the same function in the container (READ ONLY transaction, rolled back), wrapping _ml_candidate_score; reproduced signal_count 3960 and optimal 0.5",
+ "caveat_return_window": "this endpoint measures entry -> MOST RECENT close, not the SWING 14-day hold used by calibrate_ml_weight; returns are not comparable to what live calibration would evaluate",
+ "boundary_counts_at_cap_0": {
+  "0.81": 3701,
+  "0.83": 259
+ },
+ "response": {
+  "evaluation": {
+   "candidate_parameter": "global_ml_weight_cap",
+   "policy": {
+    "SWING": {
+     "floor": 0.15,
+     "buy_thresholds": {
+      "bull": 0.81,
+      "neutral": 0.81,
+      "choppy": 0.8300000000000001,
+      "risk_off": 0.85,
+      "bear": 0.85,
+      "unknown": 0.81
+     }
+    }
+   },
+   "scope": "ML/TA fusion and BUY boundary; later adjustments/gates are not replayed",
+   "excluded": {
+    "style_not_governed_by_global_cap": 16744,
+    "ta_score_not_stored_for_style": 0,
+    "missing_or_invalid_auc": 162,
+    "missing_or_invalid_scores": 703
+   }
+  },
+  "lookback_days": 180,
+  "signal_count": 3960,
+  "optimal_weight": 0.5,
+  "optimal_accuracy": 30.1,
+  "current_formula_range": [
+   0.0,
+   0.75
+  ],
+  "return_basis": {
+   "basis": "split_adjusted_price where evidenced, raw price otherwise",
+   "observations_used": 3960,
+   "dropped_unadjustable_action": 0,
+   "used_unverified_completeness": 1247
+  },
+  "curve": [
+   {
+    "weight": 0.0,
+    "accuracy": 27.7,
+    "avg_return_pct": -15.45,
+    "fired": 65
+   },
+   {
+    "weight": 0.05,
+    "accuracy": 28.1,
+    "avg_return_pct": -14.72,
+    "fired": 64
+   },
+   {
+    "weight": 0.1,
+    "accuracy": 28.3,
+    "avg_return_pct": -13.3,
+    "fired": 60
+   },
+   {
+    "weight": 0.15,
+    "accuracy": 28.8,
+    "avg_return_pct": -13.02,
+    "fired": 59
+   },
+   {
+    "weight": 0.2,
+    "accuracy": 27.1,
+    "avg_return_pct": -13.46,
+    "fired": 59
+   },
+   {
+    "weight": 0.25,
+    "accuracy": 27.6,
+    "avg_return_pct": -12.61,
+    "fired": 58
+   },
+   {
+    "weight": 0.3,
+    "accuracy": 29.3,
+    "avg_return_pct": -12.22,
+    "fired": 58
+   },
+   {
+    "weight": 0.35,
+    "accuracy": 27.0,
+    "avg_return_pct": -12.29,
+    "fired": 63
+   },
+   {
+    "weight": 0.4,
+    "accuracy": 27.7,
+    "avg_return_pct": -11.63,
+    "fired": 65
+   },
+   {
+    "weight": 0.45,
+    "accuracy": 28.2,
+    "avg_return_pct": -12.45,
+    "fired": 71
+   },
+   {
+    "weight": 0.5,
+    "accuracy": 30.1,
+    "avg_return_pct": -12.13,
+    "fired": 73
+   },
+   {
+    "weight": 0.55,
+    "accuracy": 30.1,
+    "avg_return_pct": -12.13,
+    "fired": 73
+   },
+   {
+    "weight": 0.6,
+    "accuracy": 29.7,
+    "avg_return_pct": -12.34,
+    "fired": 74
+   },
+   {
+    "weight": 0.65,
+    "accuracy": 25.0,
+    "avg_return_pct": -15.45,
+    "fired": 84
+   },
+   {
+    "weight": 0.7,
+    "accuracy": 24.0,
+    "avg_return_pct": -15.69,
+    "fired": 96
+   },
+   {
+    "weight": 0.75,
+    "accuracy": 24.0,
+    "avg_return_pct": -15.66,
+    "fired": 100
+   },
+   {
+    "weight": 0.8,
+    "accuracy": 24.0,
+    "avg_return_pct": -15.66,
+    "fired": 100
+   },
+   {
+    "weight": 0.85,
+    "accuracy": 24.0,
+    "avg_return_pct": -15.66,
+    "fired": 100
+   },
+   {
+    "weight": 0.9,
+    "accuracy": 24.0,
+    "avg_return_pct": -15.66,
+    "fired": 100
+   },
+   {
+    "weight": 0.95,
+    "accuracy": 24.0,
+    "avg_return_pct": -15.66,
+    "fired": 100
+   },
+   {
+    "weight": 1.0,
+    "accuracy": 24.0,
+    "avg_return_pct": -15.66,
+    "fired": 100
+   }
+  ]
+ }
+}
