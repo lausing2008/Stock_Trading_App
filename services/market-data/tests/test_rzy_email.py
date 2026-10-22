@@ -169,3 +169,4 @@ def test_the_engine_standing_blocker_ids_are_readable_too():
     text = render_event(sample(), ('data_basis_or_freshness_unverified', 'shortability_or_borrow_cost_unverified'), config=CFG, **TIMES)
     assert 'unrecognised identifier' not in text.split('Technical details')[0]
     assert 'the price data basis and freshness are not verified for execution' in text
+

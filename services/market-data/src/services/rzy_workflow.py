@@ -46,6 +46,34 @@ RECORD_RETENTION=timedelta(days=35)
 FIGURE_KEYS=('primary_target','stop','planned_entry','D','reward_risk','event_type','direction')
 
 
+#: Price figures equal within the bar-revision rounding bound (bar_provenance.revision_magnitude):
+#: max(half a cent, 2e-5 x price). Measured Oct 21: 49 of 57 rebuild-changed signal figures were
+#: float noise or rounding (e.g. KTOS entry 38.779998779 -> 38.78), which the exact comparison
+#: below would have read as "the trade figures changed" and suppressed the email.
+PRICE_FIGURES=('primary_target','stop','planned_entry','D')
+FIGURE_ABS,FIGURE_REL=0.005,2e-5
+#: reward:risk is derived from the prices; a sub-cent stop move on a tight setup moves it by ~0.1%.
+#: Equal within 1% (or 0.01) unless the change crosses the configured minimum.
+RR_REL,RR_ABS=0.01,0.01
+
+
+def figures_equivalent(sent,current,min_rr=None):
+    """Would the queued email still state the current setup? Price fields within the rounding
+    bound, reward:risk within RR tolerance without crossing min_rr, everything else exactly."""
+    for k in FIGURE_KEYS:
+        a,b=sent.get(k),current.get(k)
+        if a==b: continue
+        if not (isinstance(a,(int,float)) and isinstance(b,(int,float))): return False
+        if k in PRICE_FIGURES:
+            if abs(a-b)>max(FIGURE_ABS,FIGURE_REL*max(abs(a),abs(b)))+1e-12: return False
+        elif k=='reward_risk':
+            if abs(a-b)>max(RR_ABS,RR_REL*max(abs(a),abs(b))): return False
+            if min_rr is not None and (a>=min_rr)!=(b>=min_rr): return False
+        else:
+            return False
+    return True
+
+
 def figures(payload):
     return {k:payload.get(k) for k in FIGURE_KEYS}
 
@@ -526,7 +554,7 @@ def rzy_send_check(session,row):
     event=session.get(RzyEvent,generation_event_id(occurrence,current))
     if event is None: return False,'superseded: occurrence absent from the current generation'
     sent_figures=(occ.queued_figures or occ.first_figures) if occ is not None else None
-    if sent_figures is not None and figures(event.payload)!={k:sent_figures.get(k) for k in FIGURE_KEYS}:
+    if sent_figures is not None and not figures_equivalent(sent_figures,figures(event.payload),current_config().min_rr):
         return False,'superseded: a rebuild changed the trade figures in the queued message'
     pref=session.get(RzyPreference,row.user_id)
     if event.symbol not in watchlist_symbols(session,row.user_id): return False,'recipient removed the symbol from the watchlist'

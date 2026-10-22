@@ -319,6 +319,25 @@ with Session() as s:
     r=queue('optout'); W.drain(s,send,t_send);s.commit(); s.refresh(r)
     assert r.state=='suppressed' and r.terminal_reason=='recipient opted out'
     pref_mail.enabled=True; s.commit()
+    # Send-time comparison is tolerant of storage noise (Oct 21: KTOS 38.779998779 -> 38.78) but
+    # not of a real change: a noisy queued copy is delivered.
+    occ_row.queued_figures=dict(W.figures(template),planned_entry=(template.get('planned_entry') or 0)+1e-7,
+                                stop=(template.get('stop') or 0)*(1+1e-6)); s.commit()
+    n=len(sent); r=queue('noise'); W.drain(s,send,t_send);s.commit(); s.refresh(r)
+    assert r.state=='accepted' and len(sent)==n+1, (r.state, r.terminal_reason)
+    occ_row.queued_figures=W.figures(template); s.commit()
+    sent_f=dict(primary_target=37.300557454427086,stop=39.14788187827215,planned_entry=38.779998779296875,
+                D=1.1844431559244768,reward_risk=4.0214984841399675,event_type='TRIGGERED',direction='short')
+    noise=dict(sent_f,primary_target=37.300555555555555,stop=39.14788293249265,planned_entry=38.78,
+               D=1.1844444444444449,reward_risk=4.021508783841207)
+    assert W.figures_equivalent(sent_f,noise,1.5)
+    assert not W.figures_equivalent(sent_f,dict(sent_f,stop=39.20),1.5)
+    assert not W.figures_equivalent(sent_f,dict(sent_f,primary_target=37.25),1.5)
+    assert not W.figures_equivalent(sent_f,dict(sent_f,direction='long'),1.5)
+    assert not W.figures_equivalent(sent_f,dict(sent_f,reward_risk=3.8),1.5)
+    assert not W.figures_equivalent(dict(sent_f,reward_risk=1.505),dict(sent_f,reward_risk=1.495),1.5)
+    assert not W.figures_equivalent(sent_f,dict(sent_f,stop=None),1.5)
+    result['tolerant_figure_check']=True
     result['delivery_any_generation']=True
     # ── F08: rebuild counts and first observation survive generation pruning ──
     logged=s.scalars(select(RzyRebuild).where(RzyRebuild.stream_key==key)).all()
