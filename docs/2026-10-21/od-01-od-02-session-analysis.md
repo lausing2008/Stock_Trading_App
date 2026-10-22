@@ -86,3 +86,16 @@ The expired AI emails show a second effect. They were queued at 17:41, 17:47 and
 3. **Incremental scans (OD-02).** Advance only streams with a new completed bar, verified against a full replay. Target: scan duration well under one bar interval.
 4. **Drain cadence.** Drain the outbox independently of the scan (for example every minute), so queued alerts aren't held behind a 5-minute scan.
 5. **Delivery-path measurement.** Close → ingest → evaluate → queue → provider acceptance on the next sessions, after 1–4, with missed and suppressed signals in the denominator.
+
+## Fixes deployed (2026-10-22 01:12 UTC, market-data `db89050a`) — each independently reviewed
+
+| Step | Commits | What it does |
+|---|---|---|
+| 1. One authoritative provider per completed bar | `79bfe2c3`, `1194ed65`, `8a0889e5` | `bar_session_authority` records the primary provider per stock/timeframe/session, from static routing (a UW 429 cooldown cannot hand yfinance the authority). A writer **owns** a bar only from its first write at or after completion; for daily bars that starts at 16:45 local, after the post-close settle. A fallback may fill new bars, complete forming snapshots and correct its own bars, but never rewrites a bar the authority owns. The authority takes over a fallback's bar once, so an outage cannot restart the cycle. A failed provenance trace marks the session so fallbacks may only add bars; a failed authority check fails closed for fallbacks and is counted. The largest divergence of a refused row is recorded. Force refreshes bypass it. |
+| 2. Tolerant send-time figure check | `009b850a` | Queued vs current prices equal within max(half a cent, 2e-5 × price); reward:risk within 1% unless it crosses the minimum; type and direction exact; NaN never equal. |
+| 3a. Bar preparation | `1f32e09d` | Same output (verified on 155 symbols / 465,950 bars), 43% less time. |
+| 3b. Scan-phase timing | `763582ac`, `db89050a` | `little_rzy_scan_phases` records load/prepare, evaluate, snapshot/commit and other per scan. **The skip-unchanged-streams design waits for this evidence.** Profiling showed the engine is already incremental and the cost is bar preparation, checkpoint copying and cold reads. |
+| 4. Independent sender | `5fb1d339` | `drain_little_rzy_outbox` every minute, its own lock; the scan job no longer drains. Same send-time checks; four concurrent drains send once. |
+| 5. Close-to-delivery measurement | — | A capture for 2026-10-22 runs after `us_post_close` is recorded ok → `/home/ec2-user/rzy-session-evidence/2026-10-22/` (log `~/rzy-capture-2026-10-22.log`). Compare against this document. |
+
+**Still unexplained:** the 43 occurrences absent from their current generation on Oct 21 (3 emailable). They stay marked unexplained until the superseded generations are replayed.
