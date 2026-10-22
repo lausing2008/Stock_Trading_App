@@ -520,8 +520,8 @@ def ingest_symbol(
             try:
                 with session.begin_nested():
                     mark_trace_failed(session, stock, timeframe, rows)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as mexc:  # noqa: BLE001
+                log.warning("ingest.trace_failed_mark_failed", symbol=symbol, tf=timeframe, error=str(mexc)[:300])
         result = session.execute(stmt)
         session.commit()
         if timeframe == "1d" and _fetched_rows:

@@ -49,7 +49,7 @@ def write(provider, ts, close, now, tf="5m"):
     """One fetch of one bar: authorise, trace, then upsert what was allowed."""
     with Session() as s:
         stock = s.get(models.Stock, 1)
-        tfv = {"5m": models.TimeFrame.M5, "1h": models.TimeFrame.H1}[tf]
+        tfv = {"5m": models.TimeFrame.M5, "1h": models.TimeFrame.H1, "1d": models.TimeFrame.D1}[tf]
         row = {"stock_id": 1, "ts": ts, "timeframe": tfv, "open": close, "high": close + 1, "low": close - 1,
                "close": close, "volume": 1000.0}
         allowed, counts = BP.authorize_bar_writes(s, stock, tf, [row], provider, "unusual_whales", now=now)
@@ -83,6 +83,15 @@ out["hour_old"] = [write("unusual_whales", b4, 70.0, T(13, 6)), write("yfinance"
 # A fallback may correct its own gap fill.
 b5 = T(14, 30)
 out["self_correction"] = [write("yfinance", b5, 80.0, T(14, 36)), write("yfinance", b5, 80.3, T(14, 41)), close_of(b5)]
+# Unchanged re-send after completion establishes ownership (re-review residual).
+b6 = T(15, 0)
+out["unchanged_resend"] = [write("unusual_whales", b6, 90.0, T(15, 0, 30)), write("unusual_whales", b6, 90.0, T(15, 5, 30)),
+                           write("yfinance", b6, 94.0, T(15, 6)), close_of(b6)]
+# Daily: a close-burst write (16:00:30 ET) does not lock out the settled close; after 16:45 ET it does.
+d = datetime(2026, 10, 20)
+out["daily_settle"] = [write("unusual_whales", d, 300.0, T(20, 0, 30), "1d"), write("yfinance", d, 301.0, T(20, 30), "1d"),
+                       close_of(d, models.TimeFrame.D1), write("unusual_whales", d, 301.2, T(20, 50), "1d"),
+                       write("yfinance", d, 299.0, T(21, 0), "1d"), close_of(d, models.TimeFrame.D1)]
 # Session dates across UTC midnight (EDT and EST) and HK.
 out["dates"] = [BP._session_date("5m", datetime(2026, 10, 21, 23, 30), "US").date().isoformat(),
                 BP._session_date("5m", datetime(2026, 11, 5, 0, 30), "US").date().isoformat(),

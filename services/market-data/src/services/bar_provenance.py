@@ -209,6 +209,11 @@ def observe_bar_writes(session, stock, timeframe, rows, provider, now=None):
             counts['provider_switch_same_values'] += 1
         else:
             counts['unchanged'] += 1
+            # An unchanged re-send after the bar's ownership time still records the write, so the
+            # writer OWNS it (bar authority); otherwise only changes would ever stamp ownership.
+            if previous == provider and p.last_written_at is not None and \
+                    p.last_written_at < _owned_from(timeframe, ts, _market(stock)) <= now:
+                p.last_written_at = now
             continue
         p.provider = provider
         p.last_written_at = now
@@ -310,6 +315,23 @@ def _completed_at(timeframe, ts, market):
     return end
 
 
+#: Daily bars are owned only once the post-close ingest could have settled them (16:30 local +
+#: 15 min, as research-engine's completed-session rule): a provider's write during the 16:00-16:15
+#: close burst must not lock out the settled close if that provider then fails at 16:30.
+DAILY_OWNERSHIP_LOCAL = (16, 45)
+
+
+def _owned_from(timeframe, ts, market):
+    """When a write starts to OWN the bar (completion, or the daily settle time)."""
+    done = _completed_at(timeframe, ts, market)
+    if timeframe != '1d':
+        return done
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo('Asia/Hong_Kong' if market == 'HK' else 'America/New_York')
+    settle = datetime(ts.year, ts.month, ts.day, *DAILY_OWNERSHIP_LOCAL, tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+    return max(done, settle)
+
+
 def _local_date(ts, market):
     from zoneinfo import ZoneInfo
     tz = ZoneInfo('Asia/Hong_Kong' if market == 'HK' else 'America/New_York')
@@ -377,7 +399,7 @@ def authorize_bar_writes(session, stock, timeframe, rows, provider, authority, n
         auth = rec.authority
         done_at = _completed_at(timeframe, ts, market)
         prev, written_at = writer.get(ts, (None, None))
-        owned = written_at is not None and written_at >= done_at
+        owned = written_at is not None and written_at >= _owned_from(timeframe, ts, market)
         if now < done_at or ts not in stored:
             ok, why = True, 'forming_or_new'
         elif rec.trace_failed and provider != auth:

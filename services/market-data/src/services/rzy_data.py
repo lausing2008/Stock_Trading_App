@@ -18,8 +18,8 @@ def prepare_bars(rows, timeframe, now, *, session_bounds, resolve_ohlc):
     # outputs; verified identical against the previous implementation on every production stream.
     _bounds={}
     def session_bounds_cached(market,d,_sb=session_bounds):
-        if d not in _bounds: _bounds[d]=_sb(market,d)
-        return _bounds[d]
+        if (market,d) not in _bounds: _bounds[(market,d)]=_sb(market,d)
+        return _bounds[(market,d)]
     session_bounds=session_bounds_cached
     now=utc(now); accepted=[]; excluded=[]
     for row in rows:

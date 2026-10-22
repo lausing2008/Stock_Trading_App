@@ -45,6 +45,9 @@ def test_authority_rules_at_their_boundaries_with_an_injected_clock():
     assert r["boundary"] == [True, False, True, True]
     assert r["hour_old"] == [True, False, 70.0]                 # the Oct 21 pattern is refused
     assert r["self_correction"] == [True, True, 80.3]           # a fallback corrects its own gap fill
+    assert r["unchanged_resend"] == [True, True, False, 90.0]   # an unchanged re-send stamps ownership
+    # Daily: the 16:00:30 close-burst write is replaceable by the settled close; after 16:45 owned.
+    assert r["daily_settle"] == [True, True, 301.0, True, False, 301.2]
     assert r["dates"] == ["2026-10-21", "2026-11-04", "2026-10-22"]
     assert r["hour_bar_done"] == "2026-10-20T20:00:00"
     # B2: cooldown routing serves yfinance, but the authority stays the primary.

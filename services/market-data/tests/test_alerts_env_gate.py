@@ -176,6 +176,7 @@ _ALERT_JOB_IDS = {
     "price_risk_outbox_drain",
     "broker_auth_check",
     "little_rzy_workflows",
+    "little_rzy_drain",
     "morning_digest_us",
     "morning_digest_hk",
     "premarket_brief_us",

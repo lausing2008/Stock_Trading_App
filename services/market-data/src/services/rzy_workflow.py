@@ -1,6 +1,7 @@
 """Watchlist-scoped RZY persistence, morning preparation and independently opted-in mail."""
 from __future__ import annotations
 import copy
+import math
 import hashlib
 import os
 import json
@@ -64,6 +65,7 @@ def figures_equivalent(sent,current,min_rr=None):
         a,b=sent.get(k),current.get(k)
         if a==b: continue
         if not (isinstance(a,(int,float)) and isinstance(b,(int,float))): return False
+        if not (math.isfinite(a) and math.isfinite(b)): return False
         if k in PRICE_FIGURES:
             if abs(a-b)>max(FIGURE_ABS,FIGURE_REL*max(abs(a),abs(b)))+1e-12: return False
         elif k=='reward_risk':
