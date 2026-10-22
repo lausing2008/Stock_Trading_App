@@ -55,3 +55,24 @@ Feed and quote-quality dashboard, intraday flow timeline, dark-pool price-zone c
 | 5 | C | M | New endpoint and block; reuses A–B |
 
 Every phase gets behavioural tests at the route and UI boundary (fixtures, never source-text checks), a sabotage check, an independent review before deploy, and a production verification on real symbols.
+
+## Status (2026-10-22)
+
+| Phase | State | Commits |
+|---|---|---|
+| A (A1–A4) | Deployed (frontend), production-verified on MU | `f18a1b2c`, `93af3549`, `ed320575` |
+| A2 thresholds | Option 1 chosen: today's cut points on exact ratios; 60/60 deferred as a separate evaluated change | — |
+| B1 + backend A2 | Committed, **not deployed** (restarts market-data; held until the Oct 22 capture finishes) | `ec1a90e4` |
+| B2 + B3 | Committed, not deployed | `21813638` |
+| B4 + B5 | Committed, not deployed | `51ad8845` |
+| C | Not started | — |
+
+Each B slice had an independent review (no blockers; findings fixed), sabotage checks, and the full market-data and frontend suites green. B ships as one market-data deploy (routes.py, options_scope.py, uw_option_chain.py, options_game_plan_snapshot.py, options_flow_snapshot.py, dark_pool_evidence.py, scheduler.py, email_service.py, unusual_whales.py) plus the frontend.
+
+Behaviour changes to know at deploy:
+- `OptionsFlowSnapshot.sentiment` is labelled from exact volumes from the deploy onward; boundary rows (e.g. 1296/1000, puts = 0) differ from older rows, and `evidence.composition_rule` marks the new ones.
+- Expiries past their last trading instant stay as labelled historical evidence; the game plan, its snapshot and both calculators offer only current expiries (`reason: no_current_expiries` when none).
+- Dark-pool prints without a timezone are now quarantined (previously assumed UTC); UW sends `Z` on every print, so none are expected.
+- After deploy, check for duplicate prints: `SELECT symbol, price, size, count(*) FROM dark_pool_prints GROUP BY 1,2,3 HAVING count(*) > 1` restricted to post-deploy rows.
+
+Found, not fixed (pre-existing): the premarket "Options flow" note in `scheduler.py` compares the stored snapshot sentiment against bullish/bearish labels, but the snapshot stores call_heavy/put_heavy/mixed, so the note can never fire.
