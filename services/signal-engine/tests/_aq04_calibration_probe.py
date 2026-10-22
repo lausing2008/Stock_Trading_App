@@ -237,5 +237,73 @@ check('a split between the target date and the filling session is still caught',
 check('nothing from the target/fill gap reaches the sample',
       r.get('return_basis', {}).get('observations_used', 1) == 0, r.get('return_basis'))
 
+# 5. GET /ml-weight-validation is a read-only preview of the calibrator (2026-10-22).
+#    A steadily rising series makes every resolved return positive. With the live cap at 0, the
+#    SWING floor (.15) keeps fused just under the .81 boundary, so the incumbent fires nothing and
+#    a higher candidate cap must promote — the case where a write would be most tempting.
+def build_trend():
+    with Session(engine) as s:
+        for t in (models.CorporateActionCoverage, models.CorporateAction,
+                  models.Signal, models.Price, models.Stock, models.TuneHistory):
+            s.query(t).delete()
+        s.commit()
+        s.add(models.Stock(id=1, symbol='TRND', name='TRND', market=models.Market.US,
+                           exchange=models.Exchange.NASDAQ, active=True))
+        base = date(2026, 1, 5)
+        for i in range(260):
+            d = base + timedelta(days=i)
+            px = 100.0 + i
+            s.add(models.Price(id=i + 1, stock_id=1, ts=datetime(d.year, d.month, d.day),
+                               timeframe=models.TimeFrame.D1, open=px, high=px, low=px,
+                               close=px, volume=1_000_000))
+        for i in range(120):
+            sd = base + timedelta(days=30 + i)
+            s.add(models.Signal(id=i + 1, stock_id=1, ts=datetime(sd.year, sd.month, sd.day),
+                                horizon=models.SignalHorizon.SWING,
+                                signal=models.SignalType.BUY, confidence=60,
+                                reasons={'ml_probability': .85, 'ta_score': .8,
+                                         'ml_test_auc': .7, 'market_regime': 'bull'}))
+        s.commit()
+
+
+def table_counts(s):
+    return {m.__name__: s.query(m).count() for m in (
+        models.Stock, models.Price, models.Signal, models.TuneHistory,
+        models.CorporateAction, models.CorporateActionCoverage)}
+
+
+cap_writes, history_writes = [], []
+sig_mod._ml_weight_global_cap = 0.0
+sig_mod.set_ml_weight_global_cap = lambda cap: cap_writes.append(cap)
+calib._record_tune_history = lambda *a, **k: history_writes.append(k)
+sig_mod._get_dynamic_buy_threshold = lambda style, regime: .81
+
+build_trend()
+with Session(engine) as _s:
+    before = table_counts(_s)
+    g = calib.ml_weight_validation(lookback_days=730, session=_s)
+    check('GET leaves no pending session changes',
+          not (_s.new or _s.dirty or _s.deleted), (_s.new, _s.dirty, _s.deleted))
+    _s.commit()
+with Session(engine) as _s:
+    check('GET writes no rows', table_counts(_s) == before, (before, table_counts(_s)))
+check('GET never sets the cap or records tune history',
+      not cap_writes and not history_writes, (cap_writes, history_writes))
+check('GET reports both slices\' fired counts on every curve point',
+      all({'fired'} <= set(pt['train']) and {'fired'} <= set(pt['validation'])
+          for pt in g['curve']) and g['curve'], g.get('curve', [])[:2])
+check('the preview predicts a promotion here', g['preview']['would_apply'] is True, g['preview'])
+
+with Session(engine) as _s:
+    r = calib.calibrate_ml_weight(lookback_days=730, session=_s, _='t')
+check('POST makes the decision GET predicted', r['applied'] is g['preview']['would_apply'], r)
+check('POST writes the cap GET selected', cap_writes == [g['optimal_weight']], cap_writes)
+check('the same curve drives both', r['curve'] == g['curve'])
+_hist = history_writes[0] if history_writes else {}
+check('POST records exactly what GET said it would',
+      len(history_writes) == 1 and all(_hist.get(k) == v
+                                        for k, v in g['preview']['would_record'].items()),
+      (_hist, g['preview'].get('would_record')))
+
 print('FAILURES:', failures)
 sys.exit(1 if failures else 0)

@@ -92,23 +92,10 @@ def test_missing_or_invalid_auc_is_excluded_and_counted(helpers, auc):
     assert excluded['missing_or_invalid_auc'] == 1
 
 
-def _validation_core(helpers):
-    # Execute the real GET computational body with injected observations, matching the
-    # existing calibrator harness; no DB/Redis writes or Docker dependencies are needed.
-    start = _CAL_SOURCE.index('    _pts: dict[int, list] = {}', _CAL_SOURCE.index('def ml_weight_validation('))
-    end = _CAL_SOURCE.index('\n\n@router.post("/calibrate_ml_weight")', start)
-    body = _CAL_SOURCE[start:end]
-    ns = dict(helpers, _actions={}, _coverage={}, lookback_days=180,
-              bisect=__import__('bisect'), datetime=__import__('datetime').datetime)
-    from common.outcome_price_basis import classify_observation_window, resolve_window
-    ns['_classify_window'] = classify_observation_window
-    ns['_resolve_outcome_basis'] = resolve_window
-    basis_start = _CAL_SOURCE.index('def _observation_basis(')
-    basis_end = _CAL_SOURCE.index('\n\n\n', basis_start)
-    exec(_CAL_SOURCE[basis_start:basis_end], ns)
-    exec('def core(rows, price_rows):\n'
-         '    policy = _ml_weight_policy()\n    evaluation = _ml_weight_evaluation(policy)\n' + body, ns)
-    return ns['core']
+def _preview(helpers, rows, prices, prev_cap=.3):
+    """The real GET path minus its DB loader: shared sweep, then the read-only report."""
+    sweep = helpers['_ml_weight_sweep'](rows, prices, {}, {}, prev_cap)
+    return helpers['_ml_weight_preview'](sweep, 180)
 
 
 @pytest.mark.parametrize('ml,ta,auc,fires', [(.81,.81,0.,False), (.9,.7,0.,False), (.9,.8,.7,True)])
@@ -126,7 +113,7 @@ def test_endpoints_scope_auc_and_strict_buy_boundary(helpers, monkeypatch, endpo
     missing.reasons.pop('ml_test_auc')
     rows.append((missing, 'TEST'))
     if endpoint == 'validation':
-        result = _validation_core(helpers)(rows, prices)
+        result = _preview(helpers, rows, prices)
     else:
         result, _, applied = _run_core(rows, prices, .3)
         assert not applied
@@ -170,3 +157,83 @@ def test_growth_rows_are_excluded_because_stored_ta_is_not_growth_ta(helpers):
     excluded = helpers['_ml_weight_evaluation'](policy)['excluded']
     assert helpers['_ml_weight_inputs'](sig, policy, excluded) is None
     assert excluded['ta_score_not_stored_for_style'] == 1
+
+
+# ── GET preview reproduces the calibrator's evaluation (2026-10-22) ─────────────────────────
+_HEAVY = [(0.95, 0.70, 100., 105.)] * 50
+_PARITY_CASES = {
+    'promotes': (_HEAVY, [(0.95, 0.70, 100., 108.)] * 20, .3),
+    'ties_live_cap': (_HEAVY, [(0.95, 0.70, 100., 102.)] * 20, .9),
+    'insufficient_validation': (_HEAVY[:10], [], .42),
+    'first_tune': (_HEAVY[:1] * 140,
+                   [(0.95, 0.70, 100., 108.)] * 30 + [(0.90, 0.73, 100., 112.)] * 30, None),
+    'no_calibration_buys': ([(0.5, 0.5, 100., 101.)] * 30, [], .3),
+}
+
+
+@pytest.mark.parametrize('case', sorted(_PARITY_CASES))
+def test_preview_reproduces_calibrator_decision(helpers, case):
+    calib_specs, val_specs, prev_cap = _PARITY_CASES[case]
+    rows, prices = _build_fixture(calib_specs, val_specs)
+    preview = _preview(helpers, rows, prices, prev_cap)
+    result, recorded, applied = _run_core(rows, prices, prev_cap)
+    decision = preview['preview']
+    assert decision['would_apply'] is result['applied'] is bool(applied)
+    assert preview['optimal_weight'] == result['optimal_weight']
+    assert preview['curve'] == result['curve']
+    assert preview['signal_count'] == result['signal_count']
+    assert preview['return_basis'] == result['return_basis']
+    if applied:
+        assert applied['weight'] == preview['optimal_weight']
+    if recorded:
+        would = decision['would_record']
+        for key in ('train_window', 'validation_window', 'validation_ev_pct',
+                    'baseline_validation_ev_pct', 'validation_n', 'promoted', 'gate_failures'):
+            assert would[key] == recorded[key], key
+    else:
+        assert 'would_record' not in decision
+    if not result['applied'] and 'reason' in result:
+        assert decision['reason'] == result['reason']
+
+
+def test_curve_reports_fired_counts_on_both_slices(helpers):
+    rows, prices = _build_fixture(_HEAVY, [(0.95, 0.70, 100., 108.)] * 20)
+    preview = _preview(helpers, rows, prices)
+    n_train, n_val = preview['split']['train_n'], preview['split']['validation_n']
+    assert (n_train, n_val) == (49, 21)
+    policy = helpers['_ml_weight_policy']()
+    excluded = helpers['_ml_weight_evaluation'](policy)['excluded']
+    inputs = [helpers['_ml_weight_inputs'](sig, policy, excluded) for sig, _ in rows]
+    for point in preview['curve']:
+        fires = sum(helpers['_ml_candidate_score'](i, point['weight']) > i['buy_threshold']
+                    for i in inputs)
+        assert point['train']['fired'] + point['validation']['fired'] == fires
+        assert point['train']['fired'] <= n_train and point['validation']['fired'] <= n_val
+        assert (point['accuracy'], point['avg_return_pct']) == (
+            point['validation']['accuracy'], point['validation']['avg_return_pct'])
+    assert any(p['train']['fired'] for p in preview['curve'])
+    assert any(not p['train']['fired'] for p in preview['curve'])
+
+
+_WRITERS = {'set_ml_weight_global_cap', '_record_tune_history', '_ml_weight_apply',
+            'set_cap', 'record_history'}
+_WRITE_METHODS = {'add', 'add_all', 'commit', 'flush', 'merge', 'delete', 'execute_write'}
+
+
+@pytest.mark.parametrize('name', ['ml_weight_validation', '_load_ml_weight_rows',
+                                  '_ml_weight_sweep', '_ml_weight_preview'])
+def test_get_path_references_no_writer(name):
+    import ast
+    fn = next(n for n in ast.parse(_CAL_SOURCE).body
+              if isinstance(n, ast.FunctionDef) and n.name == name)
+    names = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
+    names |= {a.name for n in ast.walk(fn) if isinstance(n, ast.ImportFrom) for a in n.names}
+    session_methods = {n.func.attr for n in ast.walk(fn)
+                       if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                       and isinstance(n.func.value, ast.Name) and n.func.value.id == 'session'}
+    assert not names & _WRITERS, names & _WRITERS
+    assert not session_methods & _WRITE_METHODS, session_methods & _WRITE_METHODS
+    if name in ('_ml_weight_sweep', '_ml_weight_preview'):
+        # Pure by signature: no session, so no database access of any kind.
+        assert 'session' not in {a.arg for a in fn.args.args}
+        assert 'session' not in names

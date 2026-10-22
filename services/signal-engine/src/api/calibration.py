@@ -291,22 +291,11 @@ def _ml_weight_evaluation(policy: dict) -> dict:
                          "missing_or_invalid_auc": 0, "missing_or_invalid_scores": 0}}
 
 
-@router.get("/ml-weight-validation")
-def ml_weight_validation(
-    lookback_days: int = Query(180, ge=30, le=730),
-    session: Session = Depends(get_session),
-):
-    """Sweep global ML caps through production fusion for styles without per-style caps.
+_ML_WEIGHT_MIN_VAL_SAMPLES = 15  # same floor already proven in T232-OC3 / T234-SIG-INSAMPLE-GATE-TUNING
 
-    Historical BUY rows require measured AUC and fire strictly above the current effective
-    style/regime BUY boundary. Later production adjustments/gates are not replayed.
-    Response weight fields retain their names for API compatibility but represent caps.
-    """
-    import bisect
 
-    policy = _ml_weight_policy()
-    evaluation = _ml_weight_evaluation(policy)
-
+def _load_ml_weight_rows(session, lookback_days: int):
+    """Read-only inputs shared by the ML-weight preview and the applying calibrator."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     outcome_cutoff = datetime.now(timezone.utc) - timedelta(days=1)
 
@@ -316,13 +305,12 @@ def ml_weight_validation(
         .where(Signal.ts >= cutoff, Signal.ts <= outcome_cutoff)
         .where(Signal.signal == SignalType.BUY)
     ).all()
-
     if not rows:
-        return {"evaluation": evaluation, "lookback_days": lookback_days, "signal_count": 0, "curve": [], "optimal_weight": None}
+        return rows, [], {}, {}
 
     stock_ids = list({sig.stock_id for sig, _ in rows})
     # AQ04 residual: the adjustment evidence travels with the prices, not after them.
-    _actions, _coverage = _load_action_evidence(session, {sym for _, sym in rows})
+    actions, coverage = _load_action_evidence(session, {sym for _, sym in rows})
     price_since = (cutoff - timedelta(days=5)).date()
     price_rows = session.execute(
         select(Price.stock_id, Price.ts, Price.close)
@@ -331,6 +319,30 @@ def ml_weight_validation(
         .where(Price.ts >= price_since)
         .order_by(Price.stock_id, Price.ts)
     ).all()
+    return rows, price_rows, actions, coverage
+
+
+def _ml_weight_sweep(rows, price_rows, actions, coverage, prev_cap) -> dict:
+    """The complete ML-weight evaluation: observations, split, selection and incumbent gate.
+
+    Pure — no session, Redis or file access — so the GET preview and the POST calibrator run
+    the identical decision; only the POST acts on it. `decision` carries the TuneHistory
+    arguments the calibrator records, so the preview cannot report a different outcome.
+    """
+    import bisect
+
+    policy = _ml_weight_policy()
+    evaluation = _ml_weight_evaluation(policy)
+    result = {"evaluation": evaluation, "signal_count": 0, "optimal_weight": None, "curve": [],
+              "return_basis": None, "decision": None}
+
+    def _decide(status, reason, **extra):
+        result["decision"] = {"status": status, "reason": reason, "would_apply": status == "validated",
+                              "previous_cap": prev_cap, **extra}
+        return result
+
+    if not rows:
+        return _decide("no_signals", "no_signals")
 
     _pts: dict[int, list] = {}
     _pclose: dict[int, list] = {}
@@ -342,177 +354,6 @@ def ml_weight_validation(
         d = row.ts.date() if isinstance(row.ts, datetime) else row.ts
         _pts[sid].append(d)
         _pclose[sid].append(float(row.close))
-
-    def _first_close_after(sid, after_date):
-        ts_list = _pts.get(sid)
-        if not ts_list:
-            return None, None
-        idx = bisect.bisect_right(ts_list, after_date)
-        if idx >= len(ts_list):
-            return None, None
-        return _pclose[sid][idx], ts_list[idx]
-
-    def _most_recent_close(sid):
-        ts_list = _pts.get(sid)
-        if not ts_list:
-            return None, None
-        return _pclose[sid][-1], ts_list[-1]
-
-    # Retain model inputs and the style/regime BUY boundary with each return.
-    observations: list[tuple] = []
-    dropped_corrupt = 0      # a recorded action inside the window that could not be applied
-    unverified_used = 0      # no action recorded, completeness unverified — usable, not quotable
-    seen: set[tuple] = set()
-
-    for sig, symbol in rows:
-        signal_date = sig.ts.date() if isinstance(sig.ts, datetime) else sig.ts
-        inputs = _ml_weight_inputs(sig, policy, evaluation["excluded"])
-        if inputs is None:
-            continue
-        key = (sig.stock_id, sig.horizon.value, signal_date)
-        if key in seen:
-            continue
-        seen.add(key)
-
-        reasons = sig.reasons or {}
-        ml_prob = reasons.get("ml_probability")
-        ta_score = reasons.get("ta_score")
-        if ml_prob is None or ta_score is None:
-            continue
-
-        entry, entry_date = _first_close_after(sig.stock_id, signal_date)
-        exit_p, exit_date = _most_recent_close(sig.stock_id)
-        if entry is None or exit_p is None or exit_date is None or exit_date <= signal_date:
-            continue
-        if entry <= 0:
-            continue
-
-        _resolved, _verdict = _observation_basis(
-            list(zip(_pts.get(sig.stock_id, []), _pclose.get(sig.stock_id, []))),
-            _actions, _coverage, symbol, entry_date, exit_date)
-        if not _verdict["usable"]:
-            dropped_corrupt += 1
-            continue
-        if _resolved["prices"]:
-            _adj = dict(_resolved["prices"])
-            entry, exit_p = _adj.get(entry_date, entry), _adj.get(exit_date, exit_p)
-            if entry <= 0:
-                continue
-        else:
-            unverified_used += 1
-
-        pct = (exit_p - entry) / entry * 100
-        observations.append((float(ml_prob), float(ta_score), pct, signal_date, inputs))
-
-    if not observations:
-        return {"evaluation": evaluation, "lookback_days": lookback_days, "signal_count": 0, "curve": [], "optimal_weight": None}
-
-    # Sweep candidate global caps from 0.0 to 1.0 in 0.05 steps
-    weights = [round(w / 20, 2) for w in range(21)]  # 0.00, 0.05, ..., 1.00
-    curve = []
-    best_acc = -1.0
-    optimal_weight = None
-
-    for w in weights:
-        correct = 0
-        returns = []
-        fired = 0
-        for _, _, pct, _, inputs in observations:
-            fused = _ml_candidate_score(inputs, w)
-            if fused > inputs["buy_threshold"]:
-                fired += 1
-                if pct > 0:
-                    correct += 1
-                returns.append(pct)
-
-        acc = round(correct / fired * 100, 1) if fired else None
-        avg_ret = round(sum(returns) / len(returns), 2) if returns else None
-
-        curve.append({"weight": w, "accuracy": acc, "avg_return_pct": avg_ret})
-
-        if acc is not None and acc > best_acc:
-            best_acc = acc
-            optimal_weight = w
-
-    return {
-        "evaluation": evaluation,
-        "lookback_days": lookback_days,
-        "signal_count": len(observations),
-        "optimal_weight": optimal_weight,
-        "optimal_accuracy": round(best_acc, 1) if optimal_weight is not None else None,
-        "current_formula_range": [0.0, 0.75],
-        "return_basis": {
-            "basis": "split_adjusted_price where evidenced, raw price otherwise",
-            "observations_used": len(observations),
-            "dropped_unadjustable_action": dropped_corrupt,
-            "used_unverified_completeness": unverified_used,
-        },
-        "curve": curve,
-    }
-
-
-@router.post("/calibrate_ml_weight")
-def calibrate_ml_weight(
-    lookback_days: int = Query(180, ge=30, le=730),
-    session: Session = Depends(get_session),
-    _: str = Depends(get_current_username),
-):
-    """Sweep global caps through production fusion on the styles that cap governs.
-
-    Select on older observations, validate against the live cap on newer observations,
-    and persist only after validation. Requires measured AUC and effective BUY boundaries;
-    later production adjustments/gates are not replayed. Weight fields represent caps.
-    """
-    from ..generators.signals import set_ml_weight_global_cap, _ml_weight_global_cap as prev_cap
-    import bisect
-
-    policy = _ml_weight_policy()
-    evaluation = _ml_weight_evaluation(policy)
-
-    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
-    outcome_cutoff = datetime.now(timezone.utc) - timedelta(days=1)
-
-    rows = session.execute(
-        select(Signal, Stock.symbol)
-        .join(Stock, Signal.stock_id == Stock.id)
-        .where(Signal.ts >= cutoff, Signal.ts <= outcome_cutoff)
-        .where(Signal.signal == SignalType.BUY)
-    ).all()
-
-    if not rows:
-        return {"evaluation": evaluation, "applied": False, "reason": "no_signals", "optimal_weight": None}
-
-    stock_ids = list({sig.stock_id for sig, _ in rows})
-    # AQ04 residual: the adjustment evidence travels with the prices, not after them.
-    _actions, _coverage = _load_action_evidence(session, {sym for _, sym in rows})
-    price_since = (cutoff - timedelta(days=5)).date()
-    price_rows = session.execute(
-        select(Price.stock_id, Price.ts, Price.close)
-        .where(Price.stock_id.in_(stock_ids))
-        .where(Price.timeframe == TimeFrame.D1)
-        .where(Price.ts >= price_since)
-        .order_by(Price.stock_id, Price.ts)
-    ).all()
-
-    _pts: dict[int, list] = {}
-    _pclose: dict[int, list] = {}
-    for row in price_rows:
-        sid = row.stock_id
-        if sid not in _pts:
-            _pts[sid] = []
-            _pclose[sid] = []
-        d = row.ts.date() if isinstance(row.ts, datetime) else row.ts
-        _pts[sid].append(d)
-        _pclose[sid].append(float(row.close))
-
-    def _first_close_at_or_after(sid, target_date):
-        ts_list = _pts.get(sid)
-        if not ts_list:
-            return None
-        idx = bisect.bisect_left(ts_list, target_date)
-        if idx >= len(ts_list):
-            return None
-        return _pclose[sid][idx]
 
     def _first_close_after(sid, after_date):
         ts_list = _pts.get(sid)
@@ -545,7 +386,8 @@ def calibrate_ml_weight(
     # equally-measured observations. Now uses each signal's own style-specific fixed hold window
     # (_OUTCOME_HOLD_DAYS, the same convention outcomes_calibrate_apply/tune_style_profiles already
     # use), so every observation measures the same kind of thing: return AFTER the horizon this
-    # signal was actually meant to be held for.
+    # signal was actually meant to be held for. The GET preview kept the most-recent-close
+    # convention until 2026-10-22; it now shares this loop.
     observations: list[tuple] = []
     dropped_corrupt = 0      # a recorded action inside the window that could not be applied
     unverified_used = 0      # no action recorded, completeness unverified — usable, not quotable
@@ -559,13 +401,7 @@ def calibrate_ml_weight(
         if key in seen:
             continue
         seen.add(key)
-        reasons = sig.reasons or {}
-        ml_prob = reasons.get("ml_probability")
-        ta_score = reasons.get("ta_score")
-        if ml_prob is None or ta_score is None:
-            continue
-        ts_list = _pts.get(sig.stock_id)
-        if not ts_list:
+        if not _pts.get(sig.stock_id):
             continue
         entry = _first_close_after(sig.stock_id, signal_date)
         if entry is None or entry <= 0:
@@ -576,13 +412,13 @@ def calibrate_ml_weight(
         if exit_p is None:
             continue  # hold window hasn't closed yet — not a resolved observation
 
-        # AQ04 residual: this function WRITES the global ML fusion weight, so an unadjusted
-        # split inside the hold window does not merely misreport — it moves how much the model
-        # is trusted in production. A window with a recorded, unappliable action is dropped; a
-        # window with nothing recorded is kept on raw prices and counted as unverified.
+        # AQ04 residual: the calibrator WRITES the global ML fusion weight from these returns, so
+        # an unadjusted split inside the hold window does not merely misreport — it moves how
+        # much the model is trusted in production. A window with a recorded, unappliable action is
+        # dropped; a window with nothing recorded is kept on raw prices and counted as unverified.
         _resolved, _verdict = _observation_basis(
             list(zip(_pts.get(sig.stock_id, []), _pclose.get(sig.stock_id, []))),
-            _actions, _coverage, symbol, signal_date, exit_date_actual)
+            actions, coverage, symbol, signal_date, exit_date_actual)
         if not _verdict["usable"]:
             dropped_corrupt += 1
             continue
@@ -601,36 +437,30 @@ def calibrate_ml_weight(
             unverified_used += 1
 
         pct = (exit_p - entry) / entry * 100
-        observations.append((float(ml_prob), float(ta_score), pct, signal_date, inputs))
+        observations.append((pct, signal_date, inputs))
 
+    result["signal_count"] = len(observations)
+    # The basis counts travel on every path. "no observations" and "every observation was
+    # dropped as unadjustable" are different facts, and without the counts they look alike.
+    result["return_basis"] = {
+        "basis": "split_adjusted_price where evidenced, raw price otherwise",
+        "observations_used": len(observations),
+        "dropped_unadjustable_action": dropped_corrupt,
+        "used_unverified_completeness": unverified_used,
+    }
     if not observations:
-        # The basis counts travel on THIS path too. "no observations" and "every observation was
-        # dropped as unadjustable" are different facts, and without the counts they look alike.
-        return {"evaluation": evaluation, "applied": False, "reason": "no_observations", "optimal_weight": None,
-                "return_basis": {
-                    "basis": "split_adjusted_price where evidenced, raw price otherwise",
-                    "observations_used": 0,
-                    "dropped_unadjustable_action": dropped_corrupt,
-                    "used_unverified_completeness": unverified_used,
-                }}
+        return _decide("no_observations", "no_observations")
 
     # Sort by date, split older 70% for calibration, newer 30% for validation
-    observations.sort(key=lambda x: x[3])
+    observations.sort(key=lambda x: x[1])
     split = max(1, int(len(observations) * 0.7))
     calib_obs = observations[:split]
     val_obs = observations[split:]
 
-    MIN_VAL_SAMPLES = 15  # same floor already proven in T232-OC3 / T234-SIG-INSAMPLE-GATE-TUNING
-
-    weights = [round(w / 20, 2) for w in range(21)]
-    best_acc = -1.0
-    optimal_weight = None
-    curve = []
-
     def _accuracy_and_return(obs, w):
         correct = fired = 0
         returns = []
-        for _, _, pct, _, inputs in obs:
+        for pct, _, inputs in obs:
             fused = _ml_candidate_score(inputs, w)
             if fused > inputs["buy_threshold"]:
                 fired += 1
@@ -641,64 +471,46 @@ def calibrate_ml_weight(
         avg_ret = sum(returns) / len(returns) if returns else None
         return acc, fired, avg_ret
 
+    def _slice_point(acc, fired, avg_ret):
+        return {"fired": fired,
+                "accuracy": round(acc * 100, 1) if acc is not None else None,
+                "avg_return_pct": round(avg_ret, 2) if avg_ret is not None else None}
+
+    weights = [round(w / 20, 2) for w in range(21)]
+    best_acc = -1.0
+    optimal_weight = None
+    curve = []
     for w in weights:
         # Select weight using calibration set only
-        calib_acc, _, _ = _accuracy_and_return(calib_obs, w)
+        calib_acc, calib_fired, calib_avg = _accuracy_and_return(calib_obs, w)
         if calib_acc is not None and calib_acc > best_acc:
             best_acc = calib_acc
             optimal_weight = w
-
-        # Curve accuracy shown on validation set (display only, same as before)
         v_acc, v_fired, v_avg_ret = _accuracy_and_return(val_obs, w)
-        curve.append({
-            "weight": w,
-            "accuracy": round(v_acc * 100, 1) if v_acc is not None else None,
-            "avg_return_pct": round(v_avg_ret, 2) if v_avg_ret is not None else None,
-        })
+        validation = _slice_point(v_acc, v_fired, v_avg_ret)
+        # Top-level accuracy/avg_return_pct stay the validation slice (existing chart contract).
+        curve.append({"weight": w, "accuracy": validation["accuracy"],
+                      "avg_return_pct": validation["avg_return_pct"],
+                      "train": _slice_point(calib_acc, calib_fired, calib_avg),
+                      "validation": validation})
+    result["curve"] = curve
+    result["optimal_weight"] = optimal_weight
+    result["split"] = {"train_n": len(calib_obs), "validation_n": len(val_obs)}
 
     if optimal_weight is None:
-        return {"evaluation": evaluation, "applied": False,
-                "reason": "no_calibration_buys", "optimal_weight": None,
-                "signal_count": len(observations), "lookback_days": lookback_days,
-                "return_basis": {
-                    "basis": "split_adjusted_price where evidenced, raw price otherwise",
-                    "observations_used": len(observations),
-                    "dropped_unadjustable_action": dropped_corrupt,
-                    "used_unverified_completeness": unverified_used,
-                }, "curve": curve}
+        return _decide("no_calibration_buys", "no_calibration_buys")
 
-    # Apply only after held-out validation against the live cap.
-    import uuid as _uuid
-    _run_id = str(_uuid.uuid4())
-    _train_end = calib_obs[-1][3] if calib_obs else date.today()
-    _train_start = calib_obs[0][3] if calib_obs else date.today()
-    _val_end = val_obs[-1][3] if val_obs else date.today()
-    _val_start = val_obs[0][3] if val_obs else date.today()
+    train_window = (calib_obs[0][1], calib_obs[-1][1])
+    validation_window = (val_obs[0][1], val_obs[-1][1]) if val_obs else (date.today(), date.today())
 
-    if len(val_obs) < MIN_VAL_SAMPLES:
-        _record_tune_history(
-            session, _run_id, "ml_fusion_weight", "ml_weight_global_cap", "ALL", "ALL",
-            old_value={"ml_weight_global_cap": prev_cap}, new_value={"ml_weight_global_cap": optimal_weight},
-            train_window=(_train_start, _train_end), validation_window=(_val_start, _val_end),
-            train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
-            validation_n=len(val_obs), promoted=False,
-            gate_failures=[f"insufficient_validation_samples:{len(val_obs)}<{MIN_VAL_SAMPLES}"],
-        )
-        return {
-            "evaluation": evaluation,
-            "applied": False,
-            "reason": f"only {len(val_obs)} validation-slice observations (need {MIN_VAL_SAMPLES})",
-            "optimal_weight": optimal_weight,
-            "signal_count": len(observations),
-            "lookback_days": lookback_days,
-            "return_basis": {
-                "basis": "split_adjusted_price where evidenced, raw price otherwise",
-                "observations_used": len(observations),
-                "dropped_unadjustable_action": dropped_corrupt,
-                "used_unverified_completeness": unverified_used,
-            },
-            "curve": curve,
-        }
+    if len(val_obs) < _ML_WEIGHT_MIN_VAL_SAMPLES:
+        return _decide(
+            "insufficient_validation_samples",
+            f"only {len(val_obs)} validation-slice observations (need {_ML_WEIGHT_MIN_VAL_SAMPLES})",
+            history={"train_window": train_window, "validation_window": validation_window,
+                     "validation_ev_pct": None, "baseline_validation_ev_pct": None,
+                     "validation_n": len(val_obs), "promoted": False,
+                     "gate_failures": [f"insufficient_validation_samples:{len(val_obs)}<{_ML_WEIGHT_MIN_VAL_SAMPLES}"]})
 
     candidate_acc, candidate_fired, candidate_avg_ret = _accuracy_and_return(val_obs, optimal_weight)
 
@@ -717,70 +529,144 @@ def calibrate_ml_weight(
     candidate_ev = (candidate_avg_ret or 0.0)
     baseline_ev = (baseline_avg_ret or 0.0)
     validated = (
-        candidate_fired >= MIN_VAL_SAMPLES
+        candidate_fired >= _ML_WEIGHT_MIN_VAL_SAMPLES
         and candidate_acc is not None
         and (prev_cap is None or candidate_ev > baseline_ev)
     )
+    comparison = {
+        "baseline_weight": baseline_weight,
+        "candidate_validation_fired": candidate_fired,
+        "baseline_validation_fired": baseline_fired,
+        "candidate_validation_accuracy": round(candidate_acc * 100, 1) if candidate_acc is not None else None,
+        "baseline_validation_accuracy": round(baseline_acc * 100, 1) if baseline_acc is not None else None,
+        "candidate_validation_ev_pct": round(candidate_ev, 2) if candidate_fired else None,
+        "baseline_validation_ev_pct": round(baseline_ev, 2) if baseline_fired else None,
+    }
 
     if not validated:
-        _record_tune_history(
-            session, _run_id, "ml_fusion_weight", "ml_weight_global_cap", "ALL", "ALL",
-            old_value={"ml_weight_global_cap": prev_cap}, new_value={"ml_weight_global_cap": optimal_weight},
-            train_window=(_train_start, _train_end), validation_window=(_val_start, _val_end),
-            train_ev_pct=None, validation_ev_pct=round(candidate_ev, 2) if candidate_fired else None,
-            baseline_validation_ev_pct=round(baseline_ev, 2) if baseline_fired else None,
-            validation_n=candidate_fired, promoted=False,
-            gate_failures=["ev_lift_not_positive_on_validation"],
-        )
-        return {
-            "evaluation": evaluation,
-            "applied": False,
-            "reason": f"candidate weight did not beat the live cap ({baseline_weight}) on the validation slice",
-            "optimal_weight": optimal_weight,
-            "candidate_validation_ev_pct": round(candidate_ev, 2) if candidate_fired else None,
-            "baseline_validation_ev_pct": round(baseline_ev, 2) if baseline_fired else None,
-            "signal_count": len(observations),
-            "lookback_days": lookback_days,
-            "return_basis": {
-                "basis": "split_adjusted_price where evidenced, raw price otherwise",
-                "observations_used": len(observations),
-                "dropped_unadjustable_action": dropped_corrupt,
-                "used_unverified_completeness": unverified_used,
-            },
-            "curve": curve,
-        }
+        return _decide(
+            "not_validated",
+            f"candidate weight did not beat the live cap ({baseline_weight}) on the validation slice",
+            **comparison,
+            history={"train_window": train_window, "validation_window": validation_window,
+                     "validation_ev_pct": round(candidate_ev, 2) if candidate_fired else None,
+                     "baseline_validation_ev_pct": round(baseline_ev, 2) if baseline_fired else None,
+                     "validation_n": candidate_fired, "promoted": False,
+                     "gate_failures": ["ev_lift_not_positive_on_validation"]})
 
-    set_ml_weight_global_cap(optimal_weight)
-    log.info("calibrate_ml_weight: applied cap=%.2f (val_acc=%.1f%%, val_ev=%.2f%%, n=%d, lookback=%dd)",
-             optimal_weight, (candidate_acc or 0.0) * 100, candidate_ev, len(observations), lookback_days)
-    _record_tune_history(
-        session, _run_id, "ml_fusion_weight", "ml_weight_global_cap", "ALL", "ALL",
+    return _decide(
+        "validated", "validated", **comparison,
+        history={"train_window": train_window, "validation_window": validation_window,
+                 "validation_ev_pct": round(candidate_ev, 2),
+                 "baseline_validation_ev_pct": round(baseline_ev, 2),
+                 "validation_n": candidate_fired, "promoted": True,
+                 "gate_failures": ["no_baseline_cap:first_tune"] if prev_cap is None else []})
+
+
+def _ml_weight_apply(session, sweep, prev_cap, lookback_days, set_cap, record_history) -> dict:
+    """Act on a sweep's decision — the only ML-weight path that writes."""
+    decision = sweep["decision"]
+    status = decision["status"]
+    if status == "no_signals":
+        return {"evaluation": sweep["evaluation"], "applied": False, "reason": "no_signals",
+                "optimal_weight": None}
+    base = {"evaluation": sweep["evaluation"], "applied": False, "reason": decision["reason"],
+            "optimal_weight": sweep["optimal_weight"], "signal_count": sweep["signal_count"],
+            "lookback_days": lookback_days, "return_basis": sweep["return_basis"],
+            "curve": sweep["curve"]}
+    if status in ("no_observations", "no_calibration_buys"):
+        return base
+
+    import uuid as _uuid
+    history = decision["history"]
+    optimal_weight = sweep["optimal_weight"]
+    if status == "validated":
+        set_cap(optimal_weight)
+        log.info("calibrate_ml_weight: applied cap=%.2f (val_acc=%.1f%%, val_ev=%.2f%%, n=%d, lookback=%dd)",
+                 optimal_weight, decision["candidate_validation_accuracy"] or 0.0,
+                 history["validation_ev_pct"], sweep["signal_count"], lookback_days)
+    record_history(
+        session, str(_uuid.uuid4()), "ml_fusion_weight", "ml_weight_global_cap", "ALL", "ALL",
         old_value={"ml_weight_global_cap": prev_cap}, new_value={"ml_weight_global_cap": optimal_weight},
-        train_window=(_train_start, _train_end), validation_window=(_val_start, _val_end),
-        train_ev_pct=None, validation_ev_pct=round(candidate_ev, 2),
-        baseline_validation_ev_pct=round(baseline_ev, 2), validation_n=candidate_fired,
-        promoted=True,
-        gate_failures=["no_baseline_cap:first_tune"] if prev_cap is None else [],
+        train_window=history["train_window"], validation_window=history["validation_window"],
+        train_ev_pct=None, validation_ev_pct=history["validation_ev_pct"],
+        baseline_validation_ev_pct=history["baseline_validation_ev_pct"],
+        validation_n=history["validation_n"], promoted=history["promoted"],
+        gate_failures=history["gate_failures"],
     )
+    if status == "insufficient_validation_samples":
+        return base
+    base["candidate_validation_ev_pct"] = decision["candidate_validation_ev_pct"]
+    base["baseline_validation_ev_pct"] = decision["baseline_validation_ev_pct"]
+    if status == "validated":
+        # Promotion reports the recorded (unconditional) EV figures, as it always has.
+        base.update(applied=True, optimal_accuracy=decision["candidate_validation_accuracy"] or 0.0,
+                    previous_cap=prev_cap,
+                    candidate_validation_ev_pct=history["validation_ev_pct"],
+                    baseline_validation_ev_pct=history["baseline_validation_ev_pct"])
+        base.pop("reason")
+    return base
 
-    return {
-        "evaluation": evaluation,
-        "applied": True,
-        "optimal_weight": optimal_weight,
-        "optimal_accuracy": round((candidate_acc or 0.0) * 100, 1),
-        "candidate_validation_ev_pct": round(candidate_ev, 2),
-        "baseline_validation_ev_pct": round(baseline_ev, 2),
-        "signal_count": len(observations),
+
+def _ml_weight_preview(sweep, lookback_days) -> dict:
+    """The calibrator's evaluation, reported without acting on it."""
+    decision = {k: v for k, v in (sweep["decision"] or {}).items() if k != "history"}
+    if (sweep["decision"] or {}).get("history"):
+        decision["would_record"] = sweep["decision"]["history"]
+    out = {
+        "evaluation": sweep["evaluation"],
         "lookback_days": lookback_days,
-        "previous_cap": prev_cap,
-        "return_basis": {
-            "basis": "split_adjusted_price where evidenced, raw price otherwise",
-            "observations_used": len(observations),
-            "dropped_unadjustable_action": dropped_corrupt,
-            "used_unverified_completeness": unverified_used,
-        },
-        "curve": curve,
+        "signal_count": sweep["signal_count"],
+        "optimal_weight": sweep["optimal_weight"],
+        "optimal_accuracy": decision.get("candidate_validation_accuracy"),
+        "current_formula_range": [0.0, 0.75],
+        "curve": sweep["curve"],
+        "preview": decision,
     }
+    if sweep.get("split"):
+        out["split"] = sweep["split"]
+    if sweep["return_basis"] is not None:
+        out["return_basis"] = sweep["return_basis"]
+    return out
+
+
+@router.get("/ml-weight-validation")
+def ml_weight_validation(
+    lookback_days: int = Query(180, ge=30, le=730),
+    session: Session = Depends(get_session),
+):
+    """Read-only preview of POST /calibrate_ml_weight: same observations, hold windows, 70/30
+    chronological split, train-slice selection and live-cap comparison.
+
+    `preview.would_apply` is what the calibrator would decide now; nothing is written. Curve
+    points carry train and validation fired counts; top-level accuracy/avg_return_pct are the
+    validation slice. Later production adjustments/gates are not replayed.
+    """
+    from ..generators.signals import _ml_weight_global_cap as prev_cap
+
+    rows, price_rows, actions, coverage = _load_ml_weight_rows(session, lookback_days)
+    sweep = _ml_weight_sweep(rows, price_rows, actions, coverage, prev_cap)
+    return _ml_weight_preview(sweep, lookback_days)
+
+
+@router.post("/calibrate_ml_weight")
+def calibrate_ml_weight(
+    lookback_days: int = Query(180, ge=30, le=730),
+    session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
+):
+    """Sweep global caps through production fusion on the styles that cap governs.
+
+    Select on older observations, validate against the live cap on newer observations,
+    and persist only after validation. Requires measured AUC and effective BUY boundaries;
+    later production adjustments/gates are not replayed. Weight fields represent caps.
+    """
+    from ..generators.signals import set_ml_weight_global_cap, _ml_weight_global_cap as prev_cap
+
+    rows, price_rows, actions, coverage = _load_ml_weight_rows(session, lookback_days)
+    sweep = _ml_weight_sweep(rows, price_rows, actions, coverage, prev_cap)
+    return _ml_weight_apply(session, sweep, prev_cap, lookback_days,
+                            set_ml_weight_global_cap, _record_tune_history)
 
 
 @router.post("/calibrate_ta_weights")

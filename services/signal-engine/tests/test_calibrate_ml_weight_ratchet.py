@@ -7,11 +7,10 @@ walk this parameter in a bad direction indefinitely, with no requirement to ever
 actually is.
 
 calibration.py can't be imported directly in this environment (it needs common.jwt_auth /
-FastAPI Depends / db, none for-real-installed here) — the function's real body (from the
-`rows`-not-empty check through both return branches) is extracted via exec() and run against
-real synthetic `rows`/`price_rows` fixtures, matching test_calibrate_ta_weights_validation.py's
-established source-text-extraction convention for exactly this class of Docker-only-dependency
-constraint.
+FastAPI Depends / db, none for-real-installed here). Since 2026-10-22 the calibrator is
+`_ml_weight_sweep` (pure evaluation, shared with the GET preview) plus `_ml_weight_apply` (the
+only writing step); both real functions are loaded by AST and run against synthetic
+`rows`/`price_rows` fixtures with the writers injected as fakes.
 """
 import ast
 import math
@@ -56,66 +55,37 @@ def _policy(monkeypatch):
 
 
 def _calibration_helpers():
-    namespace = {"__package__": "src.api", "math": math}
-    nodes = [node for node in ast.parse(_CAL_SOURCE).body
-             if isinstance(node, ast.FunctionDef) and node.name.startswith("_ml_")]
+    """Load every real `_ml_*` function/constant from calibration.py plus the module-level names
+    they use. The DB-reading loader and FastAPI routes are bypassed; rows are injected."""
+    from common.outcome_price_basis import classify_observation_window, resolve_window
+
+    class _FakeLog:
+        def info(self, *a, **kw):
+            pass
+
+    namespace = {"__package__": "src.api", "math": math, "datetime": datetime,
+                 "timedelta": timedelta, "date": date, "_OUTCOME_HOLD_DAYS": _OUTCOME_HOLD_DAYS,
+                 "_resolve_outcome_basis": resolve_window,
+                 "_classify_window": classify_observation_window, "log": _FakeLog()}
+    tree = ast.parse(_CAL_SOURCE).body
+    nodes = [node for node in tree
+             if (isinstance(node, ast.FunctionDef)
+                 and (node.name.startswith("_ml_")
+                      or node.name in ("_observation_basis", "_first_adjusted_after")))
+             or (isinstance(node, ast.Assign) and any(
+                 isinstance(t, ast.Name) and t.id.startswith("_ML_") for t in node.targets))]
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(_CAL_PATH), "exec"), namespace)
     return namespace
 
 
-def _extract_calibrate_ml_weight_core():
-    """Pulls the computational core of calibrate_ml_weight() — from `if not rows:` through the
-    end of the function — out of calibration.py, re-wrapped as a standalone function taking
-    `rows`/`price_rows`/`prev_cap` as parameters and every side-effecting dependency
-    (set_ml_weight_global_cap, _record_tune_history, log) injected as fakes."""
-    # Starts right AFTER the real price_rows = session.execute(...) query (which references
-    # cutoff/session/select — all real-DB constructs this test bypasses by injecting
-    # price_rows directly, already "fetched") — at the point price_rows is first consumed.
-    # _pts/_pclose is not unique to this function elsewhere in the file, so anchor the search
-    # to start from inside calibrate_ml_weight itself (found via its own @router.post decorator)
-    # rather than risk matching an earlier, unrelated function's identical-looking line.
-    fn_start = _CAL_SOURCE.index('@router.post("/calibrate_ml_weight")')
-    start = _CAL_SOURCE.index("    _pts: dict[int, list] = {}", fn_start)
-    end = _CAL_SOURCE.index('\n\n\n@router.post("/calibrate_ta_weights")')
-    body = _CAL_SOURCE[start:end]
-    dedented = "\n".join(line[4:] if line.startswith("    ") else line for line in body.splitlines())
-    func_source = (
-        "def _core(rows, price_rows, prev_cap, set_ml_weight_global_cap, _record_tune_history, log):\n"
-        + "    policy = _ml_weight_policy()\n    evaluation = _ml_weight_evaluation(policy)\n"
-        + "\n".join("    " + line if line.strip() else line for line in dedented.splitlines())
-    )
-    # AQ04 (2026-10-12): the core now classifies each observation's window against corporate
-    # actions. `_observation_basis` is defined above calibrate_ml_weight, outside the extracted
-    # slice, so it is extracted the SAME way rather than re-implemented here — a stub would make
-    # this harness agree with itself instead of with the shipped rule. The evidence maps are
-    # injected empty, which is the "nothing recorded" case: usable on raw prices, exactly the
-    # behaviour these ratchet assertions were written against.
-    from common.outcome_price_basis import (classify_observation_window as _cw,
-                                            resolve_window as _rw)
-    _helper_start = _CAL_SOURCE.index("def _observation_basis(")
-    _helper_end = _CAL_SOURCE.index("\n\n\n", _helper_start)
-    namespace = {
-        "datetime": datetime, "timezone": timezone, "timedelta": timedelta, "date": date,
-        "_OUTCOME_HOLD_DAYS": _OUTCOME_HOLD_DAYS, "bisect": __import__("bisect"),
-        "lookback_days": 180,  # only used in the returned dict for display; real value irrelevant here
-        "session": None,  # real function's own FastAPI route parameter; only forwarded verbatim
-        "_resolve_outcome_basis": _rw, "_classify_window": _cw,
-        "_actions": {}, "_coverage": {},
-    }
-    namespace.update(_calibration_helpers())
-    exec(_CAL_SOURCE[_helper_start:_helper_end], namespace)  # noqa: S102 — real helper source
-    exec(func_source, namespace)  # noqa: S102 — isolated eval of real source
-    return namespace["_core"]
-
-
-_core = None
+_helpers = None
 
 
 def _run_core(rows, price_rows, prev_cap):
-    global _core
-    if _core is None:
-        _core = _extract_calibrate_ml_weight_core()
-
+    """The real calibrator path: shared sweep, then the only writing step, with fake writers."""
+    global _helpers
+    if _helpers is None:
+        _helpers = _calibration_helpers()
     recorded = {}
 
     def _fake_record_tune_history(session, run_id, parameter_class, parameter_name, style, market,
@@ -129,11 +99,9 @@ def _run_core(rows, price_rows, prev_cap):
     def _fake_set_cap(w):
         applied["weight"] = w
 
-    class _FakeLog:
-        def info(self, *a, **kw):
-            pass
-
-    result = _core(rows, price_rows, prev_cap, _fake_set_cap, _fake_record_tune_history, _FakeLog())
+    sweep = _helpers["_ml_weight_sweep"](rows, price_rows, {}, {}, prev_cap)
+    result = _helpers["_ml_weight_apply"](None, sweep, prev_cap, 180, _fake_set_cap,
+                                          _fake_record_tune_history)
     return result, recorded, applied
 
 
