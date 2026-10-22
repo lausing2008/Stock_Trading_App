@@ -1,0 +1,153 @@
+{
+ "revisions": {
+  "completed": 51570,
+  "by_magnitude": {
+   "material": 45470,
+   "rounding": 6100
+  },
+  "magnitude_x_class": {
+   "cross_provider": {
+    "material": 37644,
+    "rounding": 5627
+   },
+   "previous_provider_unknown": {
+    "material": 1827,
+    "rounding": 348
+   },
+   "same_provider": {
+    "material": 5999,
+    "rounding": 125
+   }
+  },
+  "pair_x_magnitude": {
+   "unknown->unusual_whales": {
+    "material": 1826,
+    "rounding": 348
+   },
+   "unknown->yfinance": {
+    "material": 1,
+    "rounding": 0
+   },
+   "unusual_whales->unusual_whales": {
+    "material": 5527,
+    "rounding": 107
+   },
+   "unusual_whales->yfinance": {
+    "material": 20246,
+    "rounding": 3099
+   },
+   "yfinance->unusual_whales": {
+    "material": 17398,
+    "rounding": 2528
+   },
+   "yfinance->yfinance": {
+    "material": 472,
+    "rounding": 18
+   }
+  },
+  "bars_revised": 13424,
+  "revisions_per_bar": {
+   "count": 13424.0,
+   "mean": 3.84,
+   "std": 6.47,
+   "min": 1.0,
+   "25%": 1.0,
+   "50%": 1.0,
+   "75%": 2.0,
+   "max": 33.0
+  }
+ },
+ "rebuilds": {
+  "total": 2413,
+  "by_driver": {
+   "material_cross_provider": 1958,
+   "material_other": 330,
+   "gap_after_checkpoint": 109,
+   "rounding_only": 16
+  },
+  "by_tf_driver": {
+   "15m": {
+    "gap_after_checkpoint": 44,
+    "material_cross_provider": 673,
+    "material_other": 110,
+    "rounding_only": 4
+   },
+   "1h": {
+    "gap_after_checkpoint": 12,
+    "material_cross_provider": 529,
+    "material_other": 100,
+    "rounding_only": 4
+   },
+   "5m": {
+    "gap_after_checkpoint": 53,
+    "material_cross_provider": 756,
+    "material_other": 120,
+    "rounding_only": 8
+   }
+  }
+ },
+ "todays_signals": {
+  "occurrences": 512,
+  "by_observed_in": {
+   "incremental": 374,
+   "rebuild": 138
+  },
+  "emailable_by_observed_in": {
+   "incremental": 16,
+   "rebuild": 8
+  },
+  "emailable_delay_minutes_incremental": {
+   "count": 16.0,
+   "mean": 10.16,
+   "std": 3.67,
+   "min": 5.07,
+   "50%": 9.37,
+   "90%": 14.15,
+   "95%": 15.89,
+   "max": 19.64
+  },
+  "emailable_delay_minutes_rebuild": {
+   "count": 8.0,
+   "mean": 24.25,
+   "std": 18.67,
+   "min": 3.38,
+   "50%": 24.44,
+   "90%": 46.44,
+   "95%": 48.19,
+   "max": 49.94
+  },
+  "emailable_rebuild_by_tf": {
+   "5m": 6,
+   "15m": 2
+  },
+  "emailable_incremental_by_tf": {
+   "5m": 13,
+   "15m": 3
+  }
+ },
+ "scans": {
+  "session_runs": 72,
+  "duration_s": {
+   "count": 72.0,
+   "mean": 305.23,
+   "std": 111.2,
+   "min": 117.66,
+   "50%": 282.06,
+   "90%": 465.64,
+   "95%": 513.28,
+   "max": 644.6
+  },
+  "runs_over_8min": 5,
+  "corr_duration_paused": -0.134,
+  "streams_per_scan": {
+   "count": 72.0,
+   "mean": 348.0,
+   "std": 0.0,
+   "min": 348.0,
+   "50%": 348.0,
+   "90%": 348.0,
+   "95%": 348.0,
+   "max": 348.0
+  }
+ }
+}

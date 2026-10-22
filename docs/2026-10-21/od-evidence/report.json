@@ -1,0 +1,675 @@
+{
+ "session_day": "2026-10-21",
+ "window_utc": [
+  "2026-10-21T08:00:00",
+  "2026-10-22T00:00:00"
+ ],
+ "strategy_version": "LITTLE_RZY_INSPIRED_V1",
+ "note": "Provider acceptance is not confirmed inbox delivery. previous_provider_unknown counts toward neither hypothesis.",
+ "completed_bar_revisions": {
+  "total": 51570,
+  "by_classification": {
+   "previous_provider_unknown": 2175,
+   "cross_provider": 43271,
+   "same_provider": 6124
+  },
+  "by_timeframe": {
+   "5m": 51570
+  },
+  "provider_pairs": [
+   [
+    "unusual_whales->yfinance",
+    23345
+   ],
+   [
+    "yfinance->unusual_whales",
+    19926
+   ],
+   [
+    "unusual_whales->unusual_whales",
+    5634
+   ],
+   [
+    "unknown->unusual_whales",
+    2174
+   ],
+   [
+    "yfinance->yfinance",
+    490
+   ],
+   [
+    "unknown->yfinance",
+    1
+   ]
+  ],
+  "bar_age_minutes": {
+   "n": 51570,
+   "median": 115.35,
+   "p90": 895.43,
+   "p95": 1190.49,
+   "max": 1465.46
+  },
+  "by_classification_and_age": {
+   "previous_provider_unknown:>=6h": 2175,
+   "cross_provider:>=6h": 3817,
+   "same_provider:<15m": 5953,
+   "cross_provider:<15m": 3235,
+   "same_provider:<60m": 100,
+   "cross_provider:<60m": 7466,
+   "cross_provider:<6h": 28753,
+   "same_provider:<6h": 70,
+   "same_provider:>=6h": 1
+  },
+  "max_rel_change_pct": {
+   "n": 51570,
+   "median": 0.03,
+   "p90": 0.24,
+   "p95": 0.39,
+   "max": 5.67
+  },
+  "changed_fields": [
+   [
+    "open,volume",
+    11164
+   ],
+   [
+    "close,volume",
+    6200
+   ],
+   [
+    "high,low,close,volume",
+    4547
+   ],
+   [
+    "high,volume",
+    4121
+   ],
+   [
+    "low,volume",
+    3771
+   ],
+   [
+    "high,close,volume",
+    3769
+   ],
+   [
+    "low,close,volume",
+    3522
+   ],
+   [
+    "open,high,volume",
+    3019
+   ]
+  ],
+  "symbols": 153,
+  "top_symbols": [
+   [
+    "SES",
+    1169
+   ],
+   [
+    "DIA",
+    1124
+   ],
+   [
+    "QLD",
+    1040
+   ],
+   [
+    "SOXL",
+    940
+   ],
+   [
+    "ANET",
+    937
+   ],
+   [
+    "CCJ",
+    935
+   ],
+   [
+    "NOW",
+    933
+   ],
+   [
+    "COHR",
+    923
+   ],
+   [
+    "ASX",
+    919
+   ],
+   [
+    "BIP",
+    904
+   ]
+  ]
+ },
+ "completed_bar_hypothesis_tally": {
+  "cross_provider": 43271,
+  "same_provider": 6124,
+  "previous_provider_unknown_not_counted": 2175,
+  "reading": "All timeframes and magnitudes pooled; read completed_bar_revisions_by_timeframe instead."
+ },
+ "completed_bar_revisions_by_timeframe": {
+  "intraday": {
+   "total": 51570,
+   "by_classification": {
+    "previous_provider_unknown": 2175,
+    "cross_provider": 43271,
+    "same_provider": 6124
+   },
+   "by_timeframe": {
+    "5m": 51570
+   },
+   "provider_pairs": [
+    [
+     "unusual_whales->yfinance",
+     23345
+    ],
+    [
+     "yfinance->unusual_whales",
+     19926
+    ],
+    [
+     "unusual_whales->unusual_whales",
+     5634
+    ],
+    [
+     "unknown->unusual_whales",
+     2174
+    ],
+    [
+     "yfinance->yfinance",
+     490
+    ],
+    [
+     "unknown->yfinance",
+     1
+    ]
+   ],
+   "bar_age_minutes": {
+    "n": 51570,
+    "median": 115.35,
+    "p90": 895.43,
+    "p95": 1190.49,
+    "max": 1465.46
+   },
+   "by_classification_and_age": {
+    "previous_provider_unknown:>=6h": 2175,
+    "cross_provider:>=6h": 3817,
+    "same_provider:<15m": 5953,
+    "cross_provider:<15m": 3235,
+    "same_provider:<60m": 100,
+    "cross_provider:<60m": 7466,
+    "cross_provider:<6h": 28753,
+    "same_provider:<6h": 70,
+    "same_provider:>=6h": 1
+   },
+   "max_rel_change_pct": {
+    "n": 51570,
+    "median": 0.03,
+    "p90": 0.24,
+    "p95": 0.39,
+    "max": 5.67
+   },
+   "changed_fields": [
+    [
+     "open,volume",
+     11164
+    ],
+    [
+     "close,volume",
+     6200
+    ],
+    [
+     "high,low,close,volume",
+     4547
+    ],
+    [
+     "high,volume",
+     4121
+    ],
+    [
+     "low,volume",
+     3771
+    ],
+    [
+     "high,close,volume",
+     3769
+    ],
+    [
+     "low,close,volume",
+     3522
+    ],
+    [
+     "open,high,volume",
+     3019
+    ]
+   ],
+   "symbols": 153,
+   "top_symbols": [
+    [
+     "SES",
+     1169
+    ],
+    [
+     "DIA",
+     1124
+    ],
+    [
+     "QLD",
+     1040
+    ],
+    [
+     "SOXL",
+     940
+    ],
+    [
+     "ANET",
+     937
+    ],
+    [
+     "CCJ",
+     935
+    ],
+    [
+     "NOW",
+     933
+    ],
+    [
+     "COHR",
+     923
+    ],
+    [
+     "ASX",
+     919
+    ],
+    [
+     "BIP",
+     904
+    ]
+   ],
+   "by_magnitude": {
+    "material": 45470,
+    "rounding": 6100
+   },
+   "material": {
+    "total": 45470,
+    "by_classification": {
+     "previous_provider_unknown": 1827,
+     "cross_provider": 37644,
+     "same_provider": 5999
+    },
+    "by_timeframe": {
+     "5m": 45470
+    },
+    "provider_pairs": [
+     [
+      "unusual_whales->yfinance",
+      20246
+     ],
+     [
+      "yfinance->unusual_whales",
+      17398
+     ],
+     [
+      "unusual_whales->unusual_whales",
+      5527
+     ],
+     [
+      "unknown->unusual_whales",
+      1826
+     ],
+     [
+      "yfinance->yfinance",
+      472
+     ],
+     [
+      "unknown->yfinance",
+      1
+     ]
+    ],
+    "bar_age_minutes": {
+     "n": 45470,
+     "median": 111.05,
+     "p90": 840.51,
+     "p95": 1185.08,
+     "max": 1440.16
+    },
+    "by_classification_and_age": {
+     "previous_provider_unknown:>=6h": 1827,
+     "cross_provider:>=6h": 3222,
+     "same_provider:<15m": 5861,
+     "cross_provider:<15m": 3145,
+     "same_provider:<60m": 83,
+     "cross_provider:<60m": 6250,
+     "cross_provider:<6h": 25027,
+     "same_provider:<6h": 55
+    },
+    "max_rel_change_pct": {
+     "n": 45470,
+     "median": 0.04,
+     "p90": 0.25,
+     "p95": 0.41,
+     "max": 5.67
+    },
+    "changed_fields": [
+     [
+      "open,volume",
+      9829
+     ],
+     [
+      "close,volume",
+      4912
+     ],
+     [
+      "high,low,close,volume",
+      4474
+     ],
+     [
+      "high,close,volume",
+      3457
+     ],
+     [
+      "low,close,volume",
+      3303
+     ],
+     [
+      "high,volume",
+      3174
+     ],
+     [
+      "low,volume",
+      2980
+     ],
+     [
+      "open,high,volume",
+      2773
+     ]
+    ],
+    "symbols": 153,
+    "top_symbols": [
+     [
+      "QLD",
+      946
+     ],
+     [
+      "COHR",
+      921
+     ],
+     [
+      "NOW",
+      901
+     ],
+     [
+      "BIP",
+      899
+     ],
+     [
+      "DIA",
+      895
+     ],
+     [
+      "ANET",
+      893
+     ],
+     [
+      "SOXL",
+      892
+     ],
+     [
+      "CCJ",
+      883
+     ],
+     [
+      "UNH",
+      855
+     ],
+     [
+      "CAT",
+      837
+     ]
+    ]
+   },
+   "hypothesis_tally": {
+    "by_magnitude": {
+     "material": {
+      "cross_provider": 37644,
+      "same_provider": 5999,
+      "previous_provider_unknown_not_counted": 1827
+     },
+     "rounding": {
+      "cross_provider": 5627,
+      "same_provider": 125,
+      "previous_provider_unknown_not_counted": 348
+     }
+    },
+    "total_by_magnitude": {
+     "material": 45470,
+     "rounding": 6100
+    },
+    "reading": "material cross_provider supports vendor replacement; material same_provider supports corrections within one vendor; rounding-scale changes are precision noise and support neither; unknown supports neither."
+   }
+  },
+  "daily": {
+   "total": 0,
+   "by_classification": {},
+   "by_timeframe": {},
+   "provider_pairs": [],
+   "bar_age_minutes": {
+    "n": 0
+   },
+   "by_classification_and_age": {},
+   "max_rel_change_pct": {
+    "n": 0
+   },
+   "changed_fields": [],
+   "symbols": 0,
+   "top_symbols": [],
+   "by_magnitude": {},
+   "material": {
+    "total": 0,
+    "by_classification": {},
+    "by_timeframe": {},
+    "provider_pairs": [],
+    "bar_age_minutes": {
+     "n": 0
+    },
+    "by_classification_and_age": {},
+    "max_rel_change_pct": {
+     "n": 0
+    },
+    "changed_fields": [],
+    "symbols": 0,
+    "top_symbols": []
+   },
+   "hypothesis_tally": {
+    "by_magnitude": {},
+    "total_by_magnitude": {},
+    "reading": "material cross_provider supports vendor replacement; material same_provider supports corrections within one vendor; rounding-scale changes are precision noise and support neither; unknown supports neither."
+   }
+  }
+ },
+ "forming_bar_updates": {
+  "total": 0,
+  "by_classification": {},
+  "by_timeframe": {},
+  "provider_pairs": [],
+  "bar_age_minutes": {
+   "n": 0
+  },
+  "by_classification_and_age": {},
+  "max_rel_change_pct": {
+   "n": 0
+  },
+  "changed_fields": [],
+  "symbols": 0,
+  "top_symbols": []
+ },
+ "forming_bar_updates_by_timeframe": {
+  "intraday": {
+   "total": 0,
+   "by_classification": {},
+   "by_timeframe": {},
+   "provider_pairs": [],
+   "bar_age_minutes": {
+    "n": 0
+   },
+   "by_classification_and_age": {},
+   "max_rel_change_pct": {
+    "n": 0
+   },
+   "changed_fields": [],
+   "symbols": 0,
+   "top_symbols": []
+  },
+  "daily": {
+   "total": 0,
+   "by_classification": {},
+   "by_timeframe": {},
+   "provider_pairs": [],
+   "bar_age_minutes": {
+    "n": 0
+   },
+   "by_classification_and_age": {},
+   "max_rel_change_pct": {
+    "n": 0
+   },
+   "changed_fields": [],
+   "symbols": 0,
+   "top_symbols": []
+  }
+ },
+ "bar_provenance": {
+  "bars": 16553,
+  "provider_of_last_write": {
+   "unusual_whales": 11713,
+   "yfinance": 4840
+  },
+  "off_grid_by_provider": {
+   "yfinance": 11
+  },
+  "bars_with_completed_revisions": 13424,
+  "volume_only_revisions": 88723,
+  "provider_switches_same_values": 396,
+  "close_to_first_ingest_minutes_5m": {
+   "n": 16542,
+   "median": -4.06,
+   "p90": 200.41,
+   "p95": 275.39,
+   "max": 625.19
+  }
+ },
+ "scans": {
+  "runs": 101,
+  "session_runs": 72,
+  "duration_seconds": {
+   "n": 72,
+   "median": 283.39,
+   "p90": 467.62,
+   "p95": 534.16,
+   "max": 644.6
+  },
+  "minutes_between_session_scans": {
+   "n": 71,
+   "median": 5.0,
+   "p90": 8.0,
+   "p95": 8.98,
+   "max": 11.0
+  },
+  "stream_status_totals": {
+   "stale": 1723,
+   "no_completed_bars": 216,
+   "research_only": 18139,
+   "restatement_pending": 4708,
+   "awaiting_backfill": 270
+  },
+  "paused_stream_scans": 4708,
+  "too_late_to_mail": 2928,
+  "new_emailable_events": 2937,
+  "queued": 9
+ },
+ "rzy_rebuilds": {
+  "source": "little_rzy_rebuilds (append-only)",
+  "total": 2413,
+  "by_reason": {
+   "stored_completed_bar_changed": 2304,
+   "gap_after_checkpoint": 109
+  },
+  "by_timeframe": {
+   "15m": 831,
+   "1h": 645,
+   "5m": 937
+  }
+ },
+ "rzy_streams_paused_at_report_time": 34,
+ "occurrence_source": "little_rzy_occurrences (first observation, survives pruning)",
+ "occurrences_by_observation": {
+  "rebuild": 15951,
+  "incremental": 376
+ },
+ "research_alert_path": {
+  "5m": {
+   "signals": 9,
+   "close_to_recorded_minutes": {
+    "n": 9,
+    "median": 8.67,
+    "p90": 19.64,
+    "p95": 19.64,
+    "max": 19.64
+   },
+   "close_to_provider_accepted_minutes": {
+    "n": 1,
+    "median": 8.06,
+    "p90": 8.06,
+    "p95": 8.06,
+    "max": 8.06
+   },
+   "outcomes": {
+    "accepted": 1,
+    "recorded_too_late_not_queued": 5,
+    "expired": 3
+   }
+  },
+  "15m": {
+   "signals": 2,
+   "close_to_recorded_minutes": {
+    "n": 2,
+    "median": 10.84,
+    "p90": 10.84,
+    "p95": 10.84,
+    "max": 10.84
+   },
+   "close_to_provider_accepted_minutes": {
+    "n": 0
+   },
+   "outcomes": {
+    "suppressed": 2
+   }
+  },
+  "1h": {
+   "signals": 0,
+   "close_to_recorded_minutes": {
+    "n": 0
+   },
+   "close_to_provider_accepted_minutes": {
+    "n": 0
+   },
+   "outcomes": {}
+  }
+ },
+ "outbox_states": {
+  "little_rzy:accepted": 4,
+  "little_rzy:suppressed": 2,
+  "little_rzy:expired": 3,
+  "short_term_digest:accepted": 1
+ },
+ "digest": [
+  {
+   "created": "2026-10-21T13:11:55.009344",
+   "accepted": "2026-10-21T13:11:55.021836",
+   "state": "accepted"
+  }
+ ]
+}

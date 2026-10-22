@@ -1,0 +1,24 @@
+{
+ "captured_at": "2026-10-21T20:39:50.982751+00:00",
+ "post_close_confirmed": true,
+ "us_post_close_record": {
+  "job": "us_post_close",
+  "status": "ok",
+  "last_run": "2026-10-21T20:34:37.585513+00:00",
+  "duration_s": 277.5,
+  "error": null
+ },
+ "market_data_release": "b39800d94",
+ "files": {
+  "bar_provenance.csv": "9d7fd419039e6b6e4dc05bee0c090e28fa0293c4a6ae4e28f02c9a46f180e78e",
+  "bar_revisions.csv": "0ef33f1e6565a8a174e1d0629d1c81bf62d17a607e0166b3abae4e3cfa6b151d",
+  "daily_ingest_records.csv": "7156f9d666f460ba517a6c82e0f73e158b0b9cb021fdab7c62d0c098ead16b8f",
+  "manifest.json": "d0fd109d5f62992658d209080a81103654c5bb38a7d943c401facb3746880782",
+  "occurrences.csv": "9f32091fa76fce158c3c57ce893f9a68e52e6108c76a436eefd40e304d58d757",
+  "outbox.csv": "0286d6e97f1a4818adb94260273a9d7228065a071740ac0e9119f7bed3289fec",
+  "rebuilds.csv": "c730c5769f40b2d5fbc389aff657cc0fad632b71f51791cf83562ccf3a9b30cf",
+  "report.json": "b8b7d6bbf9f11237f68ab6967b6b945e45297dc90d8882753f0b0416b04ab95b",
+  "rzy_alert_path.csv": "c91b98f8d23b4b2e55f693847e00b829c5c58bfc4a15632582f0324b83dd99c5",
+  "scan_runs.csv": "df0b211c7c02e64ab8eb98d87451843104f681c3e8576971b3ca95cbb9c482a4"
+ }
+}
