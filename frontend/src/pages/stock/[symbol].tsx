@@ -1,6 +1,6 @@
 /** Stock detail page. Game Plan uses the deterministic copilot rules and stored evidence. */
 import { useRouter } from 'next/router';
-import { optionsFlowUnavailableText } from '@/lib/optionsFlowStatus';
+import { optionsFlowUnavailableText, composition, coverageLine, premiumText, turnoverText, requestFailedText, pct1, CP_CALL_HEAVY, CP_PUT_HEAVY } from '@/lib/optionsFlowStatus';
 import ChartCommandBar from '@/components/ChartCommandBar';
 import type { ChartController } from '@/lib/chartCommands';
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
@@ -677,7 +677,7 @@ export default function StockDetail() {
   const [instOpen, setInstOpen] = useState(false);
   const [chainOpen, setChainOpen] = useState(false);
   const [chainExpiry, setChainExpiry] = useState<string | undefined>(undefined);
-  const { data: optionsFlow } = useSWR(
+  const { data: optionsFlow, error: optionsFlowError, mutate: retryOptionsFlow } = useSWR(
     symbol ? `options-flow-${symbol}` : null,
     () => api.getOptionsFlow(symbol),
     { revalidateOnFocus: false },
@@ -1234,6 +1234,12 @@ export default function StockDetail() {
         })()}
 
         {/* Options Flow */}
+        {!optionsFlow && (
+          <div role="status" aria-label="Options Flow status" style={{ marginBottom: 24, padding: '10px 14px', border: '1px solid #334155', borderRadius: 8, color: '#94a3b8', fontSize: 13 }}>
+            <strong style={{ color: '#cbd5e1' }}>Options Flow</strong> — {optionsFlowError ? requestFailedText(optionsFlowError) : 'loading…'}
+            {optionsFlowError && <button type="button" onClick={() => void retryOptionsFlow()} style={{ marginLeft: 10, fontSize: 12 }}>Retry</button>}
+          </div>
+        )}
         {optionsFlow && !optionsFlow.available && (
           <div role="status" aria-label="Options Flow status" style={{ marginBottom: 24, padding: '10px 14px', border: '1px solid #334155', borderRadius: 8, color: '#94a3b8', fontSize: 13 }}>
             <strong style={{ color: '#cbd5e1' }}>Options Flow</strong> — {optionsFlowUnavailableText(optionsFlow)}
@@ -1250,7 +1256,7 @@ export default function StockDetail() {
               )}
               {optionsFlow.pressure_score != null && (
                 <span
-                  title={`Conviction/intensity, not direction (see sentiment badge for direction) — cp_ratio: ${optionsFlow.pressure_score.components.cp_ratio_pts}/40 · whales: ${optionsFlow.pressure_score.components.whale_pts}/30 · volume: ${optionsFlow.pressure_score.components.volume_pts}/10${optionsFlow.pressure_score.components.uw_gex_proximity_pts != null ? ` · GEX proximity (UW): ${optionsFlow.pressure_score.components.uw_gex_proximity_pts}/20` : ''}`}
+                  title={`Activity intensity points, not direction or confidence (direction is not established) — cp_ratio: ${optionsFlow.pressure_score.components.cp_ratio_pts}/40 · whales: ${optionsFlow.pressure_score.components.whale_pts}/30 · volume: ${optionsFlow.pressure_score.components.volume_pts}/10${optionsFlow.pressure_score.components.uw_gex_proximity_pts != null ? ` · GEX proximity (UW): ${optionsFlow.pressure_score.components.uw_gex_proximity_pts}/20` : ''}`}
                   style={{
                     fontSize: 11, fontWeight: 700, cursor: 'help', borderRadius: 5, padding: '2px 8px',
                     color: optionsFlow.pressure_score.score >= 60 ? '#a78bfa' : optionsFlow.pressure_score.score >= 35 ? '#818cf8' : '#64748b',
@@ -1263,12 +1269,15 @@ export default function StockDetail() {
               )}
             </div>
             <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+              <p aria-label="Options Flow source and coverage" style={{ margin: '0 0 10px', fontSize: 11, color: '#94a3b8' }}>
+                {coverageLine(optionsFlow)}. Direction is not established by these volumes.
+              </p>
               {/* C/P ratio bar */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#64748b', marginBottom: 3 }}>
                     <span>Calls {optionsFlow.call_volume?.toLocaleString()}</span>
-                    <span>C/P {optionsFlow.cp_ratio?.toFixed(2)}</span>
+                    <span>{composition(optionsFlow.call_volume, optionsFlow.put_volume).ratioText}</span>
                     <span>Puts {optionsFlow.put_volume?.toLocaleString()}</span>
                   </div>
                   <div style={{ height: 8, borderRadius: 4, background: '#1e293b', overflow: 'hidden', display: 'flex' }}>
@@ -1282,13 +1291,16 @@ export default function StockDetail() {
                     })()}
                   </div>
                 </div>
-                <div style={{
-                  padding: '3px 10px', borderRadius: 5, fontSize: 11, fontWeight: 700, flexShrink: 0,
-                  background: optionsFlow.sentiment?.includes('bullish') ? 'rgba(34,197,94,0.15)' : optionsFlow.sentiment?.includes('bearish') ? 'rgba(239,68,68,0.15)' : 'rgba(100,116,139,0.15)',
-                  color: optionsFlow.sentiment?.includes('bullish') ? '#4ade80' : optionsFlow.sentiment?.includes('bearish') ? '#f87171' : '#94a3b8',
-                }}>
-                  {(optionsFlow.sentiment ?? 'neutral').replace(/_/g, ' ')}
-                </div>
+                {(() => {
+                  const comp = composition(optionsFlow.call_volume, optionsFlow.put_volume);
+                  const tone = comp.kind === 'call_heavy' ? ['rgba(34,197,94,0.12)', '#4ade80'] : comp.kind === 'put_heavy' ? ['rgba(239,68,68,0.12)', '#f87171'] : ['rgba(100,116,139,0.15)', '#94a3b8'];
+                  return (
+                    <div aria-label="Volume composition" title={`Composition of observed contract volume, not direction: call-heavy when C/P ≥ ${CP_CALL_HEAVY} (≈56.5% calls), put-heavy when C/P ≤ ${CP_PUT_HEAVY} (≈55.6% puts), mixed otherwise. Calls can be sold and puts bought for either view.`}
+                      style={{ padding: '3px 10px', borderRadius: 5, fontSize: 11, fontWeight: 700, flexShrink: 0, background: tone[0], color: tone[1] }}>
+                      {comp.label} · {pct1(comp.callShare)} calls / {pct1(comp.putShare)} puts
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Put-volume spike callout — surfaces whether TODAY's put activity is genuinely
@@ -1297,7 +1309,7 @@ export default function StockDetail() {
               {optionsFlow.unusual && optionsFlow.unusual.length > 0 && (() => {
                 const putUnusual = optionsFlow.unusual.filter(c => c.side === 'put');
                 if (putUnusual.length === 0) return null;
-                const putPremium = putUnusual.reduce((sum, c) => sum + c.premium, 0);
+                const putPremium = putUnusual.reduce((sum, c) => sum + (c.traded_premium ?? c.premium ?? 0), 0);
                 const maxVolOi = Math.max(...putUnusual.map(c => c.vol_oi));
                 const putWhales = putUnusual.filter(c => c.is_whale).length;
                 return (
@@ -1327,7 +1339,7 @@ export default function StockDetail() {
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                       <thead>
                         <tr style={{ borderBottom: '1px solid #1e293b' }}>
-                          {['Side', 'Strike', 'Expiry', 'Volume', 'OI', 'Vol/OI', 'IV', 'ITM', 'Premium'].map(h => (
+                          {['Side', 'Strike', 'Expiry', 'Volume', 'OI', 'Vol/OI', 'IV', 'ITM', 'Paid premium', 'Est. turnover'].map(h => (
                             <th key={h} style={{ padding: '4px 8px', textAlign: 'left', color: '#475569', fontWeight: 500 }}>{h}</th>
                           ))}
                         </tr>
@@ -1347,9 +1359,13 @@ export default function StockDetail() {
                             <td style={{ padding: '5px 8px', color: c.vol_oi > 1 ? '#f59e0b' : '#94a3b8', fontWeight: c.vol_oi > 1 ? 700 : 400 }}>{c.vol_oi.toFixed(2)}×</td>
                             <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{c.iv.toFixed(0)}%</td>
                             <td style={{ padding: '5px 8px', color: c.itm ? '#4ade80' : '#475569' }}>{c.itm ? 'ITM' : 'OTM'}</td>
-                            <td style={{ padding: '5px 8px', color: c.is_whale ? '#f59e0b' : '#475569', fontWeight: c.is_whale ? 700 : 400 }}>
-                              {c.premium >= 1_000_000 ? `$${(c.premium / 1_000_000).toFixed(1)}M` : c.premium >= 1_000 ? `$${Math.round(c.premium / 1_000)}K` : c.premium > 0 ? `$${c.premium}` : '—'}
+                            <td title={premiumText(c) === 'unavailable' ? 'Paid premium needs trade-level data; the settled chain has none' : 'Premium from the trade tape'}
+                              style={{ padding: '5px 8px', color: c.is_whale ? '#f59e0b' : '#475569', fontWeight: c.is_whale ? 700 : 400 }}>
+                              {premiumText(c)}
                               {c.is_whale && ' 🐋'}
+                            </td>
+                            <td title="Estimate: volume × mid × 100 over the day; not premium anyone paid" style={{ padding: '5px 8px', color: '#64748b' }}>
+                              {turnoverText(c)}
                             </td>
                           </tr>
                         ))}

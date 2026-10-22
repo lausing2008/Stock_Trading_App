@@ -1,0 +1,45 @@
+// @vitest-environment jsdom
+import React from 'react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { SWRConfig } from 'swr';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+const api = vi.hoisted(() => ({ getGammaExposure: vi.fn(), getOptionsExpirations: vi.fn(), getDarkPoolPrints: vi.fn() }));
+vi.mock('@/lib/api', () => ({ api }));
+vi.mock('./OptionsTabCharts', () => ({ GexOiByStrikeChart: () => null, MaxPainByExpiryChart: () => null, OiTermStructureChart: () => null }));
+import MarketPressurePanel from './MarketPressurePanel';
+
+const fresh = (ui: React.ReactElement) => render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false }}>{ui}</SWRConfig>);
+beforeEach(() => Object.values(api).forEach(f => f.mockReset()));
+afterEach(cleanup);
+
+it('shows each failed request as unknown with a retry, instead of rendering nothing', async () => {
+  api.getGammaExposure.mockRejectedValue(new Error('500 Internal Server Error'));
+  api.getOptionsExpirations.mockResolvedValue({ available: false });
+  api.getDarkPoolPrints.mockRejectedValue(new TypeError('Failed to fetch'));
+  fresh(<MarketPressurePanel symbol="MU" />);
+  const status = await screen.findByRole('status', { name: 'Market Pressure status' });
+  await waitFor(() => expect(status.textContent).toContain('dark pool'));
+  expect(status.textContent).toMatch(/dealer gamma: Request failed \(HTTP 500\).*unknown, not empty/);
+  expect(status.textContent).toMatch(/dark pool: Request failed \(network\)/);
+  expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+});
+
+it('renders nothing when every request succeeded with no data, and shows loading while pending', async () => {
+  let release: (v: unknown) => void = () => {};
+  api.getGammaExposure.mockReturnValue(new Promise(r => { release = r; }));
+  api.getOptionsExpirations.mockResolvedValue({ available: false });
+  api.getDarkPoolPrints.mockResolvedValue({ available: false });
+  const view = fresh(<MarketPressurePanel symbol="MU" />);
+  expect((await screen.findByRole('status', { name: 'Market Pressure status' })).textContent).toContain('loading');
+  release({ available: false });
+  await waitFor(() => expect(view.container.textContent).toBe(''));
+});
+
+it('keeps showing loaded data while naming the request that failed', async () => {
+  api.getGammaExposure.mockResolvedValue({ available: true, source: 'unusual_whales', call_wall: 110, put_wall: 90, gamma_flip: 100, as_of_date: '2026-10-21' });
+  api.getOptionsExpirations.mockResolvedValue({ available: false });
+  api.getDarkPoolPrints.mockRejectedValue(new Error('502 Bad Gateway'));
+  fresh(<MarketPressurePanel symbol="MU" />);
+  expect(await screen.findByText('Call wall')).toBeTruthy();
+  await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/dark pool: Request failed \(HTTP 502\)/));
+});

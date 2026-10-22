@@ -1696,7 +1696,12 @@ export type WalkForwardReport = {
   cross_sectional_caveat: string | null;
 };
 export type MLWeightValidation = { lookback_days: number; signal_count: number; optimal_weight: number | null; optimal_accuracy: number | null; current_formula_range: [number, number]; curve: MLWeightCurvePoint[] };
-export type OptionsFlowContract = { expiry: string; side: 'call' | 'put'; strike: number; volume: number; oi: number; vol_oi: number; iv: number; itm: boolean; premium: number; is_whale: boolean };
+export type OptionsFlowContract = { expiry: string; side: 'call' | 'put'; strike: number; volume: number; oi: number; vol_oi: number; iv: number; itm: boolean;
+  /** Paid premium from the tape; null when not captured (the settled chain has none). */
+  premium: number | null; traded_premium?: number | null;
+  /** volume x mid x 100 — an ESTIMATE, never premium. */
+  estimated_turnover?: number | null; premium_basis?: 'tape' | 'estimated_turnover' | 'unavailable';
+  is_whale: boolean | null };
 // MPE-02: composite 0-100 options-pressure (conviction/intensity, not direction — read
 // `sentiment` alongside this for direction) score. See compute_options_pressure_score()'s own
 // docstring in routes.py for the full weighting rationale.
@@ -1710,7 +1715,11 @@ export type OptionsPressureScore = {
   };
   sentiment: string | null;
 };
-export type OptionsFlow = { symbol: string; available: boolean; reason?: string; call_volume?: number; put_volume?: number; cp_ratio?: number; sentiment?: string; unusual_count?: number; unusual?: OptionsFlowContract[]; expiries_used?: string[]; whale_count?: number; top_whale_premium?: number; pressure_score?: OptionsPressureScore | null };
+export type OptionsFlow = { symbol: string; available: boolean; reason?: string; call_volume?: number; put_volume?: number; cp_ratio?: number;
+  /** Legacy label kept for signal-engine; the page shows composition instead. */
+  sentiment?: string; unusual_count?: number; unusual?: OptionsFlowContract[]; expiries_used?: string[];
+  expiries_attempted?: string[]; chain_as_of?: string | null; coverage_status?: string | null; source?: string;
+  whale_count?: number | null; top_whale_premium?: number | null; pressure_score?: OptionsPressureScore | null; last_known_chain_date?: string | null };
 export type OptionsChainRow = { strike: number; bid: number; ask: number; last_price: number; volume: number; oi: number; iv: number; itm: boolean };
 // IF-05: max pain — needs only strike + open interest, no IV/Black-Scholes/dealer-positioning
 // assumption. null when there's zero open interest to compute against for this expiry.

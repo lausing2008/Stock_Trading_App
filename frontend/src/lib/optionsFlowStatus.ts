@@ -18,3 +18,67 @@ export function optionsFlowUnavailableText(flow: OptionsFlow & { last_known_chai
       return `Unavailable${flow.reason ? ` (${flow.reason})` : ''}.`;
   }
 }
+
+/** Phase A (options review F2/F3): composition labels from EXACT volumes. The agreed cut points
+ *  are today's: call-heavy when C/P >= 1.3 (about 56.5% calls), put-heavy when C/P <= 0.8 (about
+ *  55.6% puts), mixed otherwise. Shares are displayed rounded; classification never uses them. */
+export const CP_CALL_HEAVY = 1.3;
+export const CP_PUT_HEAVY = 0.8;
+
+export type Composition = {
+  label: 'Call-heavy volume' | 'Put-heavy volume' | 'Mixed volume' | 'Volume not measured';
+  kind: 'call_heavy' | 'put_heavy' | 'mixed' | 'unmeasured';
+  callShare: number | null;   // 0..1, exact
+  putShare: number | null;
+  ratioText: string;          // e.g. "C/P 1.85" or "C/P undefined (no puts)"
+};
+
+export function composition(call?: number | null, put?: number | null): Composition {
+  const c = call ?? 0, p = put ?? 0, total = c + p;
+  if (call == null || put == null || total <= 0) {
+    return { label: 'Volume not measured', kind: 'unmeasured', callShare: null, putShare: null, ratioText: 'C/P unavailable' };
+  }
+  const callShare = c / total, putShare = p / total;
+  if (p === 0) {
+    return { label: 'Call-heavy volume', kind: 'call_heavy', callShare, putShare, ratioText: 'C/P undefined (no puts)' };
+  }
+  const ratio = c / p;   // exact: a display-rounded 1.30 from 1.296 must NOT read as call-heavy
+  const kind = ratio >= CP_CALL_HEAVY ? 'call_heavy' : ratio <= CP_PUT_HEAVY ? 'put_heavy' : 'mixed';
+  const label = kind === 'call_heavy' ? 'Call-heavy volume' : kind === 'put_heavy' ? 'Put-heavy volume' : 'Mixed volume';
+  return { label, kind, callShare, putShare, ratioText: `C/P ${ratio.toFixed(2)}` };
+}
+
+export const pct1 = (x: number | null) => (x == null ? '—' : `${(x * 100).toFixed(1)}%`);
+
+/** Source date and expiry coverage, shown on the card itself (not only in a tooltip). */
+export function coverageLine(flow: { chain_as_of?: string | null; expiries_used?: string[] | null;
+  expiries_attempted?: string[] | null; coverage_status?: string | null }): string {
+  const used = flow.expiries_used?.length ?? 0;
+  const tried = flow.expiries_attempted?.length ?? used;
+  const status = flow.coverage_status === 'partial' ? 'partial — some expirations could not be read'
+    : flow.coverage_status === 'unverified' ? 'unverified (not proven complete)'
+    : flow.coverage_status ?? 'unknown';
+  return `Settled session ${flow.chain_as_of ? flow.chain_as_of.slice(0, 10) : 'unknown'} · ${used} of ${tried} expirations · coverage ${status}`;
+}
+
+const money = (v: number) => (v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(1)}M` : v >= 1_000 ? `$${Math.round(v / 1_000)}K` : `$${Math.round(v)}`);
+
+/** Paid premium only from the tape; never a chain mark. */
+export function premiumText(c: { traded_premium?: number | null; premium?: number | null }): string {
+  const v = c.traded_premium ?? c.premium;
+  return v != null ? money(v) : 'unavailable';
+}
+
+/** Estimated turnover (volume x mid x 100) — an estimate, never called premium. */
+export function turnoverText(c: { estimated_turnover?: number | null }): string {
+  return c.estimated_turnover != null ? `≈${money(c.estimated_turnover)}` : 'unavailable';
+}
+
+/** A request that failed is not "unavailable" data and not "no activity". */
+export function requestFailedText(error: unknown): string {
+  const msg = error instanceof Error ? error.message : String(error ?? '');
+  if (/timed out/i.test(msg)) return 'Request timed out — the result is unknown, not empty. Try again.';
+  if (/unauthori[sz]ed|session expired/i.test(msg)) return 'Request was not authorised — sign in again to load this section.';
+  if (/^\d{3}\b/.test(msg)) return `Request failed (HTTP ${msg.slice(0, 3)}) — the result is unknown, not empty. Try again.`;
+  return 'Request failed (network) — the result is unknown, not empty. Try again.';
+}

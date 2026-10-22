@@ -1,5 +1,7 @@
+import React from 'react';
 import useSWR from 'swr';
 import { api } from '@/lib/api';
+import { requestFailedText } from '@/lib/optionsFlowStatus';
 import { GexOiByStrikeChart, MaxPainByExpiryChart, OiTermStructureChart } from './OptionsTabCharts';
 
 /** MPE-06/MPE-03: real dealer gamma exposure (Unusual Whales, when configured/enabled) plus
@@ -12,17 +14,17 @@ import { GexOiByStrikeChart, MaxPainByExpiryChart, OiTermStructureChart } from '
  * since GEX specifically depends on an admin having configured and enabled a paid Unusual
  * Whales subscription (Settings → Market Pressure Data). */
 export default function MarketPressurePanel({ symbol }: { symbol: string }) {
-  const { data: gex } = useSWR(
+  const { data: gex, error: gexError, mutate: retryGex } = useSWR(
     symbol ? `gamma-exposure-${symbol}` : null,
     () => api.getGammaExposure(symbol),
     { revalidateOnFocus: false },
   );
-  const { data: expirations } = useSWR(
+  const { data: expirations, error: expirationsError, mutate: retryExpirations } = useSWR(
     symbol ? `options-expirations-${symbol}` : null,
     () => api.getOptionsExpirations(symbol),
     { revalidateOnFocus: false },
   );
-  const { data: darkPool } = useSWR(
+  const { data: darkPool, error: darkPoolError, mutate: retryDarkPool } = useSWR(
     symbol ? `dark-pool-prints-${symbol}` : null,
     () => api.getDarkPoolPrints(symbol),
     { revalidateOnFocus: false },
@@ -33,7 +35,22 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
   const hasDarkPool = darkPool?.available && (darkPool.prints?.length ?? 0) > 0;
   const hasNope = hasGex && gex?.nope?.nope != null;
 
-  if (!hasGex && !hasExpirations && !hasDarkPool) return null;
+  // Phase A: a request that FAILED is shown (unknown, not empty), and loading is visible. A
+  // section that loaded and simply has no data for this symbol still renders nothing.
+  const failed = [['dealer gamma', gexError, retryGex], ['open-interest rollup', expirationsError, retryExpirations],
+    ['dark pool', darkPoolError, retryDarkPool]].filter(([, e]) => e) as [string, unknown, () => unknown][];
+  const loading = [[gex, gexError], [expirations, expirationsError], [darkPool, darkPoolError]].some(([d, e]) => d === undefined && !e);
+  if (!hasGex && !hasExpirations && !hasDarkPool) {
+    if (failed.length === 0 && !loading) return null;
+    return (
+      <div role="status" aria-label="Market Pressure status" style={{ marginBottom: 24, padding: '10px 14px', border: '1px solid #334155', borderRadius: 8, color: '#94a3b8', fontSize: 13 }}>
+        <strong style={{ color: '#cbd5e1' }}>Market Pressure</strong> — {failed.length
+          ? failed.map(([name, e]) => `${name}: ${requestFailedText(e)}`).join(' ')
+          : 'loading…'}
+        {failed.length > 0 && <button type="button" onClick={() => failed.forEach(([, , retry]) => void retry())} style={{ marginLeft: 10, fontSize: 12 }}>Retry</button>}
+      </div>
+    );
+  }
 
   const levelColor = (level: string): string => {
     if (level === 'extreme') return '#ef4444';
@@ -57,6 +74,11 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
           </span>
         )}
       </div>
+      {failed.length > 0 && (
+        <p role="status" style={{ margin: '0 0 10px', fontSize: 12, color: '#fbbf24' }}>
+          {failed.map(([name, e]) => `${name}: ${requestFailedText(e)}`).join(' ')}
+        </p>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
         {hasGex && (
