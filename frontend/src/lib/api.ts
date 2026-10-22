@@ -1700,10 +1700,16 @@ export type OptionsFlowContract = { expiry: string; side: 'call' | 'put'; strike
   /** Paid premium from the tape; null when not captured (the settled chain has none). */
   premium: number | null; traded_premium?: number | null;
   /** volume x mid x 100 — an ESTIMATE, never premium. */
-  estimated_turnover?: number | null; premium_basis?: 'tape' | 'estimated_turnover' | 'unavailable';
+  estimated_turnover?: number | null; premium_basis?: 'event_level' | 'tape' | 'estimated_turnover' | 'unavailable';
   is_whale: boolean | null;
   /** B1: false once this expiry is past its last trading instant — historical evidence only. */
-  current_candidate?: boolean };
+  current_candidate?: boolean;
+  /** B2: how the turnover estimate was formed, and whether 100 shares/contract is defensible. */
+  turnover_basis?: 'volume_x_midpoint_x_100' | 'volume_x_last_price_x_100' | 'withheld_nonstandard_deliverable' | 'unavailable';
+  multiplier_status?: string };
+/** B3: the unusual-activity selection rule and what it saw versus what it shows. */
+export type UnusualSelection = { rule: string; eligible: { call: number; put: number }; kept: { call: number; put: number }; displayed: { call: number; put: number } };
+export type LowOiActivity = { rule: string; count: { call: number; put: number }; top: { expiry: string; side: 'call' | 'put'; strike: number; volume: number; oi: number }[] };
 /** Options review B1: one source session's expiries split into historical evidence and current candidates. */
 export type ExpiryScope = { source_session: string | null; evaluated_at: string; historical_expiries: string[];
   current_expiries: string[]; excluded_from_current: { expiry: string; reason: string; last_trading_instant: string | null }[]; rule: string };
@@ -1717,6 +1723,8 @@ export type OptionsPressureScore = {
     whale_pts: number;
     volume_pts: number;
     uw_gex_proximity_pts?: number;
+    /** Points available from the components that could be measured — the denominator. */
+    max_possible?: number; measured?: string[]; unmeasured?: string[];
   };
   sentiment: string | null;
 };
@@ -1727,7 +1735,8 @@ export type OptionsFlow = { symbol: string; available: boolean; reason?: string;
   whale_count?: number | null; whale_count_assessed?: number | null; whale_count_total?: number | null; top_whale_premium?: number | null; pressure_score?: OptionsPressureScore | null; last_known_chain_date?: string | null;
   source_session?: string | null; coverage_reason?: string | null; expiry_scope?: ExpiryScope;
   mixed_session_slices?: { expiry: string; as_of: string }[];
-  activity_composition?: 'call_heavy' | 'put_heavy' | 'mixed' | 'unmeasured'; call_share?: number | null; put_share?: number | null };
+  activity_composition?: 'call_heavy' | 'put_heavy' | 'mixed' | 'unmeasured'; call_share?: number | null; put_share?: number | null;
+  unusual_selection?: UnusualSelection; low_oi_activity?: LowOiActivity };
 export type OptionsChainRow = { strike: number; bid: number; ask: number; last_price: number; volume: number; oi: number; iv: number; itm: boolean };
 // IF-05: max pain — needs only strike + open interest, no IV/Black-Scholes/dealer-positioning
 // assumption. null when there's zero open interest to compute against for this expiry.

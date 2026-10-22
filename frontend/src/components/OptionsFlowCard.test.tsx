@@ -35,7 +35,7 @@ it('labels composition from exact volumes, never direction, with visible cut poi
   expect(text).toContain('Settled session 2026-10-20 · 2 of 3 expirations (2026-10-24, 2026-10-31) · coverage partial');
   expect(screen.getAllByText('unavailable').length).toBeGreaterThanOrEqual(2);  // paid premium cells
   expect(screen.getAllByText('≈$48K').length).toBe(3);                        // turnover in its own column
-  expect(text).toContain('Est. turnover (vol × mid × 100)');
+  expect(text).toContain('Est. turnover (vol × mark × 100)');
   expect(text).toContain('Paid premium needs trade-level data');
   expect(text).toContain('≥$600K paid premium (1 of 2 contracts known)');    // partial sum never shown as complete
 });
@@ -65,4 +65,35 @@ it('keeps an expired expiry as labelled historical evidence and carries the arch
   expect(facts).toContain('coverage complete (archive capture reached its last page)');
   expect(facts).toContain('1 of 2 expirations (2026-10-24) have expired since that session — historical evidence only');
   expect(screen.getAllByText(/expired \(historical\)/)).toHaveLength(1);
+});
+
+it('shows call and put callouts symmetrically, the selection rule with counts, and low-OI strikes', () => {
+  render(<OptionsFlowCard flow={flow({
+    unusual_selection: { rule: 'open interest > 50 and volume > 30% of open interest; top 3 per side per expiration', eligible: { call: 5, put: 2 },
+      kept: { call: 3, put: 2 }, displayed: { call: 1, put: 2 } },
+    low_oi_activity: { rule: 'open interest <= 50 and volume >= 100: new or thinly held strikes', count: { call: 1, put: 0 },
+      top: [{ expiry: '2026-10-24', side: 'call', strike: 120, volume: 400, oi: 3 }] },
+    pressure_score: { score: 15, sentiment: null, components: { cp_ratio_pts: 5, whale_pts: 0, volume_pts: 10, max_possible: 70,
+      measured: ['cp_ratio', 'gex', 'volume'], unmeasured: ['whale'] } } })} error={undefined} onRetry={() => {}} />);
+  expect(screen.getByLabelText('Elevated call activity').textContent).toContain('1 call contract shown');
+  expect(screen.getByLabelText('Elevated put activity').textContent).toContain('2 put contracts shown');
+  expect(screen.getByLabelText('Unusual activity selection').textContent)
+    .toBe('Shown: 1 of 5 eligible calls and 2 of 2 eligible puts. Selection: open interest > 50 and volume > 30% of open interest; top 3 per side per expiration');
+  expect(screen.getByLabelText('Low open interest activity').textContent).toContain('CALL $120 · 2026-10-24 · volume 400 vs open interest 3');
+  const pressure = screen.getByText('Pressure 15 / 70 pts');
+  expect(pressure.getAttribute('title')).toMatch(/not measured: whale\. Compare only with scores measuring the same components/);
+  expect(pressure.getAttribute('title')).not.toContain('whales 0/30');
+});
+
+it('says why turnover is withheld for an adjusted contract and labels a last-price estimate', async () => {
+  const { turnoverText } = await import('@/lib/optionsFlowStatus');
+  expect(turnoverText({ estimated_turnover: null, turnover_basis: 'withheld_nonstandard_deliverable' })).toMatch(/withheld \(adjusted contract/);
+  expect(turnoverText({ estimated_turnover: 48_000, turnover_basis: 'volume_x_last_price_x_100' })).toBe('≈$48K (last price, no quote)');
+  expect(turnoverText({ estimated_turnover: 48_000, turnover_basis: 'volume_x_midpoint_x_100' })).toBe('≈$48K');
+});
+
+it('discloses the selection rule even when no contract qualified', () => {
+  render(<OptionsFlowCard flow={flow({ unusual: [], unusual_selection: { rule: 'r', eligible: { call: 0, put: 0 }, kept: { call: 0, put: 0 }, displayed: { call: 0, put: 0 } } })}
+    error={undefined} onRetry={() => {}} />);
+  expect(screen.getByLabelText('Unusual activity selection').textContent).toBe('Shown: 0 of 0 eligible calls and 0 of 0 eligible puts. Selection: r');
 });

@@ -316,3 +316,57 @@ def test_a_pinned_read_returns_that_session_and_never_fetches():
     assert ch["expiries"] == ["2026-10-23"] and ch["calls"][0]["volume"] == 7
     assert (ch["coverage_status"], ch["coverage_reason"]) == ("incomplete", "request_failed")
     assert set(asked) == {older}
+
+
+# ── B2/B3: turnover labelling and selection disclosure on the real route ──────────────────
+
+def _rows(specs):
+    return pd.DataFrame([{"strike": k, "volume": v, "openInterest": oi, "lastPrice": 0.0, "last_price_available": False,
+                          "bid": 1.0, "ask": 1.2, "impliedVolatility": 0.3, "inTheMoney": False,
+                          "option_symbol": sym} for k, v, oi, sym in specs])
+
+
+def _flow_frames(calls, puts):
+    def chain(session, sym, exp, spot=None, as_of=None):
+        return SimpleNamespace(calls=calls, puts=puts, as_of=SESSION.isoformat(),
+                               coverage_status="complete", coverage_reason="terminal_page")
+    with patch.object(routes, "_uw_session_expiries", lambda *_: (SESSION, ["2026-10-23"])), \
+         patch.object(routes, "_uw_option_chain", chain), patch.object(routes, "_get_redis", lambda: _Cache()), \
+         patch.object(routes, "_options_flow_gex_component", lambda *_: None), _Clock(_at(2026, 10, 21, 2, 0)):
+        return routes.get_options_flow("SYNTH", session=None)
+
+
+def test_selection_rule_discloses_eligible_kept_and_displayed_counts_per_side():
+    calls = _rows([(100 + i, 1000 + i, 100, None) for i in range(5)] + [(200, 10, 10_000_000, None)])
+    puts = _rows([(90, 500, 100, None), (80, 300, 10, None), (70, 150, 0, None), (60, 99, 5, None)])
+    out = _flow_frames(calls, puts)
+    sel = out["unusual_selection"]
+    assert sel["eligible"] == {"call": 5, "put": 1}          # all five calls qualified...
+    assert sel["kept"] == {"call": 3, "put": 1}              # ...the per-side cap kept three
+    assert sel["displayed"] == {"call": 3, "put": 1}
+    assert "does not show that positions were opened" in sel["rule"]
+    low = out["low_oi_activity"]
+    assert low["count"] == {"call": 0, "put": 2}             # oi <= 50 and volume >= 100 only
+    assert [r["strike"] for r in low["top"]] == [80.0, 70.0]
+
+
+def test_route_rows_carry_turnover_basis_and_never_a_whale_from_the_chain():
+    calls = _rows([(100, 5000, 100, "SYNTH261023C00100000"), (101, 5000, 100, "SYNTH1261023C00101000")])
+    out = _flow_frames(calls, _rows([(90, 10, 10_000_000, None)]))
+    by_strike = {c["strike"]: c for c in out["unusual"]}
+    assert by_strike[100.0]["estimated_turnover"] == 5000 * 1.1 * 100
+    assert by_strike[100.0]["turnover_basis"] == "volume_x_midpoint_x_100"
+    assert by_strike[101.0]["estimated_turnover"] is None                    # adjusted contract
+    assert by_strike[101.0]["multiplier_status"] == "nonstandard_root_deliverable_unknown"
+    assert all(c["traded_premium"] is None and c["is_whale"] is None for c in out["unusual"])
+    assert out["whale_count"] is None
+
+
+def test_route_last_price_only_row_is_labelled_turnover_end_to_end():
+    calls = pd.DataFrame([{"strike": 100, "volume": 5000, "openInterest": 100, "lastPrice": 2.0, "last_price_available": True,
+                           "bid": 0.0, "ask": 0.0, "impliedVolatility": 0.3, "inTheMoney": False, "option_symbol": None}])
+    out = _flow_frames(calls, _rows([(90, 10, 10_000_000, None)]))
+    row = out["unusual"][0]
+    assert row["turnover_basis"] == "volume_x_last_price_x_100" and row["estimated_turnover"] == 1_000_000.0
+    assert row["traded_premium"] is None and row["is_whale"] is None
+    assert out["whale_count_basis"].startswith("unavailable — no event-level")

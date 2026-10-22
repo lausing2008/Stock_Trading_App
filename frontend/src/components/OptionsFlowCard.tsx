@@ -1,7 +1,7 @@
 import React from 'react';
 import type { OptionsFlow } from '@/lib/api';
 import { optionsFlowUnavailableText, composition, coverageLine, premiumText, turnoverText, requestFailedText, pct1,
-  partialSum, money, lowSideNote, expiredSinceLine, CP_CALL_HEAVY, CP_PUT_HEAVY } from '@/lib/optionsFlowStatus';
+  partialSum, money, lowSideNote, expiredSinceLine, pressureText, pressureTitle, pressureShare, selectionLine, CP_CALL_HEAVY, CP_PUT_HEAVY } from '@/lib/optionsFlowStatus';
 
 /** Options Flow card (options review Phase A): visible loading / request-failed / unavailable
  *  states, composition from exact volumes (never direction), source session and coverage, and
@@ -32,15 +32,15 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
               )}
               {flow.pressure_score != null && (
                 <span
-                  title={`Activity intensity points, not direction or confidence (direction is not established) — cp_ratio: ${flow.pressure_score.components.cp_ratio_pts}/40 · whales: ${flow.pressure_score.components.whale_pts}/30 · volume: ${flow.pressure_score.components.volume_pts}/10${flow.pressure_score.components.uw_gex_proximity_pts != null ? ` · GEX proximity (UW): ${flow.pressure_score.components.uw_gex_proximity_pts}/20` : ''}`}
+                  title={pressureTitle(flow.pressure_score)}
                   style={{
                     fontSize: 11, fontWeight: 700, cursor: 'help', borderRadius: 5, padding: '2px 8px',
-                    color: flow.pressure_score.score >= 60 ? '#a78bfa' : flow.pressure_score.score >= 35 ? '#818cf8' : '#64748b',
-                    background: flow.pressure_score.score >= 60 ? 'rgba(167,139,250,0.12)' : 'rgba(100,116,139,0.1)',
-                    border: `1px solid ${flow.pressure_score.score >= 60 ? 'rgba(167,139,250,0.3)' : 'rgba(100,116,139,0.25)'}`,
+                    color: pressureShare(flow.pressure_score) >= 0.6 ? '#a78bfa' : pressureShare(flow.pressure_score) >= 0.35 ? '#818cf8' : '#64748b',
+                    background: pressureShare(flow.pressure_score) >= 0.6 ? 'rgba(167,139,250,0.12)' : 'rgba(100,116,139,0.1)',
+                    border: `1px solid ${pressureShare(flow.pressure_score) >= 0.6 ? 'rgba(167,139,250,0.3)' : 'rgba(100,116,139,0.25)'}`,
                   }}
                 >
-                  Pressure {flow.pressure_score.score.toFixed(0)}
+                  {pressureText(flow.pressure_score)}
                 </span>
               )}
             </div>
@@ -88,29 +88,31 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
               {/* Put-volume spike callout — surfaces whether TODAY's put activity is genuinely
                   elevated (volume already exceeding existing open interest on the put side),
                   not just restating the raw put_volume number already shown in the bar above. */}
-              {flow.unusual && flow.unusual.length > 0 && (() => {
-                const putUnusual = flow.unusual.filter(c => c.side === 'put');
-                if (putUnusual.length === 0) return null;
-                const paid = partialSum(putUnusual.map(c => c.traded_premium ?? c.premium ?? null));
-                const putPremium = paid.sum;
-                const maxVolOi = Math.max(...putUnusual.map(c => c.vol_oi));
-                const putWhales = putUnusual.filter(c => c.is_whale).length;
+              {/* F5: elevated activity callouts for BOTH sides, same wording and layout — a put-only
+                  callout implied puts were the story. Volume above OI does not show opening trades. */}
+              {flow.unusual && flow.unusual.length > 0 && (['call', 'put'] as const).map(side => {
+                const rows = flow.unusual!.filter(c => c.side === side);
+                if (rows.length === 0) return null;
+                const paid = partialSum(rows.map(c => c.traded_premium ?? c.premium ?? null));
+                const maxVolOi = Math.max(...rows.map(c => c.vol_oi));
+                const whales = rows.filter(c => c.is_whale).length;
+                const tint = side === 'call' ? ['rgba(74,222,128,0.06)', 'rgba(74,222,128,0.2)', '#4ade80'] : ['rgba(239,68,68,0.06)', 'rgba(239,68,68,0.2)', '#f87171'];
                 return (
-                  <div style={{
+                  <div key={side} aria-label={`Elevated ${side} activity`} style={{
                     display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-                    background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)',
-                    borderRadius: 6, padding: '8px 12px', marginBottom: 12, fontSize: 11,
+                    background: tint[0], border: `1px solid ${tint[1]}`,
+                    borderRadius: 6, padding: '8px 12px', marginBottom: 8, fontSize: 11,
                   }}>
-                    <span style={{ fontWeight: 700, color: '#f87171' }}>Elevated put activity (volume vs open interest)</span>
+                    <span style={{ fontWeight: 700, color: tint[2] }}>Elevated {side} activity (volume vs open interest)</span>
                     <span style={{ color: '#94a3b8' }}>
-                      {putUnusual.length} put contract{putUnusual.length !== 1 ? 's' : ''} trading at{' '}
+                      {rows.length} {side} contract{rows.length !== 1 ? 's' : ''} shown, up to{' '}
                       {maxVolOi.toFixed(1)}× today&apos;s volume vs. existing open interest
-                      {paid.known > 0 && ` · ${paid.known < paid.total ? '≥' : ''}${money(putPremium)} paid premium${paid.known < paid.total ? ` (${paid.known} of ${paid.total} contracts known)` : ''}`}
-                      {putWhales > 0 && ` · ${putWhales} whale trade${putWhales !== 1 ? 's' : ''}`}
+                      {paid.known > 0 && ` · ${paid.known < paid.total ? '≥' : ''}${money(paid.sum)} paid premium${paid.known < paid.total ? ` (${paid.known} of ${paid.total} contracts known)` : ''}`}
+                      {whales > 0 && ` · ${whales} whale trade${whales !== 1 ? 's' : ''}`}
                     </span>
                   </div>
                 );
-              })()}
+              })}
 
               {/* Unusual contracts table */}
               {flow.unusual && flow.unusual.length > 0 && (
@@ -122,7 +124,7 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                       <thead>
                         <tr style={{ borderBottom: '1px solid #1e293b' }}>
-                          {['Side', 'Strike', 'Expiry', 'Volume', 'OI', 'Vol/OI', 'IV', 'ITM', 'Paid premium', 'Est. turnover (vol × mid × 100)'].map(h => (
+                          {['Side', 'Strike', 'Expiry', 'Volume', 'OI', 'Vol/OI', 'IV', 'ITM', 'Paid premium', 'Est. turnover (vol × mark × 100)'].map(h => (
                             <th key={h} style={{ padding: '4px 8px', textAlign: 'left', color: '#475569', fontWeight: 500 }}>{h}</th>
                           ))}
                         </tr>
@@ -147,7 +149,7 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
                               {premiumText(c)}
                               {c.is_whale && ' 🐋'}
                             </td>
-                            <td title="Estimate: volume × mid × 100 over the day; not premium anyone paid" style={{ padding: '5px 8px', color: '#64748b' }}>
+                            <td title="Estimate: volume × mark × 100 over the day (midpoint, else last price); not premium anyone paid" style={{ padding: '5px 8px', color: '#64748b' }}>
                               {turnoverText(c)}
                             </td>
                           </tr>
@@ -157,9 +159,25 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
                   </div>
                   <p style={{ margin: '6px 0 0', fontSize: 11, color: '#64748b' }}>
                     Paid premium needs trade-level data and reads &quot;unavailable&quot; where none was captured (the settled chain has none).
-                    Est. turnover = volume × mid × 100 over the day — an estimate, not premium anyone paid.
+                    Est. turnover = volume × mark × 100 over the day (midpoint, else last price) — an estimate, not premium anyone paid;
+                    withheld for adjusted contracts whose deliverable may not be 100 shares.
                   </p>
                 </>
+              )}
+              {/* Shown even when nothing qualified: "0 of 0 eligible" is not "no activity". */}
+              {selectionLine(flow.unusual_selection) && (
+                <p aria-label="Unusual activity selection" style={{ margin: '6px 0 0', fontSize: 11, color: '#64748b' }}>{selectionLine(flow.unusual_selection)}</p>
+              )}
+              {flow.low_oi_activity && (flow.low_oi_activity.count.call + flow.low_oi_activity.count.put) > 0 && (
+                <div aria-label="Low open interest activity" style={{ marginTop: 10, fontSize: 11, color: '#94a3b8' }}>
+                  <div style={{ fontSize: 10, color: '#475569', fontWeight: 700, letterSpacing: '0.06em', marginBottom: 4 }}>
+                    NEW OR THINLY HELD STRIKES — {flow.low_oi_activity.count.call} call{flow.low_oi_activity.count.call === 1 ? '' : 's'}, {flow.low_oi_activity.count.put} put{flow.low_oi_activity.count.put === 1 ? '' : 's'}
+                  </div>
+                  {flow.low_oi_activity.top.map(r => (
+                    <div key={`${r.expiry}-${r.side}-${r.strike}`}>{r.side.toUpperCase()} ${r.strike} · {r.expiry} · volume {r.volume.toLocaleString()} vs open interest {r.oi.toLocaleString()}</div>
+                  ))}
+                  <p style={{ margin: '4px 0 0', color: '#64748b' }}>{flow.low_oi_activity.rule}.</p>
+                </div>
               )}
             </div>
           </div>

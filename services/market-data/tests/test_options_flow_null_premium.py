@@ -46,6 +46,9 @@ def _run(calls, puts, call_unusual, put_unusual=0, chain_fails=False):
         if isinstance(node, ast.FunctionDef) and node.name in NAMES:
             node.decorator_list = []
             exec(compile(ast.Module(body=[node], type_ignores=[]), str(SRC), "exec"), ns)
+    from src.api import routes as _real   # module constants + helpers the exec'd bodies reference
+    ns.update({k: getattr(_real, k) for k in ("_UNUSUAL_MIN_OI", "_UNUSUAL_VOL_OI", "_LOW_OI_MIN_VOLUME",
+                                             "contract_multiplier_status")})
     saved = {n: sys.modules.get(n) for n in ("t.services.uw_option_chain", "t.services.options_scope")}
     from src.services import options_scope as _scope
     sys.modules["t.services.options_scope"] = _scope

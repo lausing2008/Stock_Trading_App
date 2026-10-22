@@ -133,8 +133,38 @@ export function premiumText(c: { traded_premium?: number | null; premium?: numbe
 }
 
 /** Estimated turnover (volume x mid x 100) — an estimate, never called premium. */
-export function turnoverText(c: { estimated_turnover?: number | null }): string {
-  return c.estimated_turnover != null ? `≈${money(c.estimated_turnover)}` : 'unavailable';
+export function turnoverText(c: { estimated_turnover?: number | null; turnover_basis?: string }): string {
+  if (c.turnover_basis === 'withheld_nonstandard_deliverable') return 'withheld (adjusted contract; deliverable may not be 100 shares)';
+  if (c.estimated_turnover == null) return 'unavailable';
+  return `≈${money(c.estimated_turnover)}${c.turnover_basis === 'volume_x_last_price_x_100' ? ' (last price, no quote)' : ''}`;
+}
+
+/** Badge emphasis only (never displayed): points relative to the MEASURED maximum, so a
+ *  score whose whale/GEX parts could not be measured is not held to an unreachable bar. */
+export function pressureShare(p: { score: number; components: { max_possible?: number } }): number {
+  const max = p.components.max_possible ?? 100;
+  return max > 0 ? p.score / max : 0;
+}
+
+/** Pressure as a point total out of what could be measured — never a percentage (F5). */
+export function pressureText(p: { score: number; components: { max_possible?: number } }): string {
+  return p.components.max_possible != null ? `Pressure ${p.score.toFixed(0)} / ${p.components.max_possible.toFixed(0)} pts` : `Pressure ${p.score.toFixed(0)} pts`;
+}
+
+export function pressureTitle(p: { components: { cp_ratio_pts: number; whale_pts: number; volume_pts: number; uw_gex_proximity_pts?: number;
+  measured?: string[]; unmeasured?: string[] } }): string {
+  const c = p.components;
+  return `Activity intensity points, not direction, confidence or a probability. Measured: ${(c.measured ?? []).join(', ') || 'unknown'}`
+    + `${c.unmeasured?.length ? `; not measured: ${c.unmeasured.join(', ')}` : ''}. Compare only with scores measuring the same components. `
+    + `cp_ratio ${c.cp_ratio_pts}/40 · volume ${c.volume_pts}/10${c.unmeasured?.includes('whale') ? '' : ` · whales ${c.whale_pts}/30`}`
+    + `${c.uw_gex_proximity_pts != null ? ` · GEX proximity ${c.uw_gex_proximity_pts}/20` : ''}`;
+}
+
+/** "Shown 3 of 5 eligible calls and 1 of 1 eligible put" plus the rule. */
+export function selectionLine(sel?: { rule: string; eligible: { call: number; put: number }; displayed: { call: number; put: number } } | null): string | null {
+  if (!sel) return null;
+  const part = (side: 'call' | 'put') => `${sel.displayed[side]} of ${sel.eligible[side]} eligible ${side}${sel.eligible[side] === 1 ? '' : 's'}`;
+  return `Shown: ${part('call')} and ${part('put')}. Selection: ${sel.rule}`;
 }
 
 /** A request that failed is not "unavailable" data and not "no activity". */

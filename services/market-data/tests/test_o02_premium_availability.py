@@ -74,9 +74,9 @@ def _extract(name: str):
     return ns[name]
 
 
-unusual_premium_fields = _extract("unusual_premium_fields")
-whale_coverage = _extract("whale_coverage")
-compute_options_pressure_score = _extract("compute_options_pressure_score")
+# The REAL functions (routes.py imports in this test environment); unusual_premium_fields now
+# calls contract_multiplier_status, which a single-function extraction would not carry.
+from src.api.routes import unusual_premium_fields, whale_coverage, compute_options_pressure_score  # noqa: E402
 
 
 def _premium_fields(last_price, *, available, bid=4.9, ask=5.1, vol=4000):
@@ -104,11 +104,37 @@ def test_the_estimate_is_offered_but_never_called_premium():
     assert got["traded_premium"] is None and got["is_whale"] is None
 
 
-def test_a_genuine_tape_price_still_produces_a_real_premium_and_whale():
+def test_event_level_premium_still_produces_a_real_premium_and_whale():
     """The control. The fix must not blind the path that does have the data."""
-    got = _premium_fields(2.0, available=True, vol=4000)
+    got = unusual_premium_fields(4000, 0.0, 4.9, 5.1, event_premium=800_000.0)
     assert got["traded_premium"] == 800_000.0
-    assert got["is_whale"] is True and got["premium_basis"] == "tape"
+    assert got["is_whale"] is True and got["premium_basis"] == "event_level"
+
+
+def test_a_last_price_times_daily_volume_is_turnover_never_premium():
+    """Options review F6: one price times a whole day's volume says nothing about what any
+    buyer paid, nor that one large buyer existed. It used to become traded_premium and a whale."""
+    got = _premium_fields(200.0, available=True, bid=None, ask=None, vol=4000)
+    assert got["traded_premium"] is None and got["is_whale"] is None
+    assert got["estimated_turnover"] == 80_000_000.0
+    assert got["turnover_basis"] == "volume_x_last_price_x_100"
+    mid = _premium_fields(200.0, available=True, vol=4000)
+    assert mid["turnover_basis"] == "volume_x_midpoint_x_100" and mid["traded_premium"] is None
+
+
+def test_an_adjusted_contract_gets_no_turnover_rather_than_a_guessed_multiplier():
+    from src.api.routes import contract_multiplier_status
+    assert contract_multiplier_status("MU261023C00900000", "MU") == "standard_root_100_assumed"
+    assert contract_multiplier_status("MU1261023C00900000", "MU") == "nonstandard_root_deliverable_unknown"
+    assert contract_multiplier_status("BRKB261023C00500000", "BRK.B") == "standard_root_100_assumed"
+    assert contract_multiplier_status(None, "MU") == "unverified_100_assumed"
+    assert contract_multiplier_status("BRK.B261023C00500000", "BRK.B") == "standard_root_100_assumed"
+    assert contract_multiplier_status("SPXW261023C05800000", "SPX") == "standard_root_100_assumed"
+    assert contract_multiplier_status("SPXW261023C05800000", "SPY") == "nonstandard_root_deliverable_unknown"
+    adj = unusual_premium_fields(4000, 0.0, 4.9, 5.1, option_symbol="MU1261023C00900000", underlying="MU")
+    assert adj["estimated_turnover"] is None and adj["turnover_basis"] == "withheld_nonstandard_deliverable"
+    std = unusual_premium_fields(4000, 0.0, 4.9, 5.1, option_symbol="MU261023C00900000", underlying="MU")
+    assert std["estimated_turnover"] == 2_000_000.0
 
 
 def test_a_contract_that_really_traded_at_zero_is_not_the_same_as_no_tape_field():
@@ -231,8 +257,8 @@ def test_a_contract_with_no_tape_premium_is_never_counted_as_a_non_whale():
     """PARTIAL COVERAGE. A plain `sum(1 for c in unusual if c["is_whale"])` counts an unknown as
     a non-whale, which is the same falsy-zero error one level up."""
     unusual = [
-        unusual_premium_fields(4000, 200.0, 4.9, 5.1),                       # tape: whale
-        unusual_premium_fields(4000, 1.0, 4.9, 5.1),                         # tape: not a whale
+        unusual_premium_fields(4000, 0.0, 4.9, 5.1, event_premium=80_000_000.0),  # events: whale
+        unusual_premium_fields(4000, 0.0, 4.9, 5.1, event_premium=400_000.0),     # events: not a whale
         unusual_premium_fields(4000, 0.0, 4.9, 5.1, last_price_available=False),  # unknown
     ]
     got = whale_coverage(unusual)   # THE REAL FUNCTION, not a count computed here
@@ -252,8 +278,8 @@ def test_nothing_assessable_gives_a_null_count_not_a_zero():
 
 
 def test_full_coverage_says_complete_rather_than_partial():
-    got = whale_coverage([unusual_premium_fields(4000, 200.0, 4.9, 5.1),
-                          unusual_premium_fields(4000, 1.0, 4.9, 5.1)])
+    got = whale_coverage([unusual_premium_fields(4000, 0.0, 4.9, 5.1, event_premium=80_000_000.0),
+                          unusual_premium_fields(4000, 0.0, 4.9, 5.1, event_premium=400_000.0)])
     assert got["whale_count"] == 1 and got["whale_count_unknown"] == 0
     assert "complete" in got["whale_count_basis"] and "PARTIAL" not in got["whale_count_basis"]
     assert got["top_whale_premium"] == 80_000_000.0

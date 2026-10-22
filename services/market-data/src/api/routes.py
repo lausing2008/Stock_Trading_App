@@ -1,6 +1,7 @@
 """/stocks, /stocks/{symbol}/prices — read API for market data."""
 from datetime import date, datetime, timedelta, timezone
 import json
+import re
 
 import pandas as pd
 
@@ -3323,6 +3324,11 @@ def relative_performance(
 
 _OPTIONS_TTL = 900  # 15-min cache — options volume refreshes intraday
 
+_UNUSUAL_MIN_OI = 50        # B3: the selection rule, stated once and disclosed in the response
+_UNUSUAL_VOL_OI = 0.30
+_LOW_OI_MIN_VOLUME = 100
+
+
 @router.get("/{symbol}/options-flow")
 def get_options_flow(symbol: str, session: Session = Depends(get_session)):
     """Unusual options activity for a symbol, derived from yfinance options chain.
@@ -3334,7 +3340,7 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
     Returns null fields for HK stocks and others without listed options.
     """
     sym = symbol.upper()
-    cache_key = f"options_flow:v3:{sym}"
+    cache_key = f"options_flow:v4:{sym}"
     try:
         rdb = _get_redis()
         cached = rdb.get(cache_key)
@@ -3363,6 +3369,9 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         received_expiries = []
         mixed_session: list[dict] = []
         archive_coverage: tuple = (None, None)
+        # B3: what the selection rule saw, not only what it kept.
+        eligible = {"call": 0, "put": 0}
+        low_oi: list[dict] = []
 
         # The nearest four expiries OF THE SOURCE SESSION: historical evidence of that session,
         # including a contract that expired at its close. Current tradeability is separate.
@@ -3389,7 +3398,14 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
 
             # Flag contracts where today's volume exceeds 30% of open interest
             for df, side in [(calls, "call"), (puts, "put")]:
-                mask = (df["openInterest"] > 50) & (df["volume"] > df["openInterest"] * 0.30)
+                mask = (df["openInterest"] > _UNUSUAL_MIN_OI) & (df["volume"] > df["openInterest"] * _UNUSUAL_VOL_OI)
+                eligible[side] += int(mask.sum())
+                # New or thinly held strikes are excluded above (vol/OI is undefined or
+                # explosive); report them as their own category instead of silently.
+                lo = (df["openInterest"] <= _UNUSUAL_MIN_OI) & (df["volume"] >= _LOW_OI_MIN_VOLUME)
+                for _, r in df[lo].iterrows():
+                    low_oi.append({"expiry": exp, "side": side, "strike": float(r["strike"]),
+                                   "volume": int(r["volume"]), "oi": int(r["openInterest"])})
                 for _, row in df[mask].sort_values("volume", ascending=False).head(3).iterrows():
                     vol = int(row["volume"])
                     # O02 (2026-10-08): THREE SEPARATE QUANTITIES, NEVER ONE.
@@ -3409,7 +3425,8 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
                     # route and its tests cannot drift apart.
                     _pf = unusual_premium_fields(
                         vol, row.get("lastPrice"), row.get("bid"), row.get("ask"),
-                        last_price_available=row.get("last_price_available"))
+                        last_price_available=row.get("last_price_available"),
+                        option_symbol=row.get("option_symbol"), underlying=sym)
                     unusual.append({
                         "expiry":    exp,
                         "side":      side,
@@ -3452,6 +3469,25 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         # 2+ unusual rows into "fetch_error" and hiding the card (options review F1, 2026-10-21:
         # 9,571 errors in one day). Unknown premium stays unknown.
         unusual = rank_unusual(unusual)
+        _shown = unusual[:10]
+        unusual_selection = {
+            "rule": (f"open interest > {_UNUSUAL_MIN_OI} and volume > {int(_UNUSUAL_VOL_OI * 100)}% of open "
+                     "interest; top 3 per side per expiration, then the 10 largest by contract volume. "
+                     "Volume above open interest does not show that positions were opened."),
+            "eligible": eligible,
+            "kept": {"call": sum(1 for c in unusual if c["side"] == "call"),
+                     "put": sum(1 for c in unusual if c["side"] == "put")},
+            "displayed": {"call": sum(1 for c in _shown if c["side"] == "call"),
+                          "put": sum(1 for c in _shown if c["side"] == "put")},
+        }
+        low_oi.sort(key=lambda r: (-r["volume"], r["expiry"], r["side"], r["strike"]))
+        low_oi_activity = {
+            "rule": (f"open interest <= {_UNUSUAL_MIN_OI} and volume >= {_LOW_OI_MIN_VOLUME}: new or "
+                     "thinly held strikes, excluded from the unusual table because volume/OI is not meaningful"),
+            "count": {"call": sum(1 for r in low_oi if r["side"] == "call"),
+                      "put": sum(1 for r in low_oi if r["side"] == "put")},
+            "top": low_oi[:5],
+        }
 
         # A COUNT OVER UNKNOWNS IS NOT A COUNT. Where no contract has a tape premium, the whale
         # count is UNAVAILABLE rather than zero — the pressure score and the stored ML feature
@@ -3481,7 +3517,9 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
             "sentiment":         sentiment,
             "unusual_count":     len(unusual),
             "unusual_ranking":   "contract volume (premium is not a ranking basis: often unavailable)",
-            "unusual":           unusual[:10],
+            "unusual":           _shown,
+            "unusual_selection": unusual_selection,
+            "low_oi_activity":   low_oi_activity,
             "expiries_used":     received_expiries,
             "expiries_attempted": list(expiries[:4]),
             "coverage_status": _cov_status,
@@ -3585,39 +3623,66 @@ def rank_unusual(rows: list) -> list:
                                        str(r.get("expiry")), str(r.get("side")), float(r.get("strike") or 0.0)))
 
 
-def unusual_premium_fields(volume, last_price, bid, ask, *, last_price_available=None) -> dict:
+# Weekly / PM-settled index roots that are the same 100-multiplier product as their underlying.
+_WEEKLY_INDEX_ROOTS = {"SPXW": "SPX", "NDXP": "NDX", "RUTW": "RUT", "VIXW": "VIX", "XSPW": "XSP"}
+_OCC_SYMBOL = re.compile(r"^([A-Z0-9.]{1,6})(\d{6})([CP])(\d{8})$")
+
+
+def contract_multiplier_status(option_symbol, underlying) -> str:
+    """Options review F6: is 100 shares per contract an assumption we can defend for this row?
+
+    An OCC symbol whose root differs from the underlying (MU vs MU1) marks an ADJUSTED contract
+    after a split, merger or special dividend, whose deliverable may not be 100 shares. Turnover
+    for those is withheld rather than multiplied by a number we do not know."""
+    if not option_symbol or not underlying:
+        return "unverified_100_assumed"
+    m = _OCC_SYMBOL.match(str(option_symbol).strip().upper())
+    if not m:
+        return "unverified_100_assumed"
+    root = m.group(1).replace(".", "")
+    root = _WEEKLY_INDEX_ROOTS.get(root, root)
+    return ("standard_root_100_assumed" if root == str(underlying).upper().replace(".", "")
+            else "nonstandard_root_deliverable_unknown")
+
+
+def unusual_premium_fields(volume, last_price, bid, ask, *, last_price_available=None,
+                           event_premium=None, option_symbol=None, underlying=None) -> dict:
     """THREE SEPARATE QUANTITIES, NEVER ONE. Pure and module-level so a test can call THE REAL
-    FUNCTION rather than describing it — a sabotage run caught a test of mine re-implementing
-    this logic, which meant a change to the real computation passed unnoticed.
+    FUNCTION rather than describing it.
 
-    O02 (2026-10-08). The migrated UW chain has no last-traded field, so its adapter emits
-    `last_price = 0.0`. The route computed `premium = volume * lastPrice * 100`, therefore ZERO
-    for every UW-derived row, and then `is_whale = premium > 500_000`, FALSE for all of them
-    regardless of activity. False reads as "checked, not a whale". That count feeds the
-    options-pressure score AND is persisted as the ML feature `opt_whale_count`, so a missing
-    input was being trained on as a measured zero.
+    O02 (2026-10-08) made a missing tape price an UNKNOWN premium rather than a zero.
+    Options review F6 (2026-10-22) closes the remaining path: a contract-day aggregate is never
+    premium anybody paid. `volume x last_price x 100` multiplies a whole day's volume by ONE
+    price and says nothing about a single large buyer, so it is now turnover like the midpoint.
 
-    Substituting a midpoint does not repair it: volume x mark x 100 is a MARKED TURNOVER
-    ESTIMATE over a day of aggregated, unrelated trades — not premium anybody paid, and not
-    evidence of one large buyer. It is offered under its own name and can never make a whale.
-
-      traded_premium      premium actually paid on the tape; NULL where unavailable
-      estimated_turnover  volume x mark x 100, an estimate, explicitly named
-      is_whale            TRI-STATE. None = unknown, because the tape premium is unavailable.
+      traded_premium      ONLY from `event_premium`: summed price x size of actual trade events
+                          (or a documented provider total). NULL from any chain aggregate.
+      estimated_turnover  volume x mark x 100 (midpoint, else last price), labelled by basis;
+                          NULL when the contract's deliverable may not be 100 shares.
+      is_whale            TRI-STATE, from traded_premium only. None = unknown.
     """
     vol = float(volume or 0)
-    has_tape = ((isinstance(last_price, (int, float)) and float(last_price) > 0)
+    has_last = ((isinstance(last_price, (int, float)) and float(last_price) > 0)
                 if last_price_available is not False else False)
-    mark = None
+    mark, basis = None, None
     if (isinstance(bid, (int, float)) and isinstance(ask, (int, float))
             and float(bid) > 0 and float(ask) > 0 and float(ask) >= float(bid)):
-        mark = (float(bid) + float(ask)) / 2.0
-    traded = round(vol * float(last_price) * 100, 2) if has_tape else None
-    est = round(vol * mark * 100, 2) if mark is not None else None
+        mark, basis = (float(bid) + float(ask)) / 2.0, "volume_x_midpoint_x_100"
+    elif has_last:
+        mark, basis = float(last_price), "volume_x_last_price_x_100"
+    multiplier = contract_multiplier_status(option_symbol, underlying)
+    est = None
+    if mark is not None and multiplier != "nonstandard_root_deliverable_unknown":
+        est = round(vol * mark * 100, 2)
+    traded = (round(float(event_premium), 2)
+              if isinstance(event_premium, (int, float)) and float(event_premium) >= 0 else None)
     return {
         "traded_premium": traded,
         "estimated_turnover": est,
-        "premium_basis": ("tape" if traded is not None
+        "turnover_basis": (basis if est is not None else
+                           "withheld_nonstandard_deliverable" if mark is not None else "unavailable"),
+        "multiplier_status": multiplier,
+        "premium_basis": ("event_level" if traded is not None
                           else "estimated_turnover" if est is not None else "unavailable"),
         "premium": traded,
         "is_whale": (traded > 500_000 if traded is not None else None),
@@ -3643,13 +3708,13 @@ def whale_coverage(unusual: list) -> dict:
     turnover = [c["estimated_turnover"] for c in unusual
                 if c.get("estimated_turnover") is not None]
     if count is None:
-        basis = ("unavailable — no contract carries a last-trade price, so no premium actually "
+        basis = ("unavailable — no event-level (trade print) premium was captured for any contract, so no premium actually "
                  "paid can be computed for any of them")
     elif unknown == 0:
-        basis = f"tape premium — complete: all {len(unusual)} unusual contract(s) assessed"
+        basis = f"event-level premium — complete: all {len(unusual)} unusual contract(s) assessed"
     else:
-        basis = (f"tape premium — PARTIAL: {len(known)} of {len(unusual)} unusual contract(s) "
-                 f"could be assessed; the remaining {unknown} carry no last-trade price and are "
+        basis = (f"event-level premium — PARTIAL: {len(known)} of {len(unusual)} unusual contract(s) "
+                 f"could be assessed; the remaining {unknown} have no event-level premium and are "
                  f"neither counted as whales nor as non-whales")
     return {"whale_count": count, "whale_count_unknown": unknown,
             "whale_count_assessed": len(known), "whale_count_total": len(unusual),
@@ -3819,10 +3884,12 @@ def _uw_option_chain(session: Session, sym: str, exp: str | None = None, spot: f
             # Beyond anything yfinance ever provided.
             "delta": r.get("delta"), "gamma": r.get("gamma"), "theta": r.get("theta"),
             "vega": r.get("vega"), "rho": r.get("rho"),
+            # F6: the OCC symbol is what tells an adjusted (non-100-share) contract apart.
+            "option_symbol": r.get("option_symbol"),
         } for r in rows] or [], columns=[
             "strike", "bid", "ask", "lastPrice", "volume", "openInterest",
             "impliedVolatility", "inTheMoney", "last_price_available",
-            "delta", "gamma", "theta", "vega", "rho"])
+            "delta", "gamma", "theta", "vega", "rho", "option_symbol"])
 
     return _ChainPair(_df(ch["calls"]), _df(ch["puts"]), ch["as_of"],
                       ch.get("coverage_status"), ch.get("coverage_reason"))
