@@ -75,4 +75,6 @@ Behaviour changes to know at deploy:
 - Dark-pool prints without a timezone are now quarantined (previously assumed UTC); UW sends `Z` on every print, so none are expected.
 - After deploy, check for duplicate prints: `SELECT symbol, price, size, count(*) FROM dark_pool_prints GROUP BY 1,2,3 HAVING count(*) > 1` restricted to post-deploy rows.
 
-Found, not fixed (pre-existing): the premarket "Options flow" note in `scheduler.py` compares the stored snapshot sentiment against bullish/bearish labels, but the snapshot stores call_heavy/put_heavy/mixed, so the note can never fire.
+Premarket "Options flow" note (pre-existing defect: it compared the stored label against bullish/bearish while snapshots store call_heavy/put_heavy/mixed, so it never fired): fixed separately in `05c063bd`, also held for the market-data deploy. It reports composition from the snapshot's versioned classification with source session and completeness, relabels older rows from stored volumes, marks rows without volumes unclassified, and uses bullish/bearish only with independent directional evidence (none exists in snapshots today).
+
+Status wording: Phase B is **locally validated**, not production-verified. It becomes production-verified only after the deploy and the post-deploy checks (including the duplicate-print query) pass.
