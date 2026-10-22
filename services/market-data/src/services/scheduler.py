@@ -9121,10 +9121,38 @@ def check_little_rzy_workflows():
             scan = rzy.scan(session)
             digest = rzy.morning_digest(session)
             session.commit()
-            delivered = rzy.drain(session, send_email)
-            log.info('little_rzy.workflows', scan=scan, digest=digest, delivery=delivered)
+            # Delivery is NOT done here any more (OD-02 step 4): on 2026-10-21 three queued alerts
+            # expired while waiting for a ~5-minute scan to finish. drain_little_rzy_outbox sends.
+            log.info('little_rzy.workflows', scan=scan, digest=digest)
     except Exception as exc:
         log.error('little_rzy.failed', error=str(exc), exc_info=True)
+    finally:
+        redis_client.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", 1, lock_key, token)
+
+
+def drain_little_rzy_outbox():
+    """Independent sender for Little RZY mail, every minute, never behind a scan (OD-02 step 4).
+
+    Same rzy.drain() as before, so every send-time check is unchanged: consent/opt-out and
+    watchlist/timeframe, the stream's CURRENT generation and figures, pauses, expiry (the outbox
+    expires a row at send time), and exactly-once claims (outbox leases; a row is claimed by one
+    worker). Its own lock only stops two drains from overlapping in this process family.
+    """
+    import uuid
+    from . import rzy_workflow as rzy
+    from .email_service import send_email
+    token = uuid.uuid4().hex
+    lock_key = 'stockai:lock:little_rzy_drain'
+    redis_client = _get_redis()
+    if not redis_client.set(lock_key, token, nx=True, ex=120):
+        return
+    try:
+        with SessionLocal() as session:
+            delivered = rzy.drain(session, send_email)
+            if delivered.get('claimed'):
+                log.info('little_rzy.delivery', delivery=delivered)
+    except Exception as exc:
+        log.error('little_rzy.drain_failed', error=str(exc), exc_info=True)
     finally:
         redis_client.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", 1, lock_key, token)
 
@@ -14716,6 +14744,8 @@ def start_scheduler() -> None:
     if _is_alerting_enabled():
         _scheduler.add_job(check_little_rzy_workflows, 'interval', minutes=1,
                            id='little_rzy_workflows', replace_existing=True, **_JOB_DEFAULTS)
+        _scheduler.add_job(drain_little_rzy_outbox, 'interval', minutes=1,
+                           id='little_rzy_drain', replace_existing=True, **_JOB_DEFAULTS)
         # ── Morning digests — one email per market, 40 min before that market opens ─────
         # US 08:50 ET (open 09:30 ET); HK 08:50 HKT (open 09:30 HKT). Each covers only its
         # own market's opportunities/positions — see send_morning_digest's market scoping.

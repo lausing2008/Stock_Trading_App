@@ -96,6 +96,10 @@ with Session() as s:
     run=s.scalars(select(RzyScanRun).order_by(RzyScanRun.id.desc())).first()
     assert run and run.mode=='session' and run.streams==1 and run.duration_seconds>=0 and run.queued==1 and run.new_emailable_events>=1
     assert sum(run.statuses.values())==1
+    from src.services.rzy_models import RzyScanPhases
+    ph=s.get(RzyScanPhases,now.replace(tzinfo=None))
+    assert ph and set(ph.phases)=={'load_and_prepare_bars','evaluate_total','snapshot_and_commit','other'}
+    assert ph.phases['evaluate_total']>=ph.phases['load_and_prepare_bars']>=0
     result['scan_run_recorded']=True
     # The route module only needs db.get_session at import; the probe passes its own session.
     for name in ('get_session','SessionLocal'):
@@ -338,6 +342,20 @@ with Session() as s:
     assert not W.figures_equivalent(dict(sent_f,reward_risk=1.505),dict(sent_f,reward_risk=1.495),1.5)
     assert not W.figures_equivalent(sent_f,dict(sent_f,stop=None),1.5)
     result['tolerant_figure_check']=True
+    # Independent sender (OD-02 step 4): two drains racing for the same row send it ONCE.
+    if engine.dialect.name=='postgresql':
+        import threading
+        r=queue('race'); n=len(sent); errs=[]
+        def run_drain():
+            try:
+                with Session() as s2: W.drain(s2,send,t_send); s2.commit()
+            except Exception as e: errs.append(e)
+        th=[threading.Thread(target=run_drain) for _ in range(4)]
+        for t in th: t.start()
+        for t in th: t.join()
+        s.refresh(r)
+        assert not errs and len(sent)==n+1 and r.state=='accepted', (errs, len(sent)-n, r.state)
+    result['independent_drain_once']=True
     result['delivery_any_generation']=True
     # ── F08: rebuild counts and first observation survive generation pruning ──
     logged=s.scalars(select(RzyRebuild).where(RzyRebuild.stream_key==key)).all()
