@@ -1382,10 +1382,14 @@ def send_premarket_brief_email(
     # ── Section 6: late-day options flow (T257-OVERNIGHT-FLOW-BRIEF Phase 2) ───
     flow_rows_html = ""
     flow_rows_text = ""
+    from .options_scope import describe_flow_snapshot
     for o in options_flow:
         cp = o.get("cp_ratio")
         cp_str = f"{cp:.2f}" if cp is not None else "—"
-        sentiment = (o.get("sentiment") or "neutral").replace("_", " ")
+        # 2026-10-22: composition from the snapshot's versioned classification, with its source
+        # session and completeness. The stored legacy label (bullish/bearish) is never shown:
+        # a volume mix does not establish direction.
+        sentiment = (o.get("flow") or describe_flow_snapshot(o))["text"]
         whale_note = ""
         if o.get("whale_count"):
             whale_note = f' · {o["whale_count"]} whale trade{"s" if o["whale_count"] != 1 else ""} (${o.get("top_whale_premium", 0):,.0f} top)'
@@ -1393,10 +1397,10 @@ def send_premarket_brief_email(
             f'<div style="padding:8px 0;border-bottom:1px solid #f1f5f9;display:flex;'
             f'justify-content:space-between">'
             f'<strong style="font-size:13px">{o.get("symbol","")}</strong>'
-            f'<span style="font-size:12px;color:#64748b">cp_ratio {cp_str} · {sentiment}{whale_note}</span>'
+            f'<span style="font-size:12px;color:#64748b">C/P {cp_str} · {sentiment}{whale_note}</span>'
             f'</div>'
         )
-        flow_rows_text += f'  {o.get("symbol","")}: cp_ratio {cp_str}, {sentiment}{whale_note}\n'
+        flow_rows_text += f'  {o.get("symbol","")}: C/P {cp_str} · {sentiment}{whale_note}\n'
 
     # ── Section 7: today's attention list (T257-OVERNIGHT-FLOW-BRIEF Phase 3) ──
     attention_rows_html = ""

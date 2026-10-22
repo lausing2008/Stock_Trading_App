@@ -22,16 +22,10 @@ def _premarket_brief_body() -> str:
     return _SCHEDULER_SOURCE[start:end]
 
 
-def _extract_build_attention_list():
-    start = _SCHEDULER_SOURCE.index("_ATTENTION_GAP_THRESHOLD_PCT")
-    end = _SCHEDULER_SOURCE.index("\ndef send_premarket_brief(")
-    func_source = _SCHEDULER_SOURCE[start:end]
-    namespace: dict = {}
-    exec(func_source, namespace)  # noqa: S102 — isolated eval of real source, matching repo convention
-    return namespace["_build_attention_list"]
-
-
-_build_attention_list = _extract_build_attention_list()
+# The REAL function: scheduler.py is importable in this test environment now (conftest stubs
+# apscheduler), and the note depends on options_scope.describe_flow_snapshot, which a
+# source-extraction would not carry.
+from src.services.scheduler import _build_attention_list  # noqa: E402
 
 
 def _capture_send():
@@ -116,7 +110,9 @@ def test_slightly_bearish_sentiment_with_no_whale_does_not_count_as_a_reason():
     assert result == []
 
 
-def test_strongly_bullish_sentiment_counts_as_a_reason():
+def test_a_legacy_bullish_label_without_volumes_is_not_a_reason_and_never_printed():
+    """2026-10-22: the legacy ladder's words are not repeated — a volume mix does not establish
+    direction — and a row with no stored volumes cannot be relabelled, so it does not count."""
     result = _build_attention_list(
         symbols={"MSFT"},
         earnings_by_symbol={"MSFT": object()},
@@ -124,8 +120,23 @@ def test_strongly_bullish_sentiment_counts_as_a_reason():
         recent_options_flow=[{"symbol": "MSFT", "sentiment": "strongly_bullish", "whale_count": 0}],
         macro_has_high_impact=False,
     )
+    assert result == []
+
+
+def test_a_legacy_bullish_row_is_relabelled_from_its_stored_volumes():
+    result = _build_attention_list(
+        symbols={"MSFT"},
+        earnings_by_symbol={"MSFT": object()},
+        premarket_movers=[],
+        recent_options_flow=[{"symbol": "MSFT", "sentiment": "strongly_bullish", "whale_count": 0,
+                              "call_volume": 6000, "put_volume": 2000, "as_of": "2026-10-08"}],
+        macro_has_high_impact=False,
+    )
     assert len(result) == 1
-    assert any("bullish" in r.lower() for r in result[0]["reasons"])
+    note = next(r for r in result[0]["reasons"] if r.startswith("Options volume"))
+    assert note.startswith("Options volume call-heavy (75% calls / 25% puts)")
+    assert "relabelled from stored volumes" in note and "direction not established" in note
+    assert "bullish" not in note.lower()
 
 
 def test_neutral_sentiment_with_a_real_whale_still_counts_as_a_reason():
@@ -172,7 +183,10 @@ def test_three_signals_all_appear_in_reasons():
         symbols={"AAPL"},
         earnings_by_symbol={"AAPL": object()},
         premarket_movers=[{"symbol": "AAPL", "change_pct": 3.5}],
-        recent_options_flow=[{"symbol": "AAPL", "sentiment": "bearish", "whale_count": 0}],
+        recent_options_flow=[{"symbol": "AAPL", "sentiment": "put_heavy", "whale_count": 0,
+                              "call_volume": 1000, "put_volume": 3000,
+                              "evidence": {"composition_rule": "exact", "chain_as_of": "2026-10-22",
+                                           "coverage_status": "complete"}}],
         macro_has_high_impact=True,
     )
     assert len(result) == 1

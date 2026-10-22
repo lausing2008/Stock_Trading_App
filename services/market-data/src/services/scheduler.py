@@ -90,6 +90,7 @@ from db import AlertCondition, AnalystPriceTarget, CorporateAction, CorporateAct
 
 
 from .ingestion import ingest_universe
+from .options_scope import describe_flow_snapshot
 from .earnings_phase import (classify_earnings_phase, extract_fiscal_year, extract_period,
                              phase_body, phase_is_notifiable, phase_subject,
                              results_binding)
@@ -3386,6 +3387,8 @@ def _fetch_recent_options_flow(session: Session) -> list[dict]:
             OptionsFlowSnapshot.sentiment,
             OptionsFlowSnapshot.call_premium, OptionsFlowSnapshot.put_premium,
             OptionsFlowSnapshot.whale_count, OptionsFlowSnapshot.top_whale_premium,
+            OptionsFlowSnapshot.call_volume, OptionsFlowSnapshot.put_volume,
+            OptionsFlowSnapshot.evidence, OptionsFlowSnapshot.as_of,
         )
         .join(Stock, OptionsFlowSnapshot.stock_id == Stock.id)
         .where(OptionsFlowSnapshot.as_of == latest_as_of)
@@ -3403,8 +3406,12 @@ def _fetch_recent_options_flow(session: Session) -> list[dict]:
             "put_premium": round(float(put_premium), 2) if put_premium is not None else None,
             "whale_count": whale_count or 0,
             "top_whale_premium": round(float(top_whale_premium), 2) if top_whale_premium else 0,
+            # 2026-10-22: the versioned description the brief shows instead of the raw label.
+            "flow": describe_flow_snapshot({"sentiment": sentiment, "call_volume": call_volume,
+                                            "put_volume": put_volume, "evidence": evidence, "as_of": as_of}),
         }
-        for symbol, cp_ratio, cp_ratio_uncapped, sentiment, call_premium, put_premium, whale_count, top_whale_premium in rows
+        for (symbol, cp_ratio, cp_ratio_uncapped, sentiment, call_premium, put_premium, whale_count,
+             top_whale_premium, call_volume, put_volume, evidence, as_of) in rows
     ]
     results.sort(key=lambda r: abs((r["cp_ratio_uncapped"] or 1.0) - 1.0), reverse=True)
     return results[:10]
@@ -3419,10 +3426,11 @@ def _fetch_recent_options_flow(session: Session) -> list[dict]:
 # conviction alert are for, with their own tracked accuracy; duplicating a direction call here
 # with no outcome tracking would be the dishonest version the design doc explicitly rejects.
 _ATTENTION_GAP_THRESHOLD_PCT = 2.0  # a real, non-noise premarket move
-_ATTENTION_NOTABLE_SENTIMENTS = {"strongly_bullish", "bullish", "bearish"}  # excludes
-# "neutral"/"slightly_bearish" as too weak on their own to flag — see the live options-flow
-# endpoint's own 5-tier ladder (services/market-data/src/api/routes.py's get_options_flow())
-# for why these three specifically read as genuinely lopsided, not marginal.
+# Options flow counts as an attention reason when the snapshot's volume is call-heavy or
+# put-heavy with an adequate sample on both sides (options_scope.describe_flow_snapshot), or a
+# whale was measured. Symmetric: the legacy set counted "bullish" but not "slightly_bearish".
+# The reason text reports composition, session and completeness — never bullish/bearish,
+# because volume mix alone does not establish direction (2026-10-22).
 
 
 def _build_attention_list(
@@ -3454,10 +3462,10 @@ def _build_attention_list(
 
         flow = flow_by_symbol.get(sym)
         if flow is not None:
-            sentiment = flow.get("sentiment")
+            desc = flow.get("flow") or describe_flow_snapshot(flow)
             has_whale = (flow.get("whale_count") or 0) > 0
-            if sentiment in _ATTENTION_NOTABLE_SENTIMENTS or has_whale:
-                note = f"Options flow {(sentiment or 'unknown').replace('_', ' ')}"
+            if desc["notable"] or has_whale:
+                note = desc["text"]
                 if has_whale:
                     note += f" · {flow['whale_count']} whale trade{'s' if flow['whale_count'] != 1 else ''}"
                 reasons.append(note)

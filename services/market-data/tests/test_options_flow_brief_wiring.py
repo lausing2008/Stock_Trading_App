@@ -41,16 +41,18 @@ def test_options_flow_section_renders_symbol_cp_ratio_and_sentiment():
             to="user@example.com", date_str="d", market="US",
             macro_events=[], my_earnings=[], recent_reactions=[],
             options_flow=[{"symbol": "AAPL", "cp_ratio": 3.5, "sentiment": "strongly_bullish",
+                            "call_volume": 7000, "put_volume": 2000, "as_of": "2026-10-08",
                             "call_premium": 500000.0, "put_premium": 100000.0,
                             "whale_count": 2, "top_whale_premium": 750000.0}],
         )
     html, text = calls[0]["html"], calls[0]["text"]
     assert "AAPL" in html
     assert "3.50" in html
-    assert "strongly bullish" in html
+    assert "bullish" not in html.lower() and "bullish" not in text.lower()   # legacy word never shown
+    assert "Options volume call-heavy (78% calls / 22% puts)" in html
     assert "2 whale trades" in html
     assert "$750,000" in html
-    assert "AAPL: cp_ratio 3.50, strongly bullish" in text
+    assert "AAPL: C/P 3.50 · Options volume call-heavy" in text
 
 
 def test_options_flow_section_has_explicit_empty_state():
@@ -99,9 +101,10 @@ def test_options_flow_missing_cp_ratio_renders_em_dash_not_none_or_crash():
             options_flow=[{"symbol": "NVDA", "cp_ratio": None, "sentiment": None}],
         )
     html = calls[0]["html"]
-    assert "cp_ratio —" in html
-    assert "neutral" in html  # sentiment=None must degrade to "neutral", matching the
-    # underlying compute_options_flow()'s own default when a data point is genuinely unknown
+    assert "C/P —" in html
+    # Missing data is said to be missing — never defaulted to a label such as "neutral".
+    assert "Options volume unclassified · source session unknown · coverage not recorded" in html
+    assert "neutral" not in html
 
 
 # ── scheduler.py wiring — source-text regression checks ──────────────────────────────────────

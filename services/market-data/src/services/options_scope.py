@@ -115,3 +115,56 @@ def expiry_scope(expiries, source_session: date | None, now: datetime | None = N
 def current_expiries(expiries, source_session: date | None, now: datetime | None = None) -> list[str]:
     """Only the expiries a current trade candidate may use."""
     return expiry_scope(expiries, source_session, now)["current_expiries"]
+
+
+# ── Stored snapshots in the premarket brief (2026-10-22) ───────────────────────────────────
+#
+# OptionsFlowSnapshot.sentiment has held three vocabularies: the legacy bullish/bearish ladder
+# (to 2026-10-08), call_heavy/put_heavy/mixed from a ROUNDED ratio (2026-10-09 to the Phase B
+# deploy), and the exact rule (rows whose evidence carries `composition_rule`). The brief must
+# not repeat the legacy direction words: a volume mix does not establish trade direction or
+# intent. Rows without the exact rule are relabelled from their stored volumes and say so.
+
+_COMPOSITION_WORDS = {"call_heavy": "call-heavy", "put_heavy": "put-heavy", "mixed": "mixed",
+                      "unmeasured": "not measured", "unclassified": "unclassified"}
+
+
+def describe_flow_snapshot(row: dict) -> dict:
+    """Composition, classification version, source session, completeness and direction for one
+    stored snapshot row ({sentiment, call_volume, put_volume, evidence, as_of})."""
+    ev = row.get("evidence") or {}
+    stored = row.get("sentiment")
+    calls, puts = row.get("call_volume"), row.get("put_volume")
+    if ev.get("composition_rule") and stored in ("call_heavy", "put_heavy", "mixed", "unmeasured"):
+        label, version = stored, "exact_v1"
+        comp = volume_composition(calls, puts) if calls is not None and puts is not None else {}
+        sample = ev.get("sample_adequacy") or comp.get("sample_adequacy")
+        call_share = ev.get("call_share", comp.get("call_share"))
+    elif calls is not None and puts is not None:
+        comp = volume_composition(calls, puts)
+        label, version = comp["activity_composition"], "relabelled_from_stored_volumes"
+        sample, call_share = comp["sample_adequacy"], comp["call_share"]
+    else:
+        label, version, sample, call_share = "unclassified", "legacy_without_volumes", "unmeasured", None
+    session = ev.get("chain_as_of")
+    as_of = row.get("as_of")
+    session_text = (f"session {str(session)[:10]}" if session else
+                    f"snapshot {str(as_of)[:10]}, source session not recorded" if as_of else "source session unknown")
+    coverage = ev.get("archive_coverage_status") or ev.get("coverage_status")
+    coverage_text = f"coverage {coverage}" if coverage else "coverage not recorded"
+    # Direction only from INDEPENDENT directional evidence carried with the row; none exists in
+    # the snapshot today, so this always reads "not established".
+    direction = ev.get("directional_intent")
+    direction_text = (f"direction {direction} ({ev['directional_basis']})"
+                      if direction in ("bullish", "bearish") and ev.get("directional_basis") else
+                      "direction not established")
+    shares = (f" ({call_share * 100:.0f}% calls / {(1 - call_share) * 100:.0f}% puts)"
+              if isinstance(call_share, (int, float)) and label in ("call_heavy", "put_heavy", "mixed") else "")
+    relabel = " · relabelled from stored volumes with the exact rule" if version == "relabelled_from_stored_volumes" else ""
+    few = " · few contracts on one side" if sample == "few_contracts_on_one_side" else ""
+    return {
+        "label": label, "version": version, "sample_adequacy": sample,
+        "notable": label in ("call_heavy", "put_heavy") and sample == "adequate",
+        "text": (f"Options volume {_COMPOSITION_WORDS[label]}{shares} · {session_text} · {coverage_text}"
+                 f"{few}{relabel} · {direction_text}"),
+    }
