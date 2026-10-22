@@ -17,11 +17,19 @@ function packet(symbol = 'AAPL'): OptionsGamePlan {
       requires_shares: key === 'covered_call' || key === 'protective_put', collateral_per_contract: 10000, what_it_does: 'Example structure', use_when: 'When it fits' };
     return [key, s];
   }));
-  return { symbol, available: true, current_price: 100, chain_as_of: new Date().toISOString(), protective_put: null, covered_call: null,
+  return { symbol, available: true, current_price: 100, chain_as_of: CHAIN_AS_OF, protective_put: null, covered_call: null,
     strategy_matrix: { singles, combos: {}, recommendation: { primary: null, reason: '' }, iv_rank: null, iv_regime: 'unknown' } };
 }
-beforeEach(() => { mocks.getOptionsGamePlan.mockReset(); mocks.getOptionsGamePlan.mockResolvedValue(packet()); });
-afterEach(cleanup);
+// Fixed clock. The card compares the chain date with today's New York date; a fixture built from
+// `new Date().toISOString()` (a UTC date) read as "in the future" from 20:00 ET to midnight and the
+// preference test failed every evening. 23:30 ET is that window, so it stays covered.
+const NOW = new Date('2026-10-22T03:30:00Z');            // 2026-10-21 23:30 America/New_York
+const CHAIN_AS_OF = '2026-10-21T20:05:00Z';               // settled chain observed the same ET day
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(NOW);   // only Date: async findBy* timers stay real
+  mocks.getOptionsGamePlan.mockReset(); mocks.getOptionsGamePlan.mockResolvedValue(packet());
+});
+afterEach(() => { cleanup(); vi.useRealTimers(); });
 it('fetches and shows all four plans even without a stock stop or target', async () => {
   render(<OptionsGamePlanCard {...props} />);
   await screen.findByRole('region', { name: 'Four common option strategies' });
