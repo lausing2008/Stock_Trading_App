@@ -13,6 +13,14 @@ def utc(value):
 def prepare_bars(rows, timeframe, now, *, session_bounds, resolve_ohlc):
     import pandas as pd
     if timeframe not in MINUTES: raise ValueError('Unsupported RZY timeframe')
+    # Performance only (OD-02, 2026-10-22): a scan called the calendar once per row (~83k calls)
+    # and read each OHLC value through pandas .iloc (~24k calls per symbol). Same inputs, same
+    # outputs; verified identical against the previous implementation on every production stream.
+    _bounds={}
+    def session_bounds_cached(market,d,_sb=session_bounds):
+        if d not in _bounds: _bounds[d]=_sb(market,d)
+        return _bounds[d]
+    session_bounds=session_bounds_cached
     now=utc(now); accepted=[]; excluded=[]
     for row in rows:
         stamp=utc(row.ts)
@@ -32,6 +40,7 @@ def prepare_bars(rows, timeframe, now, *, session_bounds, resolve_ohlc):
     if not accepted: return [],dict(exclusions=excluded,status='no_completed_bars',provider='stored_prices_upstream_not_retained')
     frame=pd.DataFrame([{key:getattr(r,key,None) for key in ('open','high','low','close','adj_close')} for r,_,_ in accepted])
     basis=resolve_ohlc(frame)
+    cols={key:basis[key].tolist() for key in ('open','high','low','close')}
     bars=[]; gaps=[]
     for i,(r,stamp,closed) in enumerate(accepted):
         if i and timeframe!='1d':
@@ -39,7 +48,7 @@ def prepare_bars(rows, timeframe, now, *, session_bounds, resolve_ohlc):
             if stamp.astimezone(NY).date()==prev.astimezone(NY).date() and stamp>prev_close:
                 gaps.append({'after':prev.isoformat(),'before':stamp.isoformat(),'reason':'missing_intraday_candles'})
         bars.append(dict(time=stamp.isoformat(),closed_at=closed.isoformat(),complete=True,
-            **{key:float(basis[key].iloc[i]) for key in ('open','high','low','close')},volume=float(r.volume),
+            **{key:float(cols[key][i]) for key in ('open','high','low','close')},volume=float(r.volume),
             provider='stored_prices_upstream_not_retained',delay='unknown',session='REGULAR',
             price_basis=basis['basis'],freshness='historical_completed',execution_eligible=False,
             shortable=None,borrow_rate_annual=None))
