@@ -1,0 +1,53 @@
+{
+  "runtime_capture": "2026-10-22T02:18:47.770569+00:00",
+  "code_derived_effective_thresholds": {
+    "SHORT": {
+      "bull": 0.72,
+      "neutral": 0.71,
+      "choppy": 0.74,
+      "risk_off": 0.77,
+      "bear": 0.77,
+      "unknown": 0.71,
+      "sell": 0.29
+    },
+    "SWING": {
+      "bull": 0.81,
+      "neutral": 0.81,
+      "choppy": 0.8300000000000001,
+      "risk_off": 0.85,
+      "bear": 0.85,
+      "unknown": 0.81,
+      "sell": 0.35
+    },
+    "LONG": {
+      "bull": 0.63,
+      "neutral": 0.65,
+      "choppy": 0.68,
+      "risk_off": 0.73,
+      "bear": 0.73,
+      "unknown": 0.65,
+      "sell": 0.35
+    },
+    "GROWTH": {
+      "bull": 0.71,
+      "neutral": 0.71,
+      "choppy": 0.76,
+      "risk_off": 0.79,
+      "bear": 0.79,
+      "unknown": 0.71,
+      "sell": 0.29
+    }
+  },
+  "synthetic_zero_global_cap_swing": {
+    "ml_ta_conflict": false,
+    "ml_weight": 0.15,
+    "ml_probability": 0.8,
+    "ml_overconfidence_gate": false
+  },
+  "synthetic_buy_boundary": {
+    "value": 0.72,
+    "at_boundary": "HOLD",
+    "just_above": "BUY"
+  },
+  "scope": "Offline source execution with captured keys and synthetic fusion inputs; not a profitability backtest."
+}

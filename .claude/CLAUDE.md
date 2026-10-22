@@ -375,6 +375,8 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
+- **`docs/audits/2026-10-21-ai-signals-horizon-thresholds-and-intraday-plan.md`** — per-horizon effective thresholds (watchdog > calibrated > default), INTRADAY research baseline. ML-weight calibrator never simulates the runtime ramp→cap→floor, so its "0" runs as .15; 0 verified outcomes [thresholds, calibration]
+
 - **`docs/2026-10-20/little-rzy-audit-addendum.md`** — RZY audit through cfb40e0b: ten findings across two reports; new control borrow/window defects, real-data evaluation caveats and outstanding acceptance. Documentation only.
 
 - **`docs/2026-10-19/little-rzy-independent-audit.md`** — RZY audit of f51fdb2c: eight reproduced findings in generations, freshness, backtest retention, replay and chart/mail behavior; evidence and recommended regressions. No fixes.

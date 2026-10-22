@@ -1,0 +1,1725 @@
+{
+  "captured_at_utc": "2026-10-22T02:18:47.770569+00:00",
+  "redis_allowlisted_values": {
+    "stockai:ml_weight_cap": "0.0",
+    "stockai:ta_weights": "{\"above_sma50\": 0.2241, \"sma50_above_sma200\": 0.0, \"golden_cross_event\": 0.0632, \"death_cross_penalty\": 0.1, \"gc_spread_expanding\": 0.06, \"gc_spread_narrowing\": 0.06, \"rsi_sweet_spot\": 0.1226, \"rsi_mild_oversold\": 0.0114, \"rsi_mild_overbought\": 0.3204, \"stoch_oversold\": 0.1975, \"stoch_overbought_penalty\": 0.08, \"stoch_cross_up\": 0.0244, \"macd_strong\": 0.0, \"macd_positive\": 0.0323, \"macd_zero_cross_up\": 0.0, \"macd_momentum_fading\": 0.08, \"bb_mid_zone\": 0.2079, \"price_above_vwap\": 0.292, \"price_below_vwap_penalty\": 0.05, \"bullish_trend\": 0.0, \"obv_trend_bullish\": 0.0, \"volume_z\": 0.0043}",
+    "stockai:conviction_weights": "{\"as_of\": \"2026-10-11\", \"lookback_days\": 365, \"total_winners\": 4417, \"total_losers\": 6219, \"layer_count\": 55, \"noise_count\": 49, \"layers\": {\"trend_above_sma50\": {\"win_pct\": 86.1, \"los_pct\": 83.6, \"edge_pct\": 2.6, \"accuracy\": 42.3, \"is_noise\": true, \"win_count\": 3805, \"los_count\": 5197, \"logistic_coef\": -0.1862}, \"macd_hist_expanding\": {\"win_pct\": 45.1, \"los_pct\": 47.1, \"edge_pct\": -2.0, \"accuracy\": 40.5, \"is_noise\": true, \"win_count\": 1991, \"los_count\": 2928, \"logistic_coef\": -0.0294}, \"sector_etf_above_sma50\": {\"win_pct\": 81.2, \"los_pct\": 84.8, \"edge_pct\": -3.5, \"accuracy\": 40.5, \"is_noise\": true, \"win_count\": 3588, \"los_count\": 5272, \"logistic_coef\": -0.0233}, \"hk_low_liquidity\": {\"win_pct\": 0.2, \"los_pct\": 0.8, \"edge_pct\": -0.6, \"accuracy\": 16.1, \"is_noise\": true, \"win_count\": 10, \"los_count\": 52, \"logistic_coef\": -0.7891}, \"adx_bullish\": {\"win_pct\": 32.6, \"los_pct\": 40.0, \"edge_pct\": -7.3, \"accuracy\": 36.7, \"is_noise\": true, \"win_count\": 1442, \"los_count\": 2487, \"logistic_coef\": 0.3073}, \"hk_southbound_compression\": {\"win_pct\": 4.1, \"los_pct\": 4.8, \"edge_pct\": -0.6, \"accuracy\": 38.0, \"is_noise\": true, \"win_count\": 183, \"los_count\": 298, \"logistic_coef\": -0.2386}, \"gc_spread_expanding\": {\"win_pct\": 60.8, \"los_pct\": 57.6, \"edge_pct\": 3.2, \"accuracy\": 42.9, \"is_noise\": true, \"win_count\": 2686, \"los_count\": 3580, \"logistic_coef\": 0.1037}, \"supertrend_cross_up\": {\"win_pct\": 1.2, \"los_pct\": 1.3, \"edge_pct\": -0.1, \"accuracy\": 39.9, \"is_noise\": true, \"win_count\": 55, \"los_count\": 83, \"logistic_coef\": -0.1393}, \"low_oos_accuracy\": {\"win_pct\": 3.6, \"los_pct\": 3.2, \"edge_pct\": 0.4, \"accuracy\": 44.2, \"is_noise\": true, \"win_count\": 157, \"los_count\": 198, \"logistic_coef\": -0.1655}, \"weekly_macd_bull\": {\"win_pct\": 41.9, \"los_pct\": 41.9, \"edge_pct\": 0.0, \"accuracy\": 41.5, \"is_noise\": true, \"win_count\": 1849, \"los_count\": 2603, \"logistic_coef\": -0.1475}, \"pullback_recovery_applied\": {\"win_pct\": 3.5, \"los_pct\": 4.7, \"edge_pct\": -1.2, \"accuracy\": 34.3, \"is_noise\": true, \"win_count\": 153, \"los_count\": 293, \"logistic_coef\": -0.3136}, \"obv_bullish\": {\"win_pct\": 2.2, \"los_pct\": 2.4, \"edge_pct\": -0.2, \"accuracy\": 39.9, \"is_noise\": true, \"win_count\": 99, \"los_count\": 149, \"logistic_coef\": -0.0314}, \"stoch_rsi_still_hot\": {\"win_pct\": 14.1, \"los_pct\": 18.9, \"edge_pct\": -4.8, \"accuracy\": 34.6, \"is_noise\": true, \"win_count\": 624, \"los_count\": 1177, \"logistic_coef\": -0.2868}, \"congress_buy\": {\"win_pct\": 2.2, \"los_pct\": 0.8, \"edge_pct\": 1.4, \"accuracy\": 66.9, \"is_noise\": false, \"win_count\": 95, \"los_count\": 47, \"logistic_coef\": 0.94}, \"hk_liquidity_gate\": {\"win_pct\": 0.0, \"los_pct\": 0.2, \"edge_pct\": -0.2, \"accuracy\": 7.1, \"is_noise\": true, \"win_count\": 1, \"los_count\": 13, \"logistic_coef\": -0.2412}, \"eight_k_flag\": {\"win_pct\": 8.9, \"los_pct\": 8.7, \"edge_pct\": 0.2, \"accuracy\": 42.0, \"is_noise\": true, \"win_count\": 393, \"los_count\": 543, \"logistic_coef\": -0.054}, \"weekly_gate_fired\": {\"win_pct\": 0.2, \"los_pct\": 0.1, \"edge_pct\": 0.0, \"accuracy\": 47.1, \"is_noise\": true, \"win_count\": 8, \"los_count\": 9, \"logistic_coef\": 0.4327}, \"adx_trending\": {\"win_pct\": 34.7, \"los_pct\": 42.5, \"edge_pct\": -7.8, \"accuracy\": 36.7, \"is_noise\": true, \"win_count\": 1532, \"los_count\": 2643, \"logistic_coef\": -0.6229}, \"sma50_above_sma200\": {\"win_pct\": 64.2, \"los_pct\": 67.1, \"edge_pct\": -3.0, \"accuracy\": 40.4, \"is_noise\": true, \"win_count\": 2834, \"los_count\": 4176, \"logistic_coef\": -0.1236}, \"adx_compression\": {\"win_pct\": 34.3, \"los_pct\": 27.0, \"edge_pct\": 7.3, \"accuracy\": 47.4, \"is_noise\": true, \"win_count\": 1515, \"los_count\": 1681, \"logistic_coef\": 0.2164}, \"weekly_blend_applied\": {\"win_pct\": 0.4, \"los_pct\": 0.3, \"edge_pct\": 0.1, \"accuracy\": 50.0, \"is_noise\": true, \"win_count\": 19, \"los_count\": 19, \"logistic_coef\": 0.2976}, \"golden_cross_event\": {\"win_pct\": 0.5, \"los_pct\": 0.3, \"edge_pct\": 0.2, \"accuracy\": 55.6, \"is_noise\": false, \"win_count\": 20, \"los_count\": 16, \"logistic_coef\": 0.4891}, \"weekly_gate_recovery_exception\": {\"win_pct\": 0.1, \"los_pct\": 0.1, \"edge_pct\": 0.0, \"accuracy\": 50.0, \"is_noise\": true, \"win_count\": 5, \"los_count\": 5, \"logistic_coef\": 0.0742}, \"bearish_trend\": {\"win_pct\": 1.0, \"los_pct\": 0.6, \"edge_pct\": 0.4, \"accuracy\": 53.6, \"is_noise\": false, \"win_count\": 45, \"los_count\": 39, \"logistic_coef\": 1.4844}, \"insufficient_history\": {\"win_pct\": 0.2, \"los_pct\": 0.1, \"edge_pct\": 0.0, \"accuracy\": 43.8, \"is_noise\": true, \"win_count\": 7, \"los_count\": 9, \"logistic_coef\": 0.0358}, \"stoch_rsi_oversold\": {\"win_pct\": 16.0, \"los_pct\": 15.4, \"edge_pct\": 0.6, \"accuracy\": 42.4, \"is_noise\": true, \"win_count\": 706, \"los_count\": 959, \"logistic_coef\": 0.3206}, \"insufficient_history_warning\": {\"win_pct\": 0.2, \"los_pct\": 0.1, \"edge_pct\": 0.0, \"accuracy\": 43.8, \"is_noise\": true, \"win_count\": 7, \"los_count\": 9, \"logistic_coef\": 0.0358}, \"macd_zero_cross_up\": {\"win_pct\": 2.4, \"los_pct\": 2.5, \"edge_pct\": -0.1, \"accuracy\": 40.6, \"is_noise\": true, \"win_count\": 108, \"los_count\": 158, \"logistic_coef\": -0.2229}, \"macd_momentum_fading\": {\"win_pct\": 26.9, \"los_pct\": 24.2, \"edge_pct\": 2.7, \"accuracy\": 44.1, \"is_noise\": true, \"win_count\": 1187, \"los_count\": 1505, \"logistic_coef\": 0.07}, \"weekly_overbought_gate\": {\"win_pct\": 2.0, \"los_pct\": 4.8, \"edge_pct\": -2.8, \"accuracy\": 23.0, \"is_noise\": true, \"win_count\": 90, \"los_count\": 301, \"logistic_coef\": -0.79}, \"insider_cluster\": {\"win_pct\": 0.5, \"los_pct\": 1.0, \"edge_pct\": -0.5, \"accuracy\": 25.0, \"is_noise\": true, \"win_count\": 21, \"los_count\": 63, \"logistic_coef\": -0.9999}, \"ml_oos_suppressed\": {\"win_pct\": 3.6, \"los_pct\": 3.2, \"edge_pct\": 0.4, \"accuracy\": 44.4, \"is_noise\": true, \"win_count\": 158, \"los_count\": 198, \"logistic_coef\": 0.0951}, \"ml_overconfidence_gate\": {\"win_pct\": 1.1, \"los_pct\": 1.7, \"edge_pct\": -0.5, \"accuracy\": 32.7, \"is_noise\": true, \"win_count\": 50, \"los_count\": 103, \"logistic_coef\": -0.4666}, \"macd_zero_cross_down\": {\"win_pct\": 0.1, \"los_pct\": 0.2, \"edge_pct\": -0.1, \"accuracy\": 23.1, \"is_noise\": true, \"win_count\": 3, \"los_count\": 10, \"logistic_coef\": -0.6871}, \"stoch_rsi_cross_down\": {\"win_pct\": 2.5, \"los_pct\": 2.4, \"edge_pct\": 0.2, \"accuracy\": 43.2, \"is_noise\": true, \"win_count\": 112, \"los_count\": 147, \"logistic_coef\": 0.0343}, \"sector_headwind\": {\"win_pct\": 8.3, \"los_pct\": 5.5, \"edge_pct\": 2.8, \"accuracy\": 51.6, \"is_noise\": true, \"win_count\": 365, \"los_count\": 342, \"logistic_coef\": 0.2807}, \"above_sma20\": {\"win_pct\": 32.4, \"los_pct\": 33.6, \"edge_pct\": -1.3, \"accuracy\": 40.6, \"is_noise\": true, \"win_count\": 1430, \"los_count\": 2092, \"logistic_coef\": 0.1034}, \"early_recovery_trend\": {\"win_pct\": 5.3, \"los_pct\": 9.6, \"edge_pct\": -4.3, \"accuracy\": 28.3, \"is_noise\": true, \"win_count\": 236, \"los_count\": 597, \"logistic_coef\": -0.9202}, \"near_recent_high_hot\": {\"win_pct\": 5.3, \"los_pct\": 6.1, \"edge_pct\": -0.8, \"accuracy\": 38.1, \"is_noise\": true, \"win_count\": 232, \"los_count\": 377, \"logistic_coef\": -0.1199}, \"macd_rising\": {\"win_pct\": 52.3, \"los_pct\": 53.8, \"edge_pct\": -1.5, \"accuracy\": 40.8, \"is_noise\": true, \"win_count\": 2308, \"los_count\": 3343, \"logistic_coef\": -0.0582}, \"catalyst_upgraded_signal\": {\"win_pct\": 0.4, \"los_pct\": 0.3, \"edge_pct\": 0.1, \"accuracy\": 51.4, \"is_noise\": true, \"win_count\": 19, \"los_count\": 18, \"logistic_coef\": 0.4788}, \"stoch_rsi_cross_up\": {\"win_pct\": 3.8, \"los_pct\": 4.2, \"edge_pct\": -0.3, \"accuracy\": 39.4, \"is_noise\": true, \"win_count\": 170, \"los_count\": 261, \"logistic_coef\": 0.0446}, \"double_bottom_vol_confirmed\": {\"win_pct\": 59.6, \"los_pct\": 57.8, \"edge_pct\": 1.7, \"accuracy\": 42.2, \"is_noise\": true, \"win_count\": 2631, \"los_count\": 3597, \"logistic_coef\": -0.0072}, \"obv_trend_bullish\": {\"win_pct\": 77.1, \"los_pct\": 77.3, \"edge_pct\": -0.2, \"accuracy\": 41.5, \"is_noise\": true, \"win_count\": 3406, \"los_count\": 4805, \"logistic_coef\": -0.2426}, \"supertrend_bullish\": {\"win_pct\": 83.5, \"los_pct\": 82.6, \"edge_pct\": 0.9, \"accuracy\": 41.8, \"is_noise\": true, \"win_count\": 3688, \"los_count\": 5135, \"logistic_coef\": 0.0417}, \"pullback_vol_confirms\": {\"win_pct\": 2.0, \"los_pct\": 2.5, \"edge_pct\": -0.4, \"accuracy\": 37.0, \"is_noise\": true, \"win_count\": 90, \"los_count\": 153, \"logistic_coef\": -0.0997}, \"double_top_neckline_broken\": {\"win_pct\": 19.5, \"los_pct\": 15.3, \"edge_pct\": 4.2, \"accuracy\": 47.5, \"is_noise\": true, \"win_count\": 860, \"los_count\": 950, \"logistic_coef\": 0.2061}, \"double_bottom_neckline_broken\": {\"win_pct\": 65.4, \"los_pct\": 63.5, \"edge_pct\": 1.9, \"accuracy\": 42.2, \"is_noise\": true, \"win_count\": 2890, \"los_count\": 3951, \"logistic_coef\": 0.1727}, \"weekly_alignment\": {\"win_pct\": 96.4, \"los_pct\": 95.7, \"edge_pct\": 0.7, \"accuracy\": 41.7, \"is_noise\": true, \"win_count\": 4260, \"los_count\": 5954, \"logistic_coef\": 0.2376}, \"price_above_vwap\": {\"win_pct\": 86.2, \"los_pct\": 82.8, \"edge_pct\": 3.4, \"accuracy\": 42.5, \"is_noise\": true, \"win_count\": 3807, \"los_count\": 5148, \"logistic_coef\": 0.512}, \"death_cross_event\": {\"win_pct\": 0.2, \"los_pct\": 0.0, \"edge_pct\": 0.2, \"accuracy\": 100.0, \"is_noise\": false, \"win_count\": 10, \"los_count\": 0, \"logistic_coef\": 1.8181}, \"stoch_rsi_overbought\": {\"win_pct\": 33.0, \"los_pct\": 35.8, \"edge_pct\": -2.8, \"accuracy\": 39.6, \"is_noise\": true, \"win_count\": 1458, \"los_count\": 2226, \"logistic_coef\": -0.0769}, \"stale_price_warning\": {\"win_pct\": 0.2, \"los_pct\": 0.1, \"edge_pct\": 0.1, \"accuracy\": 63.6, \"is_noise\": false, \"win_count\": 7, \"los_count\": 4, \"logistic_coef\": 0.8119}, \"compression_cap_applied\": {\"win_pct\": 2.1, \"los_pct\": 1.2, \"edge_pct\": 0.9, \"accuracy\": 56.4, \"is_noise\": false, \"win_count\": 93, \"los_count\": 72, \"logistic_coef\": 0.5464}, \"ml_ta_conflict\": {\"win_pct\": 18.8, \"los_pct\": 18.4, \"edge_pct\": 0.3, \"accuracy\": 42.0, \"is_noise\": true, \"win_count\": 830, \"los_count\": 1147, \"logistic_coef\": 0.0691}}, \"edge_pct\": {\"trend_above_sma50\": 2.6, \"macd_hist_expanding\": -2.0, \"sector_etf_above_sma50\": -3.5, \"hk_low_liquidity\": -0.6, \"adx_bullish\": -7.3, \"hk_southbound_compression\": -0.6, \"gc_spread_expanding\": 3.2, \"supertrend_cross_up\": -0.1, \"low_oos_accuracy\": 0.4, \"weekly_macd_bull\": 0.0, \"pullback_recovery_applied\": -1.2, \"obv_bullish\": -0.2, \"stoch_rsi_still_hot\": -4.8, \"congress_buy\": 1.4, \"hk_liquidity_gate\": -0.2, \"eight_k_flag\": 0.2, \"weekly_gate_fired\": 0.0, \"adx_trending\": -7.8, \"sma50_above_sma200\": -3.0, \"adx_compression\": 7.3, \"weekly_blend_applied\": 0.1, \"golden_cross_event\": 0.2, \"weekly_gate_recovery_exception\": 0.0, \"bearish_trend\": 0.4, \"insufficient_history\": 0.0, \"stoch_rsi_oversold\": 0.6, \"insufficient_history_warning\": 0.0, \"macd_zero_cross_up\": -0.1, \"macd_momentum_fading\": 2.7, \"weekly_overbought_gate\": -2.8, \"insider_cluster\": -0.5, \"ml_oos_suppressed\": 0.4, \"ml_overconfidence_gate\": -0.5, \"macd_zero_cross_down\": -0.1, \"stoch_rsi_cross_down\": 0.2, \"sector_headwind\": 2.8, \"above_sma20\": -1.3, \"early_recovery_trend\": -4.3, \"near_recent_high_hot\": -0.8, \"macd_rising\": -1.5, \"catalyst_upgraded_signal\": 0.1, \"stoch_rsi_cross_up\": -0.3, \"double_bottom_vol_confirmed\": 1.7, \"obv_trend_bullish\": -0.2, \"supertrend_bullish\": 0.9, \"pullback_vol_confirms\": -0.4, \"double_top_neckline_broken\": 4.2, \"double_bottom_neckline_broken\": 1.9, \"weekly_alignment\": 0.7, \"price_above_vwap\": 3.4, \"death_cross_event\": 0.2, \"stoch_rsi_overbought\": -2.8, \"stale_price_warning\": 0.1, \"compression_cap_applied\": 0.9, \"ml_ta_conflict\": 0.3}}",
+    "stockai:watchdog:SHORT:threshold": "0.72",
+    "stockai:signal_thresholds:SHORT": "0.57",
+    "stockai:signal_thresholds:SELL:SHORT": "0.29",
+    "stockai:style_tune:SHORT:ml_weight_cap": "0.4",
+    "stockai:style_tune:SHORT:adx_min": "10",
+    "stockai:style_tune:SHORT:adx_compression": null,
+    "stockai:style_tune:SHORT:high_vol_compression": null,
+    "stockai:style_tune:SHORT:breadth_compression": null,
+    "stockai:style_tune:SHORT:weekly_boost": null,
+    "stockai:style_tune:SHORT:weekly_compress": null,
+    "stockai:style_tune:SHORT:rs_compression": null,
+    "stockai:style_tune:SHORT:max_compress_ratio": null,
+    "stockai:style_tune:SHORT:min_pillars_for_sell": "3",
+    "stockai:watchdog:SWING:threshold": "0.81",
+    "stockai:signal_thresholds:SWING": "0.61",
+    "stockai:signal_thresholds:SELL:SWING": null,
+    "stockai:style_tune:SWING:ml_weight_cap": null,
+    "stockai:style_tune:SWING:adx_min": null,
+    "stockai:style_tune:SWING:adx_compression": null,
+    "stockai:style_tune:SWING:high_vol_compression": null,
+    "stockai:style_tune:SWING:breadth_compression": null,
+    "stockai:style_tune:SWING:weekly_boost": null,
+    "stockai:style_tune:SWING:weekly_compress": null,
+    "stockai:style_tune:SWING:rs_compression": null,
+    "stockai:style_tune:SWING:max_compress_ratio": null,
+    "stockai:style_tune:SWING:min_pillars_for_sell": null,
+    "stockai:watchdog:LONG:threshold": "0.63",
+    "stockai:signal_thresholds:LONG": "0.55",
+    "stockai:signal_thresholds:SELL:LONG": null,
+    "stockai:style_tune:LONG:ml_weight_cap": "0.15",
+    "stockai:style_tune:LONG:adx_min": null,
+    "stockai:style_tune:LONG:adx_compression": null,
+    "stockai:style_tune:LONG:high_vol_compression": null,
+    "stockai:style_tune:LONG:breadth_compression": null,
+    "stockai:style_tune:LONG:weekly_boost": null,
+    "stockai:style_tune:LONG:weekly_compress": null,
+    "stockai:style_tune:LONG:rs_compression": null,
+    "stockai:style_tune:LONG:max_compress_ratio": null,
+    "stockai:style_tune:LONG:min_pillars_for_sell": null,
+    "stockai:watchdog:GROWTH:threshold": "0.71",
+    "stockai:signal_thresholds:GROWTH": "0.65",
+    "stockai:signal_thresholds:SELL:GROWTH": "0.29",
+    "stockai:style_tune:GROWTH:ml_weight_cap": "0.65",
+    "stockai:style_tune:GROWTH:adx_min": null,
+    "stockai:style_tune:GROWTH:adx_compression": null,
+    "stockai:style_tune:GROWTH:high_vol_compression": null,
+    "stockai:style_tune:GROWTH:breadth_compression": null,
+    "stockai:style_tune:GROWTH:weekly_boost": null,
+    "stockai:style_tune:GROWTH:weekly_compress": null,
+    "stockai:style_tune:GROWTH:rs_compression": null,
+    "stockai:style_tune:GROWTH:max_compress_ratio": null,
+    "stockai:style_tune:GROWTH:min_pillars_for_sell": "3"
+  },
+  "database_time": [
+    {
+      "database_time": "2026-10-22T02:18:47.845014+00:00",
+      "database_date": "2026-10-22"
+    }
+  ],
+  "outcome_cohorts_180d": [
+    {
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "market": "US",
+      "evidence_status": "provisional",
+      "resolved_n": 24,
+      "distinct_dates": 1,
+      "first_signal_date": "2026-10-05",
+      "last_signal_date": "2026-10-05",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 29.167,
+      "direction_adjusted_mean_return_pct": -5.866
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "market": "US",
+      "evidence_status": "unknown",
+      "resolved_n": 3464,
+      "distinct_dates": 92,
+      "first_signal_date": "2026-06-03",
+      "last_signal_date": "2026-10-01",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 43.62,
+      "direction_adjusted_mean_return_pct": -0.735
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "market": "US",
+      "evidence_status": "unverified",
+      "resolved_n": 478,
+      "distinct_dates": 11,
+      "first_signal_date": "2026-10-02",
+      "last_signal_date": "2026-10-13",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 20.711,
+      "direction_adjusted_mean_return_pct": -7.254
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "market": "HK",
+      "evidence_status": "provisional",
+      "resolved_n": 8,
+      "distinct_dates": 3,
+      "first_signal_date": "2026-10-05",
+      "last_signal_date": "2026-10-12",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 12.5,
+      "direction_adjusted_mean_return_pct": -12.12
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "market": "HK",
+      "evidence_status": "unknown",
+      "resolved_n": 943,
+      "distinct_dates": 82,
+      "first_signal_date": "2026-06-03",
+      "last_signal_date": "2026-09-30",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 33.616,
+      "direction_adjusted_mean_return_pct": -2.707
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "market": "HK",
+      "evidence_status": "unverified",
+      "resolved_n": 32,
+      "distinct_dates": 9,
+      "first_signal_date": "2026-10-02",
+      "last_signal_date": "2026-10-13",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 3.125,
+      "direction_adjusted_mean_return_pct": -10.463
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "SELL",
+      "market": "US",
+      "evidence_status": "provisional",
+      "resolved_n": 12,
+      "distinct_dates": 1,
+      "first_signal_date": "2026-10-07",
+      "last_signal_date": "2026-10-07",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 66.667,
+      "direction_adjusted_mean_return_pct": 4.948
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "SELL",
+      "market": "US",
+      "evidence_status": "unknown",
+      "resolved_n": 1341,
+      "distinct_dates": 93,
+      "first_signal_date": "2026-06-03",
+      "last_signal_date": "2026-10-01",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 41.685,
+      "direction_adjusted_mean_return_pct": -0.725
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "SELL",
+      "market": "US",
+      "evidence_status": "unverified",
+      "resolved_n": 185,
+      "distinct_dates": 13,
+      "first_signal_date": "2026-10-02",
+      "last_signal_date": "2026-10-15",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 60.0,
+      "direction_adjusted_mean_return_pct": 3.512
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "SELL",
+      "market": "HK",
+      "evidence_status": "unknown",
+      "resolved_n": 215,
+      "distinct_dates": 20,
+      "first_signal_date": "2026-06-03",
+      "last_signal_date": "2026-07-02",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 45.581,
+      "direction_adjusted_mean_return_pct": -0.33
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "market": "US",
+      "evidence_status": "provisional",
+      "resolved_n": 8,
+      "distinct_dates": 1,
+      "first_signal_date": "2026-09-28",
+      "last_signal_date": "2026-09-28",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 62.5,
+      "direction_adjusted_mean_return_pct": 1.614
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "market": "US",
+      "evidence_status": "unknown",
+      "resolved_n": 3042,
+      "distinct_dates": 86,
+      "first_signal_date": "2026-05-25",
+      "last_signal_date": "2026-09-24",
+      "invalid_or_missing_entry": 8,
+      "stored_hurdle_hit_pct": 41.815,
+      "direction_adjusted_mean_return_pct": -1.63
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "market": "US",
+      "evidence_status": "unverified",
+      "resolved_n": 218,
+      "distinct_dates": 10,
+      "first_signal_date": "2026-09-25",
+      "last_signal_date": "2026-10-06",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 14.679,
+      "direction_adjusted_mean_return_pct": -15.715
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "market": "HK",
+      "evidence_status": "unknown",
+      "resolved_n": 650,
+      "distinct_dates": 72,
+      "first_signal_date": "2026-05-25",
+      "last_signal_date": "2026-09-22",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 29.846,
+      "direction_adjusted_mean_return_pct": -5.53
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "market": "HK",
+      "evidence_status": "unverified",
+      "resolved_n": 7,
+      "distinct_dates": 3,
+      "first_signal_date": "2026-10-04",
+      "last_signal_date": "2026-10-06",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 0.0,
+      "direction_adjusted_mean_return_pct": -29.367
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "market": "US",
+      "evidence_status": "provisional",
+      "resolved_n": 15,
+      "distinct_dates": 1,
+      "first_signal_date": "2026-10-05",
+      "last_signal_date": "2026-10-05",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 46.667,
+      "direction_adjusted_mean_return_pct": 2.407
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "market": "US",
+      "evidence_status": "unknown",
+      "resolved_n": 1122,
+      "distinct_dates": 99,
+      "first_signal_date": "2026-05-25",
+      "last_signal_date": "2026-10-01",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 43.494,
+      "direction_adjusted_mean_return_pct": -0.534
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "market": "US",
+      "evidence_status": "unverified",
+      "resolved_n": 171,
+      "distinct_dates": 11,
+      "first_signal_date": "2026-10-02",
+      "last_signal_date": "2026-10-13",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 63.743,
+      "direction_adjusted_mean_return_pct": 5.483
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "market": "HK",
+      "evidence_status": "provisional",
+      "resolved_n": 10,
+      "distinct_dates": 1,
+      "first_signal_date": "2026-10-05",
+      "last_signal_date": "2026-10-05",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 70.0,
+      "direction_adjusted_mean_return_pct": 6.5
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "market": "HK",
+      "evidence_status": "unknown",
+      "resolved_n": 649,
+      "distinct_dates": 98,
+      "first_signal_date": "2026-05-25",
+      "last_signal_date": "2026-09-30",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 48.536,
+      "direction_adjusted_mean_return_pct": -0.212
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "market": "HK",
+      "evidence_status": "unverified",
+      "resolved_n": 109,
+      "distinct_dates": 10,
+      "first_signal_date": "2026-10-02",
+      "last_signal_date": "2026-10-13",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 68.807,
+      "direction_adjusted_mean_return_pct": 6.321
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "market": "US",
+      "evidence_status": "provisional",
+      "resolved_n": 38,
+      "distinct_dates": 1,
+      "first_signal_date": "2026-09-14",
+      "last_signal_date": "2026-09-14",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 76.316,
+      "direction_adjusted_mean_return_pct": 4.763
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "market": "US",
+      "evidence_status": "unknown",
+      "resolved_n": 2340,
+      "distinct_dates": 56,
+      "first_signal_date": "2026-06-03",
+      "last_signal_date": "2026-09-10",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 49.145,
+      "direction_adjusted_mean_return_pct": -1.358
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "market": "US",
+      "evidence_status": "unverified",
+      "resolved_n": 555,
+      "distinct_dates": 10,
+      "first_signal_date": "2026-09-11",
+      "last_signal_date": "2026-09-22",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 35.676,
+      "direction_adjusted_mean_return_pct": -5.233
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "market": "HK",
+      "evidence_status": "provisional",
+      "resolved_n": 9,
+      "distinct_dates": 2,
+      "first_signal_date": "2026-09-14",
+      "last_signal_date": "2026-09-21",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 11.111,
+      "direction_adjusted_mean_return_pct": -6.331
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "market": "HK",
+      "evidence_status": "unknown",
+      "resolved_n": 540,
+      "distinct_dates": 50,
+      "first_signal_date": "2026-06-03",
+      "last_signal_date": "2026-09-10",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 32.593,
+      "direction_adjusted_mean_return_pct": -9.315
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "market": "HK",
+      "evidence_status": "unverified",
+      "resolved_n": 79,
+      "distinct_dates": 9,
+      "first_signal_date": "2026-09-11",
+      "last_signal_date": "2026-09-22",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 8.861,
+      "direction_adjusted_mean_return_pct": -15.947
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "SELL",
+      "market": "US",
+      "evidence_status": "unknown",
+      "resolved_n": 1139,
+      "distinct_dates": 86,
+      "first_signal_date": "2026-06-03",
+      "last_signal_date": "2026-09-28",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 42.318,
+      "direction_adjusted_mean_return_pct": -1.347
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "SELL",
+      "market": "US",
+      "evidence_status": "unverified",
+      "resolved_n": 243,
+      "distinct_dates": 10,
+      "first_signal_date": "2026-09-29",
+      "last_signal_date": "2026-10-08",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 37.449,
+      "direction_adjusted_mean_return_pct": 1.261
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "SELL",
+      "market": "HK",
+      "evidence_status": "unknown",
+      "resolved_n": 669,
+      "distinct_dates": 85,
+      "first_signal_date": "2026-06-03",
+      "last_signal_date": "2026-09-28",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 49.327,
+      "direction_adjusted_mean_return_pct": -0.81
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "SELL",
+      "market": "HK",
+      "evidence_status": "unverified",
+      "resolved_n": 108,
+      "distinct_dates": 8,
+      "first_signal_date": "2026-09-29",
+      "last_signal_date": "2026-10-08",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 75.926,
+      "direction_adjusted_mean_return_pct": 8.763
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "market": "US",
+      "evidence_status": "provisional",
+      "resolved_n": 41,
+      "distinct_dates": 1,
+      "first_signal_date": "2026-09-28",
+      "last_signal_date": "2026-09-28",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 51.22,
+      "direction_adjusted_mean_return_pct": -1.17
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "market": "US",
+      "evidence_status": "unknown",
+      "resolved_n": 3390,
+      "distinct_dates": 78,
+      "first_signal_date": "2026-06-09",
+      "last_signal_date": "2026-09-24",
+      "invalid_or_missing_entry": 8,
+      "stored_hurdle_hit_pct": 42.212,
+      "direction_adjusted_mean_return_pct": -1.801
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "market": "US",
+      "evidence_status": "unverified",
+      "resolved_n": 435,
+      "distinct_dates": 11,
+      "first_signal_date": "2026-09-25",
+      "last_signal_date": "2026-10-06",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 22.759,
+      "direction_adjusted_mean_return_pct": -11.675
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "market": "HK",
+      "evidence_status": "provisional",
+      "resolved_n": 2,
+      "distinct_dates": 1,
+      "first_signal_date": "2026-09-28",
+      "last_signal_date": "2026-09-28",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 50.0,
+      "direction_adjusted_mean_return_pct": -8.99
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "market": "HK",
+      "evidence_status": "unknown",
+      "resolved_n": 826,
+      "distinct_dates": 71,
+      "first_signal_date": "2026-06-10",
+      "last_signal_date": "2026-09-24",
+      "invalid_or_missing_entry": 1,
+      "stored_hurdle_hit_pct": 31.114,
+      "direction_adjusted_mean_return_pct": -5.323
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "market": "HK",
+      "evidence_status": "unverified",
+      "resolved_n": 13,
+      "distinct_dates": 8,
+      "first_signal_date": "2026-09-25",
+      "last_signal_date": "2026-10-06",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 7.692,
+      "direction_adjusted_mean_return_pct": -19.774
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "market": "US",
+      "evidence_status": "provisional",
+      "resolved_n": 2,
+      "distinct_dates": 1,
+      "first_signal_date": "2026-10-05",
+      "last_signal_date": "2026-10-05",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 50.0,
+      "direction_adjusted_mean_return_pct": 5.721
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "market": "US",
+      "evidence_status": "unknown",
+      "resolved_n": 667,
+      "distinct_dates": 83,
+      "first_signal_date": "2026-06-09",
+      "last_signal_date": "2026-10-01",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 38.981,
+      "direction_adjusted_mean_return_pct": -1.368
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "market": "US",
+      "evidence_status": "unverified",
+      "resolved_n": 53,
+      "distinct_dates": 11,
+      "first_signal_date": "2026-10-02",
+      "last_signal_date": "2026-10-13",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 75.472,
+      "direction_adjusted_mean_return_pct": 6.647
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "market": "HK",
+      "evidence_status": "provisional",
+      "resolved_n": 4,
+      "distinct_dates": 1,
+      "first_signal_date": "2026-10-05",
+      "last_signal_date": "2026-10-05",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 50.0,
+      "direction_adjusted_mean_return_pct": -0.073
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "market": "HK",
+      "evidence_status": "unknown",
+      "resolved_n": 523,
+      "distinct_dates": 81,
+      "first_signal_date": "2026-06-09",
+      "last_signal_date": "2026-09-30",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 42.83,
+      "direction_adjusted_mean_return_pct": -2.2
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "market": "HK",
+      "evidence_status": "unverified",
+      "resolved_n": 55,
+      "distinct_dates": 10,
+      "first_signal_date": "2026-10-02",
+      "last_signal_date": "2026-10-13",
+      "invalid_or_missing_entry": 0,
+      "stored_hurdle_hit_pct": 70.909,
+      "direction_adjusted_mean_return_pct": 6.977
+    }
+  ],
+  "signal_population_30d": [
+    {
+      "horizon": "SHORT",
+      "signal": "BUY",
+      "rows": 788,
+      "symbols": 127,
+      "earliest": "2026-09-22T08:34:16.905941",
+      "latest": "2026-10-21T22:22:21.945807"
+    },
+    {
+      "horizon": "SHORT",
+      "signal": "SELL",
+      "rows": 325,
+      "symbols": 75,
+      "earliest": "2026-09-22T23:38:10.214331",
+      "latest": "2026-10-22T02:17:48.291405"
+    },
+    {
+      "horizon": "SHORT",
+      "signal": "HOLD",
+      "rows": 1925,
+      "symbols": 186,
+      "earliest": "2026-09-22T08:30:29.4464",
+      "latest": "2026-10-22T02:18:42.912046"
+    },
+    {
+      "horizon": "SHORT",
+      "signal": "WAIT",
+      "rows": 2142,
+      "symbols": 187,
+      "earliest": "2026-09-22T08:30:55.709794",
+      "latest": "2026-10-22T02:18:41.539315"
+    },
+    {
+      "horizon": "SWING",
+      "signal": "BUY",
+      "rows": 463,
+      "symbols": 101,
+      "earliest": "2026-09-22T23:41:50.503515",
+      "latest": "2026-10-19T21:08:35.682244"
+    },
+    {
+      "horizon": "SWING",
+      "signal": "SELL",
+      "rows": 630,
+      "symbols": 111,
+      "earliest": "2026-09-22T08:30:42.382689",
+      "latest": "2026-10-22T02:18:42.912046"
+    },
+    {
+      "horizon": "SWING",
+      "signal": "HOLD",
+      "rows": 1754,
+      "symbols": 171,
+      "earliest": "2026-09-22T08:30:29.4464",
+      "latest": "2026-10-22T02:14:42.190296"
+    },
+    {
+      "horizon": "SWING",
+      "signal": "WAIT",
+      "rows": 2333,
+      "symbols": 192,
+      "earliest": "2026-09-22T08:30:55.709794",
+      "latest": "2026-10-22T02:18:41.539315"
+    },
+    {
+      "horizon": "LONG",
+      "signal": "BUY",
+      "rows": 1261,
+      "symbols": 140,
+      "earliest": "2026-09-22T08:30:29.4464",
+      "latest": "2026-10-21T22:23:10.26129"
+    },
+    {
+      "horizon": "LONG",
+      "signal": "SELL",
+      "rows": 783,
+      "symbols": 137,
+      "earliest": "2026-09-22T08:30:42.382689",
+      "latest": "2026-10-22T02:18:42.912046"
+    },
+    {
+      "horizon": "LONG",
+      "signal": "HOLD",
+      "rows": 1464,
+      "symbols": 181,
+      "earliest": "2026-09-22T08:31:53.587367",
+      "latest": "2026-10-22T02:16:57.841516"
+    },
+    {
+      "horizon": "LONG",
+      "signal": "WAIT",
+      "rows": 1672,
+      "symbols": 182,
+      "earliest": "2026-09-22T08:30:55.709794",
+      "latest": "2026-10-22T02:18:41.539315"
+    },
+    {
+      "horizon": "GROWTH",
+      "signal": "BUY",
+      "rows": 685,
+      "symbols": 96,
+      "earliest": "2026-09-22T08:34:16.905941",
+      "latest": "2026-10-21T22:23:10.26129"
+    },
+    {
+      "horizon": "GROWTH",
+      "signal": "SELL",
+      "rows": 267,
+      "symbols": 56,
+      "earliest": "2026-09-22T08:40:28.166779",
+      "latest": "2026-10-22T02:18:42.912046"
+    },
+    {
+      "horizon": "GROWTH",
+      "signal": "HOLD",
+      "rows": 2356,
+      "symbols": 191,
+      "earliest": "2026-09-22T08:30:29.4464",
+      "latest": "2026-10-22T02:18:06.986984"
+    },
+    {
+      "horizon": "GROWTH",
+      "signal": "WAIT",
+      "rows": 1872,
+      "symbols": 182,
+      "earliest": "2026-09-22T08:30:42.382689",
+      "latest": "2026-10-22T02:18:41.539315"
+    }
+  ],
+  "observed_regimes_180d": [
+    {
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "market_regime": "bull",
+      "resolved_n": 4290
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "market_regime": "choppy",
+      "resolved_n": 610
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "market_regime": "neutral",
+      "resolved_n": 22
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "BUY",
+      "market_regime": "unknown",
+      "resolved_n": 27
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "SELL",
+      "market_regime": "bull",
+      "resolved_n": 1429
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "SELL",
+      "market_regime": "choppy",
+      "resolved_n": 309
+    },
+    {
+      "horizon": "SHORT",
+      "signal_direction": "SELL",
+      "market_regime": "unknown",
+      "resolved_n": 15
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "market_regime": "bear",
+      "resolved_n": 1
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "market_regime": "bull",
+      "resolved_n": 3674
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "market_regime": "choppy",
+      "resolved_n": 226
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "market_regime": "neutral",
+      "resolved_n": 8
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "BUY",
+      "market_regime": "unknown",
+      "resolved_n": 16
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "market_regime": "bull",
+      "resolved_n": 1466
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "market_regime": "choppy",
+      "resolved_n": 583
+    },
+    {
+      "horizon": "SWING",
+      "signal_direction": "SELL",
+      "market_regime": "unknown",
+      "resolved_n": 27
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "market_regime": "bull",
+      "resolved_n": 3028
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "market_regime": "choppy",
+      "resolved_n": 508
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "BUY",
+      "market_regime": "unknown",
+      "resolved_n": 25
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "SELL",
+      "market_regime": "bull",
+      "resolved_n": 1512
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "SELL",
+      "market_regime": "choppy",
+      "resolved_n": 629
+    },
+    {
+      "horizon": "LONG",
+      "signal_direction": "SELL",
+      "market_regime": "unknown",
+      "resolved_n": 18
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "market_regime": "bull",
+      "resolved_n": 4420
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "market_regime": "choppy",
+      "resolved_n": 238
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "market_regime": "neutral",
+      "resolved_n": 19
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "BUY",
+      "market_regime": "unknown",
+      "resolved_n": 30
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "market_regime": "bull",
+      "resolved_n": 1042
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "market_regime": "choppy",
+      "resolved_n": 250
+    },
+    {
+      "horizon": "GROWTH",
+      "signal_direction": "SELL",
+      "market_regime": "unknown",
+      "resolved_n": 12
+    }
+  ],
+  "recent_tuning": [
+    {
+      "ts": "2026-10-21T10:10:00.232415",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "watchdog_buy_threshold",
+      "style": "GROWTH",
+      "market": "ALL",
+      "old_value": {
+        "threshold": 0.68
+      },
+      "new_value": {
+        "threshold": 0.7100000000000001
+      },
+      "validation_n": 495,
+      "validation_ev_pct": 0.2889,
+      "baseline_validation_ev_pct": null,
+      "promoted": true,
+      "gate_failures": [
+        "recent_coupled_change:signal_threshold.sell_threshold promoted 2026-10-18T21:05:55.109524"
+      ]
+    },
+    {
+      "ts": "2026-10-21T10:10:00.161621",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "watchdog_buy_threshold",
+      "style": "LONG",
+      "market": "ALL",
+      "old_value": {
+        "threshold": 0.55
+      },
+      "new_value": {
+        "threshold": 0.63
+      },
+      "validation_n": 740,
+      "validation_ev_pct": 0.373,
+      "baseline_validation_ev_pct": null,
+      "promoted": true,
+      "gate_failures": [
+        "recent_coupled_change:gate_threshold.ml_weight_cap promoted 2026-10-18T21:06:29.373289"
+      ]
+    },
+    {
+      "ts": "2026-10-21T10:10:00.131002",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "watchdog_buy_threshold",
+      "style": "SWING",
+      "market": "ALL",
+      "old_value": {
+        "threshold": 0.78
+      },
+      "new_value": {
+        "threshold": 0.81
+      },
+      "validation_n": 180,
+      "validation_ev_pct": 0.1722,
+      "baseline_validation_ev_pct": null,
+      "promoted": true,
+      "gate_failures": [
+        "recent_coupled_change:ml_hyperparams.xgboost_params promoted 2026-10-18T21:59:04.129647"
+      ]
+    },
+    {
+      "ts": "2026-10-21T10:10:00.02096",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "watchdog_buy_threshold",
+      "style": "SHORT",
+      "market": "ALL",
+      "old_value": {
+        "threshold": 0.69
+      },
+      "new_value": {
+        "threshold": 0.72
+      },
+      "validation_n": 595,
+      "validation_ev_pct": 0.2101,
+      "baseline_validation_ev_pct": null,
+      "promoted": true,
+      "gate_failures": [
+        "recent_coupled_change:gate_threshold.adx_min promoted 2026-10-18T21:06:06.987918"
+      ]
+    },
+    {
+      "ts": "2026-10-20T10:10:00.15179",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "watchdog_buy_threshold",
+      "style": "GROWTH",
+      "market": "ALL",
+      "old_value": {
+        "threshold": 0.65
+      },
+      "new_value": {
+        "threshold": 0.68
+      },
+      "validation_n": 467,
+      "validation_ev_pct": 0.3233,
+      "baseline_validation_ev_pct": null,
+      "promoted": true,
+      "gate_failures": [
+        "recent_coupled_change:signal_threshold.sell_threshold promoted 2026-10-18T21:05:55.109524"
+      ]
+    },
+    {
+      "ts": "2026-10-20T10:10:00.13168",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "watchdog_buy_threshold",
+      "style": "SWING",
+      "market": "ALL",
+      "old_value": {
+        "threshold": 0.75
+      },
+      "new_value": {
+        "threshold": 0.78
+      },
+      "validation_n": 123,
+      "validation_ev_pct": 0.1951,
+      "baseline_validation_ev_pct": null,
+      "promoted": true,
+      "gate_failures": [
+        "recent_coupled_change:ml_hyperparams.xgboost_params promoted 2026-10-18T21:59:04.129647"
+      ]
+    },
+    {
+      "ts": "2026-10-20T10:10:00.012629",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "watchdog_buy_threshold",
+      "style": "SHORT",
+      "market": "ALL",
+      "old_value": {
+        "threshold": 0.66
+      },
+      "new_value": {
+        "threshold": 0.6900000000000001
+      },
+      "validation_n": 572,
+      "validation_ev_pct": 0.2622,
+      "baseline_validation_ev_pct": null,
+      "promoted": true,
+      "gate_failures": [
+        "recent_coupled_change:gate_threshold.adx_min promoted 2026-10-18T21:06:06.987918"
+      ]
+    },
+    {
+      "ts": "2026-10-19T10:10:00.138299",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "watchdog_buy_threshold",
+      "style": "SWING",
+      "market": "ALL",
+      "old_value": {
+        "threshold": 0.61
+      },
+      "new_value": {
+        "threshold": 0.75
+      },
+      "validation_n": 78,
+      "validation_ev_pct": 0.3718,
+      "baseline_validation_ev_pct": null,
+      "promoted": true,
+      "gate_failures": [
+        "recent_coupled_change:ml_hyperparams.xgboost_params promoted 2026-10-18T21:59:04.129647"
+      ]
+    },
+    {
+      "ts": "2026-10-19T10:10:00.010198",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "watchdog_buy_threshold",
+      "style": "SHORT",
+      "market": "ALL",
+      "old_value": {
+        "threshold": 0.57
+      },
+      "new_value": {
+        "threshold": 0.66
+      },
+      "validation_n": 524,
+      "validation_ev_pct": 0.3244,
+      "baseline_validation_ev_pct": null,
+      "promoted": true,
+      "gate_failures": [
+        "recent_coupled_change:gate_threshold.adx_min promoted 2026-10-18T21:06:06.987918"
+      ]
+    },
+    {
+      "ts": "2026-10-18T21:06:44.685685",
+      "parameter_class": "gate_threshold",
+      "parameter_name": "ml_weight_cap",
+      "style": "GROWTH",
+      "market": "ALL",
+      "old_value": {
+        "ml_weight_cap": 0.6
+      },
+      "new_value": {
+        "ml_weight_cap": 0.45
+      },
+      "validation_n": 1226,
+      "validation_ev_pct": -2.41,
+      "baseline_validation_ev_pct": -2.36,
+      "promoted": false,
+      "gate_failures": [
+        "did_not_beat_baseline_or_insufficient_validation_samples"
+      ]
+    },
+    {
+      "ts": "2026-10-18T21:06:29.373289",
+      "parameter_class": "gate_threshold",
+      "parameter_name": "ml_weight_cap",
+      "style": "LONG",
+      "market": "ALL",
+      "old_value": {
+        "ml_weight_cap": 0.45
+      },
+      "new_value": {
+        "ml_weight_cap": 0.15
+      },
+      "validation_n": 783,
+      "validation_ev_pct": -0.64,
+      "baseline_validation_ev_pct": -0.81,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-18T21:06:12.627228",
+      "parameter_class": "gate_threshold",
+      "parameter_name": "ml_weight_cap",
+      "style": "SWING",
+      "market": "ALL",
+      "old_value": {
+        "ml_weight_cap": 0.65
+      },
+      "new_value": {
+        "ml_weight_cap": 0.7
+      },
+      "validation_n": 1027,
+      "validation_ev_pct": -1.84,
+      "baseline_validation_ev_pct": -1.8,
+      "promoted": false,
+      "gate_failures": [
+        "did_not_beat_baseline_or_insufficient_validation_samples"
+      ]
+    },
+    {
+      "ts": "2026-10-18T21:06:06.987918",
+      "parameter_class": "gate_threshold",
+      "parameter_name": "adx_min",
+      "style": "SHORT",
+      "market": "ALL",
+      "old_value": {},
+      "new_value": {
+        "adx_min": 10
+      },
+      "validation_n": 1363,
+      "validation_ev_pct": null,
+      "baseline_validation_ev_pct": null,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-18T21:06:03.022387",
+      "parameter_class": "gate_threshold",
+      "parameter_name": "ml_weight_cap",
+      "style": "SHORT",
+      "market": "ALL",
+      "old_value": {
+        "ml_weight_cap": 0.3
+      },
+      "new_value": {
+        "ml_weight_cap": 0.4
+      },
+      "validation_n": 1361,
+      "validation_ev_pct": -2.09,
+      "baseline_validation_ev_pct": -2.55,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-18T21:05:55.109524",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "sell_threshold",
+      "style": "GROWTH",
+      "market": "ALL",
+      "old_value": {
+        "sell_threshold": 0.35
+      },
+      "new_value": {
+        "sell_threshold": 0.29
+      },
+      "validation_n": 336,
+      "validation_ev_pct": 0.18,
+      "baseline_validation_ev_pct": 0.11,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-18T21:05:47.316226",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "sell_threshold",
+      "style": "LONG",
+      "market": "ALL",
+      "old_value": {
+        "sell_threshold": 0.35
+      },
+      "new_value": {
+        "sell_threshold": 0.19
+      },
+      "validation_n": 618,
+      "validation_ev_pct": null,
+      "baseline_validation_ev_pct": null,
+      "promoted": false,
+      "gate_failures": [
+        "candidate_unmeasurable_on_validation"
+      ]
+    },
+    {
+      "ts": "2026-10-18T21:05:38.632365",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "sell_threshold",
+      "style": "SWING",
+      "market": "ALL",
+      "old_value": {
+        "sell_threshold": 0.35
+      },
+      "new_value": {
+        "sell_threshold": 0.19
+      },
+      "validation_n": 588,
+      "validation_ev_pct": null,
+      "baseline_validation_ev_pct": null,
+      "promoted": false,
+      "gate_failures": [
+        "candidate_unmeasurable_on_validation"
+      ]
+    },
+    {
+      "ts": "2026-10-18T21:05:38.205968",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "sell_threshold",
+      "style": "SHORT",
+      "market": "ALL",
+      "old_value": {
+        "sell_threshold": 0.35
+      },
+      "new_value": {
+        "sell_threshold": 0.29
+      },
+      "validation_n": 286,
+      "validation_ev_pct": 0.02,
+      "baseline_validation_ev_pct": 0.02,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-18T21:05:17.121147",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "buy_threshold",
+      "style": "GROWTH",
+      "market": "ALL",
+      "old_value": {
+        "buy_threshold": 0.6
+      },
+      "new_value": {
+        "buy_threshold": 0.65
+      },
+      "validation_n": 1220,
+      "validation_ev_pct": -2.08,
+      "baseline_validation_ev_pct": -2.29,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-18T21:04:57.412497",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "buy_threshold",
+      "style": "LONG",
+      "market": "ALL",
+      "old_value": {
+        "buy_threshold": 0.6
+      },
+      "new_value": {
+        "buy_threshold": 0.55
+      },
+      "validation_n": 943,
+      "validation_ev_pct": -1,
+      "baseline_validation_ev_pct": -1.22,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-18T21:04:38.564664",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "buy_threshold",
+      "style": "SWING",
+      "market": "ALL",
+      "old_value": {
+        "buy_threshold": 0.72
+      },
+      "new_value": {
+        "buy_threshold": 0.61
+      },
+      "validation_n": 800,
+      "validation_ev_pct": -2.17,
+      "baseline_validation_ev_pct": -2.7,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-18T21:04:37.366614",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "buy_threshold",
+      "style": "SHORT",
+      "market": "ALL",
+      "old_value": {
+        "buy_threshold": 0.63
+      },
+      "new_value": {
+        "buy_threshold": 0.57
+      },
+      "validation_n": 1314,
+      "validation_ev_pct": -2.25,
+      "baseline_validation_ev_pct": -3.2,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-11T21:06:33.585436",
+      "parameter_class": "gate_threshold",
+      "parameter_name": "ml_weight_cap",
+      "style": "GROWTH",
+      "market": "ALL",
+      "old_value": {
+        "ml_weight_cap": 0.6
+      },
+      "new_value": {
+        "ml_weight_cap": 0.65
+      },
+      "validation_n": 1255,
+      "validation_ev_pct": -2.06,
+      "baseline_validation_ev_pct": -2.07,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-11T21:06:16.509402",
+      "parameter_class": "gate_threshold",
+      "parameter_name": "ml_weight_cap",
+      "style": "LONG",
+      "market": "ALL",
+      "old_value": {
+        "ml_weight_cap": 0.45
+      },
+      "new_value": {
+        "ml_weight_cap": 0.15
+      },
+      "validation_n": 791,
+      "validation_ev_pct": -0.35,
+      "baseline_validation_ev_pct": -0.43,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-11T21:06:00.510077",
+      "parameter_class": "gate_threshold",
+      "parameter_name": "ml_weight_cap",
+      "style": "SWING",
+      "market": "ALL",
+      "old_value": {
+        "ml_weight_cap": 0.65
+      },
+      "new_value": {
+        "ml_weight_cap": 0.7
+      },
+      "validation_n": 1059,
+      "validation_ev_pct": -1.93,
+      "baseline_validation_ev_pct": -1.89,
+      "promoted": false,
+      "gate_failures": [
+        "did_not_beat_baseline_or_insufficient_validation_samples"
+      ]
+    },
+    {
+      "ts": "2026-10-11T21:05:57.226663",
+      "parameter_class": "gate_threshold",
+      "parameter_name": "adx_min",
+      "style": "SHORT",
+      "market": "ALL",
+      "old_value": {},
+      "new_value": {
+        "adx_min": 10
+      },
+      "validation_n": 1316,
+      "validation_ev_pct": null,
+      "baseline_validation_ev_pct": null,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-11T21:05:53.909264",
+      "parameter_class": "gate_threshold",
+      "parameter_name": "ml_weight_cap",
+      "style": "SHORT",
+      "market": "ALL",
+      "old_value": {
+        "ml_weight_cap": 0.3
+      },
+      "new_value": {
+        "ml_weight_cap": 0.4
+      },
+      "validation_n": 1310,
+      "validation_ev_pct": -0.41,
+      "baseline_validation_ev_pct": -0.52,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-11T21:05:46.914955",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "sell_threshold",
+      "style": "GROWTH",
+      "market": "ALL",
+      "old_value": {
+        "sell_threshold": 0.35
+      },
+      "new_value": {
+        "sell_threshold": 0.29
+      },
+      "validation_n": 316,
+      "validation_ev_pct": -0.75,
+      "baseline_validation_ev_pct": -0.77,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-11T21:05:39.805285",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "sell_threshold",
+      "style": "LONG",
+      "market": "ALL",
+      "old_value": {
+        "sell_threshold": 0.35
+      },
+      "new_value": {
+        "sell_threshold": 0.19
+      },
+      "validation_n": 543,
+      "validation_ev_pct": null,
+      "baseline_validation_ev_pct": null,
+      "promoted": false,
+      "gate_failures": [
+        "candidate_unmeasurable_on_validation"
+      ]
+    },
+    {
+      "ts": "2026-10-11T21:05:32.536045",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "sell_threshold",
+      "style": "SWING",
+      "market": "ALL",
+      "old_value": {
+        "sell_threshold": 0.35
+      },
+      "new_value": {
+        "sell_threshold": 0.19
+      },
+      "validation_n": 532,
+      "validation_ev_pct": null,
+      "baseline_validation_ev_pct": null,
+      "promoted": false,
+      "gate_failures": [
+        "candidate_unmeasurable_on_validation"
+      ]
+    },
+    {
+      "ts": "2026-10-11T21:05:32.095429",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "sell_threshold",
+      "style": "SHORT",
+      "market": "ALL",
+      "old_value": {
+        "sell_threshold": 0.35
+      },
+      "new_value": {
+        "sell_threshold": 0.29
+      },
+      "validation_n": 219,
+      "validation_ev_pct": -0.88,
+      "baseline_validation_ev_pct": -0.44,
+      "promoted": false,
+      "gate_failures": [
+        "ev_lift_negative"
+      ]
+    },
+    {
+      "ts": "2026-10-11T21:05:15.276454",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "buy_threshold",
+      "style": "GROWTH",
+      "market": "ALL",
+      "old_value": {
+        "buy_threshold": 0.6
+      },
+      "new_value": {
+        "buy_threshold": 0.65
+      },
+      "validation_n": 1142,
+      "validation_ev_pct": -1.6,
+      "baseline_validation_ev_pct": -1.93,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-11T21:05:00.134068",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "buy_threshold",
+      "style": "LONG",
+      "market": "ALL",
+      "old_value": {
+        "buy_threshold": 0.6
+      },
+      "new_value": {
+        "buy_threshold": 0.55
+      },
+      "validation_n": 850,
+      "validation_ev_pct": -0.56,
+      "baseline_validation_ev_pct": -0.77,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-11T21:04:41.714882",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "buy_threshold",
+      "style": "SWING",
+      "market": "ALL",
+      "old_value": {
+        "buy_threshold": 0.72
+      },
+      "new_value": {
+        "buy_threshold": 0.61
+      },
+      "validation_n": 779,
+      "validation_ev_pct": -1.81,
+      "baseline_validation_ev_pct": -1.97,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-11T21:04:40.416991",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "buy_threshold",
+      "style": "SHORT",
+      "market": "ALL",
+      "old_value": {
+        "buy_threshold": 0.63
+      },
+      "new_value": {
+        "buy_threshold": 0.57
+      },
+      "validation_n": 1198,
+      "validation_ev_pct": -0.46,
+      "baseline_validation_ev_pct": -0.96,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-06T10:10:00.012289",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "watchdog_buy_threshold",
+      "style": "LONG",
+      "market": "ALL",
+      "old_value": {
+        "threshold": 0.63
+      },
+      "new_value": {
+        "threshold": 0.66
+      },
+      "validation_n": 144,
+      "validation_ev_pct": 0.2778,
+      "baseline_validation_ev_pct": null,
+      "promoted": true,
+      "gate_failures": [
+        "recent_coupled_change:signal_threshold.buy_threshold promoted 2026-10-04T21:04:49.302938"
+      ]
+    },
+    {
+      "ts": "2026-10-05T10:10:00.119275",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "watchdog_buy_threshold",
+      "style": "LONG",
+      "market": "ALL",
+      "old_value": {
+        "threshold": 0.55
+      },
+      "new_value": {
+        "threshold": 0.63
+      },
+      "validation_n": 119,
+      "validation_ev_pct": 0.2773,
+      "baseline_validation_ev_pct": null,
+      "promoted": true,
+      "gate_failures": [
+        "recent_coupled_change:signal_threshold.buy_threshold promoted 2026-10-04T21:04:49.302938"
+      ]
+    },
+    {
+      "ts": "2026-10-05T10:10:00.010952",
+      "parameter_class": "signal_threshold",
+      "parameter_name": "watchdog_buy_threshold",
+      "style": "SHORT",
+      "market": "ALL",
+      "old_value": {
+        "threshold": 0.57
+      },
+      "new_value": {
+        "threshold": 0.66
+      },
+      "validation_n": 230,
+      "validation_ev_pct": 0.3522,
+      "baseline_validation_ev_pct": null,
+      "promoted": true,
+      "gate_failures": [
+        "recent_coupled_change:signal_gate.min_pillars_for_sell promoted 2026-10-04T21:11:00.588526"
+      ]
+    },
+    {
+      "ts": "2026-10-04T21:06:23.869741",
+      "parameter_class": "gate_threshold",
+      "parameter_name": "ml_weight_cap",
+      "style": "GROWTH",
+      "market": "ALL",
+      "old_value": {
+        "ml_weight_cap": 0.6
+      },
+      "new_value": {
+        "ml_weight_cap": 0.65
+      },
+      "validation_n": 1194,
+      "validation_ev_pct": -2.54,
+      "baseline_validation_ev_pct": -2.54,
+      "promoted": true,
+      "gate_failures": []
+    },
+    {
+      "ts": "2026-10-04T21:06:08.513046",
+      "parameter_class": "gate_threshold",
+      "parameter_name": "ml_weight_cap",
+      "style": "LONG",
+      "market": "ALL",
+      "old_value": {
+        "ml_weight_cap": 0.45
+      },
+      "new_value": {
+        "ml_weight_cap": 0.35
+      },
+      "validation_n": 706,
+      "validation_ev_pct": 1.19,
+      "baseline_validation_ev_pct": 1.19,
+      "promoted": false,
+      "gate_failures": [
+        "did_not_beat_baseline_or_insufficient_validation_samples"
+      ]
+    }
+  ],
+  "latest_signal_ml_weights": [
+    {
+      "horizon": "SHORT",
+      "n": 197,
+      "earliest": "2026-10-21T20:33:30.173474",
+      "latest": "2026-10-22T02:18:42.912046",
+      "min_ml_weight": 0.0,
+      "max_ml_weight": 0.4,
+      "positive_ml_weight_n": 100
+    },
+    {
+      "horizon": "SWING",
+      "n": 197,
+      "earliest": "2026-10-21T20:33:30.173474",
+      "latest": "2026-10-22T02:18:42.912046",
+      "min_ml_weight": 0.0,
+      "max_ml_weight": 0.15,
+      "positive_ml_weight_n": 106
+    },
+    {
+      "horizon": "LONG",
+      "n": 197,
+      "earliest": "2026-10-21T20:33:30.173474",
+      "latest": "2026-10-22T02:18:42.912046",
+      "min_ml_weight": 0.0,
+      "max_ml_weight": 0.15,
+      "positive_ml_weight_n": 97
+    },
+    {
+      "horizon": "GROWTH",
+      "n": 197,
+      "earliest": "2026-10-21T20:33:30.173474",
+      "latest": "2026-10-22T02:18:42.912046",
+      "min_ml_weight": 0.0,
+      "max_ml_weight": 0.65,
+      "positive_ml_weight_n": 99
+    }
+  ]
+}

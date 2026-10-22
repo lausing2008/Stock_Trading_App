@@ -1,0 +1,10 @@
+{
+  "services/signal-engine/src/generators/signals.py": "2981183815e89785659deddd4aaa41c798523e30de497f98ca6d63d4f41778b1",
+  "services/signal-engine/src/api/calibration.py": "be4474118ebe255a72f0da457e0ad684123c114ae8c5547a77521eed42b52aa5",
+  "services/signal-engine/src/api/signals_shared.py": "a826ed5f1931125d5067508596ba1c88659bf64f31fd3cc16917da981c099414",
+  "services/market-data/src/services/scheduler.py": "674df3617402d61a86a269a8e8a549f423897c7a842842516bfad4a008c47d5b",
+  "services/market-data/src/services/paper_trading_engine.py": "4e0cd7d3590f1f0fcaf07e53bd22d2549bb25cc52193bc76e054fc43a5b222f3",
+  "services/market-data/src/services/ai_signal_alert_contract.py": "1a65f8a576e09200a7a03cefbfcfb62b877c2387714c520b87957faa3aeed0f2",
+  "services/ml-prediction/src/training/trainer.py": "fc7d772ad803b10eea47118c782a1364e3b56268bbc1d3cbee25ddb2a21d07c8",
+  "services/ml-prediction/src/features/builder.py": "846548b7d90bc045fe18c48ed154f347663cf303b2ff368e1c1e0534e5ad25f7"
+}

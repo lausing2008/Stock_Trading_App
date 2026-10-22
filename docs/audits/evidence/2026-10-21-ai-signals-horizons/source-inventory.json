@@ -1,0 +1,4679 @@
+{
+  "head": "ed3205754134fc3a448ff1814c62c043c949c667",
+  "files": {
+    "services/signal-engine/src/generators/signals.py": "2981183815e89785659deddd4aaa41c798523e30de497f98ca6d63d4f41778b1",
+    "services/signal-engine/src/api/signals_shared.py": "a826ed5f1931125d5067508596ba1c88659bf64f31fd3cc16917da981c099414",
+    "services/signal-engine/src/api/calibration.py": "be4474118ebe255a72f0da457e0ad684123c114ae8c5547a77521eed42b52aa5",
+    "services/market-data/src/services/scheduler.py": "674df3617402d61a86a269a8e8a549f423897c7a842842516bfad4a008c47d5b",
+    "services/market-data/src/services/paper_trading_engine.py": "4e0cd7d3590f1f0fcaf07e53bd22d2549bb25cc52193bc76e054fc43a5b222f3",
+    "services/ml-prediction/src/training/trainer.py": "fc7d772ad803b10eea47118c782a1364e3b56268bbc1d3cbee25ddb2a21d07c8",
+    "services/ml-prediction/src/features/builder.py": "846548b7d90bc045fe18c48ed154f347663cf303b2ff368e1c1e0534e5ad25f7",
+    "services/market-data/src/services/ai_signal_alert_contract.py": "1a65f8a576e09200a7a03cefbfcfb62b877c2387714c520b87957faa3aeed0f2",
+    "services/signal-engine/src/api/routes.py": "287664324fb39eb067ecf75b4ae8127424885cbeed1dfe39b6f2b82c27a60929",
+    "services/signal-engine/src/api/outcomes.py": "73459f903d60b3e998ee470a20bf7fe170d151f1908068339c777eb4215cdb1a",
+    "shared/db/models.py": "c263142fcc493433b15cbacb9ba07298cb56ee05f0439074b57b8570d75e3420"
+  },
+  "configuration": {
+    "services/signal-engine/src/generators/signals.py": {
+      "_TA_WEIGHTS_DEFAULT": {
+        "line": 148,
+        "value": {
+          "above_sma50": 0.15,
+          "sma50_above_sma200": 0.1,
+          "golden_cross_event": 0.1,
+          "death_cross_penalty": 0.1,
+          "gc_spread_expanding": 0.06,
+          "gc_spread_narrowing": 0.06,
+          "rsi_sweet_spot": 0.15,
+          "rsi_mild_oversold": 0.08,
+          "rsi_mild_overbought": 0.06,
+          "stoch_oversold": 0.1,
+          "stoch_overbought_penalty": 0.08,
+          "stoch_cross_up": 0.05,
+          "macd_strong": 0.15,
+          "macd_positive": 0.08,
+          "macd_zero_cross_up": 0.05,
+          "macd_momentum_fading": 0.08,
+          "bb_mid_zone": 0.1,
+          "price_above_vwap": 0.08,
+          "price_below_vwap_penalty": 0.05,
+          "bullish_trend": 0.1,
+          "obv_trend_bullish": 0.1,
+          "volume_z": 0.05
+        }
+      },
+      "_EARNINGS_COMPRESSION_ENABLED": {
+        "line": 494,
+        "value": false
+      },
+      "_HOT_NEWS_DELAYED_COMPRESS": {
+        "line": 1690,
+        "value": 0.92
+      },
+      "_STYLE_PROFILES": {
+        "line": 1693,
+        "value": {
+          "SHORT": {
+            "ml_weight_cap": 0.3,
+            "ml_weight_floor": 0.1,
+            "buy_threshold": {
+              "bull": 0.63,
+              "high_vol": 0.65,
+              "bear": 0.68,
+              "unknown": 0.62,
+              "neutral": 0.62,
+              "choppy": 0.65,
+              "risk_off": 0.68
+            },
+            "hold_threshold": {
+              "bull": 0.46,
+              "high_vol": 0.5,
+              "bear": 0.52,
+              "unknown": 0.47,
+              "neutral": 0.47,
+              "choppy": 0.5,
+              "risk_off": 0.52
+            },
+            "adx_min": 27,
+            "adx_compression": 0.85,
+            "high_vol_compression": 0.92,
+            "breadth_compression": 0.9,
+            "weekly_boost": 1.08,
+            "weekly_compress": 0.93,
+            "earnings_compression": null,
+            "news_compression": null,
+            "rs_compression": 0.9,
+            "kscore_boost": false,
+            "max_compress_ratio": 0.7
+          },
+          "SWING": {
+            "ml_weight_cap": 0.65,
+            "ml_weight_floor": 0.15,
+            "buy_threshold": {
+              "bull": 0.72,
+              "high_vol": 0.74,
+              "bear": 0.76,
+              "unknown": 0.72,
+              "neutral": 0.72,
+              "choppy": 0.74,
+              "risk_off": 0.76
+            },
+            "hold_threshold": {
+              "bull": 0.5,
+              "high_vol": 0.54,
+              "bear": 0.56,
+              "unknown": 0.5,
+              "neutral": 0.5,
+              "choppy": 0.54,
+              "risk_off": 0.56
+            },
+            "adx_min": 15,
+            "adx_compression": 0.9,
+            "high_vol_compression": 0.85,
+            "breadth_compression": 0.9,
+            "weekly_boost": 1.12,
+            "weekly_compress": 0.85,
+            "earnings_compression": {
+              "2": 0.65,
+              "5": 0.85,
+              "10": 0.95
+            },
+            "news_compression": {
+              "25": 0.75,
+              "35": 0.85
+            },
+            "rs_compression": 0.85,
+            "kscore_boost": false,
+            "max_compress_ratio": 0.55,
+            "min_pillars_for_buy": 3
+          },
+          "LONG": {
+            "ml_weight_cap": 0.45,
+            "ml_weight_floor": 0.12,
+            "buy_threshold": {
+              "bull": 0.6,
+              "high_vol": 0.65,
+              "bear": 0.7,
+              "unknown": 0.62,
+              "neutral": 0.62,
+              "choppy": 0.65,
+              "risk_off": 0.7
+            },
+            "hold_threshold": {
+              "bull": 0.46,
+              "high_vol": 0.5,
+              "bear": 0.54,
+              "unknown": 0.46,
+              "neutral": 0.46,
+              "choppy": 0.5,
+              "risk_off": 0.54
+            },
+            "adx_min": null,
+            "adx_compression": null,
+            "high_vol_compression": 0.9,
+            "breadth_compression": 0.92,
+            "weekly_boost": 1.18,
+            "weekly_compress": 0.8,
+            "earnings_compression": null,
+            "news_compression": null,
+            "rs_compression": 0.8,
+            "kscore_boost": true,
+            "max_compress_ratio": 0.65,
+            "min_pillars_for_buy": 3
+          },
+          "GROWTH": {
+            "ml_weight_cap": 0.6,
+            "ml_weight_floor": 0.2,
+            "buy_threshold": {
+              "bull": 0.6,
+              "high_vol": 0.65,
+              "bear": 0.68,
+              "unknown": 0.6,
+              "neutral": 0.6,
+              "choppy": 0.65,
+              "risk_off": 0.68
+            },
+            "hold_threshold": {
+              "bull": 0.45,
+              "high_vol": 0.5,
+              "bear": 0.52,
+              "unknown": 0.45,
+              "neutral": 0.45,
+              "choppy": 0.5,
+              "risk_off": 0.52
+            },
+            "adx_min": 12,
+            "adx_compression": 0.92,
+            "high_vol_compression": 0.88,
+            "breadth_compression": 0.95,
+            "weekly_boost": 1.08,
+            "weekly_compress": 0.92,
+            "earnings_compression": {
+              "2": 0.6,
+              "5": 0.8,
+              "10": 0.92
+            },
+            "news_compression": {
+              "25": 0.8,
+              "35": 0.9
+            },
+            "rs_compression": null,
+            "kscore_boost": false,
+            "max_compress_ratio": 0.6,
+            "skip_weekly_gate": true
+          }
+        }
+      },
+      "_DYNAMIC_BUY_THRESHOLD_BOUNDS": {
+        "line": 1970,
+        "value": [
+          0.55,
+          0.85
+        ]
+      },
+      "_DYNAMIC_SELL_THRESHOLD_BOUNDS": {
+        "line": 1971,
+        "value": [
+          0.15,
+          0.45
+        ]
+      },
+      "_SELL_THRESHOLD_FALLBACK": {
+        "line": 2012,
+        "value": 0.35
+      }
+    },
+    "services/signal-engine/src/api/signals_shared.py": {
+      "_CONF_BANDS": {
+        "line": 212,
+        "value": [
+          [
+            0,
+            40,
+            "0-40"
+          ],
+          [
+            40,
+            55,
+            "40-55"
+          ],
+          [
+            55,
+            70,
+            "55-70"
+          ],
+          [
+            70,
+            85,
+            "70-85"
+          ],
+          [
+            85,
+            101,
+            "85+"
+          ]
+        ]
+      },
+      "_CONF_CAL_MIN_COUNT": {
+        "line": 228,
+        "value": 30
+      },
+      "_OUTCOME_HOLD_DAYS": {
+        "line": 486,
+        "value": {
+          "SHORT": 7,
+          "SWING": 14,
+          "LONG": 28,
+          "GROWTH": 14
+        }
+      },
+      "_SELL_OUTCOME_HOLD_DAYS": {
+        "line": 505,
+        "value": {
+          "SHORT": 5,
+          "SWING": 7,
+          "LONG": 10,
+          "GROWTH": 7
+        }
+      },
+      "_OUTCOME_WIN_HURDLE_PCT": {
+        "line": 530,
+        "value": 0.005
+      }
+    },
+    "services/signal-engine/src/api/calibration.py": {
+      "_TUNE_STRATEGY_MIN_SAMPLES": {
+        "line": 2342,
+        "value": 15
+      },
+      "_TUNE_STRATEGY_BUY_BOUNDS": {
+        "line": 2347,
+        "value": [
+          0.55,
+          0.85
+        ]
+      },
+      "_TUNE_STRATEGY_ML_CAP_BOUNDS": {
+        "line": 2348,
+        "value": [
+          0.15,
+          0.75
+        ]
+      }
+    },
+    "services/market-data/src/services/scheduler.py": {
+      "_REGIME_THRESHOLDS": {
+        "line": 1040,
+        "value": {
+          "bull": {
+            "ml": 0.65,
+            "confluence": 70,
+            "confidence": 58,
+            "tier": "bull"
+          },
+          "neutral": {
+            "ml": 0.7,
+            "confluence": 75,
+            "confidence": 60,
+            "tier": "neutral"
+          },
+          "high_vol": {
+            "ml": 0.78,
+            "confluence": 82,
+            "confidence": 68,
+            "tier": "high_vol"
+          },
+          "bear": {
+            "ml": 0.78,
+            "confluence": 82,
+            "confidence": 68,
+            "tier": "bear"
+          },
+          "unknown": {
+            "ml": 0.7,
+            "confluence": 75,
+            "confidence": 60,
+            "tier": "neutral"
+          },
+          "choppy": {
+            "ml": 0.78,
+            "confluence": 82,
+            "confidence": 68,
+            "tier": "high_vol"
+          },
+          "risk_off": {
+            "ml": 0.78,
+            "confluence": 82,
+            "confidence": 68,
+            "tier": "bear"
+          }
+        }
+      },
+      "_MIN_CONFIDENCE": {
+        "line": 1059,
+        "value": 60.0
+      },
+      "_MIN_CONFLUENCE": {
+        "line": 1060,
+        "value": 75
+      },
+      "_MAX_ROC10_FOR_ENTRY": {
+        "line": 1065,
+        "value": 10.0
+      },
+      "_CONVICTION_EDGE_NOISE_THRESHOLD_PCT": {
+        "line": 1106,
+        "value": 2.0
+      },
+      "_SOFT_LAYER_BASE": {
+        "line": 1109,
+        "value": [
+          "OBV",
+          "ADX",
+          "ML probability",
+          "MACD"
+        ]
+      },
+      "_STYLE_PARAMS": {
+        "line": 1391,
+        "value": {
+          "SHORT": {
+            "entry1_pct": 0.995,
+            "entry2_pct": 0.985,
+            "breakout_pct": 1.01,
+            "stop_pct": 0.97,
+            "default_tp_pct": 1.05,
+            "entry1_label": "tight entry \u2014 short-term momentum play",
+            "entry2_label": "secondary entry on minor intraday dip",
+            "stop_label": "tight stop \u2014 short-term trade invalidated on 3% breach",
+            "tp_fallback": "+5% quick target for short-term momentum trade",
+            "horizon_note": "Short-term trade (1\u20135 days) \u2014 prioritise execution speed over perfect fill"
+          },
+          "SWING": {
+            "entry1_pct": 0.985,
+            "entry2_pct": 0.965,
+            "breakout_pct": 1.02,
+            "stop_pct": 0.945,
+            "default_tp_pct": 1.12,
+            "entry1_label": "near-term support \u2014 scale in on weakness",
+            "entry2_label": "secondary support \u2014 averaging down level",
+            "stop_label": "daily close below invalidates bullish swing setup",
+            "tp_fallback": "+12% from current, near next resistance",
+            "horizon_note": "Swing trade (5\u201330 days) \u2014 hold through normal volatility"
+          },
+          "LONG": {
+            "entry1_pct": 0.98,
+            "entry2_pct": 0.95,
+            "breakout_pct": 1.03,
+            "stop_pct": 0.9,
+            "default_tp_pct": 1.25,
+            "entry1_label": "initial position \u2014 build on weakness over days/weeks",
+            "entry2_label": "add-to level \u2014 deeper pullback absorption zone",
+            "stop_label": "wide stop allows normal volatility; weekly close below invalidates thesis",
+            "tp_fallback": "+25% medium-term target (position trade)",
+            "horizon_note": "Position trade (1\u201312 months) \u2014 manage around earnings; size for volatility"
+          },
+          "GROWTH": {
+            "entry1_pct": 0.975,
+            "entry2_pct": 0.94,
+            "breakout_pct": 1.035,
+            "stop_pct": 0.88,
+            "default_tp_pct": 1.35,
+            "entry1_label": "momentum pullback \u2014 growth stocks dip before continuation",
+            "entry2_label": "deeper pullback entry \u2014 scale in; strong hands accumulating",
+            "stop_label": "wide stop accommodates normal growth-stock volatility (12%)",
+            "tp_fallback": "+35% growth target \u2014 AI/tech/momentum name; hold for the move",
+            "horizon_note": "Growth/momentum trade (30\u201390 days) \u2014 hold through volatility; trail stop on gains"
+          }
+        }
+      }
+    },
+    "services/market-data/src/services/paper_trading_engine.py": {
+      "_DEFAULT_CONFIG": {
+        "line": 809,
+        "value": {
+          "trading_style": "GROWTH",
+          "market": "US",
+          "max_positions": 6,
+          "max_sector_pct": 0.25,
+          "max_sector_positions": 3,
+          "risk_per_trade_pct": 0.01,
+          "max_position_pct": 0.1,
+          "min_confidence": 45.0,
+          "confidence_sizing_enabled": false,
+          "min_kscore": 48.0,
+          "min_rr_ratio": 2.0,
+          "min_entry_score": 4,
+          "max_hold_days": 60,
+          "trail_atr_mult": 2.0,
+          "trail_trigger_pct": 0.05,
+          "breakeven_trigger_pct": 0.03,
+          "partial_tp_pct": 0.1,
+          "wait_exit_days": 5,
+          "max_portfolio_drawdown_pct": 0.2,
+          "max_daily_loss_pct": 0.04,
+          "max_entries_per_day": 3,
+          "max_entry_gap_pct": 0.04,
+          "require_kscore": true,
+          "max_open_risk_pct": 0.12,
+          "max_loss_per_trade_pct": 0.02,
+          "entry_slippage_pct": 0.001,
+          "commission_per_share": 0.0,
+          "hold_stall_days": 30,
+          "hold_stall_max_gain": 0.05,
+          "enforce_market_hours": true,
+          "max_signal_age_hours": 72,
+          "stop_cooldown_hours": 120,
+          "max_market_positions": 4,
+          "heat_brake_max_stops": 3,
+          "heat_brake_window_hours": 48,
+          "max_positions_per_symbol_global": 1,
+          "index_trend_gate_enabled": true,
+          "index_trend_gate_pct": -0.015,
+          "enable_regime_filter": true,
+          "regime_vix_high": 25.0,
+          "regime_vix_fear": 30.0,
+          "regime_bear_size_mult": 0.0,
+          "regime_risk_off_size_mult": 0.5,
+          "regime_choppy_size_mult": 0.75,
+          "regime_bull_size_mult": 1.0,
+          "regime_risk_off_min_score": 5,
+          "regime_risk_off_gate": true,
+          "regime_choppy_min_score": 4,
+          "enabled": true,
+          "decision_engine_mode": "primary",
+          "position_scaling_mode": "off"
+        }
+      },
+      "_STYLE_PARAMS": {
+        "line": 961,
+        "value": {
+          "SHORT": {
+            "entry1_pct": 0.995,
+            "entry2_pct": 0.985,
+            "breakout_pct": 1.01,
+            "stop_pct": 0.97,
+            "default_tp_pct": 1.05,
+            "atr_stop_mult": 2.0
+          },
+          "SWING": {
+            "entry1_pct": 0.985,
+            "entry2_pct": 0.965,
+            "breakout_pct": 1.02,
+            "stop_pct": 0.945,
+            "default_tp_pct": 1.12,
+            "atr_stop_mult": 2.0
+          },
+          "LONG": {
+            "entry1_pct": 0.98,
+            "entry2_pct": 0.95,
+            "breakout_pct": 1.03,
+            "stop_pct": 0.9,
+            "default_tp_pct": 1.25,
+            "atr_stop_mult": 2.0
+          },
+          "GROWTH": {
+            "entry1_pct": 0.975,
+            "entry2_pct": 0.94,
+            "breakout_pct": 1.035,
+            "stop_pct": 0.88,
+            "default_tp_pct": 1.35,
+            "atr_stop_mult": 3.0
+          }
+        }
+      },
+      "_STYLE_OVERRIDES": {
+        "line": 1046,
+        "value": {
+          "SHORT": {
+            "max_hold_days": 10,
+            "hold_stall_days": 7
+          },
+          "GROWTH": {
+            "max_hold_days": 60,
+            "trail_atr_mult": 2.0,
+            "breakeven_trigger_pct": 0.04,
+            "trail_trigger_pct": 0.07,
+            "partial_tp_pct": 0.15,
+            "partial_tp2_pct": 0.22,
+            "wait_exit_days": 5,
+            "min_confidence": 45.0,
+            "min_kscore": 48.0,
+            "max_entry_gap_pct": 0.04
+          },
+          "SWING": {
+            "max_hold_days": 20,
+            "trail_atr_mult": 2.0,
+            "trail_trigger_pct": 0.03,
+            "breakeven_trigger_pct": 0.015,
+            "partial_tp_pct": 0.1,
+            "partial_tp2_pct": 0.18,
+            "wait_exit_days": 3,
+            "min_confidence": 50.0,
+            "min_kscore": 52.0,
+            "max_entry_gap_pct": 0.03,
+            "min_ta_score": 0.65,
+            "min_entry_score": 5
+          },
+          "LONG": {
+            "max_hold_days": 90,
+            "trail_atr_mult": 2.0,
+            "trail_trigger_pct": 0.06,
+            "breakeven_trigger_pct": 0.04,
+            "partial_tp_pct": 0.15,
+            "partial_tp2_pct": 0.2,
+            "wait_exit_days": 7,
+            "min_confidence": 40.0,
+            "min_kscore": 50.0,
+            "max_entry_gap_pct": 0.05
+          }
+        }
+      },
+      "_HK_MARKET_OVERRIDES": {
+        "line": 1096,
+        "value": {
+          "regime_suspension_days": 7,
+          "max_consecutive_losses": 3,
+          "min_entry_score": 6,
+          "min_confidence": 65.0,
+          "trail_atr_mult": 1.5,
+          "max_position_pct": 0.07,
+          "risk_per_trade_pct": 0.007,
+          "min_ta_score": 0.65
+        }
+      }
+    },
+    "services/ml-prediction/src/training/trainer.py": {
+      "_HORIZON_BY_STYLE": {
+        "line": 35,
+        "value": {
+          "SHORT": 5,
+          "SWING": 10,
+          "LONG": 20,
+          "GROWTH": 15
+        }
+      },
+      "_PRECISION_BY_STYLE": {
+        "line": 49,
+        "value": {
+          "SHORT": 0.73,
+          "SWING": 0.63,
+          "LONG": 0.53,
+          "GROWTH": 0.63,
+          "SHORT_HK": 0.78,
+          "SWING_HK": 0.7,
+          "LONG_HK": 0.6,
+          "GROWTH_HK": 0.7
+        }
+      }
+    },
+    "services/ml-prediction/src/features/builder.py": {},
+    "services/market-data/src/services/ai_signal_alert_contract.py": {},
+    "services/signal-engine/src/api/routes.py": {},
+    "services/signal-engine/src/api/outcomes.py": {},
+    "shared/db/models.py": {}
+  },
+  "generator_conditions": [
+    {
+      "function": "_ml_service_token",
+      "line": 215,
+      "condition": "_ml_svc_token_cache and time.time() < _ml_svc_token_exp - 7 * 86400"
+    },
+    {
+      "function": "_load_ml_weight_override",
+      "line": 233,
+      "condition": "0.0 <= v <= 1.0"
+    },
+    {
+      "function": "_load_ml_weight_override",
+      "line": 242,
+      "condition": "isinstance(v, (int, float)) and 0.0 <= v <= 1.0"
+    },
+    {
+      "function": "_fetch_weekly_prices",
+      "line": 395,
+      "condition": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_ml_data",
+      "line": 426,
+      "condition": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_ml_data",
+      "line": 460,
+      "condition": "r.status_code != 404"
+    },
+    {
+      "function": "_fetch_ml_data",
+      "line": 445,
+      "condition": "not np.isfinite(test_auc) or not 0 <= test_auc <= 1"
+    },
+    {
+      "function": "_fetch_market_regime",
+      "line": 539,
+      "condition": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_market_regime",
+      "line": 547,
+      "condition": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_market_breadth",
+      "line": 559,
+      "condition": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_hsi_regime",
+      "line": 588,
+      "condition": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_earnings_proximity",
+      "line": 605,
+      "condition": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_earnings_beat_rate",
+      "line": 624,
+      "condition": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_relative_strength",
+      "line": 643,
+      "condition": "r.status_code != 200"
+    },
+    {
+      "function": "_fetch_news_sentiment",
+      "line": 672,
+      "condition": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_options_flow",
+      "line": 691,
+      "condition": "r.status_code != 200"
+    },
+    {
+      "function": "_fetch_hot_news",
+      "line": 716,
+      "condition": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_patterns_from_ta",
+      "line": 731,
+      "condition": "r.status_code == 200"
+    },
+    {
+      "function": "_supertrend",
+      "line": 749,
+      "condition": "n < period + 2"
+    },
+    {
+      "function": "_resample_to_weekly",
+      "line": 849,
+      "condition": "df.empty or len(df) < 10"
+    },
+    {
+      "function": "_resample_to_weekly",
+      "line": 869,
+      "condition": "_date.today() - latest_week_start < _td(days=4)"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 890,
+      "condition": "df.empty or len(df) < 15"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 907,
+      "condition": "not pd.isna(sma10.iloc[-1])"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 909,
+      "condition": "pct > 0.01"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 923,
+      "condition": "40 < rsi_val < 68"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 911,
+      "condition": "pct < -0.01"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 925,
+      "condition": "rsi_val <= 40"
+    },
+    {
+      "function": "_fetch_sr_context_from_ta",
+      "line": 963,
+      "condition": "r.status_code == 200"
+    },
+    {
+      "function": "_sr_context",
+      "line": 1012,
+      "condition": "all((val >= float(r_h.iloc[i + j]) for j in range(-pw, pw + 1) if j != 0))"
+    },
+    {
+      "function": "_sr_context",
+      "line": 1016,
+      "condition": "all((val <= float(r_l.iloc[i + j]) for j in range(-pw, pw + 1) if j != 0))"
+    },
+    {
+      "function": "_sr_context",
+      "line": 1040,
+      "condition": "prev < nearest_res * (1.0 - thr)"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1073,
+      "condition": "len(close) < 22"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1081,
+      "condition": "pd.isna(high_20d) or high_20d <= 0"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1089,
+      "condition": "not 0.05 <= pullback_pct <= 0.25"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1106,
+      "condition": "consecutive_green < 2"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1097,
+      "condition": "close.iloc[i] > close.iloc[i - 1]"
+    },
+    {
+      "function": "_pattern_score_adjustment",
+      "line": 1137,
+      "condition": "recency < 0.1"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1167,
+      "condition": "df.empty or len(df) < 15"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1184,
+      "condition": "len(sma50_s.dropna()) >= 2 and len(sma200_s.dropna()) >= 2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1193,
+      "condition": "not pd.isna(sma50) and (not pd.isna(sma200)) and (sma200 > 0)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1220,
+      "condition": "len(k_smooth.dropna()) >= 2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1255,
+      "condition": "high_20d_ta is not None and (not pd.isna(high_20d_ta)) and (high_20d_ta > 0)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1291,
+      "condition": "len(macd_line.dropna()) >= 2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1317,
+      "condition": "not pd.isna(vwma_val) and (not np.isinf(vwma_val)) and (vwma_val > 0)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1451,
+      "condition": "rsi_val is not None and rsi_val >= 72"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1477,
+      "condition": "price_above_vwap is False"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1506,
+      "condition": "len(macd_line.dropna()) >= 2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1509,
+      "condition": "len(k_smooth.dropna()) >= 2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1569,
+      "condition": "rsi_val is not None and rsi_val <= 28"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1606,
+      "condition": "price_above_vwap is True"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1195,
+      "condition": "len(sma50_s.dropna()) >= 6 and len(sma200_s.dropna()) >= 6"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1650,
+      "condition": "_max_w > 0"
+    },
+    {
+      "function": "_growth_ta_adjustment",
+      "line": 1826,
+      "condition": "72 <= rsi_val <= 85"
+    },
+    {
+      "function": "_growth_ta_adjustment",
+      "line": 1828,
+      "condition": "65 <= rsi_val < 72"
+    },
+    {
+      "function": "_fetch_kscore",
+      "line": 1838,
+      "condition": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_short_interest",
+      "line": 1859,
+      "condition": "r.status_code == 200"
+    },
+    {
+      "function": "_check_uw_short_interest_disagreement",
+      "line": 1897,
+      "condition": "uw_spf_pct is None or free_spf_pct <= 0"
+    },
+    {
+      "function": "_fetch_analyst_momentum",
+      "line": 1938,
+      "condition": "r.status_code == 200"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2152,
+      "condition": "style_key == 'SWING' and ml_prob is not None and (float(ml_prob) > 0.9) and (ta_prob < 0.75)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2188,
+      "condition": "fused > 0.5 and _pillars < 2"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2223,
+      "condition": "fused < 0.5 and _min_pillars_sell > 0 and (_bearish_pillars < _min_pillars_sell)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2256,
+      "condition": "_pr_delta > 0 and (_pillars >= _min_pillars or _early_recovery_exception)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2317,
+      "condition": "bc is not None and breadth_pct is not None and (breadth_pct < 40) and (fused > 0.5)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2341,
+      "condition": "style_key == 'SHORT' and days_to_earnings is not None and (0 <= days_to_earnings <= 2)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2408,
+      "condition": "nc is not None and news_sentiment is not None and (fused > 0.5)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2453,
+      "condition": "fused > 0.5 and rs_comp is not None and (rs_rank is not None) and (rs_rank < 0.7) and (not rs_absolute_floor) and (not rs_recovery_floor)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2474,
+      "condition": "style_key in ('SWING', 'LONG') and sector_etf_above_sma50 is False and (fused > 0.5)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2544,
+      "condition": "_hot_news_age_hours is not None and _hot_news_age_hours > 1.0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2563,
+      "condition": "hot_news and fused > 0.5 and (style_key != 'LONG')"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2716,
+      "condition": "orig_dist != 0 and abs(curr_dist) < abs(orig_dist) * max_ratio and _sign_agrees"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2752,
+      "condition": "style_key in ('SWING', 'LONG') and (not p.get('skip_weekly_gate')) and (weekly_rsi is not None) and (weekly_trend is not None) and (weekly_rsi <= 38) and (weekly_trend == 'down') and (not _weekly_gate_recovery_exception)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2789,
+      "condition": "style_key in ('SWING', 'LONG') and (not p.get('skip_weekly_gate')) and (weekly_rsi is not None) and (weekly_rsi > 75) and (weekly_trend == 'up')"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2805,
+      "condition": "reasons.get('hsi_regime') == 'bear' and fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2814,
+      "condition": "_is_hk_stock and fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2826,
+      "condition": "base_reasons.get('hk_low_liquidity') and style_key in ('SWING', 'GROWTH') and (fused > 0.5)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2106,
+      "condition": "ml_test_auc < 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2119,
+      "condition": "raw_w > 0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2124,
+      "condition": "gap > 0.35"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2191,
+      "condition": "fused > 0.5 and _pillars < _min_pillars"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2279,
+      "condition": "daily_dir * weekly_dir > 0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2343,
+      "condition": "ebr_short is not None and ebr_short >= 0.7 and (market_regime == 'bull')"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2358,
+      "condition": "market_regime == 'bull' and ebr is not None and (ebr >= 0.7)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2409,
+      "condition": "news_sentiment < 25"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2456,
+      "condition": "fused > 0.5 and (rs_absolute_floor or rs_recovery_floor) and (rs_rank is not None) and (rs_rank < 0.7)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2586,
+      "condition": "short_pct_float >= 0.3 and fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2604,
+      "condition": "analyst_upgrades_7d >= 2 and net >= 2"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2634,
+      "condition": "kscore >= 70"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2729,
+      "condition": "orig_dist != 0 and abs(curr_dist) < abs(orig_dist) * max_ratio and (not _sign_agrees)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2763,
+      "condition": "_consec == -1"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2766,
+      "condition": "_consec < 5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2816,
+      "condition": "_flow_net is not None and float(_flow_net) < 0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2109,
+      "condition": "ml_test_auc < 0.55"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2130,
+      "condition": "gap > 0.25"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2195,
+      "condition": "_pillars >= 4"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2363,
+      "condition": "market_regime == 'bull' and ebr is not None and (ebr >= 0.5)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2372,
+      "condition": "0 <= days_to_earnings <= 2"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2412,
+      "condition": "news_sentiment < 35"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2458,
+      "condition": "rs_rank is not None and rs_rank < 0.7"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2589,
+      "condition": "short_pct_float >= 0.2 and fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2609,
+      "condition": "analyst_upgrades_7d >= 1 and net >= 1"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2636,
+      "condition": "kscore >= 55"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2768,
+      "condition": "_consec >= 20"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2379,
+      "condition": "days_to_earnings <= 5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2613,
+      "condition": "analyst_downgrades_7d >= 2 and net <= -2"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2638,
+      "condition": "kscore < 35"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2386,
+      "condition": "days_to_earnings <= 10"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2618,
+      "condition": "analyst_downgrades_7d >= 1 and net <= -1"
+    },
+    {
+      "function": "_check_price_staleness",
+      "line": 2885,
+      "condition": "days_old > 3"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 2919,
+      "condition": "symbol.upper().endswith('.HK') and len(df) >= 20"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3083,
+      "condition": "len(_inst_rows) >= 2"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3116,
+      "condition": "len(_snaps) >= 2 and _snaps[0][0] is not None and (_snaps[-1][0] is not None)"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3085,
+      "condition": "_prior_sh > 0"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3155,
+      "condition": "_rflow.status_code == 200"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3181,
+      "condition": "_squeeze >= 40"
+    }
+  ],
+  "generator_numeric_expressions": [
+    {
+      "function": "_ml_service_token",
+      "line": 218,
+      "expression": "exp = int(time.time()) + 365 * 86400"
+    },
+    {
+      "function": "_ml_service_token",
+      "line": 215,
+      "expression": "time.time() < _ml_svc_token_exp - 7 * 86400"
+    },
+    {
+      "function": "_load_ml_weight_override",
+      "line": 233,
+      "expression": "0.0 <= v <= 1.0"
+    },
+    {
+      "function": "_load_ml_weight_override",
+      "line": 242,
+      "expression": "0.0 <= v <= 1.0"
+    },
+    {
+      "function": "_fetch_weekly_prices",
+      "line": 395,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_ml_data",
+      "line": 426,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_ml_data",
+      "line": 428,
+      "expression": "prob = float(data.get('bullish_probability', 0.5))"
+    },
+    {
+      "function": "_fetch_ml_data",
+      "line": 439,
+      "expression": "test_auc = 0.0"
+    },
+    {
+      "function": "_fetch_ml_data",
+      "line": 460,
+      "expression": "r.status_code != 404"
+    },
+    {
+      "function": "_fetch_ml_data",
+      "line": 446,
+      "expression": "test_auc = 0.0"
+    },
+    {
+      "function": "_fetch_ml_data",
+      "line": 445,
+      "expression": "0 <= test_auc <= 1"
+    },
+    {
+      "function": "_fetch_market_regime",
+      "line": 539,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_market_regime",
+      "line": 547,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_market_breadth",
+      "line": 559,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_hsi_regime",
+      "line": 588,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_earnings_proximity",
+      "line": 605,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_earnings_beat_rate",
+      "line": 624,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_relative_strength",
+      "line": 650,
+      "expression": "stock_ret = ret_pct / 100.0 if ret_pct is not None else None"
+    },
+    {
+      "function": "_fetch_relative_strength",
+      "line": 643,
+      "expression": "r.status_code != 200"
+    },
+    {
+      "function": "_fetch_relative_strength",
+      "line": 650,
+      "expression": "ret_pct / 100.0 if ret_pct is not None else None"
+    },
+    {
+      "function": "_fetch_news_sentiment",
+      "line": 672,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_options_flow",
+      "line": 691,
+      "expression": "r.status_code != 200"
+    },
+    {
+      "function": "_fetch_hot_news",
+      "line": 716,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_patterns_from_ta",
+      "line": 731,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_supertrend",
+      "line": 762,
+      "expression": "hl2 = (high + low) / 2"
+    },
+    {
+      "function": "_supertrend",
+      "line": 749,
+      "expression": "n < period + 2"
+    },
+    {
+      "function": "_supertrend",
+      "line": 775,
+      "expression": "final_upper[i] = basic_upper[i] if basic_upper[i] < final_upper[i - 1] or close_v[i - 1] > final_upper[i - 1] else final_upper[i - 1]"
+    },
+    {
+      "function": "_supertrend",
+      "line": 776,
+      "expression": "final_lower[i] = basic_lower[i] if basic_lower[i] > final_lower[i - 1] or close_v[i - 1] < final_lower[i - 1] else final_lower[i - 1]"
+    },
+    {
+      "function": "_supertrend",
+      "line": 777,
+      "expression": "trend[i] = 1.0 if trend[i - 1] == -1 and close_v[i] > final_upper[i] else -1.0 if trend[i - 1] == 1 and close_v[i] < final_lower[i] else trend[i - 1]"
+    },
+    {
+      "function": "_supertrend",
+      "line": 773,
+      "expression": "trend[i] = trend[i - 1]"
+    },
+    {
+      "function": "_supertrend",
+      "line": 775,
+      "expression": "basic_upper[i] if basic_upper[i] < final_upper[i - 1] or close_v[i - 1] > final_upper[i - 1] else final_upper[i - 1]"
+    },
+    {
+      "function": "_supertrend",
+      "line": 776,
+      "expression": "basic_lower[i] if basic_lower[i] > final_lower[i - 1] or close_v[i - 1] < final_lower[i - 1] else final_lower[i - 1]"
+    },
+    {
+      "function": "_supertrend",
+      "line": 777,
+      "expression": "1.0 if trend[i - 1] == -1 and close_v[i] > final_upper[i] else -1.0 if trend[i - 1] == 1 and close_v[i] < final_lower[i] else trend[i - 1]"
+    },
+    {
+      "function": "_supertrend",
+      "line": 778,
+      "expression": "-1.0 if trend[i - 1] == 1 and close_v[i] < final_lower[i] else trend[i - 1]"
+    },
+    {
+      "function": "_supertrend",
+      "line": 775,
+      "expression": "basic_upper[i] < final_upper[i - 1]"
+    },
+    {
+      "function": "_supertrend",
+      "line": 775,
+      "expression": "close_v[i - 1] > final_upper[i - 1]"
+    },
+    {
+      "function": "_supertrend",
+      "line": 776,
+      "expression": "basic_lower[i] > final_lower[i - 1]"
+    },
+    {
+      "function": "_supertrend",
+      "line": 776,
+      "expression": "close_v[i - 1] < final_lower[i - 1]"
+    },
+    {
+      "function": "_supertrend",
+      "line": 777,
+      "expression": "trend[i - 1] == -1"
+    },
+    {
+      "function": "_supertrend",
+      "line": 783,
+      "expression": "trend[-1] == 1"
+    },
+    {
+      "function": "_supertrend",
+      "line": 783,
+      "expression": "trend[-2] == -1"
+    },
+    {
+      "function": "_supertrend",
+      "line": 784,
+      "expression": "trend[-1] == -1"
+    },
+    {
+      "function": "_supertrend",
+      "line": 784,
+      "expression": "trend[-2] == 1"
+    },
+    {
+      "function": "_supertrend",
+      "line": 778,
+      "expression": "trend[i - 1] == 1"
+    },
+    {
+      "function": "_adx",
+      "line": 796,
+      "expression": "dm_plus = up_move.where((up_move > down_move) & (up_move > 0), 0.0)"
+    },
+    {
+      "function": "_adx",
+      "line": 797,
+      "expression": "dm_minus = down_move.where((down_move > up_move) & (down_move > 0), 0.0)"
+    },
+    {
+      "function": "_adx",
+      "line": 806,
+      "expression": "di_plus = 100 * dm_plus.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, np.nan)"
+    },
+    {
+      "function": "_adx",
+      "line": 807,
+      "expression": "di_minus = 100 * dm_minus.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, np.nan)"
+    },
+    {
+      "function": "_adx",
+      "line": 809,
+      "expression": "dx = 100 * (di_plus - di_minus).abs() / (di_plus + di_minus).replace(0, np.nan)"
+    },
+    {
+      "function": "_adx",
+      "line": 810,
+      "expression": "adx = dx.ewm(alpha=1 / period, adjust=False).mean()"
+    },
+    {
+      "function": "_adx",
+      "line": 817,
+      "expression": "float(adx.iloc[-1]) if not pd.isna(adx.iloc[-1]) else None"
+    },
+    {
+      "function": "_adx",
+      "line": 818,
+      "expression": "float(di_plus.iloc[-1]) if not pd.isna(di_plus.iloc[-1]) else 0.0"
+    },
+    {
+      "function": "_adx",
+      "line": 819,
+      "expression": "float(di_minus.iloc[-1]) if not pd.isna(di_minus.iloc[-1]) else 0.0"
+    },
+    {
+      "function": "_adx",
+      "line": 796,
+      "expression": "up_move > 0"
+    },
+    {
+      "function": "_adx",
+      "line": 797,
+      "expression": "down_move > 0"
+    },
+    {
+      "function": "_stoch_rsi",
+      "line": 835,
+      "expression": "raw_k = (rsi - rsi_min) / rng.replace(0, np.nan)"
+    },
+    {
+      "function": "_stoch_rsi",
+      "line": 838,
+      "expression": "k_val = float(k.iloc[-1]) if not pd.isna(k.iloc[-1]) else 0.5"
+    },
+    {
+      "function": "_stoch_rsi",
+      "line": 839,
+      "expression": "d_val = float(d.iloc[-1]) if not pd.isna(d.iloc[-1]) else 0.5"
+    },
+    {
+      "function": "_stoch_rsi",
+      "line": 838,
+      "expression": "float(k.iloc[-1]) if not pd.isna(k.iloc[-1]) else 0.5"
+    },
+    {
+      "function": "_stoch_rsi",
+      "line": 839,
+      "expression": "float(d.iloc[-1]) if not pd.isna(d.iloc[-1]) else 0.5"
+    },
+    {
+      "function": "_resample_to_weekly",
+      "line": 849,
+      "expression": "len(df) < 10"
+    },
+    {
+      "function": "_resample_to_weekly",
+      "line": 868,
+      "expression": "latest_week_start = pd.to_datetime(weekly['ts'].iloc[-1]).date()"
+    },
+    {
+      "function": "_resample_to_weekly",
+      "line": 871,
+      "expression": "weekly if len(weekly) >= 10 else pd.DataFrame()"
+    },
+    {
+      "function": "_resample_to_weekly",
+      "line": 869,
+      "expression": "_date.today() - latest_week_start < _td(days=4)"
+    },
+    {
+      "function": "_resample_to_weekly",
+      "line": 870,
+      "expression": "weekly = weekly.iloc[:-1]"
+    },
+    {
+      "function": "_resample_to_weekly",
+      "line": 871,
+      "expression": "len(weekly) >= 10"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 883,
+      "expression": "_neutral: dict = {'weekly_rsi': None, 'weekly_trend': 'neutral', 'weekly_macd_bull': False, 'weekly_score': 0.5, 'weekly_confidence': 0.0}"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 894,
+      "expression": "weekly_confidence = min(1.0, 0.7 + (len(df) - 15) / (26 - 15) * 0.3) if len(df) < 26 else 1.0"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 902,
+      "expression": "rsi = _canon_rsi(close, window=14)"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 903,
+      "expression": "rsi_val = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else None"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 905,
+      "expression": "sma10 = close.rolling(10).mean()"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 914,
+      "expression": "_weekly_macd_df = _canon_macd(close, fast=12, slow=26, signal=9)"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 917,
+      "expression": "macd_positive = bool(hist.iloc[-1] > 0)"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 918,
+      "expression": "macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 921,
+      "expression": "score = 0.35"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 935,
+      "expression": "rsi_consec_low = 0"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 894,
+      "expression": "min(1.0, 0.7 + (len(df) - 15) / (26 - 15) * 0.3) if len(df) < 26 else 1.0"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 903,
+      "expression": "float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else None"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 908,
+      "expression": "pct = (close.iloc[-1] - float(sma10.iloc[-1])) / float(sma10.iloc[-1])"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 918,
+      "expression": "bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 928,
+      "expression": "score += 0.25"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 930,
+      "expression": "score += 0.2"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 890,
+      "expression": "len(df) < 15"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 894,
+      "expression": "len(df) < 26"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 909,
+      "expression": "pct > 0.01"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 917,
+      "expression": "hist.iloc[-1] > 0"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 918,
+      "expression": "len(hist) >= 2"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 923,
+      "expression": "40 < rsi_val < 68"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 924,
+      "expression": "score += 0.2"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 932,
+      "expression": "score += 0.1"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 938,
+      "expression": "rsi_consec_low += 1"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 943,
+      "expression": "round(rsi_val, 1) if rsi_val is not None else None"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 911,
+      "expression": "pct < -0.01"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 918,
+      "expression": "hist.iloc[-1] > hist.iloc[-2]"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 925,
+      "expression": "rsi_val <= 40"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 926,
+      "expression": "score += 0.1"
+    },
+    {
+      "function": "_weekly_technicals",
+      "line": 936,
+      "expression": "rsi <= 38"
+    },
+    {
+      "function": "_fetch_sr_context_from_ta",
+      "line": 963,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_sr_context",
+      "line": 994,
+      "expression": "current = float(close.iloc[-1])"
+    },
+    {
+      "function": "_sr_context",
+      "line": 995,
+      "expression": "prev = float(close.iloc[-2]) if len(close) >= 2 else current"
+    },
+    {
+      "function": "_sr_context",
+      "line": 998,
+      "expression": "hist_len = min(252, len(close) - 1)"
+    },
+    {
+      "function": "_sr_context",
+      "line": 999,
+      "expression": "hist_high = float(high.iloc[-hist_len - 1:-1].max()) if hist_len > 0 else float(high.max())"
+    },
+    {
+      "function": "_sr_context",
+      "line": 1000,
+      "expression": "hist_low = float(low.iloc[-hist_len - 1:-1].min()) if hist_len > 0 else float(low.min())"
+    },
+    {
+      "function": "_sr_context",
+      "line": 1003,
+      "expression": "n = min(60, len(high))"
+    },
+    {
+      "function": "_sr_context",
+      "line": 1004,
+      "expression": "pw = 3"
+    },
+    {
+      "function": "_sr_context",
+      "line": 1029,
+      "expression": "thr = 0.015"
+    },
+    {
+      "function": "_sr_context",
+      "line": 995,
+      "expression": "float(close.iloc[-2]) if len(close) >= 2 else current"
+    },
+    {
+      "function": "_sr_context",
+      "line": 999,
+      "expression": "float(high.iloc[-hist_len - 1:-1].max()) if hist_len > 0 else float(high.max())"
+    },
+    {
+      "function": "_sr_context",
+      "line": 1000,
+      "expression": "float(low.iloc[-hist_len - 1:-1].min()) if hist_len > 0 else float(low.min())"
+    },
+    {
+      "function": "_sr_context",
+      "line": 995,
+      "expression": "len(close) >= 2"
+    },
+    {
+      "function": "_sr_context",
+      "line": 999,
+      "expression": "hist_len > 0"
+    },
+    {
+      "function": "_sr_context",
+      "line": 1000,
+      "expression": "hist_len > 0"
+    },
+    {
+      "function": "_sr_context",
+      "line": 1051,
+      "expression": "round(nearest_res, 2) if nearest_res is not None else None"
+    },
+    {
+      "function": "_sr_context",
+      "line": 1052,
+      "expression": "round(nearest_sup, 2) if nearest_sup is not None else None"
+    },
+    {
+      "function": "_sr_context",
+      "line": 1040,
+      "expression": "prev < nearest_res * (1.0 - thr)"
+    },
+    {
+      "function": "_sr_context",
+      "line": 1012,
+      "expression": "j != 0"
+    },
+    {
+      "function": "_sr_context",
+      "line": 1016,
+      "expression": "j != 0"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1078,
+      "expression": "high_20d = close.iloc[:-1].rolling(20).max().iloc[-1]"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1079,
+      "expression": "current = close.iloc[-1]"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1086,
+      "expression": "reasons['pullback_depth_pct'] = round(pullback_pct * 100, 1)"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1094,
+      "expression": "consecutive_green = 0"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1111,
+      "expression": "vol_avg = volume.iloc[:-1].rolling(20).mean().iloc[-1]"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1112,
+      "expression": "vol_confirms = bool(not pd.isna(vol_avg) and vol_avg > 0 and (volume.iloc[-1] > vol_avg * 1.1))"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1117,
+      "expression": "delta = 0.07 if vol_confirms else 0.04"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1073,
+      "expression": "len(close) < 22"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1106,
+      "expression": "consecutive_green < 2"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1117,
+      "expression": "0.07 if vol_confirms else 0.04"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1081,
+      "expression": "high_20d <= 0"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1089,
+      "expression": "0.05 <= pullback_pct <= 0.25"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1097,
+      "expression": "close.iloc[i] > close.iloc[i - 1]"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1098,
+      "expression": "consecutive_green += 1"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1113,
+      "expression": "vol_avg > 0"
+    },
+    {
+      "function": "_pullback_recovery",
+      "line": 1113,
+      "expression": "volume.iloc[-1] > vol_avg * 1.1"
+    },
+    {
+      "function": "_pattern_score_adjustment",
+      "line": 1131,
+      "expression": "adj = 0.0"
+    },
+    {
+      "function": "_pattern_score_adjustment",
+      "line": 1134,
+      "expression": "end_idx = p.get('end_idx', 0)"
+    },
+    {
+      "function": "_pattern_score_adjustment",
+      "line": 1135,
+      "expression": "confidence = float(p.get('confidence', 0.5))"
+    },
+    {
+      "function": "_pattern_score_adjustment",
+      "line": 1136,
+      "expression": "recency = max(0.0, 1.0 - (df_len - 1 - end_idx) / 20.0)"
+    },
+    {
+      "function": "_pattern_score_adjustment",
+      "line": 1137,
+      "expression": "recency < 0.1"
+    },
+    {
+      "function": "_pattern_score_adjustment",
+      "line": 1142,
+      "expression": "base = 0.08"
+    },
+    {
+      "function": "_pattern_score_adjustment",
+      "line": 1145,
+      "expression": "base = 0.15"
+    },
+    {
+      "function": "_pattern_score_adjustment",
+      "line": 1151,
+      "expression": "base = 0.08"
+    },
+    {
+      "function": "_pattern_score_adjustment",
+      "line": 1147,
+      "expression": "base = 0.12"
+    },
+    {
+      "function": "_pattern_score_adjustment",
+      "line": 1154,
+      "expression": "base = 0.13"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1174,
+      "expression": "sma50_s = close.rolling(50).mean()"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1175,
+      "expression": "sma200_s = close.rolling(200).mean()"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1176,
+      "expression": "sma50 = sma50_s.iloc[-1]"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1177,
+      "expression": "sma200 = sma200_s.iloc[-1]"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1179,
+      "expression": "above_sma50 = bool(close.iloc[-1] > sma50)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1211,
+      "expression": "rsi = _canon_rsi(close, window=14)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1212,
+      "expression": "rsi_val = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else None"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1217,
+      "expression": "stoch_oversold = stoch_k < 0.2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1218,
+      "expression": "stoch_overbought = stoch_k > 0.8"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1234,
+      "expression": "stoch_rsi_still_hot = bool(stoch_overbought or (len(k_smooth.dropna()) >= 2 and float(k_smooth.iloc[-2]) > 0.8))"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1239,
+      "expression": "reasons['stoch_rsi_k'] = round(stoch_k, 3)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1240,
+      "expression": "reasons['stoch_rsi_d'] = round(stoch_d, 3)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1252,
+      "expression": "high_20d_ta = close.iloc[:-1].rolling(20).max().iloc[-1] if len(close) >= 21 else None"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1277,
+      "expression": "_macd_df = _canon_macd(close, fast=12, slow=26, signal=9)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1280,
+      "expression": "macd_hist = float(hist.iloc[-1])"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1281,
+      "expression": "macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1285,
+      "expression": "macd_hist_slope = float(hist.iloc[-1] - hist.iloc[-3]) if len(hist.dropna()) >= 4 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1286,
+      "expression": "macd_hist_expanding = macd_hist_slope > 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1289,
+      "expression": "macd_momentum_fading = macd_hist > 0 and macd_hist_slope < 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1295,
+      "expression": "reasons['macd_hist_slope'] = round(macd_hist_slope, 5)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1301,
+      "expression": "sma20 = close.rolling(20).mean()"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1302,
+      "expression": "std20 = close.rolling(20).std()"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1303,
+      "expression": "bb_upper = sma20 + 2 * std20"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1304,
+      "expression": "bb_lower = sma20 - 2 * std20"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1305,
+      "expression": "band_width = bb_upper.iloc[-1] - bb_lower.iloc[-1]"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1306,
+      "expression": "bb_pct_b = float((close.iloc[-1] - bb_lower.iloc[-1]) / band_width) if band_width > 0 else 0.5"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1307,
+      "expression": "reasons['bb_pct_b'] = round(bb_pct_b, 3)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1313,
+      "expression": "typical_price = (_tb['high'] + _tb['low'] + close) / 3"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1314,
+      "expression": "vwma_20 = (typical_price.iloc[:-1] * volume.iloc[:-1]).rolling(20).sum() / volume.iloc[:-1].rolling(20).sum()"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1315,
+      "expression": "vwma_val = vwma_20.iloc[-1]"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1324,
+      "expression": "reasons['supertrend_bullish'] = bool(st_trend == 1)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1329,
+      "expression": "roc_10 = float((close.iloc[-1] / close.iloc[-11] - 1) * 100) if len(close) >= 11 else None"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1330,
+      "expression": "roc_20 = float((close.iloc[-1] / close.iloc[-21] - 1) * 100) if len(close) >= 21 else None"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1331,
+      "expression": "reasons['roc_10'] = round(roc_10, 2) if roc_10 is not None else None"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1332,
+      "expression": "reasons['roc_20'] = round(roc_20, 2) if roc_20 is not None else None"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1337,
+      "expression": "trending = adx_val is not None and adx_val > 25"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1339,
+      "expression": "reasons['adx'] = round(adx_val, 1) if adx_val is not None else None"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1344,
+      "expression": "direction = close.diff().apply(lambda x: 1 if x > 0 else -1 if x < 0 else 0)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1346,
+      "expression": "obv_trend_bullish = bool(obv.rolling(10).mean().iloc[-1] > obv.rolling(30).mean().iloc[-1])"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1350,
+      "expression": "vol_std = volume.iloc[:-1].rolling(20).std().iloc[-1]"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1351,
+      "expression": "vol_z = (volume.iloc[-1] - volume.iloc[:-1].rolling(20).mean().iloc[-1]) / vol_std if vol_std and vol_std > 0 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1361,
+      "expression": "_vz = float(reasons.get('volume_z') or 0.0)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1376,
+      "expression": "sma20_val = close.rolling(20).mean().iloc[-1]"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1377,
+      "expression": "_above_sma20 = bool(not pd.isna(sma20_val) and close.iloc[-1] > sma20_val)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1429,
+      "expression": "rsi_score = 1.0 if rsi_val is not None and 45 < rsi_val < 65 else 0.8 if rsi_val is not None and 35 < rsi_val <= 45 else 0.5 if rsi_val is not None and 65 <= rsi_val < 72 else 0.5 if rsi_val is not None and 28 <= rsi_val < 35 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1439,
+      "expression": "macd_score = 1.0 if macd_hist > 0 and macd_hist_expanding else 0.9 if macd_zero_cross_up else 0.5 if macd_momentum_fading else 0.7 if macd_hist > 0 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1446,
+      "expression": "stoch_score = 0.8 if stoch_oversold else 0.7 if stoch_cross_up else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1453,
+      "expression": "p_momentum = rsi_score * 0.35 + macd_score * 0.4 + stoch_score * 0.25"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1461,
+      "expression": "vol_z_signal = _vz > 0.5"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1470,
+      "expression": "bb_score = 0.8 if 0.2 < bb_pct_b < 0.8 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1471,
+      "expression": "vwap_score = 1.0 if price_above_vwap is True else 0.0 if price_above_vwap is False else 0.4"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1481,
+      "expression": "independent_pillars_active = sum((1 for ps in pillar_scores if ps >= 0.5))"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1483,
+      "expression": "reasons['pillar_trend'] = round(p_trend, 2)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1484,
+      "expression": "reasons['pillar_momentum'] = round(p_momentum, 2)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1485,
+      "expression": "reasons['pillar_volume'] = round(p_volume, 2)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1486,
+      "expression": "reasons['pillar_structure'] = round(p_structure, 2)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1553,
+      "expression": "rsi_bear_score = 1.0 if rsi_val is not None and 55 <= rsi_val < 72 else 0.8 if rsi_val is not None and 45 <= rsi_val < 55 else 0.5 if rsi_val is not None and 28 <= rsi_val < 45 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1559,
+      "expression": "macd_bear_score = 1.0 if macd_hist < 0 and (not macd_hist_expanding) else 0.9 if macd_zero_cross_down else 0.7 if macd_hist < 0 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1565,
+      "expression": "stoch_bear_score = 0.8 if stoch_overbought else 0.7 if stoch_rsi_cross_down else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1571,
+      "expression": "pb_momentum = rsi_bear_score * 0.35 + macd_bear_score * 0.4 + stoch_bear_score * 0.25"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1599,
+      "expression": "bb_bear_score = 0.8 if bb_pct_b <= 0.2 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1600,
+      "expression": "vwap_bear_score = 1.0 if price_above_vwap is False else 0.0 if price_above_vwap is True else 0.4"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1610,
+      "expression": "bearish_pillars_active = sum((1 for ps in bearish_pillar_scores if ps >= 0.5))"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1612,
+      "expression": "reasons['bearish_pillar_trend'] = round(pb_trend, 2)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1613,
+      "expression": "reasons['bearish_pillar_momentum'] = round(pb_momentum, 2)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1614,
+      "expression": "reasons['bearish_pillar_volume'] = round(pb_volume, 2)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1615,
+      "expression": "reasons['bearish_pillar_structure'] = round(pb_structure, 2)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1185,
+      "expression": "prev50, prev200 = (sma50_s.iloc[-2], sma200_s.iloc[-2])"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1194,
+      "expression": "gc_spread_pct = round(float((sma50 - sma200) / sma200), 4)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1212,
+      "expression": "float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else None"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1217,
+      "expression": "stoch_k < 0.2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1218,
+      "expression": "stoch_k > 0.8"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1220,
+      "expression": "len(k_smooth.dropna()) >= 2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1221,
+      "expression": "stoch_cross_up = bool(k_smooth.iloc[-1] > 0.2 and k_smooth.iloc[-2] <= 0.2)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1252,
+      "expression": "close.iloc[:-1].rolling(20).max().iloc[-1] if len(close) >= 21 else None"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1256,
+      "expression": "pct_from_20d_high = round(float((high_20d_ta - close.iloc[-1]) / high_20d_ta), 4)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1257,
+      "expression": "near_recent_high = bool(pct_from_20d_high < 0.03 and rsi_val is not None and (rsi_val > 65))"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1281,
+      "expression": "bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1285,
+      "expression": "float(hist.iloc[-1] - hist.iloc[-3]) if len(hist.dropna()) >= 4 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1286,
+      "expression": "macd_hist_slope > 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1291,
+      "expression": "len(macd_line.dropna()) >= 2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1292,
+      "expression": "macd_zero_cross_up = bool(macd_line.iloc[-1] > 0 and macd_line.iloc[-2] <= 0)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1306,
+      "expression": "float((close.iloc[-1] - bb_lower.iloc[-1]) / band_width) if band_width > 0 else 0.5"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1318,
+      "expression": "price_above_vwap = bool(close.iloc[-1] > vwma_val)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1329,
+      "expression": "float((close.iloc[-1] / close.iloc[-11] - 1) * 100) if len(close) >= 11 else None"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1330,
+      "expression": "float((close.iloc[-1] / close.iloc[-21] - 1) * 100) if len(close) >= 21 else None"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1331,
+      "expression": "round(roc_10, 2) if roc_10 is not None else None"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1332,
+      "expression": "round(roc_20, 2) if roc_20 is not None else None"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1339,
+      "expression": "round(adx_val, 1) if adx_val is not None else None"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1351,
+      "expression": "(volume.iloc[-1] - volume.iloc[:-1].rolling(20).mean().iloc[-1]) / vol_std if vol_std and vol_std > 0 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1383,
+      "expression": "p_trend = 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1385,
+      "expression": "_gc_score = 1.0 if golden_cross_event and _vz > 0.5 and gc_spread_expanding else 0.8 if golden_cross_event and gc_spread_expanding else 0.5 if golden_cross_event else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1391,
+      "expression": "_sma_golden_score = (0.8 if gc_spread_expanding else 0.4) if sma50_above_sma200 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1392,
+      "expression": "_st_score = 1.0 if st_cross_up else 0.7 if st_trend == 1 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1409,
+      "expression": "_above_sma50_score = 1.0 if above_sma50 else 0.7 if _early_recovery_trend else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1410,
+      "expression": "p_trend = _above_sma50_score * 0.3 + _sma_golden_score * 0.25 + (1.0 if bullish_trend else 0.0) * 0.2 + _gc_score * 0.15 + _st_score * 0.1"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1430,
+      "expression": "1.0 if rsi_val is not None and 45 < rsi_val < 65 else 0.8 if rsi_val is not None and 35 < rsi_val <= 45 else 0.5 if rsi_val is not None and 65 <= rsi_val < 72 else 0.5 if rsi_val is not None and 28 <= rsi_val < 35 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1440,
+      "expression": "1.0 if macd_hist > 0 and macd_hist_expanding else 0.9 if macd_zero_cross_up else 0.5 if macd_momentum_fading else 0.7 if macd_hist > 0 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1446,
+      "expression": "0.8 if stoch_oversold else 0.7 if stoch_cross_up else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1449,
+      "expression": "stoch_score *= 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1450,
+      "expression": "macd_score *= 0.7"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1452,
+      "expression": "rsi_score *= 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1461,
+      "expression": "_vz > 0.5"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1463,
+      "expression": "p_volume = 1.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1470,
+      "expression": "0.8 if 0.2 < bb_pct_b < 0.8 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1472,
+      "expression": "1.0 if price_above_vwap is True else 0.0 if price_above_vwap is False else 0.4"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1478,
+      "expression": "p_structure = max(0.0, p_structure - 0.15)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1506,
+      "expression": "len(macd_line.dropna()) >= 2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1507,
+      "expression": "macd_zero_cross_down = bool(macd_line.iloc[-1] < 0 and macd_line.iloc[-2] >= 0)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1509,
+      "expression": "len(k_smooth.dropna()) >= 2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1510,
+      "expression": "stoch_rsi_cross_down = bool(k_smooth.iloc[-1] < 0.8 and k_smooth.iloc[-2] >= 0.8)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1520,
+      "expression": "pb_trend = 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1522,
+      "expression": "_dc_score = 1.0 if death_cross_event and _vz > 0.5 and (not gc_spread_expanding) else 0.8 if death_cross_event and (not gc_spread_expanding) else 0.5 if death_cross_event else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1528,
+      "expression": "_sma_death_score = (0.8 if not gc_spread_expanding else 0.4) if not sma50_above_sma200 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1529,
+      "expression": "_st_bear_score = 1.0 if st_cross_down else 0.7 if st_trend == -1 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1530,
+      "expression": "pb_trend = (1.0 if above_sma50 is False else 0.0) * 0.3 + _sma_death_score * 0.25 + (1.0 if bearish_trend else 0.0) * 0.2 + _dc_score * 0.15 + _st_bear_score * 0.1"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1554,
+      "expression": "1.0 if rsi_val is not None and 55 <= rsi_val < 72 else 0.8 if rsi_val is not None and 45 <= rsi_val < 55 else 0.5 if rsi_val is not None and 28 <= rsi_val < 45 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1560,
+      "expression": "1.0 if macd_hist < 0 and (not macd_hist_expanding) else 0.9 if macd_zero_cross_down else 0.7 if macd_hist < 0 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1565,
+      "expression": "0.8 if stoch_overbought else 0.7 if stoch_rsi_cross_down else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1567,
+      "expression": "stoch_bear_score *= 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1568,
+      "expression": "macd_bear_score *= 0.7"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1570,
+      "expression": "rsi_bear_score *= 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1588,
+      "expression": "pb_volume = 1.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1599,
+      "expression": "0.8 if bb_pct_b <= 0.2 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1601,
+      "expression": "1.0 if price_above_vwap is False else 0.0 if price_above_vwap is True else 0.4"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1607,
+      "expression": "pb_structure = max(0.0, pb_structure - 0.15)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1625,
+      "expression": "_flag_map = {'above_sma50': +1 if above_sma50 else 0, 'sma50_above_sma200': +1 if sma50_above_sma200 else 0, 'golden_cross_event': +1 if golden_cross_event else 0, 'death_cross_penalty': -1 if death_cross_event else 0, 'gc_spread_expanding': +1 if gc_spread_expanding else 0, 'gc_spread_narrowing': -1 if sma50_above_sma200 and (not gc_spread_expanding) else 0, 'rsi_sweet_spot': +1 if rsi_val is not None and 45 < rsi_val < 65 else 0, 'rsi_mild_oversold': +1 if rsi_val is not None and 35 < rsi_val <= 45 else 0, 'rsi_mild_overbought': -1 if rsi_val is not None and 65 <= rsi_val < 72 else 0, 'stoch_oversold': +1 if stoch_oversold else 0, 'stoch_overbought_penalty': -1 if stoch_overbought else 0, 'stoch_cross_up': +1 if stoch_cross_up else 0, 'macd_strong': +1 if macd_hist > 0 and macd_hist_expanding else 0, 'macd_positive': +1 if macd_hist > 0 else 0, 'macd_zero_cross_up': +1 if macd_zero_cross_up else 0, 'macd_momentum_fading': -1 if macd_momentum_fading else 0, 'bb_mid_zone': +1 if 0.2 < bb_pct_b < 0.8 else 0, 'price_above_vwap': +1 if price_above_vwap is True else 0, 'price_below_vwap_penalty': -1 if price_above_vwap is False else 0, 'bullish_trend': +1 if bullish_trend else 0, 'obv_trend_bullish': +1 if obv_trend_bullish else 0, 'volume_z': +1 if _vz > 0.5 else 0}"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1167,
+      "expression": "len(df) < 15"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1179,
+      "expression": "close.iloc[-1] > sma50"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1184,
+      "expression": "len(sma50_s.dropna()) >= 2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1184,
+      "expression": "len(sma200_s.dropna()) >= 2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1193,
+      "expression": "sma200 > 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1196,
+      "expression": "spread_now = float(sma50_s.iloc[-1] - sma200_s.iloc[-1])"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1197,
+      "expression": "spread_5d = float(sma50_s.iloc[-6] - sma200_s.iloc[-6])"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1252,
+      "expression": "len(close) >= 21"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1255,
+      "expression": "high_20d_ta > 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1281,
+      "expression": "len(hist) >= 2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1285,
+      "expression": "len(hist.dropna()) >= 4"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1289,
+      "expression": "macd_hist > 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1289,
+      "expression": "macd_hist_slope < 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1306,
+      "expression": "band_width > 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1317,
+      "expression": "vwma_val > 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1324,
+      "expression": "st_trend == 1"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1329,
+      "expression": "len(close) >= 11"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1330,
+      "expression": "len(close) >= 21"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1337,
+      "expression": "adx_val > 25"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1346,
+      "expression": "obv.rolling(10).mean().iloc[-1] > obv.rolling(30).mean().iloc[-1]"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1386,
+      "expression": "1.0 if golden_cross_event and _vz > 0.5 and gc_spread_expanding else 0.8 if golden_cross_event and gc_spread_expanding else 0.5 if golden_cross_event else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1391,
+      "expression": "(0.8 if gc_spread_expanding else 0.4) if sma50_above_sma200 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1392,
+      "expression": "1.0 if st_cross_up else 0.7 if st_trend == 1 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1409,
+      "expression": "1.0 if above_sma50 else 0.7 if _early_recovery_trend else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1431,
+      "expression": "0.8 if rsi_val is not None and 35 < rsi_val <= 45 else 0.5 if rsi_val is not None and 65 <= rsi_val < 72 else 0.5 if rsi_val is not None and 28 <= rsi_val < 35 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1441,
+      "expression": "0.9 if macd_zero_cross_up else 0.5 if macd_momentum_fading else 0.7 if macd_hist > 0 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1446,
+      "expression": "0.7 if stoch_cross_up else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1451,
+      "expression": "rsi_val >= 72"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1465,
+      "expression": "p_volume = 0.6"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1467,
+      "expression": "p_volume = 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1470,
+      "expression": "0.2 < bb_pct_b < 0.8"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1473,
+      "expression": "0.0 if price_above_vwap is False else 0.4"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1523,
+      "expression": "1.0 if death_cross_event and _vz > 0.5 and (not gc_spread_expanding) else 0.8 if death_cross_event and (not gc_spread_expanding) else 0.5 if death_cross_event else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1528,
+      "expression": "(0.8 if not gc_spread_expanding else 0.4) if not sma50_above_sma200 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1529,
+      "expression": "1.0 if st_cross_down else 0.7 if st_trend == -1 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1555,
+      "expression": "0.8 if rsi_val is not None and 45 <= rsi_val < 55 else 0.5 if rsi_val is not None and 28 <= rsi_val < 45 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1561,
+      "expression": "0.9 if macd_zero_cross_down else 0.7 if macd_hist < 0 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1565,
+      "expression": "0.7 if stoch_rsi_cross_down else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1569,
+      "expression": "rsi_val <= 28"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1590,
+      "expression": "pb_volume = 0.6"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1592,
+      "expression": "pb_volume = 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1599,
+      "expression": "bb_pct_b <= 0.2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1602,
+      "expression": "0.0 if price_above_vwap is True else 0.4"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1650,
+      "expression": "_max_w > 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1651,
+      "expression": "_weighted = sum((_flag_map.get(k, 0) * v for k, v in _weights.items()))"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1652,
+      "expression": "_calibrated = float(np.clip(0.5 + _weighted / (2 * _max_w), 0.0, 1.0))"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1653,
+      "expression": "base = base * 0.85 + _calibrated * 0.15"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1654,
+      "expression": "reasons['calibrated_ta_score'] = round(_calibrated, 3)"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1195,
+      "expression": "len(sma50_s.dropna()) >= 6"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1195,
+      "expression": "len(sma200_s.dropna()) >= 6"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1281,
+      "expression": "hist.iloc[-1] > hist.iloc[-2]"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1318,
+      "expression": "close.iloc[-1] > vwma_val"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1344,
+      "expression": "1 if x > 0 else -1 if x < 0 else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1351,
+      "expression": "vol_std > 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1377,
+      "expression": "close.iloc[-1] > sma20_val"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1387,
+      "expression": "0.8 if golden_cross_event and gc_spread_expanding else 0.5 if golden_cross_event else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1391,
+      "expression": "0.8 if gc_spread_expanding else 0.4"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1392,
+      "expression": "0.7 if st_trend == 1 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1409,
+      "expression": "0.7 if _early_recovery_trend else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1430,
+      "expression": "45 < rsi_val < 65"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1432,
+      "expression": "0.5 if rsi_val is not None and 65 <= rsi_val < 72 else 0.5 if rsi_val is not None and 28 <= rsi_val < 35 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1440,
+      "expression": "macd_hist > 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1442,
+      "expression": "0.5 if macd_momentum_fading else 0.7 if macd_hist > 0 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1524,
+      "expression": "0.8 if death_cross_event and (not gc_spread_expanding) else 0.5 if death_cross_event else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1528,
+      "expression": "0.8 if not gc_spread_expanding else 0.4"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1529,
+      "expression": "0.7 if st_trend == -1 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1554,
+      "expression": "55 <= rsi_val < 72"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1556,
+      "expression": "0.5 if rsi_val is not None and 28 <= rsi_val < 45 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1560,
+      "expression": "macd_hist < 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1562,
+      "expression": "0.7 if macd_hist < 0 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1626,
+      "expression": "+1 if above_sma50 else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1627,
+      "expression": "+1 if sma50_above_sma200 else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1628,
+      "expression": "+1 if golden_cross_event else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1629,
+      "expression": "-1 if death_cross_event else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1630,
+      "expression": "+1 if gc_spread_expanding else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1631,
+      "expression": "-1 if sma50_above_sma200 and (not gc_spread_expanding) else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1632,
+      "expression": "+1 if rsi_val is not None and 45 < rsi_val < 65 else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1633,
+      "expression": "+1 if rsi_val is not None and 35 < rsi_val <= 45 else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1634,
+      "expression": "-1 if rsi_val is not None and 65 <= rsi_val < 72 else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1635,
+      "expression": "+1 if stoch_oversold else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1636,
+      "expression": "-1 if stoch_overbought else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1637,
+      "expression": "+1 if stoch_cross_up else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1638,
+      "expression": "+1 if macd_hist > 0 and macd_hist_expanding else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1639,
+      "expression": "+1 if macd_hist > 0 else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1640,
+      "expression": "+1 if macd_zero_cross_up else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1641,
+      "expression": "-1 if macd_momentum_fading else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1642,
+      "expression": "+1 if 0.2 < bb_pct_b < 0.8 else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1643,
+      "expression": "+1 if price_above_vwap is True else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1644,
+      "expression": "-1 if price_above_vwap is False else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1645,
+      "expression": "+1 if bullish_trend else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1646,
+      "expression": "+1 if obv_trend_bullish else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1647,
+      "expression": "+1 if _vz > 0.5 else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1221,
+      "expression": "k_smooth.iloc[-1] > 0.2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1221,
+      "expression": "k_smooth.iloc[-2] <= 0.2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1236,
+      "expression": "len(k_smooth.dropna()) >= 2"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1236,
+      "expression": "float(k_smooth.iloc[-2]) > 0.8"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1257,
+      "expression": "pct_from_20d_high < 0.03"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1257,
+      "expression": "rsi_val > 65"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1292,
+      "expression": "macd_line.iloc[-1] > 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1292,
+      "expression": "macd_line.iloc[-2] <= 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1344,
+      "expression": "x > 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1344,
+      "expression": "-1 if x < 0 else 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1386,
+      "expression": "_vz > 0.5"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1388,
+      "expression": "0.5 if golden_cross_event else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1392,
+      "expression": "st_trend == 1"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1431,
+      "expression": "35 < rsi_val <= 45"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1433,
+      "expression": "0.5 if rsi_val is not None and 28 <= rsi_val < 35 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1443,
+      "expression": "0.7 if macd_hist > 0 else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1481,
+      "expression": "ps >= 0.5"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1507,
+      "expression": "macd_line.iloc[-1] < 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1507,
+      "expression": "macd_line.iloc[-2] >= 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1510,
+      "expression": "k_smooth.iloc[-1] < 0.8"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1510,
+      "expression": "k_smooth.iloc[-2] >= 0.8"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1523,
+      "expression": "_vz > 0.5"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1525,
+      "expression": "0.5 if death_cross_event else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1529,
+      "expression": "st_trend == -1"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1555,
+      "expression": "45 <= rsi_val < 55"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1562,
+      "expression": "macd_hist < 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1610,
+      "expression": "ps >= 0.5"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1639,
+      "expression": "macd_hist > 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1642,
+      "expression": "0.2 < bb_pct_b < 0.8"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1647,
+      "expression": "_vz > 0.5"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1344,
+      "expression": "x < 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1432,
+      "expression": "65 <= rsi_val < 72"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1443,
+      "expression": "macd_hist > 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1556,
+      "expression": "28 <= rsi_val < 45"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1632,
+      "expression": "45 < rsi_val < 65"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1633,
+      "expression": "35 < rsi_val <= 45"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1634,
+      "expression": "65 <= rsi_val < 72"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1638,
+      "expression": "macd_hist > 0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1413,
+      "expression": "1.0 if bullish_trend else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1433,
+      "expression": "28 <= rsi_val < 35"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1533,
+      "expression": "1.0 if bearish_trend else 0.0"
+    },
+    {
+      "function": "_ta_score",
+      "line": 1531,
+      "expression": "1.0 if above_sma50 is False else 0.0"
+    },
+    {
+      "function": "_growth_ta_adjustment",
+      "line": 1819,
+      "expression": "delta = 0.0"
+    },
+    {
+      "function": "_growth_ta_adjustment",
+      "line": 1820,
+      "expression": "sma20 = close.rolling(20).mean().iloc[-1]"
+    },
+    {
+      "function": "_growth_ta_adjustment",
+      "line": 1821,
+      "expression": "sma50 = close.rolling(50).mean().iloc[-1]"
+    },
+    {
+      "function": "_growth_ta_adjustment",
+      "line": 1823,
+      "expression": "delta += 0.1"
+    },
+    {
+      "function": "_growth_ta_adjustment",
+      "line": 1826,
+      "expression": "72 <= rsi_val <= 85"
+    },
+    {
+      "function": "_growth_ta_adjustment",
+      "line": 1827,
+      "expression": "delta += 0.04"
+    },
+    {
+      "function": "_growth_ta_adjustment",
+      "line": 1828,
+      "expression": "65 <= rsi_val < 72"
+    },
+    {
+      "function": "_growth_ta_adjustment",
+      "line": 1829,
+      "expression": "delta += 0.02"
+    },
+    {
+      "function": "_fetch_kscore",
+      "line": 1838,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_short_interest",
+      "line": 1859,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_check_uw_short_interest_disagreement",
+      "line": 1896,
+      "expression": "free_spf_pct = short_pct_float * 100"
+    },
+    {
+      "function": "_check_uw_short_interest_disagreement",
+      "line": 1890,
+      "expression": "uw_data = r.json() if r.status_code == 200 else None"
+    },
+    {
+      "function": "_check_uw_short_interest_disagreement",
+      "line": 1897,
+      "expression": "free_spf_pct <= 0"
+    },
+    {
+      "function": "_check_uw_short_interest_disagreement",
+      "line": 1890,
+      "expression": "r.json() if r.status_code == 200 else None"
+    },
+    {
+      "function": "_check_uw_short_interest_disagreement",
+      "line": 1890,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_analyst_momentum",
+      "line": 1934,
+      "expression": "cutoff = (_adate.today() - _td(days=7)).isoformat()"
+    },
+    {
+      "function": "_fetch_analyst_momentum",
+      "line": 1938,
+      "expression": "r.status_code == 200"
+    },
+    {
+      "function": "_fetch_analyst_momentum",
+      "line": 1941,
+      "expression": "ups = sum((1 for a in recent if a.get('action', '').lower() in _UP_ACTIONS or (a.get('action', '').lower() in _INIT_ACTIONS and a.get('to_grade', '').strip().lower() in _POSITIVE_GRADES)))"
+    },
+    {
+      "function": "_fetch_analyst_momentum",
+      "line": 1949,
+      "expression": "downs = sum((1 for a in recent if a.get('action', '').lower() in _DOWN_ACTIONS))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2144,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2182,
+      "expression": "_min_pillars = int(p.get('min_pillars_for_buy', 2))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2200,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2222,
+      "expression": "_min_pillars_sell = int(_get_style_tuned_param(style_key, 'min_pillars_for_sell', 0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2228,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2249,
+      "expression": "_pr_delta = base_reasons.get('pullback_recovery_delta', 0.0) or 0.0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2251,
+      "expression": "_early_recovery_exception = _pr_delta >= 0.07 and _rsi_val is not None and (30 <= _rsi_val <= 45) and (_pillars >= 2)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2265,
+      "expression": "weekly_score = weekly_tech.get('weekly_score', 0.5)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2268,
+      "expression": "daily_dir = fused - 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2269,
+      "expression": "weekly_dir = weekly_score - 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2274,
+      "expression": "weekly_confidence = weekly_tech.get('weekly_confidence', 1.0)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2275,
+      "expression": "reasons['weekly_confidence'] = round(weekly_confidence, 3)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2306,
+      "expression": "hv_fired = hv_comp is not None and market_regime in ('high_vol', 'choppy', 'risk_off') and (fused > 0.5)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2321,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2324,
+      "expression": "fused = float(np.clip(fused + pattern_adj, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2423,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2435,
+      "expression": "rs_absolute_floor = stock_20d_ret_pct is not None and stock_20d_ret_pct > 5.0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2438,
+      "expression": "rs_recovery_floor = _rsi_for_rs is not None and 28 <= _rsi_for_rs <= 45 and _stoch_cross_up_for_rs"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2462,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2479,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2488,
+      "expression": "reasons['options_directional_adjustment'] = 0.0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2504,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2579,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2596,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2630,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2666,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2672,
+      "expression": "max_ratio = p.get('max_compress_ratio', 0.5)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2673,
+      "expression": "orig_dist = fused_before_filters - 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2674,
+      "expression": "curr_dist = fused - 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2710,
+      "expression": "reasons['fused_pre_compression'] = round(float(fused_before_filters), 6)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2711,
+      "expression": "reasons['fused_post_compression'] = round(float(fused), 6)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2712,
+      "expression": "reasons['compression_total_ratio'] = round(float(curr_dist / orig_dist), 6) if orig_dist else None"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2715,
+      "expression": "_sign_agrees = curr_dist == 0 or np.sign(curr_dist) == np.sign(orig_dist)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2748,
+      "expression": "_weekly_gate_recovery_exception = base_reasons.get('stoch_rsi_cross_up', False) and (base_reasons.get('pullback_recovery_delta') or 0.0) >= 0.07"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2857,
+      "expression": "confidence = round(abs(fused - 0.5) * 200, 2)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2105,
+      "expression": "ml_prob_c = float(np.clip(ml_prob, 0.05, 0.95))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2135,
+      "expression": "fused = ml_w * ml_prob_c + (1.0 - ml_w) * ta_prob"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2136,
+      "expression": "reasons['ml_weight'] = round(ml_w, 2)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2137,
+      "expression": "reasons['ml_probability'] = round(float(ml_prob_c), 4)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2141,
+      "expression": "reasons['ml_weight'] = 0.0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2156,
+      "expression": "fused = 0.5 + (fused - 0.5) * 0.85"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2157,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2179,
+      "expression": "_pillars = 2"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2189,
+      "expression": "fused = 0.5 + (fused - 0.5) * 0.85"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2219,
+      "expression": "_bearish_pillars = 0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2224,
+      "expression": "fused = 0.5 + (fused - 0.5) * 0.7"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2257,
+      "expression": "fused = float(np.clip(fused + _pr_delta, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2293,
+      "expression": "fused = 0.5 + (fused - 0.5) * adx_comp"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2308,
+      "expression": "fused = 0.5 + (fused - 0.5) * hv_comp"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2318,
+      "expression": "fused = 0.5 + (fused - 0.5) * bc"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2328,
+      "expression": "fused = 0.5 + (fused - 0.5) * 0.35"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2349,
+      "expression": "adj_short = float(np.clip(0.4 * beat_scale_short, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2350,
+      "expression": "fused = 0.5 + (fused - 0.5) * adj_short"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2352,
+      "expression": "reasons['earnings_beat_rate'] = round(ebr_short, 2) if ebr_short is not None else None"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2356,
+      "expression": "reasons['earnings_beat_rate'] = round(ebr, 2) if ebr is not None else None"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2396,
+      "expression": "reasons['earnings_beat_rate'] = round(earnings_beat_rate, 2) if earnings_beat_rate is not None else None"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2454,
+      "expression": "fused = 0.5 + (fused - 0.5) * rs_comp"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2475,
+      "expression": "fused = 0.5 + (fused - 0.5) * 0.85"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2494,
+      "expression": "fused = 0.5 + (fused - 0.5) * 0.85"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2545,
+      "expression": "_hot_news_compress = 0.85"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2547,
+      "expression": "_hot_news_compress = 0.7"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2627,
+      "expression": "reasons['analyst_momentum_adj'] = 0.0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2644,
+      "expression": "fused = 0.5 + (fused - 0.5) * 0.6"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2650,
+      "expression": "fused = 0.5 + (fused - 0.5) * 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2661,
+      "expression": "fused = 0.5 + (fused - 0.5) * 0.6"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2713,
+      "expression": "round(float(curr_dist / orig_dist), 6) if orig_dist else None"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2717,
+      "expression": "fused = 0.5 + float(np.sign(orig_dist)) * abs(orig_dist) * max_ratio"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2718,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2723,
+      "expression": "reasons['fused_post_cap'] = round(float(fused), 6)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2762,
+      "expression": "_consec = weekly_tech.get('weekly_rsi_consec_low', -1)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2772,
+      "expression": "fused = 0.5 + (fused - 0.5) * _mult"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2773,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2776,
+      "expression": "reasons['weekly_gate_mult'] = round(_mult, 3)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2779,
+      "expression": "reasons['weekly_gate_bars'] = 0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2794,
+      "expression": "fused = 0.5 + (fused - 0.5) * 0.85"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2795,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2806,
+      "expression": "fused = 0.5 + (fused - 0.5) * 0.8"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2807,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2827,
+      "expression": "fused = 0.5 + (fused - 0.5) * 0.3"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2828,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2106,
+      "expression": "ml_test_auc < 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2108,
+      "expression": "raw_w = 0.0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2119,
+      "expression": "raw_w > 0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2121,
+      "expression": "auc_floor = min(1.0, max(0.0, (ml_test_auc - 0.5) / 0.1)) * p.get('ml_weight_floor', 0.0)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2124,
+      "expression": "gap > 0.35"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2127,
+      "expression": "extra = 0.25 * min((gap - 0.35) / 0.3, 1.0)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2128,
+      "expression": "ml_w *= 0.75 - extra"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2154,
+      "expression": "float(ml_prob) > 0.9"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2155,
+      "expression": "ta_prob < 0.75"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2188,
+      "expression": "fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2188,
+      "expression": "_pillars < 2"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2193,
+      "expression": "fused = 0.5 + (fused - 0.5) * 0.7"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2223,
+      "expression": "fused < 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2223,
+      "expression": "_min_pillars_sell > 0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2252,
+      "expression": "_pr_delta >= 0.07"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2253,
+      "expression": "30 <= _rsi_val <= 45"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2254,
+      "expression": "_pillars >= 2"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2256,
+      "expression": "_pr_delta > 0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2279,
+      "expression": "daily_dir * weekly_dir > 0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2280,
+      "expression": "boosted = float(np.clip(0.5 + daily_dir * p['weekly_boost'], 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2281,
+      "expression": "fused = fused * (1.0 - weekly_confidence) + boosted * weekly_confidence"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2284,
+      "expression": "compressed = float(np.clip(0.5 + daily_dir * p['weekly_compress'], 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2285,
+      "expression": "fused = fused * (1.0 - weekly_confidence) + compressed * weekly_confidence"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2306,
+      "expression": "fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2317,
+      "expression": "breadth_pct < 40"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2317,
+      "expression": "fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2341,
+      "expression": "0 <= days_to_earnings <= 2"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2344,
+      "expression": "beat_scale_short = 2.0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2352,
+      "expression": "round(ebr_short, 2) if ebr_short is not None else None"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2356,
+      "expression": "round(ebr, 2) if ebr is not None else None"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2360,
+      "expression": "fused = float(np.clip(fused + 0.03, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2396,
+      "expression": "round(earnings_beat_rate, 2) if earnings_beat_rate is not None else None"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2408,
+      "expression": "fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2409,
+      "expression": "news_sentiment < 25"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2410,
+      "expression": "fused = 0.5 + (fused - 0.5) * nc[25]"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2418,
+      "expression": "reasons['news_sentiment_flag'] = 'strongly_negative' if news_sentiment < 25 else 'negative' if news_sentiment < 35 else 'neutral_or_positive'"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2435,
+      "expression": "stock_20d_ret_pct > 5.0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2439,
+      "expression": "28 <= _rsi_for_rs <= 45"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2453,
+      "expression": "fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2453,
+      "expression": "rs_rank < 0.7"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2474,
+      "expression": "fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2497,
+      "expression": "fused = float(np.clip(fused + 0.05, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2541,
+      "expression": "_hot_news_age_hours = (_hn_datetime.now(_hn_timezone.utc) - _hot_ts).total_seconds() / 3600"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2544,
+      "expression": "_hot_news_age_hours > 1.0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2563,
+      "expression": "fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2565,
+      "expression": "fused = 0.5 + (fused - 0.5) * _hot_news_compress"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2587,
+      "expression": "fused = float(np.clip(fused + 0.04, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2605,
+      "expression": "adj = min(analyst_upgrades_7d * 0.025, 0.05)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2606,
+      "expression": "fused = float(np.clip(fused + adj, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2608,
+      "expression": "reasons['analyst_momentum_adj'] = round(adj, 3)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2634,
+      "expression": "kscore >= 70"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2635,
+      "expression": "fused = float(np.clip(fused + 0.08, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2715,
+      "expression": "curr_dist == 0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2716,
+      "expression": "orig_dist != 0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2750,
+      "expression": "(base_reasons.get('pullback_recovery_delta') or 0.0) >= 0.07"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2756,
+      "expression": "weekly_rsi <= 38"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2763,
+      "expression": "_consec == -1"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2765,
+      "expression": "_consec = 20"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2766,
+      "expression": "_consec < 5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2767,
+      "expression": "_mult = 0.65"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2792,
+      "expression": "weekly_rsi > 75"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2805,
+      "expression": "fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2814,
+      "expression": "fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2817,
+      "expression": "fused = 0.5 + (fused - 0.5) * 0.85"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2818,
+      "expression": "fused = float(np.clip(fused, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2826,
+      "expression": "fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2109,
+      "expression": "ml_test_auc < 0.55"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2111,
+      "expression": "raw_w = float((ml_test_auc - 0.5) / 0.05 * 0.2)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2114,
+      "expression": "raw_w = float(np.clip(0.2 + (ml_test_auc - 0.55) / 0.15 * 0.55, 0.2, 0.75))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2130,
+      "expression": "gap > 0.25"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2131,
+      "expression": "ml_w *= 0.75"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2191,
+      "expression": "fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2195,
+      "expression": "_pillars >= 4"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2196,
+      "expression": "fused = float(np.clip(fused + 0.03, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2343,
+      "expression": "ebr_short >= 0.7"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2346,
+      "expression": "beat_scale_short = 0.85 if ebr_short is None else float(np.clip(0.75 + 0.25 * ebr_short, 0.75, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2348,
+      "expression": "beat_scale_short = 1.0 if ebr_short is None else float(np.clip(1.0 + 0.2 * (ebr_short - 0.5) / 0.5, 0.8, 1.2))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2358,
+      "expression": "ebr >= 0.7"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2364,
+      "expression": "beat_scale = 2.0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2372,
+      "expression": "0 <= days_to_earnings <= 2"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2373,
+      "expression": "adj_mult = float(np.clip(ec[2] * beat_scale, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2412,
+      "expression": "news_sentiment < 35"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2413,
+      "expression": "fused = 0.5 + (fused - 0.5) * nc[35]"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2419,
+      "expression": "'strongly_negative' if news_sentiment < 25 else 'negative' if news_sentiment < 35 else 'neutral_or_positive'"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2456,
+      "expression": "fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2456,
+      "expression": "rs_rank < 0.7"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2500,
+      "expression": "fused = float(np.clip(fused + 0.03, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2586,
+      "expression": "short_pct_float >= 0.3"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2586,
+      "expression": "fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2590,
+      "expression": "fused = float(np.clip(fused + 0.02, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2604,
+      "expression": "analyst_upgrades_7d >= 2"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2604,
+      "expression": "net >= 2"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2610,
+      "expression": "fused = float(np.clip(fused + 0.02, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2612,
+      "expression": "reasons['analyst_momentum_adj'] = 0.02"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2636,
+      "expression": "kscore >= 55"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2637,
+      "expression": "fused = float(np.clip(fused + 0.04, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2729,
+      "expression": "orig_dist != 0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2768,
+      "expression": "_consec >= 20"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2769,
+      "expression": "_mult = 0.4"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2771,
+      "expression": "_mult = 0.65 - 0.25 * (_consec - 5) / 15.0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2816,
+      "expression": "float(_flow_net) < 0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2346,
+      "expression": "0.85 if ebr_short is None else float(np.clip(0.75 + 0.25 * ebr_short, 0.75, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2348,
+      "expression": "1.0 if ebr_short is None else float(np.clip(1.0 + 0.2 * (ebr_short - 0.5) / 0.5, 0.8, 1.2))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2363,
+      "expression": "ebr >= 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2367,
+      "expression": "beat_scale = 0.85 if ebr is None else float(np.clip(0.75 + 0.25 * ebr, 0.75, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2370,
+      "expression": "beat_scale = 1.0 if ebr is None else float(np.clip(1.0 + 0.2 * (ebr - 0.5) / 0.5, 0.8, 1.2))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2375,
+      "expression": "fused = 0.5 + (fused - 0.5) * adj_mult"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2379,
+      "expression": "days_to_earnings <= 5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2380,
+      "expression": "adj_mult = float(np.clip(ec[5] * beat_scale, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2419,
+      "expression": "news_sentiment < 25"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2420,
+      "expression": "'negative' if news_sentiment < 35 else 'neutral_or_positive'"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2458,
+      "expression": "rs_rank < 0.7"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2589,
+      "expression": "short_pct_float >= 0.2"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2589,
+      "expression": "fused > 0.5"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2609,
+      "expression": "analyst_upgrades_7d >= 1"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2609,
+      "expression": "net >= 1"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2614,
+      "expression": "adj = min(analyst_downgrades_7d * 0.04, 0.08)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2615,
+      "expression": "fused = float(np.clip(fused - adj, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2617,
+      "expression": "reasons['analyst_momentum_adj'] = round(-adj, 3)"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2638,
+      "expression": "kscore < 35"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2639,
+      "expression": "fused = float(np.clip(fused - 0.06, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2367,
+      "expression": "0.85 if ebr is None else float(np.clip(0.75 + 0.25 * ebr, 0.75, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2370,
+      "expression": "1.0 if ebr is None else float(np.clip(1.0 + 0.2 * (ebr - 0.5) / 0.5, 0.8, 1.2))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2382,
+      "expression": "fused = 0.5 + (fused - 0.5) * adj_mult"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2386,
+      "expression": "days_to_earnings <= 10"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2387,
+      "expression": "adj_mult = float(np.clip(ec[10] * beat_scale, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2420,
+      "expression": "news_sentiment < 35"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2613,
+      "expression": "analyst_downgrades_7d >= 2"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2613,
+      "expression": "net <= -2"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2619,
+      "expression": "fused = float(np.clip(fused - 0.03, 0.0, 1.0))"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2621,
+      "expression": "reasons['analyst_momentum_adj'] = -0.03"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2624,
+      "expression": "reasons['analyst_momentum_adj'] = 0.0"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2389,
+      "expression": "fused = 0.5 + (fused - 0.5) * adj_mult"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2618,
+      "expression": "analyst_downgrades_7d >= 1"
+    },
+    {
+      "function": "_apply_style_signal",
+      "line": 2618,
+      "expression": "net <= -1"
+    },
+    {
+      "function": "_check_price_staleness",
+      "line": 2885,
+      "expression": "days_old > 3"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 2911,
+      "expression": "insufficient_history = len(df) < 50"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 2973,
+      "expression": "reasons['weekly_ta_score'] = round(weekly_score, 3)"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 2978,
+      "expression": "reasons['pattern_adjustment'] = round(pattern_adj, 3)"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3006,
+      "expression": "_atr_series = _canon_atr(_high, _low, _close, period=14)"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3007,
+      "expression": "_last_price = float(_close.iloc[-1])"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3008,
+      "expression": "_atr_14 = float(_atr_series.iloc[-1]) if not pd.isna(_atr_series.iloc[-1]) else None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3009,
+      "expression": "reasons['last_price'] = round(_last_price, 4)"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3010,
+      "expression": "reasons['atr_14'] = round(_atr_14, 4) if _atr_14 is not None else None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3012,
+      "expression": "reasons['atr_14_pct'] = round(_atr_14 / _last_price, 4) if _atr_14 is not None and _last_price > 0 else None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3129,
+      "expression": "reasons['stock_20d_return_pct'] = round(stock_20d_ret * 100, 2) if stock_20d_ret is not None else None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3131,
+      "expression": "reasons['options_cp_ratio'] = round(cp_ratio, 2) if cp_ratio is not None else None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3133,
+      "expression": "reasons['short_pct_float'] = round(short_pct_float * 100, 1) if short_pct_float is not None else None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3134,
+      "expression": "reasons['short_ratio'] = round(short_ratio, 1) if short_ratio is not None else None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3188,
+      "expression": "ta_prob_growth = float(np.clip(ta_prob + _growth_ta_adjustment(df, reasons), 0.0, 1.0))"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 2911,
+      "expression": "len(df) < 50"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 2922,
+      "expression": "_daily_turnover_20d = float((_close_vals.iloc[-20:] * _vol_vals.iloc[-20:]).mean())"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 2923,
+      "expression": "_hk_low_liquidity = _daily_turnover_20d < 50000000"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3008,
+      "expression": "float(_atr_series.iloc[-1]) if not pd.isna(_atr_series.iloc[-1]) else None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3010,
+      "expression": "round(_atr_14, 4) if _atr_14 is not None else None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3012,
+      "expression": "round(_atr_14 / _last_price, 4) if _atr_14 is not None and _last_price > 0 else None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3129,
+      "expression": "round(stock_20d_ret * 100, 2) if stock_20d_ret is not None else None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3131,
+      "expression": "round(cp_ratio, 2) if cp_ratio is not None else None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3133,
+      "expression": "round(short_pct_float * 100, 1) if short_pct_float is not None else None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3134,
+      "expression": "round(short_ratio, 1) if short_ratio is not None else None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 2919,
+      "expression": "len(df) >= 20"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 2923,
+      "expression": "_daily_turnover_20d < 50000000"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3083,
+      "expression": "len(_inst_rows) >= 2"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3084,
+      "expression": "_latest_sh, _prior_sh = (float(_inst_rows[0][1] or 0), float(_inst_rows[1][1] or 0))"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3117,
+      "expression": "_rec_delta = float(_snaps[-1][0]) - float(_snaps[0][0])"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3118,
+      "expression": "reasons['eps_revision_direction'] = 1 if _rec_delta > 0.15 else -1 if _rec_delta < -0.15 else 0"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3151,
+      "expression": "_rflow = _httpx.get(f'{_settings.market_data_url}/stocks/hk-connect-flow/{symbol.upper()}', timeout=2.0)"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3178,
+      "expression": "_sr = float(_s_ratio) if _s_ratio is not None else 5.0"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3180,
+      "expression": "_squeeze = min(100, _sp * 0.6 + min(_sr, 15) / 15 * 100 * 0.4)"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3012,
+      "expression": "_last_price > 0"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3036,
+      "expression": "reasons['eight_k_date'] = str(_row_material[0])"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3037,
+      "expression": "reasons['eight_k_form'] = _row_material[1] or '8-K'"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3085,
+      "expression": "_prior_sh > 0"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3086,
+      "expression": "_inst_chg = (_latest_sh - _prior_sh) / _prior_sh * 100"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3087,
+      "expression": "reasons['inst_change_pct'] = round(_inst_chg, 1)"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3088,
+      "expression": "reasons['inst_ownership_increased'] = _inst_chg > 5.0"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3116,
+      "expression": "len(_snaps) >= 2"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3116,
+      "expression": "_snaps[0][0] is not None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3116,
+      "expression": "_snaps[-1][0] is not None"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3118,
+      "expression": "1 if _rec_delta > 0.15 else -1 if _rec_delta < -0.15 else 0"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3155,
+      "expression": "_rflow.status_code == 200"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3178,
+      "expression": "float(_s_ratio) if _s_ratio is not None else 5.0"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3181,
+      "expression": "_squeeze >= 40"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3182,
+      "expression": "reasons['squeeze_score'] = round(_squeeze, 1)"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3052,
+      "expression": "reasons['eight_k_date'] = str(_row_any[0])"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3053,
+      "expression": "reasons['eight_k_form'] = _row_any[1] or '8-K'"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3088,
+      "expression": "_inst_chg > 5.0"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3118,
+      "expression": "_rec_delta > 0.15"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3118,
+      "expression": "-1 if _rec_delta < -0.15 else 0"
+    },
+    {
+      "function": "generate_all_signals",
+      "line": 3118,
+      "expression": "_rec_delta < -0.15"
+    }
+  ],
+  "calibration_parameters": {
+    "_clear_watchdog_override": "style: str",
+    "_watchdog_action_kind": "old_value: dict, new_value: dict",
+    "watchdog_self_tuning_report": "session: Session=Depends(get_session), _: str=Depends(get_current_username)",
+    "_first_adjusted_after": "adjusted: dict, after_date",
+    "_first_adjusted_at_or_after": "adjusted: dict, target_date",
+    "_load_action_evidence": "session, symbols",
+    "_observation_basis": "bars, actions, coverage, symbol, start, end",
+    "ml_weight_validation": "lookback_days: int=Query(180, ge=30, le=730), session: Session=Depends(get_session)",
+    "calibrate_ml_weight": "lookback_days: int=Query(180, ge=30, le=730), session: Session=Depends(get_session), _: str=Depends(get_current_username)",
+    "calibrate_ta_weights": "lookback_days: int=Query(365, ge=60, le=730), session: Session=Depends(get_session), _: str=Depends(get_current_username)",
+    "calibrate_conviction_weights": "lookback_days: int=Query(365, ge=90, le=730), min_count: int=Query(10), session: Session=Depends(get_session), _: str=Depends(get_current_username)",
+    "outcomes_calibration": "days: int=Query(180, ge=30, le=365, description='Look-back window in calendar days'), session: Session=Depends(get_session)",
+    "outcomes_calibrate": "days: int=Query(180, description='Look-back window in calendar days'), min_samples: int=Query(15, description='Minimum signals required to suggest a threshold'), session: Session=Depends(get_session)",
+    "outcomes_calibrate_apply": "days: int=Query(180, description='Look-back window in calendar days'), min_samples: int=Query(50, description='Minimum signals required to apply a new threshold'), min_ev_lift: float=Query(0.1, description='Minimum expected-value lift (%) before applying'), _: str=Depends(get_current_username), session: Session=Depends(get_session)",
+    "tune_sell_pillars": "min_samples: int=Query(50, description='Minimum SELL outcomes required per train/validation slice'), session: Session=Depends(get_session), _: str=Depends(get_current_username)",
+    "tune_style_profiles": "days: int=Query(120, description='Look-back window in calendar days'), min_samples: int=Query(10, description='Minimum outcomes required per bucket'), _: str=Depends(get_current_username), session: Session=Depends(get_session)",
+    "_passes_promotion_margin": "candidate_rets: list[float], baseline_rets: list[float], ev_lift: float",
+    "tune_strategy": "days: int=Query(180, description='Look-back window in calendar days'), min_samples: int=Query(_TUNE_STRATEGY_MIN_SAMPLES, description='Minimum outcomes required per grid cell, per slice'), _: str=Depends(get_current_username), session: Session=Depends(get_session)",
+    "signal_watchdog": "_: str=Depends(get_current_username), session: Session=Depends(get_session)",
+    "tune_status": "_: str=Depends(get_current_username), session: Session=Depends(get_session)",
+    "confidence_calibration_map": "refresh: bool=Query(False, description='Force rebuild from DB, bypassing Redis cache'), session: Session=Depends(get_session)",
+    "calibration_candidates": "include_provisional: bool=False, username: str=Depends(get_current_username), session: Session=Depends(get_session)"
+  }
+}
