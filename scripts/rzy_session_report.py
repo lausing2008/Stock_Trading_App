@@ -153,6 +153,15 @@ def main(day, out_dir):
             paused_stream_scans=sum(r.statuses.get('restatement_pending', 0) for r in session_runs),
             too_late_to_mail=sum(r.too_late_to_mail for r in session_runs), new_emailable_events=sum(r.new_emailable_events for r in session_runs),
             queued=sum(r.queued for r in session_runs))
+        # OD-02: where scan time went (present from the 2026-10-22 release on).
+        try:
+            from src.services.rzy_models import RzyScanPhases
+            ph = s.scalars(select(RzyScanPhases).where(RzyScanPhases.scan_time >= start, RzyScanPhases.scan_time < end,
+                                                     RzyScanPhases.mode == 'session')).all()
+            keys = sorted({k for p in ph for k in p.phases})
+            report['scan_phases_seconds'] = {k: pct([p.phases.get(k, 0.0) for p in ph]) for k in keys} if ph else {'n': 0}
+        except Exception as exc:  # noqa: BLE001 - older release: no phase table
+            report['scan_phases_seconds'] = {'unavailable': str(exc)[:120]}
         # F08: the append-only rebuild log survives generation pruning; archives do not.
         log_rows = s.scalars(select(RzyRebuild).where(RzyRebuild.rebuilt_at >= start, RzyRebuild.rebuilt_at < end)).all()
         if log_rows:

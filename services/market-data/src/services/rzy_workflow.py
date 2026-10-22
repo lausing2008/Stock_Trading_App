@@ -18,7 +18,7 @@ from common.price_basis import resolve_ohlc
 from common.outbox import enqueue
 from .little_rzy import Engine,Config,VERSION,stable,planning_reference,generation_event_id
 from .rzy_data import prepare_bars,aggregate_completed_bars,break_indices,MINUTES,utc
-from .rzy_models import RzyStream,RzyEvent,RzyPreference,RzyStreamGeneration,RzyStreamSnapshot,RzyScanRun,RzyOccurrence,RzyRebuild
+from .rzy_models import RzyStream,RzyEvent,RzyPreference,RzyStreamGeneration,RzyStreamSnapshot,RzyScanRun,RzyOccurrence,RzyRebuild,RzyScanPhases
 import time as _time
 from .rzy_email import render_event,render_event_html,event_subject
 
@@ -152,7 +152,7 @@ def load_bars(session,symbol,timeframe,now,cache=None):
     return result
 
 
-def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_cache=None,allow_rebuild=True,clock=None):
+def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_cache=None,allow_rebuild=True,clock=None,timings=None):
     """Advance one stream on its latest contiguous completed-bar segment.
 
     Stored history that no longer matches the checkpoint (material OHLC revision, a removed bar,
@@ -164,7 +164,9 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_
     records are persisted (F09). They differ whenever a scan takes time.
     """
     now=utc(now or datetime.now(timezone.utc)); cfg=config or current_config()
+    _t=_time.monotonic()
     bars,evidence=load_bars(session,symbol,timeframe,now,bars_cache)
+    if timings is not None: timings['load_and_prepare_bars']=timings.get('load_and_prepare_bars',0.0)+_time.monotonic()-_t
     evidence=dict(evidence)
     key=f'{symbol}:{timeframe}:{cfg.hash}'
     row=session.scalar(select(RzyStream).where(RzyStream.stream_key==key).with_for_update().execution_options(populate_existing=True)) if persist else session.get(RzyStream,key)
@@ -347,12 +349,15 @@ def scan(session,now=None,clock=None):
         fresh=set(session.scalars(select(RzyStream.stream_key).where(RzyStream.stream_key.in_(list(keys)),RzyStream.updated_at>=window))) if keys else set()
         jobs=set(sorted(v for k,v in keys.items() if k not in fresh)[:MAINTENANCE_BATCH])
     queued=0; statuses={}; cache={}; previous_symbol=None; emailable_new=0; too_late=0
+    phases={'load_and_prepare_bars':0.0,'evaluate_total':0.0,'snapshot_and_commit':0.0}
     for symbol,tf in sorted(jobs):
         if symbol!=previous_symbol: cache.clear(); previous_symbol=symbol
-        try: result=evaluate(session,symbol,tf,now,persist=True,bars_cache=cache,clock=clock)
+        _t=_time.monotonic()
+        try: result=evaluate(session,symbol,tf,now,persist=True,bars_cache=cache,clock=clock,timings=phases)
         except (ValueError,TypeError) as exc:
             session.rollback();statuses[f'{symbol}:{tf}']='data_rejected: '+str(exc)[:160]
             save_snapshot(session,symbol,tf,current_config().hash,now,'data_rejected',stream_summary(symbol,tf,error=exc));session.commit();continue
+        phases['evaluate_total']+=_time.monotonic()-_t; _t=_time.monotonic()
         save_snapshot(session,symbol,tf,result['config_hash'],now,result['status'],stream_summary(symbol,tf,result))
         statuses[f'{symbol}:{tf}']=result['status']+(f" rebuilt:{result['rebuild_reason']}" if result.get('rebuilt') else '')
         if maintenance:
@@ -389,9 +394,14 @@ def scan(session,now=None,clock=None):
         # One stream is an atomic unit; do not retain every large JSON checkpoint or an idle
         # transaction for the entire watchlist scan. No provider calls occur in this transaction.
         session.commit()
+        phases['snapshot_and_commit']+=_time.monotonic()-_t
     duration=_time.monotonic()-started
     counts={}
     for v in statuses.values(): k=v.split(' ')[0].split(':')[0]; counts[k]=counts.get(k,0)+1
+    phases['other']=max(0.0,duration-phases['evaluate_total']-phases['snapshot_and_commit'])
+    session.merge(RzyScanPhases(scan_time=now.replace(tzinfo=None),mode='maintenance' if maintenance else 'session',
+        phases={k:round(v,3) for k,v in phases.items()}))
+    session.execute(delete(RzyScanPhases).where(RzyScanPhases.scan_time<(now-timedelta(days=35)).replace(tzinfo=None)))
     session.add(RzyScanRun(scan_time=now.replace(tzinfo=None),mode='maintenance' if maintenance else 'session',duration_seconds=round(duration,3),
         streams=len(jobs),statuses=counts,new_emailable_events=emailable_new,too_late_to_mail=too_late,queued=queued))
     session.execute(delete(RzyScanRun).where(RzyScanRun.scan_time<(now-timedelta(days=35)).replace(tzinfo=None)))

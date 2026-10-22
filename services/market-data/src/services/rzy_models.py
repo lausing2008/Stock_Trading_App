@@ -107,3 +107,12 @@ class RzyRebuild(Base):
     generation: Mapped[int] = mapped_column(Integer)
     reason: Mapped[str] = mapped_column(String(64))
     rebuilt_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class RzyScanPhases(Base):
+    """Where a scan's wall time went (OD-02, 2026-10-22): bar loading/preparation, evaluation,
+    snapshot/commit, other. Measured to choose the incremental-scan design from evidence."""
+    __tablename__ = 'little_rzy_scan_phases'
+    scan_time: Mapped[datetime] = mapped_column(DateTime, primary_key=True)
+    mode: Mapped[str] = mapped_column(String(16))
+    phases: Mapped[dict] = mapped_column(JSON)
