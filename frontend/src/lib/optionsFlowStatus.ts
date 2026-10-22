@@ -24,6 +24,14 @@ export function optionsFlowUnavailableText(flow: OptionsFlow & { last_known_chai
  *  55.6% puts), mixed otherwise. Shares are displayed rounded; classification never uses them. */
 export const CP_CALL_HEAVY = 1.3;
 export const CP_PUT_HEAVY = 0.8;
+/** The legacy label's own floor: under 100 put contracts the split rests on little volume. */
+export const LOW_PUT_VOLUME = 100;
+
+/** Sum of known values with how many were known: a partial sum is never shown as complete. */
+export function partialSum(values: (number | null | undefined)[]): { sum: number; known: number; total: number } {
+  const known = values.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+  return { sum: known.reduce((a, b) => a + b, 0), known: known.length, total: values.length };
+}
 
 export type Composition = {
   label: 'Call-heavy volume' | 'Put-heavy volume' | 'Mixed volume' | 'Volume not measured';
@@ -42,6 +50,9 @@ export function composition(call?: number | null, put?: number | null): Composit
   if (p === 0) {
     return { label: 'Call-heavy volume', kind: 'call_heavy', callShare, putShare, ratioText: 'C/P undefined (no puts)' };
   }
+  if (c === 0) {
+    return { label: 'Put-heavy volume', kind: 'put_heavy', callShare, putShare, ratioText: 'C/P 0 (no calls)' };
+  }
   const ratio = c / p;   // exact: a display-rounded 1.30 from 1.296 must NOT read as call-heavy
   const kind = ratio >= CP_CALL_HEAVY ? 'call_heavy' : ratio <= CP_PUT_HEAVY ? 'put_heavy' : 'mixed';
   const label = kind === 'call_heavy' ? 'Call-heavy volume' : kind === 'put_heavy' ? 'Put-heavy volume' : 'Mixed volume';
@@ -58,7 +69,8 @@ export function coverageLine(flow: { chain_as_of?: string | null; expiries_used?
   const status = flow.coverage_status === 'partial' ? 'partial — some expirations could not be read'
     : flow.coverage_status === 'unverified' ? 'unverified (not proven complete)'
     : flow.coverage_status ?? 'unknown';
-  return `Settled session ${flow.chain_as_of ? flow.chain_as_of.slice(0, 10) : 'unknown'} · ${used} of ${tried} expirations · coverage ${status}`;
+  const names = flow.expiries_used?.length ? ` (${flow.expiries_used.join(', ')})` : '';
+  return `Settled session ${flow.chain_as_of ? flow.chain_as_of.slice(0, 10) : 'unknown'} · ${used} of ${tried} expirations${names} · coverage ${status}`;
 }
 
 const money = (v: number) => (v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(1)}M` : v >= 1_000 ? `$${Math.round(v / 1_000)}K` : `$${Math.round(v)}`);

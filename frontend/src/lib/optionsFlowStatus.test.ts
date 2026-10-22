@@ -20,7 +20,7 @@ it('classifies composition from exact volumes with the agreed C/P cut points', (
   expect(composition(800, 1000).kind).toBe('put_heavy');             // exactly 0.8
   expect(composition(801, 1000).kind).toBe('mixed');
   expect(composition(1000, 0)).toMatchObject({ kind: 'call_heavy', ratioText: 'C/P undefined (no puts)' });
-  expect(composition(0, 1000).kind).toBe('put_heavy');               // all puts: symmetric
+  expect(composition(0, 1000)).toMatchObject({ kind: 'put_heavy', ratioText: 'C/P 0 (no calls)' });   // all puts: symmetric
   expect(composition(0, 0).kind).toBe('unmeasured');
   expect(composition(undefined, 10).kind).toBe('unmeasured');
   const c = composition(3000, 1000);
@@ -30,7 +30,7 @@ it('classifies composition from exact volumes with the agreed C/P cut points', (
 
 it('shows source date and coverage, and keeps premium and turnover apart', () => {
   expect(coverageLine({ chain_as_of: '2026-10-20T00:00:00', expiries_used: ['a', 'b', 'c'], expiries_attempted: ['a', 'b', 'c', 'd'], coverage_status: 'partial' }))
-    .toBe('Settled session 2026-10-20 · 3 of 4 expirations · coverage partial — some expirations could not be read');
+    .toBe('Settled session 2026-10-20 · 3 of 4 expirations (a, b, c) · coverage partial — some expirations could not be read');
   expect(coverageLine({})).toContain('Settled session unknown');
   expect(premiumText({ premium: null, traded_premium: null })).toBe('unavailable');
   expect(premiumText({ traded_premium: 1_250_000 })).toBe('$1.3M');
@@ -43,4 +43,10 @@ it('words every request failure as unknown, never as empty', () => {
   expect(requestFailedText(new Error('Request timed out'))).toMatch(/timed out/);
   expect(requestFailedText(new Error('Unauthorized'))).toMatch(/not authorised/);
   expect(requestFailedText(new TypeError('Failed to fetch'))).toMatch(/network/);
+});
+
+import { partialSum } from './optionsFlowStatus';
+it('never presents a partial premium sum as complete', () => {
+  expect(partialSum([600_000, null, undefined])).toEqual({ sum: 600_000, known: 1, total: 3 });
+  expect(partialSum([null, null])).toEqual({ sum: 0, known: 0, total: 2 });
 });

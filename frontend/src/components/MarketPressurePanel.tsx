@@ -75,8 +75,9 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
         )}
       </div>
       {failed.length > 0 && (
-        <p role="status" style={{ margin: '0 0 10px', fontSize: 12, color: '#fbbf24' }}>
+        <p role="status" aria-label="Market Pressure partial failure" style={{ margin: '0 0 10px', fontSize: 12, color: '#fbbf24' }}>
           {failed.map(([name, e]) => `${name}: ${requestFailedText(e)}`).join(' ')}
+          <button type="button" onClick={() => failed.forEach(([, , retry]) => void retry())} style={{ marginLeft: 10, fontSize: 12 }}>Retry</button>
         </p>
       )}
 

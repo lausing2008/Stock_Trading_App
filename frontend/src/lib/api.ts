@@ -1719,7 +1719,7 @@ export type OptionsFlow = { symbol: string; available: boolean; reason?: string;
   /** Legacy label kept for signal-engine; the page shows composition instead. */
   sentiment?: string; unusual_count?: number; unusual?: OptionsFlowContract[]; expiries_used?: string[];
   expiries_attempted?: string[]; chain_as_of?: string | null; coverage_status?: string | null; source?: string;
-  whale_count?: number | null; top_whale_premium?: number | null; pressure_score?: OptionsPressureScore | null; last_known_chain_date?: string | null };
+  whale_count?: number | null; whale_count_assessed?: number | null; whale_count_total?: number | null; top_whale_premium?: number | null; pressure_score?: OptionsPressureScore | null; last_known_chain_date?: string | null };
 export type OptionsChainRow = { strike: number; bid: number; ask: number; last_price: number; volume: number; oi: number; iv: number; itm: boolean };
 // IF-05: max pain — needs only strike + open interest, no IV/Black-Scholes/dealer-positioning
 // assumption. null when there's zero open interest to compute against for this expiry.
