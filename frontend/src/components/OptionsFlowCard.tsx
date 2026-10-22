@@ -1,7 +1,7 @@
 import React from 'react';
 import type { OptionsFlow } from '@/lib/api';
 import { optionsFlowUnavailableText, composition, coverageLine, premiumText, turnoverText, requestFailedText, pct1,
-  partialSum, money, lowSideNote, CP_CALL_HEAVY, CP_PUT_HEAVY } from '@/lib/optionsFlowStatus';
+  partialSum, money, lowSideNote, expiredSinceLine, CP_CALL_HEAVY, CP_PUT_HEAVY } from '@/lib/optionsFlowStatus';
 
 /** Options Flow card (options review Phase A): visible loading / request-failed / unavailable
  *  states, composition from exact volumes (never direction), source session and coverage, and
@@ -47,6 +47,7 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
             <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
               <p aria-label="Options Flow source and coverage" style={{ margin: '0 0 10px', fontSize: 11, color: '#94a3b8' }}>
                 {coverageLine(flow)}. Direction is not established by these volumes.
+                {expiredSinceLine(flow.expiry_scope) ? <> {expiredSinceLine(flow.expiry_scope)}</> : null}
               </p>
               {/* C/P ratio bar */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
@@ -135,7 +136,7 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
                               </span>
                             </td>
                             <td style={{ padding: '5px 8px', color: '#e2e8f0' }}>${c.strike}</td>
-                            <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.expiry}</td>
+                            <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.expiry}{c.current_candidate === false ? <span style={{ color: '#f59e0b' }}> · expired (historical)</span> : null}</td>
                             <td style={{ padding: '5px 8px', color: '#e2e8f0', fontWeight: 600 }}>{c.volume.toLocaleString()}</td>
                             <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.oi.toLocaleString()}</td>
                             <td style={{ padding: '5px 8px', color: c.vol_oi > 1 ? '#f59e0b' : '#94a3b8', fontWeight: c.vol_oi > 1 ? 700 : 400 }}>{c.vol_oi.toFixed(2)}×</td>

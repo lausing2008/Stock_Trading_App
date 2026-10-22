@@ -50,7 +50,12 @@ def compute_options_flow(symbol: str) -> OptionsFlowResult | None:
             sentiment=data.get("activity_composition", "unknown"),
             evidence={key: data.get(key) for key in (
                 "chain_as_of", "coverage_status", "expiries_used", "expiries_attempted",
-                "directional_intent", "independence_group", "source")},
+                "directional_intent", "independence_group", "source",
+                # Phase B (2026-10-22): `sentiment` above now comes from EXACT volumes. Rows
+                # without these keys were labelled from the rounded/capped ratio, so boundary
+                # rows (e.g. 1296/1000, or puts == 0) differ across the cut-over.
+                "composition_rule", "cp_ratio_basis", "call_share", "put_share",
+                "sample_adequacy", "archive_coverage_status")},
         )
     except Exception as exc:
         log.warning("options_flow_snapshot.compute_failed", symbol=symbol, error=str(exc))

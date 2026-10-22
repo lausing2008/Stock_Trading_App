@@ -16,6 +16,7 @@ import IvVsHvChart from '@/components/IvVsHvChart';
 import OptionsPerformanceTable from '@/components/OptionsPerformanceTable';
 import GainLossTable from '@/components/GainLossTable';
 import { daysToExpiry as glDaysToExpiry } from '@/lib/optionsGainLoss';
+import { tradeableExpiries, servedExpiryIsPast, calculatorUnavailableReason } from '@/lib/optionsFlowStatus';
 import type { OptionAction, OptionRight } from '@/lib/optionsGainLoss';
 import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary, type QuarterlyRow, type AnalystConsensus, type Fundamentals, type StockEarningsHistory, type StockEarningsEvent } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
@@ -732,11 +733,13 @@ export default function StockDetail() {
   // 2026-09-29, the nearest returned for AAPL was 2026-09-28. A button for a date that has been
   // and gone is not a choice.
   const glLiveExpiries = useMemo(
-    () => (glChain?.expiries ?? []).filter(e => (glDaysToExpiry(e) ?? -1) >= 0),
-    [glChain?.expiries],
+    // B1: the server's current list knows the 16:00 ET close, early closes and holidays; a
+    // contract expiring today is not a choice after the bell.
+    () => tradeableExpiries(glChain, glDaysToExpiry),
+    [glChain],
   );
   useEffect(() => {
-    if (!glExpiry && glChain?.expiry && (glDaysToExpiry(glChain.expiry) ?? -1) < 0 && glLiveExpiries.length) {
+    if (!glExpiry && servedExpiryIsPast(glChain, glDaysToExpiry) && glLiveExpiries.length) {
       setGlExpiry(glLiveExpiries[0]);
     }
   }, [glChain?.expiry, glLiveExpiries, glExpiry]);
@@ -1214,10 +1217,10 @@ export default function StockDetail() {
               expiries={glLiveExpiries}
               expiry={glExpiry ?? glChain?.expiry}
               onExpiryChange={setGlExpiry}
-              calls={glChain?.calls ?? []}
-              puts={glChain?.puts ?? []}
+              calls={glLiveExpiries.length ? glChain?.calls ?? [] : []}
+              puts={glLiveExpiries.length ? glChain?.puts ?? [] : []}
               loading={glLoading}
-              unavailableReason={glChain && !glChain.available ? (glChain.reason ?? 'unavailable') : undefined}
+              unavailableReason={calculatorUnavailableReason(glChain, glLiveExpiries)}
               action={glAction}
               right={glRight}
               onPositionChange={(a, r) => { setGlAction(a); setGlRight(r); }}
@@ -1273,7 +1276,7 @@ export default function StockDetail() {
                             color: optionsChain.expiry === exp ? '#38bdf8' : '#94a3b8',
                           }}
                         >
-                          {exp}
+                          {exp}{optionsChain.current_expiries && !optionsChain.current_expiries.includes(exp) ? ' (expired)' : ''}
                         </button>
                       ))}
                     </div>

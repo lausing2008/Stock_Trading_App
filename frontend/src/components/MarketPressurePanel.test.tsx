@@ -48,3 +48,15 @@ it('keeps showing loaded data while naming the request that failed', async () =>
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
   await waitFor(() => expect(api.getDarkPoolPrints.mock.calls.length).toBeGreaterThan(before));
 });
+
+it('labels an expiration past its last trade as historical in the rollup', async () => {
+  api.getGammaExposure.mockResolvedValue({ available: false, source: 'none' });
+  api.getDarkPoolPrints.mockResolvedValue({ available: false });
+  const r = (expiry: string, current: boolean) => ({ expiry, call_oi: 10, put_oi: 10, total_oi: 20, call_volume: 1, put_volume: 1,
+    put_call_oi_ratio: 1, concentration_pct: 50, level: 'extreme', current });
+  api.getOptionsExpirations.mockResolvedValue({ available: true, expirations: [r('2026-10-21', false), r('2026-10-23', true)] });
+  fresh(<MarketPressurePanel symbol="MU" />);
+  const cell = await screen.findByText(/2026-10-21/);
+  expect(cell.textContent).toContain('expired (historical)');
+  expect((await screen.findByText(/2026-10-23/)).textContent).not.toContain('expired');
+});

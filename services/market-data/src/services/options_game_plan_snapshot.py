@@ -125,8 +125,11 @@ def compute_options_game_plan_snapshot(session, stock_id: int, symbol: str) -> O
         # reason the outage was measurable at all — it produced zero rows on 09-15/16/17 while
         # yfinance returned empty, and that gap is what proved the failure predated the deploy
         # it was blamed on.
-        from ..api.routes import _uw_expiries, _uw_option_chain
-        expiries = sorted(_uw_expiries(session, symbol))
+        from ..api.routes import _uw_session_expiries, _uw_option_chain
+        from .options_scope import current_expiries
+        source_session, session_expiries = _uw_session_expiries(session, symbol)
+        # Options review B1: only expiries still before their last trading instant.
+        expiries = current_expiries(session_expiries, source_session) if session_expiries else []
         if not expiries:
             return None
 
@@ -167,14 +170,14 @@ def compute_options_game_plan_snapshot(session, stock_id: int, symbol: str) -> O
         call_rows: list[dict] = []
         try:
             if put_exp:
-                put_rows = _options_chain_rows(_uw_option_chain(session, symbol, put_exp).puts)
+                put_rows = _options_chain_rows(_uw_option_chain(session, symbol, put_exp, as_of=source_session).puts)
         except Exception as exc:
             log.warning("options_game_plan_snapshot.put_fetch_failed", symbol=symbol, expiry=put_exp, error=str(exc))
         try:
             if call_exp == put_exp:
-                call_rows = _options_chain_rows(_uw_option_chain(session, symbol, call_exp).calls) if call_exp else []
+                call_rows = _options_chain_rows(_uw_option_chain(session, symbol, call_exp, as_of=source_session).calls) if call_exp else []
             elif call_exp:
-                call_rows = _options_chain_rows(_uw_option_chain(session, symbol, call_exp).calls)
+                call_rows = _options_chain_rows(_uw_option_chain(session, symbol, call_exp, as_of=source_session).calls)
         except Exception as exc:
             log.warning("options_game_plan_snapshot.call_fetch_failed", symbol=symbol, expiry=call_exp, error=str(exc))
 

@@ -150,13 +150,20 @@ def get_chain(
     expiry: date | None = None,
     spot: float | None = None,
     allow_fetch: bool = True,
+    as_of: date | None = None,
 ) -> dict:
     """The chain for `symbol`, from the archive, fetching+persisting from UW on a miss.
 
     Returns {available, as_of, is_settled_session, source, calls, puts, expiries, reason}.
     `calls`/`puts` are in the legacy `_options_chain_rows()` shape. Never raises.
+
+    `as_of` pins the source session (options review B1): a caller assembling several expiry
+    slices passes the session it started from, so a capture landing mid-request cannot mix
+    two sessions into one summary. A pinned read never fetches.
     """
     sym = symbol.upper()
+    if as_of is not None:
+        return _chain_for_session(session, sym, as_of, expiry, spot)
     # AUD-T409-UTCDATEBOUNDARY: ET, not a naive UTC truncation (see the same finding in
     # options_income_engine._today_et()) — otherwise the staleness check and the fetch
     # window both run one day ahead of the real US trading day for part of every evening.
@@ -195,7 +202,12 @@ def get_chain(
         return {"available": False, "reason": "no_chain_for_symbol", "symbol": sym,
                 "as_of": None, "is_settled_session": True, "source": "unusual_whales",
                 "calls": [], "puts": [], "expiries": []}
+    return _chain_for_session(session, sym, as_of, expiry, spot)
 
+
+def _chain_for_session(session: Session, sym: str, as_of: date, expiry: date | None,
+                       spot: float | None) -> dict:
+    today = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
     rows = _rows_for(session, sym, as_of, expiry)
     if not rows:
         return {"available": False, "reason": "no_contracts_for_expiry", "symbol": sym,
@@ -241,3 +253,11 @@ def get_expiries(session: Session, symbol: str, *, allow_fetch: bool = True) -> 
     `sorted(yf.Ticker(sym).options)`."""
     chain = get_chain(session, symbol, allow_fetch=allow_fetch)
     return chain["expiries"] if chain["available"] else []
+
+
+def get_session_expiries(session: Session, symbol: str, *, allow_fetch: bool = True) -> tuple[date | None, list[str]]:
+    """The source session and ITS expiries, from one read, so the two cannot disagree."""
+    chain = get_chain(session, symbol, allow_fetch=allow_fetch)
+    if not chain["available"]:
+        return None, []
+    return date.fromisoformat(chain["as_of"]), chain["expiries"]

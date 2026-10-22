@@ -63,6 +63,7 @@ export default function OptionsGamePlanCard({
     <h3>Options Game Plan — data unavailable</h3>
     <p>{plan.reason === 'options_feed_unavailable' ? 'The options provider is unavailable. Refresh when the feed recovers.'
       : plan.reason === 'no_options_listed' ? 'No listed option contracts were returned for this symbol.'
+      : plan.reason === 'no_current_expiries' ? 'Every expiration in the archived chain has stopped trading, so there is no current contract to plan. Refresh after the next session is captured.'
       : `No priced option plan is available (${plan.reason ?? 'no usable contracts'}). Refresh the chain before entry.`}</p>
     {plan.last_known_chain_date && <p>Last recorded chain: {plan.last_known_chain_date}.</p>}
     <OptionStrategyMatrixPanel key={symbol} spot={currentPrice ?? 0} matrix={{ singles: {}, combos: {}, recommendation: { primary: null, reason: 'No contract data' }, iv_rank: null, iv_regime: 'unknown' }} />

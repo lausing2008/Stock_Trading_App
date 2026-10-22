@@ -24,6 +24,15 @@ class _FakeStrikeGreeks:
                     setattr(self, key, None)
 
 
+
+# Options review B1: the snapshot now keeps only expiries still before their last trading
+# instant. These fixtures are dated (2026-09/10) and this file is about greeks/expected move,
+# not scope, so the session is pinned and scope passes everything through; the scope rule
+# itself is tested in test_options_scope.py.
+from datetime import date as _date
+_SESSION = _date(2026, 9, 17)
+_ALL_CURRENT = lambda expiries, session, now=None: list(expiries)  # noqa: E731
+
 def _fake_ticker(current_price=100.0, expiries=("2026-10-01",)):
     """Still needed for the PRICE fallback only. T404 moved the option CHAIN to Unusual
     Whales, but yfinance remains the price source — and only its options endpoint broke."""
@@ -65,7 +74,8 @@ def _run(put_strike=95.0, call_strike=105.0, put_exp="2026-10-01", call_exp="202
          patch("src.services.unusual_whales.get_greeks", side_effect=greeks_side_effect) as mock_greeks, \
          patch.object(m, "log"), \
          patch("yfinance.Ticker", return_value=_fake_ticker(expiries=(put_exp, call_exp))), \
-         patch("src.api.routes._uw_expiries", return_value=[put_exp, call_exp]), \
+         patch("src.api.routes._uw_session_expiries", return_value=(_SESSION, [put_exp, call_exp])), \
+         patch("src.services.options_scope.current_expiries", side_effect=_ALL_CURRENT), \
          patch("src.api.routes._uw_option_chain", return_value=_fake_uw_chain()):
         result = m.compute_options_game_plan_snapshot(_session(), stock_id=1, symbol="AAPL")
     return result, mock_greeks

@@ -29,6 +29,7 @@ import { api } from '@/lib/api';
 import NumberField from '@/components/NumberField';
 import GainLossTable from '@/components/GainLossTable';
 import { daysToExpiry } from '@/lib/optionsGainLoss';
+import { tradeableExpiries, servedExpiryIsPast, calculatorUnavailableReason } from '@/lib/optionsFlowStatus';
 import type { OptionAction, OptionRight } from '@/lib/optionsGainLoss';
 
 type Leg = {
@@ -137,14 +138,16 @@ export default function OptionsCalculator() {
   // it builds a table for a contract nobody can trade. Filter them out rather than render a
   // negative countdown.
   const liveExpiries = useMemo(
-    () => (chain?.expiries ?? []).filter(e => (daysToExpiry(e) ?? -1) >= 0),
-    [chain?.expiries],
+    // B1: the server's current list knows the 16:00 ET close, early closes and holidays; a
+    // contract expiring today is not a choice after the bell.
+    () => tradeableExpiries(chain, daysToExpiry),
+    [chain],
   );
 
   // If the chain came back defaulted to an expiry that has already passed, advance to the first
   // tradeable one. Guarded on `!expiry` so it runs once and never fights a user's own choice.
   useEffect(() => {
-    if (!expiry && chain?.expiry && (daysToExpiry(chain.expiry) ?? -1) < 0 && liveExpiries.length) {
+    if (!expiry && servedExpiryIsPast(chain, daysToExpiry) && liveExpiries.length) {
       setExpiry(liveExpiries[0]);
     }
   }, [chain?.expiry, liveExpiries, expiry]);
@@ -343,10 +346,10 @@ export default function OptionsCalculator() {
           // immediately rather than lagging a round-trip behind the click.
           expiry={expiry ?? chain?.expiry}
           onExpiryChange={setExpiry}
-          calls={chain?.calls ?? []}
-          puts={chain?.puts ?? []}
+          calls={liveExpiries.length ? chain?.calls ?? [] : []}
+          puts={liveExpiries.length ? chain?.puts ?? [] : []}
           loading={Boolean(symbol) && chainLoading}
-          unavailableReason={chain && !chain.available ? (chain.reason ?? 'unavailable') : undefined}
+          unavailableReason={calculatorUnavailableReason(chain, liveExpiries)}
           action={tableAction}
           right={tableRight}
           onPositionChange={(a, r) => { setTableAction(a); setTableRight(r); }}

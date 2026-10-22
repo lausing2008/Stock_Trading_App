@@ -244,7 +244,7 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
               <tbody>
                 {expirations!.expirations!.map(row => (
                   <tr key={row.expiry} style={{ borderBottom: '1px solid #0f172a' }}>
-                    <td style={{ padding: '5px 6px', color: '#e2e8f0' }}>{row.expiry}</td>
+                    <td style={{ padding: '5px 6px', color: '#e2e8f0' }}>{row.expiry}{row.current === false ? <span style={{ color: '#f59e0b' }}> · expired (historical)</span> : null}</td>
                     <td style={{ padding: '5px 6px', textAlign: 'right', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{row.total_oi.toLocaleString()}</td>
                     <td style={{ padding: '5px 6px', textAlign: 'right', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{row.put_call_oi_ratio != null ? row.put_call_oi_ratio.toFixed(2) : '—'}</td>
                     <td style={{ padding: '5px 6px', textAlign: 'right' }}>

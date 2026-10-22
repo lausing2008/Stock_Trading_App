@@ -42,3 +42,14 @@ def test_fetch_error_is_not_empty_history():
 def test_unavailable_is_not_a_zero_snapshot():
     with patch('src.services.options_flow_snapshot._fetch_flow_response', return_value={'available': False}):
         assert compute_options_flow('MU') is None
+
+
+def test_snapshot_records_which_composition_rule_labelled_it():
+    """Phase B: `sentiment` changed basis (exact volumes) on 2026-10-22; the row says so."""
+    from src.services.options_scope import volume_composition
+    with patch('src.services.options_flow_snapshot._fetch_flow_response',
+               return_value={**response(), **volume_composition(1296, 1000), 'archive_coverage_status': 'complete'}):
+        r = compute_options_flow('MU')
+    assert r.sentiment == 'mixed'
+    assert 'exact contract volumes' in r.evidence['composition_rule']
+    assert r.evidence['cp_ratio_basis'] == 'exact' and r.evidence['archive_coverage_status'] == 'complete'

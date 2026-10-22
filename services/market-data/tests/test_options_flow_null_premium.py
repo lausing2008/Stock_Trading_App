@@ -15,7 +15,7 @@ import pandas as pd
 
 SRC = Path(__file__).resolve().parents[1] / "src/api/routes.py"
 TREE = ast.parse(SRC.read_text())
-NAMES = {"get_options_flow", "unusual_premium_fields", "whale_coverage", "compute_options_pressure_score", "rank_unusual"}
+NAMES = {"get_options_flow", "_with_current_scope", "unusual_premium_fields", "whale_coverage", "compute_options_pressure_score", "rank_unusual"}
 
 
 class _Cache:
@@ -36,16 +36,19 @@ def _frame(total, unusual_rows):
 def _run(calls, puts, call_unusual, put_unusual=0, chain_fails=False):
     warnings = []
     ns = {"__package__": "t.api", "Session": object, "Depends": lambda v: None, "get_session": lambda: None,
-          "json": json, "_OPTIONS_TTL": 900, "_get_redis": _Cache, "_uw_expiries": lambda *_: ["2099-01-16"],
+          "json": json, "_OPTIONS_TTL": 900, "_get_redis": _Cache, "_uw_session_expiries": lambda *_: (date(2026, 10, 20), ["2099-01-16"]),
           "_options_flow_gex_component": lambda *_: None,
           "log": SimpleNamespace(warning=lambda *a, **k: warnings.append(k)),
           "_uw_option_chain": (lambda *_: (_ for _ in ()).throw(RuntimeError("chain read failed"))) if chain_fails else
-                              (lambda *_: SimpleNamespace(calls=_frame(calls, call_unusual), puts=_frame(puts, put_unusual)))}
+                              (lambda *_, **__: SimpleNamespace(calls=_frame(calls, call_unusual), puts=_frame(puts, put_unusual),
+                                                  as_of="2026-10-20", coverage_status=None, coverage_reason=None))}
     for node in TREE.body:
         if isinstance(node, ast.FunctionDef) and node.name in NAMES:
             node.decorator_list = []
             exec(compile(ast.Module(body=[node], type_ignores=[]), str(SRC), "exec"), ns)
-    saved = {n: sys.modules.get(n) for n in ("t.services.uw_option_chain",)}
+    saved = {n: sys.modules.get(n) for n in ("t.services.uw_option_chain", "t.services.options_scope")}
+    from src.services import options_scope as _scope
+    sys.modules["t.services.options_scope"] = _scope
     mod = ModuleType("t.services.uw_option_chain"); mod.latest_as_of = lambda *_: date(2026, 10, 20)
     sys.modules[mod.__name__] = mod
     try:

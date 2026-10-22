@@ -3334,12 +3334,12 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
     Returns null fields for HK stocks and others without listed options.
     """
     sym = symbol.upper()
-    cache_key = f"options_flow:v2:{sym}"
+    cache_key = f"options_flow:v3:{sym}"
     try:
         rdb = _get_redis()
         cached = rdb.get(cache_key)
         if cached:
-            return json.loads(cached)
+            return _with_current_scope(json.loads(cached))
     except Exception:
         pass
 
@@ -3350,7 +3350,9 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         # T404: the option chain now comes from Unusual Whales, not yfinance.
         # AUD265-GAMMA-ASSUMES-SORTED-EXPIRIES: sorted() makes "nearest 4 expiries" structural
         # rather than dependent on yfinance's own (undocumented) ordering of t.options.
-        expiries = sorted(_uw_expiries(session, sym))
+        # B1: the source session and its expiries come from ONE read, and every slice below is
+        # pinned to that session — a capture landing mid-request cannot pool two sessions.
+        source_session, expiries = _uw_session_expiries(session, sym)
         if not expiries:
             result = {"symbol": sym, "available": False, **_empty_chain_reason(session, sym)}
             return result
@@ -3359,14 +3361,24 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         total_put_vol = 0
         unusual: list[dict] = []
         received_expiries = []
+        mixed_session: list[dict] = []
+        archive_coverage: tuple = (None, None)
 
-        for exp in expiries[:4]:  # nearest four expiries
+        # The nearest four expiries OF THE SOURCE SESSION: historical evidence of that session,
+        # including a contract that expired at its close. Current tradeability is separate.
+        for exp in expiries[:4]:
             try:
-                chain = _uw_option_chain(session, sym, exp)
+                chain = _uw_option_chain(session, sym, exp, as_of=source_session)
             except Exception:
                 continue
+            # Defence in depth: the pinned read above returns this session or raises, so this
+            # should not trigger today. It guards a future reader change that stops pinning.
+            if str(chain.as_of)[:10] != source_session.isoformat():
+                mixed_session.append({"expiry": exp, "as_of": str(chain.as_of)[:10]})
+                continue   # flagged, never pooled
 
             received_expiries.append(exp)
+            archive_coverage = (chain.coverage_status, chain.coverage_reason)
             calls = chain.calls.fillna(0)
             puts  = chain.puts.fillna(0)
 
@@ -3413,7 +3425,7 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         if not received_expiries:
             # Every expiry read failed: a data failure, never "no volume" (review of the F1 fix).
             return {"symbol": sym, "available": False, "reason": "chain_read_failed",
-                    "expiries_attempted": list(expiries[:4])}
+                    "expiries_attempted": list(expiries[:4]), "mixed_session_slices": mixed_session}
         if total_call_vol == 0 and total_put_vol == 0:
             result = {"symbol": sym, "available": False, "reason": "no_volume"}
             return result
@@ -3448,10 +3460,18 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         _wc = whale_coverage(unusual)
         _whale_count = _wc["whale_count"]
 
-        from ..services.uw_option_chain import latest_as_of
-        chain_date = latest_as_of(session, sym)
+        from ..services.options_scope import volume_composition
+        _comp = volume_composition(total_call_vol, total_put_vol)
+        # Two facts, kept apart: whether the archive capture itself finished, and whether every
+        # requested slice of it could be read. "partial" must not hide an "incomplete" archive.
+        _archive_status = archive_coverage[0] or "unverified"
+        if len(received_expiries) < len(expiries[:4]):
+            _cov_status, _cov_reason = "partial", "some expirations of the source session could not be read"
+        else:
+            _cov_status, _cov_reason = _archive_status, archive_coverage[1]
         result = {
-            "chain_as_of": chain_date.isoformat() if chain_date else None,
+            "chain_as_of": source_session.isoformat(),
+            "source_session": source_session.isoformat(),
             "source": "unusual_whales_settled_chain",
             "symbol":            sym,
             "available":         True,
@@ -3464,8 +3484,13 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
             "unusual":           unusual[:10],
             "expiries_used":     received_expiries,
             "expiries_attempted": list(expiries[:4]),
-            "coverage_status": "partial" if len(received_expiries) < len(expiries[:4]) else "unverified",
-            "activity_composition": "call_heavy" if cp_ratio >= 1.3 else "put_heavy" if cp_ratio <= .8 else "mixed",
+            "coverage_status": _cov_status,
+            "coverage_reason": _cov_reason,
+            "archive_coverage_status": _archive_status,
+            "archive_coverage_reason": archive_coverage[1],
+            "mixed_session_slices": mixed_session,
+            # A2/F2-F3: exact volumes, never the rounded/capped cp_ratio above (kept for legacy).
+            **_comp,
             "directional_intent": "not_established",
             "independence_group": "option_chain",
             "sentiment_basis": "legacy composition label; not trade intent or independent directional evidence",
@@ -3487,11 +3512,26 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         except Exception:
             pass
 
-        return result
+        return _with_current_scope(result)
 
     except Exception as exc:
         log.warning("options_flow.error", symbol=sym, error=str(exc))
         return {"symbol": sym, "available": False, "reason": "fetch_error"}
+
+
+def _with_current_scope(result: dict, now: "datetime | None" = None) -> dict:
+    """Attach time-dependent expiry scope AFTER the cache: a payload cached at 15:59 must not
+    still call a same-day contract current at 16:05 (options review B1)."""
+    if not result.get("available") or not result.get("source_session"):
+        return result
+    from datetime import date as _date
+    from ..services.options_scope import expiry_scope
+    scope = expiry_scope(result.get("expiries_used") or [], _date.fromisoformat(result["source_session"]), now)
+    current = set(scope["current_expiries"])
+    out = dict(result)
+    out["expiry_scope"] = scope
+    out["unusual"] = [{**c, "current_candidate": c.get("expiry") in current} for c in result.get("unusual") or []]
+    return out
 
 
 def _options_flow_gex_component(symbol: str) -> dict | None:
@@ -3742,21 +3782,24 @@ _OPTIONS_CHAIN_TTL = 900  # 15-min — matches _OPTIONS_TTL's own refresh cadenc
 # `as_of` comes back with it and callers must surface it — a settled bid shown as a live quote
 # is the A06 finding already on the tracker.
 class _ChainPair:
-    __slots__ = ("calls", "puts", "as_of")
+    __slots__ = ("calls", "puts", "as_of", "coverage_status", "coverage_reason")
 
-    def __init__(self, calls, puts, as_of):
+    def __init__(self, calls, puts, as_of, coverage_status=None, coverage_reason=None):
         self.calls, self.puts, self.as_of = calls, puts, as_of
+        self.coverage_status, self.coverage_reason = coverage_status, coverage_reason
 
 
-def _uw_option_chain(session: Session, sym: str, exp: str | None = None, spot: float | None = None):
+def _uw_option_chain(session: Session, sym: str, exp: str | None = None, spot: float | None = None,
+                     as_of: "date | None" = None):
     """UW chain for one expiry, shaped exactly like yfinance's option_chain(). Raises on
-    unavailability so existing `try/except Exception: continue` call sites behave as before."""
+    unavailability so existing `try/except Exception: continue` call sites behave as before.
+    `as_of` pins the source session so several slices cannot come from different sessions."""
     import pandas as _pd
     from datetime import date as _date
     from ..services.uw_option_chain import get_chain as _uw_get_chain
 
     exp_d = _date.fromisoformat(exp) if exp else None
-    ch = _uw_get_chain(session, sym, expiry=exp_d, spot=spot)
+    ch = _uw_get_chain(session, sym, expiry=exp_d, spot=spot, as_of=as_of)
     if not ch["available"]:
         raise ValueError(f"no UW chain for {sym} {exp or ''}: {ch.get('reason')}")
 
@@ -3781,13 +3824,21 @@ def _uw_option_chain(session: Session, sym: str, exp: str | None = None, spot: f
             "impliedVolatility", "inTheMoney", "last_price_available",
             "delta", "gamma", "theta", "vega", "rho"])
 
-    return _ChainPair(_df(ch["calls"]), _df(ch["puts"]), ch["as_of"])
+    return _ChainPair(_df(ch["calls"]), _df(ch["puts"]), ch["as_of"],
+                      ch.get("coverage_status"), ch.get("coverage_reason"))
 
 
 def _uw_expiries(session: Session, sym: str) -> list[str]:
     """Replacement for `sorted(yf.Ticker(sym).options)`."""
     from ..services.uw_option_chain import get_expiries as _uw_get_expiries
     return _uw_get_expiries(session, sym)
+
+
+def _uw_session_expiries(session: Session, sym: str):
+    """(source session, its sorted expiries) from ONE read — options review B1."""
+    from ..services.uw_option_chain import get_session_expiries
+    as_of, expiries = get_session_expiries(session, sym)
+    return as_of, sorted(expiries)
 
 
 def _options_chain_rows(df) -> list[dict]:
@@ -4023,22 +4074,26 @@ def get_options_chain(symbol: str, expiry: str | None = None, session: Session =
         # AUD265-GAMMA-ASSUMES-SORTED-EXPIRIES: sorted() makes "the nearest expiry" default
         # structural rather than dependent on yfinance's own (undocumented) ordering of
         # t.options.
-        expiries = sorted(_uw_expiries(session, sym))
+        source_session, expiries = _uw_session_expiries(session, sym)
         if not expiries:
             return {"symbol": sym, "available": False, **_empty_chain_reason(session, sym)}
 
-        exp = expiry if expiry in expiries else expiries[0]
-        cache_key = f"options_chain:{sym}:{exp}"
+        # B1: an explicitly requested expiry of the session is served (historical evidence);
+        # the DEFAULT is the nearest CURRENT expiry, never one already past its last trade.
+        from ..services.options_scope import current_expiries as _current_expiries
+        _cur = _current_expiries(expiries, source_session)
+        exp = expiry if expiry in expiries else (_cur[0] if _cur else expiries[0])
+        cache_key = f"options_chain:v2:{sym}:{source_session.isoformat()}:{exp}"
         try:
             rdb = _get_redis()
             cached = rdb.get(cache_key)
             if cached:
-                return json.loads(cached)
+                return _chain_with_scope(json.loads(cached))
         except Exception:
             rdb = None
 
         try:
-            chain = _uw_option_chain(session, sym, exp)
+            chain = _uw_option_chain(session, sym, exp, as_of=source_session)
         except Exception as exc:
             log.warning("options_chain.fetch_failed", symbol=sym, expiry=exp, error=str(exc))
             return {"symbol": sym, "available": False, "reason": "fetch_error"}
@@ -4054,6 +4109,9 @@ def get_options_chain(symbol: str, expiry: str | None = None, session: Session =
             "puts":            _puts_rows,
             # IF-05: max pain — needs only strike + OI, both already in the rows above.
             "max_pain":        compute_max_pain(_calls_rows, _puts_rows),
+            "source_session":  source_session.isoformat(),
+            "coverage_status": chain.coverage_status or "unverified",
+            "coverage_reason": chain.coverage_reason,
         }
 
         if rdb is not None:
@@ -4062,11 +4120,40 @@ def get_options_chain(symbol: str, expiry: str | None = None, session: Session =
             except Exception:
                 pass
 
-        return result
+        return _chain_with_scope(result)
 
     except Exception as exc:
         log.warning("options_chain.error", symbol=sym, error=str(exc))
         return {"symbol": sym, "available": False, "reason": "fetch_error"}
+
+
+def _chain_with_scope(result: dict, now: "datetime | None" = None) -> dict:
+    """B1: per-request (never cached) scope for the chain: all session expiries remain listed as
+    historical evidence; `current_expiries` is what a calculator may offer as a trade."""
+    if not result.get("available") or not result.get("source_session"):
+        return result
+    from datetime import date as _date
+    from ..services.options_scope import expiry_scope
+    scope = expiry_scope(result.get("expiries") or [], _date.fromisoformat(result["source_session"]), now)
+    out = dict(result)
+    out["expiry_scope"] = scope
+    out["current_expiries"] = scope["current_expiries"]
+    out["expiry_is_current"] = result.get("expiry") in scope["current_expiries"]
+    return out
+
+
+def _expirations_with_scope(result: dict, now: "datetime | None" = None) -> dict:
+    if not result.get("available") or not result.get("source_session"):
+        return result
+    from datetime import date as _date
+    from ..services.options_scope import expiry_scope
+    scope = expiry_scope([r.get("expiry") for r in result.get("expirations") or []],
+                         _date.fromisoformat(result["source_session"]), now)
+    current = set(scope["current_expiries"])
+    out = dict(result)
+    out["expiry_scope"] = scope
+    out["expirations"] = [{**r, "current": r.get("expiry") in current} for r in result["expirations"]]
+    return out
 
 
 def compute_expiration_rollup(per_expiry: list[dict]) -> list[dict]:
@@ -4142,25 +4229,25 @@ def get_options_expirations(symbol: str, session: Session = Depends(get_session)
     whole purpose is the cross-expiry comparison itself, not a single day's detail.
     """
     sym = symbol.upper()
-    cache_key = f"options_expirations:{sym}"
+    cache_key = f"options_expirations:v2:{sym}"
     try:
         rdb = _get_redis()
         cached = rdb.get(cache_key)
         if cached:
-            return json.loads(cached)
+            return _expirations_with_scope(json.loads(cached))
     except Exception:
         rdb = None
 
     try:
         # T404: the option chain now comes from Unusual Whales, not yfinance.
-        expiries = sorted(_uw_expiries(session, sym))
+        source_session, expiries = _uw_session_expiries(session, sym)
         if not expiries:
             return {"symbol": sym, "available": False, **_empty_chain_reason(session, sym)}
 
         per_expiry = []
         for exp in expiries[:6]:
             try:
-                chain = _uw_option_chain(session, sym, exp)
+                chain = _uw_option_chain(session, sym, exp, as_of=source_session)
             except Exception:
                 continue
             calls = chain.calls.fillna(0)
@@ -4177,7 +4264,8 @@ def get_options_expirations(symbol: str, session: Session = Depends(get_session)
         if not rollup:
             return {"symbol": sym, "available": False, "reason": "no_open_interest"}
 
-        result = {"symbol": sym, "available": True, "expirations": rollup}
+        result = {"symbol": sym, "available": True, "expirations": rollup,
+                  "source_session": source_session.isoformat()}
 
         if rdb is not None:
             try:
@@ -4185,7 +4273,7 @@ def get_options_expirations(symbol: str, session: Session = Depends(get_session)
             except Exception:
                 pass
 
-        return result
+        return _expirations_with_scope(result)
 
     except Exception as exc:
         log.warning("options_expirations.error", symbol=sym, error=str(exc))
@@ -4824,9 +4912,15 @@ def get_options_game_plan(
     sym = symbol.upper()
     try:
         # T404: the option chain now comes from Unusual Whales, not yfinance.
-        expiries = sorted(_uw_expiries(session, sym))
-        if not expiries:
+        source_session, session_expiries = _uw_session_expiries(session, sym)
+        if not session_expiries:
             return {"symbol": sym, "available": False, **_empty_chain_reason(session, sym)}
+        # B1: trade candidates come ONLY from expiries still before their last trading instant.
+        from ..services.options_scope import current_expiries as _current_expiries
+        expiries = _current_expiries(session_expiries, source_session)
+        if not expiries:
+            return {"symbol": sym, "available": False, "reason": "no_current_expiries",
+                    "source_session": source_session.isoformat()}
 
         current_price = _goal_current_price(session, sym)
         if current_price is None:
@@ -4850,13 +4944,13 @@ def get_options_game_plan(
         chain_as_of: str | None = None
         try:
             if put_exp:
-                _pc = _uw_option_chain(session, sym, put_exp, spot=current_price)
+                _pc = _uw_option_chain(session, sym, put_exp, spot=current_price, as_of=source_session)
                 put_rows, chain_as_of = _options_chain_rows(_pc.puts), _pc.as_of
         except Exception as exc:
             log.warning("options_game_plan.put_fetch_failed", symbol=sym, expiry=put_exp, error=str(exc))
         try:
             if call_exp:
-                _cc = _uw_option_chain(session, sym, call_exp, spot=current_price)
+                _cc = _uw_option_chain(session, sym, call_exp, spot=current_price, as_of=source_session)
                 call_rows, chain_as_of = _options_chain_rows(_cc.calls), _cc.as_of
         except Exception as exc:
             log.warning("options_game_plan.call_fetch_failed", symbol=sym, expiry=call_exp, error=str(exc))

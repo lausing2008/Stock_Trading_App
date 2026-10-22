@@ -68,14 +68,58 @@ export function composition(call?: number | null, put?: number | null): Composit
 
 export const pct1 = (x: number | null) => (x == null ? '—' : `${(x * 100).toFixed(1)}%`);
 
+/** The archive's own completeness evidence, in words (options review B1). */
+export function coverageStatusText(status?: string | null): string {
+  switch (status) {
+    case 'complete': return 'complete (archive capture reached its last page)';
+    case 'incomplete': return 'incomplete — the archive capture did not finish';
+    case 'partial': return 'partial — some expirations could not be read';
+    case 'unverified_legacy': case 'unverified_legacy_cap': return 'unverified (captured before completeness was recorded)';
+    case 'unverified': return 'unverified (not proven complete)';
+    default: return status ?? 'unknown';
+  }
+}
+
+/** Expiries a calculator may offer as a trade: the server's current list when present (it knows
+ *  the exchange close and holidays); otherwise the older client-side date filter. */
+export function tradeableExpiries(chain: { expiries?: string[]; current_expiries?: string[] } | undefined,
+  daysToExpiry: (e: string) => number | null): string[] {
+  if (chain?.current_expiries) return chain.current_expiries;
+  return (chain?.expiries ?? []).filter(e => (daysToExpiry(e) ?? -1) >= 0);
+}
+
+/** Why a calculator has nothing to offer: the chain's own reason, or — when the chain loaded
+ *  but every expiry of its session is past its last trade — say that rather than nothing. */
+export function calculatorUnavailableReason(chain: { available?: boolean; reason?: string; current_expiries?: string[] } | undefined,
+  tradeable: string[]): string | undefined {
+  if (!chain) return undefined;
+  if (!chain.available) return chain.reason ?? 'unavailable';
+  if (chain.current_expiries && tradeable.length === 0) return 'every expiration in the archived session has stopped trading';
+  return undefined;
+}
+
+/** True when the served expiry is not a current trade candidate. */
+export function servedExpiryIsPast(chain: { expiry?: string; expiry_is_current?: boolean } | undefined,
+  daysToExpiry: (e: string) => number | null): boolean {
+  if (!chain?.expiry) return false;
+  if (typeof chain.expiry_is_current === 'boolean') return !chain.expiry_is_current;
+  return (daysToExpiry(chain.expiry) ?? -1) < 0;
+}
+
+/** "k of n expirations have expired since the session — historical evidence only", or null. */
+export function expiredSinceLine(scope?: { historical_expiries: string[]; current_expiries: string[] } | null): string | null {
+  if (!scope) return null;
+  const expired = scope.historical_expiries.filter(e => !scope.current_expiries.includes(e));
+  if (!expired.length) return null;
+  return `${expired.length} of ${scope.historical_expiries.length} expirations (${expired.join(', ')}) have expired since that session — historical evidence only, not current trade candidates.`;
+}
+
 /** Source date and expiry coverage, shown on the card itself (not only in a tooltip). */
 export function coverageLine(flow: { chain_as_of?: string | null; expiries_used?: string[] | null;
   expiries_attempted?: string[] | null; coverage_status?: string | null }): string {
   const used = flow.expiries_used?.length ?? 0;
   const tried = flow.expiries_attempted?.length ?? used;
-  const status = flow.coverage_status === 'partial' ? 'partial — some expirations could not be read'
-    : flow.coverage_status === 'unverified' ? 'unverified (not proven complete)'
-    : flow.coverage_status ?? 'unknown';
+  const status = coverageStatusText(flow.coverage_status);
   const names = flow.expiries_used?.length ? ` (${flow.expiries_used.join(', ')})` : '';
   return `Settled session ${flow.chain_as_of ? flow.chain_as_of.slice(0, 10) : 'unknown'} · ${used} of ${tried} expirations${names} · coverage ${status}`;
 }

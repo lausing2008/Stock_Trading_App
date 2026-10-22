@@ -1,0 +1,14 @@
+{
+  "_note": "Shared by services/market-data/tests/test_options_scope.py and frontend/src/lib/optionsFlowStatus.test.ts so the backend and card rules cannot drift. Cut points: call-heavy C/P >= 1.3, put-heavy C/P <= 0.8, exact volumes.",
+  "cases": [
+    {"call": 1300, "put": 1000, "kind": "call_heavy", "why": "exactly 1.3"},
+    {"call": 1296, "put": 1000, "kind": "mixed", "why": "1.296 displays as 1.30 but is below the cut"},
+    {"call": 800, "put": 1000, "kind": "put_heavy", "why": "exactly 0.8"},
+    {"call": 801, "put": 1000, "kind": "mixed", "why": "0.801 displays as 0.80 but is above the cut"},
+    {"call": 1000, "put": 0, "kind": "call_heavy", "why": "no puts: C/P undefined, not a capped 10"},
+    {"call": 0, "put": 1000, "kind": "put_heavy", "why": "no calls: symmetric with no puts"},
+    {"call": 0, "put": 0, "kind": "unmeasured", "why": "nothing traded"},
+    {"call": 333051, "put": 228251, "kind": "call_heavy", "why": "MU 2026-10-20 production reading"},
+    {"call": 1000, "put": 1000, "kind": "mixed", "why": "balanced"}
+  ]
+}

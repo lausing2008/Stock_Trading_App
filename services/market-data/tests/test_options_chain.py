@@ -69,7 +69,7 @@ def test_endpoint_reuses_the_same_chain_helper_as_options_flow():
     providers or different staleness."""
     for fn in ("def get_options_chain(", "def get_options_flow("):
         body = _fn_body(fn)
-        assert "_uw_option_chain(session, sym, exp)" in body, f"{fn} must use the shared UW helper"
+        assert "_uw_option_chain(session, sym, exp, as_of=source_session)" in body, f"{fn} must use the shared UW helper"
         assert "yf.Ticker(sym)" not in body, f"{fn} must not fetch a chain from yfinance"
 
 
@@ -154,7 +154,9 @@ def test_get_options_chain_sorts_expiries_before_defaulting_to_the_nearest_one()
     start = _ROUTES_SOURCE.index("def get_options_chain(")
     end = _ROUTES_SOURCE.index("\n@router.get", start + 1)
     body = _ROUTES_SOURCE[start:end]
-    assert "expiries = sorted(_uw_expiries(session, sym))" in body
+    # B1: expiries come from _uw_session_expiries, which sorts them (behaviour pinned in
+    # test_options_scope.py::test_session_expiries_are_sorted).
+    assert "source_session, expiries = _uw_session_expiries(session, sym)" in body
     # The default-to-first-expiry logic must still be present (this is a sort-before-index
     # fix, not a removal of the "default to nearest" behavior).
     assert "expiries[0]" in body
@@ -166,5 +168,7 @@ def test_get_options_flow_sorts_expiries_before_taking_the_nearest_four():
     start = _ROUTES_SOURCE.index("def get_options_flow(")
     end = _ROUTES_SOURCE.index("\n@router.get", start + 1)
     body = _ROUTES_SOURCE[start:end]
-    assert "expiries = sorted(_uw_expiries(session, sym))" in body
+    # B1: expiries come from _uw_session_expiries, which sorts them (behaviour pinned in
+    # test_options_scope.py::test_session_expiries_are_sorted).
+    assert "source_session, expiries = _uw_session_expiries(session, sym)" in body
     assert "expiries[:4]" in body

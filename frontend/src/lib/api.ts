@@ -1701,7 +1701,12 @@ export type OptionsFlowContract = { expiry: string; side: 'call' | 'put'; strike
   premium: number | null; traded_premium?: number | null;
   /** volume x mid x 100 — an ESTIMATE, never premium. */
   estimated_turnover?: number | null; premium_basis?: 'tape' | 'estimated_turnover' | 'unavailable';
-  is_whale: boolean | null };
+  is_whale: boolean | null;
+  /** B1: false once this expiry is past its last trading instant — historical evidence only. */
+  current_candidate?: boolean };
+/** Options review B1: one source session's expiries split into historical evidence and current candidates. */
+export type ExpiryScope = { source_session: string | null; evaluated_at: string; historical_expiries: string[];
+  current_expiries: string[]; excluded_from_current: { expiry: string; reason: string; last_trading_instant: string | null }[]; rule: string };
 // MPE-02: composite 0-100 options-pressure (conviction/intensity, not direction — read
 // `sentiment` alongside this for direction) score. See compute_options_pressure_score()'s own
 // docstring in routes.py for the full weighting rationale.
@@ -1719,12 +1724,18 @@ export type OptionsFlow = { symbol: string; available: boolean; reason?: string;
   /** Legacy label kept for signal-engine; the page shows composition instead. */
   sentiment?: string; unusual_count?: number; unusual?: OptionsFlowContract[]; expiries_used?: string[];
   expiries_attempted?: string[]; chain_as_of?: string | null; coverage_status?: string | null; source?: string;
-  whale_count?: number | null; whale_count_assessed?: number | null; whale_count_total?: number | null; top_whale_premium?: number | null; pressure_score?: OptionsPressureScore | null; last_known_chain_date?: string | null };
+  whale_count?: number | null; whale_count_assessed?: number | null; whale_count_total?: number | null; top_whale_premium?: number | null; pressure_score?: OptionsPressureScore | null; last_known_chain_date?: string | null;
+  source_session?: string | null; coverage_reason?: string | null; expiry_scope?: ExpiryScope;
+  mixed_session_slices?: { expiry: string; as_of: string }[];
+  activity_composition?: 'call_heavy' | 'put_heavy' | 'mixed' | 'unmeasured'; call_share?: number | null; put_share?: number | null };
 export type OptionsChainRow = { strike: number; bid: number; ask: number; last_price: number; volume: number; oi: number; iv: number; itm: boolean };
 // IF-05: max pain — needs only strike + open interest, no IV/Black-Scholes/dealer-positioning
 // assumption. null when there's zero open interest to compute against for this expiry.
 export type MaxPain = { max_pain_strike: number; total_call_oi: number; total_put_oi: number; put_call_oi_ratio: number | null };
-export type OptionsChain = { symbol: string; available: boolean; reason?: string; expiry?: string; expiries?: string[]; calls?: OptionsChainRow[]; puts?: OptionsChainRow[]; max_pain?: MaxPain | null };
+export type OptionsChain = { symbol: string; available: boolean; reason?: string; expiry?: string; expiries?: string[]; calls?: OptionsChainRow[]; puts?: OptionsChainRow[]; max_pain?: MaxPain | null;
+  /** B1: `expiries` is the source session's full list (history); only these may be offered as trades. */
+  current_expiries?: string[]; expiry_is_current?: boolean; source_session?: string | null; expiry_scope?: ExpiryScope;
+  coverage_status?: string | null; coverage_reason?: string | null };
 
 // MPE-06: real, calculated dealer gamma exposure via Unusual Whales. `source` distinguishes a
 // real GEX read ("unusual_whales") from the free-tier's own OI-concentration proxy elsewhere
@@ -1959,8 +1970,10 @@ export type OptionsExpirationRow = {
   put_call_oi_ratio: number | null;
   concentration_pct: number;
   level: 'normal' | 'elevated' | 'high' | 'extreme';
+  /** B1: false once past its last trading instant (still valid evidence of the source session). */
+  current?: boolean;
 };
-export type OptionsExpirationsResponse = { symbol: string; available: boolean; reason?: string; expirations?: OptionsExpirationRow[] };
+export type OptionsExpirationsResponse = { symbol: string; available: boolean; reason?: string; expirations?: OptionsExpirationRow[]; source_session?: string | null; expiry_scope?: ExpiryScope };
 export type QuickScanResult = { symbol: string; price: number; change_pct: number | null; change_5d: number | null; rsi: number | null; sma20: number | null; sma50: number | null; above_sma20: boolean | null; above_sma50: boolean | null; vol_ratio: number | null; range_pos_20d: number | null };
 export type FearGreed = { source: 'CNN'; updated_at: string; score: number; rating: string; previous_close: number | null; previous_1_week: number | null; previous_1_month: number | null; previous_1_year: number | null; sp500_regime?: 'bull' | 'bear'; sp500_vs_ma200_pct?: number | null };
 export type MarketBreadth = { breadth_pct: number | null; above_200ma: number; below_200ma: number; total: number; label: string; color: string; updated_at: string };

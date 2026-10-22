@@ -50,3 +50,45 @@ it('never presents a partial premium sum as complete', () => {
   expect(partialSum([600_000, null, undefined])).toEqual({ sum: 600_000, known: 1, total: 3 });
   expect(partialSum([null, null])).toEqual({ sum: 0, known: 0, total: 2 });
 });
+
+// ── Options review B1 + shared composition rule ────────────────────────────────────────────
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { coverageStatusText, tradeableExpiries, servedExpiryIsPast, expiredSinceLine } from './optionsFlowStatus';
+
+const shared = JSON.parse(readFileSync(resolve(__dirname, '../../../services/market-data/tests/fixtures/options_composition_cases.json'), 'utf8')) as
+  { cases: { call: number; put: number; kind: string; why: string }[] };
+
+it.each(shared.cases)('matches the backend composition rule: $why', ({ call, put, kind }) => {
+  expect(composition(call, put).kind).toBe(kind);
+});
+
+it('words the archive completeness evidence instead of a bare "unverified"', () => {
+  expect(coverageStatusText('complete')).toMatch(/complete \(archive capture reached its last page\)/);
+  expect(coverageStatusText('incomplete')).toMatch(/did not finish/);
+  expect(coverageStatusText('unverified_legacy_cap')).toMatch(/before completeness was recorded/);
+  expect(coverageStatusText(undefined)).toBe('unknown');
+});
+
+it('offers only the server\'s current expiries, so a same-day contract is gone after the close', () => {
+  const dte = () => 0;                                         // client date math still says "today"
+  expect(tradeableExpiries({ expiries: ['2026-10-21', '2026-10-23'], current_expiries: ['2026-10-23'] }, dte)).toEqual(['2026-10-23']);
+  expect(tradeableExpiries({ expiries: ['2026-10-21', '2026-10-23'] }, e => (e === '2026-10-21' ? -1 : 2))).toEqual(['2026-10-23']);
+  expect(servedExpiryIsPast({ expiry: '2026-10-21', expiry_is_current: false }, dte)).toBe(true);
+  expect(servedExpiryIsPast({ expiry: '2026-10-23', expiry_is_current: true }, () => -5)).toBe(false);
+});
+
+it('names expirations that expired since the session as historical evidence only', () => {
+  expect(expiredSinceLine({ historical_expiries: ['2026-10-21', '2026-10-23'], current_expiries: ['2026-10-23'] }))
+    .toBe('1 of 2 expirations (2026-10-21) have expired since that session — historical evidence only, not current trade candidates.');
+  expect(expiredSinceLine({ historical_expiries: ['2026-10-23'], current_expiries: ['2026-10-23'] })).toBeNull();
+  expect(expiredSinceLine(undefined)).toBeNull();
+});
+
+it('says why a calculator is empty when every archived expiration has stopped trading', async () => {
+  const { calculatorUnavailableReason } = await import('./optionsFlowStatus');
+  expect(calculatorUnavailableReason({ available: true, current_expiries: [] }, [])).toBe('every expiration in the archived session has stopped trading');
+  expect(calculatorUnavailableReason({ available: true, current_expiries: ['2026-10-23'] }, ['2026-10-23'])).toBeUndefined();
+  expect(calculatorUnavailableReason({ available: false, reason: 'fetch_error' }, [])).toBe('fetch_error');
+  expect(calculatorUnavailableReason(undefined, [])).toBeUndefined();
+});

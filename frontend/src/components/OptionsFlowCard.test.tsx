@@ -56,3 +56,13 @@ it('says when the whale count covers only some contracts', () => {
   render(<OptionsFlowCard flow={flow({ whale_count: 1, whale_count_assessed: 1, whale_count_total: 3 })} error={undefined} onRetry={() => {}} />);
   expect(document.body.textContent).toContain('1 whale trade (1 of 3 contracts assessable)');
 });
+
+it('keeps an expired expiry as labelled historical evidence and carries the archive coverage', () => {
+  render(<OptionsFlowCard flow={flow({ coverage_status: 'complete', unusual: [row('call', { current_candidate: false }), row('put', { expiry: '2026-10-31', current_candidate: true })],
+    expiry_scope: { source_session: '2026-10-20', evaluated_at: '2026-10-24T21:00:00Z', historical_expiries: ['2026-10-24', '2026-10-31'],
+      current_expiries: ['2026-10-31'], excluded_from_current: [], rule: '' } })} error={undefined} onRetry={() => {}} />);
+  const facts = screen.getByLabelText('Options Flow source and coverage').textContent ?? '';
+  expect(facts).toContain('coverage complete (archive capture reached its last page)');
+  expect(facts).toContain('1 of 2 expirations (2026-10-24) have expired since that session — historical evidence only');
+  expect(screen.getAllByText(/expired \(historical\)/)).toHaveLength(1);
+});
