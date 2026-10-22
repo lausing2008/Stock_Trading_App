@@ -441,7 +441,7 @@ def stream_summary(symbol,tf,result=None,error=None):
         candidates.append(dict(symbol=symbol,timeframe=tf,direction=st['direction'],structure_id=st['id'],target=st['target'],
             provisional_stop=reference['stop'],entry_reference=reference['entry_reference'],trigger_line=reference['trendline'],planned_reward_risk=reference['reward_risk'],
             sequence=st['sequence_number'],sequence_confidence=st['sequence_confidence'],data_as_of=result['evidence'].get('data_as_of'),
-            guidance=GUIDANCE.format(minimum=minimum)))
+            guidance=GUIDANCE.format(minimum=minimum),min_reward_risk=minimum))
     return dict(candidates=candidates,exclusion=None if candidates else {'symbol':symbol,'timeframe':tf,'reason':'insufficient_planned_reward_risk'})
 
 
@@ -535,16 +535,13 @@ def morning_digest(session,now=None):
         user=session.get(User,pref.user_id)
         if not eligible(session,user,pref,'short_term_digest'): continue
         report=digest_preview(session,user.id,now)
-        body=f"Short-term/day-trading watchlist preparation · {d}\n"+report['note']+'\n'+report['ranking']+'\n'
-        if not report['candidates']: body+='No qualifying candidates. Do not force a trade.\n'
-        for c in report['candidates']:
-            body+=f"{c['symbol']} {c['direction'].upper()} {c['timeframe']}: entry reference {c['entry_reference']:.4f}; provisional stop {c['provisional_stop']:.4f}; measured target {c['target']:.4f}; planned R/R {c['planned_reward_risk']:.2f}; observed {c['data_as_of']}. {c['guidance']}\n"
-        body+='Manage email preferences in Settings → Short-term trading & Little RZY.\n'
-        body+='Excluded: '+', '.join(f"{x['symbol']} {x['timeframe']} ({x['reason']})" for x in report['exclusions'])
+        # Presentation only (rzy_email.render_digest): the same candidates and exclusions.
+        from .rzy_email import render_digest
+        body,body_html=render_digest(report,d)
         from .email_service import _unsubscribe_footer
         footer_html,footer_text=_unsubscribe_footer('short_term_digest',user.id)
         _,created=enqueue(session,event_id='rzy-digest:'+stable(user.id,d)[:50],user_id=user.id,recipient=user.email.strip(),alert_type='short_term_digest',
-            subject=f'Short-term watchlist digest · {d}',body_text=body+footer_text,body_html='<pre>'+escape(body)+'</pre>'+footer_html,expires_at=utc(bounds[0]).replace(tzinfo=None))
+            subject=f'Short-term watchlist digest · {d}',body_text=body+footer_text,body_html=body_html+footer_html,expires_at=utc(bounds[0]).replace(tzinfo=None))
         queued+=int(created)
     return {'status':'ok','queued':queued}
 

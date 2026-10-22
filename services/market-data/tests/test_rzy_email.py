@@ -170,3 +170,43 @@ def test_the_engine_standing_blocker_ids_are_readable_too():
     assert 'unrecognised identifier' not in text.split('Technical details')[0]
     assert 'the price data basis and freshness are not verified for execution' in text
 
+
+
+# ── Morning watchlist digest ────────────────────────────────────────────────────────────────
+from datetime import date
+from src.services.rzy_email import render_digest
+
+
+def _cand(symbol, direction, tf, entry, stop, target, rr):
+    return dict(symbol=symbol, direction=direction, timeframe=tf, entry_reference=entry, provisional_stop=stop,
+                target=target, planned_reward_risk=rr, data_as_of='2026-10-21T20:00:00+00:00', min_reward_risk=1.5)
+
+
+def test_digest_states_setups_with_per_share_risk_and_explains_timeframes_once():
+    report = dict(candidates=[_cand('ANET', 'long', '15m', 184.35, 181.0234, 197.8865, 4.07),
+                              _cand('NOK', 'long', '5m', 9.255, 9.1917, 9.4093, 2.44),
+                              _cand('ARMK', 'short', '15m', 55.71, 56.0765, 54.613, 2.99)],
+                  total_candidates=14, exclusions=[])
+    text, html = render_digest(report, date(2026, 10, 22))
+    assert text.startswith('LITTLE RZY · WATCHLIST DIGEST · Thu Oct 22\n3 setups to watch (showing 3 of 14)')
+    assert 'ANET · Long (buy) · 15-minute candles' in text
+    assert 'Entry $184.35 · Stop $181.02 (risk $3.33/share) · Target $197.89 (reward $13.54/share) · Reward:risk 4.07' in text
+    assert 'ARMK · Short (sell short) · 15-minute candles' in text
+    assert 'SETUPS (charts as of Oct 21, 4:00 PM ET)' in text
+    assert 'each 5m candle is 5 minutes of trading' in text and text.count('each 5m candle') == 1
+    assert 'still at least 1.5' in text and text.count('Wait for') == 0           # instructions once, not per row
+    assert 'https://lausing.com/stock/NOK?tf=5m' in html and 'How to use this email' in html
+
+
+def test_digest_counts_routine_exclusions_and_lists_only_the_ones_worth_reading():
+    ex = ([dict(symbol=f'S{i}', timeframe='5m', reason='no_armed_structure') for i in range(40)]
+          + [dict(symbol='AMADY', timeframe='15m', reason='stale_15m_aggregate'),
+             dict(symbol='ADBE', timeframe='1h', reason='insufficient_planned_reward_risk'),
+             dict(symbol='ZZZ', timeframe='5m', reason='data_rejected: boom')])
+    text, _ = render_digest(dict(candidates=[], total_candidates=0, exclusions=ex), date(2026, 10, 22))
+    assert 'No setups today — do not force a trade.' in text
+    assert 'NOT SHOWN: 43 watchlist charts' in text
+    assert '  40 — no active setup on that chart\n' in text and 'S0 5m' not in text
+    assert '1 — price data not current: AMADY 15m' in text
+    assert '1 — setup found, but planned reward:risk below the minimum: ADBE 1h' in text
+    assert '1 — price data rejected: ZZZ 5m' in text

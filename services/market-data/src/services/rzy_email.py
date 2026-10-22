@@ -359,3 +359,164 @@ def render_event_html(event, paper_blockers=(), **kw):
             '<div style="padding:20px;background:#eff6ff"><p style="margin:0;font-size:12px">LITTLE RZY · RESEARCH ALERT</p>'
             f'<h1 style="font-size:22px;margin:8px 0">{escape(str(event["symbol"]))} · {escape(str(event["timeframe"]))}</h1>'
             f'<p style="margin:0">{escape(event_label(event))}</p></div>' + ''.join(cards) + '</div>')
+
+
+# ── Morning watchlist digest (2026-10-22) ──────────────────────────────────────────────────
+# Presentation of digest_preview(): the same candidates, figures and exclusions, laid out to be
+# read before the open. Instructions are stated once instead of on every row, and routine
+# exclusions are counted rather than listed.
+
+TIMEFRAME_WORDS = {'5m': '5-minute', '15m': '15-minute', '1h': '1-hour'}
+EXCLUSION_WORDS = {
+    'no_armed_structure': 'no active setup on that chart',
+    'insufficient_planned_reward_risk': 'setup found, but planned reward:risk below the minimum',
+    'snapshot_expired': 'scan result too old to use',
+    'not_evaluated_yet': 'not scanned yet',
+}
+ROUTINE_EXCLUSIONS = ('no_armed_structure',)
+
+
+def _exclusion_words(reason):
+    reason = str(reason or 'unknown')
+    if reason in EXCLUSION_WORDS:
+        return EXCLUSION_WORDS[reason]
+    if reason.startswith('stale_'):
+        return 'price data not current'
+    if reason.startswith('data_rejected'):
+        return 'price data rejected'
+    return reason.replace('_', ' ')
+
+
+def _price(v):
+    return NA if v is None else (f'${v:,.2f}' if abs(v) >= 1 else f'${v:.4f}')
+
+
+def _per_share(v):
+    return NA if v is None else f'${v:,.2f}'
+
+
+def _rr(v):
+    return NA if v is None else f'{v:.2f}'
+
+
+def _short_stamp(dt):
+    et = dt.astimezone(NY)
+    return f"{et:%b} {et.day}, {et:%I:%M %p}".replace(' 0', ' ') + ' ET'
+
+
+def _as_of_text(values):
+    stamps = sorted({_short_stamp(_parse(v)) for v in values if v and _parse(v)})
+    return stamps[0] if len(stamps) == 1 else (', '.join(stamps) if stamps else NA)
+
+
+def digest_rows(report):
+    rows = []
+    for c in report.get('candidates', []):
+        entry, stop, target = c.get('entry_reference'), c.get('provisional_stop'), c.get('target')
+        risk = abs(entry - stop) if entry is not None and stop is not None else None
+        reward = abs(target - entry) if entry is not None and target is not None else None
+        long_ = str(c.get('direction')).lower() == 'long'
+        rows.append(dict(symbol=c['symbol'], timeframe=c['timeframe'],
+                         chart=TIMEFRAME_WORDS.get(c['timeframe'], c['timeframe']) + ' candles',
+                         setup='Long (buy)' if long_ else 'Short (sell short)',
+                         entry=entry, stop=stop, target=target, risk=risk, reward=reward,
+                         reward_risk=c.get('planned_reward_risk'), minimum=c.get('min_reward_risk'),
+                         url=chart_url({'symbol': c['symbol'], 'timeframe': c['timeframe']})))
+    return rows
+
+
+def digest_exclusion_summary(report):
+    groups = {}
+    for x in report.get('exclusions', []):
+        groups.setdefault(_exclusion_words(x.get('reason')), []).append(f"{x.get('symbol')} {x.get('timeframe')}")
+    routine = {_exclusion_words(r) for r in ROUTINE_EXCLUSIONS}
+    return [(words, items, words not in routine) for words, items in sorted(groups.items(), key=lambda g: -len(g[1]))]
+
+
+def _minimum(rows):
+    mins = sorted({r['minimum'] for r in rows if r['minimum'] is not None})
+    return f'{mins[0]:g}' if len(mins) == 1 else '1.5'
+
+
+def digest_how_to(rows):
+    minimum = _minimum(rows)
+    return [
+        'These setups were found on yesterday\'s completed charts. None of them is an order or a prediction.',
+        'After the 9:30 ET open, open the chart for a setup and wait for one candle of that setup\'s size '
+        '(5-minute, 15-minute or 1-hour) to close and reject the trendline in the setup\'s direction.',
+        f'Before acting, recheck: the open did not gap through the stop or past the entry, the data is current, '
+        f'and reward:risk at your real fill price is still at least {minimum}. If any check fails, skip it.',
+        'Entry, stop and target are planning references from the pattern, not confirmed prices. '
+        'A short setup also needs shares available to borrow. No setup at all is a normal result.',
+    ]
+
+
+TIMEFRAME_EXPLAINED = ('5m, 15m and 1h are the candle size the setup was found on: each 5m candle is 5 minutes of '
+                       'trading, 15m is 15 minutes, 1h is one hour. Shorter candles give earlier, faster and noisier '
+                       'setups with closer stops; a setup is confirmed only by a candle of its own size.')
+ORDER_EXPLAINED = 'Order: setups early in their pattern first, then by symbol. This is not a quality or win-rate ranking.'
+
+
+def render_digest(report, day, base_url=CHART_BASE_URL):
+    """(text, html) for one user's morning digest."""
+    rows = digest_rows(report)
+    total = report.get('total_candidates', len(rows))
+    as_of = _as_of_text(c.get('data_as_of') for c in report.get('candidates', []))
+    excl = digest_exclusion_summary(report)
+    n_excl = sum(len(items) for _, items, _ in excl)
+    title = f'{len(rows)} setup{"s" if len(rows) != 1 else ""} to watch' + (f' (showing {len(rows)} of {total})' if total > len(rows) else '')
+    day_text = f'{day:%a %b} {day.day}' if hasattr(day, 'strftime') else str(day)
+
+    text = [f'LITTLE RZY · WATCHLIST DIGEST · {day_text}', title if rows else 'No setups today — do not force a trade.', '']
+    text += ['HOW TO USE THIS EMAIL'] + [f'{i}. {s}' for i, s in enumerate(digest_how_to(rows), 1)] + ['', TIMEFRAME_EXPLAINED, '']
+    if rows:
+        text += [f'SETUPS (charts as of {as_of})', ORDER_EXPLAINED]
+        for r in rows:
+            text += [f"{r['symbol']} · {r['setup']} · {r['chart']}",
+                     f"  Entry {_price(r['entry'])} · Stop {_price(r['stop'])} (risk {_per_share(r['risk'])}/share)"
+                     f" · Target {_price(r['target'])} (reward {_per_share(r['reward'])}/share) · Reward:risk {_rr(r['reward_risk'])}",
+                     f"  Chart: {r['url']}"]
+        text.append('')
+    text.append(f'NOT SHOWN: {n_excl} watchlist chart{"s" if n_excl != 1 else ""}')
+    for words, items, listed in excl:
+        text.append(f'  {len(items)} — {words}' + (f": {', '.join(items)}" if listed else ''))
+    text += ['', 'Manage email preferences in Settings → Short-term trading & Little RZY.', '']
+
+    def esc(v):
+        return escape(str(v))
+    cell = 'padding:8px 6px;border-bottom:1px solid #e2e8f0;vertical-align:top'
+    if rows:
+        table = ('<table style="width:100%;border-collapse:collapse;font-size:13px">'
+                 '<tr style="text-align:left;color:#475569;font-size:12px">'
+                 + ''.join(f'<th style="padding:6px">{h}</th>' for h in ('Setup', 'Entry', 'Stop', 'Target', 'R:R')) + '</tr>'
+                 + ''.join(
+                     f'<tr><td style="{cell}"><a href="{esc(r["url"])}" style="font-weight:bold;color:#1d4ed8">{esc(r["symbol"])}</a>'
+                     f'<br><span style="font-size:12px;color:{"#15803d" if r["setup"].startswith("Long") else "#b91c1c"}">{esc(r["setup"])}</span>'
+                     f'<br><span style="color:#64748b;font-size:12px">{esc(r["chart"])}</span></td>'
+                     f'<td style="{cell}">{esc(_price(r["entry"]))}</td>'
+                     f'<td style="{cell}">{esc(_price(r["stop"]))}<br><span style="color:#64748b;font-size:12px">risk {esc(_per_share(r["risk"]))}</span></td>'
+                     f'<td style="{cell}">{esc(_price(r["target"]))}<br><span style="color:#64748b;font-size:12px">reward {esc(_per_share(r["reward"]))}</span></td>'
+                     f'<td style="{cell};font-weight:bold">{esc(_rr(r["reward_risk"]))}</td></tr>' for r in rows)
+                 + '</table>'
+                 f'<p style="font-size:12px;color:#64748b;margin:8px 0 0">Charts as of {esc(as_of)}. {esc(ORDER_EXPLAINED)} '
+                 'R:R is planned reward:risk. Risk and reward are per share, from entry to stop and entry to target.</p>')
+    else:
+        table = '<p style="margin:0"><strong>No setups today.</strong> Nothing on your watchlist met the rules — do not force a trade.</p>'
+    excl_html = ''.join(
+        f'<li style="margin:4px 0">{len(items)} — {esc(words)}'
+        + (f'<br><span style="font-size:12px;color:#64748b">{esc(", ".join(items))}</span>' if listed else '') + '</li>'
+        for words, items, listed in excl)
+    how = ''.join(f'<li style="margin:6px 0">{esc(s)}</li>' for s in digest_how_to(rows))
+    html = (
+        '<div style="max-width:680px;margin:auto;font:15px/1.5 Arial,sans-serif;color:#172033;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px">'
+        f'<div style="padding:20px;background:#eff6ff"><p style="margin:0;font-size:12px">LITTLE RZY · WATCHLIST DIGEST · {esc(day_text)}</p>'
+        f'<h1 style="font-size:22px;margin:8px 0">{esc(title if rows else "No setups today")}</h1>'
+        '<p style="margin:0">Setups to watch after the open — none of them is an order.</p></div>'
+        f'<div style="padding:16px 20px;border-top:1px solid #e2e8f0">{table}</div>'
+        f'<div style="padding:16px 20px;border-top:1px solid #e2e8f0;background:#fffbeb"><h2 style="font-size:16px;margin:0 0 8px">How to use this email</h2>'
+        f'<ol style="margin:0;padding-left:20px">{how}</ol>'
+        f'<p style="margin:10px 0 0;font-size:13px;color:#475569">{esc(TIMEFRAME_EXPLAINED)}</p></div>'
+        f'<div style="padding:16px 20px;border-top:1px solid #e2e8f0;font-size:13px;color:#475569"><h2 style="font-size:14px;margin:0 0 6px">Not shown: {n_excl} watchlist chart{"s" if n_excl != 1 else ""}</h2>'
+        f'<ul style="margin:0;padding-left:20px">{excl_html}</ul>'
+        '<p style="margin:10px 0 0">Manage email preferences in Settings → Short-term trading &amp; Little RZY.</p></div></div>')
+    return '\n'.join(text), html

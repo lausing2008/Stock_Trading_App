@@ -145,7 +145,7 @@ with Session() as s:
     assert W.morning_digest(s,datetime(2026,10,18,13,10,tzinfo=timezone.utc))['queued']==0
     assert W.morning_digest(s,datetime(2026,12,25,14,10,tzinfo=timezone.utc))['queued']==0
     digest=s.scalar(select(models.NotificationOutbox).where(models.NotificationOutbox.alert_type=='short_term_digest'))
-    assert 'No qualifying candidates' in digest.body_text and 'OTHER' not in digest.body_text
+    assert 'No setups today' in digest.body_text and 'OTHER' not in digest.body_text and 'How to use this email' in digest.body_html
     assert digest.expires_at==datetime(2026,10,19,13,30)
     result['calendar_scope_digest_dedup']=True
     # Delivery checks the queued channel's consent independently of pattern alerts.
