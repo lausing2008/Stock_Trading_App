@@ -612,3 +612,42 @@ def test_the_lazy_redis_client_import_lives_inside_the_flag_check_try_block():
     import_idx = body.index("from common.redis_client import get_redis")
     except_idx = body.index("except Exception:\n        return None")
     assert try_idx < import_idx < except_idx
+
+
+# ── AUD-FORECAST-TRUNCATED: the 500-token cap cut most real responses mid-string ──
+
+def test_max_tokens_leaves_room_for_the_full_pretty_printed_response(monkeypatch):
+    """Production: most forecast calls stopped at exactly 500 output tokens and failed to parse
+    ("Unterminated string ... char ~1800"), so the modal always said "could not be generated".
+    The full 3-scenario JSON runs ~500+ tokens when the model pretty-prints it."""
+    import src.services.earnings as e
+    monkeypatch.setattr("common.redis_client.get_redis", lambda: _fake_redis())
+    monkeypatch.setattr(e, "_api_key", lambda: "test-key")
+    _patch_fundamentals(monkeypatch, _REAL_FUNDAMENTALS)
+    sent = {}
+
+    class _Capture(_FakeAsyncClient):
+        async def post(self, url, headers=None, json=None):
+            sent.update(json)
+            return await super().post(url, headers=headers, json=json)
+
+    monkeypatch.setattr(e.httpx, "AsyncClient", lambda **kw: _Capture(_mock_anthropic_response()))
+    assert _run(generate_earnings_forecast("AAPL", "Technology", 1)) is not None
+    assert sent["max_tokens"] >= 1200
+
+
+def test_a_max_tokens_stop_is_reported_as_truncation_not_cached(monkeypatch):
+    import src.services.earnings as e
+    fake_redis = _fake_redis()
+    monkeypatch.setattr("common.redis_client.get_redis", lambda: fake_redis)
+    monkeypatch.setattr(e, "_api_key", lambda: "test-key")
+    _patch_fundamentals(monkeypatch, _REAL_FUNDAMENTALS)
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {"content": [{"text": '{"watching_for": "cut off'}], "stop_reason": "max_tokens"}
+    monkeypatch.setattr(e.httpx, "AsyncClient", lambda **kw: _FakeAsyncClient(resp))
+    warnings = []
+    monkeypatch.setattr(e.log, "warning", lambda ev, **kw: warnings.append(ev))
+
+    assert _run(generate_earnings_forecast("AAPL", "Technology", 1)) is None
+    assert "earnings_forecast.truncated" in warnings
+    fake_redis.setex.assert_not_called()

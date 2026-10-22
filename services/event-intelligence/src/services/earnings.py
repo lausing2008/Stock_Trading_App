@@ -664,7 +664,11 @@ async def generate_earnings_forecast(symbol: str, sector: str | None, days_to_ev
     prompt += reactions_block
     body = {
         "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 500,
+        # AUD-FORECAST-TRUNCATED: was 500, and most calls stopped at exactly 500 output tokens —
+        # the model pretty-prints the JSON (~1,800 chars by the third scenario), so the response
+        # was cut mid-string, failed to parse, and every forecast showed "could not be generated
+        # just now" while still being billed. Retrying hit the same cap.
+        "max_tokens": 1500,
         "temperature": 0.2,
         "system": _FORECAST_SYSTEM,
         "messages": [{"role": "user", "content": prompt}],
@@ -679,7 +683,7 @@ async def generate_earnings_forecast(symbol: str, sector: str | None, days_to_ev
     from common.llm_usage import CALL_SITE_EARNINGS_FORECAST, log_llm_call
     _t0 = _time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
         _duration_ms = int((_time.monotonic() - _t0) * 1000)
         if r.status_code != 200:
@@ -707,6 +711,10 @@ async def generate_earnings_forecast(symbol: str, sector: str | None, days_to_ev
 
     # AUD-LLMUSAGE: parsing outside the network-call try — a malformed JSON body here is
     # an already-billed "ok" call, not an API failure; must not double-log as "error".
+    if _resp_json.get("stop_reason") == "max_tokens":
+        # Name the truncation rather than letting it surface as an opaque JSON parse error.
+        log.warning("earnings_forecast.truncated", symbol=symbol, max_tokens=body["max_tokens"])
+        return None
     try:
         raw = _resp_json["content"][0]["text"].strip()
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
