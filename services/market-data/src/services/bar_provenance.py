@@ -255,3 +255,103 @@ def record_daily_fetch(session, stock, *, fetched_at, ok, observed_session=None,
                                      if observed_session is not None and observed_session.tzinfo else observed_session)
     else:
         row.last_failure_at, row.last_error = when, (error or '')[:300]
+
+
+# ── One authoritative provider per completed bar (OD-01 fix 1, 2026-10-22) ──────────────────────
+# Oct 21 evidence: 88% of attributable completed-bar revisions were Unusual Whales and yfinance
+# alternately rewriting the same bars (each incremental fetch re-upserts the whole day from
+# whichever provider answered); they drove 81% of 2,413 Little RZY rebuilds and the pauses that
+# suppressed its emails. The rule below is ENFORCEMENT, unlike the observation-only trace above.
+#
+# Authority is explicit per (stock, timeframe, session date) in bar_session_authority: the
+# market's PRIMARY provider for that timeframe (first in the routing order), recorded the first
+# time a fetch touches that session. For each incoming row:
+#   forming bar (not yet completed)                      -> written by any provider
+#   new bar (nothing stored)                             -> written (a fallback may fill a gap)
+#   stored bar last written by THIS provider             -> written (same-provider correction)
+#   stored by a fallback, incoming from the authority    -> written ONCE (authority replaces it;
+#                                                           the bar is then the authority's)
+#   stored by the authority, incoming from a fallback    -> NOT written ("protected")
+#   stored, writer unknown (pre-trace), from a fallback  -> NOT written
+# So an outage can make a fallback fill gaps, each such bar is replaced at most once when the
+# authority returns, and no completed bar can ever be rewritten back and forth.
+
+
+class BarSessionAuthority(Base):
+    __tablename__ = 'bar_session_authority'
+    stock_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    timeframe: Mapped[str] = mapped_column(String(8), primary_key=True)
+    session_date: Mapped[datetime] = mapped_column(DateTime, primary_key=True)
+    authority: Mapped[str] = mapped_column(String(32))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime)
+    #: rows a fallback was prevented from rewriting / fallback bars replaced by the authority
+    protected: Mapped[int] = mapped_column(Integer, default=0)
+    replaced: Mapped[int] = mapped_column(Integer, default=0)
+
+
+def _completed_at(timeframe, ts, market):
+    if timeframe == '1d':
+        return _daily_close_utc(market, ts) or ts + timedelta(days=1)
+    return ts + timedelta(minutes=MINUTES[timeframe])
+
+
+def _session_date(timeframe, ts, market):
+    """Exchange-local date for intraday (UTC ts), the stored date for daily."""
+    if timeframe == '1d':
+        return datetime(ts.year, ts.month, ts.day)
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo('Asia/Hong_Kong' if market == 'HK' else 'America/New_York')
+    local = ts.replace(tzinfo=timezone.utc).astimezone(tz)
+    return datetime(local.year, local.month, local.day)
+
+
+def authorize_bar_writes(session, stock, timeframe, rows, provider, authority, now=None):
+    """(rows allowed to be written, counts). Enforces the rule above for TRACKED timeframes."""
+    if timeframe not in TRACKED or not rows or not authority:
+        return rows, {}
+    now = _naive_utc(now or datetime.now(timezone.utc))
+    daily = timeframe == '1d'
+    key = (lambda v: v.replace(tzinfo=None)) if daily else _naive_utc
+    market = _market(stock)
+    tf_value = rows[0]['timeframe']
+    keys = sorted({key(r['ts']) for r in rows})
+    lo, hi = keys[0], keys[-1]
+    stored = {_naive_utc(p.ts) for p in session.scalars(select(Price).where(
+        Price.stock_id == stock.id, Price.timeframe == tf_value, Price.ts >= lo, Price.ts <= hi))}
+    writer = {p.ts: p.provider for p in session.scalars(select(BarProvenance).where(
+        BarProvenance.stock_id == stock.id, BarProvenance.timeframe == timeframe,
+        BarProvenance.ts >= lo, BarProvenance.ts <= hi))}
+    sessions = {}
+    for k in keys:
+        d = _session_date(timeframe, k, market)
+        if d not in sessions:
+            rec = session.get(BarSessionAuthority, (stock.id, timeframe, d))
+            if rec is None:
+                rec = BarSessionAuthority(stock_id=stock.id, timeframe=timeframe, session_date=d,
+                                          authority=authority, recorded_at=now, protected=0, replaced=0)
+                session.add(rec)
+                session.execute(delete(BarSessionAuthority).where(
+                    BarSessionAuthority.stock_id == stock.id, BarSessionAuthority.session_date < now - RETENTION))
+            sessions[d] = rec
+    allowed, counts = [], dict(allowed=0, protected=0, replaced=0)
+    for r in rows:
+        ts = key(r['ts'])
+        rec = sessions[_session_date(timeframe, ts, market)]
+        auth = rec.authority
+        prev = writer.get(ts)
+        if now < _completed_at(timeframe, ts, market) or ts not in stored or prev == provider:
+            ok = True
+        elif provider == auth:
+            ok = True                      # authority replaces a fallback / unknown-writer bar once
+            counts['replaced'] += int(prev is not None and prev != auth)
+        else:
+            ok = False                     # a fallback never rewrites a stored completed bar
+        if ok:
+            allowed.append(r); counts['allowed'] += 1
+            if provider == auth and prev is not None and prev != auth and ts in stored \
+                    and now >= _completed_at(timeframe, ts, market):
+                rec.replaced = (rec.replaced or 0) + 1
+        else:
+            counts['protected'] += 1
+            rec.protected = (rec.protected or 0) + 1
+    return allowed, counts

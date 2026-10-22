@@ -18,7 +18,7 @@ from common.redis_client import get_redis
 from db import Price, SessionLocal, Stock, TimeFrame
 
 from ..adapters import get_adapter, get_adapters
-from .bar_provenance import observe_bar_writes, record_daily_fetch
+from .bar_provenance import observe_bar_writes, record_daily_fetch, authorize_bar_writes
 
 log = get_logger("ingestion")
 
@@ -455,6 +455,31 @@ def ingest_symbol(
                         before=len(rows), after=len(_dedup))
         rows = list(_dedup.values())
 
+        # OD-01 fix 1: one authoritative provider per completed bar (see bar_provenance). A
+        # fallback may fill gaps and the forming bar, but never rewrites a stored completed bar
+        # the authority owns. `_fetched_rows` keeps what the provider returned (fetch evidence).
+        _fetched_rows, _authority_counts = rows, None
+        if not force:
+            try:
+                with session.begin_nested():
+                    _market_eff = "HK" if (symbol.endswith(".HK") or market == "HK") else market
+                    rows, _authority_counts = authorize_bar_writes(
+                        session, stock, timeframe, rows, adapter.name,
+                        get_adapters(_market_eff, timeframe)[0].name)
+            except Exception as exc:  # noqa: BLE001 - a failed check must not stop ingestion
+                rows = _fetched_rows
+                log.warning("ingest.authority_check_failed", symbol=symbol, tf=timeframe, error=str(exc)[:300])
+        if not rows:
+            session.commit()
+            if timeframe == "1d" and _fetched_rows:
+                _record_daily(session, stock, fetched_at=_fetched_at, ok=True, provider=adapter.name,
+                              observed_session=max(r["ts"] for r in _fetched_rows))
+            log.info("ingest.done", symbol=symbol, inserted=0, tf=timeframe, rows_sent=0, advanced=False,
+                     head_before=str(head)[:19] if head else None, head_after=str(head)[:19] if head else None,
+                     adapter=adapter.name, authority=_authority_counts)
+            return {"symbol": symbol, "inserted": 0, "tf": timeframe, "advanced": False,
+                    "head_after": head, "adapter": adapter.name, "authority": _authority_counts}
+
         stmt = pg_insert(Price).values(rows)
         stmt = stmt.on_conflict_do_update(
             index_elements=["stock_id", "ts", "timeframe"],
@@ -486,11 +511,11 @@ def ingest_symbol(
             log.warning("ingest.bar_trace_failed", symbol=symbol, tf=timeframe, error=str(exc)[:300])
         result = session.execute(stmt)
         session.commit()
-        if timeframe == "1d" and rows:
+        if timeframe == "1d" and _fetched_rows:
             # Per-symbol evidence that THIS close was refreshed after a session ended (stamped
             # with the time the provider was asked, and the newest session it returned).
             _record_daily(session, stock, fetched_at=_fetched_at, ok=True, provider=adapter.name,
-                          observed_session=max(r["ts"] for r in rows))
+                          observed_session=max(r["ts"] for r in _fetched_rows))
 
         _head_after = _last_bar_ts(session, stock.id, tf)
         _advanced = bool(
@@ -504,7 +529,7 @@ def ingest_symbol(
                  head_before=str(_head_before)[:19] if _head_before else None,
                  head_after=str(_head_after)[:19] if _head_after else None,
                  newest_bar=str(_newest_written)[:19] if _newest_written else None,
-                 adapter=adapter.name, bar_trace=_bar_trace)
+                 adapter=adapter.name, bar_trace=_bar_trace, authority=_authority_counts)
         return {
             "symbol": symbol,
             "inserted": result.rowcount,
@@ -514,6 +539,7 @@ def ingest_symbol(
             "advanced": _advanced,
             "head_after": _head_after,
             "adapter": adapter.name,
+            "authority": _authority_counts,
         }
 
 

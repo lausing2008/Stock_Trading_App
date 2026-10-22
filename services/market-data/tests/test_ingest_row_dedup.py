@@ -27,7 +27,8 @@ _SOURCE = (pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "i
 import textwrap
 
 _start = _SOURCE.index("\n        # BUG-INGEST-CARDINALITYVIOLATION:") + 1
-_end = _SOURCE.index("\n\n        stmt = pg_insert(Price).values(rows)")
+# The dedup block ends where the bar-authority filter (OD-01 fix 1) begins.
+_end = _SOURCE.index("\n        # OD-01 fix 1:")
 _BLOCK = textwrap.dedent(_SOURCE[_start:_end])
 
 
