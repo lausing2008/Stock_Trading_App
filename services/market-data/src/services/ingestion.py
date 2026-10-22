@@ -17,8 +17,9 @@ from common.redis_client import get_redis
 
 from db import Price, SessionLocal, Stock, TimeFrame
 
-from ..adapters import get_adapter, get_adapters
-from .bar_provenance import observe_bar_writes, record_daily_fetch, authorize_bar_writes
+from ..adapters import get_adapter, get_adapters, primary_provider
+from .bar_provenance import (observe_bar_writes, record_daily_fetch, authorize_bar_writes, mark_trace_failed,
+                             fail_closed_rows, AUTHORITY_FAILED_KEY)
 
 log = get_logger("ingestion")
 
@@ -460,15 +461,21 @@ def ingest_symbol(
         # the authority owns. `_fetched_rows` keeps what the provider returned (fetch evidence).
         _fetched_rows, _authority_counts = rows, None
         if not force:
+            _authority = primary_provider("HK" if (symbol.endswith(".HK") or market == "HK") else market, timeframe)
             try:
                 with session.begin_nested():
-                    _market_eff = "HK" if (symbol.endswith(".HK") or market == "HK") else market
                     rows, _authority_counts = authorize_bar_writes(
-                        session, stock, timeframe, rows, adapter.name,
-                        get_adapters(_market_eff, timeframe)[0].name)
+                        session, stock, timeframe, rows, adapter.name, _authority)
             except Exception as exc:  # noqa: BLE001 - a failed check must not stop ingestion
-                rows = _fetched_rows
+                # FAIL CLOSED for fallbacks: no decision means a fallback may only add new bars.
+                rows = fail_closed_rows(_fetched_rows, timeframe, adapter.name, _authority, head)
+                _authority_counts = {"error": str(exc)[:200], "allowed": len(rows),
+                                     "protected": len(_fetched_rows) - len(rows)}
                 log.warning("ingest.authority_check_failed", symbol=symbol, tf=timeframe, error=str(exc)[:300])
+                try:
+                    get_redis().incr(AUTHORITY_FAILED_KEY)
+                except Exception:
+                    pass
         if not rows:
             session.commit()
             if timeframe == "1d" and _fetched_rows:
@@ -509,6 +516,12 @@ def ingest_symbol(
                 _bar_trace = observe_bar_writes(session, stock, timeframe, rows, adapter.name)
         except Exception as exc:  # noqa: BLE001 - instrumentation must not break ingestion
             log.warning("ingest.bar_trace_failed", symbol=symbol, tf=timeframe, error=str(exc)[:300])
+            # The writer of these bars is now unrecorded: their sessions fail closed for fallbacks.
+            try:
+                with session.begin_nested():
+                    mark_trace_failed(session, stock, timeframe, rows)
+            except Exception:  # noqa: BLE001
+                pass
         result = session.execute(stmt)
         session.commit()
         if timeframe == "1d" and _fetched_rows:

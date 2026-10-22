@@ -146,7 +146,9 @@ def test_a_redis_outage_does_not_remove_a_working_data_source():
 
 def test_hk_is_still_never_routed_to_uw():
     """UW has no HK coverage; the registry must keep sending HK to yfinance."""
-    assert 'market == "US"' in _supports_body()
+    assert "if not self.supports_static(market, timeframe):" in _supports_body()
+    i = _SRC.index("def supports_static(")
+    assert 'market == "US"' in _SRC[i:_SRC.index("def supports(", i)]
     assert 'supported_markets = ("US",)' in _SRC
 
 

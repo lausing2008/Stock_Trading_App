@@ -115,9 +115,12 @@ def test_hk_is_not_claimed():
     """UW has no HK coverage. Claiming it would route HK away from yfinance into a provider that
     returns nothing for it."""
     assert 'supported_markets = ("US",)' in UW_SRC
-    i = UW_SRC.index("def supports(")
-    fn = UW_SRC[i:UW_SRC.index("\n    @staticmethod", i)]
-    assert 'market == "US"' in fn
+    # The static capability (used by routing AND by bar authority) is US-only, and the live
+    # check defers to it before any cooldown logic.
+    i = UW_SRC.index("def supports_static(")
+    assert 'market == "US"' in UW_SRC[i:UW_SRC.index("def supports(", i)]
+    j = UW_SRC.index("def supports(")
+    assert "if not self.supports_static(market, timeframe):" in UW_SRC[j:UW_SRC.index("\n    @staticmethod", j)]
 
 
 def test_prices_are_coerced_from_strings():

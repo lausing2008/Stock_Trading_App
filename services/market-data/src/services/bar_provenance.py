@@ -264,17 +264,22 @@ def record_daily_fetch(session, stock, *, fetched_at, ok, observed_session=None,
 # suppressed its emails. The rule below is ENFORCEMENT, unlike the observation-only trace above.
 #
 # Authority is explicit per (stock, timeframe, session date) in bar_session_authority: the
-# market's PRIMARY provider for that timeframe (first in the routing order), recorded the first
-# time a fetch touches that session. For each incoming row:
-#   forming bar (not yet completed)                      -> written by any provider
-#   new bar (nothing stored)                             -> written (a fallback may fill a gap)
-#   stored bar last written by THIS provider             -> written (same-provider correction)
-#   stored by a fallback, incoming from the authority    -> written ONCE (authority replaces it;
-#                                                           the bar is then the authority's)
-#   stored by the authority, incoming from a fallback    -> NOT written ("protected")
-#   stored, writer unknown (pre-trace), from a fallback  -> NOT written
-# So an outage can make a fallback fill gaps, each such bar is replaced at most once when the
-# authority returns, and no completed bar can ever be rewritten back and forth.
+# market's PRIMARY provider by static routing (adapters.primary_provider — a temporary cooldown
+# cannot make the fallback the authority). A stored bar is OWNED by its writer only once it has
+# been written AFTER the bar completed (provenance last_written_at >= completion): a snapshot
+# taken while the bar was forming is never protected against the complete bar. For each row:
+#   forming bar, or stored bar last written while forming   -> written by any provider
+#   new bar (nothing stored)                                 -> written (a fallback may fill a gap)
+#   owned by THIS provider                                   -> written (same-provider correction)
+#   owned by a fallback / writer unknown, from the authority -> written (the authority takes it)
+#   owned by the authority (or unknown writer), from fallback-> NOT written ("protected")
+# A fallback can therefore fill gaps and complete forming snapshots, the authority replaces a
+# fallback's bar once and then owns it, and no completed bar can be rewritten back and forth.
+# If the provenance trace fails for a write (writer unknown afterwards), the session is marked
+# trace_failed and fallbacks may then only add new bars to it (fail closed).
+
+#: An authority decision that could not be made: fallbacks may only ADD bars (fail closed).
+AUTHORITY_FAILED_KEY = 'stockai:metric:bar_authority_check_failed'
 
 
 class BarSessionAuthority(Base):
@@ -284,25 +289,56 @@ class BarSessionAuthority(Base):
     session_date: Mapped[datetime] = mapped_column(DateTime, primary_key=True)
     authority: Mapped[str] = mapped_column(String(32))
     recorded_at: Mapped[datetime] = mapped_column(DateTime)
-    #: rows a fallback was prevented from rewriting / fallback bars replaced by the authority
+    #: row-fetch events refused / fallback bars taken over by the authority (event counts, not bars)
     protected: Mapped[int] = mapped_column(Integer, default=0)
     replaced: Mapped[int] = mapped_column(Integer, default=0)
+    #: largest relative OHLC difference of a refused fallback row vs the stored bar (visibility
+    #: into a systematically different authority; the refused values are otherwise discarded)
+    max_protected_divergence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trace_failed: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 def _completed_at(timeframe, ts, market):
     if timeframe == '1d':
         return _daily_close_utc(market, ts) or ts + timedelta(days=1)
-    return ts + timedelta(minutes=MINUTES[timeframe])
+    end = ts + timedelta(minutes=MINUTES[timeframe])
+    if timeframe == '1h':
+        # The 15:30 ET hour bar ends at the close, not at 16:30.
+        close = _daily_close_utc(market, datetime(*_local_date(ts, market)))
+        if close is not None and ts < close < end:
+            return close
+    return end
+
+
+def _local_date(ts, market):
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo('Asia/Hong_Kong' if market == 'HK' else 'America/New_York')
+    local = ts.replace(tzinfo=timezone.utc).astimezone(tz)
+    return local.year, local.month, local.day
 
 
 def _session_date(timeframe, ts, market):
     """Exchange-local date for intraday (UTC ts), the stored date for daily."""
     if timeframe == '1d':
         return datetime(ts.year, ts.month, ts.day)
-    from zoneinfo import ZoneInfo
-    tz = ZoneInfo('Asia/Hong_Kong' if market == 'HK' else 'America/New_York')
-    local = ts.replace(tzinfo=timezone.utc).astimezone(tz)
-    return datetime(local.year, local.month, local.day)
+    return datetime(*_local_date(ts, market))
+
+
+def _session_record(session, stock_id, timeframe, d, authority, now):
+    """Get-or-create without a race: INSERT ... ON CONFLICT DO NOTHING, then read (PostgreSQL);
+    a plain get-then-add elsewhere (tests on SQLite)."""
+    if session.get_bind().dialect.name == 'postgresql':
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        session.execute(pg_insert(BarSessionAuthority).values(
+            stock_id=stock_id, timeframe=timeframe, session_date=d, authority=authority, recorded_at=now,
+            protected=0, replaced=0, trace_failed=False).on_conflict_do_nothing())
+        return session.get(BarSessionAuthority, (stock_id, timeframe, d), populate_existing=True)
+    rec = session.get(BarSessionAuthority, (stock_id, timeframe, d))
+    if rec is None:
+        rec = BarSessionAuthority(stock_id=stock_id, timeframe=timeframe, session_date=d, authority=authority,
+                                  recorded_at=now, protected=0, replaced=0, trace_failed=False)
+        session.add(rec); session.flush()
+    return rec
 
 
 def authorize_bar_writes(session, stock, timeframe, rows, provider, authority, now=None):
@@ -316,42 +352,75 @@ def authorize_bar_writes(session, stock, timeframe, rows, provider, authority, n
     tf_value = rows[0]['timeframe']
     keys = sorted({key(r['ts']) for r in rows})
     lo, hi = keys[0], keys[-1]
-    stored = {_naive_utc(p.ts) for p in session.scalars(select(Price).where(
+    stored = {_naive_utc(p.ts): p for p in session.execute(select(
+        Price.ts, Price.open, Price.high, Price.low, Price.close).where(
         Price.stock_id == stock.id, Price.timeframe == tf_value, Price.ts >= lo, Price.ts <= hi))}
-    writer = {p.ts: p.provider for p in session.scalars(select(BarProvenance).where(
+    writer = {p.ts: (p.provider, p.last_written_at) for p in session.scalars(select(BarProvenance).where(
         BarProvenance.stock_id == stock.id, BarProvenance.timeframe == timeframe,
         BarProvenance.ts >= lo, BarProvenance.ts <= hi))}
+    horizon = now - RETENTION
     sessions = {}
     for k in keys:
         d = _session_date(timeframe, k, market)
         if d not in sessions:
-            rec = session.get(BarSessionAuthority, (stock.id, timeframe, d))
-            if rec is None:
-                rec = BarSessionAuthority(stock_id=stock.id, timeframe=timeframe, session_date=d,
-                                          authority=authority, recorded_at=now, protected=0, replaced=0)
-                session.add(rec)
-                session.execute(delete(BarSessionAuthority).where(
-                    BarSessionAuthority.stock_id == stock.id, BarSessionAuthority.session_date < now - RETENTION))
-            sessions[d] = rec
+            # Sessions older than the retention window get no record (a full-history fetch would
+            # otherwise create and immediately prune hundreds); the rule still applies to them.
+            sessions[d] = (_session_record(session, stock.id, timeframe, d, authority, now) if d >= horizon - timedelta(days=1)
+                           else BarSessionAuthority(authority=authority, protected=0, replaced=0, trace_failed=False))
+    if any(d >= horizon - timedelta(days=1) for d in sessions):
+        session.execute(delete(BarSessionAuthority).where(
+            BarSessionAuthority.stock_id == stock.id, BarSessionAuthority.session_date < horizon))
     allowed, counts = [], dict(allowed=0, protected=0, replaced=0)
     for r in rows:
         ts = key(r['ts'])
         rec = sessions[_session_date(timeframe, ts, market)]
         auth = rec.authority
-        prev = writer.get(ts)
-        if now < _completed_at(timeframe, ts, market) or ts not in stored or prev == provider:
-            ok = True
+        done_at = _completed_at(timeframe, ts, market)
+        prev, written_at = writer.get(ts, (None, None))
+        owned = written_at is not None and written_at >= done_at
+        if now < done_at or ts not in stored:
+            ok, why = True, 'forming_or_new'
+        elif rec.trace_failed and provider != auth:
+            ok, why = False, 'trace_failed'           # writer unreliable: fallback may only add bars
+        elif prev is not None and not owned:
+            ok, why = True, 'completing_forming_snapshot'
+        elif prev == provider:
+            ok, why = True, 'same_provider'
         elif provider == auth:
-            ok = True                      # authority replaces a fallback / unknown-writer bar once
-            counts['replaced'] += int(prev is not None and prev != auth)
+            ok, why = True, 'authority_takes_over'
         else:
-            ok = False                     # a fallback never rewrites a stored completed bar
+            ok, why = False, 'protected'
         if ok:
             allowed.append(r); counts['allowed'] += 1
-            if provider == auth and prev is not None and prev != auth and ts in stored \
-                    and now >= _completed_at(timeframe, ts, market):
-                rec.replaced = (rec.replaced or 0) + 1
+            if why == 'authority_takes_over' and prev is not None:
+                counts['replaced'] += 1; rec.replaced = (rec.replaced or 0) + 1
         else:
-            counts['protected'] += 1
-            rec.protected = (rec.protected or 0) + 1
+            counts['protected'] += 1; rec.protected = (rec.protected or 0) + 1
+            old = stored[ts]
+            div = max(_rel(float(getattr(old, f)), float(r[f])) for f in OHLC)
+            rec.max_protected_divergence = max(rec.max_protected_divergence or 0.0, div)
     return allowed, counts
+
+
+def mark_trace_failed(session, stock, timeframe, rows):
+    """The provenance trace failed after an authorised write: the writer of these bars is now
+    unknown, so their sessions fail closed for fallbacks (see authorize_bar_writes)."""
+    if timeframe not in TRACKED or not rows:
+        return
+    daily = timeframe == '1d'
+    key = (lambda v: v.replace(tzinfo=None)) if daily else _naive_utc
+    market = _market(stock)
+    for d in {_session_date(timeframe, key(r['ts']), market) for r in rows}:
+        rec = session.get(BarSessionAuthority, (stock.id, timeframe, d))
+        if rec is not None:
+            rec.trace_failed = True
+
+
+def fail_closed_rows(rows, timeframe, provider, authority, head):
+    """When no authority decision could be made: the authority writes as before; a fallback may
+    only ADD bars newer than the stored head, never rewrite a stored bar."""
+    if timeframe not in TRACKED or provider == authority or head is None:
+        return rows
+    h = _naive_utc(head) if timeframe != '1d' else head.replace(tzinfo=None)
+    key = (lambda v: v.replace(tzinfo=None)) if timeframe == '1d' else _naive_utc
+    return [r for r in rows if key(r['ts']) > h]

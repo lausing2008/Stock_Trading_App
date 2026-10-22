@@ -94,6 +94,17 @@ def get_adapter(name: str | None = None, market: str | None = None) -> DataAdapt
     raise RuntimeError("No data adapter registered")
 
 
+def primary_provider(market: str, timeframe: str) -> str:
+    """The market's AUTHORITATIVE provider for a timeframe: the first in _PRIORITY that can serve
+    it by static capability. Unlike get_adapters()[0] it ignores a temporary cooldown or budget,
+    so a 429 burst at a session's first fetch cannot make the fallback that session's authority."""
+    for name in _PRIORITY:
+        a = _registry.get(name)
+        if a is not None and getattr(a, "supports_static", a.supports)(market, timeframe):
+            return name
+    return "yfinance"
+
+
 def get_adapters(market: str | None, timeframe: str | None = None) -> list[DataAdapter]:
     """Return adapters in priority order that can serve the given market+timeframe.
 

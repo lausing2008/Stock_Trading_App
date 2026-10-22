@@ -31,3 +31,23 @@ def test_a_fallback_never_rewrites_a_completed_bar_and_an_outage_cannot_restart_
     # Daily: a completed session's close is protected too.
     assert r["daily_uw"]["replaced"] == 1                     # yfinance backfill replaced once
     assert r["daily_yf"]["protected"] == 1 and r["daily_close"] == 200.0
+
+
+@pytest.mark.skipif(not URL, reason="RZY_PG_URL is absent; required in make test-integration-pg-schema")
+def test_authority_rules_at_their_boundaries_with_an_injected_clock():
+    run = subprocess.run([sys.executable, str(pathlib.Path(__file__).with_name("_bar_authority_rules_probe.py"))],
+                         capture_output=True, text=True, timeout=150)
+    assert run.returncode == 0, run.stdout[-2000:] + run.stderr[-4000:]
+    r = json.loads(run.stdout.strip().splitlines()[-1])
+    # B1: a forming snapshot is not owned — the fallback completes it; then the authority owns it.
+    assert r["b1"] == [True, True, 104.0, True, False, 104.2]
+    # Ownership starts at the first write at/after completion (exact ts+5m boundary).
+    assert r["boundary"] == [True, False, True, True]
+    assert r["hour_old"] == [True, False, 70.0]                 # the Oct 21 pattern is refused
+    assert r["self_correction"] == [True, True, 80.3]           # a fallback corrects its own gap fill
+    assert r["dates"] == ["2026-10-21", "2026-11-04", "2026-10-22"]
+    assert r["hour_bar_done"] == "2026-10-20T20:00:00"
+    # B2: cooldown routing serves yfinance, but the authority stays the primary.
+    assert r["primary_in_cooldown"] == ["unusual_whales", "unusual_whales", "yfinance", "yfinance"]
+    assert r["trace_failed"] == [False, True] and r["fail_closed"] == [1, 2]
+    assert r["record"][0] == "unusual_whales" and r["record"][3] > 0 and r["record"][4] is True

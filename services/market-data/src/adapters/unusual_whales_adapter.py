@@ -99,8 +99,12 @@ class UnusualWhalesAdapter(DataAdapter):
     name = "unusual_whales"
     supported_markets = ("US",)
 
+    def supports_static(self, market: str, timeframe: str) -> bool:
+        """Routing capability, ignoring the temporary AUD-UW-BURST cooldown (bar authority uses it)."""
+        return market == "US" and timeframe in _TF_CANDLE
+
     def supports(self, market: str, timeframe: str) -> bool:
-        if not (market == "US" and timeframe in _TF_CANDLE):
+        if not self.supports_static(market, timeframe):
             return False
         # AUD-UW-BURST: step aside while cooling down so the registry picks yfinance without
         # paying a round trip first. Fail-open on any Redis problem — an unavailable metric
