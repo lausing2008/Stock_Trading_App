@@ -1,7 +1,7 @@
 import React from 'react';
 import type { OptionsFlow } from '@/lib/api';
 import { optionsFlowUnavailableText, composition, coverageLine, premiumText, turnoverText, requestFailedText, pct1,
-  partialSum, CP_CALL_HEAVY, CP_PUT_HEAVY, LOW_PUT_VOLUME } from '@/lib/optionsFlowStatus';
+  partialSum, money, lowSideNote, CP_CALL_HEAVY, CP_PUT_HEAVY } from '@/lib/optionsFlowStatus';
 
 /** Options Flow card (options review Phase A): visible loading / request-failed / unavailable
  *  states, composition from exact volumes (never direction), source session and coverage, and
@@ -74,7 +74,7 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
                     <div aria-label="Volume composition" title={`Composition of observed contract volume, not direction: call-heavy when C/P ≥ ${CP_CALL_HEAVY} (≈56.5% calls), put-heavy when C/P ≤ ${CP_PUT_HEAVY} (≈55.6% puts), mixed otherwise. Calls can be sold and puts bought for either view.`}
                       style={{ padding: '3px 10px', borderRadius: 5, fontSize: 11, fontWeight: 700, flexShrink: 0, background: tone[0], color: tone[1] }}>
                       {comp.label} · {pct1(comp.callShare)} calls / {pct1(comp.putShare)} puts
-                      {(flow.put_volume ?? 0) < LOW_PUT_VOLUME && ' · low put volume'}
+                      {lowSideNote(flow.call_volume, flow.put_volume) && ' · few contracts on one side'}
                     </div>
                   );
                 })()}
@@ -82,7 +82,7 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
 
               <p style={{ margin: '0 0 10px', fontSize: 11, color: '#64748b' }}>
                 Call-heavy when C/P ≥ {CP_CALL_HEAVY} (≈56.5% calls), put-heavy when C/P ≤ {CP_PUT_HEAVY} (≈55.6% puts), mixed otherwise
-                {' '}— a description of volume, not of direction{(flow.put_volume ?? 0) < LOW_PUT_VOLUME ? `; under ${LOW_PUT_VOLUME} put contracts the split rests on little volume` : ''}.
+                {' '}— a description of volume, not of direction{lowSideNote(flow.call_volume, flow.put_volume) ? `; ${lowSideNote(flow.call_volume, flow.put_volume)}` : ''}.
               </p>
               {/* Put-volume spike callout — surfaces whether TODAY's put activity is genuinely
                   elevated (volume already exceeding existing open interest on the put side),
@@ -104,7 +104,7 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
                     <span style={{ color: '#94a3b8' }}>
                       {putUnusual.length} put contract{putUnusual.length !== 1 ? 's' : ''} trading at{' '}
                       {maxVolOi.toFixed(1)}× today&apos;s volume vs. existing open interest
-                      {paid.known > 0 && ` · ${paid.known < paid.total ? '≥' : ''}$${putPremium >= 1_000_000 ? (putPremium / 1_000_000).toFixed(1) + 'M' : Math.round(putPremium / 1_000) + 'K'} paid premium${paid.known < paid.total ? ` (${paid.known} of ${paid.total} contracts known)` : ''}`}
+                      {paid.known > 0 && ` · ${paid.known < paid.total ? '≥' : ''}${money(putPremium)} paid premium${paid.known < paid.total ? ` (${paid.known} of ${paid.total} contracts known)` : ''}`}
                       {putWhales > 0 && ` · ${putWhales} whale trade${putWhales !== 1 ? 's' : ''}`}
                     </span>
                   </div>
@@ -155,7 +155,7 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
                     </table>
                   </div>
                   <p style={{ margin: '6px 0 0', fontSize: 11, color: '#64748b' }}>
-                    Paid premium needs trade-level data; the settled chain has none, so it reads &quot;unavailable&quot;.
+                    Paid premium needs trade-level data and reads &quot;unavailable&quot; where none was captured (the settled chain has none).
                     Est. turnover = volume × mid × 100 over the day — an estimate, not premium anyone paid.
                   </p>
                 </>

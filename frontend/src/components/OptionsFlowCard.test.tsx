@@ -40,7 +40,19 @@ it('labels composition from exact volumes, never direction, with visible cut poi
   expect(text).toContain('≥$600K paid premium (1 of 2 contracts known)');    // partial sum never shown as complete
 });
 
-it('qualifies a split resting on little put volume', () => {
-  render(<OptionsFlowCard flow={flow({ call_volume: 30, put_volume: 10, unusual: [] })} error={undefined} onRetry={() => {}} />);
-  expect(screen.getByLabelText('Volume composition').textContent).toMatch(/Call-heavy volume.*low put volume/);
+it('qualifies a ratio resting on few contracts of either side, symmetrically', () => {
+  render(<OptionsFlowCard flow={flow({ call_volume: 10_000, put_volume: 50, unusual: [] })} error={undefined} onRetry={() => {}} />);
+  expect(screen.getByLabelText('Volume composition').textContent).toMatch(/Call-heavy volume.*few contracts on one side/);
+  expect(document.body.textContent).toContain('only 50 puts (fewer than 100 contracts on that side)');
+  cleanup();
+  render(<OptionsFlowCard flow={flow({ call_volume: 50, put_volume: 10_000, unusual: [] })} error={undefined} onRetry={() => {}} />);
+  expect(document.body.textContent).toContain('only 50 calls (fewer than 100 contracts on that side)');
+  cleanup();
+  render(<OptionsFlowCard flow={flow({ call_volume: 3000, put_volume: 1000, unusual: [] })} error={undefined} onRetry={() => {}} />);
+  expect(screen.getByLabelText('Volume composition').textContent).not.toMatch(/few contracts/);
+});
+
+it('says when the whale count covers only some contracts', () => {
+  render(<OptionsFlowCard flow={flow({ whale_count: 1, whale_count_assessed: 1, whale_count_total: 3 })} error={undefined} onRetry={() => {}} />);
+  expect(document.body.textContent).toContain('1 whale trade (1 of 3 contracts assessable)');
 });

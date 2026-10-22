@@ -24,8 +24,15 @@ export function optionsFlowUnavailableText(flow: OptionsFlow & { last_known_chai
  *  55.6% puts), mixed otherwise. Shares are displayed rounded; classification never uses them. */
 export const CP_CALL_HEAVY = 1.3;
 export const CP_PUT_HEAVY = 0.8;
-/** The legacy label's own floor: under 100 put contracts the split rests on little volume. */
-export const LOW_PUT_VOLUME = 100;
+/** The legacy label's own floor (100 contracts), applied SYMMETRICALLY: when either side has
+ *  fewer, the ratio rests on very few contracts of that side. */
+export const LOW_SIDE_VOLUME = 100;
+
+export function lowSideNote(call?: number | null, put?: number | null): string | null {
+  if (call == null || put == null || call + put <= 0) return null;
+  const [side, n] = call <= put ? ['calls', call] : ['puts', put];
+  return n < LOW_SIDE_VOLUME ? `only ${n.toLocaleString()} ${side} (fewer than ${LOW_SIDE_VOLUME} contracts on that side)` : null;
+}
 
 /** Sum of known values with how many were known: a partial sum is never shown as complete. */
 export function partialSum(values: (number | null | undefined)[]): { sum: number; known: number; total: number } {
@@ -73,7 +80,7 @@ export function coverageLine(flow: { chain_as_of?: string | null; expiries_used?
   return `Settled session ${flow.chain_as_of ? flow.chain_as_of.slice(0, 10) : 'unknown'} · ${used} of ${tried} expirations${names} · coverage ${status}`;
 }
 
-const money = (v: number) => (v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(1)}M` : v >= 1_000 ? `$${Math.round(v / 1_000)}K` : `$${Math.round(v)}`);
+export const money = (v: number) => (v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(1)}M` : v >= 1_000 ? `$${Math.round(v / 1_000)}K` : `$${Math.round(v)}`);
 
 /** Paid premium only from the tape; never a chain mark. */
 export function premiumText(c: { traded_premium?: number | null; premium?: number | null }): string {

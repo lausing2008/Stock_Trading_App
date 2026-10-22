@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { SWRConfig } from 'swr';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const api = vi.hoisted(() => ({ getGammaExposure: vi.fn(), getOptionsExpirations: vi.fn(), getDarkPoolPrints: vi.fn() }));
@@ -42,4 +42,9 @@ it('keeps showing loaded data while naming the request that failed', async () =>
   fresh(<MarketPressurePanel symbol="MU" />);
   expect(await screen.findByText('Call wall')).toBeTruthy();
   await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/dark pool: Request failed \(HTTP 502\)/));
+  // Retry re-fetches the failed request.
+  api.getDarkPoolPrints.mockResolvedValue({ available: false });
+  const before = api.getDarkPoolPrints.mock.calls.length;
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  await waitFor(() => expect(api.getDarkPoolPrints.mock.calls.length).toBeGreaterThan(before));
 });
