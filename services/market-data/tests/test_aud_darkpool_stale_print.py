@@ -90,16 +90,17 @@ def test_an_undateable_print_fails_CLOSED(bad):
 
 def test_a_parse_failure_cannot_break_the_alert_job():
     """One malformed row must not take down alerts for the other 31 symbols."""
-    fn = SCHED_SRC[SCHED_SRC.index("def _dark_pool_print_is_recent"):]
-    fn = fn[:fn.index("\ndef ")]
-    assert "except (ValueError, TypeError, AttributeError)" in fn
+    # Behavioural (was a source-text check): odd types never raise, they fail closed.
+    for odd in (12345, object(), b"2026-09-08", ["x"], "2026-13-45T99:99:99Z"):
+        assert sched._dark_pool_print_is_recent(_Row(odd), _cutoff()) is False
 
 
-def test_a_naive_timestamp_is_treated_as_utc():
-    """UW's ISO strings may omit the offset. Treating a naive value as local time would
-    reintroduce a timezone bug inside the fix — the same class as AUD-EXIT-HKENTRYDATE."""
+def test_a_naive_timestamp_is_quarantined_not_assumed_utc():
+    """Options review B4 (2026-10-22) REVERSES the earlier rule. Assuming UTC for a value with
+    no offset guesses which instant it names; a guessed instant cannot prove a print is new.
+    UW sends `Z` on every print (measured on 779,482 stored rows), so nothing real is lost."""
     naive = (_NOW - timedelta(minutes=5)).replace(tzinfo=None).isoformat()
-    assert sched._dark_pool_print_is_recent(_Row(naive), _cutoff()) is True
+    assert sched._dark_pool_print_is_recent(_Row(naive), _cutoff()) is False
 
 
 def test_a_trailing_Z_offset_parses():

@@ -1728,8 +1728,9 @@ class DarkPoolPrintRow:
     venue: str | None
     executed_at: str | None  # ISO datetime
     # T377-DARKPOOL-SIDE: the NBBO quote at execution time. UW returns these on every print
-    # and they were previously parsed away; they are what makes buy/sell EXACT rather than
-    # inferred from a drifting live price (see classify_dark_pool_side()).
+    # and they were previously parsed away; they make the buy/sell ESTIMATE far better than one
+    # inferred from a drifting live price (see classify_dark_pool_side()). Still an estimate:
+    # quote timing, late reports and trade conditions can move a print inside the spread.
     nbbo_bid: float | None = None
     nbbo_ask: float | None = None
 
@@ -1760,7 +1761,7 @@ def classify_dark_pool_side(
     364 real comparable prints, that heuristic agreed with this one only **66.8%** of the time
     — wrong on one print in three. The NBBO spread is 10-30 cents wide while the live price
     drifts dollars over a session, so the drift dominates. On MU, seven prints executing at or
-    BELOW the bid (unambiguously seller-initiated) were all labelled "buying" by the
+    BELOW the bid (most likely seller-initiated) were all labelled "buying" by the
     live-price version, purely because the price had since fallen below them.
     """
     if price is None or nbbo_bid is None or nbbo_ask is None:

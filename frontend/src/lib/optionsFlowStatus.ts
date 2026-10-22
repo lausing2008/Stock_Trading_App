@@ -175,3 +175,32 @@ export function requestFailedText(error: unknown): string {
   if (/^\d{3}\b/.test(msg)) return `Request failed (HTTP ${msg.slice(0, 3)}) — the result is unknown, not empty. Try again.`;
   return 'Request failed (network) — the result is unknown, not empty. Try again.';
 }
+
+
+// ── Options review B4/B5: off-exchange print time, side and baseline ──────────────────────
+
+/** "14:32 ET · 12 min ago", or the quarantine reason — never a guessed time. */
+export function printTimeText(p: { executed_at_utc?: string | null; time_status?: string; age_minutes?: number | null }): string {
+  if (p.time_status && p.time_status !== 'ok') {
+    return p.time_status === 'future' ? 'time in the future — quarantined (clock/feed error)'
+      : p.time_status === 'ambiguous_timezone' ? 'no timezone — quarantined' : `time ${p.time_status}`;
+  }
+  if (!p.executed_at_utc) return 'time unknown';
+  const t = new Date(p.executed_at_utc);
+  const et = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(t);
+  const age = p.age_minutes;
+  const ageText = age == null ? '' : age < 60 ? ` · ${Math.round(age)} min ago` : age < 48 * 60 ? ` · ${(age / 60).toFixed(1)} h ago` : ` · ${Math.round(age / 1440)} d ago`;
+  return `${et} ET${ageText}`;
+}
+
+export function sideEstimateText(side?: string | null): string {
+  return side === 'buy' ? 'buy (est.)' : side === 'sell' ? 'sell (est.)' : 'undeterminable';
+}
+
+export function baselineLine(b?: { status: string; median: number | null; prints: number | null; window_days: number; min_prints: number; text?: string | null } | null): string | null {
+  if (!b) return null;
+  const base = b.text ?? b.status;
+  const pop = `${b.prints ?? 'unknown'} captured prints in ${b.window_days} days (relative bar needs ${b.min_prints})`;
+  return b.status === 'ok' && b.median != null ? `Baseline: median ${money(b.median)} — ${pop}; percentiles are relative to captured prints, not all market activity.`
+    : `Baseline: ${base} — ${pop}.`;
+}

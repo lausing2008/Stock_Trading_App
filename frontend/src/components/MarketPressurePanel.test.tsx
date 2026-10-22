@@ -60,3 +60,25 @@ it('labels an expiration past its last trade as historical in the rollup', async
   expect(cell.textContent).toContain('expired (historical)');
   expect((await screen.findByText(/2026-10-23/)).textContent).not.toContain('expired');
 });
+
+it('shows each off-exchange print with its ET time and age, a side estimate, quarantine and the baseline status', async () => {
+  api.getGammaExposure.mockResolvedValue({ available: false, source: 'none' });
+  api.getOptionsExpirations.mockResolvedValue({ available: false });
+  api.getDarkPoolPrints.mockResolvedValue({ available: true, source: 'unusual_whales',
+    side_basis: 'estimate from the NBBO', venue_note: 'off-exchange print; a reporting-facility code does not establish which dark pool executed it',
+    baseline: { status: 'query_failed', median: null, prints: null, window_days: 14, min_prints: 20, first_captured: null, last_captured: null,
+      population: 'captured', text: 'absolute floor only: the baseline query FAILED (not the same as no history)' },
+    prints: [
+      { price: 10.09, size: 1000, premium: 10090, venue: 'L', executed_at: '2026-10-21T17:48:00Z', executed_at_utc: '2026-10-21T17:48:00+00:00',
+        time_status: 'ok', age_minutes: 12, side_estimate: 'buy' },
+      { price: 10, size: 500, premium: 5000, venue: 'L', executed_at: '2026-10-22T18:00:00Z', executed_at_utc: '2026-10-22T18:00:00+00:00',
+        time_status: 'future', age_minutes: null, side_estimate: null },
+    ] });
+  fresh(<MarketPressurePanel symbol="MU" />);
+  expect(await screen.findByText('Oct 21, 13:48 ET · 12 min ago')).toBeTruthy();
+  expect(screen.getByText('time in the future — quarantined (clock/feed error)')).toBeTruthy();
+  expect(screen.getByText('buy (est.)')).toBeTruthy();
+  expect(screen.getByText('undeterminable')).toBeTruthy();
+  expect(screen.getByLabelText('Dark pool baseline').textContent).toMatch(/baseline query FAILED.*unknown captured prints in 14 days/);
+  expect(document.body.textContent).toContain('does not establish which dark pool executed it');
+});

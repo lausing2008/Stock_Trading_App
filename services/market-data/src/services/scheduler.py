@@ -6352,38 +6352,53 @@ _DARK_POOL_ALERT_COOLDOWN_MINUTES = 60  # longer than options-flow's 30 — a sy
 # printing in pieces over the day.
 
 
-def _dark_pool_premium_baseline(session, symbol: str, before: datetime | None = None) -> float | None:
-    """AUD-DARKPOOL-ABSTHRESHOLD: median print premium for `symbol` over the trailing
-    _DARK_POOL_BASELINE_DAYS, or None when there isn't enough history to be meaningful.
+def _dark_pool_baseline(session, symbol: str, before: datetime | None = None) -> dict:
+    """AUD-DARKPOOL-ABSTHRESHOLD + options review B5: the median premium of CAPTURED prints for
+    `symbol` over the trailing _DARK_POOL_BASELINE_DAYS strictly before `before`, with a status
+    that keeps "too little history" and "the query failed" apart.
 
-    Returning None is a real, load-bearing answer, not an error: the caller then applies the
-    absolute floor ALONE, which is exactly the pre-fix behavior. That is what makes this safe
-    to ship against today's empty table — the relative bar simply switches itself on once each
-    symbol has accumulated _DARK_POOL_BASELINE_MIN_PRINTS prints.
-
-    Median rather than mean — see _DARK_POOL_REL_MULTIPLE's own comment for why a right-skewed
-    premium distribution makes the mean actively counterproductive here.
+    Median rather than mean — see _DARK_POOL_REL_MULTIPLE's own comment. The population is what
+    this app captured from bounded provider windows, not all off-exchange activity.
     """
+    from .dark_pool_evidence import baseline_status
     try:
         before = (before or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(tzinfo=None)
         cutoff = before - timedelta(days=_DARK_POOL_BASELINE_DAYS)
         row = session.execute(
             text("""
                 SELECT COUNT(*) AS n,
-                       percentile_cont(0.5) WITHIN GROUP (ORDER BY premium) AS med
+                       percentile_cont(0.5) WITHIN GROUP (ORDER BY premium) AS med,
+                       MIN(executed_at) AS first_at, MAX(executed_at) AS last_at
                 FROM dark_pool_prints
                 WHERE symbol = :sym AND executed_at >= :cutoff AND executed_at < :before AND premium IS NOT NULL
             """),
             {"sym": symbol, "cutoff": cutoff, "before": before},
         ).one()
-        if row.n is None or row.n < _DARK_POOL_BASELINE_MIN_PRINTS:
-            return None
-        if row.med is None or float(row.med) <= 0:
-            return None
-        return float(row.med)
+        n = int(row.n) if row.n is not None else None
+        med = float(row.med) if row.med is not None else None
+        status = baseline_status(n, med, _DARK_POOL_BASELINE_MIN_PRINTS)
+        first_at, last_at = getattr(row, "first_at", None), getattr(row, "last_at", None)
+        return {"status": status, "median": med if status == "ok" else None, "prints": n,
+                "window_days": _DARK_POOL_BASELINE_DAYS, "min_prints": _DARK_POOL_BASELINE_MIN_PRINTS,
+                "first_captured": first_at.isoformat() if hasattr(first_at, "isoformat") else None,
+                "last_captured": last_at.isoformat() if hasattr(last_at, "isoformat") else None,
+                "population": "captured prints for this symbol (bounded provider windows), not all market activity"}
     except Exception as exc:
         log.warning("dark_pool_baseline.failed", symbol=symbol, error=str(exc))
-        return None
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        return {"status": "query_failed", "median": None, "prints": None,
+                "window_days": _DARK_POOL_BASELINE_DAYS, "min_prints": _DARK_POOL_BASELINE_MIN_PRINTS,
+                "first_captured": None, "last_captured": None,
+                "population": "captured prints for this symbol (bounded provider windows), not all market activity"}
+
+
+def _dark_pool_premium_baseline(session, symbol: str, before: datetime | None = None) -> float | None:
+    """The median when the relative bar can run, else None (absolute floor only). Kept for the
+    existing callers; `_dark_pool_baseline` carries the reason."""
+    return _dark_pool_baseline(session, symbol, before)["median"]
 
 
 def _persist_dark_pool_prints(session, stock_id: int, symbol: str, rows: list) -> int:
@@ -6414,15 +6429,24 @@ def _persist_dark_pool_prints(session, stock_id: int, symbol: str, rows: list) -
         return 0
     try:
         from sqlalchemy.dialects.postgresql import insert as _pg_insert
+        from .dark_pool_evidence import print_time
         payload = []
+        quarantined: dict[str, int] = {}
         for r in rows:
             if r.executed_at is None or r.price is None or r.size is None:
+                continue
+            # B4: store the instant in UTC (the column has no zone, so an offset in the raw
+            # string would otherwise be dropped as local wall time); future-dated or zone-less
+            # prints are quarantined rather than entering the baseline.
+            _at, _status = print_time(r.executed_at)
+            if _status != "ok":
+                quarantined[_status] = quarantined.get(_status, 0) + 1
                 continue
             payload.append({
                 "symbol": symbol, "stock_id": stock_id,
                 "price": float(r.price), "size": int(r.size),
                 "premium": float(r.premium) if r.premium is not None else None,
-                "venue": r.venue, "executed_at": r.executed_at,
+                "venue": r.venue, "executed_at": _at.replace(tzinfo=None),
                 # T377-DARKPOOL-SIDE: the NBBO quote at execution. Stored raw rather than
                 # storing a precomputed side, so the classification thresholds can be retuned
                 # against history later without re-ingesting (and so a future analysis can ask
@@ -6430,6 +6454,8 @@ def _persist_dark_pool_prints(session, stock_id: int, symbol: str, rows: list) -
                 "nbbo_bid": float(r.nbbo_bid) if r.nbbo_bid is not None else None,
                 "nbbo_ask": float(r.nbbo_ask) if r.nbbo_ask is not None else None,
             })
+        if quarantined:
+            log.warning("dark_pool_print.quarantined", symbol=symbol, **quarantined)
         if not payload:
             return 0
         stmt = _pg_insert(DarkPoolPrint).values(payload).on_conflict_do_nothing(
@@ -6497,21 +6523,13 @@ def _dark_pool_print_is_recent(row, cutoff: "datetime") -> bool:
     correct direction: an alert we cannot date is an alert we cannot prove is new, and the whole
     point of this filter is to stop re-sending prints whose age we previously ignored. The cost
     of a false negative is one missed email; the cost of a false positive is the spam this fixes.
+
+    Options review B4: a print dated beyond the clock tolerance in the FUTURE, or without a
+    timezone, is not fresh evidence (it used to pass `parsed >= cutoff`, and a naive value was
+    assumed UTC). See dark_pool_evidence.print_time().
     """
-    raw = getattr(row, "executed_at", None)
-    if not raw:
-        return False
-    try:
-        if isinstance(raw, str):
-            # fromisoformat handles "2026-09-08T20:04:39" and "+00:00"; normalise a trailing Z.
-            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        else:
-            parsed = raw
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed >= cutoff
-    except (ValueError, TypeError, AttributeError):
-        return False
+    from .dark_pool_evidence import is_recent
+    return is_recent(getattr(row, "executed_at", None), cutoff)
 
 
 def check_dark_pool_alerts() -> None:
@@ -6609,25 +6627,24 @@ def check_dark_pool_alerts() -> None:
                     _print_cutoff = datetime.now(timezone.utc) - timedelta(
                         minutes=_DARK_POOL_PRINT_MAX_AGE_MINUTES
                     )
-                    qualifying = []
+                    # B4/B5: ONE parse per print (dark_pool_evidence.print_time) for freshness and
+                    # the baseline cutoff, and the baseline that qualified a print is the one
+                    # reported for it — never a second query that could disagree.
+                    from .dark_pool_evidence import print_time as _print_time
+                    from .option_evidence import dark_pool_qualifies
+                    qualifying = []   # (row, its baseline info)
                     for r in rows:
                         if (r.premium or 0) < _DARK_POOL_ALERT_MIN_PREMIUM or not _dark_pool_print_is_recent(r, _print_cutoff):
                             continue
-                        event_at = datetime.fromisoformat(r.executed_at.replace("Z", "+00:00"))
-                        if event_at.tzinfo is None:
-                            event_at = event_at.replace(tzinfo=timezone.utc)
-                        baseline = _dark_pool_premium_baseline(session, symbol, before=event_at)
-                        from .option_evidence import dark_pool_qualifies
-                        if dark_pool_qualifies(r.premium or 0, baseline, _DARK_POOL_ALERT_MIN_PREMIUM, _DARK_POOL_REL_MULTIPLE):
-                            qualifying.append(r)
+                        event_at = _print_time(r.executed_at)[0]
+                        info = _dark_pool_baseline(session, symbol, before=event_at)
+                        if dark_pool_qualifies(r.premium or 0, info["median"], _DARK_POOL_ALERT_MIN_PREMIUM, _DARK_POOL_REL_MULTIPLE):
+                            qualifying.append((r, info))
                     if not qualifying:
                         continue
                     id_by_symbol[symbol] = stock_id
-                    biggest = max(qualifying, key=lambda r: r.premium or 0)
-                    biggest_at = datetime.fromisoformat(biggest.executed_at.replace("Z", "+00:00"))
-                    if biggest_at.tzinfo is None:
-                        biggest_at = biggest_at.replace(tzinfo=timezone.utc)
-                    _baseline = _dark_pool_premium_baseline(session, symbol, before=biggest_at)
+                    biggest, _baseline_info = max(qualifying, key=lambda q: q[0].premium or 0)
+                    _baseline = _baseline_info["median"]
                     candidates[symbol] = {
                         "symbol": symbol,
                         # T377-DARKPOOL-SIDE: `price` remains the pre-existing "best available
@@ -6655,6 +6672,8 @@ def check_dark_pool_alerts() -> None:
                         "vs_baseline": (
                             round((biggest.premium or 0) / _baseline, 1) if _baseline else None
                         ),
+                        # B5: why the relative bar did or did not run, kept apart.
+                        "baseline_status": _baseline_info["status"],
                     }
                 except Exception as exc:
                     log.warning("dark_pool_alert.symbol_error", symbol=symbol, error=str(exc))

@@ -92,3 +92,8 @@ it('says why a calculator is empty when every archived expiration has stopped tr
   expect(calculatorUnavailableReason({ available: false, reason: 'fetch_error' }, [])).toBe('fetch_error');
   expect(calculatorUnavailableReason(undefined, [])).toBeUndefined();
 });
+
+it('renders an after-midnight ET print as 00:xx, never 24:xx', async () => {
+  const { printTimeText } = await import('./optionsFlowStatus');
+  expect(printTimeText({ executed_at_utc: '2026-10-22T04:05:00Z', time_status: 'ok', age_minutes: 0 })).toBe('Oct 22, 00:05 ET · 0 min ago');
+});

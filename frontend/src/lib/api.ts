@@ -1794,7 +1794,16 @@ export type DarkPoolPrint = {
   premium: number | null;
   venue: string | null;
   executed_at: string | null;
+  /** B4: only `ok` is dated evidence; future / ambiguous_timezone / missing / unparseable are quarantined. */
+  executed_at_utc?: string | null; time_status?: 'ok' | 'future' | 'ambiguous_timezone' | 'missing' | 'unparseable';
+  age_minutes?: number | null; nbbo_bid?: number | null; nbbo_ask?: number | null;
+  /** An ESTIMATE from the print's place in the NBBO; null = undeterminable, never neutral. */
+  side_estimate?: 'buy' | 'sell' | null;
 };
+
+export type DarkPoolBaseline = { status: 'ok' | 'insufficient_history' | 'no_positive_premium' | 'query_failed';
+  median: number | null; prints: number | null; window_days: number; min_prints: number;
+  first_captured: string | null; last_captured: string | null; population: string; text?: string | null };
 
 export type DarkPoolPrints = {
   symbol: string;
@@ -1802,6 +1811,7 @@ export type DarkPoolPrints = {
   source: 'unusual_whales' | 'none';
   reason?: string;
   prints: DarkPoolPrint[];
+  side_basis?: string; venue_note?: string; clock_tolerance_minutes?: number; baseline?: DarkPoolBaseline;
 };
 
 // T324-OPTIONSFLOW-TAB: Options Flow nav tab types — screener/flow-scanner/net-flow/cached views.

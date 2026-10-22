@@ -61,7 +61,9 @@ def _render(cands, omitted=0):
     # every module-level helper it calls has to be supplied here. `_with_unsub` appends the
     # unsubscribe footer; a pass-through keeps these tests about dark-pool rendering, which is
     # what they exist to check. The footer itself is covered by test_alert_preferences.py.
-    ns = {"_with_unsub": lambda _to, _at, _html, _text: (_html, _text)}
+    ns = {"_with_unsub": lambda _to, _at, _html, _text: (_html, _text),
+          # B5: the builder imports BASELINE_TEXT relatively; resolve it against the real package.
+          "__package__": "src.services"}
     for n in ast.parse(EMAIL).body:
         if getattr(n, "name", "") == "send_dark_pool_alert_email":
             body = "".join(lines[n.lineno - 1:n.end_lineno]).replace(
@@ -162,8 +164,10 @@ def test_a_missing_live_price_does_not_render_a_fake_zero_percent():
 
 
 def test_the_side_is_never_defaulted():
-    fn = _email_fn()
-    assert 'side_str = {"buy": "BUY", "sell": "SELL"}.get(side or "", "—")' in fn
+    """Behavioural (was a source-text check): no side and an unknown value both read "—"."""
+    _, _, text = _render([_c(side=None), _c(symbol="NVDA", side="flat")])
+    rows = [l for l in text.splitlines() if l.startswith(("  MU:", "  NVDA:"))]
+    assert len(rows) == 2 and all("[—]" in l and "BUY" not in l and "SELL" not in l for l in rows)
 
 
 def test_the_existing_size_price_and_venue_survive():
@@ -315,3 +319,11 @@ def test_digest_shares_is_unknown_when_premium_is_missing():
     shares_fn = _extract_shares_fn()
     row = _Row(qualifying_metric=None, alert_price=105.0, exec_price=100.0)
     assert shares_fn(row) == "—"
+
+
+def test_email_says_how_each_print_qualified_and_marks_the_side_as_an_estimate():
+    _, html, text = _render([_c(side="buy", baseline_status="ok", vs_baseline=7.2),
+                             _c(symbol="NVDA", side="sell", baseline_status="query_failed", vs_baseline=None)])
+    assert "BUY (est.)" in text and "SELL (est.)" in text
+    assert "7.2× the median of captured prints" in text
+    assert "the baseline query FAILED (not the same as no history)" in html

@@ -61,20 +61,16 @@ def test_baseline_requires_a_real_sample():
 # ── both bars are applied, conjunctively ─────────────────────────────────────
 
 def test_event_baseline_ends_before_the_event():
-    import ast
+    """The REAL function: the window is [event - 14d, event), never including the event itself."""
     from datetime import datetime, timezone, timedelta
     from types import SimpleNamespace
-    from unittest.mock import MagicMock
-    tree = ast.parse(_SOURCE)
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_dark_pool_premium_baseline')
-    ns = dict(datetime=datetime, timezone=timezone, timedelta=timedelta,
-              _DARK_POOL_BASELINE_DAYS=14, _DARK_POOL_BASELINE_MIN_PRINTS=20,
-              text=lambda sql: sql, log=MagicMock())
-    exec(compile(ast.Module(body=[fn], type_ignores=[]), str(_SCHEDULER_PATH), 'exec'), ns)
+    from unittest.mock import MagicMock, patch
+    import src.services.scheduler as sched
     session = MagicMock()
-    session.execute.return_value.one.return_value = SimpleNamespace(n=21, med=100000.)
+    session.execute.return_value.one.return_value = SimpleNamespace(n=21, med=100000., first_at=None, last_at=None)
     event = datetime(2026, 10, 7, 15, tzinfo=timezone.utc)
-    assert ns['_dark_pool_premium_baseline'](session, 'MU', before=event) == 100000.
+    with patch.object(sched, "text", lambda sql: sql):
+        assert sched._dark_pool_premium_baseline(session, 'MU', before=event) == 100000.
     sql, params = session.execute.call_args.args
     assert 'executed_at < :before' in sql
     assert params['before'] == event.replace(tzinfo=None)
@@ -84,17 +80,23 @@ def test_event_baseline_ends_before_the_event():
 def test_baseline_uses_median_not_mean():
     """Dark-pool premium is heavily right-skewed; a mean would be dragged up by one outlier
     and make the bar EASIER to clear on exactly the symbols that just saw a huge print."""
-    start = _SOURCE.index("def _dark_pool_premium_baseline(")
+    start = _SOURCE.index("def _dark_pool_baseline(")
     body = _SOURCE[start:_SOURCE.index("\n\n\ndef ", start)]
     assert "percentile_cont(0.5)" in body
     assert "AVG(premium)" not in body
 
 
 def test_baseline_returns_none_below_the_minimum_sample():
-    start = _SOURCE.index("def _dark_pool_premium_baseline(")
-    body = _SOURCE[start:_SOURCE.index("\n\n\ndef ", start)]
-    assert "row.n < _DARK_POOL_BASELINE_MIN_PRINTS" in body
-    assert "return None" in body
+    """Behavioural: 19 captured prints is not a baseline; the absolute floor alone applies."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+    import src.services.scheduler as sched
+    session = MagicMock()
+    session.execute.return_value.one.return_value = SimpleNamespace(
+        n=sched._DARK_POOL_BASELINE_MIN_PRINTS - 1, med=100000., first_at=None, last_at=None)
+    with patch.object(sched, "text", lambda sql: sql):
+        assert sched._dark_pool_premium_baseline(session, 'MU') is None
+        assert sched._dark_pool_baseline(session, 'MU')["status"] == "insufficient_history"
 
 
 def test_persist_is_idempotent_on_the_real_unique_constraint():

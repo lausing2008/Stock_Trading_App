@@ -1,7 +1,7 @@
 import React from 'react';
 import useSWR from 'swr';
 import { api } from '@/lib/api';
-import { requestFailedText } from '@/lib/optionsFlowStatus';
+import { requestFailedText, printTimeText, sideEstimateText, baselineLine } from '@/lib/optionsFlowStatus';
 import { GexOiByStrikeChart, MaxPainByExpiryChart, OiTermStructureChart } from './OptionsTabCharts';
 
 /** MPE-06/MPE-03: real dealer gamma exposure (Unusual Whales, when configured/enabled) plus
@@ -70,7 +70,7 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
         )}
         {hasDarkPool && (
           <span style={{ fontSize: 10, fontWeight: 700, color: '#38bdf8', background: 'rgba(56,189,248,0.12)', border: '1px solid rgba(56,189,248,0.3)', borderRadius: 4, padding: '2px 7px' }}>
-            Dark Pool — Unusual Whales
+            Off-exchange prints — Unusual Whales
           </span>
         )}
       </div>
@@ -262,22 +262,28 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
         {hasDarkPool && (
           <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
             <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>
-              Recent large off-exchange block prints — a measured fact (real size, real price),
-              not a directional signal. <a href="/dark-pool-guide" style={{ color: '#38bdf8' }}>What is dark pool trading?</a>
+              Recent off-exchange prints — size and price are reported facts, not a directional signal.
+              {darkPool!.venue_note ? ` ${darkPool!.venue_note.charAt(0).toUpperCase()}${darkPool!.venue_note.slice(1)}.` : ''}{' '}
+              <a href="/dark-pool-guide" style={{ color: '#38bdf8' }}>What is dark pool trading?</a>
             </div>
+            {baselineLine(darkPool!.baseline) && (
+              <p aria-label="Dark pool baseline" style={{ margin: '0 0 8px', fontSize: 11, color: darkPool!.baseline?.status === 'query_failed' ? '#fbbf24' : '#64748b' }}>{baselineLine(darkPool!.baseline)}</p>
+            )}
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #1e293b' }}>
-                  {['Size', 'Price', 'Premium', 'Venue'].map(h => (
-                    <th key={h} style={{ padding: '4px 6px', textAlign: h === 'Size' ? 'left' : 'right', color: '#475569', fontWeight: 500 }}>{h}</th>
+                  {['Executed (ET) · age', 'Size', 'Price', 'Side (est.)', 'Premium', 'Venue'].map(h => (
+                    <th key={h} style={{ padding: '4px 6px', textAlign: h === 'Executed (ET) · age' || h === 'Size' ? 'left' : 'right', color: '#475569', fontWeight: 500 }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {darkPool!.prints!.slice(0, 8).map((p, i) => (
                   <tr key={`${p.executed_at}-${i}`} style={{ borderBottom: '1px solid #0f172a' }}>
+                    <td style={{ padding: '5px 6px', color: p.time_status && p.time_status !== 'ok' ? '#fbbf24' : '#94a3b8' }}>{printTimeText(p)}</td>
                     <td style={{ padding: '5px 6px', color: '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>{p.size != null ? p.size.toLocaleString() : '—'}</td>
                     <td style={{ padding: '5px 6px', textAlign: 'right', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{p.price != null ? `$${p.price.toFixed(2)}` : '—'}</td>
+                    <td title={darkPool!.side_basis ?? 'Estimate from the print\'s place in the NBBO'} style={{ padding: '5px 6px', textAlign: 'right', color: '#94a3b8' }}>{sideEstimateText(p.side_estimate)}</td>
                     <td style={{ padding: '5px 6px', textAlign: 'right', color: '#38bdf8', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{p.premium != null ? `$${p.premium.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}</td>
                     <td style={{ padding: '5px 6px', textAlign: 'right', color: '#64748b' }}>{p.venue || '—'}</td>
                   </tr>

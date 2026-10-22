@@ -2226,7 +2226,14 @@ def send_dark_pool_alert_email(to: str, candidates: list[dict], omitted_count: i
         # quote) and renders "—". Never defaulted to a side: this email's whole framing is that
         # it reports MEASURED facts, so a guessed direction would break the one promise it makes.
         side = c.get("side")
-        side_str = {"buy": "BUY", "sell": "SELL"}.get(side or "", "—")
+        side_str = {"buy": "BUY (est.)", "sell": "SELL (est.)"}.get(side or "", "—")
+        # Options review B5: say how the print qualified — the relative bar against CAPTURED
+        # prints, or the absolute floor alone and why (too little history vs a failed query).
+        from .dark_pool_evidence import BASELINE_TEXT
+        _vs = c.get("vs_baseline")
+        _bstat = c.get("baseline_status")
+        basis_str = (f"{_vs}× the median of captured prints" if _bstat == "ok" and _vs is not None
+                     else BASELINE_TEXT.get(_bstat or "", "baseline status unknown"))
         live = c.get("live_price")
         live_str = f"${live:.2f}" if live is not None else "—"
         # Percent difference is CONTEXT only — see the 66.8% note above for why it is not the
@@ -2245,11 +2252,12 @@ def send_dark_pool_alert_email(to: str, candidates: list[dict], omitted_count: i
             f'<div style="font-size:12px;color:#64748b;margin-top:2px">'
             f'{size_str} shares @ {price_str} · {side_str} · live {live_str} ({vs_str}) · venue {venue}'
             f'</div>'
+            f'<div style="font-size:11px;color:#94a3b8;margin-top:2px">{basis_str}</div>'
             f'</div>'
         )
         rows_text += (
             f"  {sym}: {size_str} shares @ {price_str} = {premium_str} premium "
-            f"[{side_str}] live {live_str} ({vs_str}, venue {venue})\n"
+            f"[{side_str}] live {live_str} ({vs_str}, venue {venue}) — {basis_str}\n"
         )
 
     omitted_html = (

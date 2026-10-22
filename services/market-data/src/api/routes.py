@@ -4503,7 +4503,7 @@ def get_earnings_transcript_route(symbol: str, report_date: str):
 
 
 @router.get("/{symbol}/dark-pool-prints")
-def get_dark_pool_prints_route(symbol: str):
+def get_dark_pool_prints_route(symbol: str, session: Session = Depends(get_session)):
     """T323-DARKPOOL: real recent off-exchange block trades via Unusual Whales' own
     `/api/darkpool/{ticker}` — genuinely new capability, not previously built anywhere in this
     app (unlike gamma-exposure/short-interest, there is no free-proxy fallback for this). See
@@ -4524,17 +4524,34 @@ def get_dark_pool_prints_route(symbol: str):
     if not rows:
         return {"symbol": sym, "available": False, "source": "none", "reason": "no_data", "prints": []}
 
+    # Options review B4/B5: every print carries its time status and age, the side is an
+    # estimate with its basis, and the relative baseline says whether it could run and why not.
+    from ..services import dark_pool_evidence as _dpe
+    from ..services.scheduler import _dark_pool_baseline
+    now = datetime.now(timezone.utc)
+    prints = []
+    for r in rows:
+        at, status = _dpe.print_time(r.executed_at, now)
+        prints.append({
+            "price": r.price, "size": r.size, "premium": r.premium,
+            "venue": r.venue, "executed_at": r.executed_at,
+            "executed_at_utc": at.isoformat() if at else None,
+            "time_status": status,
+            # Within the clock tolerance a print can be stamped slightly ahead: age 0, never negative.
+            "age_minutes": round(max(0.0, (now - at).total_seconds() / 60.0), 1) if at and status == "ok" else None,
+            "nbbo_bid": r.nbbo_bid, "nbbo_ask": r.nbbo_ask,
+            "side_estimate": _uw.classify_dark_pool_side(r.price, r.nbbo_bid, r.nbbo_ask),
+        })
+    baseline = _dark_pool_baseline(session, sym)
     return {
         "symbol": sym,
         "available": True,
         "source": "unusual_whales",
-        "prints": [
-            {
-                "price": r.price, "size": r.size, "premium": r.premium,
-                "venue": r.venue, "executed_at": r.executed_at,
-            }
-            for r in rows
-        ],
+        "prints": prints,
+        "side_basis": _dpe.SIDE_BASIS,
+        "venue_note": _dpe.VENUE_NOTE,
+        "clock_tolerance_minutes": _dpe.CLOCK_TOLERANCE.total_seconds() / 60.0,
+        "baseline": {**baseline, "text": _dpe.BASELINE_TEXT.get(baseline["status"])},
     }
 
 
