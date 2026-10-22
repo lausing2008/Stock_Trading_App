@@ -93,32 +93,8 @@ def test_normal_nonzero_value_parses_correctly():
 
 
 def test_zero_auc_correctly_zeroes_ml_weight_via_the_downstream_guard():
-    """End-to-end proof the fix actually closes the gap the audit found: with the OLD
-    or-chain bug, a genuine auc=0.0 (with the other two metric keys populated) would have
-    been silently overwritten before ever reaching this guard, producing a nonzero raw_w.
-    With the fix, test_auc=0.0 reaches _apply_style_signal's own ml_test_auc<0.50 guard
-    (signals.py:1942-1944) unmodified and correctly zeroes the weight.
-
-    Extracts just that guard's real source (not the whole many-parameter
-    _apply_style_signal) via exec(), matching this repo's own established source-extraction
-    technique for testing an isolated fragment inside a larger function."""
-    import pathlib
-    import textwrap
-    src_path = pathlib.Path(signals.__file__)
-    src = src_path.read_text()
-    start = src.index("    if ml_prob is not None:")
-    end = src.index("gap = abs(ml_prob_c - ta_prob)", start)
-    snippet = textwrap.dedent(src[start:end])
-    namespace = {
-        "np": __import__("numpy"),
-        "ml_prob": 0.9,  # a strongly bullish but UNRELIABLE model
-        "ml_test_auc": 0.0,  # the exact value the fix now preserves instead of silently overwriting
-        "ta_prob": 0.6,
-        "_get_style_tuned_param": lambda *a, **kw: None,
-        "_ml_weight_global_cap": None,
-        "p": {"ml_weight_cap": 0.75, "ml_weight_floor": 0.10},
-        "style_key": "SWING",
-    }
-    exec(snippet, namespace)  # noqa: S102 — isolated eval of real source, matches repo convention
-    assert namespace["raw_w"] == 0.0
-    assert namespace["ml_w"] == 0.0
+    """A real zero AUC survives parsing and disables ML despite bullish siblings."""
+    ml_prob, test_auc, _ = _run_fetch({
+        "mean_model_test_auc": 0., "auc": .72, "cv_auc_mean": .75,
+    })
+    assert signals._calculate_ml_weight(ml_prob, .6, test_auc, .75, .10) == 0.

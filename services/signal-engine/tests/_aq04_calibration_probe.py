@@ -6,6 +6,8 @@ with real models behind it. The question being answered is not "does the helper 
 correctly" but "does the function that WRITES the production ML weight actually refuse the
 corrupt observation".
 """
+import ast
+import numpy as np
 import importlib.util
 import sys
 import types
@@ -58,12 +60,21 @@ sys.modules['src'] = src_pkg
 api_pkg = types.ModuleType('src.api'); api_pkg.__path__ = [str(root / 'services/signal-engine/src/api')]
 sys.modules['src.api'] = api_pkg
 sys.modules['src.api.signals_shared'] = ss
-# calibration.py reaches up to ..generators.signals for the live cap; only these two names.
+# Load real pure fusion/profile definitions; override external policy reads for this price-basis probe.
 gen_pkg = types.ModuleType('src.generators'); gen_pkg.__path__ = [str(root / 'services/signal-engine/src/generators')]
 sys.modules['src.generators'] = gen_pkg
 sig_mod = types.ModuleType('src.generators.signals')
 sig_mod.set_ml_weight_global_cap = lambda *a, **k: None
 sig_mod._ml_weight_global_cap = 0.5
+sig_source = (root / 'services/signal-engine/src/generators/signals.py').read_text()
+sig_nodes = [n for n in ast.parse(sig_source).body
+             if (isinstance(n, ast.FunctionDef) and n.name == '_calculate_ml_weight')
+             or (isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)
+                 and n.target.id == '_STYLE_PROFILES')]
+sig_mod.np = np
+exec(compile(ast.Module(body=sig_nodes, type_ignores=[]), '<fusion>', 'exec'), vars(sig_mod))
+sig_mod._get_style_tuned_param = lambda style, param, default: default
+sig_mod._get_dynamic_buy_threshold = lambda style, regime: None
 sys.modules['src.generators.signals'] = sig_mod
 
 spec = importlib.util.spec_from_file_location(
@@ -119,8 +130,8 @@ def build(split_on: date | None, *, coverage: bool, n_signals: int = 120):
             s.add(models.Signal(id=i + 1, stock_id=1, ts=datetime(sd.year, sd.month, sd.day),
                                 horizon=models.SignalHorizon.SWING,
                                 signal=models.SignalType.BUY, confidence=60,
-                                reasons={'ml_probability': 0.6 + (i % 5) * 0.02,
-                                         'ta_score': 0.5 + (i % 3) * 0.05}))
+                                reasons={'ml_probability': .85, 'ta_score': .8,
+                                         'ml_test_auc': .7, 'market_regime': 'bull'}))
         if split_on:
             s.add(models.CorporateAction(id=1, symbol='SPLT', ex_date=split_on, action_type='split',
                                          split_ratio=None, source='test', retrieved_at=datetime(2026, 10, 1)))
@@ -209,8 +220,8 @@ def build_gap():
             s.add(models.Signal(id=sid, stock_id=1, ts=datetime(sd.year, sd.month, sd.day),
                                 horizon=models.SignalHorizon.SWING, signal=models.SignalType.BUY,
                                 confidence=60,
-                                reasons={'ml_probability': 0.6 + (sid % 5) * 0.02,
-                                         'ta_score': 0.52 + (sid % 3) * 0.05}))
+                                reasons={'ml_probability': .85, 'ta_score': .8,
+                                         'ml_test_auc': .7, 'market_regime': 'bull'}))
         s.add(models.CorporateAction(id=1, symbol='GAPT', ex_date=split_day, action_type='split',
                                      split_ratio=None, source='test',
                                      retrieved_at=datetime(2026, 10, 1)))

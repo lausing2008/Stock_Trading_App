@@ -7,6 +7,7 @@ calibration, TA/conviction weight calibration, style-profile/strategy grid tunin
 watchdog and its self-tuning diagnostic report, and outcome-threshold calibration. Verbatim
 extraction — no logic changes; a bug found here was already present before the split.
 """
+import math
 import os as _os
 from datetime import date, datetime, timedelta, timezone
 
@@ -216,19 +217,95 @@ def _observation_basis(bars, actions, coverage, symbol, start, end):
     return resolved, verdict
 
 
+def _ml_weight_policy() -> dict:
+    """Snapshot the current global-cap population and BUY boundaries for one sweep."""
+    from ..generators.signals import (
+        _STYLE_PROFILES, _get_dynamic_buy_threshold, _get_style_tuned_param,
+    )
+
+    policy = {}
+    for style, profile in _STYLE_PROFILES.items():
+        if _get_style_tuned_param(style, "ml_weight_cap", None) is not None:
+            continue
+        thresholds = {}
+        # Match _decide_style's canonical vocabulary; legacy high_vol maps to unknown.
+        for regime in ("bull", "neutral", "choppy", "risk_off", "bear", "unknown"):
+            default = profile["buy_threshold"][regime]
+            dynamic = _get_dynamic_buy_threshold(style, regime)
+            thresholds[regime] = dynamic if dynamic is not None else default
+        policy[style] = {"floor": profile.get("ml_weight_floor", 0.0),
+                         "buy_thresholds": thresholds}
+    return policy
+
+
+def _ml_weight_inputs(sig, policy: dict, excluded: dict) -> dict | None:
+    """Require measured model quality; never fabricate AUC for historical rows."""
+    style = sig.horizon.value
+    if style not in policy:
+        excluded["style_not_governed_by_global_cap"] += 1
+        return None
+    # GROWTH fuses with ta_prob + _growth_ta_adjustment(), but reasons["ta_score"] stores only the
+    # shared ta_prob, so a stored GROWTH row cannot reproduce its fusion input. Excluded and
+    # counted rather than replayed with the wrong TA; reachable once GROWTH's per-style cap key
+    # (30-day TTL) expires and the global cap governs it.
+    if style == "GROWTH":
+        excluded["ta_score_not_stored_for_style"] += 1
+        return None
+    reasons = sig.reasons or {}
+    auc = reasons.get("ml_test_auc")
+    try:
+        if isinstance(auc, bool) or auc is None or not math.isfinite(float(auc)) or not 0 <= float(auc) <= 1:
+            raise ValueError
+        auc = float(auc)
+    except (TypeError, ValueError, OverflowError):
+        excluded["missing_or_invalid_auc"] += 1
+        return None
+    try:
+        ml = float(reasons["ml_probability"])
+        ta = float(reasons["ta_score"])
+        if not (math.isfinite(ml) and math.isfinite(ta) and 0 <= ml <= 1 and 0 <= ta <= 1):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, OverflowError):
+        excluded["missing_or_invalid_scores"] += 1
+        return None
+    regime = reasons.get("market_regime")
+    thresholds = policy[style]["buy_thresholds"]
+    regime = regime if regime in thresholds else "unknown"
+    return {"ml": ml, "ta": ta, "auc": auc, "floor": policy[style]["floor"],
+            "buy_threshold": thresholds[regime]}
+
+
+def _ml_candidate_score(inputs: dict, cap: float) -> float:
+    from ..generators.signals import _calculate_ml_weight
+
+    weight = _calculate_ml_weight(inputs["ml"], inputs["ta"], inputs["auc"], cap, inputs["floor"])
+    ml = min(0.95, max(0.05, inputs["ml"]))
+    return weight * ml + (1 - weight) * inputs["ta"]
+
+
+def _ml_weight_evaluation(policy: dict) -> dict:
+    return {"candidate_parameter": "global_ml_weight_cap", "policy": policy,
+            "scope": "ML/TA fusion and BUY boundary; later adjustments/gates are not replayed",
+            "excluded": {"style_not_governed_by_global_cap": 0,
+                         "ta_score_not_stored_for_style": 0,
+                         "missing_or_invalid_auc": 0, "missing_or_invalid_scores": 0}}
+
+
 @router.get("/ml-weight-validation")
 def ml_weight_validation(
     lookback_days: int = Query(180, ge=30, le=730),
     session: Session = Depends(get_session),
 ):
-    """Empirically sweep ML fusion weights 0→1 to find which blend best predicted price direction.
+    """Sweep global ML caps through production fusion for styles without per-style caps.
 
-    For each BUY signal in the lookback window, reads ml_probability and ta_score from the
-    reasons JSON, pairs with the actual price outcome, then tries 21 weight values (0.00 to 1.00
-    in 0.05 steps). Returns accuracy and avg_return_pct at each weight so the caller can see
-    the empirical optimum vs the current formula range (0.40–0.75).
+    Historical BUY rows require measured AUC and fire strictly above the current effective
+    style/regime BUY boundary. Later production adjustments/gates are not replayed.
+    Response weight fields retain their names for API compatibility but represent caps.
     """
     import bisect
+
+    policy = _ml_weight_policy()
+    evaluation = _ml_weight_evaluation(policy)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     outcome_cutoff = datetime.now(timezone.utc) - timedelta(days=1)
@@ -241,7 +318,7 @@ def ml_weight_validation(
     ).all()
 
     if not rows:
-        return {"lookback_days": lookback_days, "signal_count": 0, "curve": [], "optimal_weight": None}
+        return {"evaluation": evaluation, "lookback_days": lookback_days, "signal_count": 0, "curve": [], "optimal_weight": None}
 
     stock_ids = list({sig.stock_id for sig, _ in rows})
     # AQ04 residual: the adjustment evidence travels with the prices, not after them.
@@ -281,15 +358,18 @@ def ml_weight_validation(
             return None, None
         return _pclose[sid][-1], ts_list[-1]
 
-    # Build list of (ml_prob, ta_score, pct_change) for signals with complete data
-    observations: list[tuple[float, float, float]] = []
+    # Retain model inputs and the style/regime BUY boundary with each return.
+    observations: list[tuple] = []
     dropped_corrupt = 0      # a recorded action inside the window that could not be applied
     unverified_used = 0      # no action recorded, completeness unverified — usable, not quotable
     seen: set[tuple] = set()
 
     for sig, symbol in rows:
         signal_date = sig.ts.date() if isinstance(sig.ts, datetime) else sig.ts
-        key = (sig.stock_id, signal_date)
+        inputs = _ml_weight_inputs(sig, policy, evaluation["excluded"])
+        if inputs is None:
+            continue
+        key = (sig.stock_id, sig.horizon.value, signal_date)
         if key in seen:
             continue
         seen.add(key)
@@ -322,24 +402,24 @@ def ml_weight_validation(
             unverified_used += 1
 
         pct = (exit_p - entry) / entry * 100
-        observations.append((float(ml_prob), float(ta_score), pct))
+        observations.append((float(ml_prob), float(ta_score), pct, signal_date, inputs))
 
     if not observations:
-        return {"lookback_days": lookback_days, "signal_count": 0, "curve": [], "optimal_weight": None}
+        return {"evaluation": evaluation, "lookback_days": lookback_days, "signal_count": 0, "curve": [], "optimal_weight": None}
 
-    # Sweep weight from 0.0 to 1.0 in 0.05 steps
+    # Sweep candidate global caps from 0.0 to 1.0 in 0.05 steps
     weights = [round(w / 20, 2) for w in range(21)]  # 0.00, 0.05, ..., 1.00
     curve = []
     best_acc = -1.0
-    optimal_weight = 0.5
+    optimal_weight = None
 
     for w in weights:
         correct = 0
         returns = []
         fired = 0
-        for ml_p, ta_s, pct in observations:
-            fused = w * ml_p + (1 - w) * ta_s
-            if fused > 0.5:
+        for _, _, pct, _, inputs in observations:
+            fused = _ml_candidate_score(inputs, w)
+            if fused > inputs["buy_threshold"]:
                 fired += 1
                 if pct > 0:
                     correct += 1
@@ -355,11 +435,12 @@ def ml_weight_validation(
             optimal_weight = w
 
     return {
+        "evaluation": evaluation,
         "lookback_days": lookback_days,
         "signal_count": len(observations),
         "optimal_weight": optimal_weight,
-        "optimal_accuracy": round(best_acc, 1),
-        "current_formula_range": [0.40, 0.75],
+        "optimal_accuracy": round(best_acc, 1) if optimal_weight is not None else None,
+        "current_formula_range": [0.0, 0.75],
         "return_basis": {
             "basis": "split_adjusted_price where evidenced, raw price otherwise",
             "observations_used": len(observations),
@@ -376,16 +457,17 @@ def calibrate_ml_weight(
     session: Session = Depends(get_session),
     _: str = Depends(get_current_username),
 ):
-    """Find the empirically optimal ML fusion weight and apply it as the global cap.
+    """Sweep global caps through production fusion on the styles that cap governs.
 
-    Runs the same weight sweep as /ml-weight-validation, searches for the weight with the
-    highest BUY accuracy on the calibration (train) slice, then only applies it if it ALSO
-    beats a neutral baseline (weight=0.5) on the held-out validation slice — writes to
-    ml_weight_override.json and updates the in-process value only when validated.
-    Returns the chosen weight (or None if nothing validated) and the full accuracy curve.
+    Select on older observations, validate against the live cap on newer observations,
+    and persist only after validation. Requires measured AUC and effective BUY boundaries;
+    later production adjustments/gates are not replayed. Weight fields represent caps.
     """
     from ..generators.signals import set_ml_weight_global_cap, _ml_weight_global_cap as prev_cap
     import bisect
+
+    policy = _ml_weight_policy()
+    evaluation = _ml_weight_evaluation(policy)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     outcome_cutoff = datetime.now(timezone.utc) - timedelta(days=1)
@@ -398,7 +480,7 @@ def calibrate_ml_weight(
     ).all()
 
     if not rows:
-        return {"applied": False, "reason": "no_signals", "optimal_weight": None}
+        return {"evaluation": evaluation, "applied": False, "reason": "no_signals", "optimal_weight": None}
 
     stock_ids = list({sig.stock_id for sig, _ in rows})
     # AQ04 residual: the adjustment evidence travels with the prices, not after them.
@@ -464,13 +546,16 @@ def calibrate_ml_weight(
     # (_OUTCOME_HOLD_DAYS, the same convention outcomes_calibrate_apply/tune_style_profiles already
     # use), so every observation measures the same kind of thing: return AFTER the horizon this
     # signal was actually meant to be held for.
-    observations: list[tuple[float, float, float, object]] = []
+    observations: list[tuple] = []
     dropped_corrupt = 0      # a recorded action inside the window that could not be applied
     unverified_used = 0      # no action recorded, completeness unverified — usable, not quotable
     seen: set[tuple] = set()
     for sig, symbol in rows:
         signal_date = sig.ts.date() if isinstance(sig.ts, datetime) else sig.ts
-        key = (sig.stock_id, signal_date)
+        inputs = _ml_weight_inputs(sig, policy, evaluation["excluded"])
+        if inputs is None:
+            continue
+        key = (sig.stock_id, sig.horizon.value, signal_date)
         if key in seen:
             continue
         seen.add(key)
@@ -516,12 +601,12 @@ def calibrate_ml_weight(
             unverified_used += 1
 
         pct = (exit_p - entry) / entry * 100
-        observations.append((float(ml_prob), float(ta_score), pct, signal_date))
+        observations.append((float(ml_prob), float(ta_score), pct, signal_date, inputs))
 
     if not observations:
         # The basis counts travel on THIS path too. "no observations" and "every observation was
         # dropped as unadjustable" are different facts, and without the counts they look alike.
-        return {"applied": False, "reason": "no_observations", "optimal_weight": None,
+        return {"evaluation": evaluation, "applied": False, "reason": "no_observations", "optimal_weight": None,
                 "return_basis": {
                     "basis": "split_adjusted_price where evidenced, raw price otherwise",
                     "observations_used": 0,
@@ -539,15 +624,15 @@ def calibrate_ml_weight(
 
     weights = [round(w / 20, 2) for w in range(21)]
     best_acc = -1.0
-    optimal_weight = 0.5
+    optimal_weight = None
     curve = []
 
     def _accuracy_and_return(obs, w):
         correct = fired = 0
         returns = []
-        for ml_p, ta_s, pct, _ in obs:
-            fused = w * ml_p + (1 - w) * ta_s
-            if fused > 0.5:
+        for _, _, pct, _, inputs in obs:
+            fused = _ml_candidate_score(inputs, w)
+            if fused > inputs["buy_threshold"]:
                 fired += 1
                 returns.append(pct)
                 if pct > 0:
@@ -571,9 +656,18 @@ def calibrate_ml_weight(
             "avg_return_pct": round(v_avg_ret, 2) if v_avg_ret is not None else None,
         })
 
-    # T234-ML-WEIGHT-NO-VALIDATION-GATE: only apply optimal_weight if it ALSO beats a neutral
-    # baseline (0.5 — equal TA/ML blend) on the validation slice the search never saw. Previously
-    # set_ml_weight_global_cap() ran unconditionally regardless of what validation showed.
+    if optimal_weight is None:
+        return {"evaluation": evaluation, "applied": False,
+                "reason": "no_calibration_buys", "optimal_weight": None,
+                "signal_count": len(observations), "lookback_days": lookback_days,
+                "return_basis": {
+                    "basis": "split_adjusted_price where evidenced, raw price otherwise",
+                    "observations_used": len(observations),
+                    "dropped_unadjustable_action": dropped_corrupt,
+                    "used_unverified_completeness": unverified_used,
+                }, "curve": curve}
+
+    # Apply only after held-out validation against the live cap.
     import uuid as _uuid
     _run_id = str(_uuid.uuid4())
     _train_end = calib_obs[-1][3] if calib_obs else date.today()
@@ -591,6 +685,7 @@ def calibrate_ml_weight(
             gate_failures=[f"insufficient_validation_samples:{len(val_obs)}<{MIN_VAL_SAMPLES}"],
         )
         return {
+            "evaluation": evaluation,
             "applied": False,
             "reason": f"only {len(val_obs)} validation-slice observations (need {MIN_VAL_SAMPLES})",
             "optimal_weight": optimal_weight,
@@ -638,6 +733,7 @@ def calibrate_ml_weight(
             gate_failures=["ev_lift_not_positive_on_validation"],
         )
         return {
+            "evaluation": evaluation,
             "applied": False,
             "reason": f"candidate weight did not beat the live cap ({baseline_weight}) on the validation slice",
             "optimal_weight": optimal_weight,
@@ -668,6 +764,7 @@ def calibrate_ml_weight(
     )
 
     return {
+        "evaluation": evaluation,
         "applied": True,
         "optimal_weight": optimal_weight,
         "optimal_accuracy": round((candidate_acc or 0.0) * 100, 1),

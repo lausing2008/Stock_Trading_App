@@ -2067,6 +2067,40 @@ def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tupl
     return "SELL", style_key, tier
 
 
+def _calculate_ml_weight(
+    ml_prob: float, ta_prob: float, ml_test_auc: float, cap: float, floor: float,
+) -> float:
+    """Production fusion weight: AUC ramp, cap, protective floor, disagreement cut.
+
+    Inputs are explicit so calibration can replay a candidate cap without reading or
+    mutating live overrides. A zero cap intentionally retains a quality-scaled floor.
+    """
+    ml_prob_c = float(np.clip(ml_prob, 0.05, 0.95))
+    if ml_test_auc < 0.50:
+        # Truly random or inverse model — zero weight
+        raw_w = 0.0
+    elif ml_test_auc < 0.55:
+        # Ramp from 0 at AUC=0.50 to 0.20 at AUC=0.55 — weak model gets low influence
+        raw_w = float((ml_test_auc - 0.50) / 0.05 * 0.20)
+    else:
+        # Ramp from 0.20 at AUC=0.55 up to 0.75 at AUC=0.70+
+        raw_w = float(np.clip(0.20 + (ml_test_auc - 0.55) / 0.15 * 0.55, 0.20, 0.75))
+    ml_w = min(raw_w, cap)
+    if raw_w > 0:  # floor only applies to non-zero weights — don't resurrect a zero-weighted inverse model
+        # T228: AUC-scaled floor — near-random (AUC≈0.50) gets floor≈0; AUC≥0.60 gets full floor
+        auc_floor = min(1.0, max(0.0, (ml_test_auc - 0.50) / 0.10)) * floor
+        ml_w = max(ml_w, auc_floor)
+    gap = abs(ml_prob_c - ta_prob)
+    if gap > 0.35:
+        # Graduated from 25% cut (at gap=0.35) to 50% cut (at gap=0.65).
+        # Continues monotonically from the intermediate band instead of restarting at 0%.
+        extra = 0.25 * min((gap - 0.35) / 0.30, 1.0)
+        ml_w *= (0.75 - extra)
+    elif gap > 0.25:
+        ml_w *= 0.75  # flat 25% cut for intermediate disagreement
+    return ml_w
+
+
 def _apply_style_signal(
     ta_prob: float,
     ml_prob: float | None,
@@ -2103,35 +2137,11 @@ def _apply_style_signal(
     # ── ML / TA fusion with style-specific ML weight cap ─────────────────────
     if ml_prob is not None:
         ml_prob_c = float(np.clip(ml_prob, 0.05, 0.95))
-        if ml_test_auc < 0.50:
-            # Truly random or inverse model — zero weight
-            raw_w = 0.0
-        elif ml_test_auc < 0.55:
-            # Ramp from 0 at AUC=0.50 to 0.20 at AUC=0.55 — weak model gets low influence
-            raw_w = float((ml_test_auc - 0.50) / 0.05 * 0.20)
-        else:
-            # Ramp from 0.20 at AUC=0.55 up to 0.75 at AUC=0.70+
-            raw_w = float(np.clip(0.20 + (ml_test_auc - 0.55) / 0.15 * 0.55, 0.20, 0.75))
-        # Per-style ML weight cap: Redis override (tune_style_profiles) > global file override > profile default
+        # Per-style override > global override > profile default.
         _per_style_cap = _get_style_tuned_param(style_key, "ml_weight_cap", None)
         eff_cap = _per_style_cap if _per_style_cap is not None else (_ml_weight_global_cap if _ml_weight_global_cap is not None else p["ml_weight_cap"])
-        ml_w = min(raw_w, eff_cap)
-        if raw_w > 0:  # floor only applies to non-zero weights — don't resurrect a zero-weighted inverse model
-            # T228: AUC-scaled floor — near-random (AUC≈0.50) gets floor≈0; AUC≥0.60 gets full floor
-            auc_floor = min(1.0, max(0.0, (ml_test_auc - 0.50) / 0.10)) * p.get("ml_weight_floor", 0.0)
-            ml_w = max(ml_w, auc_floor)
-        gap = abs(ml_prob_c - ta_prob)
-        if gap > 0.35:
-            # Graduated from 25% cut (at gap=0.35) to 50% cut (at gap=0.65).
-            # Continues monotonically from the intermediate band instead of restarting at 0%.
-            extra = 0.25 * min((gap - 0.35) / 0.30, 1.0)
-            ml_w *= (0.75 - extra)
-            reasons["ml_ta_conflict"] = True
-        elif gap > 0.25:
-            ml_w *= 0.75  # flat 25% cut for intermediate disagreement
-            reasons["ml_ta_conflict"] = True
-        else:
-            reasons["ml_ta_conflict"] = False
+        ml_w = _calculate_ml_weight(ml_prob, ta_prob, ml_test_auc, eff_cap, p.get("ml_weight_floor", 0.0))
+        reasons["ml_ta_conflict"] = abs(ml_prob_c - ta_prob) > 0.25
         fused = ml_w * ml_prob_c + (1.0 - ml_w) * ta_prob
         reasons["ml_weight"] = round(ml_w, 2)
         reasons["ml_probability"] = round(float(ml_prob_c), 4)  # H-3: per-style, not shared SWING value

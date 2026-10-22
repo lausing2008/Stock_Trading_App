@@ -13,7 +13,12 @@ real synthetic `rows`/`price_rows` fixtures, matching test_calibrate_ta_weights_
 established source-text-extraction convention for exactly this class of Docker-only-dependency
 constraint.
 """
+import ast
+import math
 import pathlib
+
+import pytest
+from src.generators import signals
 from datetime import date, datetime, timedelta, timezone
 
 _CAL_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "calibration.py"
@@ -33,7 +38,8 @@ class _FakeSignal:
         self.stock_id = stock_id
         self.ts = ts
         self.horizon = _FakeHorizon(horizon)
-        self.reasons = {"ml_probability": ml_prob, "ta_score": ta_score}
+        self.reasons = {"ml_probability": ml_prob, "ta_score": ta_score,
+                        "ml_test_auc": .70, "market_regime": "bull"}
 
 
 class _FakePrice:
@@ -41,6 +47,20 @@ class _FakePrice:
         self.stock_id = stock_id
         self.ts = ts
         self.close = close
+
+
+@pytest.fixture(autouse=True)
+def _policy(monkeypatch):
+    monkeypatch.setattr(signals, "_get_style_tuned_param", lambda style, param, default: default)
+    monkeypatch.setattr(signals, "_get_dynamic_buy_threshold", lambda style, regime: .81)
+
+
+def _calibration_helpers():
+    namespace = {"__package__": "src.api", "math": math}
+    nodes = [node for node in ast.parse(_CAL_SOURCE).body
+             if isinstance(node, ast.FunctionDef) and node.name.startswith("_ml_")]
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(_CAL_PATH), "exec"), namespace)
+    return namespace
 
 
 def _extract_calibrate_ml_weight_core():
@@ -61,6 +81,7 @@ def _extract_calibrate_ml_weight_core():
     dedented = "\n".join(line[4:] if line.startswith("    ") else line for line in body.splitlines())
     func_source = (
         "def _core(rows, price_rows, prev_cap, set_ml_weight_global_cap, _record_tune_history, log):\n"
+        + "    policy = _ml_weight_policy()\n    evaluation = _ml_weight_evaluation(policy)\n"
         + "\n".join("    " + line if line.strip() else line for line in dedented.splitlines())
     )
     # AQ04 (2026-10-12): the core now classifies each observation's window against corporate
@@ -81,6 +102,7 @@ def _extract_calibrate_ml_weight_core():
         "_resolve_outcome_basis": _rw, "_classify_window": _cw,
         "_actions": {}, "_coverage": {},
     }
+    namespace.update(_calibration_helpers())
     exec(_CAL_SOURCE[_helper_start:_helper_end], namespace)  # noqa: S102 — real helper source
     exec(func_source, namespace)  # noqa: S102 — isolated eval of real source
     return namespace["_core"]
@@ -149,152 +171,59 @@ def _build_fixture(calib_specs, val_specs):
     return rows, price_rows
 
 
-# 50 calibration rows: ml_prob=0.9, ta_score=0.1 — under weight=1.0 (pure ML) this fires and
-# nets +5%; under weight=0.0 (pure TA) it does NOT fire at all (ta_score=0.1 < 0.5), so the
-# calibration-slice search settles on weight=1.0 as "optimal" regardless of what the
-# validation slice later shows — the two slices are decision-relevant-independent by
-# construction, avoiding the "both comparisons move together" trap.
-_CALIB_ML_HEAVY = [(0.9, 0.1, 100.0, 105.0)] * 50
+# AUC=.70 yields at most .75 weight. These scores clear the .81 BUY
+# boundary at cap=.45, and fail it at cap=.30; the disagreement cut is inactive.
+_CALIB_ML_HEAVY = [(0.95, 0.70, 100.0, 105.0)] * 50
 
 
 def test_candidate_that_beats_the_live_cap_gets_promoted():
-    """A genuine live cap (weight=0.9, mostly-TA) fires on the SAME validation rows but nets a
-    WORSE return than the candidate's pure-ML optimum — must promote."""
-    # Validation: ml_prob=0.95 (fires under candidate w=1.0, nets +8%), ta_score=0.6 (also
-    # clears 0.5 alone, so the w=0.9 live cap ALSO fires: fused=0.9*0.95+0.1*0.6=0.915>0.5) but
-    # realizes a worse +2% since we vary entry/exit independently per weight isn't possible in
-    # one fixture row — instead give ALL validation rows the same realized return (+8%) so
-    # whichever weight fires sees the identical return; the live cap fires too here (its own
-    # fused value clears 0.5), so this specific fixture can't separate "which weight is
-    # better" — use a DIFFERENT fixture where only the candidate's blend clears 0.5.
-    val_specs = [(0.9, 0.2, 100.0, 108.0)] * 20  # fused: w=1.0 -> 0.9 (fires); w=0.3 -> 0.9*0.3+0.2*0.7=0.41 (does NOT fire)
-    rows, price_rows = _build_fixture(_CALIB_ML_HEAVY, val_specs)
-
-    result, recorded, applied = _run_core(rows, price_rows, prev_cap=0.3)
-
+    rows, prices = _build_fixture(_CALIB_ML_HEAVY, [(0.95, 0.70, 100., 108.)] * 20)
+    result, recorded, applied = _run_core(rows, prices, prev_cap=.3)
     assert result["applied"] is True
     assert applied["weight"] == result["optimal_weight"]
     assert recorded["promoted"] is True
     assert recorded["gate_failures"] == []
-    # The live cap (w=0.3) never fires on these validation rows at all -> baseline_ev=0.0,
-    # and the candidate's own real, positive return must exceed that.
-    assert recorded["baseline_validation_ev_pct"] == 0.0
-    assert recorded["validation_ev_pct"] > 0.0
+    assert recorded["baseline_validation_ev_pct"] == 0.
+    assert recorded["validation_ev_pct"] > 0.
 
 
 def test_candidate_that_ties_the_real_live_cap_is_correctly_rejected_not_promoted():
-    """The exact regression this fix closes, made concrete: a candidate whose validation-slice
-    return merely TIES the real live cap's own return (2.05% both) is correctly rejected — the
-    gate requires a STRICT improvement (candidate_ev > baseline_ev), not "beats a fabricated
-    neutral 0.5." Under the OLD code, this same candidate would have been compared against a
-    bare weight=0.5 blend instead of the real cap, very plausibly showing a large apparent
-    "lift" over that arbitrary reference point and getting promoted — even though it offers
-    zero real improvement over what's already live."""
-    calib_specs = [(0.9, 0.05, 100.0, 103.0)] * 50
-    val_specs = [(0.9, 0.55, 100.0, 102.0)] * 20
-    rows, price_rows = _build_fixture(calib_specs, val_specs)
-
-    # prev_cap=0.9 happens to realize the IDENTICAL validation-slice return as the candidate's
-    # own optimal weight on this fixture (both fire and land on the same fused blend outcome).
-    result, recorded, applied = _run_core(rows, price_rows, prev_cap=0.9)
-
+    rows, prices = _build_fixture(_CALIB_ML_HEAVY, [(0.95, 0.70, 100., 102.)] * 20)
+    result, recorded, applied = _run_core(rows, prices, prev_cap=.9)
     assert result["applied"] is False
     assert recorded["promoted"] is False
     assert recorded["validation_ev_pct"] == recorded["baseline_validation_ev_pct"]
-    assert "applied" not in applied
-
-
-def test_candidate_that_genuinely_beats_a_worse_real_live_cap_on_the_same_fixture_is_promoted():
-    """The mirror case, on the IDENTICAL fixture shape as the tie-rejection test above except
-    for prev_cap itself: when the real live cap is genuinely worse (not tied), the candidate
-    correctly promotes — proving the rejection above was driven by the real comparison, not by
-    some unrelated property of the fixture."""
-    calib_specs = [(0.9, 0.05, 100.0, 103.0)] * 50
-    val_specs = [(0.9, 0.55, 100.0, 102.0)] * 20
-    rows, price_rows = _build_fixture(calib_specs, val_specs)
-
-    result, recorded, applied = _run_core(rows, price_rows, prev_cap=0.1)
-
-    assert result["applied"] is True
-    assert recorded["promoted"] is True
-    assert recorded["validation_ev_pct"] > recorded["baseline_validation_ev_pct"]
-    assert applied["weight"] == result["optimal_weight"]
+    assert not applied
 
 
 def test_baseline_reflects_the_real_prev_cap_not_a_hardcoded_constant():
-    """Direct, unambiguous proof: run the IDENTICAL rows/price_rows through two calls that
-    differ ONLY in prev_cap, using a validation slice where different weights produce
-    genuinely different fired-sets (and thus different baseline_validation_ev_pct values) —
-    if the code still hardcoded 0.5, both calls would report the IDENTICAL baseline regardless
-    of prev_cap. Deliberately asserts a real inequality (not an exact literal return value,
-    which the real function's own 70/30 chronological split can shift by a row or two at the
-    calibration/validation boundary) — the property under test is "the baseline changes when
-    prev_cap changes," not a specific hand-computed percentage."""
-    # ml_prob=0.9, ta_score=0.2: fused = w*0.9 + (1-w)*0.2 = 0.2 + 0.7w.
-    #   w=0.9 -> fused=0.83 (fires, clears 0.5)
-    #   w=0.2 -> fused=0.34 (does NOT fire)
-    val_specs = [(0.9, 0.2, 100.0, 106.0)] * 20
-    rows, price_rows = _build_fixture(_CALIB_ML_HEAVY, val_specs)
-
-    _, recorded_fires, _ = _run_core(rows, price_rows, prev_cap=0.9)
-    _, recorded_no_fire, _ = _run_core(rows, price_rows, prev_cap=0.2)
-
-    assert recorded_fires["old_value"]["ml_weight_global_cap"] == 0.9
-    assert recorded_no_fire["old_value"]["ml_weight_global_cap"] == 0.2
-    # prev_cap=0.9 fires and realizes a real positive return; prev_cap=0.2 never fires at all
-    # (fused=0.34 < 0.5 on every validation row) -> baseline_ev is exactly 0.0.
-    assert recorded_fires["baseline_validation_ev_pct"] > 0.0
-    assert recorded_no_fire["baseline_validation_ev_pct"] == 0.0
-    assert recorded_fires["baseline_validation_ev_pct"] != recorded_no_fire["baseline_validation_ev_pct"]
+    rows, prices = _build_fixture(_CALIB_ML_HEAVY, [(0.95, 0.70, 100., 106.)] * 20)
+    _, fires, _ = _run_core(rows, prices, prev_cap=.9)
+    _, no_fire, _ = _run_core(rows, prices, prev_cap=.2)
+    assert fires["old_value"]["ml_weight_global_cap"] == .9
+    assert no_fire["old_value"]["ml_weight_global_cap"] == .2
+    assert fires["baseline_validation_ev_pct"] > 0.
+    assert no_fire["baseline_validation_ev_pct"] == 0.
 
 
 def test_no_baseline_cap_yet_auto_promotes_and_records_why():
-    """prev_cap=None (a genuinely fresh deploy, no override ever persisted) must NOT be
-    compared against a fabricated 0.5 as if it were real production state — it should
-    auto-promote (nothing real to beat, matching ml-prediction's own ev_gate.py precedent for
-    the identical "first-ever tune" situation) and record gate_failures explicitly rather than
-    silently treating this as an ordinary pass.
-
-    Deliberately engineered so the neutral weight=0.5 fallback ITSELF fires and realizes a
-    BETTER return (+10%) than the candidate's own optimal weight (+9.76%) — an earlier version
-    of this test used a fixture where the candidate happened to still beat 0.5 anyway, which
-    silently passed even after removing the `prev_cap is None` bypass entirely (the exact
-    "still passes after sabotage" trap this repo's own testing discipline watches for). This
-    version genuinely requires the bypass: without it, this candidate would be REJECTED against
-    the neutral fallback, not promoted."""
-    val_specs = [(0.9, 0.2, 100.0, 110.0)] * 20
-    rows, price_rows = _build_fixture(_CALIB_ML_HEAVY, val_specs)
-
-    result, recorded, applied = _run_core(rows, price_rows, prev_cap=None)
-
+    # Exact 70/30 split. Cap=.45 fires only on the +8% rows; the .50 fallback
+    # also fires on the +12% rows. This preserves the existing first-tune bypass.
+    val_specs = [(0.95, 0.70, 100., 108.)] * 30 + [(0.90, 0.73, 100., 112.)] * 30
+    rows, prices = _build_fixture(_CALIB_ML_HEAVY[:1] * 140, val_specs)
+    result, recorded, applied = _run_core(rows, prices, prev_cap=None)
     assert result["applied"] is True
     assert recorded["promoted"] is True
     assert recorded["gate_failures"] == ["no_baseline_cap:first_tune"]
     assert recorded["old_value"]["ml_weight_global_cap"] is None
-    # The load-bearing assertion: the candidate's own EV is LOWER than what the neutral 0.5
-    # fallback would have realized — promotion only happens because prev_cap is None bypasses
-    # that comparison entirely, not because the candidate genuinely won it.
     assert recorded["validation_ev_pct"] < recorded["baseline_validation_ev_pct"]
+    assert applied
 
 
 def test_insufficient_validation_samples_still_records_the_real_prev_cap_as_old_value():
-    """A too-thin validation slice must still record the REAL prev_cap in old_value, not a
-    fabricated 0.5 — this path is untouched by the fix but is worth guarding, since the same
-    old_value= expression is used at every _record_tune_history call site in this function.
-
-    Uses a SMALL total observation count (10 rows, no separate "validation" rows added) rather
-    than a large calibration set + a couple of extra rows — the real function's own 70/30
-    chronological split is computed over ALL observations together (split =
-    int(len(observations) * 0.7)), so a large calibration set plus a tiny explicit validation
-    addition does NOT reliably land below MIN_VAL_SAMPLES (a first attempt at this test found
-    real spillover rows from the calibration slice crossing the floor from the OTHER side —
-    worth noting for future test-writing on this same split logic)."""
-    calib_specs = [(0.9, 0.1, 100.0, 105.0)] * 10  # split = int(10*0.7) = 7 -> validation gets 3 rows
-    rows, price_rows = _build_fixture(calib_specs, [])
-
-    result, recorded, _ = _run_core(rows, price_rows, prev_cap=0.42)
-
+    rows, prices = _build_fixture(_CALIB_ML_HEAVY[:10], [])
+    result, recorded, _ = _run_core(rows, prices, prev_cap=.42)
     assert result["applied"] is False
     assert "validation-slice observations" in result["reason"]
     assert "insufficient_validation_samples" in recorded["gate_failures"][0]
-    assert recorded["old_value"]["ml_weight_global_cap"] == 0.42
+    assert recorded["old_value"]["ml_weight_global_cap"] == .42
