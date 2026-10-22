@@ -156,8 +156,9 @@ def main(day, out_dir):
         # OD-02: where scan time went (present from the 2026-10-22 release on).
         try:
             from src.services.rzy_models import RzyScanPhases
-            ph = s.scalars(select(RzyScanPhases).where(RzyScanPhases.scan_time >= start, RzyScanPhases.scan_time < end,
-                                                     RzyScanPhases.mode == 'session')).all()
+            with s.begin_nested():   # a missing table must not abort the rest of the report
+                ph = s.scalars(select(RzyScanPhases).where(RzyScanPhases.scan_time >= start, RzyScanPhases.scan_time < end,
+                                                         RzyScanPhases.mode == 'session')).all()
             keys = sorted({k for p in ph for k in p.phases})
             report['scan_phases_seconds'] = {k: pct([p.phases.get(k, 0.0) for p in ph]) for k in keys} if ph else {'n': 0}
         except Exception as exc:  # noqa: BLE001 - older release: no phase table

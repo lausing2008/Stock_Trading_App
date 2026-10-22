@@ -351,21 +351,25 @@ def scan(session,now=None,clock=None):
         fresh=set(session.scalars(select(RzyStream.stream_key).where(RzyStream.stream_key.in_(list(keys)),RzyStream.updated_at>=window))) if keys else set()
         jobs=set(sorted(v for k,v in keys.items() if k not in fresh)[:MAINTENANCE_BATCH])
     queued=0; statuses={}; cache={}; previous_symbol=None; emailable_new=0; too_late=0
+    # load_and_prepare_bars is a SUBSET of evaluate_total (never add them); snapshot_and_commit
+    # includes email rendering/enqueue; every stream path stops both timers.
     phases={'load_and_prepare_bars':0.0,'evaluate_total':0.0,'snapshot_and_commit':0.0}
     for symbol,tf in sorted(jobs):
         if symbol!=previous_symbol: cache.clear(); previous_symbol=symbol
         _t=_time.monotonic()
         try: result=evaluate(session,symbol,tf,now,persist=True,bars_cache=cache,clock=clock,timings=phases)
         except (ValueError,TypeError) as exc:
+            phases['evaluate_total']+=_time.monotonic()-_t; _t=_time.monotonic()
             session.rollback();statuses[f'{symbol}:{tf}']='data_rejected: '+str(exc)[:160]
-            save_snapshot(session,symbol,tf,current_config().hash,now,'data_rejected',stream_summary(symbol,tf,error=exc));session.commit();continue
+            save_snapshot(session,symbol,tf,current_config().hash,now,'data_rejected',stream_summary(symbol,tf,error=exc));session.commit()
+            phases['snapshot_and_commit']+=_time.monotonic()-_t;continue
         phases['evaluate_total']+=_time.monotonic()-_t; _t=_time.monotonic()
         save_snapshot(session,symbol,tf,result['config_hash'],now,result['status'],stream_summary(symbol,tf,result))
         statuses[f'{symbol}:{tf}']=result['status']+(f" rebuilt:{result['rebuild_reason']}" if result.get('rebuilt') else '')
         if maintenance:
             session.execute(update(RzyStream).where(RzyStream.stream_key==f"{symbol}:{tf}:{result['config_hash']}").values(updated_at=now.replace(tzinfo=None)))
         if maintenance or result.get('bootstrap') or result['status']!='research_only':
-            session.commit();continue
+            session.commit();phases['snapshot_and_commit']+=_time.monotonic()-_t;continue
         blockers=tuple(result['evidence'].get('paper_blockers') or ())
         for event in result['new_events']:
             if not emailable(event,blockers): continue
