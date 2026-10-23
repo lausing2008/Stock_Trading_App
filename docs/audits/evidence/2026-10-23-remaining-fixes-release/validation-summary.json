@@ -1,0 +1,33 @@
+{
+  "market_data": {
+    "passed": 5756,
+    "skipped": 26,
+    "seconds": 369.28,
+    "checkout": "5249fb9f8903c3c080df0a00498cf93e93a06da6"
+  },
+  "signal_engine": {
+    "passed": 940,
+    "skipped": 1,
+    "seconds": 38.76,
+    "checkout": "7b1ae2f67e4309fa79ebf641c29dae73756b5952",
+    "note": "signal-engine source unchanged through deployed release"
+  },
+  "frontend": {
+    "passed": 809,
+    "test_files": 67,
+    "checkout": "f0ba2ca2eb8f4876066b02d14fc491f0fe3ac315",
+    "note": "frontend source unchanged through deployed release; full typecheck passed"
+  },
+  "reversed_adapter_provider_group": {
+    "passed": 189
+  },
+  "postgresql_ledger_probe": {
+    "passed": true,
+    "temporary_tables_only": true,
+    "rolled_back": true
+  },
+  "production_frontend_build": {
+    "passed": true,
+    "production_ec2_settings": true
+  }
+}

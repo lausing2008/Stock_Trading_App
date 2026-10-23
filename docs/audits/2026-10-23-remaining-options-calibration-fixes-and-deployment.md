@@ -48,4 +48,34 @@ Deploy only committed source, excluding the unrelated dirty working tree. Build 
 
 The PostgreSQL temporary-table probe passed: two distinct IDs retained, ten payload versions, one active unambiguous event; corrections, cancellation tombstones and stale-capture protection all passed. Temporary tables disappeared after rollback. Evidence is in [the release evidence folder](evidence/2026-10-23-remaining-fixes-release/README.md). The first container probe failed before any connection because its repository-depth assumption did not fit `/app/tests`; the harness was corrected and the ledger code passed unchanged.
 
-Final suite totals and deployed release identity will be appended after rollout.
+## Completed deployment and verification
+
+Application release `3f838758e09d6e84423c345569483eeb6f23a1d9` is live. Validation-only commits `6e778f51` and `5249fb9f` correct two stale cache fixtures and restore test-module identity; they do not change application source. All commits were pushed to the user-authorized public `prod` destination. The server checkout advanced only from committed source, and unrelated local work remains unstaged.
+
+Market-data and signal-engine were rebuilt on EC2 and recreated with `--no-deps --no-build`; frontend was built and deployed through committed `scripts/deploy_frontend.sh` with production settings. Only these three services restarted. Prior image IDs and timestamped rollback tags were retained in `/tmp/options-release-images-3f838758.txt` on EC2. The Oct 22 capture had completed before any restart. No old rollback images were deleted and no local build output or `.env.local` was transferred.
+
+Verified at `2026-10-23T22:25:35.689868+00:00`:
+
+- All 15 containers healthy; all 12 backend `src` and `shared` hashes match the isolated committed application release.
+- Running frontend build ID matches the prepared release image; public `/`, `/stock/MU` and `/signal-tuning` return HTTP 200. These are HTTP/API checks, not interactive browser verification.
+- MU and AMD options are available on source session October 22, both using `chain_intensity_v2`; MU is call-heavy and AMD mixed. These are volume composition readings, not inferred trade direction or return forecasts.
+- MU's chain carries an explicitly estimated moneyness reference. Its dark-pool response is available, with identity-ledger status and sampling marked degraded because the bounded response reached its limit.
+- All eight guarded calibration POST endpoints return `research_only`, `applied:false`. Observed ML, TA, conviction and per-horizon settings keys are unchanged. Regression tests also prove the guarded legacy mutation bodies cannot execute.
+- The new ledger is receiving real observations: the first aggregate check found 1,093 IDs, 1,139 payload versions and 32 ambiguous IDs quarantined from the baseline. The cause of same-observation payload disagreements is not established and may include metadata-only differences. No canceled print was observed in that sample; SQL probes establish cancellation behavior. No ledger capture/persistence errors were observed since restart.
+
+Validation:
+
+| Check | Result |
+|---|---|
+| Final isolated market-data suite (`5249fb9f`) | 5,756 passed, 26 skipped; 369.28 seconds |
+| Signal-engine full suite | 940 passed, 1 skipped; source unchanged since tested checkout `7b1ae2f6` |
+| Frontend full suite | 809 passed; source unchanged since tested checkout `f0ba2ca2` |
+| Full frontend typecheck and EC2 production build | Passed |
+| Reversed adapter/provider test group | 189 passed |
+| PostgreSQL ledger probe | Passed with temporary tables and complete rollback |
+
+The first full runs failed only on two fixtures expecting the old cache key; those were corrected. A targeted reversed-order run then found a test-module restoration defect; restoring the original instance in both Python import registries fixed it. The final full run above is clean. Skipped tests are not represented as passed. Evidence is preserved in [the release evidence folder](evidence/2026-10-23-remaining-fixes-release/README.md).
+
+## Remaining work
+
+R01–R09 fixes and restrictions are deployed; R03 remains an estimate and R05 root matching cannot establish legal deliverables. R10 now has a forward identity ledger and sampling visibility, but provider identity/correction semantics, conflicting captures and irrecoverable legacy collisions remain limitations. R11–R14 are reviewed and automatic settings promotion is contained; complete all-candidate, executable net-cost replay and independent held-out/forward validation remain unbuilt. No higher win rate or return is established, no automatic tuning is re-enabled, and the intraday horizon remains a documentation/research proposal. The broader per-stock dominance feature remains separate planned work.

@@ -2,6 +2,8 @@
 
 Date: October 22, 2026 (America/Los_Angeles). Reviewed checkout: `994e967be802ee17c9d0e6046ef8e74129974d5e`.
 
+> **Deployment update (October 23, 2026):** R01–R09 fixes/restrictions and the R10 forward identity/sampling ledger are live. R11–R14 were reviewed; automatic settings promotion is held at a research-only boundary, with full strategy replay still unfinished. All 15 containers are healthy and all 12 backend source/shared hashes match. Final validation: market-data 5,756 passed (26 skipped), signal-engine 940 passed (1 skipped), frontend 809 passed, full typecheck and production build passed. See the [deployment record and remaining limitations](2026-10-23-remaining-options-calibration-fixes-and-deployment.md). The earlier status and original audit below are historical.
+
 > **Status update (later on October 22, 2026):** an independent review re-checked R01–R10 against HEAD `b997cadb` and confirmed all ten, with four corrections (R01, R03, R07 evidence, R10). R01–R07 are now **fixed locally and not deployed**; R08–R10 are open and R11–R14 are pending review. See [section 9](#9-review-corrections-and-resolution-status). Sections 1–8 are kept as originally written.
 
 The recent fixes materially improve the system, but they do not yet establish complete data visibility, safe automatic calibration, or an executable intraday strategy. **Prioritize failure visibility, contract identity and calibration evidence before tuning for higher win rates.** Keep the intraday horizon in research/shadow mode until replay and delivery evidence meet the gates below.
@@ -290,7 +292,7 @@ Current production impact remains to be measured for missing fields, adjusted co
 
 ## 9. Review corrections and resolution status
 
-October 23 continuation: [remaining fixes, promotion boundary and deployment record](2026-10-23-remaining-options-calibration-fixes-and-deployment.md). This distinguishes corrected code from research paths held out of production and the remaining R10 print-identity work.
+October 23 continuation: [remaining fixes, promotion boundary and deployment record](2026-10-23-remaining-options-calibration-fixes-and-deployment.md). This distinguishes corrected code from research paths held out of production and the remaining provider-identity/research limitations.
 
 Added after an independent review of R01–R10 on the same day. That review read the source at HEAD `b997cadb`, eleven commits after the audited checkout. Only `uw_option_chain.py` (provider exclusions) and `scheduler.py` (the capture job) changed among the audited files, and neither change affects a finding. R11–R14 were not part of that review and **remain pending review**.
 
