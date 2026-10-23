@@ -1872,10 +1872,11 @@ class TestGetFunctionRealHttpBehavior:
                 sys.modules[m] = stub
             else:
                 sys.modules.pop(m, None)
-        # Re-import the stubbed version back into sys.modules for every OTHER test in this
-        # file (collected before/after this class) to keep working against the mocked version.
-        sys.modules.pop("src.services.unusual_whales", None)
-        importlib.import_module("src.services.unusual_whales")
+        # Restore the ORIGINAL module in both import registries. A third fresh copy
+        # leaves route-local imports bound to a different object than already-collected
+        # tests patch, making a reversed test order observe unpatched provider calls.
+        sys.modules["src.services.unusual_whales"] = uw
+        sys.modules["src.services"].unusual_whales = uw
 
     def test_returns_none_with_no_key_configured(self):
         with patch.object(self.real_uw, "get_unusual_whales_key", return_value=""):
