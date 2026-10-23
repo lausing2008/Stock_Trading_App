@@ -63,3 +63,15 @@ It lasted until a reboot at 23:47 UTC. Status checks never failed, so the reboot
 
 - The 43 Oct 21 occurrences absent from their current generation remain **unexplained**; Oct 22's equivalent was not computed.
 - Handover rebuilds (636) could be avoided by not evaluating a stream's newest bar until its authority has written it. That is a separate design decision.
+
+## The three unaccepted Oct 22 5m alerts (classified 2026-10-23 from the captured evidence)
+
+All three were seen in **incremental** scans (never rebuilds) and never queued; each was recorded after the 8-minute 5m queueing window. **Class: scan latency (OD-02).** None is a data, provider, authority or delivery fault.
+
+| Alert | Candle close (UTC) | Recorded | Late by | Mechanism |
+|---|---|---|---|---|
+| SMH 5m TRIGGERED | 18:30 | 18:43:10 | 13.2 min | Previous scan (18:28:25) ran 562 s, so the next started at 18:38:25 (8.4 min after close); SMH reached 4.7 min into that scan |
+| DDOG 5m TRIGGERED | 19:35 | 19:43:55 | 8.9 min | Previous scan (19:30:25) ran 594 s; next started 19:40:25; DDOG reached 3.5 min in. Missed by 0.9 min |
+| TXN 5m TRIGGERED | 18:45 | 18:57:14 | 12.2 min | Scan at 18:44:25 started before the close; next at 18:50:25 ran 455 s; TXN (late in the alphabetical order) reached 6.8 min in |
+
+Both mechanisms, a long scan delaying the next start and a symbol's position inside a scan, come from scan duration, dominated by bar loading. This is further support for incremental bar loading. **Delivery is not yet dependable:** 5 of 8 accepted in one session, and the 3 misses have a known, unfixed cause.

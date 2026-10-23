@@ -67,10 +67,20 @@ The option-chain archive gaps, the backup restore test and the Friday snapshot-r
   - no forming final candles;
   - no session data for SSNLF, SKHYV and US10Y.
 
-  **The scheduled run for session Fri 2026-10-23 (16:02 ET) is the acceptance check for item 1.**
+  **Release: deployed; scheduled verification pending.** Acceptance for item 1 is the scheduled run for session **Fri 2026-10-23** (16:02 ET; HK 16:12 HKT). Every symbol that traded must have:
+  - the final candle **present**;
+  - written **after** it completed;
+  - **finalized OHLCV** (open/high/low/close/volume equal to the authoritative provider's completed candle fetched afterwards).
+
+  The Oct 22 one-off run shows recovery, not automatic operation.
 - **Off-grid cleanup:**
   - **Export:** 127,027 rows with id, values and provenance, at `EC2:~/offgrid-export-2026-10-23/` and `~/Documents/MyProjects/incident-evidence/offgrid-export-2026-10-23/` (sha256 `05171ebb…`). All rows are snapshot-shaped (volume 0, O=H=L=C). Provenance exists for the 941 rows written since the trace started.
   - **Delete:** one transaction removed only exported ids whose stored values still matched: **127,025 rows**. The 2 HK rows in the 16:00–16:15 HKT closing-auction window were kept.
-  - **After:** 0 off-grid rows in the US Oct 20–22 and HK Oct 21–22 sessions; grid counts unchanged.
+  - **After:** no targeted off-grid snapshots remain; the two HK auction-window rows were intentionally retained. Grid counts are unchanged.
 - **RZY:** no rebuilds followed (RZY already excluded these rows). Check again after its pre-open maintenance. Rebuilds never re-send an occurrence's email.
-- **Item 2's acceptance:** the off-grid exclusion counter after the 04:00 ET yfinance premarket run.
+- **Item 2's acceptance**, per session, three counts:
+  - **received:** off-grid rows in provider responses (`ingest.off_grid_snapshots_excluded` / counter `stockai:metric:off_grid_snapshots_excluded`; at this layer every received row is rejected, so received = rejected);
+  - **rejected:** as above;
+  - **persisted:** off-grid 5m rows in `prices` for the session (target 0).
+
+  A zero rejected count proves nothing unless snapshots were received. The first yfinance premarket run (04:00 ET Fri 2026-10-23) must show received > 0 and persisted = 0.
