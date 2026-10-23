@@ -16,7 +16,7 @@ Live GEX no longer contributes points to a settled-session score. The separate M
 
 Known cash-index roots and caret index symbols are refused as current candidates and as automatic 100-share payoff calculations. Historical expiry evidence remains available. Symbol context now reaches scope evaluation in routes, snapshots and cached-response scope updates.
 
-This implements a restriction, not a complete index contract calendar. Index options remain unsupported until contract-class metadata establishes their last-trading instant, settlement and deliverable. Existing ordinary equity/ETF expiry calendar tests cover regular, early-close, holiday and DST sessions. The application's symbol/root assumptions are not authoritative exchange contract terms.
+This implements a restriction, not a complete index contract calendar. Index options remain unsupported until contract-class metadata establishes their last-trading instant, settlement and deliverable. Browser clock refreshes preserve a server-side product refusal; unsupported settlement is not relabelled as expired. Existing ordinary equity/ETF expiry calendar tests cover regular, early-close, holiday and DST sessions. The application's symbol/root assumptions are not authoritative exchange contract terms.
 
 ### R10 — sampling telemetry added; print identity remains open
 

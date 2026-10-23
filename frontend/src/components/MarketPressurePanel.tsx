@@ -1,6 +1,6 @@
 import React from 'react';
 import { api } from '@/lib/api';
-import { requestFailedText, printTimeText, sideEstimateText, baselineLine, darkPoolStatus, etText, agoText } from '@/lib/optionsFlowStatus';
+import { requestFailedText, printTimeText, sideEstimateText, baselineLine, expiryCandidateNote, darkPoolStatus, etText, agoText } from '@/lib/optionsFlowStatus';
 import { REFRESH_MS, useNow } from '@/lib/useNow';
 import { usePolledSWR } from '@/lib/usePolledSWR';
 import { GexOiByStrikeChart, MaxPainByExpiryChart, OiTermStructureChart } from './OptionsTabCharts';
@@ -257,7 +257,7 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
               <tbody>
                 {expirations!.expirations!.map(row => (
                   <tr key={row.expiry} style={{ borderBottom: '1px solid #0f172a' }}>
-                    <td style={{ padding: '5px 6px', color: '#e2e8f0' }}>{row.expiry}{row.current === false ? <span style={{ color: '#f59e0b' }}> · expired (historical)</span> : null}</td>
+                    <td style={{ padding: '5px 6px', color: '#e2e8f0' }}>{row.expiry}{expiryCandidateNote(row.expiry, expirations?.expiry_scope, now, row.current) ? <span style={{ color: '#f59e0b' }}>{expiryCandidateNote(row.expiry, expirations?.expiry_scope, now, row.current)}</span> : null}</td>
                     <td style={{ padding: '5px 6px', textAlign: 'right', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{row.total_oi.toLocaleString()}</td>
                     <td style={{ padding: '5px 6px', textAlign: 'right', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{row.put_call_oi_ratio != null ? row.put_call_oi_ratio.toFixed(2) : '—'}</td>
                     <td style={{ padding: '5px 6px', textAlign: 'right' }}>

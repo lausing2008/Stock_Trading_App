@@ -92,10 +92,11 @@ export function tradeableExpiries(chain: { expiries?: string[]; current_expiries
 
 /** Why a calculator has nothing to offer: the chain's own reason, or — when the chain loaded
  *  but every expiry of its session is past its last trade — say that rather than nothing. */
-export function calculatorUnavailableReason(chain: { available?: boolean; reason?: string; current_expiries?: string[] } | undefined,
+export function calculatorUnavailableReason(chain: { available?: boolean; reason?: string; current_expiries?: string[]; expiry_scope?: ExpiryScopeLike } | undefined,
   tradeable: string[]): string | undefined {
   if (!chain) return undefined;
   if (!chain.available) return chain.reason ?? 'unavailable';
+  if (chain.expiry_scope?.expiries?.some(r => r.reason === 'unsupported_product_settlement')) return 'this product needs settlement rules that are not supported; historical research only';
   if (chain.current_expiries && tradeable.length === 0) return 'every expiration in the archived session has stopped trading';
   return undefined;
 }
@@ -117,15 +118,24 @@ export function servedExpiryIsPast(chain: { expiry?: string; expiry_is_current?:
 export function isCurrentExpiry(expiry: string, scope?: ExpiryScopeLike | null, now: number = Date.now(),
   fallback?: boolean): boolean | undefined {
   const row = scope?.expiries?.find(r => r.expiry === expiry);
+  if (row?.current === false) return false; // time passing cannot override a product refusal
   const lti = row?.last_trading_instant ? Date.parse(row.last_trading_instant) : NaN;
   return row && !Number.isNaN(lti) ? row.historical && now < lti : fallback;
 }
 
 type ExpiryScopeLike = { historical_expiries: string[]; current_expiries: string[];
-  expiries?: { expiry: string; historical: boolean; last_trading_instant: string | null }[] };
+  expiries?: { expiry: string; historical: boolean; current?: boolean; reason?: string | null; last_trading_instant: string | null }[] };
+
+export function expiryCandidateNote(expiry: string, scope?: ExpiryScopeLike | null, now: number = Date.now(), fallback?: boolean): string | null {
+  if (isCurrentExpiry(expiry, scope, now, fallback) !== false) return null;
+  return scope?.expiries?.find(r => r.expiry === expiry)?.reason === 'unsupported_product_settlement'
+    ? ' · unsupported settlement (historical)' : ' · expired (historical)';
+}
 
 export function expiredSinceLine(scope?: ExpiryScopeLike | null, now: number = Date.now()): string | null {
   if (!scope) return null;
+  const unsupported = scope.expiries?.filter(r => r.reason === 'unsupported_product_settlement') ?? [];
+  if (unsupported.length) return `${unsupported.length} expirations use unsupported settlement rules — historical research only, not current trade candidates.`;
   const expired = scope.historical_expiries.filter(e => !isCurrentExpiry(e, scope, now, scope.current_expiries.includes(e)));
   // (an expiry the server called current but whose last trading instant has now passed is expired)
   if (!expired.length) return null;

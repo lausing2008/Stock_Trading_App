@@ -522,15 +522,8 @@ def _ml_weight_sweep(rows, price_rows, actions, coverage, prev_cap) -> dict:
 
     candidate_acc, candidate_fired, candidate_avg_ret = _accuracy_and_return(val_obs, optimal_weight)
 
-    # AUD283-MLWEIGHT-RATCHET: the candidate must beat the ACTUAL LIVE cap (prev_cap), not a
-    # hardcoded neutral 0.5 — comparing against a fixed 0.5 meant a candidate could beat "a
-    # coin-flip blend" while being genuinely WORSE than the cap already in production, and
-    # still get promoted, silently walking this parameter in a bad direction with no
-    # requirement to ever beat where it actually already is. prev_cap is None only on a truly
-    # fresh deploy with no override ever persisted yet — in that one case there is nothing real
-    # to beat, so this falls back to the neutral 0.5 baseline and records that explicitly,
-    # matching the same "no_baseline_params:first_tune_for_symbol" auto-promote convention
-    # ml-prediction's own ev_gate.py already established for the identical situation.
+    # Compare against the real global cap, or each style's effective default when absent.
+    # Missing an incumbent key never bypasses validation or the external promotion boundary.
     baseline_weight = prev_cap  # None replays each style's actual profile default, not a fabricated .5
     baseline_acc, baseline_fired, baseline_avg_ret = _accuracy_and_return(val_obs, baseline_weight)
 
@@ -568,8 +561,8 @@ def _ml_weight_sweep(rows, price_rows, actions, coverage, prev_cap) -> dict:
         history={"train_window": train_window, "validation_window": validation_window,
                  "validation_ev_pct": round(candidate_ev, 2),
                  "baseline_validation_ev_pct": round(baseline_ev, 2),
-                 "validation_n": candidate_fired, "promoted": True,
-                 "gate_failures": ["no_baseline_cap:first_tune"] if prev_cap is None else []})
+                 "validation_n": candidate_fired, "promoted": False,
+                 "gate_failures": ["complete_replay_required"]})
 
 
 def _ml_weight_apply(session, sweep, prev_cap, lookback_days, set_cap, record_history) -> dict:

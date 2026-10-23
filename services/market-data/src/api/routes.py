@@ -5117,7 +5117,8 @@ def get_options_game_plan(
         from ..services.options_scope import current_expiries as _current_expiries
         expiries = _current_expiries(session_expiries, source_session, symbol=sym)
         if not expiries:
-            return {"symbol": sym, "available": False, "reason": "no_current_expiries",
+            from ..services.options_contract import supported_underlying
+            return {"symbol": sym, "available": False, "reason": ("no_current_expiries" if supported_underlying(sym) else "unsupported_product_settlement"),
                     "source_session": source_session.isoformat()}
 
         current_price = _goal_current_price(session, sym)

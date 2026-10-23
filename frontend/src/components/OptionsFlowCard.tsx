@@ -2,7 +2,7 @@ import React from 'react';
 import type { OptionsFlow } from '@/lib/api';
 import { optionsFlowUnavailableText, composition, coverageLine, premiumText, turnoverText, requestFailedText, pct1,
   partialSum, money, lowSideNote, expiredSinceLine, pressureText, pressureTitle, pressureShare, selectionLine, CP_CALL_HEAVY, CP_PUT_HEAVY,
-  fmtIv, moneynessText, moneynessReferenceLine, volumeScopeNote, isCurrentExpiry, etText, agoText } from '@/lib/optionsFlowStatus';
+  fmtIv, moneynessText, moneynessReferenceLine, volumeScopeNote, expiryCandidateNote, etText, agoText } from '@/lib/optionsFlowStatus';
 import { useNow } from '@/lib/useNow';
 
 /** Options Flow card (options review Phase A): visible loading / request-failed / unavailable
@@ -159,7 +159,7 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
                               </span>
                             </td>
                             <td style={{ padding: '5px 8px', color: '#e2e8f0' }}>${c.strike}</td>
-                            <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.expiry}{isCurrentExpiry(c.expiry, flow.expiry_scope, now, c.current_candidate) === false ? <span style={{ color: '#f59e0b' }}> · expired (historical)</span> : null}</td>
+                            <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.expiry}{expiryCandidateNote(c.expiry, flow.expiry_scope, now, c.current_candidate) ? <span style={{ color: '#f59e0b' }}>{expiryCandidateNote(c.expiry, flow.expiry_scope, now, c.current_candidate)}</span> : null}</td>
                             <td style={{ padding: '5px 8px', color: '#e2e8f0', fontWeight: 600 }}>{c.volume.toLocaleString()}</td>
                             <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.oi.toLocaleString()}</td>
                             <td style={{ padding: '5px 8px', color: c.vol_oi > 1 ? '#f59e0b' : '#94a3b8', fontWeight: c.vol_oi > 1 ? 700 : 400 }}>{c.vol_oi.toFixed(2)}×</td>
