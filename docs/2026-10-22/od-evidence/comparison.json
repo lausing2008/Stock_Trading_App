@@ -1,0 +1,312 @@
+{
+ "2026-10-21": {
+  "release": "b39800d94",
+  "config_hash": "8ceb8cf780c3eb981983",
+  "completed_revisions_window": {
+   "total": 51570,
+   "by_class": {
+    "cross_provider": 43271,
+    "same_provider": 6124,
+    "previous_provider_unknown": 2175
+   },
+   "by_magnitude": {
+    "material": 45470,
+    "rounding": 6100
+   },
+   "material_cross_provider": 37644,
+   "by_timeframe": {
+    "5m": 51570
+   }
+  },
+  "completed_revisions_regular_session_bars": {
+   "total": 45557,
+   "by_class": {
+    "cross_provider": 39454,
+    "same_provider": 6103
+   },
+   "by_magnitude": {
+    "material": 40401,
+    "rounding": 5156
+   },
+   "material_cross_provider": 34422,
+   "by_timeframe": {
+    "5m": 45557
+   }
+  },
+  "rebuilds": {
+   "total": 2413,
+   "by_driver": {
+    "material_cross_provider": 1958,
+    "material_same_or_unknown": 330,
+    "gap_after_checkpoint": 109,
+    "rounding_only": 16
+   },
+   "during_regular_session": 2096
+  },
+  "scans_regular_session": {
+   "runs": 71,
+   "duration_s": {
+    "n": 71,
+    "median": 280.73,
+    "p90": 467.62,
+    "max": 644.6
+   },
+   "minutes_between": {
+    "n": 70,
+    "median": 5.0,
+    "p90": 8.0,
+    "max": 10.0
+   },
+   "stream_scans": 24708,
+   "paused_stream_scans": 4708,
+   "paused_share": 0.1905,
+   "too_late_to_mail": 2928,
+   "queued": 9
+  },
+  "scan_phases_regular_session_s": "not captured (release predates phase timing)",
+  "signals_regular_session": {
+   "occurrences": 512,
+   "by_observed_in": {
+    "incremental": 374,
+    "rebuild": 138
+   },
+   "emailable": 24,
+   "emailable_by_observed_in": {
+    "incremental": 16,
+    "rebuild": 8
+   },
+   "emailable_close_to_recorded_min_incremental": {
+    "n": 16,
+    "median": 9.37,
+    "p90": 14.15,
+    "max": 19.64
+   },
+   "emailable_close_to_recorded_min_rebuild": {
+    "n": 8,
+    "median": 24.44,
+    "p90": 46.44,
+    "max": 49.94
+   }
+  },
+  "alert_path": {
+   "5m": {
+    "signals": 9,
+    "outcomes": {
+     "recorded_too_late_not_queued": 5,
+     "expired": 3,
+     "accepted": 1
+    },
+    "close_to_accepted_min": {
+     "n": 1,
+     "median": 8.06,
+     "p90": 8.06,
+     "max": 8.06
+    }
+   },
+   "15m": {
+    "signals": 2,
+    "outcomes": {
+     "suppressed": 2
+    },
+    "close_to_accepted_min": {
+     "n": 0
+    }
+   },
+   "1h": {
+    "signals": 0,
+    "outcomes": {},
+    "close_to_accepted_min": {
+     "n": 0
+    }
+   }
+  },
+  "outbox_states": {
+   "little_rzy:accepted": 4,
+   "little_rzy:suppressed": 2,
+   "little_rzy:expired": 3,
+   "short_term_digest:accepted": 1
+  },
+  "bar_session_authority": "not captured (release predates bar authority)"
+ },
+ "2026-10-22": {
+  "release": "db89050a9",
+  "config_hash": "8ceb8cf780c3eb981983",
+  "completed_revisions_window": {
+   "total": 12374,
+   "by_class": {
+    "same_provider": 8975,
+    "cross_provider": 3240,
+    "previous_provider_unknown": 159
+   },
+   "by_magnitude": {
+    "material": 11883,
+    "rounding": 491
+   },
+   "material_cross_provider": 3106,
+   "by_timeframe": {
+    "5m": 11868,
+    "1d": 506
+   }
+  },
+  "completed_revisions_regular_session_bars": {
+   "total": 10253,
+   "by_class": {
+    "same_provider": 7014,
+    "cross_provider": 3239
+   },
+   "by_magnitude": {
+    "material": 9945,
+    "rounding": 308
+   },
+   "material_cross_provider": 3105,
+   "by_timeframe": {
+    "5m": 10253
+   }
+  },
+  "rebuilds": {
+   "total": 966,
+   "by_driver": {
+    "material_cross_provider": 636,
+    "material_same_or_unknown": 238,
+    "gap_after_checkpoint": 90,
+    "rounding_only": 2
+   },
+   "during_regular_session": 772
+  },
+  "scans_regular_session": {
+   "runs": 78,
+   "duration_s": {
+    "n": 78,
+    "median": 260.59,
+    "p90": 355.34,
+    "max": 615.47
+   },
+   "minutes_between": {
+    "n": 77,
+    "median": 5.0,
+    "p90": 6.4,
+    "max": 11.0
+   },
+   "stream_scans": 27144,
+   "paused_stream_scans": 1473,
+   "paused_share": 0.0543,
+   "too_late_to_mail": 1487,
+   "queued": 8
+  },
+  "scan_phases_regular_session_s": {
+   "evaluate_total": {
+    "n": 78,
+    "median": 230.49,
+    "p90": 303.75,
+    "max": 545.05
+   },
+   "load_and_prepare_bars": {
+    "n": 78,
+    "median": 164.26,
+    "p90": 207.34,
+    "max": 426.57
+   },
+   "other": {
+    "n": 78,
+    "median": 1.5,
+    "p90": 2.47,
+    "max": 4.79
+   },
+   "snapshot_and_commit": {
+    "n": 78,
+    "median": 26.27,
+    "p90": 37.13,
+    "max": 65.64
+   }
+  },
+  "signals_regular_session": {
+   "occurrences": 434,
+   "by_observed_in": {
+    "incremental": 374,
+    "rebuild": 60
+   },
+   "emailable": 24,
+   "emailable_by_observed_in": {
+    "incremental": 20,
+    "rebuild": 4
+   },
+   "emailable_close_to_recorded_min_incremental": {
+    "n": 20,
+    "median": 7.83,
+    "p90": 13.27,
+    "max": 16.53
+   },
+   "emailable_close_to_recorded_min_rebuild": {
+    "n": 4,
+    "median": 29.29,
+    "p90": 35.29,
+    "max": 36.79
+   }
+  },
+  "alert_path": {
+   "5m": {
+    "signals": 8,
+    "outcomes": {
+     "accepted": 5,
+     "recorded_too_late_not_queued": 3
+    },
+    "close_to_accepted_min": {
+     "n": 5,
+     "median": 6.43,
+     "p90": 8.03,
+     "max": 8.43
+    }
+   },
+   "15m": {
+    "signals": 2,
+    "outcomes": {
+     "accepted": 2
+    },
+    "close_to_accepted_min": {
+     "n": 2,
+     "median": 6.43,
+     "p90": 8.83,
+     "max": 9.43
+    }
+   },
+   "1h": {
+    "signals": 2,
+    "outcomes": {
+     "accepted": 2
+    },
+    "close_to_accepted_min": {
+     "n": 2,
+     "median": 12.5,
+     "p90": 16.52,
+     "max": 17.53
+    }
+   }
+  },
+  "outbox_states": {
+   "short_term_digest:accepted": 1,
+   "little_rzy:accepted": 9
+  },
+  "bar_session_authority": {
+   "sessions": 404,
+   "by_authority": {
+    "yfinance": 85,
+    "unusual_whales": 319
+   },
+   "by_timeframe": {
+    "1d": 208,
+    "5m": 196
+   },
+   "protected": 193570,
+   "replaced": 4874,
+   "sessions_with_protected": 149,
+   "trace_failed_sessions": 0,
+   "max_protected_divergence": {
+    "n": 149,
+    "median": 0.0,
+    "p90": 0.02,
+    "p95": 0.03,
+    "max": 0.07
+   }
+  }
+ }
+}
