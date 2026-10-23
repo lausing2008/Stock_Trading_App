@@ -87,6 +87,19 @@ out["self_correction"] = [write("yfinance", b5, 80.0, T(14, 36)), write("yfinanc
 b6 = T(15, 0)
 out["unchanged_resend"] = [write("unusual_whales", b6, 90.0, T(15, 0, 30)), write("unusual_whales", b6, 90.0, T(15, 5, 30)),
                            write("yfinance", b6, 94.0, T(15, 6)), close_of(b6)]
+# 457 final candle: the 15:55 ET candle (19:55 UTC) is written as a forming snapshot at 15:55:25;
+# the 16:02 post-close reconciliation by the authority completes it; a fallback at 16:07 is refused.
+b7 = T(19, 55)
+out["final_forming"] = [write("unusual_whales", b7, 120.0, T(19, 55, 25)), write("unusual_whales", b7, 121.0, T(20, 2)),
+                        write("yfinance", b7, 125.0, T(20, 7)), close_of(b7)]
+# A final candle that was never written (the 15:55:01 fetch ran before the provider had it) is
+# inserted by the reconciliation and then owned: no fallback replaces it.
+b8 = T(19, 45)
+out["final_missing"] = [write("unusual_whales", b8, 130.0, T(20, 2)), write("yfinance", b8, 131.0, T(20, 7)), close_of(b8)]
+# The fallback wrote the forming final snapshot (authority unavailable at 15:55); the authority
+# completes it after the bell.
+b9 = T(19, 40)
+out["final_fallback_forming"] = [write("yfinance", b9, 140.0, T(19, 40, 20)), write("unusual_whales", b9, 141.0, T(20, 2)), close_of(b9)]
 # Daily: a close-burst write (16:00:30 ET) does not lock out the settled close; after 16:45 ET it does.
 d = datetime(2026, 10, 20)
 out["daily_settle"] = [write("unusual_whales", d, 300.0, T(20, 0, 30), "1d"), write("yfinance", d, 301.0, T(20, 30), "1d"),

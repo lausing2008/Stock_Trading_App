@@ -12377,6 +12377,119 @@ def _refresh_5m(market: str) -> None:
         _check_short_intraday_triggers(market)
 
 
+def _stored_5m_rows(symbols: list[str], lo: datetime, hi: datetime) -> list:
+    """(symbol, ts) of stored 5m candles in [lo, hi), naive UTC."""
+    with SessionLocal() as s:
+        return s.execute(select(Stock.symbol, Price.ts).join(Stock, Price.stock_id == Stock.id).where(
+            Stock.symbol.in_(symbols), Price.timeframe == TimeFrame.M5,
+            Price.ts >= lo, Price.ts < hi)).all()
+
+
+def _candle_last_written(symbols: list[str], ts: datetime) -> dict:
+    """symbol -> last write time of the 5m candle at `ts` (from the provenance trace)."""
+    from .bar_provenance import BarProvenance
+    with SessionLocal() as s:
+        return dict(s.execute(select(Stock.symbol, BarProvenance.last_written_at)
+                              .join(Stock, BarProvenance.stock_id == Stock.id)
+                              .where(Stock.symbol.in_(symbols), BarProvenance.timeframe == "5m",
+                                     BarProvenance.ts == ts)).all())
+
+
+def _reconcile_session_5m(market: str, now: "datetime | None" = None, *, second_pass: bool = False) -> dict:
+    """Tracker 457 (missing final candle): complete the session's 5m candles after the bell.
+
+    The intraday job's last fire is 15:55 local, before the 15:55 candle completes at 16:00, and
+    nothing else ingests 5m bars until the next morning. So every evening the final candle was
+    either absent (the 15:55:0x fetch ran before the provider had it) or a seconds-old forming
+    snapshot, until the next morning's run re-fetched the day. Measured on 2026-10-22: no 5m
+    write after 15:55 ET for any symbol; GDX/MDB/SMH/SOXX/VICR without the 15:55 candle while
+    Unusual Whales returns it.
+
+    Ingest only, through the normal path, so bar authority applies: the authority may complete
+    its own forming snapshot, a fallback may add a missing candle, and nothing accepted is
+    overwritten by another provider. No trading step and no RZY scan run here; the RZY scan's
+    own window and freshness rules decide whether a completed candle is still mailable.
+
+    Completeness is measured against the expected grid (session_grid), not row counts:
+      * final_candle_missing / final_candle_forming (last written before the candle completed)
+        decide `partial`, for symbols that traded this session;
+      * symbols with no candles at all this session are listed as `no_session_data` (delisted,
+        provider-less or untraded) and do not make every run partial.
+    The second pass re-ingests only what the first pass left incomplete.
+    """
+    from .session_grid import completeness
+    _t0 = time.monotonic()
+    now = now or datetime.now(timezone.utc)
+    tz = ZoneInfo("Asia/Hong_Kong" if market == "HK" else "America/New_York")
+    day = now.astimezone(tz).date()
+    if (market == "HK" and not _is_hk_trading_day(now)) or (market == "US" and not _is_us_trading_day(now)):
+        return {"status": "not_a_trading_day"}
+    symbols = _symbols_for(market)
+    key = f"scheduler:job:{market.lower()}_5m_reconcile:detail"
+    if second_pass:
+        try:
+            prev = json.loads(_get_redis().get(key) or "{}")
+        except Exception:
+            prev = {}
+        if prev.get("session") == day.isoformat() and prev.get("pass") == 1:
+            pending = set(prev.get("final_candle_missing", [])) | set(prev.get("final_candle_forming", [])) \
+                | set(prev.get("missing_candles", {}))
+            symbols = [x for x in symbols if x in pending]
+    if not symbols:
+        return {"status": "nothing_to_reconcile"}
+    error = None
+    try:
+        ingest_universe(symbols, "5m")
+    except Exception as exc:  # recorded; completeness below still reports what is stored
+        error = str(exc)[:200]
+        log.error("scheduler.5m_reconcile_ingest_failed", market=market, error=error)
+    detail: dict = {"market": market, "session": day.isoformat(), "pass": 2 if second_pass else 1,
+                    "symbols": len(symbols), "complete": 0, "final_candle_missing": [], "final_candle_forming": [],
+                    "missing_candles": {}, "off_grid_rows": {}, "no_session_data": [], "ingest_error": error}
+    try:
+        from datetime import timedelta as _td
+        lo = datetime(day.year, day.month, day.day, tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+        rows = _stored_5m_rows(symbols, lo, lo + _td(days=1))
+        by_sym: dict = {}
+        for sym, ts in rows:
+            by_sym.setdefault(sym, []).append(ts)
+        finals: dict = {}
+        for sym in symbols:
+            c = completeness(by_sym.get(sym, []), market, day, until=now)
+            if c["expected"] and c["present"] == 0:
+                detail["no_session_data"].append(sym)
+                continue
+            if not c["missing"]:
+                detail["complete"] += 1
+            else:
+                detail["missing_candles"][sym] = len(c["missing"])
+            if c["final_candle_missing"]:
+                detail["final_candle_missing"].append(sym)
+            elif c["expected"]:
+                finals[sym] = c["last_expected"]
+            if c["off_grid"]:
+                detail["off_grid_rows"][sym] = len(c["off_grid"])
+        for final_ts in set(finals.values()):
+            written = _candle_last_written([x for x, t in finals.items() if t == final_ts], final_ts)
+            for sym, at in written.items():
+                if at is not None and at < final_ts + _td(minutes=5):
+                    detail["final_candle_forming"].append(sym)
+    except Exception as exc:
+        detail["completeness_error"] = str(exc)[:200]
+    elapsed = time.monotonic() - _t0
+    log.info("scheduler.5m_reconcile_done", market=market, session=detail["session"], pass_no=detail["pass"],
+             symbols=len(symbols), complete=detail["complete"], final_candle_missing=detail["final_candle_missing"],
+             final_candle_forming=detail["final_candle_forming"], no_session_data=len(detail["no_session_data"]),
+             missing_symbols=len(detail["missing_candles"]), off_grid_symbols=len(detail["off_grid_rows"]))
+    try:
+        _get_redis().set(key, json.dumps(detail, default=str))
+    except Exception:
+        pass
+    incomplete = detail["final_candle_missing"] or detail["final_candle_forming"] or detail.get("completeness_error")
+    _record_job_status(f"{market.lower()}_5m_reconcile", "error" if error else ("partial" if incomplete else "ok"), elapsed)
+    return detail
+
+
 def _refresh_premarket_5m() -> None:
     """T257-OVERNIGHT-FLOW-BRIEF: ingest 5-minute bars during the US premarket window
     (4:00–9:25 ET), so Price.session=="PRE" rows actually exist for the premarket-gappers
@@ -14780,6 +14893,33 @@ def start_scheduler() -> None:
             timezone="America/New_York",
         ),
         id="us_5m_intraday", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # Tracker 457: the intraday job's last fire (15:55) precedes the final candle's completion
+    # (16:00). Two passes after the bell complete the session's candles; HK also after its
+    # 12:00 lunch close. Ingest only (see _reconcile_session_5m).
+    _scheduler.add_job(
+        lambda: _reconcile_session_5m("US"),
+        CronTrigger(hour=16, minute=2, day_of_week="mon-fri", timezone="America/New_York"),
+        id="us_5m_reconcile", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    _scheduler.add_job(
+        lambda: _reconcile_session_5m("US", second_pass=True),
+        CronTrigger(hour=16, minute=7, day_of_week="mon-fri", timezone="America/New_York"),
+        id="us_5m_reconcile_retry", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    # HK afternoon passes wait for the closing auction (16:00 to ~16:10 HKT, random match).
+    _scheduler.add_job(
+        lambda: _reconcile_session_5m("HK"),
+        OrTrigger([CronTrigger(hour=12, minute=2, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+                   CronTrigger(hour=16, minute=12, day_of_week="mon-fri", timezone="Asia/Hong_Kong")]),
+        id="hk_5m_reconcile", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    _scheduler.add_job(
+        lambda: _reconcile_session_5m("HK", second_pass=True),
+        OrTrigger([CronTrigger(hour=12, minute=7, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+                   CronTrigger(hour=16, minute=17, day_of_week="mon-fri", timezone="Asia/Hong_Kong")]),
+        id="hk_5m_reconcile_retry", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── 5-minute intraday bars — HK market hours (skip 12:00–13:00 lunch break)

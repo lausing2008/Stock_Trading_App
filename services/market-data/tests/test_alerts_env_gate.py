@@ -237,6 +237,7 @@ _NON_ALERT_JOB_IDS = {
     "options_game_plan_eod",
     "hk_open_burst", "hk_intra", "hk_close_burst", "hk_post_close", "weekly_full_refresh",
     "us_premarket_5m_early", "us_premarket_5m_9am", "us_5m_intraday", "hk_5m_intraday",
+    "us_5m_reconcile", "us_5m_reconcile_retry", "hk_5m_reconcile", "hk_5m_reconcile_retry",
     "(f-string prefix='broker_token_renewal_')",
     # AUD-UWEXPAND: pure data-capture jobs (UW -> Postgres), send no email and gate nothing.
     "etf_fund_flows_daily",
