@@ -38,8 +38,13 @@
 
 Sabotages caught. Independent review: no blockers; its four should-fix findings were addressed as above. The tests also found a duplicated keyword in the new log call that would have raised in production.
 
-## Fix B (next, separate)
+## Fix B: nightly full-list capture (committed, not deployed)
 
-- Capture the active US universe nightly instead of on demand (removes the sawtooth).
-- Stop retrying symbols the provider cannot serve: 42 HK symbols and BRK-A are recorded `incomplete / request_failed` on every attempt.
-- Backfill Oct 16–21. UW serves about 2 years of history, so it is recoverable. Schedule it away from the 02:00 UTC backup at idle I/O priority, given the unexplained Oct 22 stall.
+- **Backfill:** Oct 16–21, done 2026-10-23 after a sample test. 464 symbol-sessions, 696,897 rows, 0 errors. Complete for every active US symbol except BRK-A.
+- **Nightly capture (18:45 ET):** now the LEAPS list **first** (the 19:00 ET income step reads it), then every active, non-delisted US symbol. A startup catch-up after a restart stays on the LEAPS list only, so a daytime deploy cannot launch about 1k provider calls in market hours or capture a session before the provider has archived it.
+- **Explicit provider exclusions** (`uw_option_chain.PROVIDER_EXCLUDED`): BRK-A (Unusual Whales returns 422), plus all HK listings by market. They are never fetched on demand, never retried nightly, and count as structural (not stale or failed) in the snapshot job. A page view gets `reason: provider_excluded` with the detail.
+- **Failures are visible:** the nightly log names `incomplete_symbols`.
+- **Checked:** the only "complete with 0 rows" sessions on weekdays belong to six symbols that list no options at all (AMADY, SSNLF, DFNS, QUCY, SCTX, FRNM), so there are no permanent holes for optionable symbols.
+- **Open decisions:**
+  - **Storage:** about 0.55 MB per symbol-session, so about 85 MB a day (about 21 GB a year) against 32 GB free with 800-day retention. A tiered retention (LEAPS 800 days, others shorter) needs a consumer analysis and approval because it deletes history.
+  - **Retries:** 4xx responses other than 429 are still retried by the Unusual Whales client.

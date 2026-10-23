@@ -48,7 +48,7 @@ const ITEMS: Item[] = [
     file: 'docs/2026-10-22/options-flow-snapshot-trace.md', effort: 'M',
     impact: 'Options flow, game plans and the premarket note read week-old settled chains for most symbols.',
     what: 'Only ~30 LEAPS symbols are captured nightly; the rest are captured on demand once their newest session is more than 7 days old. Sessions Oct 16-21 are missing for 105-144 of 155 active US symbols. 42 HK symbols and BRK-A fail on every attempt (provider cannot serve them) and are retried each time.',
-    fix: 'BACKFILL DONE 2026-10-23 02:44-02:57 UTC after a sample test (re-fetched IONQ 10-15 identical to the archive 962/962; 4 symbols x 2-3 sessions complete with last_tape_time on the session): 464 symbol-sessions, 696,897 rows, 0 errors, peak memory pressure 0.19%. Oct 16-21 now complete for every active US symbol except BRK-A (provider 422). STILL OPEN: nightly full-list capture (prevents recurrence) and excluding unsupported symbols from retries.',
+    fix: 'BACKFILL DONE 2026-10-23 02:44-02:57 UTC after a sample test (re-fetched IONQ 10-15 identical to the archive 962/962; 4 symbols x 2-3 sessions complete with last_tape_time on the session): 464 symbol-sessions, 696,897 rows, 0 errors, peak memory pressure 0.19%. Oct 16-21 now complete for every active US symbol except BRK-A (provider 422). Nightly full-list capture BUILT and reviewed (LEAPS first; startup catch-up LEAPS-only; BRK-A and HK as explicit provider exclusions, never retried; incomplete symbols logged), NOT deployed. Open: deploy, first nightly run verified, and a storage/retention decision (~85 MB/day vs 32 GB free).',
   },
   {
     id: 'OPTIONS-FLOW-SNAPSHOT-CURRENT', tier: 465, severity: 'high', defaultStatus: 'in-progress',

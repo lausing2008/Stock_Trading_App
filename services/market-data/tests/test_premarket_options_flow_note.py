@@ -186,3 +186,11 @@ def test_brief_after_a_holiday_reads_the_holiday_run():
     assert [f["symbol"] for f in flow] == ["AAA"]
     from src.services.options_flow_snapshot import last_job_day
     assert last_job_day(date(2026, 10, 26)) == date(2026, 10, 23)        # Monday brief -> Friday run
+
+
+def test_a_provider_excluded_symbol_is_structural_in_the_snapshot_job():
+    now = datetime(2026, 10, 22, 21, 0, tzinfo=timezone.utc)
+    detail, written, captured, redis = _run_job({"AAA": "2026-10-21", "BRK-A": "2026-10-15"}, now,
+                                                symbols=(("1", "AAA"), ("2", "BRK-A")))
+    assert detail["unavailable"] == {"BRK-A": "provider_excluded"} and detail["stale_source_session"] == {}
+    assert captured[0][0] == ("AAA",) and redis["status"] == "ok"

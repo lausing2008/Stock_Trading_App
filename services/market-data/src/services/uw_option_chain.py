@@ -35,6 +35,22 @@ from sqlalchemy.orm import Session
 
 log = structlog.get_logger()
 
+# Fix B (2026-10-23): symbols the provider cannot serve, recorded EXPLICITLY so they are neither
+# retried every night nor counted as archive gaps. HK listings are excluded by market (Unusual
+# Whales has no HK option chains).
+PROVIDER_EXCLUDED: dict[str, str] = {
+    "BRK-A": "Unusual Whales returns 422 for BRK-A option chains (every session 2026-10-13..22)",
+}
+
+
+def provider_excluded(symbol: str) -> str | None:
+    """Why the provider cannot serve `symbol`'s chain, or None."""
+    sym = symbol.upper()
+    if sym.endswith(".HK"):
+        return "no Unusual Whales option chains for HK listings"
+    return PROVIDER_EXCLUDED.get(sym)
+
+
 # How far back to accept a settled chain before giving up. A long weekend plus a holiday is 4
 # days; 7 covers that without silently serving something a week and a half stale.
 _MAX_LOOKBACK_DAYS = 7
@@ -172,7 +188,11 @@ def get_chain(
 
     # Fetch when we have nothing, or nothing recent enough to be worth showing.
     stale = as_of is None or (today - as_of).days > _MAX_LOOKBACK_DAYS
-    if stale and allow_fetch:
+    excluded = provider_excluded(sym)
+    if stale and allow_fetch and excluded:
+        # Fix B: the provider cannot serve this symbol; a page view must not retry it every time.
+        log.info("uw_chain.fetch_skipped_provider_excluded", symbol=sym, reason=excluded)
+    elif stale and allow_fetch:
         # PROVIDER REQUESTS DO NOT BELONG INSIDE A DATABASE TRANSACTION (2026-10-12).
         # `latest_as_of()` above is a SELECT, and in SQLAlchemy a SELECT opens a transaction
         # that stays open until commit or rollback. The capture below then makes Unusual Whales
@@ -198,6 +218,10 @@ def get_chain(
         except Exception as exc:
             log.warning("uw_chain.fetch_failed", symbol=sym, error=str(exc))
 
+    if as_of is None and excluded:
+        return {"available": False, "reason": "provider_excluded", "reason_detail": excluded, "symbol": sym,
+                "as_of": None, "is_settled_session": True, "source": "unusual_whales",
+                "calls": [], "puts": [], "expiries": []}
     if as_of is None:
         return {"available": False, "reason": "no_chain_for_symbol", "symbol": sym,
                 "as_of": None, "is_settled_session": True, "source": "unusual_whales",

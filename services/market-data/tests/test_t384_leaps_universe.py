@@ -181,8 +181,15 @@ def test_the_xlk_active_flag_inconsistency_is_flagged():
 
 # ── The job that consumes the list is unchanged in shape ────────────────────────────────
 
-def test_the_daily_job_still_uses_the_constant():
-    assert "capture_option_chain_history(_OPTHIST_SYMBOLS, _start, _end, skip_existing=True)" in SRC
+def test_the_daily_job_still_captures_every_leaps_symbol_first():
+    """Fix B (2026-10-23) widened the nightly list to the active US universe; the LEAPS list
+    stays in it, FIRST, so the 19:00 ET income step reads a current chain."""
+    import src.services.scheduler as sched
+    syms = sched._opthist_capture_symbols(us_symbols=["ZZZ", "AAA"])
+    leaps = [x for x in sched._OPTHIST_SYMBOLS if not sched.opthist_provider_excluded(x)]
+    assert syms[:len(leaps)] == leaps and set(syms[len(leaps):]) == {"AAA", "ZZZ"}
+    i = SRC.index("def _capture_option_chain_history_daily")
+    assert "capture_option_chain_history(_symbols, _start, _end, skip_existing=True)" in SRC[i:i + 2500]
 
 
 def test_skip_existing_is_still_on():

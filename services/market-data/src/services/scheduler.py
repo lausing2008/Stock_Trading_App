@@ -3238,7 +3238,8 @@ def compute_options_flow_snapshots_eod(now: "datetime | None" = None) -> dict:
             session.rollback()   # end the read before slow provider calls
             if symbols:
                 try:
-                    cap = capture_option_chain_history([sym for _, sym in symbols], expected, expected, skip_existing=True)
+                    cap = capture_option_chain_history([sym for _, sym in symbols if not opthist_provider_excluded(sym)],
+                                                       expected, expected, skip_existing=True)
                     detail["capture"] = {k: v for k, v in cap.items() if k != "errors_detail"}
                 except Exception as exc:  # capture failure is recorded; stale symbols are then skipped
                     detail["capture"] = {"error": str(exc)[:200]}
@@ -3251,6 +3252,9 @@ def compute_options_flow_snapshots_eod(now: "datetime | None" = None) -> dict:
                 pass
             ready = []
             for stock_id, symbol in symbols:
+                if opthist_provider_excluded(symbol):   # structural: never stale, never a failure
+                    detail["unavailable"][symbol] = "provider_excluded"
+                    continue
                 try:
                     result, reason = compute_options_flow_with_reason(symbol)
                     if result is None:
@@ -3289,7 +3293,7 @@ def compute_options_flow_snapshots_eod(now: "datetime | None" = None) -> dict:
     except Exception:
         pass
     # A symbol with no listed options is a property of the symbol, not a failed run.
-    structural = {"no_options_listed", "no_chain_for_symbol"}
+    structural = {"no_options_listed", "no_chain_for_symbol", "provider_excluded"}
     failures = {k: v for k, v in detail["unavailable"].items() if v not in structural}
     status = "ok" if not detail["stale_source_session"] and not failures else "partial"
     _record_job_status("options_flow_eod", status, elapsed)
@@ -15149,7 +15153,7 @@ def start_scheduler() -> None:
                 return  # archive is current — skip the expensive capture entirely
             log.warning("opthist.behind_at_startup_capturing",
                         newest_as_of=str(newest), expected_through=str(probe))
-            _capture_option_chain_history_daily()
+            _capture_option_chain_history_daily(full_list=False)
         except Exception as exc:
             # Never let a startup check take the scheduler (or the service) down with it.
             log.error("opthist.startup_check_failed", error=str(exc), exc_info=True)
@@ -16146,12 +16150,29 @@ _OPTHIST_SYMBOLS = [
 # scheduler_jobs did.
 _OPTHIST_RETENTION_DAYS = 800
 
+# Fix B (2026-10-23): provider exclusions live in uw_option_chain (BRK-A explicit; HK by market).
+from .uw_option_chain import PROVIDER_EXCLUDED as _OPTHIST_PROVIDER_EXCLUDED, provider_excluded as opthist_provider_excluded  # noqa: E402
+
+
+def _opthist_capture_symbols(us_symbols: "list[str] | None" = None) -> list[str]:
+    """Nightly capture list: the LEAPS list plus every active, non-delisted US symbol, minus
+    provider exclusions. Until 2026-10-23 only the LEAPS list was captured nightly and every other
+    symbol only on demand once a week stale, so most of the archive ran up to 8 days behind."""
+    if us_symbols is None:
+        with SessionLocal() as s:
+            us_symbols = [sym for (sym,) in s.execute(select(Stock.symbol).where(
+                Stock.market == Market.US, Stock.active.is_(True), Stock.delisted.is_(False)))]
+    # LEAPS/income symbols FIRST: the 19:00 ET income step reads them, and a full-list run is long.
+    leaps = [x for x in _OPTHIST_SYMBOLS if not opthist_provider_excluded(x)]
+    rest = sorted(x for x in set(us_symbols) - set(leaps) if not opthist_provider_excluded(x))
+    return leaps + rest
+
 # 5 days: long enough for the daily job to self-heal a long weekend plus one failed run, short
 # enough that the skip_existing lookups stay negligible.
 _OPTHIST_BACKFILL_WINDOW_DAYS = 5
 
 
-def _capture_option_chain_history_daily() -> None:
+def _capture_option_chain_history_daily(full_list: bool = True) -> None:
     """T374-OPTHIST-SCHEDULE: capture yesterday's chains for the standing universe.
 
     Yesterday, not today: the chain for a session is only settled after the close, and this runs
@@ -16171,8 +16192,13 @@ def _capture_option_chain_history_daily() -> None:
     try:
         _end = _date.today() - _td(days=1)
         _start = _end - _td(days=_OPTHIST_BACKFILL_WINDOW_DAYS)
-        res = capture_option_chain_history(_OPTHIST_SYMBOLS, _start, _end, skip_existing=True)
-        log.info("opthist.daily_done", **{k: v for k, v in res.items() if k != "errors_detail"})
+        # Nightly: the full active US list. A startup catch-up (full_list=False) keeps the LEAPS
+        # list only, so a daytime deploy does not launch ~1k provider calls in market hours or
+        # capture a session before the provider has archived it.
+        _symbols = _opthist_capture_symbols() if full_list else [x for x in _OPTHIST_SYMBOLS if not opthist_provider_excluded(x)]
+        res = capture_option_chain_history(_symbols, _start, _end, skip_existing=True)
+        log.info("opthist.daily_done", full_list=full_list, symbols_requested=len(_symbols),
+                 excluded=sorted(_OPTHIST_PROVIDER_EXCLUDED), **res)
         # T375-LEAPS-PERF: re-warm the LEAPS coverage cache immediately after new rows land.
         # That query is inherently slow (a COLUMN-TO-COLUMN DTE comparison over 7.5M rows; three
         # indexing attempts got 47s down to 13s, never to index-only), and it runs on PAGE LOAD
@@ -16301,6 +16327,7 @@ def capture_option_chain_history(
 
     _t0 = time.monotonic()
     days_done = days_skipped = days_empty = days_incomplete = 0
+    incomplete_symbols: set = set()
     rows_written = 0
     errors = 0
 
@@ -16405,9 +16432,11 @@ def capture_option_chain_history(
                     days_empty += 1
                 else:
                     days_incomplete += 1
+                    incomplete_symbols.add(sym)
                 time.sleep(_OPTHIST_THROTTLE_S)
             except Exception as exc:
                 errors += 1
+                incomplete_symbols.add(sym)
                 log.warning("scheduler.opthist.error", symbol=sym, as_of=as_of, error=str(exc))
                 time.sleep(_OPTHIST_THROTTLE_S)
 
@@ -16425,6 +16454,7 @@ def capture_option_chain_history(
         "days_incomplete": days_incomplete,
         "rows_written": rows_written,
         "errors": errors,
+        "incomplete_symbols": sorted(incomplete_symbols),
         "elapsed_s": round(elapsed, 1),
     }
 
