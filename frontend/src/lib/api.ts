@@ -1699,7 +1699,9 @@ export type MLWeightValidation = { lookback_days: number; signal_count: number; 
 /** Audit R03: ITM/ATM/OTM against the chain session's own close; null when that price is unknown. */
 export type Moneyness = 'ITM' | 'ATM' | 'OTM';
 /** R03: the same-session underlying price moneyness was measured against. */
-export type MoneynessReference = { price: number; session: string; source: string };
+export type MoneynessReference = { price: number; session: string; source: string;
+  /** R03: 'estimated' — the close passed a put–call parity plausibility check, which is not proof of a matching price basis. */
+  basis_confidence?: 'estimated'; basis_note?: string };
 /** R04: how many contracts a field was measured for. */
 export type FieldCount = { known: number; missing?: number; invalid?: number; total: number };
 export type OptionsFlowContract = { expiry: string; side: 'call' | 'put'; strike: number; volume: number; oi: number; vol_oi: number;
@@ -3471,6 +3473,12 @@ export type OptionsIncomePortfolioListItem = {
   is_active: boolean;
   config: Record<string, unknown>;
   created_at: string | null;
+  /** R08: the headline equity includes approximate marks. */
+  equity_is_approximate?: boolean;
+  /** Review 2026-10-23: of those, marks on contracts with unsupported terms. */
+  equity_unsupported_contract_marks?: number;
+  /** Expired positions kept open because their contract terms are unsupported. */
+  settlement_unresolved?: number;
 };
 
 export type OptionsIncomePosition = {
@@ -3499,6 +3507,11 @@ export type OptionsIncomePosition = {
   is_itm: boolean | null;
   cushion_pct: number | null;
   days_to_expiry: number | null;
+  /** R05: why this position's payoff is not computed automatically (null = standard contract). */
+  payoff_blocked_reason?: string | null;
+  /** Review 2026-10-23: 'settlement_unresolved' = expired on an unsupported contract, kept open on purpose. */
+  settlement_state?: 'open' | 'settlement_pending' | 'settlement_unresolved' | 'closed';
+  settlement_reason?: string | null;
 };
 
 // ── T405-FEDWATCH ────────────────────────────────────────────────────────────────────────
@@ -3552,6 +3565,10 @@ export type OptionsIncomeEquityPoint = {
   cash: number;
   open_positions_count: number;
   collateral_committed: number;
+  /** R08: this point rests on at least one approximate mark. */
+  is_approximate?: boolean;
+  /** Review 2026-10-23: approximate marks on contracts with unsupported terms. */
+  unsupported_contract_marks?: number;
 };
 
 export type PaperTrade = {

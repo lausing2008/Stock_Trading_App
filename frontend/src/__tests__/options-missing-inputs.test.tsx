@@ -40,8 +40,10 @@ describe('Options Flow card', () => {
   it('shows measured moneyness and names the session close it used', () => {
     render(<OptionsFlowCard flow={flow({ moneyness_reference: { price: 120, session: '2026-10-20', source: 'daily_close' },
       unusual: [contract({ moneyness: 'ITM', itm: true })] })} error={undefined} onRetry={() => {}} />);
-    expect(cells()[7]).toBe('ITM');
-    expect(screen.getByLabelText('Moneyness reference').textContent).toContain('2026-10-20 close of $120.00');
+    expect(cells()[7]).toBe('ITM (est.)');                     // R03: plausible, never verified
+    const line = screen.getByLabelText('Moneyness reference').textContent ?? '';
+    expect(line).toContain('Moneyness is estimated against the 2026-10-20 close of $120.00');
+    expect(line).toContain('a plausibility check, not proof that both use the same price basis');
   });
 
   it('an unmeasured put side is never shown as all calls', () => {

@@ -5,6 +5,7 @@ import Head from 'next/head';
 import useSWR from 'swr';
 import { getSession, isAdmin } from '@/lib/auth';
 import { formatCalendarDate } from '@/lib/calendarDate';
+import { IncomeCaveats, EquityCurveCaveat, SettlementBadge } from '@/components/IncomeCaveats';
 import {
   api,
   type OptionsIncomeCandidate,
@@ -304,6 +305,7 @@ export default function OptionsIncomePage() {
                   <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
                     {p.open_positions} open · {p.closed_positions} closed · {fmtUSD(p.total_premium_collected)} premium collected
                   </div>
+                  <IncomeCaveats p={p} />
                 </button>
               ))}
             </div>
@@ -327,6 +329,7 @@ export default function OptionsIncomePage() {
               <div style={{ ...CARD, gridColumn: 'span 2', minWidth: 260 }}>
                 <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Equity Curve</div>
                 <Sparkline points={equityCurve ?? []} />
+                <EquityCurveCaveat points={equityCurve ?? []} />
               </div>
             </div>
           )}
@@ -443,7 +446,12 @@ function PositionsTable({ positions, emptyLabel, showClose }: { positions: Optio
         <tbody>
           {positions.map(p => (
             <tr key={p.id}>
-              <td style={{ ...TD, fontWeight: 700, color: '#f1f5f9' }}>{p.symbol}</td>
+              <td style={{ ...TD, fontWeight: 700, color: '#f1f5f9' }}>
+                {p.symbol}<SettlementBadge p={p} />
+                {p.settlement_state === 'settlement_unresolved' && p.settlement_reason && (
+                  <div style={{ fontSize: 10, fontWeight: 400, color: '#f87171', marginTop: 2 }}>{p.settlement_reason}</div>
+                )}
+              </td>
               <td style={TD}><StrategyBadge strategy={p.strategy} /></td>
               <td style={TD}>${p.strike.toFixed(2)}</td>
               <td style={TD}>{fmtDate(p.expiry)}</td>

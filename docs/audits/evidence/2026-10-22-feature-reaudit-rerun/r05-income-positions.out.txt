@@ -1,0 +1,11 @@
+# Read-only production query, 2026-10-23, options_income_positions by contract identity.
+SET
+SET
+BEGIN
+ stage  |  status  | positions | symbols | affected_symbols 
+--------+----------+-----------+---------+------------------
+ closed | standard |         7 |       6 | 
+ open   | standard |         7 |       7 | 
+(2 rows)
+
+ROLLBACK

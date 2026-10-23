@@ -168,3 +168,32 @@ def test_a_mark_on_an_unsupported_contract_is_graded_as_such():
     # The engine relabels the quality of any mark on a contract with unsupported terms.
     assert eng.unsupported_contract_reason("AAA261120P00090000", "AAA") is None
     assert eng.unsupported_contract_reason("OPT-MARK", "AAA").startswith("unverified_100_assumed")
+
+
+
+# ── review 2026-10-23: unresolved settlement is visible; unsupported marks are identifiable ──
+
+def test_settlement_state_names_an_unresolved_expired_unsupported_position():
+    from types import SimpleNamespace as NS
+    from src.services import options_income_engine as eng
+    today = date(2026, 10, 23)
+    pos = lambda sym, exp, stage="open": NS(symbol="AMD", option_symbol=sym, expiry=exp, stage=stage)
+    adj, std = "AMD1261016P00100000", "AMD261016P00100000"
+    state, why = eng.settlement_state(pos(adj, date(2026, 10, 16)), today)
+    assert state == "settlement_unresolved" and "nonstandard_root_deliverable_unknown" in why
+    assert eng.settlement_state(pos(None, date(2026, 10, 16)), today)[0] == "settlement_unresolved"
+    assert eng.settlement_state(pos(std, date(2026, 10, 16)), today)[0] == "settlement_pending"
+    assert eng.settlement_state(pos(adj, date(2026, 11, 20)), today) == ("open", None)   # not expired yet
+    assert eng.settlement_state(pos(std, date(2026, 10, 16), "closed"), today) == ("closed", None)
+
+
+def test_an_unsupported_mark_is_identifiable_in_the_stored_equity_row():
+    import importlib.util, pathlib
+    spec = importlib.util.spec_from_file_location("t_r08", pathlib.Path(__file__).with_name("test_r08_mark_quality.py"))
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    ev = mod._probe("snapshot_unsupported_contract")["mark_evidence"]
+    assert ev["unsupported_contract_marks"] == 1
+    assert ev["mark_quality"] == {"unsupported_contract_terms": 1}
+    assert ev["approximate_marks"] == 1
+    fresh = mod._probe("snapshot_fresh_quote")["mark_evidence"]
+    assert fresh["unsupported_contract_marks"] == 0 and fresh["approximate_marks"] == 0

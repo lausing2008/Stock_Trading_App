@@ -250,15 +250,18 @@ export const fmtIv = (v: number | null | undefined) => (v == null ? '—' : `${v
 
 /** ITM/ATM/OTM, or "unknown" when the chain session's own price was unavailable. */
 export function moneynessText(c: { moneyness?: string | null; itm?: boolean | null }): string {
-  if (c.moneyness) return c.moneyness;
+  if (c.moneyness) return `${c.moneyness} (est.)`;   // always estimated (R03)
   if (c.itm === true) return 'ITM';
   if (c.itm === false) return 'not ITM';   // without `moneyness`, false could be OTM or ATM
   return 'unknown';
 }
 
 /** Which price moneyness was measured against — or why it is unknown. */
-export function moneynessReferenceLine(ref?: { price: number; session: string } | null, unknownReason?: string | null): string {
-  if (ref) return `Moneyness against the ${ref.session} close of $${ref.price.toFixed(2)} (the chain's own session, confirmed against the chain's put–call parity).`;
+export function moneynessReferenceLine(ref?: { price: number; session: string; basis_confidence?: string } | null, unknownReason?: string | null): string {
+  // R03: passing put–call parity is plausibility, not proof of a matching price basis — a small
+  // split adjustment can pass — so the result is always called estimated.
+  if (ref) return `Moneyness is estimated against the ${ref.session} close of $${ref.price.toFixed(2)} (the chain's own session). `
+    + 'The close agrees with the chain\'s put–call parity within 7.5% — a plausibility check, not proof that both use the same price basis.';
   // R03 basis: say WHY — a missing close and a close on a different price basis (a split) are
   // different facts. Today's price is never substituted for a settled chain.
   return `Moneyness unknown: ${unknownReason ?? 'no closing price for the chain\'s session'}. Today's price is not used for a settled chain.`;

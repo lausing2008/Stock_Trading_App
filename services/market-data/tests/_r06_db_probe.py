@@ -239,7 +239,11 @@ def main(scenario: str) -> dict:
     # ── R08: the mark evidence must actually land in the row ────────────────
     if scenario.startswith("snapshot_"):
         quote_age = {"snapshot_fresh_quote": 0, "snapshot_stale_quote": 4,
-                     "snapshot_no_quote": None}[scenario]
+                     "snapshot_no_quote": None, "snapshot_unsupported_contract": 0}[scenario]
+        _exp = TODAY + timedelta(days=30)
+        # Review 2026-10-23: an ADJUSTED root (AAA1) with a perfectly fresh quote — its mark must
+        # still be recorded as approximate, for the contract terms, not the quote.
+        _root = "AAA1" if scenario == "snapshot_unsupported_contract" else "AAA"
         with Session() as s:
             p = _portfolio(s)
             p_id = p.id
@@ -247,8 +251,8 @@ def main(scenario: str) -> dict:
                 portfolio_id=p_id, symbol="AAA", strategy="CASH_SECURED_PUT",
                 # Audit R05: a standard OCC symbol (root == symbol); an unidentified contract id
                 # would be graded `unsupported_contract_terms`, not by its quote age.
-                option_symbol=f"AAA{(TODAY + timedelta(days=30)).strftime('%y%m%d')}P00090000",
-                strike=90.0, expiry=TODAY + timedelta(days=30),
+                option_symbol=f"{_root}{_exp.strftime('%y%m%d')}P00090000",
+                strike=90.0, expiry=_exp,
                 contracts=1, entry_date=TODAY,
                 entry_time=datetime(2026, 9, 24, 20, 0, tzinfo=timezone.utc),
                 underlying_entry_price=100.0,

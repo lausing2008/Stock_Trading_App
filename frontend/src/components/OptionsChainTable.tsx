@@ -31,7 +31,7 @@ export default function OptionsChainTable({ calls, puts, moneynessReference, mon
     <>
       <p aria-label="Chain moneyness reference" style={{ margin: '0 0 6px', fontSize: 11, color: '#64748b' }}>
         {moneynessReferenceLine(moneynessReference, moneynessUnknownReason)}
-        {moneynessReference ? ' In-the-money strikes are tinted.' : ''}
+        {moneynessReference ? ' Strikes estimated to be in the money are tinted.' : ''}
       </p>
       {notes.length > 0 && (
         <p aria-label="Chain field coverage" style={{ margin: '0 0 6px', fontSize: 11, color: '#94a3b8' }}>

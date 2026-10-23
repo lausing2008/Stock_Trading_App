@@ -171,8 +171,14 @@ def session_reference_close(session: Session, symbol: str, as_of: date) -> dict 
 # so a stored close can be split- (and dividend-) adjusted after the fact while the archived
 # strikes stay in the terms of their own session. The close is used for moneyness only when the
 # chain itself agrees with it: put-call parity near the money gives the underlying in the
-# chain's OWN strike terms. A split moves the ratio by 25% or more (5-for-4); 7.5% leaves room
-# for carry and dividends in near-dated parity while still catching any split.
+# chain's OWN strike terms. 7.5% leaves room for carry and dividends in near-dated parity and
+# catches every split of 5-for-4 or larger.
+#
+# THIS IS A PLAUSIBILITY CHECK, NOT PROOF of a matching price basis (review, 2026-10-23). A small
+# adjustment inside the tolerance passes — a 21-for-20 split moves the close ~4.8% — and nothing
+# here establishes the close's provenance: corporate-action coverage is not verified and ingest
+# may re-adjust history after the fact. So moneyness that passes is labelled ESTIMATED, always.
+# It would only become "verified" with provenance this code does not have.
 _PARITY_TOLERANCE = 0.075
 _PARITY_PAIRS = 3
 
@@ -217,7 +223,7 @@ def reference_basis(close: float, implied: dict | None) -> dict:
                 "reason": "no two-sided call/put pair to derive the chain's own price"}
     ratio = close / implied["price"]
     ok = abs(ratio - 1.0) <= _PARITY_TOLERANCE
-    return {"status": "compatible" if ok else "incompatible", "chain_implied": implied["price"],
+    return {"status": "plausible" if ok else "incompatible", "chain_implied": implied["price"],
             "ratio": round(ratio, 4), "pairs": implied["pairs"],
             "reason": None if ok else
             f"stored close {close:.2f} vs chain-implied {implied['price']:.2f} (ratio {ratio:.3f}): different price bases, e.g. a split adjustment"}
@@ -396,8 +402,12 @@ def _chain_for_session(session: Session, sym: str, as_of: date, expiry: date | N
         moneyness_unknown_reason = "no daily close stored for the chain's session"
     else:
         basis = reference_basis(reference["price"], chain_implied_spot(session_rows))
-        reference = {**reference, "basis_check": basis}
-        if basis["status"] != "compatible":
+        # Plausible is not verified: the label travels with the reference (see _PARITY_TOLERANCE).
+        reference = {**reference, "basis_check": basis, "basis_confidence": "estimated",
+                     "basis_note": ("estimated: the close agrees with the chain's put-call parity within "
+                                    f"{_PARITY_TOLERANCE:.1%}; that is a plausibility check, not proof both use "
+                                    "the same price basis (a small split adjustment can pass)")}
+        if basis["status"] != "plausible":
             moneyness_unknown_reason = basis["reason"]
             reference = None
     spot = reference["price"] if reference else None

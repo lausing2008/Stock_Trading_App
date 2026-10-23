@@ -134,7 +134,10 @@ def _session_chain(rows, close):
 def test_chain_for_session_measures_moneyness_from_that_session():
     ch = _session_chain(PARITY_120, 120.0)
     assert ch["moneyness_reference"]["session"] == "2026-10-20"
-    assert ch["moneyness_reference"]["basis_check"]["status"] == "compatible"
+    assert ch["moneyness_reference"]["basis_check"]["status"] == "plausible"
+    # Plausible, never verified: nothing here establishes the close's provenance.
+    assert ch["moneyness_reference"]["basis_confidence"] == "estimated"
+    assert "not proof" in ch["moneyness_reference"]["basis_note"]
     by = {(r["strike"]): r for r in ch["calls"]}
     assert by[100.0]["moneyness"] == "ITM" and by[140.0]["moneyness"] == "OTM" and by[120.0]["moneyness"] == "ATM"
     assert {r["strike"]: r["moneyness"] for r in ch["puts"]}[140.0] == "ITM"
@@ -161,6 +164,19 @@ def test_a_reverse_split_adjustment_is_rejected_too():
 def test_a_close_within_carry_tolerance_is_accepted():
     ch = _session_chain(PARITY_120, 123.0)        # 2.5% from parity: carry/dividends, not a split
     assert ch["moneyness_reference"]["price"] == 123.0
+
+
+def test_a_small_split_inside_the_tolerance_passes_and_is_only_estimated():
+    # 21-for-20: the re-adjusted close is 120 x 20/21 = 114.29, 4.8% from parity — inside 7.5%.
+    # The check cannot catch it, and moneyness near the money is then WRONG: a 115 call is truly
+    # ITM at 120 but reads OTM against 114.29. That is exactly why the result is only labelled
+    # estimated. This test pins the limitation; it does not endorse the answer.
+    rows = PARITY_120 + [_quoted(115, "call", 5.4, 5.6), _quoted(115, "put", 0.4, 0.6)]
+    ch = _session_chain(rows, round(120 * 20 / 21, 2))
+    ref = ch["moneyness_reference"]
+    assert ref is not None and ref["basis_check"]["status"] == "plausible"
+    assert ref["basis_confidence"] == "estimated"
+    assert {r["strike"]: r["moneyness"] for r in ch["calls"]}[115.0] == "OTM"   # truly ITM: the known miss
 
 
 def test_a_5_for_4_split_is_outside_the_tolerance():

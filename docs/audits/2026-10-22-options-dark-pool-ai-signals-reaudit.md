@@ -360,5 +360,39 @@ Testing found that a plain `refreshInterval` had no backoff at all. It also foun
 
 **R06 regression made unambiguous.** The held-fill-without-quote tests now state standard contract terms explicitly in their fixture. Unsupported identity (adjusted, or no terms) is a separate test that expects no priced row and a "kept on record" notice. With standard fixtures, restoring the old drop-when-unquoted line fails 5 tests.
 
+### 9.4 Review follow-up (October 23, 2026)
+
+**R05 exclusions, archive-wide and open positions** (read-only production queries, each statement bounded, aggregates only, no mutations; evidence in the rerun directory):
+
+| Population | Contracts / positions | Classified standard | Adjusted | Missing symbol | Unreadable |
+|---|---:|---:|---:|---:|---:|
+| Archive, 133 symbols (one bounded query each) | 15,081,256 rows | all | 0 | 0 | 0 |
+| Archive, the 17 largest symbols (bounded per quarter after hitting the 60 s per-symbol limit) | 37,445,586 rows | all | 0 | 0 | 0 |
+| **Archive total** | **52,526,842 rows** | all | 0 | 0 | 0 |
+| Options-income positions, open | 7 (7 symbols) | 7 | 0 | 0 | 0 |
+| Options-income positions, closed | 7 (6 symbols) | 7 | 0 | 0 | 0 |
+
+The archive spans 150 symbols, sessions 2024-08-09 to 2026-10-22. The single full-table query timed out at 300 s and returned nothing; the per-symbol and per-quarter queries replaced it and all completed.
+
+**Result: zero exclusions under the current R05 classifier**, archive-wide and among held positions. That is a statement about the classifier, not independent verification: it checks only that each readable OCC root matches its underlying. It does not establish any contract's legal deliverable, and it is not proof that root matching detects every adjustment (an adjustment that kept the original root would pass).
+
+**R03 is an estimate, labelled as one.** Put-call parity within 7.5% is a plausibility check, not proof of a matching price basis. Nothing in this code base establishes the close's provenance, so every moneyness reading that passes is `basis_confidence: "estimated"`: "ITM (est.)" in the flow card, with the reference line saying so, and "estimated to be in the money" in the chain table. A new test pins the limit: a 21-for-20 split moves the close 4.8%, passes the check, and misreads a truly in-the-money 115 call as OTM. That is exactly why the result is never presented as measured.
+
+**Unresolved settlement is visible.** The positions API returns `settlement_state` (`open`, `settlement_pending` for an expired standard position awaiting its exact close, `settlement_unresolved` for an expired position on unsupported terms, `closed`) with a reason. The options-income page shows a SETTLEMENT UNRESOLVED badge with the reason on the position. The approximate valuation stays identifiable: each equity row's evidence carries `unsupported_contract_marks`; equity-curve points return it; and the portfolio summary returns `equity_unsupported_contract_marks` and `settlement_unresolved`, shown on the page as "≈ … settlement unresolved … return includes only their approximate mark, not a settled outcome". The equity curve says how many points rest on approximate and unsupported marks.
+
+**Polling: two defects in `d52518bf`, both fixed with tests.** Both fail against the committed hook:
+- **The data-level lag was real.** A provider `rate_limited` answer delivered with HTTP 200 on the first response was followed by one poll at the base interval. A first-response HTTP 429 already backed off, because SWR suspends polling while the cache holds an error, and it now has its own regression test.
+- **The committed hook never polled under re-renders.** Its inline-function `refreshInterval` gave SWR a new dependency on every render, which restarted the countdown each time, so a component re-rendering faster than its interval never polled. The Market Pressure panel re-renders every 30 s, so its 60-second GEX/NOPE poll and 15-minute dark-pool poll would never have fired. Measured: 1 request in 3 minutes with re-renders every 15 s, against 4 with the fix.
+
+The interval is now a number held in state. It changes only when the backoff step changes, and that change re-arms the timer at once.
+
+**Hidden tabs still executed error retries** (found by the follow-up review, [2026-10-23-followup-review.md](evidence/2026-10-22-feature-reaudit-rerun/2026-10-23-followup-review.md)). `refreshWhenHidden: false` paused normal polling, but the custom `onErrorRetry` scheduled an unconditional timer, so after an HTTP 503 a hidden tab made 6 requests in 3 minutes instead of 1. Retries now go through one scheduler per hook instance:
+- At most one timer; each retry has a deadline (429: the backed-off interval; other errors: doubling from 5 s, capped at the base cadence).
+- A retry that comes due while hidden or offline is held, not run.
+- On becoming visible and online, an overdue retry runs once immediately, and one not yet due is re-armed for its remaining time, so a rate-limit deadline is never shortened.
+- Success, a key change or unmount clears it. SWR's own reconnect revalidation is off, so the scheduler is the single recovery path.
+
+It is not simply dropped while hidden, because SWR skips normal polling while an error is cached and focus revalidation is off here. Tests cover 503 and 429 while hidden, hide-before-deadline, showing before and after a 429 deadline, repeated wake events, repeated failures (exact count, no burst), offline/online, unmount and key change. The review's witness passes unmodified. Removing the visibility/online gate fails 5 tests. Removing clean-up fails the unmount test, which compares leftover timers with a never-failed control because SWR leaves one internal timer either way. The key-change test alone would not catch missing clean-up (SWR's bound revalidate does nothing after the key changes); it shares the unmount clean-up path.
+
 Rerun evidence is saved separately in [evidence/2026-10-22-feature-reaudit-rerun/](evidence/2026-10-22-feature-reaudit-rerun/README.md). The original evidence directory is unchanged.
 

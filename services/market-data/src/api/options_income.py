@@ -16,6 +16,7 @@ from db.models import OptionsIncomeEquityCurve, OptionsIncomePortfolio, OptionsI
 from .auth import get_admin_user, get_advanced_user
 from ..services.options_income_engine import _today_et
 from ..services.options_income_engine import unsupported_contract_reason as _unsupported_reason
+from ..services.options_income_engine import settlement_state as _settlement_state
 from ..services.options_contract import contract_terms as _contract_terms
 from common.logging import get_logger
 
@@ -115,6 +116,13 @@ def list_income_portfolios(
             "current_equity": round(equity, 2),
             "equity_is_approximate": bool(_latest_evidence.get("approximate_marks")),
             "equity_mark_evidence": _latest_evidence or None,
+            # Review 2026-10-23: approximate marks on UNSUPPORTED contracts, and expired positions
+            # whose settlement is unresolved, are counted on their own so equity and return
+            # are never read as fully settled, fully quoted figures.
+            "equity_unsupported_contract_marks": int(_latest_evidence.get("unsupported_contract_marks")
+                                                     or (_latest_evidence.get("mark_quality") or {}).get("unsupported_contract_terms") or 0),
+            "settlement_unresolved": sum(1 for pos in open_positions
+                                         if _settlement_state(pos, _today_et())[0] == "settlement_unresolved"),
             "total_return_pct": round((equity / p.initial_capital - 1) * 100, 2),
             "open_positions": len(open_positions),
             "closed_positions": len(closed_positions),
@@ -211,6 +219,8 @@ def get_income_positions(
         # its payoff is not settled automatically.
         "contract_terms": _contract_terms(pos.option_symbol, pos.symbol),
         "payoff_blocked_reason": _unsupported_reason(pos.option_symbol, pos.symbol),
+        # Review 2026-10-23: an expired unsupported position is kept open on purpose; this says so.
+        **dict(zip(("settlement_state", "settlement_reason"), _settlement_state(pos, _today_et()))),
         "strike": pos.strike,
         "expiry": pos.expiry.isoformat(),
         "contracts": pos.contracts,
@@ -261,6 +271,9 @@ def get_income_equity_curve(
         # before the column existed — genuinely unknown, not "all good".
         "mark_evidence": c.mark_evidence,
         "is_approximate": bool((c.mark_evidence or {}).get("approximate_marks")),
+        # Review 2026-10-23: of those, marks on contracts with unsupported terms.
+        "unsupported_contract_marks": int((c.mark_evidence or {}).get("unsupported_contract_marks")
+                                          or ((c.mark_evidence or {}).get("mark_quality") or {}).get("unsupported_contract_terms") or 0),
     } for c in curve]
 
 

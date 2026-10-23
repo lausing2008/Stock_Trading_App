@@ -164,7 +164,7 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
                             <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.oi.toLocaleString()}</td>
                             <td style={{ padding: '5px 8px', color: c.vol_oi > 1 ? '#f59e0b' : '#94a3b8', fontWeight: c.vol_oi > 1 ? 700 : 400 }}>{c.vol_oi.toFixed(2)}×</td>
                             <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{fmtIv(c.iv)}</td>
-                            <td style={{ padding: '5px 8px', color: moneynessText(c) === 'ITM' ? '#4ade80' : '#475569' }}>{moneynessText(c)}</td>
+                            <td style={{ padding: '5px 8px', color: c.moneyness === 'ITM' ? '#4ade80' : '#475569' }}>{moneynessText(c)}</td>
                             <td title={premiumText(c) === 'unavailable' ? 'Paid premium needs trade-level data; the settled chain has none' : 'Premium from the trade tape'}
                               style={{ padding: '5px 8px', color: c.is_whale ? '#f59e0b' : '#475569', fontWeight: c.is_whale ? 700 : 400 }}>
                               {premiumText(c)}

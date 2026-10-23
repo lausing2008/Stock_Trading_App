@@ -51,6 +51,23 @@ def unsupported_contract_reason(option_symbol, symbol) -> str | None:
     """None for a standard contract; otherwise why its x100 payoff is not computed (R05)."""
     terms = _contract_terms(option_symbol, symbol)
     return None if terms["automatic_payoff_supported"] else f"{terms['status']}: {terms['basis']}"
+
+
+def settlement_state(pos, today: date) -> tuple[str, str | None]:
+    """(state, reason) for display (review 2026-10-23).
+
+    `settlement_unresolved` is an EXPIRED position whose contract terms are unsupported: it is
+    kept open on purpose, and that must be visible rather than look like an ordinary open
+    trade. `settlement_pending` is an expired standard position still waiting for its exact
+    settlement close (the existing retry path)."""
+    if pos.stage == "closed":
+        return "closed", None
+    if pos.expiry is not None and pos.expiry < today:
+        blocked = unsupported_contract_reason(pos.option_symbol, pos.symbol)
+        if blocked:
+            return "settlement_unresolved", f"expired; settlement not computed — {blocked}"
+        return "settlement_pending", "expired; waiting for the exact settlement-session close"
+    return "open", None
 log = structlog.get_logger()
 
 # The same liquid, daily-archived-chain universe OPTHIST already covers — see scheduler.py's
@@ -1249,6 +1266,7 @@ def _snapshot_income_equity_curve(session: Session, portfolios: list[OptionsInco
             quality_counts: dict[str, int] = {}
             worst_quote_age: int | None = None
             approximate = 0
+            unsupported_marks = 0
             for p in open_positions:
                 # R08: valued at the snapshot's OWN date, with the source recorded. The live
                 # price is correct only when the snapshot IS today.
@@ -1278,6 +1296,7 @@ def _snapshot_income_equity_curve(session: Session, portfolios: list[OptionsInco
                 # approximate with its own reason, never as an ordinary mark.
                 if unsupported_contract_reason(p.option_symbol, p.symbol):
                     _q = "unsupported_contract_terms"
+                    unsupported_marks += 1
                 quality_counts[_q] = quality_counts.get(_q, 0) + 1
                 if _q in _APPROXIMATE_MARK_QUALITIES or _q == "unsupported_contract_terms":
                     approximate += 1
@@ -1292,6 +1311,9 @@ def _snapshot_income_equity_curve(session: Session, portfolios: list[OptionsInco
                 "underlying_sources": underlying_sources,
                 "worst_quote_age_days": worst_quote_age,
                 "approximate_marks": approximate,
+                # R05 review: marks on contracts with unsupported terms, named on their own so a
+                # report can say WHY the figure is approximate, not only that it is.
+                "unsupported_contract_marks": unsupported_marks,
                 "positions_marked": len(open_positions),
                 # The bound the archive query applied, so the numbers above can be read without
                 # knowing this file's constants.

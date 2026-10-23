@@ -45,3 +45,5 @@ The ML calibration witness (R11/R12) is not rerun here: R11–R14 are pending re
 
 `r05-exclusions-latest-session.sql` and `.out.txt`: a read-only production query on each symbol's latest archived session. 285,643 contracts across 150 symbols, all standard; none adjusted, missing or unreadable. The archive-wide breakdown and open options-income positions were not measured.
 
+Archive-wide and income positions (2026-10-23): `r05-archive-by-symbol.*` (133 symbols complete, 17 timed out at 60 s), `r05-archive-large-symbols-quarterly.*` (those 17 per quarter, all complete), `r05-income-positions.*`. Total 52,526,842 archive rows plus 14 positions: zero exclusions under the current R05 classifier (root matching on readable OCC symbols). That is not independent verification of any contract's deliverable.
+
