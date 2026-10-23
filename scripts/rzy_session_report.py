@@ -154,6 +154,7 @@ def main(day, out_dir):
             too_late_to_mail=sum(r.too_late_to_mail for r in session_runs), new_emailable_events=sum(r.new_emailable_events for r in session_runs),
             queued=sum(r.queued for r in session_runs))
         # OD-02: where scan time went (present from the 2026-10-22 release on).
+        ph, authority = [], []
         try:
             from src.services.rzy_models import RzyScanPhases
             with s.begin_nested():   # a missing table must not abort the rest of the report
@@ -163,6 +164,24 @@ def main(day, out_dir):
             report['scan_phases_seconds'] = {k: pct([p.phases.get(k, 0.0) for p in ph]) for k in keys} if ph else {'n': 0}
         except Exception as exc:  # noqa: BLE001 - older release: no phase table
             report['scan_phases_seconds'] = {'unavailable': str(exc)[:120]}
+        # OD-01 fix 1: one authoritative provider per completed bar (present from db89050a on).
+        # protected = fallback writes refused on authority-owned bars; replaced = fallback bars
+        # the authority took over once. Both are the success measure for the fix.
+        try:
+            from src.services.bar_provenance import BarSessionAuthority
+            with s.begin_nested():
+                authority = s.scalars(select(BarSessionAuthority).where(
+                    BarSessionAuthority.session_date == datetime.fromisoformat(day))).all()
+            divs = [a.max_protected_divergence for a in authority if a.max_protected_divergence is not None]
+            report['bar_session_authority'] = dict(
+                sessions=len(authority), by_authority=dict(Counter(a.authority for a in authority)),
+                by_timeframe=dict(Counter(a.timeframe for a in authority)),
+                protected=sum(a.protected or 0 for a in authority), replaced=sum(a.replaced or 0 for a in authority),
+                sessions_with_protected=sum(1 for a in authority if a.protected),
+                trace_failed_sessions=sum(1 for a in authority if a.trace_failed),
+                max_protected_divergence=pct(divs))
+        except Exception as exc:  # noqa: BLE001 - older release: no authority table
+            report['bar_session_authority'] = {'unavailable': str(exc)[:120]}
         # F08: the append-only rebuild log survives generation pruning; archives do not.
         log_rows = s.scalars(select(RzyRebuild).where(RzyRebuild.rebuilt_at >= start, RzyRebuild.rebuilt_at < end)).all()
         if log_rows:
@@ -254,6 +273,13 @@ def main(day, out_dir):
            'first_generation', 'observed_in', 'latest_generation', 'queued_at'])
     write('rebuilds.csv', [dict(stream_key=g.stream_key, generation=g.generation, reason=g.reason, rebuilt_at=g.rebuilt_at.isoformat())
           for g in log_rows], ['stream_key', 'generation', 'reason', 'rebuilt_at'])
+    phase_keys = sorted({k for p in ph for k in p.phases})
+    write('scan_phases.csv', [dict(scan_time=p.scan_time.isoformat(), mode=p.mode, **{k: p.phases.get(k) for k in phase_keys}) for p in ph],
+          ['scan_time', 'mode'] + phase_keys)
+    write('bar_session_authority.csv', [dict(symbol=symbols.get(a.stock_id), timeframe=a.timeframe, session_date=a.session_date.date().isoformat(),
+          authority=a.authority, recorded_at=a.recorded_at.isoformat() if a.recorded_at else None, protected=a.protected, replaced=a.replaced,
+          max_protected_divergence=a.max_protected_divergence, trace_failed=a.trace_failed) for a in authority],
+          ['symbol', 'timeframe', 'session_date', 'authority', 'recorded_at', 'protected', 'replaced', 'max_protected_divergence', 'trace_failed'])
     (out / 'report.json').write_text(json.dumps(report, indent=1, default=str))
     root = Path(os.environ.get('RZY_EVAL_ROOT', '/app'))
     code = {f: hashlib.sha256((root / 'src/services' / f).read_bytes()).hexdigest() for f in
