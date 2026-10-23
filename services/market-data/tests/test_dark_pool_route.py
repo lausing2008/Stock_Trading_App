@@ -57,7 +57,7 @@ def test_real_data_case_reports_source_unusual_whales():
 def test_never_returns_available_true_with_source_none():
     import re
     returns = re.findall(r"return \{[^}]*\}", _FUNC_SOURCE, re.DOTALL)
-    assert len(returns) == 3
+    assert len(returns) == 4
     for r in returns:
         if '"available": True' in r:
             assert '"source": "unusual_whales"' in r

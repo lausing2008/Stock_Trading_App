@@ -243,10 +243,10 @@ export function sideEstimateText(side?: string | null): string {
   return side === 'buy' ? 'buy (est.)' : side === 'sell' ? 'sell (est.)' : 'undeterminable';
 }
 
-export function baselineLine(b?: { status: string; median: number | null; prints: number | null; window_days: number; min_prints: number; text?: string | null; sampling?: { status: string; note?: string; failed_polls?: number; saturated_windows?: number; missing_session_slots?: number } } | null): string | null {
+export function baselineLine(b?: { status: string; median: number | null; prints: number | null; window_days: number; min_prints: number; text?: string | null; sampling?: { status: string; note?: string; failed_polls?: number; saturated_windows?: number; missing_session_slots?: number; unidentified_events?: number } } | null): string | null {
   if (!b) return null;
   const sampling = b.sampling;
-  const samplingText = sampling ? ` Sampling: ${sampling.status}; failed polls ${sampling.failed_polls ?? 'unknown'}, saturated windows ${sampling.saturated_windows ?? 'unknown'}, missing session slots ${sampling.missing_session_slots ?? 'unknown'}. ${sampling.note ?? ''}` : ' Sampling continuity and event identity are unverified.';
+  const samplingText = sampling ? ` Sampling: ${sampling.status}; failed polls ${sampling.failed_polls ?? 'unknown'}, saturated windows ${sampling.saturated_windows ?? 'unknown'}, missing session slots ${sampling.missing_session_slots ?? 'unknown'}, unidentified events ${sampling.unidentified_events ?? 'unknown'}. ${sampling.note ?? ''}` : ' Sampling continuity and event identity are unverified.';
   const base = b.text ?? b.status;
   const pop = `${b.prints ?? 'unknown'} captured prints in ${b.window_days} days (relative bar needs ${b.min_prints})`;
   return b.status === 'ok' && b.median != null ? `Baseline: median ${money(b.median)} — ${pop}; percentiles are relative to captured prints, not all market activity.${samplingText}`

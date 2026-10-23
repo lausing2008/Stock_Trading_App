@@ -4627,7 +4627,9 @@ def get_dark_pool_prints_route(symbol: str, session: Session = Depends(get_sessi
     from ..services.scheduler import _dark_pool_baseline
     now = datetime.now(timezone.utc)
     prints = []
-    for r in rows:
+    for r in _uw.usable_dark_pool_rows(rows):
+        if getattr(r, "canceled", None) is True:
+            continue
         at, status = _dpe.print_time(r.executed_at, now)
         prints.append({
             "price": r.price, "size": r.size, "premium": r.premium,
@@ -4639,6 +4641,9 @@ def get_dark_pool_prints_route(symbol: str, session: Session = Depends(get_sessi
             "nbbo_bid": r.nbbo_bid, "nbbo_ask": r.nbbo_ask,
             "side_estimate": _uw.classify_dark_pool_side(r.price, r.nbbo_bid, r.nbbo_ask),
         })
+    if not prints:
+        return {"symbol":sym,"available":False,"source":"unusual_whales", "prints":[],
+                **status_fields,"status":"empty","reason":"no_active_prints"}
     baseline = _dark_pool_baseline(session, sym)
     from ..services.dark_pool_sampling import coverage as sampling_coverage
     try:

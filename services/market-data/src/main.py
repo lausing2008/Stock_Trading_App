@@ -36,6 +36,8 @@ _quote_stream_stop = asyncio.Event()
 
 async def on_startup():
     init_db()
+    from .services.dark_pool_ledger import ensure_schema
+    ensure_schema()
     start_scheduler()
     # T230-DATA-STREAMING-QUOTES: long-lived real-time quote WebSocket task, started once at
     # startup on FastAPI's own event loop (this is safe here specifically because on_startup is

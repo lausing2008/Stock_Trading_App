@@ -15,11 +15,11 @@ def key(symbol):
     return f"stockai:darkpool:polls:v1:{symbol.upper()}"
 
 
-def record(redis, symbol, status, count=0, limit=50, *, now=None):
+def record(redis, symbol, status, count=0, limit=50, *, now=None, identified=None):
     now = now or datetime.now(timezone.utc)
     try:
         item = json.dumps({"at": now.isoformat(), "status": status, "count": count,
-                           "saturated": count >= limit, "limit": limit}, sort_keys=True)
+                           "saturated": count >= limit, "limit": limit, "identified": identified}, sort_keys=True)
         pipe = redis.pipeline()
         pipe.zadd(key(symbol), {item: now.timestamp()})
         pipe.zremrangebyscore(key(symbol), "-inf", now.timestamp() - RETENTION)
@@ -38,6 +38,7 @@ def summarize(rows, *, now=None):
     times = sorted(datetime.fromisoformat(r["at"]) for r in successful)
     failures = len(good) - len(successful)
     saturated = sum(bool(r["saturated"]) for r in successful)
+    unidentified = sum(max(0,r.get("count",0)-(r.get("identified") or 0)) for r in successful)
     # Only assess complete expected slots after observation began, during regular sessions.
     missing = 0
     if good:
@@ -53,13 +54,13 @@ def summarize(rows, *, now=None):
                         missing += 1
                     slot = end
             day += timedelta(days=1)
-    return {"status": "unobserved" if not good else "degraded" if failures or saturated or missing else "observed_sample",
-            "polls": len(good), "failed_polls": failures, "saturated_windows": saturated,
+    return {"status": "unobserved" if not good else "degraded" if failures or saturated or missing or unidentified else "observed_sample",
+            "polls": len(good), "failed_polls": failures, "unidentified_events": unidentified, "saturated_windows": saturated,
             "missing_session_slots": missing, "expected_cadence_seconds": CADENCE,
             "observed_since": good[0]["at"] if good else None,
             "last_poll": good[-1]["at"] if good else None,
-            "identity_status": "legacy_tuple_identity_unverified",
-            "note": "Captured windows only. Corrections and identical distinct prints cannot be resolved by the legacy tuple key; continuous tape coverage is not established."}
+            "identity_status": "provider_tracking_id_v2",
+            "note": "Captured windows only. The identity ledger excludes legacy tuples and unidentified prints; continuous tape coverage is not established."}
 
 
 def coverage(redis, symbol, *, now=None):
@@ -69,4 +70,4 @@ def coverage(redis, symbol, *, now=None):
         return summarize([json.loads(r) for r in raw], now=now)
     except Exception:
         return {"status": "query_failed", "note": "Poll history unavailable; sampling quality is unknown.",
-                "identity_status": "legacy_tuple_identity_unverified"}
+                "identity_status": "provider_tracking_id_v2"}

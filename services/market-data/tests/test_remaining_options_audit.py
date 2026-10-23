@@ -34,7 +34,7 @@ def test_busy_bursts_do_not_hide_poll_gaps_or_limit_saturation():
     assert result['status'] == 'degraded'
     assert result['failed_polls'] == result['saturated_windows'] == 1
     assert result['missing_session_slots'] == 15
-    assert result['identity_status'] == 'legacy_tuple_identity_unverified'
+    assert result['identity_status'] == 'provider_tracking_id_v2'
 
 
 def test_closed_market_does_not_create_missing_session_slots():

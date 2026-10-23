@@ -1733,6 +1733,9 @@ class DarkPoolPrintRow:
     # quote timing, late reports and trade conditions can move a print inside the spread.
     nbbo_bid: float | None = None
     nbbo_ask: float | None = None
+    tracking_id: str | None = None
+    canceled: bool | None = None
+    observed_at: str | None = None
 
 
 # T377-DARKPOOL-SIDE: how far into the spread a print must land before it is called.
@@ -1807,9 +1810,16 @@ class DarkPoolFetch:
 
 def _parse_dark_pool_rows(sym: str, data) -> tuple[list[DarkPoolPrintRow], int]:
     result: list[DarkPoolPrintRow] = []
+    observed_at = datetime.now(timezone.utc).isoformat()
     bad = 0
     for row in data:
         try:
+            raw_id = row.get("tracking_id")
+            tracking_id = str(raw_id).strip() if isinstance(raw_id,(str,int)) and not isinstance(raw_id,bool) else None
+            if tracking_id and len(tracking_id) > 128:
+                tracking_id = None
+            raw_cancel = row.get("canceled")
+            canceled = raw_cancel if type(raw_cancel) is bool else (True if raw_cancel == 'true' else False if raw_cancel == 'false' else None)
             price = _to_float(row.get("price"))
             size = int(row["size"]) if row.get("size") is not None else None
             premium = _to_float(row.get("premium"))
@@ -1826,6 +1836,7 @@ def _parse_dark_pool_rows(sym: str, data) -> tuple[list[DarkPoolPrintRow], int]:
                 # other numeric field in this payload — _to_float handles that and None.
                 nbbo_bid=_to_float(row.get("nbbo_bid")),
                 nbbo_ask=_to_float(row.get("nbbo_ask")),
+                tracking_id=tracking_id, canceled=canceled, observed_at=observed_at,
             ))
         except Exception:
             bad += 1
@@ -1859,7 +1870,7 @@ def fetch_dark_pool_prints(symbol: str, *, limit: int = 50) -> DarkPoolFetch:
     if not is_available():
         return DarkPoolFetch(status="disabled", rows=[], reason="unusual_whales_disabled")
     sym = symbol.upper()
-    cache_key = f"stockai:uw:darkpool:v2:{sym}"
+    cache_key = f"stockai:uw:darkpool:v3:{sym}"
     last_good_key = f"stockai:uw:darkpool:lastgood:{sym}"
     try:
         cached = _get_redis().get(cache_key)
@@ -1876,9 +1887,15 @@ def fetch_dark_pool_prints(symbol: str, *, limit: int = 50) -> DarkPoolFetch:
 
     def observed(result):
         try:
-            record_poll(_get_redis(), sym, result.status, len(result.rows), limit)
+            record_poll(_get_redis(), sym, result.status, len(result.rows), limit, identified=sum(bool(r.tracking_id) and type(r.canceled) is bool for r in result.rows))
         except Exception:
             pass
+        if result.status == "ok":
+            try:
+                from .dark_pool_ledger import capture
+                capture(sym,result.rows)
+            except Exception as exc:
+                log.warning("dark_pool_ledger.capture_failed",symbol=sym,error=type(exc).__name__)
         return result
 
     fetched_at = datetime.now(timezone.utc).isoformat()
@@ -1926,11 +1943,33 @@ def fetch_dark_pool_prints(symbol: str, *, limit: int = 50) -> DarkPoolFetch:
                          malformed_rows=bad))
 
 
+def usable_dark_pool_rows(rows):
+    """Evidence rows only: canceled or conflicting same-ID reports cannot trigger activity.
+
+    Raw observations still reach the version ledger before this reduction. Identical
+    re-deliveries of one ID collapse; genuinely distinct IDs retain identical trade tuples.
+    """
+    groups, unknown = {}, []
+    fields = ("price","size","premium","venue","executed_at","nbbo_bid","nbbo_ask","canceled")
+    for row in rows:
+        identity = getattr(row,"tracking_id",None)
+        if identity:
+            groups.setdefault(identity,[]).append(row)
+        elif getattr(row,"canceled",None) is not True:
+            unknown.append(row)
+    kept = list(unknown)
+    for group in groups.values():
+        signatures = {tuple(getattr(r,k,None) for k in fields) for r in group}
+        if len(signatures)==1 and getattr(group[0],"canceled",None) is not True:
+            kept.append(group[0])
+    return kept
+
+
 def get_dark_pool_prints(symbol: str, *, limit: int = 50) -> list[DarkPoolPrintRow]:
     """The prints only — empty for every non-ok outcome. Kept for callers that scan (the alert
     job), where "nothing to scan" is the right reaction to any failure. A caller that DISPLAYS
     the result must use fetch_dark_pool_prints() and show its status (audit R01)."""
-    return fetch_dark_pool_prints(symbol, limit=limit).rows
+    return usable_dark_pool_rows(fetch_dark_pool_prints(symbol, limit=limit).rows)
 
 
 _OPTIONS_SCREENER_TTL = 300  # 5 min — a live scanning tool, but not fast enough-moving to need

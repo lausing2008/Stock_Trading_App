@@ -105,21 +105,21 @@ def test_success_reports_when_the_provider_answered_and_the_newest_print():
 
 def test_a_cached_answer_keeps_its_original_fetch_time():
     _, redis = _route(GOOD)
-    first = json.loads(redis.store["stockai:uw:darkpool:v2:SYNTH"])["fetched_at"]
+    first = json.loads(redis.store["stockai:uw:darkpool:v3:SYNTH"])["fetched_at"]
     out, _ = _route(AssertionError("must not fetch"), redis=redis)
     assert out["from_cache"] is True and out["fetched_at"] == first
 
 
 def test_a_failure_is_never_cached_so_the_next_view_retries():
     _, redis = _route(HTTPStatusError(503))
-    assert "stockai:uw:darkpool:v2:SYNTH" not in redis.store
+    assert "stockai:uw:darkpool:v3:SYNTH" not in redis.store
     out, _ = _route(GOOD, redis=redis)
     assert out["status"] == "ok"
 
 
 def test_a_last_good_sample_is_shown_only_beside_the_failure():
     _, redis = _route(GOOD)
-    del redis.store["stockai:uw:darkpool:v2:SYNTH"]          # the 15-min answer cache expired
+    del redis.store["stockai:uw:darkpool:v3:SYNTH"]          # the 15-min answer cache expired
     out, _ = _route(UW.UnusualWhalesRateLimitError("429"), redis=redis)
     assert out["status"] == "rate_limited"                    # the failure is the answer...
     assert out["available"] is True and out["stale"] is True  # ...with the old sample beside it
@@ -131,3 +131,20 @@ def test_the_scanning_wrapper_keeps_its_empty_list_contract():
     with patch.object(UW, "is_available", lambda: True), patch.object(UW, "_get_redis", lambda: _Redis()), \
          patch.object(UW, "_get", side_effect=HTTPStatusError(503)):
         assert UW.get_dark_pool_prints("SYNTH") == []
+
+
+def test_provider_identity_and_cancel_flag_survive_parsing_and_cancel_is_not_activity():
+    raw=[{**GOOD[0],"tracking_id":123,"canceled":True}]
+    rows,_=UW._parse_dark_pool_rows('SYNTH',raw)
+    assert rows[0].tracking_id=='123' and rows[0].canceled is True and rows[0].observed_at
+    out,_=_route(raw)
+    assert out['available'] is False and out['status']=='empty' and out['reason']=='no_active_prints'
+
+
+def test_distinct_tracking_ids_are_kept_but_conflicting_same_id_is_quarantined():
+    rows,_=UW._parse_dark_pool_rows('SYNTH',[
+        {**GOOD[0],"tracking_id":1,"canceled":False},
+        {**GOOD[0],"tracking_id":2,"canceled":False}])
+    assert len(UW.usable_dark_pool_rows(rows+rows))==2
+    changed,_=UW._parse_dark_pool_rows('SYNTH',[{**GOOD[0],"tracking_id":1,"canceled":True}])
+    assert [r.tracking_id for r in UW.usable_dark_pool_rows(rows+changed)]==['2']

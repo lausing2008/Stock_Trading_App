@@ -6437,8 +6437,8 @@ def _dark_pool_baseline(session, symbol: str, before: datetime | None = None) ->
                 SELECT COUNT(*) AS n,
                        percentile_cont(0.5) WITHIN GROUP (ORDER BY premium) AS med,
                        MIN(executed_at) AS first_at, MAX(executed_at) AS last_at
-                FROM dark_pool_prints
-                WHERE symbol = :sym AND executed_at >= :cutoff AND executed_at < :before AND premium IS NOT NULL
+                FROM dark_pool_events_v2
+                WHERE symbol = :sym AND executed_at >= :cutoff AND executed_at < :before AND premium IS NOT NULL AND canceled IS FALSE AND ambiguous IS FALSE
             """),
             {"sym": symbol, "cutoff": cutoff, "before": before},
         ).one()
@@ -6450,7 +6450,8 @@ def _dark_pool_baseline(session, symbol: str, before: datetime | None = None) ->
                 "window_days": _DARK_POOL_BASELINE_DAYS, "min_prints": _DARK_POOL_BASELINE_MIN_PRINTS,
                 "first_captured": first_at.isoformat() if hasattr(first_at, "isoformat") else None,
                 "last_captured": last_at.isoformat() if hasattr(last_at, "isoformat") else None,
-                "population": "captured prints for this symbol (bounded provider windows), not all market activity"}
+                "identity_status": "provider_tracking_id_v2", "legacy_history_used": False,
+                "population": "latest observed uncanceled provider tracking IDs (captured windows), not all market activity"}
     except Exception as exc:
         log.warning("dark_pool_baseline.failed", symbol=symbol, error=str(exc))
         try:
@@ -6460,7 +6461,8 @@ def _dark_pool_baseline(session, symbol: str, before: datetime | None = None) ->
         return {"status": "query_failed", "median": None, "prints": None,
                 "window_days": _DARK_POOL_BASELINE_DAYS, "min_prints": _DARK_POOL_BASELINE_MIN_PRINTS,
                 "first_captured": None, "last_captured": None,
-                "population": "captured prints for this symbol (bounded provider windows), not all market activity"}
+                "identity_status": "provider_tracking_id_v2", "legacy_history_used": False,
+                "population": "latest observed uncanceled provider tracking IDs (captured windows), not all market activity"}
 
 
 def _dark_pool_premium_baseline(session, symbol: str, before: datetime | None = None) -> float | None:
@@ -6496,11 +6498,19 @@ def _persist_dark_pool_prints(session, stock_id: int, symbol: str, rows: list) -
     if not rows:
         return 0
     try:
+        from .dark_pool_ledger import persist as persist_events
+        persist_events(session, symbol, rows)
+    except Exception as exc:
+        session.rollback()
+        log.warning("dark_pool_ledger.persist_failed", symbol=symbol, error=str(exc))
+    try:
         from sqlalchemy.dialects.postgresql import insert as _pg_insert
         from .dark_pool_evidence import print_time
         payload = []
         quarantined: dict[str, int] = {}
         for r in rows:
+            if getattr(r, "canceled", None) is True:
+                continue
             if r.executed_at is None or r.price is None or r.size is None:
                 continue
             # B4: store the instant in UTC (the column has no zone, so an offset in the raw
@@ -6702,7 +6712,7 @@ def check_dark_pool_alerts() -> None:
                     from .option_evidence import dark_pool_qualifies
                     qualifying = []   # (row, its baseline info)
                     for r in rows:
-                        if (r.premium or 0) < _DARK_POOL_ALERT_MIN_PREMIUM or not _dark_pool_print_is_recent(r, _print_cutoff):
+                        if getattr(r, "canceled", None) is True or (r.premium or 0) < _DARK_POOL_ALERT_MIN_PREMIUM or not _dark_pool_print_is_recent(r, _print_cutoff):
                             continue
                         event_at = _print_time(r.executed_at)[0]
                         info = _dark_pool_baseline(session, symbol, before=event_at)
