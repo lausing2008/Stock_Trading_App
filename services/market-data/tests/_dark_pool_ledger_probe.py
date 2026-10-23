@@ -54,7 +54,7 @@ with engine.connect() as connection:
             write([row('a',step=30,price=101)])
             write([row('a',step=20,price=99)])
             assert current('a')['price']==101
-            write([row('a',step=40,price=None,canceled=True)])
+            write([row('a',step=40,price=0,canceled=True)])
             assert current('a')['canceled'] and current('a')['price'] is None
             write([row('a',step=35,price=102)])
             assert current('a')['canceled']

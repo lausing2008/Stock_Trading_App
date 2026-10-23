@@ -45,21 +45,24 @@ def event_values(symbol, row):
     try:
         observed_at = _utc(observed)
         canceled = row.canceled
-        # Cancellation tombstones remain useful even when a provider omits trade figures.
-        executed_at = _utc(row.executed_at) if row.executed_at else None
-        price = float(row.price) if row.price is not None else None
-        size = int(row.size) if row.size is not None else None
-        if not canceled and (executed_at is None or price is None or size is None):
-            return None
-        if ((price is not None and (not math.isfinite(price) or price <= 0))
-                or (size is not None and size <= 0)
-                or (executed_at is not None and executed_at > observed_at + CLOCK_TOLERANCE)):
-            return None
-        premium = float(row.premium) if row.premium is not None else price*size if price is not None and size is not None else None
-        if premium is not None and (not math.isfinite(premium) or premium < 0):
-            return None
+        # Identity and the explicit cancellation flag suffice for a tombstone. Providers
+        # may zero or omit trade figures on cancellation; those must not preserve an active row.
+        if canceled:
+            executed_at = price = size = premium = None
+        else:
+            executed_at = _utc(row.executed_at) if row.executed_at else None
+            price = float(row.price) if row.price is not None else None
+            size = int(row.size) if row.size is not None else None
+            if (executed_at is None or price is None or size is None
+                    or not math.isfinite(price) or price <= 0 or size <= 0
+                    or executed_at > observed_at + CLOCK_TOLERANCE):
+                return None
+            premium = float(row.premium) if row.premium is not None else price*size
+            if not math.isfinite(premium) or premium < 0:
+                return None
         payload = {'executed_at':executed_at.isoformat() if executed_at else None, 'price':price,'size':size,'premium':premium,
-                   'canceled':row.canceled,'nbbo_bid':row.nbbo_bid,'nbbo_ask':row.nbbo_ask,'venue':row.venue}
+                   'canceled':row.canceled,'nbbo_bid':None if canceled else row.nbbo_bid,
+                   'nbbo_ask':None if canceled else row.nbbo_ask,'venue':None if canceled else row.venue}
         digest=hashlib.sha256(json.dumps(payload,sort_keys=True,allow_nan=False).encode()).hexdigest()
         return dict(symbol=symbol, tracking_id=str(tracking_id), executed_at=executed_at,price=price,
                     size=size,premium=premium,canceled=row.canceled,ambiguous=False,payload=payload,payload_hash=digest,observed_at=observed_at)
