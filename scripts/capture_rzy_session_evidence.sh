@@ -56,18 +56,24 @@ repo_head=$(git -C "$REPO" rev-parse HEAD 2>/dev/null)
 script_sha=$(sha256sum "$0" "$REPO/scripts/rzy_session_report.py" 2>/dev/null | awk '{print $1}' | paste -sd, -)
 docker cp "$REPO/scripts/rzy_session_report.py" stockai-market-data-1:/tmp/rzy_session_report.py
 docker exec -e RZY_RELEASE="$release" -w /app stockai-market-data-1 rm -rf "/tmp/rzy-session-$DAY"
-docker exec -e RZY_RELEASE="$release" -w /app stockai-market-data-1 python /tmp/rzy_session_report.py "$DAY" "/tmp/rzy-session-$DAY"
+# 2026-10-22: the first run of this report coincided with a 3-hour host stall (disk saturated,
+# no OOM, cause unproven). Lowest CPU and I/O priority, and a hard time limit, so the report
+# can never be the thing that holds the host.
+docker exec -e RZY_RELEASE="$release" -w /app stockai-market-data-1 \
+  timeout "${REPORT_TIMEOUT_S:-1800}" ionice -c3 nice -n 19 python /tmp/rzy_session_report.py "$DAY" "/tmp/rzy-session-$DAY"
+report_exit=$?
+echo "$(date -u +%FT%TZ) report exit=$report_exit"
 docker cp "stockai-market-data-1:/tmp/rzy-session-$DAY/." "$DEST/"
 # daily_ingest_records is overwritten per symbol on every fetch: keep this point-in-time copy.
 docker exec stockai-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\copy (select * from daily_ingest_records order by symbol) to stdout with csv header"' > "$DEST/daily_ingest_records.csv"
-python3 - "$DEST" "$confirmed" "$release" "$record" "$DAY" "$coverage" "$MIN_SESSION_COVERAGE" "$image" "$started" "$repo_head" "$script_sha" <<'EOF'
+python3 - "$DEST" "$confirmed" "$release" "$record" "$DAY" "$coverage" "$MIN_SESSION_COVERAGE" "$image" "$started" "$repo_head" "$script_sha" "$report_exit" <<'EOF'
 import json, sys, hashlib, pathlib, datetime
 dest, confirmed, release, record = sys.argv[1], sys.argv[2] == "true", sys.argv[3], sys.argv[4]
 day, (observed, total), min_cov = sys.argv[5], map(int, sys.argv[6].split()), float(sys.argv[7])
-image, started, repo_head, script_sha = sys.argv[8:12]
+image, started, repo_head, script_sha, report_exit = sys.argv[8:13]
 p = pathlib.Path(dest)
 json.dump({"captured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "post_close_confirmed": confirmed,
-           "target_session": day,
+           "target_session": day, "report_exit_code": int(report_exit),
            "session_coverage": {"observed_after_post_close": observed, "active_us_symbols": total, "required": min_cov},
            "release_identity": {"market_data_release": release, "image_id": image, "container_started_at": started,
                                 "ec2_repo_head": repo_head, "capture_and_report_script_sha256": script_sha},
