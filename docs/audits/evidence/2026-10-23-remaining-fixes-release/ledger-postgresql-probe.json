@@ -1,0 +1,10 @@
+{
+  "active_unambiguous": 1,
+  "corrections_and_cancellations": true,
+  "database": "postgresql-temp",
+  "distinct_events": 2,
+  "outer_rollback": true,
+  "retained_versions": 10,
+  "stale_capture_cannot_revert": true,
+  "temporary_tables_only": true
+}

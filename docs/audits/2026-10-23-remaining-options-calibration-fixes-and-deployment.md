@@ -46,4 +46,6 @@ Production preflight found 15 healthy containers, 32 GB free, and a clean server
 
 Deploy only committed source, excluding the unrelated dirty working tree. Build market-data, signal-engine and frontend with production settings on EC2; never transfer the local `.next` artifact or `.env.local`. Retain the running image IDs before rebuilding. Recreate only those services with `--no-deps` and check health, source hashes and representative authenticated responses. The frontend deployment script now also uses `--no-deps` so it cannot recreate dependencies.
 
-Validation and deployed release identity will be appended after the isolated checks and rollout finish.
+The PostgreSQL temporary-table probe passed: two distinct IDs retained, ten payload versions, one active unambiguous event; corrections, cancellation tombstones and stale-capture protection all passed. Temporary tables disappeared after rollback. Evidence is in [the release evidence folder](evidence/2026-10-23-remaining-fixes-release/README.md). The first container probe failed before any connection because its repository-depth assumption did not fit `/app/tests`; the harness was corrected and the ledger code passed unchanged.
+
+Final suite totals and deployed release identity will be appended after rollout.

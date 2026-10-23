@@ -7,8 +7,11 @@ import sys
 from pathlib import Path
 from datetime import datetime,timedelta,timezone
 from types import SimpleNamespace as NS
-root=Path(__file__).resolve().parents[3]
-sys.path[:0]=[str(root/'shared'),str(root/'services/market-data')]
+probe=Path(__file__).resolve()
+if len(probe.parents)>3:
+    root=probe.parents[3]
+    sys.path[:0]=[str(root/'shared'),str(root/'services/market-data')]
+# Container images already set PYTHONPATH=/app/shared:/app.
 from sqlalchemy import create_engine,select,func
 from sqlalchemy.orm import Session
 from src.services import dark_pool_ledger as ledger
