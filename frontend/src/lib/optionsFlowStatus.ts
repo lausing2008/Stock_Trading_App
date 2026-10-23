@@ -165,15 +165,16 @@ export function pressureShare(p: { score: number; components: { max_possible?: n
 }
 
 /** Pressure as a point total out of what could be measured — never a percentage (F5). */
-export function pressureText(p: { score: number; components: { max_possible?: number } }): string {
-  return p.components.max_possible != null ? `Pressure ${p.score.toFixed(0)} / ${p.components.max_possible.toFixed(0)} pts` : `Pressure ${p.score.toFixed(0)} pts`;
+export function pressureText(p: { score: number; method_version?: string; components: { max_possible?: number } }): string {
+  const label = p.method_version === 'chain_intensity_v2' ? 'Chain activity' : 'Pressure';
+  return p.components.max_possible != null ? `${label} ${p.score.toFixed(0)} / ${p.components.max_possible.toFixed(0)} pts` : `${label} ${p.score.toFixed(0)} pts`;
 }
 
 export function pressureTitle(p: { components: { cp_ratio_pts: number; whale_pts: number; volume_pts: number; uw_gex_proximity_pts?: number;
   measured?: string[]; unmeasured?: string[] } }): string {
   const c = p.components;
   return `Activity intensity points, not direction, confidence or a probability. Measured: ${(c.measured ?? []).join(', ') || 'unknown'}`
-    + `${c.unmeasured?.length ? `; not measured: ${c.unmeasured.join(', ')}` : ''}. Compare only with scores measuring the same components. `
+    + `${c.unmeasured?.length ? `; not measured: ${c.unmeasured.join(', ')}` : ''}. Compare only with scores using the same method, session, expiration scope and components. `
     + `cp_ratio ${c.cp_ratio_pts}/40 · volume ${c.volume_pts}/10${c.unmeasured?.includes('whale') ? '' : ` · whales ${c.whale_pts}/30`}`
     + `${c.uw_gex_proximity_pts != null ? ` · GEX proximity ${c.uw_gex_proximity_pts}/20` : ''}`;
 }
@@ -232,12 +233,14 @@ export function sideEstimateText(side?: string | null): string {
   return side === 'buy' ? 'buy (est.)' : side === 'sell' ? 'sell (est.)' : 'undeterminable';
 }
 
-export function baselineLine(b?: { status: string; median: number | null; prints: number | null; window_days: number; min_prints: number; text?: string | null } | null): string | null {
+export function baselineLine(b?: { status: string; median: number | null; prints: number | null; window_days: number; min_prints: number; text?: string | null; sampling?: { status: string; note?: string; failed_polls?: number; saturated_windows?: number; missing_session_slots?: number } } | null): string | null {
   if (!b) return null;
+  const sampling = b.sampling;
+  const samplingText = sampling ? ` Sampling: ${sampling.status}; failed polls ${sampling.failed_polls ?? 'unknown'}, saturated windows ${sampling.saturated_windows ?? 'unknown'}, missing session slots ${sampling.missing_session_slots ?? 'unknown'}. ${sampling.note ?? ''}` : ' Sampling continuity and event identity are unverified.';
   const base = b.text ?? b.status;
   const pop = `${b.prints ?? 'unknown'} captured prints in ${b.window_days} days (relative bar needs ${b.min_prints})`;
-  return b.status === 'ok' && b.median != null ? `Baseline: median ${money(b.median)} — ${pop}; percentiles are relative to captured prints, not all market activity.`
-    : `Baseline: ${base} — ${pop}.`;
+  return b.status === 'ok' && b.median != null ? `Baseline: median ${money(b.median)} — ${pop}; percentiles are relative to captured prints, not all market activity.${samplingText}`
+    : `Baseline: ${base} — ${pop}.${samplingText}`;
 }
 
 // ── Audit R03/R04 (2026-10-22): unknown measurements render as unknown ────────────────────────

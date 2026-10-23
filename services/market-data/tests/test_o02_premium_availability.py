@@ -306,7 +306,7 @@ def test_the_denominator_reflects_every_unmeasured_component():
     full = compute_options_pressure_score(
         cp_ratio=3.0, sentiment="bullish", whale_count=2, total_call_vol=5000,
         total_put_vol=1000, gex={"distance_to_flip_pct": 2.0})
-    assert full["components"]["max_possible"] == 100.0
+    assert full["components"]["max_possible"] == 80.0  # R08 excludes live GEX from settled score
     no_gex = compute_options_pressure_score(
         cp_ratio=3.0, sentiment="bullish", whale_count=2,
         total_call_vol=5000, total_put_vol=1000)

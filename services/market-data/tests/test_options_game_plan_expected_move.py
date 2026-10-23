@@ -29,7 +29,7 @@ class _FakeIVRank:
 # itself is tested in test_options_scope.py.
 from datetime import date as _date
 _SESSION = _date(2026, 9, 17)
-_ALL_CURRENT = lambda expiries, session, now=None: list(expiries)  # noqa: E731
+_ALL_CURRENT = lambda expiries, session, now=None, **kwargs: list(expiries)  # noqa: E731
 
 def _fake_uw_chain():
     """T404-OPTIONS-UW-MIGRATION: the option CHAIN moved to Unusual Whales. yfinance is still

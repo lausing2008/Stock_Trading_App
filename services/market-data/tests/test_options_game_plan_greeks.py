@@ -31,7 +31,7 @@ class _FakeStrikeGreeks:
 # itself is tested in test_options_scope.py.
 from datetime import date as _date
 _SESSION = _date(2026, 9, 17)
-_ALL_CURRENT = lambda expiries, session, now=None: list(expiries)  # noqa: E731
+_ALL_CURRENT = lambda expiries, session, now=None, **kwargs: list(expiries)  # noqa: E731
 
 def _fake_ticker(current_price=100.0, expiries=("2026-10-01",)):
     """Still needed for the PRICE fallback only. T404 moved the option CHAIN to Unusual

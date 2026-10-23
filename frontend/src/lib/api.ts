@@ -659,6 +659,7 @@ export const api = {
     request<{ status: string; count: number; symbols: string[] }>(`/ml/tune_all?n_trials=${nTrials}`, { method: 'POST' }),
   signalTuneStatus: () =>
     request<{
+      promotion_policy?: { status: string; reason: string };
       as_of: string;
       styles: Record<string, {
         defaults: { buy_threshold_bull: number; ml_weight_cap: number; adx_min: number | null; breadth_compression: number | null };
@@ -1731,6 +1732,7 @@ export type ExpiryScope = { source_session: string | null; evaluated_at: string;
 // `sentiment` alongside this for direction) score. See compute_options_pressure_score()'s own
 // docstring in routes.py for the full weighting rationale.
 export type OptionsPressureScore = {
+  method_version?: string; source_session?: string; expiries_used?: string[];
   score: number;
   components: {
     cp_ratio_pts: number;
@@ -3799,6 +3801,7 @@ export type TuneStatusStyle = {
 };
 
 export type TuneStatusReport = {
+  promotion_policy?: { status: string; reason: string };
   as_of: string;
   styles: Record<'SHORT' | 'SWING' | 'LONG' | 'GROWTH', TuneStatusStyle>;
   global_staleness: Record<string, boolean | null>;

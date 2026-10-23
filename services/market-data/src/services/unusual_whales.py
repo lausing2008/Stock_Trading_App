@@ -1872,6 +1872,15 @@ def fetch_dark_pool_prints(symbol: str, *, limit: int = 50) -> DarkPoolFetch:
     except Exception:
         pass
 
+    from .dark_pool_sampling import record as record_poll
+
+    def observed(result):
+        try:
+            record_poll(_get_redis(), sym, result.status, len(result.rows), limit)
+        except Exception:
+            pass
+        return result
+
     fetched_at = datetime.now(timezone.utc).isoformat()
     try:
         data = _get(f"/api/darkpool/{sym}", params={"limit": limit}, endpoint="/api/darkpool/{symbol}")
@@ -1887,20 +1896,20 @@ def fetch_dark_pool_prints(symbol: str, *, limit: int = 50) -> DarkPoolFetch:
                 stale_at = g.get("fetched_at")
         except Exception:
             pass
-        return DarkPoolFetch(status=status, rows=[], fetched_at=None, reason=str(exc)[:200],
-                             http_status=http_status, stale_rows=stale_rows, stale_fetched_at=stale_at)
+        return observed(DarkPoolFetch(status=status, rows=[], fetched_at=None, reason=str(exc)[:200],
+                             http_status=http_status, stale_rows=stale_rows, stale_fetched_at=stale_at))
 
     if data is None:
         # 404 / no `data` envelope: the provider answered with nothing for this symbol.
         rows, bad, status = [], 0, "empty"
     elif not isinstance(data, list):
-        return DarkPoolFetch(status="malformed", rows=[], fetched_at=fetched_at,
-                             reason=f"expected a list of prints, got {type(data).__name__}")
+        return observed(DarkPoolFetch(status="malformed", rows=[], fetched_at=fetched_at,
+                             reason=f"expected a list of prints, got {type(data).__name__}"))
     else:
         rows, bad = _parse_dark_pool_rows(sym, data)
         if data and not rows:
-            return DarkPoolFetch(status="malformed", rows=[], fetched_at=fetched_at, malformed_rows=bad,
-                                 reason=f"all {bad} returned prints were unparseable")
+            return observed(DarkPoolFetch(status="malformed", rows=[], fetched_at=fetched_at, malformed_rows=bad,
+                                 reason=f"all {bad} returned prints were unparseable"))
         status = "ok" if rows else "empty"
 
     times = [r.executed_at for r in rows if r.executed_at]
@@ -1913,8 +1922,8 @@ def fetch_dark_pool_prints(symbol: str, *, limit: int = 50) -> DarkPoolFetch:
             _get_redis().setex(last_good_key, _DARK_POOL_LAST_GOOD_TTL, payload)
     except Exception:
         pass
-    return DarkPoolFetch(status=status, rows=rows, fetched_at=fetched_at, source_as_of=source_as_of,
-                         malformed_rows=bad)
+    return observed(DarkPoolFetch(status=status, rows=rows, fetched_at=fetched_at, source_as_of=source_as_of,
+                         malformed_rows=bad))
 
 
 def get_dark_pool_prints(symbol: str, *, limit: int = 50) -> list[DarkPoolPrintRow]:

@@ -144,54 +144,41 @@ def _build_fixture(calib_specs, val_specs):
 _CALIB_ML_HEAVY = [(0.95, 0.70, 100.0, 105.0)] * 50
 
 
-def test_candidate_that_beats_the_live_cap_gets_promoted():
+def test_positive_gross_candidate_stays_research_only_without_complete_replay():
     rows, prices = _build_fixture(_CALIB_ML_HEAVY, [(0.95, 0.70, 100., 108.)] * 20)
     result, recorded, applied = _run_core(rows, prices, prev_cap=.3)
-    assert result["applied"] is True
-    assert applied["weight"] == result["optimal_weight"]
-    assert recorded["promoted"] is True
-    assert recorded["gate_failures"] == []
-    assert recorded["baseline_validation_ev_pct"] == 0.
-    assert recorded["validation_ev_pct"] > 0.
+    assert result["applied"] is False and not recorded and not applied
+    assert "complete executable strategy" in result["reason"]
 
 
-def test_candidate_that_ties_the_real_live_cap_is_correctly_rejected_not_promoted():
+def test_candidate_that_ties_live_cap_does_not_write():
     rows, prices = _build_fixture(_CALIB_ML_HEAVY, [(0.95, 0.70, 100., 102.)] * 20)
     result, recorded, applied = _run_core(rows, prices, prev_cap=.9)
-    assert result["applied"] is False
-    assert recorded["promoted"] is False
-    assert recorded["validation_ev_pct"] == recorded["baseline_validation_ev_pct"]
-    assert not applied
+    diagnostic = result["diagnostic"]
+    assert not result["applied"] and not recorded and not applied
+    assert diagnostic["candidate_validation_ev_pct"] == diagnostic["baseline_validation_ev_pct"]
 
 
-def test_baseline_reflects_the_real_prev_cap_not_a_hardcoded_constant():
+def test_baseline_reflects_real_prev_cap_and_no_fired_returns_are_unknown():
     rows, prices = _build_fixture(_CALIB_ML_HEAVY, [(0.95, 0.70, 100., 106.)] * 20)
-    _, fires, _ = _run_core(rows, prices, prev_cap=.9)
-    _, no_fire, _ = _run_core(rows, prices, prev_cap=.2)
-    assert fires["old_value"]["ml_weight_global_cap"] == .9
-    assert no_fire["old_value"]["ml_weight_global_cap"] == .2
-    assert fires["baseline_validation_ev_pct"] > 0.
-    assert no_fire["baseline_validation_ev_pct"] == 0.
+    high, _, _ = _run_core(rows, prices, prev_cap=.9)
+    low, _, _ = _run_core(rows, prices, prev_cap=.2)
+    assert high["diagnostic"]["baseline_weight"] == .9
+    assert low["diagnostic"]["baseline_weight"] == .2
+    assert high["diagnostic"]["baseline_validation_ev_pct"] > 0
+    assert low["diagnostic"]["baseline_validation_ev_pct"] is None
 
 
-def test_no_baseline_cap_yet_auto_promotes_and_records_why():
-    # Exact 70/30 split. Cap=.45 fires only on the +8% rows; the .50 fallback
-    # also fires on the +12% rows. This preserves the existing first-tune bypass.
+def test_no_incumbent_does_not_bypass_promotion_policy():
     val_specs = [(0.95, 0.70, 100., 108.)] * 30 + [(0.90, 0.73, 100., 112.)] * 30
     rows, prices = _build_fixture(_CALIB_ML_HEAVY[:1] * 140, val_specs)
     result, recorded, applied = _run_core(rows, prices, prev_cap=None)
-    assert result["applied"] is True
-    assert recorded["promoted"] is True
-    assert recorded["gate_failures"] == ["no_baseline_cap:first_tune"]
-    assert recorded["old_value"]["ml_weight_global_cap"] is None
-    assert recorded["validation_ev_pct"] < recorded["baseline_validation_ev_pct"]
-    assert applied
+    assert result["applied"] is False and not recorded and not applied
+    assert "verified_forward_outcomes" in result["missing_requirements"]
 
 
-def test_insufficient_validation_samples_still_records_the_real_prev_cap_as_old_value():
+def test_insufficient_history_never_reaches_writers():
     rows, prices = _build_fixture(_CALIB_ML_HEAVY[:10], [])
-    result, recorded, _ = _run_core(rows, prices, prev_cap=.42)
-    assert result["applied"] is False
-    assert "validation-slice observations" in result["reason"]
-    assert "insufficient_validation_samples" in recorded["gate_failures"][0]
-    assert recorded["old_value"]["ml_weight_global_cap"] == .42
+    result, recorded, applied = _run_core(rows, prices, prev_cap=.42)
+    assert not result["applied"] and not recorded and not applied
+    assert result["diagnostic"]["would_apply"] is False

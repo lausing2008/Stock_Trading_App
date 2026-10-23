@@ -200,14 +200,15 @@ def test_curve_reports_fired_counts_on_both_slices(helpers):
     rows, prices = _build_fixture(_HEAVY, [(0.95, 0.70, 100., 108.)] * 20)
     preview = _preview(helpers, rows, prices)
     n_train, n_val = preview['split']['train_n'], preview['split']['validation_n']
-    assert (n_train, n_val) == (49, 21)
+    assert (n_train, n_val) == (34, 21)  # 15 overlapping training labels purged
     policy = helpers['_ml_weight_policy']()
     excluded = helpers['_ml_weight_evaluation'](policy)['excluded']
     inputs = [helpers['_ml_weight_inputs'](sig, policy, excluded) for sig, _ in rows]
     for point in preview['curve']:
         fires = sum(helpers['_ml_candidate_score'](i, point['weight']) > i['buy_threshold']
                     for i in inputs)
-        assert point['train']['fired'] + point['validation']['fired'] == fires
+        assert point['train']['fired'] + point['validation']['fired'] <= fires
+        # Retained split has 15 fewer training labels; purged outcomes are never counted.
         assert point['train']['fired'] <= n_train and point['validation']['fired'] <= n_val
         assert (point['accuracy'], point['avg_return_pct']) == (
             point['validation']['accuracy'], point['validation']['avg_return_pct'])

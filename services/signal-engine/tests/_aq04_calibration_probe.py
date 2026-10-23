@@ -230,7 +230,7 @@ def build_gap():
 
 build_gap()
 with Session(engine) as _s:
-    r = calib.calibrate_ml_weight(lookback_days=730, session=_s, _='t')
+    r = calib.ml_weight_validation(lookback_days=730, session=_s)
 _rets = [pt['avg_return_pct'] for pt in r.get('curve', []) if pt.get('avg_return_pct') is not None]
 check('a split between the target date and the filling session is still caught',
       r.get('return_basis', {}).get('dropped_unadjustable_action', 0) == 2, r.get('return_basis'))
@@ -292,18 +292,14 @@ check('GET never sets the cap or records tune history',
 check('GET reports both slices\' fired counts on every curve point',
       all({'fired'} <= set(pt['train']) and {'fired'} <= set(pt['validation'])
           for pt in g['curve']) and g['curve'], g.get('curve', [])[:2])
-check('the preview predicts a promotion here', g['preview']['would_apply'] is True, g['preview'])
+check('the preview withholds promotion without full replay', g['preview']['would_apply'] is False, g['preview'])
 
 with Session(engine) as _s:
     r = calib.calibrate_ml_weight(lookback_days=730, session=_s, _='t')
 check('POST makes the decision GET predicted', r['applied'] is g['preview']['would_apply'], r)
-check('POST writes the cap GET selected', cap_writes == [g['optimal_weight']], cap_writes)
-check('the same curve drives both', r['curve'] == g['curve'])
-_hist = history_writes[0] if history_writes else {}
-check('POST records exactly what GET said it would',
-      len(history_writes) == 1 and all(_hist.get(k) == v
-                                        for k, v in g['preview']['would_record'].items()),
-      (_hist, g['preview'].get('would_record')))
+check('POST never writes the cap without complete replay', not cap_writes, cap_writes)
+check('POST never writes a promoted history row', not history_writes, history_writes)
+check('POST names the missing requirements', 'complete_entry_exit_cost_replay' in r['missing_requirements'], r)
 
 print('FAILURES:', failures)
 sys.exit(1 if failures else 0)

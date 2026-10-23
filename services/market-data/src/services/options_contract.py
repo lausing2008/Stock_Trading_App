@@ -29,6 +29,15 @@ NONSTANDARD = "nonstandard_root_deliverable_unknown"
 UNVERIFIED = "unverified_100_assumed"
 
 
+# No share-deliverable or NYSE-close assumption is valid for these index products.
+INDEX_ROOTS = {"SPX", "SPXW", "SPXO", "NDX", "NDXP", "RUT", "RUTW", "VIX", "VIXW", "XSP", "XSPW", "OEX", "XEO", "DJX"}
+
+
+def supported_underlying(symbol) -> bool:
+    sym = str(symbol or "").strip().upper()
+    return bool(sym) and not sym.startswith("^") and sym not in INDEX_ROOTS
+
+
 def contract_status(option_symbol, underlying) -> str:
     """One of STANDARD, NONSTANDARD or UNVERIFIED. (The UNVERIFIED label keeps its historical
     name; it means the 100 assumption cannot be checked, never that it holds.)"""
@@ -45,14 +54,16 @@ def contract_status(option_symbol, underlying) -> str:
 def contract_terms(option_symbol, underlying) -> dict:
     """The terms a payoff calculation may use, or the reason it may not."""
     status = contract_status(option_symbol, underlying)
-    supported = status == STANDARD
+    supported = status == STANDARD and supported_underlying(underlying)
     return {
         "status": status,
         "option_symbol": option_symbol if isinstance(option_symbol, str) else None,
         # Both None when unsupported: an unknown contract has no multiplier to assume.
         "premium_multiplier": 100 if supported else None,
         "deliverable_shares": 100 if supported else None,
-        "basis": ("assumed from a root matching the underlying; not an exchange deliverable record"
+        "basis": ("unsupported index product: settlement and deliverable rules are not implemented"
+                  if underlying and not supported_underlying(underlying) else
+                  "assumed from a root matching the underlying; not an exchange deliverable record"
                   if supported else
                   "adjusted contract: root differs from the underlying, deliverable unknown"
                   if status == NONSTANDARD else

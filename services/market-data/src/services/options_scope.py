@@ -19,9 +19,8 @@ has passed. Two lists, never one:
 
 The last trading instant is the expiry date's regular-session close from the NYSE calendar
 (13:00 ET on an early-close day). An expiry dated on a non-session day is treated as the previous
-session's close and the basis says so. Index products that settle later are not distinguished:
-16:00 is the conservative bound for an equity option, and it can only exclude a contract early,
-never admit an expired one.
+session's close and the basis says so. Index products are unsupported for current candidates until product-specific settlement
+and last-trading rules exist; their historical evidence remains available.
 """
 from __future__ import annotations
 
@@ -72,9 +71,11 @@ def last_trading_instant(expiry: date) -> tuple[datetime, str]:
     raise ValueError(f"no NYSE session within 10 days before {expiry}")
 
 
-def expiry_scope(expiries, source_session: date | None, now: datetime | None = None) -> dict:
+def expiry_scope(expiries, source_session: date | None, now: datetime | None = None, *, symbol: str | None = None) -> dict:
     """Split one source session's expiries into historical evidence and current candidates."""
     now = now or datetime.now(timezone.utc)
+    from .options_contract import supported_underlying
+    product_supported = symbol is None or supported_underlying(symbol)
     rows, historical, current = [], [], []
     for e in sorted({str(x) for x in (expiries or [])}):
         try:
@@ -85,8 +86,9 @@ def expiry_scope(expiries, source_session: date | None, now: datetime | None = N
             continue
         lti, basis = last_trading_instant(d)
         hist = source_session is not None and d >= source_session
-        cur = hist and now < lti
+        cur = hist and product_supported and now < lti
         reason = (None if cur else
+                  "unsupported_product_settlement" if not product_supported else
                   "source_session_unknown" if source_session is None else
                   "before_source_session" if not hist else
                   "expired_at_source_session_close" if d == source_session else
@@ -112,9 +114,9 @@ def expiry_scope(expiries, source_session: date | None, now: datetime | None = N
     }
 
 
-def current_expiries(expiries, source_session: date | None, now: datetime | None = None) -> list[str]:
+def current_expiries(expiries, source_session: date | None, now: datetime | None = None, *, symbol: str | None = None) -> list[str]:
     """Only the expiries a current trade candidate may use."""
-    return expiry_scope(expiries, source_session, now)["current_expiries"]
+    return expiry_scope(expiries, source_session, now, symbol=symbol)["current_expiries"]
 
 
 # ── Stored snapshots in the premarket brief (2026-10-22) ───────────────────────────────────

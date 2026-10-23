@@ -276,7 +276,8 @@ def _build_confidence_calibration(session: Session) -> dict:
         for state in ("verified", "provisional", "unverified", "unknown")
     }
     _timing_eligible_count = len(rows)
-    rows = [r for r in rows if r.evidence_status == "verified"]
+    from .calibration_safety import evidence_eligible
+    rows = [r for r in rows if r.evidence_status == "verified" and evidence_eligible(r)]
     _exclusions = {"original_count": _part["original_count"],
                    "timing_eligible_count": _timing_eligible_count,
                    "eligible_count": len(rows),

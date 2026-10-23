@@ -24,6 +24,7 @@ import {
   type WatchdogSelfTuningReport,
 } from '@/lib/api';
 import { getSession } from '@/lib/auth';
+import { tuningMetric } from '@/lib/tuningMetric';
 // AUD-MLAGE: fleet-freshness logic lives in lib/ so its three-state null handling
 // (known age / unknown age / genuine 0) is unit-tested — see mlFleetAge.ts.
 import { summarizeFleetAge, formatAge, ageColor, STALE_AGE_DAYS } from '@/lib/mlFleetAge';
@@ -39,6 +40,7 @@ type StyleStatus = {
 };
 
 type TuneStatusResponse = {
+  promotion_policy?: { status: string; reason: string };
   as_of: string;
   styles: Record<string, StyleStatus>;
 };
@@ -380,6 +382,11 @@ export default function SignalTuningPage() {
         )}
       </div>
 
+      {data?.promotion_policy?.status === 'research_only' && (
+        <p role="status" style={{ color: '#fbbf24', padding: 12, border: '1px solid #475569', borderRadius: 6 }}>
+          Automatic calibration is paused. Current settings remain in use; research results cannot change them until complete trade and cost validation is available.
+        </p>
+      )}
       {/* Legend */}
       <div style={{ display: 'flex', gap: 20, marginBottom: 20, flexWrap: 'wrap' }}>
         {[
@@ -709,7 +716,7 @@ export default function SignalTuningPage() {
                       </div>
                     ))}
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, marginTop: 8, color: '#475569' }}>
-                      <span>Val EV: {row.validation_ev_pct != null ? `${row.validation_ev_pct.toFixed(2)}%` : '—'}</span>
+                      <span>{tuningMetric(row)}</span>
                       <span>Baseline: {row.baseline_validation_ev_pct != null ? `${row.baseline_validation_ev_pct.toFixed(2)}%` : '—'}</span>
                       <span>n={row.validation_n ?? '—'}</span>
                     </div>
@@ -757,7 +764,7 @@ export default function SignalTuningPage() {
                             <td style={{ padding: '4px 8px', color: '#fbbf24', fontSize: 10.5 }}>
                               {row.gate_failures && row.gate_failures.length > 0 ? row.gate_failures.map(gateFailureLabel).join('; ') : '—'}
                             </td>
-                            <td style={{ padding: '4px 8px', color: '#e2e8f0' }}>{row.validation_ev_pct != null ? row.validation_ev_pct.toFixed(2) : '—'}</td>
+                            <td style={{ padding: '4px 8px', color: '#e2e8f0' }}>{tuningMetric(row)}</td>
                             <td style={{ padding: '4px 8px', color: '#64748b' }}>{row.baseline_validation_ev_pct != null ? row.baseline_validation_ev_pct.toFixed(2) : '—'}</td>
                           </tr>
                         );
@@ -801,7 +808,7 @@ export default function SignalTuningPage() {
                       {row.promoted ? 'Promoted' : 'Rejected'}
                     </td>
                     <td style={{ padding: '4px 8px', textAlign: 'right', color: '#94a3b8' }}>{row.train_ev_pct != null ? row.train_ev_pct.toFixed(2) : '—'}</td>
-                    <td style={{ padding: '4px 8px', textAlign: 'right', color: '#e2e8f0' }}>{row.validation_ev_pct != null ? row.validation_ev_pct.toFixed(2) : '—'}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right', color: '#e2e8f0' }}>{tuningMetric(row)}</td>
                     <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{row.baseline_validation_ev_pct != null ? row.baseline_validation_ev_pct.toFixed(2) : '—'}</td>
                     <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{row.validation_n ?? '—'}</td>
                   </tr>

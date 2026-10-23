@@ -81,7 +81,7 @@ it('shows call and put callouts symmetrically, the selection rule with counts, a
     .toBe('Shown: 1 of 5 eligible calls and 2 of 2 eligible puts. Selection: open interest > 50 and volume > 30% of open interest; top 3 per side per expiration');
   expect(screen.getByLabelText('Low open interest activity').textContent).toContain('CALL $120 · 2026-10-24 · volume 400 vs open interest 3');
   const pressure = screen.getByText('Pressure 15 / 70 pts');
-  expect(pressure.getAttribute('title')).toMatch(/not measured: whale\. Compare only with scores measuring the same components/);
+  expect(pressure.getAttribute('title')).toMatch(/not measured: whale\. Compare only with scores using the same method, session, expiration scope and components/);
   expect(pressure.getAttribute('title')).not.toContain('whales 0/30');
 });
 

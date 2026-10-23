@@ -30,6 +30,8 @@ from .signals_shared import (
     _tuning_staleness, log,
 )
 
+from .calibration_safety import research_only, promotion_status, evidence_eligible
+
 router = APIRouter(prefix="/signals", tags=["signals"])
 
 
@@ -233,7 +235,7 @@ def _ml_weight_policy() -> dict:
             default = profile["buy_threshold"][regime]
             dynamic = _get_dynamic_buy_threshold(style, regime)
             thresholds[regime] = dynamic if dynamic is not None else default
-        policy[style] = {"floor": profile.get("ml_weight_floor", 0.0),
+        policy[style] = {"floor": profile.get("ml_weight_floor", 0.0), "default_cap": profile["ml_weight_cap"],
                          "buy_thresholds": thresholds}
     return policy
 
@@ -272,13 +274,14 @@ def _ml_weight_inputs(sig, policy: dict, excluded: dict) -> dict | None:
     thresholds = policy[style]["buy_thresholds"]
     regime = regime if regime in thresholds else "unknown"
     return {"ml": ml, "ta": ta, "auc": auc, "floor": policy[style]["floor"],
+            "default_cap": policy[style].get("default_cap", .65),
             "buy_threshold": thresholds[regime]}
 
 
 def _ml_candidate_score(inputs: dict, cap: float) -> float:
     from ..generators.signals import _calculate_ml_weight
 
-    weight = _calculate_ml_weight(inputs["ml"], inputs["ta"], inputs["auc"], cap, inputs["floor"])
+    weight = _calculate_ml_weight(inputs["ml"], inputs["ta"], inputs["auc"], cap if cap is not None else inputs.get("default_cap", .65), inputs["floor"])
     ml = min(0.95, max(0.05, inputs["ml"]))
     return weight * ml + (1 - weight) * inputs["ta"]
 
@@ -337,7 +340,7 @@ def _ml_weight_sweep(rows, price_rows, actions, coverage, prev_cap) -> dict:
               "return_basis": None, "decision": None}
 
     def _decide(status, reason, **extra):
-        result["decision"] = {"status": status, "reason": reason, "would_apply": status == "validated",
+        result["decision"] = {"status": status, "reason": reason, "would_apply": False, "diagnostic_gross_candidate_passed": status == "validated",
                               "previous_cap": prev_cap, **extra}
         return result
 
@@ -437,6 +440,8 @@ def _ml_weight_sweep(rows, price_rows, actions, coverage, prev_cap) -> dict:
             unverified_used += 1
 
         pct = (exit_p - entry) / entry * 100
+        inputs = {**inputs, "evaluation_exit": exit_date_actual,
+                  "evidence_status": _verdict.get("evidence_status", "unverified")}
         observations.append((pct, signal_date, inputs))
 
     result["signal_count"] = len(observations)
@@ -447,15 +452,18 @@ def _ml_weight_sweep(rows, price_rows, actions, coverage, prev_cap) -> dict:
         "observations_used": len(observations),
         "dropped_unadjustable_action": dropped_corrupt,
         "used_unverified_completeness": unverified_used,
+        "promotion_verified_observations": sum(o[2].get("evidence_status") == "verified" for o in observations),
     }
     if not observations:
         return _decide("no_observations", "no_observations")
 
     # Sort by date, split older 70% for calibration, newer 30% for validation
     observations.sort(key=lambda x: x[1])
-    split = max(1, int(len(observations) * 0.7))
-    calib_obs = observations[:split]
-    val_obs = observations[split:]
+    # Whole issue sessions; purge every training label reaching the validation boundary.
+    issue_days = sorted({o[1] for o in observations})
+    boundary = issue_days[min(len(issue_days) - 1, max(1, int(len(issue_days) * .7)))]
+    calib_obs = [o for o in observations if o[1] < boundary and o[2]["evaluation_exit"] < boundary]
+    val_obs = [o for o in observations if o[1] >= boundary]
 
     def _accuracy_and_return(obs, w):
         correct = fired = 0
@@ -477,14 +485,14 @@ def _ml_weight_sweep(rows, price_rows, actions, coverage, prev_cap) -> dict:
                 "avg_return_pct": round(avg_ret, 2) if avg_ret is not None else None}
 
     weights = [round(w / 20, 2) for w in range(21)]
-    best_acc = -1.0
+    best_train_return = -float("inf")
     optimal_weight = None
     curve = []
     for w in weights:
         # Select weight using calibration set only
         calib_acc, calib_fired, calib_avg = _accuracy_and_return(calib_obs, w)
-        if calib_acc is not None and calib_acc > best_acc:
-            best_acc = calib_acc
+        if calib_fired >= _ML_WEIGHT_MIN_VAL_SAMPLES and calib_acc is not None and calib_avg > 0 and calib_avg > best_train_return:
+            best_train_return = calib_avg
             optimal_weight = w
         v_acc, v_fired, v_avg_ret = _accuracy_and_return(val_obs, w)
         validation = _slice_point(v_acc, v_fired, v_avg_ret)
@@ -523,7 +531,7 @@ def _ml_weight_sweep(rows, price_rows, actions, coverage, prev_cap) -> dict:
     # to beat, so this falls back to the neutral 0.5 baseline and records that explicitly,
     # matching the same "no_baseline_params:first_tune_for_symbol" auto-promote convention
     # ml-prediction's own ev_gate.py already established for the identical situation.
-    baseline_weight = prev_cap if prev_cap is not None else 0.5
+    baseline_weight = prev_cap  # None replays each style's actual profile default, not a fabricated .5
     baseline_acc, baseline_fired, baseline_avg_ret = _accuracy_and_return(val_obs, baseline_weight)
 
     candidate_ev = (candidate_avg_ret or 0.0)
@@ -531,7 +539,8 @@ def _ml_weight_sweep(rows, price_rows, actions, coverage, prev_cap) -> dict:
     validated = (
         candidate_fired >= _ML_WEIGHT_MIN_VAL_SAMPLES
         and candidate_acc is not None
-        and (prev_cap is None or candidate_ev > baseline_ev)
+        and candidate_ev > 0 and candidate_ev > baseline_ev
+        and all(o[2].get("evidence_status") == "verified" for o in calib_obs + val_obs)
     )
     comparison = {
         "baseline_weight": baseline_weight,
@@ -564,55 +573,21 @@ def _ml_weight_sweep(rows, price_rows, actions, coverage, prev_cap) -> dict:
 
 
 def _ml_weight_apply(session, sweep, prev_cap, lookback_days, set_cap, record_history) -> dict:
-    """Act on a sweep's decision — the only ML-weight path that writes."""
-    decision = sweep["decision"]
-    status = decision["status"]
-    if status == "no_signals":
-        return {"evaluation": sweep["evaluation"], "applied": False, "reason": "no_signals",
-                "optimal_weight": None}
-    base = {"evaluation": sweep["evaluation"], "applied": False, "reason": decision["reason"],
-            "optimal_weight": sweep["optimal_weight"], "signal_count": sweep["signal_count"],
-            "lookback_days": lookback_days, "return_basis": sweep["return_basis"],
-            "curve": sweep["curve"]}
-    if status in ("no_observations", "no_calibration_buys"):
-        return base
-
-    import uuid as _uuid
-    history = decision["history"]
-    optimal_weight = sweep["optimal_weight"]
-    if status == "validated":
-        set_cap(optimal_weight)
-        log.info("calibrate_ml_weight: applied cap=%.2f (val_acc=%.1f%%, val_ev=%.2f%%, n=%d, lookback=%dd)",
-                 optimal_weight, decision["candidate_validation_accuracy"] or 0.0,
-                 history["validation_ev_pct"], sweep["signal_count"], lookback_days)
-    record_history(
-        session, str(_uuid.uuid4()), "ml_fusion_weight", "ml_weight_global_cap", "ALL", "ALL",
-        old_value={"ml_weight_global_cap": prev_cap}, new_value={"ml_weight_global_cap": optimal_weight},
-        train_window=history["train_window"], validation_window=history["validation_window"],
-        train_ev_pct=None, validation_ev_pct=history["validation_ev_pct"],
-        baseline_validation_ev_pct=history["baseline_validation_ev_pct"],
-        validation_n=history["validation_n"], promoted=history["promoted"],
-        gate_failures=history["gate_failures"],
-    )
-    if status == "insufficient_validation_samples":
-        return base
-    base["candidate_validation_ev_pct"] = decision["candidate_validation_ev_pct"]
-    base["baseline_validation_ev_pct"] = decision["baseline_validation_ev_pct"]
-    if status == "validated":
-        # Promotion reports the recorded (unconditional) EV figures, as it always has.
-        base.update(applied=True, optimal_accuracy=decision["candidate_validation_accuracy"] or 0.0,
-                    previous_cap=prev_cap,
-                    candidate_validation_ev_pct=history["validation_ev_pct"],
-                    baseline_validation_ev_pct=history["baseline_validation_ev_pct"])
-        base.pop("reason")
-    return base
+    """Defence in depth: diagnostics cannot write even if called outside the route guard."""
+    from .calibration_safety import promotion_status
+    return {**promotion_status(), "optimal_weight": sweep["optimal_weight"],
+            "signal_count": sweep["signal_count"], "lookback_days": lookback_days,
+            "curve": sweep["curve"], "return_basis": sweep["return_basis"],
+            "evaluation": sweep["evaluation"], "diagnostic": sweep["decision"]}
 
 
 def _ml_weight_preview(sweep, lookback_days) -> dict:
     """The calibrator's evaluation, reported without acting on it."""
     decision = {k: v for k, v in (sweep["decision"] or {}).items() if k != "history"}
     if (sweep["decision"] or {}).get("history"):
-        decision["would_record"] = sweep["decision"]["history"]
+        decision["diagnostic_history"] = sweep["decision"]["history"]
+    from .calibration_safety import promotion_status
+    decision.update(promotion_status())
     out = {
         "evaluation": sweep["evaluation"],
         "lookback_days": lookback_days,
@@ -650,6 +625,7 @@ def ml_weight_validation(
 
 
 @router.post("/calibrate_ml_weight")
+@research_only
 def calibrate_ml_weight(
     lookback_days: int = Query(180, ge=30, le=730),
     session: Session = Depends(get_session),
@@ -670,6 +646,7 @@ def calibrate_ml_weight(
 
 
 @router.post("/calibrate_ta_weights")
+@research_only
 def calibrate_ta_weights(
     lookback_days: int = Query(365, ge=60, le=730),
     session: Session = Depends(get_session),
@@ -955,6 +932,7 @@ def calibrate_ta_weights(
 
 
 @router.post("/calibrate_conviction_weights")
+@research_only
 def calibrate_conviction_weights(
     lookback_days: int = Query(365, ge=90, le=730),
     min_count: int = Query(10),
@@ -1293,13 +1271,13 @@ def outcomes_calibrate(
     _STYLE_PROFILES so you can see whether signal tuning is needed.
     """
     import statistics as _stats
-    from ..generators.signals import _STYLE_PROFILES
+    from ..generators.signals import _get_dynamic_buy_threshold, _STYLE_PROFILES
 
     # Current bull-regime thresholds, fused-probability scale (T232-CAL1: sweep/report on the
     # same scale _decide_style actually compares against — previously this used a 0-100
     # confidence scale here while POST /apply wrote a misinterpreted 0-100 value too).
     CURRENT: dict[str, float] = {
-        h: _STYLE_PROFILES[h]["buy_threshold"]["bull"] for h in ("SHORT", "SWING", "LONG", "GROWTH")
+        h: (_get_dynamic_buy_threshold(h, "bull") or _STYLE_PROFILES[h]["buy_threshold"]["bull"]) for h in ("SHORT", "SWING", "LONG", "GROWTH")
     }
 
     cutoff = date.today() - timedelta(days=days)
@@ -1314,6 +1292,7 @@ def outcomes_calibrate(
     # T232-OC3: walk-forward split — mirrors the fix in POST /outcomes/calibrate/apply so this
     # preview endpoint reports the SAME methodology that actually gets applied, instead of a
     # more optimistic in-sample number that would disagree with what apply's response shows.
+    all_outcomes = [o for o in all_outcomes if evidence_eligible(o)]
     calibrations = []
     for h in ("SHORT", "SWING", "LONG", "GROWTH"):
         bucket = sorted(
@@ -1323,7 +1302,7 @@ def outcomes_calibrate(
         current_t = CURRENT.get(h, 0.65)
 
         def _stats_at(threshold: float, samples: list) -> dict | None:
-            sub = [o for o in samples if o.fused_prob is not None and o.fused_prob >= threshold]
+            sub = [o for o in samples if o.fused_prob is not None and o.fused_prob > threshold]
             if len(sub) < min_samples:
                 return None
             wins = sum(1 for o in sub if o.is_correct)
@@ -1350,9 +1329,10 @@ def outcomes_calibrate(
             })
             continue
 
-        split = max(1, int(len(bucket) * 0.7))
-        train_bucket = bucket[:split]
-        val_bucket = bucket[split:]
+        days_present = sorted({o.signal_date for o in bucket})
+        boundary = days_present[min(len(days_present) - 1, max(1, int(len(days_present) * .7)))]
+        train_bucket = [o for o in bucket if o.signal_date < boundary and o.exit_date < boundary]
+        val_bucket = [o for o in bucket if o.signal_date >= boundary]
 
         # Search on the train slice only.
         best_ev = -999.0
@@ -1390,6 +1370,7 @@ def outcomes_calibrate(
 
 
 @router.post("/outcomes/calibrate/apply")
+@research_only
 def outcomes_calibrate_apply(
     days: int = Query(180, description="Look-back window in calendar days"),
     min_samples: int = Query(50, description="Minimum signals required to apply a new threshold"),
@@ -1416,12 +1397,12 @@ def outcomes_calibrate_apply(
     hardcoded _STYLE_PROFILES values if absent).  Run this weekly via the scheduler.
     """
     import statistics as _stats
-    from ..generators.signals import _STYLE_PROFILES, _SELL_THRESHOLD_FALLBACK
+    from ..generators.signals import _get_dynamic_buy_threshold, _STYLE_PROFILES, _SELL_THRESHOLD_FALLBACK
 
     # Bull-regime buy thresholds — source of truth is _STYLE_PROFILES (T232-SIG12: no more
     # independently-drifting hardcoded copies).
     CURRENT: dict[str, float] = {
-        h: _STYLE_PROFILES[h]["buy_threshold"]["bull"] for h in ("SHORT", "SWING", "LONG", "GROWTH")
+        h: (_get_dynamic_buy_threshold(h, "bull") or _STYLE_PROFILES[h]["buy_threshold"]["bull"]) for h in ("SHORT", "SWING", "LONG", "GROWTH")
     }
     _BUY_BOUNDS = (0.55, 0.85)
     _SELL_BOUNDS = (0.15, 0.45)
@@ -1435,6 +1416,7 @@ def outcomes_calibrate_apply(
         )
     ).scalars().all()
 
+    all_outcomes = [o for o in all_outcomes if evidence_eligible(o)]
     applied: list[dict] = []
     skipped: list[dict] = []
     redis_client = _get_redis()
@@ -1475,12 +1457,13 @@ def outcomes_calibrate_apply(
             )
             continue
 
-        split = max(1, int(len(bucket) * 0.7))
-        train_bucket = bucket[:split]
-        val_bucket = bucket[split:]
+        days_present = sorted({o.signal_date for o in bucket})
+        boundary = days_present[min(len(days_present) - 1, max(1, int(len(days_present) * .7)))]
+        train_bucket = [o for o in bucket if o.signal_date < boundary and o.exit_date < boundary]
+        val_bucket = [o for o in bucket if o.signal_date >= boundary]
 
         def _stats_at(threshold: float, samples: list) -> dict | None:
-            sub = [o for o in samples if o.fused_prob is not None and o.fused_prob >= threshold]
+            sub = [o for o in samples if o.fused_prob is not None and o.fused_prob > threshold]
             if len(sub) < min_samples:
                 return None
             wins = sum(1 for o in sub if o.is_correct)
@@ -1812,6 +1795,7 @@ def outcomes_calibrate_apply(
 
 
 @router.post("/tune_sell_pillars")
+@research_only
 def tune_sell_pillars(
     min_samples: int = Query(50, description="Minimum SELL outcomes required per train/validation slice"),
     session: Session = Depends(get_session),
@@ -2013,6 +1997,7 @@ def tune_sell_pillars(
 
 
 @router.post("/tune_style_profiles")
+@research_only
 def tune_style_profiles(
     days: int = Query(120, description="Look-back window in calendar days"),
     min_samples: int = Query(10, description="Minimum outcomes required per bucket"),
@@ -2365,6 +2350,7 @@ def _passes_promotion_margin(candidate_rets: list[float], baseline_rets: list[fl
 
 
 @router.post("/tune_strategy")
+@research_only
 def tune_strategy(
     days: int = Query(180, description="Look-back window in calendar days"),
     min_samples: int = Query(_TUNE_STRATEGY_MIN_SAMPLES, description="Minimum outcomes required per grid cell, per slice"),
@@ -2642,6 +2628,7 @@ def tune_strategy(
 
 
 @router.post("/watchdog")
+@research_only
 def signal_watchdog(
     _: str = Depends(get_current_username),
     session: Session = Depends(get_session),
@@ -2839,9 +2826,9 @@ def signal_watchdog(
                                  "recent_coupled_change": _coupled_note})
                 _record_tune_history(
                     session, _run_id, "signal_threshold", "watchdog_buy_threshold", style, "ALL",
-                    old_value={"threshold": current_val}, new_value={"threshold": new_val},
+                    old_value={"threshold": current_val}, new_value={"threshold": new_val, "hit_rate_fraction": win_rate_14d},
                     train_window=_tune_window, validation_window=_tune_window,
-                    train_ev_pct=None, validation_ev_pct=round(win_rate_14d, 4),
+                    train_ev_pct=None, validation_ev_pct=None,
                     baseline_validation_ev_pct=None, validation_n=len(outcomes_14d),
                     promoted=True,
                     gate_failures=[f"recent_coupled_change:{_coupled_note}"] if _coupled_note else [],
@@ -2858,7 +2845,7 @@ def signal_watchdog(
                 action = "relaxed"
                 _record_tune_history(
                     session, _run_id, "signal_threshold", "watchdog_buy_threshold", style, "ALL",
-                    old_value={"threshold": current_val}, new_value={"threshold": new_val},
+                    old_value={"threshold": current_val}, new_value={"threshold": new_val, "hit_rate_fraction": win_rate_14d},
                     train_window=_tune_window, validation_window=_tune_window,
                     train_ev_pct=None, validation_ev_pct=None,
                     baseline_validation_ev_pct=None, validation_n=signals_7d,
@@ -3016,6 +3003,7 @@ def tune_status(
 
     return {
         "as_of": date.today().isoformat(),
+        "promotion_policy": promotion_status(),
         "styles": styles_out,
         # Global (not per-style) tuned mechanisms — same silent-reversion risk, 90-day TTL.
         "global_staleness": {

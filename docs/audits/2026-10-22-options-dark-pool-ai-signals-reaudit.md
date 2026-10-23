@@ -290,6 +290,8 @@ Current production impact remains to be measured for missing fields, adjusted co
 
 ## 9. Review corrections and resolution status
 
+October 23 continuation: [remaining fixes, promotion boundary and deployment record](2026-10-23-remaining-options-calibration-fixes-and-deployment.md). This distinguishes corrected code from research paths held out of production and the remaining R10 print-identity work.
+
 Added after an independent review of R01–R10 on the same day. That review read the source at HEAD `b997cadb`, eleven commits after the audited checkout. Only `uw_option_chain.py` (provider exclusions) and `scheduler.py` (the capture job) changed among the audited files, and neither change affects a finding. R11–R14 were not part of that review and **remain pending review**.
 
 ### 9.1 Corrections to the findings

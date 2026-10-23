@@ -3340,7 +3340,7 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
     Returns null fields for HK stocks and others without listed options.
     """
     sym = symbol.upper()
-    cache_key = f"options_flow:v5:{sym}"
+    cache_key = f"options_flow:v6:{sym}"
     try:
         rdb = _get_redis()
         cached = rdb.get(cache_key)
@@ -3592,9 +3592,15 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
                 whale_count=_whale_count,
                 total_call_vol=total_call_vol,
                 total_put_vol=total_put_vol,
-                gex=_options_flow_gex_component(sym),
+                gex=None,  # R08: settled activity and current gamma are separate measurements
             ),
         }
+
+        if result.get("pressure_score"):
+            result["pressure_score"]["source_session"] = source_session.isoformat()
+            result["pressure_score"]["expiries_used"] = list(received_expiries)
+            result["pressure_score"]["composition_scope"] = result.get("composition_scope")
+            result["pressure_score"]["volume_coverage"] = volume_coverage
 
         try:
             rdb.setex(cache_key, _OPTIONS_TTL, json.dumps(result))
@@ -3615,7 +3621,7 @@ def _with_current_scope(result: dict, now: "datetime | None" = None) -> dict:
         return result
     from datetime import date as _date
     from ..services.options_scope import expiry_scope
-    scope = expiry_scope(result.get("expiries_used") or [], _date.fromisoformat(result["source_session"]), now)
+    scope = expiry_scope(result.get("expiries_used") or [], _date.fromisoformat(result["source_session"]), now, symbol=result.get("symbol"))
     current = set(scope["current_expiries"])
     out = dict(result)
     out["expiry_scope"] = scope
@@ -3796,101 +3802,37 @@ def compute_options_pressure_score(
     total_put_vol: int,
     gex: dict | None = None,
 ) -> dict | None:
-    """MPE-02: composite 0-100 options-pressure score, built entirely from fields
-    get_options_flow() already computes above — no new data source needed for the free-tier
-    score. `gex` (Unusual Whales-only, MPE-07 — see _options_flow_gex_component()) is optional
-    real enrichment layered on top when a subscription is active.
+    """Version 2: same-session chain intensity only, never direction or probability.
 
-    Unlike compute_short_squeeze_score() (which is inherently directional — more short-float
-    pressure is always "more squeeze-y"), options pressure has no single "good" direction —
-    strongly_bullish and bearish are both real signals of conviction, just opposite ones. This
-    score therefore measures CONVICTION/INTENSITY (how far from neutral, how much size is
-    behind it), not bullishness — a caller wanting direction should read `sentiment` (already
-    returned by get_options_flow()) alongside this score, not instead of it.
-
-    Components:
-      - cp_ratio distance from 1.0 (neutral) — scored 0-40. cp_ratio is already capped at 10.0
-        by get_options_flow() itself; a ratio of 1.0 (perfectly balanced call/put volume) scores
-        0, ramping to a full 40 points at the two extremes (cp_ratio<=0.2 or >=5.0 — chosen as
-        roughly 5x away from neutral in either direction, a genuinely lopsided real reading).
-        AUD-OPTIONS6-CPRATIOASYMMETRY: scaled separately on each side of 1.0 (below-1.0 side
-        divided by (1.0-0.2)=0.8, above-1.0 side by (5.0-1.0)=4.0) — a single shared linear-
-        distance denominator would let cp_ratio=0.2 reach only 8/40 while cp_ratio=5.0 correctly
-        reaches 40/40, since 0.2 and 5.0 are NOT equidistant from 1.0 in absolute terms (0.8 vs.
-        4.0) even though both are a genuine 5x move away from neutral in fold-change terms —
-        confirmed live in production affecting a real, non-trivial population of extreme-bearish
-        options-flow snapshots before this fix.
-      - whale_count (contracts with >$500K premium, already detected by get_options_flow()) —
-        scored 0-30, 10 points per whale trade up to 3 whales (a 4th+ doesn't add more — the
-        conviction signal from "multiple large trades" is already established by 3).
-      - total volume (call+put combined) — scored 0-10, a simple liquidity-floor signal so a
-        thinly-traded name with one big lucky print doesn't score as high as genuinely active
-        options flow. Capped at 5,000 combined contracts.
-      - GEX proximity (Unusual Whales only) — scored 0-20, how close the current price sits to
-        gamma_flip. Price NEAR the flip level is where dealer hedging is most reactive/unstable
-        (a small move can trigger a larger hedging response) — scored INVERSELY to distance:
-        full 20 points within 1% of the flip, tapering to 0 at 10%+ away.
-
-    Returns None only when cp_ratio itself is missing (get_options_flow()'s own "no options
-    listed"/"no volume" cases already return available: False before this is ever called in
-    practice, but the guard is real defense, not dead code, since a future caller could pass
-    partial data through directly).
+    Share imbalance is reciprocal-symmetric. Live GEX is deliberately excluded: it has
+    a different observation window and is already shown in the Market Pressure panel.
+    `cp_ratio` and `sentiment` remain accepted for source compatibility; exact volumes
+    determine the score. Missing either side withholds the score.
     """
-    if cp_ratio is None:
+    import math
+    if cp_ratio is None or total_call_vol is None or total_put_vol is None:
         return None
-
-    if cp_ratio >= 1.0:
-        cpr_pts = min(40.0, max(0.0, (cp_ratio - 1.0) / (5.0 - 1.0) * 40.0))
-    else:
-        cpr_pts = min(40.0, max(0.0, (1.0 - cp_ratio) / (1.0 - 0.2) * 40.0))
-
-    # O02: AN UNAVAILABLE COUNT CONTRIBUTES NOTHING AND SAYS SO. Scoring it as zero would be
-    # indistinguishable from "we looked and there were no whales", which is the error the
-    # tri-state exists to prevent — and this score is read as conviction/intensity.
-    whale_pts = 0.0 if whale_count is None else min(30.0, whale_count * 10.0)
-
-    total_vol = (total_call_vol or 0) + (total_put_vol or 0)
-    vol_pts = min(10.0, max(0.0, total_vol / 5000.0 * 10.0))
-
-    score = round(cpr_pts + whale_pts + vol_pts, 1)
-
+    c, p = float(total_call_vol), float(total_put_vol)
+    if not all(math.isfinite(x) and x >= 0 for x in (c, p)) or c + p <= 0:
+        return None
+    imbalance = abs(c - p) / (c + p)
+    cpr_pts = 40.0 * imbalance
+    whale_pts = 0.0 if whale_count is None else min(30.0, max(0.0, whale_count * 10.0))
+    vol_pts = min(10.0, (c + p) / 5000.0 * 10.0)
     components = {
-        "cp_ratio_pts": round(cpr_pts, 1),
-        "whale_pts": round(whale_pts, 1),
+        "cp_ratio_pts": round(cpr_pts, 1), "whale_pts": round(whale_pts, 1),
         "volume_pts": round(vol_pts, 1),
+        "max_possible": 50.0 + (30.0 if whale_count is not None else 0.0),
+        "measured": sorted(["cp_ratio", "volume"] + (["whale"] if whale_count is not None else [])),
+        "unmeasured": ["gex"] + (["whale"] if whale_count is None else []),
+        "comparability": "Point total, not a percentage and not a probability. Compare only matching method versions, component sets, session and expiration scope.",
+        "gex_excluded_reason": "Live gamma proximity is shown separately; it is not mixed with settled chain activity.",
     }
-    # THE DENOMINATOR IS ALWAYS STATED, because a score is meaningless without it. The
-    # components are cp_ratio 40 + whale 30 + volume 10 = 80, plus GEX 20 when present — the
-    # first version of this said "70 + 20 if gex", which was simply wrong arithmetic on top of
-    # being emitted only in the unavailable case.
-    _gex_measured = gex is not None and gex.get("distance_to_flip_pct") is not None
-    components["max_possible"] = (
-        40.0 + (0.0 if whale_count is None else 30.0) + 10.0 + (20.0 if _gex_measured else 0.0))
-    components["measured"] = sorted(
-        ["cp_ratio", "volume"]
-        + ([] if whale_count is None else ["whale"])
-        + (["gex"] if _gex_measured else []))
-    components["unmeasured"] = sorted(
-        ([] if whale_count is not None else ["whale"])
-        + ([] if _gex_measured else ["gex"]))
     if whale_count is None:
         components["whale_pts_unavailable"] = True
-    # NO NORMALISED PERCENTAGE IS EMITTED, DELIBERATELY. 40 out of 50 is not "80% confidence",
-    # and dividing by a denominator that varies with what happened to be measurable produces a
-    # number that looks comparable across symbols and is not. Two scores may only be compared
-    # when `measured` matches.
-    components["comparability"] = (
-        "Comparable only with scores whose `measured` set is identical. This is a point total "
-        "out of `max_possible`, not a percentage and not a probability; rescaling it to 100 "
-        "would make differently-measured symbols look like they rank against each other.")
-
-    if gex is not None and gex.get("distance_to_flip_pct") is not None:
-        gex_dist = gex["distance_to_flip_pct"]
-        gex_pts = min(20.0, max(0.0, (10.0 - gex_dist) / 10.0 * 20.0))
-        components["uw_gex_proximity_pts"] = round(gex_pts, 1)
-        score = round(score + gex_pts, 1)
-
-    return {"score": min(100.0, score), "components": components, "sentiment": sentiment}
+    return {"score": round(cpr_pts + whale_pts + vol_pts, 1), "components": components,
+            "sentiment": sentiment, "method_version": "chain_intensity_v2",
+            "basis": "40 × absolute call/put share difference + volume points + known event-size points; descriptive only"}
 
 
 _OPTIONS_CHAIN_TTL = 900  # 15-min — matches _OPTIONS_TTL's own refresh cadence
@@ -4272,7 +4214,7 @@ def get_options_chain(symbol: str, expiry: str | None = None, session: Session =
         # B1: an explicitly requested expiry of the session is served (historical evidence);
         # the DEFAULT is the nearest CURRENT expiry, never one already past its last trade.
         from ..services.options_scope import current_expiries as _current_expiries
-        _cur = _current_expiries(expiries, source_session)
+        _cur = _current_expiries(expiries, source_session, symbol=sym)
         exp = expiry if expiry in expiries else (_cur[0] if _cur else expiries[0])
         cache_key = f"options_chain:v3:{sym}:{source_session.isoformat()}:{exp}"
         try:
@@ -4330,7 +4272,7 @@ def _chain_with_scope(result: dict, now: "datetime | None" = None) -> dict:
         return result
     from datetime import date as _date
     from ..services.options_scope import expiry_scope
-    scope = expiry_scope(result.get("expiries") or [], _date.fromisoformat(result["source_session"]), now)
+    scope = expiry_scope(result.get("expiries") or [], _date.fromisoformat(result["source_session"]), now, symbol=result.get("symbol"))
     out = dict(result)
     out["expiry_scope"] = scope
     out["current_expiries"] = scope["current_expiries"]
@@ -4344,7 +4286,7 @@ def _expirations_with_scope(result: dict, now: "datetime | None" = None) -> dict
     from datetime import date as _date
     from ..services.options_scope import expiry_scope
     scope = expiry_scope([r.get("expiry") for r in result.get("expirations") or []],
-                         _date.fromisoformat(result["source_session"]), now)
+                         _date.fromisoformat(result["source_session"]), now, symbol=result.get("symbol"))
     current = set(scope["current_expiries"])
     out = dict(result)
     out["expiry_scope"] = scope
@@ -4698,6 +4640,11 @@ def get_dark_pool_prints_route(symbol: str, session: Session = Depends(get_sessi
             "side_estimate": _uw.classify_dark_pool_side(r.price, r.nbbo_bid, r.nbbo_ask),
         })
     baseline = _dark_pool_baseline(session, sym)
+    from ..services.dark_pool_sampling import coverage as sampling_coverage
+    try:
+        sampling = sampling_coverage(_get_redis(), sym)
+    except Exception:
+        sampling = {"status": "query_failed", "note": "Sampling history unavailable; coverage is unknown."}
     return {
         "symbol": sym,
         "available": True,
@@ -4706,7 +4653,7 @@ def get_dark_pool_prints_route(symbol: str, session: Session = Depends(get_sessi
         "side_basis": _dpe.SIDE_BASIS,
         "venue_note": _dpe.VENUE_NOTE,
         "clock_tolerance_minutes": _dpe.CLOCK_TOLERANCE.total_seconds() / 60.0,
-        "baseline": {**baseline, "text": _dpe.BASELINE_TEXT.get(baseline["status"])},
+        "baseline": {**baseline, "sampling": sampling, "text": _dpe.BASELINE_TEXT.get(baseline["status"])},
         **status_fields,
     }
 
@@ -5168,7 +5115,7 @@ def get_options_game_plan(
             return {"symbol": sym, "available": False, **_empty_chain_reason(session, sym)}
         # B1: trade candidates come ONLY from expiries still before their last trading instant.
         from ..services.options_scope import current_expiries as _current_expiries
-        expiries = _current_expiries(session_expiries, source_session)
+        expiries = _current_expiries(session_expiries, source_session, symbol=sym)
         if not expiries:
             return {"symbol": sym, "available": False, "reason": "no_current_expiries",
                     "source_session": source_session.isoformat()}

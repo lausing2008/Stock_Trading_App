@@ -129,7 +129,7 @@ def compute_options_game_plan_snapshot(session, stock_id: int, symbol: str) -> O
         from .options_scope import current_expiries
         source_session, session_expiries = _uw_session_expiries(session, symbol)
         # Options review B1: only expiries still before their last trading instant.
-        expiries = current_expiries(session_expiries, source_session) if session_expiries else []
+        expiries = current_expiries(session_expiries, source_session, symbol=symbol) if session_expiries else []
         if not expiries:
             return None
 

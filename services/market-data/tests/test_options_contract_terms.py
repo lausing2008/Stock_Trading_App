@@ -20,7 +20,7 @@ STD_CALL, ADJ_CALL = "MU261120C00120000", "MU1261120C00120000"
 @pytest.mark.parametrize("sym,under,status,supported", [
     (STD_SYM, "MU", oc.STANDARD, True),
     (ADJ_SYM, "MU", oc.NONSTANDARD, False),
-    ("SPXW261120P05000000", "SPX", oc.STANDARD, True),     # weekly index root, same product
+    ("SPXW261120P05000000", "SPX", oc.STANDARD, False),     # weekly index root, same product
     (None, "MU", oc.UNVERIFIED, False),
     ("not-an-occ-symbol", "MU", oc.UNVERIFIED, False),
     (STD_SYM, None, oc.UNVERIFIED, False),

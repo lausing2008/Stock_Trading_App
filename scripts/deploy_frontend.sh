@@ -33,7 +33,7 @@ for orphan in $(docker ps -a --format '{{.Names}}' | grep -E '_stockai-frontend-
   docker rm -f "$orphan" >/dev/null 2>&1 || true
 done
 
-if ! out=$(docker compose -f "$COMPOSE" up -d --force-recreate frontend 2>&1); then
+if ! out=$(docker compose -f "$COMPOSE" up -d --no-deps --force-recreate frontend 2>&1); then
   echo "FRONTEND RECREATE FAILED:"; echo "$out"; exit 1
 fi
 
