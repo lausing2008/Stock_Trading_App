@@ -48,7 +48,7 @@ const ITEMS: Item[] = [
     file: 'docs/2026-10-22/options-flow-snapshot-trace.md', effort: 'M',
     impact: 'Options flow, game plans and the premarket note read week-old settled chains for most symbols.',
     what: 'Only ~30 LEAPS symbols are captured nightly; the rest are captured on demand once their newest session is more than 7 days old. Sessions Oct 16-21 are missing for 105-144 of 155 active US symbols. 42 HK symbols and BRK-A fail on every attempt (provider cannot serve them) and are retried each time.',
-    fix: 'Planned as a separate reviewed change: capture the active US universe nightly, stop retrying unsupported symbols, backfill Oct 16-21 (UW serves ~2 years) at idle priority away from the 02:00 UTC backup.',
+    fix: 'BACKFILL DONE 2026-10-23 02:44-02:57 UTC after a sample test (re-fetched IONQ 10-15 identical to the archive 962/962; 4 symbols x 2-3 sessions complete with last_tape_time on the session): 464 symbol-sessions, 696,897 rows, 0 errors, peak memory pressure 0.19%. Oct 16-21 now complete for every active US symbol except BRK-A (provider 422). STILL OPEN: nightly full-list capture (prevents recurrence) and excluding unsupported symbols from retries.',
   },
   {
     id: 'OPTIONS-FLOW-SNAPSHOT-CURRENT', tier: 465, severity: 'high', defaultStatus: 'in-progress',
@@ -120,7 +120,7 @@ const ITEMS: Item[] = [
     file: 'docs/2026-10-23/intraday-bar-completeness.md', effort: 'M',
     impact: 'Charts and RZY read a missing or seconds-old partial final candle from the close until the next morning.',
     what: 'us_5m_intraday last fires 15:55 ET (HK 15:55 HKT); the 15:55 candle completes at 16:00 and nothing ingests 5m until the next morning. 2026-10-22: no 5m write after 15:55:55 ET for any symbol; GDX/MDB/SMH/SOXX/VICR lacked the candle (Unusual Whales returns it now); AAPL/MU/NVDA kept a 15:55:25 forming snapshot. Bar authority made no decision (no post-completion write was attempted).',
-    fix: 'Built, reviewed, NOT deployed: post-close reconciliation 16:02 + 16:07 ET; HK 12:02/12:07 and 16:12/16:17 (after the closing auction). Ingest only, authority rules apply, no trading/RZY. Completeness against the calendar grid; forming final candles and missing ones are partial; no-session symbols listed separately; second pass only retries incomplete symbols. Acceptance: PostgreSQL probe (forming completed, missing inserted, no fallback overwrite) and after deploy 0 missing/forming final candles at 16:10 ET.',
+    fix: 'DEPLOYED 2026-10-23 04:35 UTC (a1de7cbf; rollback-before-a1de7cbf3 kept). One-off run for session Thu 2026-10-22: liquid final candles recovered (GDX/MDB/SMH/SOXX/VICR present; AAPL/MU/NVDA no longer forming); 143/157 complete; only AMADY/AMZA (thin, 457c) lack the final candle. OPEN until the scheduled 16:02 ET run for session Fri 2026-10-23 shows the final candle present. Design: post-close reconciliation 16:02 + 16:07 ET; HK 12:02/12:07 and 16:12/16:17 (after the closing auction). Ingest only, authority rules apply, no trading/RZY. Completeness against the calendar grid; forming final candles and missing ones are partial; no-session symbols listed separately; second pass only retries incomplete symbols. Acceptance: PostgreSQL probe (forming completed, missing inserted, no fallback overwrite) and after deploy 0 missing/forming final candles at 16:10 ET.',
   },
   {
     id: 'BAR-OFFGRID-SNAPSHOTS', tier: 457, severity: 'medium', defaultStatus: 'in-progress',
@@ -128,7 +128,7 @@ const ITEMS: Item[] = [
     file: 'docs/2026-10-23/intraday-bar-completeness.md', effort: 'M',
     impact: 'Extra zero-volume rows beside real candles (79 rows for 78 candles) distort charts, RVOL and anything counting candles.',
     what: 'Writer: yfinance adapter (prepost history appends the current quote). 894 such rows on 2026-10-22 (868 premarket), hundreds to 2,000+ per day since Oct 1; O=H=L=C, volume 0, stamped at the last trade (09:30:01, 01:54).',
-    fix: 'Built, reviewed, NOT deployed: ingestion excludes off-grid intraday rows before authority and write, never rounds (the genuine 09:30 candle is untouched); excluded count in ingest.done and a Redis counter. Measured: 0 of 140 US symbols had only snapshot premarket rows on Oct 22. Next, separate: export existing rows with provenance, then delete them.',
+    fix: 'DEPLOYED 2026-10-23 04:35 UTC (a1de7cbf). Existing rows: 127,027 exported with ids, values and provenance (sha256 05171ebb..., EC2 + local), then 127,025 deleted in one transaction (exported ids whose values still matched; 2 HK closing-auction-window rows kept); expected grid unchanged, 0 off-grid rows. OPEN until production evidence shows new snapshots rejected (counter stockai:metric:off_grid_snapshots_excluded after the 04:00 ET premarket run). Design: ingestion excludes off-grid intraday rows before authority and write, never rounds (the genuine 09:30 candle is untouched); excluded count in ingest.done and a Redis counter. Measured: 0 of 140 US symbols had only snapshot premarket rows on Oct 22. Next, separate: export existing rows with provenance, then delete them.',
   },
   {
     id: 'BAR-SPARSE-INTERVALS', tier: 457, severity: 'medium', defaultStatus: 'in-progress',

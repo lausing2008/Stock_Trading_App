@@ -1,6 +1,6 @@
 # Intraday 5m candle completeness (tracker 457, three separate defects)
 
-**Status:** investigated 2026-10-22/23 ET. Fixes for 1 and 2 are built, tested and in review, **not deployed**. Item 3 is classified only. RZY's data-readiness gate stays **open** until the liquid-symbol defects are fixed and verified in production and the sparse intervals are classified.
+**Status (2026-10-23 00:50 ET):** fixes 1 and 2 **deployed** (`a1de7cbf`, 04:35 UTC); each stays open until production evidence (below). Item 3 is classified only. RZY's data-readiness gate stays **open** until the liquid-symbol defects are fixed and verified in production and the sparse intervals are classified.
 
 **Measure.** Completeness is the set of **expected grid timestamps** present (`session_grid.expected_grid`, from the exchange calendar: 78 five-minute candles on a regular US day, 42 on an NYSE early close, 66 in HK with the lunch break). Off-grid rows are counted separately. Row counts are not used: 77 valid candles plus 2 snapshots is 79 rows and still missing a candle.
 
@@ -57,3 +57,20 @@ Unusual Whales has no session data for AMADY and returns an error for BRK-A; yfi
 ## Still separate
 
 The option-chain archive gaps, the backup restore test and the Friday snapshot-run verification are tracked on their own.
+
+## Deployment and verification (2026-10-23)
+
+- **Deploy:** market-data `a1de7cbf` built from the reviewed commit at Fri 00:35 ET. Logs saved (`~/container-logs/`); `rollback-before-a1de7cbf3` kept; drift check 12/12 clean.
+- **Reconciliation, one-off run for session Thu 2026-10-22** (clock set to 16:02 ET; outside the RZY scan window, so no alerts):
+  - 143/157 complete;
+  - final candle missing only for AMADY and AMZA (thin, item 3);
+  - no forming final candles;
+  - no session data for SSNLF, SKHYV and US10Y.
+
+  **The scheduled run for session Fri 2026-10-23 (16:02 ET) is the acceptance check for item 1.**
+- **Off-grid cleanup:**
+  - **Export:** 127,027 rows with id, values and provenance, at `EC2:~/offgrid-export-2026-10-23/` and `~/Documents/MyProjects/incident-evidence/offgrid-export-2026-10-23/` (sha256 `05171ebb…`). All rows are snapshot-shaped (volume 0, O=H=L=C). Provenance exists for the 941 rows written since the trace started.
+  - **Delete:** one transaction removed only exported ids whose stored values still matched: **127,025 rows**. The 2 HK rows in the 16:00–16:15 HKT closing-auction window were kept.
+  - **After:** 0 off-grid rows in the US Oct 20–22 and HK Oct 21–22 sessions; grid counts unchanged.
+- **RZY:** no rebuilds followed (RZY already excluded these rows). Check again after its pre-open maintenance. Rebuilds never re-send an occurrence's email.
+- **Item 2's acceptance:** the off-grid exclusion counter after the 04:00 ET yfinance premarket run.
