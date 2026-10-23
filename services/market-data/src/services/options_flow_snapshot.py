@@ -37,11 +37,41 @@ def _fetch_flow_response(symbol: str) -> dict:
         return get_options_flow(symbol, session=session)
 
 
+def expected_flow_session(job_date: date) -> date:
+    """The settled session a snapshot taken on `job_date` (ET) should describe (2026-10-22).
+
+    A session's settled chain reaches the archive the next day (captured after settlement), so
+    a 17:00 ET run on day D can at best describe the trading session before D. Older is stale.
+    """
+    from datetime import timedelta
+    from common.market_calendar import session_bounds
+    d = job_date - timedelta(days=1)
+    for _ in range(10):
+        if session_bounds("US", d) is not None:
+            return d
+        d -= timedelta(days=1)
+    raise ValueError(f"no US session within 10 days before {job_date}")
+
+
+def last_job_day(brief_date: date) -> date:
+    """The most recent weekday before `brief_date`: the EOD job's cron is Mon-Fri, holidays included."""
+    from datetime import timedelta
+    d = brief_date - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
 def compute_options_flow(symbol: str) -> OptionsFlowResult | None:
+    return compute_options_flow_with_reason(symbol)[0]
+
+
+def compute_options_flow_with_reason(symbol: str) -> tuple[OptionsFlowResult | None, str | None]:
+    """(result, None) or (None, why): the job records the reason for every symbol it skips."""
     try:
         data = _fetch_flow_response(symbol)
         if not data.get("available"):
-            return None
+            return None, str(data.get("reason") or "unavailable")
         calls, puts = data["call_volume"], data["put_volume"]
         return OptionsFlowResult(
             cp_ratio=data["cp_ratio"], cp_ratio_uncapped=round(calls / max(puts, 1), 2),
@@ -56,10 +86,10 @@ def compute_options_flow(symbol: str) -> OptionsFlowResult | None:
                 # rows (e.g. 1296/1000, or puts == 0) differ across the cut-over.
                 "composition_rule", "cp_ratio_basis", "call_share", "put_share",
                 "sample_adequacy", "archive_coverage_status")},
-        )
+        ), None
     except Exception as exc:
         log.warning("options_flow_snapshot.compute_failed", symbol=symbol, error=str(exc))
-        return None
+        return None, "compute_failed: " + str(exc)[:120]
 
 
 def upsert_options_flow_snapshot(

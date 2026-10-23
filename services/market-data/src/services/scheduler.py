@@ -3208,50 +3208,92 @@ def _bounded_options_flow_symbols(session: Session) -> list[tuple[int, str]]:
     return list(by_id.items())
 
 
-def compute_options_flow_snapshots_eod() -> None:
+def compute_options_flow_snapshots_eod(now: "datetime | None" = None) -> dict:
     """T257-OVERNIGHT-FLOW-BRIEF Phase 2: end-of-day options-flow snapshot job.
 
-    Runs shortly after US market close (17:00 ET) so the resulting rows are already in the DB
-    well before the next day's 08:00 ET pre-market brief queries them. Rate-limited via a fixed
-    inter-symbol sleep — options-chain fetches are more rate-limit-fragile than the fundamentals
-    batch this pattern is otherwise modeled on (_refresh_fundamentals_batch), so this uses a
-    longer per-symbol delay given the bounded (not universe-wide) symbol set.
+    Runs at 17:00 ET so the rows exist before the next morning's 08:00 ET brief.
+
+    2026-10-22 (snapshot trace): rows used to be keyed by the RUN date while describing whatever
+    session the archive last held. Non-LEAPS chains are only archived on demand once they are a
+    week stale, so for days the job wrote Oct 15 data under Oct 16..21 — old data relabelled as
+    current. Now:
+      * the job first captures the EXPECTED session (expected_flow_session) for its own symbols;
+      * a row is written only when its source session IS the expected session. It stays keyed
+        by the RUN date (the day the data became available, which the ML feature's point-in-time
+        join relies on) and its evidence names the source session, so a stale session can no
+        longer be written under a later date;
+      * every skipped symbol is recorded with its reason (stale source session, unavailable,
+        failed), durably in Redis `scheduler:job:options_flow_eod:detail` and in the log.
     """
     _t0 = time.monotonic()
-    ok = failed = 0
-    from .options_flow_snapshot import compute_options_flow, upsert_options_flow_snapshot
-
+    from datetime import date as _date
+    from .options_flow_snapshot import compute_options_flow_with_reason, upsert_options_flow_snapshot, expected_flow_session
+    now = now or datetime.now(timezone.utc)
+    expected = expected_flow_session(now.astimezone(ZoneInfo("America/New_York")).date())
+    detail: dict = {"expected_session": expected.isoformat(), "written": [], "stale_source_session": {},
+                    "unavailable": {}, "capture": None}
     try:
         with SessionLocal() as session:
             symbols = _bounded_options_flow_symbols(session)
-            if not symbols:
-                log.info("scheduler.options_flow_eod_done", ok=0, failed=0, note="no_symbols")
-                _record_job_status("options_flow_eod", "ok", time.monotonic() - _t0)
-                return
-
+            session.rollback()   # end the read before slow provider calls
+            if symbols:
+                try:
+                    cap = capture_option_chain_history([sym for _, sym in symbols], expected, expected, skip_existing=True)
+                    detail["capture"] = {k: v for k, v in cap.items() if k != "errors_detail"}
+                except Exception as exc:  # capture failure is recorded; stale symbols are then skipped
+                    detail["capture"] = {"error": str(exc)[:200]}
+            # The route caches its answer 15 minutes; a page view before the capture would hand
+            # back the previous session. Read through the archive, not the cache.
+            try:
+                if symbols:
+                    _get_redis().delete(*[f"options_flow:v4:{sym}" for _, sym in symbols])
+            except Exception:
+                pass
+            ready = []
             for stock_id, symbol in symbols:
                 try:
-                    result = compute_options_flow(symbol)
-                    if result is not None:
-                        upsert_options_flow_snapshot(session, stock_id, result)
-                        ok += 1
-                    else:
-                        failed += 1
+                    result, reason = compute_options_flow_with_reason(symbol)
+                    if result is None:
+                        detail["unavailable"][symbol] = reason
+                        continue
+                    src = (result.evidence or {}).get("chain_as_of")
+                    if src != expected.isoformat():
+                        detail["stale_source_session"][symbol] = src
+                        continue
+                    ready.append((stock_id, symbol, result))
                 except Exception as exc:
                     log.warning("scheduler.options_flow_eod.symbol_error", symbol=symbol, error=str(exc))
-                    failed += 1
-                time.sleep(2.0)  # spread over minutes with backoff — see this file's own
-                # rate-limit discipline for the options-chain endpoint specifically
-
+                    detail["unavailable"][symbol] = "error: " + str(exc)[:120]
+                time.sleep(2.0)  # rate-limit discipline for the options-chain endpoint
+            # One short write at the end: no transaction held open across provider calls.
+            run_date = now.astimezone(ZoneInfo("America/New_York")).date()
+            for stock_id, symbol, result in ready:
+                upsert_options_flow_snapshot(session, stock_id, result, as_of=run_date)
             session.commit()
+            detail["written"] = [sym for _, sym, _ in ready]
     except Exception as exc:
         log.error("scheduler.options_flow_eod_error", error=str(exc))
-        _record_job_status("options_flow_eod", "error", time.monotonic() - _t0)
-        return
+        _record_job_status("options_flow_eod", "error", time.monotonic() - _t0, str(exc))
+        detail["error"] = str(exc)[:200]
+        return detail
 
     elapsed = time.monotonic() - _t0
-    log.info("scheduler.options_flow_eod_done", ok=ok, failed=failed, elapsed_s=round(elapsed))
-    _record_job_status("options_flow_eod", "ok" if failed == 0 else "partial", elapsed)
+    detail["counts"] = {"symbols": len(symbols), "written": len(detail["written"]),
+                        "stale_source_session": len(detail["stale_source_session"]),
+                        "unavailable": len(detail["unavailable"])}
+    log.info("scheduler.options_flow_eod_done", elapsed_s=round(elapsed), **detail["counts"],
+             expected_session=detail["expected_session"], stale_symbols=detail["stale_source_session"],
+             unavailable_symbols=detail["unavailable"])
+    try:
+        _get_redis().set("scheduler:job:options_flow_eod:detail", json.dumps(detail, default=str))
+    except Exception:
+        pass
+    # A symbol with no listed options is a property of the symbol, not a failed run.
+    structural = {"no_options_listed", "no_chain_for_symbol"}
+    failures = {k: v for k, v in detail["unavailable"].items() if v not in structural}
+    status = "ok" if not detail["stale_source_session"] and not failures else "partial"
+    _record_job_status("options_flow_eod", status, elapsed)
+    return detail
 
 
 def compute_gex_snapshots_eod() -> None:
@@ -3362,7 +3404,7 @@ def compute_options_game_plan_snapshots_eod() -> None:
     _record_job_status("options_game_plan_eod", "ok" if failed == 0 else "partial", elapsed)
 
 
-def _fetch_recent_options_flow(session: Session) -> list[dict]:
+def _fetch_recent_options_flow(session: Session, now: "datetime | None" = None) -> list[dict]:
     """T257-OVERNIGHT-FLOW-BRIEF Phase 2: yesterday's late-day options flow for the pre-market
     brief — reads only already-persisted OptionsFlowSnapshot rows (no live yfinance call here),
     matching this file's own established discipline of never hammering yfinance from a report
@@ -3378,8 +3420,20 @@ def _fetch_recent_options_flow(session: Session) -> list[dict]:
     new column) while still returning the capped cp_ratio for display, since the sentiment label
     next to it was classified against the capped scale.
     """
-    latest_as_of = session.execute(select(func.max(OptionsFlowSnapshot.as_of))).scalar_one_or_none()
-    if latest_as_of is None:
+    # 2026-10-22: CURRENT rows only. The brief on day B reads what the previous trading day's
+    # evening job wrote, which describes the session before that (expected_flow_session). An
+    # older latest row is stale and is NOT shown as today's flow; the brief's empty state says so.
+    from .options_flow_snapshot import expected_flow_session, last_job_day
+    now = now or datetime.now(timezone.utc)
+    # The job runs Mon-Fri at 17:00 ET whatever the holiday calendar says; rows are keyed by that
+    # run date and describe the session before it. The brief therefore shows the session two
+    # trading days back (the settled chain is not archived until the next day).
+    latest_as_of = last_job_day(now.astimezone(ZoneInfo("America/New_York")).date())
+    expected_session = expected_flow_session(latest_as_of)
+    newest = session.execute(select(func.max(OptionsFlowSnapshot.as_of))).scalar_one_or_none()
+    if newest is None or newest < latest_as_of:
+        log.info("premarket.options_flow_not_current", expected_run=str(latest_as_of),
+                 expected_session=str(expected_session), newest_snapshot=str(newest))
         return []
     rows = session.execute(
         select(
@@ -3412,6 +3466,8 @@ def _fetch_recent_options_flow(session: Session) -> list[dict]:
         }
         for (symbol, cp_ratio, cp_ratio_uncapped, sentiment, call_premium, put_premium, whale_count,
              top_whale_premium, call_volume, put_volume, evidence, as_of) in rows
+        # A row's own evidence must name the same session; a pre-fix row keyed by run date fails this.
+        if (evidence or {}).get("chain_as_of") == expected_session.isoformat()
     ]
     results.sort(key=lambda r: abs((r["cp_ratio_uncapped"] or 1.0) - 1.0), reverse=True)
     return results[:10]
