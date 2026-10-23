@@ -37,7 +37,10 @@ const SRC = fs.readFileSync(
 /** Tiers referenced by at least one ITEM. */
 function tiersUsedByItems(): number[] {
   return [...new Set(
-    [...SRC.matchAll(/^\s*tier:\s*(\d+)\s*,/gm)].map((m) => Number(m[1])),
+    // `tier:` at the start of a line OR after `id: '...',` on the same line (2026-10-22: tiers
+    // 456-459 were written `id: 'X', tier: 459,` and were invisible because only the first form
+    // was matched — the same silent-absence bug this file exists to catch).
+    [...SRC.matchAll(/(?:^\s*|,\s*)tier:\s*(\d+)\s*,/gm)].map((m) => Number(m[1])),
   )].sort((a, b) => a - b);
 }
 
@@ -48,7 +51,8 @@ function tiersInRecord(after: string): number[] {
   // Bound the search to the record literal that follows.
   const block = SRC.slice(start, SRC.indexOf('\n};', start));
   return [...new Set(
-    [...block.matchAll(/^\s{2}(\d+):/gm)].map((m) => Number(m[1])),
+    // Also `446: '#…', 447: '#…'` written on one line.
+    [...block.matchAll(/(?:^\s{2}|,\s*)(\d+):\s*['"]/gm)].map((m) => Number(m[1])),
   )].sort((a, b) => a - b);
 }
 
@@ -75,7 +79,7 @@ describe('tier label/colour coverage', () => {
   it('specifically covers the tiers that were invisible', () => {
     const labelled = new Set(tiersInRecord('const TIER_LABEL'));
     const coloured = new Set(tiersInRecord('const TIER_COLOR'));
-    for (const t of [366, 368]) {
+    for (const t of [366, 368, 456, 457, 458, 459]) {
       expect(labelled.has(t), `tier ${t} has items but no label`).toBe(true);
       expect(coloured.has(t), `tier ${t} has items but no colour`).toBe(true);
     }
