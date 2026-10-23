@@ -28,7 +28,8 @@ import textwrap
 
 _start = _SOURCE.index("\n        # BUG-INGEST-CARDINALITYVIOLATION:") + 1
 # The dedup block ends where the bar-authority filter (OD-01 fix 1) begins.
-_end = _SOURCE.index("\n        # OD-01 fix 1:")
+# The dedup block ends where the off-grid snapshot exclusion (tracker 457) begins.
+_end = _SOURCE.index("\n        # Tracker 457 (off-grid opening snapshot)")
 _BLOCK = textwrap.dedent(_SOURCE[_start:_end])
 
 

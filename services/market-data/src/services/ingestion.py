@@ -178,6 +178,29 @@ _POSTMARKET_CLOSE_ET = dtime(20, 0)
 # only regular-session bars for HK tickers (yfinance simply has no extended-hours data to add).
 # ts here is UTC-naive (see adapters/base.py's _to_canonical intraday branch), so it's
 # converted to US Eastern before comparing against the regular-session clock boundaries.
+_GRID_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "1h": 60}
+OFF_GRID_EXCLUDED_KEY = "stockai:metric:off_grid_snapshots_excluded"
+
+
+def is_off_grid(ts: datetime, timeframe: str) -> bool:
+    """A provider row not on the candle grid: seconds set, or minute off the grid. 1h is exempt
+    from the minute rule (US hourly candles start at :30). Same rule as bar_provenance."""
+    if timeframe not in _GRID_MINUTES:
+        return False
+    return bool(ts.second or ts.microsecond
+                or (timeframe != "1h" and ts.minute % _GRID_MINUTES[timeframe] != 0))
+
+
+def exclude_off_grid_snapshots(rows: list[dict], timeframe: str) -> tuple[list[dict], list[dict]]:
+    """(candles to write, off-grid snapshots excluded). Daily/weekly rows are never touched."""
+    if timeframe not in _GRID_MINUTES:
+        return rows, []
+    kept, dropped = [], []
+    for r in rows:
+        (dropped if is_off_grid(r["ts"], timeframe) else kept).append(r)
+    return kept, dropped
+
+
 def _classify_session(ts: datetime, market: str) -> str:
     if market != "US":
         return "REGULAR"
@@ -456,6 +479,20 @@ def ingest_symbol(
                         before=len(rows), after=len(_dedup))
         rows = list(_dedup.values())
 
+        # Tracker 457 (off-grid opening snapshot): yfinance appends its current-quote row to an
+        # intraday history (open=high=low=close, volume 0, stamped at the last trade, e.g.
+        # 09:30:01). Stored, it sat beside the genuine 09:30 candle as an extra "candle" (894
+        # such rows on 2026-10-22, all yfinance). It is a quote, not a candle: excluded here,
+        # never rounded onto the grid (rounding could overwrite the real 09:30 candle).
+        rows, _snapshots = exclude_off_grid_snapshots(rows, timeframe)
+        if _snapshots:
+            log.info("ingest.off_grid_snapshots_excluded", symbol=symbol, timeframe=timeframe,
+                     provider=adapter.name, count=len(_snapshots), first=str(_snapshots[0]["ts"]))
+            try:  # rate before/after is measurable without log scraping (bar trace no longer sees them)
+                get_redis().incrby(OFF_GRID_EXCLUDED_KEY, len(_snapshots))
+            except Exception:
+                pass
+
         # OD-01 fix 1: one authoritative provider per completed bar (see bar_provenance). A
         # fallback may fill gaps and the forming bar, but never rewrites a stored completed bar
         # the authority owns. `_fetched_rows` keeps what the provider returned (fetch evidence).
@@ -483,9 +520,10 @@ def ingest_symbol(
                               observed_session=max(r["ts"] for r in _fetched_rows))
             log.info("ingest.done", symbol=symbol, inserted=0, tf=timeframe, rows_sent=0, advanced=False,
                      head_before=str(head)[:19] if head else None, head_after=str(head)[:19] if head else None,
-                     adapter=adapter.name, authority=_authority_counts)
+                     adapter=adapter.name, authority=_authority_counts, off_grid_excluded=len(_snapshots))
             return {"symbol": symbol, "inserted": 0, "tf": timeframe, "advanced": False,
-                    "head_after": head, "adapter": adapter.name, "authority": _authority_counts}
+                    "head_after": head, "adapter": adapter.name, "authority": _authority_counts,
+                    "off_grid_excluded": len(_snapshots)}
 
         stmt = pg_insert(Price).values(rows)
         stmt = stmt.on_conflict_do_update(
@@ -542,9 +580,11 @@ def ingest_symbol(
                  head_before=str(_head_before)[:19] if _head_before else None,
                  head_after=str(_head_after)[:19] if _head_after else None,
                  newest_bar=str(_newest_written)[:19] if _newest_written else None,
-                 adapter=adapter.name, bar_trace=_bar_trace, authority=_authority_counts)
+                 adapter=adapter.name, bar_trace=_bar_trace, authority=_authority_counts,
+                 off_grid_excluded=len(_snapshots))
         return {
             "symbol": symbol,
+            "off_grid_excluded": len(_snapshots),
             "inserted": result.rowcount,
             "tf": timeframe,
             # `inserted` is kept for backward compatibility with existing callers, but it does
