@@ -31,6 +31,12 @@ from datetime import date
 
 import pytest
 
+# Audit R05 (2026-10-22): strategy code refuses a contract without supported terms. These
+# fixtures are standard equity contracts, so they say so explicitly.
+_STD_TERMS = {"contract_terms": {"status": "standard_root_100_assumed", "premium_multiplier": 100,
+                                 "deliverable_shares": 100, "automatic_payoff_supported": True}}
+
+
 _MOD_PATH = (pathlib.Path(__file__).resolve().parents[1]
              / "src" / "services" / "options_strategies.py")
 _spec = importlib.util.spec_from_file_location("options_strategies_under_test", _MOD_PATH)
@@ -42,7 +48,7 @@ _CALL_EXP, _PUT_EXP = "2026-10-16", "2026-11-20"
 
 
 def _c(strike, bid, ask, right="call", last=None):
-    return {"strike": strike, "bid": bid, "ask": ask, "right": right,
+    return {**_STD_TERMS, "strike": strike, "bid": bid, "ask": ask, "right": right,
             "last_price": last, "iv": 0.4, "oi": 500}
 
 
@@ -119,17 +125,17 @@ def test_non_finite_or_non_positive_prices_never_produce_a_mid(bad):
 
 
 def test_a_stale_last_price_is_labelled_rather_than_passed_off_as_a_quote():
-    leg = osx._leg({"strike": 100.0, "bid": 0, "ask": 0, "last_price": 4.0, "right": "call"},
+    leg = osx._leg({**_STD_TERMS, "strike": 100.0, "bid": 0, "ask": 0, "last_price": 4.0, "right": "call"},
                    "buy", _CALL_EXP, 14)
     assert leg["price_source"] == "last_trade"
-    quoted = osx._leg({"strike": 100.0, "bid": 3.9, "ask": 4.1, "right": "call"},
+    quoted = osx._leg({**_STD_TERMS, "strike": 100.0, "bid": 3.9, "ask": 4.1, "right": "call"},
                       "buy", _CALL_EXP, 14)
     assert quoted["price_source"] == "quote_mid"
 
 
 def test_a_leg_without_an_expiry_or_strike_is_not_a_leg():
-    assert osx._leg({"strike": 100.0, "bid": 1, "ask": 2, "right": "call"}, "buy", None, 14) is None
-    assert osx._leg({"strike": None, "bid": 1, "ask": 2, "right": "call"}, "buy", _CALL_EXP, 14) is None
+    assert osx._leg({**_STD_TERMS, "strike": 100.0, "bid": 1, "ask": 2, "right": "call"}, "buy", None, 14) is None
+    assert osx._leg({**_STD_TERMS, "strike": None, "bid": 1, "ask": 2, "right": "call"}, "buy", _CALL_EXP, 14) is None
 
 
 # ── SR-07: the collar's expiries ────────────────────────────────────────────────────────

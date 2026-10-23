@@ -89,7 +89,7 @@ def test_route_reports_time_status_age_side_estimate_and_baseline():
                                 executed_at=(now + timedelta(days=1)).isoformat(), nbbo_bid=10.0, nbbo_ask=10.1)]
     base = {"status": "query_failed", "median": None, "prints": None, "window_days": 14, "min_prints": 20,
             "first_captured": None, "last_captured": None, "population": "captured"}
-    with patch.object(UW, "is_available", lambda: True), patch.object(UW, "get_dark_pool_prints", lambda s: rows), \
+    with patch.object(UW, "is_available", lambda: True), patch.object(UW, "fetch_dark_pool_prints", lambda s: UW.DarkPoolFetch(status="ok", rows=rows)), \
          patch.object(sched, "_dark_pool_baseline", lambda session, sym: base):
         out = routes.get_dark_pool_prints_route("mu", session=None)
     first, second = out["prints"]
@@ -106,7 +106,7 @@ def test_a_print_stamped_inside_the_tolerance_never_shows_a_negative_age():
     rows = [UW.DarkPoolPrintRow(symbol="MU", price=10.0, size=1, premium=10.0, venue="L", executed_at=ahead)]
     base = {"status": "ok", "median": 1.0, "prints": 30, "window_days": 14, "min_prints": 20,
             "first_captured": None, "last_captured": None, "population": "captured"}
-    with patch.object(UW, "is_available", lambda: True), patch.object(UW, "get_dark_pool_prints", lambda s: rows), \
+    with patch.object(UW, "is_available", lambda: True), patch.object(UW, "fetch_dark_pool_prints", lambda s: UW.DarkPoolFetch(status="ok", rows=rows)), \
          patch.object(sched, "_dark_pool_baseline", lambda session, sym: base):
         p = routes.get_dark_pool_prints_route("MU", session=None)["prints"][0]
     assert p["time_status"] == "ok" and p["age_minutes"] == 0.0

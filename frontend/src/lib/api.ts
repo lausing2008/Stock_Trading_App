@@ -1696,7 +1696,17 @@ export type WalkForwardReport = {
   cross_sectional_caveat: string | null;
 };
 export type MLWeightValidation = { lookback_days: number; signal_count: number; optimal_weight: number | null; optimal_accuracy: number | null; current_formula_range: [number, number]; curve: MLWeightCurvePoint[] };
-export type OptionsFlowContract = { expiry: string; side: 'call' | 'put'; strike: number; volume: number; oi: number; vol_oi: number; iv: number; itm: boolean;
+/** Audit R03: ITM/ATM/OTM against the chain session's own close; null when that price is unknown. */
+export type Moneyness = 'ITM' | 'ATM' | 'OTM';
+/** R03: the same-session underlying price moneyness was measured against. */
+export type MoneynessReference = { price: number; session: string; source: string };
+/** R04: how many contracts a field was measured for. */
+export type FieldCount = { known: number; missing?: number; invalid?: number; total: number };
+export type OptionsFlowContract = { expiry: string; side: 'call' | 'put'; strike: number; volume: number; oi: number; vol_oi: number;
+  /** R04: null when unknown — never 0%. */
+  iv: number | null;
+  /** R03: null when moneyness could not be measured; prefer `moneyness`. */
+  itm: boolean | null; moneyness?: Moneyness | null; option_symbol?: string | null;
   /** Paid premium from the tape; null when not captured (the settled chain has none). */
   premium: number | null; traded_premium?: number | null;
   /** volume x mid x 100 — an ESTIMATE, never premium. */
@@ -1712,7 +1722,9 @@ export type UnusualSelection = { rule: string; eligible: { call: number; put: nu
 export type LowOiActivity = { rule: string; count: { call: number; put: number }; top: { expiry: string; side: 'call' | 'put'; strike: number; volume: number; oi: number }[] };
 /** Options review B1: one source session's expiries split into historical evidence and current candidates. */
 export type ExpiryScope = { source_session: string | null; evaluated_at: string; historical_expiries: string[];
-  current_expiries: string[]; excluded_from_current: { expiry: string; reason: string; last_trading_instant: string | null }[]; rule: string };
+  current_expiries: string[]; excluded_from_current: { expiry: string; reason: string; last_trading_instant: string | null }[]; rule: string;
+  /** Per-expiry rows; `last_trading_instant` lets the client re-evaluate eligibility as time passes (R02). */
+  expiries?: { expiry: string; historical: boolean; current: boolean; reason: string | null; last_trading_instant: string | null }[] };
 // MPE-02: composite 0-100 options-pressure (conviction/intensity, not direction — read
 // `sentiment` alongside this for direction) score. See compute_options_pressure_score()'s own
 // docstring in routes.py for the full weighting rationale.
@@ -1728,23 +1740,38 @@ export type OptionsPressureScore = {
   };
   sentiment: string | null;
 };
-export type OptionsFlow = { symbol: string; available: boolean; reason?: string; call_volume?: number; put_volume?: number; cp_ratio?: number;
+/** R04: call/put volume is null when that whole side was unmeasured — never 0. */
+export type OptionsFlow = { symbol: string; available: boolean; reason?: string; call_volume?: number | null; put_volume?: number | null; cp_ratio?: number | null;
   /** Legacy label kept for signal-engine; the page shows composition instead. */
-  sentiment?: string; unusual_count?: number; unusual?: OptionsFlowContract[]; expiries_used?: string[];
+  sentiment?: string | null;
+  volume_coverage?: { call: FieldCount; put: FieldCount }; composition_scope?: 'complete' | 'observed_subtotal';
+  unusual_unmeasured?: { call: number; put: number }; moneyness_reference?: MoneynessReference | null; moneyness_unknown_reason?: string | null;
+  /** R02: when the server computed this payload (cached up to 15 min; never restamped on a cache hit). */
+  computed_at?: string | null; unusual_count?: number; unusual?: OptionsFlowContract[]; expiries_used?: string[];
   expiries_attempted?: string[]; chain_as_of?: string | null; coverage_status?: string | null; source?: string;
   whale_count?: number | null; whale_count_assessed?: number | null; whale_count_total?: number | null; top_whale_premium?: number | null; pressure_score?: OptionsPressureScore | null; last_known_chain_date?: string | null;
   source_session?: string | null; coverage_reason?: string | null; expiry_scope?: ExpiryScope;
   mixed_session_slices?: { expiry: string; as_of: string }[];
   activity_composition?: 'call_heavy' | 'put_heavy' | 'mixed' | 'unmeasured'; call_share?: number | null; put_share?: number | null;
   unusual_selection?: UnusualSelection; low_oi_activity?: LowOiActivity };
-export type OptionsChainRow = { strike: number; bid: number; ask: number; last_price: number; volume: number; oi: number; iv: number; itm: boolean };
+/** R03/R04: volume, OI, IV and moneyness are null when unknown. A genuine 0 stays 0. */
+/** R05: what one contract delivers and what its premium multiplies. Only `automatic_payoff_supported`
+ *  rows may be priced at x100 automatically; adjusted (nonstandard root) and unidentified contracts are not. */
+export type ContractTerms = { status: 'standard_root_100_assumed' | 'nonstandard_root_deliverable_unknown' | 'unverified_100_assumed';
+  option_symbol?: string | null; premium_multiplier: number | null; deliverable_shares: number | null; basis?: string; automatic_payoff_supported: boolean };
+export type OptionsChainRow = { strike: number; bid: number; ask: number; last_price: number; volume: number | null; oi: number | null; iv: number | null; itm: boolean | null; moneyness?: Moneyness | null;
+  option_symbol?: string | null; contract_terms?: ContractTerms | null };
 // IF-05: max pain — needs only strike + open interest, no IV/Black-Scholes/dealer-positioning
 // assumption. null when there's zero open interest to compute against for this expiry.
-export type MaxPain = { max_pain_strike: number; total_call_oi: number; total_put_oi: number; put_call_oi_ratio: number | null };
+export type MaxPain = { max_pain_strike: number; total_call_oi: number; total_put_oi: number; put_call_oi_ratio: number | null;
+  /** R04: contracts with known OI behind this figure. */
+  oi_coverage?: { known: number; total: number; complete: boolean } };
 export type OptionsChain = { symbol: string; available: boolean; reason?: string; expiry?: string; expiries?: string[]; calls?: OptionsChainRow[]; puts?: OptionsChainRow[]; max_pain?: MaxPain | null;
   /** B1: `expiries` is the source session's full list (history); only these may be offered as trades. */
   current_expiries?: string[]; expiry_is_current?: boolean; source_session?: string | null; expiry_scope?: ExpiryScope;
-  coverage_status?: string | null; coverage_reason?: string | null };
+  coverage_status?: string | null; coverage_reason?: string | null;
+  moneyness_reference?: MoneynessReference | null; moneyness_unknown_reason?: string | null;
+  field_coverage?: { calls: Record<'volume' | 'oi' | 'iv', FieldCount>; puts: Record<'volume' | 'oi' | 'iv', FieldCount> } | null };
 
 // MPE-06: real, calculated dealer gamma exposure via Unusual Whales. `source` distinguishes a
 // real GEX read ("unusual_whales") from the free-tier's own OI-concentration proxy elsewhere
@@ -1812,6 +1839,10 @@ export type DarkPoolPrints = {
   reason?: string;
   prints: DarkPoolPrint[];
   side_basis?: string; venue_note?: string; clock_tolerance_minutes?: number; baseline?: DarkPoolBaseline;
+  /** R01: the provider's outcome. `stale` = the prints are the last good sample shown beside a failure. */
+  status?: 'ok' | 'empty' | 'disabled' | 'rate_limited' | 'unauthorized' | 'timeout' | 'upstream_error' | 'malformed';
+  fetched_at?: string | null; source_as_of?: string | null; from_cache?: boolean; malformed_rows?: number;
+  http_status?: number | null; error?: string | null; stale?: boolean; stale_fetched_at?: string | null;
 };
 
 // T324-OPTIONSFLOW-TAB: Options Flow nav tab types — screener/flow-scanner/net-flow/cached views.

@@ -73,6 +73,10 @@ def compute_options_flow_with_reason(symbol: str) -> tuple[OptionsFlowResult | N
         if not data.get("available"):
             return None, str(data.get("reason") or "unavailable")
         calls, puts = data["call_volume"], data["put_volume"]
+        if data.get("cp_ratio") is None:
+            # Audit R04: one side's volume was entirely unmeasured, so no ratio exists. Persisting
+            # one from a zero subtotal would store "all calls" for a chain whose puts nobody saw.
+            return None, "volume_side_unmeasured"
         return OptionsFlowResult(
             cp_ratio=data["cp_ratio"], cp_ratio_uncapped=round(calls / max(puts, 1), 2),
             call_volume=calls, put_volume=puts,
@@ -85,7 +89,9 @@ def compute_options_flow_with_reason(symbol: str) -> tuple[OptionsFlowResult | N
                 # without these keys were labelled from the rounded/capped ratio, so boundary
                 # rows (e.g. 1296/1000, or puts == 0) differ across the cut-over.
                 "composition_rule", "cp_ratio_basis", "call_share", "put_share",
-                "sample_adequacy", "archive_coverage_status")},
+                "sample_adequacy", "archive_coverage_status",
+                # R04: a snapshot over an observed subtotal says so.
+                "volume_coverage", "composition_scope")},
         ), None
     except Exception as exc:
         log.warning("options_flow_snapshot.compute_failed", symbol=symbol, error=str(exc))

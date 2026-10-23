@@ -21,6 +21,12 @@ import pathlib
 
 import pytest
 
+# Audit R05 (2026-10-22): strategy code refuses a contract without supported terms. These
+# fixtures are standard equity contracts, so they say so explicitly.
+_STD_TERMS = {"contract_terms": {"status": "standard_root_100_assumed", "premium_multiplier": 100,
+                                 "deliverable_shares": 100, "automatic_payoff_supported": True}}
+
+
 _SVC = pathlib.Path(__file__).resolve().parents[1] / "src"
 _BROKER = (_SVC / "services" / "broker_submission.py").read_text()
 _ROUTES = (_SVC / "api" / "routes.py").read_text()
@@ -191,7 +197,7 @@ def test_the_backend_records_the_distinction(quote, expected):
 @pytest.mark.parametrize("dte,built", [(-5, False), (-1, False), (0, True), (1, True)])
 def test_an_expired_contract_cannot_become_a_leg(dte, built):
     """WITNESS: on October 2 an October 1 call was the PRIMARY recommendation at DTE -1."""
-    leg = osx._leg({"strike": 105.0, "bid": 2.0, "ask": 2.2, "right": "call"},
+    leg = osx._leg({**_STD_TERMS, "strike": 105.0, "bid": 2.0, "ask": 2.2, "right": "call"},
                    "sell", "2026-10-01", dte)
     assert (leg is not None) is built
 
@@ -199,13 +205,13 @@ def test_an_expired_contract_cannot_become_a_leg(dte, built):
 def test_same_day_expiry_is_deliberately_still_allowed():
     """DTE 0 is tradeable until its last trading time — a session question this pure module
     cannot answer. Treating it as expired would silently drop same-day structures."""
-    assert osx._leg({"strike": 105.0, "bid": 2.0, "ask": 2.2, "right": "call"},
+    assert osx._leg({**_STD_TERMS, "strike": 105.0, "bid": 2.0, "ask": 2.2, "right": "call"},
                     "sell", "2026-10-02", 0) is not None
 
 
 def test_an_unknown_dte_is_not_treated_as_expired():
     """None means 'not computed', which is not the same as 'in the past'."""
-    assert osx._leg({"strike": 105.0, "bid": 2.0, "ask": 2.2, "right": "call"},
+    assert osx._leg({**_STD_TERMS, "strike": 105.0, "bid": 2.0, "ask": 2.2, "right": "call"},
                     "sell", "2026-11-20", None) is not None
 
 
@@ -232,8 +238,8 @@ def _reviewer_fixture(shares, *, call_expiry="2026-11-06"):
     CROSSED at 12/2 (so the long call cannot be built) and the target call valid at 2/2.2
     (so the covered call can be priced). Only an ineligible structure survives pricing."""
     from datetime import date as _date
-    calls = [{"strike": 100.0, "bid": 12.0, "ask": 2.0, "last_price": 0.0, "iv": .4, "oi": 100},
-             {"strike": 105.0, "bid": 2.0, "ask": 2.2, "last_price": 0.0, "iv": .4, "oi": 100}]
+    calls = [{**_STD_TERMS, "strike": 100.0, "bid": 12.0, "ask": 2.0, "last_price": 0.0, "iv": .4, "oi": 100},
+             {**_STD_TERMS, "strike": 105.0, "bid": 2.0, "ask": 2.2, "last_price": 0.0, "iv": .4, "oi": 100}]
     return osx.build_strategy_matrix(
         current_price=100., stop_loss=None, take_profit=105., signal="BUY",
         put_rows=[], put_expiry=None, call_rows=calls, call_expiry=call_expiry,
@@ -303,7 +309,7 @@ def test_an_omitted_dte_calculation_is_not_the_same_as_an_unreadable_expiry():
     """The distinction the first fix could not make: `dte=None` with a VALID expiry string is
     a calculation nobody performed; `dte=None` with an unparseable one is a contract whose
     identity cannot be read."""
-    c = {"strike": 105.0, "bid": 2.0, "ask": 2.2, "right": "call"}
+    c = {**_STD_TERMS, "strike": 105.0, "bid": 2.0, "ask": 2.2, "right": "call"}
     assert osx._leg(c, "sell", "2026-11-20", None) is not None
     assert osx._leg(c, "sell", "not-a-date", None) is None
 
@@ -311,7 +317,7 @@ def test_an_omitted_dte_calculation_is_not_the_same_as_an_unreadable_expiry():
 def test_same_day_expiry_remains_available_for_analysis():
     """Agreed with the reviewer: DTE 0 may be priced, but this module does not assert current
     tradability — last-trading-time rules belong to the execution consumer."""
-    c = {"strike": 105.0, "bid": 2.0, "ask": 2.2, "right": "call"}
+    c = {**_STD_TERMS, "strike": 105.0, "bid": 2.0, "ask": 2.2, "right": "call"}
     assert osx._leg(c, "sell", "2026-10-02", 0) is not None
 
 

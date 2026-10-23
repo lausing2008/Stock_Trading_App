@@ -1,0 +1,83 @@
+{
+  "R03_R04_missing_inputs": {
+    "no_reference_itm": null,
+    "no_reference_moneyness": null,
+    "reference_120_itm": true,
+    "missing_volume": null,
+    "missing_oi": null,
+    "missing_iv": null,
+    "reproduced": false
+  },
+  "R05_identity_in_chain_rows": {
+    "option_symbol_kept": "MU1261120C00100000",
+    "terms_status": "nonstandard_root_deliverable_unknown",
+    "game_plan_covered_call": null,
+    "refused": {
+      "puts": {},
+      "calls": {
+        "nonstandard_root_deliverable_unknown": 1
+      }
+    },
+    "reproduced": false
+  },
+  "R01_provider_failure": {
+    "route_status": "upstream_error",
+    "route_reason": "upstream_error",
+    "scanner_wrapper_returned": [],
+    "reproduced": false
+  },
+  "R07_tied_selection_via_route": {
+    "forward": [
+      [
+        "call",
+        100.0
+      ],
+      [
+        "call",
+        101.0
+      ],
+      [
+        "call",
+        102.0
+      ],
+      [
+        "put",
+        90.0
+      ]
+    ],
+    "reversed": [
+      [
+        "call",
+        100.0
+      ],
+      [
+        "call",
+        101.0
+      ],
+      [
+        "call",
+        102.0
+      ],
+      [
+        "put",
+        90.0
+      ]
+    ],
+    "distinct_selections_over_20_shuffles": 1,
+    "reproduced": false
+  },
+  "R08_pressure_reciprocals": {
+    "points": {
+      "2": 10.0,
+      "0.5": 25.0
+    },
+    "reproduced": true
+  },
+  "head": "b997cadb77216fd55a13efc28987a8d0f2b286d8",
+  "working_tree_dirty": true,
+  "source_sha256": {
+    "services/market-data/src/api/routes.py": "8bbf503c814e4dc78145a8989122687d69ab4a5144d9af052e0641c6bb09d296",
+    "services/market-data/src/services/unusual_whales.py": "110dedca2ffd0cb528f5bdde55a9e16bc4d7c150246a30d320a445b1e6ebcdc9",
+    "services/market-data/src/services/uw_option_chain.py": "f350688deae75ccf8aa4ffc02ee1a2ae07a457f60183cda58306298d56cf0fa9"
+  }
+}

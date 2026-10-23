@@ -1,0 +1,96 @@
+{
+  "missing_inputs": {
+    "no_spot_itm": false,
+    "spot_120_itm": true,
+    "missing_volume": 0,
+    "missing_oi": 0,
+    "missing_iv": 0.0
+  },
+  "adjusted_identity_discarded_by_chain_rows": {
+    "strike": 100.0,
+    "bid": 1.0,
+    "ask": 2.0,
+    "last_price": 0.0,
+    "volume": 0,
+    "oi": 0,
+    "iv": 0.0,
+    "itm": false
+  },
+  "provider_failure": {
+    "exception": "synthetic upstream 503",
+    "returned": []
+  },
+  "tied_selection": {
+    "input_order_a_strikes": [
+      100,
+      101,
+      102
+    ],
+    "input_order_b_strikes": [
+      101,
+      102,
+      103
+    ]
+  },
+  "pressure_reciprocals": {
+    "2": 10.0,
+    "0.5": 25.0
+  },
+  "first_tune_negative_returns_same_day_split": {
+    "decision": {
+      "status": "validated",
+      "reason": "validated",
+      "would_apply": true,
+      "previous_cap": null,
+      "baseline_weight": 0.5,
+      "candidate_validation_fired": 30,
+      "baseline_validation_fired": 30,
+      "candidate_validation_accuracy": 0.0,
+      "baseline_validation_accuracy": 0.0,
+      "candidate_validation_ev_pct": -10.0,
+      "baseline_validation_ev_pct": -10.0,
+      "history": {
+        "train_window": [
+          "2026-01-02",
+          "2026-01-02"
+        ],
+        "validation_window": [
+          "2026-01-02",
+          "2026-01-02"
+        ],
+        "validation_ev_pct": -10.0,
+        "baseline_validation_ev_pct": -10.0,
+        "validation_n": 30,
+        "promoted": true,
+        "gate_failures": [
+          "no_baseline_cap:first_tune"
+        ]
+      }
+    },
+    "return_basis": {
+      "basis": "split_adjusted_price where evidenced, raw price otherwise",
+      "observations_used": 100,
+      "dropped_unadjustable_action": 0,
+      "used_unverified_completeness": 100
+    },
+    "split": {
+      "train_n": 70,
+      "validation_n": 30
+    }
+  },
+  "protective_floor_at_zero_cap": 0.15,
+  "head": "994e967be802ee17c9d0e6046ef8e74129974d5e",
+  "source_sha256": {
+    "services/market-data/src/api/routes.py": "51c4afbedd3ba56da0db4d824375847c3e1774772fdc896563e852289702acd3",
+    "services/market-data/src/services/unusual_whales.py": "2f4e373ac74126c20d27dcc94c20fd2c00607a135d3411b6257729337a59df98",
+    "services/market-data/src/services/uw_option_chain.py": "41d4e45b586e66fac52eb20baca1426a3308230474c30f26d8ad330074924440",
+    "services/signal-engine/src/api/calibration.py": "ed95966c0d6397046ffd65596cb41e098ca875898e739240e5d59a1f59deca70",
+    "services/signal-engine/src/generators/signals.py": "2fc84efc0382442044fcd7536653d5fd6dfe8b28a67c673d706fdbba3f3c7147",
+    "services/market-data/src/services/options_scope.py": "69bd007473a1bf07ab700d1fb87ab71f1b3c7df5ce96e9dc37d905aac6a16b10",
+    "services/market-data/src/services/dark_pool_evidence.py": "9dcb6f2203bdeeb130b922a52651bf0bb64308d77fc8ccc2a02934901a16984d",
+    "frontend/src/components/OptionsFlowCard.tsx": "464e76c509b29530619492fc64db4b031b9d8a1272ad877e7c3559e810bcc062",
+    "frontend/src/components/MarketPressurePanel.tsx": "d913c364044d4f71091ec9b3a81858a619db3326678782b2c07e49b51d59ed50",
+    "frontend/src/lib/optionsGainLoss.ts": "8e188fdd4a6309025a05b83c737d3053c35170ed94b574fa138b5b9ea323f4d1",
+    "frontend/src/lib/optionsFlowStatus.ts": "6e3ce6dccd3e5b25e98a40722029ede0df253c6acfbaa85bc3388b866db73a2d"
+  }
+}

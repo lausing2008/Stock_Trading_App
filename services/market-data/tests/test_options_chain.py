@@ -14,6 +14,7 @@ import constraint (see test_backfill_realized_ev.py's docstring for the same rea
 Real pandas is used (not mocked) so this test exercises the actual sort_values/fillna
 behavior, not a hand-copied re-implementation that could silently drift from it.
 """
+import json
 import pathlib
 
 import pandas as pd
@@ -26,7 +27,8 @@ def _extract_options_chain_rows():
     start = _ROUTES_SOURCE.index("def _options_chain_rows(")
     end = _ROUTES_SOURCE.index('\n@router.get("/{symbol}/options-chain")', start)
     func_source = _ROUTES_SOURCE[start:end]
-    namespace = {"pd": pd}
+    from src.services.options_contract import contract_terms   # R05: the real shared definition
+    namespace = {"pd": pd, "_contract_terms": contract_terms}
     exec(func_source, namespace)  # noqa: S102 — isolated eval of one pure function's real source
     return namespace["_options_chain_rows"]
 
@@ -93,14 +95,23 @@ def test_field_mapping_and_iv_is_converted_to_a_percent():
     row = _options_chain_rows(df)[0]
     assert row == {
         "strike": 100.0, "bid": 1.5, "ask": 1.6, "last_price": 1.55,
-        "volume": 42, "oi": 500, "iv": 35.7, "itm": True,
+        "volume": 42, "oi": 500, "iv": 35.7, "itm": True, "moneyness": None,
+        # R05: no symbol -> terms unverified, which every automatic payoff path refuses.
+        "option_symbol": None,
+        "contract_terms": {"status": "unverified_100_assumed", "option_symbol": None, "premium_multiplier": None,
+                           "deliverable_shares": None, "automatic_payoff_supported": False,
+                           "basis": "no readable contract symbol: contract terms cannot be identified"},
     }
 
 
-def test_nan_values_degrade_to_zero_not_crash():
+def test_nan_values_never_crash_and_unknown_measurements_stay_unknown():
     """A thinly-traded contract can have NaN bid/ask/volume — must not raise or leak a NaN
     into the JSON response (float('nan') is not valid JSON, same class of bug already fixed
-    once this session for updown_vol_ratio's Infinity case)."""
+    once this session for updown_vol_ratio's Infinity case).
+
+    Audit R04 (2026-10-22) INVERTED the measurement half of this test: it used to assert NaN
+    volume/OI/IV became 0, which is how "0% IV" and "100% calls" could include unknowns. Prices
+    keep the 0.0 no-quote convention; measurements are None."""
     df = _make_chain_df(
         strike=[50], bid=[float("nan")], ask=[float("nan")], lastPrice=[float("nan")],
         volume=[float("nan")], openInterest=[float("nan")], impliedVolatility=[float("nan")],
@@ -109,9 +120,20 @@ def test_nan_values_degrade_to_zero_not_crash():
     row = _options_chain_rows(df)[0]
     assert row["bid"] == 0.0
     assert row["ask"] == 0.0
-    assert row["volume"] == 0
-    assert row["oi"] == 0
-    assert row["iv"] == 0.0
+    assert row["volume"] is None
+    assert row["oi"] is None
+    assert row["iv"] is None
+    json.dumps(row)   # no NaN leaks
+
+
+def test_a_genuine_zero_stays_zero_and_unknown_moneyness_is_none():
+    df = _make_chain_df(
+        strike=[50], bid=[1.0], ask=[1.2], lastPrice=[0.0], volume=[0],
+        openInterest=[0], impliedVolatility=[0.0], inTheMoney=[None],
+    )
+    row = _options_chain_rows(df)[0]
+    assert row["volume"] == 0 and row["oi"] == 0 and row["iv"] == 0.0
+    assert row["itm"] is None and row["moneyness"] is None
 
 
 def test_empty_dataframe_returns_empty_list():

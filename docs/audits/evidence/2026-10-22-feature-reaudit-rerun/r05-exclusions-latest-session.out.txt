@@ -1,0 +1,12 @@
+# Read-only production query, ~2026-10-23 06:30 UTC, via docker exec into stockai-postgres-1.
+# Query: r05-exclusions-latest-session.sql (each symbol's latest option_chain_history session).
+# Classification mirrors services/market-data/src/services/options_contract.py.
+SET
+SET
+BEGIN
+   k    |  status  | contracts | symbols
+--------+----------+-----------+---------
+ TOTALS | standard |    285643 |     150
+(1 row)
+# No adjusted, missing-symbol or unreadable-symbol rows. Archive-wide breakdown and open
+# options-income positions were NOT measured (the production read was refused in-session).

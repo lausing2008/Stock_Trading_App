@@ -15,7 +15,7 @@ import pandas as pd
 
 SRC = Path(__file__).resolve().parents[1] / "src/api/routes.py"
 TREE = ast.parse(SRC.read_text())
-NAMES = {"get_options_flow", "_with_current_scope", "unusual_premium_fields", "whale_coverage", "compute_options_pressure_score", "rank_unusual"}
+NAMES = {"get_options_flow", "_with_current_scope", "unusual_premium_fields", "whale_coverage", "compute_options_pressure_score", "rank_unusual", "unusual_order_key"}
 
 
 class _Cache:
@@ -75,8 +75,8 @@ def test_several_unknown_premiums_no_longer_fail_the_route():
 def test_ranking_is_deterministic_on_ties():
     from importlib import util
     ns = {}
-    node = next(n for n in TREE.body if isinstance(n, ast.FunctionDef) and n.name == "rank_unusual")
-    exec(compile(ast.Module(body=[node], type_ignores=[]), str(SRC), "exec"), ns)
+    for node in (n for n in TREE.body if isinstance(n, ast.FunctionDef) and n.name in ("rank_unusual", "unusual_order_key")):
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(SRC), "exec"), ns)
     rows = [dict(expiry="2099-01-16", side="put", strike=95.0, volume=500, vol_oi=1.0, premium=None),
             dict(expiry="2099-01-16", side="call", strike=105.0, volume=500, vol_oi=1.0, premium=None),
             dict(expiry="2099-01-09", side="call", strike=110.0, volume=500, vol_oi=1.0, premium=None),

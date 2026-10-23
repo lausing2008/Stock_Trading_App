@@ -1,0 +1,2205 @@
+{
+  "services/signal-engine/src/generators/signals.py": {
+    "sha256": "2fc84efc0382442044fcd7536653d5fd6dfe8b28a67c673d706fdbba3f3c7147",
+    "constants": {
+      "_TA_WEIGHTS_DEFAULT": {
+        "line": 148,
+        "value": {
+          "above_sma50": 0.15,
+          "sma50_above_sma200": 0.1,
+          "golden_cross_event": 0.1,
+          "death_cross_penalty": 0.1,
+          "gc_spread_expanding": 0.06,
+          "gc_spread_narrowing": 0.06,
+          "rsi_sweet_spot": 0.15,
+          "rsi_mild_oversold": 0.08,
+          "rsi_mild_overbought": 0.06,
+          "stoch_oversold": 0.1,
+          "stoch_overbought_penalty": 0.08,
+          "stoch_cross_up": 0.05,
+          "macd_strong": 0.15,
+          "macd_positive": 0.08,
+          "macd_zero_cross_up": 0.05,
+          "macd_momentum_fading": 0.08,
+          "bb_mid_zone": 0.1,
+          "price_above_vwap": 0.08,
+          "price_below_vwap_penalty": 0.05,
+          "bullish_trend": 0.1,
+          "obv_trend_bullish": 0.1,
+          "volume_z": 0.05
+        }
+      },
+      "_EARNINGS_COMPRESSION_ENABLED": {
+        "line": 494,
+        "value": false
+      },
+      "_HOT_NEWS_DELAYED_COMPRESS": {
+        "line": 1690,
+        "value": 0.92
+      },
+      "_STYLE_PROFILES": {
+        "line": 1693,
+        "value": {
+          "SHORT": {
+            "ml_weight_cap": 0.3,
+            "ml_weight_floor": 0.1,
+            "buy_threshold": {
+              "bull": 0.63,
+              "high_vol": 0.65,
+              "bear": 0.68,
+              "unknown": 0.62,
+              "neutral": 0.62,
+              "choppy": 0.65,
+              "risk_off": 0.68
+            },
+            "hold_threshold": {
+              "bull": 0.46,
+              "high_vol": 0.5,
+              "bear": 0.52,
+              "unknown": 0.47,
+              "neutral": 0.47,
+              "choppy": 0.5,
+              "risk_off": 0.52
+            },
+            "adx_min": 27,
+            "adx_compression": 0.85,
+            "high_vol_compression": 0.92,
+            "breadth_compression": 0.9,
+            "weekly_boost": 1.08,
+            "weekly_compress": 0.93,
+            "earnings_compression": null,
+            "news_compression": null,
+            "rs_compression": 0.9,
+            "kscore_boost": false,
+            "max_compress_ratio": 0.7
+          },
+          "SWING": {
+            "ml_weight_cap": 0.65,
+            "ml_weight_floor": 0.15,
+            "buy_threshold": {
+              "bull": 0.72,
+              "high_vol": 0.74,
+              "bear": 0.76,
+              "unknown": 0.72,
+              "neutral": 0.72,
+              "choppy": 0.74,
+              "risk_off": 0.76
+            },
+            "hold_threshold": {
+              "bull": 0.5,
+              "high_vol": 0.54,
+              "bear": 0.56,
+              "unknown": 0.5,
+              "neutral": 0.5,
+              "choppy": 0.54,
+              "risk_off": 0.56
+            },
+            "adx_min": 15,
+            "adx_compression": 0.9,
+            "high_vol_compression": 0.85,
+            "breadth_compression": 0.9,
+            "weekly_boost": 1.12,
+            "weekly_compress": 0.85,
+            "earnings_compression": {
+              "2": 0.65,
+              "5": 0.85,
+              "10": 0.95
+            },
+            "news_compression": {
+              "25": 0.75,
+              "35": 0.85
+            },
+            "rs_compression": 0.85,
+            "kscore_boost": false,
+            "max_compress_ratio": 0.55,
+            "min_pillars_for_buy": 3
+          },
+          "LONG": {
+            "ml_weight_cap": 0.45,
+            "ml_weight_floor": 0.12,
+            "buy_threshold": {
+              "bull": 0.6,
+              "high_vol": 0.65,
+              "bear": 0.7,
+              "unknown": 0.62,
+              "neutral": 0.62,
+              "choppy": 0.65,
+              "risk_off": 0.7
+            },
+            "hold_threshold": {
+              "bull": 0.46,
+              "high_vol": 0.5,
+              "bear": 0.54,
+              "unknown": 0.46,
+              "neutral": 0.46,
+              "choppy": 0.5,
+              "risk_off": 0.54
+            },
+            "adx_min": null,
+            "adx_compression": null,
+            "high_vol_compression": 0.9,
+            "breadth_compression": 0.92,
+            "weekly_boost": 1.18,
+            "weekly_compress": 0.8,
+            "earnings_compression": null,
+            "news_compression": null,
+            "rs_compression": 0.8,
+            "kscore_boost": true,
+            "max_compress_ratio": 0.65,
+            "min_pillars_for_buy": 3
+          },
+          "GROWTH": {
+            "ml_weight_cap": 0.6,
+            "ml_weight_floor": 0.2,
+            "buy_threshold": {
+              "bull": 0.6,
+              "high_vol": 0.65,
+              "bear": 0.68,
+              "unknown": 0.6,
+              "neutral": 0.6,
+              "choppy": 0.65,
+              "risk_off": 0.68
+            },
+            "hold_threshold": {
+              "bull": 0.45,
+              "high_vol": 0.5,
+              "bear": 0.52,
+              "unknown": 0.45,
+              "neutral": 0.45,
+              "choppy": 0.5,
+              "risk_off": 0.52
+            },
+            "adx_min": 12,
+            "adx_compression": 0.92,
+            "high_vol_compression": 0.88,
+            "breadth_compression": 0.95,
+            "weekly_boost": 1.08,
+            "weekly_compress": 0.92,
+            "earnings_compression": {
+              "2": 0.6,
+              "5": 0.8,
+              "10": 0.92
+            },
+            "news_compression": {
+              "25": 0.8,
+              "35": 0.9
+            },
+            "rs_compression": null,
+            "kscore_boost": false,
+            "max_compress_ratio": 0.6,
+            "skip_weekly_gate": true
+          }
+        }
+      },
+      "_SHORT_INTEREST_UW_DISAGREEMENT_REL_THRESHOLD": {
+        "line": 1850,
+        "value": 0.2
+      },
+      "_DYNAMIC_BUY_THRESHOLD_BOUNDS": {
+        "line": 1970,
+        "value": [
+          0.55,
+          0.85
+        ]
+      },
+      "_DYNAMIC_SELL_THRESHOLD_BOUNDS": {
+        "line": 1971,
+        "value": [
+          0.15,
+          0.45
+        ]
+      },
+      "_SELL_THRESHOLD_FALLBACK": {
+        "line": 2012,
+        "value": 0.35
+      }
+    }
+  },
+  "services/signal-engine/src/api/calibration.py": {
+    "sha256": "ed95966c0d6397046ffd65596cb41e098ca875898e739240e5d59a1f59deca70",
+    "constants": {
+      "_WATCHDOG_STEP": {
+        "line": 79,
+        "value": 0.03
+      },
+      "_WATCHDOG_RELAX_STEP": {
+        "line": 80,
+        "value": 0.02
+      },
+      "_ML_WEIGHT_MIN_VAL_SAMPLES": {
+        "line": 294,
+        "value": 15
+      },
+      "_TUNE_STRATEGY_MIN_SAMPLES": {
+        "line": 2325,
+        "value": 15
+      },
+      "_TUNE_STRATEGY_BUY_BOUNDS": {
+        "line": 2330,
+        "value": [
+          0.55,
+          0.85
+        ]
+      },
+      "_TUNE_STRATEGY_ML_CAP_BOUNDS": {
+        "line": 2331,
+        "value": [
+          0.15,
+          0.75
+        ]
+      },
+      "_MIN_PROMOTION_EV_LIFT_PCT": {
+        "line": 2345,
+        "value": 0.5
+      },
+      "_MIN_PROMOTION_LIFT_SD_RATIO": {
+        "line": 2346,
+        "value": 0.5
+      }
+    }
+  },
+  "services/market-data/src/api/routes.py": {
+    "sha256": "51c4afbedd3ba56da0db4d824375847c3e1774772fdc896563e852289702acd3",
+    "constants": {
+      "_MARKET_UTC_OFFSET_H": {
+        "line": 29,
+        "value": {
+          "HK": 8,
+          "CN": 8
+        }
+      },
+      "_LIVE_KEY": {
+        "line": 79,
+        "value": "stockai:live_prices"
+      },
+      "_LIVE_TTL": {
+        "line": 80,
+        "value": 90
+      },
+      "_AVG_VOLUME_KEY": {
+        "line": 82,
+        "value": "stockai:avg_volume"
+      },
+      "_LIVE_BULK_FALLBACK_MAX": {
+        "line": 183,
+        "value": 20
+      },
+      "_INDICES": {
+        "line": 400,
+        "value": [
+          [
+            "S&P 500",
+            "^GSPC",
+            "US"
+          ],
+          [
+            "NASDAQ",
+            "^IXIC",
+            "US"
+          ],
+          [
+            "Dow Jones",
+            "^DJI",
+            "US"
+          ],
+          [
+            "VIX",
+            "^VIX",
+            "US"
+          ],
+          [
+            "Hang Seng",
+            "^HSI",
+            "HK"
+          ]
+        ]
+      },
+      "_MARKET_OVERVIEW_KEY": {
+        "line": 407,
+        "value": "stockai:market_overview"
+      },
+      "_FEAR_GREED_KEY": {
+        "line": 451,
+        "value": "stockai:fear_greed"
+      },
+      "_MARKET_BREADTH_KEY": {
+        "line": 610,
+        "value": "stockai:market_breadth"
+      },
+      "_ANALYST_ACCURACY_MIN_SAMPLES": {
+        "line": 1518,
+        "value": 5
+      },
+      "_ANALYST_CONSENSUS_LOOKBACK_DAYS": {
+        "line": 1519,
+        "value": 90
+      },
+      "_QUARTERLY_TTL": {
+        "line": 1630,
+        "value": 86400
+      },
+      "_SECTOR_ETFS": {
+        "line": 1841,
+        "value": {
+          "XLK": "Technology",
+          "XLV": "Healthcare",
+          "XLF": "Financials",
+          "XLE": "Energy",
+          "XLI": "Industrials",
+          "XLY": "Consumer Discretionary",
+          "XLP": "Consumer Staples",
+          "XLU": "Utilities",
+          "XLRE": "Real Estate",
+          "XLC": "Communication Services",
+          "XLB": "Materials"
+        }
+      },
+      "_SECTOR_ROTATION_TTL": {
+        "line": 1854,
+        "value": 3600
+      },
+      "_MACRO_2026": {
+        "line": 2017,
+        "value": [
+          {
+            "type": "fomc",
+            "date": "2026-01-29",
+            "title": "FOMC Rate Decision",
+            "description": "Federal Reserve interest rate decision \u2014 Jan meeting",
+            "impact": "high"
+          },
+          {
+            "type": "fomc",
+            "date": "2026-03-18",
+            "title": "FOMC Rate Decision",
+            "description": "Federal Reserve interest rate decision \u2014 Mar meeting",
+            "impact": "high"
+          },
+          {
+            "type": "fomc",
+            "date": "2026-05-07",
+            "title": "FOMC Rate Decision",
+            "description": "Federal Reserve interest rate decision \u2014 May meeting",
+            "impact": "high"
+          },
+          {
+            "type": "fomc",
+            "date": "2026-06-18",
+            "title": "FOMC Rate Decision",
+            "description": "Federal Reserve interest rate decision \u2014 Jun meeting",
+            "impact": "high"
+          },
+          {
+            "type": "fomc",
+            "date": "2026-07-30",
+            "title": "FOMC Rate Decision",
+            "description": "Federal Reserve interest rate decision \u2014 Jul meeting",
+            "impact": "high"
+          },
+          {
+            "type": "fomc",
+            "date": "2026-09-17",
+            "title": "FOMC Rate Decision",
+            "description": "Federal Reserve interest rate decision \u2014 Sep meeting",
+            "impact": "high"
+          },
+          {
+            "type": "fomc",
+            "date": "2026-10-29",
+            "title": "FOMC Rate Decision",
+            "description": "Federal Reserve interest rate decision \u2014 Oct meeting",
+            "impact": "high"
+          },
+          {
+            "type": "fomc",
+            "date": "2026-12-10",
+            "title": "FOMC Rate Decision",
+            "description": "Federal Reserve interest rate decision \u2014 Dec meeting",
+            "impact": "high"
+          },
+          {
+            "type": "cpi",
+            "date": "2026-01-15",
+            "title": "CPI Release",
+            "description": "Consumer Price Index \u2014 Dec 2025 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "cpi",
+            "date": "2026-02-12",
+            "title": "CPI Release",
+            "description": "Consumer Price Index \u2014 Jan 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "cpi",
+            "date": "2026-03-12",
+            "title": "CPI Release",
+            "description": "Consumer Price Index \u2014 Feb 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "cpi",
+            "date": "2026-04-10",
+            "title": "CPI Release",
+            "description": "Consumer Price Index \u2014 Mar 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "cpi",
+            "date": "2026-05-14",
+            "title": "CPI Release",
+            "description": "Consumer Price Index \u2014 Apr 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "cpi",
+            "date": "2026-06-11",
+            "title": "CPI Release",
+            "description": "Consumer Price Index \u2014 May 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "cpi",
+            "date": "2026-07-14",
+            "title": "CPI Release",
+            "description": "Consumer Price Index \u2014 Jun 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "cpi",
+            "date": "2026-08-13",
+            "title": "CPI Release",
+            "description": "Consumer Price Index \u2014 Jul 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "cpi",
+            "date": "2026-09-11",
+            "title": "CPI Release",
+            "description": "Consumer Price Index \u2014 Aug 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "cpi",
+            "date": "2026-10-14",
+            "title": "CPI Release",
+            "description": "Consumer Price Index \u2014 Sep 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "cpi",
+            "date": "2026-11-13",
+            "title": "CPI Release",
+            "description": "Consumer Price Index \u2014 Oct 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "cpi",
+            "date": "2026-12-11",
+            "title": "CPI Release",
+            "description": "Consumer Price Index \u2014 Nov 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "nfp",
+            "date": "2026-01-09",
+            "title": "Jobs Report (NFP)",
+            "description": "Non-Farm Payrolls \u2014 Dec 2025 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "nfp",
+            "date": "2026-02-06",
+            "title": "Jobs Report (NFP)",
+            "description": "Non-Farm Payrolls \u2014 Jan 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "nfp",
+            "date": "2026-03-06",
+            "title": "Jobs Report (NFP)",
+            "description": "Non-Farm Payrolls \u2014 Feb 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "nfp",
+            "date": "2026-04-03",
+            "title": "Jobs Report (NFP)",
+            "description": "Non-Farm Payrolls \u2014 Mar 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "nfp",
+            "date": "2026-05-08",
+            "title": "Jobs Report (NFP)",
+            "description": "Non-Farm Payrolls \u2014 Apr 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "nfp",
+            "date": "2026-06-05",
+            "title": "Jobs Report (NFP)",
+            "description": "Non-Farm Payrolls \u2014 May 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "nfp",
+            "date": "2026-07-02",
+            "title": "Jobs Report (NFP)",
+            "description": "Non-Farm Payrolls \u2014 Jun 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "nfp",
+            "date": "2026-08-07",
+            "title": "Jobs Report (NFP)",
+            "description": "Non-Farm Payrolls \u2014 Jul 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "nfp",
+            "date": "2026-09-04",
+            "title": "Jobs Report (NFP)",
+            "description": "Non-Farm Payrolls \u2014 Aug 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "nfp",
+            "date": "2026-10-02",
+            "title": "Jobs Report (NFP)",
+            "description": "Non-Farm Payrolls \u2014 Sep 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "nfp",
+            "date": "2026-11-06",
+            "title": "Jobs Report (NFP)",
+            "description": "Non-Farm Payrolls \u2014 Oct 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "nfp",
+            "date": "2026-12-04",
+            "title": "Jobs Report (NFP)",
+            "description": "Non-Farm Payrolls \u2014 Nov 2026 data (BLS)",
+            "impact": "high"
+          },
+          {
+            "type": "pce",
+            "date": "2026-01-30",
+            "title": "PCE Inflation",
+            "description": "Personal Consumption Expenditures \u2014 Nov 2025 data (BEA)",
+            "impact": "high"
+          },
+          {
+            "type": "pce",
+            "date": "2026-02-27",
+            "title": "PCE Inflation",
+            "description": "Personal Consumption Expenditures \u2014 Dec 2025 data (BEA)",
+            "impact": "high"
+          },
+          {
+            "type": "pce",
+            "date": "2026-03-27",
+            "title": "PCE Inflation",
+            "description": "Personal Consumption Expenditures \u2014 Jan 2026 data (BEA)",
+            "impact": "high"
+          },
+          {
+            "type": "pce",
+            "date": "2026-04-30",
+            "title": "PCE Inflation",
+            "description": "Personal Consumption Expenditures \u2014 Feb 2026 data (BEA)",
+            "impact": "high"
+          },
+          {
+            "type": "pce",
+            "date": "2026-05-29",
+            "title": "PCE Inflation",
+            "description": "Personal Consumption Expenditures \u2014 Mar 2026 data (BEA)",
+            "impact": "high"
+          },
+          {
+            "type": "pce",
+            "date": "2026-06-26",
+            "title": "PCE Inflation",
+            "description": "Personal Consumption Expenditures \u2014 Apr 2026 data (BEA)",
+            "impact": "high"
+          },
+          {
+            "type": "pce",
+            "date": "2026-07-31",
+            "title": "PCE Inflation",
+            "description": "Personal Consumption Expenditures \u2014 May 2026 data (BEA)",
+            "impact": "high"
+          },
+          {
+            "type": "pce",
+            "date": "2026-08-28",
+            "title": "PCE Inflation",
+            "description": "Personal Consumption Expenditures \u2014 Jun 2026 data (BEA)",
+            "impact": "high"
+          },
+          {
+            "type": "pce",
+            "date": "2026-09-25",
+            "title": "PCE Inflation",
+            "description": "Personal Consumption Expenditures \u2014 Jul 2026 data (BEA)",
+            "impact": "high"
+          },
+          {
+            "type": "pce",
+            "date": "2026-10-30",
+            "title": "PCE Inflation",
+            "description": "Personal Consumption Expenditures \u2014 Aug 2026 data (BEA)",
+            "impact": "high"
+          },
+          {
+            "type": "pce",
+            "date": "2026-11-25",
+            "title": "PCE Inflation",
+            "description": "Personal Consumption Expenditures \u2014 Sep 2026 data (BEA)",
+            "impact": "high"
+          },
+          {
+            "type": "pce",
+            "date": "2026-12-18",
+            "title": "PCE Inflation",
+            "description": "Personal Consumption Expenditures \u2014 Oct 2026 data (BEA)",
+            "impact": "high"
+          },
+          {
+            "type": "gdp",
+            "date": "2026-01-29",
+            "title": "GDP Advance Estimate",
+            "description": "Q4 2025 GDP advance (BEA)",
+            "impact": "medium"
+          },
+          {
+            "type": "gdp",
+            "date": "2026-04-30",
+            "title": "GDP Advance Estimate",
+            "description": "Q1 2026 GDP advance (BEA)",
+            "impact": "medium"
+          },
+          {
+            "type": "gdp",
+            "date": "2026-07-30",
+            "title": "GDP Advance Estimate",
+            "description": "Q2 2026 GDP advance (BEA)",
+            "impact": "medium"
+          },
+          {
+            "type": "gdp",
+            "date": "2026-10-29",
+            "title": "GDP Advance Estimate",
+            "description": "Q3 2026 GDP advance (BEA)",
+            "impact": "medium"
+          }
+        ]
+      },
+      "_MACRO_TYPE_TO_RELEASE_EVENT_TYPE": {
+        "line": 2085,
+        "value": {
+          "cpi": "cpi_release",
+          "nfp": "nfp_release",
+          "pce": "pce_release",
+          "gdp": "gdp_release",
+          "ppi": "ppi_release",
+          "retail_sales": "retail_sales_release",
+          "consumer_conf": "consumer_conf_release",
+          "housing_starts": "housing_starts_release",
+          "jobless_claims": "jobless_claims_release",
+          "fed_funds": "fed_funds_release"
+        }
+      },
+      "_MARKET_SCREENER_QUERIES": {
+        "line": 3191,
+        "value": [
+          "small_cap_gainers",
+          "aggressive_small_caps",
+          "most_actives"
+        ]
+      },
+      "_MARKET_SCREENER_TTL": {
+        "line": 3192,
+        "value": 300
+      },
+      "_OPTIONS_TTL": {
+        "line": 3325,
+        "value": 900
+      },
+      "_UNUSUAL_MIN_OI": {
+        "line": 3327,
+        "value": 50
+      },
+      "_UNUSUAL_VOL_OI": {
+        "line": 3328,
+        "value": 0.3
+      },
+      "_LOW_OI_MIN_VOLUME": {
+        "line": 3329,
+        "value": 100
+      },
+      "_WEEKLY_INDEX_ROOTS": {
+        "line": 3627,
+        "value": {
+          "SPXW": "SPX",
+          "NDXP": "NDX",
+          "RUTW": "RUT",
+          "VIXW": "VIX",
+          "XSPW": "XSP"
+        }
+      },
+      "_OPTIONS_CHAIN_TTL": {
+        "line": 3831,
+        "value": 900
+      },
+      "_SQUEEZE_PRESSURE_LOW_MAX": {
+        "line": 3984,
+        "value": 40.0
+      },
+      "_SQUEEZE_PRESSURE_MEDIUM_MAX": {
+        "line": 3985,
+        "value": 70.0
+      },
+      "_OPTIONS_GAME_PLAN_MIN_PUT_DTE": {
+        "line": 4787,
+        "value": 25
+      },
+      "_OPTIONS_GAME_PLAN_MAX_PUT_DTE": {
+        "line": 4788,
+        "value": 60
+      },
+      "_OPTIONS_GAME_PLAN_MIN_CALL_DTE": {
+        "line": 4789,
+        "value": 14
+      },
+      "_OPTIONS_GAME_PLAN_MAX_CALL_DTE": {
+        "line": 4790,
+        "value": 45
+      },
+      "_SECTOR_ETF_MAP": {
+        "line": 5169,
+        "value": {
+          "Technology": "XLK",
+          "Health Care": "XLV",
+          "Healthcare": "XLV",
+          "Financials": "XLF",
+          "Financial Services": "XLF",
+          "Consumer Discretionary": "XLY",
+          "Consumer Staples": "XLP",
+          "Energy": "XLE",
+          "Utilities": "XLU",
+          "Materials": "XLB",
+          "Industrials": "XLI",
+          "Real Estate": "XLRE",
+          "Communication Services": "XLC",
+          "Telecommunications": "XLC"
+        }
+      },
+      "_RS_TTL": {
+        "line": 5177,
+        "value": 3600
+      }
+    }
+  },
+  "services/market-data/src/services/scheduler.py": {
+    "sha256": "be90bfee5aa70747184c1fafcd8ecd2599bd8d8fa7e558fec9c959bb1f4b98e3",
+    "constants": {
+      "_REDIS_ALERTS_FORCE_ENABLED": {
+        "line": 167,
+        "value": "stockai:admin:feature:alerts_force_enabled_non_prod"
+      },
+      "_OUTCOME_STALE_TRADING_DAYS": {
+        "line": 191,
+        "value": 3
+      },
+      "_SIGNAL_COHORT_MIN_COUNT": {
+        "line": 238,
+        "value": 30
+      },
+      "_SIGNAL_COHORT_TTL": {
+        "line": 239,
+        "value": 21600
+      },
+      "_CONVICTION_MET_COUNTER_KEY": {
+        "line": 390,
+        "value": "stockai:metric:conviction_met_count_48h"
+      },
+      "_ALERT_FIRED_COUNTER_KEY": {
+        "line": 391,
+        "value": "stockai:metric:alert_fired_count_48h"
+      },
+      "_SQUEEZE_FUND_CACHE_MISS_COUNTER_KEY": {
+        "line": 403,
+        "value": "stockai:metric:squeeze_fund_cache_miss_count_48h"
+      },
+      "_SQUEEZE_WATCH_FUND_CACHE_MISS_COUNTER_KEY": {
+        "line": 404,
+        "value": "stockai:metric:squeeze_watch_fund_cache_miss_count_48h"
+      },
+      "_SQUEEZE_IGNITION_FUND_CACHE_MISS_COUNTER_KEY": {
+        "line": 406,
+        "value": "stockai:metric:squeeze_ignition_fund_cache_miss_count_48h"
+      },
+      "_SQUEEZE_IGNITION_REJECT_MOVE_BAND_KEY": {
+        "line": 425,
+        "value": "stockai:metric:squeeze_ignition_reject_move_band_48h"
+      },
+      "_SQUEEZE_IGNITION_REJECT_RVOL_KEY": {
+        "line": 426,
+        "value": "stockai:metric:squeeze_ignition_reject_rvol_48h"
+      },
+      "_SQUEEZE_IGNITION_REJECT_SHORT_FLOAT_KEY": {
+        "line": 427,
+        "value": "stockai:metric:squeeze_ignition_reject_short_float_48h"
+      },
+      "_SQUEEZE_IGNITION_REJECT_STALE_SI_KEY": {
+        "line": 428,
+        "value": "stockai:metric:squeeze_ignition_reject_stale_si_48h"
+      },
+      "_REDIS_REFRESH_FAILED_KEY": {
+        "line": 719,
+        "value": "market:refresh_failed"
+      },
+      "_AUTO_RESEARCH_TOP_N": {
+        "line": 775,
+        "value": 5
+      },
+      "_AUTO_RESEARCH_MIN_CONF": {
+        "line": 776,
+        "value": 65.0
+      },
+      "_AUTO_RESEARCH_ENABLED_KEY": {
+        "line": 777,
+        "value": "stockai:admin:feature:auto_research_enabled"
+      },
+      "_AUTO_RESEARCH_COOLDOWN_S": {
+        "line": 789,
+        "value": 21600
+      },
+      "_REGIME_THRESHOLDS": {
+        "line": 1041,
+        "value": {
+          "bull": {
+            "ml": 0.65,
+            "confluence": 70,
+            "confidence": 58,
+            "tier": "bull"
+          },
+          "neutral": {
+            "ml": 0.7,
+            "confluence": 75,
+            "confidence": 60,
+            "tier": "neutral"
+          },
+          "high_vol": {
+            "ml": 0.78,
+            "confluence": 82,
+            "confidence": 68,
+            "tier": "high_vol"
+          },
+          "bear": {
+            "ml": 0.78,
+            "confluence": 82,
+            "confidence": 68,
+            "tier": "bear"
+          },
+          "unknown": {
+            "ml": 0.7,
+            "confluence": 75,
+            "confidence": 60,
+            "tier": "neutral"
+          },
+          "choppy": {
+            "ml": 0.78,
+            "confluence": 82,
+            "confidence": 68,
+            "tier": "high_vol"
+          },
+          "risk_off": {
+            "ml": 0.78,
+            "confluence": 82,
+            "confidence": 68,
+            "tier": "bear"
+          }
+        }
+      },
+      "_MIN_CONFIDENCE": {
+        "line": 1060,
+        "value": 60.0
+      },
+      "_MIN_CONFLUENCE": {
+        "line": 1061,
+        "value": 75
+      },
+      "_MAX_ROC10_FOR_ENTRY": {
+        "line": 1066,
+        "value": 10.0
+      },
+      "_CONVICTION_LAYER_FLAG": {
+        "line": 1101,
+        "value": {
+          "Uptrend": "trend_above_sma50",
+          "OBV": "obv_trend_bullish",
+          "ADX": "adx_trending",
+          "MACD": "macd_zero_cross_up"
+        }
+      },
+      "_CONVICTION_EDGE_NOISE_THRESHOLD_PCT": {
+        "line": 1107,
+        "value": 2.0
+      },
+      "_SOFT_LAYER_BASE": {
+        "line": 1110,
+        "value": [
+          "OBV",
+          "ADX",
+          "ML probability",
+          "MACD"
+        ]
+      },
+      "_STYLE_PARAMS": {
+        "line": 1392,
+        "value": {
+          "SHORT": {
+            "entry1_pct": 0.995,
+            "entry2_pct": 0.985,
+            "breakout_pct": 1.01,
+            "stop_pct": 0.97,
+            "default_tp_pct": 1.05,
+            "entry1_label": "tight entry \u2014 short-term momentum play",
+            "entry2_label": "secondary entry on minor intraday dip",
+            "stop_label": "tight stop \u2014 short-term trade invalidated on 3% breach",
+            "tp_fallback": "+5% quick target for short-term momentum trade",
+            "horizon_note": "Short-term trade (1\u20135 days) \u2014 prioritise execution speed over perfect fill"
+          },
+          "SWING": {
+            "entry1_pct": 0.985,
+            "entry2_pct": 0.965,
+            "breakout_pct": 1.02,
+            "stop_pct": 0.945,
+            "default_tp_pct": 1.12,
+            "entry1_label": "near-term support \u2014 scale in on weakness",
+            "entry2_label": "secondary support \u2014 averaging down level",
+            "stop_label": "daily close below invalidates bullish swing setup",
+            "tp_fallback": "+12% from current, near next resistance",
+            "horizon_note": "Swing trade (5\u201330 days) \u2014 hold through normal volatility"
+          },
+          "LONG": {
+            "entry1_pct": 0.98,
+            "entry2_pct": 0.95,
+            "breakout_pct": 1.03,
+            "stop_pct": 0.9,
+            "default_tp_pct": 1.25,
+            "entry1_label": "initial position \u2014 build on weakness over days/weeks",
+            "entry2_label": "add-to level \u2014 deeper pullback absorption zone",
+            "stop_label": "wide stop allows normal volatility; weekly close below invalidates thesis",
+            "tp_fallback": "+25% medium-term target (position trade)",
+            "horizon_note": "Position trade (1\u201312 months) \u2014 manage around earnings; size for volatility"
+          },
+          "GROWTH": {
+            "entry1_pct": 0.975,
+            "entry2_pct": 0.94,
+            "breakout_pct": 1.035,
+            "stop_pct": 0.88,
+            "default_tp_pct": 1.35,
+            "entry1_label": "momentum pullback \u2014 growth stocks dip before continuation",
+            "entry2_label": "deeper pullback entry \u2014 scale in; strong hands accumulating",
+            "stop_label": "wide stop accommodates normal growth-stock volatility (12%)",
+            "tp_fallback": "+35% growth target \u2014 AI/tech/momentum name; hold for the move",
+            "horizon_note": "Growth/momentum trade (30\u201390 days) \u2014 hold through volatility; trail stop on gains"
+          }
+        }
+      },
+      "_SIGNAL_ALERT_LOCK_KEY": {
+        "line": 1750,
+        "value": "stockai:lock:check_signal_alerts"
+      },
+      "_SIGNAL_ALERT_LOCK_TTL": {
+        "line": 1751,
+        "value": 120
+      },
+      "_PRICE_ALERT_LOCK_KEY": {
+        "line": 1753,
+        "value": "stockai:lock:check_price_alerts"
+      },
+      "_PRICE_ALERT_LOCK_TTL": {
+        "line": 1754,
+        "value": 55
+      },
+      "_EARNINGS_REACTION_LOCK_KEY": {
+        "line": 1756,
+        "value": "stockai:lock:check_earnings_reactions"
+      },
+      "_EARNINGS_REACTION_LOCK_TTL": {
+        "line": 1757,
+        "value": 55
+      },
+      "_PAPER_TRADING_LOCK_KEY": {
+        "line": 1759,
+        "value": "stockai:lock:paper_trading_step"
+      },
+      "_PAPER_TRADING_LOCK_TTL": {
+        "line": 1769,
+        "value": 300
+      },
+      "_LOCK_RELEASE_LUA": {
+        "line": 1778,
+        "value": "\nif redis.call(\"GET\", KEYS[1]) == ARGV[1] then\n    return redis.call(\"DEL\", KEYS[1])\nelse\n    return 0\nend\n"
+      },
+      "_PLAYBOOK_ACTION_LABEL": {
+        "line": 1847,
+        "value": {
+          "WATCH": "Watch (no open position)",
+          "HOLD": "Hold",
+          "ADD": "Consider adding",
+          "REDUCE": "Consider reducing",
+          "EXIT": "Consider exiting"
+        }
+      },
+      "_MACRO_REACTION_LOCK_KEY": {
+        "line": 2057,
+        "value": "stockai:lock:check_macro_reaction_alerts"
+      },
+      "_MACRO_REACTION_LOCK_TTL": {
+        "line": 2058,
+        "value": 55
+      },
+      "_REDIS_MACRO_LLM_ENABLED": {
+        "line": 2059,
+        "value": "stockai:admin:feature:macro_llm_reaction_enabled"
+      },
+      "_EARNINGS_IMPACT_LOCK_KEY": {
+        "line": 2154,
+        "value": "stockai:lock:check_earnings_impact_alerts"
+      },
+      "_EARNINGS_IMPACT_LOCK_TTL": {
+        "line": 2155,
+        "value": 55
+      },
+      "_REDIS_EARNINGS_LLM_ENABLED": {
+        "line": 2156,
+        "value": "stockai:admin:feature:earnings_llm_impact_enabled"
+      },
+      "_EARNINGS_DIRECTION_CAVEAT": {
+        "line": 2165,
+        "value": "AI interpretation of the reported numbers \u2014 not a measured edge. Track record: Admin \u2192 Earnings direction accuracy."
+      },
+      "_EARNINGS_OUTBOX_LOCK_KEY": {
+        "line": 2334,
+        "value": "stockai:lock:drain_earnings_outbox"
+      },
+      "_EARNINGS_OUTBOX_LOCK_TTL": {
+        "line": 2335,
+        "value": 55
+      },
+      "_EARLY_EARNINGS_NEWS_LOCK_KEY": {
+        "line": 2337,
+        "value": "stockai:lock:check_early_earnings_news_alerts"
+      },
+      "_EARLY_EARNINGS_NEWS_LOCK_TTL": {
+        "line": 2338,
+        "value": 55
+      },
+      "_FUTURES": {
+        "line": 2978,
+        "value": [
+          [
+            "E-mini S&P 500",
+            "ES=F"
+          ],
+          [
+            "E-mini Nasdaq 100",
+            "NQ=F"
+          ],
+          [
+            "E-mini Dow",
+            "YM=F"
+          ],
+          [
+            "E-mini Russell 2000",
+            "RTY=F"
+          ]
+        ]
+      },
+      "_FUTURES_CACHE_KEY": {
+        "line": 2984,
+        "value": "stockai:overnight_futures"
+      },
+      "_FUTURES_CACHE_TTL": {
+        "line": 2985,
+        "value": 60
+      },
+      "_PREMARKET_GAPPERS_CACHE_KEY": {
+        "line": 3055,
+        "value": "stockai:premarket_gappers"
+      },
+      "_PREMARKET_GAPPERS_CACHE_TTL": {
+        "line": 3056,
+        "value": 300
+      },
+      "_PREMARKET_GAPPERS_TOP_N": {
+        "line": 3057,
+        "value": 10
+      },
+      "_OPTIONS_FLOW_TOP_K": {
+        "line": 3137,
+        "value": 20
+      },
+      "_OPTIONS_FLOW_ALERT_SYMBOLS_CAP": {
+        "line": 3150,
+        "value": 20
+      },
+      "_ATTENTION_GAP_THRESHOLD_PCT": {
+        "line": 3428,
+        "value": 2.0
+      },
+      "_VOL_ANOMALY_LOCK_KEY": {
+        "line": 3748,
+        "value": "stockai:lock:check_volume_anomalies"
+      },
+      "_VOL_ANOMALY_LOCK_TTL": {
+        "line": 3749,
+        "value": 55
+      },
+      "_VOL_ANOMALY_DAILY_CAP": {
+        "line": 3750,
+        "value": 10
+      },
+      "_SQUEEZE_LOCK_KEY": {
+        "line": 3966,
+        "value": "stockai:lock:check_short_squeeze_alerts"
+      },
+      "_SQUEEZE_LOCK_TTL": {
+        "line": 3967,
+        "value": 55
+      },
+      "_SQUEEZE_MIN_SHORT_FLOAT": {
+        "line": 3968,
+        "value": 15.0
+      },
+      "_SQUEEZE_MIN_INTRADAY_MOVE_PCT": {
+        "line": 3969,
+        "value": 3.0
+      },
+      "_SQUEEZE_RVOL_BASE": {
+        "line": 3973,
+        "value": 2.2
+      },
+      "_SQUEEZE_CRITICAL_DAYS_TO_COVER": {
+        "line": 3985,
+        "value": 2.0
+      },
+      "_SQUEEZE_UW_DISAGREEMENT_REL_THRESHOLD": {
+        "line": 3993,
+        "value": 0.2
+      },
+      "_SQUEEZE_IGNITION_LOCK_KEY": {
+        "line": 4443,
+        "value": "stockai:lock:check_squeeze_ignition_alerts"
+      },
+      "_SQUEEZE_IGNITION_LOCK_TTL": {
+        "line": 4444,
+        "value": 55
+      },
+      "_SQUEEZE_IGNITION_MIN_MOVE_PCT": {
+        "line": 4449,
+        "value": 1.0
+      },
+      "_SQUEEZE_IGNITION_RVOL_BASE": {
+        "line": 4456,
+        "value": 1.8
+      },
+      "_PREBREAKOUT_LOCK_KEY": {
+        "line": 4742,
+        "value": "stockai:lock:check_prebreakout_alerts"
+      },
+      "_PREBREAKOUT_LOCK_TTL": {
+        "line": 4743,
+        "value": 3600
+      },
+      "_PREBREAKOUT_MIN_DAILY_BARS": {
+        "line": 4744,
+        "value": 146
+      },
+      "_SQUEEZE_FAMILY_CAL_MIN_COUNT": {
+        "line": 4745,
+        "value": 30
+      },
+      "_ENTRY_GAP_MIN_COUNT": {
+        "line": 4768,
+        "value": 5
+      },
+      "_ENTRY_GAP_CACHE_TTL": {
+        "line": 4770,
+        "value": 3600
+      },
+      "_PREBREAKOUT_CAL_BANDS": {
+        "line": 4827,
+        "value": [
+          [
+            15.0,
+            20.0,
+            "15-20"
+          ],
+          [
+            20.0,
+            30.0,
+            "20-30"
+          ],
+          [
+            30.0,
+            100.01,
+            "30+"
+          ]
+        ]
+      },
+      "_GAMMA_UNWIND_CAL_BANDS": {
+        "line": 4830,
+        "value": [
+          [
+            55.0,
+            65.0,
+            "55-65"
+          ],
+          [
+            65.0,
+            80.0,
+            "65-80"
+          ],
+          [
+            80.0,
+            100.01,
+            "80+"
+          ]
+        ]
+      },
+      "_SQUEEZE_CAL_CACHE_TTL_S": {
+        "line": 4845,
+        "value": 300
+      },
+      "_GAMMA_UNWIND_LOCK_KEY": {
+        "line": 5283,
+        "value": "stockai:lock:check_gamma_unwind_alerts"
+      },
+      "_GAMMA_UNWIND_LOCK_TTL": {
+        "line": 5284,
+        "value": 3600
+      },
+      "_GAMMA_UNWIND_MAX_DAYS_TO_EXPIRY": {
+        "line": 5291,
+        "value": 5
+      },
+      "_GAMMA_UNWIND_MIN_OI_CONCENTRATION": {
+        "line": 5292,
+        "value": 0.55
+      },
+      "_GAMMA_UNWIND_MIN_CALLS_CONCENTRATION": {
+        "line": 5306,
+        "value": 0.85
+      },
+      "_GAMMA_UNWIND_STRIKE_BAND_PCT": {
+        "line": 5307,
+        "value": 0.05
+      },
+      "_GAMMA_UNWIND_MIN_NOTIONAL_USD": {
+        "line": 5314,
+        "value": 5000000
+      },
+      "_GEX_CORROBORATE_BAND_PCT": {
+        "line": 5324,
+        "value": 0.03
+      },
+      "_OPTIONS_FLOW_ALERT_LOCK_KEY": {
+        "line": 5602,
+        "value": "stockai:lock:check_options_flow_alerts"
+      },
+      "_OPTIONS_FLOW_ALERT_LOCK_TTL": {
+        "line": 5603,
+        "value": 55
+      },
+      "_OPTIONS_FLOW_ALERT_MIN_PREMIUM": {
+        "line": 5617,
+        "value": 250000
+      },
+      "_OPTIONS_FLOW_ALERT_MIN_VOLUME_OI_RATIO": {
+        "line": 5618,
+        "value": 3.0
+      },
+      "_OPTIONS_FLOW_ALERT_MAX_DTE": {
+        "line": 5619,
+        "value": 45
+      },
+      "_OPTIONS_FLOW_ALERT_EMAIL_CAP": {
+        "line": 5628,
+        "value": 12
+      },
+      "_OPTIONS_FLOW_ALERT_COOLDOWN_MINUTES": {
+        "line": 5637,
+        "value": 30
+      },
+      "_FLOW_SIDE_MIN_IMBALANCE": {
+        "line": 5644,
+        "value": 0.6
+      },
+      "_DARK_POOL_ALERT_LOCK_KEY": {
+        "line": 6312,
+        "value": "stockai:lock:check_dark_pool_alerts"
+      },
+      "_DARK_POOL_ALERT_LOCK_TTL": {
+        "line": 6313,
+        "value": 55
+      },
+      "_DARK_POOL_ALERT_MIN_PREMIUM": {
+        "line": 6328,
+        "value": 1000000
+      },
+      "_DARK_POOL_REL_MULTIPLE": {
+        "line": 6337,
+        "value": 5.0
+      },
+      "_DARK_POOL_BASELINE_DAYS": {
+        "line": 6338,
+        "value": 14
+      },
+      "_DARK_POOL_BASELINE_MIN_PRINTS": {
+        "line": 6344,
+        "value": 20
+      },
+      "_DARK_POOL_ALERT_EMAIL_CAP": {
+        "line": 6345,
+        "value": 12
+      },
+      "_DARK_POOL_PRINT_MAX_AGE_MINUTES": {
+        "line": 6355,
+        "value": 90
+      },
+      "_DARK_POOL_ALERT_COOLDOWN_MINUTES": {
+        "line": 6357,
+        "value": 60
+      },
+      "_BEARISH_WATCH_MIN_DAYS_TO_EXPIRY": {
+        "line": 6772,
+        "value": 3
+      },
+      "_BEARISH_WATCH_MAX_DAYS_TO_EXPIRY": {
+        "line": 6773,
+        "value": 5
+      },
+      "_BEARISH_WATCH_MIN_AGREEING_SIGNALS": {
+        "line": 6774,
+        "value": 2
+      },
+      "_SQUEEZE_WATCH_LOCK_KEY": {
+        "line": 6846,
+        "value": "stockai:lock:check_squeeze_watch_reverts"
+      },
+      "_SQUEEZE_WATCH_LOCK_TTL": {
+        "line": 6847,
+        "value": 55
+      },
+      "_SQUEEZE_WATCH_PRICE_RECOVERY_MIN_PCT": {
+        "line": 6858,
+        "value": 2.0
+      },
+      "_SR_WATCH_LOCK_KEY": {
+        "line": 7039,
+        "value": "stockai:lock:check_sr_watch_reverts"
+      },
+      "_SR_WATCH_LOCK_TTL": {
+        "line": 7040,
+        "value": 55
+      },
+      "_SQUEEZE_OUTCOME_EVAL_LOCK_KEY": {
+        "line": 7216,
+        "value": "stockai:lock:evaluate_squeeze_alert_outcomes"
+      },
+      "_SQUEEZE_OUTCOME_EVAL_LOCK_TTL": {
+        "line": 7217,
+        "value": 3600
+      },
+      "_SQUEEZE_OUTCOME_CENSOR_GRACE_DAYS": {
+        "line": 7218,
+        "value": 10
+      },
+      "_SQUEEZE_OUTCOME_WIN_HURDLE_PCT": {
+        "line": 7219,
+        "value": 0.005
+      },
+      "_SQUEEZE_OUTCOME_WINDOWS": {
+        "line": 7220,
+        "value": [
+          1,
+          2,
+          3,
+          5,
+          10,
+          20
+        ]
+      },
+      "_PREBREAKOUT_OUTCOME_EVAL_LOCK_KEY": {
+        "line": 7351,
+        "value": "stockai:lock:evaluate_prebreakout_alert_outcomes"
+      },
+      "_PREBREAKOUT_OUTCOME_EVAL_LOCK_TTL": {
+        "line": 7352,
+        "value": 3600
+      },
+      "_OPTIONS_FLOW_ALERT_OUTCOME_EVAL_LOCK_KEY": {
+        "line": 7449,
+        "value": "stockai:lock:evaluate_options_flow_alert_outcomes"
+      },
+      "_OPTIONS_FLOW_ALERT_OUTCOME_EVAL_LOCK_TTL": {
+        "line": 7450,
+        "value": 3600
+      },
+      "_DARK_POOL_ALERT_OUTCOME_EVAL_LOCK_KEY": {
+        "line": 7575,
+        "value": "stockai:lock:evaluate_dark_pool_alert_outcomes"
+      },
+      "_DARK_POOL_ALERT_OUTCOME_EVAL_LOCK_TTL": {
+        "line": 7576,
+        "value": 3600
+      },
+      "_DARK_POOL_OUTCOME_MOVE_HURDLE_PCT": {
+        "line": 7577,
+        "value": 0.02
+      },
+      "_FIX_EFFECTIVENESS_RECHECK_LOCK_KEY": {
+        "line": 7680,
+        "value": "stockai:lock:recheck_fix_effectiveness"
+      },
+      "_FIX_EFFECTIVENESS_RECHECK_LOCK_TTL": {
+        "line": 7681,
+        "value": 3600
+      },
+      "_VALUE_AREA_COMPUTE_LOCK_KEY": {
+        "line": 7751,
+        "value": "stockai:lock:compute_value_area_levels"
+      },
+      "_VALUE_AREA_COMPUTE_LOCK_TTL": {
+        "line": 7752,
+        "value": 3600
+      },
+      "_VALUE_AREA_ALERT_LOCK_KEY": {
+        "line": 7798,
+        "value": "stockai:lock:check_value_area_breakdown"
+      },
+      "_VALUE_AREA_ALERT_LOCK_TTL": {
+        "line": 7799,
+        "value": 55
+      },
+      "_TOP3_LOCK_KEY": {
+        "line": 7950,
+        "value": "stockai:lock:check_top3_conviction"
+      },
+      "_TOP3_LOCK_TTL": {
+        "line": 7951,
+        "value": 55
+      },
+      "_TOP3_MIN_WIN_RATE": {
+        "line": 7952,
+        "value": 0.7
+      },
+      "_TOP3_MIN_COUNT": {
+        "line": 7953,
+        "value": 30
+      },
+      "_TOP3_MIN_KSCORE": {
+        "line": 7954,
+        "value": 55
+      },
+      "_FINSTMT_THROTTLE_S": {
+        "line": 10589,
+        "value": 0.34
+      },
+      "_FINSTMT_INCOME_MAP": {
+        "line": 10594,
+        "value": [
+          [
+            "total_revenue",
+            [
+              "Total Revenue",
+              "Operating Revenue"
+            ]
+          ],
+          [
+            "gross_profit",
+            [
+              "Gross Profit"
+            ]
+          ],
+          [
+            "operating_income",
+            [
+              "Operating Income",
+              "Total Operating Income As Reported"
+            ]
+          ],
+          [
+            "ebit",
+            [
+              "EBIT"
+            ]
+          ],
+          [
+            "net_income",
+            [
+              "Net Income",
+              "Net Income Common Stockholders"
+            ]
+          ],
+          [
+            "tax_provision",
+            [
+              "Tax Provision"
+            ]
+          ],
+          [
+            "pretax_income",
+            [
+              "Pretax Income"
+            ]
+          ]
+        ]
+      },
+      "_FINSTMT_BALANCE_MAP": {
+        "line": 10603,
+        "value": [
+          [
+            "total_assets",
+            [
+              "Total Assets"
+            ]
+          ],
+          [
+            "total_debt",
+            [
+              "Total Debt"
+            ]
+          ],
+          [
+            "total_equity",
+            [
+              "Stockholders Equity",
+              "Total Equity Gross Minority Interest"
+            ]
+          ],
+          [
+            "cash_and_equivalents",
+            [
+              "Cash And Cash Equivalents",
+              "Cash Cash Equivalents And Short Term Investments"
+            ]
+          ],
+          [
+            "current_liabilities",
+            [
+              "Current Liabilities"
+            ]
+          ]
+        ]
+      },
+      "_FINSTMT_DEBT_COMPONENTS": {
+        "line": 10620,
+        "value": [
+          [
+            "Long Term Debt And Capital Lease Obligation",
+            "Long Term Debt"
+          ],
+          [
+            "Current Debt And Capital Lease Obligation",
+            "Current Debt"
+          ]
+        ]
+      },
+      "_FINSTMT_CASHFLOW_MAP": {
+        "line": 10624,
+        "value": [
+          [
+            "operating_cashflow",
+            [
+              "Operating Cash Flow"
+            ]
+          ],
+          [
+            "capital_expenditure",
+            [
+              "Capital Expenditure"
+            ]
+          ],
+          [
+            "free_cashflow",
+            [
+              "Free Cash Flow"
+            ]
+          ]
+        ]
+      },
+      "_ANALYST_TARGET_OUTCOME_WINDOW_DAYS": {
+        "line": 10788,
+        "value": 365
+      },
+      "_ANALYST_TARGET_TOLERANCE_PCT": {
+        "line": 10789,
+        "value": 0.1
+      },
+      "_EARNINGS_BEAT_SCREENER_LOOKBACK_DAYS": {
+        "line": 10861,
+        "value": 14
+      },
+      "_EARNINGS_BEAT_SCREENER_MIN_SURPRISE_PCT": {
+        "line": 10862,
+        "value": 0.0
+      },
+      "_EARNINGS_BEAT_SCREENER_MIN_REC_IMPROVEMENT": {
+        "line": 10863,
+        "value": 0.15
+      },
+      "_EARNINGS_BEAT_SCREENER_TOP_N": {
+        "line": 10864,
+        "value": 10
+      },
+      "_LLM_USAGE_BASELINE_HOURS": {
+        "line": 11098,
+        "value": 24
+      },
+      "_LLM_USAGE_SPIKE_MULTIPLE": {
+        "line": 11106,
+        "value": 5.0
+      },
+      "_LLM_USAGE_MIN_TOKENS_TO_EVALUATE": {
+        "line": 11124,
+        "value": 5000
+      },
+      "_LLM_USAGE_ALERT_COOLDOWN_HOURS": {
+        "line": 11125,
+        "value": 6
+      },
+      "_REDIS_THEME_FORECAST_ENABLED": {
+        "line": 11673,
+        "value": "stockai:admin:feature:theme_forecast_email_enabled"
+      },
+      "_REDIS_TRADE_COACH_ENABLED": {
+        "line": 11835,
+        "value": "stockai:admin:feature:trade_coach_email_enabled"
+      },
+      "_SECTOR_ROTATION_ALERT_TOP_N": {
+        "line": 11944,
+        "value": 5
+      },
+      "_FLOW_DIGEST_LOCK_KEY": {
+        "line": 13951,
+        "value": "stockai:lock:flow_digest"
+      },
+      "_FLOW_DIGEST_LOCK_TTL": {
+        "line": 13952,
+        "value": 300
+      },
+      "_FLOW_DIGEST_MAX_ROWS": {
+        "line": 13953,
+        "value": 12
+      },
+      "_FLOW_DIGEST_MIN_N": {
+        "line": 13958,
+        "value": 20
+      },
+      "_OPTHIST_THROTTLE_S": {
+        "line": 15846,
+        "value": 0.3
+      },
+      "_OPTHIST_SYMBOLS": {
+        "line": 15870,
+        "value": [
+          "SPY",
+          "QQQ",
+          "META",
+          "TSLA",
+          "AMD",
+          "NVDA",
+          "MSFT",
+          "AAPL",
+          "AMZN",
+          "PLTR",
+          "QQQM",
+          "QLD",
+          "TQQQ",
+          "TSM",
+          "GOOG",
+          "AVGO",
+          "MU",
+          "DELL",
+          "HPE",
+          "JPM",
+          "CAT",
+          "RTX",
+          "GEV",
+          "CRWD",
+          "NET",
+          "SMH",
+          "SOXX",
+          "XLK",
+          "GLD",
+          "INTC",
+          "MRVL",
+          "CRWV",
+          "AAOI",
+          "AAOX",
+          "SOXL"
+        ]
+      },
+      "_OPTHIST_RETENTION_DAYS": {
+        "line": 15951,
+        "value": 800
+      },
+      "_OPTHIST_BACKFILL_WINDOW_DAYS": {
+        "line": 15955,
+        "value": 5
+      },
+      "_ETF_FLOW_UNIVERSE": {
+        "line": 16284,
+        "value": [
+          "SPY",
+          "QQQ",
+          "IWM",
+          "DIA",
+          "SMH",
+          "GLD",
+          "TLT",
+          "EEM",
+          "FXI",
+          "EWH",
+          "XLK",
+          "XLF",
+          "XLE",
+          "XLV",
+          "XLI",
+          "XLY",
+          "XLP",
+          "XLU",
+          "XLB",
+          "XLRE",
+          "XLC"
+        ]
+      }
+    }
+  },
+  "services/market-data/src/services/paper_trading_engine.py": {
+    "sha256": "4e0cd7d3590f1f0fcaf07e53bd22d2549bb25cc52193bc76e054fc43a5b222f3",
+    "constants": {
+      "_BROKER_BUYING_POWER_SAFETY_MARGIN": {
+        "line": 154,
+        "value": 0.95
+      },
+      "_DEFAULT_CONFIG": {
+        "line": 809,
+        "value": {
+          "trading_style": "GROWTH",
+          "market": "US",
+          "max_positions": 6,
+          "max_sector_pct": 0.25,
+          "max_sector_positions": 3,
+          "risk_per_trade_pct": 0.01,
+          "max_position_pct": 0.1,
+          "min_confidence": 45.0,
+          "confidence_sizing_enabled": false,
+          "min_kscore": 48.0,
+          "min_rr_ratio": 2.0,
+          "min_entry_score": 4,
+          "max_hold_days": 60,
+          "trail_atr_mult": 2.0,
+          "trail_trigger_pct": 0.05,
+          "breakeven_trigger_pct": 0.03,
+          "partial_tp_pct": 0.1,
+          "wait_exit_days": 5,
+          "max_portfolio_drawdown_pct": 0.2,
+          "max_daily_loss_pct": 0.04,
+          "max_entries_per_day": 3,
+          "max_entry_gap_pct": 0.04,
+          "require_kscore": true,
+          "max_open_risk_pct": 0.12,
+          "max_loss_per_trade_pct": 0.02,
+          "entry_slippage_pct": 0.001,
+          "commission_per_share": 0.0,
+          "hold_stall_days": 30,
+          "hold_stall_max_gain": 0.05,
+          "enforce_market_hours": true,
+          "max_signal_age_hours": 72,
+          "stop_cooldown_hours": 120,
+          "max_market_positions": 4,
+          "heat_brake_max_stops": 3,
+          "heat_brake_window_hours": 48,
+          "max_positions_per_symbol_global": 1,
+          "index_trend_gate_enabled": true,
+          "index_trend_gate_pct": -0.015,
+          "enable_regime_filter": true,
+          "regime_vix_high": 25.0,
+          "regime_vix_fear": 30.0,
+          "regime_bear_size_mult": 0.0,
+          "regime_risk_off_size_mult": 0.5,
+          "regime_choppy_size_mult": 0.75,
+          "regime_bull_size_mult": 1.0,
+          "regime_risk_off_min_score": 5,
+          "regime_risk_off_gate": true,
+          "regime_choppy_min_score": 4,
+          "enabled": true,
+          "decision_engine_mode": "primary",
+          "position_scaling_mode": "off"
+        }
+      },
+      "_STYLE_PARAMS": {
+        "line": 961,
+        "value": {
+          "SHORT": {
+            "entry1_pct": 0.995,
+            "entry2_pct": 0.985,
+            "breakout_pct": 1.01,
+            "stop_pct": 0.97,
+            "default_tp_pct": 1.05,
+            "atr_stop_mult": 2.0
+          },
+          "SWING": {
+            "entry1_pct": 0.985,
+            "entry2_pct": 0.965,
+            "breakout_pct": 1.02,
+            "stop_pct": 0.945,
+            "default_tp_pct": 1.12,
+            "atr_stop_mult": 2.0
+          },
+          "LONG": {
+            "entry1_pct": 0.98,
+            "entry2_pct": 0.95,
+            "breakout_pct": 1.03,
+            "stop_pct": 0.9,
+            "default_tp_pct": 1.25,
+            "atr_stop_mult": 2.0
+          },
+          "GROWTH": {
+            "entry1_pct": 0.975,
+            "entry2_pct": 0.94,
+            "breakout_pct": 1.035,
+            "stop_pct": 0.88,
+            "default_tp_pct": 1.35,
+            "atr_stop_mult": 3.0
+          }
+        }
+      },
+      "_STYLE_OVERRIDES": {
+        "line": 1046,
+        "value": {
+          "SHORT": {
+            "max_hold_days": 10,
+            "hold_stall_days": 7
+          },
+          "GROWTH": {
+            "max_hold_days": 60,
+            "trail_atr_mult": 2.0,
+            "breakeven_trigger_pct": 0.04,
+            "trail_trigger_pct": 0.07,
+            "partial_tp_pct": 0.15,
+            "partial_tp2_pct": 0.22,
+            "wait_exit_days": 5,
+            "min_confidence": 45.0,
+            "min_kscore": 48.0,
+            "max_entry_gap_pct": 0.04
+          },
+          "SWING": {
+            "max_hold_days": 20,
+            "trail_atr_mult": 2.0,
+            "trail_trigger_pct": 0.03,
+            "breakeven_trigger_pct": 0.015,
+            "partial_tp_pct": 0.1,
+            "partial_tp2_pct": 0.18,
+            "wait_exit_days": 3,
+            "min_confidence": 50.0,
+            "min_kscore": 52.0,
+            "max_entry_gap_pct": 0.03,
+            "min_ta_score": 0.65,
+            "min_entry_score": 5
+          },
+          "LONG": {
+            "max_hold_days": 90,
+            "trail_atr_mult": 2.0,
+            "trail_trigger_pct": 0.06,
+            "breakeven_trigger_pct": 0.04,
+            "partial_tp_pct": 0.15,
+            "partial_tp2_pct": 0.2,
+            "wait_exit_days": 7,
+            "min_confidence": 40.0,
+            "min_kscore": 50.0,
+            "max_entry_gap_pct": 0.05
+          }
+        }
+      },
+      "_HK_MARKET_OVERRIDES": {
+        "line": 1096,
+        "value": {
+          "regime_suspension_days": 7,
+          "max_consecutive_losses": 3,
+          "min_entry_score": 6,
+          "min_confidence": 65.0,
+          "trail_atr_mult": 1.5,
+          "max_position_pct": 0.07,
+          "risk_per_trade_pct": 0.007,
+          "min_ta_score": 0.65
+        }
+      },
+      "_ENTRY_GATE_KEYS": {
+        "line": 1197,
+        "value": [
+          "min_confidence",
+          "min_kscore",
+          "min_entry_score",
+          "min_ta_score",
+          "min_rr_ratio"
+        ]
+      },
+      "_DE_THREADED_KEYS": {
+        "line": 1213,
+        "value": [
+          "min_confidence",
+          "min_entry_score",
+          "min_rr_ratio",
+          "max_entry_gap_pct",
+          "max_breakout_extension_pct",
+          "max_sector_positions",
+          "equity_floor_pct",
+          "max_consecutive_losses",
+          "research_gating_enabled"
+        ]
+      },
+      "_SECTOR_ETF_MAP": {
+        "line": 1388,
+        "value": {
+          "Technology": "XLK",
+          "Health Care": "XLV",
+          "Healthcare": "XLV",
+          "Financials": "XLF",
+          "Financial Services": "XLF",
+          "Energy": "XLE",
+          "Consumer Discretionary": "XLY",
+          "Consumer Staples": "XLP",
+          "Industrials": "XLI",
+          "Materials": "XLB",
+          "Real Estate": "XLRE",
+          "Utilities": "XLU",
+          "Communication Services": "XLC",
+          "Telecommunications": "XLC",
+          "Consumer Cyclical": "XLY",
+          "Consumer Defensive": "XLP",
+          "Financial": "XLF",
+          "Basic Materials": "XLB"
+        }
+      },
+      "_REGIME_HYSTERESIS_TICKS": {
+        "line": 1533,
+        "value": 2
+      },
+      "_CORR_LOOKBACK_DAYS": {
+        "line": 2175,
+        "value": 30
+      },
+      "_CORR_MIN_OVERLAP_ROWS": {
+        "line": 2176,
+        "value": 10
+      },
+      "_MAX_ROC10_FOR_ENTRY_PAPER": {
+        "line": 2248,
+        "value": 10.0
+      },
+      "_DE_SHADOW_LIST_MAXLEN": {
+        "line": 4362,
+        "value": 2000
+      },
+      "_PS_SHADOW_LIST_MAXLEN": {
+        "line": 4433,
+        "value": 2000
+      },
+      "_RECOVERY_RESERVE_TTL": {
+        "line": 4632,
+        "value": 900
+      },
+      "_RECOVERY_RESERVED_PREFIX": {
+        "line": 4633,
+        "value": "reserved:"
+      },
+      "_VOL_TARGET_MIN_SAMPLE_DAYS": {
+        "line": 4768,
+        "value": 20
+      },
+      "_VOL_TARGET_ANNUAL_PCT": {
+        "line": 4769,
+        "value": 0.15
+      },
+      "_VOL_TARGET_MULT_MIN": {
+        "line": 4770,
+        "value": 0.5
+      },
+      "_VOL_TARGET_MULT_MAX": {
+        "line": 4771,
+        "value": 1.5
+      },
+      "_SKIP_REASON_LABEL": {
+        "line": 4890,
+        "value": {
+          "stop_cooldown": "Recently stopped out",
+          "global_symbol_cap": "Already open in another portfolio",
+          "no_ranking": "No K-Score ranking available",
+          "kscore": "K-Score below minimum",
+          "stale_signal": "Signal too old",
+          "confluence_fail": "Short-horizon signal disagrees",
+          "price_drift": "Price moved too far from signal",
+          "low_volume": "Volume below average \u2014 entry postponed",
+          "hk_flow_gate": "HK Stock Connect flow unfavorable",
+          "ta_gate": "TA score below minimum",
+          "declining_confidence": "Confidence declining since signal",
+          "research_gate": "Research recommendation unfavorable",
+          "min_position": "Position size below minimum",
+          "open_risk_cap": "Portfolio open-risk cap reached",
+          "sector_cap": "Sector exposure cap reached",
+          "sector_count_cap": "Sector position-count cap reached",
+          "insufficient_cash": "Insufficient cash",
+          "conviction_gate": "Alert system's conviction gate already rejected this BUY",
+          "entry_score_below_threshold": "Entry score below minimum (DE or fallback scorer)",
+          "already_open_scale_in_only": "Already an open position \u2014 evaluated for scale-in only",
+          "not_on_watchlist": "Signal exists but stock isn't on this style's watchlist"
+        }
+      },
+      "_SIZE_AWARE_SLIPPAGE_IMPACT_K": {
+        "line": 4973,
+        "value": 2.0
+      },
+      "_MAX_ENTRY_PRICE_STALENESS_DAYS": {
+        "line": 5640,
+        "value": 5
+      }
+    }
+  },
+  "services/ml-prediction/src/training/trainer.py": {
+    "sha256": "fc7d772ad803b10eea47118c782a1364e3b56268bbc1d3cbee25ddb2a21d07c8",
+    "constants": {
+      "_HORIZON_BY_STYLE": {
+        "line": 35,
+        "value": {
+          "SHORT": 5,
+          "SWING": 10,
+          "LONG": 20,
+          "GROWTH": 15
+        }
+      },
+      "_MIN_PRECISION": {
+        "line": 42,
+        "value": 0.6
+      },
+      "_PRECISION_BY_STYLE": {
+        "line": 49,
+        "value": {
+          "SHORT": 0.73,
+          "SWING": 0.63,
+          "LONG": 0.53,
+          "GROWTH": 0.63,
+          "SHORT_HK": 0.78,
+          "SWING_HK": 0.7,
+          "LONG_HK": 0.6,
+          "GROWTH_HK": 0.7
+        }
+      },
+      "_MIN_ROWS_AFTER_OUTCOME_DEDUP": {
+        "line": 373,
+        "value": 200
+      },
+      "_MIN_SLICE_ROWS": {
+        "line": 657,
+        "value": 10
+      },
+      "_MODEL_STALE_DAYS": {
+        "line": 1750,
+        "value": 30
+      },
+      "_META_BLEND_FLAG_KEY": {
+        "line": 2054,
+        "value": "stockai:ml:meta_blend_enabled"
+      },
+      "_META_SHADOW_FLAG_KEY": {
+        "line": 2084,
+        "value": "stockai:ml:meta_shadow_enabled"
+      }
+    }
+  },
+  "services/signal-engine/src/api/signals_shared.py": {
+    "sha256": "a826ed5f1931125d5067508596ba1c88659bf64f31fd3cc16917da981c099414",
+    "constants": {
+      "_CONF_BANDS": {
+        "line": 212,
+        "value": [
+          [
+            0,
+            40,
+            "0-40"
+          ],
+          [
+            40,
+            55,
+            "40-55"
+          ],
+          [
+            55,
+            70,
+            "55-70"
+          ],
+          [
+            70,
+            85,
+            "70-85"
+          ],
+          [
+            85,
+            101,
+            "85+"
+          ]
+        ]
+      },
+      "_CONF_CAL_CACHE_KEY": {
+        "line": 219,
+        "value": "signal:confidence_calibration"
+      },
+      "_CONF_CAL_TTL": {
+        "line": 220,
+        "value": 3600
+      },
+      "_CONF_CAL_MIN_COUNT": {
+        "line": 228,
+        "value": 30
+      },
+      "_OUTCOME_HOLD_DAYS": {
+        "line": 486,
+        "value": {
+          "SHORT": 7,
+          "SWING": 14,
+          "LONG": 28,
+          "GROWTH": 14
+        }
+      },
+      "_SELL_OUTCOME_HOLD_DAYS": {
+        "line": 505,
+        "value": {
+          "SHORT": 5,
+          "SWING": 7,
+          "LONG": 10,
+          "GROWTH": 7
+        }
+      },
+      "_OUTCOME_CENSOR_GRACE_DAYS": {
+        "line": 515,
+        "value": 10
+      },
+      "_OUTCOME_WIN_HURDLE_PCT": {
+        "line": 530,
+        "value": 0.005
+      }
+    }
+  }
+}

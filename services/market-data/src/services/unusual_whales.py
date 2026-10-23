@@ -1776,64 +1776,152 @@ def classify_dark_pool_side(
     return None
 
 
-def get_dark_pool_prints(symbol: str, *, limit: int = 50) -> list[DarkPoolPrintRow]:
-    """Real off-exchange block trades for `symbol` from UW's real `/api/darkpool/{ticker}`.
-    Redis-cached 15 min, matching GEX's own cadence — a real, current-trading-day signal that
-    should never be more than briefly stale. Fails open (empty list), same contract as every
-    other function in this module — a caller (MarketPressurePanel's dark-pool card,
-    check_dark_pool_alerts()) must always be able to render/scan nothing without special-casing
-    which failure mode occurred.
-    """
+# Audit R01 (2026-10-22): every outcome of a dark-pool request, as a STATUS. Before this the
+# function returned [] for disabled, empty, rate-limited, unauthorized, timed-out, 5xx and
+# malformed alike, and the route reported all of them as `no_data` — a working gateway did not
+# establish a working feed.
+DARK_POOL_FAILURE_STATUSES = ("rate_limited", "unauthorized", "timeout", "upstream_error", "malformed")
+_DARK_POOL_LAST_GOOD_TTL = 86400   # a last good sample, shown ONLY with an explicit stale banner
+
+
+@dataclass
+class DarkPoolFetch:
+    """One dark-pool request's outcome. `status` is one of: ok, empty, disabled, or a member of
+    DARK_POOL_FAILURE_STATUSES. `rows` are this answer's prints (empty unless ok).
+
+    `fetched_at` is when the provider answered (a cached answer keeps its original time — it is
+    never restamped). `source_as_of` is the newest execution time among the rows. On a failure,
+    `stale_rows`/`stale_fetched_at` carry the last good sample, if one is held, for display
+    beside the failure — never in place of it."""
+    status: str
+    rows: list
+    fetched_at: str | None = None
+    source_as_of: str | None = None
+    from_cache: bool = False
+    reason: str | None = None
+    http_status: int | None = None
+    malformed_rows: int = 0
+    stale_rows: list | None = None
+    stale_fetched_at: str | None = None
+
+
+def _parse_dark_pool_rows(sym: str, data) -> tuple[list[DarkPoolPrintRow], int]:
+    result: list[DarkPoolPrintRow] = []
+    bad = 0
+    for row in data:
+        try:
+            price = _to_float(row.get("price"))
+            size = int(row["size"]) if row.get("size") is not None else None
+            premium = _to_float(row.get("premium"))
+            if premium is None and price is not None and size is not None:
+                premium = price * size
+            result.append(DarkPoolPrintRow(
+                symbol=sym,
+                price=price,
+                size=size,
+                premium=premium,
+                venue=row.get("market_center") or row.get("venue"),
+                executed_at=row.get("executed_at") or row.get("timestamp"),
+                # T377-DARKPOOL-SIDE: UW returns these as STRINGS ("977.65"), like every
+                # other numeric field in this payload — _to_float handles that and None.
+                nbbo_bid=_to_float(row.get("nbbo_bid")),
+                nbbo_ask=_to_float(row.get("nbbo_ask")),
+            ))
+        except Exception:
+            bad += 1
+    return result, bad
+
+
+def _classify_dark_pool_exception(exc: Exception) -> tuple[str, int | None]:
+    # By class NAME through the MRO, as _get() itself does for HTTPStatusError: it does not
+    # depend on httpx's exception classes being importable as types here.
+    names = {c.__name__ for c in type(exc).__mro__}
+    if isinstance(exc, UnusualWhalesRateLimitError):
+        return "rate_limited", 429
+    if isinstance(exc, UnusualWhalesAuthError):
+        return "unauthorized", None
+    if "TimeoutException" in names:
+        return "timeout", None
+    if "HTTPStatusError" in names:
+        return "upstream_error", getattr(getattr(exc, "response", None), "status_code", None)
+    if "JSONDecodeError" in names or isinstance(exc, ValueError):   # r.json() on a non-JSON body
+        return "malformed", None
+    return "upstream_error", None
+
+
+def fetch_dark_pool_prints(symbol: str, *, limit: int = 50) -> DarkPoolFetch:
+    """Real off-exchange block trades for `symbol` from UW's `/api/darkpool/{ticker}`, with the
+    outcome kept (audit R01). Redis-cached 15 min (ok and empty answers only — a failure is
+    never cached, so the next view retries). Never raises."""
+    import json
+    from dataclasses import asdict
+
     if not is_available():
-        return []
+        return DarkPoolFetch(status="disabled", rows=[], reason="unusual_whales_disabled")
     sym = symbol.upper()
-    cache_key = f"stockai:uw:darkpool:{sym}"
+    cache_key = f"stockai:uw:darkpool:v2:{sym}"
+    last_good_key = f"stockai:uw:darkpool:lastgood:{sym}"
     try:
         cached = _get_redis().get(cache_key)
         if cached:
-            import json
-            rows = json.loads(cached)
-            return [DarkPoolPrintRow(**r) for r in rows]
+            c = json.loads(cached)
+            rows = [DarkPoolPrintRow(**r) for r in c.get("rows") or []]
+            return DarkPoolFetch(status=c["status"], rows=rows, fetched_at=c.get("fetched_at"),
+                                 source_as_of=c.get("source_as_of"), from_cache=True,
+                                 malformed_rows=c.get("malformed_rows", 0))
     except Exception:
         pass
 
+    fetched_at = datetime.now(timezone.utc).isoformat()
     try:
         data = _get(f"/api/darkpool/{sym}", params={"limit": limit}, endpoint="/api/darkpool/{symbol}")
     except Exception as exc:
-        log.warning("unusual_whales.dark_pool_failed", symbol=sym, error=str(exc))
-        return []
+        status, http_status = _classify_dark_pool_exception(exc)
+        log.warning("unusual_whales.dark_pool_failed", symbol=sym, status=status, error=str(exc))
+        stale_rows, stale_at = None, None
+        try:
+            lg = _get_redis().get(last_good_key)
+            if lg:
+                g = json.loads(lg)
+                stale_rows = [DarkPoolPrintRow(**r) for r in g.get("rows") or []]
+                stale_at = g.get("fetched_at")
+        except Exception:
+            pass
+        return DarkPoolFetch(status=status, rows=[], fetched_at=None, reason=str(exc)[:200],
+                             http_status=http_status, stale_rows=stale_rows, stale_fetched_at=stale_at)
 
-    result: list[DarkPoolPrintRow] = []
-    if isinstance(data, list):
-        for row in data:
-            try:
-                price = _to_float(row.get("price"))
-                size = int(row["size"]) if row.get("size") is not None else None
-                premium = _to_float(row.get("premium"))
-                if premium is None and price is not None and size is not None:
-                    premium = price * size
-                result.append(DarkPoolPrintRow(
-                    symbol=sym,
-                    price=price,
-                    size=size,
-                    premium=premium,
-                    venue=row.get("market_center") or row.get("venue"),
-                    executed_at=row.get("executed_at") or row.get("timestamp"),
-                    # T377-DARKPOOL-SIDE: UW returns these as STRINGS ("977.65"), like every
-                    # other numeric field in this payload — _to_float handles that and None.
-                    nbbo_bid=_to_float(row.get("nbbo_bid")),
-                    nbbo_ask=_to_float(row.get("nbbo_ask")),
-                ))
-            except Exception:
-                continue
+    if data is None:
+        # 404 / no `data` envelope: the provider answered with nothing for this symbol.
+        rows, bad, status = [], 0, "empty"
+    elif not isinstance(data, list):
+        return DarkPoolFetch(status="malformed", rows=[], fetched_at=fetched_at,
+                             reason=f"expected a list of prints, got {type(data).__name__}")
+    else:
+        rows, bad = _parse_dark_pool_rows(sym, data)
+        if data and not rows:
+            return DarkPoolFetch(status="malformed", rows=[], fetched_at=fetched_at, malformed_rows=bad,
+                                 reason=f"all {bad} returned prints were unparseable")
+        status = "ok" if rows else "empty"
 
+    times = [r.executed_at for r in rows if r.executed_at]
+    source_as_of = max(times) if times else None
     try:
-        import json
-        from dataclasses import asdict
-        _get_redis().setex(cache_key, _DARK_POOL_TTL, json.dumps([asdict(r) for r in result]))
+        payload = json.dumps({"status": status, "fetched_at": fetched_at, "source_as_of": source_as_of,
+                              "malformed_rows": bad, "rows": [asdict(r) for r in rows]})
+        _get_redis().setex(cache_key, _DARK_POOL_TTL, payload)
+        if rows:
+            _get_redis().setex(last_good_key, _DARK_POOL_LAST_GOOD_TTL, payload)
     except Exception:
         pass
-    return result
+    return DarkPoolFetch(status=status, rows=rows, fetched_at=fetched_at, source_as_of=source_as_of,
+                         malformed_rows=bad)
+
+
+def get_dark_pool_prints(symbol: str, *, limit: int = 50) -> list[DarkPoolPrintRow]:
+    """The prints only — empty for every non-ok outcome. Kept for callers that scan (the alert
+    job), where "nothing to scan" is the right reaction to any failure. A caller that DISPLAYS
+    the result must use fetch_dark_pool_prints() and show its status (audit R01)."""
+    return fetch_dark_pool_prints(symbol, limit=limit).rows
 
 
 _OPTIONS_SCREENER_TTL = 300  # 5 min — a live scanning tool, but not fast enough-moving to need

@@ -9,6 +9,12 @@ source-text-extraction technique for functions in this exact file.
 import pathlib
 from datetime import date, datetime, timezone
 
+# Audit R05 (2026-10-22): strategy code refuses a contract without supported terms. These
+# fixtures are standard equity contracts, so they say so explicitly.
+_STD_TERMS = {"contract_terms": {"status": "standard_root_100_assumed", "premium_multiplier": 100,
+                                 "deliverable_shares": 100, "automatic_payoff_supported": True}}
+
+
 _ROUTES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "routes.py"
 _ROUTES_SOURCE = _ROUTES_PATH.read_text()
 
@@ -51,7 +57,7 @@ TODAY = date(2026, 9, 1)
 
 
 def _put_row(strike, bid, ask, last=0.0, oi=100, iv=30.0):
-    return {"strike": strike, "bid": bid, "ask": ask, "last_price": last, "oi": oi, "iv": iv}
+    return {**_STD_TERMS, "strike": strike, "bid": bid, "ask": ask, "last_price": last, "oi": oi, "iv": iv}
 
 
 # ── _nearest_expiry_in_dte_window ────────────────────────────────────────────────────────────
@@ -136,7 +142,7 @@ def test_covered_call_reports_a_real_effective_cap_above_the_strike():
         put_expiries=[],
         put_rows=[],
         call_expiries=["2026-09-25"],  # 24 days out, inside [14, 45]
-        call_rows=[{"strike": 168.0, "bid": 1.7, "ask": 2.0, "last_price": 0.0, "oi": 200, "iv": 28.0}],
+        call_rows=[{**_STD_TERMS, "strike": 168.0, "bid": 1.7, "ask": 2.0, "last_price": 0.0, "oi": 200, "iv": 28.0}],
         today=TODAY,
     )
     cc = result["covered_call"]
@@ -156,7 +162,7 @@ def test_both_legs_can_be_computed_independently_in_one_call():
         put_expiries=["2026-10-14"],
         put_rows=[_put_row(140.0, 2.9, 3.1)],
         call_expiries=["2026-09-25"],
-        call_rows=[{"strike": 168.0, "bid": 1.7, "ask": 2.0, "last_price": 0.0, "oi": 200, "iv": 28.0}],
+        call_rows=[{**_STD_TERMS, "strike": 168.0, "bid": 1.7, "ask": 2.0, "last_price": 0.0, "oi": 200, "iv": 28.0}],
         today=TODAY,
     )
     assert result["protective_put"] is not None

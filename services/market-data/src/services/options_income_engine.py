@@ -43,6 +43,14 @@ from db.models import (
 from db.session import SessionLocal
 from common.market_calendar import NYSE_HOLIDAYS
 
+from .options_contract import STANDARD as _STANDARD_CONTRACT, contract_status as _contract_status  # R05
+from .options_contract import contract_terms as _contract_terms  # R05
+
+
+def unsupported_contract_reason(option_symbol, symbol) -> str | None:
+    """None for a standard contract; otherwise why its x100 payoff is not computed (R05)."""
+    terms = _contract_terms(option_symbol, symbol)
+    return None if terms["automatic_payoff_supported"] else f"{terms['status']}: {terms['basis']}"
 log = structlog.get_logger()
 
 # The same liquid, daily-archived-chain universe OPTHIST already covers — see scheduler.py's
@@ -391,6 +399,14 @@ def rank_income_candidates(
 
             best: dict | None = None
             for r in rows:
+                # Audit R05 (2026-10-22): premium, collateral and assignment below all multiply
+                # by 100. That holds only for a STANDARD contract (root matches the symbol). An
+                # adjusted contract can deliver other than 100 shares, or shares plus cash, and an
+                # unidentified one has no known terms — neither is offered as an income trade.
+                if _contract_status(r.option_symbol, sym) != _STANDARD_CONTRACT:
+                    log.info("options_income.contract_refused", symbol=sym, option_symbol=r.option_symbol,
+                             status=_contract_status(r.option_symbol, sym))
+                    continue
                 # AUD-T398-DTEFROMSTALE: days-to-expiry MUST be measured from today, not from
                 # the chain's as_of date. A position is opened NOW, so the real holding period
                 # is today -> expiry. Measuring from as_of silently stops enforcing the stated
@@ -770,6 +786,15 @@ def settle_expired_positions(session: Session, portfolio: OptionsIncomePortfolio
                               position_id=pos.id, symbol=pos.symbol)
                     continue
                 pos.stock_id = stock.id
+            # Audit R05: settlement multiplies by 100 shares per contract. A position whose contract
+            # is not a standard root (adjusted after a corporate action, or unidentifiable) keeps
+            # its record OPEN with the reason logged, like a missing settlement close — its cash
+            # outcome is not computed from terms nobody has established.
+            _blocked = unsupported_contract_reason(pos.option_symbol, pos.symbol)
+            if _blocked:
+                log.warning("options_income.settlement_blocked_unsupported_contract", position_id=pos.id,
+                            symbol=pos.symbol, option_symbol=pos.option_symbol, reason=_blocked)
+                continue
             settlement = _settlement_close(session, pos.stock_id, pos.expiry)
             if settlement is None:
                 # Left OPEN on purpose and retried next run — never settled against a substitute
@@ -1248,8 +1273,13 @@ def _snapshot_income_equity_curve(session: Session, portfolios: list[OptionsInco
                 mark_sources[_src] = mark_sources.get(_src, 0) + 1
                 _age = (as_of - _quote_date).days if _quote_date else None
                 _q = mark_quality(_src, _age)
+                # Audit R05: a mark at x100 on an unsupported contract is an estimate on assumed
+                # terms. Dropping it would overstate equity, so it is kept but counted as
+                # approximate with its own reason, never as an ordinary mark.
+                if unsupported_contract_reason(p.option_symbol, p.symbol):
+                    _q = "unsupported_contract_terms"
                 quality_counts[_q] = quality_counts.get(_q, 0) + 1
-                if _q in _APPROXIMATE_MARK_QUALITIES:
+                if _q in _APPROXIMATE_MARK_QUALITIES or _q == "unsupported_contract_terms":
                     approximate += 1
                 if _age is not None and (worst_quote_age is None or _age > worst_quote_age):
                     worst_quote_age = _age

@@ -21,7 +21,9 @@ it('shows each failed request as unknown with a retry, instead of rendering noth
   await waitFor(() => expect(status.textContent).toContain('dark pool'));
   expect(status.textContent).toMatch(/dealer gamma: Request failed \(HTTP 500\).*unknown, not empty/);
   expect(status.textContent).toMatch(/dark pool: Request failed \(network\)/);
-  expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+  // Audit R01: each failed component has its own Retry.
+  expect(screen.getByRole('button', { name: 'Retry dealer gamma' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Retry dark pool' })).toBeTruthy();
 });
 
 it('renders nothing when every request succeeded with no data, and shows loading while pending', async () => {
@@ -45,8 +47,10 @@ it('keeps showing loaded data while naming the request that failed', async () =>
   // Retry re-fetches the failed request.
   api.getDarkPoolPrints.mockResolvedValue({ available: false });
   const before = api.getDarkPoolPrints.mock.calls.length;
-  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  const gexBefore = api.getGammaExposure.mock.calls.length;
+  fireEvent.click(screen.getByRole('button', { name: 'Retry dark pool' }));
   await waitFor(() => expect(api.getDarkPoolPrints.mock.calls.length).toBeGreaterThan(before));
+  expect(api.getGammaExposure.mock.calls.length).toBe(gexBefore);   // retry targets the failed component only
 });
 
 it('labels an expiration past its last trade as historical in the rollup', async () => {
@@ -62,6 +66,9 @@ it('labels an expiration past its last trade as historical in the rollup', async
 });
 
 it('shows each off-exchange print with its ET time and age, a side estimate, quarantine and the baseline status', async () => {
+  // Audit R02: the age is elapsed time from execution, so the clock is pinned 12 minutes later.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-21T18:00:00Z'));
   api.getGammaExposure.mockResolvedValue({ available: false, source: 'none' });
   api.getOptionsExpirations.mockResolvedValue({ available: false });
   api.getDarkPoolPrints.mockResolvedValue({ available: true, source: 'unusual_whales',
@@ -81,4 +88,5 @@ it('shows each off-exchange print with its ET time and age, a side estimate, qua
   expect(screen.getByText('undeterminable')).toBeTruthy();
   expect(screen.getByLabelText('Dark pool baseline').textContent).toMatch(/baseline query FAILED.*unknown captured prints in 14 days/);
   expect(document.body.textContent).toContain('does not establish which dark pool executed it');
+  vi.useRealTimers();
 });

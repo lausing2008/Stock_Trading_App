@@ -1,7 +1,8 @@
 import React from 'react';
-import useSWR from 'swr';
 import { api } from '@/lib/api';
-import { requestFailedText, printTimeText, sideEstimateText, baselineLine } from '@/lib/optionsFlowStatus';
+import { requestFailedText, printTimeText, sideEstimateText, baselineLine, darkPoolStatus, etText, agoText } from '@/lib/optionsFlowStatus';
+import { REFRESH_MS, useNow } from '@/lib/useNow';
+import { usePolledSWR } from '@/lib/usePolledSWR';
 import { GexOiByStrikeChart, MaxPainByExpiryChart, OiTermStructureChart } from './OptionsTabCharts';
 
 /** MPE-06/MPE-03: real dealer gamma exposure (Unusual Whales, when configured/enabled) plus
@@ -14,40 +15,51 @@ import { GexOiByStrikeChart, MaxPainByExpiryChart, OiTermStructureChart } from '
  * since GEX specifically depends on an admin having configured and enabled a paid Unusual
  * Whales subscription (Settings → Market Pressure Data). */
 export default function MarketPressurePanel({ symbol }: { symbol: string }) {
-  const { data: gex, error: gexError, mutate: retryGex } = useSWR(
-    symbol ? `gamma-exposure-${symbol}` : null,
-    () => api.getGammaExposure(symbol),
-    { revalidateOnFocus: false },
-  );
-  const { data: expirations, error: expirationsError, mutate: retryExpirations } = useSWR(
-    symbol ? `options-expirations-${symbol}` : null,
-    () => api.getOptionsExpirations(symbol),
-    { revalidateOnFocus: false },
-  );
-  const { data: darkPool, error: darkPoolError, mutate: retryDarkPool } = useSWR(
-    symbol ? `dark-pool-prints-${symbol}` : null,
-    () => api.getDarkPoolPrints(symbol),
-    { revalidateOnFocus: false },
-  );
+  // Audit R02: each feed refreshes at its own backend cadence while the page is visible.
+  // Hidden tabs do not poll, same-key requests are shared, and rate limits back off (usePolledSWR).
+  const { data: gex, error: gexError, mutate: retryGex } = usePolledSWR(
+    symbol ? `gamma-exposure-${symbol}` : null, () => api.getGammaExposure(symbol), REFRESH_MS.gammaExposure);
+  const { data: expirations, error: expirationsError, mutate: retryExpirations } = usePolledSWR(
+    symbol ? `options-expirations-${symbol}` : null, () => api.getOptionsExpirations(symbol), REFRESH_MS.expirations);
+  const { data: darkPool, error: darkPoolError, mutate: retryDarkPool } = usePolledSWR(
+    symbol ? `dark-pool-prints-${symbol}` : null, () => api.getDarkPoolPrints(symbol), REFRESH_MS.darkPool);
+  const now = useNow(30_000);
 
   const hasGex = gex?.available && gex.source === 'unusual_whales';
   const hasExpirations = expirations?.available && (expirations.expirations?.length ?? 0) > 0;
   const hasDarkPool = darkPool?.available && (darkPool.prints?.length ?? 0) > 0;
   const hasNope = hasGex && gex?.nope?.nope != null;
 
-  // Phase A: a request that FAILED is shown (unknown, not empty), and loading is visible. A
-  // section that loaded and simply has no data for this symbol still renders nothing.
+  // Phase A: a request that FAILED is shown (unknown, not empty), and loading is visible.
+  // Audit R01: a request that SUCCEEDED can still carry a provider failure (dark pool answers
+  // HTTP 200 with a status), and a genuine empty answer is a fact worth showing, so neither
+  // disappears any more. Each failed component has its own Retry.
   const failed = [['dealer gamma', gexError, retryGex], ['open-interest rollup', expirationsError, retryExpirations],
     ['dark pool', darkPoolError, retryDarkPool]].filter(([, e]) => e) as [string, unknown, () => unknown][];
   const loading = [[gex, gexError], [expirations, expirationsError], [darkPool, darkPoolError]].some(([d, e]) => d === undefined && !e);
+  const dpState = darkPoolError ? null : darkPoolStatus(darkPool);
+  const statusBlock = (failed.length > 0 || dpState) ? (
+    <div role="status" aria-label="Market Pressure status" style={{ marginBottom: 12, fontSize: 12, color: '#94a3b8', lineHeight: 1.6 }}>
+      {failed.map(([name, e, retry]) => (
+        <div key={name}>
+          {name}: {requestFailedText(e)}
+          <button type="button" onClick={() => void retry()} style={{ marginLeft: 8, fontSize: 11 }}>Retry {name}</button>
+        </div>
+      ))}
+      {dpState && (
+        <div aria-label="Dark pool feed status" style={{ color: dpState.tone === 'error' ? '#fbbf24' : '#64748b' }}>
+          {dpState.text}
+          {dpState.tone === 'error' && <button type="button" onClick={() => void retryDarkPool()} style={{ marginLeft: 8, fontSize: 11 }}>Retry dark pool</button>}
+        </div>
+      )}
+    </div>
+  ) : null;
   if (!hasGex && !hasExpirations && !hasDarkPool) {
-    if (failed.length === 0 && !loading) return null;
+    if (!statusBlock && !loading) return null;
     return (
-      <div role="status" aria-label="Market Pressure status" style={{ marginBottom: 24, padding: '10px 14px', border: '1px solid #334155', borderRadius: 8, color: '#94a3b8', fontSize: 13 }}>
-        <strong style={{ color: '#cbd5e1' }}>Market Pressure</strong> — {failed.length
-          ? failed.map(([name, e]) => `${name}: ${requestFailedText(e)}`).join(' ')
-          : 'loading…'}
-        {failed.length > 0 && <button type="button" onClick={() => failed.forEach(([, , retry]) => void retry())} style={{ marginLeft: 10, fontSize: 12 }}>Retry</button>}
+      <div style={{ marginBottom: 24, padding: '10px 14px', border: '1px solid #334155', borderRadius: 8, color: '#94a3b8', fontSize: 13 }}>
+        <strong style={{ color: '#cbd5e1' }}>Market Pressure</strong>
+        {statusBlock ?? <div role="status" aria-label="Market Pressure status">loading…</div>}
       </div>
     );
   }
@@ -74,12 +86,7 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
           </span>
         )}
       </div>
-      {failed.length > 0 && (
-        <p role="status" aria-label="Market Pressure partial failure" style={{ margin: '0 0 10px', fontSize: 12, color: '#fbbf24' }}>
-          {failed.map(([name, e]) => `${name}: ${requestFailedText(e)}`).join(' ')}
-          <button type="button" onClick={() => failed.forEach(([, , retry]) => void retry())} style={{ marginLeft: 10, fontSize: 12 }}>Retry</button>
-        </p>
-      )}
+      {statusBlock}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
         {hasGex && (
@@ -197,8 +204,14 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
           return (
             <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
               <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>
-                NOPE — real-time, delta-weighted options pressure (updates roughly every minute).
-                {gex!.nope!.timestamp && <span style={{ color: '#334155' }}> As of {new Date(gex!.nope!.timestamp).toLocaleTimeString()}.</span>}
+                {/* Audit R02: the reading's own time and age, not a cadence claim — an open tab
+                    showed an hours-old reading under "updates roughly every minute". */}
+                NOPE — delta-weighted options pressure.{' '}
+                <span aria-label="NOPE reading time" style={{ color: '#475569' }}>
+                  {gex!.nope!.timestamp
+                    ? `Reading from ${etText(gex!.nope!.timestamp) ?? 'an unreadable time'}${Number.isNaN(Date.parse(gex!.nope!.timestamp)) ? '' : ` · ${agoText((now - Date.parse(gex!.nope!.timestamp)) / 60_000)}`}; refreshed about once a minute while this page is open.`
+                    : 'Reading time not provided.'}
+                </span>
               </div>
               <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
                 <span style={{ fontSize: 11, color: isBullish ? '#4ade80' : '#f87171', fontWeight: 700 }}>
@@ -266,6 +279,14 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
               {darkPool!.venue_note ? ` ${darkPool!.venue_note.charAt(0).toUpperCase()}${darkPool!.venue_note.slice(1)}.` : ''}{' '}
               <a href="/dark-pool-guide" style={{ color: '#38bdf8' }}>What is dark pool trading?</a>
             </div>
+            {/* R02: when these prints were retrieved from the provider (a cached answer keeps its
+                original time). A stale sample says so in the status line above. */}
+            {(darkPool!.stale ? darkPool!.stale_fetched_at : darkPool!.fetched_at) && (
+              <p aria-label="Dark pool retrieved" style={{ margin: '0 0 8px', fontSize: 11, color: darkPool!.stale ? '#fbbf24' : '#64748b' }}>
+                {darkPool!.stale ? 'Last good sample retrieved' : 'Retrieved'} {etText(darkPool!.stale ? darkPool!.stale_fetched_at : darkPool!.fetched_at)}
+                {' · '}{agoText((now - Date.parse((darkPool!.stale ? darkPool!.stale_fetched_at : darkPool!.fetched_at)!)) / 60_000)}
+              </p>
+            )}
             {baselineLine(darkPool!.baseline) && (
               <p aria-label="Dark pool baseline" style={{ margin: '0 0 8px', fontSize: 11, color: darkPool!.baseline?.status === 'query_failed' ? '#fbbf24' : '#64748b' }}>{baselineLine(darkPool!.baseline)}</p>
             )}
@@ -280,7 +301,7 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
               <tbody>
                 {darkPool!.prints!.slice(0, 8).map((p, i) => (
                   <tr key={`${p.executed_at}-${i}`} style={{ borderBottom: '1px solid #0f172a' }}>
-                    <td style={{ padding: '5px 6px', color: p.time_status && p.time_status !== 'ok' ? '#fbbf24' : '#94a3b8' }}>{printTimeText(p)}</td>
+                    <td style={{ padding: '5px 6px', color: p.time_status && p.time_status !== 'ok' ? '#fbbf24' : '#94a3b8' }}>{printTimeText(p, now)}</td>
                     <td style={{ padding: '5px 6px', color: '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>{p.size != null ? p.size.toLocaleString() : '—'}</td>
                     <td style={{ padding: '5px 6px', textAlign: 'right', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{p.price != null ? `$${p.price.toFixed(2)}` : '—'}</td>
                     <td title={darkPool!.side_basis ?? 'Estimate from the print\'s place in the NBBO'} style={{ padding: '5px 6px', textAlign: 'right', color: '#94a3b8' }}>{sideEstimateText(p.side_estimate)}</td>

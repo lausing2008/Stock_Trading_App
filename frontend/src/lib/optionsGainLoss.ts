@@ -46,9 +46,45 @@ export interface ChainQuote {
   bid: number;
   ask: number;
   last_price: number;
-  oi: number;
-  volume: number;
-  iv: number;
+  /** null when unknown (audit R04) — never treated as a measured zero. */
+  oi: number | null;
+  volume: number | null;
+  iv: number | null;
+  /** R05: only rows whose terms are supported are priced; see `contractSupported`. */
+  contract_terms?: { automatic_payoff_supported: boolean; premium_multiplier: number | null; status?: string } | null;
+}
+
+/** Audit R05 (2026-10-22): every figure in this module multiplies by CONTRACT (100). That holds
+ * only for a contract whose terms say so. An adjusted contract (root differs from the underlying)
+ * can deliver other than 100 shares, or shares plus cash; a row with no terms is unidentified.
+ * Both are refused — not priced at 100 by default. */
+export function contractSupported(q: Pick<ChainQuote, 'contract_terms'>): boolean {
+  const t = q.contract_terms;
+  return Boolean(t && t.automatic_payoff_supported === true && t.premium_multiplier === CONTRACT);
+}
+
+/** A held fill whose strike exists in the chain ONLY as an unsupported contract: the record is
+ * kept and explained, never priced (R05). null when the fill is priced normally or matches nothing. */
+export function heldUnsupported(quotes: ChainQuote[], fill?: UserFill | null): { strike: number; status: string; reason: string } | null {
+  if (!fill || !(fill.premium > 0)) return null;
+  const at = quotes.filter(q => Math.abs(Number(q.strike) - fill.strike) < 1e-9);
+  if (!at.length || at.some(contractSupported)) return null;
+  const status = at[0].contract_terms?.status ?? 'no_contract_terms';
+  const reason = status === 'nonstandard_root_deliverable_unknown'
+    ? 'adjusted contract: its deliverable may not be 100 shares (or may include cash), so no payoff is computed'
+    : 'the contract cannot be identified, so its terms — and any payoff — are unknown';
+  return { strike: fill.strike, status, reason };
+}
+
+/** How many chain rows were refused for unsupported contract terms, by status. */
+export function refusedContracts(quotes: ChainQuote[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const q of quotes) {
+    if (contractSupported(q)) continue;
+    const k = q.contract_terms?.status ?? 'no_contract_terms';
+    out[k] = (out[k] ?? 0) + 1;
+  }
+  return out;
 }
 
 /** A position the user actually holds, entered by hand.
@@ -75,8 +111,11 @@ export interface GainLossRow {
   premium: number;
   premiumSource: 'mid' | 'last' | 'your fill';
   /** The market's current midpoint, kept alongside when `premium` is the user's own fill, so the
-   * table can show both rather than silently replacing one with the other. */
-  quotedPremium: number;
+   * table can show both rather than silently replacing one with the other.
+   *
+   * null when the strike has no usable quote. Only a held fill keeps such a row (R06): its
+   * expiry figures come from what was paid, and its CURRENT value stays unknown — never zero. */
+  quotedPremium: number | null;
   isUserFill: boolean;
   /** Bid/ask spread as a percentage of the midpoint. null when there is no two-sided quote. */
   spreadPct: number | null;
@@ -99,7 +138,8 @@ export interface GainLossRow {
    * Negative means it can FALL that far and still break even (a short call, a long put). */
   breakevenMovePct: number | null;
   moneyness: 'ITM' | 'ATM' | 'OTM';
-  /** True when nothing has traded and nothing is open — the premium is a quote nobody has taken. */
+  /** True when nothing has traded and nothing is open — the premium is a quote nobody has taken.
+   * Only from MEASURED zeros: unknown volume/OI is not evidence of illiquidity (R04). */
   illiquid: boolean;
 }
 
@@ -187,6 +227,12 @@ export function breakevenFor(right: OptionRight, strike: number, premium: number
  *
  * Rows whose premium is zero or missing are DROPPED rather than shown with an infinite or
  * meaningless ROI. A strike with no price is not a cheaper trade, it is an unquoted one.
+ *
+ * Except the user's own fill (audit R06, 2026-10-22). A held position must not vanish because
+ * the feed has no quote for it today — that is exactly when the holder needs the row. Every
+ * at-expiry figure comes from the fill, so it needs no quote; `quotedPremium` stays null so the
+ * current mark is unavailable rather than invented. A fill for a strike absent from the chain
+ * is still ignored: nothing confirms that contract exists at this expiry.
  */
 export function buildGainLossRows(
   quotes: ChainQuote[],
@@ -201,14 +247,19 @@ export function buildGainLossRows(
   for (const q of quotes) {
     const strike = Number(q.strike);
     if (!Number.isFinite(strike) || strike <= 0) continue;
+    // R05: an adjusted or unidentified contract gets no automatic payoff — not even for a held
+    // fill, since the fill does not tell us what one contract delivers.
+    if (!contractSupported(q)) continue;
     const quoted = premiumFor(q);
-    if (!(quoted.premium > 0)) continue;
+    const hasQuote = quoted.premium > 0;
 
     // A fill entered for THIS strike replaces the quote as the basis of every figure in the row.
+    // Resolved BEFORE the quote check, so a held position survives a missing quote (R06).
     const usesFill = Boolean(fill && fill.premium > 0 && Math.abs(fill.strike - strike) < 1e-9);
+    if (!hasQuote && !usesFill) continue;
     const premium = usesFill ? fill!.premium : quoted.premium;
     const source: GainLossRow['premiumSource'] = usesFill ? 'your fill' : quoted.source;
-    const spreadPct = quoted.spreadPct;
+    const spreadPct = hasQuote ? quoted.spreadPct : null;
 
     const grossPremium = premium * CONTRACT * contracts;
     const valueAtTarget = intrinsic(right, strike, targetPrice) * CONTRACT * contracts;
@@ -226,7 +277,7 @@ export function buildGainLossRows(
       right,
       premium,
       premiumSource: source,
-      quotedPremium: quoted.premium,
+      quotedPremium: hasQuote ? quoted.premium : null,
       isUserFill: usesFill,
       spreadPct: spreadPct == null ? null : Number(spreadPct.toFixed(1)),
       cashFlow: sign * -grossPremium,
@@ -241,7 +292,7 @@ export function buildGainLossRows(
         ? Number((((breakevenFor(right, strike, premium) - spot) / spot) * 100).toFixed(1))
         : null,
       moneyness: moneynessOf(right, strike, spot),
-      illiquid: (Number(q.oi) || 0) === 0 && (Number(q.volume) || 0) === 0,
+      illiquid: q.oi === 0 && q.volume === 0,
     });
   }
   return out.sort((a, b) => a.strike - b.strike);
@@ -290,9 +341,9 @@ export function highestRoi(rows: GainLossRow[]): GainLossRow | null {
  * realises less than this and a short costs more to buy back. The caller is expected to say so.
  */
 export function unrealized(
-  action: OptionAction, fillPremium: number, quotedPremium: number, contracts: number,
+  action: OptionAction, fillPremium: number, quotedPremium: number | null, contracts: number,
 ): { cost: number; markValue: number; pnl: number; pnlPct: number } | null {
-  if (!(fillPremium > 0) || !(quotedPremium > 0) || !(contracts > 0)) return null;
+  if (!(fillPremium > 0) || quotedPremium == null || !(quotedPremium > 0) || !(contracts > 0)) return null;
   const cost = fillPremium * CONTRACT * contracts;
   const markValue = quotedPremium * CONTRACT * contracts;
   // A buyer gains when the mark rises; a seller gains when it falls.

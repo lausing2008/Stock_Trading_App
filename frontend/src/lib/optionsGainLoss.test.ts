@@ -1,12 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   premiumFor, intrinsic, moneynessOf, capitalFor, maxLossFor, breakevenFor,
-  buildGainLossRows, nearestStrikes, highestRoi, daysToExpiry, unrealized,
+  buildGainLossRows, nearestStrikes, highestRoi, daysToExpiry, unrealized, heldUnsupported,
 } from './optionsGainLoss';
 import type { ChainQuote } from './optionsGainLoss';
 
+// R05: the calculator prices only contracts with supported terms; these fixtures are standard.
+const STD_TERMS = { automatic_payoff_supported: true, premium_multiplier: 100, status: 'standard_root_100_assumed' };
 function q(strike: number, bid: number, ask: number, extra: Partial<ChainQuote> = {}): ChainQuote {
-  return { strike, bid, ask, last_price: 0, oi: 100, volume: 10, iv: 0.3, ...extra };
+  return { strike, bid, ask, last_price: 0, oi: 100, volume: 10, iv: 0.3, contract_terms: STD_TERMS, ...extra };
 }
 
 describe('premiumFor', () => {
@@ -411,6 +413,77 @@ describe('a position the user actually holds', () => {
     expect(row.capitalBasis).toBe(1980);
     expect(row.netPL).toBe(420);
     expect(row.roiPct).toBe(21.2);
+  });
+});
+
+// ── Audit R06 (2026-10-22): a held fill must survive a missing quote ───────────────────────
+
+describe('a held position whose strike has no quote', () => {
+  // The saved witness: strike 100, paid 5.00, no bid/ask/last, stock at 120 at expiry — on a
+  // STANDARD contract, stated explicitly so this tests R06 and nothing else. (The original
+  // witness row had no contract terms, so after R05 it is refused for identity before R06 runs;
+  // that case is tested separately below.)
+  const unquoted = [q(95, 7.9, 8.1), q(100, 0, 0, { contract_terms: STD_TERMS }), q(105, 2.9, 3.1)];
+  const fill = { strike: 100, premium: 5 };
+
+  it('the fixture is a standard contract', () => {
+    expect(unquoted[1].contract_terms).toEqual(STD_TERMS);
+  });
+
+  it('keeps the row and prices every expiry figure from the fill', () => {
+    const row = buildGainLossRows(unquoted, 'buy', 'call', 100, 120, 1, fill).find(r => r.strike === 100)!;
+    expect(row).toBeDefined();
+    expect(row.isUserFill).toBe(true);
+    expect(row.premium).toBe(5);
+    expect(row.premiumSource).toBe('your fill');
+    expect(row.valueAtTarget).toBe(2000);
+    expect(row.netPL).toBe(1500);
+    expect(row.roiPct).toBe(300);
+    expect(row.breakeven).toBe(105);
+  });
+
+  it('leaves the current market value unavailable, never zero', () => {
+    const row = buildGainLossRows(unquoted, 'buy', 'call', 100, 120, 1, fill).find(r => r.strike === 100)!;
+    expect(row.quotedPremium).toBeNull();
+    expect(row.spreadPct).toBeNull();
+    expect(unrealized('buy', row.premium, row.quotedPremium, 1)).toBeNull();
+  });
+
+  it('works for a short position too', () => {
+    const row = buildGainLossRows(unquoted, 'sell', 'put', 100, 90, 1, fill).find(r => r.strike === 100)!;
+    expect(row.isUserFill).toBe(true);
+    expect(row.netPL).toBe(-500);   // collected 500, owes 1,000 at 90
+    expect(row.quotedPremium).toBeNull();
+  });
+
+  it('still drops an unquoted strike that nobody holds', () => {
+    const rows = buildGainLossRows(unquoted, 'buy', 'call', 100, 120);
+    expect(rows.map(r => r.strike)).toEqual([95, 105]);
+  });
+
+  it('does not keep an unquoted strike for a fill on a different strike', () => {
+    const rows = buildGainLossRows(unquoted, 'buy', 'call', 100, 120, 1, { strike: 105, premium: 2 });
+    expect(rows.map(r => r.strike)).toEqual([95, 105]);
+  });
+
+  it('does not invent a row for a held strike absent from the chain', () => {
+    const rows = buildGainLossRows(unquoted, 'buy', 'call', 100, 120, 1, { strike: 110, premium: 1 });
+    expect(rows.some(r => r.isUserFill)).toBe(false);
+  });
+
+  it('UNSUPPORTED IDENTITY is a separate case: no priced row for an adjusted or unidentified contract', () => {
+    const adjusted = { automatic_payoff_supported: false, premium_multiplier: null, status: 'nonstandard_root_deliverable_unknown' };
+    expect(buildGainLossRows([q(100, 0, 0, { contract_terms: adjusted })], 'buy', 'call', 100, 120, 1, fill)).toEqual([]);
+    expect(buildGainLossRows([q(100, 0, 0, { contract_terms: null })], 'buy', 'call', 100, 120, 1, fill)).toEqual([]);
+    expect(heldUnsupported([q(100, 0, 0, { contract_terms: adjusted })], fill)?.status).toBe('nonstandard_root_deliverable_unknown');
+    expect(heldUnsupported(unquoted, fill)).toBeNull();     // the standard case is priced, not blocked
+  });
+
+  it('a quoted held strike still keeps its market mark', () => {
+    const quoted = [q(100, 5.9, 6.1)];
+    const row = buildGainLossRows(quoted, 'buy', 'call', 100, 120, 1, fill)[0];
+    expect(row.quotedPremium).toBe(6);
+    expect(unrealized('buy', row.premium, row.quotedPremium, 1)?.pnl).toBe(100);
   });
 });
 

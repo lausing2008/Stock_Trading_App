@@ -245,7 +245,10 @@ def main(scenario: str) -> dict:
             p_id = p.id
             s.add(models.OptionsIncomePosition(
                 portfolio_id=p_id, symbol="AAA", strategy="CASH_SECURED_PUT",
-                option_symbol="OPT-MARK", strike=90.0, expiry=TODAY + timedelta(days=30),
+                # Audit R05: a standard OCC symbol (root == symbol); an unidentified contract id
+                # would be graded `unsupported_contract_terms`, not by its quote age.
+                option_symbol=f"AAA{(TODAY + timedelta(days=30)).strftime('%y%m%d')}P00090000",
+                strike=90.0, expiry=TODAY + timedelta(days=30),
                 contracts=1, entry_date=TODAY,
                 entry_time=datetime(2026, 9, 24, 20, 0, tzinfo=timezone.utc),
                 underlying_entry_price=100.0,

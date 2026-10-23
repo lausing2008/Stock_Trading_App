@@ -37,7 +37,7 @@ def test_no_catch_all_get_symbol_route_exists_in_this_file_to_shadow_it():
 
 def test_checks_availability_before_attempting_any_fetch():
     avail_idx = _FUNC_SOURCE.index("_uw.is_available()")
-    fetch_idx = _FUNC_SOURCE.index("_uw.get_dark_pool_prints(")
+    fetch_idx = _FUNC_SOURCE.index("_uw.fetch_dark_pool_prints(")
     assert avail_idx < fetch_idx
 
 
@@ -46,7 +46,8 @@ def test_disabled_case_reports_source_none_not_a_fabricated_value():
 
 
 def test_no_data_case_also_reports_source_none():
-    assert '"source": "none", "reason": "no_data"' in _FUNC_SOURCE
+    # Audit R01: the empty answer keeps reason "no_data"; failures now carry their own status.
+    assert '"available": False, "source": "none",\n                "reason": "no_data" if fetch.status == "empty" else fetch.status' in _FUNC_SOURCE
 
 
 def test_real_data_case_reports_source_unusual_whales():

@@ -11,6 +11,12 @@ import pytest
 
 from src.services.options_strategies import build_strategy_matrix, _iv_regime
 
+# Audit R05 (2026-10-22): strategy code refuses a contract without supported terms. These
+# fixtures are standard equity contracts, so they say so explicitly.
+_STD_TERMS = {"contract_terms": {"status": "standard_root_100_assumed", "premium_multiplier": 100,
+                                 "deliverable_shares": 100, "automatic_payoff_supported": True}}
+
+
 TODAY = date(2026, 9, 18)
 PUT_EXP, CALL_EXP = "2026-10-30", "2026-10-16"
 SPOT = 110.00
@@ -19,7 +25,7 @@ SPOT = 110.00
 def _chain(strikes, bid, ask):
     """A synthetic chain with an explicit bid/ask per strike, so mid is exact and the tests
     assert real arithmetic rather than a fixture's rounding."""
-    return [{"strike": k, "bid": bid(k), "ask": ask(k), "last_price": 0.0, "iv": 0.35, "oi": 500}
+    return [{**_STD_TERMS, "strike": k, "bid": bid(k), "ask": ask(k), "last_price": 0.0, "iv": 0.35, "oi": 500}
             for k in strikes]
 
 
@@ -214,7 +220,7 @@ def test_iv_regime_boundaries():
 def test_wide_spreads_are_surfaced_not_buried():
     """A 'cost' quoted at mid is fiction when the spread is enormous; the reader must be able
     to see that."""
-    wide = [{"strike": 110, "bid": 1.0, "ask": 3.0, "last_price": 0, "iv": 0.4, "oi": 10}]
+    wide = [{**_STD_TERMS, "strike": 110, "bid": 1.0, "ask": 3.0, "last_price": 0, "iv": 0.4, "oi": 10}]
     m = build_strategy_matrix(
         current_price=SPOT, stop_loss=None, take_profit=None, signal=None,
         put_rows=[], put_expiry=None, call_rows=wide, call_expiry=CALL_EXP,

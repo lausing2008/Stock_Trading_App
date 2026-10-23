@@ -49,6 +49,8 @@ class FakePos:
         self.underlying_entry_price = entry; self.collateral_reserved = 50000.0
         self.close_date = None; self.underlying_close_price = None; self.assigned = None
         self.pnl = None; self.pct_return_on_collateral = None; self.close_reason = None
+        # Audit R05: a standard contract (root == symbol); settlement refuses any other.
+        self.option_symbol = f"{symbol}260925P{int(strike * 1000):08d}"
 
 
 class FakePortfolio:
@@ -161,3 +163,25 @@ def test_cash_released_matches_settlement_economics(monkeypatch):
     eng.settle_expired_positions(FakeSession([pos]), pf, as_of=date(2026, 9, 26))
     assert pf.current_cash == pytest.approx(10_000.0 + econ["cash_released"])
     assert pos.assigned is False and pos.close_reason == "expired_otm"
+
+
+# ── Audit R05: a position on an unsupported contract keeps its record, unsettled ────────────
+
+def test_an_adjusted_contract_position_is_not_settled_and_stays_open(monkeypatch):
+    monkeypatch.setattr(eng, "_settlement_close", _settles_at(505.0))
+    adjusted = FakePos(1, "AMD"); adjusted.option_symbol = "AMD1260925P00500000"
+    missing = FakePos(2, "AMD"); missing.option_symbol = None
+    standard = FakePos(3, "AMD")
+    pf = FakePortfolio(); cash = pf.current_cash
+    sess = FakeSession([adjusted, missing, standard])
+    n = eng.settle_expired_positions(sess, pf, as_of=date(2026, 9, 26))
+    assert n == 1 and standard.stage == "closed"
+    assert adjusted.stage == "open" and adjusted.pnl is None          # record kept, no x100 payoff
+    assert missing.stage == "open" and missing.pnl is None
+    assert pf.current_cash != cash                                      # only the standard one moved cash
+
+
+def test_the_blocked_reason_is_explicit():
+    assert eng.unsupported_contract_reason("AMD260925P00500000", "AMD") is None
+    assert eng.unsupported_contract_reason("AMD1260925P00500000", "AMD").startswith("nonstandard_root_deliverable_unknown")
+    assert eng.unsupported_contract_reason(None, "AMD").startswith("unverified_100_assumed")

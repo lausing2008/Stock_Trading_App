@@ -1,0 +1,12 @@
+# UI witness rerun, 2026-10-23T06:12Z, HEAD b997cadb + uncommitted fixes (R01-R07 local)
+# A witness PASSES while its defect is present; a FAIL means the defect is no longer observed.
+ × src/__tests__/feature-reaudit-witness.test.tsx > cached available flow hides a subsequent failed refresh
+ ✓ src/__tests__/feature-reaudit-witness.test.tsx > an explicit held fill disappears when its archived quote is missing
+ × src/__tests__/feature-reaudit-witness.test.tsx > the print age is a frozen response value, not elapsed time since execution
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  2 failed | 1 passed (3)
+
+# Companion (ui-witness-r06-with-terms.test.tsx): these assert the CORRECTED behaviour, so a pass is the fix observed.
+ ✓ src/__tests__/r06-companion-witness.test.tsx > R06: a held fill on a standard contract survives a missing quote, with no current mark
+ ✓ src/__tests__/r06-companion-witness.test.tsx > R05: the original witness row, with no contract terms, is refused as unidentified
+      Tests  2 passed (2)

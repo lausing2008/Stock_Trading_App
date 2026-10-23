@@ -3340,7 +3340,7 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
     Returns null fields for HK stocks and others without listed options.
     """
     sym = symbol.upper()
-    cache_key = f"options_flow:v4:{sym}"
+    cache_key = f"options_flow:v5:{sym}"
     try:
         rdb = _get_redis()
         cached = rdb.get(cache_key)
@@ -3352,6 +3352,7 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
     try:
         import yfinance as yf
         import pandas as pd
+        from datetime import datetime as _dt, timezone as _tz
 
         # T404: the option chain now comes from Unusual Whales, not yfinance.
         # AUD265-GAMMA-ASSUMES-SORTED-EXPIRIES: sorted() makes "nearest 4 expiries" structural
@@ -3372,6 +3373,13 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         # B3: what the selection rule saw, not only what it kept.
         eligible = {"call": 0, "put": 0}
         low_oi: list[dict] = []
+        # R04: contracts whose volume was measured vs not, per side. A side total is a
+        # complete-scope statement only when nothing on that side is missing.
+        volume_coverage = {side: {"known": 0, "total": 0} for side in ("call", "put")}
+        # Contracts the unusual rule could not evaluate (volume or OI unknown) — not "not unusual".
+        unmeasured = {"call": 0, "put": 0}
+        moneyness_reference = None
+        moneyness_unknown_reason = None
 
         # The nearest four expiries OF THE SOURCE SESSION: historical evidence of that session,
         # including a contract that expired at its close. Current tradeability is separate.
@@ -3388,13 +3396,21 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
 
             received_expiries.append(exp)
             archive_coverage = (chain.coverage_status, chain.coverage_reason)
-            calls = chain.calls.fillna(0)
-            puts  = chain.puts.fillna(0)
+            # R04: NO fillna(0). Unknown volume/OI/IV stay NaN, so comparisons below are False
+            # for them (never eligible, never "low OI") and sums cover measured contracts only.
+            calls = chain.calls
+            puts  = chain.puts
+            moneyness_reference = moneyness_reference or getattr(chain, "moneyness_reference", None)
+            moneyness_unknown_reason = moneyness_unknown_reason or getattr(chain, "moneyness_unknown_reason", None)
 
             c_vol = int(calls["volume"].sum())
             p_vol = int(puts["volume"].sum())
             total_call_vol += c_vol
             total_put_vol  += p_vol
+            for df, side in [(calls, "call"), (puts, "put")]:
+                volume_coverage[side]["known"] += int(df["volume"].notna().sum())
+                volume_coverage[side]["total"] += int(len(df))
+                unmeasured[side] += int((df["volume"].isna() | df["openInterest"].isna()).sum())
 
             # Flag contracts where today's volume exceeds 30% of open interest
             for df, side in [(calls, "call"), (puts, "put")]:
@@ -3406,7 +3422,14 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
                 for _, r in df[lo].iterrows():
                     low_oi.append({"expiry": exp, "side": side, "strike": float(r["strike"]),
                                    "volume": int(r["volume"]), "oi": int(r["openInterest"])})
-                for _, row in df[mask].sort_values("volume", ascending=False).head(3).iterrows():
+                # Audit R07 (2026-10-22): the FULL deterministic order before the cut. Sorting
+                # by volume alone let input order decide which tied strikes survived the top 3,
+                # and rank_unusual() below cannot recover a row already discarded here.
+                _cands = sorted(
+                    (r for _, r in df[mask].iterrows()),
+                    key=lambda r: unusual_order_key(r["volume"], r["openInterest"], exp, side,
+                                                    r["strike"], r.get("option_symbol")))
+                for row in _cands[:3]:
                     vol = int(row["volume"])
                     # O02 (2026-10-08): THREE SEPARATE QUANTITIES, NEVER ONE.
                     #
@@ -3434,8 +3457,14 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
                         "volume":    vol,
                         "oi":        int(row["openInterest"]),
                         "vol_oi":    round(float(row["volume"]) / max(float(row["openInterest"]), 1), 2),
-                        "iv":        round(float(row["impliedVolatility"]) * 100, 1),
-                        "itm":       bool(row["inTheMoney"]),
+                        # R04: unknown IV is None, never 0%. R03: moneyness only against the
+                        # chain session's own close; None when that price is unknown.
+                        "iv":        (None if pd.isna(row["impliedVolatility"])
+                                      else round(float(row["impliedVolatility"]) * 100, 1)),
+                        "itm":       None if row["inTheMoney"] is None or pd.isna(row["inTheMoney"]) else bool(row["inTheMoney"]),
+                        "moneyness": row.get("moneyness") if isinstance(row.get("moneyness"), str) else None,
+                        # The canonical contract ID: rank_unusual's final tie-break (R07).
+                        "option_symbol": row.get("option_symbol") or None,
                         **_pf,
                     })
 
@@ -3443,7 +3472,12 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
             # Every expiry read failed: a data failure, never "no volume" (review of the F1 fix).
             return {"symbol": sym, "available": False, "reason": "chain_read_failed",
                     "expiries_attempted": list(expiries[:4]), "mixed_session_slices": mixed_session}
-        if total_call_vol == 0 and total_put_vol == 0:
+        # R04: a side with contracts but NO measured volume is unmeasured, not zero.
+        side_unmeasured = {side: c["total"] > 0 and c["known"] == 0 for side, c in volume_coverage.items()}
+        if all(side_unmeasured.values()):
+            return {"symbol": sym, "available": False, "reason": "volume_unmeasured",
+                    "volume_coverage": volume_coverage}
+        if total_call_vol == 0 and total_put_vol == 0 and not any(side_unmeasured.values()):
             result = {"symbol": sym, "available": False, "reason": "no_volume"}
             return result
 
@@ -3453,7 +3487,10 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         cp_ratio = round(min(total_call_vol / max(total_put_vol, 1), 10.0), 2)
         sufficient_put_vol = total_put_vol >= 100
 
-        if cp_ratio >= 2.0 and sufficient_put_vol:
+        if any(side_unmeasured.values()):
+            # One whole side unmeasured: no ratio exists. A missing put side is not "all calls".
+            cp_ratio, sentiment = None, None
+        elif cp_ratio >= 2.0 and sufficient_put_vol:
             sentiment = "strongly_bullish"
         elif cp_ratio >= 1.3 and sufficient_put_vol:
             sentiment = "bullish"
@@ -3472,7 +3509,8 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         _shown = unusual[:10]
         unusual_selection = {
             "rule": (f"open interest > {_UNUSUAL_MIN_OI} and volume > {int(_UNUSUAL_VOL_OI * 100)}% of open "
-                     "interest; top 3 per side per expiration, then the 10 largest by contract volume. "
+                     "interest; top 3 per side per expiration, then the 10 largest by contract volume "
+                     "(ties: exact volume/OI, then expiry, strike, contract symbol). "
                      "Volume above open interest does not show that positions were opened."),
             "eligible": eligible,
             "kept": {"call": sum(1 for c in unusual if c["side"] == "call"),
@@ -3497,7 +3535,9 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         _whale_count = _wc["whale_count"]
 
         from ..services.options_scope import volume_composition
-        _comp = volume_composition(total_call_vol, total_put_vol)
+        _comp = volume_composition(None if side_unmeasured["call"] else total_call_vol,
+                                   None if side_unmeasured["put"] else total_put_vol)
+        _complete_volume = all(c["known"] == c["total"] for c in volume_coverage.values())
         # Two facts, kept apart: whether the archive capture itself finished, and whether every
         # requested slice of it could be read. "partial" must not hide an "incomplete" archive.
         _archive_status = archive_coverage[0] or "unverified"
@@ -3508,11 +3548,14 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         result = {
             "chain_as_of": source_session.isoformat(),
             "source_session": source_session.isoformat(),
+            # R02: when this payload was computed. Stored inside the cache, so a cache hit keeps it.
+            "computed_at": _dt.now(_tz.utc).isoformat(),
             "source": "unusual_whales_settled_chain",
             "symbol":            sym,
             "available":         True,
-            "call_volume":       total_call_vol,
-            "put_volume":        total_put_vol,
+            # R04: null for a side with no measured volume, so no reader can rebuild "100% calls".
+            "call_volume":       None if side_unmeasured["call"] else total_call_vol,
+            "put_volume":        None if side_unmeasured["put"] else total_put_vol,
             "cp_ratio":          cp_ratio,
             "sentiment":         sentiment,
             "unusual_count":     len(unusual),
@@ -3529,6 +3572,14 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
             "mixed_session_slices": mixed_session,
             # A2/F2-F3: exact volumes, never the rounded/capped cp_ratio above (kept for legacy).
             **_comp,
+            # R04: how much of the volume population was measured. "observed_subtotal" means the
+            # composition above covers only contracts with a measured volume.
+            "volume_coverage": volume_coverage,
+            "composition_scope": "complete" if _complete_volume else "observed_subtotal",
+            "unusual_unmeasured": unmeasured,
+            # R03: the same-session close the `itm`/`moneyness` fields were measured against.
+            "moneyness_reference": moneyness_reference,
+            "moneyness_unknown_reason": None if moneyness_reference else moneyness_unknown_reason,
             "directional_intent": "not_established",
             "independence_group": "option_chain",
             "sentiment_basis": "legacy composition label; not trade intent or independent directional evidence",
@@ -3614,18 +3665,39 @@ def _options_flow_gex_component(symbol: str) -> dict | None:
     }
 
 
+def unusual_order_key(volume, oi, expiry, side, strike, option_symbol=None, vol_oi=None) -> tuple:
+    """The one ordering of unusual contracts, used before EVERY truncation (audit R07).
+
+    Volume, then EXACT volume/OI (the displayed `vol_oi` is rounded to 2dp, so two different
+    ratios can tie on it), then expiry, side, strike, and the contract symbol last. A total order
+    over these fields makes the selection independent of the provider's row order.
+    `vol_oi` is only a fallback for a row that carries no open interest."""
+    vol = float(volume or 0)
+    if oi is not None:
+        ratio = vol / max(float(oi or 0), 1.0)
+    else:
+        ratio = float(vol_oi or 0.0)
+    sym = option_symbol if isinstance(option_symbol, str) else ""
+    return (-vol, -ratio, str(expiry), str(side), float(strike or 0.0), sym)
+
+
 def rank_unusual(rows: list) -> list:
-    """Unusual contracts ranked by volume, then volume/OI; ties broken by expiry, side, strike.
+    """Unusual contracts ranked by volume, then exact volume/OI; ties broken by expiry, side,
+    strike, contract symbol.
 
     Total order over always-present fields, so missing premiums can never raise and the order
-    is reproducible."""
-    return sorted(rows, key=lambda r: (-(r.get("volume") or 0), -(r.get("vol_oi") or 0.0),
-                                       str(r.get("expiry")), str(r.get("side")), float(r.get("strike") or 0.0)))
+    is reproducible. Same key as the per-side cut in get_options_flow (R07)."""
+    return sorted(rows, key=lambda r: unusual_order_key(
+        r.get("volume"), r.get("oi"), r.get("expiry"), r.get("side"), r.get("strike"),
+        r.get("option_symbol"), r.get("vol_oi")))
 
 
-# Weekly / PM-settled index roots that are the same 100-multiplier product as their underlying.
-_WEEKLY_INDEX_ROOTS = {"SPXW": "SPX", "NDXP": "NDX", "RUTW": "RUT", "VIXW": "VIX", "XSPW": "XSP"}
-_OCC_SYMBOL = re.compile(r"^([A-Z0-9.]{1,6})(\d{6})([CP])(\d{8})$")
+# Audit R05 (2026-10-22): contract identity moved to services/options_contract.py so the strategy
+# module and the chain rows share it. These names stay for existing callers and tests.
+from ..services.options_contract import (  # noqa: E402
+    WEEKLY_INDEX_ROOTS as _WEEKLY_INDEX_ROOTS, OCC_SYMBOL as _OCC_SYMBOL, contract_status as _contract_status,
+    contract_terms as _contract_terms, split_supported as _split_supported,
+)
 
 
 def contract_multiplier_status(option_symbol, underlying) -> str:
@@ -3633,16 +3705,9 @@ def contract_multiplier_status(option_symbol, underlying) -> str:
 
     An OCC symbol whose root differs from the underlying (MU vs MU1) marks an ADJUSTED contract
     after a split, merger or special dividend, whose deliverable may not be 100 shares. Turnover
-    for those is withheld rather than multiplied by a number we do not know."""
-    if not option_symbol or not underlying:
-        return "unverified_100_assumed"
-    m = _OCC_SYMBOL.match(str(option_symbol).strip().upper())
-    if not m:
-        return "unverified_100_assumed"
-    root = m.group(1).replace(".", "")
-    root = _WEEKLY_INDEX_ROOTS.get(root, root)
-    return ("standard_root_100_assumed" if root == str(underlying).upper().replace(".", "")
-            else "nonstandard_root_deliverable_unknown")
+    for those is withheld rather than multiplied by a number we do not know.
+    Delegates to services/options_contract.py (R05), the single definition."""
+    return _contract_status(option_symbol, underlying)
 
 
 def unusual_premium_fields(volume, last_price, bid, ask, *, last_price_available=None,
@@ -3847,24 +3912,34 @@ _OPTIONS_CHAIN_TTL = 900  # 15-min — matches _OPTIONS_TTL's own refresh cadenc
 # `as_of` comes back with it and callers must surface it — a settled bid shown as a live quote
 # is the A06 finding already on the tracker.
 class _ChainPair:
-    __slots__ = ("calls", "puts", "as_of", "coverage_status", "coverage_reason")
+    __slots__ = ("calls", "puts", "as_of", "coverage_status", "coverage_reason",
+                 "moneyness_reference", "field_coverage", "moneyness_unknown_reason")
 
-    def __init__(self, calls, puts, as_of, coverage_status=None, coverage_reason=None):
+    def __init__(self, calls, puts, as_of, coverage_status=None, coverage_reason=None,
+                 moneyness_reference=None, field_coverage=None, moneyness_unknown_reason=None):
         self.calls, self.puts, self.as_of = calls, puts, as_of
         self.coverage_status, self.coverage_reason = coverage_status, coverage_reason
+        # R03/R04: the same-session price moneyness was measured against (None = unknown), and
+        # per-field valid/missing/invalid counts for each side.
+        self.moneyness_reference = moneyness_reference
+        # R03 basis: why moneyness is unknown (no close, or the close fails the chain's parity check).
+        self.moneyness_unknown_reason = moneyness_unknown_reason
+        self.field_coverage = field_coverage
 
 
-def _uw_option_chain(session: Session, sym: str, exp: str | None = None, spot: float | None = None,
-                     as_of: "date | None" = None):
+def _uw_option_chain(session: Session, sym: str, exp: str | None = None, as_of: "date | None" = None):
     """UW chain for one expiry, shaped exactly like yfinance's option_chain(). Raises on
     unavailability so existing `try/except Exception: continue` call sites behave as before.
-    `as_of` pins the source session so several slices cannot come from different sessions."""
+    `as_of` pins the source session so several slices cannot come from different sessions.
+
+    Volume, open interest, IV and moneyness arrive NULLABLE (audit R04/R03): a missing value is
+    NaN/None in the frame, never 0 or False. Callers must not `fillna(0)` them."""
     import pandas as _pd
     from datetime import date as _date
     from ..services.uw_option_chain import get_chain as _uw_get_chain
 
     exp_d = _date.fromisoformat(exp) if exp else None
-    ch = _uw_get_chain(session, sym, expiry=exp_d, spot=spot, as_of=as_of)
+    ch = _uw_get_chain(session, sym, expiry=exp_d, as_of=as_of)
     if not ch["available"]:
         raise ValueError(f"no UW chain for {sym} {exp or ''}: {ch.get('reason')}")
 
@@ -3875,8 +3950,10 @@ def _uw_option_chain(session: Session, sym: str, exp: str | None = None, spot: f
             "openInterest": r["oi"],
             # yfinance stored IV as a FRACTION and _options_chain_rows multiplies by 100; the
             # adapter hands back percent, so divide here to keep that contract intact.
-            "impliedVolatility": (r["iv"] or 0) / 100.0,
+            # None stays None (R04): unknown IV is not zero volatility.
+            "impliedVolatility": None if r["iv"] is None else r["iv"] / 100.0,
             "inTheMoney": r["itm"],
+            "moneyness": r.get("moneyness"),
             # O02: CARRIED THROUGH, or the route cannot tell "this source has no last-trade
             # price" from "this contract last traded at zero". `.fillna(0)` downstream would
             # turn a null into a number, so the fact travels as its own boolean column.
@@ -3888,11 +3965,20 @@ def _uw_option_chain(session: Session, sym: str, exp: str | None = None, spot: f
             "option_symbol": r.get("option_symbol"),
         } for r in rows] or [], columns=[
             "strike", "bid", "ask", "lastPrice", "volume", "openInterest",
-            "impliedVolatility", "inTheMoney", "last_price_available",
+            "impliedVolatility", "inTheMoney", "moneyness", "last_price_available",
             "delta", "gamma", "theta", "vega", "rho", "option_symbol"])
 
-    return _ChainPair(_df(ch["calls"]), _df(ch["puts"]), ch["as_of"],
-                      ch.get("coverage_status"), ch.get("coverage_reason"))
+    def _typed(df):
+        # Numeric with NaN for unknown — an all-None column would otherwise be `object` and
+        # break comparisons. inTheMoney/moneyness stay object so None is not coerced to False.
+        for col in ("volume", "openInterest", "impliedVolatility"):
+            df[col] = _pd.to_numeric(df[col], errors="coerce")
+        df["inTheMoney"] = df["inTheMoney"].astype(object)
+        return df
+
+    return _ChainPair(_typed(_df(ch["calls"])), _typed(_df(ch["puts"])), ch["as_of"],
+                      ch.get("coverage_status"), ch.get("coverage_reason"),
+                      ch.get("moneyness_reference"), ch.get("field_coverage"), ch.get("moneyness_unknown_reason"))
 
 
 def _uw_expiries(session: Session, sym: str) -> list[str]:
@@ -3908,23 +3994,51 @@ def _uw_session_expiries(session: Session, sym: str):
     return as_of, sorted(expiries)
 
 
-def _options_chain_rows(df) -> list[dict]:
+def _options_chain_rows(df, underlying: str | None = None) -> list[dict]:
     """Flattens one side (calls or puts) of a yfinance option_chain() DataFrame into a plain
     list of dicts, sorted by strike ascending. Pulled out to module level (not an inline
     closure) specifically so it's independently unit-testable without needing a real yfinance
-    Ticker/HTTP call — the only real logic in get_options_chain() worth testing directly."""
-    df = df.fillna(0)
+    Ticker/HTTP call — the only real logic in get_options_chain() worth testing directly.
+
+    Audit R03/R04 (2026-10-22): volume, open interest, IV and moneyness stay None when unknown.
+    The old `df.fillna(0)` made a missing IV read as 0% and an unmeasured contract read as OTM.
+    Prices keep the 0.0 convention (no quote), and no NaN ever reaches the JSON.
+
+    Audit R05: each row keeps its `option_symbol` and the `contract_terms` derived from it and
+    `underlying`. Without an underlying the terms are unverified, which every automatic payoff
+    path refuses — so a caller cannot get priced rows by forgetting to say what they are."""
+    import math
+
+    def _known(v):
+        if v is None:
+            return False
+        try:
+            return not math.isnan(float(v))
+        except (TypeError, ValueError):
+            return False
+
+    def _price(v):
+        return float(v) if _known(v) else 0.0
+
     out = []
     for _, row in df.sort_values("strike").iterrows():
+        vol, oi, iv = row.get("volume"), row.get("openInterest"), row.get("impliedVolatility")
+        itm = row.get("inTheMoney")
+        mny = row.get("moneyness")
+        osym = row.get("option_symbol")
+        osym = osym if isinstance(osym, str) and osym else None
         out.append({
             "strike":       float(row["strike"]),
-            "bid":          float(row.get("bid", 0)),
-            "ask":          float(row.get("ask", 0)),
-            "last_price":   float(row.get("lastPrice", 0)),
-            "volume":       int(row.get("volume", 0)),
-            "oi":           int(row.get("openInterest", 0)),
-            "iv":           round(float(row.get("impliedVolatility", 0)) * 100, 1),
-            "itm":          bool(row.get("inTheMoney", False)),
+            "bid":          _price(row.get("bid")),
+            "ask":          _price(row.get("ask")),
+            "last_price":   _price(row.get("lastPrice")),
+            "volume":       int(float(vol)) if _known(vol) else None,
+            "oi":           int(float(oi)) if _known(oi) else None,
+            "iv":           round(float(iv) * 100, 1) if _known(iv) else None,
+            "itm":          bool(itm) if _known(itm) else None,
+            "moneyness":    mny if isinstance(mny, str) else None,
+            "option_symbol": osym,
+            "contract_terms": _contract_terms(osym, underlying),
         })
     return out
 
@@ -3949,7 +4063,16 @@ def compute_max_pain(calls: list[dict], puts: list[dict]) -> dict | None:
 
     Returns None if either side has zero total open interest (nothing to compute against —
     a common case for a thin/newly-listed expiry) rather than fabricating a strike from noise.
+
+    Audit R04 (2026-10-22): a contract with UNKNOWN open interest (None) is excluded rather than
+    counted as zero, and `oi_coverage` says how many contracts were measured. A max pain over a
+    partial OI population is an observed-subset figure, and the coverage is how a reader knows.
     """
+    n_total = len(calls) + len(puts)
+    calls = [c for c in calls if c.get("oi") is not None]
+    puts = [p for p in puts if p.get("oi") is not None]
+    oi_coverage = {"known": len(calls) + len(puts), "total": n_total,
+                   "complete": len(calls) + len(puts) == n_total}
     total_oi = sum(c["oi"] for c in calls) + sum(p["oi"] for p in puts)
     if total_oi <= 0:
         return None
@@ -3978,6 +4101,7 @@ def compute_max_pain(calls: list[dict], puts: list[dict]) -> dict | None:
         "total_call_oi": total_call_oi,
         "total_put_oi": total_put_oi,
         "put_call_oi_ratio": round(total_put_oi / total_call_oi, 3) if total_call_oi > 0 else None,
+        "oi_coverage": oi_coverage,
     }
 
 
@@ -4150,7 +4274,7 @@ def get_options_chain(symbol: str, expiry: str | None = None, session: Session =
         from ..services.options_scope import current_expiries as _current_expiries
         _cur = _current_expiries(expiries, source_session)
         exp = expiry if expiry in expiries else (_cur[0] if _cur else expiries[0])
-        cache_key = f"options_chain:v2:{sym}:{source_session.isoformat()}:{exp}"
+        cache_key = f"options_chain:v3:{sym}:{source_session.isoformat()}:{exp}"
         try:
             rdb = _get_redis()
             cached = rdb.get(cache_key)
@@ -4165,8 +4289,8 @@ def get_options_chain(symbol: str, expiry: str | None = None, session: Session =
             log.warning("options_chain.fetch_failed", symbol=sym, expiry=exp, error=str(exc))
             return {"symbol": sym, "available": False, "reason": "fetch_error"}
 
-        _calls_rows = _options_chain_rows(chain.calls)
-        _puts_rows = _options_chain_rows(chain.puts)
+        _calls_rows = _options_chain_rows(chain.calls, sym)
+        _puts_rows = _options_chain_rows(chain.puts, sym)
         result = {
             "symbol":          sym,
             "available":       True,
@@ -4177,6 +4301,11 @@ def get_options_chain(symbol: str, expiry: str | None = None, session: Session =
             # IF-05: max pain — needs only strike + OI, both already in the rows above.
             "max_pain":        compute_max_pain(_calls_rows, _puts_rows),
             "source_session":  source_session.isoformat(),
+            # R03: the same-session close behind `itm`/`moneyness`; None = moneyness unknown.
+            "moneyness_reference": getattr(chain, "moneyness_reference", None),
+            "moneyness_unknown_reason": getattr(chain, "moneyness_unknown_reason", None),
+            # R04: valid/missing/invalid counts per field and side.
+            "field_coverage":  getattr(chain, "field_coverage", None),
             "coverage_status": chain.coverage_status or "unverified",
             "coverage_reason": chain.coverage_reason,
         }
@@ -4277,6 +4406,9 @@ def compute_expiration_rollup(per_expiry: list[dict]) -> list[dict]:
             "put_call_oi_ratio": round(put_oi / call_oi, 3) if call_oi > 0 else None,
             "concentration_pct": concentration_pct,
             "level": level,
+            # R04: measured/total contracts behind these sums; absent for legacy callers.
+            "oi_coverage": r.get("oi_coverage"),
+            "volume_coverage": r.get("volume_coverage"),
         })
     return result
 
@@ -4296,7 +4428,7 @@ def get_options_expirations(symbol: str, session: Session = Depends(get_session)
     whole purpose is the cross-expiry comparison itself, not a single day's detail.
     """
     sym = symbol.upper()
-    cache_key = f"options_expirations:v2:{sym}"
+    cache_key = f"options_expirations:v3:{sym}"
     try:
         rdb = _get_redis()
         cached = rdb.get(cache_key)
@@ -4317,14 +4449,18 @@ def get_options_expirations(symbol: str, session: Session = Depends(get_session)
                 chain = _uw_option_chain(session, sym, exp, as_of=source_session)
             except Exception:
                 continue
-            calls = chain.calls.fillna(0)
-            puts = chain.puts.fillna(0)
+            # R04: sums over MEASURED contracts, with the counts that say how many that was.
+            calls, puts = chain.calls, chain.puts
+            _cov = lambda col: {"known": int(calls[col].notna().sum() + puts[col].notna().sum()),
+                                "total": int(len(calls) + len(puts))}
             per_expiry.append({
                 "expiry": exp,
                 "call_oi": int(calls["openInterest"].sum()),
                 "put_oi": int(puts["openInterest"].sum()),
                 "call_volume": int(calls["volume"].sum()),
                 "put_volume": int(puts["volume"].sum()),
+                "oi_coverage": _cov("openInterest"),
+                "volume_coverage": _cov("volume"),
             })
 
         rollup = compute_expiration_rollup(per_expiry)
@@ -4518,11 +4654,30 @@ def get_dark_pool_prints_route(symbol: str, session: Session = Depends(get_sessi
 
     sym = symbol.upper()
     if not _uw.is_available():
-        return {"symbol": sym, "available": False, "source": "none", "reason": "unusual_whales_disabled", "prints": []}
+        return {"symbol": sym, "available": False, "source": "none", "reason": "unusual_whales_disabled",
+                "status": "disabled", "prints": []}
 
-    rows = _uw.get_dark_pool_prints(sym)
+    # Audit R01 (2026-10-22): the provider's outcome travels with the answer. `reason` keeps its
+    # old values for an empty answer ("no_data"); a failure now says which failure it was.
+    fetch = _uw.fetch_dark_pool_prints(sym)
+    failed = fetch.status in _uw.DARK_POOL_FAILURE_STATUSES
+    status_fields = {
+        "status": fetch.status,
+        "fetched_at": fetch.fetched_at,
+        "source_as_of": fetch.source_as_of,
+        "from_cache": fetch.from_cache,
+        "malformed_rows": fetch.malformed_rows,
+        "http_status": fetch.http_status,
+        "error": fetch.reason if failed else None,
+        # A last good sample is shown ONLY beside the failure, never as the current answer.
+        "stale": bool(failed and fetch.stale_rows),
+        "stale_fetched_at": fetch.stale_fetched_at if failed and fetch.stale_rows else None,
+    }
+    rows = fetch.rows if fetch.status == "ok" else (fetch.stale_rows or [] if failed else [])
     if not rows:
-        return {"symbol": sym, "available": False, "source": "none", "reason": "no_data", "prints": []}
+        return {"symbol": sym, "available": False, "source": "none",
+                "reason": "no_data" if fetch.status == "empty" else fetch.status,
+                **status_fields, "prints": []}
 
     # Options review B4/B5: every print carries its time status and age, the side is an
     # estimate with its basis, and the relative baseline says whether it could run and why not.
@@ -4552,6 +4707,7 @@ def get_dark_pool_prints_route(symbol: str, session: Session = Depends(get_sessi
         "venue_note": _dpe.VENUE_NOTE,
         "clock_tolerance_minutes": _dpe.CLOCK_TOLERANCE.total_seconds() / 60.0,
         "baseline": {**baseline, "text": _dpe.BASELINE_TEXT.get(baseline["status"])},
+        **status_fields,
     }
 
 
@@ -4866,7 +5022,14 @@ def compute_options_game_plan(
     # SF-02: the SAME quote-validation the strategy matrix uses, so the two surfaces on this
     # page cannot disagree about whether a quote is usable.
     from ..services.options_strategies import _mid as _mid_shared
+    from ..services.options_contract import split_supported as _split_supported
     result: dict = {"protective_put": None, "covered_call": None}
+    # Audit R05 (2026-10-22): only contracts with SUPPORTED terms (standard root, 100 assumed)
+    # may be priced at x100 below or in the matrix. An adjusted or unidentifiable contract is
+    # refused rather than given a payoff it may not have; the refusals are reported.
+    put_rows, _put_refused = _split_supported(put_rows)
+    call_rows, _call_refused = _split_supported(call_rows)
+    result["contract_terms_refused"] = {"puts": _put_refused, "calls": _call_refused}
 
     if stop_loss and stop_loss > 0 and put_rows and put_expiries:
         put_exp = _nearest_expiry_in_dte_window(
@@ -4906,6 +5069,8 @@ def compute_options_game_plan(
                     "effective_floor_price": effective_floor,
                     "iv": contract["iv"],
                     "oi": contract["oi"],
+                    "option_symbol": contract.get("option_symbol"),
+                    "contract_terms": contract.get("contract_terms"),
                     "reference_stop_loss": stop_loss,
                 }
 
@@ -4946,6 +5111,8 @@ def compute_options_game_plan(
                     "effective_cap_price": round(contract["strike"] + mid, 2),
                     "iv": contract["iv"],
                     "oi": contract["oi"],
+                    "option_symbol": contract.get("option_symbol"),
+                    "contract_terms": contract.get("contract_terms"),
                     "reference_take_profit": take_profit,
                 }
 
@@ -5028,14 +5195,14 @@ def get_options_game_plan(
         chain_as_of: str | None = None
         try:
             if put_exp:
-                _pc = _uw_option_chain(session, sym, put_exp, spot=current_price, as_of=source_session)
-                put_rows, chain_as_of = _options_chain_rows(_pc.puts), _pc.as_of
+                _pc = _uw_option_chain(session, sym, put_exp, as_of=source_session)
+                put_rows, chain_as_of = _options_chain_rows(_pc.puts, sym), _pc.as_of
         except Exception as exc:
             log.warning("options_game_plan.put_fetch_failed", symbol=sym, expiry=put_exp, error=str(exc))
         try:
             if call_exp:
-                _cc = _uw_option_chain(session, sym, call_exp, spot=current_price, as_of=source_session)
-                call_rows, chain_as_of = _options_chain_rows(_cc.calls), _cc.as_of
+                _cc = _uw_option_chain(session, sym, call_exp, as_of=source_session)
+                call_rows, chain_as_of = _options_chain_rows(_cc.calls, sym), _cc.as_of
         except Exception as exc:
             log.warning("options_game_plan.call_fetch_failed", symbol=sym, expiry=call_exp, error=str(exc))
 

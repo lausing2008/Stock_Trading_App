@@ -6,7 +6,7 @@
 import { useMemo } from 'react';
 import type { OptionsChainRow } from '@/lib/api';
 import {
-  buildGainLossRows, nearestStrikes, highestRoi, daysToExpiry, unrealized,
+  buildGainLossRows, nearestStrikes, highestRoi, daysToExpiry, unrealized, refusedContracts, heldUnsupported,
 } from '@/lib/optionsGainLoss';
 import type { OptionAction, OptionRight } from '@/lib/optionsGainLoss';
 import NumberField from './NumberField';
@@ -78,6 +78,9 @@ export default function GainLossTable({
     [held, action, contracts],
   );
   const best = useMemo(() => highestRoi(rows), [rows]);
+  const refused = useMemo(() => refusedContracts(quotes), [quotes]);
+  const refusedCount = Object.values(refused).reduce((a, b) => a + b, 0);
+  const heldBlocked = useMemo(() => heldUnsupported(quotes, fill), [quotes, fill?.strike, fill?.premium]);
   const dte = expiry ? daysToExpiry(expiry) : null;
 
   const pill = (active: boolean): React.CSSProperties => ({
@@ -166,7 +169,7 @@ export default function GainLossTable({
           }}>
             <strong style={{ color: '#38bdf8' }}>Your position.</strong>{' '}
             {contracts} × ${held.strike} {right} @ ${held.premium.toFixed(2)} = {money(mark.cost)}
-            {' · '}now marked {money(mark.markValue)} (${held.quotedPremium.toFixed(2)} mid)
+            {' · '}now marked {money(mark.markValue)} (${held.quotedPremium?.toFixed(2)} mid)
             {' · '}
             <strong style={{ color: tone(mark.pnl) }}>
               {mark.pnl >= 0 ? '+' : ''}{money(mark.pnl)} ({pct(mark.pnlPct)})
@@ -177,6 +180,40 @@ export default function GainLossTable({
               breakeven and return are yours; every other row is the current market quote.
             </div>
           </div>
+        )}
+
+        {held && !mark && held.quotedPremium == null && (
+          <div role="status" aria-label="Held position without a quote" style={{
+            background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.3)',
+            borderRadius: 6, padding: '10px 12px', marginBottom: 12, fontSize: 12, lineHeight: 1.7,
+          }}>
+            <strong style={{ color: '#f59e0b' }}>Your position.</strong>{' '}
+            {contracts} × ${held.strike} {right} @ ${held.premium.toFixed(2)} = {money(held.premium * 100 * contracts)}
+            {' · '}current market value unavailable — no quote for this strike.
+            <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
+              Your row below still shows the at-expiry result from what you paid. Without a quote
+              there is no current mark, so none is shown rather than one being guessed.
+            </div>
+          </div>
+        )}
+
+        {heldBlocked && (
+          <div role="status" aria-label="Held position not priced" style={{
+            background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.3)',
+            borderRadius: 6, padding: '10px 12px', marginBottom: 12, fontSize: 12, lineHeight: 1.7,
+          }}>
+            <strong style={{ color: '#f59e0b' }}>Your position.</strong>{' '}
+            {contracts} × ${heldBlocked.strike} {right} @ ${fillPremium.toFixed(2)} — kept on record, payoff not computed: {heldBlocked.reason}.
+          </div>
+        )}
+
+        {refusedCount > 0 && (
+          <p role="status" aria-label="Contracts not priced" style={{ fontSize: 11, color: '#f59e0b', margin: '0 0 10px', lineHeight: 1.6 }}>
+            {refusedCount} contract{refusedCount === 1 ? '' : 's'} not priced
+            {refused.nonstandard_root_deliverable_unknown ? ` — ${refused.nonstandard_root_deliverable_unknown} adjusted (deliverable may not be 100 shares)` : ''}
+            {(refusedCount - (refused.nonstandard_root_deliverable_unknown ?? 0)) > 0 ? ` — ${refusedCount - (refused.nonstandard_root_deliverable_unknown ?? 0)} without identifiable contract terms` : ''}.
+            {' '}Every figure here multiplies by 100, which only a standard contract supports.
+          </p>
         )}
 
         {loading && <div style={{ fontSize: 12, color: '#64748b' }}>Loading chain…</div>}
@@ -230,7 +267,9 @@ export default function GainLossTable({
                             border: `1px solid ${r.moneyness === 'ITM' ? 'rgba(74,222,128,0.3)' : atm ? 'rgba(56,189,248,0.3)' : '#334155'}`,
                           }}>{r.moneyness}</span>
                           {r.isUserFill && (
-                            <span title={`Priced from your fill of $${r.premium.toFixed(2)}, not the current $${r.quotedPremium.toFixed(2)} midpoint.`}
+                            <span title={r.quotedPremium == null
+                              ? `Priced from your fill of $${r.premium.toFixed(2)}; this strike has no current quote.`
+                              : `Priced from your fill of $${r.premium.toFixed(2)}, not the current $${r.quotedPremium.toFixed(2)} midpoint.`}
                               style={{
                                 fontSize: 9, marginLeft: 6, padding: '1px 5px', borderRadius: 3,
                                 fontWeight: 700, cursor: 'help',
@@ -259,7 +298,7 @@ export default function GainLossTable({
                           ${r.premium.toFixed(2)}
                           {r.isUserFill && (
                             <span style={{ fontSize: 10, color: '#64748b', marginLeft: 5 }}>
-                              (mkt ${r.quotedPremium.toFixed(2)})
+                              {r.quotedPremium == null ? '(no quote)' : `(mkt $${r.quotedPremium.toFixed(2)})`}
                             </span>
                           )}
                           {r.premiumSource === 'last' && <span style={{ color: '#f59e0b' }}>*</span>}

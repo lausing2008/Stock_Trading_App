@@ -3247,7 +3247,7 @@ def compute_options_flow_snapshots_eod(now: "datetime | None" = None) -> dict:
             # back the previous session. Read through the archive, not the cache.
             try:
                 if symbols:
-                    _get_redis().delete(*[f"options_flow:v4:{sym}" for _, sym in symbols])
+                    _get_redis().delete(*[f"options_flow:v5:{sym}" for _, sym in symbols])
             except Exception:
                 pass
             ready = []

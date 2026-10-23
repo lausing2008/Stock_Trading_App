@@ -1484,7 +1484,9 @@ def test_dark_pool_prints_reads_from_cache_when_present():
     cached_row = uw.DarkPoolPrintRow(symbol="AAPL", price=250.0, size=10000, premium=2_500_000.0,
                                        venue="L", executed_at="2026-09-01T14:30:00Z")
     import json
-    fake_redis.store["stockai:uw:darkpool:AAPL"] = json.dumps([asdict(cached_row)])
+    # Audit R01: the cache stores the outcome with the rows, under a versioned key.
+    fake_redis.store["stockai:uw:darkpool:v2:AAPL"] = json.dumps(
+        {"status": "ok", "fetched_at": "2026-09-01T14:31:00+00:00", "rows": [asdict(cached_row)]})
     with patch.object(uw, "is_available", return_value=True), \
          patch.object(uw, "_get_redis", return_value=fake_redis), \
          patch.object(uw, "_get") as mock_get:
@@ -1577,8 +1579,10 @@ def test_dark_pool_prints_uses_the_15min_ttl_not_the_6h_congress_ttl():
              {"price": "100.0", "size": 5000, "executed_at": "2026-09-01T14:30:00Z"},
          ]):
         uw.get_dark_pool_prints("AAPL")
-    assert len(spy_calls) == 1
-    assert spy_calls[0][1] == uw._DARK_POOL_TTL
+    # Audit R01: the 15-min answer cache, plus a last-good copy shown only beside a failure.
+    ttls = {key: ttl for key, ttl, _ in spy_calls}
+    assert ttls["stockai:uw:darkpool:v2:AAPL"] == uw._DARK_POOL_TTL
+    assert ttls["stockai:uw:darkpool:lastgood:AAPL"] == uw._DARK_POOL_LAST_GOOD_TTL
     assert spy_calls[0][1] == 900
 
 

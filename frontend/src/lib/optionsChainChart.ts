@@ -16,14 +16,21 @@ export interface StrikeOiPoint {
 export function aggregateOiByStrike(calls: OptionsChainRow[], puts: OptionsChainRow[]): StrikeOiPoint[] {
   const strikes = Array.from(new Set([...calls.map(c => c.strike), ...puts.map(p => p.strike)])).sort((a, b) => a - b);
   const callOiByStrike = new Map<number, number>();
-  for (const c of calls) callOiByStrike.set(c.strike, (callOiByStrike.get(c.strike) ?? 0) + c.oi);
+  // R04: a contract with unknown OI contributes nothing; it is not a measured zero. The caller
+  // reports how many were unknown (`unknownOiCount`) rather than the chart implying a full book.
+  for (const c of calls) if (c.oi != null) callOiByStrike.set(c.strike, (callOiByStrike.get(c.strike) ?? 0) + c.oi);
   const putOiByStrike = new Map<number, number>();
-  for (const p of puts) putOiByStrike.set(p.strike, (putOiByStrike.get(p.strike) ?? 0) + p.oi);
+  for (const p of puts) if (p.oi != null) putOiByStrike.set(p.strike, (putOiByStrike.get(p.strike) ?? 0) + p.oi);
   return strikes.map(strike => ({
     strike,
     callOi: callOiByStrike.get(strike) ?? 0,
     putOi: putOiByStrike.get(strike) ?? 0,
   }));
+}
+
+/** Contracts whose open interest is unknown (R04) — for the chart's caption. */
+export function unknownOiCount(calls: OptionsChainRow[], puts: OptionsChainRow[]): number {
+  return [...calls, ...puts].filter(r => r.oi == null).length;
 }
 
 /** The largest single OI value across either side, at any strike — used to scale bar

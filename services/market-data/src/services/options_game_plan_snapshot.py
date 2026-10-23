@@ -170,14 +170,14 @@ def compute_options_game_plan_snapshot(session, stock_id: int, symbol: str) -> O
         call_rows: list[dict] = []
         try:
             if put_exp:
-                put_rows = _options_chain_rows(_uw_option_chain(session, symbol, put_exp, as_of=source_session).puts)
+                put_rows = _options_chain_rows(_uw_option_chain(session, symbol, put_exp, as_of=source_session).puts, symbol)
         except Exception as exc:
             log.warning("options_game_plan_snapshot.put_fetch_failed", symbol=symbol, expiry=put_exp, error=str(exc))
         try:
             if call_exp == put_exp:
-                call_rows = _options_chain_rows(_uw_option_chain(session, symbol, call_exp, as_of=source_session).calls) if call_exp else []
+                call_rows = _options_chain_rows(_uw_option_chain(session, symbol, call_exp, as_of=source_session).calls, symbol) if call_exp else []
             elif call_exp:
-                call_rows = _options_chain_rows(_uw_option_chain(session, symbol, call_exp, as_of=source_session).calls)
+                call_rows = _options_chain_rows(_uw_option_chain(session, symbol, call_exp, as_of=source_session).calls, symbol)
         except Exception as exc:
             log.warning("options_game_plan_snapshot.call_fetch_failed", symbol=symbol, expiry=call_exp, error=str(exc))
 

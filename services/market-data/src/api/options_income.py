@@ -15,6 +15,8 @@ from db import get_session
 from db.models import OptionsIncomeEquityCurve, OptionsIncomePortfolio, OptionsIncomePosition, User
 from .auth import get_admin_user, get_advanced_user
 from ..services.options_income_engine import _today_et
+from ..services.options_income_engine import unsupported_contract_reason as _unsupported_reason
+from ..services.options_contract import contract_terms as _contract_terms
 from common.logging import get_logger
 
 log = get_logger("options_income_api")
@@ -205,6 +207,10 @@ def get_income_positions(
         "symbol": pos.symbol,
         "strategy": pos.strategy,
         "option_symbol": pos.option_symbol,
+        # Audit R05: the record is always returned; a contract with unsupported terms says why
+        # its payoff is not settled automatically.
+        "contract_terms": _contract_terms(pos.option_symbol, pos.symbol),
+        "payoff_blocked_reason": _unsupported_reason(pos.option_symbol, pos.symbol),
         "strike": pos.strike,
         "expiry": pos.expiry.isoformat(),
         "contracts": pos.contracts,

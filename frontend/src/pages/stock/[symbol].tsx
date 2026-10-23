@@ -12,6 +12,10 @@ import OptionsGamePlanCard from '@/components/OptionsGamePlanCard';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
 import OptionsChainChart from '@/components/OptionsChainChart';
+import OptionsChainTable from '@/components/OptionsChainTable';
+import { unknownOiCount } from '@/lib/optionsChainChart';
+import { REFRESH_MS } from '@/lib/useNow';
+import { usePolledSWR } from '@/lib/usePolledSWR';
 import IvVsHvChart from '@/components/IvVsHvChart';
 import OptionsPerformanceTable from '@/components/OptionsPerformanceTable';
 import GainLossTable from '@/components/GainLossTable';
@@ -678,11 +682,10 @@ export default function StockDetail() {
   const [instOpen, setInstOpen] = useState(false);
   const [chainOpen, setChainOpen] = useState(false);
   const [chainExpiry, setChainExpiry] = useState<string | undefined>(undefined);
-  const { data: optionsFlow, error: optionsFlowError, mutate: retryOptionsFlow } = useSWR(
-    symbol ? `options-flow-${symbol}` : null,
-    () => api.getOptionsFlow(symbol),
-    { revalidateOnFocus: false },
-  );
+  // Audit R02: refresh at the backend cache's cadence while the page is visible, so an open tab
+  // does not keep pre-expiry eligibility or an old payload; hidden tabs pause, rate limits back off.
+  const { data: optionsFlow, error: optionsFlowError, mutate: retryOptionsFlow } = usePolledSWR(
+    symbol ? `options-flow-${symbol}` : null, () => api.getOptionsFlow(symbol), REFRESH_MS.optionsFlow);
   // T230-DATA-OPTIONS-CHAIN: only fetched once the user opens the section — the full
   // strike matrix is a heavier fetch than options-flow's own top-3-per-side summary, and
   // most visits to a stock page don't need it.
@@ -1298,6 +1301,11 @@ export default function StockDetail() {
                         <div style={{ fontSize: 10, color: '#475569' }}>
                           (measured from open interest alone — not a prediction of where price will land)
                         </div>
+                        {optionsChain.max_pain.oi_coverage && !optionsChain.max_pain.oi_coverage.complete && (
+                          <div style={{ fontSize: 10, color: '#f59e0b' }}>
+                            from {optionsChain.max_pain.oi_coverage.known} of {optionsChain.max_pain.oi_coverage.total} contracts with known open interest
+                          </div>
+                        )}
                       </div>
                     )}
                     {!optionsChain.max_pain && (
@@ -1313,52 +1321,14 @@ export default function StockDetail() {
                       <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>
                         Open Interest by Strike — <span style={{ color: '#4ade80' }}>■ Calls</span>{' '}
                         <span style={{ color: '#f87171' }}>■ Puts</span>
+                        {unknownOiCount(optionsChain.calls ?? [], optionsChain.puts ?? []) > 0 && (
+                          <span style={{ color: '#f59e0b' }}> · {unknownOiCount(optionsChain.calls ?? [], optionsChain.puts ?? [])} contracts with unknown open interest not drawn</span>
+                        )}
                       </div>
                       <OptionsChainChart calls={optionsChain.calls ?? []} puts={optionsChain.puts ?? []} />
                     </div>
-                    <div style={{ overflowX: 'auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-                        <thead>
-                          <tr style={{ borderBottom: '1px solid #1e293b' }}>
-                            {['Bid', 'Ask', 'Last', 'Vol', 'OI', 'IV'].map(h => (
-                              <th key={`c-${h}`} style={{ padding: '4px 8px', textAlign: 'right', color: '#4ade80', fontWeight: 500 }}>{h}</th>
-                            ))}
-                            <th style={{ padding: '4px 12px', textAlign: 'center', color: '#475569', fontWeight: 700 }}>Strike</th>
-                            {['Bid', 'Ask', 'Last', 'Vol', 'OI', 'IV'].map(h => (
-                              <th key={`p-${h}`} style={{ padding: '4px 8px', textAlign: 'left', color: '#f87171', fontWeight: 500 }}>{h}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(() => {
-                            const calls = optionsChain.calls ?? [];
-                            const puts = optionsChain.puts ?? [];
-                            const strikes = Array.from(new Set([...calls.map(c => c.strike), ...puts.map(p => p.strike)])).sort((a, b) => a - b);
-                            return strikes.map(strike => {
-                              const c = calls.find(x => x.strike === strike);
-                              const p = puts.find(x => x.strike === strike);
-                              return (
-                                <tr key={strike} style={{ borderBottom: '1px solid #0f172a' }}>
-                                  <td style={{ padding: '4px 8px', textAlign: 'right', color: c?.itm ? '#4ade80' : '#94a3b8' }}>{c ? c.bid.toFixed(2) : '—'}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'right', color: c?.itm ? '#4ade80' : '#94a3b8' }}>{c ? c.ask.toFixed(2) : '—'}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'right', color: '#94a3b8' }}>{c ? c.last_price.toFixed(2) : '—'}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'right', color: '#94a3b8' }}>{c ? c.volume.toLocaleString() : '—'}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{c ? c.oi.toLocaleString() : '—'}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{c ? `${c.iv.toFixed(0)}%` : '—'}</td>
-                                  <td style={{ padding: '4px 12px', textAlign: 'center', color: '#e2e8f0', fontWeight: 700 }}>${strike}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'left', color: p?.itm ? '#f87171' : '#94a3b8' }}>{p ? p.bid.toFixed(2) : '—'}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'left', color: p?.itm ? '#f87171' : '#94a3b8' }}>{p ? p.ask.toFixed(2) : '—'}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'left', color: '#94a3b8' }}>{p ? p.last_price.toFixed(2) : '—'}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'left', color: '#94a3b8' }}>{p ? p.volume.toLocaleString() : '—'}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'left', color: '#64748b' }}>{p ? p.oi.toLocaleString() : '—'}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'left', color: '#64748b' }}>{p ? `${p.iv.toFixed(0)}%` : '—'}</td>
-                                </tr>
-                              );
-                            });
-                          })()}
-                        </tbody>
-                      </table>
-                    </div>
+                    <OptionsChainTable calls={optionsChain.calls ?? []} puts={optionsChain.puts ?? []}
+                      moneynessReference={optionsChain.moneyness_reference} moneynessUnknownReason={optionsChain.moneyness_unknown_reason} fieldCoverage={optionsChain.field_coverage} />
                   </>
                 )}
               </div>

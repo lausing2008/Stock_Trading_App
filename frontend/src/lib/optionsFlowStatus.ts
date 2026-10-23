@@ -12,6 +12,8 @@ export function optionsFlowUnavailableText(flow: OptionsFlow & { last_known_chai
       return 'The option chain could not be read for any selected expiration. This is a data failure, not an absence of activity.';
     case 'no_volume':
       return 'No call or put volume in the selected expirations.';
+    case 'volume_unmeasured':
+      return 'The archived chain has no measured volume for these contracts. This is missing data, not zero activity.';
     case 'no_options_listed':
       return 'No listed options for this symbol.';
     default:
@@ -107,9 +109,25 @@ export function servedExpiryIsPast(chain: { expiry?: string; expiry_is_current?:
 }
 
 /** "k of n expirations have expired since the session — historical evidence only", or null. */
-export function expiredSinceLine(scope?: { historical_expiries: string[]; current_expiries: string[] } | null): string | null {
+/** Whether an expiry is still a current trade candidate AT `now` (audit R02).
+ *
+ * The server's `current_expiries` were evaluated when the response was built; a tab left open
+ * past a contract's last trading instant must not keep offering it. Uses the scope's own
+ * per-expiry `last_trading_instant`; falls back to the server flag when that is absent. */
+export function isCurrentExpiry(expiry: string, scope?: ExpiryScopeLike | null, now: number = Date.now(),
+  fallback?: boolean): boolean | undefined {
+  const row = scope?.expiries?.find(r => r.expiry === expiry);
+  const lti = row?.last_trading_instant ? Date.parse(row.last_trading_instant) : NaN;
+  return row && !Number.isNaN(lti) ? row.historical && now < lti : fallback;
+}
+
+type ExpiryScopeLike = { historical_expiries: string[]; current_expiries: string[];
+  expiries?: { expiry: string; historical: boolean; last_trading_instant: string | null }[] };
+
+export function expiredSinceLine(scope?: ExpiryScopeLike | null, now: number = Date.now()): string | null {
   if (!scope) return null;
-  const expired = scope.historical_expiries.filter(e => !scope.current_expiries.includes(e));
+  const expired = scope.historical_expiries.filter(e => !isCurrentExpiry(e, scope, now, scope.current_expiries.includes(e)));
+  // (an expiry the server called current but whose last trading instant has now passed is expired)
   if (!expired.length) return null;
   return `${expired.length} of ${scope.historical_expiries.length} expirations (${expired.join(', ')}) have expired since that session — historical evidence only, not current trade candidates.`;
 }
@@ -179,8 +197,26 @@ export function requestFailedText(error: unknown): string {
 
 // ── Options review B4/B5: off-exchange print time, side and baseline ──────────────────────
 
-/** "14:32 ET · 12 min ago", or the quarantine reason — never a guessed time. */
-export function printTimeText(p: { executed_at_utc?: string | null; time_status?: string; age_minutes?: number | null }): string {
+/** Elapsed time in words: "12 min ago", "3.5 h ago", "2 d ago". */
+export function agoText(ageMinutes: number): string {
+  const age = Math.max(0, ageMinutes);
+  return age < 60 ? `${Math.round(age)} min ago` : age < 48 * 60 ? `${(age / 60).toFixed(1)} h ago` : `${Math.round(age / 1440)} d ago`;
+}
+
+/** "Oct 22, 14:32 ET" for an ISO instant, or null when absent/unparseable. */
+export function etText(iso?: string | null): string | null {
+  if (!iso) return null;
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return null;
+  return `${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(t)} ET`;
+}
+
+/** "14:32 ET · 12 min ago", or the quarantine reason — never a guessed time.
+ *
+ * Audit R02 (2026-10-22): the age is ELAPSED time from the execution timestamp to `now`, not the
+ * response's fixed `age_minutes`, which froze at "1 min ago" in a tab left open for hours. */
+export function printTimeText(p: { executed_at_utc?: string | null; time_status?: string; age_minutes?: number | null },
+  now: number = Date.now()): string {
   if (p.time_status && p.time_status !== 'ok') {
     return p.time_status === 'future' ? 'time in the future — quarantined (clock/feed error)'
       : p.time_status === 'ambiguous_timezone' ? 'no timezone — quarantined' : `time ${p.time_status}`;
@@ -188,9 +224,8 @@ export function printTimeText(p: { executed_at_utc?: string | null; time_status?
   if (!p.executed_at_utc) return 'time unknown';
   const t = new Date(p.executed_at_utc);
   const et = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(t);
-  const age = p.age_minutes;
-  const ageText = age == null ? '' : age < 60 ? ` · ${Math.round(age)} min ago` : age < 48 * 60 ? ` · ${(age / 60).toFixed(1)} h ago` : ` · ${Math.round(age / 1440)} d ago`;
-  return `${et} ET${ageText}`;
+  const age = Number.isNaN(t.getTime()) ? null : (now - t.getTime()) / 60_000;
+  return `${et} ET${age == null ? '' : ` · ${agoText(age)}`}`;
 }
 
 export function sideEstimateText(side?: string | null): string {
@@ -203,4 +238,73 @@ export function baselineLine(b?: { status: string; median: number | null; prints
   const pop = `${b.prints ?? 'unknown'} captured prints in ${b.window_days} days (relative bar needs ${b.min_prints})`;
   return b.status === 'ok' && b.median != null ? `Baseline: median ${money(b.median)} — ${pop}; percentiles are relative to captured prints, not all market activity.`
     : `Baseline: ${base} — ${pop}.`;
+}
+
+// ── Audit R03/R04 (2026-10-22): unknown measurements render as unknown ────────────────────────
+
+/** A count, or an em dash when it was not measured. A genuine 0 renders as 0. */
+export const fmtCount = (v: number | null | undefined) => (v == null ? '—' : v.toLocaleString());
+
+/** IV in percent, or an em dash. Unknown IV is not zero volatility. */
+export const fmtIv = (v: number | null | undefined) => (v == null ? '—' : `${v.toFixed(0)}%`);
+
+/** ITM/ATM/OTM, or "unknown" when the chain session's own price was unavailable. */
+export function moneynessText(c: { moneyness?: string | null; itm?: boolean | null }): string {
+  if (c.moneyness) return c.moneyness;
+  if (c.itm === true) return 'ITM';
+  if (c.itm === false) return 'not ITM';   // without `moneyness`, false could be OTM or ATM
+  return 'unknown';
+}
+
+/** Which price moneyness was measured against — or why it is unknown. */
+export function moneynessReferenceLine(ref?: { price: number; session: string } | null, unknownReason?: string | null): string {
+  if (ref) return `Moneyness against the ${ref.session} close of $${ref.price.toFixed(2)} (the chain's own session, confirmed against the chain's put–call parity).`;
+  // R03 basis: say WHY — a missing close and a close on a different price basis (a split) are
+  // different facts. Today's price is never substituted for a settled chain.
+  return `Moneyness unknown: ${unknownReason ?? 'no closing price for the chain\'s session'}. Today's price is not used for a settled chain.`;
+}
+
+/** Volume coverage in words, or null when every contract's volume was measured. */
+export function volumeScopeNote(flow: { composition_scope?: string; volume_coverage?: { call: { known: number; total: number }; put: { known: number; total: number } } }): string | null {
+  const cov = flow.volume_coverage;
+  if (!cov || flow.composition_scope !== 'observed_subtotal') return null;
+  const part = (side: 'call' | 'put') => cov[side].known < cov[side].total
+    ? `${cov[side].total - cov[side].known} of ${cov[side].total} ${side} contracts have no measured volume` : null;
+  const parts = [part('call'), part('put')].filter(Boolean);
+  return parts.length ? `Observed subtotal: ${parts.join('; ')}.` : null;
+}
+
+/** Contracts missing a field, in words, or null when complete. */
+export function missingFieldNote(label: string, c?: { known: number; total: number } | null): string | null {
+  if (!c || c.known >= c.total) return null;
+  return `${label} unknown for ${c.total - c.known} of ${c.total} contracts`;
+}
+
+// ── Audit R01 (2026-10-22): the dark-pool provider's outcome, in words ──────────────────────
+
+export const DARK_POOL_FAILURES = ['rate_limited', 'unauthorized', 'timeout', 'upstream_error', 'malformed'] as const;
+
+/** {tone, text} for a dark-pool answer that is not a plain fresh success, else null.
+ *  `error` = the feed failed (with or without a last good sample); `muted` = an honest non-failure. */
+export function darkPoolStatus(dp?: { status?: string; http_status?: number | null; malformed_rows?: number;
+  fetched_at?: string | null; stale?: boolean; stale_fetched_at?: string | null } | null): { tone: 'error' | 'muted'; text: string } | null {
+  if (!dp || !dp.status || dp.status === 'ok') return null;
+  const what: Record<string, string> = {
+    rate_limited: 'the provider rate limit was reached',
+    unauthorized: 'the provider rejected the subscription key or entitlement',
+    timeout: 'the provider did not answer in time',
+    upstream_error: `the provider returned an error${dp.http_status ? ` (HTTP ${dp.http_status})` : ''}`,
+    malformed: `the provider's answer could not be read${dp.malformed_rows ? ` (${dp.malformed_rows} unparseable prints)` : ''}`,
+  };
+  if (dp.status in what) {
+    const stale = dp.stale && dp.stale_fetched_at
+      ? ` Showing the last good sample, retrieved ${etText(dp.stale_fetched_at) ?? 'earlier'} — not current.`
+      : '';
+    return { tone: 'error', text: `Off-exchange prints: latest request failed — ${what[dp.status]}. This is a feed failure, not an absence of prints.${stale}` };
+  }
+  if (dp.status === 'empty') {
+    return { tone: 'muted', text: `Off-exchange prints: the provider returned none for this symbol${dp.fetched_at ? ` (answered ${etText(dp.fetched_at)})` : ''}.` };
+  }
+  if (dp.status === 'disabled') return { tone: 'muted', text: 'Off-exchange prints: provider not configured.' };
+  return { tone: 'muted', text: `Off-exchange prints: ${dp.status}.` };
 }

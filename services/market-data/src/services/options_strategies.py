@@ -37,7 +37,14 @@ from zoneinfo import ZoneInfo
 _IV_RANK_RICH = 60.0
 _IV_RANK_CHEAP = 30.0
 
-_CONTRACT_MULTIPLIER = 100
+_CONTRACT_MULTIPLIER = 100   # valid only for rows passing _contract_supported (R05)
+
+
+def _contract_supported(contract: dict | None) -> bool:
+    """Same rule as options_contract.is_supported (R05), inlined because this module is also
+    loaded standalone, without its package: only a row carrying SUPPORTED terms may be priced."""
+    terms = (contract or {}).get("contract_terms") or {}
+    return terms.get("automatic_payoff_supported") is True and terms.get("premium_multiplier") == _CONTRACT_MULTIPLIER
 
 
 def _mid(contract: dict | None) -> float | None:
@@ -114,6 +121,12 @@ def _leg(contract: dict | None, action: str, expiry: str | None, dte: int | None
     price = _mid(contract)
     if contract is None or price is None or price <= 0:
         return None
+    # Audit R05 (2026-10-22): every figure below multiplies by 100. That holds only for a
+    # contract whose terms are SUPPORTED (standard root). An adjusted contract can deliver other
+    # than 100 shares, or shares plus cash; an unidentified one has no known terms. Both are
+    # refused here, whoever calls this, rather than priced at 100 by default.
+    if not _contract_supported(contract):
+        return None
     # SR-06: a leg with no readable strike or expiry cannot be part of a payoff statement —
     # the width of a vertical and the bounds of a collar are both functions of exactly these.
     if not _finite_positive(contract.get("strike")) or not expiry:
@@ -162,6 +175,8 @@ def _leg(contract: dict | None, action: str, expiry: str | None, dte: int | None
         "iv": contract.get("iv"),
         "oi": contract.get("oi"),
         "spread_pct": _spread_pct(contract),
+        "option_symbol": contract.get("option_symbol"),
+        "contract_terms": contract.get("contract_terms"),
     }
 
 
@@ -505,8 +520,9 @@ def _coverable_contracts(shares: float | None) -> int:
     0.4 of a share against an assignment.
 
     DELIBERATELY NOT MODELLED HERE, and named so nobody assumes otherwise: shares already
-    encumbered by existing short calls, adjusted deliverables after a corporate action, and
-    settlement state. Those need an account snapshot this pure module does not have, and
+    encumbered by existing short calls, and settlement state. (Adjusted deliverables after a
+    corporate action are not modelled either; since audit R05 such contracts are refused at
+    `_leg`, so every leg this coverage applies to is a standard 100-share contract.) Those need an account snapshot this pure module does not have, and
     this function must not be mistaken for an account-level eligibility check.
     """
     try:

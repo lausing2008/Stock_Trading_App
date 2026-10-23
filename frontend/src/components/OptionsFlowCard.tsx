@@ -1,13 +1,28 @@
 import React from 'react';
 import type { OptionsFlow } from '@/lib/api';
 import { optionsFlowUnavailableText, composition, coverageLine, premiumText, turnoverText, requestFailedText, pct1,
-  partialSum, money, lowSideNote, expiredSinceLine, pressureText, pressureTitle, pressureShare, selectionLine, CP_CALL_HEAVY, CP_PUT_HEAVY } from '@/lib/optionsFlowStatus';
+  partialSum, money, lowSideNote, expiredSinceLine, pressureText, pressureTitle, pressureShare, selectionLine, CP_CALL_HEAVY, CP_PUT_HEAVY,
+  fmtIv, moneynessText, moneynessReferenceLine, volumeScopeNote, isCurrentExpiry, etText, agoText } from '@/lib/optionsFlowStatus';
+import { useNow } from '@/lib/useNow';
 
 /** Options Flow card (options review Phase A): visible loading / request-failed / unavailable
  *  states, composition from exact volumes (never direction), source session and coverage, and
  *  paid premium kept apart from estimated turnover. */
 export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: OptionsFlow; error?: unknown; onRetry: () => void }) {
+  // Audit R02: ages and expiry eligibility advance in an open tab.
+  const now = useNow(30_000);
+  const computed = etText(flow?.computed_at);
+  const computedAge = flow?.computed_at ? agoText((now - Date.parse(flow.computed_at)) / 60_000) : null;
   return <>
+        {/* R02: a failed refresh is shown even when earlier data is on screen — the cached
+            answer stays, labelled with when it was computed, never presented as current. */}
+        {flow && error ? (
+          <div role="alert" aria-label="Options Flow refresh failed" style={{ marginBottom: 8, padding: '8px 12px', border: '1px solid rgba(245,158,11,0.4)', borderRadius: 8, color: '#fbbf24', fontSize: 12 }}>
+            Latest refresh failed — {requestFailedText(error)}{' '}
+            {computed ? `Showing the data computed ${computed} (${computedAge}).` : 'Showing the previously loaded data.'}
+            <button type="button" onClick={() => onRetry()} style={{ marginLeft: 10, fontSize: 12 }}>Retry</button>
+          </div>
+        ) : null}
         {!flow && (
           <div role="status" aria-label="Options Flow status" style={{ marginBottom: 24, padding: '10px 14px', border: '1px solid #334155', borderRadius: 8, color: '#94a3b8', fontSize: 13 }}>
             <strong style={{ color: '#cbd5e1' }}>Options Flow</strong> — {error ? requestFailedText(error) : 'loading…'}
@@ -47,20 +62,23 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
             <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
               <p aria-label="Options Flow source and coverage" style={{ margin: '0 0 10px', fontSize: 11, color: '#94a3b8' }}>
                 {coverageLine(flow)}. Direction is not established by these volumes.
-                {expiredSinceLine(flow.expiry_scope) ? <> {expiredSinceLine(flow.expiry_scope)}</> : null}
+                {computed ? <> Computed {computed} · {computedAge}.</> : null}
+                {expiredSinceLine(flow.expiry_scope, now) ? <> {expiredSinceLine(flow.expiry_scope, now)}</> : null}
               </p>
               {/* C/P ratio bar */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#64748b', marginBottom: 3 }}>
-                    <span>Calls {flow.call_volume?.toLocaleString()}</span>
+                    <span>Calls {flow.call_volume == null ? 'not measured' : flow.call_volume.toLocaleString()}</span>
                     <span>{composition(flow.call_volume, flow.put_volume).ratioText}</span>
-                    <span>Puts {flow.put_volume?.toLocaleString()}</span>
+                    <span>Puts {flow.put_volume == null ? 'not measured' : flow.put_volume.toLocaleString()}</span>
                   </div>
                   <div style={{ height: 8, borderRadius: 4, background: '#1e293b', overflow: 'hidden', display: 'flex' }}>
                     {(() => {
-                      const total = (flow.call_volume ?? 0) + (flow.put_volume ?? 0);
-                      const callPct = total > 0 ? (flow.call_volume ?? 0) / total * 100 : 50;
+                      // R04: a side that was not measured draws no bar at all — not a 100/0 split.
+                      if (flow.call_volume == null || flow.put_volume == null) return null;
+                      const total = flow.call_volume + flow.put_volume;
+                      const callPct = total > 0 ? flow.call_volume / total * 100 : 50;
                       return <>
                         <div style={{ width: `${callPct}%`, background: '#22c55e', borderRadius: '4px 0 0 4px' }} />
                         <div style={{ flex: 1, background: '#ef4444', borderRadius: '0 4px 4px 0' }} />
@@ -85,6 +103,9 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
                 Call-heavy when C/P ≥ {CP_CALL_HEAVY} (≈56.5% calls), put-heavy when C/P ≤ {CP_PUT_HEAVY} (≈55.6% puts), mixed otherwise
                 {' '}— a description of volume, not of direction{lowSideNote(flow.call_volume, flow.put_volume) ? `; ${lowSideNote(flow.call_volume, flow.put_volume)}` : ''}.
               </p>
+              {volumeScopeNote(flow) && (
+                <p aria-label="Volume coverage" style={{ margin: '0 0 10px', fontSize: 11, color: '#f59e0b' }}>{volumeScopeNote(flow)}</p>
+              )}
               {/* Put-volume spike callout — surfaces whether TODAY's put activity is genuinely
                   elevated (volume already exceeding existing open interest on the put side),
                   not just restating the raw put_volume number already shown in the bar above. */}
@@ -124,7 +145,7 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                       <thead>
                         <tr style={{ borderBottom: '1px solid #1e293b' }}>
-                          {['Side', 'Strike', 'Expiry', 'Volume', 'OI', 'Vol/OI', 'IV', 'ITM', 'Paid premium', 'Est. turnover (vol × mark × 100)'].map(h => (
+                          {['Side', 'Strike', 'Expiry', 'Volume', 'OI', 'Vol/OI', 'IV', 'Moneyness', 'Paid premium', 'Est. turnover (vol × mark × 100)'].map(h => (
                             <th key={h} style={{ padding: '4px 8px', textAlign: 'left', color: '#475569', fontWeight: 500 }}>{h}</th>
                           ))}
                         </tr>
@@ -138,12 +159,12 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
                               </span>
                             </td>
                             <td style={{ padding: '5px 8px', color: '#e2e8f0' }}>${c.strike}</td>
-                            <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.expiry}{c.current_candidate === false ? <span style={{ color: '#f59e0b' }}> · expired (historical)</span> : null}</td>
+                            <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.expiry}{isCurrentExpiry(c.expiry, flow.expiry_scope, now, c.current_candidate) === false ? <span style={{ color: '#f59e0b' }}> · expired (historical)</span> : null}</td>
                             <td style={{ padding: '5px 8px', color: '#e2e8f0', fontWeight: 600 }}>{c.volume.toLocaleString()}</td>
                             <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.oi.toLocaleString()}</td>
                             <td style={{ padding: '5px 8px', color: c.vol_oi > 1 ? '#f59e0b' : '#94a3b8', fontWeight: c.vol_oi > 1 ? 700 : 400 }}>{c.vol_oi.toFixed(2)}×</td>
-                            <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{c.iv.toFixed(0)}%</td>
-                            <td style={{ padding: '5px 8px', color: c.itm ? '#4ade80' : '#475569' }}>{c.itm ? 'ITM' : 'OTM'}</td>
+                            <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{fmtIv(c.iv)}</td>
+                            <td style={{ padding: '5px 8px', color: moneynessText(c) === 'ITM' ? '#4ade80' : '#475569' }}>{moneynessText(c)}</td>
                             <td title={premiumText(c) === 'unavailable' ? 'Paid premium needs trade-level data; the settled chain has none' : 'Premium from the trade tape'}
                               style={{ padding: '5px 8px', color: c.is_whale ? '#f59e0b' : '#475569', fontWeight: c.is_whale ? 700 : 400 }}>
                               {premiumText(c)}
@@ -157,6 +178,9 @@ export default function OptionsFlowCard({ flow, error, onRetry }: { flow?: Optio
                       </tbody>
                     </table>
                   </div>
+                  <p aria-label="Moneyness reference" style={{ margin: '6px 0 0', fontSize: 11, color: '#64748b' }}>
+                    {moneynessReferenceLine(flow.moneyness_reference, flow.moneyness_unknown_reason)}
+                  </p>
                   <p style={{ margin: '6px 0 0', fontSize: 11, color: '#64748b' }}>
                     Paid premium needs trade-level data and reads &quot;unavailable&quot; where none was captured (the settled chain has none).
                     Est. turnover = volume × mark × 100 over the day (midpoint, else last price) — an estimate, not premium anyone paid;

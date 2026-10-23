@@ -224,6 +224,12 @@ export default function OptionsCalculator() {
           capital required are exact arithmetic — no model, no live quotes. Enter the premium
           you would actually pay or receive.
         </p>
+        {/* Audit R05: the hand-built legs are priced as STANDARD contracts. Say so. */}
+        <p aria-label="Contract size assumption" style={{ fontSize: 11, color: '#94a3b8', marginTop: -10, marginBottom: 18, maxWidth: 760, lineHeight: 1.6 }}>
+          Assumes standard equity contracts: 100 shares delivered per contract and premium × 100.
+          An adjusted contract (after a split, merger or special dividend) can deliver a different
+          number of shares or shares plus cash, and these figures would not apply to it.
+        </p>
 
         <form onSubmit={e => { e.preventDefault(); setSymbol(symbolDraft.trim().toUpperCase()); setExpiry(undefined); }}
           style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 16, flexWrap: 'wrap' }}>
