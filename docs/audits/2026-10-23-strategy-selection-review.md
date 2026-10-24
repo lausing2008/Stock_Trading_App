@@ -14,6 +14,16 @@ Delta, gamma and OI do not jointly rank these contracts. Breakeven is calculated
 
 The release adds visible text disclosing selection heuristics and the absence of exhaustive alternative search. It does not change strike selection or trading thresholds.
 
+## TSM screenshot follow-up
+
+The user identified the screenshot as **TSM**. A read-only, repeatable-read production reproduction at `2026-10-24T01:27:35Z` used its displayed stop **404.07** and target **584.39**. It read the **October 22** stored chain; this reproduces the missing card with current stored evidence, rather than proving the screenshot used that exact snapshot.
+
+The selected call expiry was **November 20, 2026**; put expiry **December 4**. With underlying reference **418.51**, the nearest call strike to 584.39 was **580**, contract `TSM261120C00580000`. Its bid was **0**, ask **0.09**, and last-price field **0**: no usable two-sided quote or last-price fallback. Thus both the legacy covered-call leg and matrix covered call were absent. Root-based standard-contract classification passed, so this witness is a quote/selection failure, not a contract-identity refusal or missing share declaration.
+
+There were **76 call rows**, of which **64** passed basic supported-contract/price checks. This does not establish they pass spread, freshness, liquidity, assignment or portfolio eligibility, nor that any is the best choice. The reproduction confirms why choosing the distant stock-target strike first can suppress this card while other strikes price. It supports the candidate diagnostics and comparable-alternative search proposed below. No production code, database rows or settings changed. The direct strategy API rejected the service credential with HTTP 401; no user authentication was fabricated. The reproduction used internal calculation helpers over an explicitly read-only, time-limited database transaction and rolled back.
+
+[TSM reproduction evidence](evidence/2026-10-23-followup-deployment/tsm-selection.json).
+
 ## Proposed next implementation, in order
 
 1. **Candidate diagnostics first.** Return selected contract identity, target anchor, expiry selection reason, quote timestamp/source and machine-readable rejection reasons for each strategy. Distinguish no chain, no candidate, invalid quote, unsupported terms and valid contract blocked by holdings. Render counts of evaluated and rejected candidates. Regression: invalid nearest strike with valid neighbour must not become a claim that the entire chain is unpriceable.

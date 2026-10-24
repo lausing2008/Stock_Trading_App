@@ -1,0 +1,30 @@
+{
+  "call_expiry": "2026-11-20",
+  "calls_count": 76,
+  "checked_at": "2026-10-24T01:27:35.851484+00:00",
+  "covered_call": null,
+  "covered_call_unavailable": "The current quote for this call is not usable \u2014 its bid and ask are crossed, one-sided or non-numeric \u2014 so no credit can be stated for it right now.",
+  "current_price": 418.51,
+  "matrix_single_names": [
+    "long_call",
+    "protective_put",
+    "cash_secured_put"
+  ],
+  "method": "read_only_stored_chain_reproduction",
+  "priced_supported_call_count": 64,
+  "put_expiry": "2026-12-04",
+  "screenshot_inputs": {
+    "stop_loss": 404.07,
+    "take_profit": 584.39
+  },
+  "selected_call": {
+    "ask": 0.09,
+    "bid": 0.0,
+    "last_price": 0.0,
+    "oi": 842,
+    "option_symbol": "TSM261120C00580000",
+    "strike": 580.0
+  },
+  "source_session": "2026-10-22",
+  "symbol": "TSM"
+}

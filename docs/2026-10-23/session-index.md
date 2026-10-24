@@ -99,3 +99,6 @@ The shipped session tracker has 17 entries across tiers 468–473: 10 done, 2 in
 
 
 First versioned-wrapper backup: exit 0, 2.4 GB published after verification, no partial left, retention applied and 15 containers healthy. [Final backup evidence](../audits/evidence/2026-10-23-followup-deployment/backup.json). No new restore drill was performed. The backup tracker entry remains in progress in the shipped frontend; this report supersedes its pre-run status text.
+
+
+TSM screenshot clarification: read-only reproduction with the displayed 584.39 target selects the November 20 $580 call, whose October 22 snapshot has bid 0 / ask 0.09 and no usable last price. Both covered-call surfaces refuse it. Other strikes can price; the selector does not exhaustively compare alternatives. [Specific evidence and limits](../audits/2026-10-23-strategy-selection-review.md#tsm-screenshot-follow-up). Documentation only; no new application deployment.
