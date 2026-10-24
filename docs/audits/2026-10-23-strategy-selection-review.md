@@ -38,3 +38,24 @@ No universal best delta, gamma, strike, expiry or strategy is established by thi
 ## Financial reference
 
 OIC describes the covered call as stock plus a written call: income is received in exchange for capped upside while substantial stock downside remains. [OIC covered call](https://www.optionseducation.org/strategies/all-strategies/covered-call-buy-write). OIC explains that gamma changes delta and is more concentrated in near-term ATM options: [OIC gamma](https://prd-web.optionseducation.org/advancedconcepts/gamma). Those mechanics motivate explicit risk comparisons; they do not establish a profitable ranking.
+
+
+## Follow-up implementation: explicit covered-call comparison
+
+Implemented locally after the TSM clarification; not deployed. The existing anchor contract is preserved. The backend now inspects the already-fetched call rows for the selected expiration, explains the original selection failure, counts screening rejections, and returns up to three distinct alternatives. The route keeps a response available when alternatives are its only usable research content.
+
+Screening requires supported contract terms, future expiry, finite positive non-crossed two-sided quotes, an exact spread no greater than the existing 20% research policy, and consistent covered-call payoff with positive maximum profit. Last-trade-only quotes do not qualify. Decimal comparison prevents binary floating-point error at exactly 20%. Missing/invalid Greeks stay unknown. The rows supplied to the matrix may already exclude unsupported terms; the UI discloses that its counts are after upstream exclusions. No additional chain reads are made and no other expiry is searched.
+
+Order: distance to the original target (or spot), unrounded spread, measured OI, strike and contract identity. This deterministic proximity policy does not optimize returns. OI only breaks otherwise-equal ties; it neither establishes executability nor supplies a verified reporting date. Alternatives use the original covered-call payoff arithmetic. Duplicate contract identities are not listed twice.
+
+The browser preserves the original card by default and exposes a contract-comparison selector. Choosing an alternative changes only the displayed covered-call comparison; the stock target, original combinations and backend recommendation are unchanged. Its different upside cap and the unchanged target are explicit. Assignment acceptance is cleared and must be given for the newly displayed contract. Existing share, objective, budget, expiry and snapshot-age checks still govern the conditional preference; entry remains WAIT. A fresh matrix discards the old alternative selection.
+
+OI, delta, gamma, theta, vega and spread now appear on strategy cards when supplied. These are provider snapshot option-contract estimates, not combined strategy Greeks or probabilities of profit. The route adapter now preserves the Greek fields it previously dropped; no Greeks are estimated or backfilled from another contract.
+
+This completes the first bounded improvement: explaining a failed target candidate and exposing explicit alternatives from one expiry. Multi-expiry optimization, measured market/context integration and expected-return ranking remain planned and require the validation described above. The previous TSM evidence remains local because public publication of those detailed quotes was rejected; this implementation performs no production mutation or external publication.
+
+
+Validation follow-up: the first full backend run found one harness-only failure: dotted monkeypatch lookup traversed a stubbed root package lacking the expected attribute. The fixture now patches the imported module object directly, preserving the real handler/composition assertions. The subsequent full backend suite passed **5,799 tests, 26 skipped** (379.55 seconds). The UI also honors the original candidate's backend screening failure even when its displayed rounded spread would appear acceptable; explicitly chosen alternatives are assessed separately from that original rejection.
+
+
+Final follow-up verification: **5,799 backend tests passed, 26 skipped**; **834 frontend tests passed across 71 files**; full frontend typecheck and whitespace checks passed. Both isolated guard-removal witnesses still detect regression after the harness repair. The tracker marks the broader candidate/context improvement in progress, with this covered-call comparison implementation local and tested. No interactive browser acceptance, production build, public push or deployment was performed in this follow-up. [Validation evidence](evidence/2026-10-23-covered-call-candidates/).

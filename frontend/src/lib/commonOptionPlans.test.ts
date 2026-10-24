@@ -65,3 +65,15 @@ it('keeps missing strategies explainable and never chooses an unavailable contra
   expect(recommend({ cash: 0 }, m).primary).toBeNull();
   expect(recommend({}, m).plans.long_call.blockers).toContain('No priced contract is available.');
 });
+
+it('honors the original candidate screen even when rounded spread would appear acceptable', () => {
+  const m = matrix(); m.singles.covered_call.legs[0].spread_pct = 20;
+  m.candidate_review = { covered_call: { method_version: 'covered_call_candidates_v1', anchor: 100,
+    expiry: '2026-11-20', scope: 'all_rows_of_selected_call_expiry', evaluated_count: 1, screened_count: 0,
+    rejected_counts: { spread_exceeds_20_percent: 1 },
+    original: { strike: 100, option_symbol: null, reason: 'spread_exceeds_20_percent' },
+    ranking: 'Not expected return.', alternatives: [], actionability: 'research_only' } };
+  const result = recommend({ goal: 'income', cash: 0 }, m);
+  expect(result.primary).toBeNull();
+  expect(result.plans.covered_call.blockers.join(' ')).toContain('failed the research screen');
+});

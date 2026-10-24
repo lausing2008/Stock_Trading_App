@@ -1,0 +1,29 @@
+{
+  "status": "tested_local_implementation_not_pushed_or_deployed",
+  "backend_full": {
+    "passed": 5799,
+    "skipped": 26,
+    "seconds": 379.55
+  },
+  "frontend_full": {
+    "passed": 834,
+    "files": 71,
+    "seconds": 13.16
+  },
+  "typecheck": "passed",
+  "whitespace": "passed",
+  "guard_removal": {
+    "wide_spread_screen": "detected: 2 failures",
+    "same_day_expiry_screen": "detected: 1 failure"
+  },
+  "initial_full_run": {
+    "passed": 5798,
+    "failed": 1,
+    "cause": "test harness dotted monkeypatch resolution through a stubbed root package",
+    "repair": "patch imported module object; real route assertions unchanged"
+  },
+  "production_mutation": false,
+  "additional_provider_requests": 0,
+  "browser_acceptance": "not_run",
+  "production_build": "not_run"
+}

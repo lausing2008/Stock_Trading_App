@@ -4,6 +4,8 @@ This is the current continuation of the [earlier session index](../2026-10-22/se
 
 **Current boundary:** follow-up application release `a1054dcb` is deployed, superseding the earlier `3f838758` release. All 15 containers are healthy, all 12 backend source hashes match, and the new frontend build and dominance endpoints are verified. The cron wrapper now uses the versioned backup script; its first real dump completed successfully at 01:24:10 UTC, with checked gzip/dump marker and atomic publication. [Follow-up release and evidence](../audits/2026-10-23-followup-deployment.md). Local-only descriptions below are historical preparation records, superseded by this release note. See the [strategy-selection review](../audits/2026-10-23-strategy-selection-review.md) for the screenshot questions and remaining ranking work.
 
+**Later local work:** explicit covered-call candidate comparison, provider Greek display and regression coverage are implemented after this release. They are not pushed or deployed; see the strategy-selection review and its new validation evidence.
+
 ## Delivered and verified earlier in the session
 
 | Work | Status | Evidence / tracker |
@@ -102,3 +104,9 @@ First versioned-wrapper backup: exit 0, 2.4 GB published after verification, no 
 
 
 TSM screenshot clarification: read-only reproduction with the displayed 584.39 target selects the November 20 $580 call, whose October 22 snapshot has bid 0 / ask 0.09 and no usable last price. Both covered-call surfaces refuse it. Other strikes can price; the selector does not exhaustively compare alternatives. [Specific evidence and limits](../audits/2026-10-23-strategy-selection-review.md#tsm-screenshot-follow-up). Documentation only; no new application deployment.
+
+
+Covered-call improvement continuation: local implementation now exposes candidate rejection reasons and up to three screened alternatives from the selected expiry. Choosing one explicitly replaces only the browser comparison and clears assignment acceptance; stock target and combinations remain unchanged. Strategy cards show available provider Greeks and OI. Regression coverage includes unusable-target alternatives, exact spread boundaries, deterministic ranking, route visibility, stale evidence and renewed acceptance. Validation totals and deployment boundary are recorded in the strategy-selection report. No production changes or public evidence push in this round.
+
+
+Covered-call follow-up validation completed: 5,799 backend passed / 26 skipped; 834 frontend passed; full typecheck and whitespace clean. One initial harness-only collection failure was repaired and the full backend suite rerun successfully. Quote/expiry guard-removal witnesses detect regressions. Implementation and documentation are committed locally only; production remains at a1054dcb with documentation through d0d46cb8. Public push remains withheld because the preceding local history includes detailed TSM evidence whose publication was rejected.

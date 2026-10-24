@@ -65,6 +65,9 @@ export function commonOptionPlan(key: CommonOptionKey, strategy: OptionStrategy 
 
 export function recommendCommonOption(matrix: OptionStrategyMatrix, context: OptionPlanContext, today: string, chainAsOf?: string | null) {
   const plans = Object.fromEntries(COMMON_OPTION_KEYS.map(k => [k, commonOptionPlan(k, matrix.singles[k], context, today)])) as Record<CommonOptionKey, ReturnType<typeof commonOptionPlan>>;
+  if (matrix.singles.covered_call && matrix.candidate_review?.covered_call?.original.reason) {
+    plans.covered_call.blockers.push('The original covered-call candidate failed the research screen. Choose a screened alternative or refresh its evidence.');
+  }
   const rank = matrix.iv_rank;
   const rich = typeof rank === 'number' && Number.isFinite(rank) && rank >= 70 && rank <= 100;
   const order: CommonOptionKey[] = context.goal === 'upside' ? (rich ? ['cash_secured_put', 'long_call'] : ['long_call', 'cash_secured_put'])

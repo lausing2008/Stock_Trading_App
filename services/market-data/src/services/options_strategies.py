@@ -27,6 +27,7 @@ view you should take, and it is why a "bullish" view does not automatically mean
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
@@ -174,6 +175,9 @@ def _leg(contract: dict | None, action: str, expiry: str | None, dte: int | None
         "days_to_expiry": dte,
         "iv": contract.get("iv"),
         "oi": contract.get("oi"),
+        **{name: contract.get(name) if isinstance(contract.get(name), (int, float))
+           and not isinstance(contract.get(name), bool) and math.isfinite(contract[name]) else None
+           for name in ("delta", "gamma", "theta", "vega")},
         "spread_pct": _spread_pct(contract),
         "option_symbol": contract.get("option_symbol"),
         "contract_terms": contract.get("contract_terms"),
@@ -215,6 +219,89 @@ def _dte(expiry: str | None, today: date) -> int | None:
 
 def _pct(part: float, whole: float) -> float | None:
     return round(part / whole * 100, 2) if whole else None
+
+
+def _covered_call_strategy(leg: dict, current_price: float) -> dict:
+    credit = leg["price_per_share"]
+    return {
+        "name": "Covered Call", "direction": "neutral-to-mildly-bullish", "net": "credit",
+        "legs": [leg],
+        "net_per_share": round(credit, 2),
+        "net_per_contract": round(credit * _CONTRACT_MULTIPLIER, 2),
+        "max_loss_per_contract": round((current_price - credit) * _CONTRACT_MULTIPLIER, 2),
+        "max_profit_per_contract": round((leg["strike"] - current_price + credit) * _CONTRACT_MULTIPLIER, 2),
+        "breakeven": round(current_price - credit, 2),
+        "breakeven_move_pct": _pct(-credit, current_price),
+        "requires_shares": True,
+        "directional_exposure": "income_long",
+        "collateral_per_contract": round(current_price * _CONTRACT_MULTIPLIER, 2),
+        "what_it_does": f"Collects premium now in exchange for capping your exit near ${leg['strike']:.2f}.",
+        "use_when": "You already own the shares, would be content selling at the strike, and want to be paid for the wait.",
+    }
+
+
+def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price):
+    """Screen the already-fetched call chain; never silently replace a user's target.
+
+    20% is the existing frontend research spread policy, not an optimized liquidity rule.
+    OI/Greeks are disclosed; they do not establish executability or expected return.
+    """
+    rejects = {}
+    screened = []
+    selected = _nearest(rows, anchor)
+    selected_reason = None
+    for row in rows:
+        reason = None
+        if not _contract_supported(row):
+            reason = "unsupported_contract"
+        elif not _finite_positive(row.get("strike")) or dte is None or expiry <= today.isoformat():
+            reason = "invalid_or_expired_contract"
+        elif any(not isinstance(row.get(k), (int, float)) or isinstance(row.get(k), bool)
+                 or not _finite_positive(row.get(k)) for k in ("bid", "ask")):
+            reason = "two_sided_quote_required"
+        elif row["bid"] > row["ask"]:
+            reason = "crossed_quote"
+        else:
+            mid = _mid(row)
+            bid_decimal, ask_decimal = Decimal(str(row["bid"])), Decimal(str(row["ask"]))
+            spread = float((ask_decimal - bid_decimal) * 200 / (ask_decimal + bid_decimal))
+            if spread > 20:
+                reason = "spread_exceeds_20_percent"
+            else:
+                leg = _leg(row, "sell", expiry, dte)
+                if not leg:
+                    reason = "invalid_or_expired_contract"
+                elif leg["price_per_share"] > current_price:
+                    reason = "invalid_payoff"
+                elif leg["strike"] - current_price + leg["price_per_share"] <= 0:
+                    reason = "non_positive_max_profit"
+                else:
+                    oi = row.get("oi")
+                    known_oi = isinstance(oi, (int, float)) and not isinstance(oi, bool) and math.isfinite(oi) and oi >= 0
+                    rank = (abs(leg["strike"] - anchor), spread, -oi if known_oi else 0,
+                            leg["strike"], str(row.get("option_symbol") or ""), leg["price_per_share"])
+                    screened.append((rank, row, _covered_call_strategy(leg, current_price)))
+        if row is selected:
+            selected_reason = reason
+        if reason:
+            rejects[reason] = rejects.get(reason, 0) + 1
+    unique = {}
+    for rank, row, strategy in sorted(screened, key=lambda entry: entry[0]):
+        identity = (str(row.get("option_symbol") or ""), row["strike"])
+        selected_identity = (str(selected.get("option_symbol") or ""), selected["strike"]) if selected else None
+        if identity == selected_identity or identity in unique:
+            continue
+        unique[identity] = strategy
+    # These are distinct alternatives, not promoted into singles/combos/recommendation.
+    return {"method_version": "covered_call_candidates_v1", "anchor": anchor,
+            "expiry": expiry, "scope": "all_rows_of_selected_call_expiry",
+            "evaluated_count": len(rows), "screened_count": len(screened),
+            "rejected_counts": dict(sorted(rejects.items())),
+            "original": {"strike": selected.get("strike") if selected else None,
+                         "option_symbol": selected.get("option_symbol") if selected else None,
+                         "reason": selected_reason if selected else "no_chain_rows"},
+            "ranking": "Distance to target (or spot), then unrounded spread, OI, strike and contract identity; not expected return.",
+            "alternatives": list(unique.values())[:3], "actionability": "research_only"}
 
 
 def build_strategy_matrix(
@@ -290,21 +377,7 @@ def build_strategy_matrix(
     leg = _leg(target_call or atm_call, "sell", call_expiry, call_dte)
     if leg:
         credit = leg["price_per_share"]
-        singles["covered_call"] = {
-            "name": "Covered Call", "direction": "neutral-to-mildly-bullish", "net": "credit",
-            "legs": [leg],
-            "net_per_share": round(credit, 2),
-            "net_per_contract": round(credit * _CONTRACT_MULTIPLIER, 2),
-            "max_loss_per_contract": round((current_price - credit) * _CONTRACT_MULTIPLIER, 2),
-            "max_profit_per_contract": round((leg["strike"] - current_price + credit) * _CONTRACT_MULTIPLIER, 2),
-            "breakeven": round(current_price - credit, 2),
-            "breakeven_move_pct": _pct(-credit, current_price),
-            "requires_shares": True,
-            "directional_exposure": "income_long",
-            "collateral_per_contract": round(current_price * _CONTRACT_MULTIPLIER, 2),
-            "what_it_does": f"Collects premium now in exchange for capping your exit near ${leg['strike']:.2f}.",
-            "use_when": "You already own the shares, would be content selling at the strike, and want to be paid for the wait.",
-        }
+        singles["covered_call"] = _covered_call_strategy(leg, current_price)
 
     # ── 3. BUY PUT — protective put ────────────────────────────────────────────────────
     leg = _leg(stop_put or atm_put, "buy", put_expiry, put_dte)
@@ -474,6 +547,8 @@ def build_strategy_matrix(
         "singles": singles,
         "combos": combos,
         "unavailable": unavailable,
+        "candidate_review": {"covered_call": _covered_call_candidates(
+            call_rows, take_profit if take_profit else current_price, call_expiry, call_dte, today, current_price)},
         "recommendation": _recommend(
             singles=singles, combos=combos, signal=signal, iv_rank=iv_rank,
             # SF-03 (2026-10-02): ONE SHARE DOES NOT COVER A CALL.

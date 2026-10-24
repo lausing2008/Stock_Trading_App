@@ -23,6 +23,15 @@ const LABEL: React.CSSProperties = {
 const fmtUSD = (n: number | null | undefined) =>
   n == null ? '—' : `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+const measurement = (n: number | null | undefined) =>
+  n == null || !Number.isFinite(n) ? 'unavailable' : n.toFixed(4);
+const candidateReason = (reason: string) => ({
+  unsupported_contract: 'unsupported contract terms', invalid_or_expired_contract: 'invalid or expired contract',
+  two_sided_quote_required: 'missing a usable two-sided quote', crossed_quote: 'crossed bid/ask',
+  spread_exceeds_20_percent: 'spread above the 20% research ceiling', non_positive_max_profit: 'non-positive maximum payoff',
+  no_chain_rows: 'no call-chain rows', invalid_payoff: 'inconsistent payoff inputs',
+}[reason] ?? 'unavailable contract evidence');
+
 /** Unbounded is rendered as a word, never as a number — "$0" would read as "no profit". */
 const fmtBound = (n: number | null | undefined, unbounded: string) =>
   n == null ? unbounded : fmtUSD(n);
@@ -85,6 +94,13 @@ function StrategyCard({ s, spot, highlight, review }: { s: OptionStrategy; spot:
         {i > 0 && ' + '}{leg.action.toUpperCase()} {fmtUSD(leg.strike)} {leg.right} · expires {leg.expiry ?? 'unknown'}
         {leg.days_to_expiry != null && ` (${leg.days_to_expiry} days)`}
       </span>)}</p>
+      <p style={{ fontSize: 11, color: '#94a3b8' }}>{s.legs.map((leg, i) => <span key={i}>
+        {i > 0 && ' · '}OI {leg.oi == null ? 'unavailable' : leg.oi.toLocaleString()}
+        {' · '}Delta {measurement(leg.delta)} · Gamma {measurement(leg.gamma)}
+        {' · '}Theta {measurement(leg.theta)} · Vega {measurement(leg.vega)}
+        {' · '}Spread {leg.spread_pct == null ? 'unavailable' : `${leg.spread_pct}%`}
+      </span>)}</p>
+      <p style={{ fontSize: 10, color: '#94a3b8' }}>Greeks describe the option contract, not the combined strategy exposure. Snapshot estimates; units are provider conventions. They do not establish a probability of profit.</p>
       <p style={{ fontSize: 10, color: '#94a3b8' }}>Expiry economics per standard contract, before fees. Stock legs use the reference spot.</p>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(88px,1fr))', gap: 8, marginTop: 10 }}>
@@ -156,17 +172,23 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
   const [shares, setShares] = useState('');
   const [cash, setCash] = useState('');
   const [premiumBudget, setPremiumBudget] = useState('');
-  const [acceptAssignment, setAcceptAssignment] = useState(false);
+  const [coveredChoice, setCoveredChoice] = useState<{ source: OptionStrategyMatrix; index: number } | null>(null);
+  const [assignmentAcceptance, setAssignmentAcceptance] = useState<string | null>(null);
+  const candidates = matrix.candidate_review?.covered_call;
+  const alternative = coveredChoice?.source === matrix ? candidates?.alternatives[coveredChoice.index] : undefined;
+  const comparedMatrix = alternative ? { ...matrix, candidate_review: undefined, singles: { ...matrix.singles, covered_call: alternative } } : matrix;
+  const assignmentKey = JSON.stringify([comparedMatrix.singles.covered_call?.legs, comparedMatrix.singles.cash_secured_put?.legs, chainAsOf]);
+  const acceptAssignment = assignmentAcceptance === assignmentKey;
   const amount = (text: string) => text.trim() && Number.isFinite(Number(text)) && Number(text) >= 0 ? Number(text) : null;
   const context: OptionPlanContext = { goal, shares: amount(shares), cash: amount(cash), premiumBudget: amount(premiumBudget), acceptAssignment, stop: stopLoss, target: takeProfit };
   const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-  const review = recommendCommonOption(matrix, context, today, chainAsOf);
+  const review = recommendCommonOption(comparedMatrix, context, today, chainAsOf);
   const comboKeys = Object.keys(matrix.combos);
   return <section aria-label="Four common option strategies" style={{ marginTop: 16 }}>
     <h3>Four common strategies & conditional preference</h3>
     <p>Compare one standard 100-share contract. These are research illustrations using settled provider prices
       {chainAsOf ? ` observed ${chainAsOf}` : ' with an unknown observation date'}, not live executable quotes.</p>
-    <p>Contract selection uses the nearest strike to spot, the stock stop or target, and preset expiry windows. Delta, gamma, open interest and breakeven are not jointly optimized. This comparison does not establish the best return.</p>
+    <p>Original contract selection uses the nearest strike to spot, the stock stop or target, and preset expiry windows. Covered-call alternatives screen the supplied rows of the selected call expiry; choosing one changes this comparison only. Delta, gamma, open interest and breakeven are not jointly optimized. This comparison does not establish the best return.</p>
     <div className="option-strategy-inputs">
       <label>Objective<select aria-label="Objective" value={goal} onChange={e => setGoal(e.target.value as OptionGoal)}>
         <option value="compare">Compare only — choose an objective</option><option value="upside">Upside / bullish exposure</option>
@@ -176,7 +198,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
       <label>Cash reserved for assignment ($)<input type="number" min="0" value={cash} onChange={e => setCash(e.target.value)} /></label>
       <label>Option premium-loss budget ($)<input type="number" min="0" value={premiumBudget} onChange={e => setPremiumBudget(e.target.value)} /></label>
     </div>
-    <label><input type="checkbox" checked={acceptAssignment} onChange={e => setAcceptAssignment(e.target.checked)} /> I accept buying or selling 100 shares at the listed strike if assigned.</label>
+    <label><input type="checkbox" checked={acceptAssignment} onChange={e => setAssignmentAcceptance(e.target.checked ? assignmentKey : null)} /> I accept buying or selling 100 shares at the listed strike if assigned.</label>
     <div role="status" style={{ ...CARD, borderColor: review.primary ? '#38bdf8' : '#475569', margin: '14px 0' }}>
       <strong>{review.primary ? `Preferred strategy to research: ${COMMON_OPTION_NAMES[review.primary]}` : 'Wait / no strategy preference yet'}</strong>
       <p>{review.reason}</p><p>{review.ivNote}</p>
@@ -185,11 +207,32 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
       <p>Premium targets and exits below are illustrative policies, not calibrated forecasts or guaranteed fills.
         For hedges and covered calls, the premium budget does not cap stock losses.</p>
     </div>
+    {candidates && <section aria-label="Covered call contract selection" style={{ ...CARD, marginBottom: 14 }}>
+      <h4>Covered call — contract selection</h4>
+      <p>Original anchor {fmtUSD(candidates.anchor)} · expiry {candidates.expiry ?? 'unknown'} · selected strike {fmtUSD(candidates.original.strike)}.</p>
+      <p>{candidates.original.reason ? `Original candidate: ${candidateReason(candidates.original.reason)}.` : 'Original candidate passed the basic quote screen; holdings, freshness and broker checks remain separate.'}</p>
+      <p>{candidates.screened_count} of {candidates.evaluated_count} rows passed the research quote/payoff screen. Counts cover supplied rows after upstream contract exclusions. Scope: one selected expiration; other expirations are not searched.</p>
+      {!!Object.keys(candidates.rejected_counts).length && <p>Excluded: {Object.entries(candidates.rejected_counts).map(([reason, count]) => `${count} ${candidateReason(reason)}`).join('; ')}.</p>}
+      <p>{candidates.ranking} The 20% spread ceiling is a research policy; quote age, size and actual deliverables are unverified.</p>
+      {candidates.alternatives.length ? <label>Covered-call contract to compare<select aria-label="Covered-call contract to compare"
+        value={alternative && coveredChoice ? String(coveredChoice.index) : 'original'} onChange={e => {
+          setCoveredChoice(e.target.value === 'original' ? null : { source: matrix, index: Number(e.target.value) });
+          setAssignmentAcceptance(null);
+        }}>
+        <option value="original">Original target-strike selection</option>
+        {candidates.alternatives.map((s, i) => <option key={s.legs[0].option_symbol ?? i} value={String(i)}>
+          Compare {fmtUSD(s.legs[0].strike)} call · {s.legs[0].expiry} · {fmtUSD(s.net_per_contract)} credit before fees
+        </option>)}
+      </select></label> : <p>No other contract passed this screen. This does not establish absence in other expirations.</p>}
+      {alternative && <p role="status">Comparing an explicitly selected alternative at {fmtUSD(alternative.legs[0].strike)}.
+        {' '}Stock target remains {fmtUSD(takeProfit)}; selling this call caps stock upside at its strike.
+        {' '}Confirm assignment acceptance again. Combinations still use their original legs. This is not an expected-return ranking.</p>}
+    </section>}
     <div className="common-option-strategy-grid">
-      {COMMON_OPTION_KEYS.map(key => matrix.singles[key]
-        ? <StrategyCard key={key} s={matrix.singles[key]} spot={spot} highlight={review.primary === key} review={review.plans[key]} />
+      {COMMON_OPTION_KEYS.map(key => comparedMatrix.singles[key]
+        ? <StrategyCard key={key} s={comparedMatrix.singles[key]} spot={spot} highlight={review.primary === key} review={review.plans[key]} />
         : <article key={key} style={CARD}><h4>{COMMON_OPTION_NAMES[key]}</h4>
-          <p>No usable priced contract at the selected strike and expiry. Nearby strikes have not been exhaustively searched. Entry, premium targets and stops are unavailable; refresh the chain.</p>
+          <p>No usable priced contract at the selected strike and expiry. {candidates && key === 'covered_call' ? 'Select a screened alternative above if available.' : 'Nearby strikes have not been exhaustively searched.'} Entry, premium targets and stops are unavailable; refresh the chain.</p>
           <p>{review.plans[key].blockers.join(' ')}</p><details><summary>Playbook — before entry, while open & exit</summary><ol>{review.plans[key].steps.map(step => <li key={step}>{step}</li>)}</ol></details>
         </article>)}
     </div>

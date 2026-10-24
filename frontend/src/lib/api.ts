@@ -2535,6 +2535,11 @@ export type OptionStrategyLeg = {
   days_to_expiry: number | null;
   iv?: number | null;
   oi?: number | null;
+  delta?: number | null;
+  gamma?: number | null;
+  theta?: number | null;
+  vega?: number | null;
+  option_symbol?: string | null;
   /** Bid-ask width as a % of mid. A large value means the quoted cost will not be the fill. */
   spread_pct?: number | null;
   /** SF-04: WHERE this number came from.
@@ -2598,6 +2603,13 @@ export type AddStocksResult = {
 };
 
 export type OptionStrategyMatrix = {
+  candidate_review?: { covered_call?: {
+    method_version: 'covered_call_candidates_v1'; anchor: number; expiry: string | null;
+    scope: string; evaluated_count: number; screened_count: number;
+    rejected_counts: Record<string, number>;
+    original: { strike: number | null; option_symbol: string | null; reason: string | null };
+    ranking: string; alternatives: OptionStrategy[]; actionability: 'research_only';
+  } };
   singles: Record<string, OptionStrategy>;
   combos: Record<string, OptionStrategy>;
   /** SR-07 (2026-10-02): structures the chain COULD price but that must not be shown with a

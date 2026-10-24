@@ -98,6 +98,7 @@ def test_field_mapping_and_iv_is_converted_to_a_percent():
         "volume": 42, "oi": 500, "iv": 35.7, "itm": True, "moneyness": None,
         # R05: no symbol -> terms unverified, which every automatic payoff path refuses.
         "option_symbol": None,
+        "delta": None, "gamma": None, "theta": None, "vega": None,
         "contract_terms": {"status": "unverified_100_assumed", "option_symbol": None, "premium_multiplier": None,
                            "deliverable_shares": None, "automatic_payoff_supported": False,
                            "basis": "no readable contract symbol: contract terms cannot be identified"},
@@ -194,3 +195,12 @@ def test_get_options_flow_sorts_expiries_before_taking_the_nearest_four():
     # test_options_scope.py::test_session_expiries_are_sorted).
     assert "source_session, expiries = _uw_session_expiries(session, sym)" in body
     assert "expiries[:4]" in body
+
+
+def test_contract_greeks_survive_adapter_and_nonfinite_values_remain_unknown():
+    df = _make_chain_df(strike=[100], bid=[1.5], ask=[1.6], delta=[.4], gamma=[.02],
+                        theta=[float('nan')], vega=[float('inf')])
+    row = _options_chain_rows(df)[0]
+    assert row['delta'] == .4 and row['gamma'] == .02
+    assert row['theta'] is None and row['vega'] is None
+    json.dumps(row, allow_nan=False)

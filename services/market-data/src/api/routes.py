@@ -3997,6 +3997,8 @@ def _options_chain_rows(df, underlying: str | None = None) -> list[dict]:
             "itm":          bool(itm) if _known(itm) else None,
             "moneyness":    mny if isinstance(mny, str) else None,
             "option_symbol": osym,
+            **{name: float(row[name]) if _known(row.get(name)) and math.isfinite(float(row[name])) else None
+               for name in ("delta", "gamma", "theta", "vega")},
             "contract_terms": _contract_terms(osym, underlying),
         })
     return out
@@ -5197,6 +5199,7 @@ def get_options_game_plan(
         plan["available"] = bool(
             plan["protective_put"] or plan["covered_call"]
             or matrix.get("singles") or matrix.get("combos")
+            or any(review.get("alternatives") for review in matrix.get("candidate_review", {}).values())
         )
         return plan
 
