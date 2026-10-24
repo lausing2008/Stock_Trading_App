@@ -25,6 +25,10 @@ Latest frontend validation: **936 tests passed across 76 files**, full typecheck
 
 Read-only TSM checks on the October 22 archive returned 12 alternatives per strategy for the **verification example** DTE 60–180 / absolute delta 0.20–0.40, zero matches for exact-zero delta, and zero additional reads for an expiry band incompatible with the holding-period minimum. These are bounded research examples, not recommended settings or executable prices. No authenticated interactive browser acceptance was performed for these latest releases; the reports distinguish DOM tests, real-route regressions, deployed helper calculations and public HTTP/served-build checks.
 
+## Learning tutorial and screenshot-layout continuation
+
+A new Advanced/admin Learning page covers all newly shipped options and dark-pool research features, including an interactive fictional candidate comparison. The screenshot's narrow prints card is repaired with full-row dense tables, larger responsive chart-card targets and contained mobile scrolling. [Implementation, native-browser before/after measurements and rollout](../audits/2026-10-24-options-learning-and-market-pressure-layout.md). The existing CLAUDE.md pointer reaches this complete updated session index; prior work and evidence remain preserved. Validation/rollout status is recorded in that report.
+
 ## Earlier audits, correctness fixes and operational work carried through this session
 
 | Area | Work and recorded boundary | Authoritative record |

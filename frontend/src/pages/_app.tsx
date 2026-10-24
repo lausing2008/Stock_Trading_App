@@ -154,6 +154,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Alerts Guide',   href: '/alerts-guide', color: '#f59e0b', tag: 'new' },
       { label: 'Watchlist Rotation — How It Works', href: '/watchlist-rotation-explainer', color: '#f59e0b', tag: 'new' },
       { label: 'Conditional Orders Guide', href: '/conditional-orders-guide', color: '#22c55e', tag: 'new' },
+      { label: 'Options & Dark Pool Tutorial', href: '/options-dark-pool-tutorial', color: '#38bdf8', tag: 'new' },
       { label: 'Option Trading Guide', href: '/option-trading-guide', color: '#f59e0b', tag: 'new' },
       { label: 'QQQ LEAPS Playbook', href: '/qqq-leaps-playbook', color: '#a78bfa', tag: 'new' },
       { label: 'Options Income Guide', href: '/options-income-guide', color: '#a78bfa', tag: 'new' },

@@ -90,3 +90,19 @@ it('shows each off-exchange print with its ET time and age, a side estimate, qua
   expect(document.body.textContent).toContain('does not establish which dark pool executed it');
   vi.useRealTimers();
 });
+
+it('gives the prints and expiry tables independent full-width, keyboard-scrollable containers', async () => {
+  api.getGammaExposure.mockResolvedValue({ available: false, source: 'none' });
+  api.getOptionsExpirations.mockResolvedValue({ available: true, expirations: [{ expiry: '2026-12-18', total_oi: 20000, put_call_oi_ratio: 1,
+    concentration_pct: 100, level: 'normal' }] });
+  api.getDarkPoolPrints.mockResolvedValue({ available: true, status: 'available', prints: [{ executed_at_utc: '2026-10-23T20:00:00Z', time_status: 'ok',
+    size: 500, price: 879.8, premium: 439900, side_estimate: 'buy', venue: 'L' }] });
+  fresh(<MarketPressurePanel symbol="EXAMPLE" />);
+  const scroll = await screen.findByRole('region', { name: 'Off-exchange prints table' });
+  expect(scroll.getAttribute('tabindex')).toBe('0');
+  expect(scroll.closest('.market-pressure-wide')).not.toBeNull();
+  expect(screen.getByRole('table', { name: 'Recent off-exchange prints' }).className).toBe('market-pressure-prints-table');
+  expect(screen.getByRole('columnheader', { name: 'Notional ($)' })).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'How to use this table' }).getAttribute('href')).toBe('/options-dark-pool-tutorial#dark-pool');
+  expect(screen.getByRole('region', { name: 'Open interest by expiration table' }).closest('.market-pressure-wide')).not.toBeNull();
+});

@@ -161,9 +161,11 @@ export default function OptionsGamePlanCard({
           Protective puts and covered calls require shares; cash-secured puts require reserved cash.
           This card compares plans and does not place trades. See{' '}
           <a href="/option-trading-guide" style={{ color: '#818cf8' }}>Option Trading Guide</a>{' '}
-          for how to read them, or{' '}
+          for the basics, or follow the{' '}
+          <Link href="/options-dark-pool-tutorial" style={{ color: '#38bdf8' }}>Options &amp; Dark Pool Tutorial</Link>{' '}
+          for the new controls. Use{' '}
           <Link href={`/options-calculator?symbol=${plan.symbol}&spot=${plan.current_price ?? ''}`} style={{ color: '#818cf8' }}>
-            open the options calculator
+            the options calculator
           </Link>{' '}
           to price your own strikes and contract counts.
         </div>

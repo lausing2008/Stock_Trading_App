@@ -35,6 +35,30 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: "OPTIONS-DARK-POOL-TUTORIAL",
+    tier: 468,
+    severity: "feature",
+    defaultStatus: "done",
+    title: "Learning tutorial for the new options and off-exchange research workflow",
+    file: "docs/audits/2026-10-24-options-learning-and-market-pressure-layout.md",
+    effort: "M",
+    impact: "Explains how to use the new controls and interpret incomplete evidence, with a safe practice comparison.",
+    what: "The individual guides did not walk through the complete newly shipped stock Options workflow.",
+    fix: "Add Learning → Options & Dark Pool Tutorial with matching Advanced/admin access, topic anchors, stock deep link, step-by-step strategy/holding/delta/DTE comparison instructions, event/source/unknown states, dominance/turnover explanations, Market Pressure and off-exchange sampling/identity limits, held-position caveats and a local fictional comparison exercise. Link it from Game Plan and the prints table. No market-data requests or trading settings added.",
+  },
+  {
+    id: "MARKET-PRESSURE-TABLE-RESPONSIVE",
+    tier: 468,
+    severity: "high",
+    defaultStatus: "done",
+    title: "Full-width off-exchange and expiry tables with contained mobile scrolling",
+    file: "docs/audits/2026-10-24-options-learning-and-market-pressure-layout.md",
+    effort: "S",
+    impact: "Fixes the screenshot where six columns overflowed a narrow Market Pressure card.",
+    what: "The auto-fit grid gave a dense table the same 220-pixel minimum as a chart; at 1449 px the card was about 226 px and at 1024 px the page overflowed.",
+    fix: "Use a responsive 360-pixel chart-card target, min-width zero and start alignment. Put both dense tables on full grid rows and contain horizontal overflow in keyboard-focusable wrappers. Keep print cells on one line, improve table-label contrast, title the prints section, label equity value Notional ($), and link the tutorial. Real-component offline Chrome checks cover desktop, tablet and phone widths, with a captured before/after and keyboard-scroll regression witness. Feed/signal behavior is unchanged.",
+  },
+  {
     id: "OPTIONS-CANDIDATE-COMPARISON-TABLE",
     tier: 468,
     severity: "feature",

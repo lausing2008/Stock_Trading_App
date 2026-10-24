@@ -10,8 +10,8 @@ import { GexOiByStrikeChart, MaxPainByExpiryChart, OiTermStructureChart } from '
  * matching StockGoalsPanel's/SrWatchButton's own established pattern for keeping
  * stock/[symbol].tsx from growing further — it already sits at 4000+ lines.
  *
- * Renders NOTHING when neither real GEX data nor a real expirations rollup is available —
- * this is deliberately optional enrichment, never a required section every stock page shows,
+ * Shows feed failures and empty/unavailable states separately from usable optional data —
+ * provider failure must never be mistaken for absence of market activity,
  * since GEX specifically depends on an admin having configured and enabled a paid Unusual
  * Whales subscription (Settings → Market Pressure Data). */
 export default function MarketPressurePanel({ symbol }: { symbol: string }) {
@@ -88,7 +88,7 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
       </div>
       {statusBlock}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+      <div className="market-pressure-grid">
         {hasGex && (
           <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
             <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>
@@ -241,16 +241,17 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
         })()}
 
         {hasExpirations && (
-          <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+          <div className="market-pressure-wide" style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
             <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>
               Open interest concentration by expiration — relative to the other expiries shown
               here (no historical baseline exists to compare against).
             </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+            <div className="market-pressure-table-scroll" role="region" aria-label="Open interest by expiration table" tabIndex={0}>
+            <table className="market-pressure-expirations-table" aria-label="Open interest by expiration" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #1e293b' }}>
                   {['Expiry', 'Total OI', 'P/C Ratio', 'Level'].map(h => (
-                    <th key={h} style={{ padding: '4px 6px', textAlign: h === 'Expiry' ? 'left' : 'right', color: '#475569', fontWeight: 500 }}>{h}</th>
+                    <th key={h} style={{ padding: '4px 6px', textAlign: h === 'Expiry' ? 'left' : 'right', color: '#94a3b8', fontWeight: 600 }}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -269,32 +270,36 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         )}
 
         {hasDarkPool && (
-          <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
-            <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>
+          <section className="market-pressure-wide" aria-label="Off-exchange prints" style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+            <h3 style={{ fontSize: 14, color: '#e2e8f0', margin: '0 0 10px' }}>Off-exchange prints</h3>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 10 }}>
               Recent off-exchange prints — size and price are reported facts, not a directional signal.
               {darkPool!.venue_note ? ` ${darkPool!.venue_note.charAt(0).toUpperCase()}${darkPool!.venue_note.slice(1)}.` : ''}{' '}
-              <a href="/dark-pool-guide" style={{ color: '#38bdf8' }}>What is dark pool trading?</a>
+              <a href="/dark-pool-guide" style={{ color: '#38bdf8' }}>What is dark pool trading?</a>{' · '}
+              <a href="/options-dark-pool-tutorial#dark-pool" style={{ color: '#38bdf8' }}>How to use this table</a>
             </div>
             {/* R02: when these prints were retrieved from the provider (a cached answer keeps its
                 original time). A stale sample says so in the status line above. */}
             {(darkPool!.stale ? darkPool!.stale_fetched_at : darkPool!.fetched_at) && (
-              <p aria-label="Dark pool retrieved" style={{ margin: '0 0 8px', fontSize: 11, color: darkPool!.stale ? '#fbbf24' : '#64748b' }}>
+              <p aria-label="Dark pool retrieved" style={{ margin: '0 0 8px', fontSize: 11, color: darkPool!.stale ? '#fbbf24' : '#94a3b8' }}>
                 {darkPool!.stale ? 'Last good sample retrieved' : 'Retrieved'} {etText(darkPool!.stale ? darkPool!.stale_fetched_at : darkPool!.fetched_at)}
                 {' · '}{agoText((now - Date.parse((darkPool!.stale ? darkPool!.stale_fetched_at : darkPool!.fetched_at)!)) / 60_000)}
               </p>
             )}
             {baselineLine(darkPool!.baseline) && (
-              <p aria-label="Dark pool baseline" style={{ margin: '0 0 8px', fontSize: 11, color: darkPool!.baseline?.status === 'query_failed' ? '#fbbf24' : '#64748b' }}>{baselineLine(darkPool!.baseline)}</p>
+              <p aria-label="Dark pool baseline" style={{ margin: '0 0 8px', fontSize: 11, color: darkPool!.baseline?.status === 'query_failed' ? '#fbbf24' : '#94a3b8' }}>{baselineLine(darkPool!.baseline)}</p>
             )}
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+            <div className="market-pressure-table-scroll" role="region" aria-label="Off-exchange prints table" tabIndex={0}>
+            <table className="market-pressure-prints-table" aria-label="Recent off-exchange prints" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #1e293b' }}>
-                  {['Executed (ET) · age', 'Size', 'Price', 'Side (est.)', 'Premium', 'Venue'].map(h => (
-                    <th key={h} style={{ padding: '4px 6px', textAlign: h === 'Executed (ET) · age' || h === 'Size' ? 'left' : 'right', color: '#475569', fontWeight: 500 }}>{h}</th>
+                  {['Executed (ET) · age', 'Size', 'Price', 'Side (est.)', 'Notional ($)', 'Venue'].map(h => (
+                    <th key={h} style={{ padding: '4px 6px', textAlign: h === 'Executed (ET) · age' || h === 'Size' ? 'left' : 'right', color: '#94a3b8', fontWeight: 600 }}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -306,12 +311,14 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
                     <td style={{ padding: '5px 6px', textAlign: 'right', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{p.price != null ? `$${p.price.toFixed(2)}` : '—'}</td>
                     <td title={darkPool!.side_basis ?? 'Estimate from the print\'s place in the NBBO'} style={{ padding: '5px 6px', textAlign: 'right', color: '#94a3b8' }}>{sideEstimateText(p.side_estimate)}</td>
                     <td style={{ padding: '5px 6px', textAlign: 'right', color: '#38bdf8', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{p.premium != null ? `$${p.premium.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}</td>
-                    <td style={{ padding: '5px 6px', textAlign: 'right', color: '#64748b' }}>{p.venue || '—'}</td>
+                    <td style={{ padding: '5px 6px', textAlign: 'right', color: '#94a3b8' }}>{p.venue || '—'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
+            </div>
+            <p className="market-pressure-scroll-hint">Scroll this table horizontally on a narrow screen to see all columns.</p>
+          </section>
         )}
       </div>
     </div>

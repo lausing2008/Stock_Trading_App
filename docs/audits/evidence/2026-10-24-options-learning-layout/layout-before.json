@@ -1,0 +1,35 @@
+[
+  {
+    "viewport": 1449,
+    "documentWidth": 1449,
+    "cardWidth": 226.171875,
+    "gridWidth": 1417,
+    "tableWidth": 288.078125,
+    "tableEscapesCard": true,
+    "cardScrollWidth": 304,
+    "cardClientWidth": 224,
+    "internalScroll": null
+  },
+  {
+    "viewport": 1024,
+    "documentWidth": 1074,
+    "cardWidth": 239,
+    "gridWidth": 992,
+    "tableWidth": 288.078125,
+    "tableEscapesCard": true,
+    "cardScrollWidth": 304,
+    "cardClientWidth": 237,
+    "internalScroll": null
+  },
+  {
+    "viewport": 390,
+    "documentWidth": 390,
+    "cardWidth": 358,
+    "gridWidth": 358,
+    "tableWidth": 324,
+    "tableEscapesCard": false,
+    "cardScrollWidth": 356,
+    "cardClientWidth": 356,
+    "internalScroll": null
+  }
+]

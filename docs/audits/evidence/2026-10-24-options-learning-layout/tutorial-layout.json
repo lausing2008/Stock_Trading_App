@@ -1,0 +1,23 @@
+[
+  {
+    "viewport": 1449,
+    "documentWidth": 1449,
+    "tocLinks": 12,
+    "tableOpen": true,
+    "sampleRows": 3
+  },
+  {
+    "viewport": 1024,
+    "documentWidth": 1024,
+    "tocLinks": 12,
+    "tableOpen": true,
+    "sampleRows": 3
+  },
+  {
+    "viewport": 390,
+    "documentWidth": 390,
+    "tocLinks": 12,
+    "tableOpen": true,
+    "sampleRows": 3
+  }
+]

@@ -1,0 +1,45 @@
+[
+  {
+    "viewport": 1449,
+    "documentWidth": 1449,
+    "cardWidth": 1417,
+    "gridWidth": 1417,
+    "tableWidth": 1383,
+    "tableEscapesCard": false,
+    "cardScrollWidth": 1415,
+    "cardClientWidth": 1415,
+    "internalScroll": {
+      "client": 1383,
+      "content": 1383
+    }
+  },
+  {
+    "viewport": 1024,
+    "documentWidth": 1024,
+    "cardWidth": 992,
+    "gridWidth": 992,
+    "tableWidth": 958,
+    "tableEscapesCard": false,
+    "cardScrollWidth": 990,
+    "cardClientWidth": 990,
+    "internalScroll": {
+      "client": 958,
+      "content": 958
+    }
+  },
+  {
+    "viewport": 390,
+    "documentWidth": 390,
+    "cardWidth": 358,
+    "gridWidth": 358,
+    "tableWidth": 720,
+    "tableEscapesCard": true,
+    "cardScrollWidth": 356,
+    "cardClientWidth": 356,
+    "internalScroll": {
+      "client": 324,
+      "content": 720
+    },
+    "keyboardScrollLeft": 320
+  }
+]
