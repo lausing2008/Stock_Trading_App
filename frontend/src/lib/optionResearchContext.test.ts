@@ -9,7 +9,7 @@ it('uses a matching dated signal while keeping input observation dates and optio
   const r = review();
   expect(r.status).toBe('recorded'); expect(r.conflict).toBe(true);
   expect(r.rows.find(row => row.label === 'Market regime')?.value).toBe('bear');
-  expect(r.rows.find(row => row.label === 'Stock trend')?.value).toContain('SMA50 below SMA200');
+  expect(r.rows.find(row => row.label === 'Stock trend')?.value).toContain('SMA50-above-SMA200 flag: no');
   expect(r.rows.find(row => row.label === 'Company outlook proxy')?.value).toBe('Analyst recommendations improved');
   expect(r.rows.find(row => row.label === 'Option-horizon return forecast')?.value).toBe('Unavailable');
   expect(r.note).toContain('not independent votes');
@@ -32,7 +32,7 @@ it('rejects wrong-symbol and missing signals without leaking their reasons', () 
 });
 it('distinguishes unknown fields from genuine false and unchanged observations', () => {
   const r = review(signal({ reasons: { trend_above_sma50: false, sma50_above_sma200: false, eps_revision_direction: 0 } }));
-  expect(r.rows[2].value).toBe('Price below SMA50; SMA50 below SMA200');
+  expect(r.rows[2].value).toBe('Recorded above-SMA50 flag: no; SMA50-above-SMA200 flag: no');
   expect(r.rows[3].value).toContain('unchanged'); expect(r.rows[1].value).toBe('Unavailable');
   expect(review(signal({ reasons: {} })).rows[2].value).toBe('Unavailable');
 });

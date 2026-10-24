@@ -21,7 +21,7 @@ These are existing evaluation windows, **not recommendations for how long to hol
 
 ## Recorded evidence and limits
 
-The panel separates the selected AI signal, recorded market regime, recorded daily SMA50/200 trend, an analyst-recommendation revision proxy, and unavailable option-horizon return forecast evidence. Values from a wrong symbol/horizon are hidden. Missing values remain unavailable; genuine false/unchanged diagnostics are preserved.
+The panel separates the selected AI signal, recorded market regime, recorded daily SMA50/200 trend, an analyst-recommendation revision proxy, and unavailable option-horizon return forecast evidence. Values from a wrong symbol/horizon are hidden. Missing values remain unavailable; genuine false/unchanged diagnostics are preserved. Trend booleans are shown literally as recorded yes/no flags; a false above-average flag is not called a below-average observation, because equality or unavailable calculations can also produce false.
 
 An explicitly zoned signal timestamp can establish the record's age against a disclosed **72-hour research freshness limit**. Missing/invalid timestamps, unverified timezones, future timestamps, stale records and mismatched symbols/styles have separate states. A timezone-less DB timestamp is not interpreted in the viewer's local timezone. The signal row's timestamp is never presented as the observation date of its underlying market, technical or company inputs. Those source dates are currently absent and remain unverified. A fresh saved signal also does not prove its inputs were fresh. These recorded fields share one signal record; they are not independent votes.
 

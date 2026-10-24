@@ -23,7 +23,7 @@ export function reviewOptionResearchContext(context: OptionResearchContext, now:
   const above = reasons.trend_above_sma50;
   const order = reasons.sma50_above_sma200;
   const trend = typeof above === 'boolean' && typeof order === 'boolean'
-    ? `Price ${above ? 'above' : 'below'} SMA50; SMA50 ${order ? 'above' : 'below'} SMA200`
+    ? `Recorded above-SMA50 flag: ${above ? 'yes' : 'no'}; SMA50-above-SMA200 flag: ${order ? 'yes' : 'no'}`
     : 'Unavailable';
   const revision = reasons.eps_revision_direction;
   const outlook = revision === 1 ? 'Analyst recommendations improved' : revision === -1 ? 'Analyst recommendations weakened'
