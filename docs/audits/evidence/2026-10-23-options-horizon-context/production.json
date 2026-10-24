@@ -1,0 +1,123 @@
+{
+  "application_release": "abc32f3066f1c0ba19741157a7a64b68da370727",
+  "containers": [
+    {
+      "health": "healthy",
+      "image": "sha256:91be053a5df31b6d67665c23d3bf0fb9694e7fa5b82f4c3a9a4600b8a2c5f269",
+      "name": "stockai-api-gateway-1",
+      "started_at": "2026-10-22T23:47:20.048017661Z",
+      "status": "running"
+    },
+    {
+      "health": "healthy",
+      "image": "sha256:50bdcb6b79bb9b6e07dc9ed17a15aae9261188aa893ff4a88c503902d52ec57c",
+      "name": "stockai-decision-engine-1",
+      "started_at": "2026-10-22T23:47:17.622979137Z",
+      "status": "running"
+    },
+    {
+      "health": "healthy",
+      "image": "sha256:6a2a167a737009a4f9944cf4a85dbf72d87680a448e531362600a198c037252b",
+      "name": "stockai-event-intelligence-1",
+      "started_at": "2026-10-22T23:47:16.733739888Z",
+      "status": "running"
+    },
+    {
+      "health": "healthy",
+      "image": "sha256:316d3f8c601bae3f7152a4c9d8ddc5c0438e29ca08de33170e50debdce38be18",
+      "name": "stockai-frontend-1",
+      "started_at": "2026-10-24T04:33:01.541067918Z",
+      "status": "running"
+    },
+    {
+      "health": "healthy",
+      "image": "sha256:253cb4494219747261b93368a4ecd27d1193ed712dc52f8739e7b81d1900d31b",
+      "name": "stockai-market-data-1",
+      "started_at": "2026-10-24T04:08:01.540801222Z",
+      "status": "running"
+    },
+    {
+      "health": "healthy",
+      "image": "sha256:923b14f5a8fe22df165a3f62d42e74a484dc86f50c61a72292fae13709033190",
+      "name": "stockai-ml-prediction-1",
+      "started_at": "2026-10-22T23:47:19.009616969Z",
+      "status": "running"
+    },
+    {
+      "health": "healthy",
+      "image": "sha256:5d71038c36ea448c768c0a0c6c53150dcc1ae4921b90a04d8900078b327dc6a9",
+      "name": "stockai-news-intelligence-1",
+      "started_at": "2026-10-22T23:47:19.9974542Z",
+      "status": "running"
+    },
+    {
+      "health": "healthy",
+      "image": "sha256:51dfbc128ec96066ffedb60a1a5386dd415abd6b47794d27fa4d73b25e9fd393",
+      "name": "stockai-portfolio-optimizer-1",
+      "started_at": "2026-10-22T23:47:19.161390494Z",
+      "status": "running"
+    },
+    {
+      "health": "healthy",
+      "image": "sha256:fff3594bf464bea0f502788874403882d8bbbe618b3250f8649e7e42fd118020",
+      "name": "stockai-postgres-1",
+      "started_at": "2026-10-22T23:47:16.284451594Z",
+      "status": "running"
+    },
+    {
+      "health": "healthy",
+      "image": "sha256:41828982d9ac5b39dbcbb4b02d5d11a8157545f959442cb370e60b5269b2cf04",
+      "name": "stockai-ranking-engine-1",
+      "started_at": "2026-10-22T23:47:14.512887134Z",
+      "status": "running"
+    },
+    {
+      "health": "healthy",
+      "image": "sha256:487efc0616382465781b8fdc3d6d1db449e6fd80ae23bf48432a2da6b6929908",
+      "name": "stockai-redis-1",
+      "started_at": "2026-10-22T23:47:15.037867617Z",
+      "status": "running"
+    },
+    {
+      "health": "healthy",
+      "image": "sha256:cd66692199b27f27803c67b66943a32e6d54d6ea9dccfd0451b8c1d681f67bee",
+      "name": "stockai-research-engine-1",
+      "started_at": "2026-10-22T23:47:19.964688592Z",
+      "status": "running"
+    },
+    {
+      "health": "healthy",
+      "image": "sha256:8e306e2a988a3d3952ec6608cae20d74b51435c40abcf79d708fd6b9fd0c3756",
+      "name": "stockai-signal-engine-1",
+      "started_at": "2026-10-24T01:13:24.095207013Z",
+      "status": "running"
+    },
+    {
+      "health": "healthy",
+      "image": "sha256:724d93bff5553d57ab18baf81232029882c68bf553d261bfed3b194a99573e4c",
+      "name": "stockai-strategy-engine-1",
+      "started_at": "2026-10-22T23:47:19.437830208Z",
+      "status": "running"
+    },
+    {
+      "health": "healthy",
+      "image": "sha256:3c5762094197e0e945f3484986d90f5ab000f0ac2f6d411b607a66ad1845c6ef",
+      "name": "stockai-technical-analysis-1",
+      "started_at": "2026-10-22T23:47:14.056239696Z",
+      "status": "running"
+    }
+  ],
+  "frontend_build_id": "EF9PFU08HOVDJSR3fxm3G",
+  "ledger_errors_since_restart": 0,
+  "matches_prepared_frontend": true,
+  "non_frontend_containers_unchanged": true,
+  "public_http": {
+    "/": 200,
+    "/improvements": 200,
+    "/signal-accuracy": 200,
+    "/signal-tuning": 200,
+    "/stock/TSM": 200
+  },
+  "validation_commit": "abc32f3066f1c0ba19741157a7a64b68da370727",
+  "verified_at": "2026-10-24T04:34:04.802974+00:00"
+}

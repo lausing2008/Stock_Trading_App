@@ -1,6 +1,6 @@
 # Options horizon fit and context evidence — October 23, 2026
 
-Implementation validated locally; production rollout/verification is recorded below after deployment. This is a frontend-only follow-up to explicit covered-call alternatives. No signal thresholds, model weights, provider ingestion, account orders or backend code changed.
+**Deployed application release `abc32f30`.** Production verification is recorded below. This is a frontend-only follow-up to explicit covered-call alternatives. No signal thresholds, model weights, provider ingestion, account orders or backend code changed.
 
 ## Delivered behavior
 
@@ -42,3 +42,14 @@ The panel can flag conflicting recorded signal/regime values, but does not score
 ## Validation
 
 **864 frontend tests passed across 72 files**, full typecheck and whitespace checks passed. Focused tests cover four-horizon binding, wrong-symbol refusal, invalid/future/stale/timezone-less timestamps, real false/zero observations, proxy labelling, expiry/holding boundaries for all four strategies, a changed horizon without options refetch, override isolation and aging in an open tab. No backend tests were rerun because backend code was unchanged. No interactive browser acceptance is claimed. [Validation evidence](evidence/2026-10-23-options-horizon-context/).
+
+
+## Production rollout
+
+The user's standing public-prod push/deployment authorization covered this follow-up. Implementation eaba0a2c and the tested literal-trend-flag correction abc32f30 are public. Both revisions used a pinned clean EC2 checkout, the shared host lock, production frontend settings and retained rollback images. Only frontend was recreated; market-data, all other backends, PostgreSQL and Redis kept their prior start times. No backend tests were rerun for this frontend-only change.
+
+Free space was initially about 24 GB, below the frontend build's 25 GB guard. Under the lock, dangling-only image pruning reclaimed 7.028 GB, restoring 31 GB before the first build. Tagged release/rollback images and running images were preserved. The final build compiled all 76 pages. Rollback references remain in `/tmp/options-horizon-rollback-abc32f30.txt` on EC2.
+
+Verification at **2026-10-23 21:34 PDT**: all 15 containers healthy, all 12 backend src/shared hashes match the release's unchanged backend files, all 14 non-frontend start times unchanged, and prepared/running frontend build **EF9PFU08HOVDJSR3fxm3G** matches. Public `/`, `/stock/TSM`, `/improvements`, `/signal-accuracy` and `/signal-tuning` returned HTTP 200. TSM/tracker chunks include the horizon selector, holding-period input, goal-fit-only label and context evidence. No interactive authenticated browser acceptance was performed.
+
+The broader strategy-ranking tracker remains in progress; the horizon/context-readiness item is complete. The previously stale “LOCAL IMPLEMENTATION” tracker prefix was corrected. Dated observation provenance, validated option forecasts and multi-expiry selection remain open; no improved win rate or return is claimed.

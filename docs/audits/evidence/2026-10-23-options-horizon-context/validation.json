@@ -10,6 +10,7 @@
   "backend_tests": "not_rerun: unchanged backend code",
   "provider_requests_added": 0,
   "market_aware_ranking": "unavailable pending dated input observations and validated option-horizon forecasts",
-  "production_verification": "pending",
-  "literal_trend_flags": "false is not inferred to mean below an average"
+  "production_verification": "passed: see production.json, served.json and source.json",
+  "literal_trend_flags": "false is not inferred to mean below an average",
+  "application_release": "abc32f3066f1c0ba19741157a7a64b68da370727"
 }

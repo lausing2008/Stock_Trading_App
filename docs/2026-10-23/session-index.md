@@ -2,7 +2,7 @@
 
 This is the current continuation of the [earlier session index](../2026-10-22/session-index.md). It consolidates the options/calibration deployment, the pending working-tree audit, the four authorized local fixes, and the Improvements tracker update. Dates are October 23 in America/Los_Angeles; evidence files retain their recorded UTC timestamps.
 
-**Current boundary:** covered-call candidate comparison is deployed in `e08dd338` after the user authorized public prod publication and automatic deployment. All 15 containers are healthy, all 12 backend source hashes match, and TSM stored-data/served-build checks passed. Only market-data and frontend restarted in this rollout. [Latest deployment and evidence](../audits/2026-10-23-covered-call-candidates-deployment.md). Earlier local-only status statements below are historical and superseded by this release.
+**Current boundary:** options horizon/expiry fit and context evidence are deployed in `abc32f30`, following the prior covered-call comparison release. All 15 containers are healthy; all 12 backend source hashes match. This update restarted frontend only; all 14 other containers kept their previous start times. [Current feature/policy report and verification](../audits/2026-10-23-options-horizon-context.md). Market-aware ranking remains unavailable pending dated input observations and validated forecasts. Earlier local-only statements are historical preparation records.
 
 **Later release:** explicit covered-call comparison, provider Greek display and regression coverage are now public and deployed in e08dd338; multi-expiry and forecast/regime ranking remain planned.
 
@@ -118,3 +118,6 @@ Automatic-push authorization and deployment completed: e08dd338 public and live,
 ## Options horizon/context continuation
 
 The next frontend-only improvement adds an Options-tab horizon selector, editable calendar-day holding period, expiry compatibility for all four strategies, and a recorded-context evidence panel. It labels company recommendation changes correctly and distinguishes record freshness from input observation dates. Existing highlights become “Goal-fit only”; market-aware preference remains unavailable until provenance/forecast gaps are resolved. Full frontend 864 passed, full typecheck and whitespace clean; backend code unchanged. [Design, policies and remaining data work](../audits/2026-10-23-options-horizon-context.md). Authorized automatic production rollout is recorded in that report once verified.
+
+
+Horizon/context rollout completed: abc32f30 is public and deployed. Full frontend 864 passed and typecheck clean; production build compiled 76 pages. All 15 containers healthy, all 12 backend source hashes match, and every non-frontend container retained its start time. Public TSM and tracker pages serve the new controls/evidence. [Final evidence](../audits/evidence/2026-10-23-options-horizon-context/).
