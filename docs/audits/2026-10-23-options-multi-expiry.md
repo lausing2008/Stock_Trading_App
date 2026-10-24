@@ -1,6 +1,6 @@
 # Holding-compatible covered-call expiration search
 
-Date: October 23, 2026 (America/Los_Angeles). Implementation continuation after the horizon/context release. Deployment and final validation are recorded below when completed.
+Date: October 23, 2026 (America/Los_Angeles). Implementation continuation after the horizon/context release. Public and deployed application release: `6f2b5a5c3e1f6775a5437bbb2055c98b7e8af5ef`.
 
 ## Behavior and limits
 
@@ -23,4 +23,15 @@ The browser accepts supplementary candidates only when symbol, archive session, 
 
 ## Validation and deployment
 
-Frontend validation: 869 tests passed across 72 files; full typecheck and whitespace check passed. Targeted backend checks: 52 passed. Full backend validation and authorized deployment remain pending. Two initial frontend test runs used unsupported assertion helpers or an ambiguous status query; those test-harness errors were corrected before the successful full run. Typecheck also caught a nullable selection access, now explicitly guarded. Regression coverage exercises bounded reads, holding-buffer boundaries, nearest-strike inclusion in other expirations, source-session pinning/mismatch, partial failures, no coverage, explicit selection, context changes, changed spot/session and failed requests.
+Frontend validation: 869 tests passed across 72 files; full typecheck and whitespace check passed. Targeted backend checks: 52 passed. Full backend validation: **5,803 passed, 26 skipped**. Both production images built successfully and the frontend compiled all 76 pages. Two initial frontend test runs used unsupported assertion helpers or an ambiguous status query; those test-harness errors were corrected before the successful full run. Typecheck also caught a nullable selection access, now explicitly guarded. Regression coverage exercises bounded reads, holding-buffer boundaries, nearest-strike inclusion in other expirations, source-session pinning/mismatch, partial failures, no coverage, explicit selection, context changes, changed spot/session and failed requests.
+
+
+### Authorized production rollout
+
+Release `6f2b5a5c` was pushed to public `prod` and deployed under the shared host lock using exact-release image tags and retained rollback images. Only market-data and frontend were recreated. All 15 containers are healthy, all 12 backend source digests match the tested checkout, and the other 13 containers retained their start times. Running frontend build `1dwwrCyVLZLF4jUDTNUMH` matches the prepared image. Five public pages returned HTTP 200; the served TSM and Improvements JavaScript contains the new controls and tracker entry. No dark-pool ledger capture/persist errors were found in the verification log window.
+
+A read-only, repeatable-read production witness with a 10-second per-statement timeout used TSM's October 22 archive and the screenshot's target/stop. For each tested holding period (14, 60 and 120 days), four expirations read successfully and returned 12 screened alternatives, all satisfying the holding-period buffer. The original selection metadata remained unchanged. These are archived research comparisons; none establishes executable prices, a current best strategy or improved win rates.
+
+Verification used deployed calculation helpers, container/source checks, public HTTP/served-build checks and frontend DOM regressions. No authenticated interactive browser acceptance was performed, and the helper witness does not test production advanced-tier authentication end to end. Automated route regressions execute the real handler and composition with synthetic archive dependencies.
+
+[Evidence, scripts and validation](evidence/2026-10-23-options-multi-expiry/README.md). This record is a documentation-only follow-up to the application release; it requires no additional service restart.

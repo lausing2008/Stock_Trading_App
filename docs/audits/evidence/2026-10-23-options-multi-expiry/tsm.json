@@ -1,0 +1,261 @@
+{
+  "checked_at": "2026-10-24T05:09:21.085654+00:00",
+  "current_price": 418.19,
+  "holding_searches": {
+    "120": {
+      "alternatives": [
+        {
+          "credit_before_fees": 358.0,
+          "expiry": "2027-03-19",
+          "strike": 580.0
+        },
+        {
+          "credit_before_fees": 407.0,
+          "expiry": "2027-03-19",
+          "strike": 570.0
+        },
+        {
+          "credit_before_fees": 472.0,
+          "expiry": "2027-03-19",
+          "strike": 560.0
+        },
+        {
+          "credit_before_fees": 538.0,
+          "expiry": "2027-04-16",
+          "strike": 580.0
+        },
+        {
+          "credit_before_fees": 412.0,
+          "expiry": "2027-04-16",
+          "strike": 600.0
+        },
+        {
+          "credit_before_fees": 792.0,
+          "expiry": "2027-04-16",
+          "strike": 550.0
+        },
+        {
+          "credit_before_fees": 950.0,
+          "expiry": "2027-06-17",
+          "strike": 580.0
+        },
+        {
+          "credit_before_fees": 845.0,
+          "expiry": "2027-06-17",
+          "strike": 590.0
+        },
+        {
+          "credit_before_fees": 1060.0,
+          "expiry": "2027-06-17",
+          "strike": 570.0
+        },
+        {
+          "credit_before_fees": 1680.0,
+          "expiry": "2027-09-17",
+          "strike": 580.0
+        },
+        {
+          "credit_before_fees": 1530.0,
+          "expiry": "2027-09-17",
+          "strike": 590.0
+        },
+        {
+          "credit_before_fees": 1780.0,
+          "expiry": "2027-09-17",
+          "strike": 570.0
+        }
+      ],
+      "completed_expiries": [
+        "2027-03-19",
+        "2027-04-16",
+        "2027-06-17",
+        "2027-09-17"
+      ],
+      "eligible_expiry_count": 9,
+      "evaluated_count": 205,
+      "failed_expiries": [],
+      "holding_days": 120,
+      "method_version": "covered_call_candidates_v2",
+      "screened_count": 153,
+      "searched_expiries": [
+        "2027-03-19",
+        "2027-04-16",
+        "2027-06-17",
+        "2027-09-17"
+      ]
+    },
+    "14": {
+      "alternatives": [
+        {
+          "credit_before_fees": 181.0,
+          "expiry": "2026-11-13",
+          "strike": 460.0
+        },
+        {
+          "credit_before_fees": 234.0,
+          "expiry": "2026-11-13",
+          "strike": 455.0
+        },
+        {
+          "credit_before_fees": 310.0,
+          "expiry": "2026-11-13",
+          "strike": 450.0
+        },
+        {
+          "credit_before_fees": 108.0,
+          "expiry": "2026-11-20",
+          "strike": 480.0
+        },
+        {
+          "credit_before_fees": 177.0,
+          "expiry": "2026-11-20",
+          "strike": 470.0
+        },
+        {
+          "credit_before_fees": 280.0,
+          "expiry": "2026-11-20",
+          "strike": 460.0
+        },
+        {
+          "credit_before_fees": 233.0,
+          "expiry": "2026-11-27",
+          "strike": 470.0
+        },
+        {
+          "credit_before_fees": 350.0,
+          "expiry": "2026-11-27",
+          "strike": 460.0
+        },
+        {
+          "credit_before_fees": 417.0,
+          "expiry": "2026-11-27",
+          "strike": 455.0
+        },
+        {
+          "credit_before_fees": 1443.0,
+          "expiry": "2026-12-04",
+          "strike": 425.0
+        },
+        {
+          "credit_before_fees": 1595.0,
+          "expiry": "2026-12-04",
+          "strike": 420.0
+        },
+        {
+          "credit_before_fees": 1855.0,
+          "expiry": "2026-12-04",
+          "strike": 415.0
+        }
+      ],
+      "completed_expiries": [
+        "2026-11-13",
+        "2026-11-20",
+        "2026-11-27",
+        "2026-12-04"
+      ],
+      "eligible_expiry_count": 16,
+      "evaluated_count": 246,
+      "failed_expiries": [],
+      "holding_days": 14,
+      "method_version": "covered_call_candidates_v2",
+      "screened_count": 74,
+      "searched_expiries": [
+        "2026-11-13",
+        "2026-11-20",
+        "2026-11-27",
+        "2026-12-04"
+      ]
+    },
+    "60": {
+      "alternatives": [
+        {
+          "credit_before_fees": 53.0,
+          "expiry": "2027-01-15",
+          "strike": 600.0
+        },
+        {
+          "credit_before_fees": 158.0,
+          "expiry": "2027-01-15",
+          "strike": 550.0
+        },
+        {
+          "credit_before_fees": 246.0,
+          "expiry": "2027-01-15",
+          "strike": 530.0
+        },
+        {
+          "credit_before_fees": 350.0,
+          "expiry": "2027-02-19",
+          "strike": 550.0
+        },
+        {
+          "credit_before_fees": 622.0,
+          "expiry": "2027-02-19",
+          "strike": 520.0
+        },
+        {
+          "credit_before_fees": 725.0,
+          "expiry": "2027-02-19",
+          "strike": 510.0
+        },
+        {
+          "credit_before_fees": 358.0,
+          "expiry": "2027-03-19",
+          "strike": 580.0
+        },
+        {
+          "credit_before_fees": 407.0,
+          "expiry": "2027-03-19",
+          "strike": 570.0
+        },
+        {
+          "credit_before_fees": 472.0,
+          "expiry": "2027-03-19",
+          "strike": 560.0
+        },
+        {
+          "credit_before_fees": 538.0,
+          "expiry": "2027-04-16",
+          "strike": 580.0
+        },
+        {
+          "credit_before_fees": 412.0,
+          "expiry": "2027-04-16",
+          "strike": 600.0
+        },
+        {
+          "credit_before_fees": 792.0,
+          "expiry": "2027-04-16",
+          "strike": 550.0
+        }
+      ],
+      "completed_expiries": [
+        "2027-01-15",
+        "2027-02-19",
+        "2027-03-19",
+        "2027-04-16"
+      ],
+      "eligible_expiry_count": 11,
+      "evaluated_count": 226,
+      "failed_expiries": [],
+      "holding_days": 60,
+      "method_version": "covered_call_candidates_v2",
+      "screened_count": 111,
+      "searched_expiries": [
+        "2027-01-15",
+        "2027-02-19",
+        "2027-03-19",
+        "2027-04-16"
+      ]
+    }
+  },
+  "method": "read_only_stored_chain_reproduction",
+  "original_call_expiry": "2026-11-20",
+  "screenshot_inputs": {
+    "stop_loss": 404.07,
+    "take_profit": 584.39
+  },
+  "source_session": "2026-10-22",
+  "symbol": "TSM",
+  "today": "2026-10-24"
+}

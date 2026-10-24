@@ -124,3 +124,6 @@ Horizon/context rollout completed: abc32f30 is public and deployed. Full fronten
 
 
 Covered-call expiration search continuation: an explicit request compares up to four archived expirations that cover the declared holding period plus two calendar days. Coverage and read failures are visible; no alternative is silently selected, the original target is preserved, and changed context invalidates pending comparisons. [Implementation, limits and validation](../audits/2026-10-23-options-multi-expiry.md). The Improvements page includes this work.
+
+
+Multi-expiration search rollout completed: application release 6f2b5a5c is public and live. Backend 5,803 passed / 26 skipped; frontend 869 passed with full typecheck; production compiled 76 pages. All 15 containers healthy, all 12 backend source digests match, and only market-data/frontend restarted. TSM read-only 14/60/120-day witnesses each returned 12 alternatives across four expirations without failed reads. [Report and evidence](../audits/2026-10-23-options-multi-expiry.md).

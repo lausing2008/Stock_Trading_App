@@ -1,0 +1,9 @@
+5803 passed, 26 skipped, 29 warnings in 379.07s (0:06:19)
+
+
+ Test Files  72 passed (72)
+      Tests  869 passed (869)
+   Start at  22:03:08
+   Duration  14.61s (transform 6.59s, setup 18ms, collect 22.47s, tests 29.38s, environment 37.36s, prepare 18.04s)
+
+Full frontend typecheck: passed. Production image build: 76 pages compiled.
