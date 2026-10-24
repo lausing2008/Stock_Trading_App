@@ -2607,15 +2607,15 @@ export type AddStocksResult = {
 };
 
 export type OptionStrategyMatrix = {
-  candidate_review?: { covered_call?: {
-    method_version: 'covered_call_candidates_v1' | 'covered_call_candidates_v2'; anchor: number; expiry: string | null;
+  candidate_review?: Partial<Record<'covered_call' | 'long_call' | 'protective_put' | 'cash_secured_put', {
+    method_version: 'covered_call_candidates_v1' | 'covered_call_candidates_v2' | 'single_leg_candidates_v1'; strategy_key?: string; search_date?: string; anchor: number; expiry: string | null;
     holding_days?: number; buffer_days?: number; eligible_expiry_count?: number;
     searched_expiries?: string[]; completed_expiries?: string[]; failed_expiries?: string[];
     scope: string; evaluated_count: number; screened_count: number;
     rejected_counts: Record<string, number>;
     original: { strike: number | null; option_symbol: string | null; reason: string | null };
     ranking: string; alternatives: OptionStrategy[]; actionability: 'research_only';
-  } };
+  }>>;
   singles: Record<string, OptionStrategy>;
   combos: Record<string, OptionStrategy>;
   /** SR-07 (2026-10-02): structures the chain COULD price but that must not be shown with a

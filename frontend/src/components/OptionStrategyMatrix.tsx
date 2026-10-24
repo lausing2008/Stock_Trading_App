@@ -174,6 +174,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
 }) {
   const now = useNow();
   const research = researchContext ? reviewOptionResearchContext(researchContext, now) : null;
+  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(now));
   const holdingKey = researchContext ? `${researchContext.symbol}:${researchContext.horizon}` : '';
   const [holdingOverride, setHoldingOverride] = useState<{ key: string; value: string } | null>(null);
   const holdingText = holdingOverride?.key === holdingKey ? holdingOverride.value : String(Object.hasOwn(OPTION_HOLDING_DEFAULTS, researchContext?.horizon ?? '') ? OPTION_HOLDING_DEFAULTS[researchContext!.horizon] : '');
@@ -182,52 +183,66 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
   const [cash, setCash] = useState('');
   const [premiumBudget, setPremiumBudget] = useState('');
   type CandidateReview = NonNullable<NonNullable<OptionStrategyMatrix['candidate_review']>['covered_call']>;
-  const [coveredChoice, setCoveredChoice] = useState<{ source: CandidateReview; index: number } | null>(null);
+  const [comparisonKey, setComparisonKey] = useState<CommonOptionKey>('covered_call');
+  const [choices, setChoices] = useState<Partial<Record<CommonOptionKey, { source: CandidateReview; index: number }>>>({});
   const [assignmentAcceptance, setAssignmentAcceptance] = useState<string | null>(null);
   const searchGeneration = useRef(0);
-  const [search, setSearch] = useState<{ key: string; source: OptionStrategyMatrix; review?: CandidateReview; pending?: boolean; error?: string } | null>(null);
-  const searchKey = JSON.stringify([holdingKey, holdingText, chainAsOf, spot, stopLoss, takeProfit]);
+  const [search, setSearch] = useState<{ key: string; source: OptionStrategyMatrix; reviews?: OptionStrategyMatrix['candidate_review']; pending?: boolean; error?: string } | null>(null);
+  const searchKey = JSON.stringify([holdingKey, holdingText, chainAsOf, spot, stopLoss, takeProfit, today]);
   useEffect(() => {
     searchGeneration.current += 1;
     setSearch(null);
-    setCoveredChoice(null);
+    setChoices({});
     setAssignmentAcceptance(null);
     return () => { searchGeneration.current += 1; };
   }, [matrix, searchKey]);
   const currentSearch = search?.key === searchKey && search.source === matrix ? search : null;
-  const candidates = currentSearch?.review ?? matrix.candidate_review?.covered_call;
+  const reviews = currentSearch?.reviews ?? matrix.candidate_review;
+  const candidates = reviews?.[comparisonKey];
+  const coveredChoice = choices[comparisonKey];
   const alternative = coveredChoice && coveredChoice.source === candidates ? candidates?.alternatives[coveredChoice.index] : undefined;
   const searchExpiries = async () => {
     if (!researchContext || !Number.isInteger(Number(holdingText)) || Number(holdingText) < 1 || Number(holdingText) > 365) return;
     const generation = ++searchGeneration.current;
     setSearch({ key: searchKey, source: matrix, pending: true });
-    setCoveredChoice(null);
+    setChoices({});
     setAssignmentAcceptance(null);
     try {
       const result = await api.getOptionsGamePlan(researchContext.symbol, { stopLoss, takeProfit, holdingDays: Number(holdingText) });
       if (generation !== searchGeneration.current) return;
-      const review = result.strategy_matrix?.candidate_review?.covered_call;
-      if (result.symbol !== researchContext.symbol || result.chain_as_of !== chainAsOf || result.current_price !== spot || review?.method_version !== 'covered_call_candidates_v2' || review.holding_days !== Number(holdingText)) {
+      const reviews = result.strategy_matrix?.candidate_review;
+      const review = reviews?.covered_call;
+      if (result.symbol !== researchContext.symbol || result.chain_as_of !== chainAsOf || result.current_price !== spot || review?.method_version !== 'covered_call_candidates_v2' || review.holding_days !== Number(holdingText) || (review.search_date && review.search_date !== today)) {
         throw new Error('Search context changed or is unavailable. Refresh the game plan before searching again.');
       }
-      setSearch({ key: searchKey, source: matrix, review });
+      setSearch({ key: searchKey, source: matrix, reviews });
     } catch (error) {
       if (generation === searchGeneration.current) setSearch({ key: searchKey, source: matrix, error: error instanceof Error ? error.message : 'Expiration search failed. Retry when the service recovers.' });
     }
   };
-  const comparedMatrix = alternative ? { ...matrix, candidate_review: undefined, singles: { ...matrix.singles, covered_call: alternative } } : matrix;
+  const comparedMatrix = { ...matrix, singles: { ...matrix.singles }, candidate_review: { ...reviews } };
+  for (const key of COMMON_OPTION_KEYS) {
+    const choice = choices[key];
+    const source = reviews?.[key];
+    const selected = choice?.source === source && choice ? source?.alternatives[choice.index] : undefined;
+    if (selected) {
+      comparedMatrix.singles[key] = selected;
+      delete comparedMatrix.candidate_review[key];
+    }
+  }
+  const selectionName = comparisonKey === 'covered_call' ? 'Covered-call' : COMMON_OPTION_NAMES[comparisonKey];
+  const sectionName = comparisonKey === 'covered_call' ? 'Covered call' : COMMON_OPTION_NAMES[comparisonKey];
   const assignmentKey = JSON.stringify([comparedMatrix.singles.covered_call?.legs, comparedMatrix.singles.cash_secured_put?.legs, chainAsOf]);
   const acceptAssignment = assignmentAcceptance === assignmentKey;
   const amount = (text: string) => text.trim() && Number.isFinite(Number(text)) && Number(text) >= 0 ? Number(text) : null;
   const context: OptionPlanContext = { goal, shares: amount(shares), cash: amount(cash), premiumBudget: amount(premiumBudget), acceptAssignment, stop: stopLoss, target: takeProfit, holdingDays: researchContext ? (holdingText.trim() ? Number(holdingText) : null) : undefined };
-  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(now));
   const review = recommendCommonOption(comparedMatrix, context, today, chainAsOf);
   const comboKeys = Object.keys(matrix.combos);
   return <section aria-label="Four common option strategies" style={{ marginTop: 16 }}>
     <h3>Four common strategies & conditional preference</h3>
     <p>Compare one standard 100-share contract. These are research illustrations using settled provider prices
       {chainAsOf ? ` observed ${chainAsOf}` : ' with an unknown observation date'}, not live executable quotes.</p>
-    <p>Original contract selection uses the nearest strike to spot, the stock stop or target, and preset expiry windows. Covered-call alternatives initially screen the selected call expiry; an explicit holding-period search can compare other expirations. Choosing one changes this comparison only. Delta, gamma, open interest and breakeven are not jointly optimized. This comparison does not establish the best return.</p>
+    <p>Original contract selection uses the nearest strike to spot, the stock stop or target, and preset expiry windows. Covered-call alternatives initially screen the selected call expiry; an explicit holding-period search compares all four strategies across other expirations. Choosing one changes this comparison only. Delta, gamma, open interest and breakeven are not jointly optimized. This comparison does not establish the best return.</p>
     {researchContext && research && <section aria-label="Horizon and market context evidence" style={{ ...CARD, marginBottom: 14 }}>
       <h4>Strategy research horizon: {researchContext.horizon}</h4>
       <div className="option-strategy-inputs"><label style={{ maxWidth: 300 }}>Planned holding period (calendar days)<input aria-label="Planned holding period (calendar days)" type="number" min="1" max="365" step="1" value={holdingText}
@@ -259,38 +274,49 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
       <p>Premium targets and exits below are illustrative policies, not calibrated forecasts or guaranteed fills.
         For hedges and covered calls, the premium budget does not cap stock losses.</p>
     </div>
-    {candidates && <section aria-label="Covered call contract selection" style={{ ...CARD, marginBottom: 14 }}>
-      <h4>Covered call — contract selection</h4>
+    {(matrix.candidate_review || researchContext) && <section aria-label={`${sectionName} contract selection`} style={{ ...CARD, marginBottom: 14 }}>
+      <h4>{sectionName} — contract selection</h4>
+      {COMMON_OPTION_KEYS.some(key => choices[key]?.source === reviews?.[key] && choices[key]) && <p>Selected comparisons: {COMMON_OPTION_KEYS.flatMap(key => {
+        const choice = choices[key];
+        const selected = choice && choice.source === reviews?.[key] ? reviews?.[key]?.alternatives[choice.index] : undefined;
+        return selected ? [`${COMMON_OPTION_NAMES[key]}: ${fmtUSD(selected.legs[0].strike)} · ${selected.legs[0].expiry}`] : [];
+      }).join('; ')}. Combinations retain their original legs.</p>}
+      <label>Strategy for contract comparison<select aria-label="Strategy for contract comparison" value={comparisonKey} onChange={e => setComparisonKey(e.target.value as CommonOptionKey)}>
+        {COMMON_OPTION_KEYS.map(key => <option key={key} value={key}>{COMMON_OPTION_NAMES[key]}</option>)}
+      </select></label>
+      {researchContext && <p><button type="button" disabled={!!currentSearch?.pending || !Number.isInteger(Number(holdingText)) || Number(holdingText) < 1 || Number(holdingText) > 365} onClick={searchExpiries}>
+        {currentSearch?.pending ? 'Searching expirations…' : 'Find expirations for holding period'}</button> Searches all four strategies across up to four eligible expirations from the same archived session, on request only.</p>}
+      {currentSearch?.error && <p role="alert">{currentSearch.error} Original comparison remains available.</p>}
+      {candidates ? <>
       <p>Original anchor {fmtUSD(candidates.anchor)} · expiry {candidates.expiry ?? 'unknown'} · selected strike {fmtUSD(candidates.original.strike)}.</p>
       <p>{candidates.original.reason ? `Original candidate: ${candidateReason(candidates.original.reason)}.` : 'Original candidate passed the basic quote screen; holdings, freshness and broker checks remain separate.'}</p>
-      {researchContext && <p><button type="button" disabled={!!currentSearch?.pending || !Number.isInteger(Number(holdingText)) || Number(holdingText) < 1 || Number(holdingText) > 365} onClick={searchExpiries}>
-        {currentSearch?.pending ? 'Searching expirations…' : 'Find expirations for holding period'}</button> Searches up to four eligible expirations from the same archived session, on request only.</p>}
-      {currentSearch?.error && <p role="alert">{currentSearch.error} Original comparison remains available.</p>}
-      <p>{candidates.screened_count} of {candidates.evaluated_count} rows passed the research quote/payoff screen. {candidates.method_version === 'covered_call_candidates_v2' ? 'Counts include unsupported rows refused by this screen. ' : 'Counts cover supplied rows after upstream contract exclusions. '}{candidates.method_version === 'covered_call_candidates_v2'
+      <p>{candidates.screened_count} of {candidates.evaluated_count} rows passed the research quote/payoff screen. {candidates.method_version !== 'covered_call_candidates_v1' ? 'Counts include unsupported rows refused by this screen. ' : 'Counts cover supplied rows after upstream contract exclusions. '}{candidates.method_version !== 'covered_call_candidates_v1'
         ? `Scope: ${candidates.completed_expiries?.length ?? 0} of ${candidates.searched_expiries?.length ?? 0} attempted expirations read; ${candidates.eligible_expiry_count ?? 0} eligible expirations in this archive. Minimum remaining life: ${candidates.holding_days! + candidates.buffer_days!} calendar days. Read: ${candidates.completed_expiries?.join(', ') || 'none'}.`
         : 'Scope: one selected expiration; other expirations are not searched.'}</p>
       {!!candidates.failed_expiries?.length && <p role="alert">Expiration reads failed: {candidates.failed_expiries.join(', ')}. Results are incomplete; a failure is not absence of contracts.</p>}
       {!!Object.keys(candidates.rejected_counts).length && <p>Excluded: {Object.entries(candidates.rejected_counts).map(([reason, count]) => `${count} ${candidateReason(reason)}`).join('; ')}.</p>}
       <p>{candidates.ranking} The 20% spread ceiling is a research policy; quote age, size and actual deliverables are unverified.</p>
-      {candidates.alternatives.length ? <label>Covered-call contract to compare<select aria-label="Covered-call contract to compare"
+      {candidates.alternatives.length ? <label>{selectionName} contract to compare<select aria-label={`${selectionName} contract to compare`}
         value={alternative && coveredChoice ? String(coveredChoice.index) : 'original'} onChange={e => {
-          setCoveredChoice(e.target.value === 'original' ? null : { source: candidates, index: Number(e.target.value) });
+          const value = e.target.value;
+          setChoices(previous => ({ ...previous, [comparisonKey]: value === 'original' ? undefined : { source: candidates, index: Number(value) } }));
           setAssignmentAcceptance(null);
         }}>
-        <option value="original">Original target-strike selection</option>
+        <option value="original">{comparisonKey === 'covered_call' ? 'Original target-strike selection' : 'Original plan selection'}</option>
         {candidates.alternatives.map((s, i) => <option key={s.legs[0].option_symbol ?? i} value={String(i)}>
-          Compare {fmtUSD(s.legs[0].strike)} call · {s.legs[0].expiry} · {fmtUSD(s.net_per_contract)} credit before fees
+          Compare {fmtUSD(s.legs[0].strike)} {s.legs[0].right} · {s.legs[0].expiry} · {fmtUSD(s.net_per_contract)} {s.net} before fees
         </option>)}
       </select></label> : <p>No other contract passed this screen. This does not establish absence in other expirations.</p>}
       {alternative && <p role="status">Comparing an explicitly selected alternative at {fmtUSD(alternative.legs[0].strike)}.
-        {' '}Stock target remains {fmtUSD(takeProfit)}; selling this call caps stock upside at its strike.
+        {' '}Stock target remains {fmtUSD(takeProfit)}; stock stop remains {fmtUSD(stopLoss)}. {comparisonKey === 'covered_call' ? 'Selling this call caps stock upside at its strike.' : 'Review the selected strike, expiry and payoff for this strategy.'}
         {' '}Confirm assignment acceptance again. Combinations still use their original legs. This is not an expected-return ranking.</p>}
+      </> : <p>Search expirations to compare contracts for this strategy. Its original card remains below.</p>}
     </section>}
     <div className="common-option-strategy-grid">
       {COMMON_OPTION_KEYS.map(key => comparedMatrix.singles[key]
         ? <StrategyCard key={key} s={comparedMatrix.singles[key]} spot={spot} highlight={review.primary === key} review={review.plans[key]} />
         : <article key={key} style={CARD}><h4>{COMMON_OPTION_NAMES[key]}</h4>
-          <p>No usable priced contract at the selected strike and expiry. {candidates && key === 'covered_call' ? 'Select a screened alternative above if available.' : 'Nearby strikes have not been exhaustively searched.'} Entry, premium targets and stops are unavailable; refresh the chain.</p>
+          <p>No usable priced contract at the selected strike and expiry. {reviews?.[key] ? 'Select this strategy and a screened alternative above if available.' : 'Nearby strikes have not been exhaustively searched.'} Entry, premium targets and stops are unavailable; refresh the chain.</p>
           <p>{review.plans[key].blockers.join(' ')}</p><details><summary>Playbook — before entry, while open & exit</summary><ol>{review.plans[key].steps.map(step => <li key={step}>{step}</li>)}</ol></details>
         </article>)}
     </div>

@@ -35,6 +35,18 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: "OPTIONS-FOUR-STRATEGY-EXPIRATIONS",
+    tier: 468,
+    severity: "feature",
+    defaultStatus: "done",
+    title: "Holding-compatible expiration comparisons for all four strategies",
+    file: "docs/audits/2026-10-23-four-strategy-expirations.md",
+    effort: "M",
+    impact: "Long calls, protective puts and cash-secured puts gain the explicit expiration comparison already available for covered calls.",
+    what: "The original preset expiry can be shorter than the declared holding period, and one expiry cannot establish absence of usable contracts.",
+    fix: "One explicit search screens all four strategies using at most four additional archive reads, shared across sides and strategies with failures cached too. Reuse original payoff arithmetic; enforce supported terms, two-sided noncrossed quotes, exact spread policy and strategy-specific payoff consistency. Preserve original plans and combination legs; explicit choices remain visible across strategy switches and clear assignment acceptance. Date changes invalidate pending and displayed search context. Expected-return optimization still requires independently dated inputs and validated costs/fills.",
+  },
+  {
     id: "OPTIONS-MULTI-EXPIRY-COVERED-CALL",
     tier: 468,
     severity: "feature",

@@ -221,6 +221,64 @@ def _pct(part: float, whole: float) -> float | None:
     return round(part / whole * 100, 2) if whole else None
 
 
+def _single_leg_strategy(key, leg, current_price):
+    """Shared payoff arithmetic for original plans and explicitly compared candidates."""
+    if key == "covered_call":
+        return _covered_call_strategy(leg, current_price)
+    debit = credit = leg["price_per_share"]
+    if key == 'long_call':
+        return {
+            "name": "Long Call", "direction": "bullish", "net": "debit",
+            "legs": [leg],
+            "net_per_share": round(debit, 2),
+            "net_per_contract": round(debit * _CONTRACT_MULTIPLIER, 2),
+            "max_loss_per_contract": round(debit * _CONTRACT_MULTIPLIER, 2),
+            "max_profit_per_contract": None,          # unbounded
+            "breakeven": round(leg["strike"] + debit, 2),
+            "breakeven_move_pct": _pct(leg["strike"] + debit - current_price, current_price),
+            "requires_shares": False,
+            "directional_exposure": "bullish",
+            "collateral_per_contract": round(debit * _CONTRACT_MULTIPLIER, 2),
+            "what_it_does": "Pays for the right to buy at the strike. Full premium is lost if the stock is below the strike at expiry.",
+            "use_when": "You expect a move up big enough and soon enough to clear the breakeven, and you want a hard cap on what you can lose.",
+        }
+    if key == 'protective_put':
+        return {
+            "name": "Protective Put", "direction": "hedge", "net": "debit",
+            "legs": [leg],
+            "net_per_share": round(debit, 2),
+            "net_per_contract": round(debit * _CONTRACT_MULTIPLIER, 2),
+            "max_loss_per_contract": round((current_price - leg["strike"] + debit) * _CONTRACT_MULTIPLIER, 2),
+            "max_profit_per_contract": None,          # you still own the upside
+            "breakeven": round(current_price + debit, 2),
+            "breakeven_move_pct": _pct(debit, current_price),
+            "requires_shares": True,
+            "directional_exposure": "hedge_long",
+            "collateral_per_contract": round(debit * _CONTRACT_MULTIPLIER, 2),
+            "effective_floor": round(leg["strike"] - debit, 2),
+            "what_it_does": f"Insurance. Puts a floor near ${leg['strike'] - debit:.2f} no matter how far the stock falls.",
+            "use_when": "You own the shares, want to keep the upside, and are willing to pay a known premium to bound the downside.",
+        }
+    if key == 'cash_secured_put':
+        return {
+            "name": "Cash-Secured Put", "direction": "neutral-to-bullish", "net": "credit",
+            "legs": [leg],
+            "net_per_share": round(credit, 2),
+            "net_per_contract": round(credit * _CONTRACT_MULTIPLIER, 2),
+            "max_loss_per_contract": round((leg["strike"] - credit) * _CONTRACT_MULTIPLIER, 2),
+            "max_profit_per_contract": round(credit * _CONTRACT_MULTIPLIER, 2),
+            "breakeven": round(leg["strike"] - credit, 2),
+            "breakeven_move_pct": _pct(leg["strike"] - credit - current_price, current_price),
+            "requires_shares": False,
+            "directional_exposure": "income_bullish",
+            "collateral_per_contract": round(leg["strike"] * _CONTRACT_MULTIPLIER, 2),
+            "effective_entry": round(leg["strike"] - credit, 2),
+            "what_it_does": f"Paid now to promise to buy at ${leg['strike']:.2f}; if assigned your effective cost is ${leg['strike'] - credit:.2f}.",
+            "use_when": "You want the shares but at a lower price, and are genuinely willing to own them if it drops.",
+        }
+    raise ValueError("Unknown single-leg strategy")
+
+
 def _covered_call_strategy(leg: dict, current_price: float) -> dict:
     credit = leg["price_per_share"]
     return {
@@ -240,10 +298,11 @@ def _covered_call_strategy(leg: dict, current_price: float) -> dict:
     }
 
 
-def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price, *, include_selected=False):
-    """Screen the already-fetched call chain; never silently replace a user's target.
+def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price, *, include_selected=False, strategy_key="covered_call"):
+    """Screen a supplied single-leg chain; never silently replace a user's target.
 
     20% is the existing frontend research spread policy, not an optimized liquidity rule.
+    The default preserves the covered-call API; other keys reuse the same screens.
     OI/Greeks are disclosed; they do not establish executability or expected return.
     """
     rejects = {}
@@ -268,19 +327,25 @@ def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price, *,
             if spread > 20:
                 reason = "spread_exceeds_20_percent"
             else:
-                leg = _leg(row, "sell", expiry, dte)
+                action = "buy" if strategy_key in ("long_call", "protective_put") else "sell"
+                right = "call" if strategy_key in ("long_call", "covered_call") else "put"
+                leg = _leg({**row, "right": right}, action, expiry, dte)
                 if not leg:
                     reason = "invalid_or_expired_contract"
-                elif leg["price_per_share"] > current_price:
+                elif right == "call" and leg["price_per_share"] > current_price:
                     reason = "invalid_payoff"
-                elif leg["strike"] - current_price + leg["price_per_share"] <= 0:
+                elif strategy_key == "covered_call" and leg["strike"] - current_price + leg["price_per_share"] <= 0:
                     reason = "non_positive_max_profit"
+                elif strategy_key in ("protective_put", "cash_secured_put") and leg["price_per_share"] >= leg["strike"]:
+                    reason = "invalid_payoff"
+                elif strategy_key == "protective_put" and current_price - leg["strike"] + leg["price_per_share"] < 0:
+                    reason = "invalid_payoff"
                 else:
                     oi = row.get("oi")
                     known_oi = isinstance(oi, (int, float)) and not isinstance(oi, bool) and math.isfinite(oi) and oi >= 0
                     rank = (abs(leg["strike"] - anchor), spread, -oi if known_oi else 0,
                             leg["strike"], str(row.get("option_symbol") or ""), leg["price_per_share"])
-                    screened.append((rank, row, _covered_call_strategy(leg, current_price)))
+                    screened.append((rank, row, _single_leg_strategy(strategy_key, leg, current_price)))
         if row is selected:
             selected_reason = reason
         if reason:
@@ -304,7 +369,7 @@ def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price, *,
             "alternatives": list(unique.values())[:3], "actionability": "research_only"}
 
 
-def covered_call_expiry_search(*, original, expiries, today, holding_days, current_price, read_rows):
+def covered_call_expiry_search(*, original, expiries, today, holding_days, current_price, read_rows, strategy_key="covered_call"):
     """Bounded archive search. Reader must enforce one source session; failures stay visible."""
     eligible = sorted({e for e in expiries if (date.fromisoformat(e) - today).days >= holding_days + 2})
     searched = eligible[:4]
@@ -318,14 +383,16 @@ def covered_call_expiry_search(*, original, expiries, today, holding_days, curre
             continue
         completed.append(expiry)
         review = _covered_call_candidates(rows, original['anchor'], expiry,
-            (date.fromisoformat(expiry) - today).days, today, current_price, include_selected=True)
+            (date.fromisoformat(expiry) - today).days, today, current_price, include_selected=True, strategy_key=strategy_key)
         evaluated += review['evaluated_count']
         screened += review['screened_count']
         for reason, count in review['rejected_counts'].items():
             rejects[reason] = rejects.get(reason, 0) + count
         alternatives.extend(s for s in review['alternatives']
             if s['legs'][0].get('option_symbol') != original['original'].get('option_symbol'))
-    return {**original, 'method_version': 'covered_call_candidates_v2',
+    return {**original, 'method_version': 'covered_call_candidates_v2' if strategy_key == 'covered_call' else 'single_leg_candidates_v1',
+        'strategy_key': strategy_key,
+        'search_date': today.isoformat(),
         'scope': 'first_four_expirations_covering_holding_period',
         'holding_days': holding_days, 'buffer_days': 2,
         'eligible_expiry_count': len(eligible), 'searched_expiries': searched,
@@ -385,22 +452,7 @@ def build_strategy_matrix(
     # direction but slow still loses the entire debit.
     leg = _leg(atm_call, "buy", call_expiry, call_dte)
     if leg:
-        debit = leg["price_per_share"]
-        singles["long_call"] = {
-            "name": "Long Call", "direction": "bullish", "net": "debit",
-            "legs": [leg],
-            "net_per_share": round(debit, 2),
-            "net_per_contract": round(debit * _CONTRACT_MULTIPLIER, 2),
-            "max_loss_per_contract": round(debit * _CONTRACT_MULTIPLIER, 2),
-            "max_profit_per_contract": None,          # unbounded
-            "breakeven": round(leg["strike"] + debit, 2),
-            "breakeven_move_pct": _pct(leg["strike"] + debit - current_price, current_price),
-            "requires_shares": False,
-            "directional_exposure": "bullish",
-            "collateral_per_contract": round(debit * _CONTRACT_MULTIPLIER, 2),
-            "what_it_does": "Pays for the right to buy at the strike. Full premium is lost if the stock is below the strike at expiry.",
-            "use_when": "You expect a move up big enough and soon enough to clear the breakeven, and you want a hard cap on what you can lose.",
-        }
+        singles['long_call'] = _single_leg_strategy('long_call', leg, current_price)
 
     # ── 2. SELL CALL — covered call ────────────────────────────────────────────────────
     # Income, but it is NOT free: you have sold your upside above the strike. This is the
@@ -413,23 +465,7 @@ def build_strategy_matrix(
     # ── 3. BUY PUT — protective put ────────────────────────────────────────────────────
     leg = _leg(stop_put or atm_put, "buy", put_expiry, put_dte)
     if leg:
-        debit = leg["price_per_share"]
-        singles["protective_put"] = {
-            "name": "Protective Put", "direction": "hedge", "net": "debit",
-            "legs": [leg],
-            "net_per_share": round(debit, 2),
-            "net_per_contract": round(debit * _CONTRACT_MULTIPLIER, 2),
-            "max_loss_per_contract": round((current_price - leg["strike"] + debit) * _CONTRACT_MULTIPLIER, 2),
-            "max_profit_per_contract": None,          # you still own the upside
-            "breakeven": round(current_price + debit, 2),
-            "breakeven_move_pct": _pct(debit, current_price),
-            "requires_shares": True,
-            "directional_exposure": "hedge_long",
-            "collateral_per_contract": round(debit * _CONTRACT_MULTIPLIER, 2),
-            "effective_floor": round(leg["strike"] - debit, 2),
-            "what_it_does": f"Insurance. Puts a floor near ${leg['strike'] - debit:.2f} no matter how far the stock falls.",
-            "use_when": "You own the shares, want to keep the upside, and are willing to pay a known premium to bound the downside.",
-        }
+        singles['protective_put'] = _single_leg_strategy('protective_put', leg, current_price)
 
     # ── 4. SELL PUT — cash-secured put ─────────────────────────────────────────────────
     # The leg most often missing from a "game plan", and the one that answers "I want in, but
@@ -437,23 +473,7 @@ def build_strategy_matrix(
     # is owning the stock at the strike after it has fallen through it.
     leg = _leg(stop_put or atm_put, "sell", put_expiry, put_dte)
     if leg:
-        credit = leg["price_per_share"]
-        singles["cash_secured_put"] = {
-            "name": "Cash-Secured Put", "direction": "neutral-to-bullish", "net": "credit",
-            "legs": [leg],
-            "net_per_share": round(credit, 2),
-            "net_per_contract": round(credit * _CONTRACT_MULTIPLIER, 2),
-            "max_loss_per_contract": round((leg["strike"] - credit) * _CONTRACT_MULTIPLIER, 2),
-            "max_profit_per_contract": round(credit * _CONTRACT_MULTIPLIER, 2),
-            "breakeven": round(leg["strike"] - credit, 2),
-            "breakeven_move_pct": _pct(leg["strike"] - credit - current_price, current_price),
-            "requires_shares": False,
-            "directional_exposure": "income_bullish",
-            "collateral_per_contract": round(leg["strike"] * _CONTRACT_MULTIPLIER, 2),
-            "effective_entry": round(leg["strike"] - credit, 2),
-            "what_it_does": f"Paid now to promise to buy at ${leg['strike']:.2f}; if assigned your effective cost is ${leg['strike'] - credit:.2f}.",
-            "use_when": "You want the shares but at a lower price, and are genuinely willing to own them if it drops.",
-        }
+        singles['cash_secured_put'] = _single_leg_strategy('cash_secured_put', leg, current_price)
 
     # ── 5. COLLAR — long put + short call ──────────────────────────────────────────────
     # The natural pairing of the two legs this page already had. The short call PAYS for the

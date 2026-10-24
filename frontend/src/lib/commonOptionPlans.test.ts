@@ -90,3 +90,16 @@ it.each([null, 0, -1, 1.5, 366, NaN, Infinity])('rejects an invalid declared hol
 it.each(COMMON_OPTION_KEYS)('applies holding/expiry checks to %s', key => {
   expect(commonOptionPlan(key, strategy(key), { ...context, holdingDays: 60 }, today).blockers.join(' ')).toContain('planned holding period');
 });
+
+it.each(['long_call', 'protective_put', 'cash_secured_put'] as const)('blocks an unscreened original %s after search', key => {
+  const m = { singles: { [key]: strategy(key) }, combos: {}, iv_rank: null, iv_regime: 'unknown' as const,
+    recommendation: { primary: null, reason: 'Wait' }, candidate_review: { [key]: {
+      method_version: 'single_leg_candidates_v1' as const, anchor: 100, expiry: '2026-11-20', scope: 'test',
+      evaluated_count: 1, screened_count: 0, rejected_counts: { invalid_payoff: 1 },
+      original: { strike: 100, option_symbol: null, reason: 'invalid_payoff' },
+      ranking: 'test', alternatives: [], actionability: 'research_only' as const,
+    } } };
+  const result = recommendCommonOption(m, context, today, today);
+  expect(result.plans[key].blockers.join(' ')).toContain('failed the research screen');
+  expect(result.primary).not.toBe(key);
+});

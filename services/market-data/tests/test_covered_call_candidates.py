@@ -115,14 +115,19 @@ def test_real_route_keeps_a_response_visible_when_only_alternatives_can_be_built
         assert kwargs['as_of'] == TODAY
         reads.append(args[2])
         as_of = '2026-01-01' if mismatched_search and len(reads) > 2 else TODAY.isoformat()
-        return SimpleNamespace(calls=rows, puts=[], as_of=as_of)
+        return SimpleNamespace(calls=rows, puts=[row(95, option_symbol='SEARCH-PUT')] if len(reads) > 2 else [], as_of=as_of)
     namespace.update(_today_et=lambda: TODAY, _goal_current_price=lambda *args: 100,
                      _uw_session_expiries=lambda *args: (TODAY, [EXP]),
                      _uw_option_chain=read_chain,
                      _options_chain_rows=lambda values, symbol: values)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[handler], type_ignores=[])), '<real route>', 'exec'), namespace)
     result = namespace['get_options_game_plan']('EXAMPLE', 95, 120, None, object(), None, holding_days)
-    review = result['strategy_matrix']['candidate_review']['covered_call']
+    reviews = result['strategy_matrix']['candidate_review']
+    review = reviews['covered_call']
+    assert len(reads) == (2 if holding_days is None else 3)
+    if holding_days is not None:
+        assert set(reviews) == {'covered_call', 'long_call', 'protective_put', 'cash_secured_put'}
+        assert all(r['failed_expiries'] == ([EXP] if mismatched_search else []) for r in reviews.values())
     assert result['strategy_matrix']['singles'] == {}
     if mismatched_search:
         assert review['failed_expiries'] == [EXP]
@@ -130,6 +135,10 @@ def test_real_route_keeps_a_response_visible_when_only_alternatives_can_be_built
     else:
         assert result['available'] is True
         assert review['alternatives'][0]['legs'][0]['strike'] == 110
+        if holding_days is not None:
+            assert all(r['alternatives'] for r in reviews.values())
+            assert reviews['protective_put']['alternatives'][0]['legs'][0]['right'] == 'put'
+            assert reviews['cash_secured_put']['alternatives'][0]['legs'][0]['action'] == 'sell'
 
 
 def test_expiry_search_is_bounded_filters_holding_and_reports_failed_reads():
@@ -162,3 +171,55 @@ def test_expiry_search_no_coverage_is_distinct_from_read_failure():
         holding_days=365, current_price=100, read_rows=lambda _: pytest.fail('no read expected'))
     assert review['eligible_expiry_count'] == 0
     assert review['failed_expiries'] == review['alternatives'] == []
+
+
+@pytest.mark.parametrize('key,strike,action,right,loss,profit,breakeven,capital,shares', [
+    ('long_call', 105, 'buy', 'call', 210, None, 107.1, 210, False),
+    ('protective_put', 95, 'buy', 'put', 710, None, 102.1, 210, True),
+    ('cash_secured_put', 95, 'sell', 'put', 9290, 210, 92.9, 9500, False),
+])
+def test_other_strategy_searches_use_original_payoff_math(key, strike, action, right, loss, profit, breakeven, capital, shares):
+    from src.services.options_strategies import _covered_call_candidates, covered_call_expiry_search
+    original = _covered_call_candidates([row(strike, 0, .1)], strike, EXP, 35, TODAY, 100, strategy_key=key)
+    priced = row(strike, option_symbol='OTHER-EXPIRY', delta=.3 if right == 'call' else -.3)
+    review = covered_call_expiry_search(original=original, expiries=[EXP], today=TODAY,
+        holding_days=33, current_price=100, read_rows=lambda _: [priced], strategy_key=key)
+    assert review['method_version'] == 'single_leg_candidates_v1'
+    assert review['strategy_key'] == key and review['search_date'] == TODAY.isoformat()
+    selected = review['alternatives'][0]
+    assert selected['legs'][0]['action'] == action and selected['legs'][0]['right'] == right
+    assert selected['max_loss_per_contract'] == loss and selected['max_profit_per_contract'] == profit
+    assert selected['breakeven'] == breakeven and selected['collateral_per_contract'] == capital
+    assert selected['requires_shares'] is shares
+    base = build_strategy_matrix(current_price=100, stop_loss=95, take_profit=120, signal=None,
+        call_rows=[priced] if right == 'call' else [], put_rows=[priced] if right == 'put' else [],
+        call_expiry=EXP, put_expiry=EXP, today=TODAY)
+    assert selected == base['singles'][key]
+
+
+@pytest.mark.parametrize('key', ['long_call', 'protective_put', 'cash_secured_put'])
+@pytest.mark.parametrize('bad,reason', [
+    (row(95, 0, 2, last_price=2), 'two_sided_quote_required'),
+    (row(95, 2, 1), 'crossed_quote'),
+    (row(95, 1.7999, 2.2001), 'spread_exceeds_20_percent'),
+    (row(95, contract_terms={}), 'unsupported_contract'),
+])
+def test_every_other_strategy_applies_the_quote_and_terms_guards(key, bad, reason):
+    from src.services.options_strategies import _covered_call_candidates
+    review = _covered_call_candidates([bad], 95, EXP, 35, TODAY, 100,
+        include_selected=True, strategy_key=key)
+    assert review['alternatives'] == []
+    assert review['rejected_counts'] == {reason: 1}
+
+
+@pytest.mark.parametrize('key,bad', [
+    ('long_call', row(105, 101, 102)),
+    ('protective_put', row(95, 95, 96)),
+    ('protective_put', row(110)),
+    ('cash_secured_put', row(95, 95, 96)),
+])
+def test_inconsistent_strategy_payoffs_are_not_candidates(key, bad):
+    from src.services.options_strategies import _covered_call_candidates
+    review = _covered_call_candidates([bad], 95, EXP, 35, TODAY, 100,
+        include_selected=True, strategy_key=key)
+    assert review['alternatives'] == [] and review['rejected_counts'] == {'invalid_payoff': 1}

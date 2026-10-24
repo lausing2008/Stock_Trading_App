@@ -157,3 +157,53 @@ it('discards a pending search after holding context changes', async () => {
   fireEvent.change(screen.getByLabelText('Planned holding period (calendar days)'), { target: { value: '0' } });
   expect((screen.getByRole('button', { name: 'Find expirations for holding period' }) as HTMLButtonElement).disabled).toBe(true);
 });
+
+function fourStrategyResult() {
+  const result = searchResult();
+  const reviews = result.strategy_matrix!.candidate_review!;
+  for (const key of ['long_call', 'protective_put', 'cash_secured_put'] as const) {
+    const isCall = key === 'long_call';
+    const buying = key !== 'cash_secured_put';
+    const strategy = { ...alternative, name: key, net: buying ? 'debit' as const : 'credit' as const,
+      requires_shares: key === 'protective_put',
+      legs: [{ ...alternative.legs[0], action: buying ? 'buy' as const : 'sell' as const,
+        right: isCall ? 'call' as const : 'put' as const, expiry: '2026-03-06', option_symbol: key }] };
+    reviews[key] = { ...reviews.covered_call!, method_version: 'single_leg_candidates_v1', strategy_key: key,
+      failed_expiries: [], completed_expiries: ['2026-02-06', '2026-03-06'], alternatives: [strategy] };
+  }
+  return result;
+}
+
+it('compares all other single-leg strategies explicitly with one request and clears assignment acceptance', async () => {
+  const get = vi.spyOn(api, 'getOptionsGamePlan').mockResolvedValue(fourStrategyResult());
+  render(searchPanel());
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Find expirations for holding period' })));
+  for (const [key, name] of [['long_call', 'Long Call'], ['protective_put', 'Protective Put'], ['cash_secured_put', 'Cash-Secured Put']]) {
+    fireEvent.change(screen.getByLabelText('Strategy for contract comparison'), { target: { value: key } });
+    const select = screen.getByLabelText(`${name} contract to compare`) as HTMLSelectElement;
+    expect(select.value).toBe('original');
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.change(select, { target: { value: '0' } });
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByText(/Selected comparisons:/).textContent).toContain(name);
+    expect(screen.getByText(/Comparing an explicitly selected alternative/).textContent).toContain('Stock target remains $120.00');
+  }
+  expect(get).toHaveBeenCalledTimes(1);
+  const selections = screen.getByText(/Selected comparisons:/).textContent;
+  expect(selections).toContain('Long Call');
+  expect(selections).toContain('Protective Put');
+  expect(selections).toContain('Cash-Secured Put');
+  fireEvent.change(screen.getByLabelText('Planned holding period (calendar days)'), { target: { value: '60' } });
+  expect(screen.queryByText(/Selected comparisons:/)).toBeNull();
+});
+
+it('expires pending search context when the New York date rolls over', async () => {
+  let resolve!: (value: Awaited<ReturnType<typeof api.getOptionsGamePlan>>) => void;
+  vi.spyOn(api, 'getOptionsGamePlan').mockReturnValue(new Promise(r => { resolve = r; }));
+  render(searchPanel());
+  fireEvent.click(screen.getByRole('button', { name: 'Find expirations for holding period' }));
+  vi.setSystemTime(new Date('2026-01-03T05:00:01Z'));
+  act(() => vi.advanceTimersByTime(30_000));
+  await act(async () => resolve(fourStrategyResult()));
+  expect(document.body.textContent).toContain('other expirations are not searched');
+});

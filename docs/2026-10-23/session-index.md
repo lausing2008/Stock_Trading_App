@@ -127,3 +127,6 @@ Covered-call expiration search continuation: an explicit request compares up to 
 
 
 Multi-expiration search rollout completed: application release 6f2b5a5c is public and live. Backend 5,803 passed / 26 skipped; frontend 869 passed with full typecheck; production compiled 76 pages. All 15 containers healthy, all 12 backend source digests match, and only market-data/frontend restarted. TSM read-only 14/60/120-day witnesses each returned 12 alternatives across four expirations without failed reads. [Report and evidence](../audits/2026-10-23-options-multi-expiry.md).
+
+
+Four-strategy continuation: explicit expiration search now covers long calls, protective puts and cash-secured puts alongside covered calls. One expiration read is shared across all strategies, including cached failures; selecting alternatives preserves original stock levels and combinations. Active choices remain visible and midnight invalidates search context. [Design, guards, validation and rollout](../audits/2026-10-23-four-strategy-expirations.md). The Improvements page includes this work.

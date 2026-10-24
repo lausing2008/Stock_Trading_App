@@ -16,7 +16,7 @@ The browser accepts supplementary candidates only when symbol, archive session, 
 
 ## Remaining improvements
 
-- Extend the bounded expiration search to long calls, protective puts and cash-secured puts; each needs its own objective and payoff screens.
+- Extension to long calls, protective puts and cash-secured puts is implemented in the [four-strategy follow-up](2026-10-23-four-strategy-expirations.md), which records its validation and deployment status.
 - Add independently dated spot/chain price-basis checks and current quotes, quote sizes and event dates before any executable comparison.
 - Add documented delta/DTE preference controls and measure their coverage before asserting optimal settings.
 - Validate costs, fills, early assignment and portfolio risk in strategy replay before highlighting expected-return winners. Existing context evidence and goal-fit highlighting do not supply that validation.

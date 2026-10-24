@@ -5198,17 +5198,39 @@ def get_options_game_plan(
         plan["chain_source"] = "unusual_whales"
         matrix = plan.get("strategy_matrix") or {}
         if isinstance(holding_days, int) and not isinstance(holding_days, bool):
-            from ..services.options_strategies import covered_call_expiry_search
-            original = matrix.get("candidate_review", {}).get("covered_call")
-            if original:
-                def read_search_rows(expiry):
-                    chain = _uw_option_chain(session, sym, expiry, as_of=source_session)
-                    if str(chain.as_of) != source_session.isoformat():
-                        raise ValueError("Search chain session does not match source session")
-                    return _options_chain_rows(chain.calls, sym)
-                matrix["candidate_review"]["covered_call"] = covered_call_expiry_search(
-                    original=original, expiries=expiries, today=today,
-                    holding_days=holding_days, current_price=current_price, read_rows=read_search_rows)
+            from ..services.options_strategies import covered_call_expiry_search, _covered_call_candidates
+            from ..services.options_contract import split_supported
+            # One archive read per attempted expiry, shared by all four strategies; cache failures too.
+            search_chains = {}
+            def read_search_rows(expiry, right):
+                if expiry not in search_chains:
+                    try:
+                        chain = _uw_option_chain(session, sym, expiry, as_of=source_session)
+                        if str(chain.as_of) != source_session.isoformat():
+                            raise ValueError("Search chain session does not match source session")
+                        search_chains[expiry] = chain
+                    except Exception as exc:
+                        search_chains[expiry] = exc
+                chain = search_chains[expiry]
+                if isinstance(chain, Exception):
+                    raise chain
+                return _options_chain_rows(chain.calls if right == "call" else chain.puts, sym)
+            specs = {
+                "covered_call": (call_rows, call_exp, take_profit or current_price, "call"),
+                "long_call": (call_rows, call_exp, current_price, "call"),
+                "protective_put": (put_rows, put_exp, stop_loss or current_price, "put"),
+                "cash_secured_put": (put_rows, put_exp, stop_loss or current_price, "put"),
+            }
+            for key, (rows, expiry, anchor, right) in specs.items():
+                original = matrix.get("candidate_review", {}).get(key)
+                if original is None:
+                    original = _covered_call_candidates(split_supported(rows)[0], anchor, expiry,
+                        (date.fromisoformat(expiry) - today).days if expiry else None,
+                        today, current_price, strategy_key=key)
+                matrix.setdefault("candidate_review", {})[key] = covered_call_expiry_search(
+                    original=original, expiries=expiries, today=today, strategy_key=key,
+                    holding_days=holding_days, current_price=current_price,
+                    read_rows=lambda expiry, right=right: read_search_rows(expiry, right))
         plan["available"] = bool(
             plan["protective_put"] or plan["covered_call"]
             or matrix.get("singles") or matrix.get("combos")
