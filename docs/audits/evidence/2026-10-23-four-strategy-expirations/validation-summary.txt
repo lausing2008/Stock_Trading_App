@@ -1,0 +1,9 @@
+5822 passed, 26 skipped, 29 warnings in 360.78s (0:06:00)
+
+
+ Test Files  72 passed (72)
+      Tests  874 passed (874)
+   Start at  22:53:36
+   Duration  15.18s (transform 6.67s, setup 21ms, collect 23.18s, tests 28.35s, environment 41.59s, prepare 19.31s)
+
+Full frontend typecheck passed; 200 original matrices identical; production compiled 76 pages.

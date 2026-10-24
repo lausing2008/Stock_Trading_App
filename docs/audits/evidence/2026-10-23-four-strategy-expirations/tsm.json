@@ -1,0 +1,1724 @@
+{
+  "checked_at": "2026-10-24T06:00:58.459991+00:00",
+  "current_price": 418.19,
+  "holding_searches": {
+    "120": {
+      "additional_archive_reads": 4,
+      "strategies": {
+        "cash_secured_put": {
+          "alternatives": [
+            {
+              "action": "sell",
+              "capital_per_contract": 40000.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 37198.0,
+              "net": "credit",
+              "premium_before_fees": 2802.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41000.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 37742.0,
+              "net": "credit",
+              "premium_before_fees": 3258.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 39000.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 36630.0,
+              "net": "credit",
+              "premium_before_fees": 2370.0,
+              "right": "put",
+              "strike": 390.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 40000.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 36873.0,
+              "net": "credit",
+              "premium_before_fees": 3127.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41000.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 37412.0,
+              "net": "credit",
+              "premium_before_fees": 3588.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 39000.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 36318.0,
+              "net": "credit",
+              "premium_before_fees": 2682.0,
+              "right": "put",
+              "strike": 390.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 40000.0,
+              "expiry": "2027-06-17",
+              "max_loss_per_contract": 36338.0,
+              "net": "credit",
+              "premium_before_fees": 3662.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41000.0,
+              "expiry": "2027-06-17",
+              "max_loss_per_contract": 36845.0,
+              "net": "credit",
+              "premium_before_fees": 4155.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 39000.0,
+              "expiry": "2027-06-17",
+              "max_loss_per_contract": 35770.0,
+              "net": "credit",
+              "premium_before_fees": 3230.0,
+              "right": "put",
+              "strike": 390.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 40000.0,
+              "expiry": "2027-09-17",
+              "max_loss_per_contract": 35688.0,
+              "net": "credit",
+              "premium_before_fees": 4312.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41000.0,
+              "expiry": "2027-09-17",
+              "max_loss_per_contract": 36208.0,
+              "net": "credit",
+              "premium_before_fees": 4792.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 39000.0,
+              "expiry": "2027-09-17",
+              "max_loss_per_contract": 35128.0,
+              "net": "credit",
+              "premium_before_fees": 3872.0,
+              "right": "put",
+              "strike": 390.0
+            }
+          ],
+          "completed_expiries": [
+            "2027-03-19",
+            "2027-04-16",
+            "2027-06-17",
+            "2027-09-17"
+          ],
+          "eligible_expiry_count": 9,
+          "evaluated_count": 205,
+          "failed_expiries": [],
+          "holding_days": 120,
+          "method_version": "single_leg_candidates_v1",
+          "screened_count": 166,
+          "searched_expiries": [
+            "2027-03-19",
+            "2027-04-16",
+            "2027-06-17",
+            "2027-09-17"
+          ]
+        },
+        "covered_call": {
+          "alternatives": [
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 41461.0,
+              "net": "credit",
+              "premium_before_fees": 358.0,
+              "right": "call",
+              "strike": 580.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 41412.0,
+              "net": "credit",
+              "premium_before_fees": 407.0,
+              "right": "call",
+              "strike": 570.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 41347.0,
+              "net": "credit",
+              "premium_before_fees": 472.0,
+              "right": "call",
+              "strike": 560.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 41281.0,
+              "net": "credit",
+              "premium_before_fees": 538.0,
+              "right": "call",
+              "strike": 580.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 41407.0,
+              "net": "credit",
+              "premium_before_fees": 412.0,
+              "right": "call",
+              "strike": 600.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 41027.0,
+              "net": "credit",
+              "premium_before_fees": 792.0,
+              "right": "call",
+              "strike": 550.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-06-17",
+              "max_loss_per_contract": 40869.0,
+              "net": "credit",
+              "premium_before_fees": 950.0,
+              "right": "call",
+              "strike": 580.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-06-17",
+              "max_loss_per_contract": 40974.0,
+              "net": "credit",
+              "premium_before_fees": 845.0,
+              "right": "call",
+              "strike": 590.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-06-17",
+              "max_loss_per_contract": 40759.0,
+              "net": "credit",
+              "premium_before_fees": 1060.0,
+              "right": "call",
+              "strike": 570.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-09-17",
+              "max_loss_per_contract": 40139.0,
+              "net": "credit",
+              "premium_before_fees": 1680.0,
+              "right": "call",
+              "strike": 580.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-09-17",
+              "max_loss_per_contract": 40289.0,
+              "net": "credit",
+              "premium_before_fees": 1530.0,
+              "right": "call",
+              "strike": 590.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-09-17",
+              "max_loss_per_contract": 40039.0,
+              "net": "credit",
+              "premium_before_fees": 1780.0,
+              "right": "call",
+              "strike": 570.0
+            }
+          ],
+          "completed_expiries": [
+            "2027-03-19",
+            "2027-04-16",
+            "2027-06-17",
+            "2027-09-17"
+          ],
+          "eligible_expiry_count": 9,
+          "evaluated_count": 205,
+          "failed_expiries": [],
+          "holding_days": 120,
+          "method_version": "covered_call_candidates_v2",
+          "screened_count": 153,
+          "searched_expiries": [
+            "2027-03-19",
+            "2027-04-16",
+            "2027-06-17",
+            "2027-09-17"
+          ]
+        },
+        "long_call": {
+          "alternatives": [
+            {
+              "action": "buy",
+              "capital_per_contract": 3660.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 3660.0,
+              "net": "debit",
+              "premium_before_fees": 3660.0,
+              "right": "call",
+              "strike": 420.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 4095.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 4095.0,
+              "net": "debit",
+              "premium_before_fees": 4095.0,
+              "right": "call",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3205.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 3205.0,
+              "net": "debit",
+              "premium_before_fees": 3205.0,
+              "right": "call",
+              "strike": 430.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 4075.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 4075.0,
+              "net": "debit",
+              "premium_before_fees": 4075.0,
+              "right": "call",
+              "strike": 420.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 4533.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 4533.0,
+              "net": "debit",
+              "premium_before_fees": 4533.0,
+              "right": "call",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3655.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 3655.0,
+              "net": "debit",
+              "premium_before_fees": 3655.0,
+              "right": "call",
+              "strike": 430.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 4927.0,
+              "expiry": "2027-06-17",
+              "max_loss_per_contract": 4927.0,
+              "net": "debit",
+              "premium_before_fees": 4927.0,
+              "right": "call",
+              "strike": 420.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 5412.0,
+              "expiry": "2027-06-17",
+              "max_loss_per_contract": 5412.0,
+              "net": "debit",
+              "premium_before_fees": 5412.0,
+              "right": "call",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 4498.0,
+              "expiry": "2027-06-17",
+              "max_loss_per_contract": 4498.0,
+              "net": "debit",
+              "premium_before_fees": 4498.0,
+              "right": "call",
+              "strike": 430.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 6017.0,
+              "expiry": "2027-09-17",
+              "max_loss_per_contract": 6017.0,
+              "net": "debit",
+              "premium_before_fees": 6017.0,
+              "right": "call",
+              "strike": 420.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 6455.0,
+              "expiry": "2027-09-17",
+              "max_loss_per_contract": 6455.0,
+              "net": "debit",
+              "premium_before_fees": 6455.0,
+              "right": "call",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 5578.0,
+              "expiry": "2027-09-17",
+              "max_loss_per_contract": 5578.0,
+              "net": "debit",
+              "premium_before_fees": 5578.0,
+              "right": "call",
+              "strike": 430.0
+            }
+          ],
+          "completed_expiries": [
+            "2027-03-19",
+            "2027-04-16",
+            "2027-06-17",
+            "2027-09-17"
+          ],
+          "eligible_expiry_count": 9,
+          "evaluated_count": 205,
+          "failed_expiries": [],
+          "holding_days": 120,
+          "method_version": "single_leg_candidates_v1",
+          "screened_count": 173,
+          "searched_expiries": [
+            "2027-03-19",
+            "2027-04-16",
+            "2027-06-17",
+            "2027-09-17"
+          ]
+        },
+        "protective_put": {
+          "alternatives": [
+            {
+              "action": "buy",
+              "capital_per_contract": 2802.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 4621.0,
+              "net": "debit",
+              "premium_before_fees": 2802.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3258.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 4077.0,
+              "net": "debit",
+              "premium_before_fees": 3258.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 2370.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 5189.0,
+              "net": "debit",
+              "premium_before_fees": 2370.0,
+              "right": "put",
+              "strike": 390.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3127.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 4946.0,
+              "net": "debit",
+              "premium_before_fees": 3127.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3588.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 4407.0,
+              "net": "debit",
+              "premium_before_fees": 3588.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 2682.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 5501.0,
+              "net": "debit",
+              "premium_before_fees": 2682.0,
+              "right": "put",
+              "strike": 390.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3662.0,
+              "expiry": "2027-06-17",
+              "max_loss_per_contract": 5481.0,
+              "net": "debit",
+              "premium_before_fees": 3662.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 4155.0,
+              "expiry": "2027-06-17",
+              "max_loss_per_contract": 4974.0,
+              "net": "debit",
+              "premium_before_fees": 4155.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3230.0,
+              "expiry": "2027-06-17",
+              "max_loss_per_contract": 6049.0,
+              "net": "debit",
+              "premium_before_fees": 3230.0,
+              "right": "put",
+              "strike": 390.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 4312.0,
+              "expiry": "2027-09-17",
+              "max_loss_per_contract": 6131.0,
+              "net": "debit",
+              "premium_before_fees": 4312.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 4792.0,
+              "expiry": "2027-09-17",
+              "max_loss_per_contract": 5611.0,
+              "net": "debit",
+              "premium_before_fees": 4792.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3872.0,
+              "expiry": "2027-09-17",
+              "max_loss_per_contract": 6691.0,
+              "net": "debit",
+              "premium_before_fees": 3872.0,
+              "right": "put",
+              "strike": 390.0
+            }
+          ],
+          "completed_expiries": [
+            "2027-03-19",
+            "2027-04-16",
+            "2027-06-17",
+            "2027-09-17"
+          ],
+          "eligible_expiry_count": 9,
+          "evaluated_count": 205,
+          "failed_expiries": [],
+          "holding_days": 120,
+          "method_version": "single_leg_candidates_v1",
+          "screened_count": 166,
+          "searched_expiries": [
+            "2027-03-19",
+            "2027-04-16",
+            "2027-06-17",
+            "2027-09-17"
+          ]
+        }
+      }
+    },
+    "14": {
+      "additional_archive_reads": 4,
+      "strategies": {
+        "cash_secured_put": {
+          "alternatives": [
+            {
+              "action": "sell",
+              "capital_per_contract": 40500.0,
+              "expiry": "2026-11-13",
+              "max_loss_per_contract": 39420.0,
+              "net": "credit",
+              "premium_before_fees": 1080.0,
+              "right": "put",
+              "strike": 405.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 40000.0,
+              "expiry": "2026-11-13",
+              "max_loss_per_contract": 39105.0,
+              "net": "credit",
+              "premium_before_fees": 895.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41000.0,
+              "expiry": "2026-11-13",
+              "max_loss_per_contract": 39715.0,
+              "net": "credit",
+              "premium_before_fees": 1285.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 40500.0,
+              "expiry": "2026-11-20",
+              "max_loss_per_contract": 39270.0,
+              "net": "credit",
+              "premium_before_fees": 1230.0,
+              "right": "put",
+              "strike": 405.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 40250.0,
+              "expiry": "2026-11-20",
+              "max_loss_per_contract": 39075.0,
+              "net": "credit",
+              "premium_before_fees": 1175.0,
+              "right": "put",
+              "strike": 402.5
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 40750.0,
+              "expiry": "2026-11-20",
+              "max_loss_per_contract": 39393.0,
+              "net": "credit",
+              "premium_before_fees": 1357.0,
+              "right": "put",
+              "strike": 407.5
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 40500.0,
+              "expiry": "2026-11-27",
+              "max_loss_per_contract": 39195.0,
+              "net": "credit",
+              "premium_before_fees": 1305.0,
+              "right": "put",
+              "strike": 405.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 40000.0,
+              "expiry": "2026-11-27",
+              "max_loss_per_contract": 38860.0,
+              "net": "credit",
+              "premium_before_fees": 1140.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41000.0,
+              "expiry": "2026-11-27",
+              "max_loss_per_contract": 39457.0,
+              "net": "credit",
+              "premium_before_fees": 1543.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41000.0,
+              "expiry": "2026-12-04",
+              "max_loss_per_contract": 39323.0,
+              "net": "credit",
+              "premium_before_fees": 1677.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41500.0,
+              "expiry": "2026-12-04",
+              "max_loss_per_contract": 39565.0,
+              "net": "credit",
+              "premium_before_fees": 1935.0,
+              "right": "put",
+              "strike": 415.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 42000.0,
+              "expiry": "2026-12-04",
+              "max_loss_per_contract": 39798.0,
+              "net": "credit",
+              "premium_before_fees": 2202.0,
+              "right": "put",
+              "strike": 420.0
+            }
+          ],
+          "completed_expiries": [
+            "2026-11-13",
+            "2026-11-20",
+            "2026-11-27",
+            "2026-12-04"
+          ],
+          "eligible_expiry_count": 16,
+          "evaluated_count": 246,
+          "failed_expiries": [],
+          "holding_days": 14,
+          "method_version": "single_leg_candidates_v1",
+          "screened_count": 165,
+          "searched_expiries": [
+            "2026-11-13",
+            "2026-11-20",
+            "2026-11-27",
+            "2026-12-04"
+          ]
+        },
+        "covered_call": {
+          "alternatives": [
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2026-11-13",
+              "max_loss_per_contract": 41638.0,
+              "net": "credit",
+              "premium_before_fees": 181.0,
+              "right": "call",
+              "strike": 460.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2026-11-13",
+              "max_loss_per_contract": 41585.0,
+              "net": "credit",
+              "premium_before_fees": 234.0,
+              "right": "call",
+              "strike": 455.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2026-11-13",
+              "max_loss_per_contract": 41509.0,
+              "net": "credit",
+              "premium_before_fees": 310.0,
+              "right": "call",
+              "strike": 450.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2026-11-20",
+              "max_loss_per_contract": 41711.0,
+              "net": "credit",
+              "premium_before_fees": 108.0,
+              "right": "call",
+              "strike": 480.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2026-11-20",
+              "max_loss_per_contract": 41642.0,
+              "net": "credit",
+              "premium_before_fees": 177.0,
+              "right": "call",
+              "strike": 470.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2026-11-20",
+              "max_loss_per_contract": 41539.0,
+              "net": "credit",
+              "premium_before_fees": 280.0,
+              "right": "call",
+              "strike": 460.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2026-11-27",
+              "max_loss_per_contract": 41586.0,
+              "net": "credit",
+              "premium_before_fees": 233.0,
+              "right": "call",
+              "strike": 470.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2026-11-27",
+              "max_loss_per_contract": 41469.0,
+              "net": "credit",
+              "premium_before_fees": 350.0,
+              "right": "call",
+              "strike": 460.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2026-11-27",
+              "max_loss_per_contract": 41402.0,
+              "net": "credit",
+              "premium_before_fees": 417.0,
+              "right": "call",
+              "strike": 455.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2026-12-04",
+              "max_loss_per_contract": 40376.0,
+              "net": "credit",
+              "premium_before_fees": 1443.0,
+              "right": "call",
+              "strike": 425.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2026-12-04",
+              "max_loss_per_contract": 40224.0,
+              "net": "credit",
+              "premium_before_fees": 1595.0,
+              "right": "call",
+              "strike": 420.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2026-12-04",
+              "max_loss_per_contract": 39964.0,
+              "net": "credit",
+              "premium_before_fees": 1855.0,
+              "right": "call",
+              "strike": 415.0
+            }
+          ],
+          "completed_expiries": [
+            "2026-11-13",
+            "2026-11-20",
+            "2026-11-27",
+            "2026-12-04"
+          ],
+          "eligible_expiry_count": 16,
+          "evaluated_count": 246,
+          "failed_expiries": [],
+          "holding_days": 14,
+          "method_version": "covered_call_candidates_v2",
+          "screened_count": 74,
+          "searched_expiries": [
+            "2026-11-13",
+            "2026-11-20",
+            "2026-11-27",
+            "2026-12-04"
+          ]
+        },
+        "long_call": {
+          "alternatives": [
+            {
+              "action": "buy",
+              "capital_per_contract": 1165.0,
+              "expiry": "2026-11-13",
+              "max_loss_per_contract": 1165.0,
+              "net": "debit",
+              "premium_before_fees": 1165.0,
+              "right": "call",
+              "strike": 420.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1382.0,
+              "expiry": "2026-11-13",
+              "max_loss_per_contract": 1382.0,
+              "net": "debit",
+              "premium_before_fees": 1382.0,
+              "right": "call",
+              "strike": 415.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 965.0,
+              "expiry": "2026-11-13",
+              "max_loss_per_contract": 965.0,
+              "net": "debit",
+              "premium_before_fees": 965.0,
+              "right": "call",
+              "strike": 425.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1353.0,
+              "expiry": "2026-11-20",
+              "max_loss_per_contract": 1353.0,
+              "net": "debit",
+              "premium_before_fees": 1353.0,
+              "right": "call",
+              "strike": 420.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1588.0,
+              "expiry": "2026-11-20",
+              "max_loss_per_contract": 1588.0,
+              "net": "debit",
+              "premium_before_fees": 1588.0,
+              "right": "call",
+              "strike": 415.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1470.0,
+              "expiry": "2026-11-27",
+              "max_loss_per_contract": 1470.0,
+              "net": "debit",
+              "premium_before_fees": 1470.0,
+              "right": "call",
+              "strike": 420.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1727.0,
+              "expiry": "2026-11-27",
+              "max_loss_per_contract": 1727.0,
+              "net": "debit",
+              "premium_before_fees": 1727.0,
+              "right": "call",
+              "strike": 415.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1255.0,
+              "expiry": "2026-11-27",
+              "max_loss_per_contract": 1255.0,
+              "net": "debit",
+              "premium_before_fees": 1255.0,
+              "right": "call",
+              "strike": 425.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1595.0,
+              "expiry": "2026-12-04",
+              "max_loss_per_contract": 1595.0,
+              "net": "debit",
+              "premium_before_fees": 1595.0,
+              "right": "call",
+              "strike": 420.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1855.0,
+              "expiry": "2026-12-04",
+              "max_loss_per_contract": 1855.0,
+              "net": "debit",
+              "premium_before_fees": 1855.0,
+              "right": "call",
+              "strike": 415.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1443.0,
+              "expiry": "2026-12-04",
+              "max_loss_per_contract": 1443.0,
+              "net": "debit",
+              "premium_before_fees": 1443.0,
+              "right": "call",
+              "strike": 425.0
+            }
+          ],
+          "completed_expiries": [
+            "2026-11-13",
+            "2026-11-20",
+            "2026-11-27",
+            "2026-12-04"
+          ],
+          "eligible_expiry_count": 16,
+          "evaluated_count": 246,
+          "failed_expiries": [],
+          "holding_days": 14,
+          "method_version": "single_leg_candidates_v1",
+          "screened_count": 161,
+          "searched_expiries": [
+            "2026-11-13",
+            "2026-11-20",
+            "2026-11-27",
+            "2026-12-04"
+          ]
+        },
+        "protective_put": {
+          "alternatives": [
+            {
+              "action": "buy",
+              "capital_per_contract": 1080.0,
+              "expiry": "2026-11-13",
+              "max_loss_per_contract": 2399.0,
+              "net": "debit",
+              "premium_before_fees": 1080.0,
+              "right": "put",
+              "strike": 405.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 895.0,
+              "expiry": "2026-11-13",
+              "max_loss_per_contract": 2714.0,
+              "net": "debit",
+              "premium_before_fees": 895.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1285.0,
+              "expiry": "2026-11-13",
+              "max_loss_per_contract": 2104.0,
+              "net": "debit",
+              "premium_before_fees": 1285.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1230.0,
+              "expiry": "2026-11-20",
+              "max_loss_per_contract": 2549.0,
+              "net": "debit",
+              "premium_before_fees": 1230.0,
+              "right": "put",
+              "strike": 405.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1175.0,
+              "expiry": "2026-11-20",
+              "max_loss_per_contract": 2744.0,
+              "net": "debit",
+              "premium_before_fees": 1175.0,
+              "right": "put",
+              "strike": 402.5
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1357.0,
+              "expiry": "2026-11-20",
+              "max_loss_per_contract": 2426.0,
+              "net": "debit",
+              "premium_before_fees": 1357.0,
+              "right": "put",
+              "strike": 407.5
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1305.0,
+              "expiry": "2026-11-27",
+              "max_loss_per_contract": 2624.0,
+              "net": "debit",
+              "premium_before_fees": 1305.0,
+              "right": "put",
+              "strike": 405.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1140.0,
+              "expiry": "2026-11-27",
+              "max_loss_per_contract": 2959.0,
+              "net": "debit",
+              "premium_before_fees": 1140.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1543.0,
+              "expiry": "2026-11-27",
+              "max_loss_per_contract": 2362.0,
+              "net": "debit",
+              "premium_before_fees": 1543.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1677.0,
+              "expiry": "2026-12-04",
+              "max_loss_per_contract": 2496.0,
+              "net": "debit",
+              "premium_before_fees": 1677.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1935.0,
+              "expiry": "2026-12-04",
+              "max_loss_per_contract": 2254.0,
+              "net": "debit",
+              "premium_before_fees": 1935.0,
+              "right": "put",
+              "strike": 415.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 2202.0,
+              "expiry": "2026-12-04",
+              "max_loss_per_contract": 2021.0,
+              "net": "debit",
+              "premium_before_fees": 2202.0,
+              "right": "put",
+              "strike": 420.0
+            }
+          ],
+          "completed_expiries": [
+            "2026-11-13",
+            "2026-11-20",
+            "2026-11-27",
+            "2026-12-04"
+          ],
+          "eligible_expiry_count": 16,
+          "evaluated_count": 246,
+          "failed_expiries": [],
+          "holding_days": 14,
+          "method_version": "single_leg_candidates_v1",
+          "screened_count": 165,
+          "searched_expiries": [
+            "2026-11-13",
+            "2026-11-20",
+            "2026-11-27",
+            "2026-12-04"
+          ]
+        }
+      }
+    },
+    "60": {
+      "additional_archive_reads": 4,
+      "strategies": {
+        "cash_secured_put": {
+          "alternatives": [
+            {
+              "action": "sell",
+              "capital_per_contract": 40000.0,
+              "expiry": "2027-01-15",
+              "max_loss_per_contract": 37970.0,
+              "net": "credit",
+              "premium_before_fees": 2030.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41000.0,
+              "expiry": "2027-01-15",
+              "max_loss_per_contract": 38512.0,
+              "net": "credit",
+              "premium_before_fees": 2488.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 39000.0,
+              "expiry": "2027-01-15",
+              "max_loss_per_contract": 37340.0,
+              "net": "credit",
+              "premium_before_fees": 1660.0,
+              "right": "put",
+              "strike": 390.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 40000.0,
+              "expiry": "2027-02-19",
+              "max_loss_per_contract": 37567.0,
+              "net": "credit",
+              "premium_before_fees": 2433.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41000.0,
+              "expiry": "2027-02-19",
+              "max_loss_per_contract": 38065.0,
+              "net": "credit",
+              "premium_before_fees": 2935.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 39000.0,
+              "expiry": "2027-02-19",
+              "max_loss_per_contract": 36957.0,
+              "net": "credit",
+              "premium_before_fees": 2043.0,
+              "right": "put",
+              "strike": 390.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 40000.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 37198.0,
+              "net": "credit",
+              "premium_before_fees": 2802.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41000.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 37742.0,
+              "net": "credit",
+              "premium_before_fees": 3258.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 39000.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 36630.0,
+              "net": "credit",
+              "premium_before_fees": 2370.0,
+              "right": "put",
+              "strike": 390.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 40000.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 36873.0,
+              "net": "credit",
+              "premium_before_fees": 3127.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41000.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 37412.0,
+              "net": "credit",
+              "premium_before_fees": 3588.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 39000.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 36318.0,
+              "net": "credit",
+              "premium_before_fees": 2682.0,
+              "right": "put",
+              "strike": 390.0
+            }
+          ],
+          "completed_expiries": [
+            "2027-01-15",
+            "2027-02-19",
+            "2027-03-19",
+            "2027-04-16"
+          ],
+          "eligible_expiry_count": 11,
+          "evaluated_count": 226,
+          "failed_expiries": [],
+          "holding_days": 60,
+          "method_version": "single_leg_candidates_v1",
+          "screened_count": 166,
+          "searched_expiries": [
+            "2027-01-15",
+            "2027-02-19",
+            "2027-03-19",
+            "2027-04-16"
+          ]
+        },
+        "covered_call": {
+          "alternatives": [
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-01-15",
+              "max_loss_per_contract": 41766.0,
+              "net": "credit",
+              "premium_before_fees": 53.0,
+              "right": "call",
+              "strike": 600.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-01-15",
+              "max_loss_per_contract": 41661.0,
+              "net": "credit",
+              "premium_before_fees": 158.0,
+              "right": "call",
+              "strike": 550.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-01-15",
+              "max_loss_per_contract": 41573.0,
+              "net": "credit",
+              "premium_before_fees": 246.0,
+              "right": "call",
+              "strike": 530.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-02-19",
+              "max_loss_per_contract": 41469.0,
+              "net": "credit",
+              "premium_before_fees": 350.0,
+              "right": "call",
+              "strike": 550.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-02-19",
+              "max_loss_per_contract": 41197.0,
+              "net": "credit",
+              "premium_before_fees": 622.0,
+              "right": "call",
+              "strike": 520.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-02-19",
+              "max_loss_per_contract": 41094.0,
+              "net": "credit",
+              "premium_before_fees": 725.0,
+              "right": "call",
+              "strike": 510.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 41461.0,
+              "net": "credit",
+              "premium_before_fees": 358.0,
+              "right": "call",
+              "strike": 580.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 41412.0,
+              "net": "credit",
+              "premium_before_fees": 407.0,
+              "right": "call",
+              "strike": 570.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 41347.0,
+              "net": "credit",
+              "premium_before_fees": 472.0,
+              "right": "call",
+              "strike": 560.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 41281.0,
+              "net": "credit",
+              "premium_before_fees": 538.0,
+              "right": "call",
+              "strike": 580.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 41407.0,
+              "net": "credit",
+              "premium_before_fees": 412.0,
+              "right": "call",
+              "strike": 600.0
+            },
+            {
+              "action": "sell",
+              "capital_per_contract": 41819.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 41027.0,
+              "net": "credit",
+              "premium_before_fees": 792.0,
+              "right": "call",
+              "strike": 550.0
+            }
+          ],
+          "completed_expiries": [
+            "2027-01-15",
+            "2027-02-19",
+            "2027-03-19",
+            "2027-04-16"
+          ],
+          "eligible_expiry_count": 11,
+          "evaluated_count": 226,
+          "failed_expiries": [],
+          "holding_days": 60,
+          "method_version": "covered_call_candidates_v2",
+          "screened_count": 111,
+          "searched_expiries": [
+            "2027-01-15",
+            "2027-02-19",
+            "2027-03-19",
+            "2027-04-16"
+          ]
+        },
+        "long_call": {
+          "alternatives": [
+            {
+              "action": "buy",
+              "capital_per_contract": 2610.0,
+              "expiry": "2027-01-15",
+              "max_loss_per_contract": 2610.0,
+              "net": "debit",
+              "premium_before_fees": 2610.0,
+              "right": "call",
+              "strike": 420.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3143.0,
+              "expiry": "2027-01-15",
+              "max_loss_per_contract": 3143.0,
+              "net": "debit",
+              "premium_before_fees": 3143.0,
+              "right": "call",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 2180.0,
+              "expiry": "2027-01-15",
+              "max_loss_per_contract": 2180.0,
+              "net": "debit",
+              "premium_before_fees": 2180.0,
+              "right": "call",
+              "strike": 430.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3168.0,
+              "expiry": "2027-02-19",
+              "max_loss_per_contract": 3168.0,
+              "net": "debit",
+              "premium_before_fees": 3168.0,
+              "right": "call",
+              "strike": 420.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3655.0,
+              "expiry": "2027-02-19",
+              "max_loss_per_contract": 3655.0,
+              "net": "debit",
+              "premium_before_fees": 3655.0,
+              "right": "call",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 2723.0,
+              "expiry": "2027-02-19",
+              "max_loss_per_contract": 2723.0,
+              "net": "debit",
+              "premium_before_fees": 2723.0,
+              "right": "call",
+              "strike": 430.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3660.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 3660.0,
+              "net": "debit",
+              "premium_before_fees": 3660.0,
+              "right": "call",
+              "strike": 420.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 4095.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 4095.0,
+              "net": "debit",
+              "premium_before_fees": 4095.0,
+              "right": "call",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3205.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 3205.0,
+              "net": "debit",
+              "premium_before_fees": 3205.0,
+              "right": "call",
+              "strike": 430.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 4075.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 4075.0,
+              "net": "debit",
+              "premium_before_fees": 4075.0,
+              "right": "call",
+              "strike": 420.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 4533.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 4533.0,
+              "net": "debit",
+              "premium_before_fees": 4533.0,
+              "right": "call",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3655.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 3655.0,
+              "net": "debit",
+              "premium_before_fees": 3655.0,
+              "right": "call",
+              "strike": 430.0
+            }
+          ],
+          "completed_expiries": [
+            "2027-01-15",
+            "2027-02-19",
+            "2027-03-19",
+            "2027-04-16"
+          ],
+          "eligible_expiry_count": 11,
+          "evaluated_count": 226,
+          "failed_expiries": [],
+          "holding_days": 60,
+          "method_version": "single_leg_candidates_v1",
+          "screened_count": 174,
+          "searched_expiries": [
+            "2027-01-15",
+            "2027-02-19",
+            "2027-03-19",
+            "2027-04-16"
+          ]
+        },
+        "protective_put": {
+          "alternatives": [
+            {
+              "action": "buy",
+              "capital_per_contract": 2030.0,
+              "expiry": "2027-01-15",
+              "max_loss_per_contract": 3849.0,
+              "net": "debit",
+              "premium_before_fees": 2030.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 2488.0,
+              "expiry": "2027-01-15",
+              "max_loss_per_contract": 3307.0,
+              "net": "debit",
+              "premium_before_fees": 2488.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 1660.0,
+              "expiry": "2027-01-15",
+              "max_loss_per_contract": 4479.0,
+              "net": "debit",
+              "premium_before_fees": 1660.0,
+              "right": "put",
+              "strike": 390.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 2433.0,
+              "expiry": "2027-02-19",
+              "max_loss_per_contract": 4252.0,
+              "net": "debit",
+              "premium_before_fees": 2433.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 2935.0,
+              "expiry": "2027-02-19",
+              "max_loss_per_contract": 3754.0,
+              "net": "debit",
+              "premium_before_fees": 2935.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 2043.0,
+              "expiry": "2027-02-19",
+              "max_loss_per_contract": 4862.0,
+              "net": "debit",
+              "premium_before_fees": 2043.0,
+              "right": "put",
+              "strike": 390.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 2802.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 4621.0,
+              "net": "debit",
+              "premium_before_fees": 2802.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3258.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 4077.0,
+              "net": "debit",
+              "premium_before_fees": 3258.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 2370.0,
+              "expiry": "2027-03-19",
+              "max_loss_per_contract": 5189.0,
+              "net": "debit",
+              "premium_before_fees": 2370.0,
+              "right": "put",
+              "strike": 390.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3127.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 4946.0,
+              "net": "debit",
+              "premium_before_fees": 3127.0,
+              "right": "put",
+              "strike": 400.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 3588.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 4407.0,
+              "net": "debit",
+              "premium_before_fees": 3588.0,
+              "right": "put",
+              "strike": 410.0
+            },
+            {
+              "action": "buy",
+              "capital_per_contract": 2682.0,
+              "expiry": "2027-04-16",
+              "max_loss_per_contract": 5501.0,
+              "net": "debit",
+              "premium_before_fees": 2682.0,
+              "right": "put",
+              "strike": 390.0
+            }
+          ],
+          "completed_expiries": [
+            "2027-01-15",
+            "2027-02-19",
+            "2027-03-19",
+            "2027-04-16"
+          ],
+          "eligible_expiry_count": 11,
+          "evaluated_count": 226,
+          "failed_expiries": [],
+          "holding_days": 60,
+          "method_version": "single_leg_candidates_v1",
+          "screened_count": 166,
+          "searched_expiries": [
+            "2027-01-15",
+            "2027-02-19",
+            "2027-03-19",
+            "2027-04-16"
+          ]
+        }
+      }
+    }
+  },
+  "method": "read_only_stored_chain_reproduction",
+  "original_call_expiry": "2026-11-20",
+  "screenshot_inputs": {
+    "stop_loss": 404.07,
+    "take_profit": 584.39
+  },
+  "source_session": "2026-10-22",
+  "symbol": "TSM",
+  "today": "2026-10-24"
+}

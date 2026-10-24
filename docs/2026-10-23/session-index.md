@@ -130,3 +130,6 @@ Multi-expiration search rollout completed: application release 6f2b5a5c is publi
 
 
 Four-strategy continuation: explicit expiration search now covers long calls, protective puts and cash-secured puts alongside covered calls. One expiration read is shared across all strategies, including cached failures; selecting alternatives preserves original stock levels and combinations. Active choices remain visible and midnight invalidates search context. [Design, guards, validation and rollout](../audits/2026-10-23-four-strategy-expirations.md). The Improvements page includes this work.
+
+
+Four-strategy rollout completed: dc5a058d is public and deployed. Backend 5,822 passed / 26 skipped, frontend 874 passed and full typecheck clean; production compiled 76 pages. All 15 containers healthy, all 12 backend sources match, and only market-data/frontend restarted. TSM returned screened alternatives for all four strategies at 14/60/120 holding days, using four shared archive reads per search. [Final report and evidence](../audits/2026-10-23-four-strategy-expirations.md).

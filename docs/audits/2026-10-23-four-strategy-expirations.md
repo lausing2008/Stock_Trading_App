@@ -1,6 +1,6 @@
 # Four-strategy holding-compatible expiration comparisons
 
-Date: October 23, 2026 (America/Los_Angeles). Continuation of the [covered-call expiration search](2026-10-23-options-multi-expiry.md). Final validation and deployment are recorded below after completion.
+Date: October 23, 2026 (America/Los_Angeles). Continuation of the [covered-call expiration search](2026-10-23-options-multi-expiry.md). Public and deployed application release: `dc5a058db7ce11d016dfd1b85704966eb9ea8136`.
 
 ## Changes
 
@@ -25,7 +25,7 @@ Pending responses and selections are invalidated when matrix, symbol/horizon, ho
 
 ## Validation
 
-Targeted backend: 105 passed. Focused frontend: 44 passed; full typecheck passed. Offline original-matrix equivalence: 200 cases passed. Full frontend: **874 passed across 72 files**, full typecheck clean. Full backend, production build and authorized rollout are pending. An existing older-response DOM test initially caught that the new selector appeared without candidate data or research context; the compatibility guard was restored, then focused and full frontend checks passed.
+Targeted backend: 105 passed. Focused frontend: 44 passed; full typecheck passed. Offline original-matrix equivalence: 200 cases passed. Full frontend: **874 passed across 72 files**, full typecheck clean. Full backend: **5,822 passed, 26 skipped**. Production frontend compiled all 76 pages; authorized rollout completed successfully. An existing older-response DOM test initially caught that the new selector appeared without candidate data or research context; the compatibility guard was restored, then focused and full frontend checks passed.
 
 Regression cases cover numeric payoff/capital and buy/sell/right for each new strategy, unsupported terms and quote failures on every strategy, invalid payoff bounds, same-session enforcement, failure caching/shared read count, all four reviews through the real handler/composition, explicit selection, assignment reset, no request on strategy switches, visible active choices and midnight invalidation.
 
@@ -37,3 +37,22 @@ Regression cases cover numeric payoff/capital and buy/sell/right for each new st
 - Dark-pool provider correction semantics and feed-gap completeness remain separate open work; this change does not resolve them.
 
 [Evidence and reproducible witnesses](evidence/2026-10-23-four-strategy-expirations/README.md).
+
+
+## Production rollout
+
+Application release `dc5a058d` was pushed to public `prod` and deployed under the shared host lock with exact-release image tags and retained rollback images. Only market-data/frontend were recreated. All 15 containers are healthy, all 12 backend source digests match the tested checkout, and the other 13 containers retained their start times. Frontend build `4Wmyw_AXLmcdBoQXr-Gb7` matches the prepared image. Five public pages returned HTTP 200; served TSM and tracker assets include the new selector, comparison summary and tracker entry. No dark-pool ledger capture/persist errors were found in the verification log window.
+
+The read-only production witness uses TSM's October 22 archive, source-session-pinned chains, repeatable-read isolation and a 10-second per-statement timeout. It validates contract side, minimum remaining life, nonnegative maximum loss, preserved original metadata and the shared read bound.
+
+| Holding days | Shared extra reads | Long call alternatives | Covered call | Protective put | Cash-secured put |
+| --- | --- | --- | --- | --- | --- |
+| 14 | 4 | 11 | 12 | 12 | 12 |
+| 60 | 4 | 12 | 12 | 12 | 12 |
+| 120 | 4 | 12 | 12 | 12 | 12 |
+
+All attempted expirations read successfully. Counts are bounded research candidates, not an exhaustive market search. The original contract is excluded from alternatives, which can reduce the count below three for an expiration. These are settled snapshots, not executable prices or demonstrated best-return choices.
+
+Verification combines the real handler/composition regressions, frontend DOM tests, deployed calculation helpers, source/image/container checks and public HTTP/served-build checks. No authenticated interactive browser acceptance or end-to-end production advanced-tier authentication test was performed. An entirely unavailable initial plan still needs a stable source-session/reference-price basis before supplemental results can be accepted; failed or changed-context searches leave the original comparison available with an explanation.
+
+The deployment evidence and final record are a documentation-only follow-up; no further service restart is required.

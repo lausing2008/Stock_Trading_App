@@ -5,6 +5,14 @@
   "frontend_files": 72,
   "typecheck": "passed",
   "original_matrix_equivalence_cases": 200,
-  "full_backend": "pending",
-  "production": "not deployed"
+  "full_backend": "passed",
+  "production": "deployed and verified",
+  "full_backend_passed": 5822,
+  "backend_skipped": 26,
+  "application_release": "dc5a058db7ce11d016dfd1b85704966eb9ea8136",
+  "production_build": "76 pages compiled",
+  "containers_healthy": 15,
+  "backend_source_matches": 12,
+  "other_containers_unchanged": 13,
+  "frontend_build_id": "4Wmyw_AXLmcdBoQXr-Gb7"
 }
