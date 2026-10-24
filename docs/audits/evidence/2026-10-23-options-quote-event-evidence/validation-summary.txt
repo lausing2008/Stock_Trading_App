@@ -1,0 +1,8 @@
+
+ Test Files  73 passed (73)
+      Tests  906 passed (906)
+   Start at  23:24:18
+   Duration  14.29s (transform 7.17s, setup 20ms, collect 21.84s, tests 30.07s, environment 37.18s, prepare 18.83s)
+
+Full frontend typecheck passed; no exclusions.
+Backend code unchanged; backend suite not rerun.

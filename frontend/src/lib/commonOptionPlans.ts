@@ -8,6 +8,7 @@ export const COMMON_OPTION_NAMES: Record<CommonOptionKey, string> = {
 export type OptionGoal = 'compare' | 'upside' | 'income' | 'protect' | 'bearish';
 export type OptionPlanContext = {
   goal: OptionGoal; shares: number | null; cash: number | null; premiumBudget: number | null;
+  calendarBlockers?: Partial<Record<CommonOptionKey, string>>;
   acceptAssignment: boolean; stop?: number; target?: number; holdingDays?: number | null;
 };
 const positive = (n: number | null | undefined): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0;
@@ -16,6 +17,7 @@ const usd = (n: number) => `$${n.toFixed(2)}`;
 /** Research policies, not optimized parameters or executable order instructions. */
 export function commonOptionPlan(key: CommonOptionKey, strategy: OptionStrategy | undefined, context: OptionPlanContext, today: string) {
   const blockers: string[] = [];
+  if (context.calendarBlockers?.[key]) blockers.push(context.calendarBlockers[key]!);
   const leg = strategy?.legs[0];
   const expected = { long_call: ['buy', 'call'], protective_put: ['buy', 'put'], covered_call: ['sell', 'call'], cash_secured_put: ['sell', 'put'] }[key];
   if (!strategy || !leg) blockers.push('No priced contract is available.');

@@ -4,6 +4,7 @@ import { api } from '@/lib/api';
 import type { OptionsGamePlan } from '@/lib/api';
 import OptionStrategyMatrixPanel from './OptionStrategyMatrix';
 import type { OptionResearchContext } from '@/lib/optionResearchContext';
+import type { OptionCalendarContext } from '@/lib/optionCalendarEvidence';
 
 /** T322-OPTIONS-GAMEPLAN: composes AI Signal's existing stop-loss/take-profit levels (same
  * numbers PositionSizer already shows) with a REAL, currently-listed options contract to
@@ -15,10 +16,11 @@ import type { OptionResearchContext } from '@/lib/optionResearchContext';
  * Self-contained (its own fetch, no SWR), matching SrWatchButton's/StockGoalsPanel's own
  * established pattern for keeping stock/[symbol].tsx from growing further. */
 export default function OptionsGamePlanCard({
-  symbol, currentPrice, stopLoss, takeProfit, signal, researchContext,
+  symbol, currentPrice, stopLoss, takeProfit, signal, researchContext, calendarContext,
 }: {
   symbol: string;
   researchContext?: OptionResearchContext;
+  calendarContext?: OptionCalendarContext;
   currentPrice: number | undefined;
   stopLoss: number | undefined;
   takeProfit: number | undefined;
@@ -62,14 +64,14 @@ export default function OptionsGamePlanCard({
   }
   if (!plan) return null;
   if (!plan.available) return <div role="status" style={{ marginTop: 12 }}>
-    <h3>Options Game Plan — data unavailable</h3>
+    <h3>{plan.strategy_matrix && plan.current_price && plan.chain_as_of ? 'Options Game Plan — original preset contracts unavailable' : 'Options Game Plan — data unavailable'}</h3>
     <p>{plan.reason === 'options_feed_unavailable' ? 'The options provider is unavailable. Refresh when the feed recovers.'
       : plan.reason === 'no_options_listed' ? 'No listed option contracts were returned for this symbol.'
       : plan.reason === 'unsupported_product_settlement' ? 'This product needs settlement and last-trading rules that are not supported. Its archived chain is available for historical research.'
       : plan.reason === 'no_current_expiries' ? 'Every expiration in the archived chain has stopped trading, so there is no current contract to plan. Refresh after the next session is captured.'
       : `No priced option plan is available (${plan.reason ?? 'no usable contracts'}). Refresh the chain before entry.`}</p>
     {plan.last_known_chain_date && <p>Last recorded chain: {plan.last_known_chain_date}.</p>}
-    <OptionStrategyMatrixPanel key={symbol} researchContext={researchContext} spot={currentPrice ?? 0} matrix={{ singles: {}, combos: {}, recommendation: { primary: null, reason: 'No contract data' }, iv_rank: null, iv_regime: 'unknown' }} />
+    <OptionStrategyMatrixPanel key={symbol} symbol={symbol} calendarContext={calendarContext} researchContext={researchContext} spot={plan.current_price ?? currentPrice ?? 0} stopLoss={stopLoss} takeProfit={takeProfit} chainAsOf={plan.chain_as_of} matrix={plan.strategy_matrix ?? { singles: {}, combos: {}, recommendation: { primary: null, reason: 'No contract data' }, iv_rank: null, iv_regime: 'unknown' }} />
   </div>;
 
   const pp = plan.protective_put;
@@ -152,7 +154,7 @@ export default function OptionsGamePlanCard({
         )}
       </div>}
       {plan.current_price != null && (
-        <OptionStrategyMatrixPanel key={symbol} researchContext={researchContext} matrix={matrix ?? { singles: {}, combos: {}, recommendation: { primary: null, reason: 'Strategy matrix unavailable' }, iv_rank: null, iv_regime: 'unknown' }} spot={plan.current_price} stopLoss={stopLoss} takeProfit={takeProfit} chainAsOf={plan.chain_as_of} />
+        <OptionStrategyMatrixPanel key={symbol} symbol={symbol} calendarContext={calendarContext} researchContext={researchContext} matrix={matrix ?? { singles: {}, combos: {}, recommendation: { primary: null, reason: 'Strategy matrix unavailable' }, iv_rank: null, iv_regime: 'unknown' }} spot={plan.current_price} stopLoss={stopLoss} takeProfit={takeProfit} chainAsOf={plan.chain_as_of} />
       )}
       {currentPrice != null && (
         <div style={{ fontSize: 10.5, color: '#475569', marginTop: 10 }}>

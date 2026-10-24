@@ -42,7 +42,7 @@ it('requires renewed assignment acceptance after explicitly choosing a compariso
   render(panel());
   fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'income' } });
   fireEvent.change(screen.getByLabelText('Unencumbered shares'), { target: { value: '100' } });
-  const accept = screen.getByRole('checkbox') as HTMLInputElement;
+  const accept = screen.getByRole('checkbox', { name: /I accept buying or selling/ }) as HTMLInputElement;
   fireEvent.click(accept);
   expect(accept.checked).toBe(true);
   fireEvent.change(screen.getByLabelText('Covered-call contract to compare'), { target: { value: '0' } });
@@ -62,10 +62,10 @@ it('requires renewed assignment acceptance after explicitly choosing a compariso
 it('discards an alternative and its assignment acknowledgement when a fresh response replaces the matrix', () => {
   const { rerender } = render(panel());
   fireEvent.change(screen.getByLabelText('Covered-call contract to compare'), { target: { value: '0' } });
-  fireEvent.click(screen.getByRole('checkbox'));
+  fireEvent.click(screen.getByRole('checkbox', { name: /I accept buying or selling/ }));
   rerender(panel(matrix()));
   expect((screen.getByLabelText('Covered-call contract to compare') as HTMLSelectElement).value).toBe('original');
-  expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+  expect((screen.getByRole('checkbox', { name: /I accept buying or selling/ }) as HTMLInputElement).checked).toBe(false);
 });
 
 it('does not turn a chosen alternative with stale data into a preferred strategy', () => {
@@ -73,7 +73,7 @@ it('does not turn a chosen alternative with stale data into a preferred strategy
   fireEvent.change(screen.getByLabelText('Covered-call contract to compare'), { target: { value: '0' } });
   fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'income' } });
   fireEvent.change(screen.getByLabelText('Unencumbered shares'), { target: { value: '100' } });
-  fireEvent.click(screen.getByRole('checkbox'));
+  fireEvent.click(screen.getByRole('checkbox', { name: /I accept buying or selling/ }));
   expect(screen.queryByText('Preferred strategy to research: Covered Call')).toBeNull();
   expect(document.body.textContent).toContain('more than seven calendar days old');
 });
@@ -182,9 +182,9 @@ it('compares all other single-leg strategies explicitly with one request and cle
     fireEvent.change(screen.getByLabelText('Strategy for contract comparison'), { target: { value: key } });
     const select = screen.getByLabelText(`${name} contract to compare`) as HTMLSelectElement;
     expect(select.value).toBe('original');
-    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('checkbox', { name: /I accept buying or selling/ }));
     fireEvent.change(select, { target: { value: '0' } });
-    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole('checkbox', { name: /I accept buying or selling/ }) as HTMLInputElement).checked).toBe(false);
     expect(screen.getByText(/Selected comparisons:/).textContent).toContain(name);
     expect(screen.getByText(/Comparing an explicitly selected alternative/).textContent).toContain('Stock target remains $120.00');
   }
@@ -206,4 +206,55 @@ it('expires pending search context when the New York date rolls over', async () 
   act(() => vi.advanceTimersByTime(30_000));
   await act(async () => resolve(fourStrategyResult()));
   expect(document.body.textContent).toContain('other expirations are not searched');
+});
+
+function eventPanel(m: OptionStrategyMatrix, retrievedAt: string | null, earningsDate: string | null, exDividendDate = '2026-01-20') {
+  return <OptionStrategyMatrixPanel matrix={m} symbol="EXAMPLE" spot={100} chainAsOf="2026-01-02"
+    researchContext={searchContext} calendarContext={{ symbol: 'EXAMPLE', retrievedAt, earningsDate, exDividendDate }} />;
+}
+function eventMatrix() {
+  const m = matrix();
+  m.singles.long_call = { ...alternative, name: 'Long Call', net: 'debit', requires_shares: false,
+    max_loss_per_contract: 210, max_profit_per_contract: null, collateral_per_contract: 210,
+    legs: [{ ...alternative.legs[0], action: 'buy' }] };
+  return m;
+}
+it('keeps the earnings filter optional and blocks events before expiry even beyond the planned hold', () => {
+  const m = eventMatrix();
+  const { rerender } = render(eventPanel(m, '2026-01-02T16:00:00Z', null));
+  fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'upside' } });
+  fireEvent.change(screen.getByLabelText('Option premium-loss budget ($)'), { target: { value: '300' } });
+  expect(screen.getByText('Goal-fit only: Long Call')).toBeTruthy();
+  const filter = screen.getByRole('checkbox', { name: 'Require a current calendar record with reported next earnings after expiration' });
+  expect((filter as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(filter);
+  expect(screen.queryByText('Goal-fit only: Long Call')).toBeNull();
+  rerender(eventPanel(m, '2026-01-02T16:00:00Z', '2026-03-01'));
+  expect(screen.getByText('Goal-fit only: Long Call')).toBeTruthy();
+  rerender(eventPanel(m, '2026-01-02T16:00:00Z', '2026-01-20'));
+  expect(screen.queryByText('Goal-fit only: Long Call')).toBeNull();
+  expect(document.body.textContent).toContain('Reported after planned hold, but by expiry');
+  rerender(eventPanel(m, '2025-12-31T16:00:00Z', '2026-03-01'));
+  expect(screen.queryByText('Goal-fit only: Long Call')).toBeNull();
+  expect(document.body.textContent).toContain('Calendar retrieved over 24 hours ago');
+});
+it('ages calendar evidence and removes a filtered preference without making a request', () => {
+  const get = vi.spyOn(api, 'getOptionsGamePlan');
+  render(eventPanel(eventMatrix(), '2026-01-02T16:00:00Z', '2026-03-01'));
+  fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'upside' } });
+  fireEvent.change(screen.getByLabelText('Option premium-loss budget ($)'), { target: { value: '300' } });
+  fireEvent.click(screen.getByRole('checkbox', { name: /Require a current calendar record/ }));
+  expect(screen.getByText('Goal-fit only: Long Call')).toBeTruthy();
+  vi.setSystemTime(new Date('2026-01-03T16:00:01Z'));
+  act(() => vi.advanceTimersByTime(30_000));
+  expect(screen.queryByText('Goal-fit only: Long Call')).toBeNull();
+  expect(get).not.toHaveBeenCalled();
+});
+it('discloses quote and event provenance gaps independently of retrieval freshness', () => {
+  render(eventPanel(matrix(), '2026-01-02T16:00:00Z', '2026-01-09'));
+  const evidence = screen.getByRole('region', { name: 'Quote and event evidence' });
+  expect(evidence.textContent).toContain('Quote observation time, bid/ask size and reference-spot observation time are unavailable');
+  expect(evidence.textContent).toContain('Calendar retrieved within 24 hours');
+  expect(evidence.textContent).toContain('issuer confirmation, event time and complete future calendar coverage are unverified');
+  expect(evidence.textContent).toContain('Both short calls and short puts can be assigned early');
 });

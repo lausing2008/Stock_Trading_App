@@ -15,6 +15,7 @@ import { COMMON_OPTION_KEYS, COMMON_OPTION_NAMES, recommendCommonOption, type Op
 import type { OptionStrategy, OptionStrategyMatrix } from '@/lib/api';
 import { OPTION_HOLDING_DEFAULTS, reviewOptionResearchContext, type OptionResearchContext } from '@/lib/optionResearchContext';
 import { useNow } from '@/lib/useNow';
+import { optionEventWindow, reviewOptionCalendar, type OptionCalendarContext } from '@/lib/optionCalendarEvidence';
 
 const CARD: React.CSSProperties = {
   background: '#0b1220', border: '1px solid #1e293b', borderRadius: 8, padding: 14,
@@ -168,8 +169,10 @@ function StrategyCard({ s, spot, highlight, review }: { s: OptionStrategy; spot:
   );
 }
 
-export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, takeProfit, chainAsOf, researchContext }: {
+export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, takeProfit, chainAsOf, researchContext, calendarContext, symbol }: {
+  symbol?: string;
   researchContext?: OptionResearchContext;
+  calendarContext?: OptionCalendarContext;
   matrix: OptionStrategyMatrix; spot: number; stopLoss?: number; takeProfit?: number; chainAsOf?: string | null;
 }) {
   const now = useNow();
@@ -182,6 +185,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
   const [shares, setShares] = useState('');
   const [cash, setCash] = useState('');
   const [premiumBudget, setPremiumBudget] = useState('');
+  const [requireEarningsAfterExpiry, setRequireEarningsAfterExpiry] = useState(false);
   type CandidateReview = NonNullable<NonNullable<OptionStrategyMatrix['candidate_review']>['covered_call']>;
   const [comparisonKey, setComparisonKey] = useState<CommonOptionKey>('covered_call');
   const [choices, setChoices] = useState<Partial<Record<CommonOptionKey, { source: CandidateReview; index: number }>>>({});
@@ -235,7 +239,16 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
   const assignmentKey = JSON.stringify([comparedMatrix.singles.covered_call?.legs, comparedMatrix.singles.cash_secured_put?.legs, chainAsOf]);
   const acceptAssignment = assignmentAcceptance === assignmentKey;
   const amount = (text: string) => text.trim() && Number.isFinite(Number(text)) && Number(text) >= 0 ? Number(text) : null;
-  const context: OptionPlanContext = { goal, shares: amount(shares), cash: amount(cash), premiumBudget: amount(premiumBudget), acceptAssignment, stop: stopLoss, target: takeProfit, holdingDays: researchContext ? (holdingText.trim() ? Number(holdingText) : null) : undefined };
+  const holdingDays = researchContext ? (holdingText.trim() ? Number(holdingText) : null) : undefined;
+  const calendar = reviewOptionCalendar(calendarContext, symbol ?? researchContext?.symbol ?? '', now);
+  const eventRows = COMMON_OPTION_KEYS.map(key => {
+    const expiry = comparedMatrix.singles[key]?.legs[0]?.expiry;
+    return { key, expiry, earnings: optionEventWindow(calendar, calendar.earningsDate, expiry, today, holdingDays),
+      dividend: optionEventWindow(calendar, calendar.exDividendDate, expiry, today, holdingDays) };
+  });
+  const calendarBlockers = Object.fromEntries(eventRows.filter(row => requireEarningsAfterExpiry && row.earnings.code !== 'after_expiry')
+    .map(row => [row.key, 'Earnings timing filter: requires a current matched calendar record reporting next earnings after this option expires.']));
+  const context: OptionPlanContext = { goal, shares: amount(shares), cash: amount(cash), premiumBudget: amount(premiumBudget), acceptAssignment, stop: stopLoss, target: takeProfit, holdingDays, calendarBlockers };
   const review = recommendCommonOption(comparedMatrix, context, today, chainAsOf);
   const comboKeys = Object.keys(matrix.combos);
   return <section aria-label="Four common option strategies" style={{ marginTop: 16 }}>
@@ -256,6 +269,20 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
       {research.conflict && <p>Recorded signal and regime conflict. Verify current observations before choosing a directional strategy.</p>}
       <p>{research.note}</p>
     </section>}
+    <section aria-label="Quote and event evidence" style={{ ...CARD, marginBottom: 14 }}>
+      <h4>Quote and event evidence</h4>
+      <p>Archive session: {chainAsOf ?? 'unavailable'}. Quote observation time, bid/ask size and reference-spot observation time are unavailable in this plan. Archive ingestion time is not quote observation time. Fresh execution evidence remains unavailable.</p>
+      <p>Calendar source: yfinance fundamentals · retrieved {calendar.retrievedAt ?? 'not recorded'} · {calendar.label}.
+        {' '}Reported next earnings: {calendar.earningsDate ?? 'not reported'} · reported ex-dividend date: {calendar.exDividendDate ?? 'not reported'}.</p>
+      <p>Retrieval age is checked against a 24-hour research policy. Event dates are date-only reports; issuer confirmation, event time and complete future calendar coverage are unverified. A missing or past date does not mean no event.</p>
+      <label><input type="checkbox" checked={requireEarningsAfterExpiry} onChange={e => setRequireEarningsAfterExpiry(e.target.checked)} /> Require a current calendar record with reported next earnings after expiration</label>
+      <p>This optional research filter applies to each compared contract through expiry, even when the planned holding period is shorter. It does not prove an event-free window.</p>
+      <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', fontSize: 12 }}>
+        <thead><tr>{['Strategy', 'Compared expiry', 'Reported earnings timing', 'Reported ex-dividend timing'].map(h => <th key={h} style={{ textAlign: 'left', padding: 6 }}>{h}</th>)}</tr></thead>
+        <tbody>{eventRows.map(row => <tr key={row.key}><th scope="row" style={{ textAlign: 'left', padding: 6 }}>{COMMON_OPTION_NAMES[row.key]}</th><td>{row.expiry ?? 'unavailable'}</td><td>{row.earnings.label}</td><td>{row.dividend.label}</td></tr>)}</tbody>
+      </table></div>
+      <p>Covered calls need an early-assignment review around ex-dividend dates. Assignment probability is not computed: fresh option time value, dividend amount and verified deliverables are missing. Both short calls and short puts can be assigned early.</p>
+    </section>
     <div className="option-strategy-inputs">
       <label>Objective<select aria-label="Objective" value={goal} onChange={e => setGoal(e.target.value as OptionGoal)}>
         <option value="compare">Compare only — choose an objective</option><option value="upside">Upside / bullish exposure</option>

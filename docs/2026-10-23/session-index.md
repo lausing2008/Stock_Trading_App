@@ -133,3 +133,6 @@ Four-strategy continuation: explicit expiration search now covers long calls, pr
 
 
 Four-strategy rollout completed: dc5a058d is public and deployed. Backend 5,822 passed / 26 skipped, frontend 874 passed and full typecheck clean; production compiled 76 pages. All 15 containers healthy, all 12 backend sources match, and only market-data/frontend restarted. TSM returned screened alternatives for all four strategies at 14/60/120 holding days, using four shared archive reads per search. [Final report and evidence](../audits/2026-10-23-four-strategy-expirations.md).
+
+
+Quote/event continuation: reuse the loaded fundamentals calendar, disclose retrieval freshness separately from source confirmation, classify reported events against each compared expiry and planned hold, and offer an optional reported-earnings-after-expiry filter. Quote observation time, size and timed reference spot remain explicitly unavailable. A related fix preserves stable archive evidence when original preset contracts cannot be priced, allowing an explicit alternative search. [Implementation, policy, checks and rollout](../audits/2026-10-23-options-quote-event-evidence.md). The Improvements page includes this work.

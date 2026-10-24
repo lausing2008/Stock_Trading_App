@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { OptionsGamePlan, OptionStrategy } from '@/lib/api';
 const mocks = vi.hoisted(() => ({ getOptionsGamePlan: vi.fn() }));
@@ -34,7 +34,7 @@ it('fetches and shows all four plans even without a stock stop or target', async
   render(<OptionsGamePlanCard {...props} />);
   await screen.findByRole('region', { name: 'Four common option strategies' });
   expect(mocks.getOptionsGamePlan).toHaveBeenCalledWith('AAPL', { stopLoss: undefined, takeProfit: undefined });
-  for (const key of COMMON_OPTION_KEYS) expect(screen.getByText(COMMON_OPTION_NAMES[key], { exact: true })).toBeTruthy();
+  for (const key of COMMON_OPTION_KEYS) expect(within(document.querySelector('.common-option-strategy-grid') as HTMLElement).getByText(COMMON_OPTION_NAMES[key], { exact: true })).toBeTruthy();
   expect(screen.getAllByText('Playbook — before entry, while open & exit')).toHaveLength(4);
   fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'upside' } });
   fireEvent.change(screen.getByLabelText('Option premium-loss budget ($)'), { target: { value: '400' } });
@@ -121,4 +121,30 @@ it('uses the selected horizon default and hides mismatched signal reasons', asyn
   expect(screen.getAllByText(/Wrong symbol or horizon/).length).toBeGreaterThan(0);
   expect((screen.getByLabelText('Planned holding period (calendar days)') as HTMLInputElement).value).toBe('28');
   expect(screen.queryByRole('cell', { name: 'bull' })).toBeNull();
+});
+
+it('keeps a stable archived basis searchable when the original preset contracts cannot be priced', async () => {
+  const initial = packet();
+  const covered = initial.strategy_matrix!.singles.covered_call;
+  initial.available = false;
+  initial.strategy_matrix!.singles = {};
+  initial.strategy_matrix!.candidate_review = { covered_call: {
+    method_version: 'covered_call_candidates_v1', anchor: 100, expiry: '2099-12-20',
+    scope: 'all_rows_of_selected_call_expiry', evaluated_count: 1, screened_count: 0,
+    rejected_counts: { two_sided_quote_required: 1 }, original: { strike: 100, option_symbol: null, reason: 'two_sided_quote_required' },
+    ranking: 'Research only', alternatives: [], actionability: 'research_only',
+  } };
+  const searched = packet();
+  searched.strategy_matrix!.candidate_review = { covered_call: { ...initial.strategy_matrix!.candidate_review.covered_call!,
+    method_version: 'covered_call_candidates_v2', holding_days: 14, buffer_days: 2,
+    searched_expiries: ['2099-12-20'], completed_expiries: ['2099-12-20'], eligible_expiry_count: 1,
+    alternatives: [covered],
+  } };
+  mocks.getOptionsGamePlan.mockResolvedValueOnce(initial).mockResolvedValueOnce(searched);
+  render(<OptionsGamePlanCard {...props} researchContext={{ symbol: 'AAPL', horizon: 'SWING' }} />);
+  await screen.findByText('Options Game Plan — original preset contracts unavailable');
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Find expirations for holding period' })));
+  fireEvent.change(screen.getByLabelText('Covered-call contract to compare'), { target: { value: '0' } });
+  expect(screen.getByText(/Comparing an explicitly selected alternative/)).toBeTruthy();
+  expect(mocks.getOptionsGamePlan).toHaveBeenLastCalledWith('AAPL', { stopLoss: undefined, takeProfit: undefined, holdingDays: 14 });
 });

@@ -35,6 +35,18 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: "OPTIONS-QUOTE-EVENT-EVIDENCE",
+    tier: 468,
+    severity: "feature",
+    defaultStatus: "done",
+    title: "Quote provenance and reported-event timing for option comparisons",
+    file: "docs/audits/2026-10-23-options-quote-event-evidence.md",
+    effort: "M",
+    impact: "Shows missing execution evidence and reported earnings/ex-dividend exposure for each compared expiry.",
+    what: "An archive session or ingestion timestamp does not establish when its quotes were observed, and a missing event date does not establish an event-free window.",
+    fix: "Reuse existing fundamentals without new requests. Show calendar retrieval age, date-only reports and source/confirmation gaps; compare reported dates with both planned hold and selected expiry. An optional filter, off by default, requires a matched calendar retrieved within 24 hours reporting next earnings strictly after expiry; unknown, stale, future, malformed and past records cannot pass. Quote observation times and sizes remain explicitly unavailable. Preserve a valid archive/session basis when original preset contracts are unpriced so explicit alternative searches can recover. Research comparison only; no expected-return winner or executable entry is added.",
+  },
+  {
     id: "OPTIONS-FOUR-STRATEGY-EXPIRATIONS",
     tier: 468,
     severity: "feature",

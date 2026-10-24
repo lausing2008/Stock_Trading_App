@@ -103,3 +103,10 @@ it.each(['long_call', 'protective_put', 'cash_secured_put'] as const)('blocks an
   expect(result.plans[key].blockers.join(' ')).toContain('failed the research screen');
   expect(result.primary).not.toBe(key);
 });
+
+it.each(COMMON_OPTION_KEYS)('applies an optional calendar blocker to %s', key => {
+  const blocked = commonOptionPlan(key, strategy(key), { ...context, calendarBlockers: { [key]: 'Calendar requires review' } }, today);
+  expect(blocked.blockers).toContain('Calendar requires review');
+  const ordinary = commonOptionPlan(key, strategy(key), context, today);
+  expect(ordinary.blockers).not.toContain('Calendar requires review');
+});

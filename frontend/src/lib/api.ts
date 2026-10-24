@@ -2129,6 +2129,7 @@ export type Fundamentals = {
   book_value: number | null;
   dividend_yield: number | null;
   dividend_rate: number | null;
+  ex_dividend_date?: string | null; // Reported date from existing fundamentals response.
   // Returns & risk
   return_on_equity: number | null;
   return_on_assets: number | null;

@@ -1195,6 +1195,8 @@ export default function StockDetail() {
             </select></label></div>
             <OptionsGamePlanCard
               researchContext={{ symbol: symbol as string, horizon: selectedHorizon, signal: contextSignal }}
+              calendarContext={data.fundamentals ? { symbol: symbol as string, retrievedAt: data.fundamentals.fetched_at,
+                earningsDate: data.fundamentals.next_earnings_date, exDividendDate: data.fundamentals.ex_dividend_date } : undefined}
               symbol={symbol as string}
               currentPrice={curPx}
               stopLoss={nearestSupport}
