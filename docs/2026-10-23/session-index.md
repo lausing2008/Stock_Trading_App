@@ -4,7 +4,7 @@ This is the current continuation of the [earlier session index](../2026-10-22/se
 
 **Current boundary:** delta/DTE preferences are public and deployed in `dc2d4b7d`, completing just after midnight on October 24. Backend 5,849 passed / 26 skipped; frontend 928 passed and full typecheck clean; production compiled 76 pages. All 15 containers are healthy, all 12 backend sources match, and only market-data/frontend restarted. [Current report and evidence](../audits/2026-10-23-options-delta-dte-preferences.md). [October 24 continuation](../2026-10-24/session-index.md). Quote provenance, issuer-confirmed event coverage and validated return forecasts remain open; earlier local-only/planned statements below are historical preparation records.
 
-**Later release:** explicit covered-call comparison, provider Greek display and regression coverage are now public and deployed in e08dd338; multi-expiry and forecast/regime ranking remain planned.
+**Historical covered-call release stage (superseded below):** explicit comparison and provider Greek display shipped in `e08dd338`. Multi-expiry was planned at that stage and is now delivered; forecast-based return ranking remains open. [Complete current session index](../2026-10-24/session-index.md).
 
 ## Delivered and verified earlier in the session
 
