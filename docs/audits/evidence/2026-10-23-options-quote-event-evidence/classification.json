@@ -1,0 +1,127 @@
+{
+  "calendar": {
+    "current": true,
+    "earningsDate": "2027-01-14",
+    "exDividendDate": "2026-12-10",
+    "label": "Calendar retrieved within 24 hours",
+    "retrievedAt": "2026-10-24T01:32:15.737056Z",
+    "status": "current"
+  },
+  "checked_at": "2026-10-24T06:26:29.358287+00:00",
+  "expiry_source": "preceding read-only TSM archive witness; policy examples, not a new market search",
+  "planned_holding_days": 14,
+  "symbol": "TSM",
+  "today": "2026-10-24",
+  "windows": [
+    {
+      "earnings": {
+        "code": "after_expiry",
+        "label": "Reported date after expiry; coverage unverified"
+      },
+      "ex_dividend": {
+        "code": "after_expiry",
+        "label": "Reported date after expiry; coverage unverified"
+      },
+      "expiry": "2026-11-13"
+    },
+    {
+      "earnings": {
+        "code": "after_expiry",
+        "label": "Reported date after expiry; coverage unverified"
+      },
+      "ex_dividend": {
+        "code": "after_expiry",
+        "label": "Reported date after expiry; coverage unverified"
+      },
+      "expiry": "2026-11-20"
+    },
+    {
+      "earnings": {
+        "code": "after_expiry",
+        "label": "Reported date after expiry; coverage unverified"
+      },
+      "ex_dividend": {
+        "code": "after_expiry",
+        "label": "Reported date after expiry; coverage unverified"
+      },
+      "expiry": "2026-11-27"
+    },
+    {
+      "earnings": {
+        "code": "after_expiry",
+        "label": "Reported date after expiry; coverage unverified"
+      },
+      "ex_dividend": {
+        "code": "after_expiry",
+        "label": "Reported date after expiry; coverage unverified"
+      },
+      "expiry": "2026-12-04"
+    },
+    {
+      "earnings": {
+        "code": "before_expiry",
+        "label": "Reported after planned hold, but by expiry"
+      },
+      "ex_dividend": {
+        "code": "before_expiry",
+        "label": "Reported after planned hold, but by expiry"
+      },
+      "expiry": "2027-01-15"
+    },
+    {
+      "earnings": {
+        "code": "before_expiry",
+        "label": "Reported after planned hold, but by expiry"
+      },
+      "ex_dividend": {
+        "code": "before_expiry",
+        "label": "Reported after planned hold, but by expiry"
+      },
+      "expiry": "2027-02-19"
+    },
+    {
+      "earnings": {
+        "code": "before_expiry",
+        "label": "Reported after planned hold, but by expiry"
+      },
+      "ex_dividend": {
+        "code": "before_expiry",
+        "label": "Reported after planned hold, but by expiry"
+      },
+      "expiry": "2027-03-19"
+    },
+    {
+      "earnings": {
+        "code": "before_expiry",
+        "label": "Reported after planned hold, but by expiry"
+      },
+      "ex_dividend": {
+        "code": "before_expiry",
+        "label": "Reported after planned hold, but by expiry"
+      },
+      "expiry": "2027-04-16"
+    },
+    {
+      "earnings": {
+        "code": "before_expiry",
+        "label": "Reported after planned hold, but by expiry"
+      },
+      "ex_dividend": {
+        "code": "before_expiry",
+        "label": "Reported after planned hold, but by expiry"
+      },
+      "expiry": "2027-06-17"
+    },
+    {
+      "earnings": {
+        "code": "before_expiry",
+        "label": "Reported after planned hold, but by expiry"
+      },
+      "ex_dividend": {
+        "code": "before_expiry",
+        "label": "Reported after planned hold, but by expiry"
+      },
+      "expiry": "2027-09-17"
+    }
+  ]
+}

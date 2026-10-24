@@ -31,7 +31,7 @@ Regression cases cover numeric payoff/capital and buy/sell/right for each new st
 
 ## Remaining work
 
-- Independently dated spot/chain price-basis checks, current two-sided quote sizes and event dates.
+- Independently dated spot/chain price-basis checks and current two-sided quote sizes remain open. [The quote/event follow-up](2026-10-23-options-quote-event-evidence.md) now exposes the missing quote provenance and reported calendar dates with a retrieval policy; issuer confirmation and full event coverage remain open.
 - Documented user controls for delta/DTE preferences, followed by coverage and out-of-sample cost/fill evaluation.
 - Validated option-strategy return forecasts and portfolio/assignment risk before claiming a best market-aware strategy.
 - Dark-pool provider correction semantics and feed-gap completeness remain separate open work; this change does not resolve them.

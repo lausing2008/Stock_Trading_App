@@ -1,0 +1,11 @@
+{
+  "calendar": {
+    "ex_dividend_date": "2026-12-10",
+    "fetched_at": "2026-10-24T01:32:15.737056Z",
+    "next_earnings_date": "2027-01-14"
+  },
+  "checked_at": "2026-10-24T06:26:29.358287+00:00",
+  "method": "existing_redis_get_only",
+  "record_present": true,
+  "symbol": "TSM"
+}

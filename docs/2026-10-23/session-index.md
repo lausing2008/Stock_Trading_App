@@ -2,7 +2,7 @@
 
 This is the current continuation of the [earlier session index](../2026-10-22/session-index.md). It consolidates the options/calibration deployment, the pending working-tree audit, the four authorized local fixes, and the Improvements tracker update. Dates are October 23 in America/Los_Angeles; evidence files retain their recorded UTC timestamps.
 
-**Current boundary:** options horizon/expiry fit and context evidence are deployed in `abc32f30`, following the prior covered-call comparison release. All 15 containers are healthy; all 12 backend source hashes match. This update restarted frontend only; all 14 other containers kept their previous start times. [Current feature/policy report and verification](../audits/2026-10-23-options-horizon-context.md). Market-aware ranking remains unavailable pending dated input observations and validated forecasts. Earlier local-only statements are historical preparation records.
+**Current boundary:** quote/event evidence and the optional reported-earnings-after-expiry research filter are public and deployed in `4e6b1f0c`, following four-strategy expiration comparisons in `dc5a058d`. Frontend 906 passed with full typecheck; production compiled 76 pages. All 15 containers are healthy, all 12 backend sources match, and all 14 non-frontend containers retained their start times. Backend source is unchanged; its preceding full suite passed 5,822 with 26 skipped. [Current report and evidence](../audits/2026-10-23-options-quote-event-evidence.md). Quote observation times/sizes and issuer-confirmed event coverage remain unavailable; market-aware return ranking still needs those inputs and validated forecasts. Earlier local-only/planned statements below are historical preparation records.
 
 **Later release:** explicit covered-call comparison, provider Greek display and regression coverage are now public and deployed in e08dd338; multi-expiry and forecast/regime ranking remain planned.
 
@@ -136,3 +136,6 @@ Four-strategy rollout completed: dc5a058d is public and deployed. Backend 5,822 
 
 
 Quote/event continuation: reuse the loaded fundamentals calendar, disclose retrieval freshness separately from source confirmation, classify reported events against each compared expiry and planned hold, and offer an optional reported-earnings-after-expiry filter. Quote observation time, size and timed reference spot remain explicitly unavailable. A related fix preserves stable archive evidence when original preset contracts cannot be priced, allowing an explicit alternative search. [Implementation, policy, checks and rollout](../audits/2026-10-23-options-quote-event-evidence.md). The Improvements page includes this work.
+
+
+Quote/event rollout completed: 4e6b1f0c is public and live; 906 frontend tests and full typecheck pass, production compiled 76 pages. All 15 containers healthy, all 12 backend source digests match, and only frontend restarted. TSM cached-calendar evidence and the exact classifier replay are saved alongside served-build and health checks. [Final report](../audits/2026-10-23-options-quote-event-evidence.md).

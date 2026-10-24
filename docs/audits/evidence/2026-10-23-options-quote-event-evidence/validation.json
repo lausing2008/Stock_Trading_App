@@ -6,5 +6,11 @@
   "whitespace": "passed",
   "backend_code": "unchanged",
   "backend_tests": "not rerun; preceding release 5822 passed / 26 skipped",
-  "production": "not yet deployed"
+  "production": "deployed and verified",
+  "application_release": "4e6b1f0cb860e586ad259d2e5fd9ce9d67ab415f",
+  "frontend_build_id": "WFsiB5NjASsFNyuSSVBMs",
+  "production_build": "76 pages compiled",
+  "containers_healthy": 15,
+  "backend_source_matches": 12,
+  "other_containers_unchanged": 14
 }
