@@ -12,6 +12,8 @@
 import React, { useState } from 'react';
 import { COMMON_OPTION_KEYS, COMMON_OPTION_NAMES, recommendCommonOption, type OptionPlanContext, type OptionGoal, type CommonOptionKey } from '@/lib/commonOptionPlans';
 import type { OptionStrategy, OptionStrategyMatrix } from '@/lib/api';
+import { OPTION_HOLDING_DEFAULTS, reviewOptionResearchContext, type OptionResearchContext } from '@/lib/optionResearchContext';
+import { useNow } from '@/lib/useNow';
 
 const CARD: React.CSSProperties = {
   background: '#0b1220', border: '1px solid #1e293b', borderRadius: 8, padding: 14,
@@ -165,9 +167,15 @@ function StrategyCard({ s, spot, highlight, review }: { s: OptionStrategy; spot:
   );
 }
 
-export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, takeProfit, chainAsOf }: {
+export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, takeProfit, chainAsOf, researchContext }: {
+  researchContext?: OptionResearchContext;
   matrix: OptionStrategyMatrix; spot: number; stopLoss?: number; takeProfit?: number; chainAsOf?: string | null;
 }) {
+  const now = useNow();
+  const research = researchContext ? reviewOptionResearchContext(researchContext, now) : null;
+  const holdingKey = researchContext ? `${researchContext.symbol}:${researchContext.horizon}` : '';
+  const [holdingOverride, setHoldingOverride] = useState<{ key: string; value: string } | null>(null);
+  const holdingText = holdingOverride?.key === holdingKey ? holdingOverride.value : String(Object.hasOwn(OPTION_HOLDING_DEFAULTS, researchContext?.horizon ?? '') ? OPTION_HOLDING_DEFAULTS[researchContext!.horizon] : '');
   const [goal, setGoal] = useState<OptionGoal>('compare');
   const [shares, setShares] = useState('');
   const [cash, setCash] = useState('');
@@ -180,8 +188,8 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
   const assignmentKey = JSON.stringify([comparedMatrix.singles.covered_call?.legs, comparedMatrix.singles.cash_secured_put?.legs, chainAsOf]);
   const acceptAssignment = assignmentAcceptance === assignmentKey;
   const amount = (text: string) => text.trim() && Number.isFinite(Number(text)) && Number(text) >= 0 ? Number(text) : null;
-  const context: OptionPlanContext = { goal, shares: amount(shares), cash: amount(cash), premiumBudget: amount(premiumBudget), acceptAssignment, stop: stopLoss, target: takeProfit };
-  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const context: OptionPlanContext = { goal, shares: amount(shares), cash: amount(cash), premiumBudget: amount(premiumBudget), acceptAssignment, stop: stopLoss, target: takeProfit, holdingDays: researchContext ? (holdingText.trim() ? Number(holdingText) : null) : undefined };
+  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(now));
   const review = recommendCommonOption(comparedMatrix, context, today, chainAsOf);
   const comboKeys = Object.keys(matrix.combos);
   return <section aria-label="Four common option strategies" style={{ marginTop: 16 }}>
@@ -189,6 +197,19 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
     <p>Compare one standard 100-share contract. These are research illustrations using settled provider prices
       {chainAsOf ? ` observed ${chainAsOf}` : ' with an unknown observation date'}, not live executable quotes.</p>
     <p>Original contract selection uses the nearest strike to spot, the stock stop or target, and preset expiry windows. Covered-call alternatives screen the supplied rows of the selected call expiry; choosing one changes this comparison only. Delta, gamma, open interest and breakeven are not jointly optimized. This comparison does not establish the best return.</p>
+    {researchContext && research && <section aria-label="Horizon and market context evidence" style={{ ...CARD, marginBottom: 14 }}>
+      <h4>Strategy research horizon: {researchContext.horizon}</h4>
+      <div className="option-strategy-inputs"><label style={{ maxWidth: 300 }}>Planned holding period (calendar days)<input aria-label="Planned holding period (calendar days)" type="number" min="1" max="365" step="1" value={holdingText}
+        onChange={e => setHoldingOverride({ key: holdingKey, value: e.target.value })} /></label></div>
+      <p>The editable default follows the platform outcome-evaluation window. It is not an optimized holding time. Each contract needs this period plus a two-calendar-day research buffer before expiry.</p>
+      <p>Signal record: {research.recordedAt ?? 'unavailable'} · {research.statusLabel}. Record-age policy: at most 72 hours; underlying observations need their own dates.</p>
+      <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', fontSize: 12 }}>
+        <thead><tr>{['Evidence', 'Recorded value', 'Source', 'Date / limitation'].map(h => <th key={h} style={{ textAlign: 'left', padding: 6 }}>{h}</th>)}</tr></thead>
+        <tbody>{research.rows.map(row => <tr key={row.label}><th scope="row" style={{ textAlign: 'left', padding: 6 }}>{row.label}</th><td>{row.value}</td><td>{row.source}</td><td>{row.observation}</td></tr>)}</tbody>
+      </table></div>
+      {research.conflict && <p>Recorded signal and regime conflict. Verify current observations before choosing a directional strategy.</p>}
+      <p>{research.note}</p>
+    </section>}
     <div className="option-strategy-inputs">
       <label>Objective<select aria-label="Objective" value={goal} onChange={e => setGoal(e.target.value as OptionGoal)}>
         <option value="compare">Compare only — choose an objective</option><option value="upside">Upside / bullish exposure</option>
@@ -200,7 +221,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
     </div>
     <label><input type="checkbox" checked={acceptAssignment} onChange={e => setAssignmentAcceptance(e.target.checked ? assignmentKey : null)} /> I accept buying or selling 100 shares at the listed strike if assigned.</label>
     <div role="status" style={{ ...CARD, borderColor: review.primary ? '#38bdf8' : '#475569', margin: '14px 0' }}>
-      <strong>{review.primary ? `Preferred strategy to research: ${COMMON_OPTION_NAMES[review.primary]}` : 'Wait / no strategy preference yet'}</strong>
+      <strong>{review.primary ? `${researchContext ? 'Goal-fit only' : 'Preferred strategy to research'}: ${COMMON_OPTION_NAMES[review.primary]}` : 'Wait / no strategy preference yet'}</strong>
       <p>{review.reason}</p><p>{review.ivNote}</p>
       <p>Entry status: WAIT for fresh quotes and broker checks. Holdings and budgets above are your declarations;
         account permissions, deliverables, event coverage and portfolio risk are unverified. No quantity or order is recommended.</p>

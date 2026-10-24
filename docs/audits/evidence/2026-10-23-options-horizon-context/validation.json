@@ -1,0 +1,14 @@
+{
+  "frontend_full": {
+    "passed": 864,
+    "files": 72,
+    "seconds": 13.02
+  },
+  "typecheck": "passed",
+  "whitespace": "passed",
+  "backend_changed": false,
+  "backend_tests": "not_rerun: unchanged backend code",
+  "provider_requests_added": 0,
+  "market_aware_ranking": "unavailable pending dated input observations and validated option-horizon forecasts",
+  "production_verification": "pending"
+}

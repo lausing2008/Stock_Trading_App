@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { api } from '@/lib/api';
 import type { OptionsGamePlan } from '@/lib/api';
 import OptionStrategyMatrixPanel from './OptionStrategyMatrix';
+import type { OptionResearchContext } from '@/lib/optionResearchContext';
 
 /** T322-OPTIONS-GAMEPLAN: composes AI Signal's existing stop-loss/take-profit levels (same
  * numbers PositionSizer already shows) with a REAL, currently-listed options contract to
@@ -14,9 +15,10 @@ import OptionStrategyMatrixPanel from './OptionStrategyMatrix';
  * Self-contained (its own fetch, no SWR), matching SrWatchButton's/StockGoalsPanel's own
  * established pattern for keeping stock/[symbol].tsx from growing further. */
 export default function OptionsGamePlanCard({
-  symbol, currentPrice, stopLoss, takeProfit, signal,
+  symbol, currentPrice, stopLoss, takeProfit, signal, researchContext,
 }: {
   symbol: string;
+  researchContext?: OptionResearchContext;
   currentPrice: number | undefined;
   stopLoss: number | undefined;
   takeProfit: number | undefined;
@@ -67,7 +69,7 @@ export default function OptionsGamePlanCard({
       : plan.reason === 'no_current_expiries' ? 'Every expiration in the archived chain has stopped trading, so there is no current contract to plan. Refresh after the next session is captured.'
       : `No priced option plan is available (${plan.reason ?? 'no usable contracts'}). Refresh the chain before entry.`}</p>
     {plan.last_known_chain_date && <p>Last recorded chain: {plan.last_known_chain_date}.</p>}
-    <OptionStrategyMatrixPanel key={symbol} spot={currentPrice ?? 0} matrix={{ singles: {}, combos: {}, recommendation: { primary: null, reason: 'No contract data' }, iv_rank: null, iv_regime: 'unknown' }} />
+    <OptionStrategyMatrixPanel key={symbol} researchContext={researchContext} spot={currentPrice ?? 0} matrix={{ singles: {}, combos: {}, recommendation: { primary: null, reason: 'No contract data' }, iv_rank: null, iv_regime: 'unknown' }} />
   </div>;
 
   const pp = plan.protective_put;
@@ -150,7 +152,7 @@ export default function OptionsGamePlanCard({
         )}
       </div>}
       {plan.current_price != null && (
-        <OptionStrategyMatrixPanel key={symbol} matrix={matrix ?? { singles: {}, combos: {}, recommendation: { primary: null, reason: 'Strategy matrix unavailable' }, iv_rank: null, iv_regime: 'unknown' }} spot={plan.current_price} stopLoss={stopLoss} takeProfit={takeProfit} chainAsOf={plan.chain_as_of} />
+        <OptionStrategyMatrixPanel key={symbol} researchContext={researchContext} matrix={matrix ?? { singles: {}, combos: {}, recommendation: { primary: null, reason: 'Strategy matrix unavailable' }, iv_rank: null, iv_regime: 'unknown' }} spot={plan.current_price} stopLoss={stopLoss} takeProfit={takeProfit} chainAsOf={plan.chain_as_of} />
       )}
       {currentPrice != null && (
         <div style={{ fontSize: 10.5, color: '#475569', marginTop: 10 }}>

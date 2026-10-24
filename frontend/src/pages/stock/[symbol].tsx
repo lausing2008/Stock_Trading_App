@@ -1186,15 +1186,22 @@ export default function StockDetail() {
             ?.filter(l => curPx == null || l.price < curPx)
             .sort((a, b) => b.price - a.price)[0]?.price ?? undefined;
           const takeProfit = data.fundamentals?.target_price ?? undefined;
-          const activeSignal = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig?.signal;
+          const contextSignal = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig;
+          const activeSignal = contextSignal?.signal;
           return (
+            <div>
+            <div className="option-strategy-inputs"><label style={{ maxWidth: 300 }}>Strategy research horizon<select aria-label="Strategy research horizon" value={selectedHorizon} onChange={e => setSelectedHorizon(e.target.value)}>
+              {['SHORT', 'SWING', 'LONG', 'GROWTH'].map(h => <option key={h} value={h}>{h}</option>)}
+            </select></label></div>
             <OptionsGamePlanCard
+              researchContext={{ symbol: symbol as string, horizon: selectedHorizon, signal: contextSignal }}
               symbol={symbol as string}
               currentPrice={curPx}
               stopLoss={nearestSupport}
               takeProfit={takeProfit}
               signal={activeSignal}
             />
+            </div>
           );
         })()}
 

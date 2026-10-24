@@ -35,6 +35,18 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: "OPTIONS-HORIZON-CONTEXT-EVIDENCE",
+    tier: 468,
+    severity: "high",
+    defaultStatus: "done",
+    title: "Horizon-aware holding/expiry fit and context evidence",
+    file: "docs/audits/2026-10-23-options-horizon-context.md",
+    effort: "M",
+    impact: "Makes an expiry mismatch or undated context visible before a goal-fit highlight.",
+    what: "A long stock target and a short option expiry do not share a time horizon; recorded model inputs lack independent observation dates.",
+    fix: "RELEASE INCLUDED: select the existing SHORT/SWING/LONG/GROWTH horizon on Options; declare 1–365 holding days; require expiry to cover that period plus two calendar days. The editable starting values follow existing outcome-evaluation windows, not optimized trades. Reuse selected-horizon signal evidence; distinguish record date from observation date, reject wrong-symbol/horizon context, and label the analyst-recommendation proxy accurately. Market-aware preference stays unavailable without dated inputs and validated option forecasts; the highlight is goal fit only.",
+  },
+  {
     id: "OPTIONS-STRATEGY-CANDIDATE-RANKING",
     tier: 468,
     severity: "high",
@@ -44,7 +56,7 @@ const ITEMS: Item[] = [
     effort: "L",
     impact: "Makes conditional fit and missing candidates understandable without claiming an optimized return.",
     what: "The matrix uses nearest strikes and preset expiry windows; an invalid selected strike can hide a covered call even when another strike is usable.",
-    fix: "LOCAL IMPLEMENTATION: covered-call rejection reasons, deterministic screened alternatives for one expiry, explicit browser comparison choice, renewed assignment acceptance, and available option Greeks/OI. Target and combinations remain unchanged. NEXT: multi-expiry comparison and timestamped regime/trend/company forecasts. Existing conditional preference uses declared objectives and resources plus quote checks. Validate executable net-cost outcomes before expected-return ranking. Selection limitations are now visible on the card.",
+    fix: "RELEASE INCLUDED: covered-call rejection reasons, deterministic screened alternatives for one expiry, explicit browser comparison choice, renewed assignment acceptance, and available option Greeks/OI. Target and combinations remain unchanged. NEXT: multi-expiry comparison and timestamped regime/trend/company forecasts. Existing conditional preference uses declared objectives and resources plus quote checks. Validate executable net-cost outcomes before expected-return ranking. Selection limitations are now visible on the card.",
   },
   {
     id: "CHART-INTRADAY-INDICATOR-WARMUP",

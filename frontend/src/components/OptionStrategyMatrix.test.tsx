@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { OptionStrategy, OptionStrategyMatrix } from '@/lib/api';
 import OptionStrategyMatrixPanel from './OptionStrategyMatrix';
 
@@ -85,4 +85,17 @@ it('explains an empty screen and remains compatible with older responses', () =>
   rerender(panel({ ...m }));
   expect(screen.queryByRole('region', { name: 'Covered call contract selection' })).toBeNull();
   expect(screen.getByText('Wait / no strategy preference yet')).toBeTruthy();
+});
+
+
+it('ages recorded context while the tab stays open without any request', () => {
+  render(<OptionStrategyMatrixPanel matrix={matrix()} spot={100} takeProfit={120} chainAsOf="2026-01-02"
+    researchContext={{ symbol: 'EXAMPLE', horizon: 'SWING', signal: { symbol: 'EXAMPLE', horizon: 'SWING', signal: 'BUY',
+      ts: '2026-01-02T16:00:00Z', reasons: {}, confidence: 99, bullish_probability: .99 } }} />);
+  const evidence = screen.getByRole('region', { name: 'Horizon and market context evidence' });
+  expect(evidence.textContent).toContain('Record within 72-hour limit');
+  vi.setSystemTime(new Date('2026-01-06T17:00:00Z'));
+  act(() => vi.advanceTimersByTime(30_000));
+  expect(evidence.textContent).toContain('Record older than 72 hours');
+  expect(evidence.textContent).toContain('Market-aware preference unavailable');
 });

@@ -77,3 +77,16 @@ it('honors the original candidate screen even when rounded spread would appear a
   expect(result.primary).toBeNull();
   expect(result.plans.covered_call.blockers.join(' ')).toContain('failed the research screen');
 });
+
+it('requires expiry to cover the editable holding period plus two calendar days using current dates', () => {
+  const s = strategy('long_call'); s.legs[0].days_to_expiry = 999;
+  expect(commonOptionPlan('long_call', s, { ...context, holdingDays: 31 }, today).blockers).toEqual([]);
+  expect(commonOptionPlan('long_call', s, { ...context, holdingDays: 32 }, today).blockers.join(' ')).toContain('two-calendar-day research buffer');
+});
+it.each([null, 0, -1, 1.5, 366, NaN, Infinity])('rejects an invalid declared holding period: %s', holdingDays => {
+  const p = commonOptionPlan('long_call', strategy('long_call'), { ...context, holdingDays }, today);
+  expect(p.blockers.join(' ')).toContain('1 to 365 calendar days');
+});
+it.each(COMMON_OPTION_KEYS)('applies holding/expiry checks to %s', key => {
+  expect(commonOptionPlan(key, strategy(key), { ...context, holdingDays: 60 }, today).blockers.join(' ')).toContain('planned holding period');
+});

@@ -113,3 +113,8 @@ Covered-call follow-up validation completed: 5,799 backend passed / 26 skipped; 
 
 
 Automatic-push authorization and deployment completed: e08dd338 public and live, production frontend build EinBdMqNIJxOWRz-mfkl3, all 15 containers healthy and all 12 backend source hashes matching. TSM offers three screened alternatives from its October 22 snapshot, with explicit comparison choice and renewed assignment acceptance. [Deployment record](../audits/2026-10-23-covered-call-candidates-deployment.md). No additional service restarts are needed for this documentation update.
+
+
+## Options horizon/context continuation
+
+The next frontend-only improvement adds an Options-tab horizon selector, editable calendar-day holding period, expiry compatibility for all four strategies, and a recorded-context evidence panel. It labels company recommendation changes correctly and distinguishes record freshness from input observation dates. Existing highlights become “Goal-fit only”; market-aware preference remains unavailable until provenance/forecast gaps are resolved. Full frontend 864 passed, full typecheck and whitespace clean; backend code unchanged. [Design, policies and remaining data work](../audits/2026-10-23-options-horizon-context.md). Authorized automatic production rollout is recorded in that report once verified.

@@ -8,7 +8,7 @@ export const COMMON_OPTION_NAMES: Record<CommonOptionKey, string> = {
 export type OptionGoal = 'compare' | 'upside' | 'income' | 'protect' | 'bearish';
 export type OptionPlanContext = {
   goal: OptionGoal; shares: number | null; cash: number | null; premiumBudget: number | null;
-  acceptAssignment: boolean; stop?: number; target?: number;
+  acceptAssignment: boolean; stop?: number; target?: number; holdingDays?: number | null;
 };
 const positive = (n: number | null | undefined): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0;
 const usd = (n: number) => `$${n.toFixed(2)}`;
@@ -26,6 +26,16 @@ export function commonOptionPlan(key: CommonOptionKey, strategy: OptionStrategy 
     if (!leg.expiry || !/^\d{4}-\d{2}-\d{2}$/.test(leg.expiry) || !Number.isFinite(Date.parse(leg.expiry)) || leg.expiry <= today) blockers.push('Expiry is missing or has passed; refresh the chain.');
     if (leg.price_source !== 'quote_mid' || leg.spread_pct == null || !Number.isFinite(leg.spread_pct)) blockers.push('A usable two-sided quote and spread are required.');
     else if (leg.spread_pct < 0 || leg.spread_pct > 20) blockers.push('Bid/ask spread exceeds the 20% research comparison limit or is invalid.');
+    if (context.holdingDays !== undefined) {
+      if (context.holdingDays == null || !Number.isInteger(context.holdingDays) || context.holdingDays < 1 || context.holdingDays > 365) {
+        blockers.push('Declare a planned holding period from 1 to 365 calendar days.');
+      } else {
+        const remaining = (Date.parse(leg.expiry ?? '') - Date.parse(today)) / 86_400_000;
+        if (!Number.isFinite(remaining) || remaining < context.holdingDays + 2) {
+          blockers.push('Expiry does not cover the planned holding period plus the two-calendar-day research buffer.');
+        }
+      }
+    }
     if (strategy.max_profit_per_contract !== null && (!Number.isFinite(strategy.max_profit_per_contract) || strategy.max_profit_per_contract <= 0)) blockers.push('The maximum payoff is not positive.');
   }
   if (key === 'covered_call' || key === 'protective_put') {

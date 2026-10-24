@@ -85,3 +85,40 @@ it('keeps unusable-quote reasons visible when both legacy contracts are absent',
   expect(warning.getAttribute('title')).toContain('one-sided quote');
   expect(screen.getByText('Options Game Plan', { exact: true })).toBeTruthy();
 });
+
+it('binds holding-period/expiry checks to the selected horizon without refetching the chain', async () => {
+  const p = packet();
+  for (const s of Object.values(p.strategy_matrix!.singles)) {
+    s.legs[0].expiry = '2026-10-30'; s.legs[0].days_to_expiry = 999;
+  }
+  mocks.getOptionsGamePlan.mockResolvedValue(p);
+  const source = { symbol: 'AAPL', horizon: 'SHORT', signal: 'BUY' as const, confidence: 99, bullish_probability: .99,
+    ts: '2026-10-22T03:00:00Z', reasons: { market_regime: 'bear', eps_revision_direction: 1 } };
+  const { rerender } = render(<OptionsGamePlanCard {...props} researchContext={{ symbol: 'AAPL', horizon: 'SHORT', signal: source }} />);
+  await screen.findByRole('region', { name: 'Horizon and market context evidence' });
+  expect((screen.getByLabelText('Planned holding period (calendar days)') as HTMLInputElement).value).toBe('7');
+  fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'upside' } });
+  fireEvent.change(screen.getByLabelText('Option premium-loss budget ($)'), { target: { value: '400' } });
+  expect(screen.getByText('Goal-fit only: Long Call')).toBeTruthy();
+  expect(screen.getByText(/Market-aware preference unavailable/)).toBeTruthy();
+  expect(screen.getByText(/Recorded signal and regime conflict/)).toBeTruthy();
+  rerender(<OptionsGamePlanCard {...props} researchContext={{ symbol: 'AAPL', horizon: 'SWING', signal: { ...source, horizon: 'SWING' } }} />);
+  expect((screen.getByLabelText('Planned holding period (calendar days)') as HTMLInputElement).value).toBe('14');
+  expect(screen.queryByText('Goal-fit only: Long Call')).toBeNull();
+  expect(screen.getAllByText(/Expiry does not cover/).length).toBeGreaterThan(0);
+  expect(mocks.getOptionsGamePlan).toHaveBeenCalledTimes(1);
+  fireEvent.change(screen.getByLabelText('Planned holding period (calendar days)'), { target: { value: '3' } });
+  expect(screen.getByText('Goal-fit only: Long Call')).toBeTruthy();
+  rerender(<OptionsGamePlanCard {...props} researchContext={{ symbol: 'AAPL', horizon: 'SHORT', signal: source }} />);
+  expect((screen.getByLabelText('Planned holding period (calendar days)') as HTMLInputElement).value).toBe('7');
+});
+
+it('uses the selected horizon default and hides mismatched signal reasons', async () => {
+  const signal = { symbol: 'OTHER', horizon: 'LONG', signal: 'BUY' as const, confidence: 99, bullish_probability: .99,
+    ts: '2026-10-22T03:00:00Z', reasons: { market_regime: 'bull' } };
+  render(<OptionsGamePlanCard {...props} researchContext={{ symbol: 'AAPL', horizon: 'LONG', signal }} />);
+  await screen.findByRole('region', { name: 'Horizon and market context evidence' });
+  expect(screen.getAllByText(/Wrong symbol or horizon/).length).toBeGreaterThan(0);
+  expect((screen.getByLabelText('Planned holding period (calendar days)') as HTMLInputElement).value).toBe('28');
+  expect(screen.queryByRole('cell', { name: 'bull' })).toBeNull();
+});

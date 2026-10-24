@@ -1420,6 +1420,9 @@ export type SignalReasons = Record<string, unknown> & {
 };
 
 export type Signal = {
+  /** Stored record timestamp; it does not prove the age of underlying observations. */
+  ts?: string | null;
+  source?: string;
   symbol: string;
   signal: 'BUY' | 'SELL' | 'HOLD' | 'WAIT';
   horizon: string;
