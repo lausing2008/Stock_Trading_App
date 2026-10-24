@@ -86,8 +86,8 @@ def test_empty_chain_has_an_explicit_no_rows_reason():
     assert review['evaluated_count'] == 0 and review['alternatives'] == []
 
 
-@pytest.mark.parametrize('holding_days,mismatched_search', [(None, False), (14, False), (14, True)])
-def test_real_route_keeps_a_response_visible_when_only_alternatives_can_be_built(monkeypatch, holding_days, mismatched_search):
+@pytest.mark.parametrize('holding_days,mismatched_search,preferences', [(None, False, {}), (14, False, {}), (14, True, {}), (14, False, {'min_dte': 35, 'max_dte': 35, 'min_abs_delta': .2, 'max_abs_delta': .4}), (14, False, {'min_dte': 40, 'max_dte': 30})])
+def test_real_route_keeps_a_response_visible_when_only_alternatives_can_be_built(monkeypatch, holding_days, mismatched_search, preferences):
     """Execute real composition and handler source; stub only DB/provider dependencies."""
     import ast
     from datetime import datetime, timezone
@@ -97,8 +97,9 @@ def test_real_route_keeps_a_response_visible_when_only_alternatives_can_be_built
     scope_module = importlib.import_module('src.services.options_scope')
     monkeypatch.setattr(scope_module, 'current_expiries', lambda expiries, *a, **k: expiries)
     source = (Path(__file__).parents[1] / 'src/api/routes.py').read_text()
+    from fastapi import HTTPException
     log = SimpleNamespace(warning=lambda *a, **k: None)
-    namespace = {'date': date, 'datetime': datetime, 'timezone': timezone, 'log': log,
+    namespace = {'date': date, 'datetime': datetime, 'timezone': timezone, 'log': log, 'HTTPException': HTTPException,
                  '__name__': 'src.api.routes', '__package__': 'src.api'}
     start = source.index('_OPTIONS_GAME_PLAN_MIN_PUT_DTE = ')
     end = source.index('\n@router.get("/{symbol}/options-game-plan")', start)
@@ -106,27 +107,33 @@ def test_real_route_keeps_a_response_visible_when_only_alternatives_can_be_built
     handler = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == 'get_options_game_plan')
     handler.decorator_list = []
     handler.returns = None
-    handler.args.defaults = []
+    handler.args.defaults = [ast.Constant(value=None) for _ in range(4)]
     for arg in handler.args.args:
         arg.annotation = None
-    rows = [row(100, 0, .1), row(110), row(120, 0, .1)]
+    rows = [row(100, 0, .1), row(110, delta=.3), row(120, 0, .1)]
     reads = []
     def read_chain(*args, **kwargs):
         assert kwargs['as_of'] == TODAY
         reads.append(args[2])
         as_of = '2026-01-01' if mismatched_search and len(reads) > 2 else TODAY.isoformat()
-        return SimpleNamespace(calls=rows, puts=[row(95, option_symbol='SEARCH-PUT')] if len(reads) > 2 else [], as_of=as_of)
+        return SimpleNamespace(calls=rows, puts=[row(95, delta=-.3, option_symbol='SEARCH-PUT')] if len(reads) > 2 else [], as_of=as_of)
     namespace.update(_today_et=lambda: TODAY, _goal_current_price=lambda *args: 100,
                      _uw_session_expiries=lambda *args: (TODAY, [EXP]),
                      _uw_option_chain=read_chain,
                      _options_chain_rows=lambda values, symbol: values)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[handler], type_ignores=[])), '<real route>', 'exec'), namespace)
-    result = namespace['get_options_game_plan']('EXAMPLE', 95, 120, None, object(), None, holding_days)
+    if preferences.get('min_dte', 0) > preferences.get('max_dte', 1095):
+        with pytest.raises(HTTPException) as exc:
+            namespace['get_options_game_plan']('EXAMPLE', 95, 120, None, object(), None, holding_days, **preferences)
+        assert exc.value.status_code == 422 and reads == []
+        return
+    result = namespace['get_options_game_plan']('EXAMPLE', 95, 120, None, object(), None, holding_days, **preferences)
     reviews = result['strategy_matrix']['candidate_review']
     review = reviews['covered_call']
     assert len(reads) == (2 if holding_days is None else 3)
     if holding_days is not None:
         assert set(reviews) == {'covered_call', 'long_call', 'protective_put', 'cash_secured_put'}
+        assert all(r['search_preferences']['min_dte'] == preferences.get('min_dte') for r in reviews.values())
         assert all(r['failed_expiries'] == ([EXP] if mismatched_search else []) for r in reviews.values())
     assert result['strategy_matrix']['singles'] == {}
     if mismatched_search:

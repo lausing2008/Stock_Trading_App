@@ -110,3 +110,7 @@ it.each(COMMON_OPTION_KEYS)('applies an optional calendar blocker to %s', key =>
   const ordinary = commonOptionPlan(key, strategy(key), context, today);
   expect(ordinary.blockers).not.toContain('Calendar requires review');
 });
+
+it.each(COMMON_OPTION_KEYS)('applies a contract-preference blocker to %s', key => {
+  expect(commonOptionPlan(key, strategy(key), { ...context, contractPreferenceBlockers: { [key]: 'Outside preference band' } }, today).blockers).toContain('Outside preference band');
+});

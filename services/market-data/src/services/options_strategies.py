@@ -298,13 +298,16 @@ def _covered_call_strategy(leg: dict, current_price: float) -> dict:
     }
 
 
-def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price, *, include_selected=False, strategy_key="covered_call"):
+def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price, *, include_selected=False, strategy_key="covered_call", preferences=None, exclude_option_symbol=None):
     """Screen a supplied single-leg chain; never silently replace a user's target.
 
     20% is the existing frontend research spread policy, not an optimized liquidity rule.
     The default preserves the covered-call API; other keys reuse the same screens.
     OI/Greeks are disclosed; they do not establish executability or expected return.
     """
+    # Imported only for an explicitly filtered search; standalone original-plan witnesses stay compatible.
+    if preferences:
+        from .option_search_preferences import delta_rejection as _delta_rejection
     rejects = {}
     screened = []
     selected = _nearest(rows, anchor)
@@ -340,6 +343,8 @@ def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price, *,
                     reason = "invalid_payoff"
                 elif strategy_key == "protective_put" and current_price - leg["strike"] + leg["price_per_share"] < 0:
                     reason = "invalid_payoff"
+                elif preferences and _delta_rejection(row.get("delta"), right, preferences):
+                    reason = _delta_rejection(row.get("delta"), right, preferences)
                 else:
                     oi = row.get("oi")
                     known_oi = isinstance(oi, (int, float)) and not isinstance(oi, bool) and math.isfinite(oi) and oi >= 0
@@ -353,6 +358,8 @@ def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price, *,
     unique = {}
     for rank, row, strategy in sorted(screened, key=lambda entry: entry[0]):
         identity = (str(row.get("option_symbol") or ""), row["strike"])
+        if exclude_option_symbol is not None and identity[0] == exclude_option_symbol:
+            continue
         selected_identity = (str(selected.get("option_symbol") or ""), selected["strike"]) if selected else None
         if (identity == selected_identity and not include_selected) or identity in unique:
             continue
@@ -369,9 +376,14 @@ def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price, *,
             "alternatives": list(unique.values())[:3], "actionability": "research_only"}
 
 
-def covered_call_expiry_search(*, original, expiries, today, holding_days, current_price, read_rows, strategy_key="covered_call"):
+def covered_call_expiry_search(*, original, expiries, today, holding_days, current_price, read_rows, strategy_key="covered_call", preferences=None):
     """Bounded archive search. Reader must enforce one source session; failures stay visible."""
-    eligible = sorted({e for e in expiries if (date.fromisoformat(e) - today).days >= holding_days + 2})
+    from .option_search_preferences import normalize_preferences
+    preferences = normalize_preferences(preferences)
+    holding_eligible = {e for e in expiries if (date.fromisoformat(e) - today).days >= holding_days + 2}
+    eligible = sorted(e for e in holding_eligible
+        if (preferences['min_dte'] is None or (date.fromisoformat(e) - today).days >= preferences['min_dte'])
+        and (preferences['max_dte'] is None or (date.fromisoformat(e) - today).days <= preferences['max_dte']))
     searched = eligible[:4]
     alternatives, failed, completed, rejects = [], [], [], {}
     evaluated = screened = 0
@@ -383,7 +395,8 @@ def covered_call_expiry_search(*, original, expiries, today, holding_days, curre
             continue
         completed.append(expiry)
         review = _covered_call_candidates(rows, original['anchor'], expiry,
-            (date.fromisoformat(expiry) - today).days, today, current_price, include_selected=True, strategy_key=strategy_key)
+            (date.fromisoformat(expiry) - today).days, today, current_price, include_selected=True, strategy_key=strategy_key, preferences=preferences,
+            exclude_option_symbol=original['original'].get('option_symbol'))
         evaluated += review['evaluated_count']
         screened += review['screened_count']
         for reason, count in review['rejected_counts'].items():
@@ -393,6 +406,7 @@ def covered_call_expiry_search(*, original, expiries, today, holding_days, curre
     return {**original, 'method_version': 'covered_call_candidates_v2' if strategy_key == 'covered_call' else 'single_leg_candidates_v1',
         'strategy_key': strategy_key,
         'search_date': today.isoformat(),
+        'search_preferences': preferences, 'holding_eligible_expiry_count': len(holding_eligible),
         'scope': 'first_four_expirations_covering_holding_period',
         'holding_days': holding_days, 'buffer_days': 2,
         'eligible_expiry_count': len(eligible), 'searched_expiries': searched,

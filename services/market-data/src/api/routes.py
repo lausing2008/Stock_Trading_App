@@ -1,5 +1,6 @@
 """/stocks, /stocks/{symbol}/prices — read API for market data."""
 from datetime import date, datetime, timedelta, timezone
+from typing import Annotated
 import json
 import re
 
@@ -5121,6 +5122,10 @@ def get_options_game_plan(
     session: Session = Depends(get_session),
     _user=Depends(get_advanced_user),
     holding_days: int | None = Query(None, ge=1, le=365),
+    min_dte: Annotated[int | None, Query(ge=1, le=1095)] = None,
+    max_dte: Annotated[int | None, Query(ge=1, le=1095)] = None,
+    min_abs_delta: Annotated[float | None, Query(ge=0, le=1)] = None,
+    max_abs_delta: Annotated[float | None, Query(ge=0, le=1)] = None,
 ):
     """T322-OPTIONS-GAMEPLAN: Advanced-tier-only. Composes compute_options_game_plan() above
     from a REAL, freshly-fetched options chain (calls for the covered-call leg, puts for the
@@ -5133,6 +5138,14 @@ def get_options_game_plan(
     Gated behind get_advanced_user (T322-FEATURE-TIERING) — an admin or Advanced-tier user only.
     """
     sym = symbol.upper()
+    from ..services.option_search_preferences import normalize_preferences
+    try:
+        preferences = normalize_preferences(dict(min_dte=min_dte, max_dte=max_dte,
+            min_abs_delta=min_abs_delta, max_abs_delta=max_abs_delta))
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
+    if any(value is not None for value in preferences.values()) and not isinstance(holding_days, int):
+        raise HTTPException(422, detail="Search preferences require holding_days")
     try:
         # T404: the option chain now comes from Unusual Whales, not yfinance.
         source_session, session_expiries = _uw_session_expiries(session, sym)
@@ -5230,6 +5243,7 @@ def get_options_game_plan(
                 matrix.setdefault("candidate_review", {})[key] = covered_call_expiry_search(
                     original=original, expiries=expiries, today=today, strategy_key=key,
                     holding_days=holding_days, current_price=current_price,
+                    preferences=preferences,
                     read_rows=lambda expiry, right=right: read_search_rows(expiry, right))
         plan["available"] = bool(
             plan["protective_put"] or plan["covered_call"]

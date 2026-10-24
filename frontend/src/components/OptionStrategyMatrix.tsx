@@ -16,6 +16,7 @@ import type { OptionStrategy, OptionStrategyMatrix } from '@/lib/api';
 import { OPTION_HOLDING_DEFAULTS, reviewOptionResearchContext, type OptionResearchContext } from '@/lib/optionResearchContext';
 import { useNow } from '@/lib/useNow';
 import { optionEventWindow, reviewOptionCalendar, type OptionCalendarContext } from '@/lib/optionCalendarEvidence';
+import { optionPreferenceBlocker, parseOptionPreferences, type OptionSearchPreferences } from '@/lib/optionSearchPreferences';
 
 const CARD: React.CSSProperties = {
   background: '#0b1220', border: '1px solid #1e293b', borderRadius: 8, padding: 14,
@@ -186,13 +187,16 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
   const [cash, setCash] = useState('');
   const [premiumBudget, setPremiumBudget] = useState('');
   const [requireEarningsAfterExpiry, setRequireEarningsAfterExpiry] = useState(false);
+  const [preferenceText, setPreferenceText] = useState<Record<keyof OptionSearchPreferences, string>>({ min_dte: '', max_dte: '', min_abs_delta: '', max_abs_delta: '' });
+  const preferences = parseOptionPreferences(preferenceText);
+  const preferencesActive = Object.values(preferences.values).some(value => value !== null);
   type CandidateReview = NonNullable<NonNullable<OptionStrategyMatrix['candidate_review']>['covered_call']>;
   const [comparisonKey, setComparisonKey] = useState<CommonOptionKey>('covered_call');
   const [choices, setChoices] = useState<Partial<Record<CommonOptionKey, { source: CandidateReview; index: number }>>>({});
   const [assignmentAcceptance, setAssignmentAcceptance] = useState<string | null>(null);
   const searchGeneration = useRef(0);
   const [search, setSearch] = useState<{ key: string; source: OptionStrategyMatrix; reviews?: OptionStrategyMatrix['candidate_review']; pending?: boolean; error?: string } | null>(null);
-  const searchKey = JSON.stringify([holdingKey, holdingText, chainAsOf, spot, stopLoss, takeProfit, today]);
+  const searchKey = JSON.stringify([holdingKey, holdingText, chainAsOf, spot, stopLoss, takeProfit, today, preferenceText]);
   useEffect(() => {
     searchGeneration.current += 1;
     setSearch(null);
@@ -206,18 +210,22 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
   const coveredChoice = choices[comparisonKey];
   const alternative = coveredChoice && coveredChoice.source === candidates ? candidates?.alternatives[coveredChoice.index] : undefined;
   const searchExpiries = async () => {
-    if (!researchContext || !Number.isInteger(Number(holdingText)) || Number(holdingText) < 1 || Number(holdingText) > 365) return;
+    if (!researchContext || preferences.error || !Number.isInteger(Number(holdingText)) || Number(holdingText) < 1 || Number(holdingText) > 365) return;
     const generation = ++searchGeneration.current;
     setSearch({ key: searchKey, source: matrix, pending: true });
     setChoices({});
     setAssignmentAcceptance(null);
     try {
-      const result = await api.getOptionsGamePlan(researchContext.symbol, { stopLoss, takeProfit, holdingDays: Number(holdingText) });
+      const result = await api.getOptionsGamePlan(researchContext.symbol, { stopLoss, takeProfit, holdingDays: Number(holdingText), ...(preferencesActive ? { searchPreferences: preferences.values } : {}) });
       if (generation !== searchGeneration.current) return;
       const reviews = result.strategy_matrix?.candidate_review;
       const review = reviews?.covered_call;
       if (result.symbol !== researchContext.symbol || result.chain_as_of !== chainAsOf || result.current_price !== spot || review?.method_version !== 'covered_call_candidates_v2' || review.holding_days !== Number(holdingText) || (review.search_date && review.search_date !== today)) {
         throw new Error('Search context changed or is unavailable. Refresh the game plan before searching again.');
+      }
+      if (preferencesActive && Object.values(reviews ?? {}).some(r => (Object.keys(preferences.values) as (keyof OptionSearchPreferences)[])
+        .some(key => (r?.search_preferences?.[key] ?? null) !== preferences.values[key]))) {
+        throw new Error('Search preferences were not acknowledged. Refresh the plan before comparing results.');
       }
       setSearch({ key: searchKey, source: matrix, reviews });
     } catch (error) {
@@ -248,7 +256,11 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
   });
   const calendarBlockers = Object.fromEntries(eventRows.filter(row => requireEarningsAfterExpiry && row.earnings.code !== 'after_expiry')
     .map(row => [row.key, 'Earnings timing filter: requires a current matched calendar record reporting next earnings after this option expires.']));
-  const context: OptionPlanContext = { goal, shares: amount(shares), cash: amount(cash), premiumBudget: amount(premiumBudget), acceptAssignment, stop: stopLoss, target: takeProfit, holdingDays, calendarBlockers };
+  const contractPreferenceBlockers = Object.fromEntries(COMMON_OPTION_KEYS.flatMap(key => {
+    const reason = preferences.error ?? optionPreferenceBlocker(comparedMatrix.singles[key]?.legs[0], preferences.values, today);
+    return reason ? [[key, reason]] : [];
+  }));
+  const context: OptionPlanContext = { goal, shares: amount(shares), cash: amount(cash), premiumBudget: amount(premiumBudget), acceptAssignment, stop: stopLoss, target: takeProfit, holdingDays, calendarBlockers, contractPreferenceBlockers };
   const review = recommendCommonOption(comparedMatrix, context, today, chainAsOf);
   const comboKeys = Object.keys(matrix.combos);
   return <section aria-label="Four common option strategies" style={{ marginTop: 16 }}>
@@ -303,6 +315,17 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
     </div>
     {(matrix.candidate_review || researchContext) && <section aria-label={`${sectionName} contract selection`} style={{ ...CARD, marginBottom: 14 }}>
       <h4>{sectionName} — contract selection</h4>
+      {researchContext && <fieldset style={{ border: '1px solid #334155', marginBottom: 12 }}><legend>Research contract preferences — all four strategies</legend>
+        <div className="option-strategy-inputs">{([
+          ['min_dte', 'Minimum days to expiry', 1, 1095, 1], ['max_dte', 'Maximum days to expiry', 1, 1095, 1],
+          ['min_abs_delta', 'Minimum absolute delta', 0, 1, .01], ['max_abs_delta', 'Maximum absolute delta', 0, 1, .01],
+        ] as const).map(([key, label, min, max, step]) => <label key={key}>{label}<input aria-label={label} type="number" min={min} max={max} step={step}
+          placeholder="No preference" value={preferenceText[key]} onChange={e => setPreferenceText(previous => ({ ...previous, [key]: e.target.value }))} /></label>)}</div>
+        <button type="button" onClick={() => setPreferenceText({ min_dte: '', max_dte: '', min_abs_delta: '', max_abs_delta: '' })}>Clear contract preferences</button>
+        {preferences.error && <p role="alert">{preferences.error}</p>}
+        <p>Blank means no preference. Days are calendar days from the current New York date; the holding period plus two-day buffer still applies. Delta uses the absolute provider contract estimate, with positive calls and negative puts, before buy/sell position signs. A requested delta range excludes missing, invalid or wrong-sign values.</p>
+        <p>Preferences apply before the server shortlist and also gate goal fit for original or chosen contracts. They are shared across strategies and local to this page. Editing them clears comparisons; click Search to fetch new alternatives. Earliest four eligible expirations are searched; failures do not trigger an expanded search. No values are presented as optimal or as profit probabilities.</p>
+      </fieldset>}
       {COMMON_OPTION_KEYS.some(key => choices[key]?.source === reviews?.[key] && choices[key]) && <p>Selected comparisons: {COMMON_OPTION_KEYS.flatMap(key => {
         const choice = choices[key];
         const selected = choice && choice.source === reviews?.[key] ? reviews?.[key]?.alternatives[choice.index] : undefined;
@@ -311,7 +334,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
       <label>Strategy for contract comparison<select aria-label="Strategy for contract comparison" value={comparisonKey} onChange={e => setComparisonKey(e.target.value as CommonOptionKey)}>
         {COMMON_OPTION_KEYS.map(key => <option key={key} value={key}>{COMMON_OPTION_NAMES[key]}</option>)}
       </select></label>
-      {researchContext && <p><button type="button" disabled={!!currentSearch?.pending || !Number.isInteger(Number(holdingText)) || Number(holdingText) < 1 || Number(holdingText) > 365} onClick={searchExpiries}>
+      {researchContext && <p><button type="button" disabled={!!currentSearch?.pending || !!preferences.error || !Number.isInteger(Number(holdingText)) || Number(holdingText) < 1 || Number(holdingText) > 365} onClick={searchExpiries}>
         {currentSearch?.pending ? 'Searching expirations…' : 'Find expirations for holding period'}</button> Searches all four strategies across up to four eligible expirations from the same archived session, on request only.</p>}
       {currentSearch?.error && <p role="alert">{currentSearch.error} Original comparison remains available.</p>}
       {candidates ? <>
@@ -323,6 +346,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
       {!!candidates.failed_expiries?.length && <p role="alert">Expiration reads failed: {candidates.failed_expiries.join(', ')}. Results are incomplete; a failure is not absence of contracts.</p>}
       {!!Object.keys(candidates.rejected_counts).length && <p>Excluded: {Object.entries(candidates.rejected_counts).map(([reason, count]) => `${count} ${candidateReason(reason)}`).join('; ')}.</p>}
       <p>{candidates.ranking} The 20% spread ceiling is a research policy; quote age, size and actual deliverables are unverified.</p>
+      {candidates.search_preferences && <p>Search preference coverage: {candidates.holding_eligible_expiry_count ?? 'unknown'} expirations fit the holding period; {candidates.eligible_expiry_count ?? 'unknown'} also fit the declared expiry band. Delta exclusions are included in the row rejection counts. Scope remains this archived session.</p>}
       {candidates.alternatives.length ? <label>{selectionName} contract to compare<select aria-label={`${selectionName} contract to compare`}
         value={alternative && coveredChoice ? String(coveredChoice.index) : 'original'} onChange={e => {
           const value = e.target.value;
@@ -331,7 +355,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
         }}>
         <option value="original">{comparisonKey === 'covered_call' ? 'Original target-strike selection' : 'Original plan selection'}</option>
         {candidates.alternatives.map((s, i) => <option key={s.legs[0].option_symbol ?? i} value={String(i)}>
-          Compare {fmtUSD(s.legs[0].strike)} {s.legs[0].right} · {s.legs[0].expiry} · {fmtUSD(s.net_per_contract)} {s.net} before fees
+          Compare {fmtUSD(s.legs[0].strike)} {s.legs[0].right} · {s.legs[0].expiry} · delta {s.legs[0].delta ?? 'unavailable'} · {fmtUSD(s.net_per_contract)} {s.net} before fees
         </option>)}
       </select></label> : <p>No other contract passed this screen. This does not establish absence in other expirations.</p>}
       {alternative && <p role="status">Comparing an explicitly selected alternative at {fmtUSD(alternative.legs[0].strike)}.

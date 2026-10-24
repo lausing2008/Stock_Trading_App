@@ -258,3 +258,61 @@ it('discloses quote and event provenance gaps independently of retrieval freshne
   expect(evidence.textContent).toContain('issuer confirmation, event time and complete future calendar coverage are unverified');
   expect(evidence.textContent).toContain('Both short calls and short puts can be assigned early');
 });
+
+it('sends explicit bounds once, shows acknowledged coverage and clears choices when preferences change', async () => {
+  const result = fourStrategyResult();
+  const prefs = { min_dte: 35, max_dte: 90, min_abs_delta: .2, max_abs_delta: .4 };
+  for (const review of Object.values(result.strategy_matrix!.candidate_review!)) {
+    review!.search_preferences = prefs;
+    review!.holding_eligible_expiry_count = 12;
+  }
+  const get = vi.spyOn(api, 'getOptionsGamePlan').mockResolvedValue(result);
+  render(searchPanel());
+  for (const [label, value] of [['Minimum days to expiry', '35'], ['Maximum days to expiry', '90'], ['Minimum absolute delta', '.2'], ['Maximum absolute delta', '.4']]) {
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  }
+  expect(get).not.toHaveBeenCalled();
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Find expirations for holding period' })));
+  expect(get).toHaveBeenCalledWith('EXAMPLE', { stopLoss: undefined, takeProfit: 120, holdingDays: 14, searchPreferences: prefs });
+  expect(document.body.textContent).toContain('12 expirations fit the holding period');
+  fireEvent.change(screen.getByLabelText('Covered-call contract to compare'), { target: { value: '0' } });
+  expect(screen.getByText(/Selected comparisons:/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('checkbox', { name: /I accept buying or selling/ }));
+  fireEvent.change(screen.getByLabelText('Maximum absolute delta'), { target: { value: '.25' } });
+  expect(screen.queryByText(/Selected comparisons:/)).toBeNull();
+  expect((screen.getByRole('checkbox', { name: /I accept buying or selling/ }) as HTMLInputElement).checked).toBe(false);
+  expect(get).toHaveBeenCalledTimes(1);
+});
+it('refuses unacknowledged preferences and inverted bounds without disguising the old shortlist as filtered', async () => {
+  vi.spyOn(api, 'getOptionsGamePlan').mockResolvedValue(searchResult());
+  render(searchPanel());
+  fireEvent.change(screen.getByLabelText('Minimum absolute delta'), { target: { value: '.2' } });
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Find expirations for holding period' })));
+  expect(screen.getByRole('alert').textContent).toContain('preferences were not acknowledged');
+  fireEvent.change(screen.getByLabelText('Minimum days to expiry'), { target: { value: '60' } });
+  fireEvent.change(screen.getByLabelText('Maximum days to expiry'), { target: { value: '30' } });
+  expect((screen.getByRole('button', { name: 'Find expirations for holding period' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByRole('alert').textContent).toContain('cannot exceed');
+});
+it('applies preferences to original goal fit and clear restores blank behavior', () => {
+  render(eventPanel(eventMatrix(), '2026-01-02T16:00:00Z', '2026-03-01'));
+  fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'upside' } });
+  fireEvent.change(screen.getByLabelText('Option premium-loss budget ($)'), { target: { value: '300' } });
+  expect(screen.getByText('Goal-fit only: Long Call')).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('Minimum absolute delta'), { target: { value: '.6' } });
+  expect(screen.queryByText('Goal-fit only: Long Call')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Clear contract preferences' }));
+  expect(screen.getByText('Goal-fit only: Long Call')).toBeTruthy();
+});
+
+it('discards an in-flight result when contract preferences change without making another request', async () => {
+  let resolve!: (value: Awaited<ReturnType<typeof api.getOptionsGamePlan>>) => void;
+  const get = vi.spyOn(api, 'getOptionsGamePlan').mockReturnValue(new Promise(r => { resolve = r; }));
+  render(searchPanel());
+  fireEvent.click(screen.getByRole('button', { name: 'Find expirations for holding period' }));
+  fireEvent.change(screen.getByLabelText('Minimum absolute delta'), { target: { value: '.3' } });
+  await act(async () => resolve(fourStrategyResult()));
+  expect(document.body.textContent).toContain('other expirations are not searched');
+  expect(screen.queryByText(/Search preference coverage:/)).toBeNull();
+  expect(get).toHaveBeenCalledTimes(1);
+});

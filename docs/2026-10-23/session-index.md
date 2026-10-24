@@ -139,3 +139,6 @@ Quote/event continuation: reuse the loaded fundamentals calendar, disclose retri
 
 
 Quote/event rollout completed: 4e6b1f0c is public and live; 906 frontend tests and full typecheck pass, production compiled 76 pages. All 15 containers healthy, all 12 backend source digests match, and only frontend restarted. TSM cached-calendar evidence and the exact classifier replay are saved alongside served-build and health checks. [Final report](../audits/2026-10-23-options-quote-event-evidence.md).
+
+
+Delta/DTE continuation: optional shared calendar-day and absolute-contract-delta bounds now apply before expiry/contract truncation, and gate goal fit for original or explicitly chosen contracts. All defaults remain blank, missing delta cannot pass an active delta range, invalid bounds are visible, and preference edits invalidate pending searches without requests. Original-contract exclusion precedes the three-alternative cut. [Policy, tests and rollout](../audits/2026-10-23-options-delta-dte-preferences.md). The Improvements page includes this work.

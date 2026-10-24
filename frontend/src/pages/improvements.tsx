@@ -35,6 +35,18 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: "OPTIONS-DELTA-DTE-PREFERENCES",
+    tier: 468,
+    severity: "feature",
+    defaultStatus: "done",
+    title: "Explicit absolute-delta and expiry preferences before option shortlisting",
+    file: "docs/audits/2026-10-23-options-delta-dte-preferences.md",
+    effort: "M",
+    impact: "Finds matching contracts beyond the old first-three rows while preserving a bounded archive search.",
+    what: "Filtering an already truncated shortlist could incorrectly suggest there are no contracts within a requested delta or expiry band.",
+    fix: "Optional shared ranges are blank by default: calendar DTE 1–1095, absolute contract delta 0–1. Apply DTE before the four-expiration cap and delta before the three-alternative cut; missing, invalid and wrong-sign deltas cannot pass an active delta range. Preserve zero and inclusive boundaries, echo applied settings, reject inverted bounds, and block mismatched or unacknowledged responses. Active preferences also gate goal fit for originals and selected alternatives. Editing clears choices and assignment acceptance without requests. Original-contract exclusion now precedes the cut so three actual alternatives can fill the slots. No optimized defaults, expected-return ranking or automatic trades.",
+  },
+  {
     id: "OPTIONS-QUOTE-EVENT-EVIDENCE",
     tier: 468,
     severity: "feature",
