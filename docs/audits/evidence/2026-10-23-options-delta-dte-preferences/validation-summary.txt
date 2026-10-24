@@ -1,0 +1,10 @@
+5849 passed, 26 skipped, 29 warnings in 374.86s (0:06:14)
+
+
+ Test Files  74 passed (74)
+      Tests  928 passed (928)
+   Start at  23:53:36
+   Duration  15.57s (transform 8.74s, setup 28ms, collect 24.71s, tests 35.63s, environment 40.33s, prepare 19.13s)
+
+Full frontend typecheck passed; no exclusions.
+200 original plan matrices remain identical to the prior baseline.

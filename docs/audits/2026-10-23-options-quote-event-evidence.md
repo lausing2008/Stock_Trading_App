@@ -38,7 +38,7 @@ Tests cover real/invalid dates and leap days, timestamp timezone and freshness b
 
 - Per-quote observation timestamps and sizes, independently dated spot and price-basis checks.
 - Issuer-confirmed earnings/ex-dividend dates, event time, dividend amount and coverage evidence.
-- Delta/DTE preference controls and measured out-of-sample cost/fill/assignment outcomes before expected-return ranking.
+- [Explicit delta/DTE controls are now implemented and deployed](2026-10-23-options-delta-dte-preferences.md). Measured out-of-sample cost/fill/assignment outcomes remain required before optimal settings or expected-return ranking.
 - Dark-pool correction identity and feed-gap completeness remain separate work.
 
 [Evidence and final verification](evidence/2026-10-23-options-quote-event-evidence/README.md).

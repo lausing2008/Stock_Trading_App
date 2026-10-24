@@ -1,6 +1,6 @@
 # Explicit option delta and expiration preferences
 
-Date: October 23, 2026 (America/Los_Angeles). Continuation after [quote/event evidence](2026-10-23-options-quote-event-evidence.md). Final validation and deployment are recorded below when complete.
+Started October 23 and deployed/verified October 24, 2026 (America/Los_Angeles). The filename retains the task start date. Continuation after [quote/event evidence](2026-10-23-options-quote-event-evidence.md). Public and deployed application release: `dc2d4b7d9c40e043f4face36e42fb21ef9dbcf4f`.
 
 ## Behavior and policy
 
@@ -28,7 +28,7 @@ Editing preferences invalidates pending/displayed supplementary results, clears 
 
 ## Validation and deployment
 
-Targeted backend: 118 passed. Full frontend: **928 passed across 74 files**, full typecheck and whitespace clean. Offline equivalence witness: 200 complete original matrices remain identical. Full backend suite and production rollout are pending. Tests cover boundaries, zero, missing/wrong-sign delta, inverted ranges, before-cut matching, before-cap expiry filtering, original exclusion, shared real-handler read counts, acknowledgement, goal-fit gating, clear behavior and stale in-flight responses.
+Targeted backend: 118 passed. Full frontend: **928 passed across 74 files**, full typecheck and whitespace clean. Offline equivalence witness: 200 complete original matrices remain identical. Full backend: **5,849 passed, 26 skipped**. Final production build compiled all 76 pages; authorized rollout completed successfully. Manual review caught generic fallback labels for the new delta rejection codes; distinct labels and a regression assertion were added before deployment, then all 928 frontend tests and typecheck passed again. The backend source was unchanged by that UI-only follow-up. Tests cover boundaries, zero, missing/wrong-sign delta, inverted ranges, before-cut matching, before-cap expiry filtering, original exclusion, shared real-handler read counts, acknowledgement, goal-fit gating, clear behavior and stale in-flight responses.
 
 ## Remaining work
 
@@ -38,3 +38,23 @@ Targeted backend: 118 passed. Full frontend: **928 passed across 74 files**, ful
 - Dark-pool correction identity and feed-gap completeness remain independent open work.
 
 [Evidence and final verification](evidence/2026-10-23-options-delta-dte-preferences/README.md).
+
+
+## Authorized production rollout and evidence
+
+Application release `dc2d4b7d` was pushed to public `prod` and deployed under the shared host lock with exact-release images and retained rollback images. The earlier prepared `88496ee8` images were never deployed; the final images include the rejection-label fix. Disk guards reclaimed 3.199 GB and then 1.601 GB from dangling images only; tagged rollback images were retained.
+
+Only market-data and frontend were recreated. All 15 containers are healthy, all 12 backend source/shared digests match the tested checkout, and the other 13 containers retained their start times. Running frontend build `--SQq4lp7uX-RJGTPRaj_` matches the prepared image. Five public pages returned HTTP 200; served TSM and Improvements assets include the preference controls, acknowledgement/coverage messages and final rejection labels. Verification completed at 00:00:06 on October 24 in America/Los_Angeles. No dark-pool ledger capture/persist errors were found in the verification log window.
+
+The deployed TSM calculation witness used a read-only, repeatable-read transaction, source-session-pinned October 22 archive data, a 10-second per-statement timeout, the screenshot stop/target and a 14-day holding period. It checked every returned contract against the requested DTE and signed/magnitude delta constraints and preserved original metadata.
+
+| Scenario | Extra archive reads shared across all strategies | Long call alternatives | Covered call | Protective put | Cash-secured put |
+| --- | --- | --- | --- | --- | --- |
+| Blank preferences | 4 | 12 | 12 | 12 | 12 |
+| DTE 60–180, absolute delta 0.20–0.40 | 4 | 12 | 12 | 12 | 12 |
+| Absolute delta exactly zero | 4 | 0 | 0 | 0 | 0 |
+| DTE exactly one day, holding period 14 days | 0 | 0 | 0 | 0 | 0 |
+
+All attempted reads succeeded. Zero matched alternatives in the zero-delta scenario is a bounded screen result, not absence across the market. The empty DTE band is inconsistent with the holding-period minimum, so no additional chain reads are needed; ordinary initial plan reads remain separate. These examples are verification inputs, not suggested trading settings.
+
+Verification combines complete frontend/backend suites, the real route/composition regression, offline original-matrix equivalence, deployed helper calculations, source/container checks and public HTTP/served-build checks. No authenticated interactive browser acceptance or production advanced-tier authentication test was performed. Quotes remain settled archive references; ranges do not establish optimal returns, current executability or a forecast of profitability. The final evidence/documentation follow-up needs no additional service restart.
