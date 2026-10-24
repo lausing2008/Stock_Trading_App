@@ -4,9 +4,10 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { OptionStrategy, OptionStrategyMatrix } from '@/lib/api';
 import OptionStrategyMatrixPanel from './OptionStrategyMatrix';
+import { api } from '@/lib/api';
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-02T17:00:00Z')); });
-afterEach(() => { cleanup(); vi.useRealTimers(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 const alternative: OptionStrategy = {
   name: 'Covered Call', direction: 'neutral-to-mildly-bullish', net: 'credit', requires_shares: true,
   legs: [{ action: 'sell', right: 'call', strike: 110, price_per_share: 2.1, cost_per_contract: 210,
@@ -98,4 +99,61 @@ it('ages recorded context while the tab stays open without any request', () => {
   act(() => vi.advanceTimersByTime(30_000));
   expect(evidence.textContent).toContain('Record older than 72 hours');
   expect(evidence.textContent).toContain('Market-aware preference unavailable');
+});
+
+const searchContext = { symbol: 'EXAMPLE', horizon: 'SWING' };
+function searchPanel(m = matrix()) {
+  return <OptionStrategyMatrixPanel matrix={m} spot={100} takeProfit={120} chainAsOf="2026-01-02" researchContext={searchContext} />;
+}
+function searchResult(m = matrix()) {
+  return { symbol: 'EXAMPLE', available: true, current_price: 100, chain_as_of: '2026-01-02',
+    strategy_matrix: { ...m, candidate_review: { covered_call: { ...m.candidate_review!.covered_call!,
+      method_version: 'covered_call_candidates_v2', holding_days: 14, buffer_days: 2,
+      searched_expiries: ['2026-02-06', '2026-03-06'], completed_expiries: ['2026-03-06'],
+      failed_expiries: ['2026-02-06'], eligible_expiry_count: 8,
+      alternatives: [{ ...alternative, legs: [{ ...alternative.legs[0], expiry: '2026-03-06', option_symbol: 'LATER-CALL' }] }] } } } } as Awaited<ReturnType<typeof api.getOptionsGamePlan>>;
+}
+
+it('searches only on request and keeps partial results explicit without selecting them', async () => {
+  const get = vi.spyOn(api, 'getOptionsGamePlan').mockResolvedValue(searchResult());
+  render(searchPanel());
+  expect(get).not.toHaveBeenCalled();
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Find expirations for holding period' })));
+  expect(get).toHaveBeenCalledTimes(1);
+  expect(get).toHaveBeenCalledWith('EXAMPLE', { stopLoss: undefined, takeProfit: 120, holdingDays: 14 });
+  expect(screen.getByRole('alert').textContent).toContain('Expiration reads failed: 2026-02-06');
+  expect(document.body.textContent).toContain('1 of 2 attempted expirations read; 8 eligible');
+  const select = screen.getByLabelText('Covered-call contract to compare');
+  expect((select as HTMLSelectElement).value).toBe('original');
+  fireEvent.change(select, { target: { value: '0' } });
+  expect(screen.getByText(/Comparing an explicitly selected alternative/).textContent).toContain('Stock target remains $120.00');
+  fireEvent.change(screen.getByLabelText('Planned holding period (calendar days)'), { target: { value: '90' } });
+  expect(screen.queryByText(/Comparing an explicitly selected alternative/)).toBeNull();
+  expect(document.body.textContent).toContain('other expirations are not searched');
+});
+
+it.each(['failed', 'different-session', 'different-spot'])('retains the original comparison on %s searches', async kind => {
+  const result = searchResult();
+  if (kind === 'different-session') result.chain_as_of = '2026-01-01';
+  if (kind === 'different-spot') result.current_price = 101;
+  const get = vi.spyOn(api, 'getOptionsGamePlan');
+  if (kind === 'failed') get.mockRejectedValue(new Error('Search unavailable'));
+  else get.mockResolvedValue(result);
+  render(searchPanel());
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Find expirations for holding period' })));
+  expect(screen.getByRole('alert').textContent).toContain('Original comparison remains available');
+  expect(document.body.textContent).toContain('other expirations are not searched');
+});
+
+it('discards a pending search after holding context changes', async () => {
+  let resolve!: (value: Awaited<ReturnType<typeof api.getOptionsGamePlan>>) => void;
+  vi.spyOn(api, 'getOptionsGamePlan').mockReturnValue(new Promise(r => { resolve = r; }));
+  render(searchPanel());
+  fireEvent.click(screen.getByRole('button', { name: 'Find expirations for holding period' }));
+  expect((screen.getByRole('button', { name: 'Searching expirations…' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText('Planned holding period (calendar days)'), { target: { value: '90' } });
+  await act(async () => resolve(searchResult()));
+  expect(document.body.textContent).toContain('other expirations are not searched');
+  fireEvent.change(screen.getByLabelText('Planned holding period (calendar days)'), { target: { value: '0' } });
+  expect((screen.getByRole('button', { name: 'Find expirations for holding period' }) as HTMLButtonElement).disabled).toBe(true);
 });

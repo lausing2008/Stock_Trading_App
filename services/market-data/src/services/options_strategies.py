@@ -240,7 +240,7 @@ def _covered_call_strategy(leg: dict, current_price: float) -> dict:
     }
 
 
-def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price):
+def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price, *, include_selected=False):
     """Screen the already-fetched call chain; never silently replace a user's target.
 
     20% is the existing frontend research spread policy, not an optimized liquidity rule.
@@ -289,7 +289,7 @@ def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price):
     for rank, row, strategy in sorted(screened, key=lambda entry: entry[0]):
         identity = (str(row.get("option_symbol") or ""), row["strike"])
         selected_identity = (str(selected.get("option_symbol") or ""), selected["strike"]) if selected else None
-        if identity == selected_identity or identity in unique:
+        if (identity == selected_identity and not include_selected) or identity in unique:
             continue
         unique[identity] = strategy
     # These are distinct alternatives, not promoted into singles/combos/recommendation.
@@ -302,6 +302,37 @@ def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price):
                          "reason": selected_reason if selected else "no_chain_rows"},
             "ranking": "Distance to target (or spot), then unrounded spread, OI, strike and contract identity; not expected return.",
             "alternatives": list(unique.values())[:3], "actionability": "research_only"}
+
+
+def covered_call_expiry_search(*, original, expiries, today, holding_days, current_price, read_rows):
+    """Bounded archive search. Reader must enforce one source session; failures stay visible."""
+    eligible = sorted({e for e in expiries if (date.fromisoformat(e) - today).days >= holding_days + 2})
+    searched = eligible[:4]
+    alternatives, failed, completed, rejects = [], [], [], {}
+    evaluated = screened = 0
+    for expiry in searched:
+        try:
+            rows = read_rows(expiry)
+        except Exception:
+            failed.append(expiry)
+            continue
+        completed.append(expiry)
+        review = _covered_call_candidates(rows, original['anchor'], expiry,
+            (date.fromisoformat(expiry) - today).days, today, current_price, include_selected=True)
+        evaluated += review['evaluated_count']
+        screened += review['screened_count']
+        for reason, count in review['rejected_counts'].items():
+            rejects[reason] = rejects.get(reason, 0) + count
+        alternatives.extend(s for s in review['alternatives']
+            if s['legs'][0].get('option_symbol') != original['original'].get('option_symbol'))
+    return {**original, 'method_version': 'covered_call_candidates_v2',
+        'scope': 'first_four_expirations_covering_holding_period',
+        'holding_days': holding_days, 'buffer_days': 2,
+        'eligible_expiry_count': len(eligible), 'searched_expiries': searched,
+        'completed_expiries': completed, 'failed_expiries': failed,
+        'evaluated_count': evaluated, 'screened_count': screened, 'rejected_counts': rejects,
+        'alternatives': alternatives,
+        'ranking': 'Earliest eligible expiration first; within each expiration, distance to original anchor, unrounded spread, OI, strike and identity. Up to three per expiration; not expected return.'}
 
 
 def build_strategy_matrix(

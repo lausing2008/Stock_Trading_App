@@ -121,3 +121,6 @@ The next frontend-only improvement adds an Options-tab horizon selector, editabl
 
 
 Horizon/context rollout completed: abc32f30 is public and deployed. Full frontend 864 passed and typecheck clean; production build compiled 76 pages. All 15 containers healthy, all 12 backend source hashes match, and every non-frontend container retained its start time. Public TSM and tracker pages serve the new controls/evidence. [Final evidence](../audits/evidence/2026-10-23-options-horizon-context/).
+
+
+Covered-call expiration search continuation: an explicit request compares up to four archived expirations that cover the declared holding period plus two calendar days. Coverage and read failures are visible; no alternative is silently selected, the original target is preserved, and changed context invalidates pending comparisons. [Implementation, limits and validation](../audits/2026-10-23-options-multi-expiry.md). The Improvements page includes this work.

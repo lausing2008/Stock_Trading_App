@@ -9,7 +9,8 @@
  *
  * Every number comes from a REAL currently-listed contract. Nothing here predicts direction.
  */
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { api } from '@/lib/api';
 import { COMMON_OPTION_KEYS, COMMON_OPTION_NAMES, recommendCommonOption, type OptionPlanContext, type OptionGoal, type CommonOptionKey } from '@/lib/commonOptionPlans';
 import type { OptionStrategy, OptionStrategyMatrix } from '@/lib/api';
 import { OPTION_HOLDING_DEFAULTS, reviewOptionResearchContext, type OptionResearchContext } from '@/lib/optionResearchContext';
@@ -180,10 +181,40 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
   const [shares, setShares] = useState('');
   const [cash, setCash] = useState('');
   const [premiumBudget, setPremiumBudget] = useState('');
-  const [coveredChoice, setCoveredChoice] = useState<{ source: OptionStrategyMatrix; index: number } | null>(null);
+  type CandidateReview = NonNullable<NonNullable<OptionStrategyMatrix['candidate_review']>['covered_call']>;
+  const [coveredChoice, setCoveredChoice] = useState<{ source: CandidateReview; index: number } | null>(null);
   const [assignmentAcceptance, setAssignmentAcceptance] = useState<string | null>(null);
-  const candidates = matrix.candidate_review?.covered_call;
-  const alternative = coveredChoice?.source === matrix ? candidates?.alternatives[coveredChoice.index] : undefined;
+  const searchGeneration = useRef(0);
+  const [search, setSearch] = useState<{ key: string; source: OptionStrategyMatrix; review?: CandidateReview; pending?: boolean; error?: string } | null>(null);
+  const searchKey = JSON.stringify([holdingKey, holdingText, chainAsOf, spot, stopLoss, takeProfit]);
+  useEffect(() => {
+    searchGeneration.current += 1;
+    setSearch(null);
+    setCoveredChoice(null);
+    setAssignmentAcceptance(null);
+    return () => { searchGeneration.current += 1; };
+  }, [matrix, searchKey]);
+  const currentSearch = search?.key === searchKey && search.source === matrix ? search : null;
+  const candidates = currentSearch?.review ?? matrix.candidate_review?.covered_call;
+  const alternative = coveredChoice && coveredChoice.source === candidates ? candidates?.alternatives[coveredChoice.index] : undefined;
+  const searchExpiries = async () => {
+    if (!researchContext || !Number.isInteger(Number(holdingText)) || Number(holdingText) < 1 || Number(holdingText) > 365) return;
+    const generation = ++searchGeneration.current;
+    setSearch({ key: searchKey, source: matrix, pending: true });
+    setCoveredChoice(null);
+    setAssignmentAcceptance(null);
+    try {
+      const result = await api.getOptionsGamePlan(researchContext.symbol, { stopLoss, takeProfit, holdingDays: Number(holdingText) });
+      if (generation !== searchGeneration.current) return;
+      const review = result.strategy_matrix?.candidate_review?.covered_call;
+      if (result.symbol !== researchContext.symbol || result.chain_as_of !== chainAsOf || result.current_price !== spot || review?.method_version !== 'covered_call_candidates_v2' || review.holding_days !== Number(holdingText)) {
+        throw new Error('Search context changed or is unavailable. Refresh the game plan before searching again.');
+      }
+      setSearch({ key: searchKey, source: matrix, review });
+    } catch (error) {
+      if (generation === searchGeneration.current) setSearch({ key: searchKey, source: matrix, error: error instanceof Error ? error.message : 'Expiration search failed. Retry when the service recovers.' });
+    }
+  };
   const comparedMatrix = alternative ? { ...matrix, candidate_review: undefined, singles: { ...matrix.singles, covered_call: alternative } } : matrix;
   const assignmentKey = JSON.stringify([comparedMatrix.singles.covered_call?.legs, comparedMatrix.singles.cash_secured_put?.legs, chainAsOf]);
   const acceptAssignment = assignmentAcceptance === assignmentKey;
@@ -196,7 +227,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
     <h3>Four common strategies & conditional preference</h3>
     <p>Compare one standard 100-share contract. These are research illustrations using settled provider prices
       {chainAsOf ? ` observed ${chainAsOf}` : ' with an unknown observation date'}, not live executable quotes.</p>
-    <p>Original contract selection uses the nearest strike to spot, the stock stop or target, and preset expiry windows. Covered-call alternatives screen the supplied rows of the selected call expiry; choosing one changes this comparison only. Delta, gamma, open interest and breakeven are not jointly optimized. This comparison does not establish the best return.</p>
+    <p>Original contract selection uses the nearest strike to spot, the stock stop or target, and preset expiry windows. Covered-call alternatives initially screen the selected call expiry; an explicit holding-period search can compare other expirations. Choosing one changes this comparison only. Delta, gamma, open interest and breakeven are not jointly optimized. This comparison does not establish the best return.</p>
     {researchContext && research && <section aria-label="Horizon and market context evidence" style={{ ...CARD, marginBottom: 14 }}>
       <h4>Strategy research horizon: {researchContext.horizon}</h4>
       <div className="option-strategy-inputs"><label style={{ maxWidth: 300 }}>Planned holding period (calendar days)<input aria-label="Planned holding period (calendar days)" type="number" min="1" max="365" step="1" value={holdingText}
@@ -232,12 +263,18 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
       <h4>Covered call — contract selection</h4>
       <p>Original anchor {fmtUSD(candidates.anchor)} · expiry {candidates.expiry ?? 'unknown'} · selected strike {fmtUSD(candidates.original.strike)}.</p>
       <p>{candidates.original.reason ? `Original candidate: ${candidateReason(candidates.original.reason)}.` : 'Original candidate passed the basic quote screen; holdings, freshness and broker checks remain separate.'}</p>
-      <p>{candidates.screened_count} of {candidates.evaluated_count} rows passed the research quote/payoff screen. Counts cover supplied rows after upstream contract exclusions. Scope: one selected expiration; other expirations are not searched.</p>
+      {researchContext && <p><button type="button" disabled={!!currentSearch?.pending || !Number.isInteger(Number(holdingText)) || Number(holdingText) < 1 || Number(holdingText) > 365} onClick={searchExpiries}>
+        {currentSearch?.pending ? 'Searching expirations…' : 'Find expirations for holding period'}</button> Searches up to four eligible expirations from the same archived session, on request only.</p>}
+      {currentSearch?.error && <p role="alert">{currentSearch.error} Original comparison remains available.</p>}
+      <p>{candidates.screened_count} of {candidates.evaluated_count} rows passed the research quote/payoff screen. {candidates.method_version === 'covered_call_candidates_v2' ? 'Counts include unsupported rows refused by this screen. ' : 'Counts cover supplied rows after upstream contract exclusions. '}{candidates.method_version === 'covered_call_candidates_v2'
+        ? `Scope: ${candidates.completed_expiries?.length ?? 0} of ${candidates.searched_expiries?.length ?? 0} attempted expirations read; ${candidates.eligible_expiry_count ?? 0} eligible expirations in this archive. Minimum remaining life: ${candidates.holding_days! + candidates.buffer_days!} calendar days. Read: ${candidates.completed_expiries?.join(', ') || 'none'}.`
+        : 'Scope: one selected expiration; other expirations are not searched.'}</p>
+      {!!candidates.failed_expiries?.length && <p role="alert">Expiration reads failed: {candidates.failed_expiries.join(', ')}. Results are incomplete; a failure is not absence of contracts.</p>}
       {!!Object.keys(candidates.rejected_counts).length && <p>Excluded: {Object.entries(candidates.rejected_counts).map(([reason, count]) => `${count} ${candidateReason(reason)}`).join('; ')}.</p>}
       <p>{candidates.ranking} The 20% spread ceiling is a research policy; quote age, size and actual deliverables are unverified.</p>
       {candidates.alternatives.length ? <label>Covered-call contract to compare<select aria-label="Covered-call contract to compare"
         value={alternative && coveredChoice ? String(coveredChoice.index) : 'original'} onChange={e => {
-          setCoveredChoice(e.target.value === 'original' ? null : { source: matrix, index: Number(e.target.value) });
+          setCoveredChoice(e.target.value === 'original' ? null : { source: candidates, index: Number(e.target.value) });
           setAssignmentAcceptance(null);
         }}>
         <option value="original">Original target-strike selection</option>

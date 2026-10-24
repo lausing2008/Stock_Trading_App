@@ -865,11 +865,12 @@ export const api = {
   getFixRecords: () => request<FixRecordResponse[]>('/fix-effectiveness'),
   takeFixSnapshot: (fixId: string) => request<FixSnapshotResult>(`/fix-effectiveness/${fixId}/snapshot`, { method: 'POST' }),
   getOptionsExpirations: (symbol: string) => request<OptionsExpirationsResponse>(`/stocks/${symbol}/options-expirations`),
-  getOptionsGamePlan: (symbol: string, opts: { stopLoss?: number; takeProfit?: number; shares?: number }) => {
+  getOptionsGamePlan: (symbol: string, opts: { stopLoss?: number; takeProfit?: number; shares?: number; holdingDays?: number }) => {
     const params = new URLSearchParams();
     if (opts.stopLoss != null) params.set('stop_loss', String(opts.stopLoss));
     if (opts.takeProfit != null) params.set('take_profit', String(opts.takeProfit));
     if (opts.shares != null) params.set('shares', String(opts.shares));
+    if (opts.holdingDays != null) params.set('holding_days', String(opts.holdingDays));
     const qs = params.toString();
     return request<OptionsGamePlan>(`/stocks/${symbol}/options-game-plan${qs ? `?${qs}` : ''}`);
   },
@@ -2607,7 +2608,9 @@ export type AddStocksResult = {
 
 export type OptionStrategyMatrix = {
   candidate_review?: { covered_call?: {
-    method_version: 'covered_call_candidates_v1'; anchor: number; expiry: string | null;
+    method_version: 'covered_call_candidates_v1' | 'covered_call_candidates_v2'; anchor: number; expiry: string | null;
+    holding_days?: number; buffer_days?: number; eligible_expiry_count?: number;
+    searched_expiries?: string[]; completed_expiries?: string[]; failed_expiries?: string[];
     scope: string; evaluated_count: number; screened_count: number;
     rejected_counts: Record<string, number>;
     original: { strike: number | null; option_symbol: string | null; reason: string | null };

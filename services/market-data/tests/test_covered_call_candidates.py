@@ -86,7 +86,8 @@ def test_empty_chain_has_an_explicit_no_rows_reason():
     assert review['evaluated_count'] == 0 and review['alternatives'] == []
 
 
-def test_real_route_keeps_a_response_visible_when_only_alternatives_can_be_built(monkeypatch):
+@pytest.mark.parametrize('holding_days,mismatched_search', [(None, False), (14, False), (14, True)])
+def test_real_route_keeps_a_response_visible_when_only_alternatives_can_be_built(monkeypatch, holding_days, mismatched_search):
     """Execute real composition and handler source; stub only DB/provider dependencies."""
     import ast
     from datetime import datetime, timezone
@@ -109,12 +110,55 @@ def test_real_route_keeps_a_response_visible_when_only_alternatives_can_be_built
     for arg in handler.args.args:
         arg.annotation = None
     rows = [row(100, 0, .1), row(110), row(120, 0, .1)]
+    reads = []
+    def read_chain(*args, **kwargs):
+        assert kwargs['as_of'] == TODAY
+        reads.append(args[2])
+        as_of = '2026-01-01' if mismatched_search and len(reads) > 2 else TODAY.isoformat()
+        return SimpleNamespace(calls=rows, puts=[], as_of=as_of)
     namespace.update(_today_et=lambda: TODAY, _goal_current_price=lambda *args: 100,
                      _uw_session_expiries=lambda *args: (TODAY, [EXP]),
-                     _uw_option_chain=lambda *args, **kwargs: SimpleNamespace(calls=rows, puts=[], as_of=TODAY.isoformat()),
+                     _uw_option_chain=read_chain,
                      _options_chain_rows=lambda values, symbol: values)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[handler], type_ignores=[])), '<real route>', 'exec'), namespace)
-    result = namespace['get_options_game_plan']('EXAMPLE', 95, 120, None, object(), None)
-    assert result['available'] is True
+    result = namespace['get_options_game_plan']('EXAMPLE', 95, 120, None, object(), None, holding_days)
+    review = result['strategy_matrix']['candidate_review']['covered_call']
     assert result['strategy_matrix']['singles'] == {}
-    assert result['strategy_matrix']['candidate_review']['covered_call']['alternatives'][0]['legs'][0]['strike'] == 110
+    if mismatched_search:
+        assert review['failed_expiries'] == [EXP]
+        assert review['alternatives'] == []
+    else:
+        assert result['available'] is True
+        assert review['alternatives'][0]['legs'][0]['strike'] == 110
+
+
+def test_expiry_search_is_bounded_filters_holding_and_reports_failed_reads():
+    from src.services.options_strategies import covered_call_expiry_search
+    original = matrix([row(120, 0, .1), row(110)])['candidate_review']['covered_call']
+    requested = []
+    def read(expiry):
+        requested.append(expiry)
+        if expiry == '2026-03-06':
+            raise RuntimeError('archive unavailable')
+        return [row(120, option_symbol=expiry + '-120'), row(110, option_symbol=expiry + '-110')]
+    expiries = ['2026-01-09', EXP, '2026-03-06', '2026-04-03', '2026-05-01', '2026-06-05']
+    review = covered_call_expiry_search(original=original, expiries=list(reversed(expiries)),
+        today=TODAY, holding_days=33, current_price=100, read_rows=read)
+    assert requested == [EXP, '2026-03-06', '2026-04-03', '2026-05-01']
+    assert review['eligible_expiry_count'] == 5
+    assert review['failed_expiries'] == ['2026-03-06']
+    assert len(review['completed_expiries']) == 3
+    assert review['evaluated_count'] == review['screened_count'] == 6
+    assert review['original'] == original['original']
+    assert review['alternatives'][0]['legs'][0]['strike'] == 120
+    assert all(s['legs'][0]['days_to_expiry'] >= 35 for s in review['alternatives'])
+    assert review['method_version'] == 'covered_call_candidates_v2'
+
+
+def test_expiry_search_no_coverage_is_distinct_from_read_failure():
+    from src.services.options_strategies import covered_call_expiry_search
+    original = matrix([])['candidate_review']['covered_call']
+    review = covered_call_expiry_search(original=original, expiries=[EXP], today=TODAY,
+        holding_days=365, current_price=100, read_rows=lambda _: pytest.fail('no read expected'))
+    assert review['eligible_expiry_count'] == 0
+    assert review['failed_expiries'] == review['alternatives'] == []

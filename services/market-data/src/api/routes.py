@@ -5120,6 +5120,7 @@ def get_options_game_plan(
     shares: float | None = Query(None),
     session: Session = Depends(get_session),
     _user=Depends(get_advanced_user),
+    holding_days: int | None = Query(None, ge=1, le=365),
 ):
     """T322-OPTIONS-GAMEPLAN: Advanced-tier-only. Composes compute_options_game_plan() above
     from a REAL, freshly-fetched options chain (calls for the covered-call leg, puts for the
@@ -5196,6 +5197,18 @@ def get_options_game_plan(
         plan["chain_as_of"] = chain_as_of
         plan["chain_source"] = "unusual_whales"
         matrix = plan.get("strategy_matrix") or {}
+        if isinstance(holding_days, int) and not isinstance(holding_days, bool):
+            from ..services.options_strategies import covered_call_expiry_search
+            original = matrix.get("candidate_review", {}).get("covered_call")
+            if original:
+                def read_search_rows(expiry):
+                    chain = _uw_option_chain(session, sym, expiry, as_of=source_session)
+                    if str(chain.as_of) != source_session.isoformat():
+                        raise ValueError("Search chain session does not match source session")
+                    return _options_chain_rows(chain.calls, sym)
+                matrix["candidate_review"]["covered_call"] = covered_call_expiry_search(
+                    original=original, expiries=expiries, today=today,
+                    holding_days=holding_days, current_price=current_price, read_rows=read_search_rows)
         plan["available"] = bool(
             plan["protective_put"] or plan["covered_call"]
             or matrix.get("singles") or matrix.get("combos")

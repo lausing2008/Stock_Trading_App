@@ -35,6 +35,18 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: "OPTIONS-MULTI-EXPIRY-COVERED-CALL",
+    tier: 468,
+    severity: "feature",
+    defaultStatus: "done",
+    title: "Explicit covered-call search across holding-compatible expirations",
+    file: "docs/audits/2026-10-23-options-multi-expiry.md",
+    effort: "M",
+    impact: "Offers longer-dated research alternatives when the original expiry does not fit the holding period.",
+    what: "One selected expiration cannot establish whether a suitable longer-dated contract exists.",
+    fix: "Search on request only: first four archived expirations covering declared holding days plus a two-day buffer, up to three screened contracts per expiry. Show attempted, completed, failed and eligible expiry coverage. Keep the same source session and reference spot, reject changed context, require explicit selection and renewed assignment acceptance. Original target and combination legs stay unchanged. This is a bounded research ordering, not an expected-return ranking; other strategies and validated market-aware forecasts remain future work.",
+  },
+  {
     id: "OPTIONS-HORIZON-CONTEXT-EVIDENCE",
     tier: 468,
     severity: "high",
