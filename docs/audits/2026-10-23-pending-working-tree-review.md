@@ -1,5 +1,7 @@
 # Pending working-tree review — October 23, 2026
 
+**Release update:** this reviewed implementation is committed and deployed in `a1054dcb`. The [follow-up deployment report](2026-10-23-followup-deployment.md) records production verification and the separate first-run backup status. Earlier local-only wording below describes the audit/preparation stage and is preserved as history.
+
 > **Fix update:** W01–W04 are now fixed locally and regression-tested. Nothing is staged, committed or deployed. See the completion section below; the initial findings and original reproduction results remain as historical evidence.
 
 Reviewed against committed HEAD `e0831bb9`. **The Git index is empty: no files are staged.** The initial review covered the modified and untracked work visible at review time and added only this report and reproduction evidence. The subsequently authorized fixes change the files recorded in the completion section; no staging, commit or deployment was performed.

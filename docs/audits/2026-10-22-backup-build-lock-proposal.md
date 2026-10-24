@@ -1,5 +1,7 @@
 # Proposal: one host lock for database backups and image builds
 
+**Release update:** this reviewed implementation is committed and deployed in `a1054dcb`. The [follow-up deployment report](2026-10-23-followup-deployment.md) records production verification and the separate first-run backup status. Earlier local-only wording below describes the audit/preparation stage and is preserved as history.
+
 Status: **implemented locally, for review; not committed or deployed.** Cron timing and journal settings are out of scope and unchanged. See "Implementation" below for how the build differs from the design.
 
 ## What happened
@@ -91,3 +93,6 @@ Sabotage checks, each re-run against the full file:
 1. Commit and push. On EC2, run `git pull origin prod` **before** the first `deploy.sh` run. The outer lock in `deploy.sh` sources the `deploy_lock.sh` already on the host, and an old copy without token support makes the nested acquire refuse with exit 75. That fails safe, but the deploy does not run.
 2. Point the existing cron entry's script at the versioned one, without changing the schedule: replace the body of `/home/ec2-user/pg_backup.sh` with `exec bash /home/ec2-user/Stock_Trading_App/scripts/pg_backup.sh`. Keep the old body as `/home/ec2-user/pg_backup.sh.pre-lock`.
 3. Run one backup by hand and check exit 0, `gzip -t`, the marker and the log line, as on October 22.
+
+
+Rollout result: wrapper switched with original saved as `.pre-lock`, unchanged cron schedule; first real run completed October 24 01:24:10 UTC, exit 0, verified and published 2.4 GB. A live concurrent-deploy probe was refused. [Release and evidence](2026-10-23-followup-deployment.md). Earlier restore evidence is separate; no new restore drill was run.

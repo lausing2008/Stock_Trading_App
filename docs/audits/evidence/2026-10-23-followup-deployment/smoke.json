@@ -1,0 +1,100 @@
+{
+  "calibration": [
+    {
+      "applied": false,
+      "route": "calibrate_ml_weight",
+      "status": "research_only"
+    },
+    {
+      "applied": false,
+      "route": "calibrate_ta_weights",
+      "status": "research_only"
+    },
+    {
+      "applied": false,
+      "route": "calibrate_conviction_weights",
+      "status": "research_only"
+    },
+    {
+      "applied": false,
+      "route": "outcomes/calibrate/apply",
+      "status": "research_only"
+    },
+    {
+      "applied": false,
+      "route": "tune_sell_pillars",
+      "status": "research_only"
+    },
+    {
+      "applied": false,
+      "route": "tune_style_profiles",
+      "status": "research_only"
+    },
+    {
+      "applied": false,
+      "route": "tune_strategy",
+      "status": "research_only"
+    },
+    {
+      "applied": false,
+      "route": "watchdog",
+      "status": "research_only"
+    }
+  ],
+  "calibration_keys_unchanged": true,
+  "chain": {
+    "available": true,
+    "moneyness_reference": {
+      "basis_check": {
+        "chain_implied": 870.15,
+        "pairs": 3,
+        "ratio": 0.9843,
+        "reason": null,
+        "status": "plausible"
+      },
+      "basis_confidence": "estimated",
+      "basis_note": "estimated: the close agrees with the chain's put-call parity within 7.5%; that is a plausibility check, not proof both use the same price basis (a small split adjustment can pass)",
+      "price": 856.49,
+      "session": "2026-10-22",
+      "source": "daily_close"
+    },
+    "moneyness_unknown_reason": null,
+    "source_session": "2026-10-22"
+  },
+  "dark_pool": {
+    "available": true,
+    "fetched_at": "2026-10-24T01:03:44.327801+00:00",
+    "sampling": {
+      "expected_cadence_seconds": 900,
+      "failed_polls": 0,
+      "identity_status": "provider_tracking_id_v2",
+      "last_poll": "2026-10-24T01:03:44.419772+00:00",
+      "missing_session_slots": 0,
+      "note": "Captured windows only. The identity ledger excludes legacy tuples and unidentified prints; continuous tape coverage is not established.",
+      "observed_since": "2026-10-23T22:24:30.374394+00:00",
+      "polls": 11,
+      "saturated_windows": 11,
+      "status": "degraded",
+      "unidentified_events": 0
+    },
+    "status": "ok"
+  },
+  "flows": [
+    {
+      "activity_composition": "call_heavy",
+      "available": true,
+      "composition_scope": "complete",
+      "score_method": "chain_intensity_v2",
+      "source_session": "2026-10-22",
+      "symbol": "MU"
+    },
+    {
+      "activity_composition": "mixed",
+      "available": true,
+      "composition_scope": "complete",
+      "score_method": "chain_intensity_v2",
+      "source_session": "2026-10-22",
+      "symbol": "AMD"
+    }
+  ]
+}

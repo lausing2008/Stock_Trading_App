@@ -87,3 +87,8 @@ See the [October 23 session continuation](../2026-10-23/session-index.md) for th
 
 
 Phase C has since been implemented locally with explicit unavailable event measures, and the dark-pool conflict histories have a bounded read-only diagnostic. See [the continuation report](2026-10-23-options-dominance-and-dark-pool-identity.md). Neither feature is part of the deployed release described above.
+
+
+## Follow-up release a1054dcb
+
+The subsequently reviewed working tree is now committed, pushed and deployed. See the [follow-up deployment report](2026-10-23-followup-deployment.md) for Phase C dominance, W01–W04, chart/daily crossover fixes, host locking, backup wrapper and served strategy-selection disclosures. All 15 containers and all 12 backend source hashes were verified. The original release evidence remains unchanged; the new report supersedes preceding local-only status for this work.

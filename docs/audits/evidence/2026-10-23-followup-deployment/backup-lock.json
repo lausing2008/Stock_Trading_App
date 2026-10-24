@@ -1,0 +1,1 @@
+{"checked_at": "2026-10-24T01:16:19.867563+00:00", "deploy_refused_while_real_backup_running": true, "backup_owns_lock": true, "wrapper_versioned": true, "old_wrapper_preserved": true, "cron_still_calls_wrapper": true}

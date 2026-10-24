@@ -2,7 +2,7 @@
 
 This is the current continuation of the [earlier session index](../2026-10-22/session-index.md). It consolidates the options/calibration deployment, the pending working-tree audit, the four authorized local fixes, and the Improvements tracker update. Dates are October 23 in America/Los_Angeles; evidence files retain their recorded UTC timestamps.
 
-**Current boundary:** application release `3f838758` is deployed, with committed documentation through `e0831bb9`. Subsequent chart/alert/backup work, W01–W04 fixes, Phase C dominance, the identity diagnostic, this documentation and the tracker update remain local, unstaged and uncommitted. No deployment was performed for these later changes.
+**Current boundary:** follow-up application release `a1054dcb` is deployed, superseding the earlier `3f838758` release. All 15 containers are healthy, all 12 backend source hashes match, and the new frontend build and dominance endpoints are verified. The cron wrapper now uses the versioned backup script; its first real dump completed successfully at 01:24:10 UTC, with checked gzip/dump marker and atomic publication. [Follow-up release and evidence](../audits/2026-10-23-followup-deployment.md). Local-only descriptions below are historical preparation records, superseded by this release note. See the [strategy-selection review](../audits/2026-10-23-strategy-selection-review.md) for the screenshot questions and remaining ranking work.
 
 ## Delivered and verified earlier in the session
 
@@ -89,3 +89,13 @@ Latest validation: **market-data full suite 5,784 passed / 26 skipped**; **front
 The user authorized committing and deploying the reviewed working tree on October 23. This supersedes the earlier local-only boundary once production verification is recorded in the follow-up deployment report. Application scope: Phase C dominance, chart/daily-cross fixes, W01–W04, host lock/backup entry point, tracker changes and a plain-language strategy-selection disclosure. Research-only calibration and dark-pool quarantine remain in effect.
 
 The [strategy selection review](../audits/2026-10-23-strategy-selection-review.md) answers the supplied screenshot and specifies candidate diagnostics, exhaustive comparable candidate search, market-aware conditional fit and validation. No Greek optimizer or forecast-based best-return ranking is claimed.
+
+
+## Follow-up production verification
+
+Application commit `a1054dcb` is live. Production reports 15 healthy containers, all 12 backend source/shared hashes matching, matching prepared/running frontend build `ghID9kU82xv0akohrUYlL`, five HTTP 200 public routes and served stock/tracker feature markers. Authenticated MU/AMD/AAPL dominance reads match the shared-cache endpoint. Eight calibration routes remain research-only and tracked settings are unchanged. This is API/HTTP/build verification, not interactive browser acceptance.
+
+The shipped session tracker has 17 entries across tiers 468–473: 10 done, 2 in progress, 5 planned. The new planned item covers candidate-specific option diagnostics and market-aware strategy ranking; the existing code remains a conditional fit policy. R10 identity semantics and backup follow-through stay separate from completed application correctness fixes. [Follow-up report and evidence](../audits/2026-10-23-followup-deployment.md).
+
+
+First versioned-wrapper backup: exit 0, 2.4 GB published after verification, no partial left, retention applied and 15 containers healthy. [Final backup evidence](../audits/evidence/2026-10-23-followup-deployment/backup.json). No new restore drill was performed. The backup tracker entry remains in progress in the shipped frontend; this report supersedes its pre-run status text.

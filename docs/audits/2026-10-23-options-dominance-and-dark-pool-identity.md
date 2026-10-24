@@ -1,5 +1,7 @@
 # Options dominance and dark-pool identity continuation
 
+**Release update:** this reviewed implementation is committed and deployed in `a1054dcb`. The [follow-up deployment report](2026-10-23-followup-deployment.md) records production verification and the separate first-run backup status. Earlier local-only wording below describes the audit/preparation stage and is preserved as history.
+
 Date: October 23, 2026, America/Los_Angeles. **Implementation is local, unstaged and uncommitted. No service was restarted or deployed.** Production activity in this continuation was limited to a bounded read-only aggregate query and an isolated PostgreSQL temporary-table probe with full rollback.
 
 ## Per-stock activity summary

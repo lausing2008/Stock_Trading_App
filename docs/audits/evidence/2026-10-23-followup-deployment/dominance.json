@@ -1,0 +1,320 @@
+[
+  {
+    "available": true,
+    "rows": [
+      {
+        "call_share": 0.6042478551649864,
+        "composition": "call_heavy",
+        "metric": "volume",
+        "note": "Shares describe the included expirations only; volume does not establish trade direction or opening activity.",
+        "put_share": 0.39575214483501364,
+        "reported_as_of": "2026-10-22",
+        "sides": {
+          "call": {
+            "known": 871,
+            "observed_subtotal": 497099,
+            "total": 871,
+            "value": 497099
+          },
+          "put": {
+            "known": 871,
+            "observed_subtotal": 325575,
+            "total": 871,
+            "value": 325575
+          }
+        },
+        "snapshot_session": "2026-10-22",
+        "status": "measured"
+      },
+      {
+        "call_share": 0.45130876796634595,
+        "composition": "more_puts",
+        "metric": "open_interest",
+        "note": "OI is from these same chain rows. The provider's OI reporting date is not supplied; snapshot session is not proof of its reporting date.",
+        "put_share": 0.548691232033654,
+        "reported_as_of": null,
+        "sides": {
+          "call": {
+            "known": 871,
+            "observed_subtotal": 231729,
+            "total": 871,
+            "value": 231729
+          },
+          "put": {
+            "known": 871,
+            "observed_subtotal": 281731,
+            "total": 871,
+            "value": 281731
+          }
+        },
+        "snapshot_session": "2026-10-22",
+        "status": "measured"
+      },
+      {
+        "metric": "traded_premium",
+        "note": "Paid premium needs trade-level events. Chain marks and estimated turnover are not paid premium.",
+        "reason": "trade_events_not_captured_for_this_scope",
+        "status": "unavailable"
+      },
+      {
+        "metric": "aggressor_estimate",
+        "note": "No comparable trade-event window and classified-share evidence; buying, selling and opening/closing intent are not established.",
+        "reason": "no_comparable_event_window",
+        "status": "unavailable"
+      }
+    ],
+    "scope": {
+      "coverage_status": "complete",
+      "included": [
+        "2026-10-23",
+        "2026-10-26",
+        "2026-10-28",
+        "2026-10-30"
+      ],
+      "missing": [],
+      "requested": [
+        "2026-10-23",
+        "2026-10-26",
+        "2026-10-28",
+        "2026-10-30"
+      ],
+      "slices": [
+        {
+          "coverage_reason": "terminal_page",
+          "coverage_status": "complete",
+          "expiry": "2026-10-23"
+        },
+        {
+          "coverage_reason": "terminal_page",
+          "coverage_status": "complete",
+          "expiry": "2026-10-26"
+        },
+        {
+          "coverage_reason": "terminal_page",
+          "coverage_status": "complete",
+          "expiry": "2026-10-28"
+        },
+        {
+          "coverage_reason": "terminal_page",
+          "coverage_status": "complete",
+          "expiry": "2026-10-30"
+        }
+      ],
+      "universe": "nearest_four_expirations_of_source_session"
+    },
+    "source_session": "2026-10-22",
+    "symbol": "MU"
+  },
+  {
+    "available": true,
+    "rows": [
+      {
+        "call_share": 0.5503025792332297,
+        "composition": "mixed",
+        "metric": "volume",
+        "note": "Shares describe the included expirations only; volume does not establish trade direction or opening activity.",
+        "put_share": 0.44969742076677033,
+        "reported_as_of": "2026-10-22",
+        "sides": {
+          "call": {
+            "known": 713,
+            "observed_subtotal": 310544,
+            "total": 713,
+            "value": 310544
+          },
+          "put": {
+            "known": 713,
+            "observed_subtotal": 253771,
+            "total": 713,
+            "value": 253771
+          }
+        },
+        "snapshot_session": "2026-10-22",
+        "status": "measured"
+      },
+      {
+        "call_share": 0.5202610613095172,
+        "composition": "more_calls",
+        "metric": "open_interest",
+        "note": "OI is from these same chain rows. The provider's OI reporting date is not supplied; snapshot session is not proof of its reporting date.",
+        "put_share": 0.4797389386904828,
+        "reported_as_of": null,
+        "sides": {
+          "call": {
+            "known": 713,
+            "observed_subtotal": 187808,
+            "total": 713,
+            "value": 187808
+          },
+          "put": {
+            "known": 713,
+            "observed_subtotal": 173180,
+            "total": 713,
+            "value": 173180
+          }
+        },
+        "snapshot_session": "2026-10-22",
+        "status": "measured"
+      },
+      {
+        "metric": "traded_premium",
+        "note": "Paid premium needs trade-level events. Chain marks and estimated turnover are not paid premium.",
+        "reason": "trade_events_not_captured_for_this_scope",
+        "status": "unavailable"
+      },
+      {
+        "metric": "aggressor_estimate",
+        "note": "No comparable trade-event window and classified-share evidence; buying, selling and opening/closing intent are not established.",
+        "reason": "no_comparable_event_window",
+        "status": "unavailable"
+      }
+    ],
+    "scope": {
+      "coverage_status": "complete",
+      "included": [
+        "2026-10-23",
+        "2026-10-26",
+        "2026-10-28",
+        "2026-10-30"
+      ],
+      "missing": [],
+      "requested": [
+        "2026-10-23",
+        "2026-10-26",
+        "2026-10-28",
+        "2026-10-30"
+      ],
+      "slices": [
+        {
+          "coverage_reason": "terminal_page",
+          "coverage_status": "complete",
+          "expiry": "2026-10-23"
+        },
+        {
+          "coverage_reason": "terminal_page",
+          "coverage_status": "complete",
+          "expiry": "2026-10-26"
+        },
+        {
+          "coverage_reason": "terminal_page",
+          "coverage_status": "complete",
+          "expiry": "2026-10-28"
+        },
+        {
+          "coverage_reason": "terminal_page",
+          "coverage_status": "complete",
+          "expiry": "2026-10-30"
+        }
+      ],
+      "universe": "nearest_four_expirations_of_source_session"
+    },
+    "source_session": "2026-10-22",
+    "symbol": "AMD"
+  },
+  {
+    "available": true,
+    "rows": [
+      {
+        "call_share": 0.533131516617546,
+        "composition": "mixed",
+        "metric": "volume",
+        "note": "Shares describe the included expirations only; volume does not establish trade direction or opening activity.",
+        "put_share": 0.466868483382454,
+        "reported_as_of": "2026-10-22",
+        "sides": {
+          "call": {
+            "known": 253,
+            "observed_subtotal": 486418,
+            "total": 253,
+            "value": 486418
+          },
+          "put": {
+            "known": 253,
+            "observed_subtotal": 425961,
+            "total": 253,
+            "value": 425961
+          }
+        },
+        "snapshot_session": "2026-10-22",
+        "status": "measured"
+      },
+      {
+        "call_share": 0.5224273328266856,
+        "composition": "more_calls",
+        "metric": "open_interest",
+        "note": "OI is from these same chain rows. The provider's OI reporting date is not supplied; snapshot session is not proof of its reporting date.",
+        "put_share": 0.47757266717331437,
+        "reported_as_of": null,
+        "sides": {
+          "call": {
+            "known": 253,
+            "observed_subtotal": 255724,
+            "total": 253,
+            "value": 255724
+          },
+          "put": {
+            "known": 253,
+            "observed_subtotal": 233768,
+            "total": 253,
+            "value": 233768
+          }
+        },
+        "snapshot_session": "2026-10-22",
+        "status": "measured"
+      },
+      {
+        "metric": "traded_premium",
+        "note": "Paid premium needs trade-level events. Chain marks and estimated turnover are not paid premium.",
+        "reason": "trade_events_not_captured_for_this_scope",
+        "status": "unavailable"
+      },
+      {
+        "metric": "aggressor_estimate",
+        "note": "No comparable trade-event window and classified-share evidence; buying, selling and opening/closing intent are not established.",
+        "reason": "no_comparable_event_window",
+        "status": "unavailable"
+      }
+    ],
+    "scope": {
+      "coverage_status": "complete",
+      "included": [
+        "2026-10-23",
+        "2026-10-26",
+        "2026-10-28",
+        "2026-10-30"
+      ],
+      "missing": [],
+      "requested": [
+        "2026-10-23",
+        "2026-10-26",
+        "2026-10-28",
+        "2026-10-30"
+      ],
+      "slices": [
+        {
+          "coverage_reason": "terminal_page",
+          "coverage_status": "complete",
+          "expiry": "2026-10-23"
+        },
+        {
+          "coverage_reason": "terminal_page",
+          "coverage_status": "complete",
+          "expiry": "2026-10-26"
+        },
+        {
+          "coverage_reason": "terminal_page",
+          "coverage_status": "complete",
+          "expiry": "2026-10-28"
+        },
+        {
+          "coverage_reason": "terminal_page",
+          "coverage_status": "complete",
+          "expiry": "2026-10-30"
+        }
+      ],
+      "universe": "nearest_four_expirations_of_source_session"
+    },
+    "source_session": "2026-10-22",
+    "symbol": "AAPL"
+  }
+]

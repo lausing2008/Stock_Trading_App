@@ -1,0 +1,13 @@
+{
+  "exit_code": 0,
+  "healthy_containers_after_backup": 15,
+  "lock_status": "state=completed what=backup-2026-10-24 pid=3376263 finished=2026-10-24T01:24:10Z exit=0",
+  "log": "Sat Oct 24 01:24:10 UTC 2026: backup stockai-2026-10-24.sql.gz complete (2.4G)",
+  "partial_absent": true,
+  "published_backup_count": 7,
+  "published_bytes": 2502561784,
+  "published_name": "stockai-2026-10-24.sql.gz",
+  "restore_drill": "not_performed_in_this_rollout",
+  "script_checked_gzip_and_dump_completion_marker": true,
+  "verified_at": "2026-10-24T01:25:12.689486+00:00"
+}

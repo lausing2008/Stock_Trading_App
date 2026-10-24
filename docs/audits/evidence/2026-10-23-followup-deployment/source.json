@@ -1,0 +1,86 @@
+{
+  "api-gateway": {
+    "hashes": {
+      "shared": "dbbaaf5bbe031eabcd88fef9b86384d8d0acbe68c1a99d5cac7a5c0e89b0a641",
+      "src": "31e5273d6a53e13a89afcec39e57a260db9046b10edf4acbf3924f3782abfed1"
+    },
+    "matches": true
+  },
+  "decision-engine": {
+    "hashes": {
+      "shared": "dbbaaf5bbe031eabcd88fef9b86384d8d0acbe68c1a99d5cac7a5c0e89b0a641",
+      "src": "39d0fbbd87c1db80f0ac80393737b19aaa6feb61dc05d65977d5f35cbe233e3b"
+    },
+    "matches": true
+  },
+  "event-intelligence": {
+    "hashes": {
+      "shared": "dbbaaf5bbe031eabcd88fef9b86384d8d0acbe68c1a99d5cac7a5c0e89b0a641",
+      "src": "7fa68a1ef2c31b6aefd38164d0642f09d0cebf9e22c53dae01ebe0f57c51cead"
+    },
+    "matches": true
+  },
+  "market-data": {
+    "hashes": {
+      "shared": "dbbaaf5bbe031eabcd88fef9b86384d8d0acbe68c1a99d5cac7a5c0e89b0a641",
+      "src": "259a08d6176ef9d314290fdb9a8f28d0db7cc2bb73d73df708e6d5dbe52efa13"
+    },
+    "matches": true
+  },
+  "ml-prediction": {
+    "hashes": {
+      "shared": "dbbaaf5bbe031eabcd88fef9b86384d8d0acbe68c1a99d5cac7a5c0e89b0a641",
+      "src": "e09d713fdb2d47852bc1e6c68aaf9d4512c6c83338eb5c7313589a9691e548ec"
+    },
+    "matches": true
+  },
+  "news-intelligence": {
+    "hashes": {
+      "shared": "dbbaaf5bbe031eabcd88fef9b86384d8d0acbe68c1a99d5cac7a5c0e89b0a641",
+      "src": "a5fc288ae8bf9d40abb6f2134dd1ee94f96f79bfa487050a18f4b6e0751a1afe"
+    },
+    "matches": true
+  },
+  "portfolio-optimizer": {
+    "hashes": {
+      "shared": "dbbaaf5bbe031eabcd88fef9b86384d8d0acbe68c1a99d5cac7a5c0e89b0a641",
+      "src": "ffa5640c3aa3a3dd64141dd8c09600102326d152690543c3a7175554cc9e800b"
+    },
+    "matches": true
+  },
+  "ranking-engine": {
+    "hashes": {
+      "shared": "dbbaaf5bbe031eabcd88fef9b86384d8d0acbe68c1a99d5cac7a5c0e89b0a641",
+      "src": "6b6d76c88bbe7fb1477888d2ef176d4cfff4ebe3d3486e5dff852216b959d187"
+    },
+    "matches": true
+  },
+  "research-engine": {
+    "hashes": {
+      "shared": "dbbaaf5bbe031eabcd88fef9b86384d8d0acbe68c1a99d5cac7a5c0e89b0a641",
+      "src": "ab0820efd19a5311f92d77ffda86ca46465db008cfa3b1071242ac0f6acbe330"
+    },
+    "matches": true
+  },
+  "signal-engine": {
+    "hashes": {
+      "shared": "dbbaaf5bbe031eabcd88fef9b86384d8d0acbe68c1a99d5cac7a5c0e89b0a641",
+      "src": "9b7317dfbef3d85059a867db8431dee3cb360ee7f65c2fd533430fe909b2cb74"
+    },
+    "matches": true
+  },
+  "strategy-engine": {
+    "hashes": {
+      "shared": "dbbaaf5bbe031eabcd88fef9b86384d8d0acbe68c1a99d5cac7a5c0e89b0a641",
+      "src": "e42067f51ece8176099057705759dfa08fbc430dd1ee6b5d4207d6717d2ec97e"
+    },
+    "matches": true
+  },
+  "technical-analysis": {
+    "hashes": {
+      "shared": "dbbaaf5bbe031eabcd88fef9b86384d8d0acbe68c1a99d5cac7a5c0e89b0a641",
+      "src": "48b5e8026e00babe42795979af10eb3ed2e7f3585e618829e7162421047bfcf4"
+    },
+    "matches": true
+  }
+}
