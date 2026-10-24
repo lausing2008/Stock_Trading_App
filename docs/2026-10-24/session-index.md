@@ -6,9 +6,9 @@ The [October 23 session record](../2026-10-23/session-index.md) and [earlier Oct
 
 ## Latest verified release and validation
 
-Application release **`003e05ab7bf1e98008ecb9004f82f551e88db348`** is public and deployed. Its final verification recorded **15 healthy containers**, matching source/shared digests for **all 12 backends**, and unchanged start times for all 14 non-frontend containers after the frontend-only comparison rollout. The frontend was built fresh on EC2 from production settings and compiled all 76 pages. Rollback images were retained.
+Application release **`c93d1695df3be4dd83d9b33837a514baa0b99e85`** is public and deployed. Its final verification recorded **15 healthy containers**, matching source/shared digests for **all 12 backends**, and unchanged start times for all 14 non-frontend containers after the frontend-only Learning/layout rollout. The frontend was built fresh on EC2 from production settings and compiled all 77 pages. Rollback images were retained.
 
-Latest frontend validation: **936 tests passed across 76 files**, full typecheck and whitespace clean. Backend code is unchanged; the preceding applicable market-data validation remains **5,849 passed / 26 skipped**, not a new run. The preceding 200-case original-matrix witness and earlier signal-engine/operational checks retain their own report-specific scope. [Latest comparison release and evidence](../audits/2026-10-24-options-candidate-comparison.md).
+Latest frontend validation: **945 tests passed across 77 files**, full typecheck and whitespace clean. Backend code is unchanged; the preceding applicable market-data validation remains **5,849 passed / 26 skipped**, not a new run. The preceding 200-case original-matrix witness and earlier signal-engine/operational checks retain their own report-specific scope. [Latest tutorial/layout release and evidence](../audits/2026-10-24-options-learning-and-market-pressure-layout.md).
 
 ## Delivered strategy improvements in this session
 
@@ -27,7 +27,7 @@ Read-only TSM checks on the October 22 archive returned 12 alternatives per stra
 
 ## Learning tutorial and screenshot-layout continuation
 
-A new Advanced/admin Learning page covers all newly shipped options and dark-pool research features, including an interactive fictional candidate comparison. The screenshot's narrow prints card is repaired with full-row dense tables, larger responsive chart-card targets and contained mobile scrolling. [Implementation, native-browser before/after measurements and rollout](../audits/2026-10-24-options-learning-and-market-pressure-layout.md). The existing CLAUDE.md pointer reaches this complete updated session index; prior work and evidence remain preserved. Validation/rollout status is recorded in that report.
+A new Advanced/admin Learning page covers all newly shipped options and dark-pool research features, including an interactive fictional candidate comparison. The screenshot's narrow prints card is repaired with full-row dense tables, larger responsive chart-card targets and contained mobile scrolling. [Implementation, native-browser before/after measurements and rollout](../audits/2026-10-24-options-learning-and-market-pressure-layout.md). The existing CLAUDE.md pointer reaches this complete updated session index; prior work and evidence remain preserved. Deployed `c93d1695`: 945 frontend tests, full typecheck, 77-page production build and all 15 healthy. Native Chrome before/after witnesses cover 1449/1024/390 px and mobile keyboard scrolling. Both new tracker entries are done; backend/polling logic is unchanged.
 
 ## Earlier audits, correctness fixes and operational work carried through this session
 
@@ -58,7 +58,7 @@ The earlier reports retain their own independent-review findings, failed first r
 
 The Improvements page (`frontend/src/pages/improvements.tsx`) records the options follow-ups under tier 468; linked earlier work spans tiers 468–473 and the prior RZY/data-quality trackers. Statuses distinguish delivered safeguards from unresolved semantics, unverified coverage and research-only plans. Each improvement above has its own report and evidence directory. The chronological October 23 record retains earlier tracker counts as historical snapshots, not the latest total.
 
-The user authorized the public `prod` push and automatic production deployment. Published application commits and documentation/evidence follow-ups are recorded in the linked release reports. Latest application release is `003e05ab`; documentation-only follow-ups do not require another rebuild or restart.
+The user authorized the public `prod` push and automatic production deployment. Published application commits and documentation/evidence follow-ups are recorded in the linked release reports. Latest application release is `c93d1695`; documentation-only follow-ups do not require another rebuild or restart.
 
 The prior `.claude/CLAUDE.md` update pointed only to a latest-release summary. It now points to this **complete session index**. The persistent core remains one concise pointer; the details stay here and in the topic reports. Existing overall core-size/older-entry guard violations predate this documentation update and are not represented as repaired.
 

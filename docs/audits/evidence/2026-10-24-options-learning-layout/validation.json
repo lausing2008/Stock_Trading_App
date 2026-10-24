@@ -1,0 +1,21 @@
+{
+  "application_commit": "c93d1695df3be4dd83d9b33837a514baa0b99e85",
+  "frontend": {
+    "test_files_passed": 77,
+    "tests_passed": 945,
+    "full_typecheck": "passed",
+    "focused_tests_passed": 106
+  },
+  "browser_viewports": [
+    1449,
+    1024,
+    390
+  ],
+  "browser_scope": "Offline actual component/styles with synthetic feeds; no authenticated production browser acceptance",
+  "backend_changed": false,
+  "preceding_backend_suite": {
+    "passed": 5849,
+    "skipped": 26,
+    "rerun_for_this_frontend_release": false
+  }
+}

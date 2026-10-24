@@ -10,7 +10,7 @@ Native Chrome witnesses use the actual component/chart code and styles with synt
 - `layout-before.json` and `layout-after.json`: 1449/1024/390 px geometry. The former 1024 px document overflow and 226 px desktop prints card are repaired. At 390 px only the named table region scrolls; ArrowRight moves it 320 px. `tableEscapesCard` measures the table's geometry, so it is intentionally true inside the mobile scroller; card and document widths remain contained.
 - `tutorial-layout.json`: twelve anchors, practice expansion/three sample rows and no document overflow at all three widths. Sorting/selection and route access guards have separate DOM tests.
 - Before/after PNGs are offline synthetic witnesses, not authenticated production screenshots. The lesson/practice images use explicitly fictional contracts.
-- Backend source/settings/polling are unchanged. Production build and final verification are recorded in the report and added JSON files on rollout.
+- Backend source/settings/polling are unchanged. Production build generated 77 pages using EC2 `.env.production`. Build `hGq1HqqUrzvkapUP75fDb` / application `c93d1695` is live. `production.json` records 15 healthy and 14 non-frontend start times unchanged; `backend-source.json` records 12 matching digests; `served.json` confirms new page/tracker/table markers and CSS. The three `verify_*`/deployment scripts preserve the scoped production witnesses; backend digest checker is in the preceding comparison evidence folder. These production checks do not claim authenticated browser interaction.
 
 ## Reproduce locally
 

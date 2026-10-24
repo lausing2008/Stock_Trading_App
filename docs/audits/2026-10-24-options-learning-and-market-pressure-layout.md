@@ -1,6 +1,6 @@
 # Options/Dark Pool Learning tutorial and Market Pressure layout repair
 
-Date: October 24, 2026, America/Los_Angeles. User requested a Learning page covering all newly shipped features and supplied a screenshot of the narrow, overflowing dark-pool table. Final validation and deployment are recorded below when complete.
+Date: October 24, 2026, America/Los_Angeles. User requested a Learning page covering all newly shipped features and supplied a screenshot of the narrow, overflowing dark-pool table. Validation, native-browser evidence and deployment are recorded below.
 
 ## Tutorial and navigation
 
@@ -42,7 +42,24 @@ These are native layout and local interaction checks, not authenticated producti
 
 ## Validation and rollout
 
-Focused checks: 106 passed (tutorial, Market Pressure, navigation/guard parity), full typecheck clean. Full frontend suite: **945 passed across 77 files**, full typecheck and whitespace clean. The authorized frontend-only production rollout is next. Backend source is unchanged; preceding validation remains 5,849 passed / 26 skipped, not a new backend test run. Initial tutorial test selectors were tightened to the practice section and functional anchors; temporary offline renderer setup was corrected for module/JSX interop before successful browser runs.
+Focused checks: 106 passed (tutorial, Market Pressure, navigation/guard parity), full typecheck clean. Full frontend suite: **945 passed across 77 files**, full typecheck and whitespace clean. Application commit `c93d1695df3be4dd83d9b33837a514baa0b99e85` was pushed to the authorized public `prod` branch. Production rollout verification is recorded below. Backend source is unchanged; preceding validation remains 5,849 passed / 26 skipped, not a new backend test run. Initial tutorial test selectors were tightened to the practice section and functional anchors; temporary offline renderer setup was corrected for module/JSX interop before successful browser runs.
+
+### Deployment preparation
+
+The first pinned deployment stopped before building or recreating any service because the custom disk guard required 25 GiB (rounded `df -BG` output). Dangling-image cleanup reclaimed 1.602 GB but left the host at 24G. Under the same host-wide deployment lock, pruning only unused build cache reclaimed another 676.3 MB and restored 25G. Tagged rollback images, volumes and running containers were preserved. The same exact application revision was then retried, built fresh from EC2 production settings with the classic Docker builder, and retained the prior frontend image for rollback.
+
+### Final production verification
+
+Application **`c93d1695df3be4dd83d9b33837a514baa0b99e85`** is deployed with frontend build ID **`hGq1HqqUrzvkapUP75fDb`**. The fresh EC2 build loaded `.env.production` and generated **77/77 pages**, including the new tutorial. Local build artifacts were not shipped.
+
+- All **15 containers healthy**, with unchanged start times for **all 14 non-frontend containers**.
+- All **12 backend source/shared digests match** the preceding unchanged source baseline.
+- Public HTTP 200 for the tutorial, TSM, Improvements, home, Signal Tuning and Signal Accuracy.
+- Served page build IDs match the running/prepared frontend; compiled tutorial/navigation, table/help, tracker markers and responsive CSS are present.
+- No dark-pool ledger capture/persist errors in the checked 15-minute log window.
+- Prior image retained as `stockai-frontend:rollback-20261024T153734Z`; final disk output 22G available. The guard is a pre-build margin, not a claim that post-build free space remains at least 25G.
+
+The Improvements page includes `OPTIONS-DARK-POOL-TUTORIAL` and `MARKET-PRESSURE-TABLE-RESPONSIVE` as done, with this report linked. The complete session index is updated through the existing `.claude/CLAUDE.md` pointer. Final evidence/docs are committed separately and synchronized without rebuilding or restarting services. Production checks verify delivery and health; authenticated interaction remains covered by local tests/offline browser witnesses rather than a claimed live logged-in browser run.
 
 ## Open boundaries
 

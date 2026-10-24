@@ -1,0 +1,20 @@
+{
+  "pages": [
+    {
+      "path": "/stock/TSM",
+      "build_id": "hGq1HqqUrzvkapUP75fDb",
+      "markers_verified": true
+    },
+    {
+      "path": "/options-dark-pool-tutorial",
+      "build_id": "hGq1HqqUrzvkapUP75fDb",
+      "markers_verified": true
+    },
+    {
+      "path": "/improvements",
+      "build_id": "hGq1HqqUrzvkapUP75fDb",
+      "markers_verified": true
+    }
+  ],
+  "responsive_styles_verified": true
+}
