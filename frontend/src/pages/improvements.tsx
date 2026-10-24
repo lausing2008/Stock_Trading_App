@@ -35,6 +35,18 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: "OPTIONS-CANDIDATE-COMPARISON-TABLE",
+    tier: 468,
+    severity: "feature",
+    defaultStatus: "done",
+    title: "Compare returned option candidates by risk, cost and liquidity evidence",
+    file: "docs/audits/2026-10-24-options-candidate-comparison.md",
+    effort: "M",
+    impact: "Makes strike/expiry tradeoffs visible before choosing an alternative for the strategy graph.",
+    what: "A compact contract dropdown hides payoff, breakeven, capital and measurement differences among the returned alternatives.",
+    fix: "Expandable comparison pins the original reference and shows archive debit/credit, payoff bounds, expiry breakeven, stated capital, current calendar DTE, recorded spread/OI and contract delta/gamma. Sort only returned alternatives by spread, OI, capital or expiry, with unknown values last and stable source indices. Sorting does not select or change acceptance; explicit selection uses the existing checks and clears assignment acceptance. Unpriced originals and missing measurements stay unavailable; stock/cost-basis and before-fee limits are explicit. No extra requests, backend ranking change or best-return claim.",
+  },
+  {
     id: "OPTIONS-DELTA-DTE-PREFERENCES",
     tier: 468,
     severity: "feature",

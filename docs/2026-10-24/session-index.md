@@ -21,6 +21,7 @@ Latest applicable validation: **5,849 market-data tests passed / 26 skipped**, *
 | Extend the explicit search to long calls, protective puts and cash-secured puts; shared four-expiry read budget, exact payoff reuse, active-choice summary and midnight invalidation | Deployed `dc5a058d` | [Four-strategy report](../audits/2026-10-23-four-strategy-expirations.md) |
 | Quote provenance gaps; reported earnings/ex-dividend dates and retrieval age; per-contract event windows; optional earnings-after-expiry filter; recover alternative search when original presets are unpriced but their archive basis is valid | Deployed `4e6b1f0c`; issuer confirmation and live-quote evidence remain unavailable | [Quote/event report](../audits/2026-10-23-options-quote-event-evidence.md) |
 | Optional shared DTE and absolute-delta bands before truncation, inclusive/zero handling, missing/wrong-sign delta exclusions, server acknowledgement, original/chosen goal-fit checks and original exclusion before the three-alternative cut | Deployed `dc2d4b7d`; preferences start blank and do not establish optimal returns | [Delta/DTE report](../audits/2026-10-23-options-delta-dte-preferences.md) |
+| Expandable candidate comparison: original reference, risk/capital/breakeven/Greeks and sortable returned shortlist with stable explicit selection | Implemented; validation and authorized frontend-only rollout in progress | [Candidate-comparison report](../audits/2026-10-24-options-candidate-comparison.md) |
 
 Read-only TSM checks on the October 22 archive returned 12 alternatives per strategy for the **verification example** DTE 60–180 / absolute delta 0.20–0.40, zero matches for exact-zero delta, and zero additional reads for an expiry band incompatible with the holding-period minimum. These are bounded research examples, not recommended settings or executable prices. No authenticated interactive browser acceptance was performed for these latest releases; the reports distinguish DOM tests, real-route regressions, deployed helper calculations and public HTTP/served-build checks.
 
@@ -76,3 +77,8 @@ The prior `.claude/CLAUDE.md` update pointed only to a latest-release summary. I
 - RZY/data-readiness and completeness measurements, remaining unexplained signal disappearance/rebuild questions, and report-specific 457/458 acceptance targets.
 - Generic deployment-script exact-tested-revision pinning, backup retention/follow-through and any additional restore drill required by the operational plan.
 - News classification/utility evaluation beyond the repaired empty-cohort behavior: [evaluation plan](../2026-10-22-news-classification-evaluation-plan.md).
+
+
+## Candidate-comparison continuation
+
+The next frontend-only improvement adds an expandable original/alternative comparison with costs, payoff bounds, breakeven, capital, expiry/DTE, spread, OI and Greeks. Sorting applies only to returned candidates, preserves source identities and does not select a replacement. Explicit table selection follows the same assignment and eligibility path as the existing dropdown. [Implementation, checks and final rollout](../audits/2026-10-24-options-candidate-comparison.md). The existing CLAUDE.md pointer reaches this updated full-session index; earlier RZY/audit and operational records are preserved.

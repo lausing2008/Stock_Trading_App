@@ -50,7 +50,7 @@ it('requires renewed assignment acceptance after explicitly choosing a compariso
   expect(screen.queryByText('Preferred strategy to research: Covered Call')).toBeNull();
   expect(screen.getByText(/Stock target remains/).textContent).toContain('$120.00');
   expect(screen.getByText(/Stock target remains/).textContent).toContain('$110.00');
-  expect(screen.getByText('$97.90')).toBeTruthy();
+  expect(within(document.querySelector('.common-option-strategy-grid') as HTMLElement).getByText('$97.90')).toBeTruthy();
   expect(document.body.textContent).toContain('Delta 0.3000');
   expect(document.body.textContent).toContain('Gamma 0.0200');
   expect(document.body.textContent).toContain('Theta unavailable');
@@ -319,4 +319,27 @@ it('discards an in-flight result when contract preferences change without making
   expect(document.body.textContent).toContain('other expirations are not searched');
   expect(screen.queryByText(/Search preference coverage:/)).toBeNull();
   expect(get).toHaveBeenCalledTimes(1);
+});
+
+it('selects the intended contract from the sorted comparison table without another fetch', () => {
+  const m = matrix();
+  m.candidate_review!.covered_call!.alternatives.push({ ...alternative, max_profit_per_contract: 1710,
+    legs: [{ ...alternative.legs[0], option_symbol: 'NARROW-CALL', strike: 115, spread_pct: 2 }] });
+  const get = vi.spyOn(api, 'getOptionsGamePlan');
+  render(panel(m));
+  fireEvent.click(screen.getByText(/Compare candidate costs, risk and liquidity/));
+  fireEvent.change(screen.getByLabelText('Sort returned alternatives'), { target: { value: 'spread' } });
+  const table = screen.getByRole('table', { name: 'Returned option candidate comparison' });
+  expect(within(table).getAllByRole('row')[2].textContent).toContain('NARROW-CALL');
+  fireEvent.click(screen.getByRole('checkbox', { name: /I accept buying or selling/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Compare alternative 2' }));
+  expect((screen.getByLabelText('Covered-call contract to compare') as HTMLSelectElement).value).toBe('1');
+  expect(screen.getByText(/Comparing an explicitly selected alternative/).textContent).toContain('$115.00');
+  expect(screen.getByText(/Comparing an explicitly selected alternative/).textContent).toContain('Stock target remains $120.00');
+  expect((screen.getByRole('checkbox', { name: /I accept buying or selling/ }) as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(screen.getByRole('checkbox', { name: /I accept buying or selling/ }));
+  fireEvent.change(screen.getByLabelText('Sort returned alternatives'), { target: { value: 'server' } });
+  expect((screen.getByLabelText('Covered-call contract to compare') as HTMLSelectElement).value).toBe('1');
+  expect((screen.getByRole('checkbox', { name: /I accept buying or selling/ }) as HTMLInputElement).checked).toBe(true);
+  expect(get).not.toHaveBeenCalled();
 });

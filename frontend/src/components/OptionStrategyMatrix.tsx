@@ -17,6 +17,7 @@ import { OPTION_HOLDING_DEFAULTS, reviewOptionResearchContext, type OptionResear
 import { useNow } from '@/lib/useNow';
 import { optionEventWindow, reviewOptionCalendar, type OptionCalendarContext } from '@/lib/optionCalendarEvidence';
 import { optionPreferenceBlocker, parseOptionPreferences, type OptionSearchPreferences } from '@/lib/optionSearchPreferences';
+import OptionCandidateComparison from './OptionCandidateComparison';
 
 const CARD: React.CSSProperties = {
   background: '#0b1220', border: '1px solid #1e293b', borderRadius: 8, padding: 14,
@@ -212,6 +213,11 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
   const candidates = reviews?.[comparisonKey];
   const coveredChoice = choices[comparisonKey];
   const alternative = coveredChoice && coveredChoice.source === candidates ? candidates?.alternatives[coveredChoice.index] : undefined;
+  const chooseComparison = (index: number | null) => {
+    if (!candidates || (index !== null && (!Number.isInteger(index) || index < 0 || index >= candidates.alternatives.length || candidates.alternatives[index]?.legs.length !== 1))) return;
+    setChoices(previous => ({ ...previous, [comparisonKey]: index === null ? undefined : { source: candidates, index } }));
+    setAssignmentAcceptance(null);
+  };
   const searchExpiries = async () => {
     if (!researchContext || preferences.error || !Number.isInteger(Number(holdingText)) || Number(holdingText) < 1 || Number(holdingText) > 365) return;
     const generation = ++searchGeneration.current;
@@ -352,15 +358,16 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
       {candidates.search_preferences && <p>Search preference coverage: {candidates.holding_eligible_expiry_count ?? 'unknown'} expirations fit the holding period; {candidates.eligible_expiry_count ?? 'unknown'} also fit the declared expiry band. Delta exclusions are included in the row rejection counts. Scope remains this archived session.</p>}
       {candidates.alternatives.length ? <label>{selectionName} contract to compare<select aria-label={`${selectionName} contract to compare`}
         value={alternative && coveredChoice ? String(coveredChoice.index) : 'original'} onChange={e => {
-          const value = e.target.value;
-          setChoices(previous => ({ ...previous, [comparisonKey]: value === 'original' ? undefined : { source: candidates, index: Number(value) } }));
-          setAssignmentAcceptance(null);
+          chooseComparison(e.target.value === 'original' ? null : Number(e.target.value));
         }}>
         <option value="original">{comparisonKey === 'covered_call' ? 'Original target-strike selection' : 'Original plan selection'}</option>
         {candidates.alternatives.map((s, i) => <option key={s.legs[0].option_symbol ?? i} value={String(i)}>
           Compare {fmtUSD(s.legs[0].strike)} {s.legs[0].right} · {s.legs[0].expiry} · delta {s.legs[0].delta ?? 'unavailable'} · {fmtUSD(s.net_per_contract)} {s.net} before fees
         </option>)}
       </select></label> : <p>No other contract passed this screen. This does not establish absence in other expirations.</p>}
+      <OptionCandidateComparison key={comparisonKey} strategyKey={comparisonKey} original={matrix.singles[comparisonKey]}
+        originalStrike={candidates.original.strike} originalExpiry={candidates.expiry} originalSymbol={candidates.original.option_symbol} alternatives={candidates.alternatives}
+        today={today} selectedIndex={alternative && coveredChoice ? coveredChoice.index : null} onSelect={chooseComparison} />
       {alternative && <p role="status">Comparing an explicitly selected alternative at {fmtUSD(alternative.legs[0].strike)}.
         {' '}Stock target remains {fmtUSD(takeProfit)}; stock stop remains {fmtUSD(stopLoss)}. {comparisonKey === 'covered_call' ? 'Selling this call caps stock upside at its strike.' : 'Review the selected strike, expiry and payoff for this strategy.'}
         {' '}Confirm assignment acceptance again. Combinations still use their original legs. This is not an expected-return ranking.</p>}

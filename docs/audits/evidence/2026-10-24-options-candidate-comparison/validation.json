@@ -1,0 +1,9 @@
+{
+  "frontend_passed": 936,
+  "frontend_files": 76,
+  "focused_passed": 28,
+  "typecheck": "passed",
+  "backend_code": "unchanged",
+  "backend_tests": "not rerun; preceding 5849 passed / 26 skipped",
+  "production": "not deployed"
+}
