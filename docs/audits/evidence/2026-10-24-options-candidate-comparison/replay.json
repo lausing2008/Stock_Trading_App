@@ -1,0 +1,1040 @@
+{
+  "symbol": "TSM",
+  "source_session": "2026-10-22",
+  "sample_checked_at": "2026-10-24T14:26:55.519846+00:00",
+  "method": "reviewed TypeScript sort and React static-table replay on read-only archive sample; not interactive browser acceptance",
+  "results": {
+    "cash_secured_put": {
+      "returned_count": 12,
+      "original_priced": true,
+      "static_table_verified": true,
+      "source_mapping_verified": true,
+      "orders": {
+        "server": [
+          {
+            "source_index": 0,
+            "contract": "TSM261113P00405000"
+          },
+          {
+            "source_index": 1,
+            "contract": "TSM261113P00400000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113P00410000"
+          },
+          {
+            "source_index": 3,
+            "contract": "TSM261120P00405000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120P00402500"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120P00407500"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127P00405000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127P00400000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127P00410000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204P00410000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204P00415000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204P00420000"
+          }
+        ],
+        "spread": [
+          {
+            "source_index": 3,
+            "contract": "TSM261120P00405000"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113P00405000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127P00400000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127P00410000"
+          },
+          {
+            "source_index": 1,
+            "contract": "TSM261113P00400000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113P00410000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127P00405000"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120P00407500"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120P00402500"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204P00420000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204P00415000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204P00410000"
+          }
+        ],
+        "oi": [
+          {
+            "source_index": 3,
+            "contract": "TSM261120P00405000"
+          },
+          {
+            "source_index": 1,
+            "contract": "TSM261113P00400000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113P00410000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127P00400000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127P00405000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127P00410000"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113P00405000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120P00402500"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120P00407500"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204P00410000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204P00415000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204P00420000"
+          }
+        ],
+        "capital": [
+          {
+            "source_index": 1,
+            "contract": "TSM261113P00400000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127P00400000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120P00402500"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113P00405000"
+          },
+          {
+            "source_index": 3,
+            "contract": "TSM261120P00405000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127P00405000"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120P00407500"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113P00410000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127P00410000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204P00410000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204P00415000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204P00420000"
+          }
+        ],
+        "expiry": [
+          {
+            "source_index": 1,
+            "contract": "TSM261113P00400000"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113P00405000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113P00410000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120P00402500"
+          },
+          {
+            "source_index": 3,
+            "contract": "TSM261120P00405000"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120P00407500"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127P00400000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127P00405000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127P00410000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204P00410000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204P00415000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204P00420000"
+          }
+        ]
+      }
+    },
+    "covered_call": {
+      "returned_count": 12,
+      "original_priced": false,
+      "static_table_verified": true,
+      "source_mapping_verified": true,
+      "orders": {
+        "server": [
+          {
+            "source_index": 0,
+            "contract": "TSM261113C00460000"
+          },
+          {
+            "source_index": 1,
+            "contract": "TSM261113C00455000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113C00450000"
+          },
+          {
+            "source_index": 3,
+            "contract": "TSM261120C00480000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120C00470000"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120C00460000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127C00470000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127C00460000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127C00455000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204C00425000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204C00420000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204C00415000"
+          }
+        ],
+        "spread": [
+          {
+            "source_index": 5,
+            "contract": "TSM261120C00460000"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113C00460000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120C00470000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113C00450000"
+          },
+          {
+            "source_index": 1,
+            "contract": "TSM261113C00455000"
+          },
+          {
+            "source_index": 3,
+            "contract": "TSM261120C00480000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127C00455000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127C00470000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204C00415000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204C00425000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204C00420000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127C00460000"
+          }
+        ],
+        "oi": [
+          {
+            "source_index": 3,
+            "contract": "TSM261120C00480000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120C00470000"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120C00460000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113C00450000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127C00460000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127C00455000"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113C00460000"
+          },
+          {
+            "source_index": 1,
+            "contract": "TSM261113C00455000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127C00470000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204C00415000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204C00420000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204C00425000"
+          }
+        ],
+        "capital": [
+          {
+            "source_index": 2,
+            "contract": "TSM261113C00450000"
+          },
+          {
+            "source_index": 1,
+            "contract": "TSM261113C00455000"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113C00460000"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120C00460000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120C00470000"
+          },
+          {
+            "source_index": 3,
+            "contract": "TSM261120C00480000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127C00455000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127C00460000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127C00470000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204C00415000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204C00420000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204C00425000"
+          }
+        ],
+        "expiry": [
+          {
+            "source_index": 2,
+            "contract": "TSM261113C00450000"
+          },
+          {
+            "source_index": 1,
+            "contract": "TSM261113C00455000"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113C00460000"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120C00460000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120C00470000"
+          },
+          {
+            "source_index": 3,
+            "contract": "TSM261120C00480000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127C00455000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127C00460000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127C00470000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204C00415000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204C00420000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204C00425000"
+          }
+        ]
+      }
+    },
+    "long_call": {
+      "returned_count": 12,
+      "original_priced": true,
+      "static_table_verified": true,
+      "source_mapping_verified": true,
+      "orders": {
+        "server": [
+          {
+            "source_index": 0,
+            "contract": "TSM261113C00420000"
+          },
+          {
+            "source_index": 1,
+            "contract": "TSM261113C00415000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113C00425000"
+          },
+          {
+            "source_index": 3,
+            "contract": "TSM261120C00420000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120C00415000"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120C00422500"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127C00420000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127C00415000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127C00425000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204C00420000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204C00415000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204C00425000"
+          }
+        ],
+        "spread": [
+          {
+            "source_index": 3,
+            "contract": "TSM261120C00420000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120C00415000"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120C00422500"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127C00425000"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113C00420000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127C00420000"
+          },
+          {
+            "source_index": 1,
+            "contract": "TSM261113C00415000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113C00425000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127C00415000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204C00415000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204C00425000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204C00420000"
+          }
+        ],
+        "oi": [
+          {
+            "source_index": 3,
+            "contract": "TSM261120C00420000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127C00420000"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113C00420000"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120C00422500"
+          },
+          {
+            "source_index": 1,
+            "contract": "TSM261113C00415000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113C00425000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120C00415000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127C00425000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127C00415000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204C00415000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204C00420000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204C00425000"
+          }
+        ],
+        "capital": [
+          {
+            "source_index": 2,
+            "contract": "TSM261113C00425000"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113C00420000"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120C00422500"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127C00425000"
+          },
+          {
+            "source_index": 3,
+            "contract": "TSM261120C00420000"
+          },
+          {
+            "source_index": 1,
+            "contract": "TSM261113C00415000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204C00425000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127C00420000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120C00415000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204C00420000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127C00415000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204C00415000"
+          }
+        ],
+        "expiry": [
+          {
+            "source_index": 1,
+            "contract": "TSM261113C00415000"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113C00420000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113C00425000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120C00415000"
+          },
+          {
+            "source_index": 3,
+            "contract": "TSM261120C00420000"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120C00422500"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127C00415000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127C00420000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127C00425000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204C00415000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204C00420000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204C00425000"
+          }
+        ]
+      }
+    },
+    "protective_put": {
+      "returned_count": 12,
+      "original_priced": true,
+      "static_table_verified": true,
+      "source_mapping_verified": true,
+      "orders": {
+        "server": [
+          {
+            "source_index": 0,
+            "contract": "TSM261113P00405000"
+          },
+          {
+            "source_index": 1,
+            "contract": "TSM261113P00400000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113P00410000"
+          },
+          {
+            "source_index": 3,
+            "contract": "TSM261120P00405000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120P00402500"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120P00407500"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127P00405000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127P00400000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127P00410000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204P00410000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204P00415000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204P00420000"
+          }
+        ],
+        "spread": [
+          {
+            "source_index": 3,
+            "contract": "TSM261120P00405000"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113P00405000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127P00400000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127P00410000"
+          },
+          {
+            "source_index": 1,
+            "contract": "TSM261113P00400000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113P00410000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127P00405000"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120P00407500"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120P00402500"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204P00420000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204P00415000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204P00410000"
+          }
+        ],
+        "oi": [
+          {
+            "source_index": 3,
+            "contract": "TSM261120P00405000"
+          },
+          {
+            "source_index": 1,
+            "contract": "TSM261113P00400000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113P00410000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127P00400000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127P00405000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127P00410000"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113P00405000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120P00402500"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120P00407500"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204P00410000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204P00415000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204P00420000"
+          }
+        ],
+        "capital": [
+          {
+            "source_index": 1,
+            "contract": "TSM261113P00400000"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113P00405000"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127P00400000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120P00402500"
+          },
+          {
+            "source_index": 3,
+            "contract": "TSM261120P00405000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113P00410000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127P00405000"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120P00407500"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127P00410000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204P00410000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204P00415000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204P00420000"
+          }
+        ],
+        "expiry": [
+          {
+            "source_index": 1,
+            "contract": "TSM261113P00400000"
+          },
+          {
+            "source_index": 0,
+            "contract": "TSM261113P00405000"
+          },
+          {
+            "source_index": 2,
+            "contract": "TSM261113P00410000"
+          },
+          {
+            "source_index": 4,
+            "contract": "TSM261120P00402500"
+          },
+          {
+            "source_index": 3,
+            "contract": "TSM261120P00405000"
+          },
+          {
+            "source_index": 5,
+            "contract": "TSM261120P00407500"
+          },
+          {
+            "source_index": 7,
+            "contract": "TSM261127P00400000"
+          },
+          {
+            "source_index": 6,
+            "contract": "TSM261127P00405000"
+          },
+          {
+            "source_index": 8,
+            "contract": "TSM261127P00410000"
+          },
+          {
+            "source_index": 9,
+            "contract": "TSM261204P00410000"
+          },
+          {
+            "source_index": 10,
+            "contract": "TSM261204P00415000"
+          },
+          {
+            "source_index": 11,
+            "contract": "TSM261204P00420000"
+          }
+        ]
+      }
+    }
+  }
+}

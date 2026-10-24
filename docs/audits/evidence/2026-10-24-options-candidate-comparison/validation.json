@@ -5,5 +5,13 @@
   "typecheck": "passed",
   "backend_code": "unchanged",
   "backend_tests": "not rerun; preceding 5849 passed / 26 skipped",
-  "production": "not deployed"
+  "production": "deployed and verified",
+  "application_release": "003e05ab7bf1e98008ecb9004f82f551e88db348",
+  "frontend_build_id": "mXeFkEZRi6TqqsD_g43Um",
+  "production_build": "76 pages compiled",
+  "containers_healthy": 15,
+  "backend_source_matches": 12,
+  "other_containers_unchanged": 14,
+  "tsm_strategies_replayed": 4,
+  "tsm_sort_modes_per_strategy": 5
 }

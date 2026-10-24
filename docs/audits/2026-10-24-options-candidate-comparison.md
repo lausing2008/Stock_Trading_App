@@ -1,6 +1,6 @@
 # Original and returned option candidate comparison
 
-Date: October 24, 2026, America/Los_Angeles. Frontend-only continuation after the [delta/DTE preference release](2026-10-23-options-delta-dte-preferences.md). Final validation and rollout are recorded below when complete.
+Date: October 24, 2026, America/Los_Angeles. Frontend-only continuation after the [delta/DTE preference release](2026-10-23-options-delta-dte-preferences.md). Public and deployed application release: `003e05ab7bf1e98008ecb9004f82f551e88db348`.
 
 ## Behavior and scope
 
@@ -22,7 +22,7 @@ The comparison opens on request and adds no API/provider requests, polling, data
 
 ## Validation and deployment
 
-Focused validation: 28 tests passed and full typecheck clean. **936 frontend tests passed across 76 files**, with full typecheck and whitespace clean. Authorized production build/rollout remain pending. One pre-existing assertion assumed breakeven text appeared only once; it is now scoped to the actual strategy-card grid so the comparison table cannot satisfy the check accidentally. Backend code is unchanged; the preceding applicable backend validation remains 5,849 passed / 26 skipped, not a new backend suite run.
+Focused validation: 28 tests passed and full typecheck clean. **936 frontend tests passed across 76 files**, with full typecheck and whitespace clean. Production frontend compiled all 76 pages; authorized frontend-only rollout completed successfully. One pre-existing assertion assumed breakeven text appeared only once; it is now scoped to the actual strategy-card grid so the comparison table cannot satisfy the check accidentally. Backend code is unchanged; the preceding applicable backend validation remains 5,849 passed / 26 skipped, not a new backend suite run.
 
 Tests cover source-order preservation and immutable arrays, unknown/zero measurements, deterministic metric ties, real current DTE and invalid calendar dates, unpriced original identity without invented dollars, appropriate null/unbounded semantics, capital scope, and contract-index preservation through sorting and actual Matrix selection. The integrated regression proves explicit selection clears assignment acceptance, later sorting preserves the same chosen contract/acceptance, and no fetch occurs.
 
@@ -34,3 +34,16 @@ Tests cover source-order preservation and immutable arrays, unknown/zero measure
 - Per-strategy/horizon preference proposals, dark-pool correction/gap semantics and the other open items in the [complete session index](../2026-10-24/session-index.md).
 
 [Evidence and final verification](evidence/2026-10-24-options-candidate-comparison/README.md).
+
+
+## Authorized production rollout and real-data replay
+
+Release `003e05ab` was pushed to public `prod`, built fresh on EC2 using production settings, and deployed under the shared host lock with an exact-release image tag and retained rollback image. The disk guard reclaimed 1.601 GB from dangling images only; tagged rollback images remained retained. Only frontend was recreated. All 15 containers are healthy, all 12 backend source/shared digests match the unchanged checkout, and all 14 non-frontend containers retained their start times. Market-data was not restarted.
+
+Running frontend build `mXeFkEZRi6TqqsD_g43Um` matches the prepared image. Five public pages returned HTTP 200; served TSM and Improvements assets contain the comparison table, view-sort control, rounded-spread label and tracker entry. No dark-pool ledger capture/persist errors were found in the verification log window.
+
+A deployed-helper TSM witness used a source-session-pinned October 22 archive in a read-only, repeatable-read transaction with a 10-second per-statement timeout. Four additional archive reads supplied 12 returned alternatives for each of the four strategies. The original covered call remained unpriced while its strike/expiry/identity were preserved; the other three original singles were priced. These are settled research samples, not new live quotes or suggested trades.
+
+The exact reviewed TypeScript sorter and React table were replayed locally on that saved data without network access. All four static tables preserved the actual identities and values; 20 strategy/sort-mode combinations preserved response-index mappings and left the original arrays unchanged. This complements DOM tests for explicit selection and assignment acceptance. It is not authenticated interactive browser acceptance or a production advanced-tier authorization test.
+
+The full-session index reached by `.claude/CLAUDE.md` and the Improvements tracker now include this release. Older RZY/audit/operational entries remain preserved. The final report/evidence follow-up is documentation only and needs no service restart.
