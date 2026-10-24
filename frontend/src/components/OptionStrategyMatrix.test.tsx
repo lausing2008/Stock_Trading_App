@@ -265,6 +265,7 @@ it('sends explicit bounds once, shows acknowledged coverage and clears choices w
   for (const review of Object.values(result.strategy_matrix!.candidate_review!)) {
     review!.search_preferences = prefs;
     review!.holding_eligible_expiry_count = 12;
+    review!.rejected_counts = { outside_abs_delta_range: 4, delta_unavailable_or_invalid: 2, delta_sign_mismatch: 1 };
   }
   const get = vi.spyOn(api, 'getOptionsGamePlan').mockResolvedValue(result);
   render(searchPanel());
@@ -275,6 +276,9 @@ it('sends explicit bounds once, shows acknowledged coverage and clears choices w
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Find expirations for holding period' })));
   expect(get).toHaveBeenCalledWith('EXAMPLE', { stopLoss: undefined, takeProfit: 120, holdingDays: 14, searchPreferences: prefs });
   expect(document.body.textContent).toContain('12 expirations fit the holding period');
+  expect(document.body.textContent).toContain('4 outside the requested absolute-delta range');
+  expect(document.body.textContent).toContain('2 unavailable or invalid delta');
+  expect(document.body.textContent).toContain('1 delta sign inconsistent with call/put');
   fireEvent.change(screen.getByLabelText('Covered-call contract to compare'), { target: { value: '0' } });
   expect(screen.getByText(/Selected comparisons:/)).toBeTruthy();
   fireEvent.click(screen.getByRole('checkbox', { name: /I accept buying or selling/ }));

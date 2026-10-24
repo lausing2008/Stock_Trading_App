@@ -34,7 +34,10 @@ const candidateReason = (reason: string) => ({
   unsupported_contract: 'unsupported contract terms', invalid_or_expired_contract: 'invalid or expired contract',
   two_sided_quote_required: 'missing a usable two-sided quote', crossed_quote: 'crossed bid/ask',
   spread_exceeds_20_percent: 'spread above the 20% research ceiling', non_positive_max_profit: 'non-positive maximum payoff',
-  no_chain_rows: 'no call-chain rows', invalid_payoff: 'inconsistent payoff inputs',
+  no_chain_rows: 'no chain rows for this side', invalid_payoff: 'inconsistent payoff inputs',
+  outside_abs_delta_range: 'outside the requested absolute-delta range',
+  delta_unavailable_or_invalid: 'unavailable or invalid delta',
+  delta_sign_mismatch: 'delta sign inconsistent with call/put',
 }[reason] ?? 'unavailable contract evidence');
 
 /** Unbounded is rendered as a word, never as a number — "$0" would read as "no profit". */
