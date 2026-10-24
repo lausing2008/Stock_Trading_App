@@ -1,0 +1,12 @@
+[
+  {
+    "guard": "partial_fields",
+    "removed_guard_detected": true,
+    "summary": "6 failed, 16 deselected, 1 warning in 0.74s"
+  },
+  {
+    "guard": "mixed_sessions",
+    "removed_guard_detected": true,
+    "summary": "1 failed, 21 deselected, 1 warning in 0.65s"
+  }
+]

@@ -119,3 +119,18 @@ it('re-fits the candles when a resize leaves empty space before the first bar, a
  expect(mocks.fit.mock.calls.length).toBeGreaterThan(before);
  mocks.get.mockReturnValue({from:10,to:30});
 });
+
+it('renders EMA200 on a 74-candle session using prior intraday history', async () => {
+ const midnight = Date.parse(new Date().toISOString().slice(0, 10));
+ const history = Array.from({length:374}, (_,i) => ({...prices[0], ts:new Date(midnight+(i-300)*300_000).toISOString()}));
+ mocks.fetch.mockResolvedValue(history);
+ const ref=createRef<ChartController>();
+ render(<PriceChart symbol="TEST" prices={prices} commandRef={ref}/>);
+ let applied!:ReturnType<ChartController['applyCommand']>;
+ await act(async()=>{applied=ref.current!.applyCommand({kind:'range',range:'5m'},'TEST');});await applied;
+ await act(async()=>{applied=ref.current!.applyCommand({kind:'indicator',indicator:'EMA200',enabled:true},'TEST');});await applied;
+ expect(mocks.fetch).toHaveBeenCalledWith('TEST','5m',1000);
+ expect(mocks.lineOpts.some(o=>o.color==='#e879f9')).toBe(true);
+ expect(screen.queryByText(/EMA 200 needs at least/)).toBeNull();
+ expect(screen.getByText(/Golden\/death-cross alerts use daily/)).toBeTruthy();
+});

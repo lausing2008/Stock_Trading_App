@@ -902,7 +902,7 @@ def filter_audit(
     actual price return hold_days later.  Returns win-rate breakdown by filter
     count so you can see whether heavily-filtered signals genuinely perform worse.
     """
-    cache_key = f"signals:cache:filter_audit:{lookback_days}:{style}:{hold_days}"
+    cache_key = f"signals:cache:filter_audit:v2:{lookback_days}:{style}:{hold_days}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -1141,7 +1141,8 @@ def filter_audit(
         inact_wr = round(sum(1 for r in inact if r > _OUTCOME_WIN_HURDLE_PCT) / len(inact) * 100, 1) if inact else None
         act_avg   = round(sum(act)   / len(act)   * 100, 2) if act   else None
         inact_avg = round(sum(inact) / len(inact) * 100, 2) if inact else None
-        edge = round((act_wr or 0) - (inact_wr or 0), 1)  # negative = filter correctly suppresses bad trades
+        measured = act_wr is not None and inact_wr is not None
+        edge = round(act_wr - inact_wr, 1) if measured else None
         # AUD-ALPHAEVAL: the alpha-based twin of edge_pct/verdict. Same sign convention
         # (positive = the filter suppresses trades that went on to do BETTER = harmful), but
         # measured in benchmark-relative percentage points rather than raw win-rate points, so
@@ -1164,7 +1165,9 @@ def filter_audit(
             "avg_return_active":  act_avg,
             "avg_return_inactive": inact_avg,
             "edge_pct": edge,  # negative means filter correctly blocks worse signals; positive means filter is harmful
-            "verdict": "harmful" if edge > 5 else ("weak" if edge > -3 else "predictive"),
+            "verdict": "insufficient_evidence" if edge is None else ("harmful" if edge > 5 else ("weak" if edge > -3 else "predictive")),
+            "comparison_status": "measured" if measured else "insufficient_evidence",
+            "comparison_reason": None if measured else "One or both cohorts have no return observations.",
             "avg_alpha_active":   a_act_avg,
             "avg_alpha_inactive": a_inact_avg,
             "n_alpha_active":     len(a_act),
@@ -1176,7 +1179,8 @@ def filter_audit(
                 else "weak"
             ),
         })
-    by_filter.sort(key=lambda x: x["edge_pct"])  # most predictive (most negative) first
+    # Keep unmeasured comparisons visible, after measured descriptive comparisons.
+    by_filter.sort(key=lambda x: (x["edge_pct"] is None, x["edge_pct"] if x["edge_pct"] is not None else 0))
 
     n_signals = len(rows)
     n_with_returns = len(per_trade)

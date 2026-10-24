@@ -1,0 +1,27 @@
+{
+  "market_data_full": {
+    "passed": 5784,
+    "skipped": 26,
+    "seconds": 361.39
+  },
+  "frontend_full": {
+    "passed": 828,
+    "files": 70
+  },
+  "script_tests": {
+    "passed": 44
+  },
+  "typecheck": "passed",
+  "whitespace": "passed",
+  "route_focused": {
+    "passed": 29
+  },
+  "ui_focused": {
+    "passed": 16
+  },
+  "postgres_temp_diagnostic": "passed",
+  "production_query": "read_only_aggregate_only",
+  "staged": false,
+  "committed": false,
+  "deployed": false
+}

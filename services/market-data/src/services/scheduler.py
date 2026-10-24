@@ -3228,6 +3228,7 @@ def compute_options_flow_snapshots_eod(now: "datetime | None" = None) -> dict:
     _t0 = time.monotonic()
     from datetime import date as _date
     from .options_flow_snapshot import compute_options_flow_with_reason, upsert_options_flow_snapshot, expected_flow_session
+    from .options_dominance import flow_cache_key
     now = now or datetime.now(timezone.utc)
     expected = expected_flow_session(now.astimezone(ZoneInfo("America/New_York")).date())
     detail: dict = {"expected_session": expected.isoformat(), "written": [], "stale_source_session": {},
@@ -3247,7 +3248,7 @@ def compute_options_flow_snapshots_eod(now: "datetime | None" = None) -> dict:
             # back the previous session. Read through the archive, not the cache.
             try:
                 if symbols:
-                    _get_redis().delete(*[f"options_flow:v5:{sym}" for _, sym in symbols])
+                    _get_redis().delete(*[flow_cache_key(sym) for _, sym in symbols])
             except Exception:
                 pass
             ready = []
@@ -9661,6 +9662,7 @@ def check_technical_alerts() -> None:
     detected, subject to a per-pattern cooldown to prevent spam.
     """
     import pandas as pd
+    from .daily_cross import daily_ema_cross
     from sqlalchemy import or_
 
     _TECHNICAL = {
@@ -9713,8 +9715,14 @@ def check_technical_alerts() -> None:
             if not alerts:
                 return
 
-            # Fetch 260 bars per unique symbol (enough for EMA200 + 52-week + MACD + RSI)
+            # EMA200 needs substantial recursive warmup: 260 bars can invent a cross.
+            cross_symbols = {a.symbol for a in alerts if a.condition in (
+                AlertCondition.GOLDEN_CROSS, AlertCondition.DEATH_CROSS
+            )}
+            # Preserve the existing 260-bar window for other technical conditions.
             symbols = list({a.symbol for a in alerts})
+            daily_rows_by_sym = {}
+            markets_by_sym = {}
             prices_by_sym: dict[str, pd.Series] = {}
             volumes_by_sym: dict[str, pd.Series] = {}
             for sym in symbols:
@@ -9728,10 +9736,13 @@ def check_technical_alerts() -> None:
                         select(Price.ts, Price.close, Price.volume)
                         .where(Price.stock_id == stock.id, Price.timeframe == "D1")
                         .order_by(Price.ts.desc())
-                        .limit(260)
+                        .limit(1000 if sym in cross_symbols else 260)
                     ).all()
                     # Select the latest window, then restore chronological order for indicators.
                     rows = list(reversed(rows))
+                    daily_rows_by_sym[sym] = rows
+                    markets_by_sym[sym] = getattr(stock.market, "value", stock.market)
+                    rows = rows[-260:]
                     if len(rows) < 3:
                         continue
                     prices_by_sym[sym] = pd.Series(
@@ -9790,21 +9801,20 @@ def check_technical_alerts() -> None:
                         threshold_val = low_52
 
                     elif cond in (AlertCondition.GOLDEN_CROSS, AlertCondition.DEATH_CROSS):
-                        if len(close) < 200:
+                        evidence = daily_ema_cross(
+                            daily_rows_by_sym[alert.symbol], markets_by_sym[alert.symbol], now,
+                            "above" if cond == AlertCondition.GOLDEN_CROSS else "below",
+                        )
+                        if evidence is None:
                             continue
-                        ema50 = close.ewm(span=50, adjust=False).mean()
-                        ema200 = close.ewm(span=200, adjust=False).mean()
-                        prev_above = ema50.iloc[-2] > ema200.iloc[-2]
-                        curr_above = ema50.iloc[-1] > ema200.iloc[-1]
-                        if cond == AlertCondition.GOLDEN_CROSS:
-                            if prev_above or not curr_above:
-                                continue
-                            cond_label = f"Golden Cross — EMA50 ({ema50.iloc[-1]:.2f}) crossed above EMA200 ({ema200.iloc[-1]:.2f})"
-                        else:
-                            if not prev_above or curr_above:
-                                continue
-                            cond_label = f"Death Cross — EMA50 ({ema50.iloc[-1]:.2f}) crossed below EMA200 ({ema200.iloc[-1]:.2f})"
-                        threshold_val = float(ema50.iloc[-1])
+                        cond_label, threshold_val, bar_close, bar_end = evidence
+                        sent = alert.last_sent_at
+                        if sent is not None:
+                            sent = sent.replace(tzinfo=timezone.utc) if sent.tzinfo is None else sent
+                            if sent >= bar_end:
+                                continue  # the same completed candle was already delivered
+                        # Use this completed candle's close in the email/webhook too.
+                        close = pd.Series([bar_close])
 
                     elif cond == AlertCondition.MACD_BULLISH_CROSS:
                         if len(close) < 35:
@@ -9921,6 +9931,9 @@ def check_technical_alerts() -> None:
                             threshold=threshold_val,
                             price=float(close.iloc[-1]),
                             note=alert.note,
+                            value_label=("Daily candle close" if cond in (
+                                AlertCondition.GOLDEN_CROSS, AlertCondition.DEATH_CROSS
+                            ) else "Current price"),
                             # EA-04: the renderer used to claim every technical alert "will not
                             # fire again", which is false for the recurring ones this very
                             # branch keeps active. The flag is right here; pass it.

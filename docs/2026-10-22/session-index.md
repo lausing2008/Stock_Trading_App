@@ -1,5 +1,7 @@
 # Session index, 2026-10-19 → 2026-10-23 (Little RZY, options review, OD-01/OD-02, snapshots)
 
+> **October 23 continuation:** the [current session index](../2026-10-23/session-index.md) records the verified options/calibration deployment, W01-W04 local fixes, and tracker tiers 468-473. Older statuses below are historical and should not override the continuation.
+
 START HERE for this session. Each line states the state as **deployed**, **committed (not deployed)** or **open**, and links the detailed document. Tracker tiers 455–467 on the Improvements page mirror this list.
 
 ## 1. Little RZY short-term research (tiers 455–456, 459)

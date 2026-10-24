@@ -39,7 +39,9 @@ mkdir -p "$LOCAL_BACKUP_DIR"
 
 # rsync over the existing SSH key — only transfers files not already present/changed locally,
 # so a weekly re-run after the first one is cheap (typically just the one new day's dump).
-rsync -avz --progress \
+# --exclude '*.partial': pg_backup.sh dumps to <name>.partial and renames only after verifying it,
+# so a .partial is an in-progress or failed dump and must never become a local "backup".
+rsync -avz --progress --exclude '*.partial' \
   -e "ssh -i ${EC2_KEY} -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new" \
   "${EC2_HOST}:${REMOTE_BACKUP_DIR}" \
   "${LOCAL_BACKUP_DIR}/"

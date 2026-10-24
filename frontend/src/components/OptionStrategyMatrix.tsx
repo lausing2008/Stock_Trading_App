@@ -166,6 +166,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
     <h3>Four common strategies & conditional preference</h3>
     <p>Compare one standard 100-share contract. These are research illustrations using settled provider prices
       {chainAsOf ? ` observed ${chainAsOf}` : ' with an unknown observation date'}, not live executable quotes.</p>
+    <p>Contract selection uses the nearest strike to spot, the stock stop or target, and preset expiry windows. Delta, gamma, open interest and breakeven are not jointly optimized. This comparison does not establish the best return.</p>
     <div className="option-strategy-inputs">
       <label>Objective<select aria-label="Objective" value={goal} onChange={e => setGoal(e.target.value as OptionGoal)}>
         <option value="compare">Compare only — choose an objective</option><option value="upside">Upside / bullish exposure</option>
@@ -188,7 +189,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
       {COMMON_OPTION_KEYS.map(key => matrix.singles[key]
         ? <StrategyCard key={key} s={matrix.singles[key]} spot={spot} highlight={review.primary === key} review={review.plans[key]} />
         : <article key={key} style={CARD}><h4>{COMMON_OPTION_NAMES[key]}</h4>
-          <p>No usable priced contract. Entry, premium targets and stops are unavailable; refresh the chain.</p>
+          <p>No usable priced contract at the selected strike and expiry. Nearby strikes have not been exhaustively searched. Entry, premium targets and stops are unavailable; refresh the chain.</p>
           <p>{review.plans[key].blockers.join(' ')}</p><details><summary>Playbook — before entry, while open & exit</summary><ol>{review.plans[key].steps.map(step => <li key={step}>{step}</li>)}</ol></details>
         </article>)}
     </div>

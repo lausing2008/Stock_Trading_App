@@ -1,0 +1,16 @@
+[
+  {
+    "case": "unhealthy",
+    "exit": 0,
+    "reported_ok": true,
+    "verification_warning": false,
+    "status": "state=completed what=deploy:signal-engine pid=5 finished=2026-10-23T23:34:21Z exit=0"
+  },
+  {
+    "case": "missing",
+    "exit": 0,
+    "reported_ok": false,
+    "verification_warning": true,
+    "status": "state=completed what=deploy:signal-engine pid=70 finished=2026-10-23T23:34:21Z exit=0"
+  }
+]

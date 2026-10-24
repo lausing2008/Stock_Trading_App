@@ -47,6 +47,9 @@ test:
 			fail=1; \
 		fi; \
 	done; \
+	echo "== scripts (host lock, backup, deploy) =="; \
+	python -m pytest -q scripts/tests; ec=$$?; \
+	if [ "$$ec" -ne 0 ]; then echo "!! scripts FAILED (pytest exit $$ec)"; fail=1; fi; \
 	if [ "$$fail" -ne 0 ]; then \
 		echo "make test: one or more services failed"; \
 		exit 1; \

@@ -1,0 +1,37 @@
+{
+  "measurement_date": "2026-10-22",
+  "method": "Read-only production PostgreSQL and existing signal-engine filter_audit endpoint; no production writes or email sends",
+  "nu_alert": {
+    "triggered_at_utc": "2026-10-22T13:42:59.885645Z",
+    "sent_at_utc": "2026-10-22T13:43:00.932242Z",
+    "ema_window_bars": 260,
+    "ema50_previous": 14.47373083646409,
+    "ema200_previous": 14.488621457158219,
+    "email_price": 15.015,
+    "ema50_at_email_price": 14.494957078171382,
+    "ema200_at_email_price": 14.493859054599431,
+    "latest_stored_close_at_probe": 14.725,
+    "ema50_at_latest_close": 14.483584529151774,
+    "ema200_at_latest_close": 14.490973482460127,
+    "warmup_comparison_at_email_price": [
+      {"bars": 260, "ema50": 14.494957078171382, "ema200": 14.493859054599431},
+      {"bars": 400, "ema50": 14.494952319052995, "ema200": 14.356840108698869},
+      {"bars": 755, "ema50": 14.494952345092472, "ema200": 14.368433630093179}
+    ],
+    "qualification": "EMA reconstruction substitutes the email price into the latest stored daily history; historical bars are not an immutable snapshot of data at send time. Rounded email values and direction reproduce."
+  },
+  "news_filter_audit": {
+    "endpoint": "/signals/filter_audit?lookback_days=30&style=SWING&hold_days=6",
+    "n_buy_signals_found": 462,
+    "n_with_return_data": 433,
+    "hot_news_flag": {"n_active": 5, "n_inactive": 428, "win_rate_active": 0.0, "win_rate_inactive": 23.8, "avg_return_active": -14.25, "avg_return_inactive": -6.6, "avg_alpha_active": -13.17, "avg_alpha_inactive": -6.12},
+    "news_sentiment_flag": {"n_active": 0, "n_inactive": 433},
+    "qualification": "Endpoint-reported retrospective cohorts, not independent classifier accuracy or causal on/off benefit. BUY-only selection, overlapping signals and no demonstrated date/symbol independence; five active observations are insufficient for a utility conclusion. Endpoint can label zero-sample rows predictive by treating a missing win rate as zero."
+  },
+  "news_october_volume": [
+    {"source": "alpaca", "rows": 29845, "classified_rows": 15334, "distinct_urls": 16507},
+    {"source": "businesswire", "rows": 402, "classified_rows": 0, "distinct_urls": 402},
+    {"source": "pr_newswire", "rows": 2868, "classified_rows": 23, "distinct_urls": 2868},
+    {"source": "sec_edgar", "rows": 32961, "classified_rows": 1782, "distinct_urls": 32350}
+  ]
+}

@@ -1,0 +1,179 @@
+{
+  "hashes": {
+    "market-data": {
+      "src": "6324121ec84485f291d06f38fbf64fb6c954d15c7d4d473664dc2c2cd387ae3e",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "signal-engine": {
+      "src": "547fcaadf35b69d636282feca1b69a6610d8a17d2af89b0792c48fdd8208ecc1",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "api-gateway": {
+      "src": "79e6aaaf7d926ae838f95c794646f23dd496fd2acbd9c488478c19d8b94fac23",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "ml-prediction": {
+      "src": "f4f85f76673167eb07db838eb5aa29c2440afd94dbe1aab77f117e11983cd336",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "research-engine": {
+      "src": "cc7e1f62de97b4286024614ad459c65aa28a148f4fb874846d9722d2671576f9",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "ranking-engine": {
+      "src": "df0be797ad2c094624dd2fac4d9431fcdf952aca62d14f891054f9b2c634acc6",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "strategy-engine": {
+      "src": "291fbf7d0359e4248d48e50d9940a6a167bad1a3efb5360b9ba2095152fd3bdf",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "technical-analysis": {
+      "src": "5dff8906f404b9d34323238543b4cf2a382b1398005a7f6cd6d09922235f72ec",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "portfolio-optimizer": {
+      "src": "2c24b4038cca7d4ef626b0164d41e29465bad78a7039c40ec2d3ad015002beb3",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "event-intelligence": {
+      "src": "d4aa5184ed7947e1690e18b8cfa07a911842766394bac08d6cbccbb8cb1a870e",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "news-intelligence": {
+      "src": "3a64698f0ee940ce0958f6535e16e473e8778ca885b4a330853b3d394d556a0c",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "decision-engine": {
+      "src": "7530169b28b7ba6de9b40de205ae8440f848ff24f0e2b6372ff78c89b56dca19",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    }
+  },
+  "containers": [
+    {
+      "name": "stockai-market-data-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "sha256:6c3982c960f79062bd1de17d67c8789db9118448331b72c2012a920afbe22291",
+      "release": "3f838758e09d6e84423c345569483eeb6f23a1d9",
+      "started_at": "2026-10-23T22:23:29.071622632Z"
+    },
+    {
+      "name": "stockai-signal-engine-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "sha256:f22fe15453fac71b1dbfd5365dd5062d9ee7997cbec2033ff45f7a6790a50bbd",
+      "release": "3f838758e09d6e84423c345569483eeb6f23a1d9",
+      "started_at": "2026-10-23T22:23:29.225430062Z"
+    },
+    {
+      "name": "stockai-api-gateway-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "sha256:91be053a5df31b6d67665c23d3bf0fb9694e7fa5b82f4c3a9a4600b8a2c5f269",
+      "release": "6d9d72ebe382a654643e9b1187638091766290f9",
+      "started_at": "2026-10-22T23:47:20.048017661Z"
+    },
+    {
+      "name": "stockai-ml-prediction-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "sha256:923b14f5a8fe22df165a3f62d42e74a484dc86f50c61a72292fae13709033190",
+      "release": "6d9d72ebe382a654643e9b1187638091766290f9",
+      "started_at": "2026-10-22T23:47:19.009616969Z"
+    },
+    {
+      "name": "stockai-research-engine-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "sha256:cd66692199b27f27803c67b66943a32e6d54d6ea9dccfd0451b8c1d681f67bee",
+      "release": "58d449c4b",
+      "started_at": "2026-10-22T23:47:19.964688592Z"
+    },
+    {
+      "name": "stockai-ranking-engine-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "sha256:41828982d9ac5b39dbcbb4b02d5d11a8157545f959442cb370e60b5269b2cf04",
+      "release": "6d9d72ebe382a654643e9b1187638091766290f9",
+      "started_at": "2026-10-22T23:47:14.512887134Z"
+    },
+    {
+      "name": "stockai-strategy-engine-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "sha256:724d93bff5553d57ab18baf81232029882c68bf553d261bfed3b194a99573e4c",
+      "release": "6d9d72ebe382a654643e9b1187638091766290f9",
+      "started_at": "2026-10-22T23:47:19.437830208Z"
+    },
+    {
+      "name": "stockai-technical-analysis-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "sha256:3c5762094197e0e945f3484986d90f5ab000f0ac2f6d411b607a66ad1845c6ef",
+      "release": "6d9d72ebe382a654643e9b1187638091766290f9",
+      "started_at": "2026-10-22T23:47:14.056239696Z"
+    },
+    {
+      "name": "stockai-portfolio-optimizer-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "sha256:51dfbc128ec96066ffedb60a1a5386dd415abd6b47794d27fa4d73b25e9fd393",
+      "release": "6d9d72ebe382a654643e9b1187638091766290f9",
+      "started_at": "2026-10-22T23:47:19.161390494Z"
+    },
+    {
+      "name": "stockai-event-intelligence-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "sha256:6a2a167a737009a4f9944cf4a85dbf72d87680a448e531362600a198c037252b",
+      "release": "6d9d72ebe382a654643e9b1187638091766290f9",
+      "started_at": "2026-10-22T23:47:16.733739888Z"
+    },
+    {
+      "name": "stockai-news-intelligence-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "sha256:5d71038c36ea448c768c0a0c6c53150dcc1ae4921b90a04d8900078b327dc6a9",
+      "release": "6d9d72ebe382a654643e9b1187638091766290f9",
+      "started_at": "2026-10-22T23:47:19.9974542Z"
+    },
+    {
+      "name": "stockai-decision-engine-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "sha256:50bdcb6b79bb9b6e07dc9ed17a15aae9261188aa893ff4a88c503902d52ec57c",
+      "release": "6d9d72ebe382a654643e9b1187638091766290f9",
+      "started_at": "2026-10-22T23:47:17.622979137Z"
+    },
+    {
+      "name": "stockai-frontend-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "sha256:a6c15b3eade140979d6a9b2914349d35b6b5e7038ec381c66c211c37aad5a781",
+      "release": null,
+      "started_at": "2026-10-23T22:24:35.963593763Z"
+    },
+    {
+      "name": "stockai-postgres-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "sha256:fff3594bf464bea0f502788874403882d8bbbe618b3250f8649e7e42fd118020",
+      "release": null,
+      "started_at": "2026-10-22T23:47:16.284451594Z"
+    },
+    {
+      "name": "stockai-redis-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "sha256:487efc0616382465781b8fdc3d6d1db449e6fd80ae23bf48432a2da6b6929908",
+      "release": null,
+      "started_at": "2026-10-22T23:47:15.037867617Z"
+    }
+  ],
+  "frontend_build_id": "KbuB0rqZXxsd9TeuRUxhb",
+  "frontend_localhost_leak": false,
+  "repo_head": "e0831bb999488772f9c38a47b8ef8b59ea6fe791",
+  "compared_commit": "e0831bb999488772f9c38a47b8ef8b59ea6fe791",
+  "drift": []
+}

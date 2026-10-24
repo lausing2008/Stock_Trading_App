@@ -158,7 +158,8 @@ def test_job_writes_only_the_expected_session_keyed_by_that_session():
     assert detail["unavailable"] == {"CCC": "no_options_listed"}
     assert captured == [(("AAA", "BBB", "CCC"), date(2026, 10, 21), date(2026, 10, 21))]
     assert redis["status"] == "partial" and "scheduler:job:options_flow_eod:detail" in redis   # BBB is stale
-    assert redis["deleted"] == ["options_flow:v5:AAA", "options_flow:v5:BBB", "options_flow:v5:CCC"]
+    from src.services.options_dominance import flow_cache_key
+    assert redis["deleted"] == [flow_cache_key(sym) for sym in ("AAA", "BBB", "CCC")]
 
 
 def test_monday_job_expects_friday_and_skips_holidays():

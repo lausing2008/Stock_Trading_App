@@ -3331,16 +3331,14 @@ _LOW_OI_MIN_VOLUME = 100
 
 @router.get("/{symbol}/options-flow")
 def get_options_flow(symbol: str, session: Session = Depends(get_session)):
-    """Unusual options activity for a symbol, derived from yfinance options chain.
+    """Settled-session activity and dominance for the source session's nearest four expiries.
 
-    Fetches the two nearest expiration dates, aggregates call and put volume,
-    flags contracts with volume > 30% of open interest (high activity), and
-    computes a call/put ratio and a simple sentiment label.
-
-    Returns null fields for HK stocks and others without listed options.
+    Reads Unusual Whales archive rows once. Composition is descriptive; legacy
+    sentiment fields stay for existing consumers and do not establish trade intent.
     """
     sym = symbol.upper()
-    cache_key = f"options_flow:v6:{sym}"
+    from src.services.options_dominance import DominanceAccumulator, flow_cache_key
+    cache_key = flow_cache_key(sym)
     try:
         rdb = _get_redis()
         cached = rdb.get(cache_key)
@@ -3363,6 +3361,8 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         if not expiries:
             result = {"symbol": sym, "available": False, **_empty_chain_reason(session, sym)}
             return result
+
+        dominance = DominanceAccumulator(sym, source_session, expiries[:4])
 
         total_call_vol = 0
         total_put_vol = 0
@@ -3400,6 +3400,8 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
             # for them (never eligible, never "low OI") and sums cover measured contracts only.
             calls = chain.calls
             puts  = chain.puts
+            dominance.add(exp, calls, puts, source_session=chain.as_of,
+                          coverage_status=chain.coverage_status, coverage_reason=chain.coverage_reason)
             moneyness_reference = moneyness_reference or getattr(chain, "moneyness_reference", None)
             moneyness_unknown_reason = moneyness_unknown_reason or getattr(chain, "moneyness_unknown_reason", None)
 
@@ -3468,17 +3470,20 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
                         **_pf,
                     })
 
+        computed_at = _dt.now(_tz.utc).isoformat()
+        dominance_summary = dominance.summary(computed_at=computed_at, unavailable_reason="chain_read_failed")
         if not received_expiries:
             # Every expiry read failed: a data failure, never "no volume" (review of the F1 fix).
             return {"symbol": sym, "available": False, "reason": "chain_read_failed",
-                    "expiries_attempted": list(expiries[:4]), "mixed_session_slices": mixed_session}
+                    "expiries_attempted": list(expiries[:4]), "mixed_session_slices": mixed_session,
+                    "dominance": dominance_summary}
         # R04: a side with contracts but NO measured volume is unmeasured, not zero.
         side_unmeasured = {side: c["total"] > 0 and c["known"] == 0 for side, c in volume_coverage.items()}
         if all(side_unmeasured.values()):
             return {"symbol": sym, "available": False, "reason": "volume_unmeasured",
-                    "volume_coverage": volume_coverage}
+                    "volume_coverage": volume_coverage, "dominance": dominance_summary}
         if total_call_vol == 0 and total_put_vol == 0 and not any(side_unmeasured.values()):
-            result = {"symbol": sym, "available": False, "reason": "no_volume"}
+            result = {"symbol": sym, "available": False, "reason": "no_volume", "dominance": dominance_summary}
             return result
 
         # Cap ratio at 10 to prevent unbounded values when put volume is near-zero.
@@ -3549,7 +3554,8 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
             "chain_as_of": source_session.isoformat(),
             "source_session": source_session.isoformat(),
             # R02: when this payload was computed. Stored inside the cache, so a cache hit keeps it.
-            "computed_at": _dt.now(_tz.utc).isoformat(),
+            "computed_at": computed_at,
+            "dominance": dominance_summary,
             "source": "unusual_whales_settled_chain",
             "symbol":            sym,
             "available":         True,
@@ -3612,6 +3618,17 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
     except Exception as exc:
         log.warning("options_flow.error", symbol=sym, error=str(exc))
         return {"symbol": sym, "available": False, "reason": "fetch_error"}
+
+
+@router.get("/{symbol}/options-dominance")
+def get_options_dominance(symbol: str, session: Session = Depends(get_session)):
+    """Same snapshot/cache as options-flow; never fetch a second independent scope."""
+    flow = get_options_flow(symbol, session=session)
+    if flow.get("dominance"):
+        return flow["dominance"]
+    from src.services.options_dominance import DominanceAccumulator
+    return DominanceAccumulator(symbol.upper(), None, []).summary(
+        unavailable_reason=flow.get("reason") or "summary_unavailable")
 
 
 def _with_current_scope(result: dict, now: "datetime | None" = None) -> dict:

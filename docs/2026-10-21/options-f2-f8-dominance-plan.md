@@ -29,6 +29,8 @@ Request-failure visibility, accurate call-heavy / put-heavy labels, source dates
 
 ## Phase C — the reusable dominance summary (P0 per the review, built after A and B1)
 
+**October 23 continuation: implemented locally, not deployed.** The existing flow response carries `options_dominance_v1`; a dedicated endpoint shares its cache. The stock Options tab renders snapshot volume/OI plus explicit unavailable premium/aggressor rows. OI reporting date remains unknown, field-incomplete shares are withheld and partial expiration scope is disclosed. See [implementation, tests and identity investigation](../audits/2026-10-23-options-dominance-and-dark-pool-identity.md). This status supersedes older “not started” notes; review and deployment remain pending.
+
 One **Options activity and flow** block at the top of every stock's Options tab, from an additive `options_dominance_v1` response.
 
 | Row | Built from | Unavailable when |

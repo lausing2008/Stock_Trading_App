@@ -1,0 +1,20 @@
+[
+  {
+    "finding": "W01",
+    "removed_guard_detected": true,
+    "exit": 1,
+    "summary": "4 failed, 6 passed, 28 deselected in 1.59s"
+  },
+  {
+    "finding": "W02",
+    "removed_guard_detected": true,
+    "exit": 1,
+    "summary": "10 failed, 28 deselected in 1.45s"
+  },
+  {
+    "finding": "W04",
+    "removed_guard_detected": true,
+    "exit": 1,
+    "summary": "4 failed, 4 passed in 0.23s"
+  }
+]

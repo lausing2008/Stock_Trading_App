@@ -1,0 +1,34 @@
+{
+  "signal_engine_full": {
+    "passed": 955,
+    "skipped": 1,
+    "seconds": 35.88
+  },
+  "frontend_full": {
+    "passed": 819,
+    "files": 69
+  },
+  "host_scripts": {
+    "passed": 38
+  },
+  "market_data_alert_cross_focused": {
+    "passed": 91
+  },
+  "signal_engine_focused": {
+    "passed": 52
+  },
+  "frontend_typecheck": "passed",
+  "shell_syntax": "passed",
+  "tracked_whitespace": "passed",
+  "committed": false,
+  "deployed": false,
+  "documentation_tracker_followup": {
+    "frontend_passed": 820,
+    "frontend_files": 69,
+    "tracker_status_visibility_passed": 13,
+    "full_typecheck": "passed",
+    "staged": false,
+    "committed": false,
+    "deployed": false
+  }
+}

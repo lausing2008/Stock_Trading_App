@@ -1,0 +1,20 @@
+{
+  "counts": {
+    "ambiguous_ids_in_window": 47,
+    "cancellation_variant_ids": 0,
+    "execution_time_variant_ids": 0,
+    "ids_reviewed": 47,
+    "price_variant_ids": 7,
+    "quote_only_variant_ids": 0,
+    "retained_versions_reviewed": 127,
+    "size_variant_ids": 43,
+    "trade_field_variant_ids": 47
+  },
+  "days": 21,
+  "interpretation": "Quote-only variation does not establish the provider ID semantics. Quarantine is unchanged.",
+  "limit": 500,
+  "limited": false,
+  "reported_at": "2026-10-24T00:35:24.964921+00:00",
+  "scope": "all retained versions of selected currently ambiguous IDs; not a reconstruction of a single capture",
+  "status": "ok"
+}

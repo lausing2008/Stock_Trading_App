@@ -2,6 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { mergeImprovementStatuses, type StatusSeedItem } from './improvementStatuses';
 
 describe('mergeImprovementStatuses', () => {
+  it('shows new pending-deployment work as in progress while preserving saved user choices', () => {
+    const items: StatusSeedItem[] = [{ id: 'LOCAL-FIX', defaultStatus: 'in-progress' }];
+    expect(mergeImprovementStatuses(items, {})).toEqual({ 'LOCAL-FIX': 'in-progress' });
+    expect(mergeImprovementStatuses(items, { 'LOCAL-FIX': 'todo' })).toEqual({ 'LOCAL-FIX': 'todo' });
+  });
+
   it('a stale cached todo status cannot override a defaultStatus done item', () => {
     // The exact bug: an item shipped with defaultStatus: 'done' in source, but the user's
     // browser cached 'todo' for it from a visit BEFORE the fix — the seeded 'done' must win.

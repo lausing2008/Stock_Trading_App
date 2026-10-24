@@ -1,0 +1,17 @@
+{
+  "counts": {
+    "ambiguous_ids_in_window": 2,
+    "cancellation_variant_ids": 0,
+    "execution_time_variant_ids": 0,
+    "ids_reviewed": 2,
+    "price_variant_ids": 1,
+    "quote_only_variant_ids": 1,
+    "retained_versions_reviewed": 4,
+    "size_variant_ids": 0,
+    "trade_field_variant_ids": 1
+  },
+  "limit_and_empty_filter": "passed",
+  "outer_rollback": true,
+  "postgres_temp_probe": "passed",
+  "temporary_tables_only": true
+}

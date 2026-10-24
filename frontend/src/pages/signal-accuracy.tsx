@@ -1,4 +1,5 @@
 import CalibrationCandidateCard from '@/components/CalibrationCandidateCard';
+import FilterAuditComparison from '@/components/FilterAuditComparison';
 /**
  * Signal Accuracy Tracker page (/signal-accuracy) — measures how often the
  * AI signal engine's BUY and SELL calls predicted the correct direction.
@@ -1616,7 +1617,7 @@ export default function SignalAccuracyPage() {
                     Per-Filter Win Rate Analysis
                   </div>
                   <div style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
-                    Edge = win_rate_active − win_rate_inactive. Negative = filter correctly blocks weaker signals. Positive = filter is harmful (blocking better signals than it passes).
+                    Edge = win_rate_active − win_rate_inactive. Negative means a lower observed win rate in the active cohort; positive means higher. These are descriptive comparisons, not validated predictions. Empty cohorts show insufficient evidence.
                   </div>
                   <div style={{ overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
@@ -1629,8 +1630,6 @@ export default function SignalAccuracyPage() {
                       </thead>
                       <tbody>
                         {filterAuditData.by_filter_name.map(f => {
-                          const verdictColor = f.verdict === 'predictive' ? '#4ade80' : f.verdict === 'harmful' ? '#f87171' : '#facc15';
-                          const edgeColor = f.edge_pct < -3 ? '#4ade80' : f.edge_pct > 3 ? '#f87171' : '#94a3b8';
                           return (
                             <tr key={f.filter} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
                               <td style={{ padding: '6px 10px', color: '#e2e8f0', fontFamily: 'monospace', fontSize: 10 }}>{f.filter}</td>
@@ -1638,10 +1637,7 @@ export default function SignalAccuracyPage() {
                               <td style={{ padding: '6px 10px', color: '#94a3b8', fontWeight: 600 }}>{f.win_rate_active != null ? `${f.win_rate_active}%` : '—'}</td>
                               <td style={{ padding: '6px 10px', color: '#64748b' }}>{f.n_inactive}</td>
                               <td style={{ padding: '6px 10px', color: '#94a3b8', fontWeight: 600 }}>{f.win_rate_inactive != null ? `${f.win_rate_inactive}%` : '—'}</td>
-                              <td style={{ padding: '6px 10px', color: edgeColor, fontWeight: 700 }}>{f.edge_pct > 0 ? '+' : ''}{f.edge_pct}%</td>
-                              <td style={{ padding: '6px 10px' }}>
-                                <span style={{ padding: '2px 8px', borderRadius: 4, background: `${verdictColor}22`, color: verdictColor, fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}>{f.verdict}</span>
-                              </td>
+                              <FilterAuditComparison row={f} />
                             </tr>
                           );
                         })}

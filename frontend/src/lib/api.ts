@@ -678,7 +678,8 @@ export const api = {
         filter: string; n_active: number; n_inactive: number;
         win_rate_active: number | null; win_rate_inactive: number | null;
         avg_return_active: number | null; avg_return_inactive: number | null;
-        edge_pct: number; verdict: string;
+        edge_pct: number | null; verdict: string;
+        comparison_status?: 'measured' | 'insufficient_evidence'; comparison_reason?: string | null;
       }[];
     }>(`/signals/filter_audit?lookback_days=${lookbackDays}&style=${style}&hold_days=${holdDays}`),
   stockAtr: (symbol: string, period = 14) =>
@@ -804,6 +805,7 @@ export const api = {
 
   // Dividends
   getOptionsFlow: (symbol: string) => request<OptionsFlow>(`/stocks/${symbol}/options-flow`),
+  getOptionsDominance: (symbol: string) => request<OptionsDominance>(`/stocks/${symbol}/options-dominance`),
   getOptionsChain: (symbol: string, expiry?: string) =>
     request<OptionsChain>(`/stocks/${symbol}/options-chain${expiry ? `?expiry=${expiry}` : ''}`),
   getGammaExposure: (symbol: string) => request<GammaExposure>(`/stocks/${symbol}/gamma-exposure`),
@@ -1745,7 +1747,25 @@ export type OptionsPressureScore = {
   sentiment: string | null;
 };
 /** R04: call/put volume is null when that whole side was unmeasured — never 0. */
+export type OptionsDominanceSide = { known: number; total: number; value: number | null; observed_subtotal: number | null };
+export type OptionsDominanceRow = {
+  metric: 'volume' | 'open_interest' | 'traded_premium' | 'aggressor_estimate';
+  status: 'measured' | 'zero' | 'partial' | 'unavailable'; note: string; reason?: string;
+  sides?: { call: OptionsDominanceSide; put: OptionsDominanceSide };
+  call_share?: number | null; put_share?: number | null;
+  composition?: 'call_heavy' | 'put_heavy' | 'mixed' | 'unmeasured' | 'more_calls' | 'more_puts' | 'equal';
+  snapshot_session?: string | null; reported_as_of?: string | null;
+};
+export type OptionsDominance = {
+  method_version: 'options_dominance_v1'; symbol: string; available: boolean; reason?: string | null;
+  source: string; source_session: string | null; computed_at: string;
+  scope: { universe: string; requested: string[]; included: string[]; missing: string[];
+    coverage_status: string; slices: { expiry: string; coverage_status: string; coverage_reason?: string | null }[] };
+  rows: OptionsDominanceRow[]; volume_oi_disagree: boolean;
+  directional_intent: 'not_established'; actionability: 'research_only';
+};
 export type OptionsFlow = { symbol: string; available: boolean; reason?: string; call_volume?: number | null; put_volume?: number | null; cp_ratio?: number | null;
+  dominance?: OptionsDominance;
   /** Legacy label kept for signal-engine; the page shows composition instead. */
   sentiment?: string | null;
   volume_coverage?: { call: FieldCount; put: FieldCount }; composition_scope?: 'complete' | 'observed_subtotal';

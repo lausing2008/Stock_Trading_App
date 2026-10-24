@@ -22,6 +22,7 @@ import { CHART_INDICATORS, CHART_RANGES, CHART_TIMEFRAMES, type ChartTimeframe, 
 import { createChart, CandlestickData, IChartApi, LineData, Time, LineStyle, LogicalRange, UTCTimestamp, type AutoscaleInfo } from 'lightweight-charts';
 import type { Price, Overview, Levels, SignalHistoryPoint, PatternSignal } from '@/lib/api';
 import { api } from '@/lib/api';
+import { intradayWindow } from '@/lib/intradayHistory';
 import { computeVolumeProfile, sessionBars } from '@/lib/volumeProfile';
 import { detectSwingPivots, nearestPivot } from '@/lib/swingPivots';
 import { VolumeProfilePrimitive } from './VolumeProfilePrimitive';
@@ -282,6 +283,7 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
   } }));
 
   // ── Intraday 5m state ─────────────────────────────────────────────────────
+  const [intradayHistory, setIntradayHistory] = useState<Price[]>([]);
   const [intradayPrices, setIntradayPrices] = useState<Price[] | null>(null);
   const [intradayLoading, setIntradayLoading] = useState(false);
   // intradayOverride: externally provided intraday bars (15m/1h/4h) force intraday mode
@@ -292,19 +294,16 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
     if (intradayOverride != null || (timeframe && !['1d','5m'].includes(timeframe))) { setIntradayPrices(null); return; }
     if (!isIntraday) { setIntradayPrices(null); return; }
     let live = true;
-    setIntradayPrices(null); setIntradayLoading(true);
-    // Pass today's UTC date so only the current session is returned — prevents
-    // the overnight gap from appearing as a disconnection and avoids showing
-    // yesterday's higher prices as a false spike in the Y-axis range.
+    setIntradayPrices(null); setIntradayHistory([]); setIntradayLoading(true);
+    // Fetch warmup history without expanding the displayed session.
     const todayUTC = new Date().toISOString().slice(0, 10);
-    api.getPrices(symbol, '5m', 200, todayUTC)
+    api.getPrices(symbol, '5m', 1000)
       .then(data => {
-        // Safety: if today returned very few bars (< 5, e.g. pre-market),
-        // fall back to 100 bars without the date filter to show recent history.
-        if (data.length < 5) {
-          return api.getPrices(symbol, '5m', 100).then(d => { if (live) setIntradayPrices(d); });
+        const window = intradayWindow(data, todayUTC);
+        if (live) {
+          setIntradayHistory(window.history);
+          setIntradayPrices(window.visible);
         }
-        if (live) setIntradayPrices(data);
       })
       .catch(() => { if (live) setIntradayPrices([]); })
       .finally(() => { if (live) setIntradayLoading(false); });
@@ -346,6 +345,12 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
   const activePrices = intradayOverride != null && intradayOverride.length > 0
     ? intradayOverride
     : isIntraday ? (intradayPrices ?? []) : visiblePrices;
+
+  const indicatorBarCount = isIntraday ? (intradayOverride != null ? activePrices.length : intradayHistory.length) : prices.length;
+  const missingLongIndicators = [
+    showEMA200 && indicatorBarCount < 200 ? 'EMA 200' : null,
+    showSMA200 && indicatorBarCount < 200 ? 'SMA 200' : null,
+  ].filter(Boolean);
 
   // T230-CHARTING-PREMARKET: only show the "Extended Hours" legend swatch when the current
   // intraday data actually contains a dimmed pre/post-market bar — no point explaining a
@@ -628,12 +633,14 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const lineSeries: Record<string, any> = {};
     if (isIntraday && activePrices.length > 0) {
-      // Intraday bars carry no server-computed indicators (technical-analysis only computes
-      // SMA/EMA/RSI/MACD/BB for daily bars) — compute locally from the fetched bars, same
-      // approach already used here for VWAP/EMA200 on daily data. A typical single trading
-      // day of 5m bars (~78 bars) won't reach SMA/EMA 200's warmup — those lines simply don't
-      // render until enough bars exist, same graceful-null behavior as every other overlay.
-      const closes = activePrices.map(p => +p.close);
+      // Compute over history, then align the result to the visible candle timestamps.
+      const history = intradayOverride != null ? activePrices : intradayHistory;
+      const closes = history.map(p => +p.close);
+      const historyIndex = new Map(history.map((p, i) => [p.ts, i]));
+      const visibleValues = (values: (number | null)[]) => activePrices.map(p => {
+        const i = historyIndex.get(p.ts);
+        return i == null ? null : values[i];
+      });
       const intraLineConfig: { key: string; color: string; show: boolean; vals: (number | null)[] }[] = [
         { key: 'sma_5', color: '#facc15', show: showSMA5, vals: computeSMA(closes, 5) },
         { key: 'sma_10', color: '#fb7185', show: showSMA10, vals: computeSMA(closes, 10) },
@@ -646,8 +653,9 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
       ];
       for (const { key, color, show, vals } of intraLineConfig) {
         if (!show) continue;
+        const visibleVals = visibleValues(vals);
         const data: LineData<Time>[] = activePrices
-          .map((p, i) => ({ time: toIntradayTime(p.ts) as unknown as Time, value: vals[i] }))
+          .map((p, i) => ({ time: toIntradayTime(p.ts) as unknown as Time, value: visibleVals[i] }))
           .filter((d): d is LineData<Time> => d.value != null);
         if (data.length === 0) continue;
         const s = chart.addLineSeries({ color, lineWidth: 1 as const });
@@ -658,8 +666,9 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
       if (showBB) {
         const bb = computeBollingerBands(closes, 20, 2);
         for (const [key, vals] of [['bb_upper', bb.upper], ['bb_lower', bb.lower], ['bb_mid', bb.mid]] as const) {
+          const visibleVals = visibleValues(vals);
           const data: LineData<Time>[] = activePrices
-            .map((p, i) => ({ time: toIntradayTime(p.ts) as unknown as Time, value: vals[i] }))
+            .map((p, i) => ({ time: toIntradayTime(p.ts) as unknown as Time, value: visibleVals[i] }))
             .filter((d): d is LineData<Time> => d.value != null);
           if (data.length === 0) continue;
           chart.addLineSeries({
@@ -1092,7 +1101,7 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, planLines, highlightedPlanPrice, riskRewardLevels, maxPainLevel, showRzy, rzy, showSMA5, showSMA10, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showAnchoredVwap, anchoredVwapIdx, showRSI, showMACD, showSignals, showFVG, showSR, show52W, showSwingPivots, swingPivots, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
+  }, [activePrices, intradayHistory, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, planLines, highlightedPlanPrice, riskRewardLevels, maxPainLevel, showRzy, rzy, showSMA5, showSMA10, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showAnchoredVwap, anchoredVwapIdx, showRSI, showMACD, showSignals, showFVG, showSR, show52W, showSwingPivots, swingPivots, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
 
   useEffect(() => {
     const p = pendingCommand.current;
@@ -1227,6 +1236,12 @@ const PriceChart = forwardRef<ChartController, Props>(function PriceChart({ symb
   return (
     <div className="rounded-md border border-slate-800 overflow-hidden" style={{ backgroundColor: '#0b1020' }}>
 
+      {missingLongIndicators.length > 0 && <p role="status" className="px-3 pt-2 text-xs text-amber-300">
+        {missingLongIndicators.join(', ')} needs at least 200 bars; {indicatorBarCount} available.
+      </p>}
+      {isIntraday && (showEMA50 || showEMA200) && <p className="px-3 pt-2 text-xs text-slate-400">
+        Averages use this chart’s candle interval. Golden/death-cross alerts use daily EMA50/EMA200; compare on 1d.
+      </p>}
       {/* Range selector + toolbar row */}
       <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-3 pt-2 pb-1.5 border-b border-slate-800">
         {/* Intraday button */}

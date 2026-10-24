@@ -15,12 +15,13 @@ from sqlalchemy.orm import Session
 ROOT = Path(__file__).resolve().parents[3]
 
 
-@pytest.mark.parametrize("path,function", [
-    ("services/signal-engine/src/api/routes.py", "detect_patterns"),
-    ("services/market-data/src/services/scheduler.py", "check_technical_alerts"),
+@pytest.mark.parametrize("path,function,is_cross", [
+    ("services/signal-engine/src/api/routes.py", "detect_patterns", False),
+    ("services/market-data/src/services/scheduler.py", "check_technical_alerts", False),
+    ("services/market-data/src/services/scheduler.py", "check_technical_alerts", True),
 ])
-@pytest.mark.parametrize("history_size", [0, 30, 260, 400])
-def test_latest_daily_window_is_chronological(path, function, history_size):
+@pytest.mark.parametrize("history_size", [0, 30, 260, 400, 1200])
+def test_latest_daily_window_is_chronological(path, function, is_cross, history_size):
     tree = ast.parse((ROOT / path).read_text())
     function_node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == function)
     # Locate the real price fetch and all row preparation before the length guard.
@@ -57,11 +58,20 @@ def test_latest_daily_window_is_chronological(path, function, history_size):
         for record in reversed(records):
             session.execute(prices.insert().values(**record))
         namespace = dict(session=session, select=select, Price=prices.c,
-                         stock=SimpleNamespace(id=1), TimeFrame=SimpleNamespace(D1="D1"))
+                         stock=SimpleNamespace(id=1, market="US"), TimeFrame=SimpleNamespace(D1="D1"),
+                         sym="TEST", cross_symbols={"TEST"} if is_cross else set(),
+                         daily_rows_by_sym={}, markets_by_sym={})
         exec(compile(ast.Module(body=statements, type_ignores=[]), path, "exec"), namespace)
         rows = namespace["rows"]
         expected = list(range(max(0, history_size - 260), history_size))
         assert [r.ts for r in rows] == expected
         assert [r.close for r in rows] == expected
         assert [r.volume for r in rows] == [i * 10 for i in expected]
+        if function == "check_technical_alerts":
+            # Cross evidence retains its longer history; unrelated indicator calculations
+            # continue using only the latest 260 daily bars.
+            retained = namespace["daily_rows_by_sym"]["TEST"]
+            limit = 1000 if is_cross else 260
+            assert [r.ts for r in retained] == list(range(max(0, history_size - limit), history_size))
+            assert namespace["markets_by_sym"]["TEST"] == "US"
     engine.dispose()

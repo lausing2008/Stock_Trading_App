@@ -1,6 +1,7 @@
 /** Stock detail page. Game Plan uses the deterministic copilot rules and stored evidence. */
 import { useRouter } from 'next/router';
 import OptionsFlowCard from '@/components/OptionsFlowCard';
+import OptionsDominanceCard from '@/components/OptionsDominanceCard';
 import ChartCommandBar from '@/components/ChartCommandBar';
 import type { ChartController } from '@/lib/chartCommands';
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
@@ -1172,6 +1173,7 @@ export default function StockDetail() {
               <a href="/option-trading-guide" style={{ color: '#38bdf8', textDecoration: 'none' }}>Options guide →</a>
             </p>
           </div>
+        <OptionsDominanceCard flow={optionsFlow} error={optionsFlowError} onRetry={() => void retryOptionsFlow()} />
         {/* T322-OPTIONS-GAMEPLAN: Advanced-tier only — reuses the SAME nearest-support/
             analyst-target values PositionSizer above already computes (not a second,
             possibly-drifting derivation), so the hedge/income legs line up with what's

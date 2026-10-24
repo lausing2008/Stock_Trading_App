@@ -79,3 +79,11 @@ The first full runs failed only on two fixtures expecting the old cache key; tho
 ## Remaining work
 
 R01–R09 fixes and restrictions are deployed; R03 remains an estimate and R05 root matching cannot establish legal deliverables. R10 now has a forward identity ledger and sampling visibility, but provider identity/correction semantics, conflicting captures and irrecoverable legacy collisions remain limitations. R11–R14 are reviewed and automatic settings promotion is contained; complete all-candidate, executable net-cost replay and independent held-out/forward validation remain unbuilt. No higher win rate or return is established, no automatic tuning is re-enabled, and the intraday horizon remains a documentation/research proposal. The broader per-stock dominance feature remains separate planned work.
+
+
+## Subsequent local work
+
+See the [October 23 session continuation](../2026-10-23/session-index.md) for the later working-tree audit, W01–W04 repairs and Improvements page update. Those changes remain local and are not part of the deployed application release recorded here. Historical deployment evidence above is unchanged.
+
+
+Phase C has since been implemented locally with explicit unavailable event measures, and the dark-pool conflict histories have a bounded read-only diagnostic. See [the continuation report](2026-10-23-options-dominance-and-dark-pool-identity.md). Neither feature is part of the deployed release described above.
