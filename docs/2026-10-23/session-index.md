@@ -2,9 +2,9 @@
 
 This is the current continuation of the [earlier session index](../2026-10-22/session-index.md). It consolidates the options/calibration deployment, the pending working-tree audit, the four authorized local fixes, and the Improvements tracker update. Dates are October 23 in America/Los_Angeles; evidence files retain their recorded UTC timestamps.
 
-**Current boundary:** follow-up application release `a1054dcb` is deployed, superseding the earlier `3f838758` release. All 15 containers are healthy, all 12 backend source hashes match, and the new frontend build and dominance endpoints are verified. The cron wrapper now uses the versioned backup script; its first real dump completed successfully at 01:24:10 UTC, with checked gzip/dump marker and atomic publication. [Follow-up release and evidence](../audits/2026-10-23-followup-deployment.md). Local-only descriptions below are historical preparation records, superseded by this release note. See the [strategy-selection review](../audits/2026-10-23-strategy-selection-review.md) for the screenshot questions and remaining ranking work.
+**Current boundary:** covered-call candidate comparison is deployed in `e08dd338` after the user authorized public prod publication and automatic deployment. All 15 containers are healthy, all 12 backend source hashes match, and TSM stored-data/served-build checks passed. Only market-data and frontend restarted in this rollout. [Latest deployment and evidence](../audits/2026-10-23-covered-call-candidates-deployment.md). Earlier local-only status statements below are historical and superseded by this release.
 
-**Later local work:** explicit covered-call candidate comparison, provider Greek display and regression coverage are implemented after this release. They are not pushed or deployed; see the strategy-selection review and its new validation evidence.
+**Later release:** explicit covered-call comparison, provider Greek display and regression coverage are now public and deployed in e08dd338; multi-expiry and forecast/regime ranking remain planned.
 
 ## Delivered and verified earlier in the session
 
@@ -110,3 +110,6 @@ Covered-call improvement continuation: local implementation now exposes candidat
 
 
 Covered-call follow-up validation completed: 5,799 backend passed / 26 skipped; 834 frontend passed; full typecheck and whitespace clean. One initial harness-only collection failure was repaired and the full backend suite rerun successfully. Quote/expiry guard-removal witnesses detect regressions. Implementation and documentation are committed locally only; production remains at a1054dcb with documentation through d0d46cb8. Public push remains withheld because the preceding local history includes detailed TSM evidence whose publication was rejected.
+
+
+Automatic-push authorization and deployment completed: e08dd338 public and live, production frontend build EinBdMqNIJxOWRz-mfkl3, all 15 containers healthy and all 12 backend source hashes matching. TSM offers three screened alternatives from its October 22 snapshot, with explicit comparison choice and renewed assignment acceptance. [Deployment record](../audits/2026-10-23-covered-call-candidates-deployment.md). No additional service restarts are needed for this documentation update.

@@ -1,0 +1,230 @@
+{
+  "all_alternatives_validated": true,
+  "call_expiry": "2026-11-20",
+  "calls_count": 76,
+  "candidate_review": {
+    "actionability": "research_only",
+    "alternatives": [
+      {
+        "breakeven": 417.43,
+        "breakeven_move_pct": -0.26,
+        "collateral_per_contract": 41851.0,
+        "direction": "neutral-to-mildly-bullish",
+        "directional_exposure": "income_long",
+        "legs": [
+          {
+            "action": "sell",
+            "contract_terms": {
+              "automatic_payoff_supported": true,
+              "basis": "assumed from a root matching the underlying; not an exchange deliverable record",
+              "deliverable_shares": 100,
+              "option_symbol": "TSM261120C00480000",
+              "premium_multiplier": 100,
+              "status": "standard_root_100_assumed"
+            },
+            "cost_per_contract": 108.0,
+            "days_to_expiry": 27,
+            "delta": 0.0660973163225622,
+            "expiry": "2026-11-20",
+            "gamma": 0.003257945658908833,
+            "iv": 33.9,
+            "oi": 7157,
+            "option_symbol": "TSM261120C00480000",
+            "price_per_share": 1.08,
+            "price_source": "quote_mid",
+            "right": "call",
+            "spread_pct": 13.0,
+            "strike": 480.0,
+            "theta": -0.0902476729089551,
+            "vega": 0.149324945059307
+          }
+        ],
+        "max_loss_per_contract": 41743.0,
+        "max_profit_per_contract": 6257.0,
+        "name": "Covered Call",
+        "net": "credit",
+        "net_per_contract": 108.0,
+        "net_per_share": 1.08,
+        "requires_shares": true,
+        "use_when": "You already own the shares, would be content selling at the strike, and want to be paid for the wait.",
+        "what_it_does": "Collects premium now in exchange for capping your exit near $480.00."
+      },
+      {
+        "breakeven": 416.74,
+        "breakeven_move_pct": -0.42,
+        "collateral_per_contract": 41851.0,
+        "direction": "neutral-to-mildly-bullish",
+        "directional_exposure": "income_long",
+        "legs": [
+          {
+            "action": "sell",
+            "contract_terms": {
+              "automatic_payoff_supported": true,
+              "basis": "assumed from a root matching the underlying; not an exchange deliverable record",
+              "deliverable_shares": 100,
+              "option_symbol": "TSM261120C00470000",
+              "premium_multiplier": 100,
+              "status": "standard_root_100_assumed"
+            },
+            "cost_per_contract": 177.5,
+            "days_to_expiry": 27,
+            "delta": 0.0987617009242909,
+            "expiry": "2026-11-20",
+            "gamma": 0.004406863965236473,
+            "iv": 34.0,
+            "oi": 5070,
+            "option_symbol": "TSM261120C00470000",
+            "price_per_share": 1.77,
+            "price_source": "quote_mid",
+            "right": "call",
+            "spread_pct": 8.5,
+            "strike": 470.0,
+            "theta": -0.1226802142023763,
+            "vega": 0.2020706944186918
+          }
+        ],
+        "max_loss_per_contract": 41674.0,
+        "max_profit_per_contract": 5326.0,
+        "name": "Covered Call",
+        "net": "credit",
+        "net_per_contract": 177.0,
+        "net_per_share": 1.77,
+        "requires_shares": true,
+        "use_when": "You already own the shares, would be content selling at the strike, and want to be paid for the wait.",
+        "what_it_does": "Collects premium now in exchange for capping your exit near $470.00."
+      },
+      {
+        "breakeven": 415.71,
+        "breakeven_move_pct": -0.67,
+        "collateral_per_contract": 41851.0,
+        "direction": "neutral-to-mildly-bullish",
+        "directional_exposure": "income_long",
+        "legs": [
+          {
+            "action": "sell",
+            "contract_terms": {
+              "automatic_payoff_supported": true,
+              "basis": "assumed from a root matching the underlying; not an exchange deliverable record",
+              "deliverable_shares": 100,
+              "option_symbol": "TSM261120C00460000",
+              "premium_multiplier": 100,
+              "status": "standard_root_100_assumed"
+            },
+            "cost_per_contract": 280.0,
+            "days_to_expiry": 27,
+            "delta": 0.1427767629764739,
+            "expiry": "2026-11-20",
+            "gamma": 0.00562248380382075,
+            "iv": 34.6,
+            "oi": 4634,
+            "option_symbol": "TSM261120C00460000",
+            "price_per_share": 2.8,
+            "price_source": "quote_mid",
+            "right": "call",
+            "spread_pct": 7.1,
+            "strike": 460.0,
+            "theta": -0.1621254640057976,
+            "vega": 0.2615485529009094
+          }
+        ],
+        "max_loss_per_contract": 41571.0,
+        "max_profit_per_contract": 4429.0,
+        "name": "Covered Call",
+        "net": "credit",
+        "net_per_contract": 280.0,
+        "net_per_share": 2.8,
+        "requires_shares": true,
+        "use_when": "You already own the shares, would be content selling at the strike, and want to be paid for the wait.",
+        "what_it_does": "Collects premium now in exchange for capping your exit near $460.00."
+      }
+    ],
+    "anchor": 584.39,
+    "evaluated_count": 76,
+    "expiry": "2026-11-20",
+    "method_version": "covered_call_candidates_v1",
+    "original": {
+      "option_symbol": "TSM261120C00580000",
+      "reason": "two_sided_quote_required",
+      "strike": 580.0
+    },
+    "ranking": "Distance to target (or spot), then unrounded spread, OI, strike and contract identity; not expected return.",
+    "rejected_counts": {
+      "non_positive_max_profit": 27,
+      "spread_exceeds_20_percent": 10,
+      "two_sided_quote_required": 12
+    },
+    "scope": "all_rows_of_selected_call_expiry",
+    "screened_count": 27
+  },
+  "checked_at": "2026-10-24T04:08:57.805859+00:00",
+  "covered_call": null,
+  "covered_call_unavailable": "The current quote for this call is not usable \u2014 its bid and ask are crossed, one-sided or non-numeric \u2014 so no credit can be stated for it right now.",
+  "current_price": 418.51,
+  "matrix_single_names": [
+    "long_call",
+    "protective_put",
+    "cash_secured_put"
+  ],
+  "method": "read_only_stored_chain_reproduction",
+  "nearest_target_calls": [
+    {
+      "ask": 0.09,
+      "bid": 0.0,
+      "contract_terms": {
+        "automatic_payoff_supported": true,
+        "basis": "assumed from a root matching the underlying; not an exchange deliverable record",
+        "deliverable_shares": 100,
+        "option_symbol": "TSM261120C00580000",
+        "premium_multiplier": 100,
+        "status": "standard_root_100_assumed"
+      },
+      "iv": 42.0,
+      "last_price": 0.0,
+      "oi": 842,
+      "option_symbol": "TSM261120C00580000",
+      "strike": 580.0
+    },
+    {
+      "ask": 0.09,
+      "bid": 0.0,
+      "contract_terms": {
+        "automatic_payoff_supported": true,
+        "basis": "assumed from a root matching the underlying; not an exchange deliverable record",
+        "deliverable_shares": 100,
+        "option_symbol": "TSM261120C00590000",
+        "premium_multiplier": 100,
+        "status": "standard_root_100_assumed"
+      },
+      "iv": 42.4,
+      "last_price": 0.0,
+      "oi": 657,
+      "option_symbol": "TSM261120C00590000",
+      "strike": 590.0
+    },
+    {
+      "ask": 0.12,
+      "bid": 0.01,
+      "contract_terms": {
+        "automatic_payoff_supported": true,
+        "basis": "assumed from a root matching the underlying; not an exchange deliverable record",
+        "deliverable_shares": 100,
+        "option_symbol": "TSM261120C00570000",
+        "premium_multiplier": 100,
+        "status": "standard_root_100_assumed"
+      },
+      "iv": 42.4,
+      "last_price": 0.0,
+      "oi": 313,
+      "option_symbol": "TSM261120C00570000",
+      "strike": 570.0
+    }
+  ],
+  "priced_supported_call_count": 64,
+  "put_expiry": "2026-12-04",
+  "screenshot_inputs": {
+    "stop_loss": 404.07,
+    "take_profit": 584.39
+  },
+  "source_session": "2026-10-22",
+  "symbol": "TSM"
+}

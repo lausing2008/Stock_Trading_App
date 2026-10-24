@@ -1,5 +1,7 @@
 # Strategy comparison: selection review and next implementation
 
+**Production update:** covered-call candidate comparison is deployed in `e08dd338` after explicit public-push authorization. The [deployment report](2026-10-23-covered-call-candidates-deployment.md) records TSM results, source/build verification and remaining market-aware ranking work. Local-only descriptions below are preserved preparation history.
+
 Reviewed October 23, 2026 against the release working tree. This is a code review and implementation specification, not a calibrated trading recommendation. The screenshot alone cannot identify its exact rejected contract or prove that the full chain had no usable covered call.
 
 ## What the screen currently does
