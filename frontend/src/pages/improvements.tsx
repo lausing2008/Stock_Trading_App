@@ -35,6 +35,18 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: "OPTIONS-RESEARCH-LEADS-DESK",
+    tier: 468,
+    severity: "feature",
+    defaultStatus: "done",
+    title: "Surface screened contract research leads for all four strategies",
+    file: "docs/audits/2026-10-25-options-research-leads.md",
+    effort: "M",
+    impact: "Makes a defensible first contract comparison visible without presenting an unvalidated profit forecast or an executable order.",
+    what: "The returned contract shortlist was buried below evidence tables and kept its original proximity order, leaving no clear starting point for a decision.",
+    fix: "Add a four-strategy decision desk and deterministic quote-quality lead among returned rows. Require usable two-sided research quotes, positive OI, valid expiry and acknowledged active preferences; suppress leads for failed expiration reads or expired snapshots. Rank by displayed spread, OI, anchor distance and expiry, mark the comparison row, and require an explicit click to change the strategy card. Assignment acceptance clears and WAIT remains. Collapse detailed evidence tables while keeping dates, warnings and filters visible. No expected-return, probability, broker-availability or personalized-best claim.",
+  },
+  {
     id: "OPTIONS-RISK-BASIS-AND-SCENARIOS",
     tier: 468,
     severity: "high",

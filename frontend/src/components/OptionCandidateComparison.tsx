@@ -8,11 +8,12 @@ const money = (value: unknown) => nonnegativeMeasurement(value) === null ? 'Unav
   : `$${(value as number).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const greek = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value.toFixed(4) : 'Unavailable';
 const cell: React.CSSProperties = { padding: 7, textAlign: 'left', verticalAlign: 'top', borderBottom: '1px solid #334155' };
-export default function OptionCandidateComparison({ original, originalStrike, originalExpiry, originalSymbol, alternatives, strategyKey, today, selectedIndex, onSelect }: {
+export default function OptionCandidateComparison({ original, originalStrike, originalExpiry, originalSymbol, alternatives, strategyKey, today, selectedIndex, onSelect, leadIndex }: {
   original?: OptionStrategy; originalStrike: number | null; originalExpiry: string | null;
   originalSymbol?: string | null;
   alternatives: OptionStrategy[]; strategyKey: CommonOptionKey; today: string;
   selectedIndex: number | null; onSelect: (index: number | null) => void;
+  leadIndex?: number | null;
 }) {
   const [sort, setSort] = useState<CandidateSort>('server');
   const alternativesSorted = compareCandidateRows(alternatives, sort, today);
@@ -34,8 +35,8 @@ export default function OptionCandidateComparison({ original, originalStrike, or
         const oi = nonnegativeMeasurement(leg?.oi), spread = nonnegativeMeasurement(leg?.spread_pct);
         const unlimited = strategy?.max_profit_per_contract === null && strategy.legs.length === 1 && leg?.action === 'buy'
           && ((strategyKey === 'long_call' && leg.right === 'call') || (strategyKey === 'protective_put' && leg.right === 'put'));
-        return <tr key={isOriginal ? 'original' : row.sourceIndex} aria-selected={chosen}>
-          <td style={cell}><strong>{isOriginal ? 'Original plan' : `Alternative ${row.sourceIndex! + 1}`}</strong><br />
+        return <tr key={isOriginal ? 'original' : row.sourceIndex} aria-selected={chosen} className={leadIndex !== undefined && row.sourceIndex === leadIndex ? 'option-candidate-lead-row' : undefined}>
+          <td style={cell}><strong>{isOriginal ? 'Original plan' : `Alternative ${row.sourceIndex! + 1}`}</strong>{leadIndex !== undefined && row.sourceIndex === leadIndex && <span className="option-candidate-lead-badge">Research lead</span>}<br />
             <button type="button" disabled={chosen || (!isOriginal && strategy?.legs.length !== 1)}
               aria-label={isOriginal ? 'Compare original plan' : `Compare alternative ${row.sourceIndex! + 1}`}
               onClick={() => onSelect(row.sourceIndex)}>{chosen ? 'Comparing' : 'Compare'}</button>

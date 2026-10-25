@@ -1,0 +1,10 @@
+{
+  "frontend_tests": 985,
+  "frontend_test_files": 83,
+  "frontend_typecheck": "passed",
+  "git_diff_check": "passed",
+  "offline_chrome_viewports": [1449, 1024, 390],
+  "offline_chrome_result": "four lead cards, no document or card overflow, detail evidence collapsed",
+  "backend_tests": "not rerun: no backend files changed",
+  "limits": "offline visual fixture uses fictional contract quotes and does not assert authenticated production behavior"
+}

@@ -28,6 +28,8 @@ Read-only TSM checks on the October 22 archive returned 12 alternatives per stra
 
 ## October 25 risk-basis and expiry-scenario continuation
 
+[Options decision desk and per-strategy research leads](../audits/2026-10-25-options-research-leads.md): four prominent lead cards rank quote quality only within the returned shortlist, require two-sided quotes, positive OI, valid expiry, holding fit and acknowledged preferences, and suppress incomplete/expired capture leads. An explicit comparison click changes the strategy card and clears assignment acceptance; WAIT remains. Dated evidence tables use disclosures, the matching comparison row is marked, and the Learning tutorial/tracker explain the boundary. A personalized best-return contract is still unproven without executable quotes, account data and outcome calibration. Final validation and rollout are recorded in the report.
+
 [Risk explanations, arithmetic consistency and evidence](../audits/2026-10-25-options-risk-scenarios.md): scoped loss labels, covered-call/secured-put worst-case explanations, premium-versus-stock/assignment scenarios and local expiry what-if input. Charts now use the same aggregate premium as cards, including half-cent and signed credit-collar cases. Deployed `bbb7ce1b`: 980 frontend tests, full typecheck and 15 healthy containers; all 14 non-frontend start times unchanged. This frontend-only batch does not change backend/snapshot/signal/ranking behavior. Final rollout is recorded in its report; previous refresh and MU work are preserved.
 
 ## October 25 latest-provider option refresh continuation

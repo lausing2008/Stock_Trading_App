@@ -20,6 +20,7 @@ import { optionPreferenceBlocker, parseOptionPreferences, type OptionSearchPrefe
 import OptionCandidateComparison from './OptionCandidateComparison';
 import ShortOptionRisk from './ShortOptionRisk';
 import { expiryPayoff, lossScopeLabel } from '@/lib/optionExpiryRisk';
+import { optionResearchLead, type OptionResearchLead } from '@/lib/optionResearchLead';
 
 const CARD: React.CSSProperties = {
   background: '#0b1220', border: '1px solid #1e293b', borderRadius: 8, padding: 14, minWidth: 0,
@@ -248,6 +249,21 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
   const acceptAssignment = assignmentAcceptance === assignmentKey;
   const amount = (text: string) => text.trim() && Number.isFinite(Number(text)) && Number(text) >= 0 ? Number(text) : null;
   const holdingDays = researchContext ? (holdingText.trim() ? Number(holdingText) : null) : undefined;
+  const snapshotCurrent = !snapshot || Date.parse(snapshot.expires_at) > now;
+  const leadMatrix = { ...matrix, candidate_review: reviews };
+  const preferencesAcknowledged = (key: CommonOptionKey) => !preferencesActive || (Object.keys(preferences.values) as (keyof OptionSearchPreferences)[])
+    .every(field => (reviews?.[key]?.search_preferences?.[field] ?? null) === preferences.values[field]);
+  const leads = Object.fromEntries(COMMON_OPTION_KEYS.flatMap(key => {
+    const source = reviews?.[key];
+    const lead = !preferences.error && snapshotCurrent && preferencesAcknowledged(key) ? optionResearchLead(key, leadMatrix, source, today, holdingDays, preferences.values) : null;
+    return lead ? [[key, lead]] : [];
+  })) as Partial<Record<CommonOptionKey, OptionResearchLead>>;
+  const compareLead = (key: CommonOptionKey, lead: OptionResearchLead) => {
+    if (reviews?.[key] !== lead.source) return;
+    setComparisonKey(key);
+    setChoices(previous => ({ ...previous, [key]: lead.index === null ? undefined : { source: lead.source!, index: lead.index! } }));
+    setAssignmentAcceptance(null);
+  };
   const calendar = reviewOptionCalendar(calendarContext, symbol ?? researchContext?.symbol ?? '', now);
   const eventRows = COMMON_OPTION_KEYS.map(key => {
     const expiry = comparedMatrix.singles[key]?.legs[0]?.expiry;
@@ -264,23 +280,40 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
   const review = recommendCommonOption(comparedMatrix, context, today, chainAsOf);
   const comboKeys = Object.keys(matrix.combos);
   return <section aria-label="Four common option strategies" style={{ marginTop: 16 }}>
-    <h3>Four common strategies & conditional preference</h3>
+    <h3>Options decision desk</h3>
     <p>Compare one standard 100-share contract. {snapshot
       ? `These calculations use current-provider snapshot ${snapshot.id.slice(0, 8)}, captured ${snapshot.captured_at}. Quote observation times are unavailable; these are research comparisons, not executable broker quotes.`
       : `These are research illustrations using settled provider prices${chainAsOf ? ` observed ${chainAsOf}` : ' with an unknown observation date'}, not live executable quotes.`}</p>
-    <p>Original contract selection uses the nearest strike to spot, the stock stop or target, and preset expiry windows. Covered-call alternatives initially screen the selected call expiry; an explicit holding-period search compares all four strategies across other expirations. Choosing one changes this comparison only. Delta, gamma, open interest and breakeven are not jointly optimized. This comparison does not establish the best return.</p>
+    <p>Review a screened contract for each strategy, then compare its risk and eligibility. The leads below use the returned shortlist only; search expirations to widen that bounded scope. No expected-return or probability ranking is available.</p>
+    <section aria-label="Strategy research leads" className="option-research-leads">
+      <div className="option-research-leads-heading"><div><h4>Contract research leads</h4><p>Quote quality first: narrowest displayed spread, then higher open interest, then strike distance to the strategy anchor and earlier expiry. Delta/DTE preferences filter first; gamma and breakeven remain comparison evidence.</p></div>
+        <span>{snapshot ? 'Provider capture' : 'Settled archive'}</span></div>
+      <div className="option-research-leads-grid">{COMMON_OPTION_KEYS.map(key => {
+        const lead = leads[key], leg = lead?.strategy.legs[0];
+        const selected = !!lead && comparisonKey === key && (lead.index === null ? !choices[key] : choices[key]?.source === lead.source && choices[key]?.index === lead.index);
+        return <article key={key} className={`option-research-lead${selected ? ' is-compared' : ''}`}>
+          <div className="option-research-lead-title"><strong>{COMMON_OPTION_NAMES[key]}</strong><span>{lead ? 'Leading screen fit' : 'No qualified lead'}</span></div>
+          {lead && leg ? <><div className="option-research-lead-contract">{fmtUSD(leg.strike)} {leg.right} <small>· {leg.expiry}</small></div>
+            <div className="option-research-lead-metrics"><span>{lead.strategy.net === 'credit' ? 'Credit' : 'Debit'} <strong>{fmtUSD(lead.strategy.net_per_contract)}</strong></span><span>Spread <strong>{leg.spread_pct?.toFixed(1)}%</strong></span><span>OI <strong>{leg.oi?.toLocaleString()}</strong></span><span>Delta <strong>{measurement(leg.delta)}</strong></span></div>
+            <button type="button" disabled={selected} onClick={() => compareLead(key, lead)} aria-label={`Compare leading ${COMMON_OPTION_NAMES[key]} contract`}>{selected ? 'In comparison' : 'Compare this contract'}</button>
+          </> : <p>{!snapshotCurrent ? 'Capture expired. Refresh the option chain.' : preferences.error ? 'Correct the contract preferences below.' : !preferencesAcknowledged(key) ? 'Search expirations to apply the edited preferences before ranking.' : reviews?.[key]?.failed_expiries?.length ? 'Expiration reads were incomplete.' : 'No returned contract has a valid two-sided research quote, positive open interest and required expiry fit.'}</p>}</article>;
+      })}</div>
+      <p className="option-research-leads-note">{snapshot ? `Captured ${snapshot.captured_at}; quote observation times and sizes are unavailable.` : `Historical session ${chainAsOf ?? 'unknown'}; refresh the option chain for a newer provider capture.`} Leads are research comparisons, not verified broker listings, expected-return winners or orders. Comparing never accepts assignment or changes the WAIT entry status.</p>
+    </section>
     {researchContext && research && <section aria-label="Horizon and market context evidence" style={{ ...CARD, marginBottom: 14 }}>
       <h4>Strategy research horizon: {researchContext.horizon}</h4>
       <div className="option-strategy-inputs"><label style={{ maxWidth: 300 }}>Planned holding period (calendar days)<input aria-label="Planned holding period (calendar days)" type="number" min="1" max="365" step="1" value={holdingText}
         onChange={e => setHoldingOverride({ key: holdingKey, value: e.target.value })} /></label></div>
       <p>The editable default follows the platform outcome-evaluation window. It is not an optimized holding time. Each contract needs this period plus a two-calendar-day research buffer before expiry.</p>
       <p>Signal record: {research.recordedAt ?? 'unavailable'} · {research.statusLabel}. Record-age policy: at most 72 hours; underlying observations need their own dates.</p>
+      <details><summary>Inspect dated signal and market evidence</summary>
       <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', fontSize: 12 }}>
         <thead><tr>{['Evidence', 'Recorded value', 'Source', 'Date / limitation'].map(h => <th key={h} style={{ textAlign: 'left', padding: 6 }}>{h}</th>)}</tr></thead>
         <tbody>{research.rows.map(row => <tr key={row.label}><th scope="row" style={{ textAlign: 'left', padding: 6 }}>{row.label}</th><td>{row.value}</td><td>{row.source}</td><td>{row.observation}</td></tr>)}</tbody>
       </table></div>
       {research.conflict && <p>Recorded signal and regime conflict. Verify current observations before choosing a directional strategy.</p>}
       <p>{research.note}</p>
+      </details>
     </section>}
     <section aria-label="Quote and event evidence" style={{ ...CARD, marginBottom: 14 }}>
       <h4>Quote and event evidence</h4>
@@ -289,11 +322,13 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
         {' '}Reported next earnings: {calendar.earningsDate ?? 'not reported'} · reported ex-dividend date: {calendar.exDividendDate ?? 'not reported'}.</p>
       <p>Retrieval age is checked against a 24-hour research policy. Event dates are date-only reports; issuer confirmation, event time and complete future calendar coverage are unverified. A missing or past date does not mean no event.</p>
       <label><input type="checkbox" checked={requireEarningsAfterExpiry} onChange={e => setRequireEarningsAfterExpiry(e.target.checked)} /> Require a current calendar record with reported next earnings after expiration</label>
+      <details><summary>Inspect event timing for each strategy</summary>
       <p>This optional research filter applies to each compared contract through expiry, even when the planned holding period is shorter. It does not prove an event-free window.</p>
       <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', fontSize: 12 }}>
         <thead><tr>{['Strategy', 'Compared expiry', 'Reported earnings timing', 'Reported ex-dividend timing'].map(h => <th key={h} style={{ textAlign: 'left', padding: 6 }}>{h}</th>)}</tr></thead>
         <tbody>{eventRows.map(row => <tr key={row.key}><th scope="row" style={{ textAlign: 'left', padding: 6 }}>{COMMON_OPTION_NAMES[row.key]}</th><td>{row.expiry ?? 'unavailable'}</td><td>{row.earnings.label}</td><td>{row.dividend.label}</td></tr>)}</tbody>
       </table></div>
+      </details>
       <p>Covered calls need an early-assignment review around ex-dividend dates. Assignment probability is not computed: fresh option time value, dividend amount and verified deliverables are missing. Both short calls and short puts can be assigned early.</p>
     </section>
     <div className="option-strategy-inputs">
@@ -314,7 +349,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
       <p>Premium targets and exits below are illustrative policies, not calibrated forecasts or guaranteed fills.
         For hedges and covered calls, the premium budget does not cap stock losses.</p>
     </div>
-    {(matrix.candidate_review || researchContext) && <section aria-label={`${sectionName} contract selection`} style={{ ...CARD, marginBottom: 14 }}>
+    {(matrix.candidate_review || researchContext) && <section aria-label={`${sectionName} contract selection`} className="option-contract-selection" style={{ ...CARD, marginBottom: 14 }}>
       <h4>{sectionName} — contract selection</h4>
       {researchContext && <fieldset style={{ border: '1px solid #334155', marginBottom: 12 }}><legend>Research contract preferences — all four strategies</legend>
         <div className="option-strategy-inputs">{([
@@ -361,7 +396,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
       </select></label> : <p>No other contract passed this screen. This does not establish absence in other expirations.</p>}
       <OptionCandidateComparison key={comparisonKey} strategyKey={comparisonKey} original={matrix.singles[comparisonKey]}
         originalStrike={candidates.original.strike} originalExpiry={candidates.expiry} originalSymbol={candidates.original.option_symbol} alternatives={candidates.alternatives}
-        today={today} selectedIndex={alternative && coveredChoice ? coveredChoice.index : null} onSelect={chooseComparison} />
+        today={today} selectedIndex={alternative && coveredChoice ? coveredChoice.index : null} onSelect={chooseComparison} leadIndex={leads[comparisonKey]?.index} />
       {alternative && <p role="status">Comparing an explicitly selected alternative at {fmtUSD(alternative.legs[0].strike)}.
         {' '}Stock target remains {fmtUSD(takeProfit)}; stock stop remains {fmtUSD(stopLoss)}. {comparisonKey === 'covered_call' ? 'Selling this call caps stock upside at its strike.' : 'Review the selected strike, expiry and payoff for this strategy.'}
         {' '}Confirm assignment acceptance again. Combinations still use their original legs. This is not an expected-return ranking.</p>}

@@ -508,6 +508,30 @@ a { color: inherit; text-decoration: none; }
 /* Backdrop */
 .backdrop-blur-sm { backdrop-filter: blur(4px); }
 .common-option-strategy-grid { display: grid; align-items: start; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+.option-research-leads { margin: 16px 0; padding: 16px; border: 1px solid #33506b; border-radius: 10px; background: linear-gradient(135deg, #102137, #0e1728 65%); }
+.option-research-leads-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.option-research-leads-heading h4 { margin: 0 0 5px; font-size: 16px; color: #e2e8f0; }
+.option-research-leads-heading p, .option-research-leads-note { margin: 0; color: #a8b9ce; font-size: 12px; line-height: 1.5; }
+.option-research-leads-heading > span { flex: none; padding: 4px 8px; border: 1px solid #4b6b88; border-radius: 20px; color: #a8d9f2; font-size: 11px; }
+.option-research-leads-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 245px), 1fr)); gap: 10px; margin: 14px 0; }
+.option-research-lead { min-width: 0; padding: 14px; border: 1px solid #334155; border-radius: 8px; background: #0b1525; }
+.option-research-lead.is-compared { border-color: #38bdf8; box-shadow: inset 0 0 0 1px #38bdf8; }
+.option-research-lead-title { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 5px; color: #e2e8f0; font-size: 13px; }
+.option-research-lead-title span { color: #91cbed; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.option-research-lead-contract { margin: 12px 0; color: #f8fafc; font-size: 17px; font-weight: 700; }
+.option-research-lead-contract small { color: #94a3b8; font-size: 11px; font-weight: 400; }
+.option-research-lead-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; color: #94a3b8; font-size: 11px; }
+.option-research-lead-metrics strong { color: #e2e8f0; font-weight: 600; }
+.option-research-lead > p { color: #a8b9ce; font-size: 12px; line-height: 1.45; }
+.option-research-lead button { width: 100%; margin-top: 14px; padding: 8px 10px; border: 1px solid #3b82a8; border-radius: 6px; background: #103247; color: #d3f1ff; font-weight: 600; cursor: pointer; }
+.option-research-lead button:hover:not(:disabled) { background: #164860; }
+.option-research-lead button:disabled { cursor: default; opacity: .7; }
+.option-candidate-lead-row { background: #102b3a; }
+.option-candidate-lead-badge { display: inline-block; margin-left: 6px; padding: 2px 5px; border: 1px solid #38bdf8; border-radius: 4px; color: #a8e5ff; font-size: 10px; white-space: nowrap; }
+.option-contract-selection { min-width: 0; }
+.option-contract-selection > label { display: block; min-width: 0; }
+.option-contract-selection select { max-width: 100%; }
+@media (max-width: 600px) { .option-research-leads-heading { flex-direction: column; gap: 8px; } }
 .option-strategy-inputs { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
 .option-strategy-inputs label { display: flex; flex: 1 1 190px; flex-direction: column; gap: 5px; min-width: 0; }
 .option-strategy-inputs input, .option-strategy-inputs select { min-width: 0; width: 100%; background: #0f172a; color: #cbd5e1; border: 1px solid #475569; border-radius: 5px; padding: 6px; }

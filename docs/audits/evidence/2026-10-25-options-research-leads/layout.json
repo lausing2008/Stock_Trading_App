@@ -1,0 +1,41 @@
+[
+  {
+    "width": 1449,
+    "pageWidth": 1449,
+    "cards": 4,
+    "leads": [
+      "Leading screen fit",
+      "Leading screen fit",
+      "Leading screen fit",
+      "Leading screen fit"
+    ],
+    "evidenceCollapsed": true,
+    "cardOverflow": false
+  },
+  {
+    "width": 1024,
+    "pageWidth": 1024,
+    "cards": 4,
+    "leads": [
+      "Leading screen fit",
+      "Leading screen fit",
+      "Leading screen fit",
+      "Leading screen fit"
+    ],
+    "evidenceCollapsed": true,
+    "cardOverflow": false
+  },
+  {
+    "width": 390,
+    "pageWidth": 390,
+    "cards": 4,
+    "leads": [
+      "Leading screen fit",
+      "Leading screen fit",
+      "Leading screen fit",
+      "Leading screen fit"
+    ],
+    "evidenceCollapsed": true,
+    "cardOverflow": false
+  }
+]

@@ -59,6 +59,30 @@ it('requires renewed assignment acceptance after explicitly choosing a compariso
   expect(document.body.textContent).toContain('Entry status: WAIT');
 });
 
+it('highlights a screened research lead but leaves the original and WAIT in place until compared', () => {
+  render(panel());
+  const lead = screen.getByRole('region', { name: 'Strategy research leads' });
+  expect(lead.textContent).toContain('Leading screen fit');
+  expect(lead.textContent).toContain('$110.00 call');
+  expect((screen.getByLabelText('Covered-call contract to compare') as HTMLSelectElement).value).toBe('original');
+  expect(screen.getByText('Wait / no strategy preference yet')).toBeTruthy();
+  fireEvent.click(within(lead).getByRole('button', { name: 'Compare leading Covered Call contract' }));
+  expect((screen.getByLabelText('Covered-call contract to compare') as HTMLSelectElement).value).toBe('0');
+  expect(screen.getByText('Wait / no strategy preference yet')).toBeTruthy();
+  expect(within(lead).getByText('In comparison')).toBeTruthy();
+  fireEvent.click(screen.getByText(/Compare candidate costs, risk and liquidity/));
+  expect(within(screen.getByRole('table', { name: 'Returned option candidate comparison' })).getByText('Research lead').closest('tr')?.textContent).toContain('Alternative 1');
+});
+
+it('holds research leads after preference edits until the server acknowledges the search', () => {
+  render(searchPanel());
+  expect(screen.getByRole('region', { name: 'Strategy research leads' }).textContent).toContain('Leading screen fit');
+  fireEvent.change(screen.getByLabelText('Minimum absolute delta'), { target: { value: '0.2' } });
+  const leads = screen.getByRole('region', { name: 'Strategy research leads' });
+  expect(leads.textContent).toContain('Search expirations to apply the edited preferences before ranking.');
+  expect(within(leads).queryByRole('button', { name: 'Compare leading Covered Call contract' })).toBeNull();
+});
+
 it('discards an alternative and its assignment acknowledgement when a fresh response replaces the matrix', () => {
   const { rerender } = render(panel());
   fireEvent.change(screen.getByLabelText('Covered-call contract to compare'), { target: { value: '0' } });
@@ -380,6 +404,7 @@ it('an expired capture cannot gain a goal-fit highlight even when the strategy h
   fireEvent.click(screen.getByRole('checkbox',{name:/I accept buying or selling/}));
   expect(screen.getByText('Wait / no strategy preference yet')).toBeTruthy();
   expect(document.body.textContent).toContain('Snapshot expired. Refresh the option chain');
+  expect(screen.getByRole('region', { name: 'Strategy research leads' }).textContent).toContain('Capture expired. Refresh the option chain.');
 });
 
 it('keeps scenario edits separate from contract selection and assignment acceptance',()=>{
