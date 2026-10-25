@@ -92,7 +92,7 @@ def admin_overview(_admin=Depends(get_admin_user),session=Depends(get_session)):
     gens=session.scalars(select(RzyRebuild).where(RzyRebuild.rebuilt_at>=since)).all()
     occs=session.scalars(select(RzyOccurrence).where(RzyOccurrence.first_seen_at>=since)).all()
     current_since=W.snapshot_current_since(datetime.now(timezone.utc))
-    current=[x for x in snaps if x.checked_at>=current_since]
+    current=[x for x in snaps if W.snapshot_is_current(x,current_since)]
     revs=session.scalars(select(BarRevision).where(BarRevision.fetched_at>=since)).all()
     mail=session.scalars(select(NotificationOutbox).where(NotificationOutbox.alert_type.in_(('little_rzy','short_term_digest')))
         .order_by(NotificationOutbox.created_at.desc()).limit(60)).all()

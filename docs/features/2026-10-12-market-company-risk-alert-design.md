@@ -1,5 +1,7 @@
 # Market, company and price-risk alerts
 
+> **Completion review — 2026-10-24:** Quiet hours and general company shadow coverage are already built. Named benchmark research is added locally in this review. Unified macro/company delivery and go-live evidence remain incomplete. See [current review and remaining work](../audits/2026-10-24-alerts-plan-workspace-completion.md). The dated record below is preserved.
+
 ## Status (updated 2026-10-13)
 
 | Part | State |

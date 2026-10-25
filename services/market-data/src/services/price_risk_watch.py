@@ -28,7 +28,7 @@ from common.outcome_price_basis import (best_achievable_status,
                                         classify_observation_window, resolve_window)
 from common.market_calendar import is_regular_session, session_bounds
 from db import (AppNotification, CorporateAction, CorporateActionCoverage, NotificationOutbox,
-                Price, RiskEvent, RiskEventReceipt, Stock, TimeFrame, User, WatchlistItem)
+                Price, RiskEvent, RiskEventReceipt, Stock, TimeFrame, User, Watchlist, WatchlistItem)
 
 from . import price_risk
 
@@ -38,6 +38,9 @@ DELIVERY_FLAG = "stockai:admin:feature:price_risk_delivery_enabled"
 
 ALERT_TYPE_EMAIL = "price_risk"
 ALERT_TYPE_IN_APP = "price_risk_in_app"
+
+# Unlevered, named market/sector proxies; benchmark observations always stay shadow.
+BENCHMARKS = {"SPY": "S&P 500 ETF", "QQQ": "Nasdaq-100 ETF", "SOXX": "Semiconductor sector ETF"}
 
 #: Enough history for the pullback window plus the warm-up a split check needs.
 _LOOKBACK_SESSIONS = 15
@@ -344,7 +347,8 @@ def _mark_closed(event: RiskEvent, on: date, why: str) -> None:
                       "episode_closed_on": on.isoformat(), "episode_closed_by": why}
 
 
-def close_recovered_episodes(session, subject: str, closes: list, mode: str, as_of: date) -> int:
+def close_recovered_episodes(session, subject: str, closes: list, mode: str, as_of: date,
+                             *, scope: str = "symbol") -> int:
     """Close the open episode of each symbol rule whose price has recovered, and SAY so.
 
     `closes` ends with the current reading (a live quote intraday). Readings after the event's
@@ -353,7 +357,7 @@ def close_recovered_episodes(session, subject: str, closes: list, mode: str, as_
     """
     closed = 0
     for rule in EPISODIC_SYMBOL_RULES + ("session_decline",):
-        ev = _latest_open_event(session, "symbol", subject, rule, mode, as_of)
+        ev = _latest_open_event(session, scope, subject, rule, mode, as_of)
         if ev is None:
             continue
         if ev.observed_to < as_of - timedelta(days=EPISODE_MAX_AGE_DAYS):
@@ -368,15 +372,18 @@ def close_recovered_episodes(session, subject: str, closes: list, mode: str, as_
 
 
 def detect(session, *, now: datetime | None = None, redis_client=None,
-           symbols: list[str] | None = None, quotes: dict | None = None) -> dict:
+           symbols: list[str] | None = None, quotes: dict | None = None,
+           scope: str = "symbol") -> dict:
     """Run detection over followed subjects. Returns a summary; writes events and receipts.
 
     In LIVE mode this also queues one digest per eligible user in the notification outbox. It
     never calls a mail provider: the drain job does, on the alerting side of the scheduler.
     """
+    if scope not in ("symbol", "benchmark"):
+        raise ValueError("Unsupported risk scope")
     now = now or datetime.now(timezone.utc)
     today = now.date()
-    live = delivery_enabled(redis_client)
+    live = scope == "symbol" and delivery_enabled(redis_client)
     mode = "live" if live else "shadow"
     quotes = live_quotes(redis_client) if quotes is None else quotes
     cfg = load_config(redis_client)
@@ -385,9 +392,10 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
 
     watched = {r[0] for r in session.execute(
         select(Stock.symbol).join(WatchlistItem, WatchlistItem.stock_id == Stock.id)).all()}
-    universe = sorted(set(symbols) if symbols else watched)
+    universe = sorted(set(symbols) if symbols is not None else (set(BENCHMARKS) if scope == "benchmark" else watched))
     theme_members = {sym for members in price_risk_themes().values() for sym in members}
-    universe = sorted(set(universe) | (theme_members & watched)) if universe else sorted(theme_members)
+    if scope == "symbol":
+        universe = sorted(set(universe) | (theme_members & watched)) if universe else sorted(theme_members)
     if not universe:
         return {"mode": mode, "subjects": 0, "events": 0, "unmeasurable": 0, "receipts": 0,
                 "config_errors": cfg["errors"]}
@@ -415,7 +423,7 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
         unmeasurable += 1
         exclusions[factor] = exclusions.get(factor, 0) + 1
         measured[symbol] = None
-        _persist(session, {"scope": "symbol", "subject": symbol, "rule": price_risk.UNMEASURABLE,
+        _persist(session, {"scope": scope, "subject": symbol, "rule": price_risk.UNMEASURABLE,
                            "step": 0, "evidence_status": "unverified",
                            "limiting_factor": factor, "reason": reason,
                            "as_of": as_of or today}, mode, today, now)
@@ -500,10 +508,13 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
             measured[symbol] = None
         if verdict.get("usable"):
             episodes_closed += close_recovered_episodes(session, symbol, list(usable), mode,
-                                                        window_end)
-        candidates = price_risk.evaluate(symbol, "symbol", list(usable), verdict, opens=opens,
+                                                        window_end, scope=scope)
+        candidates = price_risk.evaluate(symbol, scope, list(usable), verdict, opens=opens,
                                          slow_sessions=slow_n, slow_steps=slow_steps)
         for cand in candidates:
+            if scope == "benchmark":
+                cand["instrument"] = BENCHMARKS.get(symbol, symbol)
+                cand["coverage_note"] = "Named ETF proxy; benchmark research remains shadow-only."
             cand["price_source"] = ("live_quote" if quote_status == "live_quote"
                                     else "settled_daily_bars")
             if quote_status and quote_status != "live_quote":
@@ -521,11 +532,11 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
             if cand["rule"] == "slow_decline":
                 # Same move, other ladder: a pullback reported at -7% that eases to -6.5% is
                 # not a NEW slow decline. Quiet while the pullback episode is still open.
-                open_pullback = _prior_state(session, "symbol", symbol, "pullback",
+                open_pullback = _prior_state(session, scope, symbol, "pullback",
                                              cand["as_of"], mode, closes=list(usable))
                 if open_pullback is not None and not open_pullback["episode_closed"]:
                     continue
-            prior = _prior_state(session, "symbol", symbol, cand["rule"], cand["as_of"], mode,
+            prior = _prior_state(session, scope, symbol, cand["rule"], cand["as_of"], mode,
                                  closes=list(usable))
             emit, why = price_risk.should_emit(prior, cand)
             if not emit:
@@ -538,7 +549,7 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
                     session, event, symbol, live, now, pending,
                     deliverable=_deliverable(cand, settled_through, now))
 
-    for theme, members in price_risk_themes().items():
+    for theme, members in (price_risk_themes().items() if scope == "symbol" else []):
         present = [m for m in members if m in measured]
         if not present:
             continue
@@ -702,12 +713,17 @@ def _record_receipts(session, event: RiskEvent, symbols, live: bool, now: dateti
     symbols = [symbols] if isinstance(symbols, str) else list(symbols)
     matched: dict[int, set[str]] = {}
     users: dict[int, User] = {}
-    for user, symbol in session.execute(
-            select(User, Stock.symbol).join(WatchlistItem, WatchlistItem.user_id == User.id)
-            .join(Stock, Stock.id == WatchlistItem.stock_id)
-            .where(Stock.symbol.in_(symbols), User.is_active.is_(True))).all():
-        users[user.id] = user
-        matched.setdefault(user.id, set()).add(symbol)
+    for direct, owner, symbol in session.execute(
+            select(WatchlistItem.user_id, Watchlist.user_id, Stock.symbol)
+            .select_from(WatchlistItem).join(Stock, Stock.id == WatchlistItem.stock_id)
+            .outerjoin(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
+            .where(Stock.symbol.in_(symbols))).all():
+        uid = direct or owner
+        user = session.get(User, uid) if uid is not None else None
+        if user is None or not user.is_active:
+            continue
+        users[uid] = user
+        matched.setdefault(uid, set()).add(symbol)
     already = {r[0] for r in session.execute(select(RiskEventReceipt.user_id).where(
         RiskEventReceipt.event_id == event.id)).all()}
     written = 0

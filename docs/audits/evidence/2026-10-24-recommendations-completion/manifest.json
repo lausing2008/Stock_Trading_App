@@ -1,0 +1,49 @@
+{
+  "recorded_at_utc": "2026-10-24T21:38:38.143536+00:00",
+  "client_date": "2026-10-24",
+  "base_commit": "1dc2378f616a6276cd2797051bd6bcd68e60da56",
+  "state": "local changes; not committed or deployed",
+  "production_checks": "read-only aggregate transaction; no activation or enrollment",
+  "code_sha256": {
+    "services/market-data/src/services/price_risk_watch.py": "9c79499c5b312d3dcba6821d7ee80cf30589727925677b09b027b399afc94b56",
+    "services/market-data/src/services/company_impact_watch.py": "eaedaa095df64ca0cb1a2f971a065be4b71f7cb2165bb79292f67e4a72987a48",
+    "services/market-data/src/services/scheduler.py": "d4d1ff01779e38d4278acb36bdf233d2ed1077cf822737ba6e27ac1e5a514819",
+    "frontend/src/pages/risk-alerts.tsx": "c638ad94902bedc64f893ab3c180e879bfaabc891b8eb793f9ce2af5f1cbf1f7",
+    "services/market-data/tests/_alert_recommendations_completion_probe.py": "ba10344c81c7b03463a0ec5e1692aac1ac8f3d8546eb4f86c4bab994b92169f8",
+    "services/market-data/tests/test_alert_recommendations_completion.py": "701f5e2cedbb87b62015f61c14e9aefc5b5dbdae450b1259d41291b7c60fc8f5",
+    "services/market-data/tests/_company_impact_probe.py": "fdd695c01c62dc2b94a6dcde480d657b68905bea7111814acdeaf369965fe631",
+    "frontend/src/lib/riskAlertsPage.test.tsx": "62cd70d2884587141a1a92694464eb9676624b7858c52820c8e0795964f67a12",
+    "services/market-data/src/services/rzy_workflow.py": "b370c548fa5ad044c520d1d1ffba4d8a32ad1473414f5d3e31782eddcdeb29dc",
+    "services/market-data/src/api/little_rzy.py": "01f9d72eb643d6a3888a552dae48737f730dfb63be88ebe095fe8abaf4b829b8",
+    "services/market-data/tests/_little_rzy_probe.py": "ae2ae9b76c87694efa68a2d92b80c126c68d170f33d2279f23b0469f9ef5b79c",
+    "services/market-data/tests/test_little_rzy_workflow.py": "e562345709b24721b9a5947857da59ca7b3f247117f85a119b2f121db1ce477c",
+    "frontend/src/lib/api.ts": "20e8603099cfe0609f1dd63e1088c4b8d0b0e5a510e0abea6acfa196a38dbd25",
+    "frontend/src/pages/little-rzy.tsx": "fe5f79e1968bcca6f4b3e3c00aa588491e2e6dda483c2e9a732232288717ba6c",
+    "frontend/src/lib/littleRzyPage.test.tsx": "db1c7f2ff0d735f07471badfca8f5ab0b6707b53b6ec0af7497a9a2e7bea8ef9"
+  },
+  "validation": {
+    "market_data_passed": 5858,
+    "market_data_skipped": 26,
+    "copilot_plan_passed": 95,
+    "workspace_passed": 40,
+    "benchmark_ui_passed": 1,
+    "model_quality_passed": 33,
+    "news_tickers_passed": 28,
+    "gateway_passed": 14,
+    "typescript": "passed",
+    "new_postgres_run": false,
+    "paid_model_calls": 0,
+    "market_data_scope": "5858-pass full suite preceded the later RZY snapshot follow-up; RZY follow-up tested separately",
+    "rzy_followup_passed": 101,
+    "rzy_final_workflow_rerun_passed": 55,
+    "rzy_frontend_followup_passed": 5,
+    "rzy_followup_typescript": "passed",
+    "release": {
+      "market_data_passed": 5859,
+      "market_data_skipped": 26,
+      "frontend_passed": 947,
+      "frontend_files": 78,
+      "typescript": "passed"
+    }
+  }
+}

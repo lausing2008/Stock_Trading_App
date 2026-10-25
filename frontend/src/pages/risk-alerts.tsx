@@ -1,5 +1,5 @@
 import RiskDeliveryScheduleCard from '@/components/RiskDeliveryScheduleCard';
-import { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { api, RiskAlertEvent, RiskAlertSummaryResponse } from '@/lib/api';
 
 // Price-risk alert history.
@@ -38,6 +38,7 @@ export default function RiskAlertsPage() {
   const [summary, setSummary] = useState<RiskAlertSummaryResponse | null>(null);
   const [days, setDays] = useState(14);
   const [rule, setRule] = useState('');
+  const [scope, setScope] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -46,7 +47,7 @@ export default function RiskAlertsPage() {
     setError(null);
     try {
       const [h, s] = await Promise.all([
-        api.riskAlertHistory({ days, rule: rule || undefined }),
+        api.riskAlertHistory({ days, rule: rule || undefined, scope: scope || undefined }),
         api.riskAlertSummary(days),
       ]);
       setEvents(h.events);
@@ -56,7 +57,7 @@ export default function RiskAlertsPage() {
     } finally {
       setLoading(false);
     }
-  }, [days, rule]);
+  }, [days, rule, scope]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -66,9 +67,10 @@ export default function RiskAlertsPage() {
     <div style={{ padding: '24px 16px', maxWidth: 1100, margin: '0 auto' }}>
       <h1 style={{ fontSize: 24, marginBottom: 4 }}>Price-risk alerts</h1>
       <p style={{ color: '#94a3b8', marginTop: 0, fontSize: 14 }}>
-        Measured moves in stocks you follow, independent of the AI signal&apos;s direction label —
+        Measured moves in followed stocks and named benchmark ETFs, independent of the AI signal&apos;s direction label —
         a label does not change merely because a price falls.
       </p>
+      <p style={{ color: '#94a3b8', fontSize: 13 }}>SPY, QQQ and SOXX benchmark observations are research in shadow mode; they do not send alerts.</p>
       <RiskDeliveryScheduleCard />
 
       {shadowCount > 0 && (
@@ -89,6 +91,12 @@ export default function RiskAlertsPage() {
             {[7, 14, 30, 90].map(d => <option key={d} value={d}>{d} days</option>)}
           </select>
         </label>
+        <label style={{ fontSize: 13, color: '#94a3b8' }}>Scope{' '}
+          <select aria-label="Risk event scope" value={scope} onChange={e => setScope(e.target.value)}>
+            <option value="">All scopes</option><option value="symbol">Followed stocks</option>
+            <option value="benchmark">Benchmark research</option><option value="theme">Themes</option>
+          </select>
+        </label>
         <label style={{ fontSize: 13, color: '#94a3b8' }}>
           Kind{' '}
           <select value={rule} onChange={e => setRule(e.target.value)}
@@ -105,6 +113,7 @@ export default function RiskAlertsPage() {
         </button>
       </div>
 
+      {(scope || rule) && <p style={{ color: '#94a3b8', fontSize: 12 }}>Summary counts cover all scopes and kinds in the selected time window.</p>}
       {summary && (
         <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', margin: '12px 0 20px',
                       fontSize: 13, color: '#cbd5e1' }}>
@@ -135,6 +144,7 @@ export default function RiskAlertsPage() {
                           flexWrap: 'wrap', alignItems: 'baseline' }}>
               <div>
                 <strong style={{ fontSize: 16 }}>{ev.subject}</strong>{' '}
+                {ev.scope === 'benchmark' && <span>Benchmark research · shadow only</span>}
                 <span style={{ color: '#94a3b8', fontSize: 13 }}>
                   {RULE_LABEL[ev.rule] ?? ev.rule}
                 </span>

@@ -1,5 +1,7 @@
 # Event impacts, alert receipts, model quality, and long-option review
 
+> **Completion review — 2026-10-24:** The research workflow and opt-in safeguards are implemented. Generic company coverage is shadow-only; executable option inputs and a guarded production opportunity producer remain missing. See [current review and remaining work](../audits/2026-10-24-alerts-plan-workspace-completion.md). The dated record below is preserved.
+
 Implemented locally October 12, 2026. This is a reviewed research-watch workflow. No production mail, order, trade, watchlist, or model was changed by development. Deploy the gateway, market-data, frontend, ML and news services together; apply [migration 005](../../shared/db/migrations/versions/005_news_impact_events.py) before or at service startup. The migration tolerates tables already created by `init_db()`.
 
 ## Surface RTX Spark impact watch

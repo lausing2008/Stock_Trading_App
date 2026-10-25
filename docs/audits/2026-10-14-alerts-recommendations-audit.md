@@ -1,5 +1,7 @@
 # Recommendations implementation audit — 2026-10-14
 
+> **Completion review — 2026-10-24:** Engineering F1–F5 is fixed; quiet hours and company shadow coverage are implemented. Five-session evidence exists, but activation/recall acceptance and actionable option integration remain open. See [current review and remaining work](2026-10-24-alerts-plan-workspace-completion.md). The dated record below is preserved.
+
 Reviewed checkout `aa195ddf`. This is a local code and behavioral audit, not a new production
 verification. No alert settings, application code, production data, or deployment changed.
 Earlier deployment counts are historical evidence, not measurements made by this review.

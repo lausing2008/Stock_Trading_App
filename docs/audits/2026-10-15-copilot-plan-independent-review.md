@@ -1,5 +1,7 @@
 # Independent review: Copilot Plan P1, commit 410a238c
 
+> **Completion review — 2026-10-24:** C1–C5 are resolved under the user-stated/candidate-stop contract; current plan acceptance passes 95 tests. The card and validated LLM proposal workflow now exist. See [current review and remaining work](2026-10-24-alerts-plan-workspace-completion.md). The dated record below is preserved.
+
 **Resolution (2026-10-15):** implemented and deployed in `89756b83`; see
 [final remediation and verification](2026-10-15-copilot-plan-final-remediation.md).
 The findings below are the historical review record.

@@ -280,6 +280,8 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 ### Features — shipped feature documentation (`docs/features/`)
 
+- **`docs/audits/2026-10-24-alerts-plan-workspace-completion.md`** — seven-document completion review: old fixes verified, owned-watchlist audience repaired, benchmark shadow wiring, company stages and RZY snapshot timing added; live option inputs, macro delivery and readiness remain open.
+
 - **`docs/2026-10-19/little-rzy-deployment.md`** — T455: SMA 5/10, independent RZY alerts and watchlist digest; release/evidence, live mail, 5m quarantine, unfinished real-data validation and post-session checkpoint.
 - **`docs/2026-10-19/little-rzy-deep-review.md`** — RZY deep review: entry/exit logic verified; exact-match quarantine locked all 5m, one old gap excluded a stream for months, checkpoints grew unbounded. Rebuild-by-generation + segments + bounded state [RZY, revisions]
 - **`docs/2026-10-19/little-rzy-evaluation-results.md`** — first real-data RZY test vs random-timing controls: 693 trades, −0.09R, edge −0.001R (CI spans 0). 90% exit on a close through the line within ~4 bars; targets rarely reached [RZY, backtest]

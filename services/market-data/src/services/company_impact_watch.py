@@ -11,6 +11,8 @@ from sqlalchemy import select
 from db import NewsImpactEvent, NewsImpactReceipt, RealtimeNewsItem, Stock, WatchlistItem, Watchlist, User
 
 CATEGORIES = (
+    ('acquisition', r'\b(?:acquir(?:e[sd]?|ing)|acquisition|merger|merges?|takeover|buyout)\b'),
+    ('financing', r'\b(?:public offering|private placement|share offering|stock offering|debt offering|bond offering|capital raise|raises? capital|financing round|bankruptcy|restructuring)\b'),
     ('guidance', r'\b(?:guidance|outlook|forecast)\b.*\b(?:rais\w*|cut\w*|lower\w*|boost\w*|updat\w*|revis\w*)\b|\b(?:rais\w*|cut\w*|lower\w*)\b.*\b(?:guidance|outlook|forecast)\b'),
     ('regulatory', r'\b(?:antitrust|recall|lawsuit|regulator\w*|investigation|FDA|approval|sanctions?)\b'),
     ('contract', r'\b(?:wins?|awarded|secures?|signs?)\b.*\b(?:contract|order|deal)\b'),
@@ -25,6 +27,21 @@ def category(headline):
     return next((name for name, pattern in CATEGORIES if re.search(pattern, headline, re.I)), None)
 
 
+def statement_status(headline):
+    """The publisher's claim stage, never independent confirmation of an event."""
+    if re.search(r'\b(?:denies?|denied|not proceeding|calls? off|abandons?)\b', headline, re.I):
+        return 'reported_denial'
+    if re.search(r'\b(?:rumou?r\w*|may|might|could|consider\w*|explor\w*|in talks|potential)\b', headline, re.I):
+        return 'reported_speculation'
+    if re.search(r'\b(?:completes?|completed|closes?|closed|finalizes?|finalized)\b', headline, re.I):
+        return 'reported_completed'
+    if re.search(r'\b(?:signs?|signed)\b.*\b(?:agreement|contract|deal)\b', headline, re.I):
+        return 'reported_signed'
+    if re.search(r'\b(?:approves?|approved|approval)\b', headline, re.I):
+        return 'reported_approval'
+    return 'reported_announcement'
+
+
 def aliases(stock):
     name = re.sub(r'\b(?:incorporated|inc|corporation|corp|limited|ltd|plc|class [ab])\b[.,]?', '', stock.name or '', flags=re.I).strip(' ,.')
     patterns = []
@@ -37,6 +54,7 @@ def aliases(stock):
 
 def impacts_for(row, stocks, kind, patterns=None):
     text = row.headline or ''
+    stage = statement_status(text).replace('_', ' ')
     impacts = []
     for stock in stocks:
         found = next((m for p in (patterns[stock.symbol] if patterns is not None else aliases(stock)) if (m := p.search(text))), None)
@@ -59,8 +77,8 @@ def impacts_for(row, stocks, kind, patterns=None):
             elif re.search(r'\b(?:partnership with|partners? with|collaborates? with)\s*$', before, re.I):
                 role = 'reported_partner'; quote = before + found.group(0)
         impacts.append({'symbol': stock.symbol, 'direction': direction, 'role': role,
-            'category': kind, 'source_excerpt': quote,
-            'reason': f'{kind.title()} headline associated with {stock.symbol}; role is reported, not independently verified. Revenue and share-price effects are unmeasured.'})
+            'category': kind, 'statement_status': statement_status(text), 'source_excerpt': quote,
+            'reason': f'{kind.title()} headline associated with {stock.symbol}; stage: {stage}. Role is reported, not independently verified. Revenue and share-price effects are unmeasured.'})
     return impacts
 
 
@@ -107,6 +125,7 @@ def process_recent(session, *, now=None):
         if row.symbol not in {x['symbol'] for x in event.impacts}:
             event.impacts = list(event.impacts) + [{'symbol': row.symbol, 'direction': 'unmeasured',
                 'role': 'provider_tagged_company', 'category': kind,
+                'statement_status': statement_status(row.headline or ''),
                 'reason': 'Provider association only; financial and stock effects unmeasured.'}]
         affected = {x['symbol'] for x in event.impacts}
         for uid, followed in watchers.items():

@@ -65,6 +65,8 @@ export default function LittleRzyAdminPage() {
       {digest && digest.available === false && <p role="status" className={card}>{digest.message ?? 'Preview not available yet.'}</p>}
       {digest && digest.available !== false && <>
         <p role="status" className="text-xs text-slate-400">Snapshot: oldest stream checked {when(digest.snapshot_from)} ({digest.snapshot_age_minutes} min ago), newest {when(digest.snapshot_to)} · {digest.streams_with_snapshot} of {digest.streams_expected} streams have a snapshot{digest.streams_expired ? `, ${digest.streams_expired} expired (not used)` : ''} · {digest.total_candidates ?? digest.candidates.length} candidate(s), showing up to 10.</p>
+        {digest.data_cutoff_from && <p className="text-xs text-slate-400">Input data cutoffs: {when(digest.data_cutoff_from)} to {when(digest.data_cutoff_to)}. Check times above show when processing finished; they do not make older inputs current.</p>}
+        {!!digest.streams_unknown_cutoff && <p className="text-xs text-amber-300">{digest.streams_unknown_cutoff} snapshot(s) have an unknown data cutoff and are excluded.</p>}
         <div className={`${card} overflow-x-auto`}>
           {digest.candidates.length ? <table className="w-full tabular-nums"><thead><tr>{['Symbol', 'Direction', 'TF', 'Entry ref', 'Provisional stop', 'Target', 'Planned R/R'].map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
             <tbody>{digest.candidates.map(c => <tr key={`${c.symbol}:${c.timeframe}:${c.direction}`} className="border-t border-slate-800">

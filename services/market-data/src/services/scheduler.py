@@ -2709,6 +2709,11 @@ def run_price_risk_detection() -> None:
             result = detect(session, redis_client=redis_client)
             session.commit()
             log.info("price_risk.scan", **result)
+            # Same completed-price/evidence contract, separate 2% benchmark ladder and
+            # unconditional shadow mode. This never expands the live email audience.
+            benchmarks = detect(session, redis_client=redis_client, scope="benchmark")
+            session.commit()
+            log.info("price_risk.benchmarks_shadow", **benchmarks)
         _record_job_status("run_price_risk_detection", "ok", time.monotonic() - started)
     except Exception as exc:
         log.error("price_risk.failed", error=str(exc))

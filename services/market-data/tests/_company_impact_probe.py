@@ -45,6 +45,19 @@ with Session(engine) as s:
     assert not list(s.scalars(select(models.AppNotification)))
     again=process_recent(s,now=now);s.commit()
     assert again['events']==0 and again['receipts']==0
+    # New coverage persists the publisher's stage without promoting it to verification.
+    for ident,title in ((100,'Microsoft may acquire a software company'),(101,'Microsoft announces a public offering')):
+        s.add(models.RealtimeNewsItem(id=ident,symbol='MSFT',source='test',headline=title,url=f'https://source.example/{ident}',published_at=now.replace(tzinfo=None)))
+    s.commit()
+    expanded=process_recent(s,now=now);s.commit()
+    assert expanded['events']==2 and expanded['sent']==0
+    speculation=s.scalar(select(models.NewsImpactEvent).where(models.NewsImpactEvent.title=='Microsoft may acquire a software company'))
+    assert speculation.evidence_status=='provider_headline_unverified'
+    assert speculation.impacts[0]['statement_status']=='reported_speculation'
+    assert speculation.impacts[0]['direction']=='unmeasured'
+    assert 'reported speculation' in speculation.impacts[0]['reason']
+    assert not list(s.scalars(select(models.NotificationOutbox)))
+    assert not list(s.scalars(select(models.AppNotification)))
     # The user's relevant history must survive a wave of unrelated newer events.
     for i in range(40): s.add(models.NewsImpactEvent(event_key=f'unrelated-{i}',title='Other event',source_url='https://source.example/x',published_at=now.replace(tzinfo=None),impacts=[],evidence_status='unverified'))
     s.commit()
@@ -52,5 +65,5 @@ with Session(engine) as s:
     auth=types.ModuleType('src.api.auth');auth.get_current_user=lambda:None;sys.modules['src.api.auth']=auth
     from src.api.news_impacts import list_impacts
     mine=list_impacts(current=s.get(models.User,1),session=s,followed_only=True)
-    assert len(mine)==2 and all(x['matched_symbols'] for x in mine)
+    assert len(mine)==4 and all(x['matched_symbols'] for x in mine)
 print(json.dumps({'events':first['events'],'receipts':first['receipts'],'repeat_events':again['events'],'sent':0,'roles':roles,'scoped_history':len(mine)}))

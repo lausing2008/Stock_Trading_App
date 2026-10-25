@@ -1,5 +1,7 @@
 # AI signals, options alerts, and Surface RTX Spark follow-up
 
+> **Completion review — 2026-10-24:** Event/funnel/model-quality/research-plan foundations exist. General company shadow coverage is built; live actionable options and proven model-quality improvement remain incomplete. See [current review and remaining work](2026-10-24-alerts-plan-workspace-completion.md). The dated record below is preserved.
+
 Read-only production snapshot: October 11, 2026, 22:32 UTC, revision `58138c29`; all app containers healthy. Queries and sanitized results are in [the evidence directory](evidence/2026-10-11-signal-news-followup). Production observations below differ from the local changes. Provider email acceptance is not proof of inbox delivery.
 
 ## Findings

@@ -1,5 +1,7 @@
 # Chart and Game Plan workspace
 
+> **Completion review — 2026-10-24:** Core workspace scope is implemented and current focused regressions pass. Fresh authenticated live-browser acceptance remains separate; resizing/masonry were outside this release. See [current review and remaining work](../audits/2026-10-24-alerts-plan-workspace-completion.md). The dated record below is preserved.
+
 Release `5ab91daa` was committed, deployed and pushed to GitHub on October 18, 2026.
 
 The stock page now opens with a full-width price chart and an attached Game Plan.

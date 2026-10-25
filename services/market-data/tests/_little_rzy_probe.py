@@ -12,7 +12,7 @@ models=importlib.util.module_from_spec(spec);sys.modules['db.models']=models;spe
 for key in vars(models):setattr(db,key,getattr(models,key))
 from src.services import rzy_workflow as W
 from src.services import bar_provenance as _bar_provenance  # register its tables before create_all
-from src.services.rzy_models import RzyStream,RzyEvent,RzyPreference
+from src.services.rzy_models import RzyStream,RzyEvent,RzyPreference,RzyStreamSnapshot
 from common import outbox
 from common.price_basis import resolve_ohlc
 from common.market_calendar import session_bounds
@@ -88,7 +88,9 @@ with Session() as s:
     W.evaluate=forbidden
     try: snap=W.digest_snapshot(s,1,now+timedelta(minutes=4))
     finally: W.evaluate=real_evaluate
-    assert snap['available'] and snap['snapshot_from']==now.replace(tzinfo=None).isoformat() and snap['snapshot_age_minutes']==4.0
+    assert snap['available'] and 3.0<=snap['snapshot_age_minutes']<=4.0
+    assert now.replace(tzinfo=None)<=datetime.fromisoformat(snap['snapshot_from'])<(now+timedelta(minutes=1)).replace(tzinfo=None)
+    assert snap['data_cutoff_from']==now.replace(tzinfo=None).isoformat()
     assert snap['streams_with_snapshot']==1 and snap['streams_expected']==1
     assert snap['candidates'] or snap['exclusions'], snap
     result['snapshot_preview']=True
@@ -394,6 +396,33 @@ with Session() as s:
     assert trig['LATE'].queued_at is None and late_scan['too_late_to_mail']>=1
     queued_ids={x.event_id.split(':')[-1] for x in s.scalars(select(models.NotificationOutbox)).all()}
     assert trig['EARLY'].occurrence_id in queued_ids and trig['LATE'].occurrence_id not in queued_ids
+    # Snapshot checks likewise name actual completion time, preserving the input cutoff.
+    late_snapshot=s.get(RzyStreamSnapshot,f'LATE:5m:{W.current_config().hash}')
+    assert late_snapshot.checked_at==(now+timedelta(minutes=9)).replace(tzinfo=None)
+    assert late_snapshot.summary['data_cutoff']==now.isoformat()
+    # Recent processing cannot resurrect input data whose cutoff has expired.
+    cutoff_now=now+timedelta(minutes=20)
+    W.save_snapshot(s,'EARLY','5m',W.current_config().hash,cutoff_now,'research_only',
+        {'candidates':[{'symbol':'EARLY','sequence_confidence':'known','sequence':1,'timeframe':'5m'}],'exclusion':None},data_cutoff=now)
+    s.commit()
+    old_data=W.digest_snapshot(s,1,cutoff_now)
+    assert not any(c['symbol']=='EARLY' for c in old_data['candidates'])
+    assert any(x['symbol']=='EARLY' and x['reason']=='snapshot_expired' for x in old_data['exclusions'])
+    damaged=s.get(RzyStreamSnapshot,f'EARLY:5m:{W.current_config().hash}')
+    damaged.summary=dict(damaged.summary,data_cutoff='unreadable');s.commit()
+    unknown=W.digest_snapshot(s,1,cutoff_now)
+    assert unknown['streams_unknown_cutoff']==1
+    assert any(x['symbol']=='EARLY' and x['reason']=='snapshot_cutoff_unknown' for x in unknown['exclusions'])
+    assert not any(c['symbol']=='EARLY' for c in unknown['candidates'])
+    from unittest.mock import patch
+    with patch('src.api.little_rzy.datetime') as admin_clock:
+        admin_clock.now.return_value=cutoff_now
+        current_view=admin_overview(_admin=user,session=s)
+    assert current_view['streams']['current']==0,current_view['streams']
+    assert current_view['streams']['by_status'].get('research_only',0)==0
+    # Restore the valid old cutoff for the existing week-expiry checks below.
+    damaged.summary=dict(damaged.summary,data_cutoff=now.isoformat());s.commit()
+    result['actual_snapshot_time']=True
     result['actual_time_freshness']=True
     # ── F07: an old snapshot is history, never a current candidate ──
     fresh=W.digest_snapshot(s,1,now+timedelta(minutes=4))

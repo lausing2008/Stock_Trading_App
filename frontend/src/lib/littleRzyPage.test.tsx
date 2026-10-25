@@ -48,3 +48,11 @@ it('says the preview is not available yet when no snapshot exists', async () => 
   m.api.rzyDigest.mockResolvedValue({ available: false, candidates: [], exclusions: [], note: 'n', message: 'Preview not available yet: no scan snapshot exists for your watchlist.' });
   view(); expect(await screen.findByText(/Preview not available yet/)).toBeTruthy();
 });
+
+it('distinguishes processing completion from the input cutoff and excludes unknown cutoffs', async () => {
+  m.api.rzyDigest.mockResolvedValue({ ...digest, data_cutoff_from: '2026-10-21T14:50:00', data_cutoff_to: '2026-10-21T14:51:00', streams_unknown_cutoff: 1 });
+  view();
+  expect(await screen.findByText(/Input data cutoffs:/)).toBeTruthy();
+  expect(screen.getByText(/they do not make older inputs current/)).toBeTruthy();
+  expect(screen.getByText(/unknown data cutoff and are excluded/)).toBeTruthy();
+});

@@ -1,0 +1,12 @@
+BEGIN
+SET
+{"kind" : "cohort_by_session", "rows" : [{"observed_to":"2026-10-16","delivery_mode":"shadow","events":154,"exclusions":4,"verified":0,"live_quote_events":99}, 
+ {"observed_to":"2026-10-19","delivery_mode":"shadow","events":13,"exclusions":3,"verified":0,"live_quote_events":7}, 
+ {"observed_to":"2026-10-20","delivery_mode":"shadow","events":41,"exclusions":3,"verified":0,"live_quote_events":36}, 
+ {"observed_to":"2026-10-21","delivery_mode":"shadow","events":22,"exclusions":3,"verified":0,"live_quote_events":14}, 
+ {"observed_to":"2026-10-22","delivery_mode":"shadow","events":198,"exclusions":3,"verified":0,"live_quote_events":188}]}
+{"kind" : "risk_receipts", "rows" : [{"state":"shadow_suppressed","receipts":196}]}
+{"kind" : "risk_outbox", "rows" : []}
+{"kind" : "company_events", "rows" : [{"evidence_status":"official_spec_and_provider_observation","events":1}, 
+ {"evidence_status":"provider_headline_unverified","events":101}]}
+ROLLBACK

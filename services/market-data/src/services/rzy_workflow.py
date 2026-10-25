@@ -361,10 +361,10 @@ def scan(session,now=None,clock=None):
         except (ValueError,TypeError) as exc:
             phases['evaluate_total']+=_time.monotonic()-_t; _t=_time.monotonic()
             session.rollback();statuses[f'{symbol}:{tf}']='data_rejected: '+str(exc)[:160]
-            save_snapshot(session,symbol,tf,current_config().hash,now,'data_rejected',stream_summary(symbol,tf,error=exc));session.commit()
+            save_snapshot(session,symbol,tf,current_config().hash,utc(clock()),'data_rejected',stream_summary(symbol,tf,error=exc),data_cutoff=now);session.commit()
             phases['snapshot_and_commit']+=_time.monotonic()-_t;continue
         phases['evaluate_total']+=_time.monotonic()-_t; _t=_time.monotonic()
-        save_snapshot(session,symbol,tf,result['config_hash'],now,result['status'],stream_summary(symbol,tf,result))
+        save_snapshot(session,symbol,tf,result['config_hash'],utc(clock()),result['status'],stream_summary(symbol,tf,result),data_cutoff=now)
         statuses[f'{symbol}:{tf}']=result['status']+(f" rebuilt:{result['rebuild_reason']}" if result.get('rebuilt') else '')
         if maintenance:
             session.execute(update(RzyStream).where(RzyStream.stream_key==f"{symbol}:{tf}:{result['config_hash']}").values(updated_at=now.replace(tzinfo=None)))
@@ -470,9 +470,24 @@ def snapshot_current_since(now):
     return (now-SNAPSHOT_GRACE).replace(tzinfo=None)
 
 
-def save_snapshot(session,symbol,tf,config_hash,now,status,summary):
+def save_snapshot(session,symbol,tf,config_hash,now,status,summary,*,data_cutoff=None):
+    # F09: completion time and deterministic input cutoff are different clocks. Retain both;
+    # a newly persisted snapshot must not refresh the eligibility of old input data.
+    summary=dict(summary,data_cutoff=utc(data_cutoff or now).isoformat())
     session.merge(RzyStreamSnapshot(stream_key=f'{symbol}:{tf}:{config_hash}',symbol=symbol,timeframe=tf,config_hash=config_hash,
-        checked_at=now.replace(tzinfo=None),status=status[:48],summary=summary))
+        checked_at=utc(now).replace(tzinfo=None),status=status[:48],summary=summary))
+
+
+def snapshot_data_cutoff(row):
+    value=row.summary.get('data_cutoff')
+    if value is None: return row.checked_at  # legacy rows used scan cutoff as checked_at
+    try: return utc(datetime.fromisoformat(value)).replace(tzinfo=None)
+    except (ValueError,TypeError): return None  # unknown never means current
+
+
+def snapshot_is_current(row,since):
+    cutoff=snapshot_data_cutoff(row)
+    return cutoff is not None and min(row.checked_at,cutoff)>=since
 
 
 def digest_preview(session,user_id,now=None):
@@ -506,22 +521,29 @@ def digest_snapshot(session,user_id,now=None):
         for tf in tfs:
             r=rows.get(f'{sym}:{tf}:{cfg.hash}')
             if r is None: exclusions.append({'symbol':sym,'timeframe':tf,'reason':'not_evaluated_yet'}); continue
-            if r.checked_at<since:
+            cutoff=snapshot_data_cutoff(r)
+            if not snapshot_is_current(r,since):
                 # Historical only: an old 'research_only' result is not a current candidate.
                 expired+=1
-                exclusions.append({'symbol':sym,'timeframe':tf,'reason':'snapshot_expired','checked_at':r.checked_at.isoformat(),
+                exclusions.append({'symbol':sym,'timeframe':tf,'reason':'snapshot_cutoff_unknown' if cutoff is None else 'snapshot_expired','checked_at':r.checked_at.isoformat(),
+                    'data_cutoff':r.summary.get('data_cutoff',r.checked_at.isoformat()),
                     'historical_status':r.status,'historical_candidates':len(r.summary.get('candidates',[]))}); continue
             candidates.extend(r.summary.get('candidates',[]))
             if r.summary.get('exclusion'): exclusions.append(dict(r.summary['exclusion'],checked_at=r.checked_at.isoformat()))
     times=[r.checked_at for r in rows.values()]
+    cutoffs=[snapshot_data_cutoff(r) for r in rows.values()]
+    known_cutoffs=[c for c in cutoffs if c is not None]
     oldest,newest=min(times),max(times)
     candidates=_rank(candidates)
     return dict(base,available=True,snapshot_from=oldest.isoformat(),snapshot_to=newest.isoformat(),
         snapshot_age_minutes=round((now.replace(tzinfo=None)-oldest).total_seconds()/60,1),
         streams_with_snapshot=len(rows),streams_expected=len(keys),streams_current=len(rows)-expired,streams_expired=expired,
         current_since=since.isoformat(),
+        data_cutoff_from=min(known_cutoffs).isoformat() if known_cutoffs else None,
+        data_cutoff_to=max(known_cutoffs).isoformat() if known_cutoffs else None,
+        streams_unknown_cutoff=sum(c is None for c in cutoffs),
         candidates=candidates[:10],total_candidates=len(candidates),exclusions=exclusions,
-        freshness_note='Saved scan results, not recomputed for this request. Only snapshots written by a scan since the time shown are used; older ones are listed as expired and their candidates are not shown.')
+        freshness_note='Saved scan results, not recomputed for this request. Processing time and input data cutoff must both be current; older snapshots or cutoffs are listed as expired and their candidates are not shown.')
 
 
 def morning_digest(session,now=None):
