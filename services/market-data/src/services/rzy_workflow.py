@@ -44,14 +44,15 @@ KEEP_GENERATIONS=5
 # Occurrence/rebuild records are compact and outlive generation pruning (F08); bounded like scan runs.
 RECORD_RETENTION=timedelta(days=35)
 # The trade figures an email states; a rebuild that changes any of them must not send the old body.
-FIGURE_KEYS=('primary_target','stop','planned_entry','D','reward_risk','event_type','direction')
+FIGURE_KEYS=('primary_target','stop','planned_entry','D','reward_risk','event_type','direction',
+    'actual_paper_fill','paper_fill_time','exit_price','exit_quantity','paper_state','net_pnl_per_unit','reason')
 
 
 #: Price figures equal within the bar-revision rounding bound (bar_provenance.revision_magnitude):
 #: max(half a cent, 2e-5 x price). Measured Oct 21: 49 of 57 rebuild-changed signal figures were
 #: float noise or rounding (e.g. KTOS entry 38.779998779 -> 38.78), which the exact comparison
 #: below would have read as "the trade figures changed" and suppressed the email.
-PRICE_FIGURES=('primary_target','stop','planned_entry','D')
+PRICE_FIGURES=('primary_target','stop','planned_entry','D','actual_paper_fill','exit_price')
 FIGURE_ABS,FIGURE_REL=0.005,2e-5
 #: reward:risk is derived from the prices; a sub-cent stop move on a tight setup moves it by ~0.1%.
 #: Equal within 1% (or 0.01) unless the change crosses the configured minimum.
@@ -134,7 +135,11 @@ def load_bars(session,symbol,timeframe,now,cache=None):
     stock=session.scalar(select(Stock).where(Stock.symbol==symbol))
     if stock is None or stock.market!='US': return [],{'status':'US_stocks_only_or_unknown_symbol'}
     tf={'5m':TimeFrame.M5,'15m':TimeFrame.M15,'1h':TimeFrame.H1,'1d':TimeFrame.D1}[timeframe]
-    rows=session.scalars(select(Price).where(Price.stock_id==stock.id,Price.timeframe==tf).order_by(Price.ts.desc()).limit(6000)).all()
+    # Only columns consumed by the adapter: avoid materialising thousands of ORM entities
+    # (and their unused fields) in the identity map on every stream. Preserve the same
+    # history window: arbitrarily shortening it can hide revisions or change rebuilds.
+    columns=[getattr(Price,k) for k in ('ts','open','high','low','close','adj_close','volume','session')]
+    rows=session.execute(select(*columns).where(Price.stock_id==stock.id,Price.timeframe==tf).order_by(Price.ts.desc()).limit(6000)).all()
     if timeframe in ('15m','1h'):
         # One canonical source per evaluation, never spliced (RZA-07): native rows win only when
         # they are current and at least as recent as bars derived from complete 5m constituents.
@@ -154,7 +159,7 @@ def load_bars(session,symbol,timeframe,now,cache=None):
     return result
 
 
-def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_cache=None,allow_rebuild=True,clock=None,timings=None):
+def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_cache=None,allow_rebuild=True,clock=None,timings=None,include_chart=True):
     """Advance one stream on its latest contiguous completed-bar segment.
 
     Stored history that no longer matches the checkpoint (material OHLC revision, a removed bar,
@@ -241,6 +246,9 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_
             session.add(RzyEvent(event_id=event['event_id'],symbol=symbol,timeframe=timeframe,event_type=event['event_type'],payload=event,created_at=persisted_at))
         _record_occurrences(session,key,symbol,timeframe,stored,now,persisted_at,
             'bootstrap' if prior is None else 'rebuild' if rebuilt else 'incremental')
+        from .rzy_journal import record_positions
+        record_positions(session,key,engine,stored,persisted_at,
+            'bootstrap' if prior is None else 'rebuild' if rebuilt else 'incremental')
     last_index=engine.last_index
     structures=[dict(st,planning_reference=planning_reference(st,engine.s['bars'][-1],last_index,engine.s['indicators'][-1],cfg)) for st in list(engine.s['structures'].values())[-20:]] if engine.s['bars'] else []
     generation=engine.s.get('generation',1)
@@ -256,7 +264,7 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_
     return dict(status=evidence['status'],evidence=evidence,events=events[-100:],new_events=new_events,structures=structures,
         paper_positions=[dict(structure_id=k,**p) for k,p in engine.s['positions'].items()][-50:],
         indicators=engine.s['indicators'][-1] if engine.s['indicators'] else None,
-        price_grid=[dict({k:b[k] for k in ('time','open','high','low','close')}, **{k:ind[k] for k in ('middle_band','upper_band','lower_band')}) for b,ind in list(zip(engine.s['bars'],engine.s['indicators']))[-1000:]],
+        price_grid=[dict({k:b[k] for k in ('time','open','high','low','close')}, **{k:ind[k] for k in ('middle_band','upper_band','lower_band')}) for b,ind in list(zip(engine.s['bars'],engine.s['indicators']))[-1000:]] if include_chart else [],
         configuration=__import__('dataclasses').asdict(cfg),
         strategy_version=VERSION,config_hash=cfg.hash,bootstrap=prior is None,rebuilt=rebuilt,rebuild_reason=reason if rebuilt else None,
         generation=generation,superseded_event_count=superseded)
@@ -321,7 +329,7 @@ def emailable(event,paper_blockers=()):
     if kind=='ENTRY_CANCELLED':
         # A cancellation caused only by standing data blockers repeats what the trigger email said.
         return not set(event.get('failed_rules') or []).issubset(STANDING_BLOCKERS)
-    return kind in ('TRIGGERED','REVERSAL_WATCH','EXHAUSTION_WATCH','EXIT_PENDING','PAPER_EXIT')
+    return kind in ('TRIGGERED','REVERSAL_WATCH','EXHAUSTION_WATCH','PAPER_FILL','EXIT_PENDING','PAPER_EXIT')
 
 
 def scan(session,now=None,clock=None):
@@ -357,7 +365,7 @@ def scan(session,now=None,clock=None):
     for symbol,tf in sorted(jobs):
         if symbol!=previous_symbol: cache.clear(); previous_symbol=symbol
         _t=_time.monotonic()
-        try: result=evaluate(session,symbol,tf,now,persist=True,bars_cache=cache,clock=clock,timings=phases)
+        try: result=evaluate(session,symbol,tf,now,persist=True,bars_cache=cache,clock=clock,timings=phases,include_chart=False)
         except (ValueError,TypeError) as exc:
             phases['evaluate_total']+=_time.monotonic()-_t; _t=_time.monotonic()
             session.rollback();statuses[f'{symbol}:{tf}']='data_rejected: '+str(exc)[:160]
@@ -428,12 +436,17 @@ def stream_summary(symbol,tf,result=None,error=None):
     """One stream's digest contribution: candidates, or the single reason it has none."""
     if error is not None:
         return dict(candidates=[],exclusion={'symbol':symbol,'timeframe':tf,'reason':'data_rejected: '+str(error)[:160]})
+    ev=result.get('evidence') or {}
+    expected=ev.get('expected_latest_close'); actual=ev.get('data_as_of')
+    health=dict(data_as_of=actual,expected_latest_close=expected,source=ev.get('source') or ev.get('provider'),
+        latest_completed_bin_present=(utc(datetime.fromisoformat(actual))>=utc(datetime.fromisoformat(expected))) if actual and expected else None,
+        history_gap_count=len(ev.get('gaps',[])),segment_bars=ev.get('segment_bars'),
+        paper_blockers=ev.get('paper_blockers') or ['execution_evidence_unknown'])
     if result['status']!='research_only':
-        ev=result.get('evidence') or {}
-        return dict(candidates=[],exclusion={'symbol':symbol,'timeframe':tf,'reason':ev.get('stale_reason') or result['status'],
+        return dict(health=health,candidates=[],exclusion={'symbol':symbol,'timeframe':tf,'reason':ev.get('stale_reason') or result['status'],
             'data_as_of':ev.get('data_as_of'),'expected_latest_close':ev.get('expected_latest_close'),'source':ev.get('source')})
     active=[s for s in result['structures'] if s['state']=='ARMED']
-    if not active: return dict(candidates=[],exclusion={'symbol':symbol,'timeframe':tf,'reason':'no_armed_structure'})
+    if not active: return dict(health=health,candidates=[],exclusion={'symbol':symbol,'timeframe':tf,'reason':'no_armed_structure'})
     minimum=result['configuration']['min_rr']; candidates=[]
     for st in active:
         reference=st['planning_reference']
@@ -442,7 +455,7 @@ def stream_summary(symbol,tf,result=None,error=None):
             provisional_stop=reference['stop'],entry_reference=reference['entry_reference'],trigger_line=reference['trendline'],planned_reward_risk=reference['reward_risk'],
             sequence=st['sequence_number'],sequence_confidence=st['sequence_confidence'],data_as_of=result['evidence'].get('data_as_of'),
             guidance=GUIDANCE.format(minimum=minimum),min_reward_risk=minimum))
-    return dict(candidates=candidates,exclusion=None if candidates else {'symbol':symbol,'timeframe':tf,'reason':'insufficient_planned_reward_risk'})
+    return dict(health=health,candidates=candidates,exclusion=None if candidates else {'symbol':symbol,'timeframe':tf,'reason':'insufficient_planned_reward_risk'})
 
 
 def _rank(candidates):

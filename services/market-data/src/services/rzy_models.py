@@ -116,3 +116,23 @@ class RzyScanPhases(Base):
     scan_time: Mapped[datetime] = mapped_column(DateTime, primary_key=True)
     mode: Mapped[str] = mapped_column(String(16))
     phases: Mapped[dict] = mapped_column(JSON)
+
+
+class RzyPaperJournal(Base):
+    """Durable position observations, separate per generation; never pruned with checkpoints.
+
+    These are simulator records, not broker fills. Replay/imported positions are labelled
+    explicitly and excluded from the forward cohort. Retention needs an explicit policy.
+    """
+    __tablename__ = 'little_rzy_paper_journal'
+    journal_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    stream_key: Mapped[str] = mapped_column(String(96), index=True)
+    symbol: Mapped[str] = mapped_column(String(32))
+    timeframe: Mapped[str] = mapped_column(String(8))
+    config_hash: Mapped[str] = mapped_column(String(24), index=True)
+    generation: Mapped[int] = mapped_column(Integer)
+    structure_id: Mapped[str] = mapped_column(String(64))
+    observed_in: Mapped[str] = mapped_column(String(24))
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime)
+    payload: Mapped[dict] = mapped_column(JSON)

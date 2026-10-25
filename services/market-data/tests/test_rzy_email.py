@@ -210,3 +210,23 @@ def test_digest_counts_routine_exclusions_and_lists_only_the_ones_worth_reading(
     assert '1 — price data not current: AMADY 15m' in text
     assert '1 — setup found, but planned reward:risk below the minimum: ADBE 1h' in text
     assert '1 — price data rejected: ZZZ 5m' in text
+
+
+def test_simulated_fill_is_distinct_from_trigger_and_broker_execution():
+    e=sample(event_type='PAPER_FILL',actual_paper_fill=161.20,paper_fill_time=CLOSE,paper_state='OPEN')
+    text=render_event(e,(),config=CFG,**TIMES)
+    assert 'simulated entry fill' in event_subject(e)
+    assert 'Simulated entry filled — no broker order' in text
+    assert '161.2000' in text and 'This is not a broker fill' in text
+    assert 'Actual-fill reward:risk' in text
+    assert 'not an entry trigger or an instruction to reverse' not in text
+    html=render_event_html(e,(),config=CFG,**TIMES)
+    assert 'Simulated entry filled' in html
+
+
+def test_structure_terminal_messages_do_not_claim_a_trade_exit():
+    for kind in ('INVALIDATED','EXPIRED'):
+        e=sample(event_type=kind)
+        text=render_event(e,(),config=CFG,**TIMES)
+        assert 'not a trade exit' in text
+        assert 'does not confirm a fill or close a position you hold' in text

@@ -32,7 +32,7 @@ export default function LittleRzyAdminPage() {
   }, [router]);
   const { data: overview, error: overviewError } = useSWR<RzyAdminOverview>(allowed ? 'rzy-admin-overview' : null, api.rzyAdminOverview, { refreshInterval: 60_000 });
   const { data: digest, error: digestError } = useSWR(allowed ? 'rzy-digest-snapshot' : null, api.rzyDigest, { refreshInterval: 60_000 });
-  const { data: paper, error: paperError } = useSWR(allowed ? 'rzy-paper' : null, api.rzyPaper);
+  const { data: paper, error: paperError } = useSWR(allowed ? 'rzy-paper' : null, api.rzyPaper, { refreshInterval: 60_000 });
   if (!allowed) return null;
 
   const status = overview?.streams.by_status ?? {};
@@ -59,6 +59,25 @@ export default function LittleRzyAdminPage() {
       <Tile label="Scan time (median / p95)" value={overview ? `${fmt(overview.scans.duration_seconds.median, 0)}s / ${fmt(overview.scans.duration_seconds.p95, 0)}s` : '…'} note={overview ? `${overview.scans.recent_session_scans} session scans in the last 20 h` : undefined} />
       <Tile label="Signals too late to email" value={overview ? overview.scans.too_late_to_mail : '…'} note={overview ? `${overview.scans.queued} queued in the last 20 h` : undefined} tone={overview?.scans.too_late_to_mail ? 'text-red-300' : 'text-slate-100'} />
     </div>
+
+    {overview?.monitoring && <Section title="Alert timing and readiness" intro={overview.monitoring.note}>
+      <p className="text-amber-300">Research only · execution is not ready.</p>
+      <ul className="list-disc pl-5 text-xs text-slate-400">{overview.monitoring.blockers.map(b => <li key={b}>{b}</li>)}</ul>
+      <div className={`${card} overflow-x-auto`}><table className="w-full tabular-nums"><thead><tr>{['TF', 'Trigger occurrences', 'Stage', 'Samples', 'Median', 'p95', 'Maximum'].map(h => <th className={th} key={h}>{h}</th>)}</tr></thead>
+        <tbody>{Object.entries(overview.monitoring.by_timeframe).flatMap(([tf, row]) => Object.entries(row.seconds_from_close).map(([stage, values]) => <tr key={`${tf}:${stage}`}>
+          <td className={td}>{tf}</td><td className={td}>{row.trigger_occurrences}</td><td className={td}>{stage.replaceAll('_', ' ')}</td><td className={td}>{values.samples}</td>
+          <td className={td}>{fmt(values.median, 0)}s</td><td className={td}>{fmt(values.p95, 0)}s</td><td className={td}>{fmt(values.max, 0)}s</td>
+        </tr>))}</tbody></table>
+        {!Object.keys(overview.monitoring.by_timeframe).length && <p>No incremental trigger observations in the last 20 hours.</p>}
+        {Object.entries(overview.monitoring.by_timeframe).map(([tf, row]) => <p className="mt-2 text-xs text-slate-400" key={tf}>{tf}: {row.too_late_to_queue} detected past the queue limit; {row.invalid_timestamps} invalid timestamps. Outcomes: {Object.entries(row.receipt_outcomes).map(([name, n]) => `${name} ${n}`).join(' · ') || 'no receipts'}.</p>)}
+      </div>
+      <details className={card}><summary className="cursor-pointer text-teal-400">Stream freshness and execution blockers</summary>
+        <div className="mt-2 overflow-x-auto"><table className="w-full"><thead><tr>{['Stream', 'Status', 'Latest data close', 'Expected close', 'Latest bin present', 'Paper blockers'].map(h => <th className={th} key={h}>{h}</th>)}</tr></thead>
+          <tbody>{overview.monitoring.streams.map(s => <tr key={`${s.symbol}:${s.timeframe}`}><td className={td}>{s.symbol} {s.timeframe}</td><td className={td}>{s.status}</td>
+            <td className={td}>{when(s.data_as_of)}</td><td className={td}>{when(s.expected_latest_close)}</td><td className={td}>{s.latest_completed_bin_present == null ? 'unknown' : s.latest_completed_bin_present ? 'yes' : 'missing'}</td>
+            <td className={td}>{s.paper_blockers?.join(', ') || 'unknown'}</td></tr>)}</tbody></table></div>
+      </details>
+    </Section>}
 
     <Section title="Morning digest preview" intro={<>Read from the scanner&apos;s saved results; nothing is recomputed when you open this page. Candidates are armed setups with planned reward/risk of at least 1.5. Entry and stop are provisional references: wait for an intraday trigger candle and recheck the open.</>}>
       {digestError && <p role="alert" className="text-red-400">Preview unavailable.</p>}
@@ -125,6 +144,32 @@ export default function LittleRzyAdminPage() {
     </Section>
 
     <Section title="Research paper ledger" intro="A separate, simulated ledger in one-share units. It never touches your real or paper portfolios and never sends broker orders.">
+      {paper?.performance && <div className="space-y-3">
+        <h3 className="font-semibold text-slate-100">Forward simulator performance</h3>
+        <p className="text-xs text-slate-400">{paper.performance.coverage} First observation in this window: {when(paper.performance.recording_since)}.</p>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <Tile label="Scored forward trades" value={paper.performance.summary.scored_trades} note={`${paper.performance.summary.cancelled} cancelled · ${paper.performance.summary.unresolved} unresolved`} />
+          <Tile label="Forward win rate" value={paper.performance.summary.win_rate == null ? '—' : `${fmt(paper.performance.summary.win_rate * 100, 1)}%`} />
+          <Tile label="Net expectancy" value={`${fmt(paper.performance.summary.net_expectancy_r, 3)} R`} />
+          <Tile label="Realised drawdown" value={`${fmt(paper.performance.summary.realized_drawdown_r, 2)} R`} note="closed-trade exit order" />
+        </div>
+        <p className="text-xs text-slate-400">{paper.performance.units}</p>
+        <p className="text-xs text-slate-400">Average winning trade: {fmt(paper.performance.summary.average_win_r, 3)} R · average losing or flat trade: {fmt(paper.performance.summary.average_loss_r, 3)} R.</p>
+        <p className="text-xs text-amber-300">{paper.performance.summary.conclusion}</p>
+        <p className="text-xs text-slate-400">Excluded: {paper.performance.summary.replay_or_imported} replay/imported observations, {paper.performance.summary.superseded} superseded generations, {paper.performance.summary.unscorable_closed} closed trades without valid risk. Categories can overlap.</p>
+        <details className={card}><summary className="cursor-pointer text-teal-400">Performance by timeframe and direction</summary>
+          <table className="mt-2 w-full tabular-nums"><thead><tr>{['Group', 'Scored trades', 'Win rate', 'Net expectancy (R)'].map(h => <th className={th} key={h}>{h}</th>)}</tr></thead>
+            <tbody>{Object.entries(paper.performance.groups).flatMap(([dimension, groups]) => Object.entries(groups).map(([name, s]) => <tr key={`${dimension}:${name}`}>
+              <td className={td}>{dimension}: {name}</td><td className={td}>{s.scored_trades}</td><td className={td}>{s.win_rate == null ? '—' : `${fmt(s.win_rate * 100, 1)}%`}</td><td className={td}>{fmt(s.net_expectancy_r, 3)} R</td>
+            </tr>))}</tbody></table>
+        </details>
+        <details className={card}><summary className="cursor-pointer text-teal-400">Durable lifecycle journal ({paper.performance.journal_total}; latest 200 shown)</summary>
+          <div className="mt-2 overflow-x-auto"><table className="w-full"><thead><tr>{['Stream', 'Generation', 'Cohort', 'State', 'Fill', 'Net / share', 'Lifecycle'].map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
+            <tbody>{paper.performance.journal.map(p => <tr key={p.journal_id}><td className={td}>{p.symbol} {p.timeframe}</td><td className={td}>{p.generation}{p.superseded ? ' (superseded)' : ''}</td>
+              <td className={td}>{p.observed_in}</td><td className={td}>{p.state}{p.cancelled ? ' (cancelled)' : ''}</td><td className={td}>{fmt(p.fill)}</td><td className={td}>{fmt(p.net, 4)}</td>
+              <td className={td}>{p.lifecycle.map(e => <div key={e.event_id} className="text-xs">{e.event_type} · {when(e.signal_time)}</div>)}</td></tr>)}</tbody></table></div>
+        </details>
+      </div>}
       <div className="rounded-lg border border-sky-600/40 bg-sky-500/10 p-4 text-sm text-sky-100">
         <h3 className="mb-1 font-semibold">What &ldquo;CLOSED (cancelled)&rdquo; means</h3>
         <p>When a setup triggers, the strategy plans a paper entry at the next bar&apos;s open and re-checks it then. If any check fails, the paper trade is <b>cancelled before it opens</b>: no position, no profit or loss. It is recorded as CLOSED with the reasons that failed. A cancelled row is not a losing trade, and the trigger stays visible on the chart as research history.</p>

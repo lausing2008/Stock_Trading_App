@@ -77,6 +77,14 @@ def test_reconciliation_ingests_and_reports_grid_completeness():
     assert redis["status"] == "ok"
 
 
+def test_internal_gap_is_partial_even_when_final_candle_is_finalized():
+    stored=[('AAPL', t) for t in GRID]+[('SMH', t) for i,t in enumerate(GRID) if i!=10]
+    detail, _, redis=_reconcile(stored,written=DONE)
+    assert detail['final_candle_missing']==[] and detail['final_candle_forming']==[]
+    assert detail['missing_candles']=={'SMH':1}
+    assert redis['status']=='partial'
+
+
 def test_a_final_candle_still_forming_is_partial():
     """Present but last written at 15:55:25 ET, before the candle completed at 16:00."""
     detail, _, redis = _reconcile([("AAPL", t) for t in GRID] + [("SMH", t) for t in GRID],

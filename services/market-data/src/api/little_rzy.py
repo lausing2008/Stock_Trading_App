@@ -49,9 +49,11 @@ def digest(user=Depends(get_current_user),session=Depends(get_session)):
 
 @router.get('/paper')
 def paper(user=Depends(get_current_user),session=Depends(get_session)):
+    from ..services.rzy_journal import paper_report
     symbols=W.watchlist_symbols(session,user.id)
     streams=session.scalars(select(RzyStream).where(RzyStream.symbol.in_(symbols))).all() if symbols else []
     return dict(strategy_version=VERSION,note='Separate deterministic research paper ledger, one-share units. No live broker execution or changes to existing portfolio balances.',
+        performance=paper_report(session,symbols,W.current_config().hash),
         positions=[dict(symbol=row.symbol,timeframe=row.timeframe,config_hash=row.config_hash,generation=row.checkpoint.get('generation',1),structure_id=k,**p)
                    for row in streams if row.config_hash==W.current_config().hash for k,p in row.checkpoint.get('positions',{}).items()][-100:],
         provenance='Current configuration only; each row names its stream generation. A rebuilt stream replaces its open-position cache; superseded history is in the event log.')
@@ -85,7 +87,7 @@ def admin_overview(_admin=Depends(get_admin_user),session=Depends(get_session)):
     now=datetime.now(timezone.utc).replace(tzinfo=None); since=now-timedelta(hours=20)
     cfg=W.current_config()
     runs=session.scalars(select(RzyScanRun).order_by(RzyScanRun.scan_time.desc()).limit(40)).all()
-    recent=[r for r in runs if r.scan_time>=since and r.mode=='session']
+    recent=session.scalars(select(RzyScanRun).where(RzyScanRun.scan_time>=since,RzyScanRun.mode=='session')).all()
     durations=sorted(r.duration_seconds for r in recent)
     snaps=session.scalars(select(RzyStreamSnapshot).where(RzyStreamSnapshot.config_hash==cfg.hash)).all()
     # Append-only rebuild log: generation archives are pruned and would undercount (F08).
@@ -96,8 +98,13 @@ def admin_overview(_admin=Depends(get_admin_user),session=Depends(get_session)):
     revs=session.scalars(select(BarRevision).where(BarRevision.fetched_at>=since)).all()
     mail=session.scalars(select(NotificationOutbox).where(NotificationOutbox.alert_type.in_(('little_rzy','short_term_digest')))
         .order_by(NotificationOutbox.created_at.desc()).limit(60)).all()
+    # The operational population uses a complete, explicit time window, not the 60-row
+    # recent-mail presentation limit (which would hide unaccepted/older receipts).
+    from ..services.rzy_monitoring import monitoring_report
+    window_mail=session.scalars(select(NotificationOutbox).where(NotificationOutbox.alert_type=='little_rzy',NotificationOutbox.created_at>=since)).all()
     q=lambda v,p: v[min(len(v)-1,int(len(v)*p))] if v else None
     return dict(strategy_version=VERSION,config_hash=cfg.hash,generated_at=now.isoformat(),
+        monitoring=monitoring_report([r for r in occs if r.stream_key.endswith(':'+cfg.hash)],window_mail,snaps,now,current_since),
         positioning='Research overlay and watch alert. Not a validated trade recommendation; paper execution is disabled.',
         scans=dict(recent_session_scans=len(recent),duration_seconds=dict(median=q(durations,.5),p95=q(durations,.95),max=durations[-1] if durations else None),
             too_late_to_mail=sum(r.too_late_to_mail for r in recent),queued=sum(r.queued for r in recent),

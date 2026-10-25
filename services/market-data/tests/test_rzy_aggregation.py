@@ -43,6 +43,16 @@ def test_forming_aggregate_is_never_emitted():
     assert info['exclusions'][-1]['reason']=='incomplete_aggregate'
 
 
+def test_one_missing_latest_five_minute_candle_is_stale_after_settling():
+    start,_=session_bounds('US',datetime(2026,10,16).date())
+    row=SimpleNamespace(ts=start,open=100.,high=101.,low=99.,close=100.,adj_close=None,volume=10.,session='REGULAR')
+    _,current=prepare_bars([row],'5m',start+timedelta(minutes=11),session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)
+    assert current['status']=='research_only'  # next bin is still settling
+    _,missing=prepare_bars([row],'5m',start+timedelta(minutes=12),session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)
+    assert missing['status']=='stale'
+    assert datetime.fromisoformat(missing['expected_latest_close'])==start+timedelta(minutes=10)
+
+
 def test_missing_constituent_is_not_interpolated():
     bars,evidence,now=source();bars.pop(4)
     grouped,info=aggregate_completed_bars(bars,evidence,'15m',now,session_bounds=session_bounds)

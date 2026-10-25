@@ -114,6 +114,7 @@ with Session() as s:
     assert ov['scans']['latest'] and ov['scans']['latest'][0]['queued']==1
     assert ov['alerts']['recent'] and all('recipient' not in m for m in ov['alerts']['recent'])
     assert 'not a validated trade recommendation' in ov['positioning'].lower()
+    assert ov['monitoring']['execution_ready'] is False and 'by_timeframe' in ov['monitoring']
     result['admin_overview']=True
     rows=s.scalars(select(models.NotificationOutbox)).all();assert len(rows)==1
     assert rows[0].subject.startswith('RZY research | ') and 'bullish trigger' in rows[0].subject and 'Bullish setup triggered' in rows[0].body_text and 'Research only' in rows[0].body_text and 'No broker order' in rows[0].body_text
@@ -343,6 +344,12 @@ with Session() as s:
     assert not W.figures_equivalent(sent_f,dict(sent_f,reward_risk=3.8),1.5)
     assert not W.figures_equivalent(dict(sent_f,reward_risk=1.505),dict(sent_f,reward_risk=1.495),1.5)
     assert not W.figures_equivalent(sent_f,dict(sent_f,stop=None),1.5)
+    paper_figures=W.figures(dict(event_type='PAPER_FILL',actual_paper_fill=100.,paper_fill_time=now.isoformat(),paper_state='OPEN'))
+    assert not W.figures_equivalent(paper_figures,dict(paper_figures,actual_paper_fill=101.))
+    assert not W.figures_equivalent(paper_figures,dict(paper_figures,paper_fill_time=(now+timedelta(minutes=5)).isoformat()))
+    exit_figures=W.figures(dict(event_type='PAPER_EXIT',exit_price=99.,exit_quantity=1.,paper_state='CLOSED',net_pnl_per_unit=-1.))
+    assert not W.figures_equivalent(exit_figures,dict(exit_figures,exit_quantity=.5))
+    assert not W.figures_equivalent(exit_figures,dict(exit_figures,net_pnl_per_unit=1.))
     result['tolerant_figure_check']=True
     # Independent sender (OD-02 step 4): two drains racing for the same row send it ONCE.
     if engine.dialect.name=='postgresql':
@@ -448,4 +455,122 @@ assert ev['gaps'] and break_indices(gapped,'5m',session_bounds)==[1], 'A gap is 
 bars,ev=prepare_bars(rows,'5m',base+timedelta(minutes=11),session_bounds=session_bounds,resolve_ohlc=resolve_ohlc);assert len(bars)==1 and any(x['reason']=='incomplete_or_settling' for x in ev['exclusions'])
 _,ev=prepare_bars(rows,'5m',base+timedelta(minutes=45),session_bounds=session_bounds,resolve_ohlc=resolve_ohlc);assert ev['status']=='stale'
 result['price_basis_completion_gaps']=True
+# Read-only projection must match the ORM adapter, and chart-less scans preserve decisions.
+with Session() as s:
+    t=base+timedelta(hours=7)
+    columns_seen=[]
+    def capture_columns(conn,cursor,statement,parameters,context,executemany):
+        if 'FROM prices' in statement:
+            columns_seen.append(tuple(col[0] for col in cursor.description))
+    from sqlalchemy import event as sql_event
+    sql_event.listen(engine,'after_cursor_execute',capture_columns)
+    try: projected=W.load_bars(s,'TEST','5m',t)
+    finally: sql_event.remove(engine,'after_cursor_execute',capture_columns)
+    assert columns_seen==[('ts','open','high','low','close','adj_close','volume','session')], columns_seen
+    assert not any(isinstance(x,models.Price) for x in s.identity_map.values())
+    raw=s.scalars(select(models.Price).where(models.Price.stock_id==1,models.Price.timeframe==models.TimeFrame.M5).order_by(models.Price.ts.desc()).limit(6000)).all()
+    reference=prepare_bars(list(reversed(raw)),'5m',t,session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)
+    assert projected==reference
+    full=W.evaluate(s,'TEST','5m',t)
+    slim=W.evaluate(s,'TEST','5m',t,include_chart=False)
+    assert full['price_grid'] and slim['price_grid']==[]
+    assert {k:v for k,v in full.items() if k!='price_grid'}=={k:v for k,v in slim.items() if k!='price_grid'}
+    health=W.stream_summary('TEST','5m',full)['health']
+    assert health['expected_latest_close'] and health['paper_blockers']
+result['slim_scan_parity']=True
+
+# Durable lifecycle observations: no replay promotion, no cancellation scored as a loss,
+# no duplicate entry after rebuilding, no dependence on the pruned operational cache.
+from src.services.rzy_journal import record_positions,paper_report
+from src.services.rzy_models import RzyPaperJournal
+with Session() as s:
+    shipped_rows=s.scalars(select(RzyPaperJournal).where(RzyPaperJournal.symbol=='TEST')).all()
+    assert shipped_rows and any(e['event_type']=='TRIGGERED' for row in shipped_rows for e in row.payload['lifecycle']), 'The shipped evaluate path must record its own real events'
+    key=f'JOURNAL:5m:{Config().hash}'
+    cfg=Config(); recorded=base.replace(tzinfo=None)+timedelta(minutes=10)
+    position=dict(state='PENDING_ENTRY',remaining=1.,gross=0.,fees=0.)
+    st=dict(direction='long',stop=98.,target=106.,planned_entry=100.)
+    sim=types.SimpleNamespace(symbol='JOURNAL',timeframe='5m',config=cfg,
+        s=dict(generation=1,positions={'a':position},structures={'a':st}))
+    trigger=dict(event_id='jt',event_type='TRIGGERED',structure_id='a',signal_time=(base+timedelta(minutes=10)).isoformat())
+    record_positions(s,key,sim,[trigger],recorded,'incremental');s.commit()
+    position.update(state='OPEN',fill=100.,fees=.005)
+    fill=dict(event_id='jf',event_type='PAPER_FILL',structure_id='a',signal_time=(base+timedelta(minutes=15)).isoformat())
+    record_positions(s,key,sim,[fill],recorded+timedelta(minutes=5),'incremental');s.commit()
+    position.update(state='CLOSED',net=3.99,fees=.01,gross=4.)
+    exit_=dict(event_id='jx',event_type='PAPER_EXIT',paper_state='CLOSED',structure_id='a',signal_time=(base+timedelta(minutes=20)).isoformat())
+    record_positions(s,key,sim,[exit_],recorded+timedelta(minutes=10),'incremental');s.commit()
+    record_positions(s,key,sim,[exit_],recorded+timedelta(minutes=11),'incremental');s.commit()
+    s.add(RzyStream(stream_key=key,symbol='JOURNAL',timeframe='5m',config_hash=cfg.hash,checkpoint={'generation':1,'positions':{}},updated_at=recorded));s.commit()
+    report=paper_report(s,{'JOURNAL'},cfg.hash,now=base+timedelta(days=1))
+    assert report['summary']['scored_trades']==1 and report['summary']['win_rate']==1
+    assert report['summary']['net_expectancy_r']==1.995
+    assert [e['event_type'] for e in report['journal'][0]['lifecycle']]==['TRIGGERED','PAPER_FILL','PAPER_EXIT']
+    assert paper_report(s,{'OTHER'},cfg.hash,now=base+timedelta(days=1))['journal_total']==0
+    # Changing generations retains evidence but does not turn replay into another win.
+    stream=s.get(RzyStream,key);stream.checkpoint={'generation':2,'positions':{}}
+    sim.s['generation']=2
+    record_positions(s,key,sim,[trigger,fill,exit_],recorded+timedelta(minutes=30),'rebuild');s.commit()
+    report=paper_report(s,{'JOURNAL'},cfg.hash,now=base+timedelta(days=1))
+    assert report['journal_total']==2 and report['summary']['superseded']==1
+    assert report['summary']['scored_trades']==0 and report['summary']['win_rate'] is None
+    assert report['summary']['replay_or_imported']==1
+    # Cancellation has no fill or P&L and contributes no scored trade.
+    sim.s['positions']={'b':dict(state='CLOSED',cancelled=True,reason='data_basis_or_freshness_unverified')}
+    sim.s['structures']={'b':st}
+    cancelled_trigger=dict(trigger,event_id='ct',structure_id='b',signal_time=(base+timedelta(minutes=40)).isoformat())
+    cancelled_event=dict(cancelled_trigger,event_id='cc',event_type='ENTRY_CANCELLED')
+    record_positions(s,key,sim,[cancelled_trigger,cancelled_event],recorded+timedelta(minutes=30),'incremental');s.commit()
+    report=paper_report(s,{'JOURNAL'},cfg.hash,now=base+timedelta(days=1))
+    assert report['summary']['cancelled']==1 and report['summary']['scored_trades']==0
+    # Mutating current checkpoints cannot erase persisted lifecycle records.
+    stream.checkpoint={'generation':3,'positions':{}};s.commit()
+    assert s.scalar(select(func.count()).select_from(RzyPaperJournal).where(RzyPaperJournal.symbol=='JOURNAL'))==3
+result['durable_paper_journal']=True
+
+from src.services.rzy_monitoring import monitoring_report
+from src.services.rzy_models import RzyOccurrence
+with Session() as s:
+    occurrence=types.SimpleNamespace(timeframe='5m',event_type='TRIGGERED',observed_in='incremental',
+        signal_time=base.replace(tzinfo=None),first_seen_at=base.replace(tzinfo=None)+timedelta(minutes=7),
+        queued_at=None,occurrence_id='latency')
+    boot=types.SimpleNamespace(**{**vars(occurrence),'observed_in':'bootstrap'})
+    m=monitoring_report([occurrence,boot],[],[],base,base.replace(tzinfo=None))
+    tf=m['by_timeframe']['5m']
+    assert tf['trigger_occurrences']==1 and tf['seconds_from_close']['detection']['samples']==1
+    assert tf['seconds_from_close']['detection']['median']==420
+    assert tf['receipt_outcomes']=={'not_queued':1} and not m['execution_ready']
+    occurrence.queued_at=base.replace(tzinfo=None)+timedelta(minutes=8)
+    receipt=types.SimpleNamespace(event_id='rzy:1:latency',alert_type='little_rzy',state='accepted',accepted_at=base.replace(tzinfo=None)+timedelta(minutes=9))
+    tf=monitoring_report([occurrence],[receipt],[],base,base.replace(tzinfo=None))['by_timeframe']['5m']
+    assert tf['seconds_from_close']['provider_acceptance']['median']==540
+    assert tf['seconds_from_close']['queue']['median']==480
+    assert tf['receipt_outcomes']=={'accepted':1}
+result['latency_population']=True
+
+
+# Real engine -> real journal -> report: next-open fill, conservative stop and charged costs.
+fixture_spec=importlib.util.spec_from_file_location('rzy_engine_fixture',pathlib.Path(__file__).with_name('test_little_rzy.py'))
+fixture=importlib.util.module_from_spec(fixture_spec);fixture_spec.loader.exec_module(fixture)
+with Session() as s:
+    sim,seen,st=fixture.triggered(fill=False);sim.symbol='ENGINE_JOURNAL'
+    key=f'ENGINE_JOURNAL:5m:{sim.config.hash}'
+    at=datetime.fromisoformat(seen[-1]['closed_at']).replace(tzinfo=None)
+    record_positions(s,key,sim,sim.events,at,'incremental');s.commit()
+    i=len(seen); line=sim.line(st,i);b=fixture.candle(i)
+    b.update(open=line+.8,close=line+1,low=line+.3,high=line+1.2)
+    emitted=sim.step(b);assert any(e['event_type']=='PAPER_FILL' and W.emailable(e) for e in emitted)
+    record_positions(s,key,sim,emitted,at+timedelta(minutes=5),'incremental');s.commit()
+    pos=sim.s['positions'][st['id']]
+    b=fixture.candle(i+1);b.update(open=pos['fill'],high=pos['fill']+.5,low=pos['stop']-.5,close=pos['stop']-.1)
+    emitted=sim.step(b);assert any(e['event_type']=='PAPER_EXIT' for e in emitted)
+    record_positions(s,key,sim,emitted,at+timedelta(minutes=10),'incremental');s.commit()
+    s.add(RzyStream(stream_key=key,symbol=sim.symbol,timeframe='5m',config_hash=sim.config.hash,checkpoint={'generation':1},updated_at=at));s.commit()
+    report=paper_report(s,{sim.symbol},sim.config.hash,now=at.replace(tzinfo=timezone.utc)+timedelta(days=1))
+    assert report['summary']['scored_trades']==1 and report['summary']['win_rate']==0
+    assert report['summary']['net_expectancy_r']< -1, 'Friction and commissions must survive into scored net R'
+    assert report['journal'][0]['net']==pos['net']
+    assert pos['fees']>0 and pos['net']<pos['gross']
+result['engine_journal_execution']=True
+
 print(json.dumps(result))

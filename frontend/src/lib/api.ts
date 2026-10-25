@@ -242,7 +242,7 @@ export const api = {
   saveRzyPreferences: (body: import('./rzy').RzyPreferences) => request<import('./rzy').RzyPreferences>('/stocks/rzy/preferences', { method: 'PUT', body: JSON.stringify(body) }),
   rzyDigest: () => request<{ candidates: { symbol: string; direction: string; timeframe: string; target: number; entry_reference?: number; provisional_stop?: number; planned_reward_risk?: number; guidance: string }[]; exclusions: { symbol: string; timeframe: string; reason: string; checked_at?: string }[]; note: string; available?: boolean; message?: string; snapshot_from?: string; snapshot_to?: string; snapshot_age_minutes?: number; streams_with_snapshot?: number; streams_expected?: number; streams_current?: number; streams_expired?: number; current_since?: string; data_cutoff_from?: string | null; data_cutoff_to?: string | null; streams_unknown_cutoff?: number; total_candidates?: number; freshness_note?: string }>('/stocks/rzy/digest'),
   rzyAdminOverview: () => request<RzyAdminOverview>('/stocks/rzy/admin/overview'),
-  rzyPaper: () => request<{ note: string; provenance?: string; positions: { symbol: string; timeframe: string; state: string; cancelled?: boolean; reason?: string; fill?: number; net?: number; generation?: number; config_hash?: string; trigger_index?: number; entry_time?: string }[] }>('/stocks/rzy/paper'),
+  rzyPaper: () => request<{ note: string; provenance?: string; performance?: RzyPaperPerformance; positions: { symbol: string; timeframe: string; state: string; cancelled?: boolean; reason?: string; fill?: number; net?: number; generation?: number; config_hash?: string; trigger_index?: number; entry_time?: string }[] }>('/stocks/rzy/paper'),
 
   calibrationCandidates: (includeProvisional = false) => request<CalibrationComparison>(`/signals/calibration-candidates?include_provisional=${includeProvisional}`),
   getRiskDeliverySchedule: () => request<{ enabled: boolean; timezone: string; start: string; end: string }>('/alerts/risk-delivery'),
@@ -4932,4 +4932,20 @@ export interface RzyAdminOverview {
   occurrences_last_20h?: { total: number; by_observation: Record<string, number>; queued: number };
   bar_revisions_last_20h: { total: number; completed: Record<string, number>; forming: Record<string, number> };
   alerts: { states: Record<string, number>; recent: { alert_type: string; state: string; subject: string; created_at: string; accepted_at: string | null; expires_at: string | null; terminal_reason: string | null }[] };
+  monitoring?: {
+    execution_ready: boolean; readiness: string; blockers: string[]; note: string;
+    by_timeframe: Record<string, { trigger_occurrences: number; invalid_timestamps: number; too_late_to_queue: number; receipt_outcomes: Record<string, number>; seconds_from_close: Record<string, { samples: number; median: number | null; p95: number | null; max: number | null }> }>;
+    streams: { symbol: string; timeframe: string; status: string; checked_at: string; current: boolean; data_as_of?: string; expected_latest_close?: string; latest_completed_bin_present?: boolean | null; paper_blockers?: string[] }[];
+  };
+}
+
+export interface RzyPerformanceSummary {
+  forward_observations: number; cancelled: number; unresolved: number; closed_trades: number; scored_trades: number;
+  unscorable_closed: number; win_rate: number | null; net_expectancy_r: number | null; average_win_r: number | null;
+  average_loss_r: number | null; realized_drawdown_r: number | null; replay_or_imported: number; superseded: number; conclusion: string;
+}
+export interface RzyPaperPerformance {
+  summary: RzyPerformanceSummary; groups: Record<string, Record<string, RzyPerformanceSummary>>;
+  journal_total: number; recording_since: string | null; units: string; coverage: string;
+  journal: { journal_id: string; symbol: string; timeframe: string; generation: number; observed_in: string; state: string; cancelled?: boolean; superseded: boolean; fill?: number; net?: number; direction: string; first_seen_at: string; lifecycle: { event_id: string; event_type: string; signal_time: string }[] }[];
 }

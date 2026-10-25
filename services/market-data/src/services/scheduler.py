@@ -12517,7 +12517,8 @@ def _reconcile_session_5m(market: str, now: "datetime | None" = None, *, second_
         _get_redis().set(key, json.dumps(detail, default=str))
     except Exception:
         pass
-    incomplete = detail["final_candle_missing"] or detail["final_candle_forming"] or detail.get("completeness_error")
+    incomplete = (detail["missing_candles"] or detail["final_candle_missing"] or
+                  detail["final_candle_forming"] or detail.get("completeness_error"))
     _record_job_status(f"{market.lower()}_5m_reconcile", "error" if error else ("partial" if incomplete else "ok"), elapsed)
     return detail
 

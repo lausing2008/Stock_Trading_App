@@ -1,0 +1,14 @@
+........................................................................ [ 98%]
+.                                                                        [100%]
+=============================== warnings summary ===============================
+../../../../../anaconda3/lib/python3.12/site-packages/pydantic/_internal/_config.py:295
+../../../../../anaconda3/lib/python3.12/site-packages/pydantic/_internal/_config.py:295
+  /home/lausing/anaconda3/lib/python3.12/site-packages/pydantic/_internal/_config.py:295: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.10/migration/
+    warnings.warn(DEPRECATION_MESSAGE, DeprecationWarning)
+
+src/api/routes.py:5803
+  /home/lausing/Documents/MyProjects/Stock_Trading_App/services/market-data/src/api/routes.py:5803: FastAPIDeprecationWarning: `regex` has been deprecated, please use `pattern` instead
+    tf: str = Query("1d", regex="^(15m|1h|4h|1d)$"),
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+73 passed, 3 warnings in 9.70s

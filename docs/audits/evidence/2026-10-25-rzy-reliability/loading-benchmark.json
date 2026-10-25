@@ -1,0 +1,11 @@
+{
+  "dataset": "6000 synthetic regular-session 5m bars, disposable SQLite",
+  "adapter_outputs_equal": true,
+  "samples_per_arm": 5,
+  "median_seconds": {
+    "orm": 0.20829718001186848,
+    "projected": 0.12255811202339828
+  },
+  "projected_change_percent": -41.16189570285344,
+  "limitation": "Local query+adapter microbenchmark only; no full-scan, journal overhead, production-I/O or delivery-latency claim."
+}

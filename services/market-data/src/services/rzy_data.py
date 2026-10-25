@@ -70,21 +70,16 @@ def prepare_bars(rows, timeframe, now, *, session_bounds, resolve_ohlc):
             while d<cur.date():
                 if session_bounds('US',d): gaps.append({'date':d.isoformat(),'reason':'missing_daily_session'})
                 d+=timedelta(days=1)
-    latest=accepted[-1][2]; expected=None
-    day=now.astimezone(NY).date()
-    for _ in range(12):
-        bounds=session_bounds('US',day)
-        if bounds:
-            lo,hi=(utc(v) for v in bounds)
-            if timeframe=='1d' and hi+timedelta(minutes=2)<=now: expected=hi; break
-            if timeframe!='1d' and lo<now:
-                expected=min(hi,now-timedelta(minutes=2)); break
-        day-=timedelta(days=1)
-    stale=expected is None or (expected-latest)>timedelta(minutes=MINUTES[timeframe] if timeframe!='1d' else 2)
+    latest=accepted[-1][2]
+    expected_close=latest_completable_close(now,timeframe,session_bounds)
+    # One missing completed bin is stale too. Comparing a continuous wall-clock cutoff
+    # with a whole-timeframe tolerance previously accepted exactly one missing 5m bar.
+    stale=expected_close is None or latest<expected_close
     # Gaps are reported, not fatal: the workflow evaluates only the latest contiguous segment
     # (see break_indices) instead of excluding a symbol for months over one old missing bar.
     return bars,dict(status='stale' if stale else 'research_only',
         gaps=gaps,exclusions=excluded,provider='stored_prices_upstream_not_retained',data_as_of=latest.isoformat(),
+        expected_latest_close=expected_close.isoformat() if expected_close else None,
         delay='unknown',price_basis=basis['basis'],price_basis_reason=basis['reason'],stale=stale,
         paper_blockers=['provider_delay_unverified','borrow_availability_not_stored','execution_basis_unverified'])
 

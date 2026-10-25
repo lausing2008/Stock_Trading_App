@@ -1,0 +1,54 @@
+{
+  "baseline_passed": true,
+  "isolated_copy": true,
+  "checks": [
+    {
+      "check": "projected_reads",
+      "mutation_applied": true,
+      "compiled": true,
+      "test_rejected_mutation": true
+    },
+    {
+      "check": "journal_wired_to_evaluate",
+      "mutation_applied": true,
+      "compiled": true,
+      "test_rejected_mutation": true
+    },
+    {
+      "check": "cohort_isolation",
+      "mutation_applied": true,
+      "compiled": true,
+      "test_rejected_mutation": true
+    },
+    {
+      "check": "unmailed_latency_population",
+      "mutation_applied": true,
+      "compiled": true,
+      "test_rejected_mutation": true
+    },
+    {
+      "check": "execution_figure_fidelity",
+      "mutation_applied": true,
+      "compiled": true,
+      "test_rejected_mutation": true
+    },
+    {
+      "check": "latest_bin_freshness",
+      "mutation_applied": true,
+      "compiled": true,
+      "test_rejected_mutation": true
+    },
+    {
+      "check": "internal_gap_status",
+      "mutation_applied": true,
+      "compiled": true,
+      "test_rejected_mutation": true
+    },
+    {
+      "check": "fill_email_distinction",
+      "mutation_applied": true,
+      "compiled": true,
+      "test_rejected_mutation": true
+    }
+  ]
+}

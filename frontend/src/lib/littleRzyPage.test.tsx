@@ -56,3 +56,31 @@ it('distinguishes processing completion from the input cutoff and excludes unkno
   expect(screen.getByText(/they do not make older inputs current/)).toBeTruthy();
   expect(screen.getByText(/unknown data cutoff and are excluded/)).toBeTruthy();
 });
+
+it('shows latency denominators, execution blockers and durable performance without inventing wins', async () => {
+  m.api.rzyAdminOverview.mockResolvedValue({ ...overview, monitoring: {
+    execution_ready: false, readiness: 'research_only', blockers: ['Provider timing unverified'], note: 'Acceptance is not inbox delivery.',
+    by_timeframe: { '5m': { trigger_occurrences: 4, invalid_timestamps: 0, receipt_outcomes: { not_queued: 2 },
+      seconds_from_close: { detection: { samples: 4, median: 300, p95: 600, max: 600 }, provider_acceptance: { samples: 2, median: 350, p95: 400, max: 400 } } } },
+    streams: [{ symbol: 'TEST', timeframe: '5m', status: 'stale', current: true, checked_at: '2026-10-21T15:00:00',
+      data_as_of: '2026-10-21T14:50:00', expected_latest_close: '2026-10-21T14:55:00', latest_completed_bin_present: false, paper_blockers: ['execution_basis_unverified'] }]
+  } });
+  m.api.rzyPaper.mockResolvedValue({ ...paper, performance: {
+    summary: { forward_observations: 2, cancelled: 2, unresolved: 0, closed_trades: 0, scored_trades: 0, unscorable_closed: 0,
+      win_rate: null, net_expectancy_r: null, average_win_r: null, average_loss_r: null, realized_drawdown_r: null,
+      replay_or_imported: 3, superseded: 1, conclusion: 'No demonstrated edge.' }, groups: {}, journal_total: 1,
+    recording_since: '2026-10-25T12:00:00Z', units: 'Net R per one-share simulated trade.', coverage: 'Superseded generations excluded.',
+    journal: [{ journal_id: 'j1', symbol: 'TEST', timeframe: '5m', generation: 1, observed_in: 'forward_observation', state: 'CLOSED',
+      cancelled: true, superseded: false, direction: 'long', first_seen_at: '2026-10-25T12:00:00Z',
+      lifecycle: [{ event_id: 'e1', event_type: 'ENTRY_CANCELLED', signal_time: '2026-10-25T12:00:00Z' }] }]
+  } });
+  view();
+  await screen.findByText('Alert timing and readiness');
+  expect(screen.getByText('Research only · execution is not ready.')).toBeTruthy();
+  expect(screen.getAllByText('600s')).toHaveLength(2);
+  expect(screen.getByText('missing')).toBeTruthy();
+  expect(screen.getByText('Forward simulator performance')).toBeTruthy();
+  expect(screen.getByText('Forward win rate').nextElementSibling?.textContent).toBe('—');
+  expect(screen.getByText('Net expectancy').nextElementSibling?.textContent).toBe('— R');
+  expect(screen.getByText(/ENTRY_CANCELLED ·/)).toBeTruthy();
+});

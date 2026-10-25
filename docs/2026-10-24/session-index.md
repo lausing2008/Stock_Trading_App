@@ -104,3 +104,7 @@ The next frontend-only improvement adds an expandable original/alternative compa
 
 
 Candidate-comparison rollout completed: `003e05ab` is public and live. Frontend 936 passed, full typecheck clean, production compiled 76 pages. All 15 containers healthy; all 12 backend sources match; all 14 non-frontend starts unchanged. Real-data replay verified four static strategy tables and all 20 sort/strategy source-index mappings, including the unpriced TSM original. [Final report and evidence](../audits/2026-10-24-options-candidate-comparison.md).
+
+## October 25 RZY reliability continuation
+
+[Implementation and acceptance record](../2026-10-25/rzy-reliability-and-forward-journal.md): slim scan reads/chart omission, explicit timing/readiness denominators and durable generation-scoped simulator observations with conservative forward metrics. Validation/deployment status is maintained in that record. Execution evidence and prospective edge remain open; 457/458 are not closed by this implementation.

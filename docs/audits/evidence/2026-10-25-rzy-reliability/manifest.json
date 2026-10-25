@@ -1,0 +1,35 @@
+{
+  "base_commit": "ca3852f47402bc276b4a283c9a48e008c2e8e2f4",
+  "code_sha256": {
+    "frontend/src/lib/api.ts": "15986a3edcf6e056c29a115039543b442626248a4acd9e84e987e90f840812cf",
+    "frontend/src/lib/littleRzyPage.test.tsx": "373ba362595cfec5a3579496f577bcd9728aa4cd5cb07f1f0532dc6644bb4aef",
+    "frontend/src/pages/improvements.tsx": "41450f1501338cc4512da61d4b3abe74b60683dc2f1c543719e5f0a8927abe8a",
+    "frontend/src/pages/little-rzy.tsx": "4209e8842f6ea802add277d67c52f50e7591bbf167594b47a53762474ee70935",
+    "services/market-data/src/api/little_rzy.py": "b8b8a2df4d2679c965e9a7759f8d706da16b28585dd7f326b3a51b11d42a70b0",
+    "services/market-data/src/services/rzy_data.py": "f2d90429474b0cb44a7c3dacb5b7892cb740265419cf56ec9324dc1089b00810",
+    "services/market-data/src/services/rzy_email.py": "96527f4cf5b87acf05a9e4afd9e705de5bc6545d4e85de77d7b2de6e558b4ce1",
+    "services/market-data/src/services/rzy_models.py": "671cb192726542851436cc2fcf7aa383818966e4aec62b3d639341db4806aa49",
+    "services/market-data/src/services/rzy_workflow.py": "c75f6ba698e9586f2ade9d60a5f686315a0564e4a1042910fff9830e59589451",
+    "services/market-data/src/services/scheduler.py": "1d89ce92475113ab4ad62a109dadc8dbe50c3eac782634d45172ea622efd975c",
+    "services/market-data/tests/_little_rzy_probe.py": "a0b2da4fba9ef63e1666f49d7a3ca8ed9881c210aa3a0453e3d8627d4114d153",
+    "services/market-data/tests/test_little_rzy_workflow.py": "573446860198e52b63f3ff234adf3422046d41600437d74f3e3857565f8c2094",
+    "services/market-data/tests/test_rzy_aggregation.py": "849b29982f16ad59dc356ddd8777557b297034d9484f435498f911d970d134d7",
+    "services/market-data/tests/test_rzy_email.py": "7fdbdabeb9f4755e6e8f425e120e701a81fb95cb4a97251c4e3e2e669ed3e176",
+    "services/market-data/tests/test_session_grid_and_reconcile.py": "3f2695df2f4a6b78f3f64cc8be286f0d015e99fea48173cf7684372c199cb774",
+    "services/market-data/src/services/rzy_journal.py": "83ccc3c36d8b3607d32c466470c466ac69c2726eaa0776dc526f1cfa397da76b",
+    "services/market-data/src/services/rzy_monitoring.py": "ce6b55234387881651329c70c23cbfee97b2dc940bc5e9fab26d36c9cd14af5f"
+  },
+  "artifacts": {
+    "production-readiness-before.json": "d8d08f1bcadec643411de902236d9c6965550da828050e8dfecce48551b6e9d3",
+    "loading-benchmark.json": "2bba789f4d2f4ba5615a9271f0846f01bac5106998138e0bd36fee30931a5e4c",
+    "market-full.txt": "b99957b70351a49092a44c4452b00ed364033e6f781aa3ed31dbd0385b707cab",
+    "postgres-final.txt": "34e0f991f3ffe2f170491dd590ae399d2d322f0907a36c785d585c1545b03ceb",
+    "market-final-focused.txt": "4f30b1af2bb94ea947239b231a79f05d37e649748fbec7979e5e3e174070ef9f",
+    "mutations.json": "030f2d72169869656b1f0376bb7c7ded8d17ba92c23adab132c33435880f2627",
+    "typecheck.txt": "d4732110e2acf99551ec12bae39a1061dbfb60b5f0dfa251b5c457df9db6ac8c",
+    "mutation_checks.py": "29113231af94ddff5000e0e441d4b28fcb0353a4a0d9e8ee2dac13399c68842d",
+    "frontend-full.txt": "533fc1c032e613d8bdf0e20c7dc5e134d92040a8f582a804aa02ab19b12a5c30",
+    "benchmark_loading.py": "5316385d18092b662743c65a63c6e9b386afd8b8e256033dd934c22c3e25d907"
+  },
+  "scope": "Local tests and read-only production baseline. Not full-session speed or trading acceptance."
+}

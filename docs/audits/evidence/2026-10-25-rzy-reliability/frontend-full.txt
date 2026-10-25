@@ -1,0 +1,99 @@
+
+> stockai-frontend@0.1.0 test
+> vitest run
+
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+
+ RUN  v1.6.1 /home/lausing/Documents/MyProjects/Stock_Trading_App/frontend
+
+stderr | src/__tests__/polling-behaviour.test.tsx > error retries while hidden or offline > 429: shown again after its deadline — retried once, not twice
+Warning: The current testing environment is not configured to support act(...)
+
+ ✓ src/__tests__/polling-behaviour.test.tsx  (18 tests) 175ms
+ ✓ src/components/CopilotPanel.interaction.test.tsx  (10 tests) 847ms
+ ✓ src/components/OptionsFlowCard.test.tsx  (8 tests) 917ms
+ ✓ src/components/MarketPressurePanel.test.tsx  (6 tests) 913ms
+ ✓ src/components/LLMAlternativePlan.test.tsx  (18 tests) 1451ms
+ ✓ src/__tests__/options-feed-states.test.tsx  (15 tests) 1672ms
+ ✓ src/components/PriceChart.commands.test.tsx  (10 tests) 1781ms
+ ✓ src/components/StockDetailWorkspace.test.tsx  (9 tests) 2477ms
+ ✓ src/components/StockGamePlanCard.test.tsx  (13 tests) 3258ms
+ ✓ src/components/OptionsGamePlanCard.test.tsx  (10 tests) 3406ms
+ ✓ src/lib/littleRzyPage.test.tsx  (5 tests) 1735ms
+ ✓ src/components/OptionsSnapshotControls.test.tsx  (11 tests) 1537ms
+ ✓ src/components/TradeSetupSummary.test.tsx  (5 tests) 939ms
+ ✓ src/__tests__/income-settlement-caveats.test.tsx  (6 tests) 350ms
+ ✓ src/components/OptionCandidateComparison.test.tsx  (3 tests) 1137ms
+ ✓ src/components/OptionsDominanceCard.test.tsx  (8 tests) 1893ms
+ ✓ src/components/ShortOptionRisk.test.tsx  (6 tests) 1624ms
+ ✓ src/__tests__/options-missing-inputs.test.tsx  (9 tests) 1663ms
+ ✓ src/__tests__/options-contract-terms.test.tsx  (10 tests) 1266ms
+ ✓ src/components/OptionsDarkPoolTutorial.test.tsx  (6 tests) 1683ms
+ ✓ src/components/StockGamePlanCard.llm.test.tsx  (3 tests) 3673ms
+ ✓ src/components/StockGamePlanCard.refresh.test.tsx  (2 tests) 2390ms
+ ✓ src/lib/optionsSnapshotApi.test.ts  (2 tests) 52ms
+ ✓ src/components/OptionStrategyMatrix.test.tsx  (27 tests) 12011ms
+ ✓ src/lib/optionsGainLoss.test.ts  (84 tests) 160ms
+ ✓ src/__tests__/gain-loss-held-unquoted.test.tsx  (2 tests) 815ms
+ ✓ src/components/CalibrationCandidateCard.test.tsx  (2 tests) 632ms
+ ✓ src/components/RiskDeliveryScheduleCard.test.tsx  (3 tests) 800ms
+ ✓ src/lib/optionsTabCharts.test.ts  (35 tests) 85ms
+ ✓ src/components/LittleRzyPanel.test.tsx  (3 tests) 637ms
+ ✓ src/lib/riskAlertsPage.test.tsx  (1 test) 406ms
+ ✓ src/components/WorkspaceSyncControls.test.tsx  (3 tests) 1336ms
+ ✓ src/__tests__/stock-intelligence.test.tsx  (20 tests) 251ms
+ ✓ src/lib/intelReportLayout.test.ts  (31 tests) 81ms
+ ✓ src/lib/fvgTradePlan.test.ts  (21 tests) 26ms
+ ✓ src/lib/copilot.test.ts  (2 tests) 39ms
+ ✓ src/lib/commonOptionPlans.test.ts  (39 tests) 56ms
+ ✓ src/lib/chartDrawings.test.ts  (20 tests) 51ms
+ ✓ src/lib/optionsFlowStatus.test.ts  (19 tests) 54ms
+ ✓ src/lib/qualityValueCoverage.test.ts  (13 tests) 40ms
+ ✓ src/components/DirectionScreen.test.tsx  (16 tests) 162ms
+ ✓ src/components/DailyCloseAlerts.test.tsx  (1 test) 470ms
+ ✓ src/__tests__/quality-value-applicability.test.tsx  (6 tests) 56ms
+ ✓ src/lib/ivHvChart.test.ts  (24 tests) 36ms
+ ✓ src/lib/navGuardParity.test.ts  (94 tests) 229ms
+ ✓ src/lib/mlFleetAge.test.ts  (16 tests) 38ms
+ ✓ src/lib/regimeThresholds.test.ts  (14 tests) 54ms
+ ✓ src/lib/indicators.test.ts  (11 tests) 23ms
+ ✓ src/lib/qualityValueRender.test.ts  (15 tests) 20ms
+ ✓ src/lib/calendarDate.test.ts  (10 tests) 53ms
+ ✓ src/lib/optionExpiryRisk.test.ts  (8 tests) 26ms
+ ✓ src/lib/optionsChainChart.test.ts  (24 tests) 49ms
+ ✓ src/lib/tierLabelCoverage.test.ts  (5 tests) 182ms
+ ✓ src/lib/numberField.test.ts  (22 tests) 26ms
+ ✓ src/lib/useLiveQuotes.test.ts  (19 tests) 24ms
+ ✓ src/lib/rzy.test.ts  (8 tests) 46ms
+ ✓ src/lib/riskReward.test.ts  (10 tests) 28ms
+ ✓ src/lib/improvementStatuses.test.ts  (8 tests) 27ms
+ ✓ src/lib/watchlistSelection.test.ts  (22 tests) 51ms
+ ✓ src/lib/intelReportView.test.ts  (19 tests) 38ms
+ ✓ src/lib/swingPivots.test.ts  (10 tests) 34ms
+ ✓ src/lib/optionResearchContext.test.ts  (15 tests) 31ms
+ ✓ src/lib/optionResearchLead.test.ts  (3 tests) 16ms
+ ✓ src/lib/volumeProfile.test.ts  (10 tests) 23ms
+ ✓ src/lib/optionCalendarEvidence.test.ts  (24 tests) 34ms
+ ✓ src/lib/optionCandidateComparison.test.ts  (4 tests) 18ms
+ ✓ src/lib/optionSearchPreferences.test.ts  (14 tests) 18ms
+ ✓ src/lib/fixEffectiveness.test.ts  (3 tests) 12ms
+ ✓ src/components/CopilotScreen.test.tsx  (2 tests) 38ms
+ ✓ src/components/CopilotPanel.test.tsx  (3 tests) 35ms
+ ✓ src/lib/rzyReasons.test.ts  (3 tests) 13ms
+ ✓ src/lib/expiryProductBoundary.test.ts  (2 tests) 21ms
+ ✓ src/__tests__/signal-strength-explanation.test.tsx  (2 tests) 85ms
+ ✓ src/lib/chartCommands.test.ts  (1 test) 20ms
+ ✓ src/components/FilterAuditComparison.test.tsx  (7 tests) 36ms
+ ✓ src/lib/intradayHistory.test.ts  (2 tests) 22ms
+ ✓ src/__tests__/options-flow-review.test.tsx  (1 test) 32ms
+ ✓ src/lib/stockWorkspaceLayout.test.ts  (2 tests) 20ms
+ ✓ src/__tests__/options-flow-direction-card.test.tsx  (2 tests) 52ms
+ ✓ src/lib/selectedPlanLines.test.ts  (2 tests) 12ms
+ ✓ src/lib/tuningMetric.test.ts  (2 tests) 9ms
+ ✓ src/__tests__/stock-flow-overview.test.tsx  (1 test) 29ms
+ ✓ src/lib/boardDates.test.ts  (1 test) 8ms
+
+ Test Files  83 passed (83)
+      Tests  986 passed (986)
+   Start at  15:41:13
+   Duration  22.18s (transform 9.03s, setup 39ms, collect 32.16s, tests 56.58s, environment 64.05s, prepare 26.98s)

@@ -66,6 +66,9 @@ def event_label(event):
         return 'Bearish setup triggered' if event.get('position_action') == 'OPEN_SHORT' else 'Bullish setup triggered'
     return {'REVERSAL_WATCH': 'Possible reversal — watch only',
             'EXHAUSTION_WATCH': 'Trend exhaustion — watch only',
+            'PAPER_FILL': 'Simulated entry filled',
+            'INVALIDATED': 'Research structure invalidated',
+            'EXPIRED': 'Research structure expired',
             'EXIT_PENDING': 'Paper exit pending',
             'PAPER_EXIT': 'Partial paper exit recorded' if event.get('paper_state') != 'CLOSED' else 'Paper position closed',
             'ENTRY_CANCELLED': 'Paper entry cancelled'}.get(kind, 'Pattern update — watch only')
@@ -76,6 +79,8 @@ def _short_label(event):
     if kind == 'TRIGGERED':
         return 'bearish trigger' if event.get('position_action') == 'OPEN_SHORT' else 'bullish trigger'
     return {'REVERSAL_WATCH': 'reversal watch', 'EXHAUSTION_WATCH': 'exhaustion watch',
+            'PAPER_FILL': 'simulated entry fill',
+            'INVALIDATED': 'structure invalidated', 'EXPIRED': 'structure expired',
             'EXIT_PENDING': 'paper exit pending',
             'PAPER_EXIT': 'paper position closed' if event.get('paper_state') == 'CLOSED' else 'partial paper exit',
             'ENTRY_CANCELLED': 'paper entry cancelled'}.get(kind, 'pattern update')
@@ -118,6 +123,10 @@ def _num(value):
 
 
 def _status_heading(kind, blocked, event):
+    if kind == 'PAPER_FILL':
+        return 'Simulated entry filled — no broker order'
+    if kind in ('INVALIDATED','EXPIRED'):
+        return 'Research structure invalidated — not a trade exit' if kind=='INVALIDATED' else 'Research structure expired — not a trade exit'
     if kind == 'TRIGGERED':
         return 'Research trigger — paper execution blocked' if blocked else 'Research trigger — paper entry pending checks, not a fill'
     if kind in WATCH_TYPES:
@@ -136,7 +145,12 @@ def _status(event, blockers, evaluated_at, rendered_at):
     signal = _parse(event.get('signal_time'))
     tf_minutes = MINUTES.get(event.get('timeframe'))
     lines = [_status_heading(kind, bool(blockers), event)]
-    if kind == 'TRIGGERED' and blockers:
+    if kind == 'PAPER_FILL':
+        lines.append(f'The deterministic simulator recorded an entry at {_num(event.get("actual_paper_fill"))}. '
+                     f'Simulated fill time: {_stamp(_parse(event.get("paper_fill_time")))}. This is not a broker fill or an instruction to buy or short now.')
+    elif kind in ('INVALIDATED','EXPIRED'):
+        lines.append('The research structure is no longer an active entry setup. This does not confirm a fill or close a position you hold.')
+    elif kind == 'TRIGGERED' and blockers:
         lines.append('Paper execution unavailable. This setup will not open a paper position; '
                      'do not expect a corresponding trade-exit email.')
     elif kind == 'TRIGGERED':
@@ -236,6 +250,9 @@ def _reasons(event, cfg):
         failed = event.get('failed_rules') or []
         return [CANCEL_REASONS.get(r, f'{r} (unrecognised identifier, shown raw)') for r in failed] or [
             'Reason: ' + str(event.get('rejection_reason') or NA)]
+    if kind == 'PAPER_FILL':
+        return [f'Simulated entry passed the next-bar execution, liquidity and actual-fill reward:risk checks. '
+                f'Actual-fill reward:risk: {_num(event.get("reward_risk"))}:1. This is a simulator result, not execution-provider confirmation.']
     if kind in EXIT_TYPES:
         reason = event.get('reason')
         if kind == 'EXIT_PENDING':
@@ -307,6 +324,11 @@ def sections(event, paper_blockers=(), *, evaluated_at=None, rendered_at=None, c
     elif kind == 'ENTRY_CANCELLED':
         out.append(('Why the paper entry was cancelled', _reasons(event, cfg)))
         out.append(('Original setup levels', _levels(event)))
+    elif kind == 'PAPER_FILL':
+        out.append(('Simulated fill checks', _reasons(event, cfg)))
+        out.append(('Original setup levels', _levels(event)))
+    elif kind in ('INVALIDATED','EXPIRED'):
+        out.append(('Structure lifecycle', _reasons(event, cfg)))
     else:
         out.append(('Why this triggered', _reasons(event, cfg)))
         out.append(('Setup levels', _levels(event)))

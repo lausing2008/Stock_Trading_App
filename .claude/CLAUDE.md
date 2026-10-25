@@ -476,3 +476,5 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/audits/2026-09-08-gate-audit.md`** — ALL-GATES audit (2026-09-08): 12 findings, 6 FIXED (tier 368), run as 3 parallel audits (entry / exit+risk / signal+alert) over 158 gate constants in 14 files … [Redis, watchdog]
 
 - **[`docs/2026-09-06/DEEP_SYSTEM_AUDIT.md`](../docs/2026-09-06/DEEP_SYSTEM_AUDIT.md)** — Full-system architecture + trading-logic deep audit, 27 verified findings. All 19 priority fixes applied and deployed (`prod` commits `9225995`, `bed7ed9`, `50c710f`, `0fb74c3`) …
+
+- **2026-10-25 RZY reliability:** [scan cost, latency/readiness, durable simulator journal and forward metrics](../docs/2026-10-25/rzy-reliability-and-forward-journal.md); research only, 457/458 and execution/edge gates remain open.

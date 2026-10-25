@@ -1,0 +1,72 @@
+{
+  "captured_at": "2026-10-25T22:37:30.192033+00:00",
+  "session": "2026-10-23",
+  "stored_operational_evidence": {
+    "scheduler:job:us_5m_reconcile": "{\"job\": \"us_5m_reconcile\", \"status\": \"partial\", \"last_run\": \"2026-10-23T20:07:01.648074+00:00\", \"duration_s\": 1.6, \"error\": null}",
+    "scheduler:job:us_5m_reconcile:detail": "{\"market\": \"US\", \"session\": \"2026-10-23\", \"pass\": 2, \"symbols\": 13, \"complete\": 0, \"final_candle_missing\": [\"BRK-A\", \"AMADY\"], \"final_candle_forming\": [], \"missing_candles\": {\"XSD\": 23, \"SOXQ\": 1, \"BRK-A\": 19, \"AMADY\": 46, \"EE\": 1, \"AAON\": 1, \"NATL\": 2, \"TTGT\": 19, \"IMVT\": 3, \"QUCY\": 14, \"DFNS\": 1, \"AMZA\": 14, \"FRNM\": 5}, \"off_grid_rows\": {}, \"no_session_data\": [], \"ingest_error\": null}",
+    "scheduler:job:hk_5m_reconcile": "{\"job\": \"hk_5m_reconcile\", \"status\": \"ok\", \"last_run\": \"2026-10-23T08:17:00.489083+00:00\", \"duration_s\": 0.5, \"error\": null}",
+    "scheduler:job:hk_5m_reconcile:detail": "{\"market\": \"HK\", \"session\": \"2026-10-23\", \"pass\": 2, \"symbols\": 5, \"complete\": 0, \"final_candle_missing\": [], \"final_candle_forming\": [], \"missing_candles\": {\"2171.HK\": 2, \"6608.HK\": 4, \"9898.HK\": 10, \"0117.HK\": 26, \"1768.HK\": 7}, \"off_grid_rows\": {}, \"no_session_data\": [], \"ingest_error\": null}",
+    "stockai:metric:off_grid_snapshots_excluded": "771"
+  },
+  "completeness": {
+    "symbols": 155,
+    "complete": 141,
+    "missing_intervals": 227,
+    "off_grid_rows": 0,
+    "final_missing": [
+      "SSNLF",
+      "BRK-A",
+      "AMADY"
+    ]
+  },
+  "liquid_final_bar_writes": [
+    {
+      "symbol": "GDX",
+      "bar_time": "2026-10-23T19:55:00",
+      "last_written_at": "2026-10-23T20:02:00.669769",
+      "written_after_close": true
+    },
+    {
+      "symbol": "SOXX",
+      "bar_time": "2026-10-23T19:55:00",
+      "last_written_at": "2026-10-23T20:02:00.720437",
+      "written_after_close": true
+    },
+    {
+      "symbol": "SMH",
+      "bar_time": "2026-10-23T19:55:00",
+      "last_written_at": "2026-10-23T20:02:00.901748",
+      "written_after_close": true
+    },
+    {
+      "symbol": "MDB",
+      "bar_time": "2026-10-23T19:55:00",
+      "last_written_at": "2026-10-23T20:02:02.217481",
+      "written_after_close": true
+    },
+    {
+      "symbol": "VICR",
+      "bar_time": "2026-10-23T19:55:00",
+      "last_written_at": "2026-10-23T20:02:02.384506",
+      "written_after_close": true
+    },
+    {
+      "symbol": "AAPL",
+      "bar_time": "2026-10-23T19:55:00",
+      "last_written_at": "2026-10-23T20:02:26.571436",
+      "written_after_close": true
+    },
+    {
+      "symbol": "NVDA",
+      "bar_time": "2026-10-23T19:55:00",
+      "last_written_at": "2026-10-23T20:02:32.029505",
+      "written_after_close": true
+    },
+    {
+      "symbol": "MU",
+      "bar_time": "2026-10-23T19:55:00",
+      "last_written_at": "2026-10-23T20:02:34.088382",
+      "written_after_close": true
+    }
+  ]
+}
