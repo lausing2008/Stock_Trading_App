@@ -1,0 +1,56 @@
+[
+  {
+    "viewport": 1449,
+    "documentWidth": 1449,
+    "scenarios": 2,
+    "graphs": 4,
+    "scrollers": [
+      {
+        "client": 315,
+        "content": 580
+      },
+      {
+        "client": 315,
+        "content": 580
+      }
+    ],
+    "scopedLabels": true,
+    "keyboardScrollLeft": 265
+  },
+  {
+    "viewport": 1024,
+    "documentWidth": 1024,
+    "scenarios": 2,
+    "graphs": 4,
+    "scrollers": [
+      {
+        "client": 293,
+        "content": 580
+      },
+      {
+        "client": 293,
+        "content": 580
+      }
+    ],
+    "scopedLabels": true,
+    "keyboardScrollLeft": 287
+  },
+  {
+    "viewport": 390,
+    "documentWidth": 390,
+    "scenarios": 2,
+    "graphs": 4,
+    "scrollers": [
+      {
+        "client": 328,
+        "content": 580
+      },
+      {
+        "client": 328,
+        "content": 580
+      }
+    ],
+    "scopedLabels": true,
+    "keyboardScrollLeft": 252
+  }
+]

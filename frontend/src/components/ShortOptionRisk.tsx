@@ -5,6 +5,7 @@ import { shortIncomeKind, shortIncomeScenario } from '@/lib/optionExpiryRisk';
 const usd = (n: number) => `${n < 0 ? '−' : ''}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const signed = (n: number) => `${n > 0 ? '+' : ''}${usd(n)}`;
 const cell: React.CSSProperties = { padding: 7, textAlign: 'left', borderBottom: '1px solid #334155', verticalAlign: 'top' };
+const numeric: React.CSSProperties = { ...cell, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' };
 
 export default function ShortOptionRisk({ strategy, referenceStock }: { strategy: OptionStrategy; referenceStock: number }) {
   const [custom, setCustom] = useState('');
@@ -42,7 +43,7 @@ export default function ShortOptionRisk({ strategy, referenceStock }: { strategy
           <thead><tr>{['Stock at expiry', 'Total P/L', 'Stock / assignment effect', 'Premium received', 'Modeled outcome'].map(h=><th key={h} style={cell}>{h}</th>)}</tr></thead>
           <tbody>{choices.map(price=>{
             const s=shortIncomeScenario(strategy,referenceStock,price)!;
-            return <tr key={price}><td style={cell}>{usd(price)}{price===0?' — worst case':''}</td><td style={{...cell,color:s.total<0?'#f87171':'#4ade80'}}>{signed(s.total)}</td><td style={cell}>{signed(s.stockOrAssignmentEffect)}</td><td style={cell}>{signed(s.premium)}</td><td style={cell}>{outcome(price)}</td></tr>;
+            return <tr key={price}><td style={numeric}>{usd(price)}{price===0?' — worst case':''}</td><td style={{...numeric,color:s.total<0?'#f87171':'#4ade80'}}>{signed(s.total)}</td><td style={numeric}>{signed(s.stockOrAssignmentEffect)}</td><td style={numeric}>{signed(s.premium)}</td><td style={cell}>{outcome(price)}</td></tr>;
           })}</tbody>
         </table>
       </div>
