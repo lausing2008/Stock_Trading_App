@@ -1,0 +1,20 @@
+{
+  "pages": [
+    {
+      "path": "/stock/MU",
+      "build_id": "hpeS_pSDLh01N7sR058ca",
+      "markers_verified": true
+    },
+    {
+      "path": "/improvements",
+      "build_id": "hpeS_pSDLh01N7sR058ca",
+      "markers_verified": true
+    },
+    {
+      "path": "/options-dark-pool-tutorial",
+      "build_id": "hpeS_pSDLh01N7sR058ca",
+      "markers_verified": true
+    }
+  ],
+  "responsive_styles_verified": true
+}

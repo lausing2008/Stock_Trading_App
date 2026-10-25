@@ -1,0 +1,5 @@
+{
+  "post_capture_without_token": 401,
+  "get_snapshot_without_token": 401,
+  "scope": "Public gateway requests without credentials; no capture or quote retrieval was authorized by either request"
+}

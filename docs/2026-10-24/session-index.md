@@ -6,9 +6,9 @@ The [October 23 session record](../2026-10-23/session-index.md) and [earlier Oct
 
 ## Latest verified release and validation
 
-Application release **`4c388f913115d0e21217e6d76be7ec36c1e411c3`** is deployed. Fresh verification: **15 healthy containers**, matching source/shared hashes for **all 12 backends**, and only market-data/frontend restarted. Frontend build `77kgUsXs6_kf_Q6nSk719` serves the MU selection fix. Running/rollback images were retained; final free disk space is 34G.
+Application release **`7fcb29d0c7598bb9549b86486614c87dc7b4070d`** is deployed. Fresh verification: **15 healthy containers**, matching source/shared hashes for **all 12 backends**, and only market-data/frontend restarted. Frontend build `hpeS_pSDLh01N7sR058ca` serves the current-provider option refresh. Running/rollback images were retained; final free disk space is 33G.
 
-Release validation: **5,868 market-data tests passed / 26 skipped**, **949 frontend tests passed across 78 files**, TypeScript and whitespace checks passed. A read-only deployed replay of 276 MU November 20 calls selects $880 near the user's $877.55 reference, rather than the separate $1,561.91 forecast. [MU selection report and evidence](../audits/2026-10-24-mu-covered-call-selection.md). Earlier alert/RZY and Learning/layout releases remain recorded below with their own evidence.
+Release validation: **5,912 market-data tests passed / 26 skipped**, **965 frontend tests passed across 80 files**, TypeScript and whitespace checks passed. Real deployed current-endpoint capture/readback verified 11,722 MU contracts, 24 pages, timed stock reference and one snapshot for tables/all four strategy searches; the $880 call uses 51.95/53.00 bid/ask and a 52.48 research midpoint. [Latest refresh report and evidence](../audits/2026-10-25-options-snapshot-refresh.md). Earlier MU selection, alert/RZY and Learning/layout releases retain their own evidence and limitations.
 
 ## Delivered strategy improvements in this session
 
@@ -28,7 +28,7 @@ Read-only TSM checks on the October 22 archive returned 12 alternatives per stra
 
 ## October 25 latest-provider option refresh continuation
 
-[Refresh implementation, constraints and evidence](../audits/2026-10-25-options-snapshot-refresh.md): explicit current-contract capture, shared snapshot pricing across cards/search/chain/calculator, single-expiration scope, source clocks, expiry/cooldown/failure handling and conditional goal fit. Full MU capability probe completed 11,722 contracts over 24 pages; this is newer provider data rather than an archive reread. Snapshot quote times remain unverified and no optimal-return claim is made. Validation and rollout status are recorded in that report; preceding MU/alert/RZY work remains preserved. The existing CLAUDE.md pointer now covers October 19–25.
+[Refresh implementation, constraints and evidence](../audits/2026-10-25-options-snapshot-refresh.md): explicit current-contract capture, shared snapshot pricing across cards/search/chain/calculator, single-expiration scope, source clocks, expiry/cooldown/failure handling and conditional goal fit. Full MU capability probe completed 11,722 contracts over 24 pages; this is newer provider data rather than an archive reread. Snapshot quote times remain unverified and no optimal-return claim is made. Deployed `7fcb29d0`: 5,912 backend and 965 frontend tests passed, full typecheck clean, 15 healthy and actual current-data capture/recalculation verified; preceding MU/alert/RZY work remains preserved. The existing CLAUDE.md pointer now covers October 19–25.
 
 ## MU broker-chain and covered-call selection continuation
 
@@ -67,7 +67,7 @@ The earlier reports retain their own independent-review findings, failed first r
 
 The Improvements page (`frontend/src/pages/improvements.tsx`) records the options follow-ups under tier 468; linked earlier work spans tiers 468–473 and the prior RZY/data-quality trackers. Statuses distinguish delivered safeguards from unresolved semantics, unverified coverage and research-only plans. Each improvement above has its own report and evidence directory. The chronological October 23 record retains earlier tracker counts as historical snapshots, not the latest total.
 
-The user authorized the public `prod` push and automatic production deployment. Published application commits and documentation/evidence follow-ups are recorded in the linked release reports. Latest application release is `4c388f91`; documentation-only follow-ups do not require another rebuild or restart.
+The user authorized the public `prod` push and automatic production deployment. Published application commits and documentation/evidence follow-ups are recorded in the linked release reports. Latest application release is `7fcb29d0`; documentation-only follow-ups do not require another rebuild or restart.
 
 The prior `.claude/CLAUDE.md` update pointed only to a latest-release summary. It now points to this **complete session index**. The persistent core remains one concise pointer; the details stay here and in the topic reports. Existing overall core-size/older-entry guard violations predate this documentation update and are not represented as repaired.
 

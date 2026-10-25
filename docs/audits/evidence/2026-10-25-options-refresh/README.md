@@ -5,7 +5,7 @@
 - `current-endpoint-capability.json`: two bounded requests verified actual current-contract quote/Greek fields and stock tape time. No credentials or user positions.
 - `full-capture-capability.json`: complete real MU capture into ephemeral memory; 11,722 contracts / 24 pages / 807,506 compressed bytes. Its ID is historical and cannot be used as a live app snapshot. The first oversized-format failure was not published.
 - Native browser fixtures render the actual control and stylesheet, using the saved metadata and a frozen clock. They do not authenticate to production or request quotes. Interaction and data-routing checks are separate DOM/backend tests.
-- Final test, native layout and production verification records are added below on completion. The earlier MU/archive/Cboe evidence is unchanged.
+- Final validation: 5,912 backend passed / 26 skipped, 965 frontend passed across 80 files, full typecheck clean. `production.json`, `backend-source.json`, `served.json` and `deployed-capture.json` record release `7fcb29d0` / build `hpeS_pSDLh01N7sR058ca`: 15 healthy, 12 source/shared matches, 13 unrelated start times unchanged, new served controls and actual current-data capture/readback/recalculation. `unauthenticated-access.json` confirms both new capture/read paths return 401 without credentials. Authenticated browser interaction is not claimed. The earlier MU/archive/Cboe evidence is unchanged.
 
 
 Reproduce the offline layout from repository root (frontend dependencies, Python Playwright and Chrome required):

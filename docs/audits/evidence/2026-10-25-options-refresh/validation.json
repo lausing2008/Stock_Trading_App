@@ -11,5 +11,15 @@
   },
   "whitespace": "clean",
   "provider_capability": "11722 supported MU contracts, 24 pages, 807506 compressed bytes; memory-only pre-deployment capture",
-  "production": "pending"
+  "production": {
+    "application_release": "7fcb29d0c7598bb9549b86486614c87dc7b4070d",
+    "build_id": "hpeS_pSDLh01N7sR058ca",
+    "healthy_containers": 15,
+    "matching_backends": 12,
+    "unrelated_container_start_times_unchanged": 13,
+    "actual_current_capture_contracts": 11722,
+    "actual_current_capture_pages": 24,
+    "actual_current_call": "MU261120C00880000",
+    "actual_midpoint": 52.48
+  }
 }
