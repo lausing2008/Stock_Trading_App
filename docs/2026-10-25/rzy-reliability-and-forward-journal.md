@@ -1,6 +1,6 @@
 # Little RZY reliability and forward simulator journal — 2026-10-25
 
-Status: locally validated; production deployment pending. Research only. Strategy/configuration defaults and execution eligibility are unchanged. This record supersedes no prior evaluation: the corrected historical evaluation still shows no demonstrated edge.
+Status: committed, pushed, deployed and independently checked in production. Research only. Strategy/configuration defaults and execution eligibility are unchanged. This record supersedes no prior evaluation: the corrected historical evaluation still shows no demonstrated edge.
 
 ## Scope and acceptance
 
@@ -66,6 +66,12 @@ Review after the main application commit (`8d5833b8`) found that the existing pa
 
 ## Deployment and next evidence
 
-Pending. Only market-data and frontend need rebuilding. The new service-owned table is registered through `rzy_models` before the existing locked startup `create_all`; no existing table columns change. Preserve rollback images and old logs and use the existing host-wide deployment lock.
+Deployed main release **`8d5833b8`** (market-data and frontend), then read-cost follow-up **`1c8790bc`** (market-data only), under the existing host-wide deployment lock. Frontend build **`p_TOgzaqmJB50k54BZqHj`**. Previous images and logs were retained; rollback tags include `rollback-before-8d5833b8` for market-data/frontend and `rollback-before-1c8790bc` for market-data. Remote rollout evidence is `/home/ec2-user/deploy-evidence/2026-10-25-rzy-reliability/`.
+
+Independent checks: **15/15 running healthy; zero drift across all 12 backend `src` and `shared` hashes**; only market-data/frontend start times changed. `/`, `/little-rzy`, `/stock/MU` and `/improvements` return 200 with the running build ID. Compiled assets include the timing/readiness and forward-performance sections and no `localhost:8000`. Unauthenticated requests through the published API gateway return 401 for paper and admin overview. The first verifier incorrectly assumed the private backend port was host-published; verification was corrected to use the gateway.
+
+The new table was created through service model registration and the existing locked startup schema path, without changing existing table columns. A READ ONLY transaction executed the real paper/admin handlers: 348 monitored streams, zero journal rows, null win rate/expectancy and `execution_ready=false`. Missing-latest-bin refusal and the simulated-fill label passed against loaded production code. Configuration remains **`8ceb8cf780c3eb981983`**. No production fixture records, test emails, model calls or broker orders were generated. No authenticated interactive browser acceptance was performed. [Verification, immutable images/start times and source hashes](../audits/evidence/2026-10-25-rzy-reliability/production.json).
+
+Host ended with 28 GB free and 0.0% measured I/O wait. The standard deployment cleanup ran for dangling images/stopped containers; no volumes were removed and rollback images remained tagged.
 
 After deployment, use a complete scheduled session for speed/completeness acceptance, beginning with Monday October 26, 2026 (NYSE regular session). Persist session-report artifacts and release/configuration identities. Do not pool earlier releases into a claimed improvement rate. A healthy container, empty weekend journal or a source-hash match cannot close 457/458 or establish trading readiness.

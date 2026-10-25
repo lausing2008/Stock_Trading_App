@@ -1,0 +1,13 @@
+{
+  "verified_at": "2026-10-25T22:51:59.841677+00:00",
+  "market_data_release": "1c8790bc7994890ac7d339335377a93a5b3eee31",
+  "frontend_release": "8d5833b8ab0f8921abf1ac93505c90436c7e9ad3",
+  "frontend_build": "p_TOgzaqmJB50k54BZqHj",
+  "artifacts": {
+    "production.json": "01b3ab91395d2c63df17f3994e2e068e5c664412eab0b4d020237fbd951860a1",
+    "before.json": "f8f5071c08fd88106b53c44d65bc7ea683d65dd2d6025c244fe4e330cc1f9c7f",
+    "expected-source-hashes.json": "02bf0a072f4b374489f85047a5679a422c5ba177a958612d9112bd47de7cefcc",
+    "verify_production.py": "7cbf7a744c8374c6962c48aeb940d0a43897beb7b379ec7971f6c0906860d753"
+  },
+  "acceptance": "15 healthy; zero of 12 backend source hashes drift; only market-data/frontend restarted; HTTP+compiled-bundle checks and read-only handler execution, not authenticated interactive browser acceptance. Trading/readiness remains research only."
+}

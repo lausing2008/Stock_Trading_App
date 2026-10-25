@@ -107,4 +107,4 @@ Candidate-comparison rollout completed: `003e05ab` is public and live. Frontend 
 
 ## October 25 RZY reliability continuation
 
-[Implementation and acceptance record](../2026-10-25/rzy-reliability-and-forward-journal.md): slim scan reads/chart omission, explicit timing/readiness denominators and durable generation-scoped simulator observations with conservative forward metrics. Validation/deployment status is maintained in that record. Execution evidence and prospective edge remain open; 457/458 are not closed by this implementation.
+[Implementation and acceptance record](../2026-10-25/rzy-reliability-and-forward-journal.md): slim scan reads/chart omission, explicit timing/readiness denominators and durable generation-scoped simulator observations with conservative forward metrics. Deployed main release `8d5833b8` and market-data read-cost follow-up `1c8790bc`; 15 healthy, zero backend drift, build `p_TOgzaqmJB50k54BZqHj`. Full backend 5,918 / frontend 986, final affected checks, PostgreSQL and eight mutation checks passed. Execution evidence and prospective edge remain open; 457/458 are not closed by this implementation.

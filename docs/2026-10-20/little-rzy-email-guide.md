@@ -1,10 +1,14 @@
 # Little RZY email guide and presentation update
 
+**Current status — October 25, 2026:** [The deployed reliability/journal release](../2026-10-25/rzy-reliability-and-forward-journal.md) adds explicit simulated-fill messages and a durable lifecycle/performance view at `/little-rzy` (admin). Existing stored-price streams still lack execution-grade evidence; this does not make the research triggers tradable. Historical implementation notes below are retained; their old local/deployment/test status is superseded by the linked release record.
+
 ## Reading the alerts
 
 - `OPEN_SHORT`: a bearish pattern triggered. The entry reference is a hypothetical short entry, not an order or fill. A short benefits from falling prices; its protective stop is above entry and target below entry.
 - `OPEN_LONG`: a bullish pattern triggered; stop below entry, target above entry.
 - `WATCH_ONLY`: watch for exhaustion or a possible reversal. This does not open a position or instruct a reversal.
+- `PAPER_FILL`: the deterministic simulator recorded a fill, with its simulated price and time. This is not a broker fill or an instruction to enter now; current stored-price streams remain blocked from producing these fills.
+- `INVALIDATED` / `EXPIRED`: research-structure lifecycle states, distinct from trade exits. Their renderers are explicit, but no new outbound invalidation/expiry subscription is enabled. Follow-up is never guaranteed.
 - `EXIT_PENDING`: an existing paper position has a line-close invalidation; the engine requests exit at the next bar open while its protective stop remains active.
 - `PAPER_EXIT`: a simulated exit. It may be partial; consult paper state and the actual exit price, not the original setup reference levels.
 
