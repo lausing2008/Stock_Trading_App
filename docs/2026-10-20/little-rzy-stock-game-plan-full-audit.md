@@ -1,6 +1,6 @@
 # Little RZY and stock-detail Game Plan: independent implementation audit
 
-> **Completion re-review — 2026-10-24:** the main F01–F09 remediations are present. A residual snapshot processing-time/data-cutoff issue under F09 is fixed locally with additional regression checks; after-cost execution and RZY readiness remain distinct open gates. See [current review](../audits/2026-10-24-alerts-plan-workspace-completion.md). The original findings below are historical.
+> **Completion re-review — 2026-10-24:** the main F01–F09 remediations are present. A residual snapshot processing-time/data-cutoff issue under F09 is fixed and deployed in `0a78f4ea` with additional regression checks; after-cost execution and RZY readiness remain distinct open gates. See [current review](../audits/2026-10-24-alerts-plan-workspace-completion.md). The original findings below are historical.
 
 Audit date: 2026-10-20 (America/Los_Angeles). Documentation and reproduction artifacts only; no application fixes, deployment, live database writes or email sends.
 

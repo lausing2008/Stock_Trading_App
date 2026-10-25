@@ -1,0 +1,263 @@
+{
+  "keep_running_or_container_images": [
+    "sha256:3c5762094197e0e945f3484986d90f5ab000f0ac2f6d411b607a66ad1845c6ef",
+    "sha256:41828982d9ac5b39dbcbb4b02d5d11a8157545f959442cb370e60b5269b2cf04",
+    "sha256:487efc0616382465781b8fdc3d6d1db449e6fd80ae23bf48432a2da6b6929908",
+    "sha256:50bdcb6b79bb9b6e07dc9ed17a15aae9261188aa893ff4a88c503902d52ec57c",
+    "sha256:51dfbc128ec96066ffedb60a1a5386dd415abd6b47794d27fa4d73b25e9fd393",
+    "sha256:5d71038c36ea448c768c0a0c6c53150dcc1ae4921b90a04d8900078b327dc6a9",
+    "sha256:6a2a167a737009a4f9944cf4a85dbf72d87680a448e531362600a198c037252b",
+    "sha256:724d93bff5553d57ab18baf81232029882c68bf553d261bfed3b194a99573e4c",
+    "sha256:8e306e2a988a3d3952ec6608cae20d74b51435c40abcf79d708fd6b9fd0c3756",
+    "sha256:91be053a5df31b6d67665c23d3bf0fb9694e7fa5b82f4c3a9a4600b8a2c5f269",
+    "sha256:923b14f5a8fe22df165a3f62d42e74a484dc86f50c61a72292fae13709033190",
+    "sha256:a46c471d90ad803d22e2eddbddd7be398b53e73aa372e79324c0fb0ca56ad5cd",
+    "sha256:afd815b3834e8e0c4d106274028db529447a673a45b84fe7ffd53fd6d744e358",
+    "sha256:cd66692199b27f27803c67b66943a32e6d54d6ea9dccfd0451b8c1d681f67bee",
+    "sha256:fff3594bf464bea0f502788874403882d8bbbe618b3250f8649e7e42fd118020"
+  ],
+  "keep_latest_rollback": {
+    "stockai-market-data": "sha256:28ab21b923c5944fbb20641f4c0ef0895ac8835441a389c07b4849f03251a36e",
+    "stockai-ml-prediction": "sha256:095d4038ef93c5020025c2c6438d21553a49d918ed9729a02c00fd29a8216602",
+    "stockai-frontend": "sha256:16ce9f74b01188c1f88b30da29a42d2cb2021d77b9a74ce66380641d6a25be14",
+    "stockai-ranking-engine": "sha256:49b9811b95cff68c8f386cdb72caced6c1cb66ca13070330b630e79e49021516",
+    "stockai-strategy-engine": "sha256:6a37fd4a49cb93b6e09c443f63e6d3683d4d524473261300d6314b5cb7a4c975",
+    "stockai-decision-engine": "sha256:72a83fcf1b4f75a3c956bdc2edcc387a19a8c93aed95d8c6f2873dda1860b46e",
+    "stockai-technical-analysis": "sha256:74b9e7d16047e32d0b78ef110fb4e101a59eb2f666ffba08614456b95b1236d8",
+    "stockai-portfolio-optimizer": "sha256:971d55383e9538bd16073a29e67acd9183ee5ee8fe6f8ebf7a078f9e621ef7fe",
+    "stockai-event-intelligence": "sha256:ac34fd5361c729552d6732418cd76c7328bbef6bb0173c0116e2b1f87f6da3e8",
+    "stockai-news-intelligence": "sha256:b87cd5e41c0dc40d681945ead5d2f2c46f0c9524318235311d2865bf053cc375",
+    "stockai-research-engine": "sha256:cfeabb2a7383c1ed4c1f847f0bcf8f6e59bcf1daf3241b9603a183bb1633c19b",
+    "stockai-api-gateway": "sha256:e44f30e8a71748d1ac08ec7fe229d2624c70731c02d1c493064d197641f516b2",
+    "stockai-signal-engine": "sha256:f22fe15453fac71b1dbfd5365dd5062d9ee7997cbec2033ff45f7a6790a50bbd"
+  },
+  "remove": [
+    {
+      "id": "sha256:053ed31f20992941fb08e18467a319e60f650e20182f0264aaf40639e9392b0f",
+      "tags": [
+        "stockai-market-data:rollback-before-a1de7cbf3"
+      ]
+    },
+    {
+      "id": "sha256:0853b53b1104f595a44735f29879ee4bd2e6b4fa3a4f8d08d3c745d028f564bb",
+      "tags": [
+        "stockai-market-data:release-7b1ae2f6"
+      ]
+    },
+    {
+      "id": "sha256:0b68a954739139393e2c43366dbd712e7e687ada08579eff34fbd584936547a4",
+      "tags": [
+        "stockai-market-data:release-a1054dcb",
+        "stockai-market-data:rollback-20261024T040527Z"
+      ]
+    },
+    {
+      "id": "sha256:10b627a38523a16b2e6aae08847b6ae127d74fa02690a6d90778a2a397fc19cd",
+      "tags": [
+        "stockai-frontend:release-88496ee8"
+      ]
+    },
+    {
+      "id": "sha256:22695119bf75941646bb1d8164b41ee27607c6e15a04de953ad7ba0e444466f0",
+      "tags": [
+        "stockai-market-data:rollback-before-5d64a486a"
+      ]
+    },
+    {
+      "id": "sha256:22806252e78ebeed9ec559c36686991e7cc661a7e672dbbe6584c0906c8902f7",
+      "tags": [
+        "stockai-market-data:rollback-before-5d582e0bd"
+      ]
+    },
+    {
+      "id": "sha256:253cb4494219747261b93368a4ecd27d1193ed712dc52f8739e7b81d1900d31b",
+      "tags": [
+        "stockai-market-data:release-e08dd338",
+        "stockai-market-data:rollback-20261024T050419Z"
+      ]
+    },
+    {
+      "id": "sha256:2697b8a05e0ca44e9ba6e7c323d1ec1bb785f690876728ff7841b8ae66e69cd2",
+      "tags": [
+        "stockai-signal-engine:rzy-6d9d72eb"
+      ]
+    },
+    {
+      "id": "sha256:2fe60bd94a44e8c16d3ea26ebb9caa091a16f0f78ac04f33a012fbf03f5d0bc9",
+      "tags": [
+        "stockai-signal-engine:release-7b1ae2f6"
+      ]
+    },
+    {
+      "id": "sha256:316d3f8c601bae3f7152a4c9d8ddc5c0438e29ca08de33170e50debdce38be18",
+      "tags": [
+        "stockai-frontend:release-abc32f30",
+        "stockai-frontend:rollback-20261024T050419Z"
+      ]
+    },
+    {
+      "id": "sha256:3494a256bbbcc48ab7d9f65a8caebb52f5ae3a377478f43db86f09885d8f726b",
+      "tags": [
+        "stockai-signal-engine:release-f0ba2ca2"
+      ]
+    },
+    {
+      "id": "sha256:38051c23c2a4ffa001b03403ca9f92015baf0b760a823646357bc83adf33a07e",
+      "tags": [
+        "stockai-market-data:rollback-20261023T135509Z",
+        "stockai-market-data:rollback-20261023T140549Z",
+        "stockai-market-data:rollback-20261023T221201Z",
+        "stockai-market-data:rollback-20261023T221616Z"
+      ]
+    },
+    {
+      "id": "sha256:3dc85a04a41c91edd998da90e66061054149aa7f7bdad7cfde5ed1f7aa828701",
+      "tags": [
+        "stockai-frontend:release-dc2d4b7d",
+        "stockai-frontend:rollback-20261024T142651Z"
+      ]
+    },
+    {
+      "id": "sha256:3ef21a3a4f8ce2517c9d4cade64d10981580a3de4a336255fad7ecf05eddca79",
+      "tags": [
+        "stockai-market-data:release-88496ee8"
+      ]
+    },
+    {
+      "id": "sha256:46111b966a16300a7813a46e744f46b6e016cde3bc11839aa052a0d413f50cd8",
+      "tags": [
+        "stockai-frontend:release-7b1ae2f6"
+      ]
+    },
+    {
+      "id": "sha256:4902e0d0080237962a186869c1ef16ce518ed6a5ce3e6a1294cf80f517d6712a",
+      "tags": [
+        "stockai-market-data:release-6f2b5a5c",
+        "stockai-market-data:rollback-20261024T055521Z"
+      ]
+    },
+    {
+      "id": "sha256:4dc4ba779432a61a9b414c05e44190b07c59f12cc5c4dc7227bd0bcc9d3a45d1",
+      "tags": [
+        "stockai-frontend:rollback-before-chart-refit"
+      ]
+    },
+    {
+      "id": "sha256:538e6a872abcbeb0493f1296345ea968153b8fb8a81a82376475f7dbf1445cca",
+      "tags": [
+        "stockai-frontend:release-dc5a058d",
+        "stockai-frontend:rollback-20261024T062611Z"
+      ]
+    },
+    {
+      "id": "sha256:60cfb8e90149158601ee8de73a25e19746fb581e3b801d57cfe4b29cffb9f877",
+      "tags": [
+        "stockai-frontend:release-e08dd338",
+        "stockai-frontend:rollback-20261024T042644Z"
+      ]
+    },
+    {
+      "id": "sha256:663e45a3720970e6ebd3c0417907a28caf399ba5ca8f5940456f11ffa5db7ff4",
+      "tags": [
+        "stockai-market-data:release-f1c1eb8d"
+      ]
+    },
+    {
+      "id": "sha256:6af0ff37dc27f1478344b12b5186311b8ac3019e71145c1010416d0bee3abbc8",
+      "tags": [
+        "stockai-frontend:release-6f2b5a5c",
+        "stockai-frontend:rollback-20261024T055521Z"
+      ]
+    },
+    {
+      "id": "sha256:6c3982c960f79062bd1de17d67c8789db9118448331b72c2012a920afbe22291",
+      "tags": [
+        "stockai-market-data:release-3f838758",
+        "stockai-market-data:rollback-20261024T011055Z"
+      ]
+    },
+    {
+      "id": "sha256:6fd4b9ae56abefa6e78d1f1d3271a4f690868d6d195512711c7374c114283641",
+      "tags": [
+        "stockai-frontend:release-3f838758"
+      ]
+    },
+    {
+      "id": "sha256:71e46e2af35d561f3e30d2aa4682fed877f9471bd5e27168bf2f18353a9aa636",
+      "tags": [
+        "stockai-market-data:release-f0ba2ca2"
+      ]
+    },
+    {
+      "id": "sha256:9387f034b9185f21deebbeca889c51f7519886f77381e2fb943881cf0b9c7828",
+      "tags": [
+        "stockai-frontend:release-eaba0a2c",
+        "stockai-frontend:rollback-20261024T043115Z"
+      ]
+    },
+    {
+      "id": "sha256:9a18f6acb9b14ac4ad82bd4c5aa009fc8a2cc163317c9ad3490793ae97f110a3",
+      "tags": [
+        "stockai-frontend:release-4e6b1f0c",
+        "stockai-frontend:rollback-20261024T065124Z",
+        "stockai-frontend:rollback-20261024T065501Z"
+      ]
+    },
+    {
+      "id": "sha256:a6c15b3eade140979d6a9b2914349d35b6b5e7038ec381c66c211c37aad5a781",
+      "tags": [
+        "stockai-frontend:rollback-20261024T011055Z"
+      ]
+    },
+    {
+      "id": "sha256:af4572ec0e03e5cd8f8d17ce42da01173acb283f772cbcb675ae0f85aae544a3",
+      "tags": [
+        "stockai-frontend:release-f1c1eb8d"
+      ]
+    },
+    {
+      "id": "sha256:b0a278520c41320ef5218e485156db7270ae3d4dc9a84035a92ee97c6e6ce0f5",
+      "tags": [
+        "stockai-frontend:release-a1054dcb",
+        "stockai-frontend:rollback-20261024T040527Z"
+      ]
+    },
+    {
+      "id": "sha256:d11d5a241c552cb6e64b5a9f55c6226dba907e3175823b13b49ebf2538c93476",
+      "tags": [
+        "stockai-signal-engine:release-f1c1eb8d"
+      ]
+    },
+    {
+      "id": "sha256:e9229dda43cbb4328294c2318c34e7a75ed071cc08573e9850f7b5b1892b6bc9",
+      "tags": [
+        "stockai-market-data:rollback-before-db89050a9"
+      ]
+    },
+    {
+      "id": "sha256:eb06653781cb47ca40b41303a6077291634e7084647ffd1d2dec7cc9023d852e",
+      "tags": [
+        "stockai-frontend:release-f0ba2ca2"
+      ]
+    },
+    {
+      "id": "sha256:eb6995274962694e77dd6ce35684a0491dd1c9ed1cad723361b02aa8139f4e47",
+      "tags": [
+        "stockai-signal-engine:rollback-20261023T135509Z",
+        "stockai-signal-engine:rollback-20261023T140549Z",
+        "stockai-signal-engine:rollback-20261023T221201Z",
+        "stockai-signal-engine:rollback-20261023T221616Z"
+      ]
+    },
+    {
+      "id": "sha256:f79065576ce22c666af5ee092e71f23cd64a06aa000190b823a8286177b9758e",
+      "tags": [
+        "stockai-frontend:rollback-20261023T135509Z",
+        "stockai-frontend:rollback-20261023T140549Z",
+        "stockai-frontend:rollback-20261023T221201Z",
+        "stockai-frontend:rollback-20261023T221616Z"
+      ]
+    }
+  ],
+  "dangling_prune": true
+}

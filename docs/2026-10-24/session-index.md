@@ -6,14 +6,15 @@ The [October 23 session record](../2026-10-23/session-index.md) and [earlier Oct
 
 ## Latest verified release and validation
 
-Application release **`c93d1695df3be4dd83d9b33837a514baa0b99e85`** is public and deployed. Its final verification recorded **15 healthy containers**, matching source/shared digests for **all 12 backends**, and unchanged start times for all 14 non-frontend containers after the frontend-only Learning/layout rollout. The frontend was built fresh on EC2 from production settings and compiled all 77 pages. Rollback images were retained.
+Application release **`0a78f4ea528424c5a0475468e7a16d345d4064b9`** is deployed. Fresh verification: **15 healthy containers**, matching source/shared hashes for **all 12 backends**, and only market-data/frontend restarted. Frontend build `VJiNLtTgFI1necdbrcMPB` serves the new benchmark filter and RZY input-cutoff display. Running/rollback images were retained; final free disk space is 35 GB.
 
-Latest frontend validation: **945 tests passed across 77 files**, full typecheck and whitespace clean. Backend code is unchanged; the preceding applicable market-data validation remains **5,849 passed / 26 skipped**, not a new run. The preceding 200-case original-matrix witness and earlier signal-engine/operational checks retain their own report-specific scope. [Latest tutorial/layout release and evidence](../audits/2026-10-24-options-learning-and-market-pressure-layout.md).
+Release validation: **5,859 market-data tests passed / 26 skipped**, **947 frontend tests passed across 78 files**, TypeScript and whitespace checks passed. Price-risk delivery stays off and the RZY config is unchanged. [Completion review, rollout and evidence](../audits/2026-10-24-alerts-plan-workspace-completion.md). The preceding [Learning/layout release](../audits/2026-10-24-options-learning-and-market-pressure-layout.md) and its report-specific evidence remain historical records.
 
 ## Delivered strategy improvements in this session
 
 | Work | Recorded status / release | Report and evidence |
 | --- | --- | --- |
+| Alerts/recommendations completion and RZY audit follow-up | Deployed `0a78f4ea`: owned-watchlist audience, shadow-only benchmarks, company event stages, and separate snapshot check/cutoff clocks; integration/research gates remain open | [Review and production evidence](../audits/2026-10-24-alerts-plan-workspace-completion.md) |
 | TSM screenshot investigation: why the selected covered call was unpriced; distinguish heuristic selection from a best-return optimizer | Review and read-only reproduction completed; no profitable-optimum claim | [Strategy selection and TSM witness](../audits/2026-10-23-strategy-selection-review.md) |
 | Explicit covered-call alternatives, unusable-original reasons, stable quote/ranking screens, provider Greeks/OI, renewed assignment acceptance and unchanged stock target/combination legs | Deployed `e08dd338` | [Covered-call release](../audits/2026-10-23-covered-call-candidates-deployment.md) |
 | Existing SHORT/SWING/LONG/GROWTH selector on Options, editable 1–365 calendar-day holding period, two-day expiry buffer, dated signal/context evidence and goal-fit-only highlighting | Deployed `abc32f30`; default holding windows mirror evaluation settings rather than optimal trades | [Horizon/context report](../audits/2026-10-23-options-horizon-context.md) |

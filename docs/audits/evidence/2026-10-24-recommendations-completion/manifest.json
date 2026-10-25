@@ -2,8 +2,8 @@
   "recorded_at_utc": "2026-10-24T21:38:38.143536+00:00",
   "client_date": "2026-10-24",
   "base_commit": "1dc2378f616a6276cd2797051bd6bcd68e60da56",
-  "state": "local changes; not committed or deployed",
-  "production_checks": "read-only aggregate transaction; no activation or enrollment",
+  "state": "deployed and verified",
+  "production_checks": "aggregate read-only cohort review plus deployed-source hashes, health, runtime helper checks and HTTP/served-build checks; no authenticated browser session",
   "code_sha256": {
     "services/market-data/src/services/price_risk_watch.py": "9c79499c5b312d3dcba6821d7ee80cf30589727925677b09b027b399afc94b56",
     "services/market-data/src/services/company_impact_watch.py": "eaedaa095df64ca0cb1a2f971a065be4b71f7cb2165bb79292f67e4a72987a48",
@@ -45,5 +45,18 @@
       "frontend_files": 78,
       "typescript": "passed"
     }
+  },
+  "application_release": "0a78f4ea528424c5a0475468e7a16d345d4064b9",
+  "frontend_build_id": "VJiNLtTgFI1necdbrcMPB",
+  "deployment": {
+    "completed_at_utc": "2026-10-25T03:01:01Z",
+    "healthy_containers": 15,
+    "matching_backends": 12,
+    "restarted": [
+      "/stockai-market-data-1",
+      "/stockai-frontend-1"
+    ],
+    "price_risk_delivery_enabled": false,
+    "rzy_config_hash": "8ceb8cf780c3eb981983"
   }
 }
