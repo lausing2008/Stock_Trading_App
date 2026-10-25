@@ -6,7 +6,7 @@ Offline native Chrome uses actual strategy cards, risk component, chart helper a
 
 `layout.json` records 1449/1024/390 px document containment, both open tables, all four charts and successful keyboard scrolling. Images reset horizontal scrolling to the initial columns after verification so stock price / total P&L remain visible. `mobile-detail.png` is the initial covered-call section. `final-numeric-nowrap/` preserves the final numeric-cell refinement separately: signs and values stay together, with updated screenshots/metrics. Original images are retained.
 
-Local validation: 978 frontend tests / 82 files, full typecheck and whitespace clean. Backend unchanged; preceding 5,912 passed / 26 skipped is not a fresh run. Production evidence is added after the authorized frontend-only rollout.
+Local validation: 980 frontend tests / 82 files, full typecheck and whitespace clean. Backend unchanged; preceding 5,912 passed / 26 skipped is not a fresh run. Production evidence is added after the authorized frontend-only rollout.
 
 Reproduce with frontend dependencies, Python Playwright and `/usr/bin/google-chrome` installed:
 

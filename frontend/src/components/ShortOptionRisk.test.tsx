@@ -51,3 +51,12 @@ it('does not invent an illustration for unsupported or inconsistent payoff recor
   expect(screen.getByText(/reported payoff bounds must agree/)).toBeTruthy();
   expect(screen.queryByRole('table')).toBeNull();
 });
+
+it('renders exact breakeven as zero rather than a negative-zero loss',()=>{
+  render(<ShortOptionRisk strategy={coveredCall} referenceStock={418.19}/>);
+  fireEvent.click(screen.getByText('Why the loss is large — expiry scenarios'));
+  fireEvent.change(screen.getByLabelText('Hypothetical stock price at expiry ($)'),{target:{value:'417.11'}});
+  const text=screen.getByRole('status').textContent!;
+  expect(text).toContain('total $0.00');
+  expect(text).not.toContain('−$0.00');
+});

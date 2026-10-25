@@ -28,7 +28,7 @@ Read-only TSM checks on the October 22 archive returned 12 alternatives per stra
 
 ## October 25 risk-basis and expiry-scenario continuation
 
-[Risk explanations, arithmetic consistency and evidence](../audits/2026-10-25-options-risk-scenarios.md): scoped loss labels, covered-call/secured-put worst-case explanations, premium-versus-stock/assignment scenarios and local expiry what-if input. Charts now use the same aggregate premium as cards, including half-cent and signed credit-collar cases. Local validation: 978 frontend tests and full typecheck. This frontend-only batch does not change backend/snapshot/signal/ranking behavior. Final rollout is recorded in its report; previous refresh and MU work are preserved.
+[Risk explanations, arithmetic consistency and evidence](../audits/2026-10-25-options-risk-scenarios.md): scoped loss labels, covered-call/secured-put worst-case explanations, premium-versus-stock/assignment scenarios and local expiry what-if input. Charts now use the same aggregate premium as cards, including half-cent and signed credit-collar cases. Local validation: 980 frontend tests and full typecheck. This frontend-only batch does not change backend/snapshot/signal/ranking behavior. Final rollout is recorded in its report; previous refresh and MU work are preserved.
 
 ## October 25 latest-provider option refresh continuation
 

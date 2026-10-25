@@ -40,7 +40,7 @@ it('signed credit collars and debit long calls keep their aggregate premium conv
 });
 it('refuses unknown, negative, nonfinite, unsupported and inconsistent short-risk inputs',()=>{
   for(const value of [-1,NaN,Infinity])expect(shortIncomeScenario(coveredCall,418.19,value)).toBeNull();
-  for(const reference of [0,-1,NaN,Infinity])expect(shortIncomeScenario(coveredCall,reference,400)).toBeNull();
+  for(const reference of [0,-1,NaN,Infinity,1e308])expect(shortIncomeScenario(coveredCall,reference,400)).toBeNull();
   expect(shortIncomeScenario({...coveredCall,net_per_contract:NaN},418.19,400)).toBeNull();
   expect(shortIncomeScenario({...coveredCall,max_loss_per_contract:100},418.19,400)).toBeNull();
   expect(shortIncomeScenario({...coveredCall,legs:[{...coveredCall.legs[0],contract_terms:{automatic_payoff_supported:false} as never}]},418.19,400)).toBeNull();
@@ -65,4 +65,11 @@ it('preserves the stock-plus-protective-put floor and a debit spread cap',()=>{
   expect(expiryPayoff(spread,105,100)).toBe(300);
   expect(expiryPayoff(spread,120,100)).toBe(800);
   expect(lossScopeLabel(spread)).toBe('Max combined loss');
+});
+
+it('normalizes exact breakeven to positive zero and keeps capped extreme-price scenarios finite',()=>{
+  expect(shortIncomeScenario(coveredCall,418.19,417.11)!.total).toBe(0);
+  expect(shortIncomeScenario(securedPut,418.19,390.43)!.total).toBe(0);
+  expect(shortIncomeScenario(coveredCall,418.19,1e308)!.total).toBe(6289);
+  expect(shortIncomeScenario(securedPut,418.19,1e308)!.total).toBe(1457);
 });

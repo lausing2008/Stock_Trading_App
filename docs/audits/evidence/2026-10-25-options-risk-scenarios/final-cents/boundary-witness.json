@@ -1,0 +1,21 @@
+{
+  "covered_call_breakeven": {
+    "reference_stock": 418.19,
+    "expiry_stock": 417.11,
+    "credit": 108,
+    "expected_display": "total $0.00",
+    "rounded_scenario_pnl": 0
+  },
+  "cash_secured_put_breakeven": {
+    "strike": 405,
+    "expiry_stock": 390.43,
+    "credit": 1457,
+    "rounded_scenario_pnl": 0
+  },
+  "extreme_hypothetical_expiry_stock": {
+    "value": "1e308",
+    "covered_call_capped_pnl": 6289,
+    "cash_secured_put_capped_pnl": 1457
+  },
+  "scope": "Deterministic fixtures; no real-market probability, price or trade claim"
+}
