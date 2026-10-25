@@ -60,6 +60,10 @@ Behavioural coverage includes:
 - simulated-fill email text/HTML and invalidated/expired wording; changed execution figures cannot pass queued-mail equivalence;
 - dashboard null rates remain “—”, with explicit denominators, blockers, missing-bin status and lifecycle records.
 
+## Final dashboard read-cost follow-up
+
+Review after the main application commit (`8d5833b8`) found that the existing paper endpoint fetched whole bar checkpoints for its position cache, and the new journal report also needed only the generation identifier. Both paths now select the required JSON subfields on the server. The legacy position response is unchanged, while the journal generation query returns only stream key/generation. This avoids decoding large redundant bar histories on a dashboard request. Real SQLite workflow **28 passed** and PostgreSQL 16 workflow **1 passed** verify actual cursor columns and exact legacy position values; this follow-up changes market-data only. [Follow-up evidence](../audits/evidence/2026-10-25-rzy-reliability/paper-projection-manifest.json).
+
 ## Deployment and next evidence
 
 Pending. Only market-data and frontend need rebuilding. The new service-owned table is registered through `rzy_models` before the existing locked startup `create_all`; no existing table columns change. Preserve rollback images and old logs and use the existing host-wide deployment lock.

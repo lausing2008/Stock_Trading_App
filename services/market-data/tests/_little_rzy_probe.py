@@ -573,4 +573,25 @@ with Session() as s:
     assert pos['fees']>0 and pos['net']<pos['gross']
 result['engine_journal_execution']=True
 
+
+# Both paper API and journal generation lookup read JSON subfields, never full bar checkpoints.
+from src.api.little_rzy import paper as paper_endpoint
+with Session() as s:
+    symbols=W.watchlist_symbols(s,1)
+    legacy_streams=s.scalars(select(RzyStream).where(RzyStream.symbol.in_(symbols))).all()
+    expected=[dict(symbol=r.symbol,timeframe=r.timeframe,config_hash=r.config_hash,generation=r.checkpoint.get('generation',1),structure_id=k,**p)
+        for r in legacy_streams if r.config_hash==W.current_config().hash for k,p in r.checkpoint.get('positions',{}).items()][-100:]
+    columns=[]
+    def checkpoint_columns(conn,cursor,statement,parameters,context,executemany):
+        if 'FROM little_rzy_streams' in statement:columns.append(tuple(c[0] for c in cursor.description))
+    from sqlalchemy import event as sql_event
+    sql_event.listen(engine,'after_cursor_execute',checkpoint_columns)
+    try: response=paper_endpoint(user=s.get(models.User,1),session=s)
+    finally:sql_event.remove(engine,'after_cursor_execute',checkpoint_columns)
+    assert response['positions']==expected
+    assert columns and all('checkpoint' not in cols for cols in columns),columns
+    assert any(cols==('stream_key','generation') for cols in columns),columns
+    assert any('positions' in cols for cols in columns),columns
+result['paper_read_projection']=True
+
 print(json.dumps(result))

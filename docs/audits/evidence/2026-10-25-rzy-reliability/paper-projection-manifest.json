@@ -1,0 +1,14 @@
+{
+  "base_release": "8d5833b8ab0f8921abf1ac93505c90436c7e9ad3",
+  "code_sha256": {
+    "services/market-data/src/api/little_rzy.py": "f2eb20717b7695baea8b2868f7b2c1fc209f0bb765352cebb6fa6eb5c168d641",
+    "services/market-data/src/services/rzy_journal.py": "1476b3393ed9b172e6a8209a19b89ed8899b2721b73384b7a44475b511048f3c",
+    "services/market-data/tests/_little_rzy_probe.py": "2245c6b06a20c3e86f7fffb23f066427678e5be3405d26213881b087ea8efe37",
+    "services/market-data/tests/test_little_rzy_workflow.py": "b784472b2229f62ca4948b0ba3f5d336f00e892dc66819c2cb0a8423035ead21"
+  },
+  "checks": {
+    "sqlite_workflow": 28,
+    "postgresql_16_workflow": 1
+  },
+  "note": "Legacy paper position values unchanged; cursor metadata verifies JSON-subfield reads instead of full checkpoints."
+}

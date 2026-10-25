@@ -51,11 +51,13 @@ def digest(user=Depends(get_current_user),session=Depends(get_session)):
 def paper(user=Depends(get_current_user),session=Depends(get_session)):
     from ..services.rzy_journal import paper_report
     symbols=W.watchlist_symbols(session,user.id)
-    streams=session.scalars(select(RzyStream).where(RzyStream.symbol.in_(symbols))).all() if symbols else []
+    streams=session.execute(select(RzyStream.symbol,RzyStream.timeframe,RzyStream.config_hash,
+        RzyStream.checkpoint['generation'].as_integer().label('generation'),RzyStream.checkpoint['positions'].label('positions'))
+        .where(RzyStream.symbol.in_(symbols),RzyStream.config_hash==W.current_config().hash)).all() if symbols else []
     return dict(strategy_version=VERSION,note='Separate deterministic research paper ledger, one-share units. No live broker execution or changes to existing portfolio balances.',
         performance=paper_report(session,symbols,W.current_config().hash),
-        positions=[dict(symbol=row.symbol,timeframe=row.timeframe,config_hash=row.config_hash,generation=row.checkpoint.get('generation',1),structure_id=k,**p)
-                   for row in streams if row.config_hash==W.current_config().hash for k,p in row.checkpoint.get('positions',{}).items()][-100:],
+        positions=[dict(symbol=row.symbol,timeframe=row.timeframe,config_hash=row.config_hash,generation=row.generation or 1,structure_id=k,**p)
+                   for row in streams for k,p in (row.positions or {}).items()][-100:],
         provenance='Current configuration only; each row names its stream generation. A rebuilt stream replaces its open-position cache; superseded history is in the event log.')
 
 class ReplayIn(BaseModel):

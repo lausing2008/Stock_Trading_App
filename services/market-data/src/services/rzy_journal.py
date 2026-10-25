@@ -78,8 +78,10 @@ def paper_report(session,symbols,config_hash,now=None):
     since=(utc(now or datetime.now(timezone.utc))-timedelta(days=90)).replace(tzinfo=None)
     journals=session.scalars(select(RzyPaperJournal).where(RzyPaperJournal.symbol.in_(symbols),RzyPaperJournal.config_hash==config_hash,RzyPaperJournal.first_seen_at>=since)
         .order_by(RzyPaperJournal.first_seen_at,RzyPaperJournal.journal_id)).all() if symbols else []
-    streams=session.scalars(select(RzyStream).where(RzyStream.symbol.in_(symbols),RzyStream.config_hash==config_hash)).all() if symbols else []
-    generations={r.stream_key:r.checkpoint.get('generation',1) for r in streams}
+    # Reading generation identity must not load another copy of every large bar checkpoint.
+    streams=session.execute(select(RzyStream.stream_key,RzyStream.checkpoint['generation'].as_integer().label('generation'))
+        .where(RzyStream.symbol.in_(symbols),RzyStream.config_hash==config_hash)).all() if symbols else []
+    generations={r.stream_key:r.generation or 1 for r in streams}
     rows=[]
     for r in journals:
         p=r.payload; exits=[e for e in p.get('lifecycle',[]) if e['event_type']=='PAPER_EXIT' and e.get('paper_state')=='CLOSED']
