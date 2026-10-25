@@ -11,8 +11,8 @@ EVERYTHING HERE IS PURE. No DB, no HTTP, no clock beyond an injected `today`. Th
 an already-fetched chain, exactly as compute_options_game_plan() already does, so every payoff
 below is testable against a synthetic chain with no network.
 
-WHAT THIS IS NOT. Not a prediction, and not advice. Every number is the arithmetic of a REAL,
-currently-listed contract against the user's OWN stop/target — the same honesty convention the
+WHAT THIS IS NOT. Not a prediction, and not advice. Every number is arithmetic on a supplied
+archive contract, not verification of a current listing, with explicit research references — the same honesty convention the
 rest of this app's options surface already follows (max-pain, GEX and squeeze alerts all
 explicitly disclaim prediction). The recommendation ranks structures by how well they match a
 stated objective and the current IV regime; it cannot know whether the trade will win.
@@ -299,7 +299,7 @@ def _covered_call_strategy(leg: dict, current_price: float) -> dict:
 
 
 def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price, *, include_selected=False, strategy_key="covered_call", preferences=None, exclude_option_symbol=None):
-    """Screen a supplied single-leg chain; never silently replace a user's target.
+    """Screen supplied rows; keep the stock target separate from the chosen contract.
 
     20% is the existing frontend research spread policy, not an optimized liquidity rule.
     The default preserves the covered-call API; other keys reuse the same screens.
@@ -366,13 +366,15 @@ def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price, *,
         unique[identity] = strategy
     # These are distinct alternatives, not promoted into singles/combos/recommendation.
     return {"method_version": "covered_call_candidates_v1", "anchor": anchor,
+            "anchor_basis": "reference_spot" if strategy_key == "covered_call" else "strategy_reference",
+            "listing_verification": "unverified_archive",
             "expiry": expiry, "scope": "all_rows_of_selected_call_expiry",
             "evaluated_count": len(rows), "screened_count": len(screened),
             "rejected_counts": dict(sorted(rejects.items())),
             "original": {"strike": selected.get("strike") if selected else None,
                          "option_symbol": selected.get("option_symbol") if selected else None,
                          "reason": selected_reason if selected else "no_chain_rows"},
-            "ranking": "Distance to target (or spot), then unrounded spread, OI, strike and contract identity; not expected return.",
+            "ranking": "Distance to research reference, then unrounded spread, OI, strike and contract identity; not expected return.",
             "alternatives": list(unique.values())[:3], "actionability": "research_only"}
 
 
@@ -432,10 +434,9 @@ def build_strategy_matrix(
 ) -> dict:
     """All four single legs plus the combinations that can be built from the SAME two chains.
 
-    Strike selection is anchored to the user's own plan wherever one exists — the protective put
-    and bear spread sit at the stop, the covered call and bull spread cap at the target — and
-    falls back to at-the-money only where the plan says nothing. Nothing here invents a
-    stop or target.
+    Covered-call research starts at the supplied reference spot, never an AI stock target.
+    Protective puts and combination spreads retain their explicit stock-plan anchors.
+    All strikes come from supplied archive rows; no current listing is established here.
     """
     # AUD-T409-UTCDATEBOUNDARY: ET, not a naive UTC truncation — see the same finding in
     # options_income_engine._today_et(). A naive UTC date reads one calendar day ahead of
@@ -471,7 +472,7 @@ def build_strategy_matrix(
     # ── 2. SELL CALL — covered call ────────────────────────────────────────────────────
     # Income, but it is NOT free: you have sold your upside above the strike. This is the
     # existing covered-call leg, restated in the shared shape.
-    leg = _leg(target_call or atm_call, "sell", call_expiry, call_dte)
+    leg = _leg(atm_call, "sell", call_expiry, call_dte)
     if leg:
         credit = leg["price_per_share"]
         singles["covered_call"] = _covered_call_strategy(leg, current_price)
@@ -613,7 +614,7 @@ def build_strategy_matrix(
         "combos": combos,
         "unavailable": unavailable,
         "candidate_review": {"covered_call": _covered_call_candidates(
-            call_rows, take_profit if take_profit else current_price, call_expiry, call_dte, today, current_price)},
+            call_rows, current_price, call_expiry, call_dte, today, current_price)},
         "recommendation": _recommend(
             singles=singles, combos=combos, signal=signal, iv_rank=iv_rank,
             # SF-03 (2026-10-02): ONE SHARE DOES NOT COVER A CALL.

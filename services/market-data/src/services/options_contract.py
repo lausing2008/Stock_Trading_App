@@ -88,3 +88,30 @@ def split_supported(rows: list[dict] | None) -> tuple[list[dict], dict]:
             st = ((r or {}).get("contract_terms") or {}).get("status", "no_contract_terms")
             refused[st] = refused.get(st, 0) + 1
     return kept, refused
+
+
+def checked_contract_terms(option_symbol, underlying, *, strike, expiry=None, right=None) -> dict:
+    """Check row fields against the encoded identity, not an independent listing record."""
+    from datetime import datetime
+    from decimal import Decimal, InvalidOperation
+
+    terms = contract_terms(option_symbol, underlying)
+    if not terms["automatic_payoff_supported"]:
+        return terms
+    match = OCC_SYMBOL.fullmatch(option_symbol.strip().upper())
+    mismatch = False
+    try:
+        encoded_expiry = datetime.strptime(match.group(2), "%y%m%d").date().isoformat()
+        value = Decimal(str(strike))
+        mismatch = not value.is_finite() or value <= 0 or value != Decimal(match.group(4)) / 1000
+        if expiry is not None:
+            mismatch |= str(expiry) != encoded_expiry
+        if right is not None:
+            mismatch |= str(right).lower() not in ({"c", "call"} if match.group(3) == "C" else {"p", "put"})
+    except (InvalidOperation, ValueError, TypeError, AttributeError):
+        mismatch = True
+    if mismatch:
+        return {**terms, "status": "contract_identity_mismatch", "automatic_payoff_supported": False,
+                "premium_multiplier": None, "deliverable_shares": None,
+                "basis": "row strike, expiry or side disagrees with the encoded contract identity"}
+    return terms

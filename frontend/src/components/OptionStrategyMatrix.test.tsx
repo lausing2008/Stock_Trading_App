@@ -343,3 +343,16 @@ it('selects the intended contract from the sorted comparison table without anoth
   expect((screen.getByRole('checkbox', { name: /I accept buying or selling/ }) as HTMLInputElement).checked).toBe(true);
   expect(get).not.toHaveBeenCalled();
 });
+
+
+it('separates a distant stock forecast from the archived reference strike and listing status', () => {
+  const m = matrix();
+  m.candidate_review!.covered_call!.anchor = 877.55;
+  m.candidate_review!.covered_call!.anchor_basis = 'reference_spot';
+  render(<OptionStrategyMatrixPanel matrix={m} spot={877.55} takeProfit={1561.91} chainAsOf="2026-10-22" />);
+  expect(screen.getByRole('note').textContent).toContain('Current exchange listing and Fidelity availability are not verified');
+  expect(document.body.textContent).toContain('Stock forecast target $1,561.91 is separate from an option strike');
+  expect(document.body.textContent).toContain('Research reference $877.55');
+  expect(document.body.textContent).toContain('not the forecast target');
+  expect(screen.queryByRole('option', { name: 'Original target-strike selection' })).toBeNull();
+});

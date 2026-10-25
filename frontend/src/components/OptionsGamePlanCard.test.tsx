@@ -148,3 +148,15 @@ it('keeps a stable archived basis searchable when the original preset contracts 
   expect(screen.getByText(/Comparing an explicitly selected alternative/)).toBeTruthy();
   expect(mocks.getOptionsGamePlan).toHaveBeenLastCalledWith('AAPL', { stopLoss: undefined, takeProfit: undefined, holdingDays: 14 });
 });
+
+it('renders a near-spot covered call without inventing a missing stock forecast target', async () => {
+  const p = packet();
+  delete p.strategy_matrix;
+  p.covered_call = { expiry: '2026-11-20', days_to_expiry: 30, in_target_window: true,
+    strike: 100, mid_price: 2, credit_pct_of_position: 2, credit_per_contract: 200,
+    effective_cap_price: 102, iv: 30, oi: 100, reference_take_profit: null };
+  mocks.getOptionsGamePlan.mockResolvedValue(p);
+  render(<OptionsGamePlanCard {...props} />);
+  expect(await screen.findByText('💰 Covered Call — collect income')).toBeTruthy();
+  expect(screen.queryByText(/separate stock forecast/)).toBeNull();
+});

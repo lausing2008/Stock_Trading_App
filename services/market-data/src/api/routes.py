@@ -3720,7 +3720,7 @@ def rank_unusual(rows: list) -> list:
 # module and the chain rows share it. These names stay for existing callers and tests.
 from ..services.options_contract import (  # noqa: E402
     WEEKLY_INDEX_ROOTS as _WEEKLY_INDEX_ROOTS, OCC_SYMBOL as _OCC_SYMBOL, contract_status as _contract_status,
-    contract_terms as _contract_terms, split_supported as _split_supported,
+    contract_terms as _contract_terms, checked_contract_terms as _checked_contract_terms, split_supported as _split_supported,
 )
 
 
@@ -3903,7 +3903,7 @@ def _uw_option_chain(session: Session, sym: str, exp: str | None = None, as_of: 
     if not ch["available"]:
         raise ValueError(f"no UW chain for {sym} {exp or ''}: {ch.get('reason')}")
 
-    def _df(rows):
+    def _df(rows, right):
         return _pd.DataFrame([{
             "strike": r["strike"], "bid": r["bid"], "ask": r["ask"],
             "lastPrice": r["last_price"], "volume": r["volume"],
@@ -3922,11 +3922,11 @@ def _uw_option_chain(session: Session, sym: str, exp: str | None = None, as_of: 
             "delta": r.get("delta"), "gamma": r.get("gamma"), "theta": r.get("theta"),
             "vega": r.get("vega"), "rho": r.get("rho"),
             # F6: the OCC symbol is what tells an adjusted (non-100-share) contract apart.
-            "option_symbol": r.get("option_symbol"),
+            "option_symbol": r.get("option_symbol"), "expiry": r.get("expiry"), "right": right,
         } for r in rows] or [], columns=[
             "strike", "bid", "ask", "lastPrice", "volume", "openInterest",
             "impliedVolatility", "inTheMoney", "moneyness", "last_price_available",
-            "delta", "gamma", "theta", "vega", "rho", "option_symbol"])
+            "delta", "gamma", "theta", "vega", "rho", "option_symbol", "expiry", "right"])
 
     def _typed(df):
         # Numeric with NaN for unknown — an all-None column would otherwise be `object` and
@@ -3936,7 +3936,7 @@ def _uw_option_chain(session: Session, sym: str, exp: str | None = None, as_of: 
         df["inTheMoney"] = df["inTheMoney"].astype(object)
         return df
 
-    return _ChainPair(_typed(_df(ch["calls"])), _typed(_df(ch["puts"])), ch["as_of"],
+    return _ChainPair(_typed(_df(ch["calls"], "call")), _typed(_df(ch["puts"], "put")), ch["as_of"],
                       ch.get("coverage_status"), ch.get("coverage_reason"),
                       ch.get("moneyness_reference"), ch.get("field_coverage"), ch.get("moneyness_unknown_reason"))
 
@@ -4000,7 +4000,8 @@ def _options_chain_rows(df, underlying: str | None = None) -> list[dict]:
             "option_symbol": osym,
             **{name: float(row[name]) if _known(row.get(name)) and math.isfinite(float(row[name])) else None
                for name in ("delta", "gamma", "theta", "vega")},
-            "contract_terms": _contract_terms(osym, underlying),
+            "contract_terms": _checked_contract_terms(osym, underlying, strike=row["strike"],
+                expiry=row.get("expiry"), right=row.get("right")),
         })
     return out
 
@@ -4972,7 +4973,7 @@ def compute_options_game_plan(
     today: date | None = None,
 ) -> dict:
     """MPE / T322-OPTIONS-GAMEPLAN: composes a real protective-put hedge (against `stop_loss`)
-    and a real covered-call income leg (against `take_profit`) from an ALREADY-FETCHED options
+    and a covered-call research leg (near reference spot) from an ALREADY-FETCHED options
     chain — never re-derives entry/stop/target itself, those come from the SAME Position Sizer/
     AI Signal numbers already shown elsewhere on the stock page (nearest support, ATR stop,
     analyst target), passed in by the caller. This function is pure — no DB/HTTP access — so it
@@ -4981,8 +4982,8 @@ def compute_options_game_plan(
     Deliberately does NOT recommend a strategy the user didn't ask about: a protective put only
     makes sense for someone who owns (or plans to buy) the stock and wants downside insurance; a
     covered call only makes sense for someone already holding shares willing to cap their
-    upside at the target. Both legs are computed and returned independently whenever the
-    underlying stop_loss/take_profit values exist — the frontend decides which to show/hint at
+    upside at the listed strike. The stock target stays separate. Both legs are returned
+    independently when their reference and source chain exist — the frontend decides which to show/hint at
     based on the user's own stated position, not this function.
 
     Neither leg is a recommendation to buy/sell RIGHT NOW — both report REAL, currently-listed
@@ -5046,12 +5047,12 @@ def compute_options_game_plan(
                     "reference_stop_loss": stop_loss,
                 }
 
-    if take_profit and take_profit > 0 and call_rows and call_expiries:
+    if current_price > 0 and call_rows and call_expiries:
         call_exp = _nearest_expiry_in_dte_window(
             call_expiries, today, _OPTIONS_GAME_PLAN_MIN_CALL_DTE, _OPTIONS_GAME_PLAN_MAX_CALL_DTE
         )
         if call_exp:
-            contract = _nearest_strike(call_rows, take_profit)
+            contract = _nearest_strike(call_rows, current_price)
             if contract:
                 # SF-02 (2026-10-02): ONE QUOTE CONTRACT, SHARED WITH THE MATRIX.
                 # This expression accepted a CROSSED book: bid 12 / ask 2 produced a "mid" of
@@ -5128,9 +5129,8 @@ def get_options_game_plan(
     max_abs_delta: Annotated[float | None, Query(ge=0, le=1)] = None,
 ):
     """T322-OPTIONS-GAMEPLAN: Advanced-tier-only. Composes compute_options_game_plan() above
-    from a REAL, freshly-fetched options chain (calls for the covered-call leg, puts for the
-    protective-put leg — two separate t.option_chain() calls at two independently-chosen
-    expiries, since the ideal DTE window differs between the two legs). `stop_loss`/
+    from session-pinned archived chains (calls and puts at independently chosen expiries).
+    Archive capture time does not verify a current exchange or broker listing. `stop_loss`/
     `take_profit` are passed in by the frontend, sourced from the SAME nearest-support/ATR-stop/
     analyst-target numbers PositionSizer already computes on the stock page — this endpoint
     never re-derives them, avoiding a second, possibly-drifting copy of that logic.
@@ -5229,7 +5229,7 @@ def get_options_game_plan(
                     raise chain
                 return _options_chain_rows(chain.calls if right == "call" else chain.puts, sym)
             specs = {
-                "covered_call": (call_rows, call_exp, take_profit or current_price, "call"),
+                "covered_call": (call_rows, call_exp, current_price, "call"),
                 "long_call": (call_rows, call_exp, current_price, "call"),
                 "protective_put": (put_rows, put_exp, stop_loss or current_price, "put"),
                 "cash_secured_put": (put_rows, put_exp, stop_loss or current_price, "put"),

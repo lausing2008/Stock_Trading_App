@@ -21,19 +21,19 @@ def matrix(rows, **kw):
         call_expiry=kw.get('expiry', EXP), today=TODAY, shares=100)
 
 
-def test_unpriceable_target_exposes_comparable_alternatives_without_auto_replacing_it():
-    result = matrix([row(100), row(110, delta=.3, gamma=.02), row(120, 0, .1)])
+def test_unpriceable_reference_exposes_comparable_alternatives_without_auto_replacing_it():
+    result = matrix([row(100, 0, .1), row(110, delta=.3, gamma=.02), row(120, 0, .1)])
     review = result['candidate_review']['covered_call']
     assert 'covered_call' not in result['singles']
-    assert review['original']['strike'] == 120
+    assert review['original']['strike'] == 100
     assert review['original']['reason'] == 'two_sided_quote_required'
-    assert review['evaluated_count'] == 3 and review['screened_count'] == 2
+    assert review['evaluated_count'] == 3 and review['screened_count'] == 1
     alt = review['alternatives'][0]
     assert alt['legs'][0]['strike'] == 110 and alt['legs'][0]['delta'] == .3
     assert alt['net_per_contract'] == 210 and alt['breakeven'] == 97.9
     assert alt['max_profit_per_contract'] == 1210 and alt['max_loss_per_contract'] == 9790
     assert result['recommendation']['primary'] != 'covered_call'
-    assert review['anchor'] == 120 and review['actionability'] == 'research_only'
+    assert review['anchor'] == 100 and review['actionability'] == 'research_only'
 
 
 @pytest.mark.parametrize('bad,reason', [
@@ -62,7 +62,7 @@ def test_expired_and_missing_expiry_never_offer_alternatives():
 def test_exact_spread_ceiling_and_deterministic_distinct_top_three():
     rows = [row(120, 0, .1), row(115, 1.8, 2.2), row(110), row(105), row(100)]
     expected = matrix(rows)['candidate_review']['covered_call']['alternatives']
-    assert [s['legs'][0]['strike'] for s in expected] == [115, 110, 105]
+    assert [s['legs'][0]['strike'] for s in expected] == [105, 110, 115]
     for seed in range(20):
         shuffled = list(rows) + [dict(rows[1])]
         random.Random(seed).shuffle(shuffled)
@@ -72,7 +72,7 @@ def test_exact_spread_ceiling_and_deterministic_distinct_top_three():
 
 
 def test_missing_greeks_stay_unknown_and_no_alternative_is_a_global_best_claim():
-    result = matrix([row(110, delta=float('nan'), gamma=float('inf')), row(120, 0, .1)])
+    result = matrix([row(100, 0, .1), row(110, delta=float('nan'), gamma=float('inf')), row(120, 0, .1)])
     review = result['candidate_review']['covered_call']
     leg = review['alternatives'][0]['legs'][0]
     assert leg['delta'] is None and leg['gamma'] is None
@@ -166,7 +166,7 @@ def test_expiry_search_is_bounded_filters_holding_and_reports_failed_reads():
     assert len(review['completed_expiries']) == 3
     assert review['evaluated_count'] == review['screened_count'] == 6
     assert review['original'] == original['original']
-    assert review['alternatives'][0]['legs'][0]['strike'] == 120
+    assert review['alternatives'][0]['legs'][0]['strike'] == 110
     assert all(s['legs'][0]['days_to_expiry'] >= 35 for s in review['alternatives'])
     assert review['method_version'] == 'covered_call_candidates_v2'
 
@@ -230,3 +230,20 @@ def test_inconsistent_strategy_payoffs_are_not_candidates(key, bad):
     review = _covered_call_candidates([bad], 95, EXP, 35, TODAY, 100,
         include_selected=True, strategy_key=key)
     assert review['alternatives'] == [] and review['rejected_counts'] == {'invalid_payoff': 1}
+
+
+def test_mu_distant_stock_forecast_cannot_anchor_covered_calls():
+    rows = [row(k, bid=40, ask=42) for k in (855, 860, 875, 880, 885, 900)]
+    rows += [row(1560, bid=.44, ask=.57), row(1580, bid=.44, ask=.52)]
+    def build(target):
+        return build_strategy_matrix(current_price=877.55, stop_loss=850, take_profit=target,
+            signal='BUY', put_rows=[], put_expiry=None, call_rows=rows,
+            call_expiry=EXP, today=TODAY, shares=100)
+    a, b = build(1561.91), build(900)
+    assert a['singles']['covered_call']['legs'][0]['strike'] == 880
+    assert a['singles']['covered_call'] == b['singles']['covered_call']
+    r = a['candidate_review']['covered_call']
+    assert r['anchor'] == 877.55 and r['anchor_basis'] == 'reference_spot'
+    assert r == b['candidate_review']['covered_call']
+    assert [s['legs'][0]['strike'] for s in r['alternatives']] == [875, 885, 860]
+    assert r['listing_verification'] == 'unverified_archive'

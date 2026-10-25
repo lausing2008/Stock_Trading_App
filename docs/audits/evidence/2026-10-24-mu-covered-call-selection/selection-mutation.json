@@ -1,0 +1,6 @@
+{
+  "fixed_strike": 880,
+  "restored_target_selection_strike": 1560,
+  "regression_detects_old_behavior": true,
+  "scope": "In-memory restoration of the previous covered-call leg selection; no tracked source change or production mutation"
+}

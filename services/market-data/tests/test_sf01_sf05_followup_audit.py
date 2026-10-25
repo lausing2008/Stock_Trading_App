@@ -234,11 +234,12 @@ def test_an_unknown_dte_is_not_treated_as_expired():
 # ══════════════════════════════════════════════════════════════════════════════════════════
 
 def _reviewer_fixture(shares, *, call_expiry="2026-11-06"):
-    """The review's own witness: spot 100, target 105, rich IV, no put chain, ATM call
-    CROSSED at 12/2 (so the long call cannot be built) and the target call valid at 2/2.2
-    (so the covered call can be priced). Only an ineligible structure survives pricing."""
+    """Valid near-spot quote: covered calls now share the spot anchor with long calls.
+    Both are priced, so insufficient shares exclude the covered call while a long call
+    may remain. The historical crossed-ATM/target-call witness is covered separately.
+    """
     from datetime import date as _date
-    calls = [{**_STD_TERMS, "strike": 100.0, "bid": 12.0, "ask": 2.0, "last_price": 0.0, "iv": .4, "oi": 100},
+    calls = [{**_STD_TERMS, "strike": 100.0, "bid": 2.0, "ask": 2.2, "last_price": 0.0, "iv": .4, "oi": 100},
              {**_STD_TERMS, "strike": 105.0, "bid": 2.0, "ask": 2.2, "last_price": 0.0, "iv": .4, "oi": 100}]
     return osx.build_strategy_matrix(
         current_price=100., stop_loss=None, take_profit=105., signal="BUY",
@@ -250,7 +251,7 @@ def _reviewer_fixture(shares, *, call_expiry="2026-11-06"):
 def test_the_fallback_cannot_recommend_a_structure_the_holding_cannot_carry(shares):
     """THE REVIEWER'S WITNESS. The fallback previously returned `covered_call` here."""
     rec = _reviewer_fixture(shares)["recommendation"]
-    assert rec["primary"] is None
+    assert rec["primary"] != "covered_call"
     assert "covered_call" not in [a["key"] for a in rec.get("alternatives", [])]
 
 
@@ -266,7 +267,7 @@ def test_an_ineligible_priced_structure_is_reported_not_silently_dropped():
     steps, so they must not render identically."""
     rec = _reviewer_fixture(1)["recommendation"]
     assert rec["ineligible_for_holding"] == ["covered_call"]
-    assert "do not hold enough" in rec["reason"]
+    assert "not the 100 shares" in rec["constraint"]
 
 
 @pytest.mark.parametrize("shares,expected", [(0, 0), (1, 0), (99, 0), (100, 1), (200, 2)])
@@ -329,3 +330,12 @@ _CARD_TSX = (pathlib.Path(__file__).resolve().parents[3]
 
 # Unusable-quote rendering is tested in OptionsGamePlanCard.test.tsx.
 # The former source assertion required a null-guard that no longer exists.
+
+
+def test_only_covered_call_fallback_still_refuses_insufficient_shares():
+    rec = osx._recommend(singles={"covered_call": {"directional_exposure": "income_long",
+        "name": "Covered Call", "max_profit_per_contract": 500, "requires_shares": True}}, combos={}, signal="BUY",
+        iv_rank=80, holds_shares=False, coverable_contracts=0, holds_any_shares=True)
+    assert rec['primary'] is None
+    assert rec['ineligible_for_holding'] == ['covered_call']
+    assert 'do not hold enough' in rec['reason']

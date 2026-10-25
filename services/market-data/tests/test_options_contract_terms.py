@@ -197,3 +197,30 @@ def test_an_unsupported_mark_is_identifiable_in_the_stored_equity_row():
     assert ev["approximate_marks"] == 1
     fresh = mod._probe("snapshot_fresh_quote")["mark_evidence"]
     assert fresh["unsupported_contract_marks"] == 0 and fresh["approximate_marks"] == 0
+
+
+@pytest.mark.parametrize("fields", [
+    {"strike": 1560}, {"strike": float("nan")},
+    {"strike": 120, "expiry": "2026-11-21"},
+    {"strike": 120, "right": "put"},
+])
+def test_encoded_contract_metadata_mismatch_is_never_automatically_priced(fields):
+    terms = oc.checked_contract_terms(STD_CALL, "MU", **fields)
+    assert terms['status'] == 'contract_identity_mismatch'
+    assert terms['automatic_payoff_supported'] is False
+    assert terms['premium_multiplier'] is None
+
+
+def test_exact_encoded_metadata_is_consistent_but_not_listing_verification():
+    terms = oc.checked_contract_terms(STD_CALL, "MU", strike=120,
+        expiry="2026-11-20", right="call")
+    assert terms['automatic_payoff_supported']
+    assert 'assumed' in terms['basis']
+
+
+def test_route_adapter_refuses_a_strike_that_disagrees_with_its_contract_symbol():
+    rows = _rows(_frame((1560.0, STD_CALL)))
+    assert not rows[0]['contract_terms']['automatic_payoff_supported']
+    assert not osx.build_strategy_matrix(current_price=877.55, stop_loss=None,
+        take_profit=1561.91, signal=None, put_rows=[], put_expiry=None,
+        call_rows=rows, call_expiry="2026-11-20", today=TODAY)['singles']

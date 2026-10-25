@@ -8,7 +8,7 @@ import type { OptionCalendarContext } from '@/lib/optionCalendarEvidence';
 
 /** T322-OPTIONS-GAMEPLAN: composes AI Signal's existing stop-loss/take-profit levels (same
  * numbers PositionSizer already shows) with a REAL, currently-listed options contract to
- * protect against a sharp drop (protective put) or collect income against a target (covered
+ * protect against a sharp drop (protective put) or collect income near reference spot (covered
  * call). Advanced-tier only — the backend enforces this (403 for a basic-tier user), this
  * component just doesn't render at all for one, matching the "don't show a feature a user
  * can't use" convention already established elsewhere in this app.
@@ -148,7 +148,7 @@ export default function OptionsGamePlanCard({
               {cc.credit_pct_of_position != null && <> ({cc.credit_pct_of_position.toFixed(1)}% of position)</>}
               <br />
               Caps upside near <b style={{ color: '#f1f5f9' }}>${cc.effective_cap_price.toFixed(2)}</b>
-              <span style={{ color: '#64748b' }}> (target ref: ${cc.reference_take_profit.toFixed(2)})</span>
+              {cc.reference_take_profit != null && <span style={{ color: '#64748b' }}> (separate stock forecast: ${cc.reference_take_profit.toFixed(2)})</span>}
             </div>
           </div>
         )}

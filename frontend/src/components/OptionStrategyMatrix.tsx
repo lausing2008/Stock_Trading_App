@@ -347,7 +347,9 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
         {currentSearch?.pending ? 'Searching expirations…' : 'Find expirations for holding period'}</button> Searches all four strategies across up to four eligible expirations from the same archived session, on request only.</p>}
       {currentSearch?.error && <p role="alert">{currentSearch.error} Original comparison remains available.</p>}
       {candidates ? <>
-      <p>Original anchor {fmtUSD(candidates.anchor)} · expiry {candidates.expiry ?? 'unknown'} · selected strike {fmtUSD(candidates.original.strike)}.</p>
+      <p role="note">Archived contracts · source session {chainAsOf ?? 'unknown'}. Current exchange listing and Fidelity availability are not verified. Match the exact symbol, expiry, call/put and strike in your broker before trading.</p>
+      {comparisonKey === 'covered_call' && <p>Stock forecast target {fmtUSD(takeProfit)} is separate from an option strike and does not establish a listed contract. {candidates.anchor_basis === 'reference_spot' ? 'Covered-call research is anchored to reference stock price, not the forecast target.' : 'This older plan may use the stock target as its anchor; refresh the game plan to use reference-price selection.'}</p>}
+      <p>Research reference {fmtUSD(candidates.anchor)} · expiry {candidates.expiry ?? 'unknown'} · selected strike {fmtUSD(candidates.original.strike)}.</p>
       <p>{candidates.original.reason ? `Original candidate: ${candidateReason(candidates.original.reason)}.` : 'Original candidate passed the basic quote screen; holdings, freshness and broker checks remain separate.'}</p>
       <p>{candidates.screened_count} of {candidates.evaluated_count} rows passed the research quote/payoff screen. {candidates.method_version !== 'covered_call_candidates_v1' ? 'Counts include unsupported rows refused by this screen. ' : 'Counts cover supplied rows after upstream contract exclusions. '}{candidates.method_version !== 'covered_call_candidates_v1'
         ? `Scope: ${candidates.completed_expiries?.length ?? 0} of ${candidates.searched_expiries?.length ?? 0} attempted expirations read; ${candidates.eligible_expiry_count ?? 0} eligible expirations in this archive. Minimum remaining life: ${candidates.holding_days! + candidates.buffer_days!} calendar days. Read: ${candidates.completed_expiries?.join(', ') || 'none'}.`
@@ -360,7 +362,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
         value={alternative && coveredChoice ? String(coveredChoice.index) : 'original'} onChange={e => {
           chooseComparison(e.target.value === 'original' ? null : Number(e.target.value));
         }}>
-        <option value="original">{comparisonKey === 'covered_call' ? 'Original target-strike selection' : 'Original plan selection'}</option>
+        <option value="original">Original archived selection</option>
         {candidates.alternatives.map((s, i) => <option key={s.legs[0].option_symbol ?? i} value={String(i)}>
           Compare {fmtUSD(s.legs[0].strike)} {s.legs[0].right} · {s.legs[0].expiry} · delta {s.legs[0].delta ?? 'unavailable'} · {fmtUSD(s.net_per_contract)} {s.net} before fees
         </option>)}

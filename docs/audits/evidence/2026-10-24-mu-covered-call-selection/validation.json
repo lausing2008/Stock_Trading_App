@@ -1,0 +1,25 @@
+{
+  "frontend": {
+    "passed": 949,
+    "files": 78,
+    "typecheck": "passed"
+  },
+  "focused_backend": {
+    "passed": 105
+  },
+  "adapted_harness_and_holdings_checks": {
+    "passed": 68
+  },
+  "initial_full_backend": {
+    "passed": 5855,
+    "failed": 11,
+    "skipped": 26,
+    "reason": "7 extracted-harness missing dependencies; 4 target-anchored fixture assumptions. Corrected with explicit holdings fallback regression."
+  },
+  "final_backend": {
+    "passed": 5868,
+    "skipped": 26,
+    "duration_seconds": 357.46
+  },
+  "production": "pending"
+}

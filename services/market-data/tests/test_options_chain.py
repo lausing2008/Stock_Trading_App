@@ -27,8 +27,8 @@ def _extract_options_chain_rows():
     start = _ROUTES_SOURCE.index("def _options_chain_rows(")
     end = _ROUTES_SOURCE.index('\n@router.get("/{symbol}/options-chain")', start)
     func_source = _ROUTES_SOURCE[start:end]
-    from src.services.options_contract import contract_terms   # R05: the real shared definition
-    namespace = {"pd": pd, "_contract_terms": contract_terms}
+    from src.services.options_contract import contract_terms, checked_contract_terms
+    namespace = {"pd": pd, "_contract_terms": contract_terms, "_checked_contract_terms": checked_contract_terms}
     exec(func_source, namespace)  # noqa: S102 — isolated eval of one pure function's real source
     return namespace["_options_chain_rows"]
 

@@ -35,6 +35,18 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: "OPTIONS-COVERED-CALL-SPOT-ANCHOR",
+    tier: 468,
+    severity: "high",
+    defaultStatus: "done",
+    title: "Separate stock forecasts from covered-call strike selection",
+    file: "docs/audits/2026-10-24-mu-covered-call-selection.md",
+    effort: "M",
+    impact: "A distant stock target no longer pulls the covered-call default and shortlist far from the reference stock price.",
+    what: "MU at a $877.55 reference was ranked around the $1,561.91 stock target. The distant contracts do appear in an independent delayed chain, but that does not make them suitable defaults or prove broker availability.",
+    fix: "Anchor covered-call originals and bounded alternatives to reference spot across legacy, matrix and expiry-search paths. Keep stock targets and combination legs separate; retain explicit choice and WAIT checks. Disclose archive session and unverified current/broker listing status. Refuse automatic payoff when encoded contract strike, expiry or side disagrees with its row. Preserve raw archive records. Document an independent Cboe identity witness and near-price regressions; no invented strike range or optimal-return claim.",
+  },
+  {
     id: "OPTIONS-DARK-POOL-TUTORIAL",
     tier: 468,
     severity: "feature",

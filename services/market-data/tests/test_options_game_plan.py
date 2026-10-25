@@ -208,3 +208,14 @@ def test_result_always_reports_the_inputs_passed_through():
     assert result["signal"] == "BUY"
     assert result["current_price"] == 150.0
     assert result["shares"] == 100
+
+
+def test_covered_call_uses_a_supplied_near_spot_strike_even_without_a_stock_target():
+    for target in (None, 1561.91):
+        rows = [_put_row(875, 46.4, 47), _put_row(880, 41.75, 44.9), _put_row(1560, .44, .57)]
+        result = compute_options_game_plan(current_price=877.55, stop_loss=None,
+            take_profit=target, signal='BUY', put_expiries=[], put_rows=[],
+            call_expiries=['2026-10-02'], call_rows=rows, shares=100, today=TODAY)
+        assert result['covered_call']['strike'] == 880
+        assert result['covered_call']['reference_take_profit'] == target
+        assert result['strategy_matrix']['singles']['covered_call']['legs'][0]['strike'] == 880
