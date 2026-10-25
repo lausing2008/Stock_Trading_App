@@ -11,5 +11,14 @@
     "skipped": 26,
     "rerun": false
   },
-  "production": "pending"
+  "production": {
+    "application_release": "bbb7ce1b85807cdd3081f441367f1467fb5d9dd4",
+    "build_id": "-ebXhMCK6FJl0xd5Sk13W",
+    "healthy_containers": 15,
+    "matching_backend_digests": 12,
+    "non_frontend_start_times_unchanged": 14,
+    "backend_restarts": 0,
+    "provider_capture_required": false,
+    "free_disk_gb_rounded": 30
+  }
 }

@@ -6,9 +6,9 @@ The [October 23 session record](../2026-10-23/session-index.md) and [earlier Oct
 
 ## Latest verified release and validation
 
-Application release **`7fcb29d0c7598bb9549b86486614c87dc7b4070d`** is deployed. Fresh verification: **15 healthy containers**, matching source/shared hashes for **all 12 backends**, and only market-data/frontend restarted. Frontend build `hpeS_pSDLh01N7sR058ca` serves the current-provider option refresh. Running/rollback images were retained; final free disk space is 33G.
+Application release **`bbb7ce1b85807cdd3081f441367f1467fb5d9dd4`** is deployed. Fresh verification: **15 healthy containers**, matching source/shared hashes for **all 12 backends**, and **all 14 non-frontend start times unchanged** across the frontend-only risk-explanation batch. Frontend build `-ebXhMCK6FJl0xd5Sk13W` serves scoped loss labels and expiry scenarios. Rollback images were retained; final free disk space is 30G.
 
-Release validation: **5,912 market-data tests passed / 26 skipped**, **965 frontend tests passed across 80 files**, TypeScript and whitespace checks passed. Real deployed current-endpoint capture/readback verified 11,722 MU contracts, 24 pages, timed stock reference and one snapshot for tables/all four strategy searches; the $880 call uses 51.95/53.00 bid/ask and a 52.48 research midpoint. [Latest refresh report and evidence](../audits/2026-10-25-options-snapshot-refresh.md). Earlier MU selection, alert/RZY and Learning/layout releases retain their own evidence and limitations.
+Latest frontend validation: **980 tests across 82 files**, full TypeScript and whitespace checks passed. Backend is unchanged; its preceding applicable result remains **5,912 passed / 26 skipped**, not a new run. [Latest risk/scenario report and evidence](../audits/2026-10-25-options-risk-scenarios.md). The preceding current-provider refresh, MU selection, alert/RZY and Learning/layout releases retain their own evidence and limitations below.
 
 ## Delivered strategy improvements in this session
 
@@ -28,7 +28,7 @@ Read-only TSM checks on the October 22 archive returned 12 alternatives per stra
 
 ## October 25 risk-basis and expiry-scenario continuation
 
-[Risk explanations, arithmetic consistency and evidence](../audits/2026-10-25-options-risk-scenarios.md): scoped loss labels, covered-call/secured-put worst-case explanations, premium-versus-stock/assignment scenarios and local expiry what-if input. Charts now use the same aggregate premium as cards, including half-cent and signed credit-collar cases. Local validation: 980 frontend tests and full typecheck. This frontend-only batch does not change backend/snapshot/signal/ranking behavior. Final rollout is recorded in its report; previous refresh and MU work are preserved.
+[Risk explanations, arithmetic consistency and evidence](../audits/2026-10-25-options-risk-scenarios.md): scoped loss labels, covered-call/secured-put worst-case explanations, premium-versus-stock/assignment scenarios and local expiry what-if input. Charts now use the same aggregate premium as cards, including half-cent and signed credit-collar cases. Deployed `bbb7ce1b`: 980 frontend tests, full typecheck and 15 healthy containers; all 14 non-frontend start times unchanged. This frontend-only batch does not change backend/snapshot/signal/ranking behavior. Final rollout is recorded in its report; previous refresh and MU work are preserved.
 
 ## October 25 latest-provider option refresh continuation
 
@@ -71,7 +71,7 @@ The earlier reports retain their own independent-review findings, failed first r
 
 The Improvements page (`frontend/src/pages/improvements.tsx`) records the options follow-ups under tier 468; linked earlier work spans tiers 468–473 and the prior RZY/data-quality trackers. Statuses distinguish delivered safeguards from unresolved semantics, unverified coverage and research-only plans. Each improvement above has its own report and evidence directory. The chronological October 23 record retains earlier tracker counts as historical snapshots, not the latest total.
 
-The user authorized the public `prod` push and automatic production deployment. Published application commits and documentation/evidence follow-ups are recorded in the linked release reports. Latest application release is `7fcb29d0`; documentation-only follow-ups do not require another rebuild or restart.
+The user authorized the public `prod` push and automatic production deployment. Published application commits and documentation/evidence follow-ups are recorded in the linked release reports. Latest application release is `bbb7ce1b`; documentation-only follow-ups do not require another rebuild or restart.
 
 The prior `.claude/CLAUDE.md` update pointed only to a latest-release summary. It now points to this **complete session index**. The persistent core remains one concise pointer; the details stay here and in the topic reports. Existing overall core-size/older-entry guard violations predate this documentation update and are not represented as repaired.
 
