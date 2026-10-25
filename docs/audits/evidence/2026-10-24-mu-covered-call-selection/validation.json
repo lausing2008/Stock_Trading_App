@@ -21,5 +21,17 @@
     "skipped": 26,
     "duration_seconds": 357.46
   },
-  "production": "pending"
+  "production": {
+    "release": "4c388f913115d0e21217e6d76be7ec36c1e411c3",
+    "build_id": "77kgUsXs6_kf_Q6nSk719",
+    "healthy_containers": 15,
+    "matching_backend_digests": 12,
+    "other_containers_unchanged": 13,
+    "mu_replay_strike": 880,
+    "alternative_strikes": [
+      875,
+      885,
+      870
+    ]
+  }
 }

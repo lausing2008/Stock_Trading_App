@@ -1,0 +1,20 @@
+{
+  "pages": [
+    {
+      "path": "/stock/MU",
+      "build_id": "77kgUsXs6_kf_Q6nSk719",
+      "markers_verified": true
+    },
+    {
+      "path": "/improvements",
+      "build_id": "77kgUsXs6_kf_Q6nSk719",
+      "markers_verified": true
+    },
+    {
+      "path": "/options-dark-pool-tutorial",
+      "build_id": "77kgUsXs6_kf_Q6nSk719",
+      "markers_verified": true
+    }
+  ],
+  "responsive_styles_verified": true
+}

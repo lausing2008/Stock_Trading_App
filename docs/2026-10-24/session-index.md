@@ -6,9 +6,9 @@ The [October 23 session record](../2026-10-23/session-index.md) and [earlier Oct
 
 ## Latest verified release and validation
 
-Application release **`0a78f4ea528424c5a0475468e7a16d345d4064b9`** is deployed. Fresh verification: **15 healthy containers**, matching source/shared hashes for **all 12 backends**, and only market-data/frontend restarted. Frontend build `VJiNLtTgFI1necdbrcMPB` serves the new benchmark filter and RZY input-cutoff display. Running/rollback images were retained; final free disk space is 35 GB.
+Application release **`4c388f913115d0e21217e6d76be7ec36c1e411c3`** is deployed. Fresh verification: **15 healthy containers**, matching source/shared hashes for **all 12 backends**, and only market-data/frontend restarted. Frontend build `77kgUsXs6_kf_Q6nSk719` serves the MU selection fix. Running/rollback images were retained; final free disk space is 34G.
 
-Release validation: **5,859 market-data tests passed / 26 skipped**, **947 frontend tests passed across 78 files**, TypeScript and whitespace checks passed. Price-risk delivery stays off and the RZY config is unchanged. [Completion review, rollout and evidence](../audits/2026-10-24-alerts-plan-workspace-completion.md). The preceding [Learning/layout release](../audits/2026-10-24-options-learning-and-market-pressure-layout.md) and its report-specific evidence remain historical records.
+Release validation: **5,868 market-data tests passed / 26 skipped**, **949 frontend tests passed across 78 files**, TypeScript and whitespace checks passed. A read-only deployed replay of 276 MU November 20 calls selects $880 near the user's $877.55 reference, rather than the separate $1,561.91 forecast. [MU selection report and evidence](../audits/2026-10-24-mu-covered-call-selection.md). Earlier alert/RZY and Learning/layout releases remain recorded below with their own evidence.
 
 ## Delivered strategy improvements in this session
 
@@ -28,7 +28,7 @@ Read-only TSM checks on the October 22 archive returned 12 alternatives per stra
 
 ## MU broker-chain and covered-call selection continuation
 
-[MU selection report and evidence](../audits/2026-10-24-mu-covered-call-selection.md): both the archive and an independent Cboe delayed-chain check contain the distant MU contracts as well as $855–$900 calls. Fidelity filter state is unknown. The confirmed defect is target-based ranking, now changed locally to reference-spot selection across legacy, matrix and bounded expiry search, with encoded-identity mismatch protection and clearer forecast/archive/listing wording. Final tests and rollout are recorded in the report. No live five-minute chain or broker integration is claimed. Existing alert/RZY work is preserved.
+[MU selection report and evidence](../audits/2026-10-24-mu-covered-call-selection.md): both the archive and an independent Cboe delayed-chain check contain the distant MU contracts as well as $855–$900 calls. Fidelity filter state is unknown. The confirmed defect is target-based ranking, deployed in `4c388f91` with reference-spot selection across legacy, matrix and bounded expiry search, with encoded-identity mismatch protection and clearer forecast/archive/listing wording. Backend 5,868 passed / 26 skipped and frontend 949 passed; deployed replay confirms $880. Final rollout is recorded in the report. No live five-minute chain or broker integration is claimed. Existing alert/RZY work is preserved.
 
 ## Learning tutorial and screenshot-layout continuation
 
@@ -63,7 +63,7 @@ The earlier reports retain their own independent-review findings, failed first r
 
 The Improvements page (`frontend/src/pages/improvements.tsx`) records the options follow-ups under tier 468; linked earlier work spans tiers 468–473 and the prior RZY/data-quality trackers. Statuses distinguish delivered safeguards from unresolved semantics, unverified coverage and research-only plans. Each improvement above has its own report and evidence directory. The chronological October 23 record retains earlier tracker counts as historical snapshots, not the latest total.
 
-The user authorized the public `prod` push and automatic production deployment. Published application commits and documentation/evidence follow-ups are recorded in the linked release reports. Latest application release is `c93d1695`; documentation-only follow-ups do not require another rebuild or restart.
+The user authorized the public `prod` push and automatic production deployment. Published application commits and documentation/evidence follow-ups are recorded in the linked release reports. Latest application release is `4c388f91`; documentation-only follow-ups do not require another rebuild or restart.
 
 The prior `.claude/CLAUDE.md` update pointed only to a latest-release summary. It now points to this **complete session index**. The persistent core remains one concise pointer; the details stay here and in the topic reports. Existing overall core-size/older-entry guard violations predate this documentation update and are not represented as repaired.
 

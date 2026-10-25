@@ -28,7 +28,9 @@ Frontend final suite: **949 passed across 78 files**, full typecheck clean. Focu
 
 In-memory restoration of target-based leg selection changes the MU witness from $880 back to $1,560. Removing the existing holdings guard changes the explicit insufficient-share witness from no preference to covered call. These checks do not mutate tracked source or production.
 
-Final backend suite: **5,868 passed / 26 skipped**; frontend **949 passed**, full typecheck and whitespace clean. Authorized production rollout follows below. Initial test commands from repository root failed to locate the service modules/package; corrected commands use the service working directory and frontend package prefix. These were test invocation errors, not production failures.
+Final backend suite: **5,868 passed / 26 skipped**; frontend **949 passed**, full typecheck and whitespace clean. Application **`4c388f913115d0e21217e6d76be7ec36c1e411c3`** is deployed. Frontend build **`77kgUsXs6_kf_Q6nSk719`** serves the new labels, tracker and lesson. All **15 containers healthy**, all **12 backend source/shared digests match**, and only market-data/frontend restarted; the other **13 start times are unchanged**. Prepared images match, rollback images were retained, public home/MU/tutorial/Improvements return HTTP 200 and final free disk is 34G.
+
+A read-only deployed-code replay against all **276** archived MU November 20 calls, using the user's reference $877.55 and separate target $1,561.91, now selects **$880** in both legacy and matrix paths. Alternatives are **$875, $885, $870**. This is real archived input through deployed calculation code, not a claim of authenticated UI interaction, current executable broker quotes or optimal returns. The earlier alert/RZY deployment remains intact. Final evidence is synchronized in a documentation-only follow-up without service restarts. Initial test commands from repository root failed to locate the service modules/package; corrected commands use the service working directory and frontend package prefix. These were test invocation errors, not production failures.
 
 ## Remaining boundaries
 

@@ -1,0 +1,18 @@
+{
+  "source_session": "2026-10-22",
+  "expiry": "2026-11-20",
+  "replay_date": "2026-10-24",
+  "user_reference_price": 877.55,
+  "separate_stock_forecast": 1561.91,
+  "source_call_rows": 276,
+  "legacy_strike": 880.0,
+  "matrix_strike": 880.0,
+  "anchor_basis": "reference_spot",
+  "alternative_strikes": [
+    875.0,
+    885.0,
+    870.0
+  ],
+  "listing_verification": "unverified_archive",
+  "scope": "Read-only deployed-code replay, not authenticated production UI or executable broker prices"
+}
