@@ -25,3 +25,9 @@ To make a personal selection or order, the app would need current broker quotes 
 Frontend: **985 tests in 83 files**, full TypeScript check and `git diff --check` passed. Unit regressions cover deterministic ties, quote/OI/expiry/preferences screens and incomplete reads. A component regression confirms a visible lead does not select a contract or override WAIT; its explicit Compare action preserves the source index. Native offline Chrome checks at **1449, 1024 and 390 pixels** found four visible lead cards, collapsed evidence tables and no page/card overflow. The mobile check caught and resolved an overflowing contract dropdown. Visual fixtures use fictional quotes, so they do not prove a production contract recommendation.
 
 See the separate evidence directory `docs/audits/evidence/2026-10-25-options-research-leads/` for tests, visuals and rollout records. Deployment status is recorded after the pinned production check, rather than inferred from the tracker status.
+
+## Production result
+
+Application commit **`ad287b04c823eb325f4946cf4e704bed82dbc287`** was pushed to public `prod` and deployed as a fresh EC2 production frontend build, build ID **`O7Rjp_UeR9xzd5NDLNmr3`**. The pinned deploy kept a rollback image and passed its health gate. A separate read-only verification found **15/15 healthy containers**, the **14 non-frontend start times unchanged**, all **12 backend source/shared hashes matching**, and HTTP 200 for home, MU stock, Improvements and tutorial. Served JS/CSS markers confirm the decision desk, lead buttons, tracker/tutorial wording and responsive rules are in this build. Host free space was **29 GB** after deployment cleanup.
+
+This was a frontend-only release. No backend restart or data-feed change occurred. Verification checked served assets and an offline rendered interaction fixture; it did **not** include an authenticated production click-through or prove that a highlighted contract is the user's best net-return trade.

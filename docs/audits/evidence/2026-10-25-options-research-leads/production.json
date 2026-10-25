@@ -1,0 +1,14 @@
+{
+  "verified_at_utc": "2026-10-25T18:18:25.786145+00:00",
+  "application_release": "ad287b04c823eb325f4946cf4e704bed82dbc287",
+  "frontend_build_id": "O7Rjp_UeR9xzd5NDLNmr3",
+  "healthy_containers": 15,
+  "container_count": 15,
+  "non_frontend_start_times_unchanged": 14,
+  "backend_source_shared_hashes_matching": 12,
+  "rollback_image_retained": true,
+  "public_http_200": ["/", "/stock/MU", "/improvements", "/options-dark-pool-tutorial"],
+  "served_markers_verified": ["Options decision desk", "Contract research leads", "Compare this contract", "OPTIONS-RESEARCH-LEADS-DESK", "tutorial", "responsive CSS"],
+  "disk_free_gb_after": 29,
+  "limits": "Read-only public served-asset checks; no authenticated browser click-through or best-return outcome validation."
+}

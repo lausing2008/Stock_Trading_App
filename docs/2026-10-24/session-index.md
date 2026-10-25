@@ -6,9 +6,9 @@ The [October 23 session record](../2026-10-23/session-index.md) and [earlier Oct
 
 ## Latest verified release and validation
 
-Application release **`bbb7ce1b85807cdd3081f441367f1467fb5d9dd4`** is deployed. Fresh verification: **15 healthy containers**, matching source/shared hashes for **all 12 backends**, and **all 14 non-frontend start times unchanged** across the frontend-only risk-explanation batch. Frontend build `-ebXhMCK6FJl0xd5Sk13W` serves scoped loss labels and expiry scenarios. Rollback images were retained; final free disk space is 30G.
+Application release **`ad287b04c823eb325f4946cf4e704bed82dbc287`** is deployed. Fresh verification: **15 healthy containers**, matching source/shared hashes for **all 12 backends**, and **all 14 non-frontend start times unchanged** across the frontend-only decision-desk release. Frontend build `O7Rjp_UeR9xzd5NDLNmr3` serves the lead cards, tutorial and tracker. Rollback images were retained; final free disk space is 29G.
 
-Latest frontend validation: **980 tests across 82 files**, full TypeScript and whitespace checks passed. Backend is unchanged; its preceding applicable result remains **5,912 passed / 26 skipped**, not a new run. [Latest risk/scenario report and evidence](../audits/2026-10-25-options-risk-scenarios.md). The preceding current-provider refresh, MU selection, alert/RZY and Learning/layout releases retain their own evidence and limitations below.
+Latest frontend validation: **985 tests across 83 files**, full TypeScript and whitespace checks passed. Backend is unchanged; its preceding applicable result remains **5,912 passed / 26 skipped**, not a new run. [Latest decision-desk report and evidence](../audits/2026-10-25-options-research-leads.md). The preceding risk/scenario, current-provider refresh, MU selection, alert/RZY and Learning/layout releases retain their own evidence and limitations below.
 
 ## Delivered strategy improvements in this session
 
@@ -28,7 +28,7 @@ Read-only TSM checks on the October 22 archive returned 12 alternatives per stra
 
 ## October 25 risk-basis and expiry-scenario continuation
 
-[Options decision desk and per-strategy research leads](../audits/2026-10-25-options-research-leads.md): four prominent lead cards rank quote quality only within the returned shortlist, require two-sided quotes, positive OI, valid expiry, holding fit and acknowledged preferences, and suppress incomplete/expired capture leads. An explicit comparison click changes the strategy card and clears assignment acceptance; WAIT remains. Dated evidence tables use disclosures, the matching comparison row is marked, and the Learning tutorial/tracker explain the boundary. A personalized best-return contract is still unproven without executable quotes, account data and outcome calibration. Final validation and rollout are recorded in the report.
+[Options decision desk and per-strategy research leads](../audits/2026-10-25-options-research-leads.md): four prominent lead cards rank quote quality only within the returned shortlist, require two-sided quotes, positive OI, valid expiry, holding fit and acknowledged preferences, and suppress incomplete/expired capture leads. An explicit comparison click changes the strategy card and clears assignment acceptance; WAIT remains. Dated evidence tables use disclosures, the matching comparison row is marked, and the Learning tutorial/tracker explain the boundary. A personalized best-return contract is still unproven without executable quotes, account data and outcome calibration. Deployed `ad287b04`: 985 frontend tests, 15 healthy containers and served-build markers verified.
 
 [Risk explanations, arithmetic consistency and evidence](../audits/2026-10-25-options-risk-scenarios.md): scoped loss labels, covered-call/secured-put worst-case explanations, premium-versus-stock/assignment scenarios and local expiry what-if input. Charts now use the same aggregate premium as cards, including half-cent and signed credit-collar cases. Deployed `bbb7ce1b`: 980 frontend tests, full typecheck and 15 healthy containers; all 14 non-frontend start times unchanged. This frontend-only batch does not change backend/snapshot/signal/ranking behavior. Final rollout is recorded in its report; previous refresh and MU work are preserved.
 
@@ -73,7 +73,7 @@ The earlier reports retain their own independent-review findings, failed first r
 
 The Improvements page (`frontend/src/pages/improvements.tsx`) records the options follow-ups under tier 468; linked earlier work spans tiers 468–473 and the prior RZY/data-quality trackers. Statuses distinguish delivered safeguards from unresolved semantics, unverified coverage and research-only plans. Each improvement above has its own report and evidence directory. The chronological October 23 record retains earlier tracker counts as historical snapshots, not the latest total.
 
-The user authorized the public `prod` push and automatic production deployment. Published application commits and documentation/evidence follow-ups are recorded in the linked release reports. Latest application release is `bbb7ce1b`; documentation-only follow-ups do not require another rebuild or restart.
+The user authorized the public `prod` push and automatic production deployment. Published application commits and documentation/evidence follow-ups are recorded in the linked release reports. Latest application release is `ad287b04`; documentation-only follow-ups do not require another rebuild or restart.
 
 The prior `.claude/CLAUDE.md` update pointed only to a latest-release summary. It now points to this **complete session index**. The persistent core remains one concise pointer; the details stay here and in the topic reports. Existing overall core-size/older-entry guard violations predate this documentation update and are not represented as repaired.
 
