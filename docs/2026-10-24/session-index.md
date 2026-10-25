@@ -1,4 +1,4 @@
-# Complete session work index — October 24, 2026
+# Complete session work index — October 24–25, 2026
 
 This is the single entry point for **all work covered in this conversation**, including the October 19–23 work carried into it. It supersedes the earlier latest-release-only summary. Dates use America/Los_Angeles; evidence files retain UTC timestamps. `.claude/CLAUDE.md` points here rather than duplicating the reports.
 
@@ -25,6 +25,10 @@ Release validation: **5,868 market-data tests passed / 26 skipped**, **949 front
 | Expandable candidate comparison: original reference, risk/capital/breakeven/Greeks and sortable returned shortlist with stable explicit selection | Deployed `003e05ab`; frontend-only, no extra requests | [Candidate-comparison report](../audits/2026-10-24-options-candidate-comparison.md) |
 
 Read-only TSM checks on the October 22 archive returned 12 alternatives per strategy for the **verification example** DTE 60–180 / absolute delta 0.20–0.40, zero matches for exact-zero delta, and zero additional reads for an expiry band incompatible with the holding-period minimum. These are bounded research examples, not recommended settings or executable prices. No authenticated interactive browser acceptance was performed for these latest releases; the reports distinguish DOM tests, real-route regressions, deployed helper calculations and public HTTP/served-build checks.
+
+## October 25 latest-provider option refresh continuation
+
+[Refresh implementation, constraints and evidence](../audits/2026-10-25-options-snapshot-refresh.md): explicit current-contract capture, shared snapshot pricing across cards/search/chain/calculator, single-expiration scope, source clocks, expiry/cooldown/failure handling and conditional goal fit. Full MU capability probe completed 11,722 contracts over 24 pages; this is newer provider data rather than an archive reread. Snapshot quote times remain unverified and no optimal-return claim is made. Validation and rollout status are recorded in that report; preceding MU/alert/RZY work remains preserved. The existing CLAUDE.md pointer now covers October 19–25.
 
 ## MU broker-chain and covered-call selection continuation
 

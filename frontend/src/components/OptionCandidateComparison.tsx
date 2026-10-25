@@ -24,7 +24,7 @@ export default function OptionCandidateComparison({ original, originalStrike, or
       <option value="oi">Highest measured open interest</option><option value="capital">Lowest stated capital</option><option value="expiry">Earliest expiry</option>
     </select></label>
     <div style={{ overflowX: 'auto' }}><table aria-label="Returned option candidate comparison" style={{ width: '100%', fontSize: 12 }}>
-      <thead><tr>{['Reference / choice', 'Contract', 'Expiry / calendar DTE', 'Archive debit / credit', 'Maximum loss', 'Maximum profit', 'Expiry breakeven', 'Stated capital', 'Shown spread (rounded)', 'Open interest', 'Contract delta / gamma'].map(label => <th key={label} style={cell}>{label}</th>)}</tr></thead>
+      <thead><tr>{['Reference / choice', 'Contract', 'Expiry / calendar DTE', 'Reference debit / credit', 'Maximum loss', 'Maximum profit', 'Expiry breakeven', 'Stated capital', 'Shown spread (rounded)', 'Open interest', 'Contract delta / gamma'].map(label => <th key={label} style={cell}>{label}</th>)}</tr></thead>
       <tbody>{rows.map(row => {
         const strategy = row.strategy, leg = strategy?.legs[0], isOriginal = row.sourceIndex === null;
         const strike = leg?.strike ?? (isOriginal ? originalStrike : null);
@@ -39,7 +39,7 @@ export default function OptionCandidateComparison({ original, originalStrike, or
               aria-label={isOriginal ? 'Compare original plan' : `Compare alternative ${row.sourceIndex! + 1}`}
               onClick={() => onSelect(row.sourceIndex)}>{chosen ? 'Comparing' : 'Compare'}</button>
             {!strategy && <div>Payoff unavailable</div>}</td>
-          <td style={cell}>{money(strike)} {leg?.right ?? (strategyKey === 'long_call' || strategyKey === 'covered_call' ? 'call' : 'put')}<br />{leg?.option_symbol ?? (isOriginal ? originalSymbol : null) ?? 'Contract identity unavailable'}</td>
+          <td style={cell}>{money(strike)} {leg?.right ?? (strategyKey === 'long_call' || strategyKey === 'covered_call' ? 'call' : 'put')}<br />{leg?.option_symbol ?? (isOriginal ? originalSymbol : null) ?? 'Contract identity unavailable'}{leg && 'last_tape_time' in leg && <><br />Last trade: {leg.last_tape_time ?? 'unavailable'} · quote time unavailable</>}</td>
           <td style={cell}>{expiry ?? 'Unavailable'}<br />{row.dte === null ? 'DTE unavailable' : `${row.dte} calendar days${row.dte < 0 ? ' — expired' : row.dte === 0 ? ' — same day' : ''}`}</td>
           <td style={cell}>{strategy ? `${money(strategy.net_per_contract)} ${strategy.net}` : 'Unavailable'}</td>
           <td style={cell}>{money(strategy?.max_loss_per_contract)}</td><td style={cell}>{unlimited ? 'Unbounded' : money(strategy?.max_profit_per_contract)}</td>
@@ -49,6 +49,6 @@ export default function OptionCandidateComparison({ original, originalStrike, or
         </tr>;
       })}</tbody>
     </table></div>
-    <p>One standard contract at archive reference prices, before fees, slippage and taxes. Spread sorting uses the rounded value supplied by the API, not its backend unrounded screen. Stock legs use the reference spot, not your cost basis. Covered-call capital includes stock; protective-put capital is the option debit and excludes the separately required shares. Greeks are contract estimates, not combined position exposures or profit probabilities. Quote time/size, deliverables and full event coverage remain unverified. Existing eligibility checks and WAIT entry status still apply.</p>
+    <p>One standard contract at the displayed reference prices, before fees, slippage and taxes. Spread sorting uses the rounded value supplied by the API, not its backend unrounded screen. Stock legs use the reference spot, not your cost basis. Covered-call capital includes stock; protective-put capital is the option debit and excludes the separately required shares. Greeks are contract estimates, not combined position exposures or profit probabilities. Quote time/size, deliverables and full event coverage remain unverified. Existing eligibility checks and WAIT entry status still apply.</p>
   </details>;
 }

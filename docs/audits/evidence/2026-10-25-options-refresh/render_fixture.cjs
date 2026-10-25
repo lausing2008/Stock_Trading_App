@@ -1,0 +1,10 @@
+const fs=require('fs'),vm=require('vm');
+const ts=require(require.resolve('typescript',{paths:[process.cwd()]}));
+const React=require(require.resolve('react',{paths:[process.cwd()]}));
+const server=require(require.resolve('react-dom/server',{paths:[process.cwd()]}));
+const meta=JSON.parse(fs.readFileSync('../docs/audits/evidence/2026-10-25-options-refresh/full-capture-capability.json','utf8')).metadata;
+const now=Date.parse(meta.captured_at)+61000;
+const sandbox={React,exports:{},require(name){if(name==='react')return React;if(name==='@/lib/api')return{api:{}};if(name==='@/lib/useNow')return{useNow:()=>now};throw new Error(name);}};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/components/OptionsSnapshotControls.tsx','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020,jsx:ts.JsxEmit.React,esModuleInterop:true}}).outputText,sandbox);
+const html=server.renderToStaticMarkup(React.createElement(sandbox.exports.default,{symbol:'MU',snapshot:meta,onSnapshot(){},expiries:['2026-11-20']}));
+fs.writeFileSync('/tmp/options-refresh-preview.html',`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${fs.readFileSync('src/styles/globals.css','utf8')}</style></head><body><main style="max-width:1400px;margin:auto;padding:16px"><h1>Offline refresh-controls layout witness</h1><p>Actual controls and styles, recorded public-market metadata; no browser provider requests.</p>${html}</main></body></html>`);

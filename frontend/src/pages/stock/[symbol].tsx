@@ -10,6 +10,8 @@ import dynamic from 'next/dynamic';
 import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
 import OptionsGamePlanCard from '@/components/OptionsGamePlanCard';
+import OptionsSnapshotControls from '@/components/OptionsSnapshotControls';
+import type { OptionSnapshot } from '@/lib/api';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
 import OptionsChainChart from '@/components/OptionsChainChart';
@@ -681,6 +683,8 @@ export default function StockDetail() {
 
   const [divOpen, setDivOpen] = useState(false);
   const [instOpen, setInstOpen] = useState(false);
+  const [snapshotCapture, setSnapshotCapture] = useState<OptionSnapshot | undefined>(undefined);
+  const activeOptionSnapshot = snapshotCapture?.symbol === symbol ? snapshotCapture : undefined;
   const [chainOpen, setChainOpen] = useState(false);
   const [chainExpiry, setChainExpiry] = useState<string | undefined>(undefined);
   // Audit R02: refresh at the backend cache's cadence while the page is visible, so an open tab
@@ -690,9 +694,9 @@ export default function StockDetail() {
   // T230-DATA-OPTIONS-CHAIN: only fetched once the user opens the section — the full
   // strike matrix is a heavier fetch than options-flow's own top-3-per-side summary, and
   // most visits to a stock page don't need it.
-  const { data: optionsChain } = useSWR(
-    symbol && chainOpen ? `options-chain-${symbol}-${chainExpiry ?? 'default'}` : null,
-    () => api.getOptionsChain(symbol, chainExpiry),
+  const { data: optionsChain, error: optionsChainError } = useSWR(
+    symbol && chainOpen ? `options-chain-${symbol}-${chainExpiry ?? 'default'}-${activeOptionSnapshot?.id ?? 'archive'}` : null,
+    () => api.getOptionsChain(symbol, chainExpiry, activeOptionSnapshot?.id),
     { revalidateOnFocus: false },
   );
   // T411-IVHV: both are gated on the Options tab being open. Neither is needed by the other
@@ -727,9 +731,9 @@ export default function StockDetail() {
   const [glFillPremium, setGlFillPremium] = useState(0);
   const [glContracts, setGlContracts] = useState(1);
 
-  const { data: glChain, isLoading: glLoading } = useSWR(
-    symbol && pageTab === 'Options' ? `gl-chain-${symbol}-${glExpiry ?? 'nearest'}` : null,
-    () => api.getOptionsChain(symbol, glExpiry),
+  const { data: glChain, isLoading: glLoading, error: glChainError } = useSWR(
+    symbol && pageTab === 'Options' ? `gl-chain-${symbol}-${glExpiry ?? 'nearest'}-${activeOptionSnapshot?.id ?? 'archive'}` : null,
+    () => api.getOptionsChain(symbol, glExpiry, activeOptionSnapshot?.id),
     { revalidateOnFocus: false },
   );
 
@@ -1173,6 +1177,12 @@ export default function StockDetail() {
               <a href="/option-trading-guide" style={{ color: '#38bdf8', textDecoration: 'none' }}>Options guide →</a>
             </p>
           </div>
+        {(getSession()?.tier === 'advanced' || getSession()?.role === 'admin') && <OptionsSnapshotControls key={symbol} symbol={symbol} snapshot={activeOptionSnapshot} expiries={glLiveExpiries}
+          onSnapshot={value => {
+            setSnapshotCapture(value);
+            setChainExpiry(previous => value?.expiries.includes(previous ?? '') ? previous : undefined);
+            setGlExpiry(previous => value?.expiries.includes(previous ?? '') ? previous : undefined);
+          }} />}
         <OptionsDominanceCard flow={optionsFlow} error={optionsFlowError} onRetry={() => void retryOptionsFlow()} />
         {/* T322-OPTIONS-GAMEPLAN: Advanced-tier only — reuses the SAME nearest-support/
             analyst-target values PositionSizer above already computes (not a second,
@@ -1193,7 +1203,7 @@ export default function StockDetail() {
             <div className="option-strategy-inputs"><label style={{ maxWidth: 300 }}>Strategy research horizon<select aria-label="Strategy research horizon" value={selectedHorizon} onChange={e => setSelectedHorizon(e.target.value)}>
               {['SHORT', 'SWING', 'LONG', 'GROWTH'].map(h => <option key={h} value={h}>{h}</option>)}
             </select></label></div>
-            <OptionsGamePlanCard
+            <OptionsGamePlanCard snapshotId={activeOptionSnapshot?.id}
               researchContext={{ symbol: symbol as string, horizon: selectedHorizon, signal: contextSignal }}
               calendarContext={data.fundamentals ? { symbol: symbol as string, retrievedAt: data.fundamentals.fetched_at,
                 earningsDate: data.fundamentals.next_earnings_date, exDividendDate: data.fundamentals.ex_dividend_date } : undefined}
@@ -1219,7 +1229,7 @@ export default function StockDetail() {
         {(() => {
           // Seeded from the same source the rest of this tab uses, so the table opens agreeing
           // with the price shown above it — then the user can override it.
-          const liveSpot = allPrices?.find(p => p.symbol === symbol)?.price
+          const liveSpot = activeOptionSnapshot?.stock_reference ?? allPrices?.find(p => p.symbol === symbol)?.price
             ?? data.prices?.at(-1)?.close ?? 0;
           const effectiveSpot = glSpotEdited && glSpot > 0 ? glSpot : liveSpot;
           if (!effectiveSpot) return null;
@@ -1234,7 +1244,7 @@ export default function StockDetail() {
               calls={glLiveExpiries.length ? glChain?.calls ?? [] : []}
               puts={glLiveExpiries.length ? glChain?.puts ?? [] : []}
               loading={glLoading}
-              unavailableReason={calculatorUnavailableReason(glChain, glLiveExpiries)}
+              unavailableReason={glChainError ? 'Selected chain could not be loaded. Refresh the option chain; no archive fallback was substituted.' : calculatorUnavailableReason(glChain, glLiveExpiries)}
               action={glAction}
               right={glRight}
               onPositionChange={(a, r) => { setGlAction(a); setGlRight(r); }}
@@ -1270,7 +1280,8 @@ export default function StockDetail() {
             </div>
             {chainOpen && (
               <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
-                {!optionsChain && <div style={{ fontSize: 12, color: '#475569' }}>Loading options chain…</div>}
+                {optionsChainError && <p role="alert">The selected chain could not be loaded. Refresh the option chain; no archive fallback was substituted.</p>}
+                {!optionsChain && !optionsChainError && <div style={{ fontSize: 12, color: '#475569' }}>Loading options chain…</div>}
                 {optionsChain && !optionsChain.available && (
                   <div style={{ fontSize: 12, color: '#475569' }}>No options chain available for this symbol.</div>
                 )}

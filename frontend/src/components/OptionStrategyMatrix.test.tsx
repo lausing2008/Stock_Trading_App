@@ -356,3 +356,28 @@ it('separates a distant stock forecast from the archived reference strike and li
   expect(document.body.textContent).toContain('not the forecast target');
   expect(screen.queryByRole('option', { name: 'Original target-strike selection' })).toBeNull();
 });
+
+it('pins expiration searches to the current snapshot and refuses a different snapshot response', async () => {
+  const {snapshot}=await import('@/testFixtures/optionSnapshot');
+  const meta={...snapshot,symbol:'EXAMPLE',source_session:'2026-01-02',expires_at:'2026-01-02T18:00:00Z'};
+  const result=searchResult();result.option_snapshot={...meta,id:'b'.repeat(32)};
+  const get=vi.spyOn(api,'getOptionsGamePlan').mockResolvedValue(result);
+  render(<OptionStrategyMatrixPanel matrix={matrix()} spot={100} takeProfit={120} chainAsOf="2026-01-02" snapshot={meta}
+    researchContext={{symbol:'EXAMPLE',horizon:'SWING'}} />);
+  await act(async()=>fireEvent.click(screen.getByRole('button',{name:'Find expirations for holding period'})));
+  expect(get).toHaveBeenCalledWith('EXAMPLE',{stopLoss:undefined,takeProfit:120,holdingDays:14,snapshotId:meta.id});
+  expect(screen.getByRole('alert').textContent).toContain('Search context changed');
+  expect(screen.queryByText(/Comparing an explicitly selected alternative/)).toBeNull();
+});
+
+it('an expired capture cannot gain a goal-fit highlight even when the strategy has capital', async () => {
+  const {snapshot}=await import('@/testFixtures/optionSnapshot');
+  const m=matrix();m.singles.covered_call=alternative;
+  render(<OptionStrategyMatrixPanel matrix={m} spot={100} takeProfit={120} chainAsOf="2026-01-02"
+    snapshot={{...snapshot,symbol:'EXAMPLE',expires_at:'2026-01-02T16:59:00Z'}} />);
+  fireEvent.change(screen.getByLabelText('Objective'),{target:{value:'income'}});
+  fireEvent.change(screen.getByLabelText('Unencumbered shares'),{target:{value:'100'}});
+  fireEvent.click(screen.getByRole('checkbox',{name:/I accept buying or selling/}));
+  expect(screen.getByText('Wait / no strategy preference yet')).toBeTruthy();
+  expect(document.body.textContent).toContain('Snapshot expired. Refresh the option chain');
+});

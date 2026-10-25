@@ -1,0 +1,26 @@
+[
+  {
+    "viewport": 1449,
+    "documentWidth": 1449,
+    "selectWidth": 480,
+    "captureLabel": true,
+    "explicitClockLimit": true,
+    "explicitScope": true
+  },
+  {
+    "viewport": 1024,
+    "documentWidth": 1024,
+    "selectWidth": 480,
+    "captureLabel": true,
+    "explicitClockLimit": true,
+    "explicitScope": true
+  },
+  {
+    "viewport": 390,
+    "documentWidth": 390,
+    "selectWidth": 328,
+    "captureLabel": true,
+    "explicitClockLimit": true,
+    "explicitScope": true
+  }
+]

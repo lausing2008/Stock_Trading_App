@@ -16,9 +16,10 @@ import type { OptionCalendarContext } from '@/lib/optionCalendarEvidence';
  * Self-contained (its own fetch, no SWR), matching SrWatchButton's/StockGoalsPanel's own
  * established pattern for keeping stock/[symbol].tsx from growing further. */
 export default function OptionsGamePlanCard({
-  symbol, currentPrice, stopLoss, takeProfit, signal, researchContext, calendarContext,
+  symbol, currentPrice, stopLoss, takeProfit, signal, researchContext, calendarContext, snapshotId,
 }: {
   symbol: string;
+  snapshotId?: string;
   researchContext?: OptionResearchContext;
   calendarContext?: OptionCalendarContext;
   currentPrice: number | undefined;
@@ -33,8 +34,12 @@ export default function OptionsGamePlanCard({
     let active = true;
     setPlan(undefined);
     setError(null);
-    api.getOptionsGamePlan(symbol, { stopLoss, takeProfit })
-      .then(value => { if (active) setPlan(value); })
+    api.getOptionsGamePlan(symbol, { stopLoss, takeProfit, ...(snapshotId ? { snapshotId } : {}) })
+      .then(value => {
+        if (!active) return;
+        if (snapshotId && (value.option_snapshot?.id !== snapshotId || value.symbol !== symbol || value.current_price !== value.option_snapshot.stock_reference || value.chain_as_of !== value.option_snapshot.source_session)) throw new Error('Snapshot response mismatch');
+        setPlan(value);
+      })
       .catch((e) => {
         if (!active) return;
         // A 403 here means the caller isn't Advanced-tier — a real, expected case for a basic
@@ -42,13 +47,13 @@ export default function OptionsGamePlanCard({
         // this component in some code paths; fail silently to "nothing to show" rather than a
         // scary red error for what is really just "this feature isn't unlocked for you."
         if (String(e?.message ?? e).includes('403')) { setPlan(null); return; }
-        setError('Failed to load the options game plan.');
+        setError(snapshotId ? 'Selected snapshot could not be loaded. Refresh the option chain; no archived plan was substituted.' : 'Failed to load the options game plan.');
         setPlan(null);
       });
     return () => { active = false; };
-  }, [symbol, stopLoss, takeProfit]);
+  }, [symbol, stopLoss, takeProfit, snapshotId]);
 
-  if (plan === undefined || (plan && plan.symbol !== symbol)) {
+  if (plan === undefined || (plan && (plan.symbol !== symbol || (snapshotId ? plan.option_snapshot?.id !== snapshotId : !!plan.option_snapshot)))) {
     return (
       <div style={{ background: '#1e293b', borderRadius: 10, padding: '14px 18px', border: '1px solid #334155', marginTop: 12 }}>
         <div style={{ fontSize: 12, color: '#64748b' }}>Loading options game plan…</div>
@@ -68,10 +73,10 @@ export default function OptionsGamePlanCard({
     <p>{plan.reason === 'options_feed_unavailable' ? 'The options provider is unavailable. Refresh when the feed recovers.'
       : plan.reason === 'no_options_listed' ? 'No listed option contracts were returned for this symbol.'
       : plan.reason === 'unsupported_product_settlement' ? 'This product needs settlement and last-trading rules that are not supported. Its archived chain is available for historical research.'
-      : plan.reason === 'no_current_expiries' ? 'Every expiration in the archived chain has stopped trading, so there is no current contract to plan. Refresh after the next session is captured.'
+      : plan.reason === 'no_current_expiries' ? (snapshotId ? 'No current expiration is available in this provider snapshot. Refresh when the provider has a current chain.' : 'Every expiration in the archived chain has stopped trading, so there is no current contract to plan. Refresh after the next session is captured.')
       : `No priced option plan is available (${plan.reason ?? 'no usable contracts'}). Refresh the chain before entry.`}</p>
     {plan.last_known_chain_date && <p>Last recorded chain: {plan.last_known_chain_date}.</p>}
-    <OptionStrategyMatrixPanel key={symbol} symbol={symbol} calendarContext={calendarContext} researchContext={researchContext} spot={plan.current_price ?? currentPrice ?? 0} stopLoss={stopLoss} takeProfit={takeProfit} chainAsOf={plan.chain_as_of} matrix={plan.strategy_matrix ?? { singles: {}, combos: {}, recommendation: { primary: null, reason: 'No contract data' }, iv_rank: null, iv_regime: 'unknown' }} />
+    <OptionStrategyMatrixPanel key={`${symbol}:${snapshotId ?? "archive"}`} snapshot={plan.option_snapshot} symbol={symbol} calendarContext={calendarContext} researchContext={researchContext} spot={plan.current_price ?? currentPrice ?? 0} stopLoss={stopLoss} takeProfit={takeProfit} chainAsOf={plan.chain_as_of} matrix={plan.strategy_matrix ?? { singles: {}, combos: {}, recommendation: { primary: null, reason: 'No contract data' }, iv_rank: null, iv_regime: 'unknown' }} />
   </div>;
 
   const pp = plan.protective_put;
@@ -154,7 +159,7 @@ export default function OptionsGamePlanCard({
         )}
       </div>}
       {plan.current_price != null && (
-        <OptionStrategyMatrixPanel key={symbol} symbol={symbol} calendarContext={calendarContext} researchContext={researchContext} matrix={matrix ?? { singles: {}, combos: {}, recommendation: { primary: null, reason: 'Strategy matrix unavailable' }, iv_rank: null, iv_regime: 'unknown' }} spot={plan.current_price} stopLoss={stopLoss} takeProfit={takeProfit} chainAsOf={plan.chain_as_of} />
+        <OptionStrategyMatrixPanel key={`${symbol}:${snapshotId ?? "archive"}`} snapshot={plan.option_snapshot} symbol={symbol} calendarContext={calendarContext} researchContext={researchContext} matrix={matrix ?? { singles: {}, combos: {}, recommendation: { primary: null, reason: 'Strategy matrix unavailable' }, iv_rank: null, iv_regime: 'unknown' }} spot={plan.current_price} stopLoss={stopLoss} takeProfit={takeProfit} chainAsOf={plan.chain_as_of} />
       )}
       {currentPrice != null && (
         <div style={{ fontSize: 10.5, color: '#475569', marginTop: 10 }}>

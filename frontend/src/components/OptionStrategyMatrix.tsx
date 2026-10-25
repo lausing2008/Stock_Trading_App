@@ -109,6 +109,7 @@ function StrategyCard({ s, spot, highlight, review }: { s: OptionStrategy; spot:
         {' · '}Theta {measurement(leg.theta)} · Vega {measurement(leg.vega)}
         {' · '}Spread {leg.spread_pct == null ? 'unavailable' : `${leg.spread_pct}%`}
       </span>)}</p>
+      {s.legs.some(leg => 'last_tape_time' in leg) && <p style={{ fontSize: 11, color: '#94a3b8' }}>Last reported trade: {s.legs.map(leg => leg.last_tape_time ?? 'unavailable').join(' / ')}. Trade time is not quote observation time.</p>}
       <p style={{ fontSize: 10, color: '#94a3b8' }}>Greeks describe the option contract, not the combined strategy exposure. Snapshot estimates; units are provider conventions. They do not establish a probability of profit.</p>
       <p style={{ fontSize: 10, color: '#94a3b8' }}>Expiry economics per standard contract, before fees. Stock legs use the reference spot.</p>
 
@@ -174,7 +175,8 @@ function StrategyCard({ s, spot, highlight, review }: { s: OptionStrategy; spot:
   );
 }
 
-export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, takeProfit, chainAsOf, researchContext, calendarContext, symbol }: {
+export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, takeProfit, chainAsOf, researchContext, calendarContext, symbol, snapshot }: {
+  snapshot?: import('@/lib/api').OptionSnapshot;
   symbol?: string;
   researchContext?: OptionResearchContext;
   calendarContext?: OptionCalendarContext;
@@ -200,7 +202,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
   const [assignmentAcceptance, setAssignmentAcceptance] = useState<string | null>(null);
   const searchGeneration = useRef(0);
   const [search, setSearch] = useState<{ key: string; source: OptionStrategyMatrix; reviews?: OptionStrategyMatrix['candidate_review']; pending?: boolean; error?: string } | null>(null);
-  const searchKey = JSON.stringify([holdingKey, holdingText, chainAsOf, spot, stopLoss, takeProfit, today, preferenceText]);
+  const searchKey = JSON.stringify([holdingKey, holdingText, chainAsOf, spot, stopLoss, takeProfit, today, preferenceText, snapshot?.id]);
   useEffect(() => {
     searchGeneration.current += 1;
     setSearch(null);
@@ -225,11 +227,11 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
     setChoices({});
     setAssignmentAcceptance(null);
     try {
-      const result = await api.getOptionsGamePlan(researchContext.symbol, { stopLoss, takeProfit, holdingDays: Number(holdingText), ...(preferencesActive ? { searchPreferences: preferences.values } : {}) });
+      const result = await api.getOptionsGamePlan(researchContext.symbol, { stopLoss, takeProfit, holdingDays: Number(holdingText), ...(snapshot ? { snapshotId: snapshot.id } : {}), ...(preferencesActive ? { searchPreferences: preferences.values } : {}) });
       if (generation !== searchGeneration.current) return;
       const reviews = result.strategy_matrix?.candidate_review;
       const review = reviews?.covered_call;
-      if (result.symbol !== researchContext.symbol || result.chain_as_of !== chainAsOf || result.current_price !== spot || review?.method_version !== 'covered_call_candidates_v2' || review.holding_days !== Number(holdingText) || (review.search_date && review.search_date !== today)) {
+      if ((snapshot && result.option_snapshot?.id !== snapshot.id) || result.symbol !== researchContext.symbol || result.chain_as_of !== chainAsOf || result.current_price !== spot || review?.method_version !== 'covered_call_candidates_v2' || review.holding_days !== Number(holdingText) || (review.search_date && review.search_date !== today)) {
         throw new Error('Search context changed or is unavailable. Refresh the game plan before searching again.');
       }
       if (preferencesActive && Object.values(reviews ?? {}).some(r => (Object.keys(preferences.values) as (keyof OptionSearchPreferences)[])
@@ -266,7 +268,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
   const calendarBlockers = Object.fromEntries(eventRows.filter(row => requireEarningsAfterExpiry && row.earnings.code !== 'after_expiry')
     .map(row => [row.key, 'Earnings timing filter: requires a current matched calendar record reporting next earnings after this option expires.']));
   const contractPreferenceBlockers = Object.fromEntries(COMMON_OPTION_KEYS.flatMap(key => {
-    const reason = preferences.error ?? optionPreferenceBlocker(comparedMatrix.singles[key]?.legs[0], preferences.values, today);
+    const reason = (snapshot && !(Date.parse(snapshot.expires_at) > now) ? 'Snapshot expired. Refresh the option chain before preferring a strategy.' : null) ?? preferences.error ?? optionPreferenceBlocker(comparedMatrix.singles[key]?.legs[0], preferences.values, today);
     return reason ? [[key, reason]] : [];
   }));
   const context: OptionPlanContext = { goal, shares: amount(shares), cash: amount(cash), premiumBudget: amount(premiumBudget), acceptAssignment, stop: stopLoss, target: takeProfit, holdingDays, calendarBlockers, contractPreferenceBlockers };
@@ -274,8 +276,9 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
   const comboKeys = Object.keys(matrix.combos);
   return <section aria-label="Four common option strategies" style={{ marginTop: 16 }}>
     <h3>Four common strategies & conditional preference</h3>
-    <p>Compare one standard 100-share contract. These are research illustrations using settled provider prices
-      {chainAsOf ? ` observed ${chainAsOf}` : ' with an unknown observation date'}, not live executable quotes.</p>
+    <p>Compare one standard 100-share contract. {snapshot
+      ? `These calculations use current-provider snapshot ${snapshot.id.slice(0, 8)}, captured ${snapshot.captured_at}. Quote observation times are unavailable; these are research comparisons, not executable broker quotes.`
+      : `These are research illustrations using settled provider prices${chainAsOf ? ` observed ${chainAsOf}` : ' with an unknown observation date'}, not live executable quotes.`}</p>
     <p>Original contract selection uses the nearest strike to spot, the stock stop or target, and preset expiry windows. Covered-call alternatives initially screen the selected call expiry; an explicit holding-period search compares all four strategies across other expirations. Choosing one changes this comparison only. Delta, gamma, open interest and breakeven are not jointly optimized. This comparison does not establish the best return.</p>
     {researchContext && research && <section aria-label="Horizon and market context evidence" style={{ ...CARD, marginBottom: 14 }}>
       <h4>Strategy research horizon: {researchContext.horizon}</h4>
@@ -292,7 +295,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
     </section>}
     <section aria-label="Quote and event evidence" style={{ ...CARD, marginBottom: 14 }}>
       <h4>Quote and event evidence</h4>
-      <p>Archive session: {chainAsOf ?? 'unavailable'}. Quote observation time, bid/ask size and reference-spot observation time are unavailable in this plan. Archive ingestion time is not quote observation time. Fresh execution evidence remains unavailable.</p>
+      <p>{snapshot ? `Provider capture window ${snapshot.capture_started_at} to ${snapshot.captured_at}. Stock reference observed ${snapshot.stock_observed_at}. Per-contract last trades are shown where supplied; they do not establish NBBO observation time. Quote timestamps and sizes remain unavailable; fresh execution evidence still requires broker verification.` : `Archive session: ${chainAsOf ?? 'unavailable'}. Quote observation time, bid/ask size and reference-spot observation time are unavailable in this plan. Archive ingestion time is not quote observation time. Fresh execution evidence remains unavailable.`}</p>
       <p>Calendar source: yfinance fundamentals · retrieved {calendar.retrievedAt ?? 'not recorded'} · {calendar.label}.
         {' '}Reported next earnings: {calendar.earningsDate ?? 'not reported'} · reported ex-dividend date: {calendar.exDividendDate ?? 'not reported'}.</p>
       <p>Retrieval age is checked against a 24-hour research policy. Event dates are date-only reports; issuer confirmation, event time and complete future calendar coverage are unverified. A missing or past date does not mean no event.</p>
@@ -344,25 +347,25 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
         {COMMON_OPTION_KEYS.map(key => <option key={key} value={key}>{COMMON_OPTION_NAMES[key]}</option>)}
       </select></label>
       {researchContext && <p><button type="button" disabled={!!currentSearch?.pending || !!preferences.error || !Number.isInteger(Number(holdingText)) || Number(holdingText) < 1 || Number(holdingText) > 365} onClick={searchExpiries}>
-        {currentSearch?.pending ? 'Searching expirations…' : 'Find expirations for holding period'}</button> Searches all four strategies across up to four eligible expirations from the same archived session, on request only.</p>}
+        {currentSearch?.pending ? 'Searching expirations…' : 'Find expirations for holding period'}</button> Searches all four strategies across up to four eligible expirations from the same {snapshot ? "provider snapshot" : "archived session"}, on request only.</p>}
       {currentSearch?.error && <p role="alert">{currentSearch.error} Original comparison remains available.</p>}
       {candidates ? <>
-      <p role="note">Archived contracts · source session {chainAsOf ?? 'unknown'}. Current exchange listing and Fidelity availability are not verified. Match the exact symbol, expiry, call/put and strike in your broker before trading.</p>
+      <p role="note">{snapshot ? `Latest-provider capture ${snapshot.captured_at} · latest reported trade session ${snapshot.source_session}` : `Archived contracts · source session ${chainAsOf ?? "unknown"}`}. Current exchange listing and Fidelity availability are not verified. Match the exact symbol, expiry, call/put and strike in your broker before trading.</p>
       {comparisonKey === 'covered_call' && <p>Stock forecast target {fmtUSD(takeProfit)} is separate from an option strike and does not establish a listed contract. {candidates.anchor_basis === 'reference_spot' ? 'Covered-call research is anchored to reference stock price, not the forecast target.' : 'This older plan may use the stock target as its anchor; refresh the game plan to use reference-price selection.'}</p>}
       <p>Research reference {fmtUSD(candidates.anchor)} · expiry {candidates.expiry ?? 'unknown'} · selected strike {fmtUSD(candidates.original.strike)}.</p>
       <p>{candidates.original.reason ? `Original candidate: ${candidateReason(candidates.original.reason)}.` : 'Original candidate passed the basic quote screen; holdings, freshness and broker checks remain separate.'}</p>
       <p>{candidates.screened_count} of {candidates.evaluated_count} rows passed the research quote/payoff screen. {candidates.method_version !== 'covered_call_candidates_v1' ? 'Counts include unsupported rows refused by this screen. ' : 'Counts cover supplied rows after upstream contract exclusions. '}{candidates.method_version !== 'covered_call_candidates_v1'
-        ? `Scope: ${candidates.completed_expiries?.length ?? 0} of ${candidates.searched_expiries?.length ?? 0} attempted expirations read; ${candidates.eligible_expiry_count ?? 0} eligible expirations in this archive. Minimum remaining life: ${candidates.holding_days! + candidates.buffer_days!} calendar days. Read: ${candidates.completed_expiries?.join(', ') || 'none'}.`
+        ? `Scope: ${candidates.completed_expiries?.length ?? 0} of ${candidates.searched_expiries?.length ?? 0} attempted expirations read; ${candidates.eligible_expiry_count ?? 0} eligible expirations in this ${snapshot ? "snapshot" : "archive"}. Minimum remaining life: ${candidates.holding_days! + candidates.buffer_days!} calendar days. Read: ${candidates.completed_expiries?.join(', ') || 'none'}.`
         : 'Scope: one selected expiration; other expirations are not searched.'}</p>
       {!!candidates.failed_expiries?.length && <p role="alert">Expiration reads failed: {candidates.failed_expiries.join(', ')}. Results are incomplete; a failure is not absence of contracts.</p>}
       {!!Object.keys(candidates.rejected_counts).length && <p>Excluded: {Object.entries(candidates.rejected_counts).map(([reason, count]) => `${count} ${candidateReason(reason)}`).join('; ')}.</p>}
       <p>{candidates.ranking} The 20% spread ceiling is a research policy; quote age, size and actual deliverables are unverified.</p>
-      {candidates.search_preferences && <p>Search preference coverage: {candidates.holding_eligible_expiry_count ?? 'unknown'} expirations fit the holding period; {candidates.eligible_expiry_count ?? 'unknown'} also fit the declared expiry band. Delta exclusions are included in the row rejection counts. Scope remains this archived session.</p>}
+      {candidates.search_preferences && <p>Search preference coverage: {candidates.holding_eligible_expiry_count ?? 'unknown'} expirations fit the holding period; {candidates.eligible_expiry_count ?? 'unknown'} also fit the declared expiry band. Delta exclusions are included in the row rejection counts. Scope remains this {snapshot ? "provider snapshot" : "archived session"}.</p>}
       {candidates.alternatives.length ? <label>{selectionName} contract to compare<select aria-label={`${selectionName} contract to compare`}
         value={alternative && coveredChoice ? String(coveredChoice.index) : 'original'} onChange={e => {
           chooseComparison(e.target.value === 'original' ? null : Number(e.target.value));
         }}>
-        <option value="original">Original archived selection</option>
+        <option value="original">{snapshot ? "Original snapshot selection" : "Original archived selection"}</option>
         {candidates.alternatives.map((s, i) => <option key={s.legs[0].option_symbol ?? i} value={String(i)}>
           Compare {fmtUSD(s.legs[0].strike)} {s.legs[0].right} · {s.legs[0].expiry} · delta {s.legs[0].delta ?? 'unavailable'} · {fmtUSD(s.net_per_contract)} {s.net} before fees
         </option>)}

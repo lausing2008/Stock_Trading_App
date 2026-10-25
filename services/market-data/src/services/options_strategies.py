@@ -181,6 +181,7 @@ def _leg(contract: dict | None, action: str, expiry: str | None, dte: int | None
         "spread_pct": _spread_pct(contract),
         "option_symbol": contract.get("option_symbol"),
         "contract_terms": contract.get("contract_terms"),
+        **{name: contract[name] for name in ("last_tape_time", "quote_observed_at") if name in contract},
     }
 
 

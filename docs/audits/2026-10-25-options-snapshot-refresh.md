@@ -1,0 +1,40 @@
+# Explicit latest-provider option refresh and coherent recalculation
+
+Date: October 25, 2026, America/Los_Angeles. Continuation of the October 24 MU selection fix. User requested an Options-tab refresh that retrieves updated data, recalculates comparisons and helps select the best fit at that moment. Implementation provides a current-data research comparison and conditional goal fit, not a validated highest-return forecast or an order recommendation.
+
+## User workflow
+
+Advanced/admin stock pages now have **Refresh option chain & recalculate** at the top of Options. Choose all available expirations, or one listed current expiration for a smaller capture. The button does not run automatically. Its status distinguishes capture time, reported stock time, latest reported trade session, pagination coverage, rejected contracts, scope, cooldown and expiry.
+
+On success, the strategy card, expiration comparison/search, full chain and gain/loss option prices use the same opaque immutable snapshot. Changing holding period or delta/DTE bounds searches within that capture, without silently reading the archive or fetching another set of quotes. The reference stock price is pinned too. Existing expiry selection is retained when present in the new scope; stale contract choices and assignment acceptance reset. User fills and edited calculator what-if prices remain user declarations. **Use settled archive** is an explicit mode change, never an automatic refresh fallback.
+
+For a conditional preference, choose objective, holdings, budget and holding period. Existing goal-fit rules, quote screens, holding/earnings filters and explicit comparison selection remain in force. Covered calls retain the preceding reference-spot anchor. The shortlist uses reference distance, spread and OI, not predicted profitability. Market regime/company-outlook evidence keeps its original dates. Flow, dominance, positioning and calendar feeds remain independently dated; this button does not claim they were all refreshed together.
+
+## Provider capability and source clocks
+
+The official [Unusual Whales OpenAPI](https://api.unusualwhales.com/api/openapi) documents `/api/stock/{ticker}/option-contracts`, optional expiry, zero-volume/OI filters, limit/page pagination starting at zero, NBBO, IV and per-contract Greeks. `/api/stock/{ticker}/stock-state` provides a reported stock tick and its tape time. This is distinct from the historical option-chains route used by settled archives.
+
+Two bounded capability calls confirmed the configured entitlement and actual fields. The MU $880 November 20 call returned bid **51.95**, ask **53.00**, delta **0.5209126743** and last trade **2026-10-23T21:32:12Z**; stock state returned **877.55** with tape time **2026-10-23T14:35:40Z**. These are captured observations, not promised current fills. The stock tick can lag option trades. `last_tape_time` is a trade timestamp, not a dedicated NBBO observation timestamp. Capture time never replaces either. Weekend refresh still returned Friday's values; OI can update daily. Entry remains WAIT for current two-sided broker quotes, size, deliverables, permissions and risk checks.
+
+An ephemeral full MU probe read **11,722 supported contracts, 26 expirations, 24 pages**, completing the recorded capture window in about **2.5 seconds**. The compact cache payload was **807,506 compressed bytes**. The probe used memory only, not a production snapshot or archive write. Its ID expired and is evidence rather than a reusable app identifier. Original raw archive evidence is preserved.
+
+## Implementation and boundaries
+
+- New advanced-only POST capture plus snapshot-specific chain and game-plan GET routes. Authentication's read transaction is released before external calls; failure to release it prevents capture. Existing archive, backtest and daily capture paths are unchanged.
+- Provider GET body and usage accounting are reused once per page, with automatic retry amplification disabled for manual whole-chain capture. Per-symbol in-flight lock and a 60-second post-success cooldown bound repeated requests. Rate limits receive a backoff; no automatic client retry loop is introduced.
+- All provider pages must terminate within **50 × 500 rows** and a **45-second inter-page budget**. Each underlying GET still has its existing 15-second timeout; the budget cannot interrupt an in-flight call. An unreadable page, repeated contract identity, page cap or scope mismatch fails the capture. No partial result is labelled complete. Malformed/unsupported individual identities are counted and excluded; completeness describes provider pagination, not proof of an entire exchange universe.
+- Validate encoded strike/expiry/side, preserve unknown Greeks/OI/IV and real zero measurements, reject non-finite data and refuse an untimed/non-positive stock reference. Requested expirations must still be before their trading cutoff. No archive stock price is substituted.
+- Snapshot storage uses compressed columnar JSON, **900,000 compressed / 12,000,000 uncompressed byte limits** and a **ten-minute TTL** in the existing bounded Redis cache. Contract assumptions are reconstructed and checked on load. Eviction/expiry/corruption fails closed; an old archive is not used to fill missing snapshot data. Large symbols can select one expiration explicitly; this narrows the comparison scope.
+- Capture selection is keyed by symbol and UUID. Client generation guards ignore late results after symbol changes/unmount. New capture keys isolate SWR table data, and the strategy card checks ID, symbol, stock reference and source session before showing a response. Searches reject another snapshot. Expired or malformed snapshot expiry blocks goal-fit highlighting. Snapshot source timestamps are visible per card/contract where supplied.
+
+The current chain is a provider capture over a window, not simultaneous quotes or a verified Fidelity chain. The independent Cboe MU listing check belongs to the [preceding report](2026-10-24-mu-covered-call-selection.md); no Cboe production feed was added. A current-provider capture does not validate expected returns, issuer event coverage or actual deliverables.
+
+## Validation and corrections during development
+
+The first real full-chain probe rejected the original storage format as oversized. It correctly published nothing. Columnar encoding removed repeated field names and repeated assumption text; the succeeding full probe fit the same storage bound. No size guard was removed. Initial local commands using the repository root missed the frontend/service package; subsequent checks use the proper working directories. A missing `User` annotation import was caught at route-module collection and replaced with the established dependency signature. API test response headers and a test hook return type were corrected. These occurred before deployment.
+
+Backend checks cover full/partial pagination, repeated pages, scope enforcement, identity mismatches, unknown/non-finite/zero fields, future/naive timestamps, stock-reference failures, storage failure, cooldown/rate limit, size/time caps, expiry/eviction/corruption, immutable repricing, real route calculation without archive reads and authorization/transaction boundaries. Frontend checks cover explicit capture, one in-flight request, cooldowns, failed refresh retaining old data, HTTP/structured rate limits, wrong/partial snapshots, late symbol/unmount replies, explicit archive exit, correct API paths and snapshot-pinned search/plan/expiry handling.
+
+Native Chrome renders the actual control/styles with recorded market metadata at **1449, 1024 and 390 px**, with no page overflow. These offline witnesses and DOM interactions do not claim authenticated production browser acceptance.
+
+Final local validation: **5,912 backend passed / 26 skipped**, **965 frontend passed across 80 files**, full typecheck and whitespace clean. Snapshot-specific backend checks: 44 passed. Production build and deployed replay follow below. [Evidence and reproduction](evidence/2026-10-25-options-refresh/README.md).

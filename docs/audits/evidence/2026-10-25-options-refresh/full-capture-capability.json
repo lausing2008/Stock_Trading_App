@@ -1,0 +1,68 @@
+{
+  "metadata": {
+    "id": "8c6eef28d4464c12aa7fd6142a251319",
+    "symbol": "MU",
+    "source": "unusual_whales_current_contracts",
+    "capture_started_at": "2026-10-25T07:17:48.085699+00:00",
+    "captured_at": "2026-10-25T07:17:50.569830+00:00",
+    "expires_at": "2026-10-25T07:27:50.569830+00:00",
+    "refresh_after": "2026-10-25T07:18:50.569830+00:00",
+    "stock_reference": 877.55,
+    "stock_observed_at": "2026-10-23T14:35:40+00:00",
+    "stock_market_time": "regular",
+    "source_session": "2026-10-23",
+    "source_session_basis": "latest reported trade date; not NBBO observation time",
+    "quote_observation_time_available": false,
+    "pages": 24,
+    "contracts": 11722,
+    "rejected_contracts": 0,
+    "pagination_complete": true,
+    "expiries": [
+      "2026-10-23",
+      "2026-10-26",
+      "2026-10-28",
+      "2026-10-30",
+      "2026-11-02",
+      "2026-11-04",
+      "2026-11-06",
+      "2026-11-13",
+      "2026-11-20",
+      "2026-11-27",
+      "2026-12-04",
+      "2026-12-18",
+      "2027-01-15",
+      "2027-02-19",
+      "2027-03-19",
+      "2027-04-16",
+      "2027-05-21",
+      "2027-06-17",
+      "2027-07-16",
+      "2027-08-20",
+      "2027-09-17",
+      "2027-12-17",
+      "2028-01-21",
+      "2028-06-16",
+      "2028-12-15",
+      "2029-01-19"
+    ],
+    "limitations": "Latest available provider bid/ask and Greeks captured over a window, not simultaneous broker quotes. Trade times are not quote times; OI can update daily. Entry still requires fresh broker checks."
+  },
+  "examples": [
+    {
+      "option_symbol": "MU261120C00880000",
+      "bid": 51.95,
+      "ask": 53.0,
+      "delta": 0.520912674341383,
+      "last_tape_time": "2026-10-23T21:32:12+00:00"
+    },
+    {
+      "option_symbol": "MU261120C01560000",
+      "bid": 0.3,
+      "ask": 0.47,
+      "delta": 0.00653046891488586,
+      "last_tape_time": "2026-10-23T21:20:00+00:00"
+    }
+  ],
+  "compressed_bytes": 807506,
+  "storage": "ephemeral in-memory only, no archive or Redis snapshot changes"
+}

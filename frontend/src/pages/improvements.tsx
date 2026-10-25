@@ -35,6 +35,18 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: "OPTIONS-LATEST-SNAPSHOT-REFRESH",
+    tier: 468,
+    severity: "feature",
+    defaultStatus: "done",
+    title: "Refresh current-provider option prices and recalculate from one fixed capture",
+    file: "docs/audits/2026-10-25-options-snapshot-refresh.md",
+    effort: "L",
+    impact: "An explicit refresh retrieves current-contract bid/ask and Greeks instead of re-reading the settled archive.",
+    what: "The Options tab lacked a way to retrieve the provider latest available contract data and consistently reprice strategy comparisons, chain tables and calculator option marks.",
+    fix: "Advanced/admin manual capture using the documented current-contract and timed stock-state endpoints. One compressed immutable ten-minute snapshot feeds all pricing views and bounded searches. Full pagination is required; failures, duplicates, storage/page/time limits and expiry never silently fall back to archived prices. Add per-symbol cooldown, explicit single-expiration scope, source clocks and quote-time limits, reset stale choices/assignment, preserve user fills and what-if prices, block expired-snapshot preferences and retain separate dates for flow/pressure/events. Conditional goal fit stays research-only; no highest-return promise.",
+  },
+  {
     id: "OPTIONS-COVERED-CALL-SPOT-ANCHOR",
     tier: 468,
     severity: "high",

@@ -160,3 +160,16 @@ it('renders a near-spot covered call without inventing a missing stock forecast 
   expect(await screen.findByText('💰 Covered Call — collect income')).toBeTruthy();
   expect(screen.queryByText(/separate stock forecast/)).toBeNull();
 });
+
+it('recalculates from a changed snapshot and refuses an archived response in snapshot mode', async () => {
+  const { snapshot } = await import('@/testFixtures/optionSnapshot');
+  const one={...snapshot,symbol:'AAPL',stock_reference:100,source_session:'2026-10-21'};
+  const first={...packet(),option_snapshot:one,chain_as_of:one.source_session};
+  mocks.getOptionsGamePlan.mockResolvedValueOnce(first).mockResolvedValueOnce(packet());
+  const view=render(<OptionsGamePlanCard {...props} snapshotId={one.id} />);
+  await screen.findByRole('region',{name:'Four common option strategies'});
+  expect(mocks.getOptionsGamePlan).toHaveBeenLastCalledWith('AAPL',{stopLoss:undefined,takeProfit:undefined,snapshotId:one.id});
+  view.rerender(<OptionsGamePlanCard {...props} snapshotId={'b'.repeat(32)} />);
+  expect(await screen.findByText(/Selected snapshot could not be loaded/)).toBeTruthy();
+  expect(screen.queryByRole('region',{name:'Four common option strategies'})).toBeNull();
+});

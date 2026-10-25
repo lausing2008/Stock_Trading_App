@@ -54,9 +54,9 @@ export function commonOptionPlan(key: CommonOptionKey, strategy: OptionStrategy 
 
   const p = leg?.price_per_share;
   const reference = positive(p) ? usd(p) : 'unavailable';
-  const entry = key === 'long_call' ? `After an upside confirmation, assess buying the listed call. Archive premium ${reference}/share; reprice using a fresh limit quote.`
-    : key === 'protective_put' ? `If protecting an existing holding is the goal, assess buying the listed put. Archive premium ${reference}/share; reprice using a fresh limit quote.`
-    : `Only after confirming coverage and assignment acceptance, assess selling the listed ${key === 'covered_call' ? 'call' : 'put'}. Archive credit ${reference}/share; reprice using a fresh limit quote.`;
+  const entry = key === 'long_call' ? `After an upside confirmation, assess buying the listed call. Reference premium ${reference}/share; reprice using a fresh limit quote.`
+    : key === 'protective_put' ? `If protecting an existing holding is the goal, assess buying the listed put. Reference premium ${reference}/share; reprice using a fresh limit quote.`
+    : `Only after confirming coverage and assignment acceptance, assess selling the listed ${key === 'covered_call' ? 'call' : 'put'}. Reference credit ${reference}/share; reprice using a fresh limit quote.`;
   const target = key === 'long_call' && positive(p) ? `Illustrative option-premium TP1 ${usd(p * 1.5)}, TP2 ${usd(p * 2)} (+50% / +100% before fees). Recalculate from the actual fill.`
     : key === 'protective_put' ? 'The objective is protection of the stock, not a put-premium profit target. Review the hedge when protection is no longer needed; closing the put removes the floor.'
     : positive(p) ? `Illustrative buy-to-close review at ${usd(p * 0.5)}/share (50% of original credit retained before fees). Recalculate from the actual fill.` : 'No priced target is available.';

@@ -5941,3 +5941,71 @@ from ..services import unusual_whales as _t411_uw  # noqa: E402
 from . import _t411_ivhv  # noqa: E402
 
 _t411_ivhv.register(router, get_session, _t411_uw, _t411_volatility)
+
+
+# Explicit current-provider snapshots. Kept separate from settled archive/backtest routes.
+@router.post('/{symbol}/options-refresh')
+def refresh_options_snapshot(symbol: str, expiry: str | None = None, session: Session = Depends(get_session),
+                             _user=Depends(get_advanced_user)):
+    from ..services import option_snapshot as snapshots
+    from ..services import unusual_whales as uw
+    from ..services.uw_option_chain import _release_read_transaction
+    try:
+        snapshots.symbol_key(symbol)
+        if not uw.is_available():
+            return {'available': False, 'status': 'not_configured', 'message': 'The current-contract provider is not configured.'}
+        # Auth performs a SELECT using this dependency's session. Do not hold its transaction
+        # or connection through the potentially multi-page external capture.
+        if not _release_read_transaction(session, symbol=symbol):
+            return {'available': False, 'status': 'transaction_held', 'message': 'Could not release the read transaction; no capture started.'}
+        # Manual whole-chain capture has its own bounded deadline. Use the same
+        # authenticated/counted GET body once per page, without automatic retry amplification.
+        fetch_once = getattr(uw._get, '__wrapped__', uw._get)
+        meta = snapshots.capture(symbol, _get_redis(), fetch_once, expiry=expiry)
+        return {'available': True, 'status': 'captured', 'snapshot': meta}
+    except snapshots.SnapshotError as exc:
+        return {'available': False, 'status': exc.code, 'message': str(exc), 'retry_after': exc.retry_after}
+    except Exception:
+        return {'available': False, 'status': 'refresh_failed', 'message': 'Refresh failed; previous data is retained and is not relabelled as fresh.'}
+
+
+def _read_option_snapshot(symbol, snapshot_id):
+    from ..services import option_snapshot as snapshots
+    try:
+        return snapshots.load(symbol, snapshot_id, _get_redis())
+    except snapshots.SnapshotError as exc:
+        raise HTTPException(410, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(503, 'Snapshot storage unavailable; archive fallback is disabled.') from exc
+
+
+@router.get('/{symbol}/options-snapshot/{snapshot_id}/chain')
+def get_snapshot_chain(symbol: str, snapshot_id: str, expiry: str | None = None,
+                       _user=Depends(get_advanced_user)):
+    from ..services.option_snapshot import chain_view
+    result = chain_view(_read_option_snapshot(symbol, snapshot_id), expiry)
+    if result.get('available'):
+        result['max_pain'] = compute_max_pain(result['calls'], result['puts'])
+    return result
+
+
+@router.get('/{symbol}/options-snapshot/{snapshot_id}/game-plan')
+def get_snapshot_game_plan(symbol: str, snapshot_id: str,
+        stop_loss: float | None = None, take_profit: float | None = None,
+        shares: float | None = Query(None, ge=0), holding_days: int | None = Query(None, ge=1, le=365),
+        min_dte: int | None = Query(None, ge=1, le=1095), max_dte: int | None = Query(None, ge=1, le=1095),
+        min_abs_delta: float | None = Query(None, ge=0, le=1), max_abs_delta: float | None = Query(None, ge=0, le=1),
+        _user=Depends(get_advanced_user)):
+    from ..services.option_snapshot import calculate_plan
+    from ..services.option_search_preferences import normalize_preferences
+    try:
+        preferences = normalize_preferences(dict(min_dte=min_dte, max_dte=max_dte,
+            min_abs_delta=min_abs_delta, max_abs_delta=max_abs_delta))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    import math
+    if any(v is not None and (not math.isfinite(v) or v <= 0) for v in (stop_loss, take_profit)) or (shares is not None and not math.isfinite(shares)):
+        raise HTTPException(422, 'References must be finite positive prices and shares must be finite.')
+    return calculate_plan(_read_option_snapshot(symbol, snapshot_id), compute_options_game_plan,
+        _nearest_expiry_in_dte_window, today=_today_et(), stop_loss=stop_loss, take_profit=take_profit,
+        shares=shares, holding_days=holding_days, preferences=preferences)

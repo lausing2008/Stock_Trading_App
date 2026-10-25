@@ -806,8 +806,9 @@ export const api = {
   // Dividends
   getOptionsFlow: (symbol: string) => request<OptionsFlow>(`/stocks/${symbol}/options-flow`),
   getOptionsDominance: (symbol: string) => request<OptionsDominance>(`/stocks/${symbol}/options-dominance`),
-  getOptionsChain: (symbol: string, expiry?: string) =>
-    request<OptionsChain>(`/stocks/${symbol}/options-chain${expiry ? `?expiry=${expiry}` : ''}`),
+  getOptionsChain: (symbol: string, expiry?: string, snapshotId?: string) =>
+    request<OptionsChain>(`/stocks/${symbol}/${snapshotId ? `options-snapshot/${encodeURIComponent(snapshotId)}/chain` : 'options-chain'}${expiry ? `?expiry=${encodeURIComponent(expiry)}` : ''}`),
+  refreshOptionsChain: (symbol: string, expiry?: string) => request<OptionsRefreshResult>(`/stocks/${encodeURIComponent(symbol)}/options-refresh${expiry ? `?expiry=${encodeURIComponent(expiry)}` : ''}`, { method: 'POST' }, 180_000),
   getGammaExposure: (symbol: string) => request<GammaExposure>(`/stocks/${symbol}/gamma-exposure`),
 
   // T411-IVHV: the Options tab's IV vs HV chart and 3-week gain/loss table. Two calls, not one,
@@ -865,7 +866,7 @@ export const api = {
   getFixRecords: () => request<FixRecordResponse[]>('/fix-effectiveness'),
   takeFixSnapshot: (fixId: string) => request<FixSnapshotResult>(`/fix-effectiveness/${fixId}/snapshot`, { method: 'POST' }),
   getOptionsExpirations: (symbol: string) => request<OptionsExpirationsResponse>(`/stocks/${symbol}/options-expirations`),
-  getOptionsGamePlan: (symbol: string, opts: { stopLoss?: number; takeProfit?: number; shares?: number; holdingDays?: number; searchPreferences?: { min_dte: number | null; max_dte: number | null; min_abs_delta: number | null; max_abs_delta: number | null } }) => {
+  getOptionsGamePlan: (symbol: string, opts: { stopLoss?: number; takeProfit?: number; shares?: number; holdingDays?: number; snapshotId?: string; searchPreferences?: { min_dte: number | null; max_dte: number | null; min_abs_delta: number | null; max_abs_delta: number | null } }) => {
     const params = new URLSearchParams();
     if (opts.stopLoss != null) params.set('stop_loss', String(opts.stopLoss));
     if (opts.takeProfit != null) params.set('take_profit', String(opts.takeProfit));
@@ -873,7 +874,7 @@ export const api = {
     if (opts.holdingDays != null) params.set('holding_days', String(opts.holdingDays));
     if (opts.searchPreferences) for (const [key, value] of Object.entries(opts.searchPreferences)) if (value !== null) params.set(key, String(value));
     const qs = params.toString();
-    return request<OptionsGamePlan>(`/stocks/${symbol}/options-game-plan${qs ? `?${qs}` : ''}`);
+    return request<OptionsGamePlan>(`/stocks/${symbol}/${opts.snapshotId ? `options-snapshot/${encodeURIComponent(opts.snapshotId)}/game-plan` : 'options-game-plan'}${qs ? `?${qs}` : ''}`);
   },
   // AUD-OPTIONS4-GAMEPLANBATCH: one call for many symbols' already-computed daily snapshots —
   // for a scan-list/signals-table row, never a per-row live fetch. Advanced-tier gated
@@ -1788,6 +1789,15 @@ export type OptionsFlow = { symbol: string; available: boolean; reason?: string;
  *  rows may be priced at x100 automatically; adjusted (nonstandard root) and unidentified contracts are not. */
 export type ContractTerms = { status: 'standard_root_100_assumed' | 'nonstandard_root_deliverable_unknown' | 'unverified_100_assumed';
   option_symbol?: string | null; premium_multiplier: number | null; deliverable_shares: number | null; basis?: string; automatic_payoff_supported: boolean };
+export type OptionSnapshot = {
+  id: string; symbol: string; source: string; capture_started_at: string; captured_at: string;
+  expires_at: string; refresh_after: string; stock_reference: number; stock_observed_at: string;
+  stock_market_time?: string; source_session: string; source_session_basis: string;
+  quote_observation_time_available: boolean; pages: number; contracts: number; rejected_contracts: number;
+  pagination_complete: boolean; expiries: string[]; current_expiries?: string[]; capture_expiry?: string | null; limitations: string;
+};
+export type OptionsRefreshResult = { available: boolean; status: string; snapshot?: OptionSnapshot; message?: string; retry_after?: number };
+
 export type OptionsChainRow = { strike: number; bid: number; ask: number; last_price: number; volume: number | null; oi: number | null; iv: number | null; itm: boolean | null; moneyness?: Moneyness | null;
   option_symbol?: string | null; contract_terms?: ContractTerms | null };
 // IF-05: max pain — needs only strike + open interest, no IV/Black-Scholes/dealer-positioning
@@ -1795,7 +1805,7 @@ export type OptionsChainRow = { strike: number; bid: number; ask: number; last_p
 export type MaxPain = { max_pain_strike: number; total_call_oi: number; total_put_oi: number; put_call_oi_ratio: number | null;
   /** R04: contracts with known OI behind this figure. */
   oi_coverage?: { known: number; total: number; complete: boolean } };
-export type OptionsChain = { symbol: string; available: boolean; reason?: string; expiry?: string; expiries?: string[]; calls?: OptionsChainRow[]; puts?: OptionsChainRow[]; max_pain?: MaxPain | null;
+export type OptionsChain = { option_snapshot?: OptionSnapshot; symbol: string; available: boolean; reason?: string; expiry?: string; expiries?: string[]; calls?: OptionsChainRow[]; puts?: OptionsChainRow[]; max_pain?: MaxPain | null;
   /** B1: `expiries` is the source session's full list (history); only these may be offered as trades. */
   current_expiries?: string[]; expiry_is_current?: boolean; source_session?: string | null; expiry_scope?: ExpiryScope;
   coverage_status?: string | null; coverage_reason?: string | null;
@@ -2532,6 +2542,7 @@ export type CoveredCallLeg = {
 // T402-OPTIONS-STRATEGY-MATRIX: one leg of a structure. A structure is 1 leg (long call,
 // cash-secured put, ...) or 2 (collar, vertical spread).
 export type OptionStrategyLeg = {
+  last_tape_time?: string | null; quote_observed_at?: string | null;
   action: 'buy' | 'sell';
   right: 'call' | 'put' | string;
   strike: number;
@@ -2610,7 +2621,7 @@ export type AddStocksResult = {
 
 export type OptionStrategyMatrix = {
   candidate_review?: Partial<Record<'covered_call' | 'long_call' | 'protective_put' | 'cash_secured_put', {
-    method_version: 'covered_call_candidates_v1' | 'covered_call_candidates_v2' | 'single_leg_candidates_v1'; strategy_key?: string; search_date?: string; anchor: number; anchor_basis?: 'reference_spot' | 'strategy_reference'; listing_verification?: 'unverified_archive'; expiry: string | null;
+    method_version: 'covered_call_candidates_v1' | 'covered_call_candidates_v2' | 'single_leg_candidates_v1'; strategy_key?: string; search_date?: string; anchor: number; anchor_basis?: 'reference_spot' | 'strategy_reference'; listing_verification?: 'unverified_archive' | 'provider_current_contracts'; snapshot_id?: string; expiry: string | null;
     holding_days?: number; buffer_days?: number; eligible_expiry_count?: number; holding_eligible_expiry_count?: number;
     search_preferences?: { min_dte: number | null; max_dte: number | null; min_abs_delta: number | null; max_abs_delta: number | null };
     searched_expiries?: string[]; completed_expiries?: string[]; failed_expiries?: string[];
@@ -2639,6 +2650,7 @@ export type OptionStrategyMatrix = {
 };
 
 export type OptionsGamePlan = {
+  option_snapshot?: OptionSnapshot;
   symbol: string;
   available: boolean;
   chain_as_of?: string | null;

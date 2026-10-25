@@ -1,0 +1,77 @@
+{
+  "contracts": {
+    "kind": "list",
+    "data": [
+      {
+        "delta": 0.520912674341383,
+        "theta": -0.945415427567801,
+        "gamma": 0.00299136742048891,
+        "open_interest": 937,
+        "volume": 209,
+        "last_price": "52.25",
+        "option_symbol": "MU261120C00880000",
+        "ask_volume": 105,
+        "bid_volume": 99,
+        "nbbo_bid": "51.95",
+        "nbbo_ask": "53.00",
+        "mid_volume": 5,
+        "avg_price": "56.380095693779904306220095692",
+        "floor_volume": 0,
+        "high_price": "60.79",
+        "implied_volatility": "0.539218778092643",
+        "last_tape_time": "2026-10-23T21:32:12Z",
+        "low_price": "45.00",
+        "multi_leg_volume": 40,
+        "rho": 0.311268637479541,
+        "stock_multi_leg_volume": 0,
+        "sweep_volume": 6,
+        "total_premium": "1178344.00",
+        "vega": 0.968292761391291,
+        "prev_oi": 649,
+        "no_side_volume": 0
+      },
+      {
+        "delta": 0.00653046891488586,
+        "theta": -0.0636146099617506,
+        "gamma": 9.40832858647536e-05,
+        "open_interest": 523,
+        "volume": 0,
+        "last_price": null,
+        "option_symbol": "MU261120C01560000",
+        "ask_volume": 0,
+        "bid_volume": 0,
+        "nbbo_bid": "0.30",
+        "nbbo_ask": "0.47",
+        "mid_volume": 0,
+        "avg_price": null,
+        "floor_volume": 0,
+        "high_price": null,
+        "implied_volatility": null,
+        "last_tape_time": "2026-10-23T21:20:00Z",
+        "low_price": null,
+        "multi_leg_volume": 0,
+        "rho": 0.0041023713642711,
+        "stock_multi_leg_volume": 0,
+        "sweep_volume": 0,
+        "total_premium": "0",
+        "vega": 0.0445446074252697,
+        "prev_oi": 523,
+        "no_side_volume": 0
+      }
+    ]
+  },
+  "stock": {
+    "kind": "dict",
+    "data": {
+      "close": "877.55",
+      "high": "891.89",
+      "low": "858.34",
+      "open": "862.29",
+      "volume": 21249885,
+      "total_volume": 7645453,
+      "market_time": "regular",
+      "tape_time": "2026-10-23T14:35:40Z",
+      "prev_close": "856.49"
+    }
+  }
+}

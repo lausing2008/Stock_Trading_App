@@ -40,13 +40,16 @@ export function OptionsDarkPoolTutorialContent() {
       <p>Use the new research controls, compare contracts, and understand what the data does and does not establish.</p>
       <div className="options-tutorial-links"><Link href="/stock/TSM?tab=options">Open TSM’s Options tab</Link><a href="#practice">Try the sample comparison</a></div>
     </header>
-    <p className="options-tutorial-note">This lesson explains the app. It does not identify a proven best-return strategy or place orders. Option prices in the stock workspace are settled research references; entry remains WAIT for fresh quotes and broker checks.</p>
+    <p className="options-tutorial-note">This lesson explains the app. It does not identify a proven best-return strategy or place orders. The default workspace uses settled research prices. Refresh can switch calculations to the provider’s latest available capture; entry still remains WAIT for fresh quotes and broker checks.</p>
     <nav aria-label="Tutorial topics" className="options-tutorial-toc">{topics.map(([id, title]) => <a key={id} href={`#${id}`}>{title}</a>)}</nav>
 
     <Lesson id="start" title="1. Open the Options workspace">
       <ol><li>Open any supported stock and select <strong>Options</strong>. The link above opens that tab directly for TSM.</li>
         <li>Start with source dates and feed status. A recent retrieval is different from a recent quote or trade.</li>
-        <li>Use <strong>Options Game Plan</strong> for strategy comparisons, <strong>Options Flow</strong> for recorded activity, and <strong>Market Pressure</strong> for positioning and off-exchange samples.</li></ol>
+        <li>Use <strong>Options Game Plan</strong> for strategy comparisons, <strong>Options Flow</strong> for recorded activity, and <strong>Market Pressure</strong> for positioning and off-exchange samples.</li>
+        <li>For updated option prices, use <strong>Refresh option chain &amp; recalculate</strong>. Choose all expirations, or one listed expiration for a smaller capture. A successful refresh switches the strategy cards, full chain and gain/loss option prices to the same fixed snapshot.</li></ol>
+      <p>Check capture time separately from the stock’s reported time and each contract’s last trade. Last-trade time is not a quote timestamp. Markets closed can mean the latest response still contains the previous session. The snapshot expires after ten minutes; refresh again before seeking a preference. Failed or incomplete captures keep the previous display with a visible error. Use <strong>Use settled archive</strong> only when you deliberately want to return to archive mode.</p>
+      <p>A single-expiration capture is limited to that expiry; it cannot establish the best contract across all expirations. The full capture also has explicit page/time/size limits. Flow, positioning and calendar panels keep their own source dates. A refresh resets strategy contract choices and assignment acceptance, while user-entered fills and calculator what-if prices remain yours.</p>
       <p>The computed workspace and this Learning page require Advanced access or an admin account. Missing provider data is shown explicitly; it is not filled in with invented measurements.</p>
     </Lesson>
     <Lesson id="flow" title="2. Read call/put activity without turning it into a forecast">

@@ -1,0 +1,15 @@
+{
+  "backend": {
+    "passed": 5912,
+    "skipped": 26
+  },
+  "focused_snapshot_backend": 44,
+  "frontend": {
+    "passed": 965,
+    "files": 80,
+    "full_typecheck": "passed"
+  },
+  "whitespace": "clean",
+  "provider_capability": "11722 supported MU contracts, 24 pages, 807506 compressed bytes; memory-only pre-deployment capture",
+  "production": "pending"
+}
