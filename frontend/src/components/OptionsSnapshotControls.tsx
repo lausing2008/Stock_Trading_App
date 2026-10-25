@@ -63,7 +63,7 @@ export default function OptionsSnapshotControls({ symbol, snapshot, onSnapshot, 
         <p>{snapshot.limitations}</p>
       </> : <p>Settled archive mode. Refresh requests the provider’s latest available bid/ask and Greeks; it may still return the last market session when markets are closed.</p>}
     </div>
-    <p style={{ fontSize: 12, color: '#94a3b8' }}>A complete capture updates the chain table, gain/loss option prices and strategy calculations together. Previous contract choices and assignment acceptance reset. User-entered fills and what-if prices stay yours. Flow, pressure and event panels retain their own source dates.</p>
+    <p style={{ fontSize: 12, color: '#94a3b8' }}>A complete capture updates the chain table, gain/loss option prices and strategy calculations together. Previous contract choices and assignment acceptance reset. Gain/loss calculator fills and what-if prices stay yours. Flow, pressure and event panels retain their own source dates.</p>
     <p style={{ fontSize: 12, color: '#94a3b8' }}>For a conditional best fit, choose your objective, holdings, budget and holding period below. The shortlist ranks reference distance, spread and open interest within your bounds; it does not forecast the highest return. Entry remains WAIT for fresh broker checks.</p>
   </section>;
 }

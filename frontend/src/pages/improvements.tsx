@@ -35,6 +35,18 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: "OPTIONS-RISK-BASIS-AND-SCENARIOS",
+    tier: 468,
+    severity: "high",
+    defaultStatus: "done",
+    title: "Explain stock and assignment exposure behind option maximum-loss figures",
+    file: "docs/audits/2026-10-25-options-risk-scenarios.md",
+    effort: "M",
+    impact: "Makes covered-call and cash-secured-put downside understandable without confusing premium income with total position profit.",
+    what: "Large maximum-loss amounts did not clearly identify the stock-zero assumption or stock/assignment exposure. The chart also used per-leg costs that could differ by half a dollar from the strategy premium shown on its card.",
+    fix: "Add precise loss-basis labels on cards and comparisons, short-income expiry scenario tables with premium and stock/assignment effects, and a local what-if expiry price. Distinguish reference spot from actual cost basis, at-strike uncertainty from assignment promises, and expiry arithmetic from forecasts. Share aggregate-premium expiry arithmetic between charts and scenarios, preserving signed credit-collar handling. Contain mobile tables and explain the limited chart window. Snapshot, signal, ranking and backend behavior are unchanged.",
+  },
+  {
     id: "OPTIONS-LATEST-SNAPSHOT-REFRESH",
     tier: 468,
     severity: "feature",

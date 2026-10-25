@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import type { OptionStrategy } from '@/lib/api';
+import { lossScopeLabel } from '@/lib/optionExpiryRisk';
 import type { CommonOptionKey } from '@/lib/commonOptionPlans';
 import { candidateDte, compareCandidateRows, nonnegativeMeasurement, type CandidateSort } from '@/lib/optionCandidateComparison';
 
@@ -42,7 +43,7 @@ export default function OptionCandidateComparison({ original, originalStrike, or
           <td style={cell}>{money(strike)} {leg?.right ?? (strategyKey === 'long_call' || strategyKey === 'covered_call' ? 'call' : 'put')}<br />{leg?.option_symbol ?? (isOriginal ? originalSymbol : null) ?? 'Contract identity unavailable'}{leg && 'last_tape_time' in leg && <><br />Last trade: {leg.last_tape_time ?? 'unavailable'} · quote time unavailable</>}</td>
           <td style={cell}>{expiry ?? 'Unavailable'}<br />{row.dte === null ? 'DTE unavailable' : `${row.dte} calendar days${row.dte < 0 ? ' — expired' : row.dte === 0 ? ' — same day' : ''}`}</td>
           <td style={cell}>{strategy ? `${money(strategy.net_per_contract)} ${strategy.net}` : 'Unavailable'}</td>
-          <td style={cell}>{money(strategy?.max_loss_per_contract)}</td><td style={cell}>{unlimited ? 'Unbounded' : money(strategy?.max_profit_per_contract)}</td>
+          <td style={cell}>{money(strategy?.max_loss_per_contract)}{strategy && <div>{lossScopeLabel(strategy)}{strategyKey === 'covered_call' || strategyKey === 'cash_secured_put' ? ' · stock reaches $0' : ''}</div>}</td><td style={cell}>{unlimited ? 'Unbounded' : money(strategy?.max_profit_per_contract)}</td>
           <td style={cell}>{money(strategy?.breakeven)}</td><td style={cell}>{strategy && strategy.collateral_per_contract > 0 ? money(strategy.collateral_per_contract) : 'Unavailable'}{strategy?.requires_shares && <div>{strategyKey === 'covered_call' ? 'Includes stock at reference spot; shares required' : 'Option debit only; shares required separately'}</div>}</td>
           <td style={cell}>{spread === null ? 'Unavailable' : `${spread.toFixed(1)}%`}</td><td style={cell}>{oi === null || !Number.isInteger(oi) ? 'Unavailable' : oi.toLocaleString()}</td>
           <td style={cell}>{greek(leg?.delta)} / {greek(leg?.gamma)}</td>

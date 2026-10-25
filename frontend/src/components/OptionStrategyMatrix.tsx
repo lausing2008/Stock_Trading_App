@@ -18,9 +18,11 @@ import { useNow } from '@/lib/useNow';
 import { optionEventWindow, reviewOptionCalendar, type OptionCalendarContext } from '@/lib/optionCalendarEvidence';
 import { optionPreferenceBlocker, parseOptionPreferences, type OptionSearchPreferences } from '@/lib/optionSearchPreferences';
 import OptionCandidateComparison from './OptionCandidateComparison';
+import ShortOptionRisk from './ShortOptionRisk';
+import { expiryPayoff, lossScopeLabel } from '@/lib/optionExpiryRisk';
 
 const CARD: React.CSSProperties = {
-  background: '#0b1220', border: '1px solid #1e293b', borderRadius: 8, padding: 14,
+  background: '#0b1220', border: '1px solid #1e293b', borderRadius: 8, padding: 14, minWidth: 0,
 };
 const LABEL: React.CSSProperties = {
   fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em',
@@ -45,27 +47,12 @@ const candidateReason = (reason: string) => ({
 const fmtBound = (n: number | null | undefined, unbounded: string) =>
   n == null ? unbounded : fmtUSD(n);
 
-/** Payoff at expiry for one structure, per contract, ignoring commissions.
- *  Long stock is included for structures that require it, because a covered call's payoff
- *  without the stock underneath it is not the thing the user is holding. */
-function payoffAt(s: OptionStrategy, spotAtExpiry: number, entrySpot: number): number {
-  let pnl = 0;
-  if (s.requires_shares) pnl += (spotAtExpiry - entrySpot) * 100;
-  for (const leg of s.legs) {
-    const intrinsic = leg.right === 'call'
-      ? Math.max(0, spotAtExpiry - leg.strike)
-      : Math.max(0, leg.strike - spotAtExpiry);
-    const sign = leg.action === 'buy' ? 1 : -1;
-    pnl += sign * (intrinsic * 100 - leg.cost_per_contract);
-  }
-  return pnl;
-}
 
 function PayoffChart({ s, spot }: { s: OptionStrategy; spot: number }) {
   const lo = spot * 0.75, hi = spot * 1.25;
   const pts = Array.from({ length: 61 }, (_, i) => {
     const px = lo + ((hi - lo) * i) / 60;
-    return { px, pnl: payoffAt(s, px, spot) };
+    return { px, pnl: expiryPayoff(s, px, spot) };
   });
   const maxAbs = Math.max(...pts.map(p => Math.abs(p.pnl)), 1);
   const w = 260, h = 90, pad = 4;
@@ -114,7 +101,7 @@ function StrategyCard({ s, spot, highlight, review }: { s: OptionStrategy; spot:
       <p style={{ fontSize: 10, color: '#94a3b8' }}>Expiry economics per standard contract, before fees. Stock legs use the reference spot.</p>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(88px,1fr))', gap: 8, marginTop: 10 }}>
-        <div><div style={LABEL}>Max loss</div>
+        <div><div style={LABEL}>{lossScopeLabel(s)}</div>
           <div style={{ fontSize: 12, color: '#ef4444' }}>{fmtBound(s.max_loss_per_contract, 'Unlimited')}</div></div>
         <div><div style={LABEL}>Max profit</div>
           <div style={{ fontSize: 12, color: '#22c55e' }}>{fmtBound(s.max_profit_per_contract, 'Unlimited')}</div></div>
@@ -126,6 +113,8 @@ function StrategyCard({ s, spot, highlight, review }: { s: OptionStrategy; spot:
           <div style={{ fontSize: 12, color: '#cbd5e1' }}>{fmtUSD(s.collateral_per_contract)}</div></div>
       </div>
 
+      <ShortOptionRisk strategy={s} referenceStock={spot} />
+
       {review && <div className="option-strategy-playbook">
         <p><strong>Entry:</strong> {review.entry}</p>
         <p><strong>Take profit / objective:</strong> {review.target}</p>
@@ -133,7 +122,7 @@ function StrategyCard({ s, spot, highlight, review }: { s: OptionStrategy; spot:
         {!!review.blockers.length && <p className="option-strategy-blockers"><strong>Not eligible for preference:</strong> {review.blockers.join(' ')}</p>}
         <details><summary>Playbook — before entry, while open & exit</summary><ol>{review.steps.map(step => <li key={step}>{step}</li>)}</ol></details>
       </div>}
-      <details><summary>Expiry payoff illustration</summary><PayoffChart s={s} spot={spot} /></details>
+      <details><summary>Expiry payoff illustration</summary><p>Stock-price window: 75%–125% of reference spot. This is expiry P/L, not a forecast; the stock-zero worst case may be outside the chart.</p><PayoffChart s={s} spot={spot} /></details>
 
       <button onClick={() => setOpen(o => !o)} style={{
         marginTop: 4, background: 'transparent', border: 'none', color: '#38bdf8',

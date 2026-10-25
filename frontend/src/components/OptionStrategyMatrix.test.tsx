@@ -381,3 +381,19 @@ it('an expired capture cannot gain a goal-fit highlight even when the strategy h
   expect(screen.getByText('Wait / no strategy preference yet')).toBeTruthy();
   expect(document.body.textContent).toContain('Snapshot expired. Refresh the option chain');
 });
+
+it('keeps scenario edits separate from contract selection and assignment acceptance',()=>{
+  render(panel());
+  fireEvent.change(screen.getByLabelText('Covered-call contract to compare'),{target:{value:'0'}});
+  fireEvent.change(screen.getByLabelText('Objective'),{target:{value:'income'}});
+  fireEvent.change(screen.getByLabelText('Unencumbered shares'),{target:{value:'100'}});
+  const accept=screen.getByRole('checkbox',{name:/I accept buying or selling/}) as HTMLInputElement;
+  fireEvent.click(accept);
+  const risk=screen.getByRole('region',{name:'Covered Call expiry risk'});
+  fireEvent.click(within(risk).getByText('Why the loss is large — expiry scenarios'));
+  fireEvent.change(within(risk).getByLabelText('Hypothetical stock price at expiry ($)'),{target:{value:'90'}});
+  expect(within(risk).getByRole('status').textContent).toContain('total −$790.00');
+  expect(accept.checked).toBe(true);
+  expect((screen.getByLabelText('Covered-call contract to compare') as HTMLSelectElement).value).toBe('0');
+  expect(screen.getByText(/Entry status: WAIT/)).toBeTruthy();
+});

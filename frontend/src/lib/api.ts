@@ -2542,6 +2542,7 @@ export type CoveredCallLeg = {
 // T402-OPTIONS-STRATEGY-MATRIX: one leg of a structure. A structure is 1 leg (long call,
 // cash-secured put, ...) or 2 (collar, vertical spread).
 export type OptionStrategyLeg = {
+  contract_terms?: ContractTerms | null;
   last_tape_time?: string | null; quote_observed_at?: string | null;
   action: 'buy' | 'sell';
   right: 'call' | 'put' | string;

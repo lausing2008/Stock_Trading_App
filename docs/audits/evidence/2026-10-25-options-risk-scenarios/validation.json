@@ -1,0 +1,15 @@
+{
+  "frontend": {
+    "passed": 978,
+    "files": 82,
+    "typecheck": "passed"
+  },
+  "whitespace": "clean",
+  "backend_changed": false,
+  "preceding_backend_result": {
+    "passed": 5912,
+    "skipped": 26,
+    "rerun": false
+  },
+  "production": "pending"
+}

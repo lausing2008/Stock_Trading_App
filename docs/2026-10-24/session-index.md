@@ -26,6 +26,10 @@ Release validation: **5,912 market-data tests passed / 26 skipped**, **965 front
 
 Read-only TSM checks on the October 22 archive returned 12 alternatives per strategy for the **verification example** DTE 60–180 / absolute delta 0.20–0.40, zero matches for exact-zero delta, and zero additional reads for an expiry band incompatible with the holding-period minimum. These are bounded research examples, not recommended settings or executable prices. No authenticated interactive browser acceptance was performed for these latest releases; the reports distinguish DOM tests, real-route regressions, deployed helper calculations and public HTTP/served-build checks.
 
+## October 25 risk-basis and expiry-scenario continuation
+
+[Risk explanations, arithmetic consistency and evidence](../audits/2026-10-25-options-risk-scenarios.md): scoped loss labels, covered-call/secured-put worst-case explanations, premium-versus-stock/assignment scenarios and local expiry what-if input. Charts now use the same aggregate premium as cards, including half-cent and signed credit-collar cases. Local validation: 978 frontend tests and full typecheck. This frontend-only batch does not change backend/snapshot/signal/ranking behavior. Final rollout is recorded in its report; previous refresh and MU work are preserved.
+
 ## October 25 latest-provider option refresh continuation
 
 [Refresh implementation, constraints and evidence](../audits/2026-10-25-options-snapshot-refresh.md): explicit current-contract capture, shared snapshot pricing across cards/search/chain/calculator, single-expiration scope, source clocks, expiry/cooldown/failure handling and conditional goal fit. Full MU capability probe completed 11,722 contracts over 24 pages; this is newer provider data rather than an archive reread. Snapshot quote times remain unverified and no optimal-return claim is made. Deployed `7fcb29d0`: 5,912 backend and 965 frontend tests passed, full typecheck clean, 15 healthy and actual current-data capture/recalculation verified; preceding MU/alert/RZY work remains preserved. The existing CLAUDE.md pointer now covers October 19–25.

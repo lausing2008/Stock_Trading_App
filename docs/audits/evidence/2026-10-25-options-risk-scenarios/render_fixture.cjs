@@ -1,0 +1,21 @@
+const fs=require('fs'),vm=require('vm');
+const ts=require(require.resolve('typescript',{paths:[process.cwd()]}));
+const React=require(require.resolve('react',{paths:[process.cwd()]}));
+const server=require(require.resolve('react-dom/server',{paths:[process.cwd()]}));
+function compile(path,deps={}){const box={React,exports:{},require(name){if(name==='react')return React;if(name in deps)return deps[name];throw new Error('Unmapped import '+name);}};vm.runInNewContext(ts.transpileModule(fs.readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020,jsx:ts.JsxEmit.React,esModuleInterop:true}}).outputText,box);return box.exports;}
+const risk=compile('src/lib/optionExpiryRisk.ts');
+const fixtures=compile('src/testFixtures/shortOptionRisk.ts');
+const component=compile('src/components/ShortOptionRisk.tsx',{'@/lib/optionExpiryRisk':risk});
+const calendar=compile('src/lib/optionCalendarEvidence.ts');
+const math=compile('src/lib/optionCandidateComparison.ts',{'./optionCalendarEvidence':calendar});
+const comparison=compile('src/components/OptionCandidateComparison.tsx',{'@/lib/optionCandidateComparison':math,'@/lib/optionExpiryRisk':risk});
+const plans=compile('src/lib/commonOptionPlans.ts');
+const research=compile('src/lib/optionResearchContext.ts');
+const preferences=compile('src/lib/optionSearchPreferences.ts',{'./optionCalendarEvidence':calendar});
+const panel=compile('src/components/OptionStrategyMatrix.tsx',{'@/lib/api':{api:{}},'@/lib/optionResearchContext':research,'@/lib/commonOptionPlans':plans,'@/lib/useNow':{useNow:()=>Date.parse('2026-10-25T15:00:00Z')},'@/lib/optionCalendarEvidence':calendar,'@/lib/optionSearchPreferences':preferences,'./OptionCandidateComparison':comparison,'./ShortOptionRisk':component,'@/lib/optionExpiryRisk':risk});
+const cc=fixtures.coveredCall,put=fixtures.securedPut;
+const call={...cc,name:'Long Call',net:'debit',net_per_contract:1470,max_loss_per_contract:1470,max_profit_per_contract:null,breakeven:432.2,collateral_per_contract:1470,requires_shares:false,legs:[{...cc.legs[0],action:'buy',strike:417.5,price_per_share:14.7,cost_per_contract:1470}]};
+const protective={...put,name:'Protective Put',net:'debit',net_per_contract:1457,max_loss_per_contract:2776,max_profit_per_contract:null,breakeven:432.76,collateral_per_contract:1457,requires_shares:true,legs:[{...put.legs[0],action:'buy'}]};
+const matrix={singles:{long_call:call,protective_put:protective,covered_call:cc,cash_secured_put:put},combos:{},iv_rank:null,iv_regime:'unknown',recommendation:{primary:null,reason:'Research'}};
+const html=server.renderToStaticMarkup(React.createElement(panel.default,{matrix,spot:418.19,chainAsOf:'2026-10-23'}));
+fs.writeFileSync('/tmp/options-risk-preview.html',`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${fs.readFileSync('src/styles/globals.css','utf8')}</style></head><body><main style="max-width:1500px;margin:auto;padding:16px"><h1>Offline risk illustration — historical example numbers</h1><p>Actual strategy cards and styles; synthetic/recorded examples, no market requests or current trade recommendations.</p>${html}</main></body></html>`);

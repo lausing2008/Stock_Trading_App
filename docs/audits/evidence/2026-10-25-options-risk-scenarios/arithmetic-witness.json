@@ -1,0 +1,25 @@
+{
+  "scope": "Deterministic discussion examples, not live quotes or probability forecasts",
+  "covered_call": {
+    "reference_stock": 418.19,
+    "strike": 480,
+    "credit": 108,
+    "expiry_400_total": -1711,
+    "expiry_480_total": 6289,
+    "expiry_zero_total": -41711
+  },
+  "cash_secured_put": {
+    "strike": 405,
+    "credit": 1457,
+    "expiry_350_total": -4043,
+    "expiry_zero_total": -39043
+  },
+  "half_cent_chart_case": {
+    "reference_stock": 877.55,
+    "strike": 880,
+    "displayed_strategy_credit": 5248,
+    "raw_leg_credit": 5247.5,
+    "previous_stock_zero_chart_pnl": -82507.5,
+    "corrected_stock_zero_chart_and_card_pnl": -82507
+  }
+}
