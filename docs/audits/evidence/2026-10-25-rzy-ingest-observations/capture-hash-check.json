@@ -1,0 +1,31 @@
+{
+  "all_capture_hashes_match": true,
+  "all_report_hashes_match": true,
+  "file_checks": {
+    "bar_provenance.csv": true,
+    "bar_revisions.csv": true,
+    "bar_session_authority.csv": true,
+    "daily_ingest_records.csv": true,
+    "ingest_observations.csv": true,
+    "manifest.json": true,
+    "occurrences.csv": true,
+    "outbox.csv": true,
+    "post_close_writes.csv": true,
+    "rebuilds.csv": true,
+    "report.json": true,
+    "rzy_alert_path.csv": true,
+    "scan_phases.csv": true,
+    "scan_runs.csv": true
+  },
+  "rows": {
+    "bar_revisions": 18690,
+    "bar_provenance": 20136,
+    "scan_runs": 105,
+    "alert_path": 16,
+    "outbox": 12,
+    "occurrences": 957,
+    "rebuilds": 1093,
+    "ingest_observations": 0,
+    "post_close_writes": 0
+  }
+}

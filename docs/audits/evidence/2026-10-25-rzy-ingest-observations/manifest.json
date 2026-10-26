@@ -24,6 +24,12 @@
     "typecheck.txt": "d4732110e2acf99551ec12bae39a1061dbfb60b5f0dfa251b5c457df9db6ac8c",
     "mutation_checks.py": "ac3d660c2f5c1bef9f981a9a5a487211c234b2e08d227f7417bd589166115d49",
     "capture-final.txt": "45deb04e9e27de45b4d1b4f1d750ea43d478ae84f66ecdc1b13c1ec6da04e46f",
-    "frontend-full.txt": "8d08698647a2ef5dd172d382fb1cf3977e90c8aec2cad9211f80da38b4cef31a"
-  }
+    "frontend-full.txt": "8d08698647a2ef5dd172d382fb1cf3977e90c8aec2cad9211f80da38b4cef31a",
+    "production-verification.json": "fda19c71f2d5d492a06587699ecbb498822e616431103cefa7568e67b927bc53",
+    "expected-source-hashes.json": "8102e22627051e230f584f95651eddaaffff9382926d46b16ba86692ff8a999c",
+    "production_verification.py": "6c59f9404d93f2c19188ecf6eee691ed03a73552f77b17b8ea394ca96f5c852d",
+    "capture-smoke.json": "75754464dda8fbf49741bda44613923796c50221ead4e31338863aedd7cc0356",
+    "capture-hash-check.json": "687150ebd715c2c770f5a2697f61a4f66d20d15958addf540f9ad5de4cb98b72"
+  },
+  "deployed_commit": "a8316be3fa9e2646165270a3f640c1cf06d268d5"
 }

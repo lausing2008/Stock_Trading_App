@@ -1,6 +1,6 @@
 # RZY ingest observations and session evidence — 2026-10-25
 
-Status: locally validated; deployment pending. Continues [the reliability and forward-journal release](rzy-reliability-and-forward-journal.md). RZY remains research only. No strategy settings, execution eligibility, alert enrolment or broker behavior change.
+Status: deployed and production-verified on October 26; full-session acceptance pending. Continues [the reliability and forward-journal release](rzy-reliability-and-forward-journal.md). RZY remains research only. No strategy settings, execution eligibility, alert enrolment or broker behavior change.
 
 ## Delivered scope
 
@@ -52,6 +52,16 @@ The new real-ingest PostgreSQL test is included in `make test-integration-pg-sch
 
 ## Deployment and remaining acceptance
 
-Pending. Only market-data and frontend require images. New service-owned tables register before the existing locked startup schema creation; no existing columns are added. Preserve prior images/logs and use the host lock.
+Released code **`a8316be3fa9e2646165270a3f640c1cf06d268d5`**, pushed to `origin/prod`. Only market-data and frontend restarted, under the host lock; prior logs/images were preserved. New service-owned tables registered through existing locked startup schema creation, without changes to existing columns.
+
+Production verification on **October 26**: **15/15 healthy, all 12 backend source hashes match**, frontend build **`ToAm9HIZ96C87I3-JWCWq`**, four pages return 200 with that build, both inspected protected routes return 401, expected UI markers are present, and no compiled `localhost:8000` reference was found. Strategy config remains **`8ceb8cf780c3eb981983`**. Read-only checks found **5,056 ingestion observation rows**, **5,531 post-close write observations**, and **59 replay/imported simulator rows**; there were **zero scored forward trades**, with win rate and expectancy correctly unknown. Counts are point-in-time observations, not complete-session acceptance.
+
+After the build, disk utilisation briefly reached about 90% with PostgreSQL readers active. Reporting was held until a later live sample showed approximately **1% disk utilisation, 0–0.5% I/O wait and no active swap traffic**. This does not establish the cause of the earlier host stall. Standard deployment cleanup reclaimed 1.6 GB; approximately 27 GB remained free.
+
+The read-only **October 23 smoke capture**, performed October 26 at 13:29 UTC, completed with all **14 capture-file hashes** independently rechecked. Post-close daily coverage was **154/155**. Its new observation exports contain zero rows because instrumentation was not present during that historical session; this is a capture-integrity check, not retroactive latency/completeness evidence. Artifacts remain at `/home/ec2-user/rzy-session-evidence/2026-10-23-observation-smoke-a8316be3`.
+
+**Metadata limitation:** the legacy `stockai.release` image/container label is absent, so the capture's release-label field is empty. Its image ID, container start time, repository commit and reporter hashes are retained. The separately saved production verifier establishes the deployed source hashes; the repository commit alone is not proof of running code. Observation timing joins by candle key, not an exact event-version availability timestamp.
+
+A detached capture process for **Monday, October 26** was verified running (PID 3967964), waiting for the target post-close job and at least 95% per-symbol daily coverage. Destination: `/home/ec2-user/rzy-session-evidence/2026-10-26-a8316be3`; log: `/home/ec2-user/rzy-capture-2026-10-26-a8316be3.log`. It survives SSH disconnection, not an EC2 reboot. Review its completion flags, hashes and session evidence after it runs; no prospective result is claimed yet. Sanitized verification and capture metadata are preserved alongside the validation evidence.
 
 Full-session latency/completeness evidence, safe incremental loading, verified execution/borrow data and genuinely unseen after-cost performance remain open. Collect the first complete US session after this deployment separately from earlier releases; warmup observations cannot retroactively establish first arrival. Tracker 457b is not closed solely because accounting exists, and tracker 458 is not closed by a healthy container or successful report export.

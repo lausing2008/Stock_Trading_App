@@ -112,3 +112,5 @@ Candidate-comparison rollout completed: `003e05ab` is public and live. Frontend 
 ## RZY per-session ingestion and capture continuation
 
 [Accounting, latency anchors and protected capture](../2026-10-25/rzy-ingest-observations-and-session-evidence.md): post-validation received/rejected/write counts, first observed post-close writes, conservative missing-timestamp handling, DST-aware read-only exports and fresh evidence destinations under the host lock. Validation and rollout status live in the linked record; these diagnostic observations do not make the best-effort trace a safe incremental watermark or establish trading readiness.
+
+Deployment verified October 26: main release `a8316be3`, frontend `ToAm9HIZ96C87I3-JWCWq`, 15 healthy and all 12 backend source hashes matched. Historical capture integrity passed (14 hashes); October 26 prospective capture is waiting on actual post-close confirmation. Full-session acceptance and incremental loading remain open. The linked record includes the absent release-label limitation and post-build disk-pressure measurements.

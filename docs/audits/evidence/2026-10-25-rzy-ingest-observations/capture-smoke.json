@@ -1,0 +1,68 @@
+{
+  "checked_at": "2026-10-26T13:30:00.083120+00:00",
+  "capture": {
+    "captured_at": "2026-10-26T13:29:31.806792+00:00",
+    "post_close_confirmed": true,
+    "capture_complete": true,
+    "report_manifest_verified": true,
+    "report_copy_exit_code": 0,
+    "daily_records_exit_code": 0,
+    "target_session": "2026-10-23",
+    "report_exit_code": 0,
+    "session_coverage": {
+      "observed_after_post_close": 154,
+      "active_us_symbols": 155,
+      "required": 0.95
+    },
+    "release_identity": {
+      "market_data_release": "",
+      "image_id": "sha256:7cd5939d98a1400a42156c3639380a79f3dc432de7717016ad8a5175780ae0de",
+      "container_started_at": "2026-10-26T04:25:07.14142654Z",
+      "ec2_repo_head": "a8316be3fa9e2646165270a3f640c1cf06d268d5",
+      "capture_and_report_script_sha256": "4392d60995b4d1e2a6edc9975d05f5d766fe5a0a4b9a99c3e1eac69cc7beb502,66d8196249fc0e5e1c99aad96de0bc46390799c27e2c444a416f529dff1dedc8"
+    },
+    "us_post_close_record": {
+      "job": "us_post_close",
+      "status": "ok",
+      "last_run": "2026-10-23T20:34:09.134848+00:00",
+      "duration_s": 247.7,
+      "error": null
+    },
+    "market_data_release": "",
+    "files": {
+      "bar_provenance.csv": "23c68e68d00834ea5e5b4d945a181db5092d4af2658a97fb06e508981f14cd49",
+      "bar_revisions.csv": "468ceda23535b2f367a2c0b6f98733f8cc82f88d4103d2ff9b3d34a160e5b3f9",
+      "bar_session_authority.csv": "5bb871b7708d4767a50618361be679b09c1c2208b8702fecc7750dbeefa862f0",
+      "daily_ingest_records.csv": "3390390eeea8638c44c71002e0ab26151cab3ddab13c26312bd8c581c9d34789",
+      "ingest_observations.csv": "c4018e2ece5cabdf9eb7bc8228ba516120e1f11edcb170b9bf6f14de00d906bb",
+      "manifest.json": "f30ebb97e7beafaa9b76688dbbb524410efc738dc2b460fba852160a0bc755d1",
+      "occurrences.csv": "8ab2c49bec19e10983fe43757d0acfffe044557b7b8a60c48a8fc33707d59005",
+      "outbox.csv": "25d1fec1bda8b2cff55f1eb5d18a093f5389b9ac965cd274ea03855d360b3631",
+      "post_close_writes.csv": "d190ad890bfed126619d637562a69fb333f67d33e8d35429c8056f9201b76d18",
+      "rebuilds.csv": "3cf38b448efb5ab33cfa10bf2756ae36b5c99b4eb18cc0422e476983f741268e",
+      "report.json": "eda3b9704cf81441896df8b85a16518765f006863397f694a639106ce7d08219",
+      "rzy_alert_path.csv": "57bc681e0f4785a0a348f40da3316c64a838696fbe5f5be212e3653a797101b0",
+      "scan_phases.csv": "db3a0bda2fe46b5851fd27d65dc0c4a9ad3183233a519bde13ddfb2e1173611e",
+      "scan_runs.csv": "6840f4738d1db1a125206481699e3c7ffcac2c5a4493db0ed99ab92d7a0c00a7"
+    }
+  },
+  "files": [
+    "bar_provenance.csv",
+    "bar_revisions.csv",
+    "bar_session_authority.csv",
+    "capture.json",
+    "daily_ingest_records.csv",
+    "ingest_observations.csv",
+    "manifest.json",
+    "occurrences.csv",
+    "outbox.csv",
+    "post_close_writes.csv",
+    "rebuilds.csv",
+    "report.json",
+    "rzy_alert_path.csv",
+    "scan_phases.csv",
+    "scan_runs.csv"
+  ],
+  "prospective_capture_pid": 3967964,
+  "prospective_capture_alive": true
+}
