@@ -422,6 +422,8 @@ def scan(session,now=None,clock=None):
     horizon=(now-RECORD_RETENTION).replace(tzinfo=None)
     session.execute(delete(RzyOccurrence).where(RzyOccurrence.first_seen_at<horizon))
     session.execute(delete(RzyRebuild).where(RzyRebuild.rebuilt_at<horizon))
+    from .bar_ingest_observations import purge_observations
+    purge_observations(session,now)
     session.commit()
     return {'status':'maintenance' if maintenance else 'ok','streams':len(jobs),'queued':queued,'stream_status':statuses,
             'duration_seconds':round(duration,1),'too_late_to_mail':too_late}

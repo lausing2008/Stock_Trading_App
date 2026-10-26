@@ -108,3 +108,7 @@ Candidate-comparison rollout completed: `003e05ab` is public and live. Frontend 
 ## October 25 RZY reliability continuation
 
 [Implementation and acceptance record](../2026-10-25/rzy-reliability-and-forward-journal.md): slim scan reads/chart omission, explicit timing/readiness denominators and durable generation-scoped simulator observations with conservative forward metrics. Deployed main release `8d5833b8` and market-data read-cost follow-up `1c8790bc`; 15 healthy, zero backend drift, build `p_TOgzaqmJB50k54BZqHj`. Full backend 5,918 / frontend 986, final affected checks, PostgreSQL and eight mutation checks passed. Execution evidence and prospective edge remain open; 457/458 are not closed by this implementation.
+
+## RZY per-session ingestion and capture continuation
+
+[Accounting, latency anchors and protected capture](../2026-10-25/rzy-ingest-observations-and-session-evidence.md): post-validation received/rejected/write counts, first observed post-close writes, conservative missing-timestamp handling, DST-aware read-only exports and fresh evidence destinations under the host lock. Validation and rollout status live in the linked record; these diagnostic observations do not make the best-effort trace a safe incremental watermark or establish trading readiness.

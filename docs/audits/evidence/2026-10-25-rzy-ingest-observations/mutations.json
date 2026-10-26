@@ -1,0 +1,42 @@
+{
+  "isolated_copy": true,
+  "baseline_passed": true,
+  "checks": [
+    {
+      "check": "shipped_hook",
+      "applied": true,
+      "compiled": true,
+      "rejected": true
+    },
+    {
+      "check": "savepoint_isolation",
+      "applied": true,
+      "compiled": true,
+      "rejected": true
+    },
+    {
+      "check": "forming_not_completed",
+      "applied": true,
+      "compiled": true,
+      "rejected": true
+    },
+    {
+      "check": "unknown_not_zero",
+      "applied": true,
+      "compiled": true,
+      "rejected": true
+    },
+    {
+      "check": "capture_identity",
+      "applied": true,
+      "compiled": true,
+      "rejected": true
+    },
+    {
+      "check": "capture_preservation",
+      "applied": true,
+      "compiled": true,
+      "rejected": true
+    }
+  ]
+}

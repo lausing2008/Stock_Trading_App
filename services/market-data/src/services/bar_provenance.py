@@ -38,6 +38,7 @@ from sqlalchemy import DateTime, Float, Integer, String, JSON, Boolean, select, 
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base, Price
+from .bar_ingest_observations import BarIngestObservation, BarPostCloseWrite  # register service-owned tables before startup create_all
 
 NOISE_REL = 1e-6
 TRACKED = {'5m', '15m', '1h', '1d'}

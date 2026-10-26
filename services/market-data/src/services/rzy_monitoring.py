@@ -12,7 +12,7 @@ def distribution(values):
         max=values[-1] if values else None)
 
 
-def monitoring_report(occurrences, mail, snapshots, now, current_since):
+def monitoring_report(occurrences, mail, snapshots, now, current_since,post_close_writes=None):
     """Incremental trigger population, including unmailed signals. Never infer delivery
     from a queue row or pool replay/bootstrap latency with newly observed triggers.
     The caller supplies a single explicit observation window for occurrences and mail.
@@ -22,12 +22,22 @@ def monitoring_report(occurrences, mail, snapshots, now, current_since):
     by_tf={}
     for tf in sorted({r.timeframe for r in occurrences}):
         signals=[r for r in occurrences if r.timeframe==tf and r.event_type=='TRIGGERED' and r.observed_in=='incremental']
-        stages={'detection':[],'queue':[],'provider_acceptance':[]}; outcomes=Counter(); malformed=0
+        stages={'detection':[],'queue':[],'provider_acceptance':[],'observed_post_close_write':[]}; outcomes=Counter(); malformed=0
+        write_to_detection=[]
+        missing_write=write_after_detection=0
         for r in signals:
             if r.signal_time is None: malformed+=1; continue
             detected=(utc(r.first_seen_at)-utc(r.signal_time)).total_seconds()
             if detected<0: malformed+=1; continue
             stages['detection'].append(detected)
+            if tf=='5m':
+                stamp=utc(r.signal_time).replace(tzinfo=None)
+                observed=(post_close_writes or {}).get((getattr(r,'symbol',None),stamp))
+                if observed is None:missing_write+=1
+                elif utc(observed)>utc(r.first_seen_at) or utc(observed)<utc(r.signal_time):write_after_detection+=1
+                else:
+                    stages['observed_post_close_write'].append((utc(observed)-utc(r.signal_time)).total_seconds())
+                    write_to_detection.append((utc(r.first_seen_at)-utc(observed)).total_seconds())
             if r.queued_at:
                 delta=(utc(r.queued_at)-utc(r.signal_time)).total_seconds()
                 if delta>=0: stages['queue'].append(delta)
@@ -41,6 +51,8 @@ def monitoring_report(occurrences, mail, snapshots, now, current_since):
                     delta=(utc(m.accepted_at)-utc(r.signal_time)).total_seconds()
                     if delta>=0: stages['provider_acceptance'].append(delta)
         by_tf[tf]=dict(trigger_occurrences=len(signals),invalid_timestamps=malformed,
+            post_close_write_missing=missing_write,post_close_write_timestamp_excluded=write_after_detection,
+            segments_seconds={'observed_write_to_detection':distribution(write_to_detection)},
             too_late_to_queue=sum(v>(MINUTES[tf]+3)*60 for v in stages['detection']),
             seconds_from_close={k:distribution(v) for k,v in stages.items()},receipt_outcomes=dict(outcomes))
     streams=[]
@@ -54,4 +66,4 @@ def monitoring_report(occurrences, mail, snapshots, now, current_since):
         blockers=['Execution-grade provider timing and price basis are unverified.',
                   'Short availability and borrow evidence are unavailable.',
                   'Full-session latency/completeness acceptance and forward after-cost edge are not established.'],
-        note='Last 20 hours. Detection and queue samples are per incremental trigger occurrence; acceptance samples and receipt states count recipient receipts. Not_queued and receipt_outside_window count occurrences, not recipients; neither identifies a cause. Provider acceptance is not inbox delivery. Exact completed-bar ingestion time is not stored; first write can be a forming candle. No signals is not proof of complete detection.')
+        note='Last 20 hours. Detection/queue samples count incremental trigger occurrences; acceptance samples and receipt states count recipient receipts. Not_queued and receipt_outside_window count occurrences, not recipients, without asserting a cause. Observed post-close write timing is available only for native 5m bars since instrumentation began, not first-ever ingestion, provider finality or transaction commit time. Missing/late observation timestamps are excluded, never zero-filled. Provider acceptance is not inbox delivery. No signals is not proof of complete detection.')

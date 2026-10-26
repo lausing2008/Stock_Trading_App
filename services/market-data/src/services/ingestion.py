@@ -20,6 +20,7 @@ from db import Price, SessionLocal, Stock, TimeFrame
 from ..adapters import get_adapter, get_adapters, primary_provider
 from .bar_provenance import (observe_bar_writes, record_daily_fetch, authorize_bar_writes, mark_trace_failed,
                              fail_closed_rows, AUTHORITY_FAILED_KEY)
+from .bar_ingest_observations import record_ingest_observation
 
 log = get_logger("ingestion")
 
@@ -199,6 +200,18 @@ def exclude_off_grid_snapshots(rows: list[dict], timeframe: str) -> tuple[list[d
     for r in rows:
         (dropped if is_off_grid(r["ts"], timeframe) else kept).append(r)
     return kept, dropped
+
+
+def _observe_ingest(session, stock, timeframe, received, written, off_grid, provider, forced):
+    """Observe a successful price write without making telemetry an ingestion dependency."""
+    if timeframe not in ('5m','15m','1h'):return
+    try:
+        with session.begin_nested():
+            record_ingest_observation(session,stock,timeframe,received,written,off_grid,provider,forced=forced)
+    except Exception as exc:  # observability is explicitly incomplete when this happens
+        log.warning('ingest.observation_failed',symbol=stock.symbol,tf=timeframe,error=str(exc)[:200])
+        try:get_redis().incr('stockai:metric:bar_ingest_observation_failures')
+        except Exception:pass
 
 
 def _classify_session(ts: datetime, market: str) -> str:
@@ -471,6 +484,7 @@ def ingest_symbol(
         # genuinely appears twice with a revised price (e.g. a late correction), the later value
         # is the more current one to keep, matching how a legitimate re-ingest of the same date
         # is expected to behave (the newer fetch's value should win).
+        _received_for_observation = rows
         _dedup: dict[tuple, dict] = {}
         for row in rows:
             _dedup[(row["stock_id"], row["ts"], row["timeframe"])] = row
@@ -514,6 +528,7 @@ def ingest_symbol(
                 except Exception:
                     pass
         if not rows:
+            _observe_ingest(session, stock, timeframe, _received_for_observation, rows, _snapshots, adapter.name, force)
             session.commit()
             if timeframe == "1d" and _fetched_rows:
                 _record_daily(session, stock, fetched_at=_fetched_at, ok=True, provider=adapter.name,
@@ -561,6 +576,7 @@ def ingest_symbol(
             except Exception as mexc:  # noqa: BLE001
                 log.warning("ingest.trace_failed_mark_failed", symbol=symbol, tf=timeframe, error=str(mexc)[:300])
         result = session.execute(stmt)
+        _observe_ingest(session, stock, timeframe, _received_for_observation, rows, _snapshots, adapter.name, force)
         session.commit()
         if timeframe == "1d" and _fetched_rows:
             # Per-symbol evidence that THIS close was refreshed after a session ended (stamped

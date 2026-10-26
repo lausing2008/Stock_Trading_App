@@ -104,9 +104,15 @@ def admin_overview(_admin=Depends(get_admin_user),session=Depends(get_session)):
     # recent-mail presentation limit (which would hide unaccepted/older receipts).
     from ..services.rzy_monitoring import monitoring_report
     window_mail=session.scalars(select(NotificationOutbox).where(NotificationOutbox.alert_type=='little_rzy',NotificationOutbox.created_at>=since)).all()
+    from db import Stock
+    from ..services.bar_ingest_observations import BarPostCloseWrite,ingest_totals
+    writes=session.execute(select(Stock.symbol,BarPostCloseWrite.completed_at,BarPostCloseWrite.observed_at)
+        .join(Stock,Stock.id==BarPostCloseWrite.stock_id).where(BarPostCloseWrite.timeframe=='5m',BarPostCloseWrite.completed_at>=since)).all()
+    observed_writes={(r.symbol,r.completed_at):r.observed_at for r in writes}
     q=lambda v,p: v[min(len(v)-1,int(len(v)*p))] if v else None
     return dict(strategy_version=VERSION,config_hash=cfg.hash,generated_at=now.isoformat(),
-        monitoring=monitoring_report([r for r in occs if r.stream_key.endswith(':'+cfg.hash)],window_mail,snaps,now,current_since),
+        monitoring=monitoring_report([r for r in occs if r.stream_key.endswith(':'+cfg.hash)],window_mail,snaps,now,current_since,observed_writes),
+        ingest_observations=ingest_totals(session,since=since),
         positioning='Research overlay and watch alert. Not a validated trade recommendation; paper execution is disabled.',
         scans=dict(recent_session_scans=len(recent),duration_seconds=dict(median=q(durations,.5),p95=q(durations,.95),max=durations[-1] if durations else None),
             too_late_to_mail=sum(r.too_late_to_mail for r in recent),queued=sum(r.queued for r in recent),

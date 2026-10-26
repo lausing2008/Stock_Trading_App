@@ -26,6 +26,23 @@ const paper = { note: 'n', provenance: 'Current configuration only.', positions:
 beforeEach(() => { m.role = 'admin'; m.replace.mockReset(); Object.values(m.api).forEach(f => f.mockReset()); m.api.rzyAdminOverview.mockResolvedValue(overview); m.api.rzyDigest.mockResolvedValue(digest); m.api.rzyPaper.mockResolvedValue(paper); });
 afterEach(cleanup);
 const view = () => render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}><Page /></SWRConfig>);
+it('labels write counts and missing observation timing without inventing zero delay', async () => {
+  m.api.rzyAdminOverview.mockResolvedValue({ ...overview, monitoring: {
+    readiness: 'research_only', execution_ready: false, blockers: [], note: 'Observed writes are not provider finality.', streams: [],
+    by_timeframe: { '5m': { trigger_occurrences: 1, invalid_timestamps: 0, too_late_to_queue: 0,
+      post_close_write_missing: 1, post_close_write_timestamp_excluded: 0, receipt_outcomes: { not_queued: 1 },
+      seconds_from_close: { observed_post_close_write: { samples: 0, median: null, p95: null, max: null } },
+      segments_seconds: { observed_write_to_detection: { samples: 0, median: null, p95: null, max: null } } } }
+  }, ingest_observations: [{ session_day: '2026-10-23', session_kind: 'REGULAR', market: 'US', timeframe: '5m', provider: 'fixture',
+    batch_session_groups: 1, received: 4, duplicate_dropped: 1, off_grid_rejected: 1, authority_rejected: 1, written: 1 }] });
+  view();
+  await screen.findByText('Received, rejected and written bars (last 20 hours)');
+  expect(screen.getByText(/including repeated writes of existing bars/)).toBeTruthy();
+  expect(screen.getByText(/Post-close write evidence: 1 missing, 0 excluded/)).toBeTruthy();
+  const row = screen.getByText('5m / fixture').closest('tr');
+  expect(Array.from(row?.querySelectorAll('td') ?? []).map(c => c.textContent)).toEqual(['2026-10-23', 'US / REGULAR', '5m / fixture', '4', '1', '1', '1', '1']);
+  expect(screen.getAllByText('—s').length).toBeGreaterThan(0);
+});
 it('explains every section: positioning, digest exclusions, alerts, data health, scans and cancelled paper entries', async () => {
   view();
   await screen.findByText('Research overlay and watch alert. Not a validated trade recommendation; paper execution is disabled.');

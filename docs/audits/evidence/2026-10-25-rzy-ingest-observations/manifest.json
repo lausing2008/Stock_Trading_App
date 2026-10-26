@@ -1,0 +1,29 @@
+{
+  "base_commit": "7ba819248706c140876a2e8241f2c814899c11ab",
+  "source_sha256": {
+    "frontend/src/lib/api.ts": "ef1489c1ac3c3ab2245c3b94d938f6b5a16fc5e3f389725c13e1bdc707436951",
+    "frontend/src/lib/littleRzyPage.test.tsx": "9aa5b65eb88d409dd2ea6b73af7f2c54b86a9a5b609a8957048c7a8a8bd07a2c",
+    "frontend/src/pages/improvements.tsx": "eb170401b64d8b8c602c19c18c007c30b082886b4405122b5f3b4811ef46c158",
+    "frontend/src/pages/little-rzy.tsx": "f0ccf3a2756cff702157d0bc91170a1ec1cf90321bbb2347f15e551fd1bf2fd3",
+    "scripts/capture_rzy_session_evidence.sh": "4392d60995b4d1e2a6edc9975d05f5d766fe5a0a4b9a99c3e1eac69cc7beb502",
+    "scripts/rzy_session_report.py": "66d8196249fc0e5e1c99aad96de0bc46390799c27e2c444a416f529dff1dedc8",
+    "services/market-data/src/api/little_rzy.py": "094c86f69e00281ca493b943e015e79bf7da8ba01f499e492913e84bf7a29040",
+    "services/market-data/src/services/bar_provenance.py": "0c28a8a06977b02122a726db7a8e302c4ca262688ed9123010da40c885df0a6b",
+    "services/market-data/src/services/ingestion.py": "02c72eb1abf765b0ed1abdbd34c570f76067bc5908ac8123e7bfad33c77aba34",
+    "services/market-data/src/services/rzy_monitoring.py": "05764921a948b7cf2602e525fc9592b96d47166fe312c9f1c8016aeebb38eafd",
+    "services/market-data/src/services/rzy_workflow.py": "e3bd199ae75ea786e79eef813484a4ad71d0f41cf2810e746fb916cba131d0f6",
+    "services/market-data/src/services/bar_ingest_observations.py": "6117c220bedcde20eb8f99fd92e0167e088da18c29d4b0f88ec72bf473d6d42b",
+    "services/market-data/tests/_bar_ingest_observations_probe.py": "832488840bfdd9a3a07ab23f13766cadf97727ab933ec0513f10508380216b06",
+    "services/market-data/tests/test_bar_ingest_observations.py": "11ffc875f903dcf09d66a1895cbd1e2ea88ad733961781890ed3ef602c5158e3"
+  },
+  "files": {
+    "market-full.txt": "b354d3e17b0ee7f6f6e092154d843df22a58b126997b984191b35aec60151169",
+    "postgres-final.txt": "f81c62d2029c5625197b066d2c052c8102f0aec91ecfefc35c1f946d4a70089f",
+    "focused-final.txt": "8ca77a45cb27089975ff65ff8d72b7ab489bb5be64e3623227bdcd9b1b54a93c",
+    "mutations.json": "e61844d4abe4d6ee0f313c20493d54615566c8ad2d31251b8618fa0181830fc2",
+    "typecheck.txt": "d4732110e2acf99551ec12bae39a1061dbfb60b5f0dfa251b5c457df9db6ac8c",
+    "mutation_checks.py": "ac3d660c2f5c1bef9f981a9a5a487211c234b2e08d227f7417bd589166115d49",
+    "capture-final.txt": "45deb04e9e27de45b4d1b4f1d750ea43d478ae84f66ecdc1b13c1ec6da04e46f",
+    "frontend-full.txt": "8d08698647a2ef5dd172d382fb1cf3977e90c8aec2cad9211f80da38b4cef31a"
+  }
+}

@@ -36,6 +36,7 @@ import sys
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path[:0] = [os.environ.get('RZY_EVAL_ROOT', '/app'), '/app/shared']
 from sqlalchemy import select, text  # noqa: E402
@@ -54,7 +55,7 @@ except ImportError:
             if rel(a, b) > _noise and abs(a - b) > max(_abs, _rel * max(abs(a), abs(b))) + 1e-9:
                 return 'material'
         return 'rounding'
-from src.services.rzy_models import RzyEvent, RzyStream, RzyStreamGeneration, RzyScanRun, RzyOccurrence, RzyRebuild  # noqa: E402
+from src.services.rzy_models import RzyEvent, RzyStream, RzyStreamGeneration, RzyScanRun, RzyOccurrence, RzyRebuild, RzyStreamSnapshot  # noqa: E402
 from src.services.rzy_workflow import emailable, current_config, MINUTES  # noqa: E402
 from src.services.little_rzy import VERSION  # noqa: E402
 
@@ -110,13 +111,21 @@ def completed_tally(revs):
                         'within one vendor; rounding-scale changes are precision noise and support neither; unknown supports neither.')
 
 
+def observation_window(day):
+    target=datetime.strptime(day,'%Y-%m-%d').date()
+    zone=ZoneInfo('America/New_York')
+    return tuple(datetime(target.year,target.month,target.day,hour,tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None) for hour in (4,20))
+
+
 def main(day, out_dir):
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
-    start = datetime.fromisoformat(day + 'T08:00:00'); end = start + timedelta(hours=16)   # 04:00-24:00 ET (EDT)
+    if (out/'manifest.json').exists():raise ValueError('Completed evidence already exists; choose a new output directory')
+    start,end=observation_window(day)  # 04:00–20:00 New York, including DST
     report = dict(session_day=day, window_utc=[start.isoformat(), end.isoformat()], strategy_version=VERSION,
                   note='Provider acceptance is not confirmed inbox delivery. previous_provider_unknown counts toward neither hypothesis.')
     with SessionLocal() as s:
         s.execute(text('SET TRANSACTION READ ONLY'))
+        s.execute(text("SET LOCAL statement_timeout='30000'"))
         revs = s.scalars(select(BarRevision).where(BarRevision.fetched_at >= start, BarRevision.fetched_at < end).order_by(BarRevision.fetched_at)).all()
         completed = [r for r in revs if not r.classification.endswith('_forming_bar')]
         forming = [r for r in revs if r.classification.endswith('_forming_bar')]
@@ -141,6 +150,7 @@ def main(day, out_dir):
             bars_with_completed_revisions=len({(r.stock_id, r.timeframe, r.ts) for r in completed}),
             volume_only_revisions=sum(p.volume_only_revisions or 0 for p in prov),
             provider_switches_same_values=sum(p.provider_switches_same_values or 0 for p in prov),
+            first_ingest_note='Legacy first-storage-write metric can be negative for forming candles; it does not measure completed-candle availability. See observed post-close write timing.',
             close_to_first_ingest_minutes_5m=pct([(p.first_written_at - (p.ts + timedelta(minutes=5))).total_seconds() / 60
                                                   for p in prov if p.timeframe == '5m' and not p.off_grid]))
         runs = s.scalars(select(RzyScanRun).where(RzyScanRun.scan_time >= start, RzyScanRun.scan_time < end).order_by(RzyScanRun.scan_time)).all()
@@ -191,10 +201,34 @@ def main(day, out_dir):
             gens = s.scalars(select(RzyStreamGeneration).where(RzyStreamGeneration.archived_at >= start, RzyStreamGeneration.archived_at < end)).all()
             report['rzy_rebuilds'] = dict(source='retained generation archives (LOWER BOUND: older ones are pruned)', total=len(gens),
                 by_reason=dict(Counter(g.reason for g in gens)), by_timeframe=dict(Counter(g.stream_key.split(':')[1] for g in gens)))
-        report['rzy_streams_paused_at_report_time'] = sum(1 for r in s.scalars(select(RzyStream)).all() if r.checkpoint.get('restatement_pending'))
+        # Even JSON subfield projection makes PostgreSQL read/parse the large checkpoints.
+        # Use small scan metadata instead; disclose its observation window rather than
+        # implying a new evaluation at capture time. Empty evidence is unknown, not zero.
+        snapshot_statuses=s.scalars(select(RzyStreamSnapshot.status).where(RzyStreamSnapshot.config_hash==current_config().hash,
+            RzyStreamSnapshot.checked_at>=start,RzyStreamSnapshot.checked_at<end)).all()
+        report['rzy_streams_paused_at_report_time']=sum(v=='restatement_pending' for v in snapshot_statuses) if snapshot_statuses else None
+        report['pause_measurement']=dict(source='Latest current-config scan snapshots observed inside the session window, not a new report-time evaluation',observed_snapshots=len(snapshot_statuses))
         occs = s.scalars(select(RzyOccurrence).where(RzyOccurrence.first_seen_at >= start, RzyOccurrence.first_seen_at < end)).all()
         outbox = s.scalars(select(NotificationOutbox).where(NotificationOutbox.alert_type.in_(('little_rzy', 'short_term_digest')),
                                                             NotificationOutbox.created_at >= start, NotificationOutbox.created_at < end)).all()
+        ingest_rows,post_close=[],[]
+        try:
+            from src.services.bar_ingest_observations import BarIngestObservation,BarPostCloseWrite,ingest_totals
+            with s.begin_nested():
+                ingest_rows=s.scalars(select(BarIngestObservation).where(BarIngestObservation.observed_at>=start,
+                    BarIngestObservation.observed_at<end,BarIngestObservation.session_day==datetime.fromisoformat(day).date())).all()
+                post_close=s.execute(select(Stock.symbol,BarPostCloseWrite.timeframe,BarPostCloseWrite.ts,
+                    BarPostCloseWrite.completed_at,BarPostCloseWrite.observed_at,BarPostCloseWrite.provider)
+                    .join(Stock,Stock.id==BarPostCloseWrite.stock_id).where(BarPostCloseWrite.ts>=start,BarPostCloseWrite.ts<end,BarPostCloseWrite.observed_at<end)).all()
+                report['ingest_observations']=dict(available=True,groups=ingest_totals(s,since=start,until=end,session_day=datetime.fromisoformat(day).date()),
+                    note='Post-validation received rows; written counts committed insert/update operations, not distinct candles. Missing telemetry is not zero ingestion.')
+        except Exception:
+            ingest_rows,post_close=[],[]
+            report['ingest_observations']=dict(available=False,groups=[],note='Observation schema/query unavailable; coverage is unknown.')
+        from src.services.rzy_monitoring import monitoring_report
+        observed={(r.symbol,r.completed_at):r.observed_at for r in post_close if r.timeframe=='5m'}
+        report['operational_timing']=monitoring_report([o for o in occs if o.stream_key.endswith(':'+current_config().hash)],outbox,[],end,start,observed)
+        report['operational_timing']['note']=report['operational_timing']['note'].replace('Last 20 hours.','Session observation window.')
         mail = {}
         for r in outbox:
             if r.alert_type == 'little_rzy':
@@ -273,6 +307,13 @@ def main(day, out_dir):
            'first_generation', 'observed_in', 'latest_generation', 'queued_at'])
     write('rebuilds.csv', [dict(stream_key=g.stream_key, generation=g.generation, reason=g.reason, rebuilt_at=g.rebuilt_at.isoformat())
           for g in log_rows], ['stream_key', 'generation', 'reason', 'rebuilt_at'])
+    write('ingest_observations.csv',[dict(batch_id=r.batch_id,session_day=r.session_day.isoformat(),session_kind=r.session_kind,
+        symbol=r.symbol,market=r.market,timeframe=r.timeframe,provider=r.provider,observed_at=r.observed_at.isoformat(),
+        received=r.received,duplicate_dropped=r.duplicate_dropped,off_grid_rejected=r.off_grid_rejected,
+        authority_rejected=r.authority_rejected,written=r.written,forced=r.forced) for r in ingest_rows],
+        ['batch_id','session_day','session_kind','symbol','market','timeframe','provider','observed_at','received','duplicate_dropped','off_grid_rejected','authority_rejected','written','forced'])
+    write('post_close_writes.csv',[dict(symbol=r.symbol,timeframe=r.timeframe,ts=r.ts.isoformat(),completed_at=r.completed_at.isoformat(),
+        observed_at=r.observed_at.isoformat(),provider=r.provider) for r in post_close],['symbol','timeframe','ts','completed_at','observed_at','provider'])
     phase_keys = sorted({k for p in ph for k in p.phases})
     write('scan_phases.csv', [dict(scan_time=p.scan_time.isoformat(), mode=p.mode, **{k: p.phases.get(k) for k in phase_keys}) for p in ph],
           ['scan_time', 'mode'] + phase_keys)
@@ -283,16 +324,17 @@ def main(day, out_dir):
     (out / 'report.json').write_text(json.dumps(report, indent=1, default=str))
     root = Path(os.environ.get('RZY_EVAL_ROOT', '/app'))
     code = {f: hashlib.sha256((root / 'src/services' / f).read_bytes()).hexdigest() for f in
-            ('bar_provenance.py', 'ingestion.py', 'little_rzy.py', 'rzy_data.py', 'rzy_workflow.py')}
+            ('bar_provenance.py', 'ingestion.py', 'little_rzy.py', 'rzy_data.py', 'rzy_workflow.py','bar_ingest_observations.py','rzy_monitoring.py')}
+    code['session_report.py']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     manifest = dict(created_at=datetime.now(timezone.utc).isoformat(), session_day=day, release=os.environ.get('RZY_RELEASE', 'unknown'),
                     config_hash=current_config().hash, strategy_version=VERSION, code_sha256=code,
                     files={p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(out.glob('*')) if p.name != 'manifest.json'},
                     rows=dict(bar_revisions=len(revs), bar_provenance=len(prov), scan_runs=len(runs), alert_path=len(path_rows), outbox=len(outbox),
-                              occurrences=len(occs), rebuilds=len(log_rows)))
+                              occurrences=len(occs), rebuilds=len(log_rows),ingest_observations=len(ingest_rows),post_close_writes=len(post_close)))
     (out / 'manifest.json').write_text(json.dumps(manifest, indent=1))
     print(json.dumps(dict(report_dir=str(out), rows=manifest['rows'])))
 
 
 if __name__ == '__main__':
-    main(sys.argv[1] if len(sys.argv) > 1 else datetime.utcnow().date().isoformat(),
+    main(sys.argv[1] if len(sys.argv) > 1 else datetime.now(ZoneInfo('America/New_York')).date().isoformat(),
          sys.argv[2] if len(sys.argv) > 2 else '/tmp/rzy-session')

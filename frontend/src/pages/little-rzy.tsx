@@ -64,12 +64,13 @@ export default function LittleRzyAdminPage() {
       <p className="text-amber-300">Research only · execution is not ready.</p>
       <ul className="list-disc pl-5 text-xs text-slate-400">{overview.monitoring.blockers.map(b => <li key={b}>{b}</li>)}</ul>
       <div className={`${card} overflow-x-auto`}><table className="w-full tabular-nums"><thead><tr>{['TF', 'Trigger occurrences', 'Stage', 'Samples', 'Median', 'p95', 'Maximum'].map(h => <th className={th} key={h}>{h}</th>)}</tr></thead>
-        <tbody>{Object.entries(overview.monitoring.by_timeframe).flatMap(([tf, row]) => Object.entries(row.seconds_from_close).map(([stage, values]) => <tr key={`${tf}:${stage}`}>
+        <tbody>{Object.entries(overview.monitoring.by_timeframe).flatMap(([tf, row]) => Object.entries({ ...row.seconds_from_close, ...row.segments_seconds }).map(([stage, values]) => <tr key={`${tf}:${stage}`}>
           <td className={td}>{tf}</td><td className={td}>{row.trigger_occurrences}</td><td className={td}>{stage.replaceAll('_', ' ')}</td><td className={td}>{values.samples}</td>
           <td className={td}>{fmt(values.median, 0)}s</td><td className={td}>{fmt(values.p95, 0)}s</td><td className={td}>{fmt(values.max, 0)}s</td>
         </tr>))}</tbody></table>
         {!Object.keys(overview.monitoring.by_timeframe).length && <p>No incremental trigger observations in the last 20 hours.</p>}
         {Object.entries(overview.monitoring.by_timeframe).map(([tf, row]) => <p className="mt-2 text-xs text-slate-400" key={tf}>{tf}: {row.too_late_to_queue} detected past the queue limit; {row.invalid_timestamps} invalid timestamps. Outcomes: {Object.entries(row.receipt_outcomes).map(([name, n]) => `${name} ${n}`).join(' · ') || 'no receipts'}.</p>)}
+        {Object.entries(overview.monitoring.by_timeframe).filter(([tf]) => tf === '5m').map(([tf, row]) => <p className="mt-2 text-xs text-slate-400" key={`writes:${tf}`}>Post-close write evidence: {row.post_close_write_missing ?? 'unknown'} missing, {row.post_close_write_timestamp_excluded ?? 'unknown'} excluded timestamps. Unknown observations are not zero-delay samples.</p>)}
       </div>
       <details className={card}><summary className="cursor-pointer text-teal-400">Stream freshness and execution blockers</summary>
         <div className="mt-2 overflow-x-auto"><table className="w-full"><thead><tr>{['Stream', 'Status', 'Latest data close', 'Expected close', 'Latest bin present', 'Paper blockers'].map(h => <th className={th} key={h}>{h}</th>)}</tr></thead>
@@ -77,6 +78,13 @@ export default function LittleRzyAdminPage() {
             <td className={td}>{when(s.data_as_of)}</td><td className={td}>{when(s.expected_latest_close)}</td><td className={td}>{s.latest_completed_bin_present == null ? 'unknown' : s.latest_completed_bin_present ? 'yes' : 'missing'}</td>
             <td className={td}>{s.paper_blockers?.join(', ') || 'unknown'}</td></tr>)}</tbody></table></div>
       </details>
+      {overview.ingest_observations && <details className={card}><summary className="cursor-pointer text-teal-400">Received, rejected and written bars (last 20 hours)</summary>
+        <p className="mt-2 text-xs text-slate-400">Received counts start after OHLCV validation. Duplicate, off-grid and authority filters partition these rows. Written counts committed insert/update operations, including repeated writes of existing bars, rather than unique candles. Empty evidence does not prove that ingestion was inactive or complete.</p>
+        <div className="mt-2 overflow-x-auto"><table className="w-full tabular-nums"><thead><tr>{['Session', 'Market / type', 'TF / provider', 'Received', 'Duplicates', 'Off-grid', 'Authority', 'Written'].map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
+          <tbody>{overview.ingest_observations.map((r, i) => <tr key={i}><td className={td}>{r.session_day}</td><td className={td}>{r.market} / {r.session_kind}</td><td className={td}>{r.timeframe} / {r.provider}</td>
+            <td className={td}>{r.received}</td><td className={td}>{r.duplicate_dropped}</td><td className={td}>{r.off_grid_rejected}</td><td className={td}>{r.authority_rejected}</td><td className={td}>{r.written}</td></tr>)}</tbody></table></div>
+        {!overview.ingest_observations.length && <p className="mt-2 text-xs text-slate-400">No ingest observations recorded in this window.</p>}
+      </details>}
     </Section>}
 
     <Section title="Morning digest preview" intro={<>Read from the scanner&apos;s saved results; nothing is recomputed when you open this page. Candidates are armed setups with planned reward/risk of at least 1.5. Entry and stop are provisional references: wait for an intraday trigger candle and recheck the open.</>}>

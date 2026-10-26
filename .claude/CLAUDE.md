@@ -478,3 +478,5 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **[`docs/2026-09-06/DEEP_SYSTEM_AUDIT.md`](../docs/2026-09-06/DEEP_SYSTEM_AUDIT.md)** — Full-system architecture + trading-logic deep audit, 27 verified findings. All 19 priority fixes applied and deployed (`prod` commits `9225995`, `bed7ed9`, `50c710f`, `0fb74c3`) …
 
 - **2026-10-25 RZY reliability:** [scan cost, latency/readiness, durable simulator journal and forward metrics](../docs/2026-10-25/rzy-reliability-and-forward-journal.md); research only, 457/458 and execution/edge gates remain open.
+
+- **2026-10-25 RZY ingestion:** [session counters, observed post-close writes and protected evidence capture](../docs/2026-10-25/rzy-ingest-observations-and-session-evidence.md); incremental loading and trading acceptance remain open.

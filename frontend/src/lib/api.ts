@@ -4934,9 +4934,10 @@ export interface RzyAdminOverview {
   alerts: { states: Record<string, number>; recent: { alert_type: string; state: string; subject: string; created_at: string; accepted_at: string | null; expires_at: string | null; terminal_reason: string | null }[] };
   monitoring?: {
     execution_ready: boolean; readiness: string; blockers: string[]; note: string;
-    by_timeframe: Record<string, { trigger_occurrences: number; invalid_timestamps: number; too_late_to_queue: number; receipt_outcomes: Record<string, number>; seconds_from_close: Record<string, { samples: number; median: number | null; p95: number | null; max: number | null }> }>;
+    by_timeframe: Record<string, { trigger_occurrences: number; invalid_timestamps: number; too_late_to_queue: number; post_close_write_missing?: number; post_close_write_timestamp_excluded?: number; receipt_outcomes: Record<string, number>; seconds_from_close: Record<string, { samples: number; median: number | null; p95: number | null; max: number | null }>; segments_seconds?: Record<string, { samples: number; median: number | null; p95: number | null; max: number | null }> }>;
     streams: { symbol: string; timeframe: string; status: string; checked_at: string; current: boolean; data_as_of?: string; expected_latest_close?: string; latest_completed_bin_present?: boolean | null; paper_blockers?: string[] }[];
   };
+  ingest_observations?: { session_day: string; session_kind: string; market: string; timeframe: string; provider: string; batch_session_groups: number; received: number; duplicate_dropped: number; off_grid_rejected: number; authority_rejected: number; written: number }[];
 }
 
 export interface RzyPerformanceSummary {
