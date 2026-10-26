@@ -35,6 +35,18 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: "OPTIONS-FOUR-PRESET-SHORTLISTS",
+    tier: 468,
+    severity: "feature",
+    defaultStatus: "in-progress",
+    title: "Show initial alternatives for all four option strategies",
+    file: "docs/audits/2026-10-26-options-four-preset-shortlists.md",
+    effort: "M",
+    impact: "Removes the Covered Call-only initial comparison and makes preset references distinct from research leads.",
+    what: "The initial game plan built candidate_review only for Covered Call; the other three strategies needed an explicit multi-expiration search before any alternatives appeared. The selection control did not show strategy-specific counts, and a preset card could be mistaken for an optimized pick.",
+    fix: "Build bounded call/put alternative lists for all four strategies from the already fetched preset chains, with no additional provider read. Label each strategy's separate alternative count and the table's active strategy, distinguish the nearest-strike preset from the quote-quality research lead, and retain explicit comparison and WAIT gates. Backend/frontend code is complete locally; market-data restart waits for today's RZY evidence capture to finish.",
+  },
+  {
     id: "OPTIONS-RESEARCH-LEADS-DESK",
     tier: 468,
     severity: "feature",

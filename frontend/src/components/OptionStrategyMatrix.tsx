@@ -72,7 +72,7 @@ function PayoffChart({ s, spot }: { s: OptionStrategy; spot: number }) {
   );
 }
 
-function StrategyCard({ s, spot, highlight, review }: { s: OptionStrategy; spot: number; highlight: boolean;
+function StrategyCard({ s, spot, highlight, review, selectionLabel }: { s: OptionStrategy; spot: number; highlight: boolean; selectionLabel?: string;
   review?: ReturnType<typeof recommendCommonOption>['plans'][CommonOptionKey] }) {
   const [open, setOpen] = useState(false);
   return (
@@ -85,6 +85,7 @@ function StrategyCard({ s, spot, highlight, review }: { s: OptionStrategy; spot:
           {s.net === 'credit' ? 'You receive' : 'You pay'} {fmtUSD(Math.abs(s.net_per_contract))}
         </div>
       </div>
+      {selectionLabel && <div style={{ marginTop: 6, fontSize: 11, color: '#91cbed' }}>{selectionLabel}</div>}
 
       <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6, lineHeight: 1.5 }}>{s.what_it_does}</div>
       <p style={{ fontSize: 12, color: '#cbd5e1' }}>{s.legs.map((leg, i) => <span key={i}>
@@ -284,7 +285,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
     <p>Compare one standard 100-share contract. {snapshot
       ? `These calculations use current-provider snapshot ${snapshot.id.slice(0, 8)}, captured ${snapshot.captured_at}. Quote observation times are unavailable; these are research comparisons, not executable broker quotes.`
       : `These are research illustrations using settled provider prices${chainAsOf ? ` observed ${chainAsOf}` : ' with an unknown observation date'}, not live executable quotes.`}</p>
-    <p>Review a screened contract for each strategy, then compare its risk and eligibility. The leads below use the returned shortlist only; search expirations to widen that bounded scope. No expected-return or probability ranking is available.</p>
+    <p>Review a screened contract for each strategy, then compare its risk and eligibility. Each strategy card starts with a nearest-strike preset reference, not its research lead. The leads below use the returned shortlist only; search expirations to widen that bounded scope. No expected-return or probability ranking is available.</p>
     <section aria-label="Strategy research leads" className="option-research-leads">
       <div className="option-research-leads-heading"><div><h4>Contract research leads</h4><p>Quote quality first: narrowest displayed spread, then higher open interest, then strike distance to the strategy anchor and earlier expiry. Delta/DTE preferences filter first; gamma and breakeven remain comparison evidence.</p></div>
         <span>{snapshot ? 'Provider capture' : 'Settled archive'}</span></div>
@@ -298,7 +299,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
             <button type="button" disabled={selected} onClick={() => compareLead(key, lead)} aria-label={`Compare leading ${COMMON_OPTION_NAMES[key]} contract`}>{selected ? 'In comparison' : 'Compare this contract'}</button>
           </> : <p>{!snapshotCurrent ? 'Capture expired. Refresh the option chain.' : preferences.error ? 'Correct the contract preferences below.' : !preferencesAcknowledged(key) ? 'Search expirations to apply the edited preferences before ranking.' : reviews?.[key]?.failed_expiries?.length ? 'Expiration reads were incomplete.' : 'No returned contract has a valid two-sided research quote, positive open interest and required expiry fit.'}</p>}</article>;
       })}</div>
-      <p className="option-research-leads-note">{snapshot ? `Captured ${snapshot.captured_at}; quote observation times and sizes are unavailable.` : `Historical session ${chainAsOf ?? 'unknown'}; refresh the option chain for a newer provider capture.`} Leads are research comparisons, not verified broker listings, expected-return winners or orders. Comparing never accepts assignment or changes the WAIT entry status.</p>
+      <p className="option-research-leads-note">{snapshot ? `Captured ${snapshot.captured_at}; quote observation times and sizes are unavailable.` : `Historical session ${chainAsOf ?? 'unknown'}; refresh the option chain for a newer provider capture.`} Each lead is the strongest quote-quality fit among returned rows for that strategy, not a proven best option or best return. Comparing never accepts assignment or changes the WAIT entry status.</p>
     </section>
     {researchContext && research && <section aria-label="Horizon and market context evidence" style={{ ...CARD, marginBottom: 14 }}>
       <h4>Strategy research horizon: {researchContext.horizon}</h4>
@@ -367,8 +368,9 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
         const selected = choice && choice.source === reviews?.[key] ? reviews?.[key]?.alternatives[choice.index] : undefined;
         return selected ? [`${COMMON_OPTION_NAMES[key]}: ${fmtUSD(selected.legs[0].strike)} · ${selected.legs[0].expiry}`] : [];
       }).join('; ')}. Combinations retain their original legs.</p>}
+      <p>Showing <strong>{sectionName}</strong> candidates only. Switch strategies below to see each separate shortlist. The preset expiry differs between calls and puts; the wider holding-period search is optional.</p>
       <label>Strategy for contract comparison<select aria-label="Strategy for contract comparison" value={comparisonKey} onChange={e => setComparisonKey(e.target.value as CommonOptionKey)}>
-        {COMMON_OPTION_KEYS.map(key => <option key={key} value={key}>{COMMON_OPTION_NAMES[key]}</option>)}
+        {COMMON_OPTION_KEYS.map(key => <option key={key} value={key}>{COMMON_OPTION_NAMES[key]} — {reviews?.[key]?.alternatives.length ?? 0} returned alternatives</option>)}
       </select></label>
       {researchContext && <p><button type="button" disabled={!!currentSearch?.pending || !!preferences.error || !Number.isInteger(Number(holdingText)) || Number(holdingText) < 1 || Number(holdingText) > 365} onClick={searchExpiries}>
         {currentSearch?.pending ? 'Searching expirations…' : 'Find expirations for holding period'}</button> Searches all four strategies across up to four eligible expirations from the same {snapshot ? "provider snapshot" : "archived session"}, on request only.</p>}
@@ -378,7 +380,7 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
       {comparisonKey === 'covered_call' && <p>Stock forecast target {fmtUSD(takeProfit)} is separate from an option strike and does not establish a listed contract. {candidates.anchor_basis === 'reference_spot' ? 'Covered-call research is anchored to reference stock price, not the forecast target.' : 'This older plan may use the stock target as its anchor; refresh the game plan to use reference-price selection.'}</p>}
       <p>Research reference {fmtUSD(candidates.anchor)} · expiry {candidates.expiry ?? 'unknown'} · selected strike {fmtUSD(candidates.original.strike)}.</p>
       <p>{candidates.original.reason ? `Original candidate: ${candidateReason(candidates.original.reason)}.` : 'Original candidate passed the basic quote screen; holdings, freshness and broker checks remain separate.'}</p>
-      <p>{candidates.screened_count} of {candidates.evaluated_count} rows passed the research quote/payoff screen. {candidates.method_version !== 'covered_call_candidates_v1' ? 'Counts include unsupported rows refused by this screen. ' : 'Counts cover supplied rows after upstream contract exclusions. '}{candidates.method_version !== 'covered_call_candidates_v1'
+      <p>{candidates.screened_count} of {candidates.evaluated_count} rows passed the research quote/payoff screen. {candidates.method_version === 'covered_call_candidates_v2' || candidates.method_version === 'single_leg_candidates_v1' ? 'Counts include unsupported rows refused by this screen. ' : 'Counts cover supplied rows after upstream contract exclusions. '}{candidates.method_version === 'covered_call_candidates_v2' || candidates.method_version === 'single_leg_candidates_v1'
         ? `Scope: ${candidates.completed_expiries?.length ?? 0} of ${candidates.searched_expiries?.length ?? 0} attempted expirations read; ${candidates.eligible_expiry_count ?? 0} eligible expirations in this ${snapshot ? "snapshot" : "archive"}. Minimum remaining life: ${candidates.holding_days! + candidates.buffer_days!} calendar days. Read: ${candidates.completed_expiries?.join(', ') || 'none'}.`
         : 'Scope: one selected expiration; other expirations are not searched.'}</p>
       {!!candidates.failed_expiries?.length && <p role="alert">Expiration reads failed: {candidates.failed_expiries.join(', ')}. Results are incomplete; a failure is not absence of contracts.</p>}
@@ -404,7 +406,8 @@ export default function OptionStrategyMatrixPanel({ matrix, spot, stopLoss, take
     </section>}
     <div className="common-option-strategy-grid">
       {COMMON_OPTION_KEYS.map(key => comparedMatrix.singles[key]
-        ? <StrategyCard key={key} s={comparedMatrix.singles[key]} spot={spot} highlight={review.primary === key} review={review.plans[key]} />
+        ? <StrategyCard key={key} s={comparedMatrix.singles[key]} spot={spot} highlight={review.primary === key} review={review.plans[key]}
+            selectionLabel={choices[key]?.source === reviews?.[key] ? 'Explicit comparison choice · not an automatic best pick' : 'Preset nearest-strike reference · not an automatic best pick'} />
         : <article key={key} style={CARD}><h4>{COMMON_OPTION_NAMES[key]}</h4>
           <p>No usable priced contract at the selected strike and expiry. {reviews?.[key] ? 'Select this strategy and a screened alternative above if available.' : 'Nearby strikes have not been exhaustively searched.'} Entry, premium targets and stops are unavailable; refresh the chain.</p>
           <p>{review.plans[key].blockers.join(' ')}</p><details><summary>Playbook — before entry, while open & exit</summary><ol>{review.plans[key].steps.map(step => <li key={step}>{step}</li>)}</ol></details>

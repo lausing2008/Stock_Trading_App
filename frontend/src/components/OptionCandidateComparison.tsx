@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import type { OptionStrategy } from '@/lib/api';
 import { lossScopeLabel } from '@/lib/optionExpiryRisk';
 import type { CommonOptionKey } from '@/lib/commonOptionPlans';
+import { COMMON_OPTION_NAMES } from '@/lib/commonOptionPlans';
 import { candidateDte, compareCandidateRows, nonnegativeMeasurement, type CandidateSort } from '@/lib/optionCandidateComparison';
 
 const money = (value: unknown) => nonnegativeMeasurement(value) === null ? 'Unavailable'
@@ -19,8 +20,8 @@ export default function OptionCandidateComparison({ original, originalStrike, or
   const alternativesSorted = compareCandidateRows(alternatives, sort, today);
   const rows = [{ sourceIndex: null, strategy: original, dte: candidateDte(original?.legs[0]?.expiry ?? originalExpiry, today) }, ...alternativesSorted];
   return <details style={{ marginTop: 12 }}>
-    <summary>Compare candidate costs, risk and liquidity ({alternatives.length} returned alternatives)</summary>
-    <p>The original plan is pinned first as a reference. Sorts apply only to the returned shortlist, after server screening and truncation. Unknown measurements sort last. No row is a best-return recommendation, and sorting never selects a contract.</p>
+    <summary>Compare candidate costs, risk and liquidity — {COMMON_OPTION_NAMES[strategyKey]} ({alternatives.length} returned alternatives)</summary>
+    <p>The original nearest-strike preset is pinned first as a reference; the marked research lead can be a different contract. Sorts apply only to the returned shortlist, after server screening and truncation. Unknown measurements sort last. No row is a best-return recommendation, and sorting never selects a contract.</p>
     <label>Sort returned alternatives<select aria-label="Sort returned alternatives" value={sort} onChange={event => setSort(event.target.value as CandidateSort)}>
       <option value="server">Server shortlist order</option><option value="spread">Narrowest displayed spread</option>
       <option value="oi">Highest measured open interest</option><option value="capital">Lowest stated capital</option><option value="expiry">Earliest expiry</option>

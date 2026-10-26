@@ -366,10 +366,11 @@ def _covered_call_candidates(rows, anchor, expiry, dte, today, current_price, *,
             continue
         unique[identity] = strategy
     # These are distinct alternatives, not promoted into singles/combos/recommendation.
-    return {"method_version": "covered_call_candidates_v1", "anchor": anchor,
+    return {"method_version": "covered_call_candidates_v1" if strategy_key == "covered_call" else "single_leg_candidates_preset_v1",
+            "strategy_key": strategy_key, "anchor": anchor,
             "anchor_basis": "reference_spot" if strategy_key == "covered_call" else "strategy_reference",
             "listing_verification": "unverified_archive",
-            "expiry": expiry, "scope": "all_rows_of_selected_call_expiry",
+            "expiry": expiry, "scope": "all_rows_of_selected_call_expiry" if strategy_key == "covered_call" else "all_rows_of_selected_strategy_expiry",
             "evaluated_count": len(rows), "screened_count": len(screened),
             "rejected_counts": dict(sorted(rejects.items())),
             "original": {"strike": selected.get("strike") if selected else None,
@@ -614,8 +615,16 @@ def build_strategy_matrix(
         "singles": singles,
         "combos": combos,
         "unavailable": unavailable,
-        "candidate_review": {"covered_call": _covered_call_candidates(
-            call_rows, current_price, call_expiry, call_dte, today, current_price)},
+        "candidate_review": {
+            "covered_call": _covered_call_candidates(call_rows, current_price, call_expiry, call_dte,
+                today, current_price, strategy_key="covered_call"),
+            "long_call": _covered_call_candidates(call_rows, current_price, call_expiry, call_dte,
+                today, current_price, strategy_key="long_call"),
+            "protective_put": _covered_call_candidates(put_rows, stop_loss or current_price, put_expiry,
+                put_dte, today, current_price, strategy_key="protective_put"),
+            "cash_secured_put": _covered_call_candidates(put_rows, stop_loss or current_price, put_expiry,
+                put_dte, today, current_price, strategy_key="cash_secured_put"),
+        },
         "recommendation": _recommend(
             singles=singles, combos=combos, signal=signal, iv_rank=iv_rank,
             # SF-03 (2026-10-02): ONE SHARE DOES NOT COVER A CALL.

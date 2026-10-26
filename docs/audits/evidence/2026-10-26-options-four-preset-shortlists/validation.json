@@ -1,0 +1,9 @@
+{
+  "market_data_full": {"passed": 5932, "skipped": 27},
+  "market_data_focused": {"passed": 85},
+  "frontend_full": {"passed": 988, "files": 83},
+  "frontend_typecheck": "passed",
+  "git_diff_check": "passed",
+  "backend_scope": "pure initial candidate_review construction from already fetched call and put rows; no additional provider read",
+  "release_gate": "restart market-data and frontend only after October 26 RZY capture is confirmed complete, artifacts rehashed, and original market-data container start time matches"
+}

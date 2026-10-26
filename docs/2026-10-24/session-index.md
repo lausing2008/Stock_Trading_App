@@ -1,4 +1,4 @@
-# Complete session work index — October 24–25, 2026
+# Complete session work index — October 24–26, 2026
 
 This is the single entry point for **all work covered in this conversation**, including the October 19–23 work carried into it. It supersedes the earlier latest-release-only summary. Dates use America/Los_Angeles; evidence files retain UTC timestamps. `.claude/CLAUDE.md` points here rather than duplicating the reports.
 
@@ -11,6 +11,8 @@ Application release **`ad287b04c823eb325f4946cf4e704bed82dbc287`** is deployed. 
 Latest frontend validation: **985 tests across 83 files**, full TypeScript and whitespace checks passed. Backend is unchanged; its preceding applicable result remains **5,912 passed / 26 skipped**, not a new run. [Latest decision-desk report and evidence](../audits/2026-10-25-options-research-leads.md). The preceding risk/scenario, current-provider refresh, MU selection, alert/RZY and Learning/layout releases retain their own evidence and limitations below.
 
 ## Delivered strategy improvements in this session
+
+October 26 continuation: [Four-strategy preset shortlists and default-pick clarification](../audits/2026-10-26-options-four-preset-shortlists.md) is implemented locally and awaiting rollout after today's RZY evidence capture. The initial backend response previously supplied alternatives only for Covered Call; it now constructs bounded reviews for all four strategies from already fetched call/put chains. The UI names the selected strategy and count and distinguishes nearest-strike presets from quote-quality leads. Neither is a validated best-return pick. The RZY release is now deployed, but a mid-session market-data restart would interrupt its capture; the new report records the rollout boundary.
 
 | Work | Recorded status / release | Report and evidence |
 | --- | --- | --- |

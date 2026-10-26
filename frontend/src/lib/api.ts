@@ -2622,7 +2622,7 @@ export type AddStocksResult = {
 
 export type OptionStrategyMatrix = {
   candidate_review?: Partial<Record<'covered_call' | 'long_call' | 'protective_put' | 'cash_secured_put', {
-    method_version: 'covered_call_candidates_v1' | 'covered_call_candidates_v2' | 'single_leg_candidates_v1'; strategy_key?: string; search_date?: string; anchor: number; anchor_basis?: 'reference_spot' | 'strategy_reference'; listing_verification?: 'unverified_archive' | 'provider_current_contracts'; snapshot_id?: string; expiry: string | null;
+    method_version: 'covered_call_candidates_v1' | 'covered_call_candidates_v2' | 'single_leg_candidates_preset_v1' | 'single_leg_candidates_v1'; strategy_key?: string; search_date?: string; anchor: number; anchor_basis?: 'reference_spot' | 'strategy_reference'; listing_verification?: 'unverified_archive' | 'provider_current_contracts'; snapshot_id?: string; expiry: string | null;
     holding_days?: number; buffer_days?: number; eligible_expiry_count?: number; holding_eligible_expiry_count?: number;
     search_preferences?: { min_dte: number | null; max_dte: number | null; min_abs_delta: number | null; max_abs_delta: number | null };
     searched_expiries?: string[]; completed_expiries?: string[]; failed_expiries?: string[];

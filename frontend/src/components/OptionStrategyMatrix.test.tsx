@@ -60,18 +60,42 @@ it('requires renewed assignment acceptance after explicitly choosing a compariso
 });
 
 it('highlights a screened research lead but leaves the original and WAIT in place until compared', () => {
-  render(panel());
+  const m = matrix();
+  m.singles.covered_call = { ...alternative, legs: [{ ...alternative.legs[0], price_source: 'last_trade' }] };
+  render(panel(m));
   const lead = screen.getByRole('region', { name: 'Strategy research leads' });
   expect(lead.textContent).toContain('Leading screen fit');
   expect(lead.textContent).toContain('$110.00 call');
   expect((screen.getByLabelText('Covered-call contract to compare') as HTMLSelectElement).value).toBe('original');
   expect(screen.getByText('Wait / no strategy preference yet')).toBeTruthy();
+  expect(screen.getByText('Preset nearest-strike reference · not an automatic best pick')).toBeTruthy();
   fireEvent.click(within(lead).getByRole('button', { name: 'Compare leading Covered Call contract' }));
   expect((screen.getByLabelText('Covered-call contract to compare') as HTMLSelectElement).value).toBe('0');
   expect(screen.getByText('Wait / no strategy preference yet')).toBeTruthy();
   expect(within(lead).getByText('In comparison')).toBeTruthy();
+  expect(screen.getByText('Explicit comparison choice · not an automatic best pick')).toBeTruthy();
   fireEvent.click(screen.getByText(/Compare candidate costs, risk and liquidity/));
   expect(within(screen.getByRole('table', { name: 'Returned option candidate comparison' })).getByText('Research lead').closest('tr')?.textContent).toContain('Alternative 1');
+});
+
+it('switches the comparison between four separate preset shortlists', () => {
+  const m = matrix();
+  const review = m.candidate_review!.covered_call!;
+  m.candidate_review = {
+    ...m.candidate_review,
+    long_call: { ...review, method_version: 'single_leg_candidates_preset_v1', strategy_key: 'long_call', alternatives: [{ ...alternative,
+      net: 'debit', legs: [{ ...alternative.legs[0], action: 'buy', option_symbol: 'LONG-CALL' }] }] },
+    protective_put: { ...review, method_version: 'single_leg_candidates_preset_v1', strategy_key: 'protective_put', alternatives: [] },
+    cash_secured_put: { ...review, method_version: 'single_leg_candidates_preset_v1', strategy_key: 'cash_secured_put', alternatives: [] },
+  };
+  render(panel(m));
+  const select = screen.getByLabelText('Strategy for contract comparison') as HTMLSelectElement;
+  expect(within(select).getByRole('option', { name: 'Long Call — 1 returned alternatives' })).toBeTruthy();
+  fireEvent.change(select, { target: { value: 'long_call' } });
+  expect(screen.getByRole('region', { name: 'Long Call contract selection' }).textContent).toContain('Showing Long Call candidates only');
+  expect(screen.getByText(/Compare candidate costs, risk and liquidity — Long Call/)).toBeTruthy();
+  fireEvent.change(select, { target: { value: 'protective_put' } });
+  expect(screen.getByRole('region', { name: 'Protective Put contract selection' }).textContent).toContain('No other contract passed this screen');
 });
 
 it('holds research leads after preference edits until the server acknowledges the search', () => {

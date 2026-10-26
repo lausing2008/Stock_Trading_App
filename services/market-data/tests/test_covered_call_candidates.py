@@ -86,6 +86,27 @@ def test_empty_chain_has_an_explicit_no_rows_reason():
     assert review['evaluated_count'] == 0 and review['alternatives'] == []
 
 
+def test_initial_matrix_exposes_bounded_alternatives_for_all_four_strategies():
+    result = build_strategy_matrix(current_price=100, stop_loss=95, take_profit=120,
+        signal='BUY', call_rows=[row(k) for k in (100, 105, 110, 115)], call_expiry=EXP,
+        put_rows=[row(k, delta=-.3) for k in (90, 95, 100, 105)], put_expiry=EXP,
+        today=TODAY, shares=100)
+    reviews = result['candidate_review']
+    assert set(reviews) == {'long_call', 'protective_put', 'covered_call', 'cash_secured_put'}
+    assert reviews['covered_call']['method_version'] == 'covered_call_candidates_v1'
+    for key, right, action in (('long_call', 'call', 'buy'), ('covered_call', 'call', 'sell'),
+                               ('protective_put', 'put', 'buy'), ('cash_secured_put', 'put', 'sell')):
+        review = reviews[key]
+        assert review['method_version'] in ('covered_call_candidates_v1', 'single_leg_candidates_preset_v1')
+        assert review['scope'].startswith('all_rows_of_selected_')
+        assert review['evaluated_count'] == 4
+        assert review['alternatives']
+        assert len(review['alternatives']) <= 3
+        assert all(s['legs'][0]['right'] == right and s['legs'][0]['action'] == action for s in review['alternatives'])
+        assert result['singles'][key]['legs'][0]['strike'] == (100 if right == 'call' else 95)
+    assert result['trade_eligibility']['status'] == 'research_only'
+
+
 @pytest.mark.parametrize('holding_days,mismatched_search,preferences', [(None, False, {}), (14, False, {}), (14, True, {}), (14, False, {'min_dte': 35, 'max_dte': 35, 'min_abs_delta': .2, 'max_abs_delta': .4}), (14, False, {'min_dte': 40, 'max_dte': 30})])
 def test_real_route_keeps_a_response_visible_when_only_alternatives_can_be_built(monkeypatch, holding_days, mismatched_search, preferences):
     """Execute real composition and handler source; stub only DB/provider dependencies."""
@@ -131,8 +152,8 @@ def test_real_route_keeps_a_response_visible_when_only_alternatives_can_be_built
     reviews = result['strategy_matrix']['candidate_review']
     review = reviews['covered_call']
     assert len(reads) == (2 if holding_days is None else 3)
+    assert set(reviews) == {'covered_call', 'long_call', 'protective_put', 'cash_secured_put'}
     if holding_days is not None:
-        assert set(reviews) == {'covered_call', 'long_call', 'protective_put', 'cash_secured_put'}
         assert all(r['search_preferences']['min_dte'] == preferences.get('min_dte') for r in reviews.values())
         assert all(r['failed_expiries'] == ([EXP] if mismatched_search else []) for r in reviews.values())
     assert result['strategy_matrix']['singles'] == {}
