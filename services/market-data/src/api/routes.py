@@ -487,39 +487,55 @@ _INDEX_INFO: dict[str, tuple[int, str]] = {
     "^HSI":    (0,  "Hang Seng Index — the largest companies listed in Hong Kong."),
 }
 
-# range -> (yfinance period, interval, cache seconds)
+# range -> (yfinance period, interval, cache seconds). The period is deliberately LONGER than
+# the range: the extra bars are SMA/EMA warm-up (SMA 200 needs 200 bars before the first one
+# drawn). Same single Yahoo call either way; `_index_visible_start` marks where the range begins.
 _INDEX_RANGES: dict[str, tuple[str, str, int]] = {
-    "1d":  ("5d",  "5m",  60),   # last session only; 5d so a weekend still has a session to show
-    "5d":  ("5d",  "15m", 300),
-    "1mo": ("1mo", "1h",  900),
-    "6mo": ("6mo", "1d",  3600),
-    "1y":  ("1y",  "1d",  3600),
-    "5y":  ("5y",  "1wk", 3600),
+    "1d":  ("7d",  "5m",  60),
+    "5d":  ("1mo", "15m", 300),
+    "1mo": ("6mo", "1h",  900),
+    "6mo": ("2y",  "1d",  3600),
+    "1y":  ("2y",  "1d",  3600),
+    "5y":  ("10y", "1wk", 3600),
 }
+_INDEX_RANGE_MONTHS = {"1mo": 1, "6mo": 6, "1y": 12, "5y": 60}
+_INDEX_WARMUP_BARS = 400  # bars kept before the visible range: enough for SMA/EMA 200
 
 
-def _last_session_start(stamps: list, ticker: str) -> int:
-    """Index of the first bar of the latest session, anchored on the market's own calendar.
+def _last_session_start(stamps: list, ticker: str, sessions: int = 1) -> int:
+    """Index of the first bar of the latest `sessions` sessions, anchored on the market's own calendar.
 
     Gap-based detection does not work: Yahoo's 5m futures data has holes mid-session (ES=F
     had none from 02:25 to 04:05 UTC on 2026-10-27), which a "last 45-min gap" rule read as a
     session break and cut 1D to 70 minutes. So:
     - CME futures (and COMEX gold): the session opens 18:00 ET the previous evening, so the
       trade date is the ET date of the bar shifted forward 6 h.
-    - BTC-USD trades 24/7: the last 24 h.
+    - BTC-USD trades 24/7: the last 24 h per session.
     - Cash indexes: the exchange-local date of the last bar (yfinance indexes in exchange tz).
     """
     if not stamps:
         return 0
     if ticker == "BTC-USD":
-        floor = stamps[-1] - pd.Timedelta(hours=24)
+        floor = stamps[-1] - pd.Timedelta(hours=24 * sessions)
         return next(i for i, ts in enumerate(stamps) if ts > floor)
     if ticker.endswith("=F"):
         key = lambda ts: (ts.tz_convert("America/New_York") + pd.Timedelta(hours=6)).date()
     else:
         key = lambda ts: ts.date()
-    last = key(stamps[-1])
-    return next(i for i, ts in enumerate(stamps) if key(ts) == last)
+    wanted = sorted({key(ts) for ts in stamps})[-sessions:]
+    return next(i for i, ts in enumerate(stamps) if key(ts) >= wanted[0])
+
+
+def _index_visible_start(stamps: list, ticker: str, range: str) -> int:
+    """Index of the first bar inside the requested range; earlier bars are indicator warm-up."""
+    if not stamps:
+        return 0
+    if range == "1d":
+        return _last_session_start(stamps, ticker, 1)
+    if range == "5d":
+        return _last_session_start(stamps, ticker, 5)
+    cutoff = stamps[-1] - pd.DateOffset(months=_INDEX_RANGE_MONTHS[range])
+    return next(i for i, ts in enumerate(stamps) if ts > cutoff)
 
 
 @router.get("/market_index/{ticker}")
@@ -537,7 +553,7 @@ def market_index_detail(ticker: str, range: str = Query("1d")):
         raise HTTPException(status_code=422, detail=f"range must be one of {list(_INDEX_RANGES)}")
     period, interval, ttl = _INDEX_RANGES[range]
 
-    cache_key = f"stockai:market_index:{ticker}:{range}"
+    cache_key = f"stockai:market_index:v2:{ticker}:{range}"
     try:
         cached = _get_redis().get(cache_key)
         if cached:
@@ -558,11 +574,16 @@ def market_index_detail(ticker: str, range: str = Query("1d")):
         pass
 
     bars: list[dict] = []
+    visible_from = 0
     try:
         hist = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
         hist = hist.dropna(subset=["Close"])
-        if range == "1d" and not hist.empty:
-            hist = hist.iloc[_last_session_start(list(hist.index), ticker):]
+        # the chart library throws on a repeated timestamp (Yahoo can repeat the current week)
+        hist = hist[~hist.index.duplicated(keep="last")]
+        start = _index_visible_start(list(hist.index), ticker, range)
+        first = max(0, start - _INDEX_WARMUP_BARS)
+        hist = hist.iloc[first:]
+        visible_from = start - first
         for ts, r in hist.iterrows():
             bars.append({
                 "t": int(ts.timestamp()),
@@ -576,6 +597,8 @@ def market_index_detail(ticker: str, range: str = Query("1d")):
     result = {
         **quote, "delay_minutes": delay, "description": description,
         "range": range, "interval": interval, "bars": bars,
+        # bars[:visible_from] are SMA/EMA warm-up, not part of the requested range
+        "visible_from": visible_from,
     }
     if bars:  # never cache an empty fetch — a Yahoo hiccup would stick for up to an hour
         try:

@@ -1542,6 +1542,8 @@ export type MarketIndexDetail = MarketIndex & {
   delay_minutes: number | null; description: string;
   range: MarketIndexRange; interval: string;
   bars: { t: number; o: number; h: number; l: number; c: number }[];
+  /** bars[:visible_from] are SMA/EMA warm-up before the requested range. */
+  visible_from?: number;
 };
 export type WatchlistItem = { symbol: string; name: string; name_zh?: string | null; market: string; exchange: string; sector?: string; currency: string; added_at: string; note?: string | null; delisted?: boolean };
 /** One reported value, together with WHY it is missing when it is. `state` is never absent:

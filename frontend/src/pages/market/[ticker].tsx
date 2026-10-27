@@ -13,6 +13,20 @@ import Link from 'next/link';
 import useSWR from 'swr';
 import type { IChartApi, UTCTimestamp } from 'lightweight-charts';
 import { api, type MarketIndexDetail, type MarketIndexRange } from '@/lib/api';
+import { DEFAULT_OVERLAYS, OVERLAYS, overlayLines, type OverlayKey } from '@/lib/marketIndexOverlays';
+
+const OVERLAY_STORAGE_KEY = 'stockai:market-index:overlays';
+
+function loadOverlays(): OverlayKey[] {
+  try {
+    const raw = window.localStorage.getItem(OVERLAY_STORAGE_KEY);
+    if (raw) {
+      const keys = JSON.parse(raw);
+      if (Array.isArray(keys)) return keys.filter(k => OVERLAYS.some(o => o.key === k));
+    }
+  } catch { /* storage unavailable — fall back to defaults */ }
+  return DEFAULT_OVERLAYS;
+}
 
 const RANGES: { key: MarketIndexRange; label: string }[] = [
   { key: '1d', label: '1D' }, { key: '5d', label: '5D' }, { key: '1mo', label: '1M' },
@@ -31,7 +45,7 @@ function fmt(v: number | null | undefined, isYield: boolean) {
   return isYield ? `${v.toFixed(3)}%` : v.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
-function Chart({ data, isYield }: { data: MarketIndexDetail; isYield: boolean }) {
+function Chart({ data, isYield, overlays }: { data: MarketIndexDetail; isYield: boolean; overlays: OverlayKey[] }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!ref.current || data.bars.length === 0) return;
@@ -50,22 +64,30 @@ function Chart({ data, isYield }: { data: MarketIndexDetail; isYield: boolean })
         timeScale: { borderColor: '#1e293b', timeVisible: intraday, secondsVisible: false },
         localization: isYield ? { priceFormatter: (p: number) => `${p.toFixed(3)}%` } : undefined,
       });
-      const first = data.bars[0].c;
-      const last = data.bars[data.bars.length - 1].c;
-      const up = last >= first;
+      // bars before visible_from are SMA/EMA warm-up: used for the averages, never drawn
+      const from = Math.min(data.visible_from ?? 0, data.bars.length - 1);
+      const visible = data.bars.slice(from);
+      const up = visible[visible.length - 1].c >= visible[0].c;
       const series = chart.addAreaSeries({
         lineColor: up ? '#22c55e' : '#ef4444',
         topColor: up ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)',
         bottomColor: 'rgba(0,0,0,0)',
         lineWidth: 2,
       });
-      series.setData(data.bars.map(b => ({ time: b.t as UTCTimestamp, value: b.c })));
+      series.setData(visible.map(b => ({ time: b.t as UTCTimestamp, value: b.c })));
+      for (const line of overlayLines(data.bars, from, overlays)) {
+        if (line.insufficient) continue;
+        chart.addLineSeries({
+          color: line.color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(line.points.map(p => ({ time: p.t as UTCTimestamp, value: p.value })));
+      }
       chart.timeScale().fitContent();
       resize();
       window.addEventListener('resize', resize);
     });
     return () => { cancelled = true; window.removeEventListener('resize', resize); chart?.remove(); };
-  }, [data, isYield]);
+  }, [data, isYield, overlays]);
   if (data.bars.length === 0) {
     return <div style={{ height: 380, display: 'grid', placeItems: 'center', color: '#64748b', fontSize: 13 }}>
       No price history returned by Yahoo for this range right now.
@@ -78,11 +100,19 @@ export default function MarketIndexPage() {
   const router = useRouter();
   const ticker = typeof router.query.ticker === 'string' ? router.query.ticker : '';
   const [range, setRange] = useState<MarketIndexRange>('1d');
+  const [overlays, setOverlays] = useState<OverlayKey[]>(DEFAULT_OVERLAYS);
+  useEffect(() => { setOverlays(loadOverlays()); }, []);
+  const toggleOverlay = (key: OverlayKey) => setOverlays(prev => {
+    const next = prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key];
+    try { window.localStorage.setItem(OVERLAY_STORAGE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+    return next;
+  });
   const { data, error } = useSWR<MarketIndexDetail>(
     ticker ? ['market-index', ticker, range] : null,
     () => api.marketIndexDetail(ticker, range),
     { refreshInterval: range === '1d' ? 60_000 : 0 },
   );
+  const lines = data ? overlayLines(data.bars, data.visible_from ?? 0, overlays) : [];
 
   const isYield = ticker === '^TNX';
   const isVix = ticker === '^VIX';
@@ -133,7 +163,32 @@ export default function MarketIndexPage() {
                 </button>
               ))}
             </div>
-            <Chart data={data} isYield={isYield} />
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+              {OVERLAYS.map(o => {
+                const on = overlays.includes(o.key);
+                return (
+                  <button key={o.key} onClick={() => toggleOverlay(o.key)} aria-pressed={on}
+                    style={{ fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 4, cursor: 'pointer',
+                             border: `1px solid ${on ? o.color : '#1e293b'}`,
+                             background: on ? `${o.color}22` : 'transparent',
+                             color: on ? o.color : '#64748b' }}>
+                    {o.label}
+                  </button>
+                );
+              })}
+            </div>
+            <Chart data={data} isYield={isYield} overlays={overlays} />
+            {lines.length > 0 && (
+              <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 8, fontSize: 11 }}>
+                {lines.map(l => (
+                  <span key={l.key} style={{ color: l.insufficient ? '#64748b' : l.color }}>
+                    {l.label}: {l.insufficient
+                      ? 'not enough bars in this range'
+                      : fmt(l.points[l.points.length - 1].value, isYield)}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>

@@ -59,6 +59,24 @@ Unusual Whales does not supply index or futures quotes.
   showed only the last ~70 minutes. Fixed the same night (tests include that exact shape).
 - fast_info returns **0** for fields it lacks (VIX day high/low); those render as "—".
 
+## SMA / EMA overlays (added 2026-10-27)
+
+The detail-page chart has toggles for **SMA 5 / 10 / 20 / 50 / 200 and EMA 20 / 50 / 200** — the
+same periods and colours as the stock chart. Default on: SMA 20, 50, 200 (also the stock
+chart's default). The choice is remembered per browser (localStorage) across indexes and
+ranges. A legend under the chart shows each line's latest value.
+
+**Warm-up:** each range fetches a longer window in the same single Yahoo call (1D→7d of 5m,
+5D→1mo of 15m, 1M→6mo of 1h, 6M/1Y→2y daily, 5Y→10y weekly) and returns up to 400 bars before
+the range, marked by `visible_from`. Averages are computed over all bars and only the visible
+part is drawn, so SMA 200 starts at the left edge of a 6M chart instead of being absent. An
+average that still has no value in the range (e.g. too little history) is listed as "not
+enough bars in this range" rather than drawn partially without comment. Checked live: all
+13 tickers × 6 ranges return strictly increasing timestamps; repeats are dropped anyway,
+because the chart library throws on one.
+
+5D is the last five **sessions** (futures by trade date), not five calendar days.
+
 ## Code
 
 - `services/market-data/src/api/routes.py` — `_INDICES` (name, ticker, market, group),
@@ -68,7 +86,8 @@ Unusual Whales does not supply index or futures quotes.
 - `frontend/src/pages/market/[ticker].tsx` — detail page (lightweight-charts area series,
   loaded client-side only).
 - `frontend/src/lib/api.ts` — `MarketIndex.group/change`, `MarketIndexDetail`, `marketIndexDetail`.
-- Tests: `services/market-data/tests/test_market_overview_indices.py` (11).
+- `frontend/src/lib/marketIndexOverlays.ts` — overlay periods/colours and `overlayLines()` (+ vitest).
+- Tests: `services/market-data/tests/test_market_overview_indices.py` (15), `frontend/src/lib/marketIndexOverlays.test.ts` (3).
 
 ## Load
 

@@ -35,6 +35,18 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: "MARKET-INDEX-SMA-EMA-OVERLAYS",
+    tier: 474,
+    severity: "feature",
+    defaultStatus: "done",
+    title: "SMA and EMA overlays on the market index detail charts",
+    file: "docs/features/2026-10-26-market-indexes-futures-and-detail-pages.md",
+    effort: "S",
+    impact: "Lets the major indexes, futures and macro gauges be read against their 20/50/200 averages, like the stock chart.",
+    what: "The /market/[ticker] chart showed price only. The endpoint returned exactly the requested range, so even with an overlay a 6M daily chart (~127 bars) could never draw SMA 200.",
+    fix: "Add SMA 5/10/20/50/200 and EMA 20/50/200 toggles with the stock chart's colours (default SMA 20/50/200, remembered per browser) and a latest-value legend. Each range now fetches a longer window in the same single Yahoo call and returns up to 400 warm-up bars marked by visible_from; averages are computed over all bars and drawn only over the range. An average with no value in the range is labelled, not silently missing. 5D is now five sessions; repeated timestamps are dropped.",
+  },
+  {
     id: "MARKET-INDEXES-FUTURES-DETAIL",
     tier: 474,
     severity: "feature",

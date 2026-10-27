@@ -89,7 +89,8 @@ def test_one_day_keeps_only_the_last_session():
     with patch.object(routes.yf, "Ticker", return_value=_ticker_with_history(df)), \
          patch.object(routes, "_get_redis", return_value=redis):
         out = market_index_detail("ES=F", range="1d")
-    assert len(out["bars"]) == 2
+    # earlier session is returned as indicator warm-up, marked out of the visible range
+    assert len(out["bars"]) == 4 and out["visible_from"] == 2
     assert out["change_pct"] == 0.1 and out["day_high"] == 7730.0 and out["delay_minutes"] == 10
     assert getattr(redis, "set_called", False)
 
@@ -137,3 +138,25 @@ def test_bitcoin_is_the_last_24h():
     start = _last_session_start(stamps, "BTC-USD")
     assert stamps[-1] - stamps[start] < pd.Timedelta(hours=24)
     assert stamps[-1] - stamps[start] >= pd.Timedelta(hours=23, minutes=55)
+
+
+def test_warmup_is_capped_and_visible_range_is_calendar_based():
+    from src.api.routes import _INDEX_WARMUP_BARS
+    stamps = pd.date_range("2016-10-26", "2026-10-26", freq="B", tz="UTC")
+    df = pd.DataFrame({"Open": 1.0, "High": 2.0, "Low": 0.5, "Close": 1.5}, index=stamps)
+    with patch.object(routes.yf, "Ticker", return_value=_ticker_with_history(df)), \
+         patch.object(routes, "_get_redis", return_value=_NoRedis()):
+        out = market_index_detail("^GSPC", range="1y")
+    assert out["visible_from"] == _INDEX_WARMUP_BARS
+    first_visible = pd.Timestamp(out["bars"][out["visible_from"]]["t"], unit="s", tz="UTC")
+    assert pd.Timestamp("2025-10-26", tz="UTC") < first_visible <= pd.Timestamp("2025-10-28", tz="UTC")
+
+
+def test_five_day_counts_futures_trade_dates():
+    from src.api.routes import _index_visible_start
+    # 7 futures sessions, each 22:00 UTC -> 21:00 UTC next day, 1h break between
+    stamps = []
+    for d in pd.date_range("2026-10-13", periods=7, freq="D", tz="UTC"):
+        stamps += list(pd.date_range(d + pd.Timedelta(hours=22), d + pd.Timedelta(hours=45), freq="1h"))
+    start = _index_visible_start(stamps, "ES=F", "5d")
+    assert stamps[start] == pd.Timestamp("2026-10-15 22:00", tz="UTC")
