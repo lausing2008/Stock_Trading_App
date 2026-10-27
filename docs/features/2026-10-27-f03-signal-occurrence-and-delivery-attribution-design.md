@@ -311,9 +311,7 @@ report's `table_bytes` gives the real figure after the first sessions.
 **Deployment, when approved.** This touches `shared/`, so all 12 backend images are rebuilt
 together, serialised under the host lock (`scripts/deploy.sh`). `create_all` creates the three
 tables under the startup DDL lock. Their foreign keys to `signals`/`stocks` take a brief lock,
-handled by the existing lock_timeout/retry contract. The held F04 trainer fix is on `prod` (`28f232bd`). Before deploying ml-prediction, the F04 change must be
-excluded (revert it, or deploy from a commit that lacks it); a shared-schema rebuild does not
-justify shipping it (§11).
+handled by the existing lock_timeout/retry contract. The held F04 trainer fix was reverted from `prod` and preserved on branch `f04-threshold-report-purge`, so a 12-image rebuild from `prod` ships the pre-F04 trainer.
 
 **Observation window and the next slice.** Run for ≥ 5 sessions per market, then read the report.
 The sender slice (durable send intent committed before the network call, bounded lease/fencing

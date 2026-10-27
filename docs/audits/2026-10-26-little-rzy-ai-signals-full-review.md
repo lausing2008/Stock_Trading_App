@@ -70,7 +70,7 @@ Real-time provisional daily estimates may be a valid separate product, but they 
 
 ### F03 — P1, confirmed attribution weakness: delivered outcomes attach to a mutable daily row
 
-**Status (2026-10-27): observation phase BUILT, not deployed; sender/receipt slice not started.** Occurrences per venue session, `opened` and `completed_close` snapshots and the first-wins completed-close record (F02's remainder) are written beside the existing columns. Nothing reads them except a churn report. Receipts and delivered outcomes wait for ≥ 5 observed sessions. See [design §12](../features/2026-10-27-f03-signal-occurrence-and-delivery-attribution-design.md#12-observation-phase--built-2026-10-27-not-deployed). Deploying needs all 12 images, and must exclude the held F04 trainer change.
+**Status (2026-10-27): observation phase BUILT, not deployed; sender/receipt slice not started.** Occurrences per venue session, `opened` and `completed_close` snapshots and the first-wins completed-close record (F02's remainder) are written beside the existing columns. Nothing reads them except a churn report. Receipts and delivered outcomes wait for ≥ 5 observed sessions. See [design §12](../features/2026-10-27-f03-signal-occurrence-and-delivery-attribution-design.md#12-observation-phase--built-2026-10-27-not-deployed). Deploying needs all 12 images; the held F04 trainer change is reverted from `prod`.
 
 **Path:** shared `Signal` first-fire fields; `signals_shared.py:_stored_signal_for_style`, `_build_confidence_calibration`; scheduler `check_signal_alerts`; `outcomes.py:evaluate_signal_outcomes`.
 
@@ -80,7 +80,7 @@ The live daily Signal row changes repeatedly. Outcomes score its **first** BUY/S
 
 ### F04 — P1, confirmed conditional validation defect: no label purge at the final ML split
 
-**Status (2026-10-27): fix committed (`28f232bd`), DO NOT DEPLOY ml-prediction yet — impact measured, decision needed.** `_threshold_report_bounds()` puts a `horizon`-row gap between the threshold-selection and reporting halves; a slice that cannot afford it falls to the suppressed in-sample fallback. Regression: `services/ml-prediction/tests/test_f04_threshold_report_purge.py` (8 of 9 fail without the gap).
+**Status (2026-10-27): HELD — preserved on branch `f04-threshold-report-purge`, reverted from `prod`** so `prod` is the release intended for deployment. It stays held until evaluation-version and incumbent-retention behaviour are resolved; enlarging the test slice alone does not fix those. Original commit `28f232bd`: `_threshold_report_bounds()` puts a `horizon`-row gap between the threshold-selection and reporting halves; a slice that cannot afford it falls to the suppressed in-sample fallback. Regression: `services/ml-prediction/tests/test_f04_threshold_report_purge.py` (8 of 9 fail without the gap).
 
 **Measured impact (read-only, all 1,435 production artifacts, [f04-impact.json](evidence/2026-10-26-rzy-ai-intraday-review/f04-impact.json)).** My earlier estimate ("mainly LONG below ~600 rows") was wrong: after dead-zone filtering most artifacts split far fewer rows. Of 932 `holdout` artifacts, **590 (63%) could no longer reach the 10-row reporting floor** under the purge: SWING 196, GROWTH 206, LONG 144, SHORT 44. **38 of the 109 currently unsuppressed artifacts are among them** (SWING 15, GROWTH 14, SHORT 5, LONG 4). 375 artifacts predate the mode field. Row gate only; class support of the new reporting rows is unknown without retraining.
 
