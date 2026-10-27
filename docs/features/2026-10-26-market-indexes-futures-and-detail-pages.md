@@ -52,9 +52,11 @@ Unusual Whales does not supply index or futures quotes.
   rankings, alerts or backtests. If that is wanted later, it is a separate, larger change.
 - **The endpoint is an allowlist** of the dashboard tickers (404 otherwise) — not a general
   Yahoo proxy. An empty Yahoo response is never cached.
-- **1D = the latest session**, defined as the bars after the last gap of 45+ minutes and within
-  24 h of the last bar. A UTC-date cut would split a futures session (opens 18:00 ET the
-  previous evening); the 24 h cap handles BTC, which never pauses.
+- **1D = the latest session, anchored on the market's calendar**, never on gaps in the data:
+  futures/gold from the 18:00 ET Globex open, BTC the last 24 h, cash indexes the
+  exchange-local date of the last bar. The first deploy (`1e65e340`) used "bars after the last
+  45-min gap"; live, Yahoo's ES=F 5m data had a hole from 02:25 to 04:05 UTC mid-session, so 1D
+  showed only the last ~70 minutes. Fixed the same night (tests include that exact shape).
 - fast_info returns **0** for fields it lacks (VIX day high/low); those render as "—".
 
 ## Code

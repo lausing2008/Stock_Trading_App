@@ -498,18 +498,28 @@ _INDEX_RANGES: dict[str, tuple[str, str, int]] = {
 }
 
 
-def _last_session_start(stamps: list) -> int:
-    """Index of the first bar of the latest session: after the last gap of 45+ minutes, and
-    no more than 24h before the last bar. A UTC-date cut would split a futures session (it
-    opens 18:00 ET the previous evening); the 24h bound covers BTC, which never pauses."""
+def _last_session_start(stamps: list, ticker: str) -> int:
+    """Index of the first bar of the latest session, anchored on the market's own calendar.
+
+    Gap-based detection does not work: Yahoo's 5m futures data has holes mid-session (ES=F
+    had none from 02:25 to 04:05 UTC on 2026-10-27), which a "last 45-min gap" rule read as a
+    session break and cut 1D to 70 minutes. So:
+    - CME futures (and COMEX gold): the session opens 18:00 ET the previous evening, so the
+      trade date is the ET date of the bar shifted forward 6 h.
+    - BTC-USD trades 24/7: the last 24 h.
+    - Cash indexes: the exchange-local date of the last bar (yfinance indexes in exchange tz).
+    """
     if not stamps:
         return 0
-    floor = stamps[-1] - pd.Timedelta(hours=24)
-    start = len(stamps) - 1
-    while start > 0 and stamps[start - 1] > floor \
-            and stamps[start] - stamps[start - 1] < pd.Timedelta(minutes=45):
-        start -= 1
-    return start
+    if ticker == "BTC-USD":
+        floor = stamps[-1] - pd.Timedelta(hours=24)
+        return next(i for i, ts in enumerate(stamps) if ts > floor)
+    if ticker.endswith("=F"):
+        key = lambda ts: (ts.tz_convert("America/New_York") + pd.Timedelta(hours=6)).date()
+    else:
+        key = lambda ts: ts.date()
+    last = key(stamps[-1])
+    return next(i for i, ts in enumerate(stamps) if key(ts) == last)
 
 
 @router.get("/market_index/{ticker}")
@@ -552,7 +562,7 @@ def market_index_detail(ticker: str, range: str = Query("1d")):
         hist = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
         hist = hist.dropna(subset=["Close"])
         if range == "1d" and not hist.empty:
-            hist = hist.iloc[_last_session_start(list(hist.index)):]
+            hist = hist.iloc[_last_session_start(list(hist.index), ticker):]
         for ts, r in hist.iterrows():
             bars.append({
                 "t": int(ts.timestamp()),

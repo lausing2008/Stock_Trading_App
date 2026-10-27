@@ -110,14 +110,30 @@ def test_every_dashboard_ticker_has_detail_info():
 def test_futures_session_spanning_midnight_utc_stays_whole():
     from src.api.routes import _last_session_start
     prev = list(pd.date_range("2026-10-26 13:00", "2026-10-26 21:00", freq="5min", tz="UTC"))
-    # one-hour maintenance break, then the next session runs across midnight UTC
+    # one-hour maintenance break, then the next session (opens 18:00 ET) runs across midnight UTC
     cur = list(pd.date_range("2026-10-26 22:00", "2026-10-27 03:00", freq="5min", tz="UTC"))
-    assert _last_session_start(prev + cur) == len(prev)
+    assert _last_session_start(prev + cur, "ES=F") == len(prev)
 
 
-def test_continuous_trading_is_capped_at_24h():
+def test_futures_data_hole_mid_session_does_not_cut_the_session():
+    # Real 2026-10-27 shape: Yahoo had no ES=F bars from 02:25 to 04:05 UTC.
+    from src.api.routes import _last_session_start
+    prev = list(pd.date_range("2026-10-26 13:00", "2026-10-26 20:55", freq="5min", tz="UTC"))
+    a = list(pd.date_range("2026-10-26 22:00", "2026-10-27 02:25", freq="5min", tz="UTC"))
+    b = list(pd.date_range("2026-10-27 04:05", "2026-10-27 05:10", freq="5min", tz="UTC"))
+    assert _last_session_start(prev + a + b, "ES=F") == len(prev)
+
+
+def test_cash_index_keeps_the_last_exchange_date():
+    from src.api.routes import _last_session_start
+    fri = list(pd.date_range("2026-10-23 09:30", "2026-10-23 16:00", freq="5min", tz="America/New_York"))
+    mon = list(pd.date_range("2026-10-26 09:30", "2026-10-26 16:00", freq="5min", tz="America/New_York"))
+    assert _last_session_start(fri + mon, "^GSPC") == len(fri)
+
+
+def test_bitcoin_is_the_last_24h():
     from src.api.routes import _last_session_start
     stamps = list(pd.date_range("2026-10-22", "2026-10-26 12:00", freq="5min", tz="UTC"))
-    start = _last_session_start(stamps)
-    assert stamps[-1] - stamps[start] <= pd.Timedelta(hours=24)
-    assert stamps[-1] - stamps[start] >= pd.Timedelta(hours=23)
+    start = _last_session_start(stamps, "BTC-USD")
+    assert stamps[-1] - stamps[start] < pd.Timedelta(hours=24)
+    assert stamps[-1] - stamps[start] >= pd.Timedelta(hours=23, minutes=55)
