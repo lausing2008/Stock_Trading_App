@@ -1,0 +1,22 @@
+{
+  "captured_at": "2026-10-27T05:55:05.835641+00:00",
+  "scheduler_function_sha256": {
+    "check_signal_alerts": "d15a04ba3ee2ccdc3a0b26925ce933c26e121ea63112a018dcf8d21926a53b85",
+    "check_little_rzy_workflows": "a989ac04457261b0f669e8afdb3ad0d2490828b0898098d59bc2c6f6bcb4d704",
+    "drain_little_rzy_outbox": "9c46d36a4b9a248a1b013092ca00e0660c92f96e19b9d8cc253844ef8c088bb7"
+  },
+  "forward_states": [
+    {
+      "observed_in": "forward_observation",
+      "state": "CLOSED",
+      "cancelled": "true",
+      "n": 8
+    }
+  ],
+  "post_close_record": "{\"job\": \"us_post_close\", \"status\": \"ok\", \"last_run\": \"2026-10-26T20:34:35.030342+00:00\", \"duration_s\": 275.0, \"error\": null}",
+  "local_function_matches": {
+    "check_signal_alerts": true,
+    "check_little_rzy_workflows": true,
+    "drain_little_rzy_outbox": true
+  }
+}

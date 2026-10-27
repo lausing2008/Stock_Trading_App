@@ -1,0 +1,14 @@
+{
+  "method": "Actual threshold/report split assignments executed on 40 consecutive-session synthetic retained examples; five-session labels. Does not run model training or inspect an artifact.",
+  "source_lines": [
+    1405,
+    1406,
+    1407
+  ],
+  "last_threshold_feature_date": "2026-01-30",
+  "first_reporting_feature_date": "2026-02-02",
+  "last_threshold_label_maturity": "2026-02-06",
+  "purged_rows_between_threshold_and_report": 0,
+  "label_overlaps_reporting_period": true,
+  "scope": "Threshold-selected precision/accuracy can have overlapping label windows despite holdout mode. This witness does not show leakage in every existing artifact or invalidate threshold-independent AUC by itself."
+}

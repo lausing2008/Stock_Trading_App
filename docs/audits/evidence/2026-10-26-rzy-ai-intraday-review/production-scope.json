@@ -1,0 +1,57 @@
+{
+  "captured_at": "2026-10-27T00:30:25.896282+00:00",
+  "source_sha256": {
+    "signal-engine": {
+      "src/api/signals_shared.py": "bd4f1f8484f45b11350aaf7342d3b8bbf1914985fb23fb63973679fdc4b48428",
+      "src/api/calibration_safety.py": "500b59069bdbeb7bfc46f86ea7ac83552eb7b0fea0aa805de4e2e9d13618085a",
+      "src/generators/signals.py": "2fc84efc0382442044fcd7536653d5fd6dfe8b28a67c673d706fdbba3f3c7147"
+    },
+    "ml-prediction": {
+      "src/training/trainer.py": "fc7d772ad803b10eea47118c782a1364e3b56268bbc1d3cbee25ddb2a21d07c8"
+    },
+    "market-data": {
+      "src/services/little_rzy.py": "945b62341d5b1dd2e77e26b6733864dd473475372a16ec89dd28cb26fb5e3810",
+      "src/services/rzy_data.py": "f2d90429474b0cb44a7c3dacb5b7892cb740265419cf56ec9324dc1089b00810",
+      "src/services/rzy_journal.py": "1476b3393ed9b172e6a8209a19b89ed8899b2721b73384b7a44475b511048f3c",
+      "src/services/rzy_workflow.py": "e3bd199ae75ea786e79eef813484a4ad71d0f41cf2810e746fb916cba131d0f6",
+      "src/services/scheduler.py": "1d89ce92475113ab4ad62a109dadc8dbe50c3eac782634d45172ea622efd975c"
+    }
+  },
+  "journal_cohorts": [
+    {
+      "observed_in": "rebuild",
+      "rows": 755
+    },
+    {
+      "observed_in": "forward_observation",
+      "rows": 8
+    },
+    {
+      "observed_in": "bootstrap",
+      "rows": 3
+    },
+    {
+      "observed_in": "imported_or_late",
+      "rows": 1
+    }
+  ],
+  "session_scans": [
+    {
+      "session_day": "2026-10-23",
+      "scans": 76,
+      "mean_seconds": 287.0,
+      "max_seconds": 619.6,
+      "too_late": 1644,
+      "queued": 11
+    },
+    {
+      "session_day": "2026-10-26",
+      "scans": 120,
+      "mean_seconds": 167.3,
+      "max_seconds": 539.7,
+      "too_late": 1247,
+      "queued": 10
+    }
+  ],
+  "oct26_capture_complete": null
+}

@@ -1,0 +1,26 @@
+{
+  "method": "Actual unchanged _build_confidence_calibration function on disposable SQLite tables, real SQLAlchemy Row projection and real eligibility helper. One fixture demonstrates loss before publication sample-floor checks.",
+  "complete_fixture_eligible": true,
+  "result": {
+    "__meta__": {
+      "original_count": 1,
+      "timing_eligible_count": 1,
+      "eligible_count": 0,
+      "excluded_total": 0,
+      "excluded_by_reason": {},
+      "exclusion_reasons": {},
+      "evidence_counts": {
+        "verified": 1,
+        "provisional": 0,
+        "unverified": 0,
+        "unknown": 0
+      },
+      "evidence_requirement": "verified corporate-action basis",
+      "limitations": [
+        "Outcomes from different model and rule generations are pooled: `signal_outcomes` stores no model or policy version, so a rate here spans every generation active in the window.",
+        "A measured hit rate over the underlying is not a calibrated probability, and says nothing about the return after costs."
+      ]
+    }
+  },
+  "confirmed_defect": true
+}

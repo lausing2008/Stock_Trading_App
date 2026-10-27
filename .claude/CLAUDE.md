@@ -382,6 +382,8 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
+- **`docs/audits/2026-10-26-little-rzy-ai-signals-full-review.md`** — RZY/AI correctness review, reproduced measurement defects, production evidence and staged Intraday/performance plan; documentation only.
+- **`docs/features/2026-10-26-intraday-and-signal-performance-plan.md`** — Fifth-horizon contract, causal execution, research baseline, staged implementation and promotion gates; proposed, not implemented.
 - **`docs/audits/2026-10-21-ai-signals-horizon-thresholds-and-intraday-plan.md`** — per-horizon effective thresholds (watchdog > calibrated > default), INTRADAY research baseline. ML-weight calibrator never simulates the runtime ramp→cap→floor, so its "0" runs as .15; 0 verified outcomes [thresholds, calibration]
 
 - **`docs/2026-10-20/little-rzy-audit-addendum.md`** — RZY audit through cfb40e0b: ten findings across two reports; new control borrow/window defects, real-data evaluation caveats and outstanding acceptance. Documentation only.

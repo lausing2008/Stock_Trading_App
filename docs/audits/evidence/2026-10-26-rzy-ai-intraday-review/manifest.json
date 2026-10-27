@@ -1,0 +1,50 @@
+{
+  "reviewed_head": "6113ce5276b016220af7101843edbba5c0dd52af",
+  "scope": "Read-only source/production review; documentation and evidence only. Existing tests run locally; no application edits, calibration, model training, emails, orders or deployment.",
+  "source_sha256": {
+    "shared/db/models.py": "c263142fcc493433b15cbacb9ba07298cb56ee05f0439074b57b8570d75e3420",
+    "shared/common/signal_time.py": "23faff4afdeaaba0151153a7ddf0848b47843728c3d01164772a633ab0604ac1",
+    "services/signal-engine/src/generators/signals.py": "2fc84efc0382442044fcd7536653d5fd6dfe8b28a67c673d706fdbba3f3c7147",
+    "services/signal-engine/src/api/signals_shared.py": "bd4f1f8484f45b11350aaf7342d3b8bbf1914985fb23fb63973679fdc4b48428",
+    "services/signal-engine/src/api/calibration.py": "807a12c703f733bb4191307109fc65e7ab2a7a8708415f3f60c84756bd4a0f15",
+    "services/signal-engine/src/api/calibration_safety.py": "500b59069bdbeb7bfc46f86ea7ac83552eb7b0fea0aa805de4e2e9d13618085a",
+    "services/signal-engine/src/api/signal_outcome_eligibility.py": "79fc83174891510ee422133f2bb41e7144de9f04b6380378e3f94f5d251b0425",
+    "services/signal-engine/src/api/outcomes.py": "73459f903d60b3e998ee470a20bf7fe170d151f1908068339c777eb4215cdb1a",
+    "services/signal-engine/src/api/routes.py": "287664324fb39eb067ecf75b4ae8127424885cbeed1dfe39b6f2b82c27a60929",
+    "services/ml-prediction/src/training/trainer.py": "fc7d772ad803b10eea47118c782a1364e3b56268bbc1d3cbee25ddb2a21d07c8",
+    "services/market-data/src/api/routes.py": "163d389f3d2c3372185a65a0d1c557c19816d2c6df60434519e12efd0647445a",
+    "services/market-data/src/services/little_rzy.py": "945b62341d5b1dd2e77e26b6733864dd473475372a16ec89dd28cb26fb5e3810",
+    "services/market-data/src/services/rzy_data.py": "f2d90429474b0cb44a7c3dacb5b7892cb740265419cf56ec9324dc1089b00810",
+    "services/market-data/src/services/rzy_workflow.py": "e3bd199ae75ea786e79eef813484a4ad71d0f41cf2810e746fb916cba131d0f6",
+    "services/market-data/src/services/rzy_journal.py": "1476b3393ed9b172e6a8209a19b89ed8899b2721b73384b7a44475b511048f3c",
+    "services/market-data/src/services/rzy_models.py": "671cb192726542851436cc2fcf7aa383818966e4aec62b3d639341db4806aa49",
+    "services/market-data/src/services/rzy_evaluation.py": "e57cdd27b889c28627e637d0523117d926ac1ea9594bedc8ce78d99ba99f04eb",
+    "services/market-data/src/services/rzy_backtest.py": "50c8c26e226d1112ae0425ef32dbb5a5343f6bb820fa35353a39b66454163060",
+    "services/market-data/src/services/rzy_email.py": "96527f4cf5b87acf05a9e4afd9e705de5bc6545d4e85de77d7b2de6e558b4ce1",
+    "services/market-data/src/services/rzy_monitoring.py": "05764921a948b7cf2602e525fc9592b96d47166fe312c9f1c8016aeebb38eafd",
+    "services/market-data/src/services/scheduler.py": "1d89ce92475113ab4ad62a109dadc8dbe50c3eac782634d45172ea622efd975c",
+    "services/market-data/src/services/ai_signal_alert_contract.py": "1a65f8a576e09200a7a03cefbfcfb62b877c2387714c520b87957faa3aeed0f2"
+  },
+  "production_file_matches": {
+    "services/signal-engine/src/api/signals_shared.py": true,
+    "services/signal-engine/src/api/calibration_safety.py": true,
+    "services/signal-engine/src/generators/signals.py": true,
+    "services/ml-prediction/src/training/trainer.py": true,
+    "services/market-data/src/services/little_rzy.py": true,
+    "services/market-data/src/services/rzy_data.py": true,
+    "services/market-data/src/services/rzy_journal.py": true,
+    "services/market-data/src/services/rzy_workflow.py": true,
+    "services/market-data/src/services/scheduler.py": true
+  },
+  "files": {
+    "ai-targeted-tests.txt": "c80aa402e40b139dc211e8635870c67d4d1e2af3ecc308448a2fe978f7420d7b",
+    "calibration-projection-witness.json": "2e82a65d123e2cd9f24f31590a52652066d65f787eac18676d5a3ee8a0cd8a6a",
+    "ml-threshold-boundary-witness.json": "c8f45508fb6044baff52981eaccaa38a0fc6e119fdee4c5234b41a3eccacea47",
+    "production-followup.json": "a236333efdebc04aed54097a5664a10f0298ff09f8bca75a6c469c1103e2bd4d",
+    "production-scope.json": "7d2288193cc56fa2327c038b0b80e40e362b361d627ad528d6d57bff5e139402",
+    "runtime.json": "d029f5f223b5ea8977b5752ac1431bab20703d9075f7f28416cecccdd6f1b746",
+    "rzy-fill-clock-witness.json": "eb42b68ec4e8d0bca04b90960697cf171d59574b0b17914428202dddedf7ab15",
+    "rzy-targeted-tests.txt": "25cb14dd058778f4776f5d62460bd7ca80e9524cd5f0b484eba25585215f9ee1"
+  },
+  "source_hash_basis": "Pinned committed review baseline, not subsequent concurrent working-tree edits."
+}

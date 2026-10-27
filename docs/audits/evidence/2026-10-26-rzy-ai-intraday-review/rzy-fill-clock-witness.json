@@ -1,0 +1,9 @@
+{
+  "method": "Existing synthetic triggered() fixture and unmodified Engine.step; execution_eligible=True is fixture evidence, unlike live adapter. No orders or production records.",
+  "trigger_close": "2026-01-01T04:55:00+00:00",
+  "assumed_detection_time": "2026-01-01T04:57:00+00:00",
+  "modelled_fill_time": "2026-01-01T04:55:00+00:00",
+  "fill_precedes_detection_seconds": 120.0,
+  "within_current_5m_forward_observation_age_limit": true,
+  "scope": "Forward execution modelling gap when execution eligibility is enabled; current stored-price adapter blocks fills."
+}
