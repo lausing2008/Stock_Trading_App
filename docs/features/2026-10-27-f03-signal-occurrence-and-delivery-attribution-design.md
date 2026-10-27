@@ -400,3 +400,18 @@ The wrapper takes the existing host deployment/backup lock with a bounded 60-sec
 - Storage: ≈ 3.4 MB for the session, 3.1 MB of it snapshots.
 - No HK session yet: the deploy came after the HK close. The first complete sessions are
   HK 2026-10-28 and US 2026-10-28.
+
+
+### Schedule recheck and counter interpretation
+
+A subsequent report that cron was still blocked was stale. A fresh READ ONLY host check confirmed the installed `CRON_TZ=UTC` **23:00 UTC weekday** wrapper job, active `crond`, unchanged backup job, wrapper SHA-256 `c0815044…` and collector SHA-256 `3991cb33…`. No duplicate schedule or permission-rule change was added. The first automatic execution remains pending; the existing October 27 manual capture remains excluded.
+
+**Do not call `content_changes` a confidence-change count.** It compares hashes of signal, horizon, confidence, probability and full reasons (excluding `input_contract.generated_at`). Consequently, reasons-only or probability-only changes can increment it. Such changes are not necessarily meaningless noise: levels, eligibility and context can change without a confidence change.
+
+The deployment capture's **2,509 changes / 3,243 generations** describes this full-content counter within observed actionable occurrences. Those 3,243 are not all HOLD/WAIT generations, failed refresh attempts or the number of daily persisted signal rows. Do not divide unrelated counters to derive a confidence-change or persistence-failure rate.
+
+**Historical reconstruction limit:** the current cumulative count, last hash and opened/completed-close snapshots cannot recover each intermediate confidence/probability transition, even after five sessions. Analysis can compare retained endpoint snapshots, clearly labelled, but cannot retrospectively split the 2,509 changes. A report-only formatting change cannot create the missing measurements.
+
+Before any new measurement phase, design versioned counters for (a) raw confidence changes and absolute delta, (b) separately declared material confidence changes, (c) probability changes and (d) decision-level/eligibility or reasons-only changes. Persist the previous score values needed to make those comparisons, with explicit denominators and overlap rules. A materiality threshold is a measurement convention requiring documentation, not a reason to alter signal generation. Keep current `f03-observe-v1` sessions separate from a later counter version. The first five sessions remain useful for occurrence counts, full-content churn, storage and operational observations, not precise confidence churn.
+
+**Deadlock priority:** treat the existing signals-upsert versus alert-delivery deadlock as the next independent correctness fix before receipt integration. Review consistent lock order across both writers and a bounded whole-transaction retry for PostgreSQL SQLSTATE `40P01`, with rollback, jitter, idempotent observation writes and no replay of an already-accepted external email. A retry must not repeat only the failed statement inside an aborted transaction. Verify concurrent writers and crash/send boundaries with actual PostgreSQL tests. This note chooses investigation/fix priority; it implements no retry, sender or gating changes.
