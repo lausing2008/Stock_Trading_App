@@ -1,0 +1,141 @@
+{
+  "captured_at": "2026-10-27T23:23:40+00:00",
+  "log_window_since": "2026-10-27T14:00:00",
+  "signal_engine_started_at": "2026-10-27T14:01:43.835284183Z",
+  "log_counts": {
+    "occurrence_observe_failed": 0,
+    "refresh_skip": 98,
+    "postgres_deadlocks": 8
+  },
+  "deadlocks": [
+    {
+      "at": "2026-10-27 14:06:02.300",
+      "involves_f03": false,
+      "involves_alert_delivery_update": true
+    },
+    {
+      "at": "2026-10-27 14:47:29.139",
+      "involves_f03": false,
+      "involves_alert_delivery_update": true
+    },
+    {
+      "at": "2026-10-27 15:17:46.032",
+      "involves_f03": false,
+      "involves_alert_delivery_update": true
+    },
+    {
+      "at": "2026-10-27 15:32:50.097",
+      "involves_f03": false,
+      "involves_alert_delivery_update": true
+    },
+    {
+      "at": "2026-10-27 16:57:53.009",
+      "involves_f03": false,
+      "involves_alert_delivery_update": true
+    },
+    {
+      "at": "2026-10-27 18:12:55.430",
+      "involves_f03": false,
+      "involves_alert_delivery_update": true
+    },
+    {
+      "at": "2026-10-27 18:18:03.775",
+      "involves_f03": false,
+      "involves_alert_delivery_update": true
+    },
+    {
+      "at": "2026-10-27 18:48:51.998",
+      "involves_f03": false,
+      "involves_alert_delivery_update": true
+    }
+  ],
+  "failure_samples": [],
+  "report": {
+    "contract_version": "f03-observe-v1",
+    "per_session": [
+      {
+        "session_date": "2026-10-27",
+        "market": "US",
+        "horizon": "GROWTH",
+        "occurrences": 31,
+        "stocks": 20,
+        "later_runs": 11,
+        "generations": 925,
+        "content_changes": 699,
+        "occurrences_with_changes": 28
+      },
+      {
+        "session_date": "2026-10-27",
+        "market": "US",
+        "horizon": "LONG",
+        "occurrences": 62,
+        "stocks": 31,
+        "later_runs": 31,
+        "generations": 1224,
+        "content_changes": 926,
+        "occurrences_with_changes": 48
+      },
+      {
+        "session_date": "2026-10-27",
+        "market": "US",
+        "horizon": "SHORT",
+        "occurrences": 34,
+        "stocks": 13,
+        "later_runs": 21,
+        "generations": 489,
+        "content_changes": 384,
+        "occurrences_with_changes": 26
+      },
+      {
+        "session_date": "2026-10-27",
+        "market": "US",
+        "horizon": "SWING",
+        "occurrences": 27,
+        "stocks": 16,
+        "later_runs": 11,
+        "generations": 605,
+        "content_changes": 500,
+        "occurrences_with_changes": 21
+      }
+    ],
+    "close_reasons": {
+      "open": 48,
+      "to_hold": 27,
+      "to_wait": 79
+    },
+    "completed_close_by_signal": [
+      {
+        "session_date": "2026-10-27",
+        "signal": "BUY",
+        "n": 28
+      },
+      {
+        "session_date": "2026-10-27",
+        "signal": "HOLD",
+        "n": 276
+      },
+      {
+        "session_date": "2026-10-27",
+        "signal": "SELL",
+        "n": 23
+      },
+      {
+        "session_date": "2026-10-27",
+        "signal": "WAIT",
+        "n": 297
+      }
+    ],
+    "note": "Counts are generations OBSERVED by this process from deployment onward; a session with no post-close generation has no completed-close record.",
+    "table_bytes": {
+      "signal_occurrences": 122880,
+      "signal_snapshots": 3112960,
+      "signal_session_closes": 147456
+    },
+    "signals_per_utc_day": [
+      {
+        "day": "2026-10-27",
+        "n": 792
+      }
+    ]
+  }
+}

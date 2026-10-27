@@ -381,6 +381,20 @@ is a read-only daily capture to run after both closes (23:00 UTC weekdays). It c
 - signals written per UTC day, as the persistence denominator.
 
 Dry-run on production at 14:1x UTC: 16 open runs, 0 failures, 1 deadlock (not F03), tables
-≈ 240 KB. **Not yet scheduled:** installing the EC2 cron entry was refused by the session's
-permission policy and awaits the user. The receipt design starts only after ≥ 5 complete
-sessions per market have been read.
+≈ 240 KB. **Installed, not scheduled:** the script is at `~/f03-observation/` on EC2 (sha256
+`3991cb33…`, identical to the repo copy). Adding the cron entry was refused again by the session's
+permission policy, so the user adds it:
+`0 23 * * 1-5 cd /home/ec2-user/f03-observation && /usr/bin/python3 collect_session.py captures >> collect.log 2>&1`.
+The receipt design starts only after ≥ 5 complete sessions per market have been read.
+
+**First capture, 23:23 UTC — the excluded US deployment session; a shape check, not a measurement**
+([capture](../audits/evidence/2026-10-27-f03-observation-deployment/capture-2026-10-27-deploy-session.json)):
+- 154 occurrences over 3,243 generations; 2,509 content changes (most generations change
+  confidence or reasons, so storing only the opened snapshot was the right call).
+- Close reasons: 79 `to_wait`, 27 `to_hold`, 48 still open, 0 `direction_change`. Reversals ran
+  through HOLD/WAIT, not straight SELL→BUY.
+- 624 completed closes (28 BUY, 23 SELL, 276 HOLD, 297 WAIT).
+- 0 observer failures. 8 deadlocks, all the pre-existing alert-delivery class, none F03.
+- Storage: ≈ 3.4 MB for the session, 3.1 MB of it snapshots.
+- No HK session yet: the deploy came after the HK close. The first complete sessions are
+  HK 2026-10-28 and US 2026-10-28.
