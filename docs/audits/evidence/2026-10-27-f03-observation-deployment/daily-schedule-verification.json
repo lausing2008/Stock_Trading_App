@@ -1,0 +1,32 @@
+{
+  "verified_at": "2026-10-27T23:25:38.770710+00:00",
+  "cron_active": true,
+  "crontab": "0 2 * * * /home/ec2-user/pg_backup.sh >> /home/ec2-user/backups/backup.log 2>&1\n\n# stockai-f03-observation-daily\nCRON_TZ=UTC\n0 23 * * 1-5 /home/ec2-user/f03-observation/run_daily_capture.sh >> /home/ec2-user/f03-observation/collect.log 2>&1\n",
+  "single_daily_job": true,
+  "backup_job_preserved": true,
+  "wrapper_sha256": "c08150441f7427e5d9911d953e6445d384874bfa27dfffde9899ee8443a49dea",
+  "collector_sha256": "3991cb33b46237183d930e381b0bcbbd0628bab4773b58c0acc8241aa0c9ce89",
+  "same_day_smoke": {
+    "exit": 0,
+    "existing_capture_hash_unchanged": true,
+    "stdout": "2026-10-27T23:25:38Z capture already exists for 2026-10-27; preserved"
+  },
+  "first_scheduled_capture": "2026-10-28T23:00:00+00:00",
+  "calendar_candidate_sessions": {
+    "US": [
+      "2026-10-28",
+      "2026-10-29",
+      "2026-10-30",
+      "2026-11-02",
+      "2026-11-03"
+    ],
+    "HK": [
+      "2026-10-28",
+      "2026-10-29",
+      "2026-10-30",
+      "2026-11-02",
+      "2026-11-03"
+    ]
+  },
+  "limits": "Cron is installed and active; a future scheduled run has not occurred yet. Candidate sessions count only after observed coverage is reviewed. Retained-log counters do not prove full log coverage."
+}

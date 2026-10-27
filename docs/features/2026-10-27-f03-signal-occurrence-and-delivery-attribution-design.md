@@ -376,16 +376,18 @@ measured, not assumed.
 **Collection.** [`collect_session.py`](../audits/evidence/2026-10-27-f03-observation-deployment/collect_session.py)
 is a read-only daily capture to run after both closes (23:00 UTC weekdays). It captures:
 - the observation report;
-- observation failures, refresh skips and PostgreSQL deadlocks, counted since the previous
-  capture so log rotation (5 × 20 MB) cannot drop them;
-- signals written per UTC day, as the persistence denominator.
+- observation failures, refresh skips and PostgreSQL deadlocks in retained container logs since the previous
+  capture; log rotation/recreation can still leave unmeasured coverage;
+- daily signal rows per UTC day, which are not a count of generation attempts and cannot alone be the denominator for a refresh-failure rate.
 
 Dry-run on production at 14:1x UTC: 16 open runs, 0 failures, 1 deadlock (not F03), tables
-≈ 240 KB. **Installed, not scheduled:** the script is at `~/f03-observation/` on EC2 (sha256
-`3991cb33…`, identical to the repo copy). Adding the cron entry was refused again by the session's
-permission policy, so the user adds it:
-`0 23 * * 1-5 cd /home/ec2-user/f03-observation && /usr/bin/python3 collect_session.py captures >> collect.log 2>&1`.
-The receipt design starts only after ≥ 5 complete sessions per market have been read.
+≈ 240 KB. **Installed and scheduled at 2026-10-27 23:25 UTC:** the unchanged collector is at `~/f03-observation/` on EC2 (SHA-256 `3991cb33…`, identical to the repo copy). The ec2-user crontab now has one `CRON_TZ=UTC` weekday job at **23:00 UTC** invoking `run_daily_capture.sh`; the existing **02:00 UTC database backup job is preserved**. `crond` is active.
+
+The wrapper takes the existing host deployment/backup lock with a bounded 60-second wait, uses low CPU/I/O priority and a 300-second timeout, and preserves an already-existing same-UTC-day capture. A direct smoke invocation returned success and left the deployment-session capture hash unchanged. No container was restarted and no model/trading policy changed. [Wrapper and installed-schedule verification](../audits/evidence/2026-10-27-f03-observation-deployment/daily-schedule-verification.json).
+
+**First scheduled collection: Wednesday October 28 at 23:00 UTC** (16:00 PDT / 19:00 EDT; after both markets close). The script's observation date is UTC; market session dates in its report remain separate. The first five candidate full sessions for both venues, checked against the repository calendar, are **October 28, 29, 30, November 2 and 3**. The fixed 23:00 UTC capture remains after the US close across the November 1 daylight-saving change. A capture may still run on a venue holiday; only real venue sessions with reviewed coverage count. The earliest five-session review is after the November 3 capture, provided no interruption/recreate or coverage failure invalidates a session. The receipt design starts only after ≥ 5 complete observed sessions per market have actually been reviewed, not simply after five dates elapse.
+
+**Remaining collection limits:** scheduling is verified; the first future cron execution is not yet observed. A lock conflict or collection failure can leave a missing capture and needs review in `collect.log`; this job has no automatic catch-up/retry. Retained-log counts are not evidence of complete log coverage. Missing logs, container recreation or log-command failures must be treated as unknown rather than proven zero failures. The collector does not yet expose that coverage automatically, so failure-rate acceptance needs a coverage check. It also cannot recover historical intermediate signal generations from daily rows.
 
 **First capture, 23:23 UTC — the excluded US deployment session; a shape check, not a measurement**
 ([capture](../audits/evidence/2026-10-27-f03-observation-deployment/capture-2026-10-27-deploy-session.json)):
