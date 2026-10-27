@@ -46,6 +46,8 @@ Priority: **P1** must be resolved before trusting the affected performance outpu
 
 ### F01 — P1, confirmed: confidence-calibration projection rejects every eligible outcome
 
+**Status (2026-10-26): FIXED.** The query now selects `SignalOutcome.exit_date`; the eligibility predicate is unchanged. `__meta__.verified_ineligible_count` exposes verified rows the strict contract still rejects. Regression: `services/signal-engine/tests/test_f01_calibration_query_to_bucket.py` (real SQLite query to published buckets, plus missing-exit, inverted, unverified and same-day controls; all three failed `0 == 35` before the fix). Rerun on current code: signal-engine 958 passed / 1 skipped, RZY 118 passed, ml-prediction trainer 75 passed. Production has 0 verified outcomes, so no published rate changes until verification exists.
+
 **Path:** `services/signal-engine/src/api/signals_shared.py:246–281`; `src/api/calibration_safety.py:evidence_eligible`.
 
 The SQL projection includes signal and entry dates but omits `SignalOutcome.exit_date`. The shared predicate requires `signal < entry <= exit`. A SQLAlchemy Row without `exit_date` returns the helper's default `None`, so every verified row fails. This also prevents the new delivered-subset buckets from forming. Zero currently verified production rows masks the defect; merely refreshing corporate-action evidence will not repair publication.

@@ -250,7 +250,9 @@ def _build_confidence_calibration(session: Session) -> dict:
         select(
             SignalOutcome.confidence, SignalOutcome.is_correct,
             SignalOutcome.horizon, SignalOutcome.signal_direction, Stock.market,
-            SignalOutcome.signal_date, SignalOutcome.entry_date,
+            # F01 (2026-10-26): exit_date is read by `evidence_eligible()` below. Without it a
+            # Row returns None and every verified outcome was rejected before any floor check.
+            SignalOutcome.signal_date, SignalOutcome.entry_date, SignalOutcome.exit_date,
             SignalOutcome.evidence_status,
             Signal.alert_delivery_state, Signal.alert_delivery_version,
         )
@@ -281,6 +283,10 @@ def _build_confidence_calibration(session: Session) -> dict:
     _exclusions = {"original_count": _part["original_count"],
                    "timing_eligible_count": _timing_eligible_count,
                    "eligible_count": len(rows),
+                   # Verified rows the strict signal < entry <= exit contract still rejected
+                   # (a stored exit missing or before entry). Visible so a projection loss
+                   # like F01 cannot again read as "no verified data yet".
+                   "verified_ineligible_count": _evidence_counts["verified"] - len(rows),
                    "excluded_total": _part["excluded_total"],
                    "excluded_by_reason": _part["excluded_counts"],
                    "exclusion_reasons": _part["exclusion_reasons"],
