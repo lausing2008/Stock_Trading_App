@@ -158,7 +158,7 @@ contribute no delivered observations.
 
 ## 8. Migration and rollout
 
-1. **Schema:** four new tables in `shared/db/models.py` (created by `create_all`, which does
+1. **Schema:** five new tables in `shared/db/models.py` (created by `create_all`, which does
    create missing tables) plus a migration-ledger entry. No `ALTER` of `signals`. Because this
    touches `shared/`, all 12 backend images must be rebuilt together
    ([AUD-REGISTER-POSTBUILD-DRIFT](../incidents/docker-deploy-staleness.md)).
@@ -199,3 +199,32 @@ contribute no delivered observations.
    open prices the evaluator does not use today.
 4. **Volume.** Not yet measured. Before building, a read-only count of direction changes per
    daily row over the last 30 days sizes `signal_occurrences` and the dual-write cost.
+
+
+## 11. Review decisions and pre-build corrections (October 27, 2026)
+
+Status remains **design only**. This section supersedes conflicting details above; no occurrence, receipt or outcome table has been implemented.
+
+### Recommended decisions
+
+1. **One occurrence per continuous actionable direction, within a venue session.** Confidence changes stay within the occurrence and can produce distinct immutable delivery snapshots. BUY→HOLD/WAIT closes the actionable run; a later BUY opens a new one. BUY→SELL opens the opposite run. A session boundary always closes the prior run. Define WAIT as explicitly as HOLD and use venue session identity rather than assuming the UTC daily-row boundary is the contract. Preserve any existing informational HOLD/WAIT notifications without attaching them to an old BUY/SELL outcome; they need an explicitly informational snapshot/receipt or remain clearly outside actionable measurement.
+2. **Keep a receipts table for this slice**, with the established outbox claim/retry semantics rather than an immediate sender migration. Durable send intent and snapshot/receipt identity must commit **before** the network call, with a bounded lease/fencing token. Settle acceptance afterwards. Otherwise a crash rolls back the intent as well and cannot reliably become `unknown`. Never hold a read/write transaction across the provider request. Unknown acceptance must not automatically become an ordinary safe-to-resend failure; reconciliation/provider idempotency and the documented retry policy decide it.
+3. **Use the first eligible completed close strictly after each receipt's acceptance** for the delivered *daily outcome study*. This is an evaluation convention, not an executable email fill or proof of inbox arrival. A close equal to acceptance is not safely after it. Unknown acceptance has no entry anchor. Because two recipients can receive the same snapshot on different sessions, delivered outcomes must reference `receipt_id` (or an explicitly defined acceptance-session cohort), not just `(snapshot_id, cohort, window)`. Keep recipient-specific attribution and separately deduplicate/group strategy evidence so many recipients do not masquerade as independent trades. A future Intraday executor uses actual causal quote/fill timestamps, never this daily close convention.
+4. **Measure before sizing, but label the historical limit.** Existing rows retain first-fire and final/current state, not every intermediate generation. A read-only comparison can establish lower bounds on changed direction/strength, but cannot recover true same-day transition frequency. Do not present such a count as that frequency. A bounded passive observation phase, without sender or eligibility changes, is needed for exact churn and table-volume estimates; design that phase before building the full write paths.
+
+### Required design corrections
+
+- The schema lists **five** tables. Include all five in storage/migration estimates and the rollout ledger.
+- Hash immutable decision content, excluding the snapshot's own capture timestamp. Retries must reuse the already frozen snapshot/receipt, not rebuild a new snapshot from a later live generation. Generation/input/policy identity remains part of the decision content; excluding volatile capture metadata must not erase materially different evidence.
+- A completed-close record must identify the **target venue session** and require the last bar to belong to that session. A generic `session_closed` label on yesterday's bar must not freeze today's close. Retain `close_ingest_verified=unknown` unless actual final-close ingestion is evidenced; calendar closure is not provider finality.
+- Daily legacy outcomes remain legacy. New snapshots cannot retrospectively establish which state was historically delivered. Keep all three cohorts and their entry/evidence conventions distinct.
+- The PostgreSQL acceptance tests must exercise claim→durable intent→network→settlement, crash recovery, concurrent refreshes, HOLD/WAIT transitions, two recipient acceptance sessions, equal-close timestamps, repeated retries with changing live confidence, and no old-bar completed-close capture. The actual shared-schema rollout must remain serialized under the host lock; a shared change does not justify deploying the held F04 trainer.
+
+### F04 decision remains held
+
+Keep option **(c)** operationally for now. Options (a) and (b) solve different problems: versioned evaluation validity is required even if a larger test allocation is later chosen. A new split must not preserve an old incumbent as “valid under the new protocol” merely because its legacy boolean says true. Preserve legacy artifacts for research/rollback and distinguish metric validity rather than silently relabelling them.
+
+The impact probe establishes **38 unsuppressed artifacts** at risk, not necessarily 38 independently serving symbol/horizon decisions: signal-engine can use a three-/two-model ensemble or fallback. Map affected artifacts to actual inference selection before estimating signal coverage or changing suppression. Research a larger test allocation on a frozen, paired dataset; report training loss, row/class sufficiency, inference coverage and after-cost signal results. Do not deploy the trainer, retrain production, replace artifacts or change suppression until the version/retention and allocation decisions are reviewed together.
+
+
+Read-only historical sizing evidence at **2026-10-27 13:29 UTC**: over the last 30 days, **7,753 daily rows** have a first actionable fire. Of these, **2,503** differ from their frozen first-fire direction at read time (only **7** currently show the opposite actionable direction; most other differences are HOLD/WAIT). Another **2,468** retain that first direction but have changed confidence. These are endpoint comparisons and lower bounds, not complete transition counts, delivered-alert misattribution counts or independent trades. [Per-horizon counts and limitations](../audits/evidence/2026-10-27-f01-f02-deployment/f03-historical-lower-bounds.json).

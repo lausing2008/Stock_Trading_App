@@ -1,0 +1,16 @@
+{
+  "release": "7084299d",
+  "scope": "signal-engine image only; no ml-prediction build/restart, retraining, model calls or artifact changes initiated by this deployment",
+  "tests": "970 passed, 1 skipped; full signal-engine suite before deployment",
+  "files": {
+    "capture_before.py": "44755ab9057986b9a075f5543bc600777160ac14cf456cc898c57b630ee26419",
+    "deployment.log": "b8652a86a4c36927c757e09b7d99c4cc818517585ed24d507c25387a2187a6b6",
+    "expected-source-hashes.json": "7b81064cae3ac13e966be47454ce73d1c127ddd05a5de6fdd85acabce04bb3d2",
+    "production-after.json": "19c97898c34a7eeb68d028698043f1783de7dd54326c1830d3123055cc8798cc",
+    "production-before.json": "22ef69e9790bd7ac43fa34577257a5a37de13334c8fe3df6a64359f91acf23a9",
+    "signal-engine-tests.txt": "a2b80b49ce6b9873059b22162430cae015a58e11f69864c27a55bc7c091afcd8",
+    "verification-summary.json": "8b5c4ac58165f2942b791c73b7ad67355f99f7386a0b4ee54e73481accd2bfdf",
+    "verify_production.py": "2df7e631255e4bc5600cfe8d001bb1b30d79a84a49c27bd7b5fc7a20a6694b20",
+    "f03-historical-lower-bounds.json": "69bc31c10d3943cc074b94ef9b801905ae50983c103e2d79bb52eae6f16f4e50"
+  }
+}

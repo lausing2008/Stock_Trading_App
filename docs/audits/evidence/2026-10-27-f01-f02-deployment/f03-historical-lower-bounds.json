@@ -1,0 +1,35 @@
+{
+  "captured_at": "2026-10-27T13:29:22.704222+00:00",
+  "window": "Last 30 days by daily Signal.ts; frozen first fire versus mutable current/final row at read time",
+  "rows": [
+    {
+      "horizon": "SHORT",
+      "daily_rows_with_first_fire": 1646,
+      "first_fire_differs_from_final_direction": 542,
+      "opposite_actionable_at_read_time": 1,
+      "same_direction_confidence_changed": 485
+    },
+    {
+      "horizon": "SWING",
+      "daily_rows_with_first_fire": 1866,
+      "first_fire_differs_from_final_direction": 653,
+      "opposite_actionable_at_read_time": 2,
+      "same_direction_confidence_changed": 541
+    },
+    {
+      "horizon": "LONG",
+      "daily_rows_with_first_fire": 2849,
+      "first_fire_differs_from_final_direction": 860,
+      "opposite_actionable_at_read_time": 4,
+      "same_direction_confidence_changed": 953
+    },
+    {
+      "horizon": "GROWTH",
+      "daily_rows_with_first_fire": 1392,
+      "first_fire_differs_from_final_direction": 448,
+      "opposite_actionable_at_read_time": 0,
+      "same_direction_confidence_changed": 489
+    }
+  ],
+  "limitation": "Lower bounds on within-row state changes, not transition counts or frequency. Repeated changes and historical delivered snapshots are not stored; the true direction-change rate and receipt-volume forecast are not identifiable."
+}

@@ -1,0 +1,97 @@
+{
+  "healthy_containers": 15,
+  "restarted": [
+    "/stockai-signal-engine-1"
+  ],
+  "signal_engine_src_and_shared_match": true,
+  "ml_prediction_image_start_and_source_unchanged": true,
+  "other_services_source_unchanged": true,
+  "remaining_drift_vs_repo": {
+    "market-data": [
+      "src",
+      "shared"
+    ],
+    "api-gateway": [
+      "shared"
+    ],
+    "ml-prediction": [
+      "src",
+      "shared"
+    ],
+    "research-engine": [
+      "shared"
+    ],
+    "ranking-engine": [
+      "shared"
+    ],
+    "strategy-engine": [
+      "shared"
+    ],
+    "technical-analysis": [
+      "shared"
+    ],
+    "portfolio-optimizer": [
+      "shared"
+    ],
+    "event-intelligence": [
+      "shared"
+    ],
+    "news-intelligence": [
+      "shared"
+    ],
+    "decision-engine": [
+      "shared"
+    ]
+  },
+  "loaded_features": {
+    "calibration_meta": {
+      "original_count": 26021,
+      "timing_eligible_count": 26004,
+      "eligible_count": 0,
+      "verified_ineligible_count": 0,
+      "input_basis_counts": {},
+      "input_basis_requirement": "session_closed",
+      "excluded_total": 17,
+      "excluded_by_reason": {
+        "entered_same_day": 17
+      },
+      "exclusion_reasons": {
+        "entered_same_day": "entered on the signal's own day, while the evaluator's convention is entry at the next session \u2014 this measures a trade the convention does not describe"
+      },
+      "evidence_counts": {
+        "verified": 0,
+        "provisional": 181,
+        "unverified": 4320,
+        "unknown": 21503
+      },
+      "evidence_requirement": "verified corporate-action basis",
+      "limitations": [
+        "Outcomes from different model and rule generations are pooled: `signal_outcomes` stores no model or policy version, so a rate here spans every generation active in the window.",
+        "A measured hit rate over the underlying is not a calibrated probability, and says nothing about the return after costs."
+      ]
+    },
+    "published_bucket_count": 0,
+    "fixed_clock_input_contract_checks": {
+      "US_mid_session": "provisional_intraday",
+      "US_after_close": "session_closed",
+      "HK_lunch": "provisional_intraday",
+      "close_ingest_verified": null
+    },
+    "promotion_policy": {
+      "status": "research_only",
+      "applied": false,
+      "promoted": false,
+      "would_apply": false,
+      "policy_version": "calibration_promotion_v1",
+      "reason": "Production promotion withheld: legacy studies do not replay a complete executable strategy.",
+      "missing_requirements": [
+        "immutable_all_candidate_policy_snapshots",
+        "verified_forward_outcomes",
+        "whole_session_purged_holdout",
+        "complete_entry_exit_cost_replay",
+        "positive_net_expectancy_and_risk_validation"
+      ],
+      "existing_settings_changed": false
+    }
+  }
+}

@@ -1,0 +1,212 @@
+{
+  "captured_at": "2026-10-27T13:27:51.508261+00:00",
+  "hashes": {
+    "market-data": {
+      "src": "0875da9c1b69a6dacb956aae7ba8424f7f09dd3a3d3fa96d7fb912948643365c",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "signal-engine": {
+      "src": "2db33c4da6b492b03c11f7175ac48dfca27f60fa6a9a765fb9f653818176312c",
+      "shared": "e0c1068c2a5138be6f13b78570fa93758aa34f1cd9f890c38c0e924b85b37d48"
+    },
+    "api-gateway": {
+      "src": "79e6aaaf7d926ae838f95c794646f23dd496fd2acbd9c488478c19d8b94fac23",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "ml-prediction": {
+      "src": "f4f85f76673167eb07db838eb5aa29c2440afd94dbe1aab77f117e11983cd336",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "research-engine": {
+      "src": "cc7e1f62de97b4286024614ad459c65aa28a148f4fb874846d9722d2671576f9",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "ranking-engine": {
+      "src": "df0be797ad2c094624dd2fac4d9431fcdf952aca62d14f891054f9b2c634acc6",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "strategy-engine": {
+      "src": "291fbf7d0359e4248d48e50d9940a6a167bad1a3efb5360b9ba2095152fd3bdf",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "technical-analysis": {
+      "src": "5dff8906f404b9d34323238543b4cf2a382b1398005a7f6cd6d09922235f72ec",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "portfolio-optimizer": {
+      "src": "2c24b4038cca7d4ef626b0164d41e29465bad78a7039c40ec2d3ad015002beb3",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "event-intelligence": {
+      "src": "d4aa5184ed7947e1690e18b8cfa07a911842766394bac08d6cbccbb8cb1a870e",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "news-intelligence": {
+      "src": "3a64698f0ee940ce0958f6535e16e473e8778ca885b4a330853b3d394d556a0c",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    },
+    "decision-engine": {
+      "src": "7530169b28b7ba6de9b40de205ae8440f848ff24f0e2b6372ff78c89b56dca19",
+      "shared": "0cab3ac6ce495ac1b93d27ae83ccc16527bd5098005c9e9b0d724d9eea00515c"
+    }
+  },
+  "containers": [
+    {
+      "name": "/stockai-market-data-1",
+      "image": "sha256:03dcd1f488a5dd7e98ce564427a59e9d69ee634a44b713326efb782869bf9401",
+      "started_at": "2026-10-27T05:59:27.790397407Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-signal-engine-1",
+      "image": "sha256:36ef07b05461aaaad63eb25cdc49cf4cc5ef1af559fc34c18b25fd2b1ffde28a",
+      "started_at": "2026-10-27T13:26:11.589369477Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-api-gateway-1",
+      "image": "sha256:91be053a5df31b6d67665c23d3bf0fb9694e7fa5b82f4c3a9a4600b8a2c5f269",
+      "started_at": "2026-10-22T23:47:20.048017661Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-ml-prediction-1",
+      "image": "sha256:923b14f5a8fe22df165a3f62d42e74a484dc86f50c61a72292fae13709033190",
+      "started_at": "2026-10-22T23:47:19.009616969Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-research-engine-1",
+      "image": "sha256:cd66692199b27f27803c67b66943a32e6d54d6ea9dccfd0451b8c1d681f67bee",
+      "started_at": "2026-10-22T23:47:19.964688592Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-ranking-engine-1",
+      "image": "sha256:41828982d9ac5b39dbcbb4b02d5d11a8157545f959442cb370e60b5269b2cf04",
+      "started_at": "2026-10-22T23:47:14.512887134Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-strategy-engine-1",
+      "image": "sha256:724d93bff5553d57ab18baf81232029882c68bf553d261bfed3b194a99573e4c",
+      "started_at": "2026-10-22T23:47:19.437830208Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-technical-analysis-1",
+      "image": "sha256:3c5762094197e0e945f3484986d90f5ab000f0ac2f6d411b607a66ad1845c6ef",
+      "started_at": "2026-10-22T23:47:14.056239696Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-portfolio-optimizer-1",
+      "image": "sha256:51dfbc128ec96066ffedb60a1a5386dd415abd6b47794d27fa4d73b25e9fd393",
+      "started_at": "2026-10-22T23:47:19.161390494Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-event-intelligence-1",
+      "image": "sha256:6a2a167a737009a4f9944cf4a85dbf72d87680a448e531362600a198c037252b",
+      "started_at": "2026-10-22T23:47:16.733739888Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-news-intelligence-1",
+      "image": "sha256:5d71038c36ea448c768c0a0c6c53150dcc1ae4921b90a04d8900078b327dc6a9",
+      "started_at": "2026-10-22T23:47:19.9974542Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-decision-engine-1",
+      "image": "sha256:50bdcb6b79bb9b6e07dc9ed17a15aae9261188aa893ff4a88c503902d52ec57c",
+      "started_at": "2026-10-22T23:47:17.622979137Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-frontend-1",
+      "image": "sha256:88c4c2df73183d4e81af235e6845d2a3ee35431178a06dec1f0c35ebde6ef8d7",
+      "started_at": "2026-10-27T06:04:50.740597308Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-postgres-1",
+      "image": "sha256:fff3594bf464bea0f502788874403882d8bbbe618b3250f8649e7e42fd118020",
+      "started_at": "2026-10-22T23:47:16.284451594Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-redis-1",
+      "image": "sha256:487efc0616382465781b8fdc3d6d1db449e6fd80ae23bf48432a2da6b6929908",
+      "started_at": "2026-10-22T23:47:15.037867617Z",
+      "health": "healthy",
+      "status": "running"
+    }
+  ],
+  "repo_head": "7084299df6525dc8a6f18e2ab70e35a598df7e23",
+  "loaded_features": {
+    "calibration_meta": {
+      "original_count": 26021,
+      "timing_eligible_count": 26004,
+      "eligible_count": 0,
+      "verified_ineligible_count": 0,
+      "input_basis_counts": {},
+      "input_basis_requirement": "session_closed",
+      "excluded_total": 17,
+      "excluded_by_reason": {
+        "entered_same_day": 17
+      },
+      "exclusion_reasons": {
+        "entered_same_day": "entered on the signal's own day, while the evaluator's convention is entry at the next session \u2014 this measures a trade the convention does not describe"
+      },
+      "evidence_counts": {
+        "verified": 0,
+        "provisional": 181,
+        "unverified": 4320,
+        "unknown": 21503
+      },
+      "evidence_requirement": "verified corporate-action basis",
+      "limitations": [
+        "Outcomes from different model and rule generations are pooled: `signal_outcomes` stores no model or policy version, so a rate here spans every generation active in the window.",
+        "A measured hit rate over the underlying is not a calibrated probability, and says nothing about the return after costs."
+      ]
+    },
+    "published_bucket_count": 0,
+    "fixed_clock_input_contract_checks": {
+      "US_mid_session": "provisional_intraday",
+      "US_after_close": "session_closed",
+      "HK_lunch": "provisional_intraday",
+      "close_ingest_verified": null
+    },
+    "promotion_policy": {
+      "status": "research_only",
+      "applied": false,
+      "promoted": false,
+      "would_apply": false,
+      "policy_version": "calibration_promotion_v1",
+      "reason": "Production promotion withheld: legacy studies do not replay a complete executable strategy.",
+      "missing_requirements": [
+        "immutable_all_candidate_policy_snapshots",
+        "verified_forward_outcomes",
+        "whole_session_purged_holdout",
+        "complete_entry_exit_cost_replay",
+        "positive_net_expectancy_and_risk_validation"
+      ],
+      "existing_settings_changed": false
+    }
+  }
+}

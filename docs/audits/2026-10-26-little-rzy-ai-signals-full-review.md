@@ -195,3 +195,16 @@ Choosing many rules on the same historical sample raises false-discovery risk; t
 ## Review outcome and next action
 
 Proceed with the companion implementation plan only after review. F01–F04 address measurement/data defects; F05/F06/F09 are prerequisites to a credible same-session simulator. F07/F08/F10/F11 underpin improvement claims. F12 stays contained. Current research use remains reasonable with the stated limits; **this audit does not approve either system for autonomous trading or identify a proven profitable setting**.
+
+
+## F01/F02 production rollout — October 27, 2026
+
+**Deployed signal-engine only from `7084299d`**, using the existing remote deployment script under the host-wide lock, pinned to the reviewed commit. Previous signal-engine image retained as `stockai-signal-engine:rollback-before-7084299d`; old logs and identity saved under `/home/ec2-user/deploy-evidence/2026-10-27-f01-f02-signal-engine/`. Fresh full signal-engine suite before rollout: **970 passed, 1 skipped**.
+
+Independent post-deploy checks: **15 containers healthy; only signal-engine restarted; its `src` and `shared` hashes match the release**. The ml-prediction image ID, start time, `src` and `shared` hashes are identical to preflight. All other services' source hashes are also unchanged. No trainer deployment or retrain was initiated. F04 remains explicitly **held**, including its incumbent-retention/evaluation-version decision.
+
+The loaded calibration builder executed against production PostgreSQL in a READ ONLY transaction: **26,021 resolved rows**, 26,004 timing-eligible, **0 verified**, **0 eligible**, **0 published buckets**. Seventeen same-day entries were excluded. `input_basis_counts` is empty because that counter applies after the verified/timing gate; it is not a count of all historical provisional inputs. The strict gate remains intact. Pure fixed-clock checks against the loaded F02 implementation return provisional for US mid-session/HK lunch and session-closed after US close, with `close_ingest_verified=None`. These are fixed fixtures, not new generated production signals or independently verified closing prices.
+
+**Partial-release drift is deliberate and recorded, not zero:** eleven backends retain the older shared calendar relative to this repo. market-data also has pre-existing service-source drift; ml-prediction has intentional trainer/source drift. These differences existed in preflight and were not expanded into an unapproved all-service deployment. Signal-engine now contains the corrected calendar; other services were left untouched under the explicit scope. A coordinated calendar rollout remains separate and must preserve the F04 hold.
+
+Deployment ended with about **25 GB free** and sampled I/O wait **3.1%**. [Source/image/start identities, actual query metadata, test log and verification script](evidence/2026-10-27-f01-f02-deployment/). F01 is deployed; F02 provenance and completed-session calibration eligibility are deployed, while the immutable completed-close record remains F03 design work. F03 review decisions and pre-build corrections are recorded in its [design addendum](../features/2026-10-27-f03-signal-occurrence-and-delivery-attribution-design.md#11-review-decisions-and-pre-build-corrections-october-27-2026).
