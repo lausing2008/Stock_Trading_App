@@ -139,7 +139,7 @@ a { color: inherit; text-decoration: none; }
    strip (US Markets / HK Markets / Portfolio Pulse) is a rigid 3-column row, plus a nested
    2-column Buy/Hold/Wait/Sell legend inside the Portfolio Pulse panel — both collapse cleanly
    to a single stacked column on a phone, same shape as every other fix in this pass. */
-.dashboard-markets-grid { grid-template-columns: 1fr 1fr auto; }
+.dashboard-markets-grid { grid-template-columns: 2fr 1fr auto; }
 .dashboard-pulse-legend-grid { grid-template-columns: 1fr 1fr; }
 @media (max-width: 767px) {
   .dashboard-markets-grid,

@@ -399,33 +399,53 @@ def _latest_prices_from_db(session: Session) -> list[LatestPriceOut]:
 
 
 _INDICES = [
-    ("S&P 500",   "^GSPC", "US"),
-    ("NASDAQ",    "^IXIC", "US"),
-    ("Dow Jones", "^DJI",  "US"),
-    ("VIX",       "^VIX",  "US"),
-    ("Hang Seng", "^HSI",  "HK"),
+    ("S&P 500",      "^GSPC",   "US", "index"),
+    ("NASDAQ",       "^IXIC",   "US", "index"),
+    ("Dow Jones",    "^DJI",    "US", "index"),
+    ("Russell 2000", "^RUT",    "US", "index"),
+    ("VIX",          "^VIX",    "US", "index"),
+    ("S&P Futures",     "ES=F",  "US", "futures"),
+    ("Dow Futures",     "YM=F",  "US", "futures"),
+    ("Nasdaq Futures",  "NQ=F",  "US", "futures"),
+    ("Russell Futures", "RTY=F", "US", "futures"),
+    ("10-Yr Yield", "^TNX",    "US", "macro"),
+    ("Gold",        "GC=F",    "US", "macro"),
+    ("Bitcoin",     "BTC-USD", "US", "macro"),
+    ("Hang Seng", "^HSI", "HK", "index"),
 ]
 _MARKET_OVERVIEW_KEY = "stockai:market_overview"
 
 
-def _fetch_index(name: str, ticker: str, market: str) -> dict:
+def _fetch_index(name: str, ticker: str, market: str, group: str) -> dict:
+    """Quote one index/future/macro ticker.
+
+    The change is measured against `regular_market_previous_close` (the prior session's
+    close/settlement — what Yahoo itself displays). fast_info's `previous_close` is derived
+    from daily history and, for futures, points one session too far back: on 2026-10-26 it
+    gave ES=F 7671.00 vs the real 7714.50 settle, reading +0.67% instead of +0.13%. It is
+    only the fallback, for tickers with no regular session (BTC-USD returns NaN).
+    """
+    out = {"name": name, "ticker": ticker, "market": market, "group": group,
+           "price": None, "change": None, "change_pct": None}
     try:
         fi = yf.Ticker(ticker).fast_info
         price = fi.last_price
-        prev  = getattr(fi, "previous_close", None)
-        chg   = ((price - prev) / prev * 100) if prev and price else None
-        return {
-            "name": name, "ticker": ticker, "market": market,
-            "price": round(float(price), 2) if price else None,
-            "change_pct": round(chg, 2) if chg is not None else None,
-        }
+        prev = getattr(fi, "regular_market_previous_close", None)
+        if prev is None or prev != prev:  # NaN
+            prev = getattr(fi, "previous_close", None)
+        if price:
+            out["price"] = round(float(price), 4 if ticker == "^TNX" else 2)
+        if price and prev:
+            out["change"] = round(float(price - prev), 4)
+            out["change_pct"] = round((price - prev) / prev * 100, 2)
     except Exception:
-        return {"name": name, "ticker": ticker, "market": market, "price": None, "change_pct": None}
+        pass
+    return out
 
 
 @router.get("/market_overview")
 def market_overview():
-    """Live quotes for major US and HK indices. Redis-cached 60 s."""
+    """Live quotes for major US/HK indices, US index futures and macro gauges. Redis-cached 60 s."""
     try:
         cached = _get_redis().get(_MARKET_OVERVIEW_KEY)
         if cached:
@@ -434,12 +454,12 @@ def market_overview():
         pass
 
     results: list[dict] = []
-    with ThreadPoolExecutor(max_workers=5) as pool:
-        futures = {pool.submit(_fetch_index, n, t, m): (n, t, m) for n, t, m in _INDICES}
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(_fetch_index, *row) for row in _INDICES]
         for fut in as_completed(futures):
             results.append(fut.result())
     # preserve defined order
-    order = {t: i for i, (_, t, _) in enumerate(_INDICES)}
+    order = {row[1]: i for i, row in enumerate(_INDICES)}
     results.sort(key=lambda r: order.get(r["ticker"], 99))
 
     try:
@@ -447,6 +467,112 @@ def market_overview():
     except Exception:
         pass
     return results
+
+
+# Quote delay in minutes as Yahoo itself reports it (`exchangeDataDelayedBy`, measured
+# 2026-10-26), plus a one-line description for the detail page. Our own 60 s cache adds to this.
+_INDEX_INFO: dict[str, tuple[int, str]] = {
+    "^GSPC":   (0,  "500 large US companies, weighted by market value. The usual benchmark for 'the market'."),
+    "^IXIC":   (0,  "Every stock listed on Nasdaq; tech-heavy."),
+    "^DJI":    (0,  "30 large US blue-chip companies, weighted by share price."),
+    "^RUT":    (15, "About 2,000 small-cap US companies — a read on domestic, rate-sensitive risk appetite."),
+    "^VIX":    (15, "Expected 30-day S&P 500 volatility implied by option prices. Rises when investors pay up for protection."),
+    "ES=F":    (10, "CME E-mini S&P 500 futures. Trade almost 24h, so they show the market's expectation before the cash open."),
+    "YM=F":    (10, "CBOT E-mini Dow futures. Nearly 24h trading."),
+    "NQ=F":    (10, "CME E-mini Nasdaq-100 futures. Nearly 24h trading."),
+    "RTY=F":   (10, "CME E-mini Russell 2000 futures. Nearly 24h trading."),
+    "^TNX":    (15, "10-year US Treasury yield, in percent. Higher yields tighten financial conditions and weigh on growth-stock valuations."),
+    "GC=F":    (10, "COMEX gold futures, USD per troy ounce."),
+    "BTC-USD": (0,  "Bitcoin in US dollars. Trades 24/7, so 'previous close' is the prior UTC day."),
+    "^HSI":    (0,  "Hang Seng Index — the largest companies listed in Hong Kong."),
+}
+
+# range -> (yfinance period, interval, cache seconds)
+_INDEX_RANGES: dict[str, tuple[str, str, int]] = {
+    "1d":  ("5d",  "5m",  60),   # last session only; 5d so a weekend still has a session to show
+    "5d":  ("5d",  "15m", 300),
+    "1mo": ("1mo", "1h",  900),
+    "6mo": ("6mo", "1d",  3600),
+    "1y":  ("1y",  "1d",  3600),
+    "5y":  ("5y",  "1wk", 3600),
+}
+
+
+def _last_session_start(stamps: list) -> int:
+    """Index of the first bar of the latest session: after the last gap of 45+ minutes, and
+    no more than 24h before the last bar. A UTC-date cut would split a futures session (it
+    opens 18:00 ET the previous evening); the 24h bound covers BTC, which never pauses."""
+    if not stamps:
+        return 0
+    floor = stamps[-1] - pd.Timedelta(hours=24)
+    start = len(stamps) - 1
+    while start > 0 and stamps[start - 1] > floor \
+            and stamps[start] - stamps[start - 1] < pd.Timedelta(minutes=45):
+        start -= 1
+    return start
+
+
+@router.get("/market_index/{ticker}")
+def market_index_detail(ticker: str, range: str = Query("1d")):
+    """Quote + price history for one dashboard index/future/macro ticker.
+
+    Only tickers on the dashboard are served — this is not a general Yahoo proxy. History is
+    fetched on demand from Yahoo and never stored, so these symbols stay out of signals,
+    rankings and alerts.
+    """
+    row = next((r for r in _INDICES if r[1] == ticker), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"{ticker} is not a tracked market index")
+    if range not in _INDEX_RANGES:
+        raise HTTPException(status_code=422, detail=f"range must be one of {list(_INDEX_RANGES)}")
+    period, interval, ttl = _INDEX_RANGES[range]
+
+    cache_key = f"stockai:market_index:{ticker}:{range}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    name, _, market, group = row
+    quote = _fetch_index(name, ticker, market, group)
+    try:
+        fi = yf.Ticker(ticker).fast_info
+        for key, attr in (("open", "open"), ("day_high", "day_high"), ("day_low", "day_low"),
+                          ("year_high", "year_high"), ("year_low", "year_low")):
+            val = getattr(fi, attr, None)
+            # fast_info reports 0 for fields it has no value for (VIX day high/low) — not a price
+            quote[key] = round(float(val), 4) if val is not None and val == val and val > 0 else None
+    except Exception:
+        pass
+
+    bars: list[dict] = []
+    try:
+        hist = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
+        hist = hist.dropna(subset=["Close"])
+        if range == "1d" and not hist.empty:
+            hist = hist.iloc[_last_session_start(list(hist.index)):]
+        for ts, r in hist.iterrows():
+            bars.append({
+                "t": int(ts.timestamp()),
+                "o": round(float(r["Open"]), 4), "h": round(float(r["High"]), 4),
+                "l": round(float(r["Low"]), 4), "c": round(float(r["Close"]), 4),
+            })
+    except Exception as exc:
+        log.warning("market_index.history_failed", ticker=ticker, range=range, error=str(exc))
+
+    delay, description = _INDEX_INFO.get(ticker, (None, ""))
+    result = {
+        **quote, "delay_minutes": delay, "description": description,
+        "range": range, "interval": interval, "bars": bars,
+    }
+    if bars:  # never cache an empty fetch — a Yahoo hiccup would stick for up to an hour
+        try:
+            _get_redis().setex(cache_key, ttl, json.dumps(result))
+        except Exception:
+            pass
+    return result
 
 
 _FEAR_GREED_KEY = "stockai:fear_greed"

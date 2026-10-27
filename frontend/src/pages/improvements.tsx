@@ -35,6 +35,18 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: "MARKET-INDEXES-FUTURES-DETAIL",
+    tier: 474,
+    severity: "feature",
+    defaultStatus: "done",
+    title: "US index futures, Russell 2000, 10-Yr, gold and bitcoin on the dashboard, with a detail page per index",
+    file: "docs/features/2026-10-26-market-indexes-futures-and-detail-pages.md",
+    effort: "M",
+    impact: "Shows the overnight futures and macro gauges a trader checks before the open, next to the existing indexes, with one click to a chart.",
+    what: "The dashboard showed only S&P 500, NASDAQ, Dow and VIX. Futures were fetched for the pre-market brief but never displayed, and no index had a detail page. The change baseline (fast_info previous_close) pointed one session too far back for futures: ES=F would have read +0.67% instead of the real +0.13%.",
+    fix: "Group the US card into Indexes / Futures / Rates & Macro and add ^RUT, ES=F, YM=F, NQ=F, RTY=F, ^TNX, GC=F, BTC-USD. Measure change against regular_market_previous_close (previous_close only as the NaN fallback); show the 10-Yr change in basis points. Every tile links to /market/[ticker]: quote, Yahoo-reported delay (0/10/15 min), 1D-5Y chart, day and 52-week range. History comes from an allowlisted, Redis-cached endpoint and is never stored, so these symbols stay out of signals, rankings and alerts.",
+  },
+  {
     id: "OPTIONS-FOUR-PRESET-SHORTLISTS",
     tier: 468,
     severity: "feature",
@@ -22183,6 +22195,7 @@ const ITEMS: Item[] = [
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = {
+  474: "Tier 474 — Market indexes, futures and detail pages (2026-10-26)",
   473: "Tier 473 — Daily crossover and intraday chart history (2026-10-23)",
   472: "Tier 472 — News evidence and classification evaluation (2026-10-23)",
   471: "Tier 471 — Pending-work fixes and backup/deploy reliability (2026-10-23)",
@@ -22654,6 +22667,7 @@ const TIER_LABEL: Record<Tier, string> = {
 };
 
 const TIER_COLOR: Record<Tier, string> = {
+  474: '#60a5fa',
   473: '#a78bfa',
   472: '#fbbf24',
   471: '#fb923c',

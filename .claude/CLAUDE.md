@@ -376,6 +376,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/features/fed-watch.md`** — T405: market-implied FOMC hike/cut odds from CBOT 30-day Fed Funds futures (the CME method). FOMC was only a BLACKOUT GATE before. The Fed moves in 25bp steps, so -12bp = 50% of a 25bp cut, not a 12bp cut [FOMC, rates, macro]
 - **`docs/features/learning-section.md`** — the Learning nav group is advanced-tier/admin only, enforced by `isGroupVisible()` in `_app.tsx` AND a page-level guard on all 7 pages; plus the QQQ-LEAPS and squeeze playbooks (tiers 353-354)
 
+- **`docs/features/2026-10-26-market-indexes-futures-and-detail-pages.md`** — tier 474: dashboard futures/RUT/10Y/gold/BTC + `/market/[ticker]` pages, not stored. Futures change must use `regular_market_previous_close` (`previous_close` read ES +0.67% vs real +0.13%) [indexes, futures]
 - **`docs/features/2026-10-16-dual-game-plan.md`** — Tracker 450: rules-based and on-request LLM perspectives, exact-snapshot binding, model provenance, metered retries and explicit fallback labels.
 - **`docs/features/2026-10-15-completable-followups.md`** — Tracker 446–449: deterministic Game Plan P2, risk quiet hours, company-event shadow coverage and frozen-input calibration research; evidence gates remain open.
 

@@ -92,18 +92,26 @@ function MarketOverview({ indices, signals, breadth }: { indices: MarketIndex[];
   function IndexTile({ idx }: { idx: MarketIndex }) {
     const up = (idx.change_pct ?? 0) >= 0;
     const isVix = idx.ticker === '^VIX';
+    // A yield's own % change is meaningless to read ("-0.04%" of 4.99%); show it in basis points.
+    const isYield = idx.ticker === '^TNX';
+    const yieldUp = (idx.change ?? 0) >= 0;
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', minWidth: '90px' }}>
+      <Link href={`/market/${encodeURIComponent(idx.ticker)}`} title={`${idx.name} — chart and details`}
+        style={{ display: 'flex', flexDirection: 'column', gap: '1px', minWidth: '90px', textDecoration: 'none' }}>
         <div style={{ fontSize: '10px', color: '#475569', fontWeight: 600 }}>{idx.name}</div>
         <div style={{ fontSize: '14px', fontWeight: 800, color: '#f1f5f9' }}>
-          {idx.price != null ? idx.price.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—'}
+          {idx.price == null ? '—' : isYield ? `${idx.price.toFixed(3)}%` : idx.price.toLocaleString(undefined, { maximumFractionDigits: 2 })}
         </div>
-        {idx.change_pct != null && (
+        {isYield ? (idx.change != null && (
+          <div style={{ fontSize: '11px', fontWeight: 700, color: yieldUp ? '#4ade80' : '#f87171' }}>
+            {yieldUp ? '▲' : '▼'} {Math.abs(idx.change * 100).toFixed(1)} bp
+          </div>
+        )) : idx.change_pct != null && (
           <div style={{ fontSize: '11px', fontWeight: 700, color: isVix ? (up ? '#f87171' : '#4ade80') : (up ? '#4ade80' : '#f87171') }}>
             {up ? '▲' : '▼'} {Math.abs(idx.change_pct).toFixed(2)}%
           </div>
         )}
-      </div>
+      </Link>
     );
   }
 
@@ -117,9 +125,19 @@ function MarketOverview({ indices, signals, breadth }: { indices: MarketIndex[];
           <span style={{ fontSize: '12px', fontWeight: 700, color: '#60a5fa' }}>🇺🇸 US Markets</span>
           <StatusBadge open={usOpen} pre={usPreMkt} />
         </div>
-        <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
-          {us.map(i => <IndexTile key={i.ticker} idx={i} />)}
-        </div>
+        {([['index', 'Indexes'], ['futures', 'Futures'], ['macro', 'Rates & Macro']] as const).map(([group, label]) => {
+          // Rows without a group (an older cached payload) render with the indexes.
+          const rows = us.filter(i => (i.group ?? 'index') === group);
+          if (rows.length === 0) return null;
+          return (
+            <div key={group} style={{ marginBottom: '10px' }}>
+              <div style={{ fontSize: '9px', color: '#334155', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '4px' }}>{label}</div>
+              <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+                {rows.map(i => <IndexTile key={i.ticker} idx={i} />)}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {/* HK Markets */}

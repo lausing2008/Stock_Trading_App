@@ -335,6 +335,8 @@ export const api = {
   addStocks: (symbols: string[]) => request<AddStocksResult>(`/admin/add_stocks`, { method: 'POST', body: JSON.stringify({ symbols }) }),
   deleteStock: (symbol: string) => request<{ status: string; symbol: string }>(`/admin/stocks/${symbol}`, { method: 'DELETE' }),
   marketOverview: () => request<MarketIndex[]>(`/stocks/market_overview`),
+  marketIndexDetail: (ticker: string, range: MarketIndexRange) =>
+    request<MarketIndexDetail>(`/stocks/market_index/${encodeURIComponent(ticker)}?range=${range}`),
   fearGreed: () => request<FearGreed>(`/stocks/fear_greed`),
   marketBreadth: (market: string = 'US') => request<MarketBreadth>(`/stocks/market_breadth?market=${market}`),
   hkConnectFlowLeaderboard: (days = 5, limit = 20) =>
@@ -1532,7 +1534,15 @@ export type PortfolioWeights = {
   fallback_reason?: string | null;
 };
 export type LatestPrice = { symbol: string; price: number; prev_close: number | null; change_pct: number | null; currency: string; volume: number | null; avg_volume: number | null };
-export type MarketIndex = { name: string; ticker: string; market: string; price: number | null; change_pct: number | null };
+export type MarketIndex = { name: string; ticker: string; market: string; group?: 'index' | 'futures' | 'macro'; price: number | null; change?: number | null; change_pct: number | null };
+export type MarketIndexRange = '1d' | '5d' | '1mo' | '6mo' | '1y' | '5y';
+export type MarketIndexDetail = MarketIndex & {
+  open: number | null; day_high: number | null; day_low: number | null;
+  year_high: number | null; year_low: number | null;
+  delay_minutes: number | null; description: string;
+  range: MarketIndexRange; interval: string;
+  bars: { t: number; o: number; h: number; l: number; c: number }[];
+};
 export type WatchlistItem = { symbol: string; name: string; name_zh?: string | null; market: string; exchange: string; sector?: string; currency: string; added_at: string; note?: string | null; delisted?: boolean };
 /** One reported value, together with WHY it is missing when it is. `state` is never absent:
  *  a blank cell and "we looked and the provider has nothing" are different reports. */
