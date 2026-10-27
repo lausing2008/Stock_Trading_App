@@ -1,0 +1,70 @@
+Updating 4b95e97fc..7084299df
+Fast-forward
+ .claude/CLAUDE.md                                  |    3 +
+ ...2026-10-26-little-rzy-ai-signals-full-review.md |  197 +++
+ .../ai-targeted-tests.txt                          |    2 +
+ .../calibration-projection-witness.json            |   26 +
+ .../f04-impact-probe.py                            |   74 +
+ .../f04-impact.json                                |  596 +++++++
+ .../manifest.json                                  |   50 +
+ .../ml-threshold-boundary-witness.json             |   14 +
+ .../production-followup.json                       |   22 +
+ .../production-scope.json                          |   57 +
+ .../2026-10-26-rzy-ai-intraday-review/runtime.json | 1739 ++++++++++++++++++++
+ .../rzy-fill-clock-witness.json                    |    9 +
+ .../rzy-targeted-tests.txt                         |    3 +
+ ...6-10-26-intraday-and-signal-performance-plan.md |  141 ++
+ ...l-occurrence-and-delivery-attribution-design.md |  201 +++
+ docs/incidents/market-hours-gating-bugs.md         |   42 +
+ services/market-data/src/services/scheduler.py     |    8 +
+ .../tests/test_session_grid_and_reconcile.py       |   15 +-
+ .../test_sr02_sr05_signal_age_and_hk_calendar.py   |   16 +
+ services/ml-prediction/src/training/trainer.py     |   33 +-
+ .../tests/test_f04_threshold_report_purge.py       |   81 +
+ services/signal-engine/src/api/signals_shared.py   |   27 +-
+ .../signal-engine/src/generators/input_contract.py |  136 ++
+ services/signal-engine/src/generators/signals.py   |   10 +
+ .../tests/test_f01_calibration_query_to_bucket.py  |  154 ++
+ .../tests/test_f02_daily_input_contract.py         |  138 ++
+ shared/common/market_calendar.py                   |   16 +-
+ 27 files changed, 3799 insertions(+), 11 deletions(-)
+ create mode 100644 docs/audits/2026-10-26-little-rzy-ai-signals-full-review.md
+ create mode 100644 docs/audits/evidence/2026-10-26-rzy-ai-intraday-review/ai-targeted-tests.txt
+ create mode 100644 docs/audits/evidence/2026-10-26-rzy-ai-intraday-review/calibration-projection-witness.json
+ create mode 100644 docs/audits/evidence/2026-10-26-rzy-ai-intraday-review/f04-impact-probe.py
+ create mode 100644 docs/audits/evidence/2026-10-26-rzy-ai-intraday-review/f04-impact.json
+ create mode 100644 docs/audits/evidence/2026-10-26-rzy-ai-intraday-review/manifest.json
+ create mode 100644 docs/audits/evidence/2026-10-26-rzy-ai-intraday-review/ml-threshold-boundary-witness.json
+ create mode 100644 docs/audits/evidence/2026-10-26-rzy-ai-intraday-review/production-followup.json
+ create mode 100644 docs/audits/evidence/2026-10-26-rzy-ai-intraday-review/production-scope.json
+ create mode 100644 docs/audits/evidence/2026-10-26-rzy-ai-intraday-review/runtime.json
+ create mode 100644 docs/audits/evidence/2026-10-26-rzy-ai-intraday-review/rzy-fill-clock-witness.json
+ create mode 100644 docs/audits/evidence/2026-10-26-rzy-ai-intraday-review/rzy-targeted-tests.txt
+ create mode 100644 docs/features/2026-10-26-intraday-and-signal-performance-plan.md
+ create mode 100644 docs/features/2026-10-27-f03-signal-occurrence-and-delivery-attribution-design.md
+ create mode 100644 services/ml-prediction/tests/test_f04_threshold_report_purge.py
+ create mode 100644 services/signal-engine/src/generators/input_contract.py
+ create mode 100644 services/signal-engine/tests/test_f01_calibration_query_to_bucket.py
+ create mode 100644 services/signal-engine/tests/test_f02_daily_input_contract.py
+deploy-lock: nested under owner=ec2-user pid=2912011 what=f01-f02-signal-engine-only started=2026-10-27T13:25:55Z token=6c8f270157383775
+[33m  only 25G free — pruning before build[0m
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   76G   25G  76% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   76G   25G  76% /
+── signal-engine ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-signal-engine Built 
+ Container stockai-signal-engine-1 Starting 
+ Container stockai-signal-engine-1 Started 
+── verify (settling 45s) ──────────────────────────────
+[32m  signal-engine: running/healthy[0m
+[32m  all declared services present[0m
+  host: 25G free, iowait 3.1%
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   76G   25G  76% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   76G   25G  76% /
