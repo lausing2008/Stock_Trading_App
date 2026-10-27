@@ -228,6 +228,11 @@ _CONF_CAL_TTL = 3600  # 1 hour
 _CONF_CAL_MIN_COUNT = 30
 
 
+# F02: generators/input_contract.SESSION_CLOSED — the only first-fire input basis this
+# completed-session calibration admits (a test pins the two together).
+_SESSION_CLOSED = "session_closed"
+
+
 def _cal_bucket_key(horizon: str, direction: str, market: str | None, band: str) -> str:
     if market:
         return f"{horizon}|{direction}|{market}|{band}"
@@ -255,6 +260,9 @@ def _build_confidence_calibration(session: Session) -> dict:
             SignalOutcome.signal_date, SignalOutcome.entry_date, SignalOutcome.exit_date,
             SignalOutcome.evidence_status,
             Signal.alert_delivery_state, Signal.alert_delivery_version,
+            # F02: the input basis frozen with the first-fire snapshot the outcome scores.
+            Signal.first_buy_sell_reasons["input_contract"]["basis"].as_string()
+            .label("input_basis"),
         )
         .join(Signal, Signal.id == SignalOutcome.signal_id)
         .join(Stock, Stock.id == SignalOutcome.stock_id)
@@ -280,13 +288,24 @@ def _build_confidence_calibration(session: Session) -> dict:
     _timing_eligible_count = len(rows)
     from .calibration_safety import evidence_eligible
     rows = [r for r in rows if r.evidence_status == "verified" and evidence_eligible(r)]
+    _verified_ineligible = _evidence_counts["verified"] - len(rows)
+    # F02: this is a COMPLETED-SESSION calibration. A first fire computed on a forming intraday
+    # bar is a different observation; so is a legacy snapshot that never recorded its basis
+    # (`unrecorded` — not known to be completed, so not admitted). Both stay counted.
+    _basis_counts: dict[str, int] = {}
+    for r in rows:
+        _b = r.input_basis or "unrecorded"
+        _basis_counts[_b] = _basis_counts.get(_b, 0) + 1
+    rows = [r for r in rows if r.input_basis == _SESSION_CLOSED]
     _exclusions = {"original_count": _part["original_count"],
                    "timing_eligible_count": _timing_eligible_count,
                    "eligible_count": len(rows),
                    # Verified rows the strict signal < entry <= exit contract still rejected
                    # (a stored exit missing or before entry). Visible so a projection loss
                    # like F01 cannot again read as "no verified data yet".
-                   "verified_ineligible_count": _evidence_counts["verified"] - len(rows),
+                   "verified_ineligible_count": _verified_ineligible,
+                   "input_basis_counts": _basis_counts,
+                   "input_basis_requirement": _SESSION_CLOSED,
                    "excluded_total": _part["excluded_total"],
                    "excluded_by_reason": _part["excluded_counts"],
                    "exclusion_reasons": _part["exclusion_reasons"],

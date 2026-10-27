@@ -51,10 +51,11 @@ def session(monkeypatch):
 
 
 def _add(s, i, *, signal_date, entry_date, exit_date, evidence="verified", correct=True,
-         delivery=None):
+         delivery=None, basis="session_closed"):
+    first_fire = None if basis is None else {"input_contract": {"basis": basis}}
     s.add(_models.Signal(id=i, stock_id=1, signal=_models.SignalType.BUY,
                          horizon=_models.SignalHorizon.SWING, confidence=60.0,
-                         alert_delivery_state=delivery))
+                         alert_delivery_state=delivery, first_buy_sell_reasons=first_fire))
     s.add(_models.SignalOutcome(
         id=i, signal_id=i, stock_id=1, symbol="TEST", horizon=_models.SignalHorizon.SWING,
         signal_direction="BUY", signal_date=signal_date, confidence=60.0,
@@ -82,6 +83,7 @@ def test_complete_verified_outcomes_reach_a_published_bucket(session):
     assert meta["timing_eligible_count"] == N_COMPLETE
     assert meta["eligible_count"] == N_COMPLETE, "the query must project every field the gate reads"
     assert meta["verified_ineligible_count"] == 0
+    assert meta["input_basis_counts"] == {"session_closed": N_COMPLETE}
 
     for key, scope in ((MARKET_KEY, "market"), (POOLED_KEY, "pooled_markets")):
         bucket = got[key]
@@ -125,3 +127,28 @@ def test_a_thin_verified_cohort_keeps_its_counts_without_a_rate(session):
     assert got[MARKET_KEY]["win_rate"] is None
     assert got[MARKET_KEY]["status"] == "insufficient_eligible_history"
     assert got[MARKET_KEY]["count"] == 10
+
+
+def test_only_completed_session_first_fires_are_calibrated(session):
+    """F02: a first fire computed on a forming intraday bar, or a legacy snapshot with no
+    recorded basis, is verified and timing-eligible but is NOT a completed-session observation."""
+    _complete_cohort(session)
+    sig = date.today() - timedelta(days=30)
+    for i, basis in ((201, "provisional_intraday"), (202, None), (203, "unknown")):
+        _add(session, i, signal_date=sig, entry_date=sig + timedelta(days=1),
+             exit_date=sig + timedelta(days=15), basis=basis)
+    session.commit()
+
+    got = signals_shared._build_confidence_calibration(session)
+    meta = got["__meta__"]
+    assert meta["verified_ineligible_count"] == 0
+    assert meta["input_basis_counts"] == {"session_closed": N_COMPLETE, "provisional_intraday": 1,
+                                          "unrecorded": 1, "unknown": 1}
+    assert meta["input_basis_requirement"] == "session_closed"
+    assert meta["eligible_count"] == N_COMPLETE
+    assert got[MARKET_KEY]["count"] == N_COMPLETE
+
+
+def test_the_calibration_basis_constant_matches_the_generator_contract():
+    from generators.input_contract import SESSION_CLOSED
+    assert signals_shared._SESSION_CLOSED == SESSION_CLOSED

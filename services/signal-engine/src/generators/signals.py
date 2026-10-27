@@ -2922,6 +2922,16 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
 
     is_stale = _check_price_staleness(df, symbol)
     ta_prob, reasons = _ta_score(df, ta_weights=_ta_weights)
+    # F02: record WHICH daily bars these indicators came from — a forming intraday bar or a
+    # closed session. Descriptive only; nothing below reads it. Shared across every style, so
+    # the first-fire snapshot freezes it and calibration can admit completed-session fires only.
+    try:
+        from .input_contract import daily_input_contract
+        reasons["input_contract"] = daily_input_contract(
+            df, "HK" if symbol.upper().endswith(".HK") else "US")
+    except Exception as _ic_err:
+        log.warning("signal.input_contract_failed", symbol=symbol, error=str(_ic_err))
+        reasons["input_contract"] = {"basis": "unknown", "error": str(_ic_err)[:200]}
     sr_data = _sr_context(df, symbol=symbol)
 
     # T228: HK liquidity filter — flag stocks with avg 20d daily turnover < HKD 50M
