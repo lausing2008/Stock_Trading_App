@@ -657,6 +657,18 @@ def _load_outcome_features(
 _MIN_SLICE_ROWS = 10
 
 
+def _threshold_report_bounds(n_test: int, horizon: int) -> tuple[int, int]:
+    """(threshold_end, report_start) for the final test slice — F04 (2026-10-26 review).
+
+    Rows [0, threshold_end) select the BUY threshold; rows [report_start, n_test) report the
+    metrics; the `horizon` rows between are purged so no threshold-selection label matures
+    inside the reporting period. Whether the remaining report rows are ENOUGH is the caller's
+    holdout gate, not this function's.
+    """
+    threshold_end = max(1, (n_test - horizon) // 2)
+    return threshold_end, min(n_test, threshold_end + horizon)
+
+
 def _ts_range(frame) -> tuple[str, str] | None:
     """(first, last) bar date of a price frame, or None when it cannot be read.
 
@@ -1402,9 +1414,15 @@ def train_model(
     else:
         preds = calibrator.predict(raw_test_probs)
 
-    _thresh_split = max(1, len(X_test) // 2)
-    y_test_thresh, y_test_report = y_test.iloc[:_thresh_split], y_test.iloc[_thresh_split:]
-    preds_thresh, preds_report = preds[:_thresh_split], preds[_thresh_split:]
+    # F04 (2026-10-26 review): the halves had NO purge between them, so a threshold-selection
+    # row's H-bar label could mature inside the reporting period — the same straddle T232-ML4
+    # closed at every earlier boundary. A gap of `horizon` rows now separates them (rows are
+    # distinct sessions, so `horizon` rows span at least `horizon` sessions). The gap is taken
+    # from the MIDDLE so both halves share the cost; when the slice cannot afford it, the
+    # holdout gate below fails and the existing in-sample fallback (suppressed) applies.
+    _thresh_split, _report_start = _threshold_report_bounds(len(X_test), horizon)
+    y_test_thresh, y_test_report = y_test.iloc[:_thresh_split], y_test.iloc[_report_start:]
+    preds_thresh, preds_report = preds[:_thresh_split], preds[_report_start:]
     # M13-TRACE: `n_test` is len(X_test) BEFORE this subdivision, while the reported AUC,
     # precision and recall are computed on `y_test_report` when holdout reporting is possible.
     # Measured in production: MU GROWTH stored n_test 27 against 14 actual reporting rows, and
@@ -1419,6 +1437,7 @@ def train_model(
     # a reader should use is `n_metric_rows`, which is recorded per artifact either way.
     _n_threshold_rows = int(len(y_test_thresh))
     _n_report_rows = int(len(y_test_report))
+    _n_report_purge_rows = int(len(y_test) - _n_threshold_rows - _n_report_rows)
 
     # T228-HK-MODEL-SEPARATE: use tighter HK precision floor when applicable
     _hk_suffix = "_HK" if symbol.upper().endswith(".HK") else ""
@@ -1454,7 +1473,9 @@ def train_model(
     if threshold_evaluation_mode == "holdout":
         _led.record(
             "threshold_report_sets", rows_in=_n_test_rows, rows_out=_n_report_rows,
-            dropped={"consumed_selecting_the_threshold": _n_threshold_rows},
+            dropped={k: v for k, v in (
+                ("consumed_selecting_the_threshold", _n_threshold_rows),
+                ("purge_gap_before_reporting", _n_report_purge_rows)) if v},
             partition={"reporting": _n_report_rows},
             class_support={"pos": int(np.sum(y_test.values == 1)),
                            "neg": int(np.sum(y_test.values == 0))},
@@ -1546,6 +1567,10 @@ def train_model(
         # denominator of the auc/precision/recall stored in this same dict.
         "n_threshold_rows": _n_threshold_rows,
         "n_report_rows": _n_report_rows,
+        # F04: rows withheld between the threshold and reporting halves (0 on the fallback
+        # branch, where the same rows serve both roles).
+        "n_report_purge_rows": (_n_report_purge_rows
+                                if threshold_evaluation_mode == "holdout" else 0),
         "n_metric_rows": int(len(y_test)),
         "metric_class_support": {"pos": int(np.sum(y_test.values == 1)),
                                  "neg": int(np.sum(y_test.values == 0))},

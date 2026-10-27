@@ -76,6 +76,8 @@ The live daily Signal row changes repeatedly. Outcomes score its **first** BUY/S
 
 ### F04 — P1, confirmed conditional validation defect: no label purge at the final ML split
 
+**Status (2026-10-26): FIXED locally, takes effect at the next retrain.** `_threshold_report_bounds()` puts a `horizon`-row gap between the threshold-selection and reporting halves, taken from the middle; metrics record `n_report_purge_rows` and the ledger records the gap as a drop. When the slice cannot afford the full gap the existing 10-row holdout gate fails and the suppressed in-sample fallback applies — never a partial gap presented as clean. Consequence: holdout now needs roughly `horizon + 20` test rows instead of 20, so short-history models (mainly LONG below ~600 rows) will be suppressed after retraining; not yet measured against production artifacts. Regression: `services/ml-prediction/tests/test_f04_threshold_report_purge.py` (witness case reproduced; 8 of 9 fail when the gap is removed); ml-prediction suite 466 passed.
+
 **Path:** `services/ml-prediction/src/training/trainer.py:1405–1432`.
 
 The trainer has real embargoes between train/early-stop/calibration/test and suppresses insufficient evaluation evidence. However, it then divides the final test slice into threshold-selection and reporting halves with **no purge between those halves**. A threshold-selection example's future label can extend into the reporting period. The branch is labelled `holdout` based on row count/classes, not label-window separation.
