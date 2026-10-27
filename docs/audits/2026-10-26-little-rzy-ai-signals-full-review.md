@@ -70,7 +70,7 @@ Real-time provisional daily estimates may be a valid separate product, but they 
 
 ### F03 — P1, confirmed attribution weakness: delivered outcomes attach to a mutable daily row
 
-**Status (2026-10-27): observation phase BUILT, not deployed; sender/receipt slice not started.** Occurrences per venue session, `opened` and `completed_close` snapshots and the first-wins completed-close record (F02's remainder) are written beside the existing columns. Nothing reads them except a churn report. Receipts and delivered outcomes wait for ≥ 5 observed sessions. See [design §12](../features/2026-10-27-f03-signal-occurrence-and-delivery-attribution-design.md#12-observation-phase--built-2026-10-27-not-deployed). Deploying needs all 12 images; the held F04 trainer change is reverted from `prod`.
+**Status (2026-10-27): observation phase DEPLOYED (`1be6c90c`, all 12 backends, verified); sender/receipt slice not started.** Occurrences per venue session, `opened` and `completed_close` snapshots and the first-wins completed-close record (F02's remainder) are written beside the existing columns. Nothing reads them except a churn report. Receipts and delivered outcomes wait for ≥ 5 observed sessions. See [design §12](../features/2026-10-27-f03-signal-occurrence-and-delivery-attribution-design.md#12-observation-phase--built-2026-10-27-not-deployed). Deploying needs all 12 images; the held F04 trainer change is reverted from `prod`.
 
 **Path:** shared `Signal` first-fire fields; `signals_shared.py:_stored_signal_for_style`, `_build_confidence_calibration`; scheduler `check_signal_alerts`; `outcomes.py:evaluate_signal_outcomes`.
 

@@ -230,7 +230,7 @@ The impact probe establishes **38 unsuppressed artifacts** at risk, not necessar
 Read-only historical sizing evidence at **2026-10-27 13:29 UTC**: over the last 30 days, **7,753 daily rows** have a first actionable fire. Of these, **2,503** differ from their frozen first-fire direction at read time (only **7** currently show the opposite actionable direction; most other differences are HOLD/WAIT). Another **2,468** retain that first direction but have changed confidence. These are endpoint comparisons and lower bounds, not complete transition counts, delivered-alert misattribution counts or independent trades. [Per-horizon counts and limitations](../audits/evidence/2026-10-27-f01-f02-deployment/f03-historical-lower-bounds.json).
 
 
-## 12. Observation phase — built 2026-10-27, not deployed
+## 12. Observation phase — built and deployed 2026-10-27
 
 The first slice under §11 decision 4: passive observation of what each generation published.
 **No sender, alert-gating, eligibility, outcome or calibration path changed**; nothing reads these
@@ -341,3 +341,46 @@ The sender slice (durable send intent committed before the network call, bounded
 token, settlement after, `unknown` that is never treated as an ordinary safe resend, and
 receipt-keyed delivered outcomes with a strictly-after-acceptance close) is designed from those
 measurements and is not started.
+
+
+### Deployment (2026-10-27, release `1be6c90c`)
+
+- **Release.** F04 is preserved on branch `f04-threshold-report-purge`. `a82e2401` is a
+  code-only revert of `28f232bd` on `prod`; no later commit depended on it.
+- **Deploy.** All 12 backends were rebuilt and recreated one at a time by `scripts/deploy.sh`
+  under one host lock: market-data first, so its startup `create_all` made the tables before the
+  new signal-engine wrote to them. 14:01–14:02 UTC (10:01 ET, US session open), exit 0, 12/12
+  healthy, 25 GB free. iowait read 50–63% just after the deploy and was back to 0% by 14:04 UTC.
+- **Verification.** [`verify_production.py`](../audits/evidence/2026-10-27-f03-observation-deployment/verify_production.py),
+  run on EC2, read-only.
+  - **Code match.** Every container's `/app/src` and `/app/shared` match `1be6c90c`, file by
+    file: 0 mismatches across all 12.
+  - **Trainer.** The running trainer is byte-identical to F04's parent, with 0 F04 markers.
+  - **Schema.** The three tables and all 7 indexes and constraints exist.
+  - **Persistence.** After the first refresh, 52 signals were written, 3 runs opened with 3
+    `opened` snapshots, and 0 `signal.occurrence_observe_failed` were logged.
+- **Partial session.** The deployment session (US 2026-10-27) is excluded from the read. So is
+  any session in which signal-engine is recreated.
+
+**Pre-existing finding (not F03): signals upsert vs alert-delivery deadlock.** One
+`signals.refresh.skip` after the deploy was a PostgreSQL deadlock on MDB. It was between
+signal-engine's `INSERT … ON CONFLICT` on `signals` and market-data's
+`UPDATE signals SET alert_delivery_state=…`. PostgreSQL's log shows the class long before this
+deploy: 2, 6, 12, 15 and 10 deadlocks on 10-20/21/22/23/26, and 3 on 10-27 before 14:00 UTC.
+None of the 49 in the log involve an F03 table or the advisory lock. Each one rolls back that
+symbol's whole signal batch for the cycle, which is a real persistence loss. Not fixed here: it
+needs its own decision (lock ordering between the two writers, or a retry on deadlock). The
+daily capture counts deadlocks and flags any that involve F03, so a rate change after F03 is
+measured, not assumed.
+
+**Collection.** [`collect_session.py`](../audits/evidence/2026-10-27-f03-observation-deployment/collect_session.py)
+is a read-only daily capture to run after both closes (23:00 UTC weekdays). It captures:
+- the observation report;
+- observation failures, refresh skips and PostgreSQL deadlocks, counted since the previous
+  capture so log rotation (5 × 20 MB) cannot drop them;
+- signals written per UTC day, as the persistence denominator.
+
+Dry-run on production at 14:1x UTC: 16 open runs, 0 failures, 1 deadlock (not F03), tables
+≈ 240 KB. **Not yet scheduled:** installing the EC2 cron entry was refused by the session's
+permission policy and awaits the user. The receipt design starts only after ≥ 5 complete
+sessions per market have been read.

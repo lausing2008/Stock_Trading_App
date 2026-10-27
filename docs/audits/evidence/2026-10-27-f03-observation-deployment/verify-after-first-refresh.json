@@ -1,0 +1,124 @@
+{
+  "captured_at": "2026-10-27T14:06:17+00:00",
+  "repo_head": "1be6c90cd2ca6d7227aabc01dbec35af045943ba",
+  "containers": {
+    "market-data": {
+      "started_at": "2026-10-27T14:01:41.621097147Z",
+      "health": "healthy",
+      "image": "sha256:d4cf48b2802f",
+      "shared_mismatch": [],
+      "src_mismatch": []
+    },
+    "signal-engine": {
+      "started_at": "2026-10-27T14:01:43.835284183Z",
+      "health": "healthy",
+      "image": "sha256:baedd37f551a",
+      "shared_mismatch": [],
+      "src_mismatch": []
+    },
+    "ml-prediction": {
+      "started_at": "2026-10-27T14:01:55.871121065Z",
+      "health": "healthy",
+      "image": "sha256:3fa7c7cb521b",
+      "shared_mismatch": [],
+      "src_mismatch": []
+    },
+    "technical-analysis": {
+      "started_at": "2026-10-27T14:01:58.881335845Z",
+      "health": "healthy",
+      "image": "sha256:da2f46763f1d",
+      "shared_mismatch": [],
+      "src_mismatch": []
+    },
+    "ranking-engine": {
+      "started_at": "2026-10-27T14:02:02.931803739Z",
+      "health": "healthy",
+      "image": "sha256:a2186e404e07",
+      "shared_mismatch": [],
+      "src_mismatch": []
+    },
+    "strategy-engine": {
+      "started_at": "2026-10-27T14:02:12.119203977Z",
+      "health": "healthy",
+      "image": "sha256:c8b720c2ca41",
+      "shared_mismatch": [],
+      "src_mismatch": []
+    },
+    "portfolio-optimizer": {
+      "started_at": "2026-10-27T14:02:23.075173256Z",
+      "health": "healthy",
+      "image": "sha256:f8665cd5912c",
+      "shared_mismatch": [],
+      "src_mismatch": []
+    },
+    "research-engine": {
+      "started_at": "2026-10-27T14:02:27.55994001Z",
+      "health": "healthy",
+      "image": "sha256:c7e482f047c5",
+      "shared_mismatch": [],
+      "src_mismatch": []
+    },
+    "decision-engine": {
+      "started_at": "2026-10-27T14:02:36.581225842Z",
+      "health": "healthy",
+      "image": "sha256:2bf3bc7514ec",
+      "shared_mismatch": [],
+      "src_mismatch": []
+    },
+    "event-intelligence": {
+      "started_at": "2026-10-27T14:02:39.750762004Z",
+      "health": "healthy",
+      "image": "sha256:cdbd25fac12f",
+      "shared_mismatch": [],
+      "src_mismatch": []
+    },
+    "news-intelligence": {
+      "started_at": "2026-10-27T14:02:43.071541181Z",
+      "health": "healthy",
+      "image": "sha256:4604541df1fe",
+      "shared_mismatch": [],
+      "src_mismatch": []
+    },
+    "api-gateway": {
+      "started_at": "2026-10-27T14:02:46.212235951Z",
+      "health": "healthy",
+      "image": "sha256:8fca28877a12",
+      "shared_mismatch": [],
+      "src_mismatch": []
+    }
+  },
+  "trainer": {
+    "sha256": "fc7d772ad803b10eea47118c782a1364e3b56268bbc1d3cbee25ddb2a21d07c8",
+    "equals_pre_f04_parent": true,
+    "f04_markers": 0
+  },
+  "database": {
+    "tables": [
+      "signal_occurrences",
+      "signal_session_closes",
+      "signal_snapshots"
+    ],
+    "indexes": [
+      "ix_signal_snapshots_stock_session",
+      "signal_occurrences_pkey",
+      "signal_session_closes_pkey",
+      "signal_snapshots_pkey",
+      "uq_signal_occurrence_open",
+      "uq_signal_occurrence_seq",
+      "uq_signal_snapshot_content"
+    ],
+    "signals_written_since_start": 52,
+    "signals_max_ts": "2026-10-27 14:06:23.300558",
+    "occurrences": 3,
+    "open_occurrences": 3,
+    "snapshots_by_kind": {
+      "opened": 3
+    },
+    "session_closes": 0
+  },
+  "signal_engine_log": {
+    "occurrence_observe_failed": 0,
+    "refresh_skip": 2,
+    "tracebacks": 0
+  }
+}
