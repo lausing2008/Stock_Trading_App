@@ -308,6 +308,29 @@ report's `table_bytes` gives the real figure after the first sessions.
     opening transaction is now held open for 0.3 s so the overlap is certain.
 - `make test`: all 12 backend suites and the scripts passed.
 
+**Pre-deploy review (2026-10-27).**
+- **Hooks.** Both `signals` writers observe after their upsert, with the row id from `RETURNING`.
+  Both iterate `generate_all_signals()`, which returns SHORT, SWING, LONG and GROWTH in that order.
+  The live path's reasons come from the same generator, so they carry `input_contract`.
+- **Locking.** On each path, each horizon's advisory lock is taken right after that horizon's row
+  upsert, and both are held to the same commit. Every writer takes them in the same horizon order,
+  so the new lock adds no deadlock cycle with the existing row locks.
+  - Its only new wait is between two UTC rows of the same session (a US evening run). That
+    serialisation is intended.
+  - A wait lasts at most until the other writer's per-symbol commit, the same bound the row lock
+    already has.
+- **Session identity.** Taken from F02's contract only (`forming`/`completed` newest bar), never
+  from `ts`. A run left open by a stock that stops generating is closed by its next generation as
+  `session_change`. Its `closed_at` is when the closure was *observed*, not when the session ended,
+  so the report counts runs and does not read durations.
+- **Failure isolation.** Shown on PostgreSQL. A real aborted SQL statement inside the SAVEPOINT
+  leaves the outer transaction usable, the earlier `signals` upsert commits, and the partial
+  occurrence insert is rolled back with the savepoint. With the savepoint removed the test fails
+  (`test_a_real_database_error_in_the_observer_never_loses_the_signal_upsert`). A flush error from
+  unrelated pending ORM state would fail the caller's own commit anyway, so the observer adds none.
+- **Kill switch.** `F03_OBSERVATION=0` in the shared `.env` (compose `env_file`), then recreate
+  signal-engine. A plain restart does not re-read `env_file`.
+
 **Deployment, when approved.** This touches `shared/`, so all 12 backend images are rebuilt
 together, serialised under the host lock (`scripts/deploy.sh`). `create_all` creates the three
 tables under the startup DDL lock. Their foreign keys to `signals`/`stocks` take a brief lock,

@@ -154,3 +154,21 @@ def test_the_report_runs_on_postgresql_with_table_sizes(engine):
         rep = ob.observation_report(s)
     assert rep["close_reasons"] == {"direction_change": 1, "open": 1}
     assert set(rep["table_bytes"]) == {"signal_occurrences", "signal_snapshots", "signal_session_closes"}
+
+
+def test_a_real_database_error_in_the_observer_never_loses_the_signal_upsert(engine, monkeypatch):
+    """Failure isolation on PostgreSQL: an aborted statement inside the SAVEPOINT leaves the outer
+    transaction usable, and the signals upsert made before it commits."""
+    monkeypatch.setattr(ob, "_SNAPSHOT_INSERT", text("INSERT INTO no_such_table VALUES (1)"))
+    with Session(engine) as s:
+        s.execute(text("INSERT INTO signals (stock_id, signal, horizon, confidence, source) "
+                       "VALUES (1, 'BUY', 'SWING', 60, 'signal-engine')"))
+        got = ob.observe_safely(s, stock_id=1, horizon="SWING", signal="BUY", confidence=60.0,
+                                bullish_probability=0.7, reasons=_reasons(), now=T0)
+        s.execute(text("UPDATE signals SET confidence = 61 WHERE stock_id = 1"))  # txn still live
+        s.commit()
+    assert got is None
+    with engine.connect() as c:
+        assert c.execute(text("SELECT confidence FROM signals")).scalar() == 61
+        assert c.execute(text("SELECT COUNT(*) FROM signal_occurrences")).scalar() == 0, \
+            "the occurrence INSERT before the failing snapshot was rolled back with it"
