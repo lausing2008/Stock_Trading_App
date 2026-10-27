@@ -70,6 +70,8 @@ Real-time provisional daily estimates may be a valid separate product, but they 
 
 ### F03 — P1, confirmed attribution weakness: delivered outcomes attach to a mutable daily row
 
+**Status (2026-10-27): observation phase BUILT, not deployed; sender/receipt slice not started.** Occurrences per venue session, `opened` and `completed_close` snapshots and the first-wins completed-close record (F02's remainder) are written beside the existing columns. Nothing reads them except a churn report. Receipts and delivered outcomes wait for ≥ 5 observed sessions. See [design §12](../features/2026-10-27-f03-signal-occurrence-and-delivery-attribution-design.md#12-observation-phase--built-2026-10-27-not-deployed). Deploying needs all 12 images, and must exclude the held F04 trainer change.
+
 **Path:** shared `Signal` first-fire fields; `signals_shared.py:_stored_signal_for_style`, `_build_confidence_calibration`; scheduler `check_signal_alerts`; `outcomes.py:evaluate_signal_outcomes`.
 
 The live daily Signal row changes repeatedly. Outcomes score its **first** BUY/SELL snapshot; delivery marks the row ID of the **current** selected signal. The calibration reader then joins that row's strongest delivery state to the first-fire outcome. Example: first SELL at 10:00 is never mailed; later BUY at 13:00 is mailed on the same row. The eventual first-SELL outcome can enter the “sender accepted” cohort even though that thesis was not the delivered one. Confidence changes within one direction have the same issue. The recipient count accumulates acceptances, so it is not necessarily a distinct-recipient count.

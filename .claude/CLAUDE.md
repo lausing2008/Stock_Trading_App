@@ -383,7 +383,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
 - **`docs/audits/2026-10-26-little-rzy-ai-signals-full-review.md`** — RZY/AI correctness review, reproduced measurement defects, production evidence and staged Intraday/performance plan; documentation only.
-- **`docs/features/2026-10-27-f03-signal-occurrence-and-delivery-attribution-design.md`** — F03 design, not built: review recommendations, durable receipt intent, per-recipient outcomes, historical sizing limits and rollout; F04 remains held.
+- **`docs/features/2026-10-27-f03-signal-occurrence-and-delivery-attribution-design.md`** — F03: §12 observation phase BUILT, not deployed (occurrences per venue session, snapshots, completed close); receipts/sender slice not started. 12-image deploy must exclude held F04.
 - **`docs/features/2026-10-26-intraday-and-signal-performance-plan.md`** — Fifth-horizon contract, causal execution, research baseline, staged implementation and promotion gates; proposed, not implemented.
 - **`docs/audits/2026-10-21-ai-signals-horizon-thresholds-and-intraday-plan.md`** — per-horizon effective thresholds (watchdog > calibrated > default), INTRADAY research baseline. ML-weight calibrator never simulates the runtime ramp→cap→floor, so its "0" runs as .15; 0 verified outcomes [thresholds, calibration]
 

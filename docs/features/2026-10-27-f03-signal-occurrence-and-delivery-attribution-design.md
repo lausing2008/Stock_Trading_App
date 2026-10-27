@@ -228,3 +228,95 @@ The impact probe establishes **38 unsuppressed artifacts** at risk, not necessar
 
 
 Read-only historical sizing evidence at **2026-10-27 13:29 UTC**: over the last 30 days, **7,753 daily rows** have a first actionable fire. Of these, **2,503** differ from their frozen first-fire direction at read time (only **7** currently show the opposite actionable direction; most other differences are HOLD/WAIT). Another **2,468** retain that first direction but have changed confidence. These are endpoint comparisons and lower bounds, not complete transition counts, delivered-alert misattribution counts or independent trades. [Per-horizon counts and limitations](../audits/evidence/2026-10-27-f01-f02-deployment/f03-historical-lower-bounds.json).
+
+
+## 12. Observation phase — built 2026-10-27, not deployed
+
+The first slice under §11 decision 4: passive observation of what each generation published.
+**No sender, alert-gating, eligibility, outcome or calibration path changed**; nothing reads these
+tables except the report below. Receipts (`signal_delivery_receipts`) and `occurrence_outcomes`
+are **not** created yet: the sender slice needs the §11 durable-intent/lease design worked out
+first, and its outcomes must reference `receipt_id` (§11 decision 3), which changes that table's
+key from §4.
+
+**Tables (3 of the 5; `shared/db/models.py`, created by `create_all`, no `ALTER`):**
+`signal_occurrences`, `signal_snapshots` (kinds `opened`, `completed_close`) and
+`signal_session_closes`. Differences from §4, each following §11:
+
+- An occurrence is keyed by `(stock_id, horizon, session_date, seq)`, not `signal_id:seq`. The
+  UTC daily row is not the session: a US generation after 20:00 ET lands on the next UTC row but
+  still reads that session's bar. `opened_signal_id` and each snapshot's `signal_id` record which
+  row it was published on. At most one run is open per `(stock_id, horizon)`, enforced by a
+  partial unique index as well as the lock.
+- **Session identity** is the session of the generation's newest daily bar (F02
+  `input_contract.last_bar_date`), only when its status is `forming` or `completed`. A generation
+  without one (`future`, `not_a_session`, unknown) is not observed. A generation reading an older
+  session than the open run is ignored rather than reopening the past.
+- **Transitions:** opposite direction → `direction_change` and the next `seq`; HOLD → `to_hold`,
+  WAIT → `to_wait` (both explicit, neither opens a run); a later session → `session_change`, even
+  in the same direction. Confidence changes stay in the run.
+- **Churn without per-generation rows:** each run counts `generations` and `content_changes`
+  (generations whose decision-content hash differs from the previous one). This measures
+  within-session strength churn exactly, at one row per run.
+- **Decision-content hash** covers signal, horizon, confidence, probability and the full reasons,
+  with only `input_contract.generated_at` removed. A changed input identity or reason is a
+  different hash.
+- **Completed close** is written by the first generation whose newest bar *is* the target session
+  and whose venue clock has passed that session's close. Yesterday's completed bar can only freeze
+  yesterday's record. First wins (primary key). It may be HOLD/WAIT, in which case it has no
+  occurrence. `close_ingest_verified` stays NULL: calendar closure is not provider finality.
+
+**Write path.** `api/occurrence_observer.py:observe_safely()` is called after each `signals`
+upsert at both sites (`_bulk_persist()` and the live `signal_for()` path, which publishes to the
+same row), with the row id from `RETURNING id`. It runs in its own SAVEPOINT: a failure rolls back
+only the observation and logs `signal.occurrence_observe_failed`. All generations for one
+`(stock_id, horizon)` are serialised by `pg_advisory_xact_lock(0x0F03, stock_id*8+horizon)` until
+the caller commits. A row lock on `signals` would not cover a session that spans two UTC rows.
+Kill switch: `F03_OBSERVATION=0` in the container environment.
+
+**Report.** `observation_report(session, since=None)` returns, per session/market/horizon: runs,
+later runs (`seq > 1`), generations and content changes; close reasons; completed-close records
+by signal; and on PostgreSQL the three tables' sizes. It is read-only. Its counts cover only what
+was observed from deployment onward, and a session with no post-close generation has no
+completed-close record.
+
+**Volume (to be measured, not estimated).** The §11 lower bound of 7,753 first-fire rows per 30
+days implies at least ~260 runs opened per day. Completed-close snapshots are up to one per
+`(stock, horizon)` per session with a post-close generation, each carrying a full `reasons`. The
+report's `table_bytes` gives the real figure after the first sessions.
+
+**Tests.**
+- `tests/test_f03_occurrence_observer.py` runs on SQLite with the real models (18 tests):
+  - SELL→BUY gives two runs.
+  - Same-direction strength changes are counted, and the `opened` snapshot stays frozen.
+  - HOLD and WAIT close a run, and a later BUY opens `seq 2`.
+  - A session change closes a run even in the same direction.
+  - An older session is ignored, and a non-session bar is not observed.
+  - The hash excludes only the clock.
+  - The completed close is first-wins, may be HOLD, and is never frozen from yesterday's bar.
+  - Savepoint isolation: a failed observation leaves the upsert intact, and a partial write is undone.
+  - The kill switch, the report, and the wiring at both sites.
+- `tests/test_f03_occurrence_observer_pg.py` runs on PostgreSQL 16, skipped unless `STOCKAI_F03_DB`
+  names a throwaway database (5 tests):
+  - 8 concurrent openers produce one run with 8 generations.
+  - 6 concurrent opposite-direction generations leave one open run, with gapless `seq` and none lost.
+  - The partial index refuses a second open run.
+  - JSON round-trips, NaN is stored as null, and the completed close is first-wins under concurrency.
+  - The report and table sizes.
+  - Sabotage check: with the advisory lock removed, both race tests fail. In an earlier version
+    the threads happened to run one after another and those tests passed without the lock; an
+    opening transaction is now held open for 0.3 s so the overlap is certain.
+- `make test`: all 12 backend suites and the scripts passed.
+
+**Deployment, when approved.** This touches `shared/`, so all 12 backend images are rebuilt
+together, serialised under the host lock (`scripts/deploy.sh`). `create_all` creates the three
+tables under the startup DDL lock. Their foreign keys to `signals`/`stocks` take a brief lock,
+handled by the existing lock_timeout/retry contract. The held F04 trainer fix is on `prod` (`28f232bd`). Before deploying ml-prediction, the F04 change must be
+excluded (revert it, or deploy from a commit that lacks it); a shared-schema rebuild does not
+justify shipping it (§11).
+
+**Observation window and the next slice.** Run for ≥ 5 sessions per market, then read the report.
+The sender slice (durable send intent committed before the network call, bounded lease/fencing
+token, settlement after, `unknown` that is never treated as an ordinary safe resend, and
+receipt-keyed delivered outcomes with a strictly-after-acceptance close) is designed from those
+measurements and is not started.

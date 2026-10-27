@@ -18,6 +18,7 @@ from common.jwt_auth import get_current_username
 from db import Price, Signal, SignalHorizon, Stock, TimeFrame, get_session
 
 from ..generators import generate_signal, generate_all_signals
+from .occurrence_observer import observe_safely as _observe_occurrence
 from .signals_shared import (
     _calibrated_win_rate, _compute_stability, _get_confidence_calibration,
     _get_redis, _json_safe, _service_token, _settings, _stored_signal_for_style, log,
@@ -458,7 +459,7 @@ def _bulk_persist(symbols: list[str]) -> None:
                     # as a BUY/SELL genuinely first occurs — this correctly handles a signal that
                     # starts HOLD and transitions to BUY/SELL later the same day, not just one
                     # that's BUY/SELL on its very first upsert.
-                    s.execute(
+                    _row = s.execute(
                         text("""
                             INSERT INTO signals
                                 (stock_id, signal, horizon, confidence, bullish_probability, reasons, source,
@@ -485,6 +486,7 @@ def _bulk_persist(symbols: list[str]) -> None:
                                 first_buy_sell_confidence           = COALESCE(signals.first_buy_sell_confidence, EXCLUDED.first_buy_sell_confidence),
                                 first_buy_sell_bullish_probability  = COALESCE(signals.first_buy_sell_bullish_probability, EXCLUDED.first_buy_sell_bullish_probability),
                                 first_buy_sell_reasons              = COALESCE(signals.first_buy_sell_reasons, EXCLUDED.first_buy_sell_reasons)
+                            RETURNING id
                         """),
                         dict(
                             sid=stock.id,
@@ -501,6 +503,13 @@ def _bulk_persist(symbols: list[str]) -> None:
                             rsns=json.dumps(_json_safe(ai.reasons)),
                             src="signal-engine",
                         ),
+                    ).first()
+                    # F03 observation phase: what this generation published, per venue session.
+                    # Own SAVEPOINT — a failure there never touches the upsert above.
+                    _observe_occurrence(
+                        s, stock_id=stock.id, horizon=ai.horizon, signal=ai.signal,
+                        confidence=ai.confidence, bullish_probability=ai.bullish_probability,
+                        reasons=_json_safe(ai.reasons), signal_id=_row[0] if _row else None,
                     )
 
                     # INT-4: auto-trigger research on new BUY signal (fire-and-forget)
@@ -1223,7 +1232,7 @@ def signal_for(
         # ambiguity — BUG-6) so this path can never violate the index regardless of whether
         # today's stored value matches.
         for ai in all_sig.values():
-            session.execute(
+            _row = session.execute(
                 text("""
                     INSERT INTO signals
                         (stock_id, signal, horizon, confidence, bullish_probability, reasons, source)
@@ -1238,6 +1247,7 @@ def signal_for(
                         reasons             = EXCLUDED.reasons,
                         source              = EXCLUDED.source,
                         ts                  = NOW()
+                    RETURNING id
                 """),
                 dict(
                     sid=stock.id,
@@ -1252,6 +1262,12 @@ def signal_for(
                     rsns=json.dumps(_json_safe(ai.reasons)),
                     src="signal-engine",
                 ),
+            ).first()
+            # F03 observation phase — see _bulk_persist(); this path publishes to the same row.
+            _observe_occurrence(
+                session, stock_id=stock.id, horizon=ai.horizon, signal=ai.signal,
+                confidence=ai.confidence, bullish_probability=ai.bullish_probability,
+                reasons=_json_safe(ai.reasons), signal_id=_row[0] if _row else None,
             )
         session.commit()
 

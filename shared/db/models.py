@@ -4674,3 +4674,95 @@ class EventConnection(Base):
     baseline: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     outcome: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class SignalOccurrence(Base):
+    """F03 observation phase: one continuous actionable direction for a (stock, horizon) within
+    one VENUE session (docs/features/2026-10-27-f03-signal-occurrence-and-delivery-attribution-
+    design.md). The daily `signals` row is overwritten ~5x a day and keyed on the UTC day, so it
+    cannot say what was published when; this can. Written beside the existing columns — no reader
+    uses it yet, and nothing here changes a signal, an alert or an outcome.
+
+    `session_date` is the session of the generation's newest daily bar (F02 `input_contract`),
+    never a UTC `.date()`: a US generation after 20:00 ET lands on the next UTC row but still
+    reads that session's bar. At most one occurrence is open per (stock, horizon).
+    """
+    __tablename__ = "signal_occurrences"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "horizon", "session_date", "seq", name="uq_signal_occurrence_seq"),
+        Index("uq_signal_occurrence_open", "stock_id", "horizon", unique=True,
+              postgresql_where=text("closed_at IS NULL"),
+              sqlite_where=text("closed_at IS NULL")),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), nullable=False)
+    horizon: Mapped[str] = mapped_column(String(8), nullable=False)
+    #: BUY | SELL — HOLD/WAIT never open an occurrence
+    direction: Mapped[str] = mapped_column(String(4), nullable=False)
+    market: Mapped[str] = mapped_column(String(4), nullable=False)
+    session_date: Mapped[date] = mapped_column(Date, nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    opened_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    opened_signal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("signals.id", ondelete="SET NULL"), nullable=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: direction_change | to_hold | to_wait | session_change
+    close_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: generations observed while open, and how many of them changed the decision content
+    generations: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    content_changes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    contract_version: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class SignalSnapshot(Base):
+    """F03: an immutable copy of one generation's published state. Observation phase writes two
+    kinds — `opened` (the occurrence's first generation) and `completed_close` (F02's frozen
+    completed-session state, which may be HOLD/WAIT and then has no occurrence). `delivered`
+    snapshots arrive with the sender slice. Never updated after insert.
+
+    `content_hash` covers the decision content — signal, horizon, confidence, probability and
+    reasons — with only the generation's own `input_contract.generated_at` removed.
+    """
+    __tablename__ = "signal_snapshots"
+    __table_args__ = (
+        UniqueConstraint("occurrence_id", "kind", "content_hash", name="uq_signal_snapshot_content"),
+        Index("ix_signal_snapshots_stock_session", "stock_id", "horizon", "session_date"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    occurrence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("signal_occurrences.id", ondelete="CASCADE"), nullable=True)
+    signal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("signals.id", ondelete="SET NULL"), nullable=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), nullable=False)
+    horizon: Mapped[str] = mapped_column(String(8), nullable=False)
+    session_date: Mapped[date] = mapped_column(Date, nullable=False)
+    #: opened | completed_close   (delivered: sender slice, not yet written)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    signal: Mapped[str] = mapped_column(String(4), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bullish_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    levels: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    reasons: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    input_contract: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    contract_version: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class SignalSessionClose(Base):
+    """F02's completed-close record: the first generation whose newest bar IS the target session
+    and whose venue clock had passed that session's close. First wins; never updated.
+    `close_ingest_verified` stays NULL — calendar closure is not provider finality."""
+    __tablename__ = "signal_session_closes"
+
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), primary_key=True)
+    horizon: Mapped[str] = mapped_column(String(8), primary_key=True)
+    session_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(
+        ForeignKey("signal_snapshots.id", ondelete="CASCADE"), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    close_ingest_verified: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
