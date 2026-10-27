@@ -86,20 +86,26 @@ HK_HOLIDAYS: frozenset[date] = frozenset([
     date(2025,  4,  4), date(2025,  4, 18), date(2025,  4, 21), date(2025,  5,  1),
     date(2025,  5,  5), date(2025,  5, 31), date(2025,  7,  1), date(2025, 10,  1),
     date(2025, 10,  7), date(2025, 10, 29), date(2025, 12, 25), date(2025, 12, 26),
-    # 2026
+    # 2026 — CORRECTED 2026-10-26 against the stored HK daily bars (43 symbols, zero bars on
+    # exactly these weekdays Jan 1 – Oct 27). The earlier list had three dates wrong:
+    #   * it closed Fri 02-20 ("LNY day 4, make-up"); HKEX traded that day;
+    #   * it omitted Tue 04-07, the day following Ching Ming (Sun 04-05), when HKEX was shut;
+    #   * it put Chung Yeung on Mon 10-26. The festival was Sun 10-18, so the closure was the
+    #     following Monday 10-19, and 10-26 was a full session. Every HK job gated on this
+    #     calendar skipped that session (paper scans, digests, Stock Connect, reconciliation).
     date(2026,  1,  1),  # New Year's Day
     date(2026,  2, 17),  # Lunar New Year Day 1
     date(2026,  2, 18),  # Lunar New Year Day 2
     date(2026,  2, 19),  # Lunar New Year Day 3
-    date(2026,  2, 20),  # Lunar New Year Day 4 (make-up)
-    date(2026,  4,  3),  # Ching Ming Festival + Good Friday (both fall on Apr 3, 2026)
+    date(2026,  4,  3),  # Good Friday
     date(2026,  4,  6),  # Easter Monday
+    date(2026,  4,  7),  # The day following Ching Ming Festival (Sun 04-05)
     date(2026,  5,  1),  # Labour Day
-    date(2026,  5, 25),  # Buddha's Birthday
+    date(2026,  5, 25),  # The day following Buddha's Birthday (Sun 05-24)
     date(2026,  6, 19),  # Tuen Ng Festival
     date(2026,  7,  1),  # HKSAR Establishment Day
     date(2026, 10,  1),  # National Day
-    date(2026, 10, 26),  # Chung Yeung Festival
+    date(2026, 10, 19),  # The day following Chung Yeung Festival (Sun 10-18)
     date(2026, 12, 25),  # Christmas Day (Fri)
     date(2026, 12, 28),  # Boxing Day observed (Mon; Boxing Day Dec 26 = Sat)
     # 2027 — VERIFIED 2026-10-13 against the Government's gazetted general holidays

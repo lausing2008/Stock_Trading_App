@@ -159,6 +159,22 @@ def test_the_hk_witness_date_is_a_holiday_the_calendar_knows():
     assert is_trading_day("HK", datetime(2026, 10, 1, 3, 0, tzinfo=timezone.utc)) is False
 
 
+def test_hk_2026_matches_the_sessions_hkex_actually_held():
+    """Stored HK daily bars (43 symbols) are the witness: zero bars on exactly the closed
+    weekdays. The old list closed 02-20 and 10-26 (both traded) and missed 04-07 and 10-19."""
+    from datetime import date, timedelta
+    closed_by_bars = {date(2026, 1, 1), date(2026, 2, 17), date(2026, 2, 18), date(2026, 2, 19),
+                      date(2026, 4, 3), date(2026, 4, 6), date(2026, 4, 7), date(2026, 5, 1),
+                      date(2026, 5, 25), date(2026, 6, 19), date(2026, 7, 1), date(2026, 10, 1),
+                      date(2026, 10, 19)}
+    d = date(2026, 1, 1)
+    while d <= date(2026, 10, 27):
+        if d.weekday() < 5:
+            noon_hkt = datetime(d.year, d.month, d.day, 4, 0, tzinfo=timezone.utc)
+            assert is_trading_day("HK", noon_hkt) is (d not in closed_by_bars), d
+        d += timedelta(days=1)
+
+
 def test_hk_and_us_holidays_are_independent():
     """2026-10-01 closes HKEX and not the NYSE; a shared gate must not conflate them."""
     oct1 = datetime(2026, 10, 1, 14, 0, tzinfo=timezone.utc)

@@ -12517,6 +12517,14 @@ def _reconcile_session_5m(market: str, now: "datetime | None" = None, *, second_
         _get_redis().set(key, json.dumps(detail, default=str))
     except Exception:
         pass
+    # The latest-run key above is overwritten by the next pass and the next session, and the
+    # log line goes with the container. On 2026-10-26 a recreate left no record of Friday's
+    # passes, so a session could not be verified after the fact. Keep each pass for 30 days.
+    try:
+        _get_redis().setex(f"{key}:{detail['session']}:p{detail['pass']}", 86400 * 30,
+                           json.dumps(detail, default=str))
+    except Exception:
+        pass
     incomplete = (detail["missing_candles"] or detail["final_candle_missing"] or
                   detail["final_candle_forming"] or detail.get("completeness_error"))
     _record_job_status(f"{market.lower()}_5m_reconcile", "error" if error else ("partial" if incomplete else "ok"), elapsed)

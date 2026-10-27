@@ -50,7 +50,8 @@ def _reconcile(stored, now=datetime(2026, 10, 22, 20, 2, tzinfo=UTC), *, symbols
     def ingest(syms, tf):
         calls.append((tuple(syms), tf))
         if ingest_raises: raise RuntimeError("provider down")
-    fake_redis = SimpleNamespace(set=lambda k, v: redis.__setitem__(k, v), get=lambda k: redis.get(k))
+    fake_redis = SimpleNamespace(set=lambda k, v: redis.__setitem__(k, v), get=lambda k: redis.get(k),
+                                 setex=lambda k, ttl, v: redis.__setitem__(k, v))
     with patch.object(sched, "_is_us_trading_day", lambda *a: True), patch.object(sched, "_is_hk_trading_day", lambda *a: True), \
          patch.object(sched, "_symbols_for", lambda m: list(symbols)), patch.object(sched, "ingest_universe", ingest), \
          patch.object(sched, "_stored_5m_rows", lambda syms, lo, hi: stored), \
@@ -103,6 +104,18 @@ def test_the_second_pass_reingests_only_what_the_first_left_incomplete():
     _, calls, _ = _reconcile([("AAPL", t) for t in GRID] + [("SMH", t) for t in GRID], written=DONE, redis=redis,
                              second_pass=True, now=datetime(2026, 10, 22, 20, 7, tzinfo=UTC))
     assert calls == [(("SMH",), "5m")]
+
+
+def test_each_pass_is_kept_per_session_after_the_latest_key_moves_on():
+    redis = {}
+    _reconcile([("AAPL", t) for t in GRID] + [("SMH", t) for t in GRID[:-1]], written=DONE, redis=redis)
+    _reconcile([("AAPL", t) for t in GRID] + [("SMH", t) for t in GRID], written=DONE, redis=redis,
+               second_pass=True, now=datetime(2026, 10, 22, 20, 7, tzinfo=UTC))
+    import json
+    first = json.loads(redis["scheduler:job:us_5m_reconcile:detail:2026-10-22:p1"])
+    second = json.loads(redis["scheduler:job:us_5m_reconcile:detail:2026-10-22:p2"])
+    assert first["final_candle_missing"] == ["SMH"] and second["final_candle_missing"] == []
+    assert json.loads(redis["scheduler:job:us_5m_reconcile:detail"])["pass"] == 2
 
 
 def test_ingest_failure_is_an_error_status_and_a_holiday_does_nothing():

@@ -256,6 +256,48 @@ check the weekday of the date you chose before suspecting the calendar.**
 
 ---
 
+## AUD-HK2026-CALENDAR — Three Wrong 2026 HK Dates; Oct 26 Session Skipped as "Chung Yeung" (Fixed 2026-10-26)
+
+Found while reading the deferred checks: `hk_5m_reconcile:detail` still described session Oct 23
+on the evening of Mon Oct 26, because `_is_hk_trading_day()` returned False all day. The stored
+bars said otherwise: 2,744 HK 5m bars across 42 symbols on Oct 26, zero bars for all 43 symbols
+on Oct 19.
+
+**Witness used: the stored HK daily bars, not a recalled holiday list.** Listing every 2026
+weekday (Jan 1 – Oct 27) with fewer than 20 HK symbols carrying a D1 bar gives exactly 13 dates,
+and the 2026 table disagreed with three of them:
+
+| Date | Table said | Bars show |
+|---|---|---|
+| Fri 2026-02-20 | closed ("LNY day 4, make-up") | traded |
+| Tue 2026-04-07 | open (missing) | closed — day following Ching Ming (Sun Apr 5) |
+| Mon 2026-10-19 | open (missing) | closed — day following Chung Yeung (Sun Oct 18) |
+| Mon 2026-10-26 | closed ("Chung Yeung") | traded |
+
+**What Oct 26 cost (logged skips, `reason: hk_market_closed`):** HK paper-trading scans every
+5 minutes 05:00–08:15 UTC, post-open and paper-portfolio HK digests, the Stock Connect fetch,
+and both HK 5m reconciliation passes. 5m ingestion itself is not calendar-gated and kept running.
+Feb 20 was skipped the same way. On Apr 7 and Oct 19 the reverse: every HK job ran against a
+shut exchange. Logs before the
+04:25 UTC Oct 26 recreate are gone, so the Feb/Apr/Oct 19 effects were not measured.
+
+**Fix:** the three dates corrected in `shared/common/market_calendar.py`; a regression test
+(`test_hk_2026_matches_the_sessions_hkex_actually_held`) pins every 2026 weekday through
+Oct 27 to the bar record. The research-engine observation evidence serialises `HK_HOLIDAYS`,
+so its calendar fingerprint changes with this fix — expected, the old value was wrong.
+
+**Lesson:** the 2027 HK list was checked against the gazette (AUD-HOLIDAY-2027GAP); the 2026
+list was never checked at all and had been wrong since it was written. For a year already in
+progress, the stored bars are a stronger witness than any recalled list — run the query
+before trusting a lunar date.
+
+**Also in this change:** `_reconcile_session_5m` now keeps each pass at
+`scheduler:job:{market}_5m_reconcile:detail:{session}:p{pass}` for 30 days. The single latest
+key was overwritten by the next pass, and the log line was lost with the container, so Friday
+Oct 23's reconciliation could not be verified on Monday.
+
+---
+
 ## Detail relocated from CLAUDE.md's index (2026-09-10)
 
 **T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
