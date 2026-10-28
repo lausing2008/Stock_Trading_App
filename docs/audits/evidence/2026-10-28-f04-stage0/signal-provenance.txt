@@ -1,0 +1,42 @@
+F04 Stage 0 — observed ML provenance in persisted signals (production, READ ONLY transaction)
+Run 2026-10-28 ~05:00 UTC. Window: signals.ts >= now() - 3 days, source = 'signal-engine'.
+Actual span 2026-10-25 22:00:21 .. 2026-10-28 05:01:48 UTC, 198 distinct stocks.
+Fields read from signals.reasons: ml_probability, ml_oos_suppressed, ml_weight, ml_test_auc,
+ml_agreement and ml_model (the last two are written from the SWING fetch and shared by all styles).
+
+Per horizon: n | ml_probability NULL | ml_oos_suppressed | suppressed AND ml_weight>0 | p=0.5 | p=0.45
+SHORT  596 | 71 | 440 | 220 | 362 |  78
+SWING  596 | 68 | 446 | 242 | 344 | 105
+LONG   596 | 72 | 483 | 249 | 356 | 127
+GROWTH 596 | 71 | 457 | 239 | 332 | 125
+
+Rows with ml_probability = 0.45: n | suppressed | ml_weight>0 | avg ml_weight | avg ml_test_auc
+SHORT   78 |  78 |  78 | 0.374 | 0.822
+SWING  105 | 105 | 105 | 0.142 | 0.844
+LONG   127 | 127 | 127 | 0.140 | 0.815
+GROWTH 125 | 125 | 125 | 0.605 | 0.851
+(ml_test_auc is the SWING-fetch value shared across styles; per-style quality is not stored.)
+
+SWING, suppressed rows: ml_agreement | ml_model | n | avg ml_probability | ml_weight>0
+unanimous_bear | ensemble_xgb_rf     | 381 | 0.487 | 206
+unanimous_bear | ensemble_xgb_lgb_rf |  64 | 0.498 |  35
+(none)         | ensemble_xgb_rf     |   1 | 0.500 |   1
+
+Suppressed AND weighted rows, ml_weight buckets (width 0.1): count | min | max
+0.0-0.1   94 | 0.01 | 0.09
+0.1-0.2  481 | 0.10 | 0.19
+0.2-0.3   87 | 0.20 | 0.30
+0.3-0.4   16 | 0.31 | 0.36
+0.4-0.5  146 | 0.40 | 0.49
+0.5-0.6   10 | 0.51 | 0.58
+0.6-0.7  116 | 0.62 | 0.65
+
+Final signal | suppressed AND weighted | p=0.45 AND weighted | all rows
+WAIT  539 | 243 | 1180
+HOLD  337 | 154 |  792
+BUY     0 |   0 |   34
+SELL   74 |  38 |  378
+
+Interpretation limits: these rows show suppressed models carried non-zero fusion weight on the
+recorded signals. They do not show what any signal would have been without that weight; that
+needs a counterfactual replay of the full style pipeline.

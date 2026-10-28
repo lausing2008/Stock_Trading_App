@@ -149,6 +149,16 @@ open, and links the document that holds the detail. Source review:
   - `/`, `/little-rzy`, `/improvements` and `/api/health` all return 200.
   - 33 GB free.
 
+## F04 Stage 0 (2026-10-28) — inventory and no-qualified-model trace
+
+[Report](2026-10-28-f04-stage0-inventory-and-no-model-trace.md), read-only.
+- **Inventory.** 1,433 artifacts hash-bound, 0 qualified under v2. F04 split: 590 of 934 holdout
+  below the 10-row floor (40 unsuppressed). M14 sufficiency is unreachable (median `n_test` 23).
+- **Main finding.** All-suppressed ensembles emit a bearish 0.45 with a "measured" stored AUC and
+  real fusion weight. Production, last 3 days: 435 signals; 74 SELL signals had
+  suppressed-but-weighted ML. The fix is F04 step 5/6 (empty qualified set → zero ML weight),
+  which is a live behaviour change awaiting approval.
+
 ## Open items
 
 - F03: read ≥ 5 complete sessions per market, then design receipts. Add a versioned confidence
