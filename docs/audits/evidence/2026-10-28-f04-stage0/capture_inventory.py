@@ -29,6 +29,7 @@ import json
 import os
 import pathlib
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 
 APP = os.environ.get("APP_ROOT", "/app")
@@ -260,8 +261,10 @@ def main(root, inp, out):
         "suppression_reason_if_rule_reapplied": {r: sum(1 for a in arts if a["rule_reason"] == r)
                                                  for r in sorted({str(a["rule_reason"]) for a in arts})},
         "evaluation_valid": {str(v): sum(1 for a in arts if a["evaluation_valid"] is v) for v in (True, False, None)},
-        "threshold_mode": {str(v): sum(1 for a in arts if a.get("threshold_evaluation_mode") == v)
-                           for v in sorted({str(a.get("threshold_evaluation_mode")) for a in arts})},
+        # Missing mode is counted as "not_recorded". The first run compared the stringified key
+        # against the raw value, so a missing mode (None vs "None") always counted 0.
+        "threshold_mode": dict(sorted(Counter(a.get("threshold_evaluation_mode") or "not_recorded"
+                                              for a in arts).items())),
         "holdout": len(holdout),
         "f04_holdout_below_report_floor": sum(1 for a in holdout if a["f04_report_rows_feasible"] is False),
         "f04_holdout_unknown": sum(1 for a in holdout if a["f04_report_rows_feasible"] is None),

@@ -159,6 +159,16 @@ open, and links the document that holds the detail. Source review:
   suppressed-but-weighted ML. The fix is F04 step 5/6 (empty qualified set → zero ML weight),
   which is a live behaviour change awaiting approval.
 
+## F04 Stage 0 fix (2026-10-28) — held for review
+
+[Replay report](2026-10-28-f04-ml-unavailable-replay.md). Suppressed models now carry no ML
+direction or quality weight. Code is on branch `f04-ml-unavailable` (`e1494f8a`), **not deployed**.
+- **Coverage.** Frozen-input replay of 796 cells: 792 compared, 4 failed (SSNLF, no price data).
+  Control reproduced the old pass exactly.
+- **Effect.** 30 signal changes, all in all-suppressed cells. 5 new BUYs, all gate-failed; 7 new
+  SELLs; 0 lost BUYs or SELLs; 0 newly actionable entries.
+- **Decision pending.** 7 BUY rows move from tier full → near.
+
 ## Open items
 
 - F03: read ≥ 5 complete sessions per market, then design receipts. Add a versioned confidence

@@ -1,0 +1,476 @@
+{
+ "accounting": {
+  "record": {
+   "expected": 796,
+   "completed": 792,
+   "failed": 4,
+   "missing": 0,
+   "unexpected": 0,
+   "errors": [
+    {
+     "symbol": "SSNLF",
+     "error": "ValueError: No price data for SSNLF"
+    }
+   ],
+   "misses": 0,
+   "miss_sample": []
+  },
+  "control": {
+   "expected": 796,
+   "completed": 792,
+   "failed": 4,
+   "missing": 0,
+   "unexpected": 0,
+   "errors": [
+    {
+     "symbol": "SSNLF",
+     "error": "ValueError: No price data for SSNLF"
+    }
+   ],
+   "misses": 0,
+   "miss_sample": []
+  },
+  "replay": {
+   "expected": 796,
+   "completed": 792,
+   "failed": 4,
+   "missing": 0,
+   "unexpected": 0,
+   "errors": [
+    {
+     "symbol": "SSNLF",
+     "error": "ValueError: No price data for SSNLF"
+    }
+   ],
+   "misses": 0,
+   "miss_sample": []
+  }
+ },
+ "compared_cells": 792,
+ "rows": 792,
+ "control_matches_record": true,
+ "control_mismatch": [],
+ "input_contract_differs_record_vs_replay": [],
+ "input_contract_differs_n": 0,
+ "eligible_ml_cells_changed": [],
+ "signal_distribution": {
+  "old": {
+   "SHORT": {
+    "WAIT": 106,
+    "HOLD": 84,
+    "BUY": 3,
+    "SELL": 5
+   },
+   "SWING": {
+    "WAIT": 114,
+    "SELL": 15,
+    "HOLD": 68,
+    "BUY": 1
+   },
+   "LONG": {
+    "BUY": 11,
+    "HOLD": 68,
+    "WAIT": 100,
+    "SELL": 19
+   },
+   "GROWTH": {
+    "HOLD": 104,
+    "WAIT": 72,
+    "BUY": 13,
+    "SELL": 9
+   }
+  },
+  "new": {
+   "SHORT": {
+    "WAIT": 105,
+    "HOLD": 83,
+    "BUY": 3,
+    "SELL": 7
+   },
+   "SWING": {
+    "WAIT": 115,
+    "SELL": 15,
+    "HOLD": 67,
+    "BUY": 1
+   },
+   "LONG": {
+    "BUY": 13,
+    "HOLD": 66,
+    "WAIT": 98,
+    "SELL": 21
+   },
+   "GROWTH": {
+    "HOLD": 93,
+    "WAIT": 77,
+    "BUY": 16,
+    "SELL": 12
+   }
+  }
+ },
+ "by_horizon": {
+  "SHORT": {
+   "cells": 198,
+   "ml_unavailable": 151,
+   "eligible_ml": 24,
+   "no_model": 23,
+   "changed_signal": 7,
+   "changed_confidence": 68,
+   "transitions": {
+    "WAIT->HOLD": 2,
+    "WAIT->SELL": 2,
+    "HOLD->WAIT": 3
+   },
+   "gate": {
+    "failed->failed": 2,
+    "full->near": 1
+   },
+   "newly_actionable": [],
+   "no_longer_actionable": [],
+   "new_buys": [],
+   "lost_buys": [],
+   "new_sells": [
+    {
+     "symbol": "BULL",
+     "old": [
+      "WAIT",
+      41.5,
+      null
+     ],
+     "new": [
+      "SELL",
+      49.8,
+      null
+     ],
+     "ml_unavailable": true,
+     "old_ml": [
+      0.5,
+      0.17
+     ]
+    },
+    {
+     "symbol": "QUCY",
+     "old": [
+      "WAIT",
+      32.1,
+      null
+     ],
+     "new": [
+      "SELL",
+      42.8,
+      null
+     ],
+     "ml_unavailable": true,
+     "old_ml": [
+      0.45,
+      0.3
+     ]
+    }
+   ],
+   "lost_sells": [],
+   "confidence_delta": {
+    "n": 68,
+    "mean_abs": 6.03,
+    "median_abs": 6.42,
+    "mean_signed": 6.0,
+    "max_abs": 15.25
+   },
+   "newly_actionable_n": 0,
+   "no_longer_actionable_n": 0,
+   "new_buys_n": 0,
+   "lost_buys_n": 0,
+   "new_sells_n": 2,
+   "lost_sells_n": 0
+  },
+  "SWING": {
+   "cells": 198,
+   "ml_unavailable": 153,
+   "eligible_ml": 23,
+   "no_model": 22,
+   "changed_signal": 1,
+   "changed_confidence": 80,
+   "transitions": {
+    "HOLD->WAIT": 1
+   },
+   "gate": {
+    "full->full": 1
+   },
+   "newly_actionable": [],
+   "no_longer_actionable": [],
+   "new_buys": [],
+   "lost_buys": [],
+   "new_sells": [],
+   "lost_sells": [],
+   "confidence_delta": {
+    "n": 80,
+    "mean_abs": 1.87,
+    "median_abs": 1.66,
+    "mean_signed": 1.84,
+    "max_abs": 9.92
+   },
+   "newly_actionable_n": 0,
+   "no_longer_actionable_n": 0,
+   "new_buys_n": 0,
+   "lost_buys_n": 0,
+   "new_sells_n": 0,
+   "lost_sells_n": 0
+  },
+  "LONG": {
+   "cells": 198,
+   "ml_unavailable": 162,
+   "eligible_ml": 13,
+   "no_model": 23,
+   "changed_signal": 4,
+   "changed_confidence": 85,
+   "transitions": {
+    "WAIT->SELL": 2,
+    "HOLD->BUY": 2
+   },
+   "gate": {
+    "failed->failed": 8,
+    "full->near": 3,
+    "None->failed": 2
+   },
+   "newly_actionable": [],
+   "no_longer_actionable": [],
+   "new_buys": [
+    {
+     "symbol": "TXN",
+     "old": [
+      "HOLD",
+      34.2,
+      null
+     ],
+     "new": [
+      "BUY",
+      38.4,
+      "failed"
+     ],
+     "ml_unavailable": true,
+     "old_ml": [
+      0.45,
+      0.15
+     ]
+    },
+    {
+     "symbol": "XLE",
+     "old": [
+      "HOLD",
+      35.2,
+      null
+     ],
+     "new": [
+      "BUY",
+      40.2,
+      "failed"
+     ],
+     "ml_unavailable": true,
+     "old_ml": [
+      0.45,
+      0.15
+     ]
+    }
+   ],
+   "lost_buys": [],
+   "new_sells": [
+    {
+     "symbol": "HWM",
+     "old": [
+      "WAIT",
+      28.0,
+      null
+     ],
+     "new": [
+      "SELL",
+      31.0,
+      null
+     ],
+     "ml_unavailable": true,
+     "old_ml": [
+      0.45,
+      0.11
+     ]
+    },
+    {
+     "symbol": "TMDX",
+     "old": [
+      "WAIT",
+      27.3,
+      null
+     ],
+     "new": [
+      "SELL",
+      32.2,
+      null
+     ],
+     "ml_unavailable": true,
+     "old_ml": [
+      0.5,
+      0.15
+     ]
+    }
+   ],
+   "lost_sells": [],
+   "confidence_delta": {
+    "n": 85,
+    "mean_abs": 2.12,
+    "median_abs": 2.15,
+    "mean_signed": 2.0,
+    "max_abs": 5.02
+   },
+   "newly_actionable_n": 0,
+   "no_longer_actionable_n": 0,
+   "new_buys_n": 2,
+   "lost_buys_n": 0,
+   "new_sells_n": 2,
+   "lost_sells_n": 0
+  },
+  "GROWTH": {
+   "cells": 198,
+   "ml_unavailable": 149,
+   "eligible_ml": 26,
+   "no_model": 23,
+   "changed_signal": 18,
+   "changed_confidence": 82,
+   "transitions": {
+    "WAIT->SELL": 3,
+    "WAIT->HOLD": 2,
+    "HOLD->BUY": 3,
+    "HOLD->WAIT": 10
+   },
+   "gate": {
+    "failed->failed": 10,
+    "full->near": 3,
+    "None->failed": 3
+   },
+   "newly_actionable": [],
+   "no_longer_actionable": [],
+   "new_buys": [
+    {
+     "symbol": "ANF",
+     "old": [
+      "HOLD",
+      36.6,
+      null
+     ],
+     "new": [
+      "BUY",
+      52.5,
+      "failed"
+     ],
+     "ml_unavailable": true,
+     "old_ml": [
+      0.5,
+      0.36
+     ]
+    },
+    {
+     "symbol": "MNDY",
+     "old": [
+      "HOLD",
+      23.4,
+      null
+     ],
+     "new": [
+      "BUY",
+      44.6,
+      "failed"
+     ],
+     "ml_unavailable": true,
+     "old_ml": [
+      0.45,
+      0.49
+     ]
+    },
+    {
+     "symbol": "NOW",
+     "old": [
+      "HOLD",
+      29.1,
+      null
+     ],
+     "new": [
+      "BUY",
+      54.2,
+      "failed"
+     ],
+     "ml_unavailable": true,
+     "old_ml": [
+      0.45,
+      0.44
+     ]
+    }
+   ],
+   "lost_buys": [],
+   "new_sells": [
+    {
+     "symbol": "0005.HK",
+     "old": [
+      "WAIT",
+      24.8,
+      null
+     ],
+     "new": [
+      "SELL",
+      42.7,
+      null
+     ],
+     "ml_unavailable": true,
+     "old_ml": [
+      0.45,
+      0.49
+     ]
+    },
+    {
+     "symbol": "0700.HK",
+     "old": [
+      "WAIT",
+      39.4,
+      null
+     ],
+     "new": [
+      "SELL",
+      42.1,
+      null
+     ],
+     "ml_unavailable": true,
+     "old_ml": [
+      0.5,
+      0.06
+     ]
+    },
+    {
+     "symbol": "BULL",
+     "old": [
+      "WAIT",
+      32.5,
+      null
+     ],
+     "new": [
+      "SELL",
+      42.7,
+      null
+     ],
+     "ml_unavailable": true,
+     "old_ml": [
+      0.5,
+      0.24
+     ]
+    }
+   ],
+   "lost_sells": [],
+   "confidence_delta": {
+    "n": 82,
+    "mean_abs": 7.95,
+    "median_abs": 5.61,
+    "mean_signed": 7.55,
+    "max_abs": 25.02
+   },
+   "newly_actionable_n": 0,
+   "no_longer_actionable_n": 0,
+   "new_buys_n": 3,
+   "lost_buys_n": 0,
+   "new_sells_n": 3,
+   "lost_sells_n": 0
+  }
+ }
+}

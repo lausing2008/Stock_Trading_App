@@ -75,9 +75,11 @@ removed during the capture.** 133 non-model files (`*_params.json`) were listed 
 inventory complete, validity coverage 97.6%. Four unsuppressed artifacts have neither `cv_auc_mean`
 nor `overfit_gap`.
 
-> `summary.json`'s `threshold_mode` tally compares against the string `"None"` and reports 0 for
-> missing modes. That is a defect in the capture script's summary, not in the data: the per-artifact
-> `artifacts.json` is correct (373 missing), and the table above is computed from it.
+> **Corrected 2026-10-28.** As captured, `summary.json`'s `threshold_mode` tally compared against the string
+> `"None"` and reported 0 missing modes. It now reports holdout 934 / in-sample fallback 126 / not recorded
+> **373**, recomputed from the per-artifact `artifacts.json`. The original value and the reason are kept in the
+> file's `corrections` field. `capture_inventory.py` is fixed, so its hash now differs from the as-run
+> `e12b9b33…`.
 
 ## F04 impact, refreshed
 
@@ -128,7 +130,7 @@ The stored-flag mirror describes what production actually does.
 | **S0-1** | **All-suppressed ensembles emit a bearish 0.45.** Members return 0.5; `0.5 > 0.5` is False, so the result is `unanimous_bear` and a −0.05 nudge applies whenever every member's auc/cv_auc > 0.57. The stored AUC is reported as `mean_model_test_auc` (restored from the zeroed values), and signal-engine marks it "measured". | Trace: TA 0.62 → 0.4925 fused / 0.4955 after SA-27 (cap 0.75); 0.5945 / 0.5567 (cap 0.15). Production: 435 rows at 0.45, all suppressed, all weighted; 141 cells. |
 | **S0-2** | **A suppressed model still dampens TA toward neutral.** When all members are suppressed without the nudge, ML is 0.5 but its stored quality earns weight, and SA-27 then compresses further. ML is counted as present when it should be unavailable. | Trace: single suppressed xgb, TA 0.62 → 0.518. 333 of 615 all-suppressed cells have quality ≥ 0.50. |
 | **S0-3** | **The two-model endpoint understates a mixed ensemble's quality.** With one member suppressed, its weight is zeroed and then averaged over both members (unsuppressed rf 0.62 is reported as 0.31, so ML weight is 0). This is inconsistent with the three-model path. | Code reading of `predict_latest_ensemble`. Reached only when `/predict_ensemble_three` returns a non-404 error, so rare. |
-| **S0-4** | **No cross-style fallback exists**, despite `_fetch_ml_data`'s docstring ("falls back to the SWING artifact"). A missing style model ends in TA-only. This matches the plan's rule (a wrong-horizon substitute is not coverage); only the docstring is stale. | Code: every endpoint is called with the same style; `_artifact_path` has no style fallback. |
+| **S0-4** | **No cross-style fallback exists** (docstring corrected on branch `f04-ml-unavailable`), despite `_fetch_ml_data`'s docstring ("falls back to the SWING artifact"). A missing style model ends in TA-only. This matches the plan's rule (a wrong-horizon substitute is not coverage); only the docstring is stale. | Code: every endpoint is called with the same style; `_artifact_path` has no style fallback. |
 | **S0-5** | **M14 sufficiency is unreachable under the current split** (median `n_test` 23). | Inventory. |
 | **S0-6** | **338 legacy passes have no threshold mode recorded.** They were written before R02 recorded `threshold_evaluation_mode`, but carry `evaluation_valid: true`. Under v2 they are unknown, not passed. | Inventory. |
 

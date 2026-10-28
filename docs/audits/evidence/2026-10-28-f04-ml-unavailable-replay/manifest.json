@@ -1,0 +1,35 @@
+{
+ "run": "2026-10-28 05:39-05:52 UTC, production EC2, read-only",
+ "deployed_images": {
+  "signal-engine": "sha256:baedd37f551a966878f77eff90df0a12b5a9c6f3c1202e465209655577f63741"
+ },
+ "inputs_sha256": {
+  "replay.py": "251e11b002277543b3a1bee9dbfe332b9de6dbb54a8c1abc2feb6b33d226277d",
+  "capture_members.py": "0fddbcdc187c16f05bf2f7214894719f7287e267112556bb3e8d58bd4f507bc4",
+  "compare.py": "8d0d50021acda1b9ab1a70b058f9a2fce5632fc597c733484289a36dc0bdae12",
+  "pre_stage0_ensembles.py (old ensemble)": "d34f7dc4e4179b228c9a2aeceb0d80e641357e5263ca0281a7c2bd49fe3277fc",
+  "trainer.py (new ensemble, working tree)": "d6bcd8793b37e180d08049f1d0f922edeb5ef72c6b30562a2125aca84fe4e927",
+  "signals.py (new generator, working tree)": "844e2a94dc346e422a380eb195a9a1fee3476b22a935896ee1f9a5e600f33a7b",
+  "signals.py (old generator = deployed = HEAD)": "64a87954abb559941993fd9f8dbac92334dc30e887589185664b50943a1ab1e4",
+  "active_symbols.json": "5290b226791f9bd96d870acf78bb89fa94bed0fb4d9e913a705270445269afee"
+ },
+ "outputs_raw_sha256": {
+  "members.json": "e3656eae73ae736823b57991be1403cb4fb7edb0df70d0e86943c7dbad7b4dfc",
+  "recording.json": "4767e2db3a282d2774164401f5a93a197a9b16af0f82408aa82ea727e9fd0fa1",
+  "record.jsonl": "267f3f041b9eb09f402047091176d0b2cc5e01823f510182a16074be07d0c4e6",
+  "control.jsonl": "c4acbd6fb0309821d4168711315e8dba236a400522afe2a8bde7004aa5c2b1e1",
+  "replay.jsonl": "f3a79388a96b275f175f2b9ebc761bb51a58a89febec850d5f30e5eeba9acb68",
+  "record-meta.json": "fb84e8de0b76b3d0d91ca11520a9a1ebe5cb2736c59e3a2f878bde69234cb8a1",
+  "control-meta.json": "4b8c17ab2d43519a8bace26e180b4e58c348ee6aa890223f41cef9685c840a8b",
+  "replay-meta.json": "f69172d6637b5ea1383b073655f0be052bc1eb8cc02c3b5808e612fca1cca683",
+  "compare.json": "6998a9f3781675cc26147eff2c7e4a985e10bff15a0e3ea77b3c0fd3b0cdee02"
+ },
+ "outputs_gzip_sha256": {
+  "members.json.gz": "f433d82c1f495853ae5983965422fb23102a74e4e7f58a5efb408914a263d5b6",
+  "recording.json.gz": "2b0399722400df0879336e68064d7bfdf5f5e7dd3b0acb6f9d8c70c15d3a83a1",
+  "record.jsonl.gz": "db2a9da179a763e28973cde88a96f935840900ea6a8992da01096d196f776dcd",
+  "control.jsonl.gz": "68a45d9f05a73c46c85ad1ef5087abcf55126fb0431a4ff8927cadd78899056e",
+  "replay.jsonl.gz": "75472da1905b6de2e02bd598cfda36b9f0b84993ce58ed2c20e9322d976b5e05"
+ },
+ "note": "Raw files are gzipped for the repository; gunzip reproduces the raw hashes. The members file is the frozen per-family prediction set both passes used; recording.json holds every HTTP response, Redis read and SQL row the old pass saw."
+}

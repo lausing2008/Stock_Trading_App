@@ -167,9 +167,9 @@
   "None": 35
  },
  "threshold_mode": {
-  "None": 0,
   "holdout": 934,
-  "in_sample_fallback": 126
+  "in_sample_fallback": 126,
+  "not_recorded": 373
  },
  "holdout": 934,
  "f04_holdout_below_report_floor": 590,
@@ -261,5 +261,22 @@
   "invariants_hold": true,
   "inventory_complete": true,
   "unreadable": 0
- }
+ },
+ "corrections": [
+  {
+   "field": "threshold_mode",
+   "at": "2026-10-28",
+   "as_captured": {
+    "None": 0,
+    "holdout": 934,
+    "in_sample_fallback": 126
+   },
+   "corrected": {
+    "holdout": 934,
+    "in_sample_fallback": 126,
+    "not_recorded": 373
+   },
+   "reason": "capture script compared str(None) with None, so missing modes counted 0; recomputed from artifacts.json, which recorded each artifact's mode correctly. capture_inventory.py fixed after the run, so its hash now differs from the as-run e12b9b33."
+  }
+ ]
 }
