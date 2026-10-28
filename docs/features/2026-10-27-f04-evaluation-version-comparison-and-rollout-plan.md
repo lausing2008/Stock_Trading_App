@@ -22,6 +22,8 @@ The original read-only inventory covered **1,435 artifacts**, including **932** 
 
 Current trainer behavior (`training/trainer.py`) preserves an incumbent with a truthy `metrics.evaluation_valid` when the candidate is invalid. It does not compare protocol versions. Single and ensemble inference use artifact suppression flags, with three-model → two-model → single-model fallback at the signal-engine caller. Artifacts can therefore be present or unsuppressed without being the exact set contributing to a given request.
 
+Extend the existing **M14 tooling in `services/ml-prediction/src/training/suppression_inventory.py`**, rather than implementing a parallel inventory/decision function. Reuse `build_inventory()` with the real suppression-rule function injected, preserve `evaluation_valid is None` as unknown, and preserve unreadable-artifact accounting. Add protocol, capture and routing fields around those existing results. M14 reports artifacts on disk; it does not establish actual runtime selection.
+
 Before fitting anything, refresh a **read-only inventory** with artifact identity/hash, family, saved/requested style, horizon, training time, observed evaluation fields, suppression/reason, row/class counts where stored, and resolver path. Report separately:
 
 - Stored artifacts and flags.
@@ -30,6 +32,23 @@ Before fitting anything, refresh a **read-only inventory** with artifact identit
 - Missing/ambiguous provenance; never infer exact live contribution from a filename or suppression flag.
 
 Do not invoke training endpoints, update bundles, clear caches or call prediction APIs that may fetch external features merely to collect this inventory. If exact contribution cannot be recovered from existing data, add a separately reviewed metadata-only provenance phase first.
+
+### Moving inventory and immutable study capture
+
+**The production trainer still publishes with the unpurged threshold/report split until v2 is explicitly activated.** F04 was reverted; normal post-close scheduling continues to post `/ml/train_all_horizons` (`market-data/services/scheduler.py`, `post_close` branch around line 913; queue construction in ML `api/routes.py`, around line 451). This is the continuing status quo, not a new regression introduced by the study. A read-only study does not pause that scheduler or freeze production artifacts.
+
+Capture `capture_started_at`/`capture_completed_at`, per-artifact read times, artifact path/role, file identity and **SHA-256 of the exact bytes whose metadata was loaded**. Read/copy the bytes once and inspect that immutable copy; hashing a path and subsequently reopening it can observe two different atomic replacements. Store research copies outside the production root. Recheck the directory/file identities for added, removed or replaced artifacts and record changes explicitly, with unknown/incomplete status where needed. Preserve unreadable entries in denominators; retries must not silently erase them.
+
+Unless an atomic filesystem snapshot exists, call this a **rolling capture window**, not one atomic fleet snapshot. Its immutable research manifest is a fixed study input; it is not proof that the whole fleet was serving those versions simultaneously. Later production replacements never update the frozen study cohort. Refresh live coverage separately at each reviewed stage and retain all inventory versions.
+
+### Production writer boundaries
+
+Explicit production writers include all `/ml/train*` and `/ml/tune*` endpoints (including ensemble, all-horizon and meta variants), normal scheduled training, and **`POST /ml/resweep_suppression?dry_run=false`** (`api/routes.py`, around line 670). The last endpoint rewrites `oos_suppressed` from stored metrics without retraining. It defaults to dry-run and is admin-callable; no scheduled caller was found in the reviewed service sources.
+
+- **Inventory/offline study:** no study-initiated production training, tuning, artifact edits or suppression resweep. Place unscheduled/admin writer operations, including suppression resweep, under the study's documented change moratorium. Ordinary pre-existing post-close training continues as the explicit exception and is handled by versioned rolling captures above. Do not describe the live fleet as frozen. A genuinely global writer pause would require a separately reviewed operational change.
+- **Canary:** no unaccounted writer may alter selected canary artifacts or suppression flags. Freeze admin suppression resweeps and manual writer actions; fence, pause or redirect scheduled publication for selected canary paths, or use a qualified immutable root/manifest inaccessible to legacy writers. Other cohorts may retain legacy scheduled training. Verify enforcement before activation; a plan's moratorium is not an implemented permission block. An emergency writer action pauses/rebaselines the canary.
+- Stage 0 should use M14's pure read-only calculation; it has no need to call even the resweep endpoint's dry-run route. No production pause, ACL change or resweep is performed by this plan revision.
+
 
 ## Evaluation contract
 
@@ -49,7 +68,30 @@ Required statuses are **`valid_for_protocol`**, **`invalid_for_protocol`**, and 
 
 `n_report_purge_rows >= horizon` is useful evidence, but check actual label maturity too. Dead-zone filtering and missing bars mean surviving row positions and exchange sessions are not interchangeable. Threshold-selected precision/accuracy and threshold-independent AUC must not be conflated: F04 directly weakens the former; any claim about the latter also needs its own train/calibration/report boundaries.
 
-The current **10 reporting rows** remain a feasibility floor for comparison, not statistical proof. Preserve existing quality gates; do not lower them to recover coverage. Promotion additionally needs adequate class/action support and uncertainty. Unsupported/inconclusive cells remain visible and unqualified.
+### Reconcile M14 axes and the two floors
+
+Use qualified names in the combined report so M14's conceptual “eligibility” is not confused with runtime permission:
+
+| Existing concept | Combined-report meaning/name |
+|---|---|
+| M14 validity | `legacy_evaluation_validity`: the stored Boolean/unknown, retained as historical evidence; alongside the new `protocol_evaluation_validity` |
+| M14 sufficiency | `m14_evidence_sufficiency`: the existing `evidence_sufficiency()` result and missing diagnostics, unchanged |
+| M14 documentation's eligibility question | `performance_evidence_eligibility`: acceptable measured performance versus its stated baseline; do not invent a pass from `unsuppressed` or imply M14 already implements the future paired promotion study |
+| Candidate replacement eligibility | `replacement_authorization`: whether the selected candidate may replace the incumbent under a versioned policy |
+| Runtime serving eligibility | `runtime_contribution_authorization`: whether the resolved artifact may contribute to this request |
+
+Keep both existing floors visible and **do not change either** in Stage 0:
+
+| Check | Existing floor and denominator | What it establishes |
+|---|---|---|
+| Trainer reporting computation | At least **10 post-subdivision/post-purge reporting rows**, with two reporting classes | Whether the held-out reporting path can compute its metrics; not adequate evidence by itself |
+| M14 evidence sufficiency | **`n_test >= 50`**, plus required `cv_auc_mean` and `overfit_gap` diagnostics | Existing visibility/sufficiency classification; not a promotion threshold or runtime authorization |
+
+M14 currently reads the stored **`n_test`**, which for the modern holdout path is the test slice **before** threshold/report subdivision; it is not `n_metric_rows`. Fifty test rows therefore do **not** mean fifty independent reporting observations. Keep `n_test`, threshold/purge/report counts and actual metric denominators separate. Do not silently substitute `n_metric_rows` into M14 or invent a new 50-report-row gate in this study.
+
+For example, 45 total test rows with horizon 5 can leave 20 reporting rows under the held gap rule: computationally feasible but M14-insufficient. Fifty test rows with horizon 20 can leave 15 reporting rows: M14 may be sufficient if diagnostics exist, yet that is still only 15 reporting observations and not promotion evidence. Missing counts remain unknown; class support and protocol validity remain separate axes.
+
+Preserve existing quality gates; do not lower them to recover coverage. Promotion additionally needs the already specified adequate class/action support and uncertainty. Unsupported/inconclusive cells remain visible and unqualified.
 
 ## Incumbent and serving policy
 
@@ -65,7 +107,9 @@ Store research candidates **outside the production model directory**, for exampl
 
 During an initial metadata/shadow stage, **serving remains under the existing policy**, with legacy status disclosed; that stage is not a v2 activation. Strict v2 starts only at the reviewed canary. No silent grace period in which legacy artifacts are presented as v2-passed.
 
-Enforce the same serving policy in individual predictions, both ensemble paths and signal-engine's fallback chain. Excluded models must not contribute to probability, thresholds, quality averages or agreement votes. Cross-style fallback is not coverage for the requested horizon. If no eligible contributors remain, return explicit ML-unavailable evidence and ensure fusion gives ML zero weight; a fabricated neutral probability with a retained quality score/floor is not an honest substitute. Preserve any usable TA signal with the fallback reason visible.
+The **proposed strict-v2 target behavior** is to enforce the same serving policy in individual predictions, both ensemble paths and signal-engine's fallback chain. Excluded models must not contribute to probability, thresholds, quality averages or agreement votes. Cross-style fallback is not coverage for the requested horizon. With zero qualified contributors, the target contract is explicit ML-unavailable evidence and zero ML influence, preserving usable TA with a visible reason.
+
+**Open Stage 0 verification, not an established defect:** trace what currently happens when no model qualifies. Test missing artifacts, all-suppressed artifacts, one qualified contributor and wrong-horizon fallback across individual/two-model/three-model endpoints and signal-engine's extraction/fusion. Record returned probability, quality/AUC provenance, suppression/status flags and actual applied weight. Determine whether a neutral probability retains a quality score/floor or is correctly excluded; do not assume the failure occurs. Use isolated fixtures/read-only stored provenance, not new production prediction/provider calls. Any confirmed behavior change is designed and reviewed separately.
 
 For rollback, prefer the prior qualified artifact/policy pair. If none exists, use the declared TA-only fallback. Restoring legacy serving requires a separate, explicit policy choice and must retain its legacy label; it must not rewrite evaluation history.
 
@@ -87,7 +131,15 @@ This stage establishes conditional row-feasibility estimates and potential routi
 
 ### Stage 1 — paired offline training and quality study
 
-Freeze a read-only input snapshot, feature availability, corporate-action basis, universe, code, model defaults, seed and date folds. All arms receive the same opportunity population and point-in-time feature policy. Fit any data-dependent label/dead-zone threshold on the earliest training prefix shared by all arms in that fold, then freeze it for every arm; fitting it on each arm's different sample would change the targets as well as allocation. Every CV/feature-selection step must stay inside that arm's permitted fit prefix rather than retaining a hardcoded 70% boundary. Preserve missing-data exclusions. No Optuna search, changing feature sets or relaxed suppression gates in this experiment.
+Freeze a read-only input snapshot, feature availability, corporate-action basis, universe, code, model defaults, seed and date folds. All arms receive the same opportunity population and point-in-time feature policy. Fit any data-dependent label/dead-zone threshold on the earliest training prefix shared by all arms in that fold, then freeze it for every arm; fitting it on each arm's different sample would change the targets as well as allocation. Every CV/feature-selection step must stay inside that arm's permitted fit prefix rather than retaining a hardcoded 70% boundary.
+
+**Two independent code sites must change in the research evaluator.** In the reviewed trainer, `_train_rows = int(len(df) * 0.70)` and `compute_label_threshold(df.iloc[:max(_train_rows, 60)], ...)` at **lines 828–829** choose the dead-zone threshold from the *raw* price frame, before feature/label filtering. This is separate from **`split_train = int(len(X) * 0.70)` at line 1057**, and the later 80/90 split boundaries. Changing only `split_train` for Arm C can leave its label threshold informed by rows beyond its actual 60% fit cutoff. The `max(..., 60)` floor must also remain within the permitted common training cutoff; it is not an exception to the no-look-ahead rule.
+
+Use a preregistered common time cutoff for label-threshold estimation, map raw-bar dates to the retained feature dates, and verify it precedes every arm's actual fit end. Do not fit on “60% raw rows” and assume that equals “60% retained rows.” If the predeclared cutoffs cannot satisfy this after filtering, mark the cell unsupported rather than repeatedly changing thresholds until it passes. Freeze one label/dead-zone definition per fold for all arms.
+
+This common-prefix correction moves **A and B as well as C away from the current production labelling recipe**. Arm A is therefore only the stated refitted legacy-*split* comparator on common research labels, not an exact current-production retrain. Archive the production recipe's original label metadata separately; do not attribute the difference solely to reporting allocation.
+
+Preserve missing-data exclusions. No Optuna search, changing feature sets or relaxed suppression gates in this experiment.
 
 **Common outer reporting dates are mandatory.** Comparing each arm only on its own last slice would mix period effects with allocation effects. Use whole chronological outer folds: each fold reserves a common latest reporting interval for all arms and purges development labels that mature into it. Inside the earlier development prefix, apply each arm's allocation and complete selection procedure, including its inner reporting-validity requirement. Score frozen results on the same outer dates without using that window to select thresholds.
 
@@ -100,6 +152,8 @@ Historical outcome feedback, macro/fundamental features and any cached enrichmen
 ### Pilot and resource boundary
 
 Proposed pilot: **12 stock/style cells**, covering all eight US/HK × four-style combinations plus four affected/sparse-history cases, selected before outcomes. Up to three model families × three arms × three chronological folds = **324 training jobs maximum**, less where a cell is unsupported. Each job includes internal CV and a final fit: with five CV folds this can mean **1,944 base-model fits**, plus auxiliary calibration work. Budget actual internal work, not only top-level calls. No substitutions chosen for favourable returns.
+
+**Runtime prior, supplied in the October 27 user review:** production completed approximately **326 training jobs per 30 minutes**, equivalent to about **5.5 seconds per job including five-fold CV**. At that throughput, 324 jobs is approximately **1,789 seconds / 29.8 minutes**. Treat it as an observed-throughput prior, not a guaranteed individual-job latency or proof of the isolated worker's speed; the raw timing log was not attached to this plan and was not independently remeasured here. CV is already included in that per-job figure—do not multiply the runtime estimate by six again. The larger 1,944 figure above describes base-model fit operations, not 1,944 separately timed 5.5-second jobs.
 
 Run on an isolated worker outside production. Proposed ceiling: one concurrent fit, four GiB memory and a two-hour pilot wall budget, with per-fit timeout and incremental results. Confirm resource affordability from a small benchmark before approving the actual run. Stop with incomplete results if limits are reached; never relax evidence to finish. **This document does not start or approve those fits.** Scaling to all artifacts requires the pilot's measured cost and a separate bounded execution plan.
 
@@ -121,7 +175,7 @@ Use paired comparisons on common dates with session-block uncertainty and symbol
 
 | Gate | Change allowed | Required evidence |
 |---|---|---|
-| 0 — inventory/design | Read-only capture and agreed contracts | Current artifact/routing inventory; review of this plan; no serving effect |
+| 0 — inventory/design | Extend M14 read-only reporting and agree contracts | Timestamped/hash-bound inventory, both floors and mapped axes, no-model-contributor trace; no serving effect |
 | 1 — protocol implementation | Research-only versioned evaluator and candidate registry | Real split/label-maturity tests; no production-path writes; old flags cannot satisfy v2 |
 | 2 — offline comparison | Approved bounded fits | Hashed snapshots/folds/results, all attrition and paired quality/coverage report; frozen decision criteria |
 | 3 — shadow resolution | Metadata-only qualified-artifact resolver, **zero applied candidate weight** | Exact endpoint/fallback paths and hashes; live versus proposed coverage/differences; no accidental candidate discovery |
@@ -139,10 +193,16 @@ Deploy code and artifact selection as separate controlled steps, under the host 
 - Invalid candidate preserves a qualified incumbent; legacy incumbent cannot block all v2 progress as “already valid”; two unqualified artifacts do not create a qualified selection. No invalid candidate overwrites the only saved rollback.
 - All individual/ensemble/fallback endpoints enforce the same selected protocol. Zero contributors has zero ML influence; wrong-horizon fallback and missing quality scores are disclosed.
 - Research candidates cannot be discovered by production scanners. Mixed cache/manifest versions, corrupt files, duplicate promotion, interrupted writes and rollback are tested.
-- Frozen evidence/output hashes are reproducible. No point-in-time feedback or outer evaluation data leaks into feature/threshold selection. The comparison reports every predeclared cell, including failures.
+- Frozen evidence/output hashes are reproducible. No point-in-time feedback or outer evaluation data leaks into feature/threshold selection. Assert the raw-frame dead-zone fit at lines 828–829 stays inside every arm's fit cutoff independently of the retained-row split. The comparison reports every predeclared cell, including failures.
+- M14 unknown validity, the 50-total-test-row sufficiency flag and the 10-report-row computation floor retain their distinct meanings. Atomic artifact replacement during capture cannot mix a hash from one version with metadata from another; unreadable/changed artifacts remain visible. Admin suppression resweep and scheduled publication cannot mutate a selected canary outside the approved writer policy.
 
 ## Deliverables and next action
 
-First deliverable after plan review: a **fresh read-only artifact/routing inventory** with an exact proposed protocol schema and replacement/serving truth table. Then implement the research-only evaluator/registry, run the bounded comparison when its budget and criteria are approved, and review the results before any serving-policy activation.
+First deliverable after plan review: an **M14-based, timestamped and hash-bound read-only artifact/routing inventory** with an exact proposed protocol schema and replacement/serving truth table. Then implement the research-only evaluator/registry, run the bounded comparison when its budget and criteria are approved, and review the results before any serving-policy activation.
 
 The held F04 branch remains the reference gap implementation. It is not yet a complete production release. There is **no claim here that a larger test slice, versioning alone or suppression alone increases win rate or returns**.
+
+
+## October 27 review disposition
+
+All five review points are incorporated into the operating specification above: the raw-frame label fit is a separate required research change; M14 is reused with explicit axis/floor mapping; suppression resweep is named in writer controls; the live legacy publisher and rolling capture semantics are explicit; and measured production throughput is a prior for the required worker benchmark. The unverified no-eligible-model behavior is a named Stage 0 investigation. These are documentation corrections, not a change to the study arms, existing gates or F04 hold. **Stage 0 has not started.**
