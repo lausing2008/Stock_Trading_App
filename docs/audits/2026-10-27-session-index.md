@@ -13,7 +13,7 @@ open, and links the document that holds the detail. Source review:
 | F03 signal occurrences — observation phase | Deployed to all 12 backends; collecting | `1be6c90c` | [F03 design §11–§12](../features/2026-10-27-f03-signal-occurrence-and-delivery-attribution-design.md) |
 | F04 final-split label purge | **Held**; preserved on branch `f04-threshold-report-purge`, reverted from `prod` | revert `a82e2401` | [F04 plan](../features/2026-10-27-f04-evaluation-version-comparison-and-rollout-plan.md) |
 | Signals upsert vs alert-delivery deadlock | Fixed and deployed, market-data only | `8dc84150` (deployed, recorded `c88fdc6f`) | [deadlock review](2026-10-27-signal-upsert-delivery-deadlock-review.md) |
-| Little RZY timeframe guide + diagrams | Deployed with the frontend | this session | [little-rzy.tsx](../../frontend/src/pages/little-rzy.tsx) |
+| Little RZY timeframe guide + diagrams, tracker tier 475 | Deployed, frontend only | `1b0dfd6c` | [little-rzy.tsx](../../frontend/src/pages/little-rzy.tsx) |
 
 ## 1. F01 / F02 — calibration and the daily input contract
 
@@ -131,6 +131,23 @@ open, and links the document that holds the detail. Source review:
   3. Top-down order: daily/1h direction, 15m setup, 5m timing; skip when they disagree.
 - **Labelled as untested.** Combining timeframes is a reading practice: not implemented and not
   measured, and no timeframe has beaten random entry timing.
+
+## Frontend deployment record (2026-10-28 04:08 UTC)
+
+- **Scope.** The only changes since the running release `adb1a795` were this session's two
+  frontend commits: `8288f1d0` and `1b0dfd6c` (3 files, `little-rzy.tsx`, `improvements.tsx`, one
+  test).
+- **Before.** Fresh frontend suite: 992 passed, `tsc` clean.
+- **Deploy.** `scripts/deploy_frontend.sh` under the host lock, about 4.5 min, rc=0.
+  - The previous image is kept as `stockai-frontend:rollback-before-1b0dfd6c`; the new one is
+    tagged `release-1b0dfd6c`.
+- **Verified.**
+  - 15/15 containers healthy.
+  - 0 static chunks contain `localhost:8000`.
+  - The served `little-rzy-6b84d167b4f7a09d.js` contains the guide, and the improvements chunk
+    contains tier 475.
+  - `/`, `/little-rzy`, `/improvements` and `/api/health` all return 200.
+  - 33 GB free.
 
 ## Open items
 
