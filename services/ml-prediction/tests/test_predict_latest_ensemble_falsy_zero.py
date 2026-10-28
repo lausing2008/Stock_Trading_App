@@ -25,6 +25,14 @@ _TRAINER_PATH = (
 _TRAINER_SOURCE = _TRAINER_PATH.read_text()
 
 
+def _exec_no_eligible_model(namespace: dict) -> None:
+    """F04 Stage 0: both ensembles return `_no_eligible_model(...)` when every member is
+    suppressed -- exec its real source into the same namespace."""
+    start = _TRAINER_SOURCE.index("def _no_eligible_model(symbol:")
+    end = _TRAINER_SOURCE.index("\n\n\ndef predict_single_served(", start)
+    exec(_TRAINER_SOURCE[start:end], namespace)  # noqa: S102
+
+
 def _extract_predict_latest_ensemble():
     start = _TRAINER_SOURCE.index("def predict_latest_ensemble(symbol:")
     end = _TRAINER_SOURCE.index("\n\n\ndef predict_latest_ensemble_three(", start)
@@ -44,6 +52,7 @@ def _extract_predict_latest_ensemble():
         "_artifact_path": None,       # set per-test
         "_FakePath": _FakePath,
     }
+    _exec_no_eligible_model(namespace)
     exec(func_source, namespace)  # noqa: S102 — isolated eval of one real function's own source
     return namespace["predict_latest_ensemble"], _FakePath
 
@@ -155,34 +164,36 @@ def test_oos_suppressed_model_gets_zero_weight_even_with_a_nonzero_reported_auc(
     assert result["bullish_probability"] == 0.45
 
 
-def test_both_models_suppressed_falls_back_to_using_both_rather_than_a_zero_total():
-    """If BOTH models are oos_suppressed, zeroing both out would divide-by-zero — the
-    function must fall back to using both models' own real AUCs rather than crashing or
-    silently returning a degenerate all-zero-weight result."""
+def test_both_models_suppressed_is_ml_unavailable_not_a_blend_of_rejected_models():
+    """REVERSED BY F04 STAGE 0 (docs/audits/2026-10-28-f04-stage0-inventory-and-no-model-trace.md).
+    This test used to require that two suppressed models fall back to weighting by their own
+    real AUCs, "never a zero-weight result". That fallback is the defect Stage 0 found: rejected
+    models kept carrying direction and quality into live fusion. Zero eligible contributors is
+    now explicit ML-unavailable -- no weights, no quality metric -- which also removes the
+    divide-by-zero the old fallback guarded against."""
     xgb = _model(auc=0.48, bullish_probability=0.5, oos_suppressed=True)
     rf = _model(auc=0.51, bullish_probability=0.5, oos_suppressed=True)
     fn = _make_ensemble(xgb, rf)
     result = fn("TEST", horizon=5, style="SWING")
 
-    # Falls back: total = 0.48 + 0.51, real weights derived from real AUCs — not a crash,
-    # not a 0.55/0.55 midpoint fallback that would hide the suppression from the weighting.
-    total = 0.48 + 0.51
-    assert result["weights"]["xgboost"] == round(0.48 / total, 2)
-    assert result["weights"]["random_forest"] == round(0.51 / total, 2)
-    # Both being suppressed must still be visible in the top-level flag for downstream
-    # (signal-engine SA-27) compression to discount this result appropriately.
+    assert result["ml_available"] is False
+    assert result["metrics"] == {}
+    assert "weights" not in result
     assert result["oos_suppressed"] is True
 
 
-def test_only_one_model_suppressed_the_top_level_oos_suppressed_flag_still_propagates():
-    """T237-ML-OOS1's pre-existing propagation (`bool(xgb.get(...) or rf.get(...))`) must
-    still correctly flag the WHOLE ensemble result as suppressed even though only one of the
-    two models triggered it and that model's weight was independently zeroed."""
+def test_only_one_model_suppressed_is_excluded_and_the_result_is_not_flagged_suppressed():
+    """REVERSED BY F04 STAGE 0. T237-ML-OOS1 flagged the WHOLE result suppressed when either
+    member was, so signal-engine's SA-27 compression fired on a probability the unsuppressed
+    member alone produced. The flag now means "no eligible contributor" on every path (3-model,
+    single and this one); the excluded member is named in `suppressed_members` instead."""
     xgb = _model(auc=0.50, bullish_probability=0.9, oos_suppressed=True)
     rf = _model(auc=0.60, bullish_probability=0.4, oos_suppressed=False)
     fn = _make_ensemble(xgb, rf)
     result = fn("TEST", horizon=5, style="SWING")
-    assert result["oos_suppressed"] is True
+    assert result["oos_suppressed"] is False
+    assert result["suppressed_members"] == ["xgboost"]
+    assert result["bullish_probability"] == 0.4
 
 
 # ── cv_auc_mean reporting must reflect each model's OWN real metric, not the weighting value ──

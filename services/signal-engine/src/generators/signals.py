@@ -409,8 +409,17 @@ def _fetch_ml_data(symbol: str, style_key: str = "SWING") -> tuple[float | None,
     test_auc drives the dynamic ML/TA fusion weight — a high-quality model (AUC 0.70)
     earns up to 75% weight; a near-random model (AUC < 0.52) gets 0% weight.
 
-    style_key routes to a horizon-specific artifact (e.g. {symbol}_short.joblib).
-    Falls back gracefully to the SWING artifact if a style-specific model is absent.
+    style_key routes to a horizon-specific artifact (e.g. {symbol}_short.joblib). There is NO
+    cross-style fallback: every endpoint is asked for the same style, so a missing style model
+    ends in TA-only (None) rather than borrowing another horizon's model. The 2-model and
+    single-model endpoints are reached only when the previous one returns a non-200.
+
+    ML UNAVAILABLE (F04 Stage 0): when every model for the style is oos_suppressed, the response
+    says `ml_available: false` (older ml-prediction: `oos_suppressed: true`, which meant the
+    same on the 3-model and single paths). That returns None like TA-only -- no direction, no
+    quality, zero fusion weight -- with ml_meta recording `ml_unavailable_reason` so downstream
+    entry gates can tell "no eligible model" from "no model trained" and must not soft-pass it.
+    `ml_oos_suppressed` stays True, so SA-27's compression still applies as before.
     """
     payload = {"symbol": symbol, "style": style_key}
     endpoints = [
@@ -425,6 +434,15 @@ def _fetch_ml_data(symbol: str, style_key: str = "SWING") -> tuple[float | None,
                            headers={"Authorization": f"Bearer {_ml_service_token()}"})
                 if r.status_code == 200:
                     data = r.json()
+                    if not data.get("ml_available", not data.get("oos_suppressed", False)):
+                        return None, 0.0, {
+                            "ml_model": data.get("model"),
+                            "ml_agreement": "no_eligible_model",
+                            "ml_model_probs": None,
+                            "ml_oos_suppressed": True,
+                            "ml_quality_status": "no_eligible_model",
+                            "ml_unavailable_reason": "no_eligible_model",
+                        }
                     prob = float(data.get("bullish_probability", 0.5))
                     m = data.get("metrics") or {}
                     # AUD-SIGNAL2-FALSYZEROAUC (fixed 2026-09-02): the same falsy-zero bug class
@@ -3228,7 +3246,8 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             is_stale=is_stale,
             base_reasons={**reasons,
                           **{key: _ml_m.get(key) for key in (
-                              "ml_model", "ml_agreement", "ml_model_probs", "ml_quality_status")},
+                              "ml_model", "ml_agreement", "ml_model_probs", "ml_quality_status",
+                              "ml_unavailable_reason")},
                           "ml_test_auc": _ml_auc if _ml_m.get("ml_quality_status") == "measured" else None},
             earnings_beat_rate=earnings_beat_rate,
             sector_etf_above_sma50=sector_etf_above_sma50,

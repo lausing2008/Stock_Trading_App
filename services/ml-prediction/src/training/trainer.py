@@ -1925,24 +1925,76 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
     }
 
 
+def _no_eligible_model(symbol: str, horizon: int, suppressed: list[str]) -> dict:
+    """Every model that could answer this request is oos_suppressed: ML is UNAVAILABLE.
+
+    F04 Stage 0 (docs/audits/2026-10-28-f04-stage0-inventory-and-no-model-trace.md): the
+    ensembles used to fall back to the suppressed members themselves. Each returns 0.5, so the
+    agreement test read `unanimous_bear` and nudged the blend to 0.45, and their stored AUC was
+    reported as quality, so a set of models the suppression rule had rejected carried direction
+    and fusion weight into live signals. Suppressed models contribute neither: no probability
+    of their own, no agreement nudge and no quality metric (`metrics` is empty).
+
+    `bullish_probability` stays 0.5 only so display consumers keep a number; `ml_available`
+    False is the contract a fusion consumer must read. Eligibility is today's suppression rule,
+    not F04 protocol-v2 qualification.
+    """
+    return {
+        "symbol": symbol, "model": "none_eligible",
+        "bullish_probability": 0.5, "direction": "neutral", "confidence": 0.0,
+        "horizon_days": horizon, "ensemble": False,
+        "ml_available": False, "ml_unavailable_reason": "no_eligible_model",
+        "eligible_contributors": 0, "suppressed_members": suppressed,
+        "model_probabilities": {}, "ensemble_agreement": "no_eligible_model",
+        "applied_weights": {}, "metrics": {}, "oos_suppressed": True,
+    }
+
+
+def predict_single_served(symbol: str, model_name: str, horizon: int = 5, style: str = "SWING") -> dict:
+    """POST /ml/predict: one family's prediction, ML-unavailable when that model is suppressed.
+
+    predict_latest() itself keeps returning a suppressed bundle's 0.5 and stored metrics: the
+    ensembles read that internally to identify and exclude the member.
+    """
+    res = predict_latest(symbol, model_name, horizon, style=style)
+    if res.get("oos_suppressed"):
+        return _no_eligible_model(symbol, horizon, [model_name])
+    return {**res, "ml_available": True, "eligible_contributors": 1, "suppressed_members": []}
+
+
 def predict_latest_ensemble(symbol: str, horizon: int = 5, style: str = "SWING") -> dict:
     """Average XGBoost + RandomForest predictions, weighted by each model's CV AUC.
 
     Falls back to XGBoost-only if the RF model has not been trained for this symbol.
     Using two structurally different models (gradient boosting vs. bagging) reduces
     variance and smooths out individual model over-reactions to recent noise.
+
+    Suppressed members are not contributors; with none eligible the result is ML-unavailable
+    (_no_eligible_model). The reported mean AUC still averages over both members with a
+    suppressed one zeroed, which understates a mixed pair; that is tracked separately (F04
+    Stage 0, finding S0-3) because this endpoint is only reached when the 3-model one errors.
     """
     xgb = predict_latest(symbol, "xgboost", horizon, style=style)
 
+    def _xgb_only() -> dict:
+        if xgb.get("oos_suppressed"):
+            return _no_eligible_model(symbol, horizon, ["xgboost"])
+        return {**xgb, "ensemble": False, "model": "xgboost", "ml_available": True,
+                "eligible_contributors": 1, "suppressed_members": []}
+
     rf_path = _artifact_path(symbol, "random_forest", style)
     if not rf_path.exists():
-        return {**xgb, "ensemble": False, "model": "xgboost"}
+        return _xgb_only()
 
     try:
         rf = predict_latest(symbol, "random_forest", horizon, style=style)
     except Exception as exc:
         log.warning("predict_latest_ensemble.rf_predict_failed", symbol=symbol, error=str(exc))
-        return {**xgb, "ensemble": False, "model": "xgboost"}
+        return _xgb_only()
+
+    _suppressed = [n for n, m in (("xgboost", xgb), ("random_forest", rf)) if m.get("oos_suppressed")]
+    if len(_suppressed) == 2:
+        return _no_eligible_model(symbol, horizon, _suppressed)
 
     # Prefer held-out test AUC (unbiased) over CV AUC for internal weighting.
     # T237-ML1B: `or` treats a real, legitimate auc=0.0 (a perfectly rank-inverted model —
@@ -1967,27 +2019,20 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5, style: str = "SWING")
     # oos_suppressed by predict_latest() (CV-AUC < 0.52, coin-flip territory) still had its
     # own real held-out AUC feed this weighting formula at full strength — the top-level
     # oos_suppressed flag below only informed signal-engine's downstream compression AFTER
-    # the blend already happened. Zero out a suppressed model's weight here too, falling
-    # back to using it alone only if BOTH models are suppressed (never leave the ensemble
-    # with zero total weight).
+    # the blend already happened. Zero out a suppressed model's weight here too. Both
+    # suppressed returned ML-unavailable above, so at least one member is eligible here.
     if xgb.get("oos_suppressed"):
         xgb_auc = 0.0
     if rf.get("oos_suppressed"):
         rf_auc = 0.0
     total = xgb_auc + rf_auc
     if total <= 0:
-        # Two ways to land here: (a) both models are suppressed — restore their own real
-        # AUCs so the ensemble isn't left with zero total weight; (b) neither is suppressed
-        # but both genuinely report a real auc=0.0 (a degenerate-but-real edge case) — in
-        # that case there is no meaningful AUC signal to weight by at all, so split evenly
-        # rather than dividing by zero or fabricating a preference between two equally
-        # uninformative models.
-        xgb_auc = _model_auc(xgb) if xgb.get("oos_suppressed") else xgb_auc
-        rf_auc  = _model_auc(rf) if rf.get("oos_suppressed") else rf_auc
+        # The eligible member(s) genuinely report auc=0.0 (degenerate but real). If both are
+        # eligible there is no AUC signal to weight by, so split evenly; if only one is, it
+        # carries the whole blend. A suppressed member never regains weight here.
+        xgb_auc = 0.0 if xgb.get("oos_suppressed") else 0.5
+        rf_auc = 0.0 if rf.get("oos_suppressed") else 0.5
         total = xgb_auc + rf_auc
-        if total <= 0:
-            xgb_auc = rf_auc = 0.5
-            total = 1.0
     w_xgb, w_rf = xgb_auc / total, rf_auc / total
 
     prob = float(w_xgb * xgb["bullish_probability"] + w_rf * rf["bullish_probability"])
@@ -2020,9 +2065,14 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5, style: str = "SWING")
             ),
             "buy_threshold": buy_threshold,
         },
-        # T237-ML-OOS1: propagate the coin-flip-model safety flag through the ensemble boundary —
-        # signal-engine's SA-27 compression relies on this to discount noisy ML contributions.
-        "oos_suppressed": bool(xgb.get("oos_suppressed") or rf.get("oos_suppressed")),
+        # T237-ML-OOS1 / F04 Stage 0: the flag now means "no eligible contributor", the same
+        # meaning as the 3-model and single-model paths, so signal-engine's SA-27 compression
+        # no longer fires on a result an unsuppressed member produced. Here it is always False
+        # (both suppressed returned earlier); which member was excluded is listed instead.
+        "oos_suppressed": False,
+        "ml_available": True,
+        "eligible_contributors": 2 - len(_suppressed),
+        "suppressed_members": _suppressed,
     }
 
 
@@ -2113,6 +2163,10 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
 
     Falls back gracefully: if LightGBM or RF is not trained, falls back to
     predict_latest_ensemble (XGBoost + RF), then to XGBoost-only.
+
+    Only unsuppressed members contribute to the probability, the agreement vote and nudge,
+    the threshold and the reported quality. With none eligible the result is ML-unavailable
+    (_no_eligible_model) -- never the suppressed members themselves (F04 Stage 0).
     """
     xgb = predict_latest(symbol, "xgboost", horizon, style=style)
 
@@ -2148,11 +2202,19 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
     # buy_threshold average, and agreement vote — the top-level oos_suppressed flag only
     # informed signal-engine's downstream compression AFTER the fact, it never stopped the
     # bad value from corrupting the blend itself. Exclude suppressed models from the weighted
-    # blend (still shown in model_probabilities for transparency); only fall back to using
-    # them if literally every available model is suppressed, so the ensemble is never empty.
+    # blend. F04 Stage 0: they used to be used anyway when EVERY member was suppressed; each
+    # returns 0.5, `0.5 > 0.5` read as unanimous_bear and nudged the blend to 0.45, and their
+    # stored AUC became the reported quality -- rejected models steering live signals. Now that
+    # case is ML-unavailable, and suppressed members are listed, not shown as probabilities.
+    def _name(m: dict) -> str:
+        return "xgboost" if m is xgb else "lightgbm" if m is lgb_res else "random_forest"
+
     available = [(m, w) for m, w in all_available if not m.get("oos_suppressed")]
+    _suppressed = [_name(m) for m, _ in all_available if m.get("oos_suppressed")]
     if not available:
-        available = all_available
+        return _no_eligible_model(symbol, horizon, _suppressed)
+    _eligibility = {"ml_available": True, "eligible_contributors": len(available),
+                    "suppressed_members": _suppressed}
 
     if len(available) == 1:
         # Only one usable model — no ensemble. T237-ML1: this used to always be XGBoost (the
@@ -2160,14 +2222,10 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
         # oos_suppressed models above means the single survivor can now be any of the three —
         # return the actual survivor's own data, not always xgb's.
         _sole_model, _ = available[0]
-        _sole_name = (
-            "xgboost" if _sole_model is xgb
-            else "lightgbm" if _sole_model is lgb_res
-            else "random_forest"
-        )
+        _sole_name = _name(_sole_model)
         return {**_sole_model, "ensemble": False, "model": _sole_name,
                 "model_probabilities": {_sole_name: round(_sole_model["bullish_probability"], 4)},
-                "ensemble_agreement": "single_model"}
+                "ensemble_agreement": "single_model", **_eligibility}
 
     # Renormalize weights to sum to 1.0 for whatever subset is available
     total_w = sum(w for _, w in available)
@@ -2274,18 +2332,16 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
 
     prob = float(prob)
 
-    model_probs = {"xgboost": round(xgb["bullish_probability"], 4)}
-    if lgb_res is not None:
-        model_probs["lightgbm"] = round(lgb_res["bullish_probability"], 4)
-    if rf_res is not None:
-        model_probs["random_forest"] = round(rf_res["bullish_probability"], 4)
-    # R09: a member is listed here only if it actually moved the number. A shadow run is
-    # reported below under its own name with weight 0.0, not smuggled in as a contributor.
+    # R09: a member is listed here only if it actually moved the number -- so a suppressed
+    # member (listed in suppressed_members) is not, and neither is a shadow run, which is
+    # reported below under its own name with weight 0.0.
+    model_probs = {_name(m): round(m["bullish_probability"], 4) for m, _ in available}
     if _meta_prob is not None and _meta_applied_weight > 0:
         model_probs["meta"] = round(_meta_prob, 4)
 
     _is_contributor = _meta_applied_weight > 0
-    model_name = f"ensemble_xgb{'_lgb' if lgb_res else ''}{'_rf' if rf_res else ''}{'_meta' if _is_contributor else ''}"
+    _short = {"xgboost": "xgb", "lightgbm": "lgb", "random_forest": "rf"}
+    model_name = "ensemble_" + "_".join(_short[_name(m)] for m, _ in available) + ("_meta" if _is_contributor else "")
 
     # R09: the weights that were actually applied, so a reader does not have to infer them from
     # the model name and a constant buried in this function.
@@ -2321,21 +2377,10 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
             auc = metrics.get("cv_auc_mean")
         return float(auc) if auc is not None else 0.55
 
-    # Also zero out a suppressed model's contribution to the REPORTED mean AUC — a model
-    # already known to be coin-flip-quality (oos_suppressed=True) should not inflate the
-    # metric a downstream fusion-weight formula trusts, even if its own point-estimate `auc`
-    # happens to look like a real, non-degenerate number.
-    _auc_weighted = [(_model_auc_3(xgb), bool(xgb.get("oos_suppressed")))]
-    if lgb_res:
-        _auc_weighted.append((_model_auc_3(lgb_res), bool(lgb_res.get("oos_suppressed"))))
-    if rf_res:
-        _auc_weighted.append((_model_auc_3(rf_res), bool(rf_res.get("oos_suppressed"))))
-
-    auc_vals = [0.0 if suppressed else auc for auc, suppressed in _auc_weighted]
-    if sum(auc_vals) <= 0:
-        # Every contributing model is suppressed (or genuinely all report a real auc=0.0) —
-        # restore real AUCs rather than reporting a misleading, uniformly-zeroed mean.
-        auc_vals = [auc for auc, _ in _auc_weighted]
+    # The REPORTED quality is the contributors' own: a suppressed member neither inflates it
+    # (its stored AUC) nor deflates it. F04 Stage 0: it used to be averaged in as 0.0, so two
+    # eligible 0.70 models beside a suppressed one reported 0.467 and lost their fusion weight.
+    auc_vals = [_model_auc_3(m) for m, _ in available]
     mean_auc = sum(auc_vals) / len(auc_vals)
 
     return {
@@ -2362,9 +2407,10 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
             "cv_auc_mean": round(mean_auc, 4),
             "buy_threshold": buy_threshold,
         },
-        # T237-ML-OOS1: propagate the coin-flip-model safety flag through the ensemble boundary —
-        # signal-engine's SA-27 compression relies on this to discount noisy ML contributions.
-        "oos_suppressed": bool(any(m.get("oos_suppressed") for m, _ in available)),
+        # T237-ML-OOS1: "no eligible contributor" -- always False here, since that case returned
+        # _no_eligible_model above. Which members were excluded is in suppressed_members.
+        "oos_suppressed": False,
+        **_eligibility,
     }
 
 
