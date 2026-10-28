@@ -110,4 +110,8 @@ it('explains what each timeframe measures and labels multi-timeframe entry use a
   expect(rows[2]?.textContent).toContain('too few');
   expect(screen.getByText(/This is a reading practice, not something the scanner does/)).toBeTruthy();
   expect(screen.getByText(/Keep the stop where the setup is proven wrong/)).toBeTruthy();
+  const diagrams = screen.getAllByRole('img').map(e => e.getAttribute('aria-label') ?? '');
+  expect(diagrams.some(l => /seven bars shaded/.test(l))).toBe(true);
+  expect(diagrams.some(l => /pivots A, B and C/.test(l))).toBe(true);
+  expect(diagrams.some(l => /if they disagree, skip/.test(l))).toBe(true);
 });

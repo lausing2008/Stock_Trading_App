@@ -35,6 +35,93 @@ const TF_SCALE: { tf: string; role: string; pivot: string; armed: string; band: 
     cost: '0.011R', evidence: 'n=50, too few' },
 ];
 
+const svgText = 'fill-slate-300 text-[11px]';
+const svgMuted = 'fill-slate-500 text-[10px]';
+
+// One US regular session (390 min) drawn as bars of each timeframe; the first 7 bars (the pivot
+// confirmation wait) are shaded so the clock cost of the same rule is visible.
+function SessionScaleDiagram() {
+  const x0 = 70, w = 520, rows: [string, number, string][] = [['1d', 390, '1 bar · 7-bar wait = 7 sessions →'], ['1h', 60, '7 bars · wait ≈ whole session'], ['15m', 15, '26 bars · wait = 1 h 45 min'], ['5m', 5, '78 bars · wait = 35 min']];
+  return <svg role="img" aria-label="One trading session divided into 1d, 1h, 15m and 5m bars, with the first seven bars shaded" viewBox="0 0 640 170" className="w-full min-w-[560px] max-w-3xl">
+    {rows.map(([tf, m, note], r) => {
+      const y = 8 + r * 38, n = Math.ceil(390 / m);
+      return <g key={tf}>
+        <text x={x0 - 10} y={y + 12} textAnchor="end" className={`${svgText} font-mono`}>{tf}</text>
+        {Array.from({ length: n }, (_, k) => {
+          const bx = x0 + (k * m / 390) * w, bw = (Math.min(m, 390 - k * m) / 390) * w;
+          return <rect key={k} x={bx + 0.5} y={y} width={Math.max(bw - 1, 0.6)} height={16} rx={1}
+            className={k < 7 ? 'fill-teal-500/60' : 'fill-slate-700'} />;
+        })}
+        <text x={x0} y={y + 29} className={svgMuted}>{note}</text>
+      </g>;
+    })}
+    <text x={x0} y={166} className={svgMuted}>9:30 ET</text><text x={x0 + w} y={166} textAnchor="end" className={svgMuted}>16:00 ET</text>
+  </svg>;
+}
+
+// Schematic long setup, drawn to the engine's geometry: line through A and C, D measured from the
+// highest high between them to that line, target = high + D, stop below C/trigger/line + 0.25 ATR.
+function SetupDiagram() {
+  const lineY = (x: number) => 260 - 0.1875 * (x - 60);
+  const candle = (x: number, o: number, c: number, h: number, l: number, up: boolean) => <g>
+    <line x1={x} x2={x} y1={h} y2={l} className={up ? 'stroke-teal-300' : 'stroke-slate-400'} strokeWidth={1.5} />
+    <rect x={x - 6} y={Math.min(o, c)} width={12} height={Math.abs(c - o)} className={up ? 'fill-teal-400' : 'fill-slate-500'} />
+  </g>;
+  const legend: [string, string, string][] = [['stroke-sky-400', '', 'line through A and C'], ['stroke-slate-500', '2 4', 'middle band'],
+    ['stroke-teal-300', '6 4', 'entry ref (trigger close)'], ['stroke-rose-400', '6 4', 'stop'], ['stroke-emerald-400', '6 4', 'target']];
+  return <svg role="img" aria-label="Long setup: pivots A, B and C, line through A and C, measured move D to the target, trigger candle on the line, stop below C" viewBox="0 0 640 312" className="w-full min-w-[560px] max-w-3xl">
+    <defs><marker id="rzy-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" className="fill-slate-400" /></marker></defs>
+    <path d="M40 252 Q200 196 300 211 T450 186 L600 168" fill="none" strokeDasharray="2 4" className="stroke-slate-500" />
+    <polyline points="30,245 60,260 95,228 130,212 165,170 200,150 235,178 270,196 300,215 330,196 355,190 372,193" fill="none" strokeWidth={2} className="stroke-slate-300" />
+    <line x1={60} y1={lineY(60)} x2={600} y2={lineY(600)} strokeWidth={1.5} className="stroke-sky-400" />
+    {([[60, 260, 'A', 56, 278], [200, 150, 'B', 196, 142], [300, 215, 'C', 282, 234]] as const).map(([x, y, t, tx, ty]) => <g key={t}>
+      <circle cx={x} cy={y} r={4} className="fill-amber-300" /><text x={tx} y={ty} className="fill-amber-200 text-[12px] font-semibold">{t}</text></g>)}
+    <line x1={200} y1={150} x2={200} y2={lineY(200)} strokeDasharray="3 3" className="stroke-amber-300" />
+    <text x={206} y={200} className="fill-amber-200 text-[11px]">D</text>
+    <line x1={200} y1={150} x2={200} y2={66} strokeDasharray="3 3" className="stroke-amber-300/60" />
+    <text x={206} y={112} className="fill-amber-200 text-[11px]">D again</text>
+    <line x1={190} y1={66} x2={600} y2={66} strokeDasharray="6 4" className="stroke-emerald-400" />
+    <text x={598} y={58} textAnchor="end" className="fill-emerald-300 text-[11px]">target = highest high + D</text>
+    {candle(382, 188, 196, 184, 202, false)}
+    {candle(405, 193, 178, 175, 197, true)}
+    <line x1={405} y1={178} x2={600} y2={178} strokeDasharray="6 4" className="stroke-teal-300" />
+    <line x1={330} y1={228} x2={600} y2={228} strokeDasharray="6 4" className="stroke-rose-400" />
+    <text x={420} y={104} className={svgText}>trigger: a completed candle touches</text>
+    <text x={420} y={118} className={svgText}>the line, closes above it and above</text>
+    <text x={420} y={132} className={svgText}>the prior high; recheck R/R at next open</text>
+    <path d="M430 138 L410 168" className="stroke-slate-400" markerEnd="url(#rzy-arrow)" />
+    <text x={340} y={248} className="fill-rose-300 text-[10px]">stop: below C / trigger low / line, minus 0.25 ATR</text>
+    <text x={340} y={262} className="fill-rose-300 text-[10px]">any close below the line cancels the setup</text>
+    {legend.map(([cls, dash, label], k) => <g key={label} transform={`translate(${[10, 160, 255, 430, 490][k]} 296)`}>
+      <line x1={0} y1={-4} x2={18} y2={-4} strokeWidth={2} strokeDasharray={dash || undefined} className={cls} />
+      <text x={23} y={0} className={svgMuted}>{label}</text></g>)}
+  </svg>;
+}
+
+// The top-down reading order, with the stand-aside branch when timeframes disagree.
+function TopDownDiagram() {
+  const boxes: [string, string, string[]][] = [
+    ['Daily / 1h', 'Direction', ['Trending up, down or unclear?', 'Late trend (sequence ≥ 3)?', 'Trade only with it']],
+    ['15m', 'Setup', ['Armed A–B–C in that direction', 'R/R ≥ 1.5, C near mid band', 'Target = measured move D']],
+    ['5m', 'Timing', ['Completed 5m candle on line', 'Closes in trend, no chase', 'Stop at the 15m structure']],
+  ];
+  return <svg role="img" aria-label="Top-down order: daily and hourly direction, then 15 minute setup, then 5 minute timing; if they disagree, skip" viewBox="0 0 640 160" className="w-full min-w-[560px] max-w-3xl">
+    <defs><marker id="rzy-flow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L8 4 L0 8 z" className="fill-teal-400" /></marker></defs>
+    {boxes.map(([tf, role, lines], i) => {
+      const x = 10 + i * 215;
+      return <g key={tf}>
+        <rect x={x} y={10} width={190} height={100} rx={8} className="fill-slate-800 stroke-slate-600" />
+        <text x={x + 12} y={32} className="fill-teal-300 text-[13px] font-semibold">{role}</text>
+        <text x={x + 178} y={32} textAnchor="end" className={`${svgMuted} font-mono`}>{tf}</text>
+        {lines.map((l, k) => <text key={l} x={x + 12} y={58 + k * 20} className={svgText}>{l}</text>)}
+        {i < 2 && <line x1={x + 192} y1={60} x2={x + 213} y2={60} strokeWidth={2} className="stroke-teal-400" markerEnd="url(#rzy-flow)" />}
+      </g>;
+    })}
+    <path d="M320 112 L320 132" fill="none" className="stroke-rose-400" strokeDasharray="4 3" />
+    <text x={320} y={150} textAnchor="middle" className="fill-rose-300 text-[11px]">if the timeframes disagree: skip, or treat it as a reversal watch only</text>
+  </svg>;
+}
+
 function TimeframeGuide() {
   return <details className={card}>
     <summary className="cursor-pointer font-semibold text-teal-400">Reading the timeframes: what 5m, 15m, 1h and daily tell you, and how to use them for entries</summary>
@@ -42,16 +129,28 @@ function TimeframeGuide() {
       <p>Each symbol and timeframe is its own stream: the scanner runs the same rules separately on 5m, 15m, 1h and daily bars and never compares them. 15m and 1h bars are built from completed 5m bars; an incomplete bin is withheld, not filled in. Because every rule is counted in <i>bars</i>, the same settings mean very different clock time:</p>
       <div className="overflow-x-auto"><table className="w-full">
         <thead><tr>{['TF', 'What it is good for', 'Pivot confirms after (7 bars)', 'Armed setup expires (20 bars)', 'Bollinger window (20 bars)', 'Cost per trade', 'Evidence (Jul–Oct 2026)'].map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
-        <tbody>{TF_SCALE.map(r => <tr key={r.tf} className="border-t border-slate-800"><td className={`${td} font-mono`}>{r.tf}</td><td className={td}>{r.role}</td>
-          <td className={td}>{r.pivot}</td><td className={td}>{r.armed}</td><td className={td}>{r.band}</td><td className={td}>{r.cost}</td><td className={td}>{r.evidence}</td></tr>)}</tbody>
+        <tbody>{TF_SCALE.map(r => <tr key={r.tf} className="border-t border-slate-800"><td className={`${td} font-mono text-slate-200`}>{r.tf}</td><td className={`${td} text-slate-300`}>{r.role}</td>
+          {[r.pivot, r.armed, r.band, r.cost, r.evidence].map((v, k) => <td key={k} className={`${td} text-slate-300`}>{v}</td>)}</tr>)}</tbody>
       </table></div>
+      <figure className="space-y-1 overflow-x-auto">
+        <SessionScaleDiagram />
+        <figcaption className="text-xs text-slate-500">One US session in bars of each timeframe. Shaded: the 7 bars a pivot needs before it is confirmed. The same rule waits 35 minutes on 5m and a whole session on 1h.</figcaption>
+      </figure>
       <ul className="list-disc space-y-1 pl-5 text-slate-400">
         <li><b className="text-slate-200">Lower timeframe = earlier but noisier.</b> A 5m pivot is known 35 minutes after it forms, a daily pivot only after 7 sessions. 5m structures are small, so the stop is tight and costs take a large share of the risk: about 0.12R per trade, which on its own turned a break-even 5m result into a loss.</li>
         <li><b className="text-slate-200">Higher timeframe = slower but more meaningful.</b> A daily or hourly trend (two higher highs and lows, or two lower) describes the move the intraday setups sit inside. Its stops are wider, so costs matter far less, but it produces few setups.</li>
         <li><b className="text-slate-200">15m is the middle ground.</b> It is where costs are smallest relative to risk among the intraday streams, which is why the evaluation suggested testing it first.</li>
         <li><b className="text-slate-200">Targets are rarely reached.</b> Planned targets average about 3R, but the median trade lasted 4 bars and most exits were a close back through the line. On 5m that is 20 minutes; on 1h it is most of a session.</li>
       </ul>
+      <figure className="space-y-1 overflow-x-auto">
+        <SetupDiagram />
+        <figcaption className="text-xs text-slate-500">What every timeframe looks for (long case; a short is the mirror image). Schematic, not real prices. B is the highest high between A and C; D is its distance above the A–C line, projected again to set the target. Here the planned reward/risk is about 2.2.</figcaption>
+      </figure>
       <h3 className="font-semibold text-slate-100">Using them together to choose an entry</h3>
+      <figure className="space-y-1 overflow-x-auto">
+        <TopDownDiagram />
+        <figcaption className="text-xs text-slate-500">Read from the top down. Each step only narrows the previous one; none of it is automated.</figcaption>
+      </figure>
       <p className="text-amber-300">This is a reading practice, not something the scanner does. Combining timeframes has not been implemented or tested here, and no single timeframe has shown an edge over random entry timing. Treat it as a way to filter and time setups, not as a validated method.</p>
       <ol className="list-decimal space-y-1 pl-5 text-slate-400">
         <li><b className="text-slate-200">Direction from the top (daily, then 1h).</b> Note whether the higher timeframe is trending up, trending down or unclear. Prefer lower-timeframe setups in the same direction. A sequence of 3 or more, or an exhaustion warning, means that trend is late: be more selective, not more aggressive.</li>
