@@ -81,5 +81,7 @@ Premarket "Options flow" note (pre-existing defect: it compared the stored label
 
 Status wording: Phase B is **locally validated**, not production-verified. It becomes production-verified only after the deploy and the post-deploy checks (including the duplicate-print query) pass.
 
+**Duplicate-print check: passed.** 850 dark-pool prints arrived after the deploy (through 2026-10-23 13:45:54 UTC): 0 exact duplicates and 0 hour-shifted twins. See [`../2026-10-28/open-items-status.md`](../2026-10-28/open-items-status.md).
+
 
 October 23 rollout update: Phase C `options_dominance_v1` is deployed in `a1054dcb` and verified on MU, AMD and AAPL. See [deployment report](../audits/2026-10-23-followup-deployment.md). Paid premium and classified buy/sell evidence remain explicitly unavailable.

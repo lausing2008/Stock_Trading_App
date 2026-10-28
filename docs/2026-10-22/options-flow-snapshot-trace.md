@@ -1,5 +1,12 @@
 # Options-flow snapshot job: why only three Oct 15 rows remained (traced 2026-10-22)
 
+**Status (2026-10-28):**
+- Fix A was deployed `5d64a486` on 2026-10-23. The scheduled runs on Oct 23, 26 and 27 each wrote 37 rows from the expected session.
+- Fix B is deployed. The 18:45 ET runs archived sessions Oct 23 and 26 for 158/158 symbols.
+- Storage retention: recommendation pending your decision.
+
+Evidence for all three: [`../2026-10-28/open-items-status.md`](../2026-10-28/open-items-status.md). The original status line follows.
+
 **Status: fix A built and tested locally, not deployed.** It is a separate change from the chain-archive fix (fix B, below) and the premarket-note wording (`05c063bd`, deployed).
 
 ## Trace
