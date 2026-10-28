@@ -208,3 +208,29 @@ The held F04 branch remains the reference gap implementation. It is not yet a co
 ## October 27 review disposition
 
 All five review points are incorporated into the operating specification above: the raw-frame label fit is a separate required research change; M14 is reused with explicit axis/floor mapping; suppression resweep is named in writer controls; the live legacy publisher and rolling capture semantics are explicit; and the historical production-throughput code comment is a prior for the required worker benchmark. The unverified no-eligible-model behavior is a named Stage 0 investigation. These are documentation corrections, not a change to the study arms, existing gates or F04 hold. **Stage 0 has not started.**
+
+
+## Guarded trainer deployment and nightly publication
+
+**Selected policy: Option 1.** Deploying the new trainer does not activate v2 fleet-wide. Outside explicitly enabled cohorts, scheduled live training continues the existing v1 recipe, retention and serving behavior, clearly labelled legacy/unqualified under v2. V2 evaluation and fitting write only to a candidate root outside all live discovery paths. This preserves the existing defect temporarily for legacy cells; it does not claim those cells have been repaired.
+
+Proposed controls (not implemented): `ML_V2_PUBLICATION_ENABLED=false` by default plus a versioned exact cohort manifest keyed by stock, horizon and model family. The scheduler respects these controls when building requests. Enforcement also belongs in the ML service's queue worker, artifact writer and selection resolver: a scheduler flag alone cannot protect manual endpoints, queued jobs or retries. Client-supplied protocol/root values cannot grant publication authority. An unknown control value or unreadable manifest denies v2 publication without silently changing the declared legacy policy.
+
+Each queued job freezes its requested protocol, intended destination, cohort and policy identity. Recheck current authorization at execution and immediately before atomic publication/selection. A stale job must not cross protocols or publish after its cohort is disabled. Use a fenced publication mechanism so disabling a cohort cannot race a previously checked writer into updating the selected artifact. For enabled cohorts, scheduled training may produce v2 candidates; only the same versioned qualification/promotion gate may update their selected manifest. Never publish merely because fitting succeeded. Legacy jobs cannot overwrite an enabled cohort's qualified selection; its immutable root and writer policy enforce that boundary.
+
+Activation requires the publication flag **and** explicit cohort membership **and** qualification. Disabling publication stops new promotions; it does not delete artifacts or silently switch an already-selected cohort back to v1. Serving rollback is a separate explicit, tested selection change to a pinned qualified artifact or the declared fallback. Record these independent control states in release evidence.
+
+Mandatory regression tests use the actual nightly enqueue → worker → writer path with isolated roots: flag off cannot write/select v2 in the live root; v1 behavior remains unchanged for non-enabled cells; flag on with an empty/nonmatching cohort still cannot promote; valid enabled candidates pass the promotion gate; rejected candidates cannot replace selection; old queued jobs/manual endpoints/retries cannot bypass controls; revocation during execution fences publication. Hash live artifacts and selection manifests before/after every denied case. Test restart/default configuration and compare selected-path hashes after deployment. This is a **code-release gate**, not a canary-only requirement.
+
+## Consolidated release sequencing
+
+The [completion and release plan](2026-10-27-rzy-ai-completion-and-release-plan.md) proposes shipping the complete guarded correction with purged baseline B before allocation-C optimization finishes. This does not waive protocol, retention, routing, coverage or canary gates, qualify legacy artifacts, or activate a production cohort. Stage 0 has not been executed by this documentation update.
+
+**Status update (2026-10-28).**
+- **Stage 0 complete.** [Inventory and no-qualified-model trace](../audits/2026-10-28-f04-stage0-inventory-and-no-model-trace.md).
+  The no-eligible-model behaviour is now established: all-suppressed ensembles emitted a weighted
+  bearish 0.45.
+- **Fixed and deployed** as `f5beb232`: [replay and deployment record](../audits/2026-10-28-f04-ml-unavailable-replay.md).
+  Suppressed models carry no ML weight; unavailable ML soft-fails the conviction gate's ML layer.
+- **Still open and still held:** F04's versioned evaluation, purged baseline B and nightly-publication
+  fencing, and the two-model quality calculation (S0-3).
