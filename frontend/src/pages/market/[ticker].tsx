@@ -207,6 +207,13 @@ export default function MarketIndexPage() {
           <div style={{ ...CARD, fontSize: 13, color: '#cbd5e1', lineHeight: 1.5 }}>
             <div style={LABEL}>What this is</div>
             <div style={{ marginTop: 6 }}>{data.description}</div>
+            {data.contract && (
+              <div style={{ marginTop: 6, fontSize: 12, color: '#94a3b8' }}>
+                Quote and change are from the current front contract, <b>{data.contract}</b>. The chart is
+                Yahoo&apos;s continuous front-month series, so a contract roll can show as a step that is
+                not a real price move.
+              </div>
+            )}
             <div style={{ marginTop: 8, fontSize: 11, color: '#64748b' }}>
               Source: Yahoo Finance. Shown for context only — not stored, and not used by signals, rankings or alerts.
             </div>

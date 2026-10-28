@@ -160,3 +160,34 @@ def test_five_day_counts_futures_trade_dates():
         stamps += list(pd.date_range(d + pd.Timedelta(hours=22), d + pd.Timedelta(hours=45), freq="1h"))
     start = _index_visible_start(stamps, "ES=F", "5d")
     assert stamps[start] == pd.Timestamp("2026-10-15 22:00", tz="UTC")
+
+
+def test_futures_change_uses_the_front_contract_across_a_roll():
+    # Real 2026-10-27: BZ=F rolled Dec -> Jan. The continuous previous close (115.81) is the Dec
+    # contract's; the Jan contract closed 110.74, so the day's real move was +0.56%, not -3.85%.
+    def ticker(symbol):
+        if symbol == "BZ=F":
+            return SimpleNamespace(info={"underlyingSymbol": "BZF27.NYM"},
+                                   fast_info=SimpleNamespace(last_price=111.36, previous_close=109.71,
+                                                             regular_market_previous_close=115.81))
+        assert symbol == "BZF27.NYM"
+        return SimpleNamespace(fast_info=SimpleNamespace(last_price=111.36, previous_close=109.41,
+                                                         regular_market_previous_close=110.74))
+    with patch.object(routes.yf, "Ticker", side_effect=ticker), \
+         patch.object(routes, "_get_redis", return_value=_NoRedis()):
+        out = _fetch_index("Brent Crude", "BZ=F", "US", "macro")
+    assert out["change_pct"] == 0.56
+    assert out["price"] == 111.36
+
+
+def test_front_contract_falls_back_to_continuous_symbol():
+    from src.api.routes import _front_contract
+    with patch.object(routes.yf, "Ticker", return_value=SimpleNamespace(info={})), \
+         patch.object(routes, "_get_redis", return_value=_NoRedis()):
+        assert _front_contract("CL=F") == "CL=F"
+    assert _front_contract("^GSPC") == "^GSPC"  # not a future: no lookup at all
+
+
+def test_oil_is_on_the_dashboard():
+    tickers = {row[1]: row[3] for row in _INDICES}
+    assert tickers["CL=F"] == "macro" and tickers["BZ=F"] == "macro"

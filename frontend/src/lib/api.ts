@@ -1540,6 +1540,8 @@ export type MarketIndexDetail = MarketIndex & {
   open: number | null; day_high: number | null; day_low: number | null;
   year_high: number | null; year_low: number | null;
   delay_minutes: number | null; description: string;
+  /** Futures only: the dated contract being quoted, e.g. BZF27.NYM. */
+  contract?: string | null;
   range: MarketIndexRange; interval: string;
   bars: { t: number; o: number; h: number; l: number; c: number }[];
   /** bars[:visible_from] are SMA/EMA warm-up before the requested range. */

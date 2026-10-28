@@ -9,7 +9,7 @@ NASDAQ, Dow and VIX only):
 |---|---|
 | Indexes | S&P 500 `^GSPC`, NASDAQ `^IXIC`, Dow Jones `^DJI`, **Russell 2000 `^RUT`**, VIX `^VIX` |
 | Futures | **S&P `ES=F`, Dow `YM=F`, Nasdaq `NQ=F`, Russell 2000 `RTY=F`** |
-| Rates & Macro | **10-Yr Yield `^TNX`, Gold `GC=F`, Bitcoin `BTC-USD`** |
+| Rates & Macro | **10-Yr Yield `^TNX`, Gold `GC=F`, WTI Crude `CL=F`, Brent Crude `BZ=F`, Bitcoin `BTC-USD`** |
 
 Bold = new. HK still shows Hang Seng `^HSI`.
 
@@ -29,7 +29,7 @@ Quotes come from Yahoo via yfinance. Yahoo's own `exchangeDataDelayedBy`, measur
 | Delay | Symbols |
 |---|---|
 | 0 min | S&P 500, NASDAQ, Dow, Bitcoin, Hang Seng |
-| 10 min | ES, YM, NQ, RTY futures, Gold |
+| 10 min | ES, YM, NQ, RTY futures, Gold, WTI, Brent |
 | 15 min | Russell 2000, VIX, 10-Yr |
 
 On top of that: the server caches quotes for 60 s (`stockai:market_overview`) and the page polls
@@ -59,6 +59,31 @@ Unusual Whales does not supply index or futures quotes.
   showed only the last ~70 minutes. Fixed the same night (tests include that exact shape).
 - fast_info returns **0** for fields it lacks (VIX day high/low); those render as "—".
 
+## Oil, and futures contract rolls (added 2026-10-27)
+
+**WTI Crude `CL=F`** and **Brent Crude `BZ=F`** are on the Rates & Macro row (NYMEX, Yahoo
+delay 10 min), with detail pages like the rest.
+
+**Futures are now quoted from their current dated contract**, not the continuous symbol. Yahoo's
+`info.underlyingSymbol` names it (`BZ=F` -> `BZF27.NYM`); cached in Redis for 1 h, falling back
+to the continuous symbol if Yahoo does not say. Why: a continuous series' previous close
+straddles a contract roll. On 2026-10-27 Yahoo rolled BZ=F from the December to the January
+contract; the continuous previous close (115.81) was December's, so Brent would have read
+**-3.85%** on a day the trading contract rose **+0.56%** (110.74 -> 111.36). On non-roll days the
+contract and continuous figures are identical (checked live for all seven futures). This
+applies to ES/YM/NQ/RTY and gold too — their next roll is in December.
+
+- Detail pages show which contract is quoted. Open/day range come from that contract; the
+  52-week range and the chart stay on the continuous series, so **a roll can show as a step in
+  the chart that is not a real price move** — the page says so.
+- **Known limitation:** the baseline is Yahoo's `regularMarketPreviousClose`, the figure Yahoo
+  Finance itself displays. Early in the evening futures session (opens 18:00 ET) it can still
+  point at the settle from two sessions back until Yahoo resets it, so the evening change can
+  include the prior day session's move. Measured 2026-10-27 22:23 ET: ES quoted vs the 10-26
+  settle. Not corrected here, so the dashboard matches Yahoo.
+- Not changed: the pre-market brief's own futures reading (`scheduler.py`
+  `_fetch_overnight_futures`) uses the continuous daily closes and has the same roll exposure.
+
 ## SMA / EMA overlays (added 2026-10-27)
 
 The detail-page chart has toggles for **SMA 5 / 10 / 20 / 50 / 200 and EMA 20 / 50 / 200** — the
@@ -87,9 +112,9 @@ because the chart library throws on one.
   loaded client-side only).
 - `frontend/src/lib/api.ts` — `MarketIndex.group/change`, `MarketIndexDetail`, `marketIndexDetail`.
 - `frontend/src/lib/marketIndexOverlays.ts` — overlay periods/colours and `overlayLines()` (+ vitest).
-- Tests: `services/market-data/tests/test_market_overview_indices.py` (15), `frontend/src/lib/marketIndexOverlays.test.ts` (3).
+- Tests: `services/market-data/tests/test_market_overview_indices.py` (18), `frontend/src/lib/marketIndexOverlays.test.ts` (3).
 
 ## Load
 
-`market_overview` now makes 13 fast_info reads per 60 s cache miss (was 5), only while someone
+`market_overview` now makes 15 fast_info reads per 60 s cache miss (was 5), only while someone
 has the dashboard open. A detail page adds one history call per range per cache window.

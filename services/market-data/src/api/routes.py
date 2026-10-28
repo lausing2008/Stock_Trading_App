@@ -410,14 +410,51 @@ _INDICES = [
     ("Russell Futures", "RTY=F", "US", "futures"),
     ("10-Yr Yield", "^TNX",    "US", "macro"),
     ("Gold",        "GC=F",    "US", "macro"),
+    ("WTI Crude",   "CL=F",    "US", "macro"),
+    ("Brent Crude", "BZ=F",    "US", "macro"),
     ("Bitcoin",     "BTC-USD", "US", "macro"),
     ("Hang Seng", "^HSI", "HK", "index"),
 ]
 _MARKET_OVERVIEW_KEY = "stockai:market_overview"
 
 
+_FRONT_CONTRACT_TTL = 3600  # the front contract changes only at a roll; re-checked hourly
+
+
+def _front_contract(ticker: str) -> str:
+    """The dated contract a continuous future (`BZ=F`) currently points at (`BZF27.NYM`).
+
+    A continuous series' own previous close straddles a contract roll: on 2026-10-27 Yahoo
+    rolled BZ=F from Dec to Jan Brent, and its previous close (115.81) was the DEC contract's,
+    reading -3.85% for a day the trading contract actually rose +0.56% (110.74 -> 111.36). The
+    contract's own previous close is the same number on every non-roll day and right on roll
+    day. Falls back to the continuous symbol if Yahoo does not say.
+    """
+    if not ticker.endswith("=F"):
+        return ticker
+    key = f"stockai:front_contract:{ticker}"
+    try:
+        cached = _get_redis().get(key)
+        if cached:
+            return cached.decode() if isinstance(cached, bytes) else cached
+    except Exception:
+        pass
+    try:
+        contract = yf.Ticker(ticker).info.get("underlyingSymbol")
+    except Exception:
+        contract = None
+    if not contract:
+        return ticker
+    try:
+        _get_redis().setex(key, _FRONT_CONTRACT_TTL, contract)
+    except Exception:
+        pass
+    return contract
+
+
 def _fetch_index(name: str, ticker: str, market: str, group: str) -> dict:
-    """Quote one index/future/macro ticker.
+    """Quote one index/future/macro ticker (futures via their current contract, see
+    `_front_contract`).
 
     The change is measured against `regular_market_previous_close` (the prior session's
     close/settlement — what Yahoo itself displays). fast_info's `previous_close` is derived
@@ -428,7 +465,7 @@ def _fetch_index(name: str, ticker: str, market: str, group: str) -> dict:
     out = {"name": name, "ticker": ticker, "market": market, "group": group,
            "price": None, "change": None, "change_pct": None}
     try:
-        fi = yf.Ticker(ticker).fast_info
+        fi = yf.Ticker(_front_contract(ticker)).fast_info
         price = fi.last_price
         prev = getattr(fi, "regular_market_previous_close", None)
         if prev is None or prev != prev:  # NaN
@@ -483,6 +520,8 @@ _INDEX_INFO: dict[str, tuple[int, str]] = {
     "RTY=F":   (10, "CME E-mini Russell 2000 futures. Nearly 24h trading."),
     "^TNX":    (15, "10-year US Treasury yield, in percent. Higher yields tighten financial conditions and weigh on growth-stock valuations."),
     "GC=F":    (10, "COMEX gold futures, USD per troy ounce."),
+    "CL=F":    (10, "NYMEX WTI crude oil futures, USD per barrel — the US benchmark (Cushing, Oklahoma delivery)."),
+    "BZ=F":    (10, "Brent crude oil futures, USD per barrel — the international benchmark, usually priced above WTI."),
     "BTC-USD": (0,  "Bitcoin in US dollars. Trades 24/7, so 'previous close' is the prior UTC day."),
     "^HSI":    (0,  "Hang Seng Index — the largest companies listed in Hong Kong."),
 }
@@ -564,9 +603,13 @@ def market_index_detail(ticker: str, range: str = Query("1d")):
     name, _, market, group = row
     quote = _fetch_index(name, ticker, market, group)
     try:
-        fi = yf.Ticker(ticker).fast_info
+        # open/day range from the contract being quoted; the 52-week range from the continuous
+        # series, since a newly front contract has a shorter or thinly traded history
+        contract_fi = yf.Ticker(_front_contract(ticker)).fast_info
+        continuous_fi = yf.Ticker(ticker).fast_info
         for key, attr in (("open", "open"), ("day_high", "day_high"), ("day_low", "day_low"),
                           ("year_high", "year_high"), ("year_low", "year_low")):
+            fi = continuous_fi if key.startswith("year") else contract_fi
             val = getattr(fi, attr, None)
             # fast_info reports 0 for fields it has no value for (VIX day high/low) — not a price
             quote[key] = round(float(val), 4) if val is not None and val == val and val > 0 else None
@@ -596,6 +639,7 @@ def market_index_detail(ticker: str, range: str = Query("1d")):
     delay, description = _INDEX_INFO.get(ticker, (None, ""))
     result = {
         **quote, "delay_minutes": delay, "description": description,
+        "contract": _front_contract(ticker) if ticker.endswith("=F") else None,
         "range": range, "interval": interval, "bars": bars,
         # bars[:visible_from] are SMA/EMA warm-up, not part of the requested range
         "visible_from": visible_from,
