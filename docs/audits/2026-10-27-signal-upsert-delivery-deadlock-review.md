@@ -116,3 +116,46 @@ Compare new deadlock SQLSTATE counts, refresh persistence/exhaustion, successful
 ## Decision and remaining work
 
 Proceed next with the canonical metadata ordering patch and a regression through its actual write path. Review the database-only retry boundary separately. This report changes no application, sender, observation schema, schedule or model artifact; **the production deadlock is still unfixed**.
+
+## Implementation — step 1 (canonical order), committed, NOT deployed
+
+- **Fix (market-data only).** [`ai_signal_delivery_write.py`](../../services/market-data/src/services/ai_signal_delivery_write.py)
+  reads `(id, stock_id, horizon)` for the decided rows with a plain SELECT (no row locks), then
+  issues the per-row UPDATEs ordered by stock id, then `GENERATION_HORIZON_ORDER` rank, with
+  horizon name and row id as tie-breakers. `check_signal_alerts()` calls it in place of the old
+  `_ai_delivery.items()` loop. Same values, same single commit, same skip of vanished rows.
+  Email selection, sending, consent and `SignalAlert` state are unchanged. No retry was added
+  (step 2 is still a separate review).
+- **Why it is sufficient against this cycle.** A generator holds rows of ONE stock, acquired
+  in rank order. When delivery waits on a generator's row, every row it holds for that stock
+  ranks lower, and the generator has already passed those ranks. Rows of other stocks are never
+  wanted by that generator.
+- **Unknown horizon.** It sorts last within its stock instead of raising, because raising would
+  drop the whole run's delivery evidence. A drift test reads the literal
+  `generate_all_signals()` returns and fails if the generator's order ever differs (for
+  example, when INTRADAY is added).
+- **Tests.**
+  - market-data
+    [`test_signal_delivery_lock_order.py`](../../services/market-data/tests/test_signal_delivery_lock_order.py)
+    checks the order, the drift, and that the sender writes only through the helper.
+  - signal-engine
+    [`test_signal_delivery_lock_order_db.py`](../../services/signal-engine/tests/test_signal_delivery_lock_order_db.py)
+    has a SQLite write/skip test, plus a **PostgreSQL** race. The race uses the shipped
+    `_bulk_persist` upsert SQL and the live F03 observer against the real helper. Delivery
+    already holds stock 1's rows and is proven blocked by the generator via
+    `pg_blocking_pids()`. **Canonical order: both commit, all 4 generated rows and all 8
+    delivery rows written, 4 occurrences observed. Reversed order (negative control):
+    40P01**, and the victim's batch is all-or-nothing.
+  - PostgreSQL pair run 3× against a throwaway local database, all passing; `make test` all
+    services passed.
+- **Probe compatibility.** `reproduce_pg16.py` extracts the old `_ai_delivery.items()` loop, so
+  it reproduces the pre-fix baseline at `e8851a43` only. The regression above replaces it for
+  the fixed code.
+- **Not yet covered.**
+  - Concurrent refresh plus live-GET writers, and multi-stock generator interleavings beyond one
+    generator. Both writers use the same per-stock order, so no new cycle is expected; this is
+    not separately tested.
+  - The "email accepted before DB failure" acceptance belongs to the retry/receipt work.
+- **Rollout (awaiting approval).** market-data only, `scripts/deploy.sh market-data` under the
+  host lock in a quiet window. Record it as a new evidence segment for the F03 captures
+  (deadlock counts before vs after), and keep F04 held.

@@ -61,8 +61,9 @@ def test_real_selector_gates_on_the_selected_signal_clock_before_transition_logi
 
 def test_real_selector_persists_exact_signal_id_and_distinguishes_send_failure():
     body = ast.unparse(_function("check_signal_alerts"))
-    assert "Signal.id == _signal_id" in body
+    # The per-row UPDATE itself lives in ai_signal_delivery_write (lock-ordered).
+    assert "_persist_ai_delivery(session, Signal, _ai_delivery" in body
     assert "_AI_SENDER_ACCEPTED" in body
     assert "_AI_QUEUED_NOT_SENT" in body
-    assert "alert_delivery_version=_AI_ALERT_CONTRACT_VERSION" in body
+    assert "version=_AI_ALERT_CONTRACT_VERSION" in body
 

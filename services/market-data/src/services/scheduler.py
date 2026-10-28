@@ -507,6 +507,7 @@ from .ai_signal_alert_contract import (
     classify_selected_signal_freshness as _classify_selected_signal_freshness,
     merge as _merge_ai_delivery,
 )
+from .ai_signal_delivery_write import persist_delivery_decisions as _persist_ai_delivery
 
 
 def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed: list, signal: str, sent_at: str | None = None, conviction_tier: str | None = None, signal_ts: str | None = None) -> None:
@@ -8980,17 +8981,11 @@ def check_signal_alerts() -> None:
                         _alert_fail_counts.pop(alert.id, None)
 
             # One update per selected Signal row after all recipients have been folded. Rows
-            # with no selector evidence stay NULL; historical NULLs are never guessed.
-            _delivery_now = datetime.now(timezone.utc)
-            for _signal_id, _decision in _ai_delivery.items():
-                session.execute(
-                    update(Signal).where(Signal.id == _signal_id).values(
-                        alert_delivery_state=_decision["state"],
-                        alert_delivered_recipient_count=_decision["recipients"],
-                        alert_delivery_decided_at=_delivery_now,
-                        alert_delivery_version=_AI_ALERT_CONTRACT_VERSION,
-                    )
-                )
+            # with no selector evidence stay NULL; historical NULLs are never guessed. Written
+            # in signal-engine's row-lock order, so it cannot deadlock a generation batch.
+            _persist_ai_delivery(session, Signal, _ai_delivery,
+                                 decided_at=datetime.now(timezone.utc),
+                                 version=_AI_ALERT_CONTRACT_VERSION)
             session.commit()
             if fired:
                 log.info("signal_alert.check_done", fired=fired)
