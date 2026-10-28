@@ -1,7 +1,6 @@
 # F04 Stage 0 fix — suppressed models carry no ML weight: implementation and frozen-input replay
 
-Date: **2026-10-28 (UTC)**. Status: **implemented and replayed; NOT deployed — held for review**.
-Code is on branch `f04-ml-unavailable` (not on `prod`). F04's split change and model artifacts
+Date: **2026-10-28 (UTC)**. Status: **approved for release 2026-10-28; merged to `prod` at `f5beb232`** (deployment record below). F04's split change and model artifacts
 are untouched. Finding: [Stage 0 report](2026-10-28-f04-stage0-inventory-and-no-model-trace.md).
 Evidence: [`evidence/2026-10-28-f04-ml-unavailable-replay/`](evidence/2026-10-28-f04-ml-unavailable-replay/)
 ([manifest with hashes](evidence/2026-10-28-f04-ml-unavailable-replay/manifest.json)).
@@ -20,8 +19,8 @@ All 796 expected cells (199 symbols × 4 horizons) are accounted for:
 - **New BUYs: 5. New SELLs: 7. Lost BUYs or SELLs: 0.**
   - All 5 new BUYs **fail** the conviction gate, so **no entry became newly actionable**.
   - No changed symbol is held in the 3 open paper positions.
-- **Policy point for review.** 7 unchanged BUY rows move from gate tier **full → near**. They
-  stay actionable, but they show that the new gate is stricter for one input class (see Gate).
+- **Approved policy correction.** 7 unchanged BUY rows move from gate tier **full → near**: unavailable
+  ML no longer satisfies the ML evidence check (see Gate).
 
 ## What was implemented
 
@@ -81,13 +80,21 @@ model in any family (Stage 0: TA-only on all horizons). The failure is upstream 
 all passes, and not clustered by horizon or by model availability among the affected cells, so it
 does not bias the comparison. **Control == record in all 792 cells.**
 
-**Update 2026-10-28: SSNLF is a discontinued listing** (confirmed by the user). So the 4 failures are
-expected, and the replay compared **all 792 cells of the 198 live symbols**. The platform still has it
-`active`, not `delisted`, on three watchlists, with no open paper positions. It has no daily bars; ingestion
-writes one 5-minute row a day of a frozen quote (65.21, volume 0, through 2026-10-26), and its last signal
-was 2026-10-23. Delisting detection never fired because it requires two consecutive yfinance
-ticker-missing errors, and Yahoo keeps returning the stale quote instead. Marking it delisted, and
-detecting frozen zero-volume quotes, are separate follow-ups and are not part of this fix.
+**SSNLF status — unconfirmed.** The user reports SSNLF as discontinued; that has not yet been verified
+against an authoritative listing source, and a frozen Yahoo quote alone is not treated as proof. The
+replay result is therefore stated as **792 successfully compared cells and four identical SSNLF
+no-price-data failures**. It makes no claim that the other 198 symbols are verified live listings.
+
+The platform still has SSNLF `active`, not `delisted`, on three watchlists, with no open paper positions.
+It has no daily bars: ingestion writes one 5-minute row a day of a frozen quote (65.21, volume 0, through
+2026-10-26), and its last signal was 2026-10-23. Delisting detection requires two consecutive yfinance
+ticker-missing errors, so it never fired.
+
+A separate reviewed fix is required, and it is not part of this release:
+- verify listing status from an authoritative source before marking SSNLF delisted;
+- reject quote snapshots stored as candles;
+- treat prolonged frozen, zero-volume quotes as *suspected* stale or inactive data that needs
+  confirmation, never as automatic delisting, because thinly traded securities can look similar.
 
 ## Results on the 792 compared cells
 
@@ -153,22 +160,16 @@ it.
 | not BUY → failed (new BUYs) | – | – | 2 | 3 |
 
 - **Newly actionable: 0. No longer actionable: 0.**
-- **Policy point — needs a decision before release.** The 7 full → near rows are AI (GROWTH,
-  LONG), MSFT (GROWTH, LONG) and V (GROWTH, LONG, SHORT).
-  - Signal and confidence are identical. Their suppressed models had stored AUC < 0.50, so they
-    already carried **zero** weight.
-  - The old gate gave that a soft **pass** ("model AUC below random — zero weight… soft pass").
-    The new gate records "no eligible model" as a soft **failure**.
-  - For the previously **weighted** suppressed rows the tier is preserved exactly (tested). For
-    the previously **zero-weight** class it is one soft notch stricter: full → near here, and
-    near → failed for any such BUY that also has another soft failure. None occurred in this
-    snapshot.
-  - **Options:**
-    - **(a)** keep it — it follows "missing ML must not satisfy a new-entry gate";
-    - **(b)** restore the old soft pass for that class, which would need a stored-quality signal
-      the unavailable response deliberately no longer carries.
-  - My recommendation is (a). The ML layer is not confirmed in either case, and "near" remains
-    actionable.
+- **Approved policy correction (2026-10-28).** Unavailable ML does not satisfy the ML evidence check.
+  The 7 full → near rows are AI (GROWTH, LONG), MSFT (GROWTH, LONG) and V (GROWTH, LONG, SHORT). Their
+  suppressed models had stored AUC < 0.50 and already carried zero weight.
+  - The old gate soft-**passed** that state ("model AUC below random — zero weight… soft pass"). The new
+    gate soft-**fails** it as "ML probability unavailable: no eligible model".
+  - For previously **weighted** suppressed rows, the tier is unchanged (tested).
+  - For the previously **zero-weight** class the gate is deliberately one soft notch stricter:
+    full → near, and near → failed when another soft layer also fails. Both directions are pinned in
+    `test_f04_no_eligible_model_gate.py`.
+  - In the replay snapshot, no row crossed near → failed.
 
 ## Demonstrated changes vs historical influence
 
@@ -190,7 +191,7 @@ The Stage 0 figures and this replay measure different things:
 | All-suppressed: no ML probability, quality contribution or agreement nudge | Tests (3-model, 2-model, single); replay: 615 cells `no_eligible_model`, weight 0 |
 | Mixed ensembles use eligible contributors consistently | Tests (probability, agreement, quality, names); replay: eligible cells unchanged |
 | Fully eligible outputs unchanged | Golden comparison in tests; replay: 0 of 86 eligible cells changed |
-| Gate preserves the previous tier for equivalent inputs | **Yes for previously weighted suppressed rows; one notch stricter for previously zero-weight rows (7 full → near) — decision above** |
+| Gate preserves the previous tier for equivalent inputs | Yes for previously weighted suppressed rows; one notch stricter for previously zero-weight rows (7 full → near) — **approved policy correction**, tested both ways |
 | SA-27 explicit policy for unavailable ML | Tests: identical output for any AUC; flag-driven only |
 | New/lost BUYs, SELL changes, confidence, eligibility, exits | Above |
 | Frozen evidence and hashes | `manifest.json`: members, recording, three pass outputs, control, inputs |
