@@ -81,6 +81,14 @@ model in any family (Stage 0: TA-only on all horizons). The failure is upstream 
 all passes, and not clustered by horizon or by model availability among the affected cells, so it
 does not bias the comparison. **Control == record in all 792 cells.**
 
+**Update 2026-10-28: SSNLF is a discontinued listing** (confirmed by the user). So the 4 failures are
+expected, and the replay compared **all 792 cells of the 198 live symbols**. The platform still has it
+`active`, not `delisted`, on three watchlists, with no open paper positions. It has no daily bars; ingestion
+writes one 5-minute row a day of a frozen quote (65.21, volume 0, through 2026-10-26), and its last signal
+was 2026-10-23. Delisting detection never fired because it requires two consecutive yfinance
+ticker-missing errors, and Yahoo keeps returning the stale quote instead. Marking it delisted, and
+detecting frozen zero-volume quotes, are separate follow-ups and are not part of this fix.
+
 ## Results on the 792 compared cells
 
 | | SHORT | SWING | LONG | GROWTH | All |
