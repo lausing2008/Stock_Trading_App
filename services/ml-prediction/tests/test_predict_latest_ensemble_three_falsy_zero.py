@@ -30,6 +30,14 @@ _TRAINER_PATH = (
 _TRAINER_SOURCE = _TRAINER_PATH.read_text()
 
 
+def _exec_no_eligible_model(namespace: dict) -> None:
+    """F04 Stage 0: both ensembles return `_no_eligible_model(...)` when every member is
+    suppressed -- exec its real source into the same namespace."""
+    start = _TRAINER_SOURCE.index("def _no_eligible_model(symbol:")
+    end = _TRAINER_SOURCE.index("\n\n\ndef predict_single_served(", start)
+    exec(_TRAINER_SOURCE[start:end], namespace)  # noqa: S102
+
+
 def _extract_predict_latest_ensemble_three():
     start = _TRAINER_SOURCE.index("def predict_latest_ensemble_three(symbol:")
     end = _TRAINER_SOURCE.index("\n\n\ndef validate_walkforward(", start)
@@ -57,6 +65,7 @@ def _extract_predict_latest_ensemble_three():
     _meta_start = _TRAINER_SOURCE.index("_META_BLEND_FLAG_KEY = ")
     _meta_end = _TRAINER_SOURCE.index("def predict_latest_ensemble_three(symbol:")
     exec(_TRAINER_SOURCE[_meta_start:_meta_end], namespace)  # noqa: S102
+    _exec_no_eligible_model(namespace)
     exec(func_source, namespace)  # noqa: S102 — isolated eval of one real function's own source
     return namespace["predict_latest_ensemble_three"], _FakePath
 
@@ -186,25 +195,27 @@ def test_oos_suppressed_model_is_excluded_from_the_reported_mean_even_with_a_rea
     fn = _make_ensemble_three(xgb, lgb, rf)
     result = fn("TEST", horizon=5, style="SWING")
 
-    # Suppressed xgb zeroed out -> (0.0 + 0.70 + 0.70) / 3, not (0.50 + 0.70 + 0.70) / 3.
-    expected = round((0.0 + 0.70 + 0.70) / 3, 4)
-    assert result["metrics"]["mean_model_test_auc"] == expected
+    # F04 STAGE 0: the contributors' own mean, 0.70. It used to be (0.0 + 0.70 + 0.70) / 3 =
+    # 0.4667 -- not inflated by the suppressed model, but DEFLATED by it, which pushed two
+    # eligible 0.70 models below signal-engine's 0.50 cut-off and zeroed their fusion weight.
+    # Neither its stored 0.50 nor a 0.0 stand-in belongs in the contributors' quality.
+    assert result["metrics"]["mean_model_test_auc"] == 0.70
 
 
-def test_every_model_suppressed_restores_real_aucs_rather_than_reporting_a_misleading_zero():
-    """If ALL contributing models are oos_suppressed, zeroing every one out would report a
-    misleading, uniformly-zeroed mean_model_test_auc that hides real (if sub-threshold)
-    quality differences between the models -- must restore their real AUCs in this case."""
+def test_every_model_suppressed_is_ml_unavailable_with_no_quality_reported():
+    """REVERSED BY F04 STAGE 0. This test used to require restoring the suppressed models'
+    real AUCs as the reported mean when every member was suppressed. That reported quality is
+    what gave rejected models live fusion weight (with the 0.45 unanimous_bear nudge beside
+    it). Now there is no quality to report: the result is ML-unavailable."""
     xgb = _model(auc=0.48, bullish_probability=0.5, oos_suppressed=True)
     lgb = _model(auc=0.50, bullish_probability=0.5, oos_suppressed=True)
     rf = _model(auc=0.51, bullish_probability=0.5, oos_suppressed=True)
     fn = _make_ensemble_three(xgb, lgb, rf)
     result = fn("TEST", horizon=5, style="SWING")
 
-    expected = round((0.48 + 0.50 + 0.51) / 3, 4)
-    assert result["metrics"]["mean_model_test_auc"] == expected
-    # Top-level oos_suppressed flag must still correctly propagate for downstream (SA-27)
-    # compression to discount this result, independent of the reported mean AUC fix.
+    assert result["ml_available"] is False
+    assert result["metrics"] == {}
+    assert result["ensemble_agreement"] == "no_eligible_model"
     assert result["oos_suppressed"] is True
 
 

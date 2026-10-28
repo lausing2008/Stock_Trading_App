@@ -10,7 +10,7 @@ from common.logging import get_logger
 log = get_logger("ml.routes")
 
 from ..models import list_models
-from ..training import predict_latest, predict_latest_ensemble, predict_latest_ensemble_three, train_model, tune_symbol, validate_walkforward, _HORIZON_BY_STYLE
+from ..training import predict_latest, predict_latest_ensemble, predict_latest_ensemble_three, predict_single_served, train_model, tune_symbol, validate_walkforward, _HORIZON_BY_STYLE
 
 router = APIRouter(prefix="/ml", tags=["ml"])
 
@@ -294,7 +294,8 @@ def _resolve_horizon(req: "PredictRequest") -> int:
 @router.post("/predict")
 def predict(req: PredictRequest, _: str = Depends(get_current_username)):
     try:
-        return predict_latest(req.symbol, req.model, _resolve_horizon(req), style=req.style)
+        # A suppressed model answers as ML-unavailable, not as a neutral 0.5 with its metrics.
+        return predict_single_served(req.symbol, req.model, _resolve_horizon(req), style=req.style)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:

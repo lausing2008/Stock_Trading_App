@@ -1283,7 +1283,14 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
     tier_label   = thresholds["tier"]
     ml_prob      = reasons.get("ml_probability")
     ml_weight    = float(reasons.get("ml_weight") or 0.0)
-    if ml_prob is None:
+    if reasons.get("ml_unavailable_reason") == "no_eligible_model":
+        # F04 Stage 0: every model for this horizon is suppressed. signal-engine now records
+        # that as ML-unavailable (no probability, zero weight) instead of a weighted 0.45/0.5,
+        # which always failed this layer as the soft "ML probability" failure. Keep it that
+        # failure -- same tier outcome as before -- rather than letting the None fall into the
+        # soft PASS below, which is meant for symbols that have never had a model.
+        failed.append(f"ML probability unavailable: no eligible model for this horizon (all suppressed) [{tier_label} regime]")
+    elif ml_prob is None:
         # No model at all — signal is TA-only (soft pass)
         passed.append(f"ML: no model trained yet — TA-only signal (soft pass) [{tier_label} regime]")
     elif ml_weight == 0.0:
