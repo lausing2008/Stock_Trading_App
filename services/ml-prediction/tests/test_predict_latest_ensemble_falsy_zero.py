@@ -198,22 +198,22 @@ def test_only_one_model_suppressed_is_excluded_and_the_result_is_not_flagged_sup
 
 # ── cv_auc_mean reporting must reflect each model's OWN real metric, not the weighting value ──
 
-def test_reported_cv_auc_mean_is_not_corrupted_by_a_suppressed_models_zeroed_weight():
-    """xgb_auc/rf_auc (post-fix) are the WEIGHTING values — zeroed for a suppressed model.
-    The `metrics.cv_auc_mean` field on the RETURNED dict is a separate, reported diagnostic
-    and must show the suppressed model's own real cv_auc_mean (e.g. 0.48), never the zeroed
-    weighting value — a caller reading this field to understand model quality must not see a
-    misleading 0.0 for a model that actually had a real (if sub-threshold) CV AUC."""
+def test_reported_quality_is_the_eligible_members_own_not_a_mix_with_the_suppressed_one():
+    """REVISED BY S0-3 (F04 Stage 0). This test used to require that the reported cv_auc_mean
+    average BOTH members' real values, including the suppressed one's 0.48, so that the
+    suppressed model's quality stayed visible. The reported quality is now the input that sets
+    fusion weight, and a suppressed model contributes nothing to the blend -- so it contributes
+    nothing to the quality either. Its own metrics remain on its artifact and in
+    suppressed_members. The mean_model_test_auc beside it used to be (0.0 + 0.60) / 2 = 0.30,
+    which zeroed the eligible model's fusion weight."""
     xgb = _model(auc=0.50, cv_auc_mean=0.48, bullish_probability=0.9, oos_suppressed=True)
     rf = _model(auc=0.60, cv_auc_mean=0.65, bullish_probability=0.4, oos_suppressed=False)
     fn = _make_ensemble(xgb, rf)
     result = fn("TEST", horizon=5, style="SWING")
 
-    reported_cv_mean = result["metrics"]["cv_auc_mean"]
-    expected = round((0.48 + 0.65) / 2, 4)
-    assert reported_cv_mean == expected
-    # The zeroed-for-weighting value would have produced (0.0 + 0.65)/2 = 0.325 instead.
-    assert reported_cv_mean != round((0.0 + 0.65) / 2, 4)
+    assert result["metrics"]["cv_auc_mean"] == 0.65
+    assert result["metrics"]["mean_model_test_auc"] == 0.60
+    assert result["suppressed_members"] == ["xgboost"]
 
 
 # ── buy_threshold falsy-zero guard (the same class of bug, a smaller blast radius) ─────────
