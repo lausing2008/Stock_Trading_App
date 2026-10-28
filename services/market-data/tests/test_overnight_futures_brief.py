@@ -65,6 +65,8 @@ def _extract_fetch_overnight_futures():
     namespace = {
         "json": __import__("json"),
         "log": type("L", (), {"warning": staticmethod(lambda *a, **k: None)})(),
+        # module-level import from routes.py in the real file; identity = no roll in progress
+        "_front_contract": lambda ticker: ticker,
     }
     exec(func_source, namespace)  # noqa: S102 — isolated eval of real source, matching repo convention
     return namespace["_fetch_overnight_futures"], namespace["_FUTURES_CACHE_KEY"]
@@ -146,6 +148,26 @@ def test_returns_empty_list_on_download_failure():
     with patch.dict(sys.modules, {"yfinance": _RaisingYf()}):
         results = _fetch_overnight_futures()
     assert results == []
+
+
+def test_change_is_measured_on_the_front_contract_across_a_roll():
+    """On a roll day the continuous series' prior close belongs to the expiring contract.
+    Real 2026-10-27 Brent shape: continuous 115.81 -> 111.36 (-3.85%), but the trading Jan
+    contract went 110.74 -> 111.36 (+0.56%). Same shape applied to ES here."""
+    df = _make_multi_ticker_df({
+        "ESZ26.CME": [110.74, 111.36],   # the contract actually trading
+        "NQ=F": [200.0, 205.0], "YM=F": [50.0, 49.0], "RTY=F": [30.0, 31.0],
+    })
+    globs = _fetch_overnight_futures.__globals__
+    original = globs["_front_contract"]
+    globs["_front_contract"] = lambda t: "ESZ26.CME" if t == "ES=F" else t
+    try:
+        results = _run_with_fake_yf(df, _FakeRedis())
+    finally:
+        globs["_front_contract"] = original
+    es = next(r for r in results if r["ticker"] == "ES=F")  # still keyed by the continuous ticker
+    assert es["change_pct"] == 0.56
+    assert es["price"] == 111.36
 
 
 # ── send_premarket_brief_email()'s new overnight-futures section — pure composition ──────────

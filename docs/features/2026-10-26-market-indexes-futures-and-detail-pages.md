@@ -81,8 +81,12 @@ applies to ES/YM/NQ/RTY and gold too — their next roll is in December.
   point at the settle from two sessions back until Yahoo resets it, so the evening change can
   include the prior day session's move. Measured 2026-10-27 22:23 ET: ES quoted vs the 10-26
   settle. Not corrected here, so the dashboard matches Yahoo.
-- Not changed: the pre-market brief's own futures reading (`scheduler.py`
-  `_fetch_overnight_futures`) uses the continuous daily closes and has the same roll exposure.
+- **Pre-market brief fixed too (2026-10-28):** `scheduler.py` `_fetch_overnight_futures` took the
+  last two daily closes of the CONTINUOUS symbols, so on a roll day its prior close was the
+  expiring contract's. It now bulk-downloads the current contracts (same single `yf.download`,
+  same `_front_contract` lookup and Redis cache as the dashboard) and still keys results by
+  `ES=F` etc., so the email is unchanged. Regression test reproduces the roll shape and fails
+  with the fix reverted.
 
 ## SMA / EMA overlays (added 2026-10-27)
 

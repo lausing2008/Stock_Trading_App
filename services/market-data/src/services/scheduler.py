@@ -96,7 +96,7 @@ from .earnings_phase import (classify_earnings_phase, extract_fiscal_year, extra
                              results_binding)
 from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email, send_data_quality_alert_email, send_llm_usage_spike_email, is_quota_exceeded
 from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills, poll_broker_exit_fills, sync_broker_positions
-from ..api.routes import refresh_live_price_cache, refresh_avg_volume_cache, _AVG_VOLUME_KEY
+from ..api.routes import refresh_live_price_cache, refresh_avg_volume_cache, _AVG_VOLUME_KEY, _front_contract
 # AUD-DQCHECKS-VISIBILITY: a plain constant/function (not something with import-time side
 # effects), so importing it at module level carries none of the circularity/import-order risk
 # every OTHER cross-service reference to unusual_whales.py in this file avoids by using a local
@@ -3010,6 +3010,12 @@ def _fetch_overnight_futures() -> list[dict]:
     Redis-cached 60s — this can be called from more than one brief cycle (US + HK) in the same
     minute; a fresh yf.download() per call would be wasteful and unnecessary for a value that
     only meaningfully changes overnight, not intra-minute.
+
+    Closes come from each future's CURRENT dated contract (`_front_contract`, e.g. ES=F ->
+    ESZ26.CME), not the continuous symbol: across a contract roll the continuous series' prior
+    close is the EXPIRING contract's. On 2026-10-27 that read Brent -3.85% for a day the
+    trading contract rose +0.56%; ES/NQ/YM/RTY roll quarterly (next mid-December). Results
+    are still keyed by the continuous ticker the email expects.
     """
     try:
         cached = _get_redis().get(_FUTURES_CACHE_KEY)
@@ -3020,7 +3026,8 @@ def _fetch_overnight_futures() -> list[dict]:
 
     import yfinance as yf
 
-    symbols = [t for _, t in _FUTURES]
+    contracts = {t: _front_contract(t) for _, t in _FUTURES}
+    symbols = list(contracts.values())
     try:
         raw = yf.download(
             symbols, period="5d", interval="1d", auto_adjust=True, progress=False, group_by="ticker",
@@ -3035,7 +3042,8 @@ def _fetch_overnight_futures() -> list[dict]:
     results: list[dict] = []
     for name, symbol in _FUTURES:
         try:
-            closes = raw[symbol]["Close"].dropna() if len(symbols) > 1 else raw["Close"].dropna()
+            contract = contracts[symbol]
+            closes = raw[contract]["Close"].dropna() if len(symbols) > 1 else raw["Close"].dropna()
             if len(closes) < 2:
                 continue
             price = float(closes.iloc[-1])

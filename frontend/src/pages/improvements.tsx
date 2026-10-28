@@ -35,6 +35,18 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: "PREMARKET-FUTURES-ROLL",
+    tier: 474,
+    severity: "medium",
+    defaultStatus: "done",
+    title: "Pre-market brief: measure overnight futures on the front contract, not across a roll",
+    file: "docs/features/2026-10-26-market-indexes-futures-and-detail-pages.md",
+    effort: "S",
+    impact: "Stops the pre-market email from reporting a fake overnight move for ES/NQ/YM/RTY on contract-roll days (next: mid-December).",
+    what: "_fetch_overnight_futures() compared the last two daily closes of the continuous symbols. On a roll day the earlier close is the expiring contract's, so the brief reports the roll gap as an overnight move (Brent's 2026-10-27 roll read -3.85% vs a real +0.56%).",
+    fix: "Bulk-download each future's current dated contract (shared _front_contract lookup, Redis-cached 1 h, continuous fallback) in the same single yf.download call; results stay keyed by ES=F etc. so the email is unchanged. Regression test reproduces the roll shape and fails with the fix reverted.",
+  },
+  {
     id: "MARKET-OIL-AND-FUTURES-ROLL",
     tier: 474,
     severity: "feature",
@@ -44,7 +56,7 @@ const ITEMS: Item[] = [
     effort: "S",
     impact: "Adds the two oil benchmarks, and stops a contract roll from showing a large fake daily change on any futures tile.",
     what: "Oil was not on the dashboard. Adding Brent exposed a roll defect: on 2026-10-27 Yahoo rolled BZ=F from Dec to Jan, and the continuous previous close was the Dec contract's, so Brent would have shown -3.85% on a day the trading contract rose +0.56%. Every futures tile (ES/YM/NQ/RTY, gold) has the same exposure at its next roll.",
-    fix: "Add CL=F and BZ=F (NYMEX, 10-min delay) to Rates & Macro with detail pages. Quote every future from its current contract (Yahoo underlyingSymbol, cached 1 h, continuous-symbol fallback); identical on non-roll days, correct on roll day. Detail pages name the contract and warn that the continuous chart can step at a roll. Known limitation left as-is: Yahoo's previous close can lag a session early in the evening futures session; the pre-market brief's futures reading is not changed.",
+    fix: "Add CL=F and BZ=F (NYMEX, 10-min delay) to Rates & Macro with detail pages. Quote every future from its current contract (Yahoo underlyingSymbol, cached 1 h, continuous-symbol fallback); identical on non-roll days, correct on roll day. Detail pages name the contract and warn that the continuous chart can step at a roll. Known limitation left as-is: Yahoo's previous close can lag a session early in the evening futures session. The pre-market brief's futures reading was fixed in the follow-up item PREMARKET-FUTURES-ROLL.",
   },
   {
     id: "MARKET-INDEX-SMA-EMA-OVERLAYS",
