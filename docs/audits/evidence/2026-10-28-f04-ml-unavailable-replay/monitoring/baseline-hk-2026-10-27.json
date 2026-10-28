@@ -1,0 +1,56 @@
+{
+ "window": [
+  "2026-10-27T01:30:00",
+  "2026-10-27T08:00:00"
+ ],
+ "market": "HK",
+ "signals_by_horizon": {
+  "GROWTH": {
+   "signals": 42,
+   "ml_unavailable": 0,
+   "suppressed_with_ml_weight": 15,
+   "ml_probability_0.45": 7,
+   "ml_weighted": 18,
+   "SELL": 15,
+   "HOLD": 5,
+   "WAIT": 22
+  },
+  "LONG": {
+   "signals": 42,
+   "ml_unavailable": 0,
+   "suppressed_with_ml_weight": 20,
+   "ml_probability_0.45": 10,
+   "ml_weighted": 20,
+   "SELL": 21,
+   "WAIT": 16,
+   "HOLD": 5
+  },
+  "SHORT": {
+   "signals": 42,
+   "ml_unavailable": 0,
+   "suppressed_with_ml_weight": 17,
+   "ml_probability_0.45": 8,
+   "ml_weighted": 19,
+   "WAIT": 22,
+   "HOLD": 20
+  },
+  "SWING": {
+   "signals": 42,
+   "ml_unavailable": 0,
+   "suppressed_with_ml_weight": 14,
+   "ml_probability_0.45": 7,
+   "ml_weighted": 18,
+   "SELL": 20,
+   "WAIT": 19,
+   "HOLD": 3
+  }
+ },
+ "occurrences_opened": {},
+ "occurrence_close_reasons": {},
+ "alerts_created": {},
+ "paper_exits": {},
+ "conviction_tiers_snapshot": {
+  "failed": 1
+ },
+ "conviction_no_eligible_model": 0
+}

@@ -1,6 +1,6 @@
 # F04 Stage 0 fix — suppressed models carry no ML weight: implementation and frozen-input replay
 
-Date: **2026-10-28 (UTC)**. Status: **approved for release 2026-10-28; merged to `prod` at `f5beb232`** (deployment record below). F04's split change and model artifacts
+Date: **2026-10-28 (UTC)**. Status: **approved and DEPLOYED 2026-10-28** (`f5beb232`; deployment record below). F04's split change and model artifacts
 are untouched. Finding: [Stage 0 report](2026-10-28-f04-stage0-inventory-and-no-model-trace.md).
 Evidence: [`evidence/2026-10-28-f04-ml-unavailable-replay/`](evidence/2026-10-28-f04-ml-unavailable-replay/)
 ([manifest with hashes](evidence/2026-10-28-f04-ml-unavailable-replay/manifest.json)).
@@ -195,6 +195,52 @@ The Stage 0 figures and this replay measure different things:
 | SA-27 explicit policy for unavailable ML | Tests: identical output for any AUC; flag-driven only |
 | New/lost BUYs, SELL changes, confidence, eligibility, exits | Above |
 | Frozen evidence and hashes | `manifest.json`: members, recording, three pass outputs, control, inputs |
+
+## Deployment record (2026-10-28)
+
+- **Release.** `f5beb232` (merge of `f04-ml-unavailable`), deployed 06:16–06:17 UTC by
+  `scripts/deploy.sh market-data signal-engine ml-prediction`. The services went sequentially under the
+  host lock with `--no-deps`, gate first, in 86 s.
+- **Scope.** Pre-deploy drift showed exactly the approved files differing (running market-data already
+  matched `prod` before the merge). The trainer split, model artifacts and v2 activation are unchanged.
+- **Rollback.** `stockai-{market-data,signal-engine,ml-prediction}:rollback-before-f5beb232`, retained.
+- **Health.** 15/15 containers healthy. Post-deploy drift: 12/12 backends match HEAD, 0 drifted.
+- **Live calls.**
+  - 0700.HK SWING (all suppressed): `ml_available: false`, no metrics, signal-engine
+    `ml_unavailable_reason` set, SA-27 still applied.
+  - AAPL GROWTH (eligible): unchanged (0.5064, quality 0.6712).
+  - NVDA SHORT (mixed): xgboost only, random_forest listed as suppressed.
+- **First persisted refresh** (HK, 06:20–06:22 UTC, 168 signals):
+
+  | Horizon | ML unavailable | Suppressed with ML weight | p = 0.45 |
+  |---|---:|---:|---:|
+  | SHORT | 25 | 0 | 0 |
+  | SWING | 23 | 0 | 0 |
+  | LONG | 27 | 0 | 0 |
+  | GROWTH | 24 | 0 | 0 |
+
+  For comparison, the same HK session date before release (2026-10-27) had 14–20 suppressed-weighted
+  rows and 7–10 at 0.45 per horizon. 0 errors or tracebacks in any of the three services since the
+  deploy.
+
+## Post-release monitoring
+
+- **Script.** [`monitor_session.py`](evidence/2026-10-28-f04-ml-unavailable-replay/monitor_session.py),
+  read-only, run inside signal-engine per market session. It reports:
+  - ML-unavailable share, and suppressed rows still carrying weight (must be 0);
+  - the 0.45 count and BUY/SELL counts;
+  - transitions as F03 occurrences opened, with close reasons;
+  - a conviction-tier snapshot, including "no eligible model";
+  - alert volume (outbox) and paper exits.
+- **Pre-release baselines** are in [`monitoring/`](evidence/2026-10-28-f04-ml-unavailable-replay/monitoring/):
+  - US 2026-10-27: suppressed-weighted 51–67 per horizon, 0.45 on 17–33.
+  - HK 2026-10-27: no F03 occurrences, because F03 went live after that session.
+- **Still to capture:** the first full post-release HK session (2026-10-28) and US session (2026-10-28,
+  13:30–20:00 UTC).
+
+This release resolves the suppressed-model contribution defect. F04's evaluation-version, split and
+serving-qualification work remains open. The replay establishes behaviour on frozen inputs, not
+improved trading returns.
 
 ## Limits
 

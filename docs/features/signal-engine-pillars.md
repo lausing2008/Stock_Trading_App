@@ -415,3 +415,31 @@ returns a MagicMock carrying no SQL. That is the **third** place in this codebas
 on SQL text silently passed against a stub (see also `test_smart_money_leaderboard.py` and
 `test_institutional_followers.py`). The working pattern is to read the shipped source of the one
 function under test via `inspect.getsource`, pinning no numeric literal.
+
+## F04 Stage 0 fix (2026-10-28) — suppressed models carry no ML weight; conviction gate policy
+
+**What changed.** When every model for a stock/horizon is `oos_suppressed`, ml-prediction now answers
+**ML-unavailable** (`ml_available: false`, no metrics, agreement `no_eligible_model`). Before, it blended
+the suppressed members themselves: each returned 0.5, `0.5 > 0.5` read as `unanimous_bear` and nudged the
+result to 0.45, and their stored AUC became the reported quality, so models the suppression rule had
+rejected carried direction and fusion weight into live signals.
+- **signal-engine.** Unavailable means no ML probability and zero weight, with
+  `reasons.ml_unavailable_reason = "no_eligible_model"` recorded per horizon.
+- **SA-27** still compresses, keyed only on the explicit `ml_oos_suppressed` flag.
+- **Mixed ensembles** use only eligible members for probability, agreement and quality.
+- **Fully eligible output** is byte-identical to before.
+
+**Conviction gate — approved policy correction.** In Layer 5 (ML), `no_eligible_model` is recorded as
+the soft failure `"ML probability unavailable: no eligible model…"`. It is **not** the
+"no model trained yet" soft pass. Unavailable ML is not ML evidence.
+- **Previously weighted suppressed rows:** their 0.45/0.5 already failed this layer softly, so the tier
+  is unchanged.
+- **Previously zero-weight suppressed rows (stored AUC < 0.50):** these used to soft-*pass* ("AUC below
+  random — gate skipped"). They are now one soft notch stricter: **full → near**, and **near → failed**
+  when another soft layer also fails. The replay showed 7 such BUY rows (AI, MSFT, V) at full → near.
+- **Tests.** Pinned in `services/market-data/tests/test_f04_no_eligible_model_gate.py`. Never-trained
+  symbols keep the old soft pass.
+
+Replay, deployment record and monitoring: `docs/audits/2026-10-28-f04-ml-unavailable-replay.md`.
+F04's evaluation-version, split and serving-qualification work remains open; this fix uses today's
+suppression rule, not v2 qualification.
