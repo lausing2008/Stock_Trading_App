@@ -1,0 +1,47 @@
+Updating 84300fc44..8dc841504
+Fast-forward
+ .claude/CLAUDE.md                                  |   1 +
+ ...10-27-signal-upsert-delivery-deadlock-review.md | 161 +++++++++++++++
+ .../manifest.json                                  |  14 ++
+ .../pg16-reproduction.json                         | 180 +++++++++++++++++
+ .../production-lock-summary.json                   | 219 ++++++++++++++++++++
+ .../production-victim-summary.json                 |  62 ++++++
+ .../reproduce_pg16.py                              | 170 ++++++++++++++++
+ ...l-occurrence-and-delivery-attribution-design.md |  18 ++
+ .../src/services/ai_signal_delivery_write.py       |  65 ++++++
+ services/market-data/src/services/scheduler.py     |  17 +-
+ .../tests/test_ai_signal_delivery_and_freshness.py |   5 +-
+ .../tests/test_signal_delivery_lock_order.py       |  54 +++++
+ .../tests/test_signal_delivery_lock_order_db.py    | 222 +++++++++++++++++++++
+ 13 files changed, 1175 insertions(+), 13 deletions(-)
+ create mode 100644 docs/audits/2026-10-27-signal-upsert-delivery-deadlock-review.md
+ create mode 100644 docs/audits/evidence/2026-10-27-signal-delivery-deadlock/manifest.json
+ create mode 100644 docs/audits/evidence/2026-10-27-signal-delivery-deadlock/pg16-reproduction.json
+ create mode 100644 docs/audits/evidence/2026-10-27-signal-delivery-deadlock/production-lock-summary.json
+ create mode 100644 docs/audits/evidence/2026-10-27-signal-delivery-deadlock/production-victim-summary.json
+ create mode 100644 docs/audits/evidence/2026-10-27-signal-delivery-deadlock/reproduce_pg16.py
+ create mode 100644 services/market-data/src/services/ai_signal_delivery_write.py
+ create mode 100644 services/market-data/tests/test_signal_delivery_lock_order.py
+ create mode 100644 services/signal-engine/tests/test_signal_delivery_lock_order_db.py
+[33m  only 25G free — pruning before build[0m
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   76G   25G  76% /
+deploy-lock: nested under owner=ec2-user pid=500339 what=market-data-delivery-lock-order-8dc84150 started=2026-10-28T00:27:53Z token=4a9db732739825fb
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   76G   25G  76% /
+── market-data ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-market-data Built
+ Container stockai-market-data-1 Starting
+ Container stockai-market-data-1 Started
+── verify (settling 45s) ──────────────────────────────
+[32m  market-data: running/healthy[0m
+[32m  all declared services present[0m
+  host: 25G free, iowait 3.2%
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   76G   25G  76% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   76G   25G  76% /

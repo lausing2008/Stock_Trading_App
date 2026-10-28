@@ -1,6 +1,6 @@
 # Signal persistence versus alert-delivery deadlock — diagnosis and proposed fix
 
-Review date: **October 27, 2026, America/Los_Angeles**. Status: **diagnosis and isolated reproduction complete; no application changes or deployment**. Source baseline: `e8851a43`. F04 remains held. This follows [F03 §12 and the review notes](../features/2026-10-27-f03-signal-occurrence-and-delivery-attribution-design.md).
+Review date: **October 27, 2026, America/Los_Angeles**. Status: **step 1 canonical write order deployed from `8dc84150`; full-session acceptance pending; no retry added**. Source baseline: `e8851a43`. F04 remains held. This follows [F03 §12 and the review notes](../features/2026-10-27-f03-signal-occurrence-and-delivery-attribution-design.md).
 
 ## Conclusion
 
@@ -65,7 +65,7 @@ It uses:
 
 [Raw result and source hashes](evidence/2026-10-27-signal-delivery-deadlock/pg16-reproduction.json). The ordered arm changes the **experimental input order**, not application code. It is evidence for the proposed mechanism, not a claim that a production fix is implemented or that all possible database deadlocks are removed.
 
-To reproduce from the repo with a fresh local container:
+To reproduce the **pre-fix baseline**, use a separate checkout at `2aba2e14` (it contains this probe and the reviewed `e8851a43` application source), then run the following with a fresh local container. The current fixed sender no longer has the old loop this probe extracts; use the new regression tests for the fixed implementation:
 
 ```bash
 docker run -d --name stockai-deadlock-audit-20261027 \
@@ -115,9 +115,9 @@ Compare new deadlock SQLSTATE counts, refresh persistence/exhaustion, successful
 
 ## Decision and remaining work
 
-Proceed next with the canonical metadata ordering patch and a regression through its actual write path. Review the database-only retry boundary separately. This report changes no application, sender, observation schema, schedule or model artifact; **the production deadlock is still unfixed**.
+**Diagnosis-stage decision (before the implementation below):** proceed with canonical metadata ordering and a regression through its actual write path; review the database-only retry boundary separately. The subsequent implementation and rollout sections record the delivered patch. Full-session acceptance remains open.
 
-## Implementation — step 1 (canonical order), committed, NOT deployed
+## Implementation — step 1 (canonical order), deployed
 
 - **Fix (market-data only).** [`ai_signal_delivery_write.py`](../../services/market-data/src/services/ai_signal_delivery_write.py)
   reads `(id, stock_id, horizon)` for the decided rows with a plain SELECT (no row locks), then
@@ -156,6 +156,21 @@ Proceed next with the canonical metadata ordering patch and a regression through
     generator. Both writers use the same per-stock order, so no new cycle is expected; this is
     not separately tested.
   - The "email accepted before DB failure" acceptance belongs to the retry/receipt work.
-- **Rollout (awaiting approval).** market-data only, `scripts/deploy.sh market-data` under the
-  host lock in a quiet window. Record it as a new evidence segment for the F03 captures
-  (deadlock counts before vs after), and keep F04 held.
+- **Rollout completed.** market-data only under the host lock, pinned to `8dc84150`; detailed verification and the operational cutover are below. F04 remains held.
+
+
+## Production rollout — October 27 PDT / October 28 UTC
+
+**Deployed `8dc8415041e4788c05c6f3d579d45e88e5e1cf0b`, market-data only**, through `scripts/deploy_remote.sh` under the host lock. New sender container started at **2026-10-28 00:28:08 UTC / October 27 17:28:08 PDT**. Previous image tagged `stockai-market-data:rollback-before-8dc84150`; old logs and identities retained at `/home/ec2-user/deploy-evidence/2026-10-27-delivery-lock-order/`.
+
+Fresh pre-release checks: **10 targeted market-data tests passed**; **4 database tests passed** (two SQLite, two actual PostgreSQL 16 race tests with F03 active, including the reversed-order negative control). The isolated regression container was removed. The author's full `make test` pass is recorded above; this deployment independently reran the affected checks, not all services.
+
+Post-deploy verification: **15/15 healthy; all 12 backends' `src` and `shared` hashes match the release; only market-data restarted**. All other images, start times and source hashes are unchanged, including signal-engine and ml-prediction. The helper was imported from the running image and its order checked against 64 actual signal-row identities in a READ ONLY transaction. The real sender's loaded source calls it; no insertion-order metadata loop remains. An empty-decision no-op was checked without writes. **No alert job or test email was manually invoked**.
+
+The initial quiet-window check saw zero retained PostgreSQL deadlocks after restart; the normal startup alert job had not yet completed at that first read. That is an immediate health/source check, not full-session contention acceptance or proof of zero future deadlocks. Deployment ended with about **25 GB free** and sampled I/O wait **3.2%**. [Tests, source/image/start identities and verification script](evidence/2026-10-27-delivery-lock-order-deployment/).
+
+**Passive follow-up at 00:31:42 UTC:** the normal startup `check_signal_alerts` job completed with `status=ok` at **00:29:57 UTC**, duration 43 seconds, and **401 signal rows** had delivery metadata committed since restart. These are metadata rows, not 401 sent emails. Retained PostgreSQL logs still contained zero deadlocks since the sender restart, and the F03 cron entry remained installed. No job or send was manually invoked. [Follow-up](evidence/2026-10-27-delivery-lock-order-deployment/passive-followup.json).
+
+**F03 evidence cutover:** `/home/ec2-user/f03-observation/release-cutovers/market-data-8dc84150.json` records the sender's new image/start plus the unchanged generator and ML identities. The observer contract/counters remain `f03-observe-v1`; this is a new **operational release segment**, not a new confidence-counter definition. Keep earlier captures. The next daily log window begins before this cutover, so split timestamped deadlocks at the recorded boundary and do not call its aggregate refresh-skip count a pure post-fix rate. First full candidate market sessions remain October 28 because the rollout preceded both opens; they count only after coverage is reviewed.
+
+**Still open:** active-session before/after deadlock and persistence evidence, database-only retry/receipt handling, and F04's evaluation-version/allocation decision. No retry, receipt schema or F04 trainer change shipped.

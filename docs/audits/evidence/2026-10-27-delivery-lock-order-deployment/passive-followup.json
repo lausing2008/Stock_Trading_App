@@ -1,0 +1,15 @@
+{
+  "checked_at": "2026-10-28T00:31:42.405298+00:00",
+  "cutover_started_at": "2026-10-28T00:28:08.298794974Z",
+  "normal_alert_job": {
+    "status": "ok",
+    "last_run": "2026-10-28T00:29:57.568031+00:00",
+    "duration_s": 43.0,
+    "has_error": false
+  },
+  "job_completed_after_cutover": true,
+  "delivery_rows_decided_since_restart": 401,
+  "retained_deadlocks_since_restart": 0,
+  "f03_daily_schedule_still_present": true,
+  "note": "Passive observation of normal scheduler activity; no alert job, mail or provider call was manually triggered. Still not a complete active-session contention test."
+}

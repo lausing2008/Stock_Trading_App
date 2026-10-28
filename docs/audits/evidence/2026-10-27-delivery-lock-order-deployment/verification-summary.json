@@ -1,0 +1,67 @@
+{
+  "healthy_containers": 15,
+  "restarted": [
+    "/stockai-market-data-1"
+  ],
+  "all_12_backend_hashes_match": true,
+  "other_images_starts_and_sources_unchanged": true,
+  "cutover": {
+    "recorded_at": "2026-10-28T00:28:53.886181+00:00",
+    "release": "8dc8415041e4788c05c6f3d579d45e88e5e1cf0b",
+    "phase": "delivery_metadata_canonical_lock_order",
+    "containers": [
+      {
+        "name": "/stockai-market-data-1",
+        "image": "sha256:56cdd4aafed015ee5069ac370eff7a4b93d63ec1013da61e2d7476dfd17a05ae",
+        "started_at": "2026-10-28T00:28:08.298794974Z"
+      },
+      {
+        "name": "/stockai-signal-engine-1",
+        "image": "sha256:baedd37f551a966878f77eff90df0a12b5a9c6f3c1202e465209655577f63741",
+        "started_at": "2026-10-27T14:01:43.835284183Z"
+      },
+      {
+        "name": "/stockai-ml-prediction-1",
+        "image": "sha256:3fa7c7cb521b63e606704b8e9e5b2df533917476c283162e25ec9f1c41c893b4",
+        "started_at": "2026-10-27T14:01:55.871121065Z"
+      }
+    ],
+    "note": "Sender started_at is the operational cutover anchor, not proof of its first completed alert job. No observer schema/counter change. Preserve prior captures; classify pre/post cutover separately."
+  },
+  "loaded_features": {
+    "loaded_generation_order": [
+      "SHORT",
+      "SWING",
+      "LONG",
+      "GROWTH"
+    ],
+    "read_only_metadata_order_checked_rows": 64,
+    "sender_calls_helper": true,
+    "empty_decisions_noop": true,
+    "delivery_metadata_rows_decided_since_restart": 0
+  },
+  "alert_job_status": {
+    "job": "check_signal_alerts",
+    "status": "ok",
+    "last_run": "2026-10-27T20:33:50.261925+00:00",
+    "duration_s": 145.1,
+    "error": null
+  },
+  "post_restart_retained_deadlock_count": 0,
+  "measurement_note": "Immediate quiet-window check, not a full-session contention or zero-deadlock guarantee. No alert job was manually invoked.",
+  "passive_followup": {
+    "checked_at": "2026-10-28T00:31:42.405298+00:00",
+    "cutover_started_at": "2026-10-28T00:28:08.298794974Z",
+    "normal_alert_job": {
+      "status": "ok",
+      "last_run": "2026-10-28T00:29:57.568031+00:00",
+      "duration_s": 43.0,
+      "has_error": false
+    },
+    "job_completed_after_cutover": true,
+    "delivery_rows_decided_since_restart": 401,
+    "retained_deadlocks_since_restart": 0,
+    "f03_daily_schedule_still_present": true,
+    "note": "Passive observation of normal scheduler activity; no alert job, mail or provider call was manually triggered. Still not a complete active-session contention test."
+  }
+}

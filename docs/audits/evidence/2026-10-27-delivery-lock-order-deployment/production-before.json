@@ -1,0 +1,161 @@
+{
+  "captured_at": "2026-10-28T00:26:59.360186+00:00",
+  "hashes": {
+    "market-data": {
+      "src": "2dfb056b52d46b983bf0441daaf7b98106e5766d8999d62c135a95a9997fa2cf",
+      "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+    },
+    "signal-engine": {
+      "src": "c2608d4ce1c7f7745a6a55b00de76d262a9aee4d884e8aba1720a52e34573016",
+      "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+    },
+    "api-gateway": {
+      "src": "79e6aaaf7d926ae838f95c794646f23dd496fd2acbd9c488478c19d8b94fac23",
+      "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+    },
+    "ml-prediction": {
+      "src": "f4f85f76673167eb07db838eb5aa29c2440afd94dbe1aab77f117e11983cd336",
+      "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+    },
+    "research-engine": {
+      "src": "cc7e1f62de97b4286024614ad459c65aa28a148f4fb874846d9722d2671576f9",
+      "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+    },
+    "ranking-engine": {
+      "src": "df0be797ad2c094624dd2fac4d9431fcdf952aca62d14f891054f9b2c634acc6",
+      "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+    },
+    "strategy-engine": {
+      "src": "291fbf7d0359e4248d48e50d9940a6a167bad1a3efb5360b9ba2095152fd3bdf",
+      "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+    },
+    "technical-analysis": {
+      "src": "5dff8906f404b9d34323238543b4cf2a382b1398005a7f6cd6d09922235f72ec",
+      "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+    },
+    "portfolio-optimizer": {
+      "src": "2c24b4038cca7d4ef626b0164d41e29465bad78a7039c40ec2d3ad015002beb3",
+      "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+    },
+    "event-intelligence": {
+      "src": "d4aa5184ed7947e1690e18b8cfa07a911842766394bac08d6cbccbb8cb1a870e",
+      "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+    },
+    "news-intelligence": {
+      "src": "3a64698f0ee940ce0958f6535e16e473e8778ca885b4a330853b3d394d556a0c",
+      "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+    },
+    "decision-engine": {
+      "src": "7530169b28b7ba6de9b40de205ae8440f848ff24f0e2b6372ff78c89b56dca19",
+      "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+    }
+  },
+  "containers": [
+    {
+      "name": "/stockai-market-data-1",
+      "image": "sha256:d4cf48b2802f919ddef8a9b707c865e4b8f140586700b8df7027955d7528c62b",
+      "started_at": "2026-10-27T14:01:41.621097147Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-signal-engine-1",
+      "image": "sha256:baedd37f551a966878f77eff90df0a12b5a9c6f3c1202e465209655577f63741",
+      "started_at": "2026-10-27T14:01:43.835284183Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-api-gateway-1",
+      "image": "sha256:8fca28877a1287df486ee67107b3ff8af286cd43da05b6203556e2affb398047",
+      "started_at": "2026-10-27T14:02:46.212235951Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-ml-prediction-1",
+      "image": "sha256:3fa7c7cb521b63e606704b8e9e5b2df533917476c283162e25ec9f1c41c893b4",
+      "started_at": "2026-10-27T14:01:55.871121065Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-research-engine-1",
+      "image": "sha256:c7e482f047c5125978a40de97331ab432d3447cadd00f4a0058a48e3d76b3a38",
+      "started_at": "2026-10-27T14:02:27.55994001Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-ranking-engine-1",
+      "image": "sha256:a2186e404e07d9f9681fb2e6418bd0473341da8ae952db9e576911389642a9ff",
+      "started_at": "2026-10-27T14:02:02.931803739Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-strategy-engine-1",
+      "image": "sha256:c8b720c2ca41e09e37665a0ff7684bcc23846391059af5af03d333588b385ce8",
+      "started_at": "2026-10-27T14:02:12.119203977Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-technical-analysis-1",
+      "image": "sha256:da2f46763f1d3aee88045987d9805522cacb4078e3a56952d7b64f91e4c043d7",
+      "started_at": "2026-10-27T14:01:58.881335845Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-portfolio-optimizer-1",
+      "image": "sha256:f8665cd5912c0f6a9f0487bb8de885560314c5170ea1deafcf7402bcd5a32b11",
+      "started_at": "2026-10-27T14:02:23.075173256Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-event-intelligence-1",
+      "image": "sha256:cdbd25fac12f934483427917f8cc18eb9c991213da2103eaf65e6d9d81d55403",
+      "started_at": "2026-10-27T14:02:39.750762004Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-news-intelligence-1",
+      "image": "sha256:4604541df1fe009e2c9d172b07dcdd9799f7cf8a4c006f883fb069727aad0cbe",
+      "started_at": "2026-10-27T14:02:43.071541181Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-decision-engine-1",
+      "image": "sha256:2bf3bc7514ecaa34523c74f4e9698ca2a9ff32c4d2e96e5ad1c66188ec259dd3",
+      "started_at": "2026-10-27T14:02:36.581225842Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-frontend-1",
+      "image": "sha256:88c4c2df73183d4e81af235e6845d2a3ee35431178a06dec1f0c35ebde6ef8d7",
+      "started_at": "2026-10-27T06:04:50.740597308Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-postgres-1",
+      "image": "sha256:fff3594bf464bea0f502788874403882d8bbbe618b3250f8649e7e42fd118020",
+      "started_at": "2026-10-22T23:47:16.284451594Z",
+      "health": "healthy",
+      "status": "running"
+    },
+    {
+      "name": "/stockai-redis-1",
+      "image": "sha256:487efc0616382465781b8fdc3d6d1db449e6fd80ae23bf48432a2da6b6929908",
+      "started_at": "2026-10-22T23:47:15.037867617Z",
+      "health": "healthy",
+      "status": "running"
+    }
+  ],
+  "repo_head": "84300fc441568cddcefc45fde7a28065ec1f24c1"
+}

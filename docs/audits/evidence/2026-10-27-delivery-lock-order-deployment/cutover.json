@@ -1,0 +1,23 @@
+{
+  "recorded_at": "2026-10-28T00:28:53.886181+00:00",
+  "release": "8dc8415041e4788c05c6f3d579d45e88e5e1cf0b",
+  "phase": "delivery_metadata_canonical_lock_order",
+  "containers": [
+    {
+      "name": "/stockai-market-data-1",
+      "image": "sha256:56cdd4aafed015ee5069ac370eff7a4b93d63ec1013da61e2d7476dfd17a05ae",
+      "started_at": "2026-10-28T00:28:08.298794974Z"
+    },
+    {
+      "name": "/stockai-signal-engine-1",
+      "image": "sha256:baedd37f551a966878f77eff90df0a12b5a9c6f3c1202e465209655577f63741",
+      "started_at": "2026-10-27T14:01:43.835284183Z"
+    },
+    {
+      "name": "/stockai-ml-prediction-1",
+      "image": "sha256:3fa7c7cb521b63e606704b8e9e5b2df533917476c283162e25ec9f1c41c893b4",
+      "started_at": "2026-10-27T14:01:55.871121065Z"
+    }
+  ],
+  "note": "Sender started_at is the operational cutover anchor, not proof of its first completed alert job. No observer schema/counter change. Preserve prior captures; classify pre/post cutover separately."
+}

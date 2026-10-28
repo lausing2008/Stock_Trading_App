@@ -384,7 +384,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 - **`docs/audits/2026-10-26-little-rzy-ai-signals-full-review.md`** — RZY/AI correctness review, reproduced measurement defects, production evidence and staged Intraday/performance plan; documentation only.
 - **`docs/features/2026-10-27-f03-signal-occurrence-and-delivery-attribution-design.md`** — F03: §12 observation phase DEPLOYED 1be6c90c (occurrences per venue session, snapshots, completed close); collecting ≥5 sessions/market. Pre-existing signals-upsert/alert deadlock. F04 held on branch.
-- **`docs/audits/2026-10-27-signal-upsert-delivery-deadlock-review.md`** — Read-only diagnosis, deterministic PostgreSQL reproduction and proposed canonical write order; both writers can be victims. No application fix yet.
+- **`docs/audits/2026-10-27-signal-upsert-delivery-deadlock-review.md`** — Canonical delivery write order deployed `8dc84150`; PostgreSQL race/negative control and production cutover recorded. Full-session evidence pending; no retry. F04 held.
 - **`docs/features/2026-10-26-intraday-and-signal-performance-plan.md`** — Fifth-horizon contract, causal execution, research baseline, staged implementation and promotion gates; proposed, not implemented.
 - **`docs/audits/2026-10-21-ai-signals-horizon-thresholds-and-intraday-plan.md`** — per-horizon effective thresholds (watchdog > calibrated > default), INTRADAY research baseline. ML-weight calibrator never simulates the runtime ramp→cap→floor, so its "0" runs as .15; 0 verified outcomes [thresholds, calibration]
 

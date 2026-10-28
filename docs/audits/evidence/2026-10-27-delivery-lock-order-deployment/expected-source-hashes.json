@@ -1,0 +1,50 @@
+{
+  "market-data": {
+    "src": "6e9f8b2452ef823dcf1b1074fd8dca5d8236dc4b5f9b4ecba1240890d14d8061",
+    "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+  },
+  "signal-engine": {
+    "src": "c2608d4ce1c7f7745a6a55b00de76d262a9aee4d884e8aba1720a52e34573016",
+    "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+  },
+  "api-gateway": {
+    "src": "79e6aaaf7d926ae838f95c794646f23dd496fd2acbd9c488478c19d8b94fac23",
+    "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+  },
+  "ml-prediction": {
+    "src": "f4f85f76673167eb07db838eb5aa29c2440afd94dbe1aab77f117e11983cd336",
+    "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+  },
+  "research-engine": {
+    "src": "cc7e1f62de97b4286024614ad459c65aa28a148f4fb874846d9722d2671576f9",
+    "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+  },
+  "ranking-engine": {
+    "src": "df0be797ad2c094624dd2fac4d9431fcdf952aca62d14f891054f9b2c634acc6",
+    "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+  },
+  "strategy-engine": {
+    "src": "291fbf7d0359e4248d48e50d9940a6a167bad1a3efb5360b9ba2095152fd3bdf",
+    "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+  },
+  "technical-analysis": {
+    "src": "5dff8906f404b9d34323238543b4cf2a382b1398005a7f6cd6d09922235f72ec",
+    "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+  },
+  "portfolio-optimizer": {
+    "src": "2c24b4038cca7d4ef626b0164d41e29465bad78a7039c40ec2d3ad015002beb3",
+    "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+  },
+  "event-intelligence": {
+    "src": "d4aa5184ed7947e1690e18b8cfa07a911842766394bac08d6cbccbb8cb1a870e",
+    "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+  },
+  "news-intelligence": {
+    "src": "3a64698f0ee940ce0958f6535e16e473e8778ca885b4a330853b3d394d556a0c",
+    "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+  },
+  "decision-engine": {
+    "src": "7530169b28b7ba6de9b40de205ae8440f848ff24f0e2b6372ff78c89b56dca19",
+    "shared": "2330466c53ed52db0b6b263614c41c2bb6bd1abfa4d343c79c87feb3d42ea5b7"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "release": "8dc8415041e4788c05c6f3d579d45e88e5e1cf0b",
+  "scope": "market-data only; lock order only, no retry. Signal-engine and ml-prediction unchanged. Local PostgreSQL regression container removed.",
+  "fresh_tests": {
+    "market_data_targeted": 10,
+    "database_tests": 4,
+    "database_test_details": "2 SQLite tests and 2 PostgreSQL tests, including the concurrent F03 positive and reversed-order negative control."
+  },
+  "files": {
+    "capture_before.py": "44755ab9057986b9a075f5543bc600777160ac14cf456cc898c57b630ee26419",
+    "cutover.json": "ede5af168761fe9993817d8f68cb7c488af3efbce9873b408e6afcacbdf2973c",
+    "database-tests.txt": "b728f77263d4820f92d473945639e6f58b0ac24ad606427fac0a1665c8c2b9d2",
+    "deployment.txt": "533b1d3182459f350cd85457b669edfc6d2c70271c9285b758f2d2dbde07f177",
+    "expected-source-hashes.json": "28670e1f9f8913f2bb65194c5df97e633549ec9a28e38fe6ced169d2f9d86c0b",
+    "market-data-targeted-tests.txt": "b35dbecccb7a595256e282ead476415606c29bf0ee0e97121c55928fd1bac899",
+    "passive-followup.json": "ebcf8d4ec6b256e4af50f675f5a9bf14f631918271c29b48c1c46c92a5ec7bbe",
+    "passive_followup.py": "033c2eb976c3fc1d41b65b295c6caf3fbb70a7e7efa21fc816bfbe1f67782af6",
+    "production-after.json": "69142ca31778d2e18da89661fd860b46f890e98d522642b6d0a8cc69fe47983a",
+    "production-before.json": "f85bab0ffbdcb1e89acbac9c80f0d592bdaa8c307bc043680eef0977b451b3c2",
+    "verification-summary.json": "8d224867833bcb068be580a9d46ac3aafea23fa6ed04fd5cdfec674d26383205",
+    "verify_production.py": "34f7925ba848cf66fec910a8b268a31e883950f44a86e8635782581bc87138e4"
+  },
+  "normalization": {
+    "deployment.txt": "Trailing whitespace removed from the deployment transcript."
+  }
+}
