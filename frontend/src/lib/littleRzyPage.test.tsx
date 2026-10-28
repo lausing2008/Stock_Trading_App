@@ -101,3 +101,13 @@ it('shows latency denominators, execution blockers and durable performance witho
   expect(screen.getByText('Net expectancy').nextElementSibling?.textContent).toBe('— R');
   expect(screen.getByText(/ENTRY_CANCELLED ·/)).toBeTruthy();
 });
+it('explains what each timeframe measures and labels multi-timeframe entry use as untested', async () => {
+  view();
+  await screen.findByText(/Reading the timeframes/);
+  const rows = ['5m', '15m', '1h', '1d'].map(tf => screen.getAllByText(tf).find(e => e.closest('details'))?.closest('tr'));
+  expect(rows.every(Boolean)).toBe(true);
+  expect(rows[0]?.textContent).toContain('35 min');
+  expect(rows[2]?.textContent).toContain('too few');
+  expect(screen.getByText(/This is a reading practice, not something the scanner does/)).toBeTruthy();
+  expect(screen.getByText(/Keep the stop where the setup is proven wrong/)).toBeTruthy();
+});

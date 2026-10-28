@@ -22,6 +22,50 @@ function Section({ title, intro, children }: { title: string; intro?: React.Reac
     {intro && <div className="max-w-4xl text-sm text-slate-400">{intro}</div>}{children}</section>;
 }
 
+// Every rule is counted in bars of the stream's own timeframe, so the same defaults cover very
+// different clock spans. A US regular session is 78 × 5m, 26 × 15m or 7 × 1h bars (last one 30 min).
+const TF_SCALE: { tf: string; role: string; pivot: string; armed: string; band: string; cost: string; evidence: string }[] = [
+  { tf: '5m', role: 'Timing: the exact rejection candle', pivot: '35 min', armed: '100 min', band: '~1 h 40 min',
+    cost: '0.117R (median risk 0.82% of price)', evidence: 'n=439, no edge' },
+  { tf: '15m', role: 'Setup: the intraday A–B–C structure', pivot: '1 h 45 min', armed: '5 h', band: '5 h',
+    cost: '0.069R', evidence: 'n=175, no edge' },
+  { tf: '1h', role: 'Context: the swing over several sessions', pivot: '~1 session', armed: '~3 sessions', band: '~3 sessions',
+    cost: 'not reported', evidence: 'n=28, too few' },
+  { tf: '1d', role: 'Backdrop: the trend you trade with or against', pivot: '7 sessions', armed: '~4 weeks', band: '~1 month',
+    cost: '0.011R', evidence: 'n=50, too few' },
+];
+
+function TimeframeGuide() {
+  return <details className={card}>
+    <summary className="cursor-pointer font-semibold text-teal-400">Reading the timeframes: what 5m, 15m, 1h and daily tell you, and how to use them for entries</summary>
+    <div className="mt-3 space-y-4 text-sm text-slate-300">
+      <p>Each symbol and timeframe is its own stream: the scanner runs the same rules separately on 5m, 15m, 1h and daily bars and never compares them. 15m and 1h bars are built from completed 5m bars; an incomplete bin is withheld, not filled in. Because every rule is counted in <i>bars</i>, the same settings mean very different clock time:</p>
+      <div className="overflow-x-auto"><table className="w-full">
+        <thead><tr>{['TF', 'What it is good for', 'Pivot confirms after (7 bars)', 'Armed setup expires (20 bars)', 'Bollinger window (20 bars)', 'Cost per trade', 'Evidence (Jul–Oct 2026)'].map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
+        <tbody>{TF_SCALE.map(r => <tr key={r.tf} className="border-t border-slate-800"><td className={`${td} font-mono`}>{r.tf}</td><td className={td}>{r.role}</td>
+          <td className={td}>{r.pivot}</td><td className={td}>{r.armed}</td><td className={td}>{r.band}</td><td className={td}>{r.cost}</td><td className={td}>{r.evidence}</td></tr>)}</tbody>
+      </table></div>
+      <ul className="list-disc space-y-1 pl-5 text-slate-400">
+        <li><b className="text-slate-200">Lower timeframe = earlier but noisier.</b> A 5m pivot is known 35 minutes after it forms, a daily pivot only after 7 sessions. 5m structures are small, so the stop is tight and costs take a large share of the risk: about 0.12R per trade, which on its own turned a break-even 5m result into a loss.</li>
+        <li><b className="text-slate-200">Higher timeframe = slower but more meaningful.</b> A daily or hourly trend (two higher highs and lows, or two lower) describes the move the intraday setups sit inside. Its stops are wider, so costs matter far less, but it produces few setups.</li>
+        <li><b className="text-slate-200">15m is the middle ground.</b> It is where costs are smallest relative to risk among the intraday streams, which is why the evaluation suggested testing it first.</li>
+        <li><b className="text-slate-200">Targets are rarely reached.</b> Planned targets average about 3R, but the median trade lasted 4 bars and most exits were a close back through the line. On 5m that is 20 minutes; on 1h it is most of a session.</li>
+      </ul>
+      <h3 className="font-semibold text-slate-100">Using them together to choose an entry</h3>
+      <p className="text-amber-300">This is a reading practice, not something the scanner does. Combining timeframes has not been implemented or tested here, and no single timeframe has shown an edge over random entry timing. Treat it as a way to filter and time setups, not as a validated method.</p>
+      <ol className="list-decimal space-y-1 pl-5 text-slate-400">
+        <li><b className="text-slate-200">Direction from the top (daily, then 1h).</b> Note whether the higher timeframe is trending up, trending down or unclear. Prefer lower-timeframe setups in the same direction. A sequence of 3 or more, or an exhaustion warning, means that trend is late: be more selective, not more aggressive.</li>
+        <li><b className="text-slate-200">Setup on 15m.</b> Look for an armed A–B–C structure in that direction with planned reward/risk of at least 1.5, where C pulled back to near the middle band. The line through A and C is where the entry should happen; D is the measured target.</li>
+        <li><b className="text-slate-200">Timing on 5m.</b> As price comes back to the 15m line, wait for a <i>completed</i> 5m candle that touches the line and closes back in the trend direction. Do not buy the forming candle or a close already beyond the outer Bollinger band (the no-chase rule).</li>
+        <li><b className="text-slate-200">Keep the stop where the setup is proven wrong.</b> The stop belongs beyond the structure you are trading (the 15m C or line, plus a buffer), not just beyond the 5m candle. Shrinking the stop to the 5m candle makes reward/risk look better on paper, but it raises cost drag and the chance of being stopped by noise.</li>
+        <li><b className="text-slate-200">Recheck at the next open, and stand aside on conflict.</b> Reward/risk must still be at least 1.5 at the actual next-bar open. If the timeframes disagree (for example a 5m long trigger inside a daily downtrend), treat it as counter-trend and skip it, or treat it only as an exhaustion/reversal watch.</li>
+        <li><b className="text-slate-200">Check the data first.</b> Use only streams shown as usable in Data health below. 15m and 1h are built from 5m, so a 5m restatement or missing bin affects all three.</li>
+      </ol>
+      <p className="text-xs text-slate-500">Sources: rule defaults in docs/2026-10-19/little-rzy-parameters.md; evaluation figures from docs/2026-10-19/little-rzy-evaluation-results.md and docs/2026-10-20/little-rzy-evaluation-rerun.md (5m/15m/1h Jul 21 – Oct 20 2026; daily Dec 2023 – Oct 2026; costs as modelled there).</p>
+    </div>
+  </details>;
+}
+
 export default function LittleRzyAdminPage() {
   const router = useRouter();
   const [allowed, setAllowed] = useState(false);
@@ -51,6 +95,8 @@ export default function LittleRzyAdminPage() {
       </p>
       <p className="text-xs text-slate-500">Strategy {overview?.strategy_version ?? '…'} · config {overview?.config_hash ?? '…'} · email preferences live in <Link className="text-teal-400 underline" href="/settings">Settings</Link>.</p>
     </header>
+
+    <TimeframeGuide />
 
     {overviewError && <p role="alert" className="text-red-400">Overview unavailable: {String(overviewError.message ?? overviewError)}</p>}
     <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
