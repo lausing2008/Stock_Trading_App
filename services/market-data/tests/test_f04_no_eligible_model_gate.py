@@ -46,3 +46,27 @@ def test_never_trained_still_soft_passes_unchanged():
 def test_eligible_model_layer_is_unchanged():
     ok, tier, passed, failed = _gate(_h._signal(ml_probability=0.90, ml_weight=0.5, ml_unavailable_reason=None))
     assert tier == "full" and failed == [] and "bullish probability" in passed[0]
+
+
+# ── Intentional policy correction (approved 2026-10-28) ────────────────────────────────────
+# A horizon whose suppressed models had stored AUC < 0.50 used to reach this gate with
+# ml_probability 0.5 and ml_weight 0.0, and the gate soft-PASSED it ("model AUC below random —
+# zero weight in fusion, gate skipped"). It now arrives as no_eligible_model and soft-FAILS:
+# unavailable ML is not ML evidence. The frozen-input replay showed 7 such BUY rows (AI, MSFT,
+# V) moving full -> near; a row with one other soft failure moves near -> failed. Both are the
+# intended behaviour, pinned here so a later change cannot quietly restore the soft pass.
+PRE_PATCH_ZERO_WEIGHT = dict(ml_probability=0.5, ml_weight=0.0)
+
+
+def test_policy_previously_zero_weight_row_moves_full_to_near():
+    assert _gate(_h._signal(**PRE_PATCH_ZERO_WEIGHT))[1] == "full"
+    assert _gate(_h._signal(**NO_ELIGIBLE))[1] == "near"
+
+
+def test_policy_previously_zero_weight_row_with_another_soft_failure_moves_near_to_failed():
+    for extra in ({"obv_trend_bullish": False}, {"adx_trending": False}):
+        ok_old, tier_old, _, _ = _gate(_h._signal(**PRE_PATCH_ZERO_WEIGHT, **extra))
+        ok_new, tier_new, _, failed = _gate(_h._signal(**NO_ELIGIBLE, **extra))
+        assert (ok_old, tier_old) == (True, "near"), extra
+        assert (ok_new, tier_new) == (False, "failed"), extra
+        assert any("no eligible model" in f for f in failed)
