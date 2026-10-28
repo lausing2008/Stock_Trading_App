@@ -1,0 +1,14 @@
+{
+  "reviewed_head": "e8851a436b570f70efb00291fe12f6ce3fb274b9",
+  "scope": "Production log/file/query reads only; isolated local PostgreSQL reproduction; no application edits or deployment. Temporary audit container removed.",
+  "trials": {
+    "inverted_order": 3,
+    "ordered_control": 3
+  },
+  "files": {
+    "pg16-reproduction.json": "81e3e9c3329ab36380fbc32911b8c19562faf37a11e4e51da47a52912d50a3b1",
+    "production-lock-summary.json": "84a0d647673913a0ff2dd3c87d9070b07626dafb3008ee2a50e718512c79db67",
+    "production-victim-summary.json": "892cd99ae80ee640974f5ad63e849bceebe0357e1a56912520282f7062efd8bd",
+    "reproduce_pg16.py": "652af509cdb2cb3e034d6e3c9407275aff83ae9ac0103cab6c3fd9090afaddfb"
+  }
+}

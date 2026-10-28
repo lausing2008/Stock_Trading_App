@@ -1,0 +1,62 @@
+{
+  "captured_at": "2026-10-28T00:09:49.501798+00:00",
+  "events": [
+    {
+      "at": "2026-10-27T14:06:02.300940298Z",
+      "victim_statement_kind": "INSERT",
+      "has_upsert": true,
+      "has_delivery_update": true
+    },
+    {
+      "at": "2026-10-27T14:47:29.140475156Z",
+      "victim_statement_kind": "INSERT",
+      "has_upsert": true,
+      "has_delivery_update": true
+    },
+    {
+      "at": "2026-10-27T15:17:46.033073844Z",
+      "victim_statement_kind": "UPDATE",
+      "has_upsert": true,
+      "has_delivery_update": true
+    },
+    {
+      "at": "2026-10-27T15:32:50.097760098Z",
+      "victim_statement_kind": "INSERT",
+      "has_upsert": true,
+      "has_delivery_update": true
+    },
+    {
+      "at": "2026-10-27T16:57:53.017284992Z",
+      "victim_statement_kind": "INSERT",
+      "has_upsert": true,
+      "has_delivery_update": true
+    },
+    {
+      "at": "2026-10-27T18:12:55.433322659Z",
+      "victim_statement_kind": "UPDATE",
+      "has_upsert": true,
+      "has_delivery_update": true
+    },
+    {
+      "at": "2026-10-27T18:18:03.776086970Z",
+      "victim_statement_kind": "INSERT",
+      "has_upsert": true,
+      "has_delivery_update": true
+    },
+    {
+      "at": "2026-10-27T18:48:51.998820867Z",
+      "victim_statement_kind": "UPDATE",
+      "has_upsert": true,
+      "has_delivery_update": true
+    }
+  ],
+  "source_sha256": {
+    "signal-engine": {
+      "api/routes.py": "161bffb868dc4d9f0fe9132c00cb7a11684016f56449d5c101689220e1eb339e"
+    },
+    "market-data": {
+      "services/scheduler.py": "f11e4b28d49aaab93cdd317d6568a22e3325b84923700e49b53ff093dc5c1ec6"
+    }
+  },
+  "limits": "SQL statement classification from retained error context; no parameter values, payloads or email addresses exported. Not a complete acquired-row history."
+}

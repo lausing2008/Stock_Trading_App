@@ -1,0 +1,180 @@
+{
+  "postgres_version": "16.15",
+  "container": "stockai-deadlock-audit-20261027",
+  "source_sha256": {
+    "services/signal-engine/src/api/routes.py": "161bffb868dc4d9f0fe9132c00cb7a11684016f56449d5c101689220e1eb339e",
+    "services/market-data/src/services/scheduler.py": "f11e4b28d49aaab93cdd317d6568a22e3325b84923700e49b53ff093dc5c1ec6",
+    "shared/db/models.py": "6b766c3d50dc351fccc4163b02574e2cefc10111fa1c23f162a37f95df1f658b"
+  },
+  "method": "Real models and unique index, actual production upsert SQL and alert UPDATE AST; two local transactions; pg_blocking_pids must prove overlap. F03 hooks and external side effects excluded.",
+  "inverted_order": [
+    {
+      "delivery_order": [
+        "GROWTH",
+        "SHORT"
+      ],
+      "overlap_verified_by_server": true,
+      "trace": [
+        "upsert holds SHORT",
+        "delivery holds GROWTH",
+        "server confirms delivery waits for upsert SHORT lock"
+      ],
+      "writers": {
+        "upsert": {
+          "status": "rolled_back",
+          "sqlstate": "40P01",
+          "error_type": "OperationalError"
+        },
+        "delivery": {
+          "status": "committed"
+        }
+      },
+      "all_four_horizon_confidences": {
+        "GROWTH": 40.0,
+        "LONG": 40.0,
+        "SHORT": 40.0,
+        "SWING": 40.0
+      },
+      "upsert_batch_lost": true
+    },
+    {
+      "delivery_order": [
+        "GROWTH",
+        "SHORT"
+      ],
+      "overlap_verified_by_server": true,
+      "trace": [
+        "upsert holds SHORT",
+        "delivery holds GROWTH",
+        "server confirms delivery waits for upsert SHORT lock"
+      ],
+      "writers": {
+        "delivery": {
+          "status": "committed"
+        },
+        "upsert": {
+          "status": "rolled_back",
+          "sqlstate": "40P01",
+          "error_type": "OperationalError"
+        }
+      },
+      "all_four_horizon_confidences": {
+        "GROWTH": 40.0,
+        "LONG": 40.0,
+        "SHORT": 40.0,
+        "SWING": 40.0
+      },
+      "upsert_batch_lost": true
+    },
+    {
+      "delivery_order": [
+        "GROWTH",
+        "SHORT"
+      ],
+      "overlap_verified_by_server": true,
+      "trace": [
+        "upsert holds SHORT",
+        "delivery holds GROWTH",
+        "server confirms delivery waits for upsert SHORT lock"
+      ],
+      "writers": {
+        "upsert": {
+          "status": "rolled_back",
+          "sqlstate": "40P01",
+          "error_type": "OperationalError"
+        },
+        "delivery": {
+          "status": "committed"
+        }
+      },
+      "all_four_horizon_confidences": {
+        "GROWTH": 40.0,
+        "LONG": 40.0,
+        "SHORT": 40.0,
+        "SWING": 40.0
+      },
+      "upsert_batch_lost": true
+    }
+  ],
+  "matching_order_control": [
+    {
+      "delivery_order": [
+        "SHORT",
+        "GROWTH"
+      ],
+      "overlap_verified_by_server": true,
+      "trace": [
+        "upsert holds SHORT",
+        "server confirms delivery waits for upsert SHORT lock"
+      ],
+      "writers": {
+        "upsert": {
+          "status": "committed"
+        },
+        "delivery": {
+          "status": "committed"
+        }
+      },
+      "all_four_horizon_confidences": {
+        "GROWTH": 99.0,
+        "LONG": 99.0,
+        "SHORT": 99.0,
+        "SWING": 99.0
+      },
+      "upsert_batch_lost": false
+    },
+    {
+      "delivery_order": [
+        "SHORT",
+        "GROWTH"
+      ],
+      "overlap_verified_by_server": true,
+      "trace": [
+        "upsert holds SHORT",
+        "server confirms delivery waits for upsert SHORT lock"
+      ],
+      "writers": {
+        "upsert": {
+          "status": "committed"
+        },
+        "delivery": {
+          "status": "committed"
+        }
+      },
+      "all_four_horizon_confidences": {
+        "GROWTH": 99.0,
+        "LONG": 99.0,
+        "SHORT": 99.0,
+        "SWING": 99.0
+      },
+      "upsert_batch_lost": false
+    },
+    {
+      "delivery_order": [
+        "SHORT",
+        "GROWTH"
+      ],
+      "overlap_verified_by_server": true,
+      "trace": [
+        "upsert holds SHORT",
+        "server confirms delivery waits for upsert SHORT lock"
+      ],
+      "writers": {
+        "upsert": {
+          "status": "committed"
+        },
+        "delivery": {
+          "status": "committed"
+        }
+      },
+      "all_four_horizon_confidences": {
+        "GROWTH": 99.0,
+        "LONG": 99.0,
+        "SHORT": 99.0,
+        "SWING": 99.0
+      },
+      "upsert_batch_lost": false
+    }
+  ],
+  "limitations": "Minimal mechanism witness, not an end-to-end scheduler test or proof of a production fix. No application changes applied. Production can select either transaction as deadlock victim."
+}

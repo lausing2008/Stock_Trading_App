@@ -1,0 +1,219 @@
+{
+  "captured_at": "2026-10-28T00:07:08.342904+00:00",
+  "source": "retained PostgreSQL log since 2026-10-27 14:00 UTC; only lock metadata and row identities exported",
+  "deadlocks": [
+    {
+      "at": "2026-10-27T14:06:02.300940298Z",
+      "wait_edges": [
+        {
+          "pid": 581254,
+          "transaction": 7466412,
+          "blocked_by_pid": 581545
+        },
+        {
+          "pid": 581545,
+          "transaction": 7466413,
+          "blocked_by_pid": 581254
+        }
+      ],
+      "has_signal_upsert": true,
+      "has_alert_delivery_update": true,
+      "has_f03_table_or_advisory_text": false,
+      "waiting_alert_row_ids": [
+        4170829
+      ]
+    },
+    {
+      "at": "2026-10-27T14:47:29.140475156Z",
+      "wait_edges": [
+        {
+          "pid": 581226,
+          "transaction": 7484970,
+          "blocked_by_pid": 585428
+        },
+        {
+          "pid": 585428,
+          "transaction": 7484975,
+          "blocked_by_pid": 581226
+        }
+      ],
+      "has_signal_upsert": true,
+      "has_alert_delivery_update": true,
+      "has_f03_table_or_advisory_text": false,
+      "waiting_alert_row_ids": [
+        4170829
+      ]
+    },
+    {
+      "at": "2026-10-27T15:17:46.033073844Z",
+      "wait_edges": [
+        {
+          "pid": 588341,
+          "transaction": 7498740,
+          "blocked_by_pid": 581255
+        },
+        {
+          "pid": 581255,
+          "transaction": 7498737,
+          "blocked_by_pid": 588341
+        }
+      ],
+      "has_signal_upsert": false,
+      "has_alert_delivery_update": true,
+      "has_f03_table_or_advisory_text": false,
+      "waiting_alert_row_ids": [
+        4171205
+      ]
+    },
+    {
+      "at": "2026-10-27T15:32:50.097760098Z",
+      "wait_edges": [
+        {
+          "pid": 589360,
+          "transaction": 7505031,
+          "blocked_by_pid": 589751
+        },
+        {
+          "pid": 589751,
+          "transaction": 7505036,
+          "blocked_by_pid": 589360
+        }
+      ],
+      "has_signal_upsert": true,
+      "has_alert_delivery_update": true,
+      "has_f03_table_or_advisory_text": false,
+      "waiting_alert_row_ids": [
+        4170789
+      ]
+    },
+    {
+      "at": "2026-10-27T16:57:53.017284992Z",
+      "wait_edges": [
+        {
+          "pid": 591737,
+          "transaction": 7541032,
+          "blocked_by_pid": 597759
+        },
+        {
+          "pid": 597759,
+          "transaction": 7541039,
+          "blocked_by_pid": 591737
+        }
+      ],
+      "has_signal_upsert": true,
+      "has_alert_delivery_update": true,
+      "has_f03_table_or_advisory_text": false,
+      "waiting_alert_row_ids": [
+        4170964
+      ]
+    },
+    {
+      "at": "2026-10-27T18:12:55.433322659Z",
+      "wait_edges": [
+        {
+          "pid": 604681,
+          "transaction": 7572455,
+          "blocked_by_pid": 604876
+        },
+        {
+          "pid": 604876,
+          "transaction": 7572449,
+          "blocked_by_pid": 604681
+        }
+      ],
+      "has_signal_upsert": false,
+      "has_alert_delivery_update": true,
+      "has_f03_table_or_advisory_text": false,
+      "waiting_alert_row_ids": [
+        4172085
+      ]
+    },
+    {
+      "at": "2026-10-27T18:18:03.776086970Z",
+      "wait_edges": [
+        {
+          "pid": 604104,
+          "transaction": 7574534,
+          "blocked_by_pid": 605280
+        },
+        {
+          "pid": 605280,
+          "transaction": 7574549,
+          "blocked_by_pid": 604104
+        }
+      ],
+      "has_signal_upsert": true,
+      "has_alert_delivery_update": true,
+      "has_f03_table_or_advisory_text": false,
+      "waiting_alert_row_ids": [
+        4170980
+      ]
+    },
+    {
+      "at": "2026-10-27T18:48:51.998820867Z",
+      "wait_edges": [
+        {
+          "pid": 608013,
+          "transaction": 7586151,
+          "blocked_by_pid": 591737
+        },
+        {
+          "pid": 591737,
+          "transaction": 7586146,
+          "blocked_by_pid": 608013
+        }
+      ],
+      "has_signal_upsert": false,
+      "has_alert_delivery_update": true,
+      "has_f03_table_or_advisory_text": false,
+      "waiting_alert_row_ids": [
+        4170793
+      ]
+    }
+  ],
+  "waiting_row_metadata_at_read_time": [
+    {
+      "id": 4170829,
+      "stock_id": 27,
+      "horizon": "SWING",
+      "ts": "2026-10-27T20:41:48.836655"
+    },
+    {
+      "id": 4170789,
+      "stock_id": 70,
+      "horizon": "SWING",
+      "ts": "2026-10-27T20:38:30.465407"
+    },
+    {
+      "id": 4170793,
+      "stock_id": 71,
+      "horizon": "SWING",
+      "ts": "2026-10-27T20:39:36.264972"
+    },
+    {
+      "id": 4170964,
+      "stock_id": 99,
+      "horizon": "SHORT",
+      "ts": "2026-10-27T21:16:10.016678"
+    },
+    {
+      "id": 4170980,
+      "stock_id": 103,
+      "horizon": "SHORT",
+      "ts": "2026-10-27T21:19:29.913536"
+    },
+    {
+      "id": 4171205,
+      "stock_id": 161,
+      "horizon": "SWING",
+      "ts": "2026-10-27T21:42:02.078113"
+    },
+    {
+      "id": 4172085,
+      "stock_id": 221,
+      "horizon": "SWING",
+      "ts": "2026-10-27T22:01:08.594833"
+    }
+  ],
+  "limits": "Retained logs are not full-history coverage. Row metadata is read now; logs do not preserve the complete acquired-row sequence or every held row for each transaction."
+}
