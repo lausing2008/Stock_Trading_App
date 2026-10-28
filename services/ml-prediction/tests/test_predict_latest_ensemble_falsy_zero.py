@@ -50,6 +50,7 @@ def _extract_predict_latest_ensemble():
     namespace: dict = {
         "predict_latest": None,       # set per-test
         "_artifact_path": None,       # set per-test
+        "_serving_artifact_path": None,
         "_FakePath": _FakePath,
     }
     _exec_no_eligible_model(namespace)
@@ -69,6 +70,7 @@ def _make_ensemble(xgb_result: dict, rf_result: dict):
 
     fn.__globals__["predict_latest"] = _fake_predict_latest
     fn.__globals__["_artifact_path"] = _fake_artifact_path
+    fn.__globals__["_serving_artifact_path"] = _fake_artifact_path
     return fn
 
 

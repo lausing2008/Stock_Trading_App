@@ -37,6 +37,7 @@ def _ensemble(path, members):
 
     env = {"predict_latest": predict_latest,
            "_artifact_path": lambda s, model, style="SWING": types.SimpleNamespace(exists=lambda m=model: exists[m]),
+           "_serving_artifact_path": lambda s, model, style="SWING": types.SimpleNamespace(exists=lambda m=model: exists[m]),
            "log": types.SimpleNamespace(warning=lambda *a, **k: None),
            "_meta_blend_enabled": lambda: False, "_meta_shadow_enabled": lambda: False,
            "_MetaDisabled": _MetaDisabled, "_load_sector_and_market_cap": lambda s: (None, None)}

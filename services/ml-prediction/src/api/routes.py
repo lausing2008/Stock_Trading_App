@@ -25,6 +25,7 @@ class TrainRequest(BaseModel):
     model: str = "xgboost"
     horizon: int = 5
     style: str = "SWING"
+    protocol: str = "v1"
 
 
 class TuneRequest(BaseModel):
@@ -39,6 +40,36 @@ class PredictRequest(BaseModel):
     model: str = "xgboost"
     horizon: int = 5
     style: str = "SWING"  # route to per-style artifact; falls back to SWING if absent
+
+
+def _require_v1(protocol: str) -> str:
+    """F04 publication fencing at the API boundary. v2 training is not implemented, and while
+    the publication policy has v2 disabled (the default) no v2 job may even be queued. The
+    writer re-checks at write time regardless (training/publication.py)."""
+    if protocol == "v1":
+        return protocol
+    from common.config import get_settings as _gs
+    from ..training.publication import PolicyUnreadable, read_policy
+    try:
+        enabled = read_policy(_gs().model_dir)["v2_enabled"]
+    except PolicyUnreadable:
+        enabled = False
+    if not enabled:
+        raise HTTPException(409, f"protocol {protocol!r} refused: v2 publication is disabled")
+    raise HTTPException(501, f"protocol {protocol!r} training is not implemented")
+
+
+@router.get("/publication_policy")
+def publication_policy(_: str = Depends(require_model_admin)):
+    """Read-only view of the F04 publication policy (v2 switch, cohort, selections, epoch).
+    Changes are an operator CLI inside the container, deliberately not an HTTP endpoint."""
+    from common.config import get_settings as _gs
+    from ..training.publication import PolicyUnreadable, read_policy
+    try:
+        p = read_policy(_gs().model_dir)
+    except PolicyUnreadable as exc:
+        raise HTTPException(503, f"publication policy unreadable: {exc}")
+    return {k: p[k] for k in ("schema", "epoch", "v2_enabled", "cohort", "selections")} | {"log_tail": p.get("log", [])[-20:]}
 
 
 @router.get("/models")
@@ -73,16 +104,18 @@ def train(req: TrainRequest, tasks: BackgroundTasks, _: str = Depends(require_mo
     if req.model not in list_models():
         raise HTTPException(400, f"Unknown model: {req.model}")
     horizon = _HORIZON_BY_STYLE.get(req.style.upper(), req.horizon)
-    tasks.add_task(train_model, req.symbol, req.model, horizon, style=req.style)
+    protocol = _require_v1(req.protocol)
+    tasks.add_task(train_model, req.symbol, req.model, horizon, style=req.style, protocol=protocol)
     return {"status": "scheduled", "symbol": req.symbol, "model": req.model, "style": req.style, "horizon": horizon}
 
 
 @router.post("/train_all")
-def train_all(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(require_model_admin)):
+def train_all(tasks: BackgroundTasks, style: str = "SWING", protocol: str = "v1", _: str = Depends(require_model_admin)):
     """Schedule xgboost training for every active stock (uses tuned params if available).
 
     Horizon is derived from style: SHORT=5d, SWING=10d, LONG=20d.
     """
+    protocol = _require_v1(protocol)
     from sqlalchemy import or_, select
     from db import Stock, SessionLocal
 
@@ -107,7 +140,7 @@ def train_all(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(req
 
     horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
     for sym in symbols:
-        tasks.add_task(train_model, sym, "xgboost", horizon, style=style)
+        tasks.add_task(train_model, sym, "xgboost", horizon, style=style, protocol=protocol)
 
     return {"status": "scheduled", "count": len(symbols), "symbols": symbols, "style": style, "horizon": horizon}
 
@@ -329,11 +362,12 @@ def predict_ensemble_three(req: PredictRequest, _: str = Depends(get_current_use
 
 
 @router.post("/train_all_ensemble_three")
-def train_all_ensemble_three(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(require_model_admin)):
+def train_all_ensemble_three(tasks: BackgroundTasks, style: str = "SWING", protocol: str = "v1", _: str = Depends(require_model_admin)):
     """Train XGBoost + LightGBM + RandomForest for every active symbol.
 
     Enables 3-model ensemble predictions via POST /ml/predict_ensemble_three.
     """
+    protocol = _require_v1(protocol)
     from sqlalchemy import or_, select
     from db import Stock, SessionLocal
 
@@ -358,9 +392,9 @@ def train_all_ensemble_three(tasks: BackgroundTasks, style: str = "SWING", _: st
 
     horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
     for sym in symbols:
-        tasks.add_task(train_model, sym, "xgboost", horizon, style=style)
-        tasks.add_task(train_model, sym, "lightgbm", horizon, style=style)
-        tasks.add_task(train_model, sym, "random_forest", horizon, style=style)
+        tasks.add_task(train_model, sym, "xgboost", horizon, style=style, protocol=protocol)
+        tasks.add_task(train_model, sym, "lightgbm", horizon, style=style, protocol=protocol)
+        tasks.add_task(train_model, sym, "random_forest", horizon, style=style, protocol=protocol)
 
     return {
         "status": "scheduled",
@@ -373,12 +407,13 @@ def train_all_ensemble_three(tasks: BackgroundTasks, style: str = "SWING", _: st
 
 
 @router.post("/train_all_ensemble")
-def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(require_model_admin)):
+def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING", protocol: str = "v1", _: str = Depends(require_model_admin)):
     """Train XGBoost AND RandomForest for every active symbol.
 
     Enables ensemble predictions via POST /ml/predict_ensemble.
     Horizon is derived from style: SHORT=5d, SWING=10d, LONG=20d.
     """
+    protocol = _require_v1(protocol)
     from sqlalchemy import or_, select
     from db import Stock, SessionLocal
 
@@ -403,8 +438,8 @@ def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING", _: str = De
 
     horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
     for sym in symbols:
-        tasks.add_task(train_model, sym, "xgboost", horizon, style=style)
-        tasks.add_task(train_model, sym, "random_forest", horizon, style=style)
+        tasks.add_task(train_model, sym, "xgboost", horizon, style=style, protocol=protocol)
+        tasks.add_task(train_model, sym, "random_forest", horizon, style=style, protocol=protocol)
 
     return {
         "status": "scheduled",
@@ -417,13 +452,14 @@ def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING", _: str = De
 
 
 @router.post("/train_all_horizons")
-def train_all_horizons(tasks: BackgroundTasks, _: str = Depends(require_model_admin)):
+def train_all_horizons(tasks: BackgroundTasks, protocol: str = "v1", _: str = Depends(require_model_admin)):
     """Train XGBoost + RandomForest for all 4 horizon-specific styles for every active stock.
 
     T217-C: RF trained alongside XGBoost so predict_latest_ensemble_three() has
     all three models (XGB + LGB + RF) available. Signal engine auto-routes by style.
     Run nightly after market close.
     """
+    protocol = _require_v1(protocol)
     from sqlalchemy import or_, select
     from db import Stock, SessionLocal
 
@@ -475,8 +511,8 @@ def train_all_horizons(tasks: BackgroundTasks, _: str = Depends(require_model_ad
 
     for sym in ordered_symbols:
         for style, horizon in _HORIZON_BY_STYLE.items():
-            tasks.add_task(train_model, sym, "xgboost", horizon, style=style)
-            tasks.add_task(train_model, sym, "random_forest", horizon, style=style)
+            tasks.add_task(train_model, sym, "xgboost", horizon, style=style, protocol=protocol)
+            tasks.add_task(train_model, sym, "random_forest", horizon, style=style, protocol=protocol)
 
     scheduled = [{"style": s, "horizon": h} for s, h in _HORIZON_BY_STYLE.items()]
     return {
