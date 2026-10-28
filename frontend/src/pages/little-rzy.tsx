@@ -35,27 +35,36 @@ const TF_SCALE: { tf: string; role: string; pivot: string; armed: string; band: 
     cost: '0.011R', evidence: 'n=50, too few' },
 ];
 
-const svgText = 'fill-slate-300 text-[11px]';
-const svgMuted = 'fill-slate-500 text-[10px]';
+// This app has no Tailwind build: globals.css defines a fixed set of utility classes, and none of
+// the SVG fill/stroke/arbitrary-size ones. So every diagram colour and size is an inline attribute
+// (the hex values are the slate/teal/sky/amber/emerald/rose shades used elsewhere on the page).
+const C = {
+  text: '#cbd5e1', muted: '#64748b', arrow: '#94a3b8', bar: '#334155', box: '#1e293b', boxEdge: '#475569',
+  shaded: 'rgba(20,184,166,0.6)', teal: '#2dd4bf', tealLight: '#5eead4', sky: '#38bdf8',
+  amber: '#fcd34d', amberText: '#fde68a', green: '#34d399', greenText: '#6ee7b7', rose: '#fb7185', roseText: '#fda4af',
+  candleDown: '#64748b', candleUp: '#2dd4bf', price: '#cbd5e1', band: '#64748b',
+};
+const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+const svgStyle: React.CSSProperties = { display: 'block', width: '100%', minWidth: 560, maxWidth: 768, height: 'auto' };
+const txt = (size: number, fill: string, extra: React.SVGProps<SVGTextElement> = {}) => ({ fontSize: size, fill, ...extra });
 
 // One US regular session (390 min) drawn as bars of each timeframe; the first 7 bars (the pivot
 // confirmation wait) are shaded so the clock cost of the same rule is visible.
 function SessionScaleDiagram() {
   const x0 = 70, w = 520, rows: [string, number, string][] = [['1d', 390, '1 bar · 7-bar wait = 7 sessions →'], ['1h', 60, '7 bars · wait ≈ whole session'], ['15m', 15, '26 bars · wait = 1 h 45 min'], ['5m', 5, '78 bars · wait = 35 min']];
-  return <svg role="img" aria-label="One trading session divided into 1d, 1h, 15m and 5m bars, with the first seven bars shaded" viewBox="0 0 640 170" className="w-full min-w-[560px] max-w-3xl">
+  return <svg role="img" aria-label="One trading session divided into 1d, 1h, 15m and 5m bars, with the first seven bars shaded" viewBox="0 0 640 170" style={svgStyle}>
     {rows.map(([tf, m, note], r) => {
       const y = 8 + r * 38, n = Math.ceil(390 / m);
       return <g key={tf}>
-        <text x={x0 - 10} y={y + 12} textAnchor="end" className={`${svgText} font-mono`}>{tf}</text>
+        <text x={x0 - 10} y={y + 12} textAnchor="end" {...txt(11, C.text, { fontFamily: MONO })}>{tf}</text>
         {Array.from({ length: n }, (_, k) => {
           const bx = x0 + (k * m / 390) * w, bw = (Math.min(m, 390 - k * m) / 390) * w;
-          return <rect key={k} x={bx + 0.5} y={y} width={Math.max(bw - 1, 0.6)} height={16} rx={1}
-            className={k < 7 ? 'fill-teal-500/60' : 'fill-slate-700'} />;
+          return <rect key={k} x={bx + 0.5} y={y} width={Math.max(bw - 1, 0.6)} height={16} rx={1} fill={k < 7 ? C.shaded : C.bar} />;
         })}
-        <text x={x0} y={y + 29} className={svgMuted}>{note}</text>
+        <text x={x0} y={y + 29} {...txt(10, C.muted)}>{note}</text>
       </g>;
     })}
-    <text x={x0} y={166} className={svgMuted}>9:30 ET</text><text x={x0 + w} y={166} textAnchor="end" className={svgMuted}>16:00 ET</text>
+    <text x={x0} y={166} {...txt(10, C.muted)}>9:30 ET</text><text x={x0 + w} y={166} textAnchor="end" {...txt(10, C.muted)}>16:00 ET</text>
   </svg>;
 }
 
@@ -64,37 +73,37 @@ function SessionScaleDiagram() {
 function SetupDiagram() {
   const lineY = (x: number) => 260 - 0.1875 * (x - 60);
   const candle = (x: number, o: number, c: number, h: number, l: number, up: boolean) => <g>
-    <line x1={x} x2={x} y1={h} y2={l} className={up ? 'stroke-teal-300' : 'stroke-slate-400'} strokeWidth={1.5} />
-    <rect x={x - 6} y={Math.min(o, c)} width={12} height={Math.abs(c - o)} className={up ? 'fill-teal-400' : 'fill-slate-500'} />
+    <line x1={x} x2={x} y1={h} y2={l} stroke={up ? C.tealLight : C.arrow} strokeWidth={1.5} />
+    <rect x={x - 6} y={Math.min(o, c)} width={12} height={Math.abs(c - o)} fill={up ? C.candleUp : C.candleDown} />
   </g>;
-  const legend: [string, string, string][] = [['stroke-sky-400', '', 'line through A and C'], ['stroke-slate-500', '2 4', 'middle band'],
-    ['stroke-teal-300', '6 4', 'entry ref (trigger close)'], ['stroke-rose-400', '6 4', 'stop'], ['stroke-emerald-400', '6 4', 'target']];
-  return <svg role="img" aria-label="Long setup: pivots A, B and C, line through A and C, measured move D to the target, trigger candle on the line, stop below C" viewBox="0 0 640 312" className="w-full min-w-[560px] max-w-3xl">
-    <defs><marker id="rzy-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" className="fill-slate-400" /></marker></defs>
-    <path d="M40 252 Q200 196 300 211 T450 186 L600 168" fill="none" strokeDasharray="2 4" className="stroke-slate-500" />
-    <polyline points="30,245 60,260 95,228 130,212 165,170 200,150 235,178 270,196 300,215 330,196 355,190 372,193" fill="none" strokeWidth={2} className="stroke-slate-300" />
-    <line x1={60} y1={lineY(60)} x2={600} y2={lineY(600)} strokeWidth={1.5} className="stroke-sky-400" />
-    {([[60, 260, 'A', 56, 278], [200, 150, 'B', 196, 142], [300, 215, 'C', 282, 234]] as const).map(([x, y, t, tx, ty]) => <g key={t}>
-      <circle cx={x} cy={y} r={4} className="fill-amber-300" /><text x={tx} y={ty} className="fill-amber-200 text-[12px] font-semibold">{t}</text></g>)}
-    <line x1={200} y1={150} x2={200} y2={lineY(200)} strokeDasharray="3 3" className="stroke-amber-300" />
-    <text x={206} y={200} className="fill-amber-200 text-[11px]">D</text>
-    <line x1={200} y1={150} x2={200} y2={66} strokeDasharray="3 3" className="stroke-amber-300/60" />
-    <text x={206} y={112} className="fill-amber-200 text-[11px]">D again</text>
-    <line x1={190} y1={66} x2={600} y2={66} strokeDasharray="6 4" className="stroke-emerald-400" />
-    <text x={598} y={58} textAnchor="end" className="fill-emerald-300 text-[11px]">target = highest high + D</text>
+  const legend: [string, string, string][] = [[C.sky, '', 'line through A and C'], [C.band, '2 4', 'middle band'],
+    [C.tealLight, '6 4', 'entry ref (trigger close)'], [C.rose, '6 4', 'stop'], [C.green, '6 4', 'target']];
+  return <svg role="img" aria-label="Long setup: pivots A, B and C, line through A and C, measured move D to the target, trigger candle on the line, stop below C" viewBox="0 0 640 312" style={svgStyle}>
+    <defs><marker id="rzy-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill={C.arrow} /></marker></defs>
+    <path d="M40 252 Q200 196 300 211 T450 186 L600 168" fill="none" strokeDasharray="2 4" stroke={C.band} />
+    <polyline points="30,245 60,260 95,228 130,212 165,170 200,150 235,178 270,196 300,215 330,196 355,190 372,193" fill="none" strokeWidth={2} stroke={C.price} />
+    <line x1={60} y1={lineY(60)} x2={600} y2={lineY(600)} strokeWidth={1.5} stroke={C.sky} />
+    {([[60, 260, 'A', 56, 278], [200, 150, 'B', 196, 142], [300, 215, 'C', 282, 234]] as const).map(([x, y, label, tx, ty]) => <g key={label}>
+      <circle cx={x} cy={y} r={4} fill={C.amber} /><text x={tx} y={ty} {...txt(12, C.amberText, { fontWeight: 600 })}>{label}</text></g>)}
+    <line x1={200} y1={150} x2={200} y2={lineY(200)} strokeDasharray="3 3" stroke={C.amber} />
+    <text x={206} y={200} {...txt(11, C.amberText)}>D</text>
+    <line x1={200} y1={150} x2={200} y2={66} strokeDasharray="3 3" stroke={C.amber} strokeOpacity={0.6} />
+    <text x={206} y={112} {...txt(11, C.amberText)}>D again</text>
+    <line x1={190} y1={66} x2={600} y2={66} strokeDasharray="6 4" stroke={C.green} />
+    <text x={598} y={58} textAnchor="end" {...txt(11, C.greenText)}>target = highest high + D</text>
     {candle(382, 188, 196, 184, 202, false)}
     {candle(405, 193, 178, 175, 197, true)}
-    <line x1={405} y1={178} x2={600} y2={178} strokeDasharray="6 4" className="stroke-teal-300" />
-    <line x1={330} y1={228} x2={600} y2={228} strokeDasharray="6 4" className="stroke-rose-400" />
-    <text x={420} y={104} className={svgText}>trigger: a completed candle touches</text>
-    <text x={420} y={118} className={svgText}>the line, closes above it and above</text>
-    <text x={420} y={132} className={svgText}>the prior high; recheck R/R at next open</text>
-    <path d="M430 138 L410 168" className="stroke-slate-400" markerEnd="url(#rzy-arrow)" />
-    <text x={340} y={248} className="fill-rose-300 text-[10px]">stop: below C / trigger low / line, minus 0.25 ATR</text>
-    <text x={340} y={262} className="fill-rose-300 text-[10px]">any close below the line cancels the setup</text>
-    {legend.map(([cls, dash, label], k) => <g key={label} transform={`translate(${[10, 160, 255, 430, 490][k]} 296)`}>
-      <line x1={0} y1={-4} x2={18} y2={-4} strokeWidth={2} strokeDasharray={dash || undefined} className={cls} />
-      <text x={23} y={0} className={svgMuted}>{label}</text></g>)}
+    <line x1={405} y1={178} x2={600} y2={178} strokeDasharray="6 4" stroke={C.tealLight} />
+    <line x1={330} y1={228} x2={600} y2={228} strokeDasharray="6 4" stroke={C.rose} />
+    <text x={420} y={104} {...txt(11, C.text)}>trigger: a completed candle touches</text>
+    <text x={420} y={118} {...txt(11, C.text)}>the line, closes above it and above</text>
+    <text x={420} y={132} {...txt(11, C.text)}>the prior high; recheck R/R at next open</text>
+    <path d="M430 138 L410 168" stroke={C.arrow} markerEnd="url(#rzy-arrow)" />
+    <text x={340} y={248} {...txt(10, C.roseText)}>stop: below C / trigger low / line, minus 0.25 ATR</text>
+    <text x={340} y={262} {...txt(10, C.roseText)}>any close below the line cancels the setup</text>
+    {legend.map(([colour, dash, label], k) => <g key={label} transform={`translate(${[10, 160, 255, 430, 490][k]} 296)`}>
+      <line x1={0} y1={-4} x2={18} y2={-4} strokeWidth={2} strokeDasharray={dash || undefined} stroke={colour} />
+      <text x={23} y={0} {...txt(10, C.muted)}>{label}</text></g>)}
   </svg>;
 }
 
@@ -105,20 +114,20 @@ function TopDownDiagram() {
     ['15m', 'Setup', ['Armed A–B–C in that direction', 'R/R ≥ 1.5, C near mid band', 'Target = measured move D']],
     ['5m', 'Timing', ['Completed 5m candle on line', 'Closes in trend, no chase', 'Stop at the 15m structure']],
   ];
-  return <svg role="img" aria-label="Top-down order: daily and hourly direction, then 15 minute setup, then 5 minute timing; if they disagree, skip" viewBox="0 0 640 160" className="w-full min-w-[560px] max-w-3xl">
-    <defs><marker id="rzy-flow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L8 4 L0 8 z" className="fill-teal-400" /></marker></defs>
+  return <svg role="img" aria-label="Top-down order: daily and hourly direction, then 15 minute setup, then 5 minute timing; if they disagree, skip" viewBox="0 0 640 160" style={svgStyle}>
+    <defs><marker id="rzy-flow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill={C.teal} /></marker></defs>
     {boxes.map(([tf, role, lines], i) => {
       const x = 10 + i * 215;
       return <g key={tf}>
-        <rect x={x} y={10} width={190} height={100} rx={8} className="fill-slate-800 stroke-slate-600" />
-        <text x={x + 12} y={32} className="fill-teal-300 text-[13px] font-semibold">{role}</text>
-        <text x={x + 178} y={32} textAnchor="end" className={`${svgMuted} font-mono`}>{tf}</text>
-        {lines.map((l, k) => <text key={l} x={x + 12} y={58 + k * 20} className={svgText}>{l}</text>)}
-        {i < 2 && <line x1={x + 192} y1={60} x2={x + 213} y2={60} strokeWidth={2} className="stroke-teal-400" markerEnd="url(#rzy-flow)" />}
+        <rect x={x} y={10} width={190} height={100} rx={8} fill={C.box} stroke={C.boxEdge} />
+        <text x={x + 12} y={32} {...txt(13, C.tealLight, { fontWeight: 600 })}>{role}</text>
+        <text x={x + 178} y={32} textAnchor="end" {...txt(10, C.muted, { fontFamily: MONO })}>{tf}</text>
+        {lines.map((l, k) => <text key={l} x={x + 12} y={58 + k * 20} {...txt(11, C.text)}>{l}</text>)}
+        {i < 2 && <line x1={x + 192} y1={60} x2={x + 213} y2={60} strokeWidth={2} stroke={C.teal} markerEnd="url(#rzy-flow)" />}
       </g>;
     })}
-    <path d="M320 112 L320 132" fill="none" className="stroke-rose-400" strokeDasharray="4 3" />
-    <text x={320} y={150} textAnchor="middle" className="fill-rose-300 text-[11px]">if the timeframes disagree: skip, or treat it as a reversal watch only</text>
+    <path d="M320 112 L320 132" fill="none" stroke={C.rose} strokeDasharray="4 3" />
+    <text x={320} y={150} textAnchor="middle" {...txt(11, C.roseText)}>if the timeframes disagree: skip, or treat it as a reversal watch only</text>
   </svg>;
 }
 
@@ -132,7 +141,7 @@ function TimeframeGuide() {
         <tbody>{TF_SCALE.map(r => <tr key={r.tf} className="border-t border-slate-800"><td className={`${td} font-mono text-slate-200`}>{r.tf}</td><td className={`${td} text-slate-300`}>{r.role}</td>
           {[r.pivot, r.armed, r.band, r.cost, r.evidence].map((v, k) => <td key={k} className={`${td} text-slate-300`}>{v}</td>)}</tr>)}</tbody>
       </table></div>
-      <figure className="space-y-1 overflow-x-auto">
+      <figure className="overflow-x-auto" style={{ margin: 0 }}>
         <SessionScaleDiagram />
         <figcaption className="text-xs text-slate-500">One US session in bars of each timeframe. Shaded: the 7 bars a pivot needs before it is confirmed. The same rule waits 35 minutes on 5m and a whole session on 1h.</figcaption>
       </figure>
@@ -142,12 +151,12 @@ function TimeframeGuide() {
         <li><b className="text-slate-200">15m is the middle ground.</b> It is where costs are smallest relative to risk among the intraday streams, which is why the evaluation suggested testing it first.</li>
         <li><b className="text-slate-200">Targets are rarely reached.</b> Planned targets average about 3R, but the median trade lasted 4 bars and most exits were a close back through the line. On 5m that is 20 minutes; on 1h it is most of a session.</li>
       </ul>
-      <figure className="space-y-1 overflow-x-auto">
+      <figure className="overflow-x-auto" style={{ margin: 0 }}>
         <SetupDiagram />
         <figcaption className="text-xs text-slate-500">What every timeframe looks for (long case; a short is the mirror image). Schematic, not real prices. B is the highest high between A and C; D is its distance above the A–C line, projected again to set the target. Here the planned reward/risk is about 2.2.</figcaption>
       </figure>
       <h3 className="font-semibold text-slate-100">Using them together to choose an entry</h3>
-      <figure className="space-y-1 overflow-x-auto">
+      <figure className="overflow-x-auto" style={{ margin: 0 }}>
         <TopDownDiagram />
         <figcaption className="text-xs text-slate-500">Read from the top down. Each step only narrows the previous one; none of it is automated.</figcaption>
       </figure>
