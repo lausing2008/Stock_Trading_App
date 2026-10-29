@@ -6,14 +6,14 @@ import WatchlistPickerButton from '@/components/WatchlistPickerButton';
 import { classificationLabel, selectValuationRows, valuationCsv,
   type ValuationFilter, type ValuationMetric, type ValuationRow } from '@/lib/valuationReport';
 
-const panel: React.CSSProperties = { background: '#111827', border: '1px solid #253047', borderRadius: 12, padding: 20 };
+const panel: React.CSSProperties = { background: '#111827', border: '1px solid #253047', borderRadius: 12, padding: 20, minWidth: 0 };
 const control: React.CSSProperties = { background: '#0b1220', color: '#e2e8f0', border: '1px solid #334155',
   borderRadius: 7, padding: '8px 12px', fontSize: 13 };
 const muted: React.CSSProperties = { color: '#94a3b8', fontSize: 12, lineHeight: 1.7 };
 const labels: [ValuationFilter, string][] = [['all', 'All companies'], ['undervalued', 'Undervalued research'],
   ['overvalued', 'Overvalued'], ['analyst_risk', 'Analyst risk flags'], ['qualified', 'Qualified opportunities']];
 const columns = [['symbol', 'Company'], ['price', 'Price'], ['fair_value', 'Model value'],
-  ['discount_pct', 'Discount %'], ['forward_pe', 'Fwd P/E'], ['peg', 'PEG*'], ['rsi', 'RSI (14)']];
+  ['discount_pct', 'Discount %'], ['trailing_pe', 'P/E (TTM)'], ['peg', 'PEG*'], ['rsi', 'RSI (14)']];
 
 function num(value: number | null | undefined, digits = 1) {
   return value == null ? '—' : value.toLocaleString(undefined, { maximumFractionDigits: digits });
@@ -26,12 +26,13 @@ function Metric({ metric, money = false }: { metric?: ValuationMetric; money?: b
   return <span title={metric?.reason || undefined} style={{ color: state === 'OK' ? '#e2e8f0' : '#fbbf24' }}>
     {metric?.value == null ? '—' : `${money ? '$' : ''}${num(metric.value, money ? 2 : 1)}`}
     {state === 'STALE' && <small> stale</small>}
-    {metric?.value == null && <span className="sr-only"> {metric?.reason || 'Unavailable'}</span>}
+    {metric?.value == null && <span style={{ position: 'absolute', width: 1, height: 1, padding: 0,
+      overflow: 'hidden', clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', border: 0 }}> {metric?.reason || 'Unavailable'}</span>}
   </span>;
 }
 
 function CompanyDetail({ row }: { row: ValuationRow }) {
-  return <div style={{ padding: '18px 10px', fontSize: 13, lineHeight: 1.7 }}>
+  return <div style={{ padding: '18px 10px', fontSize: 13, lineHeight: 1.7, maxWidth: 'calc(100vw - 112px)' }}>
     <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
       <strong>{row.name}</strong>
       {row.tracked && <><Link href={`/stock/${encodeURIComponent(row.symbol)}`} style={{ color: '#a5b4fc' }}>Stock research ↗</Link>
@@ -77,6 +78,7 @@ function CompanyDetail({ row }: { row: ValuationRow }) {
         <p>Upside to model value: <Metric metric={row.metrics.upside_pct} />%. Discount: <Metric metric={row.metrics.discount_pct} />%.</p>
         <p style={muted}>A price of $80 against $100 value is a 20% discount and 25% upside.</p>
         <p>Trailing P/E: <Metric metric={row.metrics.trailing_pe} /> · Industry median: {num(row.peer_pe.median)} ({row.peer_pe.count} peers)</p>
+        <p>Forward P/E: <Metric metric={row.metrics.forward_pe} /></p>
         <p style={muted}>{row.peer_pe.note}</p>
         {row.eps_note && <p style={muted}>{row.eps_note}</p>}
       </div>
@@ -154,7 +156,7 @@ export default function ValuationReportTab({ market }: { market: 'US' | 'HK' }) 
     link.click(); URL.revokeObjectURL(url);
   }
   if (!enabled) return <div style={panel}>Valuation &amp; Opportunities currently covers US-listed companies. Select US to view the report.</div>;
-  return <div style={{ display: 'grid', gap: 18 }}>
+  return <div style={{ display: 'grid', gap: 18, minWidth: 0 }}>
     <section style={{ ...panel, background: 'linear-gradient(120deg, #17213b, #111827)' }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 16 }}>
         <div><p style={{ ...muted, color: '#a5b4fc', margin: '0 0 5px', letterSpacing: 1 }}>US EQUITY RESEARCH</p>

@@ -110,6 +110,12 @@ def test_stale_inputs_and_unknown_quality_cannot_qualify():
     assert any("Quality" in b for b in row["blockers"])
 
 
+def test_failed_input_collection_is_not_attributed_to_a_successful_provider():
+    row = V.build_row({"symbol": "MISSING", "info": {}, "bars": [], "annuals": []}, "2026-10-27", NOW)
+    assert row["provider"] == "Unavailable"
+    assert row["classification"] == "insufficient_evidence"
+
+
 def test_analyst_flags_remain_independent_of_valuation_and_aggregate_is_undated():
     row = V.build_row(source(), "2026-10-27", NOW)
     assert any(r["kind"] == "analyst" for r in row["risk_flags"])

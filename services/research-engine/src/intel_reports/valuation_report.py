@@ -243,7 +243,7 @@ def build_row(raw, session_day, now, quality=None):
     if finite(info.get("profitMargins")) is not None:
         thesis.append(f"Reported profit margin: {info['profitMargins'] * 100:.1f}%")
     return {"symbol": raw["symbol"], "name": raw.get("name") or raw["symbol"],
-            "provider": raw.get("provider") or "Yahoo", "eps_note": raw.get("eps_note"),
+            "provider": raw.get("provider") or ("Yahoo" if raw.get("fetched_at") else "Unavailable"), "eps_note": raw.get("eps_note"),
             "listing_basis": raw.get("listing_basis"),
             "sector": raw.get("sector") or "Unknown", "industry": raw.get("industry"),
             "currency": raw.get("currency"), "country": raw.get("country"),
@@ -303,7 +303,7 @@ def build_report(inputs, *, now, quality=None, previous=None):
     ids = []
     for raw in inputs["rows"]:
         ids.append(book.add(Evidence(
-            evidence_id=f"valuation:{raw['symbol']}", source=raw.get("source_url") or "Yahoo unavailable",
+            evidence_id=f"valuation:{raw['symbol']}", source=raw.get("source_url") or "Company inputs unavailable",
             value=raw, retrieved_at=(datetime.fromisoformat(raw["fetched_at"]) if raw.get("fetched_at") else None),
             observed_period=inputs["price_session"],
             note="Frozen provider inputs and optional cached UW short-interest data; issuer publication dates not verified")))

@@ -848,12 +848,12 @@ export default function ReportsPage() {
   return (
     <div style={{ minHeight: '100vh', background: '#0a0a0a', color: '#f9fafb', fontFamily: 'system-ui, sans-serif' }}>
       <div style={{ background: '#111827', borderBottom: '1px solid #1f2937', padding: '0 24px' }}>
-        <div style={{ maxWidth: 1400, margin: '0 auto', display: 'flex', alignItems: 'center', gap: 24, height: 56 }}>
+        <div style={{ maxWidth: 1400, margin: '0 auto', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, minHeight: 56, padding: '10px 0' }}>
           <button onClick={() => router.push('/')} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', fontSize: 13 }}>
             ← Back
           </button>
           <h1 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Reports</h1>
-          <span style={{ color: '#6b7280', fontSize: 13 }}>Trend · Assets · Top Stocks · Money Flow · Who to Follow · Big Funds · Self-Tuning</span>
+          <span style={{ color: '#6b7280', fontSize: 13 }}>Market research</span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
             {(['US', 'HK'] as Market[]).map(m => (
               <button
@@ -880,7 +880,7 @@ export default function ReportsPage() {
               key={t.key}
               onClick={() => { setTab(t.key); router.replace({ pathname: '/reports', query: { tab: t.key } }, undefined, { shallow: true }); }}
               style={{
-                background: 'none', border: 'none', cursor: 'pointer', padding: '12px 16px', fontSize: 13, fontWeight: 500,
+                background: 'none', border: 'none', cursor: 'pointer', padding: '12px 16px', fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap', flexShrink: 0,
                 color: tab === t.key ? '#f9fafb' : '#6b7280',
                 borderBottom: tab === t.key ? '2px solid #6d28d9' : '2px solid transparent',
               }}
