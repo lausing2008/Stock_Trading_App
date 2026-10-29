@@ -489,3 +489,5 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **2026-10-25 RZY reliability:** [scan cost, latency/readiness, durable simulator journal and forward metrics](../docs/2026-10-25/rzy-reliability-and-forward-journal.md); research only, 457/458 and execution/edge gates remain open.
 
 - **2026-10-25 RZY ingestion:** [session counters, observed post-close writes and protected evidence capture](../docs/2026-10-25/rzy-ingest-observations-and-session-evidence.md); incremental loading and trading acceptance remain open.
+
+- **`docs/audits/2026-10-28-f04-fencing-s03-independent-review.md`** — Fencing held: resweep race, selection identity/integrity and rollback gaps; S0-3 source passes review, replay counts qualified. Offline witnesses; no deployment.

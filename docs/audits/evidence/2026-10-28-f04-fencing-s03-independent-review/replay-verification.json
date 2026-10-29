@@ -1,0 +1,24 @@
+{
+  "hash_checks": {
+    "old.jsonl": true,
+    "control.jsonl": true,
+    "new.jsonl": true,
+    "old-meta.json": true,
+    "control-meta.json": true,
+    "new-meta.json": true,
+    "compare.json": true,
+    "old.jsonl.gz": true,
+    "control.jsonl.gz": true,
+    "new.jsonl.gz": true,
+    "replay.py": true
+  },
+  "rows": {
+    "old": 792,
+    "control": 792,
+    "new": 792
+  },
+  "control_mismatches": [],
+  "payload_changed": 69,
+  "decision_output_changed": 54,
+  "metadata_only": 15
+}

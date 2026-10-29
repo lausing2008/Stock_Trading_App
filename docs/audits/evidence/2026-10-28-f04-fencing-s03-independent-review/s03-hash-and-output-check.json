@@ -1,0 +1,90 @@
+{
+  "hash_checks": {
+    "old.jsonl": true,
+    "control.jsonl": true,
+    "new.jsonl": true,
+    "old-meta.json": true,
+    "control-meta.json": true,
+    "new-meta.json": true,
+    "compare.json": true,
+    "old.jsonl.gz": true,
+    "control.jsonl.gz": true,
+    "new.jsonl.gz": true,
+    "replay.py": true
+  },
+  "row_counts": {
+    "old": 792,
+    "control": 792,
+    "new": 792
+  },
+  "control_mismatches": [],
+  "changed_cells": 69,
+  "signal_transitions": [
+    {
+      "symbol": "1347.HK",
+      "horizon": "SWING",
+      "old": "SELL",
+      "new": "WAIT"
+    },
+    {
+      "symbol": "AAPL",
+      "horizon": "SWING",
+      "old": "BUY",
+      "new": "HOLD"
+    },
+    {
+      "symbol": "ANET",
+      "horizon": "GROWTH",
+      "old": "WAIT",
+      "new": "HOLD"
+    },
+    {
+      "symbol": "CORT",
+      "horizon": "GROWTH",
+      "old": "SELL",
+      "new": "WAIT"
+    },
+    {
+      "symbol": "CRWD",
+      "horizon": "GROWTH",
+      "old": "HOLD",
+      "new": "BUY"
+    },
+    {
+      "symbol": "GLD",
+      "horizon": "LONG",
+      "old": "SELL",
+      "new": "WAIT"
+    },
+    {
+      "symbol": "GRNT",
+      "horizon": "GROWTH",
+      "old": "BUY",
+      "new": "HOLD"
+    },
+    {
+      "symbol": "IONQ",
+      "horizon": "GROWTH",
+      "old": "WAIT",
+      "new": "SELL"
+    },
+    {
+      "symbol": "OSCR",
+      "horizon": "GROWTH",
+      "old": "HOLD",
+      "new": "BUY"
+    },
+    {
+      "symbol": "VZ",
+      "horizon": "GROWTH",
+      "old": "WAIT",
+      "new": "HOLD"
+    },
+    {
+      "symbol": "WMT",
+      "horizon": "LONG",
+      "old": "BUY",
+      "new": "HOLD"
+    }
+  ]
+}

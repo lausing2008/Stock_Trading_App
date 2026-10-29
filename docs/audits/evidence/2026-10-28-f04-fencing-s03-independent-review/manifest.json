@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-28 America/Los_Angeles",
+  "review_base": "047b674f",
+  "branch_fencing": "c9e023a033574665cb1e9fcadb90724f9ce3e3e4",
+  "branch_s03": "a9f21607c73bf70c220c61e2119ef76f1fe2f42e",
+  "combined_worktree": "/tmp/stockai-f04-review-20261028",
+  "local_image_ids": {
+    "ml-prediction": "f9ff13606a52",
+    "signal-engine": "018c2a76f74a"
+  },
+  "combined_source_sha256": {
+    "services/ml-prediction/src/training/publication.py": "3f181dbeb02ee99540121c0d519efa2c9e77b7bbe911f0a991285280569fa850",
+    "services/ml-prediction/src/training/trainer.py": "c7c0aa9e92cb1de66e3171765338da584dfd037e8fb9e20f4e0a1faa2e15c9df",
+    "services/ml-prediction/src/api/routes.py": "e07cdcb216e6e4946763ac314b42ca434408d6dfcb1898d00d6757565234e9be",
+    "services/market-data/src/services/scheduler.py": "8b3cebf555b30fdac4a645ae99006310dc5ad463c687b7502ef2c9f138114c4f",
+    "services/ml-prediction/tests/test_f04_publication_nightly_path_container.py": "2b616cd50cd5e3b60abca055e958e2239acc26ae72bfdf04f8ffca55c2090ac3",
+    "services/signal-engine/src/api/calibration.py": "807a12c703f733bb4191307109fc65e7ab2a7a8708415f3f60c84756bd4a0f15",
+    "services/signal-engine/src/api/calibration_safety.py": "500b59069bdbeb7bfc46f86ea7ac83552eb7b0fea0aa805de4e2e9d13618085a"
+  },
+  "evidence_sha256": {
+    "container-results.txt": "8e9bd58fae086f1f48979f585c3534eb4b260259759cddab671868811d3994fe",
+    "f12-results.txt": "044a15a432861186a5bf20e66c6108cee481aaa8d499b39f798e5ccd2832dc8e",
+    "replay-verification.json": "26c4ac37919995e25829b150aa30eea31b45445e1cffd312d31ec1b983828e1a",
+    "s03-hash-and-output-check.json": "e903956c3eb26645e3ba1cca92f7c1a1b6590c476595746852892e5e000fe79d",
+    "test_review_witnesses.py": "83950c92a482cab25d2f8c9b493962cec6e25988fb413d5ed528297dc38b4906",
+    "verify_f12_registered.py": "fc7c245717d79db8c81a13e45189b7f8c7120c75e30d0339544931a81588fa5a",
+    "verify_replay.py": "2c330919a64e237aeaf40adc43dec1cbc566fd7dbc35b4977ebcdeb9e9f5c27d"
+  },
+  "note": "Witness tests assert defects exist; source fixes and prod merges/deployments were not performed.",
+  "log_normalization": "Container log trailing whitespace removed before hashing; test output otherwise preserved."
+}
