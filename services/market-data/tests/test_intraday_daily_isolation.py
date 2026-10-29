@@ -69,3 +69,16 @@ def test_watchlist_curation_skips_a_non_daily_style_code_presence():
     first = loop.body[0]
     assert isinstance(first, ast.If) and "_is_daily_horizon(style)" in ast.unparse(first.test)
     assert any(isinstance(s, ast.Continue) for s in first.body)
+
+
+def test_intraday_router_registers_before_the_stocks_catch_all_code_presence():
+    """Review follow-up: /stocks/intraday/* shares the gateway's `stocks` prefix with data_router's
+    `/stocks/{symbol}...` routes; FastAPI matches in registration order, so it must come first.
+    (Live gateway auth and routing are verified at deploy, not here.)"""
+    main = (Path(__file__).resolve().parents[1] / "src" / "main.py").read_text()
+    call = next(n for n in ast.walk(ast.parse(main)) if isinstance(n, ast.Call)
+                and getattr(n.func, "id", None) == "create_app")
+    routers = [e.id for kw in call.keywords if kw.arg == "routers" for e in kw.value.elts]
+    assert routers.index("intraday_router") < routers.index("data_router")
+    api = (Path(__file__).resolve().parents[1] / "src" / "api" / "intraday.py").read_text()
+    assert 'prefix="/stocks/intraday"' in api and "Depends(get_admin_user)" in api

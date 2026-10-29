@@ -131,6 +131,9 @@ inputs = Table(
     Column("bar_open", DateTime, nullable=False),
     Column("source", String(16), nullable=False),
     Column("bar_values", JSON, nullable=False),
+    #: contract.EVIDENCE_VERSION payload: raw and transformed hashed fields, provider identity and
+    #: basis, ordered derived constituents -- every hash below recomputes from this alone (IC-03)
+    Column("evidence", JSON, nullable=False),
     Column("raw_hash", String(64)),
     Column("source_hash", String(64)),
     Column("input_hash", String(64), nullable=False),
@@ -151,6 +154,7 @@ inputs = Table(
                     name="ck_intraday_input_availability"),
     CheckConstraint("readable_at <= input_read_at", name="ck_intraday_input_read_after_readable"),
     CheckConstraint(_in("read_clock_basis", ("observed", "replay_logical")), name="ck_intraday_input_read_clock"),
+    CheckConstraint("(run_key = 'observed') = (read_clock_basis = 'observed')", name="ck_intraday_input_clock_mode"),
 )
 
 transitions = Table(
@@ -164,6 +168,9 @@ transitions = Table(
     Column("evidence_eligible_at", DateTime),
     Column("evidence_observed_at", DateTime),
     Column("decided_at", DateTime, nullable=False),
+    #: when the research event happened (a fill's bar open, a cancellation's effect); decided_at
+    #: is when it was decided/recorded. effective_at <= decided_at; both never go backwards (IC-02)
+    Column("effective_at", DateTime, nullable=False),
     Column("clock_basis", String(16), nullable=False),
     Column("reason", String(40)),
     Column("evidence", JSON),
@@ -175,6 +182,11 @@ transitions = Table(
     CheckConstraint(_in("to_state", STATES), name="ck_intraday_transition_state"),
     CheckConstraint(_in("clock_basis", ("observed", "replay_logical")), name="ck_intraday_transition_clock"),
     CheckConstraint("(seq = 1) = (from_state IS NULL)", name="ck_intraday_transition_first"),
+    CheckConstraint("(run_key = 'observed') = (clock_basis = 'observed')", name="ck_intraday_transition_clock_mode"),
+    CheckConstraint("effective_at <= decided_at", name="ck_intraday_transition_effective_before_decided"),
+    CheckConstraint("clock_basis <> 'observed' OR ((evidence_eligible_at IS NULL OR evidence_observed_at IS NULL "
+                    "OR evidence_eligible_at <= evidence_observed_at) AND (evidence_observed_at IS NULL "
+                    "OR evidence_observed_at <= decided_at))", name="ck_intraday_transition_observed_order"),
 )
 Index("uq_intraday_one_session_terminal", transitions.c.setup_id, unique=True,
       postgresql_where=text(_in("to_state", SESSION_TERMINAL)), sqlite_where=text(_in("to_state", SESSION_TERMINAL)))

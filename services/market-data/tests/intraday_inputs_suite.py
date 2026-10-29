@@ -205,3 +205,52 @@ def test_postgresql_refuses_intraday_in_every_daily_horizon_column(engine):
             "JOIN pg_namespace n ON n.oid = t.typnamespace "
             "WHERE t.typname = 'signalhorizon' AND n.nspname = current_schema() ORDER BY e.enumsortorder")).scalars().all()
     assert labels == ["SHORT", "SWING", "LONG", "GROWTH"]
+
+
+@pytest.mark.parametrize("adjusted", [False, True])
+def test_stored_inputs_recompute_every_hash_after_the_sources_change_or_vanish(engine, adjusted):
+    """Review IC-03 acceptance: store a real snapshot (raw or adjusted basis, one unknown source,
+    derived 15m), drop the in-memory records, revise and delete the source price/provenance rows,
+    then recompute all four hashes solely from the persisted Intraday evidence."""
+    from sqlalchemy import select
+    from src.services.intraday import models as im, schema, store
+    if adjusted:
+        _exec(engine, "UPDATE prices SET adj_close = close * 0.5")
+    _core(engine, PV.delete().where(PV.c.ts == OPEN + timedelta(minutes=5)))        # one unknown source
+    s = snap(engine)
+    times = c.session_times("US", D)
+    trig = datetime(2026, 10, 28, 14, 25, tzinfo=UTC)
+    o = OPEN.replace(tzinfo=UTC)                                                   # the reader's times are aware
+    picked = [r for r in s.bars_5m if r.bar_open in (o, o + timedelta(minutes=5), trig)] + s.bars_15m[:1]
+    for r in picked:
+        r.role = "trigger" if r.bar_open == trig else ("context" if r.timeframe == "15m" else "lookback")
+    with engine.begin() as conn:
+        schema.create(conn)
+        ident = store.ensure_identity(conn, strategy_version="1", strategy_source_hash="s" * 64, params=c.Params())
+        b = store.start_batch(conn, run_key="observed", identity=ident, code_version="x", started_at=CUTOFF,
+                              data_cutoff=CUTOFF)
+        det = c.decide_at_detection(trigger_bar_open=trig, detected_at=CUTOFF + timedelta(seconds=3),
+                                    direction="bullish", times=times, stop_breached=False, inputs_ok=True)
+        store.record_evaluation(conn, batch_id=b, run_key="observed", identity=ident, stock_id=1, symbol="TEST",
+                                trigger_bar_open=trig, result="setup", detected_at=CUTOFF + timedelta(seconds=3),
+                                data_cutoff=CUTOFF, input_records=picked, detection=det, times=times,
+                                setup=dict(direction="bullish", entry_reference=111.0, stop=110.0, target=113.0,
+                                           risk_per_share=1.0, reasons={}))
+    del s, picked
+    _exec(engine, "UPDATE prices SET close = close + 7, volume = 1")                 # every source revised...
+    _core(engine, PV.delete())                                                      # ...and its provenance gone
+    _exec(engine, "DELETE FROM prices WHERE id <= 3")                                # some rows gone entirely
+    with engine.connect() as conn:
+        stored = conn.execute(select(im.inputs)).all()
+    assert len(stored) == 4 and {r.source for r in stored} == {"native", "derived_from_5m"}
+    for row in stored:
+        recomputed = c.hashes_from_evidence(row.evidence)
+        assert recomputed == {"raw_hash": row.raw_hash, "source_hash": row.source_hash,
+                              "input_hash": row.input_hash, "derived_hash": row.derived_hash}, row.role
+    providers = {row.evidence.get("provider") for row in stored if row.source == "native"}
+    assert "unknown" in providers and "unusual_whales" in providers
+    derived = next(row for row in stored if row.source == "derived_from_5m")
+    assert len(derived.evidence["constituents"]) == 3
+    if adjusted:
+        native = next(row for row in stored if row.source == "native")
+        assert native.evidence["raw"]["close"] != native.evidence["transformed"]["close"]   # raw prices kept

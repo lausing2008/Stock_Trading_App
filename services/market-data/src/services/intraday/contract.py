@@ -191,18 +191,22 @@ def first_grid_open_at_or_after(at: datetime, times: SessionTimes):
 
 PRE_ACTIONABLE_TERMINAL = ("expired_before_detection", "no_fill_opportunity",
                            "cancelled_before_actionable", "research_only_unsupported_direction")
+#: Entered, but the session ended without a recorded exit (`unresolved_exit_at_close`), or the
+#: holding path has an unobserved interval in which an exit could have happened unseen
+#: (`path_indeterminate`, review IC-04). Both are open research exposure: session-terminal,
+#: not final, and listed until explicitly reconciled.
+OPEN_EXPOSURE = ("unresolved_exit_at_close", "path_indeterminate")
 SESSION_TERMINAL = PRE_ACTIONABLE_TERMINAL + (
-    "expired", "cancelled", "rejected_invalid_bracket_at_fill", "exited", "unresolved_exit_at_close",
-    "chronology_ambiguous")
-FINAL = tuple(s for s in SESSION_TERMINAL if s != "unresolved_exit_at_close") + ("reconciled",)
+    "expired", "cancelled", "rejected_invalid_bracket_at_fill", "exited", "chronology_ambiguous") + OPEN_EXPOSURE
+FINAL = tuple(s for s in SESSION_TERMINAL if s not in OPEN_EXPOSURE) + ("reconciled",)
 STATES = ("detected", "actionable", "entered") + SESSION_TERMINAL + ("reconciled",)
 LEGAL_PAIRS = frozenset(
     [(None, "detected")]
     + [("detected", s) for s in ("actionable",) + PRE_ACTIONABLE_TERMINAL + ("chronology_ambiguous",)]
     + [("actionable", s) for s in ("entered", "expired", "cancelled", "rejected_invalid_bracket_at_fill",
                                    "chronology_ambiguous")]
-    + [("entered", "exited"), ("entered", "unresolved_exit_at_close"),
-       ("unresolved_exit_at_close", "reconciled")])
+    + [("entered", "exited"), ("entered", "unresolved_exit_at_close"), ("entered", "path_indeterminate"),
+       ("unresolved_exit_at_close", "reconciled"), ("path_indeterminate", "reconciled")])
 CANCEL_REASONS = ("invalidated_price", "input_revised", "data_unavailable", "session_end")
 RESULTS = ("setup", "no_setup", "wait", "data_unavailable", "unsupported_market", "calendar_coverage_expired")
 
@@ -282,10 +286,14 @@ def effective_time(ev: EventTimes, params: Params = Params()):
 
 def cancellation_vs_entry(cancel_effective, entry_open) -> str:
     """'cancelled' when the cancellation took effect before the entry bar opened, 'entered'
-    when it did not, 'chronology_ambiguous' when either time is unknown. Never guessed."""
+    when it took effect after, 'chronology_ambiguous' when either time is unknown or the two
+    coincide (which happened first at that instant is not knowable). Never guessed."""
     if cancel_effective is None or entry_open is None:
         return "chronology_ambiguous"
-    return "cancelled" if utc(cancel_effective) < utc(entry_open) else "entered"
+    ce, eo = utc(cancel_effective), utc(entry_open)
+    if ce == eo:
+        return "chronology_ambiguous"
+    return "cancelled" if ce < eo else "entered"
 
 
 # ── Invariants (design §5) ────────────────────────────────────────────────────────────────
@@ -318,7 +326,47 @@ class InputRecord:
     readable_at: datetime
     input_read_at: datetime
     read_clock_basis: str = "observed"         # observed | replay_logical
+    evidence: dict = field(default_factory=dict)   # EVIDENCE_VERSION payload: recomputes every hash
     first_available_at: datetime | None = None
     availability_basis: str = "unknown_exact_version"
     provider_published_at: datetime | None = None
     extra: dict = field(default_factory=dict)
+
+
+# ── Input evidence (review IC-03) ─────────────────────────────────────────────────────────
+
+EVIDENCE_VERSION = 1
+RAW_FIELDS = ("stock_id", "symbol", "timeframe", "bar_open", "open", "high", "low", "close", "adj_close",
+              "volume", "session")
+TRANSFORMED_FIELDS = ("timeframe", "bar_open", "open", "high", "low", "close", "volume", "price_basis",
+                      "price_basis_reason")
+
+
+def bar_evidence(raw: dict, provider: str | None, provider_basis: str, transformed: dict) -> dict:
+    """The persisted, versioned evidence of one native input: everything its hashes cover, in
+    canonical form (timestamps as canonical strings), so they can be recomputed from storage."""
+    return {"version": EVIDENCE_VERSION,
+            "raw": {k: _norm(raw[k]) for k in RAW_FIELDS},
+            "provider": provider or "unknown", "provider_basis": provider_basis,
+            "transformed": {k: _norm(transformed[k]) for k in TRANSFORMED_FIELDS}}
+
+
+def derived_evidence(transformed: dict, constituents: list[dict]) -> dict:
+    """A derived bar's evidence: its transformed values plus the ORDERED constituents' full
+    native evidence, so the constituent source hashes need no other table."""
+    return {"version": EVIDENCE_VERSION, "transformed": {k: _norm(transformed[k]) for k in TRANSFORMED_FIELDS},
+            "constituents": list(constituents)}
+
+
+def hashes_from_evidence(ev: dict) -> dict:
+    """Recompute every hash a stored input advertises, solely from its evidence payload."""
+    if ev.get("version") != EVIDENCE_VERSION:
+        raise ContractViolation(f"unknown evidence version {ev.get('version')!r}")
+    ih = input_hash(**ev["transformed"])
+    if "constituents" in ev:
+        members = [hashes_from_evidence(m) for m in ev["constituents"]]
+        return {"raw_hash": None, "source_hash": None, "input_hash": ih,
+                "derived_hash": derived_hash(ih, [h["source_hash"] for h in members])}
+    rh = raw_hash(**ev["raw"])
+    return {"raw_hash": rh, "source_hash": source_hash(rh, None if ev["provider"] == "unknown" else ev["provider"]),
+            "input_hash": ih, "derived_hash": None}

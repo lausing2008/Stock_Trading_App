@@ -109,11 +109,18 @@ def coverage(conn, run_key, identity, session_date):
 def list_identities(conn, *, market, mode, run_key, session_date: date):
     require_intraday_market(market)
     rk = run_scope(mode, run_key)
-    rows = conn.execute(select(evaluations.c.identity_hash, func.count()).where(
-        evaluations.c.run_key == rk, evaluations.c.session_date == session_date)
-        .group_by(evaluations.c.identity_hash).order_by(evaluations.c.identity_hash)).all()
+    # Live rows AND archived counts: after retention an identity's non-setup rows exist only as
+    # counts, and it must not disappear from discovery (review follow-up).
+    found = {h: dict(_identity_row(conn, h), evaluations=n) for h, n in conn.execute(
+        select(evaluations.c.identity_hash, func.count()).where(
+            evaluations.c.run_key == rk, evaluations.c.session_date == session_date)
+        .group_by(evaluations.c.identity_hash)).all()}
+    for h, n in conn.execute(select(evaluation_counts.c.identity_hash, func.sum(evaluation_counts.c.count)).where(
+            evaluation_counts.c.run_key == rk, evaluation_counts.c.session_date == session_date)
+            .group_by(evaluation_counts.c.identity_hash)).all():
+        found[h] = dict(_identity_row(conn, h), evaluations=int(n))       # archive is the full count
     return _envelope(run_key=rk, record_mode=mode, session=session_date.isoformat(),
-                     identities=[dict(_identity_row(conn, h), evaluations=n) for h, n in rows])
+                     identities=[found[h] for h in sorted(found)])
 
 
 def _page(conn, *, table, key_cols, where, cursor, limit, row_fn):
@@ -190,12 +197,12 @@ def list_unresolved(conn, *, market, mode, run_key, cursor=None, limit=None):
     require_intraday_market(market)
     rk = run_scope(mode, run_key)
     latest_q = _latest_state_subq()
-    ids = select(latest_q.c.setup_id).where(latest_q.c.to_state == "unresolved_exit_at_close")
+    ids = select(latest_q.c.setup_id).where(latest_q.c.to_state.in_(c.OPEN_EXPOSURE))
     keys = [setups.c.session_date, setups.c.trigger_bar_open, setups.c.occurrence_key]
-    latest = {}
+    latest = dict(conn.execute(select(latest_q.c.setup_id, latest_q.c.to_state)).all())
     items, nxt = _page(conn, table=setups, key_cols=keys, where=[setups.c.run_key == rk, setups.c.id.in_(ids)],
                        cursor=cursor, limit=limit,
-                       row_fn=lambda r: dict(_setup_row(conn, r, latest), state="unresolved_exit_at_close"))
+                       row_fn=lambda r: _setup_row(conn, r, latest))
     return _envelope(run_key=rk, record_mode=mode, items=items, next_cursor=nxt,
                      note="open research exposure: a mark is not realized P&L; reconciliation is explicit")
 

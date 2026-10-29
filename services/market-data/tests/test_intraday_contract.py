@@ -251,17 +251,67 @@ def test_liquidation_uses_the_scheduled_deadline_open():
     assert r.entry_fill_at == at(19, 20) and (r.exit_reason, r.exit_at) == ("liquidation", at(19, 50))
 
 
-def test_late_liquidation_fills_at_the_next_observed_open_before_close():
+def test_a_missing_liquidation_bar_is_indeterminate_not_a_later_fill():
+    """IC-04: the liquidation order was working during the missing 19:50 bar; it may have filled
+    there at an unknown price, so the next observed open is not a confirmed fill."""
     bs = bars(at(13, 30), 78, skip={at(19, 50)})
     r = sim(bs, actionable=at(19, 17), expires=at(19, 30))
-    assert (r.exit_reason, r.exit_at) == ("liquidation", at(19, 55)) and r.unobserved_intervals == 1
+    assert r.state == "path_indeterminate" and r.first_unobserved_at == at(19, 50)
+    assert r.exit_price is None and r.r_multiple is None and r.mark == 100.0 and r.mark_at == at(19, 50)
 
 
-def test_no_observation_before_close_is_unresolved_and_never_a_closing_fill():
+def test_no_observation_before_close_is_never_a_closing_fill():
     bs = bars(at(13, 30), 78, skip={at(19, 50), at(19, 55)})
     r = sim(bs, actionable=at(19, 17), expires=at(19, 30))
-    assert r.state == "unresolved_exit_at_close"
-    assert r.exit_price is None and r.r_multiple is None and r.mark == 100.0 and r.mark_at == at(19, 50)
+    assert r.state == "path_indeterminate" and r.unobserved_intervals == 2
+    assert r.exit_price is None and r.r_multiple is None and r.net_return is None
+
+
+@pytest.mark.parametrize("winner", [True, False])
+def test_a_missing_holding_bar_never_yields_a_confirmed_outcome(winner):
+    """IC-04 acceptance: drop one holding bar from an otherwise winning and an otherwise losing
+    path; neither stays a confirmed result. The complete-data control keeps its result."""
+    bs = bars(at(14, 0), 40)
+    late = f.Bar(at(14, 20), 101.0, 102.5, 100.5, 102.0) if winner else f.Bar(at(14, 20), 99.5, 99.6, 98.0, 98.5)
+    bs[4] = late
+    control = sim(bs)
+    assert control.state == "exited" and control.exit_reason == ("target" if winner else "stop")
+    gapped = sim([b for b in bs if b.open_at != at(14, 15)])
+    assert gapped.state == "path_indeterminate" and gapped.r_multiple is None and gapped.exit_reason is None
+    assert gapped.first_unobserved_at == at(14, 15)
+
+
+def test_excursions_exclude_the_exit_bar_s_unordered_extremes():
+    """IC-05 witness: entry 100, stop 99, target 102, entry bar high 200 / low 98. The stop-first
+    exit at 99 is known; the 200 and 98 may come after it, so they are bounds, not MAE/MFE."""
+    bs = bars(at(14, 0), 40)
+    bs[2] = f.Bar(at(14, 10), 100.0, 200.0, 98.0, 100.0)
+    r = sim(bs)
+    assert (r.exit_reason, r.exit_price) == ("stop", 99.0)
+    assert r.mae == pytest.approx(-0.01) and r.mfe == pytest.approx(0.0)
+    assert r.exit_bar_bounds == {"low": 98.0, "high": 200.0}
+
+
+@pytest.mark.parametrize("exit_bar,widen_low", [
+    (f.Bar(at(14, 20), 101.0, 102.5, 100.5, 102.0), False),   # target-only: only a higher high is post-exit-possible
+    (f.Bar(at(14, 20), 100.0, 103.0, 98.5, 100.0), True),     # double touch -> stop; both extremes unordered
+    (f.Bar(at(14, 20), 98.0, 98.2, 97.5, 98.0), True),        # gap through the stop at the open
+])
+def test_changing_only_an_exit_bar_s_post_exit_extreme_does_not_move_excursions(exit_bar, widen_low):
+    """Widen only extremes that cannot change the modelled exit; the exact excursions stay put."""
+    bs = bars(at(14, 0), 40)
+    bs[4] = exit_bar
+    base = sim(bs)
+    wider = list(bs)
+    wider[4] = f.Bar(exit_bar.open_at, exit_bar.open, exit_bar.high + 50,
+                     exit_bar.low - 50 if widen_low else exit_bar.low, exit_bar.close)
+    moved = sim(wider)
+    assert (moved.exit_reason, moved.exit_price) == (base.exit_reason, base.exit_price)
+    assert (moved.mae, moved.mfe) == (base.mae, base.mfe)
+
+
+def test_cancellation_exactly_at_the_entry_open_is_ambiguous():
+    assert c.cancellation_vs_entry(at(14, 10), at(14, 10)) == "chronology_ambiguous"
 
 
 def test_competing_timed_and_stop_exits_follow_one_precedence():

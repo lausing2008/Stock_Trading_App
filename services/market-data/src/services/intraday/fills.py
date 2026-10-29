@@ -5,6 +5,12 @@ open of the first bar that opens strictly after the order was active; resting br
 adjudicated on completed OHLC from the entry bar onward with the stop winning a double touch;
 scheduled exits may use an open equal to their scheduled time because they were ready earlier.
 No closing fill is ever invented.
+
+Unobserved intervals (review IC-04): once a bar is missing while the position is held, a stop,
+target or scheduled fill could have happened unseen, so the path is `path_indeterminate` from
+that point -- never a confirmed exit or return. Excursions (IC-05): MAE/MFE are measured over
+the fill, fully held bars and the exit price only; an exit bar's extremes are reported as
+unordered bounds, because whether they came before or after the modelled exit is unknown.
 """
 from __future__ import annotations
 
@@ -28,8 +34,8 @@ class Bar:
 
 @dataclass
 class TradeResult:
-    state: str                    # entered->exited | unresolved_exit_at_close | expired | cancelled |
-                                  # rejected_invalid_bracket_at_fill | chronology_ambiguous
+    state: str                    # exited | unresolved_exit_at_close | path_indeterminate | expired |
+                                  # cancelled | rejected_invalid_bracket_at_fill | chronology_ambiguous
     reason: str | None = None
     entry_fill_at: datetime | None = None
     entry_fill_price: float | None = None
@@ -37,6 +43,8 @@ class TradeResult:
     exit_price: float | None = None
     exit_reason: str | None = None            # stop | target | max_hold | liquidation
     exit_intrabar_time: str | None = None     # 'unknown' for bracket fills inside a bar
+    exit_bar_bounds: dict | None = None       # {'low','high'} of the exit bar: order vs the exit unknown
+    first_unobserved_at: datetime | None = None
     r_multiple: float | None = None
     net_return: float | None = None
     mae: float | None = None
@@ -101,49 +109,59 @@ def simulate_long(*, entry_reference: float, stop: float, target: float, actiona
     scheduled_reason = "max_hold" if time_exit is not None and time_exit < times.liquidation_at else "liquidation"
 
     res = TradeResult("entered", entry_fill_at=entry_open, entry_fill_price=fill)
-    lo, hi = fill, fill
+    lo, hi = fill, fill                         # known excursions: fill, fully held bars, exit price
     t = entry_open
     last_seen = None
     while t < times.close:
         b = by_open.get(t)
+        if b is None:
+            # A held interval with no bar: an exit may have happened unseen. Not a confirmed path.
+            res.state = "path_indeterminate"
+            res.first_unobserved_at = t
+            res.unobserved_intervals = sum(1 for u in _grid(t, times) if u not in by_open)
+            _mark(res, last_seen, times, lo, hi, fill)
+            return res
         if t >= scheduled:
             # Scheduled order, ready since entry: fills at this open, before anything inside it.
-            # A missing bar is no executable observation: the order stays working and fills at
-            # the next observed open before the close, or not at all.
-            if b is None:
-                res.unobserved_intervals += 1
-                t += timedelta(minutes=5)
-                continue
             reason = "liquidation" if t >= times.liquidation_at else scheduled_reason
-            return _exit(res, t, b.open * (1 - slip), reason, None, risk, fill, lo, hi, params)
-        if b is None:
-            res.unobserved_intervals += 1          # a stop may have fired unseen: flagged, not assumed
-            t += timedelta(minutes=5)
-            continue
-        last_seen = b
+            return _exit(res, t, b.open * (1 - slip), reason, None, risk, fill, lo, hi, params, None)
         if t != entry_open and b.open <= stop:
-            return _exit(res, t, b.open * (1 - slip), "stop", None, risk, fill, min(lo, b.open), hi, params)
+            return _exit(res, t, b.open * (1 - slip), "stop", None, risk, fill, lo, hi, params, None)
+        bounds = {"low": b.low, "high": b.high}
         if b.low <= stop:                       # double touch: the stop wins
-            return _exit(res, t, stop * (1 - slip), "stop", "unknown", risk, fill, min(lo, b.low), max(hi, b.high), params)
+            return _exit(res, t, stop * (1 - slip), "stop", "unknown", risk, fill, lo, hi, params, bounds)
         if b.high > target:                     # a limit fills only if traded through
-            return _exit(res, t, target, "target", "unknown", risk, fill, lo, max(hi, b.high), params)
-        lo, hi = min(lo, b.low), max(hi, b.high)
+            return _exit(res, t, target, "target", "unknown", risk, fill, lo, hi, params, bounds)
+        lo, hi = min(lo, b.low), max(hi, b.high)   # fully held: its whole range is known exposure
+        last_seen = b
         t += timedelta(minutes=5)
-    # No executable observation for the liquidation order before the close: never invent a fill.
-    res.state = "unresolved_exit_at_close"
+    # Unreachable in this model: a fully observed session always reaches the liquidation open, and
+    # any missing bar returned path_indeterminate above. Refuse rather than invent an outcome.
+    raise ContractViolation("holding loop ended without an exit or an unobserved interval")
+
+
+def _grid(start, times):
+    t = start
+    while t < times.close:
+        yield t
+        t += timedelta(minutes=5)
+
+
+def _mark(res, last_seen, times, lo, hi, fill):
     if last_seen is not None:
         res.mark = last_seen.close
         res.mark_at = bar_close(last_seen.open_at, "5m", times)
     res.mae, res.mfe = (lo - fill) / fill, (hi - fill) / fill
-    return res
 
 
-def _exit(res, at, price, reason, intrabar, risk, fill, lo, hi, params):
+def _exit(res, at, price, reason, intrabar, risk, fill, lo, hi, params, bounds):
     res.state = "exited"
     res.exit_at, res.exit_price, res.exit_reason, res.exit_intrabar_time = at, price, reason, intrabar
+    res.exit_bar_bounds = bounds
     net = price - fill - _cost(fill, params) - _cost(price, params)
     res.r_multiple = net / risk
     res.net_return = net / fill
+    lo, hi = min(lo, price), max(hi, price)
     res.mae, res.mfe = (lo - fill) / fill, (hi - fill) / fill
     return res
 

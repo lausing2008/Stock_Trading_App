@@ -27,25 +27,48 @@ _PG_FUNCTIONS = [
     # Append validation: serialise on the setup row, then require the next seq from the latest
     # state. The pair CHECK and the partial unique indexes stay as independent backstops.
     """CREATE OR REPLACE FUNCTION intraday_validate_append() RETURNS trigger LANGUAGE plpgsql AS $$
-       DECLARE last_seq integer; last_state text;
+       DECLARE last_seq integer; last_state text; last_eff timestamp; last_dec timestamp; s record;
        BEGIN
-         PERFORM 1 FROM intraday_setups WHERE id = NEW.setup_id FOR UPDATE;
+         SELECT detected_at, actionable_at, entry_expires_at INTO s FROM intraday_setups
+           WHERE id = NEW.setup_id FOR UPDATE;
          IF NOT FOUND THEN RAISE EXCEPTION 'intraday_append: setup % does not exist', NEW.setup_id; END IF;
-         SELECT seq, to_state INTO last_seq, last_state FROM intraday_setup_transitions
-           WHERE setup_id = NEW.setup_id ORDER BY seq DESC LIMIT 1;
+         SELECT seq, to_state, effective_at, decided_at INTO last_seq, last_state, last_eff, last_dec
+           FROM intraday_setup_transitions WHERE setup_id = NEW.setup_id ORDER BY seq DESC LIMIT 1;
          IF last_seq IS NULL THEN
-           IF NOT (NEW.seq = 1 AND NEW.from_state IS NULL AND NEW.to_state = 'detected') THEN
-             RAISE EXCEPTION 'intraday_append: first transition must be seq 1 NULL->detected';
+           IF NOT (NEW.seq = 1 AND NEW.from_state IS NULL AND NEW.to_state = 'detected'
+                   AND NEW.effective_at = s.detected_at) THEN
+             RAISE EXCEPTION 'intraday_append: first transition must be seq 1 NULL->detected at detection';
            END IF;
          ELSIF NOT (NEW.seq = last_seq + 1 AND NEW.from_state IS NOT DISTINCT FROM last_state) THEN
            RAISE EXCEPTION 'intraday_append: expected seq % from %, got seq % from %',
              last_seq + 1, last_state, NEW.seq, NEW.from_state;
+         ELSIF NEW.effective_at < last_eff OR NEW.decided_at < last_dec THEN
+           RAISE EXCEPTION 'intraday_append: chronology goes backwards (effective % < %, or decided % < %)',
+             NEW.effective_at, last_eff, NEW.decided_at, last_dec;
+         ELSIF NEW.to_state = 'entered' AND NOT (s.actionable_at IS NOT NULL AND NEW.effective_at > s.actionable_at
+                                                AND NEW.effective_at < s.entry_expires_at) THEN
+           RAISE EXCEPTION 'intraday_append: entry fill % outside (actionable %, expiry %)',
+             NEW.effective_at, s.actionable_at, s.entry_expires_at;
          END IF;
          RETURN NEW;
+       END $$""",
+    # One transaction-scoped lock per (run, identity, session), taken by every insert of an
+    # evaluation/setup AND by the sealer and the archiver (review IC-01). An insert in flight makes
+    # the sealer wait for it; an insert behind a committed seal sees the seal after the lock.
+    # Requires READ COMMITTED so the post-lock check reads a fresh snapshot.
+    """CREATE OR REPLACE FUNCTION intraday_session_lock(rk text, ih text, sd date) RETURNS void
+       LANGUAGE plpgsql AS $$
+       BEGIN
+         IF current_setting('transaction_isolation') <> 'read committed' THEN
+           RAISE EXCEPTION 'intraday_session_lock: requires READ COMMITTED, got %',
+             current_setting('transaction_isolation');
+         END IF;
+         PERFORM pg_advisory_xact_lock(hashtextextended('intraday|' || rk || '|' || ih || '|' || sd::text, 0));
        END $$""",
     # Membership closes at the seal: no evaluation or setup for a sealed (run, identity, session).
     """CREATE OR REPLACE FUNCTION intraday_refuse_sealed() RETURNS trigger LANGUAGE plpgsql AS $$
        BEGIN
+         PERFORM intraday_session_lock(NEW.run_key, NEW.identity_hash, NEW.session_date);
          IF EXISTS (SELECT 1 FROM intraday_session_seals s WHERE s.run_key = NEW.run_key
                     AND s.identity_hash = NEW.identity_hash AND s.session_date = NEW.session_date) THEN
            RAISE EXCEPTION 'intraday_sealed: % % % is sealed', NEW.run_key, NEW.identity_hash, NEW.session_date;

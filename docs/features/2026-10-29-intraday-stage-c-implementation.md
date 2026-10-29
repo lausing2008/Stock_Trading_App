@@ -1,7 +1,8 @@
 # Intraday Stage C — implementation record
 
-Date: **2026-10-29**. Branch: `intraday-contracts`. Status: **built and tested; not deployed;
-no generator**. Production generation is disabled (`INTRADAY_PRODUCTION_ENABLED = False`, a
+Date: **2026-10-29**. Branch: `intraday-contracts`. Status: **built, reviewed, review findings
+IC-01..IC-05 fixed (see [Implementation review remediation](#implementation-review-remediation));
+not deployed; no generator**. Production generation is disabled (`INTRADAY_PRODUCTION_ENABLED = False`, a
 code constant). Implements the [contract design](2026-10-29-intraday-stage-c-contract-design.md)
 (revision 3), after the [inventory](2026-10-29-intraday-stage-c-inventory.md) and two review
 rounds ([review](../audits/2026-10-29-intraday-stage-c-design-review.md), CDR-01..06 and
@@ -127,6 +128,42 @@ defence-in-depth code is present; they are not independent data guards.
     `fastapi`. It now uses the `HTTPException` class the routes raise.
   - The enum witness counted rows across all schemas of the shared `schemaprobe` database. It is
     now scoped to `current_schema()`.
+
+## Implementation review remediation
+
+The [implementation review](../audits/2026-10-29-intraday-stage-c-implementation-review.md) of
+`e4cf9903` found five defects that the passing suites had not exercised. All are fixed, each with
+a behavioural regression that runs through the real writer and, where it matters, direct SQL.
+
+| Finding | Fix | Regression |
+|---|---|---|
+| **IC-01** A committed seal did not freeze membership | A SQL function `intraday_session_lock(run, identity, session)` takes a transaction-scoped advisory lock. The evaluation/setup insert trigger, `seal_session` and `archive_session` all take it, and the trigger re-checks the seal after acquiring it. Inserts must run in READ COMMITTED, so that re-check reads a fresh snapshot; otherwise they are refused. | PostgreSQL, threaded. (1) An in-flight insert: the sealer is observed **blocked** on the advisory lock (`pg_locks`), then includes the committed row, and nothing joins afterwards. (2) An insert behind an open seal is observed blocked, then refused. (3) An insert outside READ COMMITTED is refused. The archive counts include the in-flight row. |
+| **IC-02** Observed records accepted replay clocks and backwards chronology | The clock basis is derived from the run and enforced by CHECKs on both transitions and inputs. A new `effective_at` column holds the research event time (a fill's open, a scheduled exit's open), separate from `decided_at` (decision/recording time), with `effective_at <= decided_at`. The append trigger requires the first transition at detection, neither time going backwards, and an `entered` fill strictly inside (actionable, expiry). The observed eligible ≤ observed ≤ decided order is a CHECK. The writer mirrors all of it, so it fails before SQL. | The writer refuses cross-mode inputs and events and a pre-detection observed entry. Direct SQL refuses a cross-mode event, a cross-mode input, effective after decided, a backwards or pre-detection entry, and a fill outside the window. A scheduled exit recorded later keeps its 16:10 fill time with a 16:18 decision time. |
+| **IC-03** Stored hashes could not be recomputed | Every input persists a versioned `evidence` payload: raw hashed fields, transformed fields with the basis **reason**, provider identity and basis, and for derived bars the **ordered constituents' full evidence**. The reader computes every hash *from* that payload, and the writer refuses an input whose stated hashes do not recompute from its evidence, before any insert. | On SQLite and PostgreSQL, raw and adjusted: store a real snapshot (one unknown source, derived 15m), drop the in-memory records, revise every price, delete all provenance and some price rows, then recompute all four hashes from the stored evidence alone. Equal. Raw prices survive the adjusted basis. Tampered evidence is refused with nothing written. |
+| **IC-04** A missing holding bar could still yield a confirmed return | The first unobserved holding interval makes the path `path_indeterminate`: a new session-terminal, **non-final** open-exposure state. It carries no exit, R or return, only a labelled mark and `first_unobserved_at`. It is listed by `/unresolved` with `unresolved_exit_at_close`, reconcilable, and never deleted. A missing liquidation bar is also indeterminate: the working order may have filled unseen. | Remove one holding bar from an otherwise winning and an otherwise losing path: neither stays confirmed, and the complete-data controls keep their results. |
+| **IC-05** MAE/MFE included unordered exit-bar extremes | Excursions cover the fill, fully held bars and the exit price only. The exit bar's low/high go in `exit_bar_bounds` (order relative to the exit unknown). A scheduled or gap exit at an open excludes that bar's range. | The reviewer's case (entry 100, stop 99, bar 200/98) now gives MAE −1%, MFE 0%, bounds {98, 200}. Widening only post-exit-possible extremes of a target-only, a double-touch and a gap-stop bar leaves the exit and excursions unchanged. |
+
+**Follow-ups from the review, also done:**
+- **Concurrent identical retry:** idempotency is re-checked under the setup lock. Two racing
+  appends with one key give one created row, and both return seq 3 (PostgreSQL, threaded).
+- **`/identities`:** includes identities known only from archived counts.
+- **Router order:** the Intraday router is registered before `data_router`'s `/stocks/{symbol}`
+  routes, and is admin-gated (code-presence witness). Live gateway routing and auth are a deploy
+  check, not claimed here.
+- **Retention:** `archive_session`, `purge_inputs` and `delete_setup` take no age argument. The
+  **caller** owns the 35- and 400-day policy, and the scheduled entry point that applies it ships
+  with, and is tested in, the shadow-generator release, before any producer writes.
+  `delete_setup` refuses any setup whose latest state is not final, which covers open exposure.
+- **Exact tie:** a cancellation taking effect exactly at the entry open is `chronology_ambiguous`
+  rather than "entered".
+- **Count:** the earlier record listed 23 storage tests; that commit collected 22. Current counts
+  are below.
+
+**The reviewer's own witnesses against the fixed code:**
+- `fill_witness.py` now reports `path_indeterminate` (no R), MAE −1%/MFE 0%, and an ambiguous tie.
+- `review_witness.py` now **blocks** at its seal step: in its single thread an uncommitted insert
+  holds the session lock, so the sealer waits, which is the fixed behaviour. It was stopped by
+  timeout. Its later clock and backdating steps are covered by the regressions above.
 
 ## Not done here
 

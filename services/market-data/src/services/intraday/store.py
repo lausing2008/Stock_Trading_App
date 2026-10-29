@@ -32,8 +32,21 @@ def _insert(conn, table):
     return insert(table)
 
 
+def _basis_for(run_key):
+    """The only clock basis a record of this run may carry (review IC-02)."""
+    return "observed" if run_key == c.OBSERVED_RUN else "replay_logical"
+
+
+def _session_lock(conn, run_key, identity, session_date):
+    """The lock every evaluation/setup insert takes in its trigger (review IC-01)."""
+    if conn.dialect.name == "postgresql":
+        conn.execute(text("SELECT intraday_session_lock(:rk, :ih, :sd)"),
+                     {"rk": run_key, "ih": identity, "sd": session_date})
+
+
 def _lock_setup(conn, setup_id):
-    q = select(setups.c.id, setups.c.run_key).where(setups.c.id == setup_id)
+    q = select(setups.c.id, setups.c.run_key, setups.c.detected_at, setups.c.actionable_at,
+               setups.c.entry_expires_at).where(setups.c.id == setup_id)
     if conn.dialect.name == "postgresql":
         q = q.with_for_update()
     row = conn.execute(q).first()
@@ -91,6 +104,22 @@ def record_evaluation(conn, *, batch_id: str, run_key: str, identity: str, stock
         raise c.ContractViolation(f"unknown result {result!r}")
     if (result == "setup") != (setup is not None):
         raise c.ContractViolation("a setup is written exactly when result == 'setup'")
+    # Every check that can refuse runs BEFORE the first insert: nothing half-written.
+    basis = _basis_for(run_key)
+    for i in input_records or []:
+        if i.read_clock_basis != basis:
+            raise c.ContractViolation(f"input read clock {i.read_clock_basis} in a {basis} run")
+        stated = {"raw_hash": i.raw_hash, "source_hash": i.source_hash, "input_hash": i.input_hash,
+                  "derived_hash": i.derived_hash}
+        if c.hashes_from_evidence(i.evidence) != stated:
+            raise c.ContractViolation("input hashes do not recompute from its evidence")
+    if setup is not None:
+        if detection is None or times is None:
+            raise c.ContractViolation("a setup needs its detection decision and session times")
+        c.check_setup_invariants(detected_at=detected_at, actionable_at=detection.actionable_at,
+                                 entry_expires_at=detection.entry_expires_at, times=times,
+                                 inputs=[dict(readable_at=i.readable_at, input_read_at=i.input_read_at)
+                                         for i in (input_records or [])])
     tbo = c.utc(trigger_bar_open)
     ekey = c.evaluation_key(run_key=run_key, identity=identity, stock_id=stock_id, trigger_bar_open=tbo)
     sdate = c.session_date_of(tbo)
@@ -108,12 +137,6 @@ def record_evaluation(conn, *, batch_id: str, run_key: str, identity: str, stock
     if setup is None:
         return {"evaluation_id": new_id, "setup_id": None, "created": True}
 
-    if detection is None or times is None:
-        raise c.ContractViolation("a setup needs its detection decision and session times")
-    c.check_setup_invariants(detected_at=detected_at, actionable_at=detection.actionable_at,
-                             entry_expires_at=detection.entry_expires_at, times=times,
-                             inputs=[dict(readable_at=i.readable_at, input_read_at=i.input_read_at)
-                                     for i in (input_records or [])])
     direction = setup["direction"]
     okey = c.occurrence_key(run_key=run_key, identity=identity, symbol=symbol, trigger_bar_open=tbo,
                             direction=direction)
@@ -129,48 +152,68 @@ def record_evaluation(conn, *, batch_id: str, run_key: str, identity: str, stock
     for i in input_records or []:
         conn.execute(inputs.insert().values(
             setup_id=sid, run_key=run_key, role=i.role, timeframe=i.timeframe, bar_open=_naive(i.bar_open),
-            source=i.source, bar_values=i.values, raw_hash=i.raw_hash, source_hash=i.source_hash,
+            source=i.source, bar_values=i.values, evidence=i.evidence, raw_hash=i.raw_hash, source_hash=i.source_hash,
             input_hash=i.input_hash, derived_hash=i.derived_hash, readable_at=_naive(i.readable_at),
             input_read_at=_naive(i.input_read_at), read_clock_basis=i.read_clock_basis,
             first_available_at=_naive(i.first_available_at),
             availability_basis=i.availability_basis, provider_published_at=_naive(i.provider_published_at)))
-    basis = "observed" if run_key == c.OBSERVED_RUN else "replay_logical"
     conn.execute(transitions.insert().values(
         setup_id=sid, run_key=run_key, seq=1, from_state=None, to_state="detected", decided_at=_naive(detected_at),
-        clock_basis=basis, idempotency_key=c.sha(["t", okey, 1])))
+        effective_at=_naive(detected_at), clock_basis=basis, idempotency_key=c.sha(["t", okey, 1])))
     conn.execute(transitions.insert().values(
         setup_id=sid, run_key=run_key, seq=2, from_state="detected", to_state=detection.state,
-        reason=detection.reason, decided_at=_naive(detected_at), clock_basis=basis,
-        idempotency_key=c.sha(["t", okey, 2])))
+        reason=detection.reason, decided_at=_naive(detected_at), effective_at=_naive(detected_at),
+        clock_basis=basis, idempotency_key=c.sha(["t", okey, 2])))
     return {"evaluation_id": new_id, "setup_id": sid, "created": True}
 
 
 # ── Transitions ───────────────────────────────────────────────────────────────────────────
 
 def append_transition(conn, *, setup_id: int, to_state: str, event: c.EventTimes, reason: str | None = None,
-                      evidence: dict | None = None, idempotency_key: str) -> dict:
+                      evidence: dict | None = None, idempotency_key: str, effective_at=None) -> dict:
     """Append one state change after locking the setup. A repeat of the same idempotency key is
-    a no-op that returns the stored row."""
-    done = conn.execute(select(transitions).where(transitions.c.idempotency_key == idempotency_key)).first()
-    if done is not None:
-        return {"seq": done.seq, "created": False}
+    a no-op that returns the stored row (checked again under the lock, so a concurrent identical
+    retry returns the stored row rather than hitting the unique key).
+
+    `effective_at` is when the research event happened (an entry fill's bar open, a scheduled
+    exit's open); it defaults to `decided_at` for a decision. It may precede `decided_at` (a fill
+    recorded later) but never the previous transition's, and neither time may go backwards. The
+    clock basis must be the run's own: observed runs observe, replays use the logical clock."""
+    def _done():
+        row = conn.execute(select(transitions.c.seq).where(transitions.c.idempotency_key == idempotency_key)).first()
+        return None if row is None else {"seq": row.seq, "created": False}
+    if (d := _done()) is not None:
+        return d
     setup = _lock_setup(conn, setup_id)
+    if (d := _done()) is not None:
+        return d
+    if event.clock_basis != _basis_for(setup.run_key):
+        raise c.ContractViolation(f"{event.clock_basis} clock on a {_basis_for(setup.run_key)} record")
+    if event.decided_at is None:
+        raise c.ContractViolation("a transition needs its decided_at")
     if event.clock_basis == "observed":
         c.effective_time(event)            # validates eligible <= observed <= decided
-    latest = conn.execute(select(transitions.c.seq, transitions.c.to_state)
+    eff = c.utc(effective_at) if effective_at is not None else c.utc(event.decided_at)
+    if eff > c.utc(event.decided_at):
+        raise c.ContractViolation("an event cannot take effect after it was decided/recorded")
+    latest = conn.execute(select(transitions.c.seq, transitions.c.to_state, transitions.c.effective_at,
+                                 transitions.c.decided_at)
                           .where(transitions.c.setup_id == setup_id)
                           .order_by(transitions.c.seq.desc()).limit(1)).first()
     latest_t = (latest.seq, latest.to_state) if latest else None
     seq = (latest.seq + 1) if latest else 1
     from_state = latest.to_state if latest else None
     c.check_append(latest_t, seq, from_state, to_state)
-    if event.decided_at is None:
-        raise c.ContractViolation("a transition needs its decided_at")
+    if latest is not None and (eff < c.utc(latest.effective_at) or c.utc(event.decided_at) < c.utc(latest.decided_at)):
+        raise c.ContractViolation("transition chronology goes backwards")
+    if to_state == "entered" and not (setup.actionable_at is not None
+                                      and c.utc(setup.actionable_at) < eff < c.utc(setup.entry_expires_at)):
+        raise c.ContractViolation("entry fill outside (actionable_at, entry_expires_at)")
     conn.execute(transitions.insert().values(
         setup_id=setup_id, run_key=setup.run_key, seq=seq, from_state=from_state, to_state=to_state,
         evidence_eligible_at=_naive(event.eligible_at), evidence_observed_at=_naive(event.observed_at),
-        decided_at=_naive(event.decided_at), clock_basis=event.clock_basis, reason=reason, evidence=evidence,
-        idempotency_key=idempotency_key))
+        decided_at=_naive(event.decided_at), effective_at=_naive(eff), clock_basis=event.clock_basis,
+        reason=reason, evidence=evidence, idempotency_key=idempotency_key))
     return {"seq": seq, "created": True}
 
 
@@ -203,6 +246,9 @@ def record_outcome(conn, *, setup_id: int, kind: str, window: str, evaluator_ver
 # ── Seals and retention ───────────────────────────────────────────────────────────────────
 
 def seal_session(conn, *, run_key: str, identity: str, session_date: date, now) -> bool:
+    """Close membership. Takes the session lock first, so it waits for any insert in flight
+    and every insert after it sees the seal (review IC-01)."""
+    _session_lock(conn, run_key, identity, session_date)
     r = conn.execute(_insert(conn, seals).values(run_key=run_key, identity_hash=identity, session_date=session_date,
                                                  sealed_at=_naive(now)).on_conflict_do_nothing())
     return bool(r.rowcount)
@@ -217,6 +263,7 @@ def archive_session(conn, *, run_key: str, identity: str, session_date: date, no
     """Archive per-result counts for a SEALED session, verify them, then delete its non-setup
     evaluations. One transaction (the caller's): a failure commits nothing, a retry after success
     finds identical counts and nothing to delete."""
+    _session_lock(conn, run_key, identity, session_date)       # serialise archives and late inserts
     sealed = conn.execute(select(seals.c.sealed_at).where(
         seals.c.run_key == run_key, seals.c.identity_hash == identity, seals.c.session_date == session_date)).first()
     if sealed is None:

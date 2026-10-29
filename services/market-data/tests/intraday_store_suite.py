@@ -77,13 +77,26 @@ def batch(conn, identity, run_key=c.OBSERVED_RUN):
 SETUP = dict(direction="bullish", entry_reference=100.0, stop=99.0, target=102.0, risk_per_share=1.0, reasons={})
 
 
+def an_input(trigger, run_key=c.OBSERVED_RUN, stock_id=1, symbol="AAA"):
+    """A native 5m input whose hashes are computed from its evidence, as the reader does."""
+    ev = c.bar_evidence(dict(stock_id=stock_id, symbol=symbol, timeframe="5m", bar_open=trigger, open=100.0,
+                             high=100.5, low=99.5, close=100.2, adj_close=None, volume=1000.0, session="REGULAR"),
+                        "unusual_whales", "provenance_matches",
+                        dict(timeframe="5m", bar_open=trigger, open=100.0, high=100.5, low=99.5, close=100.2,
+                             volume=1000.0, price_basis="raw", price_basis_reason="no adjusted close"))
+    h = c.hashes_from_evidence(ev)
+    return c.InputRecord(role="trigger", timeframe="5m", bar_open=trigger, source="native", values={"o": 1},
+                         raw_hash=h["raw_hash"], source_hash=h["source_hash"], input_hash=h["input_hash"],
+                         derived_hash=None, readable_at=trigger + timedelta(minutes=7),
+                         input_read_at=trigger + timedelta(minutes=7),
+                         read_clock_basis="observed" if run_key == c.OBSERVED_RUN else "replay_logical", evidence=ev)
+
+
 def a_setup(conn, identity, b, *, symbol="AAA", trigger=None, run_key=c.OBSERVED_RUN, stock_id=1):
     trigger = trigger or at(14, 0)
     det = c.decide_at_detection(trigger_bar_open=trigger, detected_at=trigger + timedelta(minutes=7), direction="bullish",
                                 times=T, stop_breached=False, inputs_ok=True)
-    inp = c.InputRecord(role="trigger", timeframe="5m", bar_open=trigger, source="native", values={"o": 1},
-                        raw_hash="r", source_hash="s", input_hash="i", derived_hash=None,
-                        readable_at=trigger + timedelta(minutes=7), input_read_at=trigger + timedelta(minutes=7))
+    inp = an_input(trigger, run_key)
     return store.record_evaluation(conn, batch_id=b, run_key=run_key, identity=identity, stock_id=stock_id,
                                    symbol=symbol, trigger_bar_open=trigger, result="setup",
                                    detected_at=trigger + timedelta(minutes=7), data_cutoff=trigger + timedelta(minutes=7),
@@ -239,7 +252,7 @@ def test_the_database_refuses_an_append_that_skips_the_writer(engine):
     with engine.begin() as conn:
         i = ident(conn)
         sid = a_setup(conn, i, batch(conn, i))["setup_id"]
-    raw = dict(setup_id=sid, run_key="observed", decided_at=at(14, 12), clock_basis="observed")
+    raw = dict(setup_id=sid, run_key="observed", decided_at=at(14, 12), effective_at=at(14, 12), clock_basis="observed")
     for bad in (dict(seq=3, from_state="detected", to_state="expired_before_detection", idempotency_key="b1"),  # stale from
                 dict(seq=5, from_state="actionable", to_state="entered", idempotency_key="b2"),               # seq gap
                 dict(seq=3, from_state="actionable", to_state="exited", idempotency_key="b3")):               # illegal pair
@@ -492,10 +505,263 @@ def test_partial_indexes_refuse_a_second_terminal_or_reconciliation_even_without
         store.append_transition(conn, setup_id=sid, to_state="unresolved_exit_at_close", event=ev(at(20, 1)),
                                 idempotency_key="u")
         store.append_transition(conn, setup_id=sid, to_state="reconciled", event=ev(at(20, 30)), idempotency_key="r")
-    raw = dict(setup_id=sid, run_key="observed", decided_at=at(21, 0), clock_basis="observed")
+    raw = dict(setup_id=sid, run_key="observed", decided_at=at(21, 0), effective_at=at(21, 0), clock_basis="observed")
     for extra in (dict(seq=6, from_state="unresolved_exit_at_close", to_state="reconciled", idempotency_key="r2"),
                   dict(seq=6, from_state="entered", to_state="unresolved_exit_at_close", idempotency_key="u2")):
         with pytest.raises(IntegrityError, match="uq_intraday_one_"):
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE intraday_setup_transitions DISABLE TRIGGER intraday_transition_append"))
                 conn.execute(m.transitions.insert().values(**raw, **extra))
+
+
+
+# ── Review IC-01: a committed seal freezes membership ─────────────────────────────────────
+
+def _blocked_on_advisory_lock(engine):
+    with engine.connect() as conn:
+        return conn.execute(text("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted")).scalar() > 0
+
+
+@pg_only
+def test_a_seal_waits_for_an_in_flight_insert_and_then_includes_it(engine):
+    import time
+    with engine.begin() as conn:
+        i = ident(conn)
+        b = batch(conn, i)
+    writer = engine.connect()
+    tx = writer.begin()
+    _no_setup(writer, i, b, 0)                                   # in flight, holds the session lock
+    sealed = {}
+
+    def seal():
+        with engine.begin() as conn:
+            conn.execute(text("SET LOCAL lock_timeout = '20s'"))     # a failing run cannot hang
+            store.seal_session(conn, run_key="observed", identity=i, session_date=D, now=at(22, 0))
+            sealed["count_at_seal"] = conn.execute(select(func.count()).select_from(m.evaluations)).scalar()
+    t = threading.Thread(target=seal, daemon=True)
+    t.start()
+    try:
+        deadline = time.time() + 10
+        while not _blocked_on_advisory_lock(engine) and time.time() < deadline:
+            time.sleep(0.05)
+        assert t.is_alive() and _blocked_on_advisory_lock(engine), "the sealer must wait for the in-flight insert"
+    finally:
+        tx.commit()                                                    # always release the held lock
+        writer.close()
+        t.join(30)
+    assert not t.is_alive(), "both transactions must finish"
+    assert sealed["count_at_seal"] == 1                         # the committed row is inside the seal
+    with pytest.raises(DBAPIError, match="intraday_sealed"):    # and nothing can join afterwards
+        with engine.begin() as conn:
+            _no_setup(conn, i, b, 5)
+    with engine.begin() as conn:                                # final state: membership == the seal's view
+        assert conn.execute(select(func.count()).select_from(m.evaluations)).scalar() == sealed["count_at_seal"]
+        assert conn.execute(select(func.count()).select_from(m.seals)).scalar() == 1
+        assert store.archive_session(conn, run_key="observed", identity=i, session_date=D, now=at(23, 0))["counts"] == {"no_setup": 1}
+
+
+@pg_only
+def test_an_insert_behind_an_open_seal_waits_and_is_then_refused(engine):
+    import time
+    with engine.begin() as conn:
+        i = ident(conn)
+        b = batch(conn, i)
+    sealer = engine.connect()
+    tx = sealer.begin()
+    store.seal_session(sealer, run_key="observed", identity=i, session_date=D, now=at(22, 0))
+    outcome = {}
+
+    def insert():
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("SET LOCAL lock_timeout = '20s'"))
+                _no_setup(conn, i, b, 0)
+            outcome["r"] = "inserted"
+        except DBAPIError as exc:
+            outcome["r"] = "refused" if "intraday_sealed" in str(exc) else repr(exc)
+    t = threading.Thread(target=insert, daemon=True)
+    t.start()
+    try:
+        deadline = time.time() + 10
+        while not _blocked_on_advisory_lock(engine) and time.time() < deadline:
+            time.sleep(0.05)
+        assert t.is_alive() and _blocked_on_advisory_lock(engine), "the insert must wait behind the open seal"
+    finally:
+        tx.commit()
+        sealer.close()
+        t.join(30)
+    assert not t.is_alive(), "both transactions must finish"
+    assert outcome["r"] == "refused"
+    with engine.begin() as conn:                                # final state: sealed, and nothing joined
+        assert conn.execute(select(func.count()).select_from(m.seals)).scalar() == 1
+        assert conn.execute(select(func.count()).select_from(m.evaluations)).scalar() == 0
+
+
+@pg_only
+def test_an_evaluation_insert_outside_read_committed_is_refused(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        b = batch(conn, i)
+    with pytest.raises(DBAPIError, match="requires READ COMMITTED"):
+        with engine.connect().execution_options(isolation_level="REPEATABLE READ") as conn:
+            with conn.begin():
+                _no_setup(conn, i, b, 0)
+
+
+# ── Review IC-02: clocks belong to the run; chronology never goes backwards ────────────────
+
+def test_cross_mode_inputs_and_events_are_refused_by_the_writer(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        store.ensure_replay_run(conn, "r1", input_snapshot_hash="h", as_of=at(21, 0), now=at(21, 0))
+        rb = batch(conn, i, "r1")
+        det = c.decide_at_detection(trigger_bar_open=at(14, 0), detected_at=at(14, 7), direction="bullish", times=T,
+                                    stop_breached=False, inputs_ok=True)
+        with pytest.raises(c.ContractViolation, match="read clock"):
+            store.record_evaluation(conn, batch_id=rb, run_key="r1", identity=i, stock_id=1, symbol="AAA",
+                                    trigger_bar_open=at(14, 0), result="setup", detected_at=at(14, 7),
+                                    data_cutoff=at(14, 7), setup=SETUP, input_records=[an_input(at(14, 0))],
+                                    detection=det, times=T)
+    with engine.begin() as conn:
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        with pytest.raises(c.ContractViolation, match="clock on a observed record"):
+            store.append_transition(conn, setup_id=sid, to_state="entered", idempotency_key="x",
+                                    event=c.EventTimes(at(14, 9), at(14, 10), at(14, 10), "replay_logical"))
+
+
+def test_an_observed_entry_before_detection_is_refused_by_the_writer(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        with pytest.raises(c.ContractViolation):
+            store.append_transition(conn, setup_id=sid, to_state="entered", idempotency_key="b",
+                                    event=c.EventTimes(at(13, 30), at(13, 30), at(13, 30), "observed"))
+
+
+@pg_only
+def test_direct_sql_cannot_write_cross_mode_or_backwards_records(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+    base = dict(setup_id=sid, run_key="observed", seq=3, from_state="actionable", to_state="entered")
+    for bad, why in ((dict(decided_at=at(14, 12), effective_at=at(14, 10), clock_basis="replay_logical",
+                           idempotency_key="d1"), "clock_mode"),
+                     (dict(decided_at=at(13, 30), effective_at=at(13, 30), clock_basis="observed",
+                           idempotency_key="d2"), "chronology|entry fill"),
+                     (dict(decided_at=at(14, 9), effective_at=at(14, 10), clock_basis="observed",
+                           idempotency_key="d3"), "effective_before_decided"),
+                     (dict(decided_at=at(14, 30), effective_at=at(14, 25), clock_basis="observed",
+                           idempotency_key="d4"), "entry fill")):
+        with pytest.raises(DBAPIError, match=why):
+            with engine.begin() as conn:
+                conn.execute(m.transitions.insert().values(**base, **bad))
+    with pytest.raises(DBAPIError, match="clock_mode"):
+        with engine.begin() as conn:
+            conn.execute(m.inputs.insert().values(
+                setup_id=sid, run_key="observed", role="context", timeframe="15m", bar_open=at(13, 45),
+                source="derived_from_5m", bar_values={}, evidence={"version": 1}, input_hash="x",
+                readable_at=at(14, 2), input_read_at=at(14, 3), read_clock_basis="replay_logical",
+                availability_basis="unknown_exact_version"))
+
+
+def test_an_entry_after_its_expiry_is_refused_by_the_writer(engine):
+    """Witness of the writer's entry-window check alone: forward in time (chronology fine), but
+    the fill is after the setup's expiry."""
+    with engine.begin() as conn:
+        i = ident(conn)
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        with pytest.raises(c.ContractViolation, match="entry fill outside"):
+            store.append_transition(conn, setup_id=sid, to_state="entered", effective_at=at(14, 25),
+                                    idempotency_key="late", event=ev(at(14, 26)))
+
+
+@pg_only
+def test_direct_sql_cannot_record_an_exit_before_its_entry(engine):
+    """Witness of the trigger's chronology check alone: entered -> exited is a legal pair and
+    not an entry, but its effective time precedes the entry's."""
+    with engine.begin() as conn:
+        i = ident(conn)
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        store.append_transition(conn, setup_id=sid, to_state="entered", effective_at=at(14, 10),
+                                idempotency_key="e", event=ev(at(14, 12)))
+    with pytest.raises(DBAPIError, match="chronology goes backwards"):
+        with engine.begin() as conn:
+            conn.execute(m.transitions.insert().values(
+                setup_id=sid, run_key="observed", seq=4, from_state="entered", to_state="exited",
+                effective_at=at(14, 5), decided_at=at(14, 30), clock_basis="observed", idempotency_key="x"))
+
+
+def test_a_scheduled_exit_recorded_later_keeps_its_fill_time(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        store.append_transition(conn, setup_id=sid, to_state="entered", effective_at=at(14, 10), idempotency_key="e",
+                                event=c.EventTimes(at(14, 12), at(14, 12), at(14, 12), "observed"))
+        store.append_transition(conn, setup_id=sid, to_state="exited", reason="max_hold", effective_at=at(16, 10),
+                                idempotency_key="x", event=c.EventTimes(at(16, 17), at(16, 17), at(16, 18), "observed"))
+        rows = conn.execute(select(m.transitions.c.to_state, m.transitions.c.effective_at, m.transitions.c.decided_at)
+                            .where(m.transitions.c.setup_id == sid).order_by(m.transitions.c.seq)).all()
+    eff = {r.to_state: (c.utc(r.effective_at), c.utc(r.decided_at)) for r in rows}
+    assert eff["entered"] == (at(14, 10), at(14, 12)) and eff["exited"] == (at(16, 10), at(16, 18))
+
+
+@pg_only
+def test_a_concurrent_identical_retry_returns_the_stored_row(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+    barrier, out = threading.Barrier(2), []
+
+    def go():
+        with engine.begin() as conn:
+            barrier.wait()
+            out.append(store.append_transition(conn, setup_id=sid, to_state="entered", idempotency_key="same",
+                                               event=ev(at(14, 12))))
+    ts = [threading.Thread(target=go) for _ in range(2)]
+    [t.start() for t in ts]
+    [t.join(10) for t in ts]
+    assert sorted(o["created"] for o in out) == [False, True] and {o["seq"] for o in out} == {3}
+
+
+def test_tampered_evidence_is_refused_before_any_write(engine):
+    """IC-03: an input whose stated hashes do not recompute from its evidence is refused, and
+    nothing is written."""
+    with engine.begin() as conn:
+        i = ident(conn)
+        b = batch(conn, i)
+        bad = an_input(at(14, 0))
+        bad.evidence = dict(bad.evidence, transformed=dict(bad.evidence["transformed"], close=999.0))
+        det = c.decide_at_detection(trigger_bar_open=at(14, 0), detected_at=at(14, 7), direction="bullish", times=T,
+                                    stop_breached=False, inputs_ok=True)
+        with pytest.raises(c.ContractViolation, match="recompute"):
+            store.record_evaluation(conn, batch_id=b, run_key="observed", identity=i, stock_id=1, symbol="AAA",
+                                    trigger_bar_open=at(14, 0), result="setup", detected_at=at(14, 7),
+                                    data_cutoff=at(14, 7), setup=SETUP, input_records=[bad], detection=det, times=T)
+        assert conn.execute(select(func.count()).select_from(m.evaluations)).scalar() == 0
+
+
+def test_path_indeterminate_is_listed_as_open_exposure(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        store.append_transition(conn, setup_id=sid, to_state="entered", effective_at=at(14, 10), idempotency_key="e",
+                                event=ev(at(14, 12)))
+        store.append_transition(conn, setup_id=sid, to_state="path_indeterminate", reason="unobserved_interval",
+                                effective_at=at(14, 15), idempotency_key="p", event=ev(at(14, 22)))
+        items = R.list_unresolved(conn, market="US", mode="observed", run_key=None)["items"]
+        assert [(x["symbol"], x["state"]) for x in items] == [("AAA", "path_indeterminate")]
+        with pytest.raises(c.ContractViolation):
+            store.delete_setup(conn, setup_id=sid)                     # open exposure is never deleted
+
+
+def test_an_archived_identity_stays_discoverable(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        b = batch(conn, i)
+        for mi in (0, 5):
+            _no_setup(conn, i, b, mi)
+        store.seal_session(conn, run_key="observed", identity=i, session_date=D, now=at(22, 0))
+        store.archive_session(conn, run_key="observed", identity=i, session_date=D, now=at(22, 30))
+        assert conn.execute(select(func.count()).select_from(m.evaluations)).scalar() == 0
+        found = R.list_identities(conn, market="US", mode="observed", run_key=None, session_date=D)["identities"]
+        assert [(x["identity_hash"], x["evaluations"]) for x in found] == [(i, 2)]
