@@ -1,0 +1,17 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_ test_gap_through_the_stop_at_entry_rejects_the_bracket_without_moving_levels _
+
+    def test_gap_through_the_stop_at_entry_rejects_the_bracket_without_moving_levels():
+        bs = bars(at(14, 0), 40)
+        bs[2] = f.Bar(at(14, 10), 98.5, 99.0, 98.0, 98.5)
+        r = sim(bs)
+>       assert r.state == "rejected_invalid_bracket_at_fill" and r.exit_at is None
+E       AssertionError: assert ('exited' == 'rejected_inv...acket_at_fill'
+E         - rejected_invalid_bracket_at_fill
+E         + exited)
+
+tests/test_intraday_contract.py:221: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_contract.py::test_gap_through_the_stop_at_entry_rejects_the_bracket_without_moving_levels
+1 failed, 39 deselected in 0.11s

@@ -1,8 +1,7 @@
 # Intraday Stage C — implementation record
 
-Date: **2026-10-29**. Branch: `intraday-contracts`. Status: **built, reviewed, review findings
-IC-01..IC-05 fixed (see [Implementation review remediation](#implementation-review-remediation));
-not deployed; no generator**. Production generation is disabled (`INTRADAY_PRODUCTION_ENABLED = False`, a
+Date: **2026-10-29**. Branch: `intraday-contracts`. Status: **release candidate `c49a6e17` (code), awaiting
+review; IC-01..IC-05 fixed; not deployed; no generator**. See [Release candidate](#release-candidate-c49a6e17). Production generation is disabled (`INTRADAY_PRODUCTION_ENABLED = False`, a
 code constant). Implements the [contract design](2026-10-29-intraday-stage-c-contract-design.md)
 (revision 3), after the [inventory](2026-10-29-intraday-stage-c-inventory.md) and two review
 rounds ([review](../audits/2026-10-29-intraday-stage-c-design-review.md), CDR-01..06 and
@@ -164,6 +163,66 @@ a behavioural regression that runs through the real writer and, where it matters
 - `review_witness.py` now **blocks** at its seal step: in its single thread an uncommitted insert
   holds the session lock, so the sealer waits, which is the fixed behaviour. It was stopped by
   timeout. Its later clock and backdating steps are covered by the regressions above.
+
+## Release candidate `c49a6e17`
+
+Every result in this section was produced against **commit `c49a6e17`**. The hash was recorded
+before and after the checks, and was identical. Evidence and a SHA-256 manifest are in
+[`docs/audits/evidence/2026-10-29-intraday-stage-c-mutation-run/`](../audits/evidence/2026-10-29-intraday-stage-c-mutation-run/MANIFEST.json).
+The commit that adds this record and the evidence changes documentation only.
+
+**Mutation run** (`scripts/intraday_mutation_run.py`, refuses a dirty checkout):
+- **Result:** 64 required cases, **64 CAUGHT**: 0 missed, 0 wrong reason, 0 inconclusive.
+- **What counts as caught:** a case is CAUGHT only when its own witness fails within 240 s with
+  test failures (pytest exit 1, no collection or usage error) **and** the expected witness test is
+  among the failures. A timeout is INCONCLUSIVE, never a catch.
+- **Recorded per case** (`results.json`): the file hash, the mutated file hash, the diff hash, the
+  witness command, the failing tests, the exit code, the duration and the output hash. Outputs are
+  in `outputs/`.
+- **Seal witnesses:** the in-flight case releases the writer, requires both transactions to
+  finish, and asserts that the final membership equals the seal's view and that a later insert is
+  refused. The insert-behind-an-open-seal case asserts the seal holds and nothing joined.
+- **Two lines outside the required set, with reasons** (`not_required`):
+  - the SWING fallback in `signal_for` is unreachable once the style is validated;
+  - the end of the fill loop is unreachable in fill model v1, and it raises rather than inventing
+    an outcome.
+
+**Release checks against `c49a6e17`:**
+- **`make test`:** all backend services passed.
+
+  | Service | Passed | Skipped |
+  |---|---|---|
+  | market-data | 6016 | 30 |
+  | ml-prediction | 555 | 1 |
+  | signal-engine | 1008 | 9 |
+  | research-engine | 731 | 8 |
+  | event-intelligence | 635 | — |
+  | decision-engine | 393 | — |
+
+  The other suites were also green.
+- **`make test-integration-pg-schema`:** 10 passed. These are the Intraday storage and input
+  suites on a disposable PostgreSQL 16 database, REQUIRED, with no skips allowed.
+- **ML container suite in the production image:** 24 passed, including the four route witnesses.
+- **Frontend:** this branch changes no frontend file, and the frontend suite was not run here
+  (unchanged from the earlier record).
+
+**Earlier mutation tallies are void.** While running the earlier sabotage passes I found that a
+same-length mutation (`evidence=ev` → `evidence={}`) had been restored within the same second.
+CPython trusts a `.pyc` whose recorded source mtime (seconds) and size still match, so later runs
+executed the **mutated** bytecode, and two tests failed against correct source. Every test result
+produced after those passes, including the 36/40, 40/41 and 56/61 tallies, may have executed stale
+code and is **not** relied on. The runner now purges every `__pycache__`, runs each witness with
+`PYTHONDONTWRITEBYTECODE=1`, refuses to start if any compiled file survives, and records that none
+was written during the run (`bytecode_written_during_run: []`).
+
+**Other process corrections:**
+- **Fix commit before its check:** `ae168ec4` was committed before the result of its test run was
+  read, and that run had failed. The cause was the stale bytecode above, not the code; the same
+  code passes with clean caches. It is not the candidate.
+- **Malformed mutation:** the first run at `d5681088` reported 63/64. The 64th mutation
+  (`r_archived_identity`) deleted the only statement in a loop body, an import error that the strict
+  rule correctly refused to count. It was corrected to a valid no-op in `c49a6e17`, the only change
+  between the two commits, and the full set was rerun.
 
 ## Not done here
 

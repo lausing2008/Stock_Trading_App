@@ -1,0 +1,18 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_____________ test_paper_exit_rsi_read_is_daily_only_code_presence _____________
+
+    def test_paper_exit_rsi_read_is_daily_only_code_presence():
+        fn = _fn(SRC / "paper_trading_engine.py", "_monitor_positions")
+        rsi = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "sa_text"
+               and "reasons->>'rsi'" in ast.unparse(n)]
+>       assert len(rsi) == 1 and "CAST(sig.horizon AS text) = ANY(:daily_horizons)" in ast.unparse(rsi[0])
+E       assert (1 == 1 and 'CAST(sig.horizon AS text) = ANY(:daily_horizons)' in 'sa_text("SELECT DISTINCT ON (s.symbol) s.symbol, sig.reasons->>\'rsi\' AS rsi FROM signals sig JOIN stocks s ON s.id ...HERE s.symbol = ANY(:syms) AND sig.reasons->>\'rsi\' IS NOT NULL AND sig.ts <= :as_of ORDER BY s.symbol, sig.ts DESC")')
+E        +  where 1 = len([<ast.Call object at 0x792b194eaed0>])
+E        +  and   'sa_text("SELECT DISTINCT ON (s.symbol) s.symbol, sig.reasons->>\'rsi\' AS rsi FROM signals sig JOIN stocks s ON s.id ...HERE s.symbol = ANY(:syms) AND sig.reasons->>\'rsi\' IS NOT NULL AND sig.ts <= :as_of ORDER BY s.symbol, sig.ts DESC")' = <function unparse at 0x792b3bf21c60>(<ast.Call object at 0x792b194eaed0>)
+E        +    where <function unparse at 0x792b3bf21c60> = ast.unparse
+
+tests/test_intraday_daily_isolation.py:46: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_daily_isolation.py::test_paper_exit_rsi_read_is_daily_only_code_presence
+1 failed, 5 deselected in 0.82s

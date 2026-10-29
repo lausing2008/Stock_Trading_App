@@ -1,0 +1,19 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___ test_intraday_router_registers_before_the_stocks_catch_all_code_presence ___
+
+    def test_intraday_router_registers_before_the_stocks_catch_all_code_presence():
+        """Review follow-up: /stocks/intraday/* shares the gateway's `stocks` prefix with data_router's
+        `/stocks/{symbol}...` routes; FastAPI matches in registration order, so it must come first.
+        (Live gateway auth and routing are verified at deploy, not here.)"""
+        main = (Path(__file__).resolve().parents[1] / "src" / "main.py").read_text()
+        call = next(n for n in ast.walk(ast.parse(main)) if isinstance(n, ast.Call)
+                    and getattr(n.func, "id", None) == "create_app")
+        routers = [e.id for kw in call.keywords if kw.arg == "routers" for e in kw.value.elts]
+>       assert routers.index("intraday_router") < routers.index("data_router")
+E       ValueError: 'intraday_router' is not in list
+
+tests/test_intraday_daily_isolation.py:82: ValueError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_daily_isolation.py::test_intraday_router_registers_before_the_stocks_catch_all_code_presence
+1 failed, 5 deselected in 0.63s

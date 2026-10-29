@@ -1,0 +1,317 @@
+FFFFF                                                                    [100%]
+=================================== FAILURES ===================================
+_______ test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>0] ________
+
+call = <function <lambda> at 0x72a279cf77e0>
+
+    @pytest.mark.parametrize("call", [
+        lambda s: routes.all_latest_signals(style="INTRADAY", session=s, _="u"),
+        lambda s: routes.suppressed_signals(style="INTRADAY", market=None, session=s),
+        lambda s: routes.signal_history(symbol="AAA", style="intraday", days=60, session=s),
+        lambda s: routes.signal_for("AAA", persist=False, live=False, style="INTRADAY", session=s),
+        lambda s: routes.signal_for("AAA", persist=True, live=True, style="BOGUS", session=s),
+    ])
+    def test_unknown_or_intraday_style_is_422_before_any_sql(call):
+        with patch.object(routes, "generate_all_signals", side_effect=AssertionError("live regeneration ran")):
+            with pytest.raises(HTTPException) as exc:
+>               call(_no_sql_session())
+
+intraday_isolation_suite.py:83: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+intraday_isolation_suite.py:74: in <lambda>
+    lambda s: routes.all_latest_signals(style="INTRADAY", session=s, _="u"),
+../src/api/routes.py:73: in all_latest_signals
+    horizon_enum = SignalHorizon(horizon_filter)
+/home/lausing/anaconda3/lib/python3.12/enum.py:757: in __call__
+    return cls.__new__(cls, value)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+cls = <enum 'SignalHorizon'>, value = 'INTRADAY'
+
+    def __new__(cls, value):
+        # all enum instances are actually created during class construction
+        # without calling this method; this method is called by the metaclass'
+        # __call__ (i.e. Color(3) ), and by pickle
+        if type(value) is cls:
+            # For lookups like Color(Color.RED)
+            return value
+        # by-value search for a matching enum member
+        # see if it's in the reverse mapping (for hashable values)
+        try:
+            return cls._value2member_map_[value]
+        except KeyError:
+            # Not found, no need to do long O(n) search
+            pass
+        except TypeError:
+            # not there, now do long search -- O(n) behavior
+            for member in cls._member_map_.values():
+                if member._value_ == value:
+                    return member
+        # still not found -- verify that members exist, in-case somebody got here mistakenly
+        # (such as via super when trying to override __new__)
+        if not cls._member_map_:
+            raise TypeError("%r has no members defined" % cls)
+        #
+        # still not found -- try _missing_ hook
+        try:
+            exc = None
+            result = cls._missing_(value)
+        except Exception as e:
+            exc = e
+            result = None
+        try:
+            if isinstance(result, cls):
+                return result
+            elif (
+                    Flag is not None and issubclass(cls, Flag)
+                    and cls._boundary_ is EJECT and isinstance(result, int)
+                ):
+                return result
+            else:
+                ve_exc = ValueError("%r is not a valid %s" % (value, cls.__qualname__))
+                if result is None and exc is None:
+>                   raise ve_exc
+E                   ValueError: 'INTRADAY' is not a valid SignalHorizon
+
+/home/lausing/anaconda3/lib/python3.12/enum.py:1171: ValueError
+_______ test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>1] ________
+
+call = <function <lambda> at 0x72a279cf5620>
+
+    @pytest.mark.parametrize("call", [
+        lambda s: routes.all_latest_signals(style="INTRADAY", session=s, _="u"),
+        lambda s: routes.suppressed_signals(style="INTRADAY", market=None, session=s),
+        lambda s: routes.signal_history(symbol="AAA", style="intraday", days=60, session=s),
+        lambda s: routes.signal_for("AAA", persist=False, live=False, style="INTRADAY", session=s),
+        lambda s: routes.signal_for("AAA", persist=True, live=True, style="BOGUS", session=s),
+    ])
+    def test_unknown_or_intraday_style_is_422_before_any_sql(call):
+        with patch.object(routes, "generate_all_signals", side_effect=AssertionError("live regeneration ran")):
+            with pytest.raises(HTTPException) as exc:
+>               call(_no_sql_session())
+
+intraday_isolation_suite.py:83: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+intraday_isolation_suite.py:75: in <lambda>
+    lambda s: routes.suppressed_signals(style="INTRADAY", market=None, session=s),
+../src/api/routes.py:643: in suppressed_signals
+    q = q.where(Signal.horizon == SignalHorizon(horizon_filter))
+/home/lausing/anaconda3/lib/python3.12/enum.py:757: in __call__
+    return cls.__new__(cls, value)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+cls = <enum 'SignalHorizon'>, value = 'INTRADAY'
+
+    def __new__(cls, value):
+        # all enum instances are actually created during class construction
+        # without calling this method; this method is called by the metaclass'
+        # __call__ (i.e. Color(3) ), and by pickle
+        if type(value) is cls:
+            # For lookups like Color(Color.RED)
+            return value
+        # by-value search for a matching enum member
+        # see if it's in the reverse mapping (for hashable values)
+        try:
+            return cls._value2member_map_[value]
+        except KeyError:
+            # Not found, no need to do long O(n) search
+            pass
+        except TypeError:
+            # not there, now do long search -- O(n) behavior
+            for member in cls._member_map_.values():
+                if member._value_ == value:
+                    return member
+        # still not found -- verify that members exist, in-case somebody got here mistakenly
+        # (such as via super when trying to override __new__)
+        if not cls._member_map_:
+            raise TypeError("%r has no members defined" % cls)
+        #
+        # still not found -- try _missing_ hook
+        try:
+            exc = None
+            result = cls._missing_(value)
+        except Exception as e:
+            exc = e
+            result = None
+        try:
+            if isinstance(result, cls):
+                return result
+            elif (
+                    Flag is not None and issubclass(cls, Flag)
+                    and cls._boundary_ is EJECT and isinstance(result, int)
+                ):
+                return result
+            else:
+                ve_exc = ValueError("%r is not a valid %s" % (value, cls.__qualname__))
+                if result is None and exc is None:
+>                   raise ve_exc
+E                   ValueError: 'INTRADAY' is not a valid SignalHorizon
+
+/home/lausing/anaconda3/lib/python3.12/enum.py:1171: ValueError
+_______ test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>2] ________
+
+call = <function <lambda> at 0x72a279cf56c0>
+
+    @pytest.mark.parametrize("call", [
+        lambda s: routes.all_latest_signals(style="INTRADAY", session=s, _="u"),
+        lambda s: routes.suppressed_signals(style="INTRADAY", market=None, session=s),
+        lambda s: routes.signal_history(symbol="AAA", style="intraday", days=60, session=s),
+        lambda s: routes.signal_for("AAA", persist=False, live=False, style="INTRADAY", session=s),
+        lambda s: routes.signal_for("AAA", persist=True, live=True, style="BOGUS", session=s),
+    ])
+    def test_unknown_or_intraday_style_is_422_before_any_sql(call):
+        with patch.object(routes, "generate_all_signals", side_effect=AssertionError("live regeneration ran")):
+            with pytest.raises(HTTPException) as exc:
+>               call(_no_sql_session())
+
+intraday_isolation_suite.py:83: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+intraday_isolation_suite.py:76: in <lambda>
+    lambda s: routes.signal_history(symbol="AAA", style="intraday", days=60, session=s),
+../src/api/routes.py:903: in signal_history
+    horizon = SignalHorizon(_daily_style_or_422(style))
+/home/lausing/anaconda3/lib/python3.12/enum.py:757: in __call__
+    return cls.__new__(cls, value)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+cls = <enum 'SignalHorizon'>, value = 'INTRADAY'
+
+    def __new__(cls, value):
+        # all enum instances are actually created during class construction
+        # without calling this method; this method is called by the metaclass'
+        # __call__ (i.e. Color(3) ), and by pickle
+        if type(value) is cls:
+            # For lookups like Color(Color.RED)
+            return value
+        # by-value search for a matching enum member
+        # see if it's in the reverse mapping (for hashable values)
+        try:
+            return cls._value2member_map_[value]
+        except KeyError:
+            # Not found, no need to do long O(n) search
+            pass
+        except TypeError:
+            # not there, now do long search -- O(n) behavior
+            for member in cls._member_map_.values():
+                if member._value_ == value:
+                    return member
+        # still not found -- verify that members exist, in-case somebody got here mistakenly
+        # (such as via super when trying to override __new__)
+        if not cls._member_map_:
+            raise TypeError("%r has no members defined" % cls)
+        #
+        # still not found -- try _missing_ hook
+        try:
+            exc = None
+            result = cls._missing_(value)
+        except Exception as e:
+            exc = e
+            result = None
+        try:
+            if isinstance(result, cls):
+                return result
+            elif (
+                    Flag is not None and issubclass(cls, Flag)
+                    and cls._boundary_ is EJECT and isinstance(result, int)
+                ):
+                return result
+            else:
+                ve_exc = ValueError("%r is not a valid %s" % (value, cls.__qualname__))
+                if result is None and exc is None:
+>                   raise ve_exc
+E                   ValueError: 'INTRADAY' is not a valid SignalHorizon
+
+/home/lausing/anaconda3/lib/python3.12/enum.py:1171: ValueError
+_______ test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>3] ________
+
+call = <function <lambda> at 0x72a279cf59e0>
+
+    @pytest.mark.parametrize("call", [
+        lambda s: routes.all_latest_signals(style="INTRADAY", session=s, _="u"),
+        lambda s: routes.suppressed_signals(style="INTRADAY", market=None, session=s),
+        lambda s: routes.signal_history(symbol="AAA", style="intraday", days=60, session=s),
+        lambda s: routes.signal_for("AAA", persist=False, live=False, style="INTRADAY", session=s),
+        lambda s: routes.signal_for("AAA", persist=True, live=True, style="BOGUS", session=s),
+    ])
+    def test_unknown_or_intraday_style_is_422_before_any_sql(call):
+        with patch.object(routes, "generate_all_signals", side_effect=AssertionError("live regeneration ran")):
+            with pytest.raises(HTTPException) as exc:
+>               call(_no_sql_session())
+
+intraday_isolation_suite.py:83: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+intraday_isolation_suite.py:77: in <lambda>
+    lambda s: routes.signal_for("AAA", persist=False, live=False, style="INTRADAY", session=s),
+../src/api/routes.py:1100: in signal_for
+    stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
+/home/lausing/anaconda3/lib/python3.12/unittest/mock.py:1139: in __call__
+    return self._mock_call(*args, **kwargs)
+/home/lausing/anaconda3/lib/python3.12/unittest/mock.py:1143: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <MagicMock name='mock.query' id='126042154007440'>
+args = (<class 'db.models.Stock'>,), kwargs = {}
+effect = AssertionError('SQL ran for a refused style')
+
+    def _execute_mock_call(self, /, *args, **kwargs):
+        # separate from _increment_mock_call so that awaited functions are
+        # executed separately from their call, also AsyncMock overrides this method
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+>               raise effect
+E               AssertionError: SQL ran for a refused style
+
+/home/lausing/anaconda3/lib/python3.12/unittest/mock.py:1198: AssertionError
+_______ test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>4] ________
+
+call = <function <lambda> at 0x72a279cf5a80>
+
+    @pytest.mark.parametrize("call", [
+        lambda s: routes.all_latest_signals(style="INTRADAY", session=s, _="u"),
+        lambda s: routes.suppressed_signals(style="INTRADAY", market=None, session=s),
+        lambda s: routes.signal_history(symbol="AAA", style="intraday", days=60, session=s),
+        lambda s: routes.signal_for("AAA", persist=False, live=False, style="INTRADAY", session=s),
+        lambda s: routes.signal_for("AAA", persist=True, live=True, style="BOGUS", session=s),
+    ])
+    def test_unknown_or_intraday_style_is_422_before_any_sql(call):
+        with patch.object(routes, "generate_all_signals", side_effect=AssertionError("live regeneration ran")):
+            with pytest.raises(HTTPException) as exc:
+>               call(_no_sql_session())
+
+intraday_isolation_suite.py:83: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+intraday_isolation_suite.py:78: in <lambda>
+    lambda s: routes.signal_for("AAA", persist=True, live=True, style="BOGUS", session=s),
+../src/api/routes.py:1100: in signal_for
+    stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
+/home/lausing/anaconda3/lib/python3.12/unittest/mock.py:1139: in __call__
+    return self._mock_call(*args, **kwargs)
+/home/lausing/anaconda3/lib/python3.12/unittest/mock.py:1143: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <MagicMock name='mock.query' id='126042154063712'>
+args = (<class 'db.models.Stock'>,), kwargs = {}
+effect = AssertionError('SQL ran for a refused style')
+
+    def _execute_mock_call(self, /, *args, **kwargs):
+        # separate from _increment_mock_call so that awaited functions are
+        # executed separately from their call, also AsyncMock overrides this method
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+>               raise effect
+E               AssertionError: SQL ran for a refused style
+
+/home/lausing/anaconda3/lib/python3.12/unittest/mock.py:1198: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_isolation_suite.py::test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>0]
+FAILED intraday_isolation_suite.py::test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>1]
+FAILED intraday_isolation_suite.py::test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>2]
+FAILED intraday_isolation_suite.py::test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>3]
+FAILED intraday_isolation_suite.py::test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>4]
+5 failed, 20 deselected in 2.32s

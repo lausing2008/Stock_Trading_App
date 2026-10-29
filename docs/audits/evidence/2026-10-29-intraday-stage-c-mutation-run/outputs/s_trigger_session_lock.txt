@@ -1,0 +1,41 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_________ test_an_insert_behind_an_open_seal_waits_and_is_then_refused _________
+
+engine = Engine(postgresql+psycopg2://postgres:***@localhost:55441/intraday)
+
+    @pg_only
+    def test_an_insert_behind_an_open_seal_waits_and_is_then_refused(engine):
+        import time
+        with engine.begin() as conn:
+            i = ident(conn)
+            b = batch(conn, i)
+        sealer = engine.connect()
+        tx = sealer.begin()
+        store.seal_session(sealer, run_key="observed", identity=i, session_date=D, now=at(22, 0))
+        outcome = {}
+    
+        def insert():
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text("SET LOCAL lock_timeout = '20s'"))
+                    _no_setup(conn, i, b, 0)
+                outcome["r"] = "inserted"
+            except DBAPIError as exc:
+                outcome["r"] = "refused" if "intraday_sealed" in str(exc) else repr(exc)
+        t = threading.Thread(target=insert, daemon=True)
+        t.start()
+        try:
+            deadline = time.time() + 10
+            while not _blocked_on_advisory_lock(engine) and time.time() < deadline:
+                time.sleep(0.05)
+>           assert t.is_alive() and _blocked_on_advisory_lock(engine), "the insert must wait behind the open seal"
+E           AssertionError: the insert must wait behind the open seal
+E           assert (False)
+E            +  where False = <bound method Thread.is_alive of <Thread(Thread-1 (insert), stopped daemon 124126446483136)>>()
+E            +    where <bound method Thread.is_alive of <Thread(Thread-1 (insert), stopped daemon 124126446483136)>> = <Thread(Thread-1 (insert), stopped daemon 124126446483136)>.is_alive
+
+intraday_store_suite.py:588: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_an_insert_behind_an_open_seal_waits_and_is_then_refused
+1 failed, 34 deselected in 11.42s
