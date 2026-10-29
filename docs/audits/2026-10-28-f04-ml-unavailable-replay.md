@@ -274,6 +274,10 @@ The Stage 0 figures and this replay measure different things:
   - [`post-us-2026-10-28.json`](evidence/2026-10-28-f04-ml-unavailable-replay/monitoring/post-us-2026-10-28.json)
 - Both first full post-release sessions show the intended behavior: no suppressed model carries
   weight and the 0.45 cluster is gone. That establishes correct behavior, not improved returns.
+- **Initial monitoring check closed (2026-10-29, approved).** Both market-session reports support
+  closing the suppressed-model contribution defect's initial check. They establish correct
+  behavior, not improved returns. F03 occurrence reading (≥5 sessions per market) continues
+  separately.
 
 This release resolves the suppressed-model contribution defect. F04's evaluation-version, split and
 serving-qualification work remains open. The replay establishes behaviour on frozen inputs, not
