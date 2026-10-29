@@ -1,0 +1,10 @@
+{
+  "release": "15e2abac40926ea4ee135aa6c01fe4270ef56929",
+  "sha256": {
+    "deploy-results.txt": "c43d0c5c29e209354cee63a1cad52dc934df1d592a65374ce31b4b92deba6013",
+    "drift-results.txt": "ce9735b8b587b3322c9a830bfc7ced9f7a9563ddd0beabc12acb608098bb68dc",
+    "verification-summary.json": "c9a7c94f8464c3714526087beee2d50b16da7db8c66362523e314b079222e307",
+    "verify_live_prediction.py": "f157fb9bbf5ca7bc34786e28ded980ac35af39591456e847ca0b1034bcef9b50",
+    "verify_policy.py": "d18882de40b51952029e4bad5ac2c89bda14d09a9d2b12a7a335228a53fc5a88"
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "release": "15e2abac40926ea4ee135aa6c01fe4270ef56929",
+  "date": "2026-10-28 America/Los_Angeles",
+  "lock_started_utc": "2026-10-29T03:30:20Z",
+  "services": {
+    "ml-prediction": {
+      "image": "sha256:4c3210a88dce0102661546f49f537c952722cb85d73b59525435fdbf2a7d7486",
+      "started_utc": "2026-10-29T03:30:25.54482862Z",
+      "rollback": "stockai-ml-prediction:rollback-before-15e2abac",
+      "rollback_image": "sha256:4483fffe96e42c964cc84e2e9937aa316ec5bf239ffb7a896fdb10a0ea3199a3"
+    },
+    "market-data": {
+      "image": "sha256:1b9519a1459064b1a1ac441fe8e6c7ed67736f01a4923b5430ca0cde9a8ce188",
+      "started_utc": "2026-10-29T03:30:38.270069806Z",
+      "rollback": "stockai-market-data:rollback-before-15e2abac",
+      "rollback_image": "sha256:685cedd5df2b69034d9411ff1fd02842f19724e3772c20a672d2178d5af0f205"
+    }
+  },
+  "signal_engine_unchanged": {
+    "image": "sha256:3b816ed35b99604e13c587ce205aecadcbd138d3c3af61675c3e14b287397a93",
+    "started_utc": "2026-10-28T06:16:53.078038761Z"
+  },
+  "verification": {
+    "healthy_containers": 15,
+    "backend_sources_checked": 12,
+    "backend_sources_drifted": 0,
+    "gateway_health_http": 200,
+    "policy_exists": false,
+    "marker_exists": false,
+    "v2_enabled": false,
+    "cohort_count": 0,
+    "selection_count": 0,
+    "promotion_refusal": "promotion_unavailable:qualification_records_not_implemented",
+    "v2_training_refusal_status": 409,
+    "live_prediction": {
+      "symbol": "MSFT",
+      "style": "SWING",
+      "status_code": 200,
+      "ml_available": false,
+      "ml_unavailable_reason": "no_eligible_model",
+      "eligible_contributors": 0,
+      "model": "none_eligible",
+      "oos_suppressed": true,
+      "bullish_probability": 0.5
+    }
+  },
+  "host_after_deploy": {
+    "disk_free_gb": 31,
+    "iowait_pct": 3.3
+  },
+  "old_logs_remote": "/home/ec2-user/deploy-evidence/2026-10-28-f04-fencing-15e2abac/",
+  "valuation_working_files_preserved": 19,
+  "notes": [
+    "Observations captured from the actual deployment and read-only verification tool results.",
+    "Deploy log ANSI coloring and trailing whitespace normalized.",
+    "No manual training, suppression resweep, policy mutation or signal refresh was run."
+  ]
+}

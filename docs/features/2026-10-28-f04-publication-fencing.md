@@ -1,10 +1,9 @@
-# F04 nightly-publication fencing — implemented, review findings fixed, not deployed
+# F04 nightly-publication fencing — deployed; v2 activation off
 
 Date: **2026-10-28**. Branch: `f04-publication-fencing`.
 - **Status:** implemented; the five findings of the
   [independent review](../audits/2026-10-28-f04-fencing-s03-independent-review.md) (PF-01..PF-05)
-  are fixed and tested (see [Review remediation](#review-remediation-2026-10-29)); **not
-  deployed**; v2 activation **off**. Merged with `prod` at `fa1a3e22` (S0-3) and tested combined.
+  are fixed and tested (see [Review remediation](#review-remediation-2026-10-29)); **deployed as `15e2abac`**; v2 activation **off**. Merged with `prod` at `fa1a3e22` (S0-3) and tested combined.
   The [re-review](../audits/2026-10-28-f04-fencing-remediation-review.md)'s two residual policy
   errors (RF-01, RF-02) are fixed too; see [Re-review remediation](#re-review-remediation-2026-10-29).
 - **Prerequisite for** the remaining F04 trainer changes (Option 1 of the
@@ -161,9 +160,29 @@ signal-engine change, not part of this branch.
 
 ## Not done here
 
-- No deployment. Deploying it is behaviour-neutral while v2 is off and no policy has been written.
+- Deployment is recorded below. The guarded release keeps legacy behavior while v2 is off and no policy has been written.
   New on disk: the policy directory and lock file are created at the first nightly write, and
   every write takes the lock. The establishment marker and `policy.json` appear only with the
   first operator policy change, after which a lost policy fails closed.
 - v2 training, protocol/evaluation versions and baseline B are the next F04 pieces. Nothing can
   publish them live without a cohort authorization and an explicit promotion.
+
+
+## Production deployment — October 28, 2026, 20:30 PDT
+
+**Release `15e2abac` deployed to ml-prediction and market-data** through the standard `scripts/deploy.sh`, using the clean pinned release checkout and its host deployment/backup lock. The earlier permission block occurred in the other tool; this environment accepted the authorized deployment. No bypass or runtime file copy was used. The remote checkout/pulled revision was verified as exactly `15e2abac40926ea4ee135aa6c01fe4270ef56929`.
+
+The backup completed at 02:13:52 UTC before deployment began at **03:30:20 UTC on October 29** (**20:30:20 PDT on October 28**). Both rollback images were verified before and after deployment. Old service logs and identities were saved at `/home/ec2-user/deploy-evidence/2026-10-28-f04-fencing-15e2abac/`.
+
+Post-deploy verification:
+
+- **15/15 containers healthy; all 12 backend source/shared trees match the clean release, zero drift.** Only ml-prediction and market-data restarted. Signal-engine retained its previous image/start time. Gateway health returned 200.
+- **No `policy.json`, no establishment marker, v2 disabled, empty cohort and selections.** The v2 training boundary returns 409 without queuing a job; qualification validation refuses promotion with `promotion_unavailable:qualification_records_not_implemented`. These checks did not initialize or mutate policy.
+- One actual authenticated **MSFT/SWING** ensemble prediction returned HTTP 200 and the ordinary `no_eligible_model` response, not `serving_unavailable`. Its zero-contributor response was handled normally. It was an inference read, not a persisted signal/alert/order.
+- Rollbacks retained: `stockai-ml-prediction:rollback-before-15e2abac` (`4483fffe96e4`) and `stockai-market-data:rollback-before-15e2abac` (`685cedd5df2b`). New image IDs and exact starts are in the evidence.
+- Host finished with **31 GB free, 3.3% sampled I/O wait**. No extra production training, resweep, policy change, signal refresh or test email was triggered. Normal scheduler activity remains governed by existing behavior.
+- Nineteen pre-existing working files from the parallel valuation work were hash-checked before/after the local checkout fast-forward and remained identical. Their edits were not built or committed with this deployment.
+
+[Deployment log, 12-service drift check, verification summary, scripts and hashes](../audits/evidence/2026-10-28-f04-fencing-deployment/). The merge's full-suite result is the submitter's pre-deploy evidence; this deployment did not repeat it after the clean reviewed source was pinned.
+
+**Still open:** v2 qualification manifest/evaluation versions, the purged baseline B and controlled cohort activation. F03 receipts, causal RZY simulation and Intraday remain separate implementation work. Fencing deployment does not close the whole F04 finding or establish improved trading returns. Additive Intraday contracts can be developed alongside these tasks; producing actionable Intraday signals remains gated by causal timing/data/measurement work.

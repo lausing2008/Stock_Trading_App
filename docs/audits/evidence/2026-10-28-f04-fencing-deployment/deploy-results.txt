@@ -1,0 +1,38 @@
+── preflight ──────────────────────────────────────────
+  disk free : 31G
+  iowait    : 0.0%
+  TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+  Images          51        15        18.88GB   18.56GB (98%)
+  Containers      15        15        12.98MB   0B (0%)
+ create mode 100644 services/ml-prediction/tests/test_f04_publication_fencing.py
+ create mode 100644 services/ml-prediction/tests/test_f04_publication_nightly_path_container.py
+ create mode 100644 services/ml-prediction/tests/test_f04_publication_wiring.py
+deploy-lock: nested under owner=ec2-user pid=3920020 what=deploy.sh:ml-prediction market-data started=2026-10-29T03:30:20Z token=26ccac70b69a3ef9
+  only 31G free — pruning before build
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   70G   31G  70% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   70G   31G  70% /
+── ml-prediction ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-ml-prediction Built
+ Container stockai-ml-prediction-1 Starting
+ Container stockai-ml-prediction-1 Started
+── market-data ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-market-data Built
+ Container stockai-market-data-1 Starting
+ Container stockai-market-data-1 Started
+── verify (settling 45s) ──────────────────────────────
+  ml-prediction: running/healthy
+  market-data: running/healthy
+  all declared services present
+  host: 31G free, iowait 3.3%
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   70G   31G  70% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   70G   31G  70% /

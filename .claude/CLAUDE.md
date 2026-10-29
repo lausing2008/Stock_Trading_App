@@ -490,6 +490,8 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 - **2026-10-25 RZY ingestion:** [session counters, observed post-close writes and protected evidence capture](../docs/2026-10-25/rzy-ingest-observations-and-session-evidence.md); incremental loading and trading acceptance remain open.
 
-- **`docs/audits/2026-10-28-f04-fencing-s03-independent-review.md`** — Fencing held: resweep race, selection identity/integrity and rollback gaps; S0-3 source passes review, replay counts qualified. Offline witnesses; no deployment.
+- **`docs/audits/2026-10-28-f04-fencing-s03-independent-review.md`** — Historical PF-01–PF-05 witnesses and S0-3 review; fixes subsequently verified and fencing deployed 15e2abac. See remediation/deployment records.
 
 - **`docs/audits/2026-10-28-f04-fencing-remediation-review.md`** — Final review 61fcd58c closes RF-01/RF-02; guarded deployment cleared after offline tests. V2 off, promotion refused; qualification and baseline B remain open.
+
+- **`docs/features/2026-10-28-f04-publication-fencing.md`** — DEPLOYED 15e2abac to ML/market-data, 15 healthy and 0/12 drift; v2 off, promotion refused, rollback images retained. Qualification and baseline B remain open.
