@@ -130,7 +130,7 @@ without `max_hold_days` raises `KeyError`. Recorded, not fixed here.
 | `rzy_data.prepare_bars` (open/close, grid, session filter, gaps, staleness, blockers) | reuse through the contract (US only) |
 | `aggregate_completed_bars` / native-vs-derived selection | wrap: record the source; forming 15m never used as context |
 | 2-minute settle | wrap as a named contract constant; the cutoff is not availability evidence |
-| Provider availability | gap: store observed availability (`bar_provenance.first_written_at`), provider publish time `unknown` |
+| Provider availability | gap: Stage C records `input_read_at` only; exact-version first availability stays unknown (design §4, CDR-01); provider publish time `unknown` |
 | Detection vs data cutoff (F09 clock pattern) | reuse the pattern |
 | Entry expiry, max hold, session-end exit | gap: defined by the contract |
 | Revisions (`bar_provenance`, `bar_revisions`) | wrap: setups immutable; revised inputs flagged, never edited |
@@ -140,6 +140,12 @@ without `max_hold_days` raises `KeyError`. Recorded, not fixed here.
 | F03 occurrence/snapshot pattern | reuse the pattern in new Intraday tables |
 
 ### Persistence decision for the design
+
+> **Superseded (2026-10-29).** Item 1 below (adding `INTRADAY` to `signalhorizon`) was rejected
+> in review: Intraday uses separate storage and the shared enum stays unchanged. See the
+> [contract design](2026-10-29-intraday-stage-c-contract-design.md) §1. Items 2–4 stand, except
+> that `bar_provenance.first_written_at` is **not** used as availability evidence (design §4,
+> review CDR-01).
 
 The inventory supports this shape, which the Stage C design will specify:
 
