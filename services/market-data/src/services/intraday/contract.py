@@ -317,6 +317,7 @@ class InputRecord:
     derived_hash: str | None
     readable_at: datetime
     input_read_at: datetime
+    read_clock_basis: str = "observed"         # observed | replay_logical
     first_available_at: datetime | None = None
     availability_basis: str = "unknown_exact_version"
     provider_published_at: datetime | None = None

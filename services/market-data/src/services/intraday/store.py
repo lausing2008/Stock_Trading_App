@@ -131,7 +131,8 @@ def record_evaluation(conn, *, batch_id: str, run_key: str, identity: str, stock
             setup_id=sid, run_key=run_key, role=i.role, timeframe=i.timeframe, bar_open=_naive(i.bar_open),
             source=i.source, bar_values=i.values, raw_hash=i.raw_hash, source_hash=i.source_hash,
             input_hash=i.input_hash, derived_hash=i.derived_hash, readable_at=_naive(i.readable_at),
-            input_read_at=_naive(i.input_read_at), first_available_at=_naive(i.first_available_at),
+            input_read_at=_naive(i.input_read_at), read_clock_basis=i.read_clock_basis,
+            first_available_at=_naive(i.first_available_at),
             availability_basis=i.availability_basis, provider_published_at=_naive(i.provider_published_at)))
     basis = "observed" if run_key == c.OBSERVED_RUN else "replay_logical"
     conn.execute(transitions.insert().values(

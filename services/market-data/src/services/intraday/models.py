@@ -137,6 +137,8 @@ inputs = Table(
     Column("derived_hash", String(64)),
     Column("readable_at", DateTime, nullable=False),
     Column("input_read_at", DateTime, nullable=False),
+    #: observed: the evaluator's real read time; replay_logical: the replay's data cutoff
+    Column("read_clock_basis", String(16), nullable=False),
     Column("first_available_at", DateTime),
     Column("availability_basis", String(32), nullable=False),
     Column("provider_published_at", DateTime),
@@ -148,6 +150,7 @@ inputs = Table(
     CheckConstraint("first_available_at IS NOT NULL OR availability_basis = 'unknown_exact_version'",
                     name="ck_intraday_input_availability"),
     CheckConstraint("readable_at <= input_read_at", name="ck_intraday_input_read_after_readable"),
+    CheckConstraint(_in("read_clock_basis", ("observed", "replay_logical")), name="ck_intraday_input_read_clock"),
 )
 
 transitions = Table(

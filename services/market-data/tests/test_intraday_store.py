@@ -1,4 +1,4 @@
-"""Runs intraday_store_suite.py outside this directory's stubbing conftest (it needs real
+"""Runs intraday_store_suite.py and intraday_inputs_suite.py outside this directory's stubbing conftest (it needs real
 SQLAlchemy): always on SQLite; on PostgreSQL 16 when INTRADAY_PG_URL names a disposable database
 (REQUIRED by `make test-integration-pg-schema`, which provides one)."""
 import os
@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-SUITE = pathlib.Path(__file__).with_name("intraday_store_suite.py")
+SUITES = [pathlib.Path(__file__).with_name(n) for n in ("intraday_store_suite.py", "intraday_inputs_suite.py")]
 PG_URL = os.environ.get("INTRADAY_PG_URL")
 if os.environ.get("INTRADAY_PG_REQUIRED") == "1" and not PG_URL:
     raise RuntimeError("INTRADAY_PG_REQUIRED needs a disposable INTRADAY_PG_URL")
@@ -17,8 +17,8 @@ if os.environ.get("INTRADAY_PG_REQUIRED") == "1" and not PG_URL:
 def _run(url):
     env = dict(os.environ, INTRADAY_SUITE_URL=url)
     return subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--noconftest",
-                           "-W", "ignore", str(SUITE)], capture_output=True, text=True, timeout=300, env=env,
-                          cwd=str(SUITE.parent))
+                           "-W", "ignore", *map(str, SUITES)], capture_output=True, text=True, timeout=300,
+                          env=env, cwd=str(SUITES[0].parent))
 
 
 def test_intraday_storage_contract_on_sqlite():
