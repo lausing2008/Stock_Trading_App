@@ -286,3 +286,15 @@ def test_intraday_records_leave_daily_outputs_identical_structural(tmp_path):
         after = _daily_outputs(s)
     assert before == after
     assert before["summary"]["overall"] and before["consensus"]          # the comparison is not vacuous
+
+
+def test_outcome_evaluator_pending_read_is_daily_only_compiled():
+    """compiled: the evaluator's pending-signal select (frozen first BUY/SELL) carries the
+    daily predicate. Code presence on PostgreSQL."""
+    s = _CaptureSession()
+    try:
+        outcomes.evaluate_signal_outcomes(session=s, _="u")
+    except Exception:  # noqa: BLE001 - only the statements already issued matter
+        pass
+    pending = [q for q in map(_sql, s.stmts) if "first_buy_sell_signal IN" in q and "FROM signals" in q]
+    assert len(pending) == 1 and DAILY_SQL in pending[0], pending

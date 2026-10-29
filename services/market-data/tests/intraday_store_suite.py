@@ -356,6 +356,7 @@ def test_archive_is_atomic_and_retry_safe(engine):
         remaining = conn.execute(select(m.evaluations.c.result)).scalars().all()
     assert first["deleted"] == 3 and again["deleted"] == 0
     assert counts == {"no_setup": 3, "setup": 1} and remaining == ["setup"]
+    assert first["counts"] == again["counts"] == {"no_setup": 3, "setup": 1}    # a retry reports the archive
 
 
 def test_whole_setup_deletion_leaves_no_orphans_and_never_takes_unresolved_exposure(engine):
@@ -477,3 +478,24 @@ def test_unresolved_exposure_stays_visible_after_its_session(engine):
         assert [x["symbol"] for x in out["items"]] == ["AAA"] and out["items"][0]["execution_grade"] is False
         store.append_transition(conn, setup_id=sid, to_state="reconciled", event=ev(at(20, 30)), idempotency_key="r")
         assert R.list_unresolved(conn, market="US", mode="observed", run_key=None)["items"] == []
+
+
+@pg_only
+def test_partial_indexes_refuse_a_second_terminal_or_reconciliation_even_without_the_trigger(engine):
+    """The one-session-terminal and one-reconciled indexes are backstops behind the append
+    trigger and the pair CHECK. Witnessed with the trigger disabled inside the test transaction
+    (rolled back), appending a stale-but-legal pair a second time."""
+    with engine.begin() as conn:
+        i = ident(conn)
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        store.append_transition(conn, setup_id=sid, to_state="entered", event=ev(at(14, 12)), idempotency_key="e")
+        store.append_transition(conn, setup_id=sid, to_state="unresolved_exit_at_close", event=ev(at(20, 1)),
+                                idempotency_key="u")
+        store.append_transition(conn, setup_id=sid, to_state="reconciled", event=ev(at(20, 30)), idempotency_key="r")
+    raw = dict(setup_id=sid, run_key="observed", decided_at=at(21, 0), clock_basis="observed")
+    for extra in (dict(seq=6, from_state="unresolved_exit_at_close", to_state="reconciled", idempotency_key="r2"),
+                  dict(seq=6, from_state="entered", to_state="unresolved_exit_at_close", idempotency_key="u2")):
+        with pytest.raises(IntegrityError, match="uq_intraday_one_"):
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE intraday_setup_transitions DISABLE TRIGGER intraday_transition_append"))
+                conn.execute(m.transitions.insert().values(**raw, **extra))
