@@ -1,0 +1,18 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+____ test_both_signal_upserts_bind_a_validated_daily_horizon_code_presence _____
+
+    def test_both_signal_upserts_bind_a_validated_daily_horizon_code_presence():
+        """code presence: the two INSERT ... CAST(:hor AS signalhorizon) executions pass
+        hor=parse_daily_horizon(...), so an INTRADAY value raises before SQL."""
+        tree = ast.parse((SRC / "api" / "routes.py").read_text())
+        hors = [kw for n in ast.walk(tree) if isinstance(n, ast.Call) for kw in n.keywords if kw.arg == "hor"]
+        assert len(hors) == 2
+>       assert all(isinstance(k.value, ast.Call) and getattr(k.value.func, "id", None) == "parse_daily_horizon" for k in hors)
+E       assert False
+E        +  where False = all(<generator object test_both_signal_upserts_bind_a_validated_daily_horizon_code_presence.<locals>.<genexpr> at 0x77499d9b6260>)
+
+intraday_isolation_suite.py:129: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_isolation_suite.py::test_both_signal_upserts_bind_a_validated_daily_horizon_code_presence
+1 failed, 24 deselected in 1.99s

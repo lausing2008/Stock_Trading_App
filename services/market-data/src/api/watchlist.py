@@ -1,6 +1,8 @@
 """Watchlist endpoints — per-user, multi-list support."""
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from common.horizons import UnsupportedHorizon, parse_daily_horizon
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -42,14 +44,35 @@ class WatchlistOut(BaseModel):
     created_at: str
 
 
+def _daily_style(value):
+    """Intraday Stage C §10: a watchlist style is a DAILY horizon or empty. INTRADAY (a separate
+    same-session horizon) and unknown values are refused here, at the write."""
+    if value is None or value == "":
+        return value
+    try:
+        return parse_daily_horizon(value)
+    except UnsupportedHorizon as exc:
+        raise ValueError(f"trading_style must be one of SHORT, SWING, LONG, GROWTH (got {value!r})") from exc
+
+
 class CreateWatchlistRequest(BaseModel):
     name: str
     trading_style: str | None = None
+
+    @field_validator("trading_style")
+    @classmethod
+    def _style(cls, v):
+        return _daily_style(v)
 
 
 class RenameWatchlistRequest(BaseModel):
     name: str
     trading_style: str | None = None
+
+    @field_validator("trading_style")
+    @classmethod
+    def _style(cls, v):
+        return _daily_style(v)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

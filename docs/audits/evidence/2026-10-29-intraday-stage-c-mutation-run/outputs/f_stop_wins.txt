@@ -1,0 +1,17 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_______ test_entry_bar_double_touch_is_a_stop_and_intrabar_time_unknown ________
+
+    def test_entry_bar_double_touch_is_a_stop_and_intrabar_time_unknown():
+        bs = bars(at(14, 0), 40)
+        bs[2] = f.Bar(at(14, 10), 100.0, 103.0, 98.0, 100.0)
+        r = sim(bs)
+>       assert (r.state, r.exit_reason, r.exit_at, r.exit_intrabar_time) == ("exited", "stop", at(14, 10), "unknown")
+E       AssertionError: assert ('exited', 't...c), 'unknown') == ('exited', 's...c), 'unknown')
+E         At index 1 diff: 'target' != 'stop'
+E         Use -v to get more diff
+
+tests/test_intraday_contract.py:213: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_contract.py::test_entry_bar_double_touch_is_a_stop_and_intrabar_time_unknown
+1 failed, 39 deselected in 0.11s

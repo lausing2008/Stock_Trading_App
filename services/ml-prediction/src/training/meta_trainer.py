@@ -60,6 +60,7 @@ HORIZON_MAP: dict[str, int] = {
 # trainer.py is the module this file's own callers (predict_latest_ensemble_three) rely on,
 # so it is the de facto authoritative definition of what each style's horizon means.
 from .trainer import _HORIZON_BY_STYLE as _HORIZON_DAYS
+from common.horizons import DAILY_HORIZONS  # Intraday Stage C §10: daily outcomes only
 
 
 def _market_cap_bin(market_cap: float | None) -> int:
@@ -138,9 +139,10 @@ def train_meta_model(db=None) -> dict:
                 LIMIT 1
             ) f ON true
             WHERE so.is_correct IS NOT NULL
+              AND CAST(so.horizon AS text) = ANY(:daily_horizons)
             ORDER BY so.signal_date DESC
             LIMIT 20000
-        """)).fetchall()
+        """), {"daily_horizons": list(DAILY_HORIZONS)}).fetchall()
     finally:
         if _close_session:
             _session.close()

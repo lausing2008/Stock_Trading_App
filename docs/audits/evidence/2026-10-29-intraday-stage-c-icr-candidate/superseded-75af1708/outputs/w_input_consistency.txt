@@ -1,0 +1,144 @@
+FFFFFFFFFF                                                               [100%]
+=================================== FAILURES ===================================
+_ test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[bar open] _
+
+engine = Engine(sqlite://), case = 'bar open'
+
+    @pytest.mark.parametrize("case", sorted(_TAMPERED))
+    def test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write(engine, case):
+        rec = _TAMPERED[case]()
+        assert c.hashes_from_evidence(rec.evidence)["input_hash"] == rec.input_hash      # the hashes still recompute
+        with engine.begin() as conn:
+>           with pytest.raises(c.ContractViolation):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:984: Failed
+_ test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[constituent is itself derived] _
+
+engine = Engine(sqlite://), case = 'constituent is itself derived'
+
+    @pytest.mark.parametrize("case", sorted(_TAMPERED))
+    def test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write(engine, case):
+        rec = _TAMPERED[case]()
+        assert c.hashes_from_evidence(rec.evidence)["input_hash"] == rec.input_hash      # the hashes still recompute
+        with engine.begin() as conn:
+>           with pytest.raises(c.ContractViolation):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:984: Failed
+_ test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[consumed close] _
+
+engine = Engine(sqlite://), case = 'consumed close'
+
+    @pytest.mark.parametrize("case", sorted(_TAMPERED))
+    def test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write(engine, case):
+        rec = _TAMPERED[case]()
+        assert c.hashes_from_evidence(rec.evidence)["input_hash"] == rec.input_hash      # the hashes still recompute
+        with engine.begin() as conn:
+>           with pytest.raises(c.ContractViolation):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:984: Failed
+_ test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[derived missing a constituent] _
+
+engine = Engine(sqlite://), case = 'derived missing a constituent'
+
+    @pytest.mark.parametrize("case", sorted(_TAMPERED))
+    def test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write(engine, case):
+        rec = _TAMPERED[case]()
+        assert c.hashes_from_evidence(rec.evidence)["input_hash"] == rec.input_hash      # the hashes still recompute
+        with engine.begin() as conn:
+>           with pytest.raises(c.ContractViolation):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:984: Failed
+_ test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[derived not 15m] _
+
+engine = Engine(sqlite://), case = 'derived not 15m'
+
+    @pytest.mark.parametrize("case", sorted(_TAMPERED))
+    def test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write(engine, case):
+        rec = _TAMPERED[case]()
+        assert c.hashes_from_evidence(rec.evidence)["input_hash"] == rec.input_hash      # the hashes still recompute
+        with engine.begin() as conn:
+>           with pytest.raises(c.ContractViolation):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:984: Failed
+_ test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[derived not the aggregate] _
+
+engine = Engine(sqlite://), case = 'derived not the aggregate'
+
+    @pytest.mark.parametrize("case", sorted(_TAMPERED))
+    def test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write(engine, case):
+        rec = _TAMPERED[case]()
+        assert c.hashes_from_evidence(rec.evidence)["input_hash"] == rec.input_hash      # the hashes still recompute
+        with engine.begin() as conn:
+>           with pytest.raises(c.ContractViolation):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:984: Failed
+_ test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[price basis] _
+
+engine = Engine(sqlite://), case = 'price basis'
+
+    @pytest.mark.parametrize("case", sorted(_TAMPERED))
+    def test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write(engine, case):
+        rec = _TAMPERED[case]()
+        assert c.hashes_from_evidence(rec.evidence)["input_hash"] == rec.input_hash      # the hashes still recompute
+        with engine.begin() as conn:
+>           with pytest.raises(c.ContractViolation):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:984: Failed
+_ test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[raw and transformed bar opens differ] _
+
+engine = Engine(sqlite://), case = 'raw and transformed bar opens differ'
+
+    @pytest.mark.parametrize("case", sorted(_TAMPERED))
+    def test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write(engine, case):
+        rec = _TAMPERED[case]()
+        assert c.hashes_from_evidence(rec.evidence)["input_hash"] == rec.input_hash      # the hashes still recompute
+        with engine.begin() as conn:
+>           with pytest.raises(c.ContractViolation):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:984: Failed
+_ test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[source kind] _
+
+engine = Engine(sqlite://), case = 'source kind'
+
+    @pytest.mark.parametrize("case", sorted(_TAMPERED))
+    def test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write(engine, case):
+        rec = _TAMPERED[case]()
+        assert c.hashes_from_evidence(rec.evidence)["input_hash"] == rec.input_hash      # the hashes still recompute
+        with engine.begin() as conn:
+>           with pytest.raises(c.ContractViolation):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:984: Failed
+_ test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[timeframe] _
+
+engine = Engine(sqlite://), case = 'timeframe'
+
+    @pytest.mark.parametrize("case", sorted(_TAMPERED))
+    def test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write(engine, case):
+        rec = _TAMPERED[case]()
+        assert c.hashes_from_evidence(rec.evidence)["input_hash"] == rec.input_hash      # the hashes still recompute
+        with engine.begin() as conn:
+>           with pytest.raises(c.ContractViolation):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:984: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[bar open]
+FAILED intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[constituent is itself derived]
+FAILED intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[consumed close]
+FAILED intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[derived missing a constituent]
+FAILED intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[derived not 15m]
+FAILED intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[derived not the aggregate]
+FAILED intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[price basis]
+FAILED intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[raw and transformed bar opens differ]
+FAILED intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[source kind]
+FAILED intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[timeframe]
+10 failed, 47 deselected in 1.62s

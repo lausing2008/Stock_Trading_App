@@ -1,0 +1,69 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_ test_scheduled_and_fill_times_recorded_later_remain_valid_but_expiry_is_fixed _
+
+engine = Engine(sqlite://)
+
+    def test_scheduled_and_fill_times_recorded_later_remain_valid_but_expiry_is_fixed(engine):
+        with engine.begin() as conn:
+            i = ident(conn)
+            b = batch(conn, i)
+            sid = a_setup(conn, i, b)["setup_id"]
+            store.append_transition(conn, setup_id=sid, to_state="entered", effective_at=at(14, 10), idempotency_key="e",
+                                    event=ev(at(14, 12)))
+            store.append_transition(conn, setup_id=sid, to_state="exited", reason="liquidation", effective_at=T.liquidation_at,
+                                    idempotency_key="x", event=c.EventTimes(T.close, T.close, T.close + timedelta(minutes=5),
+                                                                            "observed"))
+            s2 = a_setup(conn, i, b, symbol="BBB", stock_id=2)["setup_id"]
+            with pytest.raises(c.ContractViolation, match="cannot be dated"):
+                store.append_transition(conn, setup_id=s2, to_state="expired", effective_at=at(14, 15),
+                                        idempotency_key="x2", event=ev(at(14, 25)))
+>           store.append_transition(conn, setup_id=s2, to_state="expired", idempotency_key="x3", event=ev(at(14, 25)))
+
+intraday_store_suite.py:886: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+conn = <sqlalchemy.engine.base.Connection object at 0x71ba78cbe5a0>
+
+    def append_transition(conn, *, setup_id: int, to_state: str, event: c.EventTimes, reason: str | None = None,
+                          evidence: dict | None = None, idempotency_key: str, effective_at=None) -> dict:
+        """Append one state change after locking the setup. A repeat of the same idempotency key is
+        a no-op that returns the stored row (checked again under the lock, so a concurrent identical
+        retry returns the stored row rather than hitting the unique key).
+    
+        Timing depends on the event type (review ICR-01). Only a research fill or scheduled order
+        (`contract.FILL_STATES`) may pass an `effective_at` earlier than `decided_at`: its bar open,
+        never before the previous transition's. Every other state's effective time is fixed by the
+        contract (`required_effective_time`): a cancellation takes effect when decided (observed) or
+        at eligible + replay latency, and only before the candidate entry. The clock basis must be
+        the run's own: observed runs observe, replays use the logical clock."""
+        def _done():
+            row = conn.execute(select(transitions.c.seq).where(transitions.c.idempotency_key == idempotency_key)).first()
+            return None if row is None else {"seq": row.seq, "created": False}
+        if (d := _done()) is not None:
+            return d
+        setup = _lock_setup(conn, setup_id)
+        if (d := _done()) is not None:
+            return d
+        if event.clock_basis != _basis_for(setup.run_key):
+            raise c.ContractViolation(f"{event.clock_basis} clock on a {_basis_for(setup.run_key)} record")
+        if event.decided_at is None:
+            raise c.ContractViolation("a transition needs its decided_at")
+        if event.clock_basis == "observed":
+            c.effective_time(event)            # validates eligible <= observed <= decided
+        config = conn.execute(select(identities.c.config).where(identities.c.identity_hash == setup.identity_hash)).scalar()
+        required = c.required_effective_time(to_state, event, detected_at=setup.detected_at,
+                                             entry_expires_at=setup.entry_expires_at,
+                                             params=c.Params(replay_latency_s=config["replay_latency_s"]))
+        if required is not None and effective_at is not None and c.utc(effective_at) != required:
+            raise c.ContractViolation(f"{to_state} takes effect at {required.isoformat()}; it cannot be dated "
+                                      f"{c.utc(effective_at).isoformat()}")
+        eff = None if required is not None else (c.utc(effective_at) if effective_at is not None
+                                                     else c.utc(event.decided_at))
+>       if eff > c.utc(event.decided_at):
+E       TypeError: '>' not supported between instances of 'NoneType' and 'datetime.datetime'
+
+../src/services/intraday/store.py:211: TypeError
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_scheduled_and_fill_times_recorded_later_remain_valid_but_expiry_is_fixed
+1 failed, 56 deselected in 1.29s

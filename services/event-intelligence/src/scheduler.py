@@ -121,6 +121,7 @@ async def job_recompute_catalyst():
     # Fetch latest ta_score per stock from signals table
     from db import SessionLocal
     from sqlalchemy import text
+    from common.horizons import DAILY_HORIZONS
     _tech_scores = {}
     _atr_pcts: dict[int, float] = {}
     try:
@@ -129,8 +130,9 @@ async def job_recompute_catalyst():
                 "SELECT DISTINCT ON (stock_id) stock_id, (reasons->>'ta_score')::float AS ta_score, "
                 "(reasons->>'atr_14_pct')::float AS atr_14_pct "
                 "FROM signals WHERE reasons->>'ta_score' IS NOT NULL "
+                "AND CAST(horizon AS text) = ANY(:daily_horizons) "  # Intraday Stage C §10
                 "ORDER BY stock_id, ts DESC"
-            )).fetchall()
+            ), {"daily_horizons": list(DAILY_HORIZONS)}).fetchall()
             _tech_scores = {r[0]: float(r[1]) for r in rows if r[1] is not None}
             # T237-EI3: _compute_risk_score's "Volatility risk (ATR % passed from signal)" branch
             # was permanently dead — no caller anywhere ever passed a non-default atr_pct, so

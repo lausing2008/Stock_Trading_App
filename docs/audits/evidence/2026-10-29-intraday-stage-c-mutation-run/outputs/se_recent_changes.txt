@@ -1,0 +1,29 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______ test_recent_changes_statement_carries_the_daily_predicate_compiled ______
+
+    def test_recent_changes_statement_carries_the_daily_predicate_compiled():
+        row = MagicMock(id=1, symbol="AAA")
+        row.name = "a"
+        s = _CaptureSession(first_rows=[row])
+        routes.recent_signal_changes(symbols="AAA", hours=48, session=s)
+>       _assert_guarded(s)
+
+intraday_isolation_suite.py:204: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+session = <intraday_isolation_suite._CaptureSession object at 0x7b4820f0ae70>
+
+    def _assert_guarded(session, *, tables=("signals", "signal_outcomes", "signal_outcome_horizons")):
+        reads = [s for s in map(_sql, session.stmts) if any(f"FROM {t}" in s or f"JOIN {t}" in s for t in tables)]
+        assert reads, "the reader executed no statement against the daily tables"
+        for s in reads:
+>           assert DAILY_SQL in s, s[:400]
+E           AssertionError: SELECT anon_1.stock_id, anon_1.horizon, anon_1.signal, anon_1.ts, anon_1.confidence, anon_1.bullish_probability, anon_1.rn 
+E             FROM (SELECT signals.stock_id AS stock_id, signals.horizon AS horizon, signals.signal AS signal, signals.ts AS ts, signals.confidence AS confidence, signals.bullish_probability AS bullish_probability, row_number() OVER (PARTITION BY signals.stock_id, signals.horizon ORDER BY 
+E           assert "horizon IN ('SHORT', 'SWING', 'LONG', 'GROWTH')" in "SELECT anon_1.stock_id, anon_1.horizon, anon_1.signal, anon_1.ts, anon_1.confidence, anon_1.bullish_probability, anon...\nWHERE signals.stock_id IN (1) AND signals.ts >= '2026-10-27 06:49:00.077373+00:00') AS anon_1 \nWHERE anon_1.rn <= 2"
+
+intraday_isolation_suite.py:168: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_isolation_suite.py::test_recent_changes_statement_carries_the_daily_predicate_compiled
+1 failed, 24 deselected in 2.07s

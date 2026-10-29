@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from common.horizons import DAILY_HORIZONS, UnsupportedHorizon, parse_daily_horizon
 from common.jwt_auth import get_current_username
 from common.outcome_price_basis import resolve_window as _resolve_outcome_basis
 from db import CorporateAction, CorporateActionCoverage, Price, Signal, SignalHorizon, SignalOutcome, SignalOutcomeHorizon, SignalType, Stock, TimeFrame, TuneHistory, get_session
@@ -29,6 +30,14 @@ from .signals_shared import (
 )
 
 router = APIRouter(prefix="/signals", tags=["signals"])
+
+
+def _hold_days_for(horizon, direction: str) -> int:
+    """The outcome hold window for a DAILY horizon. Anything else (INTRADAY, an unknown value)
+    raises UnsupportedHorizon so the caller skips and counts that row instead of a KeyError
+    aborting the whole batch (Intraday Stage C design §10)."""
+    h = parse_daily_horizon(horizon)
+    return _SELL_OUTCOME_HOLD_DAYS[h] if direction == "SELL" else _OUTCOME_HOLD_DAYS[h]
 
 # ── SELFIMPROVE-NO-RETRO-FEEDBACK-LOOP: close the loop on tune_history ────────
 # Every calibration mechanism (calibrate_ta_weights, calibrate_ml_weight, calibrate_
@@ -232,6 +241,7 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         .where(
             Signal.first_buy_sell_signal.in_([SignalType.BUY, SignalType.SELL]),
             Signal.first_buy_sell_at <= datetime.combine(cutoff, _time.max),
+            Signal.horizon.in_([SignalHorizon(h) for h in DAILY_HORIZONS]),
         )
         .order_by(Signal.first_buy_sell_at)
     ).all()
@@ -363,22 +373,24 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
     # in its own try/except so one bad row can't take down any other row in the same run.
     _COMMIT_EVERY = 25
     _since_commit = 0
+    skipped_unsupported_horizon = 0
 
     for sig, symbol, is_delisted in pending_signals:
         if sig.id in evaluated_ids:
             continue
 
         horizon = sig.horizon.value
+        try:
+            hold_days = _hold_days_for(horizon, "SELL" if sig.first_buy_sell_signal == SignalType.SELL else "BUY")
+        except UnsupportedHorizon:
+            skipped_unsupported_horizon += 1
+            continue
         # AUD-SIGNAL3-EVALSELECTIONBIAS: sig.signal/sig.ts below are the LIVE, ever-changing
         # display columns — the trade thesis being measured is the one captured in
         # first_buy_sell_signal/first_buy_sell_at, which is what every read in this loop now
         # uses instead (matches the WHERE clause above, which already filters on the same
         # frozen columns).
-        # T232-SIG10: SELL uses its own shorter hold window — see _SELL_OUTCOME_HOLD_DAYS above.
-        hold_days = (
-            _SELL_OUTCOME_HOLD_DAYS[horizon] if sig.first_buy_sell_signal == SignalType.SELL
-            else _OUTCOME_HOLD_DAYS[horizon]
-        )
+        # T232-SIG10: SELL uses its own shorter hold window — see _SELL_OUTCOME_HOLD_DAYS (above).
         signal_date = sig.first_buy_sell_at.date()
 
         # Skip if another signal_id for the same (stock, horizon, date) was already evaluated.
@@ -679,10 +691,10 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         for sig, symbol, is_delisted in pending_signals:
             signal_date = sig.first_buy_sell_at.date()
             sig_dir = sig.first_buy_sell_signal.value  # "BUY" or "SELL"
-            hold_days = (
-                _SELL_OUTCOME_HOLD_DAYS[sig.horizon.value] if sig_dir == "SELL"
-                else _OUTCOME_HOLD_DAYS[sig.horizon.value]
-            )
+            try:
+                hold_days = _hold_days_for(sig.horizon.value, sig_dir)
+            except UnsupportedHorizon:
+                continue          # already counted in the first pass
             # A set, not a list: SELL SHORT's own hold_days (5) coincides with the 5-day
             # auxiliary window, so this collapses to ONE row for that case, with
             # is_primary_window=True on it — never two rows racing for the same
@@ -828,6 +840,7 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         "horizon_created": horizon_created,
         "horizon_resolved": horizon_resolved,
         "horizon_missing": horizon_missing,
+        "skipped_unsupported_horizon": skipped_unsupported_horizon,
     }
 
 

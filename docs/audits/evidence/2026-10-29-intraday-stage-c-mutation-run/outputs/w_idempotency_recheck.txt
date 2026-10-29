@@ -1,0 +1,31 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________ test_a_concurrent_identical_retry_returns_the_stored_row ___________
+
+engine = Engine(postgresql+psycopg2://postgres:***@localhost:55441/intraday)
+
+    @pg_only
+    def test_a_concurrent_identical_retry_returns_the_stored_row(engine):
+        with engine.begin() as conn:
+            i = ident(conn)
+            sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        barrier, out = threading.Barrier(2), []
+    
+        def go():
+            with engine.begin() as conn:
+                barrier.wait()
+                out.append(store.append_transition(conn, setup_id=sid, to_state="entered", idempotency_key="same",
+                                                   event=ev(at(14, 12))))
+        ts = [threading.Thread(target=go) for _ in range(2)]
+        [t.start() for t in ts]
+        [t.join(10) for t in ts]
+>       assert sorted(o["created"] for o in out) == [False, True] and {o["seq"] for o in out} == {3}
+E       assert ([True] == [False, True]
+E         At index 0 diff: True != False
+E         Right contains one more item: True
+E         Use -v to get more diff)
+
+intraday_store_suite.py:723: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_a_concurrent_identical_retry_returns_the_stored_row
+1 failed, 34 deselected in 1.49s

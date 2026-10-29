@@ -1,0 +1,31 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_____ test_duplicate_trade_roots_and_cross_chain_predecessors_are_rejected _____
+
+engine = Engine(postgresql+psycopg2://postgres:***@localhost:55441/intraday)
+
+    def test_duplicate_trade_roots_and_cross_chain_predecessors_are_rejected(engine):
+        with engine.begin() as conn:
+            i = ident(conn)
+            b = batch(conn, i)
+            s1 = a_setup(conn, i, b)["setup_id"]
+            s2 = a_setup(conn, i, b, symbol="BBB", stock_id=2)["setup_id"]
+            o1 = store.record_outcome(conn, setup_id=s1, kind="trade", window="trade", evaluator_version="v1",
+                                      evidence_hash="e1", status="realized", values={}, now=at(16, 0))["outcome_id"]
+        base = dict(run_key="observed", evaluator_version="v1", status="x", outcome_values={}, recorded_at=at(16, 0))
+        cases = [dict(outcome_key="a" * 64, setup_id=s1, kind="trade", window="trade", evidence_hash="e9"),     # 2nd root
+                 dict(outcome_key="b" * 64, setup_id=s2, kind="trade", window="trade", evidence_hash="e9",
+                      supersedes_id=o1),                                                                      # cross-setup
+                 dict(outcome_key="c" * 64, setup_id=s1, kind="forecast", window="60", evidence_hash="e9",
+                      supersedes_id=o1),                                                                      # cross-window
+                 dict(outcome_key="d" * 64, setup_id=s1, kind="trade", window="60", evidence_hash="e9"),         # bad window
+                 dict(outcome_key="f" * 64, setup_id=s1, kind="trade", window="trade", evidence_hash="e9",
+                      supersedes_id=424242)]                                                                  # orphan
+        for bad in cases:
+>           with pytest.raises(REFUSED):
+E           Failed: DID NOT RAISE (<class 'sqlalchemy.exc.IntegrityError'>, <class 'sqlalchemy.exc.DBAPIError'>, <class 'src.services.intraday.contract.ContractViolation'>)
+
+intraday_store_suite.py:307: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_duplicate_trade_roots_and_cross_chain_predecessors_are_rejected
+1 failed, 34 deselected in 1.30s

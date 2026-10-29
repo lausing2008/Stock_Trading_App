@@ -1,0 +1,27 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_________________ test_meta_trainer_reads_daily_outcomes_only __________________
+
+    def test_meta_trainer_reads_daily_outcomes_only():
+        """captured SQL + bound parameters: the raw SQL meta-model read restricts horizon to the
+        daily set, so an INTRADAY outcome could neither train it nor crowd daily rows out of the
+        20,000-row limit. Code presence on PostgreSQL (the enum cannot hold INTRADAY)."""
+        from unittest.mock import patch
+        mt = _load_meta_trainer()
+        captured = []
+        db = MagicMock()
+        db.execute.return_value.fetchall.return_value = []
+        # train_meta_model does `from sqlalchemy import text` inside the function; this suite's
+        # conftest stubs sqlalchemy, so the SQL string is captured where it is handed over.
+        with patch.object(sys.modules["sqlalchemy"], "text", side_effect=lambda sql: captured.append(sql) or sql):
+            assert mt.train_meta_model(db=db)["trained"] is False
+        sql = next(s for s in captured if "FROM signal_outcomes" in s)
+>       assert "CAST(so.horizon AS text) = ANY(:daily_horizons)" in sql
+E       AssertionError: assert 'CAST(so.horizon AS text) = ANY(:daily_horizons)' in '\n            SELECT so.symbol, so.horizon, so.signal_date, so.confidence,\n                   so.fused_prob, so.ta_s...          WHERE so.is_correct IS NOT NULL\n            ORDER BY so.signal_date DESC\n            LIMIT 20000\n        '
+
+tests/test_intraday_daily_isolation.py:61: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  meta_trainer_isolation:meta_trainer.py:150 meta_trainer.insufficient_data n=0
+=========================== short test summary info ============================
+FAILED tests/test_intraday_daily_isolation.py::test_meta_trainer_reads_daily_outcomes_only
+1 failed, 2 deselected in 0.42s

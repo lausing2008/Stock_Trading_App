@@ -1,0 +1,25 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_________________ test_an_archived_identity_stays_discoverable _________________
+
+engine = Engine(postgresql+psycopg2://postgres:***@127.0.0.1:55448/icr)
+
+    def test_an_archived_identity_stays_discoverable(engine):
+        with engine.begin() as conn:
+            i = ident(conn)
+            b = batch(conn, i)
+            for mi in (0, 5):
+                _no_setup(conn, i, b, mi)
+            store.seal_session(conn, run_key="observed", identity=i, session_date=D, now=at(22, 0))
+            store.archive_session(conn, run_key="observed", identity=i, session_date=D, now=at(22, 30))
+            assert conn.execute(select(func.count()).select_from(m.evaluations)).scalar() == 0
+            found = R.list_identities(conn, market="US", mode="observed", run_key=None, session_date=D)["identities"]
+>           assert [(x["identity_hash"], x["evaluations"]) for x in found] == [(i, 2)]
+E           AssertionError: assert [] == [('4723ba2d35...fce22ef0', 2)]
+E             Right contains one more item: ('4723ba2d358eb9320e4ecc712c8e74cfe5ae3d4492f7ae548d9bb009fce22ef0', 2)
+E             Use -v to get more diff
+
+intraday_store_suite.py:767: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_an_archived_identity_stays_discoverable
+1 failed, 56 deselected in 1.39s

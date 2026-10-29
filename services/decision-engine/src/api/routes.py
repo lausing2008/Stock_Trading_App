@@ -8,6 +8,7 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
+from common.horizons import UnsupportedHorizon, parse_daily_horizon
 from common.jwt_auth import get_current_username
 from common.signal_time import parse_signal_instant
 
@@ -72,7 +73,12 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     # caller didn't already set it via config_overrides (overrides take precedence).
     if "max_daily_loss_pct" not in req.config_overrides:
         cfg["max_daily_loss_pct"] = req.max_daily_loss_pct
-    style = req.style.upper()
+    # Intraday Stage C §10: a daily style only. INTRADAY or an unknown style is refused here;
+    # forwarding it made signal-engine regenerate and return the SWING signal.
+    try:
+        style = parse_daily_horizon(req.style)
+    except UnsupportedHorizon as exc:
+        raise HTTPException(422, {"error": "unsupported_horizon", "horizon": req.style, "hint": exc.hint}) from exc
 
     # 1. Fan-out: fetch signal + research + yfinance price fallback in parallel
     signal_data, research_data, yf_price = await fetch_all(symbol, style)

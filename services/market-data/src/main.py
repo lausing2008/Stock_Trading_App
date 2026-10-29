@@ -6,6 +6,7 @@ from db import init_db
 
 from .api.little_rzy import router as rzy_router
 from .api.valuation import router as valuation_router
+from .api.intraday import router as intraday_router
 from .api.routes import router as data_router
 from .api.admin import router as admin_router
 from .api.auth import router as auth_router
@@ -39,6 +40,10 @@ async def on_startup():
     init_db()
     from .services.dark_pool_ledger import ensure_schema
     ensure_schema()
+    # Intraday Stage C: new tables + insert-only triggers. A failure is recorded and reported by
+    # /intraday/* as schema_unavailable; it must not take market-data down (no generator exists).
+    from .services.intraday.schema import ensure_schema_safely
+    ensure_schema_safely()
     start_scheduler()
     # T230-DATA-STREAMING-QUOTES: long-lived real-time quote WebSocket task, started once at
     # startup on FastAPI's own event loop (this is safe here specifically because on_startup is
@@ -53,6 +58,6 @@ async def on_startup():
 
 app = create_app(
     "market-data-service",
-    routers=[valuation_router, rzy_router, workspace_router, close_router, connections_router, data_router, admin_router, auth_router, watchlists_router, watchlist_router, news_router, alerts_router, signal_alerts_router, journal_router, board_router, positions_router, app_notifications_router, news_impacts_router, flow_delivery_router, long_option_playbook_router, paper_portfolio_router, broker_router, rl_router, push_router, conditional_orders_router, risk_snapshots_router, options_income_router, fed_watch_router],
+    routers=[valuation_router, rzy_router, intraday_router, workspace_router, close_router, connections_router, data_router, admin_router, auth_router, watchlists_router, watchlist_router, news_router, alerts_router, signal_alerts_router, journal_router, board_router, positions_router, app_notifications_router, news_impacts_router, flow_delivery_router, long_option_playbook_router, paper_portfolio_router, broker_router, rl_router, push_router, conditional_orders_router, risk_snapshots_router, options_income_router, fed_watch_router],
     on_startup=on_startup,
 )

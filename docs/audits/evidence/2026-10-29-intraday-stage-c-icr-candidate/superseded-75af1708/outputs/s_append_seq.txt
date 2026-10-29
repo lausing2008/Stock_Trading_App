@@ -1,0 +1,22 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+__________ test_the_database_refuses_an_append_that_skips_the_writer ___________
+
+engine = Engine(postgresql+psycopg2://postgres:***@127.0.0.1:55448/icr)
+
+    @pg_only
+    def test_the_database_refuses_an_append_that_skips_the_writer(engine):
+        with engine.begin() as conn:
+            i = ident(conn)
+            sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        raw = dict(setup_id=sid, run_key="observed", decided_at=at(14, 12), effective_at=at(14, 12), clock_basis="observed")
+        for bad in (dict(seq=3, from_state="detected", to_state="expired_before_detection", idempotency_key="b1"),  # stale from
+                    dict(seq=5, from_state="actionable", to_state="entered", idempotency_key="b2"),               # seq gap
+                    dict(seq=3, from_state="actionable", to_state="exited", idempotency_key="b3")):               # illegal pair
+>           with pytest.raises(DBAPIError):
+E           Failed: DID NOT RAISE <class 'sqlalchemy.exc.DBAPIError'>
+
+intraday_store_suite.py:259: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_the_database_refuses_an_append_that_skips_the_writer
+1 failed, 56 deselected in 1.40s

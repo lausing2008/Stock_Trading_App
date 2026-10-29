@@ -1,0 +1,23 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______________ test_tampered_evidence_is_refused_before_any_write ______________
+
+engine = Engine(sqlite://)
+
+    def test_tampered_evidence_is_refused_before_any_write(engine):
+        """IC-03: an input whose stated hashes do not recompute from its evidence is refused, and
+        nothing is written."""
+        with engine.begin() as conn:
+            i = ident(conn)
+            b = batch(conn, i)
+            bad = an_input(at(14, 0))
+            bad.evidence = dict(bad.evidence, transformed=dict(bad.evidence["transformed"], close=999.0))
+            det = c.decide_at_detection(trigger_bar_open=at(14, 0), detected_at=at(14, 7), direction="bullish", times=T,
+                                        stop_breached=False, inputs_ok=True)
+>           with pytest.raises(c.ContractViolation, match="recompute"):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:736: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_tampered_evidence_is_refused_before_any_write
+1 failed, 34 deselected in 0.85s

@@ -1,0 +1,31 @@
+F..                                                                      [100%]
+=================================== FAILURES ===================================
+_ test_changing_only_an_exit_bar_s_post_exit_extreme_does_not_move_excursions[exit_bar0-False] _
+
+exit_bar = Bar(open_at=datetime.datetime(2026, 10, 28, 14, 20, tzinfo=datetime.timezone.utc), open=101.0, high=102.5, low=100.5, close=102.0)
+widen_low = False
+
+    @pytest.mark.parametrize("exit_bar,widen_low", [
+        (f.Bar(at(14, 20), 101.0, 102.5, 100.5, 102.0), False),   # target-only: only a higher high is post-exit-possible
+        (f.Bar(at(14, 20), 100.0, 103.0, 98.5, 100.0), True),     # double touch -> stop; both extremes unordered
+        (f.Bar(at(14, 20), 98.0, 98.2, 97.5, 98.0), True),        # gap through the stop at the open
+    ])
+    def test_changing_only_an_exit_bar_s_post_exit_extreme_does_not_move_excursions(exit_bar, widen_low):
+        """Widen only extremes that cannot change the modelled exit; the exact excursions stay put."""
+        bs = bars(at(14, 0), 40)
+        bs[4] = exit_bar
+        base = sim(bs)
+        wider = list(bs)
+        wider[4] = f.Bar(exit_bar.open_at, exit_bar.open, exit_bar.high + 50,
+                         exit_bar.low - 50 if widen_low else exit_bar.low, exit_bar.close)
+        moved = sim(wider)
+        assert (moved.exit_reason, moved.exit_price) == (base.exit_reason, base.exit_price)
+>       assert (moved.mae, moved.mfe) == (base.mae, base.mfe)
+E       assert (-0.005, 0.525) == (-0.005, 0.025)
+E         At index 1 diff: 0.525 != 0.025
+E         Use -v to get more diff
+
+tests/test_intraday_contract.py:310: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_contract.py::test_changing_only_an_exit_bar_s_post_exit_extreme_does_not_move_excursions[exit_bar0-False]
+1 failed, 2 passed, 41 deselected in 0.15s

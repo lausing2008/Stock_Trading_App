@@ -1,0 +1,1628 @@
+{
+ "bytecode_written_during_run": [],
+ "commit": "75af17085150855614c45e8d6dce2cd4c801e5a9",
+ "not_required": [
+  {
+   "file": "services/signal-engine/src/api/routes.py",
+   "id": "se_signal_for_swing_fallback",
+   "line": "ai = all_sig[style_key]",
+   "reason": "unreachable: the style is validated at the top of signal_for (case se_signal_for_style), so the old SWING fallback cannot be hit; not an independent guard"
+  },
+  {
+   "file": "services/market-data/src/services/intraday/fills.py",
+   "id": "f_end_of_loop",
+   "line": "raise ContractViolation(\"holding loop ended without an exit or an unobserved interval\")",
+   "reason": "unreachable in research fill model v1: a fully observed session reaches the liquidation open and any missing bar returns path_indeterminate first; the line refuses rather than invents an outcome"
+  }
+ ],
+ "pg_url_host": "127.0.0.1:55448/icr",
+ "required_cases": 93,
+ "results": [
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "unknown_or_intraday_style_is_422",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>0]",
+    "intraday_isolation_suite.py::test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>1]",
+    "intraday_isolation_suite.py::test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>2]",
+    "intraday_isolation_suite.py::test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>3]",
+    "intraday_isolation_suite.py::test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>4]"
+   ],
+   "file": "shared/common/horizons.py",
+   "file_sha256": "e962987a5fdcbac2b0cf2e28cb0702fcdacc56cd68d1bb8e6a0cead3dab8f9d3",
+   "id": "registry",
+   "mutation_diff_sha256": "9bd453ca16d84a48fe9bf108165eea3c12fb521ba383e469a5b9d5061b59fba2",
+   "mutation_sha256": "a53f4654df96f92e466fec6a89d4c5b9c1a7d8ffd9cf7590e40b0b83e0257441",
+   "output_sha256": "9eb2287555cf92c23a6e58726585ca316cd4bc70cd562704b7cc9ef37dbae7c3",
+   "returncode": 1,
+   "seconds": 2.9,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k 422"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "unknown_or_intraday_style_is_422",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>0]"
+   ],
+   "file": "services/signal-engine/src/api/routes.py",
+   "file_sha256": "2a9b895c4214ea71e93b742414321ee7b9bb2405be93fdc0c5919a7a8a8e86d6",
+   "id": "se_all_latest_style",
+   "mutation_diff_sha256": "293db3a200cdaafd5d0885da5ee292d0c8d7558eb356efbf3b84217c86aef5e1",
+   "mutation_sha256": "2c703d5f1de0dd3c5eb8134e9e1078b6a8b7fcda25afb43dca28a42dd36093d2",
+   "output_sha256": "c757cbfe75cfd0e0cfe41f8ce4a1442c7b0a6bf410cbed07616779c3c45b7060",
+   "returncode": 1,
+   "seconds": 2.4,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k 422"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "unknown_or_intraday_style_is_422",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>3]",
+    "intraday_isolation_suite.py::test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>4]"
+   ],
+   "file": "services/signal-engine/src/api/routes.py",
+   "file_sha256": "2a9b895c4214ea71e93b742414321ee7b9bb2405be93fdc0c5919a7a8a8e86d6",
+   "id": "se_signal_for_style",
+   "mutation_diff_sha256": "c0c7df5b4d5ac72d785deaf6a3c28342cb3343729d78d7689b6e20cae92109ba",
+   "mutation_sha256": "c7c12863a024ebffd0a73215904e2a9ac3426922a45cd1a79b8a9afd32dd9aec",
+   "output_sha256": "5350c4061969a2c9165adb25a4ef9c33204b90bdbd3e525984550857f33a92cb",
+   "returncode": 1,
+   "seconds": 2.3,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k 422"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "both_signal_upserts",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_both_signal_upserts_bind_a_validated_daily_horizon_code_presence"
+   ],
+   "file": "services/signal-engine/src/api/routes.py",
+   "file_sha256": "2a9b895c4214ea71e93b742414321ee7b9bb2405be93fdc0c5919a7a8a8e86d6",
+   "id": "se_upsert_hor",
+   "mutation_diff_sha256": "5292b3fc00d6b0ab93439c2b233b7942d00e58be94915885da2061a532fb2529",
+   "mutation_sha256": "3066ea9ed31efa620df4572ad590931e111757d60398711e1e7b0622fc8c8ea5",
+   "output_sha256": "e204a318dff6b3477963059c48733caa00f1bfe440a8c9da1afe00f3e7a8cfb7",
+   "returncode": 1,
+   "seconds": 2.6,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k upserts"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "outcome_loops_route_hold_days",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_both_outcome_loops_route_hold_days_through_the_guard_code_presence"
+   ],
+   "file": "services/signal-engine/src/api/outcomes.py",
+   "file_sha256": "d15405ff278fe7230abb7a00ea61a813feb7bbeb64faec482eded375c5eeef67",
+   "id": "se_outcome_hold_days",
+   "mutation_diff_sha256": "fd5984e3141648380a53d4487f9cbee955d88bb8b3fa5c7b60a0eb0c624cf391",
+   "mutation_sha256": "d8974eab31a312b279e1c8c94faffceeb95f7d4169af766d14314121207fb67b",
+   "output_sha256": "b06cda22daea4f72a9cb90e0d6934953547138cea98a338fe547036c6b983242",
+   "returncode": 1,
+   "seconds": 2.5,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k outcome_loops"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "outcome_evaluator_pending",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_outcome_evaluator_pending_read_is_daily_only_compiled"
+   ],
+   "file": "services/signal-engine/src/api/outcomes.py",
+   "file_sha256": "d15405ff278fe7230abb7a00ea61a813feb7bbeb64faec482eded375c5eeef67",
+   "id": "se_outcome_pending_filter",
+   "mutation_diff_sha256": "aca5d99000d96513d6bd4428193575acb4659afac427576aeda3d3b538c82d7f",
+   "mutation_sha256": "af5c78492a8b32504e4d2760e4868165e9934cca8943d78d439a1f18fdbedfa4",
+   "output_sha256": "d61971b9e167cbdc357b07ca1e55d8fff84d6ff7fa509285b92e1f14ea51c2b0",
+   "returncode": 1,
+   "seconds": 2.9,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k pending"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "calibrate_ta_weights",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_daily_reader_statements_carry_the_daily_predicate_compiled[calibrate_ta_weights-<lambda>]"
+   ],
+   "file": "services/signal-engine/src/api/calibration.py",
+   "file_sha256": "06bee252b3873bde13e67981af4038856c7418f5953822965e881cc4745b0adf",
+   "id": "se_cal_ta",
+   "mutation_diff_sha256": "e3d6fdc3e66754cdc3b12f847b796ade890883651c85c1d86d3bd1ba7c77be28",
+   "mutation_sha256": "51ea7a774d54c982eb175b01355d0abeb61b8c9f1c1b2bc1f94d538f43500c44",
+   "output_sha256": "16101472eb3d6a218742a8c33098f5ad52b857337245bf1210a73d43207c0d4d",
+   "returncode": 1,
+   "seconds": 3.6,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k calibrate_ta_weights"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "calibrate_conviction_weights",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_daily_reader_statements_carry_the_daily_predicate_compiled[calibrate_conviction_weights-<lambda>]"
+   ],
+   "file": "services/signal-engine/src/api/calibration.py",
+   "file_sha256": "06bee252b3873bde13e67981af4038856c7418f5953822965e881cc4745b0adf",
+   "id": "se_cal_conviction",
+   "mutation_diff_sha256": "09eaa4d04bd5ee7407d3565eb721f85f02d7709a4518d113d5fdaa8607311dd9",
+   "mutation_sha256": "cfa0028662a16f7b4e23720b6037d923467b1f70e7b97b9973a4a9a45c54126f",
+   "output_sha256": "af63a6c3b8e4494cbfd60dc4712dfc59264281eabb822eefe6abe227932c1261",
+   "returncode": 1,
+   "seconds": 3.1,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k calibrate_conviction_weights"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "outcomes_calibration",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_daily_reader_statements_carry_the_daily_predicate_compiled[outcomes_calibration-<lambda>]"
+   ],
+   "file": "services/signal-engine/src/api/calibration.py",
+   "file_sha256": "06bee252b3873bde13e67981af4038856c7418f5953822965e881cc4745b0adf",
+   "id": "se_cal_outcomes",
+   "mutation_diff_sha256": "d8c645b975cfcbb9585ca8bf0368424390d32cdd9c7ff5b0af5c46f0c143644d",
+   "mutation_sha256": "7388f2336f17518ccf4f635e3a005d213985fd2ee042a5e613f8ecbf165a7e3f",
+   "output_sha256": "1f0a5ed36521310068bc73577e0342d56239cca0312b90aa1e5a15812e5e6ca9",
+   "returncode": 1,
+   "seconds": 2.7,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k outcomes_calibration"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "signal_accuracy",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_daily_reader_statements_carry_the_daily_predicate_compiled[signal_accuracy-<lambda>]"
+   ],
+   "file": "services/signal-engine/src/api/analytics.py",
+   "file_sha256": "1f6bf6e5fe4f12d02354d850c7c65903015153cd4df8bacd80936bdffadc4e16",
+   "id": "se_accuracy",
+   "mutation_diff_sha256": "d5524164453ed95ba345dfb4493ab79cdde21bc9339d9a9055fa79d6be370f50",
+   "mutation_sha256": "2fa1ebd7ca32de1f6db8c5ec4a078bd5d5cfea7025d3dad06cfc3281dd46f918",
+   "output_sha256": "7ee8a3bd3d702a9416cff9949bf117f7a5bd37230005e900ba87a02539b92ae4",
+   "returncode": 1,
+   "seconds": 2.4,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k signal_accuracy"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "rolling_accuracy",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_daily_reader_statements_carry_the_daily_predicate_compiled[rolling_accuracy-<lambda>]"
+   ],
+   "file": "services/signal-engine/src/api/analytics.py",
+   "file_sha256": "1f6bf6e5fe4f12d02354d850c7c65903015153cd4df8bacd80936bdffadc4e16",
+   "id": "se_rolling",
+   "mutation_diff_sha256": "669e28005a7239d3599b52e5decfbb66af0d8c8e6e39fdbf9ac9cea89b303799",
+   "mutation_sha256": "9ea0ec838dd2346b6a80d53fc4522b4ae982fa9c855d40e79ccb775b8a4ada92",
+   "output_sha256": "3283a0986bd0245840a19059aed3b31cc400166bec897de80834b558c4b78bae",
+   "returncode": 1,
+   "seconds": 2.6,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k rolling_accuracy"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "factor_exposure",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_daily_reader_statements_carry_the_daily_predicate_compiled[factor_exposure-<lambda>]"
+   ],
+   "file": "services/signal-engine/src/api/analytics.py",
+   "file_sha256": "1f6bf6e5fe4f12d02354d850c7c65903015153cd4df8bacd80936bdffadc4e16",
+   "id": "se_factor",
+   "mutation_diff_sha256": "29f8b7fa2f6b4968311a96b45cad7c659e70bfc577f4a6cf580d12f1df1512f0",
+   "mutation_sha256": "e9305769ebf722ef1fb59df4a8b539589ce8a167e1605b7e7404ed2c95a2a56f",
+   "output_sha256": "e44c654cd43633e24f4b7206181162147eb5c5cef4f4d5cea9cef0f8bbbb4b3c",
+   "returncode": 1,
+   "seconds": 2.7,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k factor_exposure"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "walkforward",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_daily_reader_statements_carry_the_daily_predicate_compiled[walkforward_backtest-<lambda>]"
+   ],
+   "file": "services/signal-engine/src/api/analytics.py",
+   "file_sha256": "1f6bf6e5fe4f12d02354d850c7c65903015153cd4df8bacd80936bdffadc4e16",
+   "id": "se_walkforward",
+   "mutation_diff_sha256": "601b4b25d2c620a23a32451379d270ee1ca6cc3ca11336796355704e658c4e9d",
+   "mutation_sha256": "929bbf263d1cae6f57105498fa5e53f7a07e95d998a28b73c26332869b469466",
+   "output_sha256": "e09946caa02f62357bdacd3e147fa126ee2a2e4c49ce46b87fb10ceefc34826e",
+   "returncode": 1,
+   "seconds": 2.7,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k walkforward"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "outcomes_summary",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_daily_reader_statements_carry_the_daily_predicate_compiled[outcomes_summary-<lambda>]"
+   ],
+   "file": "services/signal-engine/src/api/analytics.py",
+   "file_sha256": "1f6bf6e5fe4f12d02354d850c7c65903015153cd4df8bacd80936bdffadc4e16",
+   "id": "se_summary_scored",
+   "mutation_diff_sha256": "3ef9db2e9fa7c41063d136eb29300b36f8b102f2a00609852b329175cd480045",
+   "mutation_sha256": "61b8606ff97d60edf9a35b9e3337ed0acebe348e2755bf907df409276bde15d7",
+   "output_sha256": "e83b48e2fc4fbc233931d5a8fcb14dec3e745cd32b7ab421be579873d798ab23",
+   "returncode": 1,
+   "seconds": 2.2,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k outcomes_summary"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "outcomes_summary",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_daily_reader_statements_carry_the_daily_predicate_compiled[outcomes_summary-<lambda>]"
+   ],
+   "file": "services/signal-engine/src/api/analytics.py",
+   "file_sha256": "1f6bf6e5fe4f12d02354d850c7c65903015153cd4df8bacd80936bdffadc4e16",
+   "id": "se_summary_censored",
+   "mutation_diff_sha256": "ee53f9812ba341e16f0a27eb28acf4ae3d58db0f20b71d4bcea7c34da92853a8",
+   "mutation_sha256": "525d65435b680515a1470afd2953a09337496e0763c97c2d72b3d08a0e8f67ac",
+   "output_sha256": "c0059fc964f74b18f91e1a736222c615e133a4bc90458cee7c46305af286edaa",
+   "returncode": 1,
+   "seconds": 2.4,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k outcomes_summary"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "signal_consensus",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_daily_reader_statements_carry_the_daily_predicate_compiled[signal_consensus-<lambda>]"
+   ],
+   "file": "services/signal-engine/src/api/routes.py",
+   "file_sha256": "2a9b895c4214ea71e93b742414321ee7b9bb2405be93fdc0c5919a7a8a8e86d6",
+   "id": "se_consensus",
+   "mutation_diff_sha256": "4eb34122288bca31da13da07e4038941ce581214203975c7f2d6693f9f3644f8",
+   "mutation_sha256": "c55358a6cc91736b4616025db56acf5382aee391f353a03f1f0069ef5672f9b8",
+   "output_sha256": "87f1d8dbbe3012acbad226fba0c1cac371594647ed2bad0b2083d38330f30072",
+   "returncode": 1,
+   "seconds": 2.7,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k consensus"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "recent_changes",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_recent_changes_statement_carries_the_daily_predicate_compiled"
+   ],
+   "file": "services/signal-engine/src/api/routes.py",
+   "file_sha256": "2a9b895c4214ea71e93b742414321ee7b9bb2405be93fdc0c5919a7a8a8e86d6",
+   "id": "se_recent_changes",
+   "mutation_diff_sha256": "83d79f644e92d170b9880c0b09a43955fab0523e4f96217ccf8150abc764611c",
+   "mutation_sha256": "6fe389ccfbc6933590058dba3a6a9808264fbb955784d90466dadf8d2266dfd1",
+   "output_sha256": "87ae27f50758708b90ddcea35cae5271609c9eb03310caf42ce3863bae437a07",
+   "returncode": 1,
+   "seconds": 2.5,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k recent_changes"
+  },
+  {
+   "cwd": "services/signal-engine/tests",
+   "expected_witness": "calibration_store",
+   "failed_tests": [
+    "intraday_isolation_suite.py::test_calibration_store_read_carries_the_daily_predicate_compiled"
+   ],
+   "file": "services/signal-engine/src/calibration_store.py",
+   "file_sha256": "567ad3af2734895bbb12fc5666107eb47ff9f18e87a235cf3a5a6ebbb16a9bcc",
+   "id": "se_calibration_store",
+   "mutation_diff_sha256": "127b3d938423871153ae04fc8b4fe3f498c1b4e7f519ed5116f1eef72325447d",
+   "mutation_sha256": "5f20b8efeeddccec118a7d778cf7b52ceaf37b631f1fe1ba163dfa0c84b5344d",
+   "output_sha256": "9497707431ce299f52bb7a8d5f566f2de926c005b060ae675c0b5228f9e0c766",
+   "returncode": 1,
+   "seconds": 2.5,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_isolation_suite.py -k calibration_store"
+  },
+  {
+   "cwd": "services/ml-prediction",
+   "expected_witness": "meta_trainer_reads_daily",
+   "failed_tests": [
+    "tests/test_intraday_daily_isolation.py::test_meta_trainer_reads_daily_outcomes_only"
+   ],
+   "file": "services/ml-prediction/src/training/meta_trainer.py",
+   "file_sha256": "13efa2c8454dc4f53ac7f541917885d9785182dc4764cf11b1efa442ee9320cf",
+   "id": "ml_meta_trainer",
+   "mutation_diff_sha256": "d86b6d1830f9ba9fc341073fd930e400ad839a306c6ced852dc26299b27f7c46",
+   "mutation_sha256": "7feda12f50f269118e8d7438ae19d1f462907ad7b5334a3712fe4f5f9633efc3",
+   "output_sha256": "227f3fb252917a23a8e57cfa6adc2ccacdab0c9a459b179a15915c71ee5ef5c1",
+   "returncode": 1,
+   "seconds": 1.5,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_daily_isolation.py -k meta_trainer"
+  },
+  {
+   "cwd": "services/ml-prediction",
+   "expected_witness": "no_route_defaults",
+   "failed_tests": [
+    "tests/test_intraday_daily_isolation.py::test_no_route_defaults_a_horizon_for_an_unknown_style_code_presence"
+   ],
+   "file": "services/ml-prediction/src/api/routes.py",
+   "file_sha256": "f588c13e25973241ee562fbc3108345ebd29b622ee76a71fe7f6e38bcb52fb71",
+   "id": "ml_route_fallback",
+   "mutation_diff_sha256": "371a2528673291511775d16d6ae30720c64e9f00faba89a800ead3a9050848f2",
+   "mutation_sha256": "63926c6c5d31c62802b77549f2511ea716824c960c7b1913f71d3d9e359ae42b",
+   "output_sha256": "9048bce9314db747de642299cd32de041150299f93802b66a640ea763b222b17",
+   "returncode": 1,
+   "seconds": 0.7,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_daily_isolation.py -k route"
+  },
+  {
+   "cwd": "services/event-intelligence",
+   "expected_witness": "catalyst_recompute",
+   "failed_tests": [
+    "tests/test_intraday_daily_isolation.py::test_catalyst_recompute_reads_daily_signals_only"
+   ],
+   "file": "services/event-intelligence/src/scheduler.py",
+   "file_sha256": "b6ac060bd376ee59cebfcb55b281bbf351e0e1b4bd50afec0b8006a41d3c51bc",
+   "id": "ei_catalyst",
+   "mutation_diff_sha256": "590a6ea5c97210a6d034199627d73155697dedbc04f07c2d956b2bbef4655939",
+   "mutation_sha256": "a3ef1c7e78797fb56f75d648007a6a86ee52ad8d6cf081626ad6ea2adeedc7cc",
+   "output_sha256": "a8b0ca87ec6db91255e3dab1c52ab0304fdb17b15f215df53ef30b802e1206b8",
+   "returncode": 1,
+   "seconds": 0.3,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_daily_isolation.py -k catalyst"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "paper_exit_rsi",
+   "failed_tests": [
+    "tests/test_intraday_daily_isolation.py::test_paper_exit_rsi_read_is_daily_only_code_presence"
+   ],
+   "file": "services/market-data/src/services/paper_trading_engine.py",
+   "file_sha256": "6ae8074f5a63c81e74065723ddeab957b95b9059db0043dfea7f0ef8a40c0804",
+   "id": "md_paper_rsi",
+   "mutation_diff_sha256": "2f122e0b0d1559840b303285ed6b3244cf84e2bdbd19965dc77e417c23e05468",
+   "mutation_sha256": "34d6979f397314eb90d430db83f0147836322bea77d9b737a452efad1227ca7a",
+   "output_sha256": "77f82b2f0b683b8f329ddfd48384be65f2ddb79b8b8c0b6e9089112d1202a7b1",
+   "returncode": 1,
+   "seconds": 1.4,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_daily_isolation.py -k paper_exit"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "signal_freshness",
+   "failed_tests": [
+    "tests/test_intraday_daily_isolation.py::test_signal_freshness_checks_ignore_non_daily_rows"
+   ],
+   "file": "services/market-data/src/services/scheduler.py",
+   "file_sha256": "737ddd212ff3399223da501fff5d63f13fec7bd32169f47f2523992d89cbd7c3",
+   "id": "md_dq_freshness",
+   "mutation_diff_sha256": "8c9f227393642a7ae56aa65e0cf4456ae8f5fa20323212666482732a11a21ac9",
+   "mutation_sha256": "525e0760945fe79928b4693087993209042812256a61404e7022d71d11290f44",
+   "output_sha256": "12cd96eee6f45414a6faa87b15615a40d0a77aa67a611c99ba2cf7fc405c3c76",
+   "returncode": 1,
+   "seconds": 1.7,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_daily_isolation.py -k freshness"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "watchlist_curation",
+   "failed_tests": [
+    "tests/test_intraday_daily_isolation.py::test_watchlist_curation_skips_a_non_daily_style_code_presence"
+   ],
+   "file": "services/market-data/src/services/scheduler.py",
+   "file_sha256": "737ddd212ff3399223da501fff5d63f13fec7bd32169f47f2523992d89cbd7c3",
+   "id": "md_curation_skip",
+   "mutation_diff_sha256": "ae7322d77d18d7b029c7954960ac74412b2fc7355383615f34fd05c3cfc61736",
+   "mutation_sha256": "beb99fc49fb4ecdacd438d3e011f61ece00a4e1a62b7cdf5a9c873cc04b7db85",
+   "output_sha256": "dc9be9fe1697ea710218d5c0642f5a2b7712ca1f6bcc46c629bcc1c7e292ab2b",
+   "returncode": 1,
+   "seconds": 1.6,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_daily_isolation.py -k curation"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "watchlist_style_must",
+   "failed_tests": [
+    "tests/test_intraday_daily_isolation.py::test_watchlist_style_must_be_a_daily_horizon[CreateWatchlistRequest]",
+    "tests/test_intraday_daily_isolation.py::test_watchlist_style_must_be_a_daily_horizon[RenameWatchlistRequest]"
+   ],
+   "file": "services/market-data/src/api/watchlist.py",
+   "file_sha256": "222babc37f7d40e0f8fce111501cab94daf09a2e9e26141cfd21c1bbc2d2b1a5",
+   "id": "md_watchlist_style",
+   "mutation_diff_sha256": "bdc4d59569e013769426f666008d8cf792139e87101f6a338eedead5133d0d10",
+   "mutation_sha256": "a048564dd8569bbfeaa2b3cd9825d19517cf4554c77037a682cae7150c1fba5d",
+   "output_sha256": "7665c8d2d1c81a0b5e9193494b1a44fea735eb3da018786931a9068438bb3129",
+   "returncode": 1,
+   "seconds": 1.3,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_daily_isolation.py -k watchlist_style"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "router_registers_before",
+   "failed_tests": [
+    "tests/test_intraday_daily_isolation.py::test_intraday_router_registers_before_the_stocks_catch_all_code_presence"
+   ],
+   "file": "services/market-data/src/main.py",
+   "file_sha256": "475edcf5fb1a4fbef0271f18da51642554eb11134a1e647a4e3bc91fd09d2113",
+   "id": "md_router_order",
+   "mutation_diff_sha256": "cf2ce4a09af13afa94eefcea62cd944644ef19aab2ba391fce34e3d66ca7b543",
+   "mutation_sha256": "656ed3cd449ecda1884695ba55a2b1930b970abac0127ae2e465ab7b641b6753",
+   "output_sha256": "7adcc5a61b2c0e40ea45d1f7f75fa00a42a7ce7c16d10b53da9cc9570e184e17",
+   "returncode": 1,
+   "seconds": 1.3,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_daily_isolation.py -k router"
+  },
+  {
+   "cwd": "services/research-engine",
+   "expected_witness": "latest_signal_reads_daily",
+   "failed_tests": [
+    "tests/test_intraday_daily_isolation.py::test_latest_signal_reads_daily_horizons_only"
+   ],
+   "file": "services/research-engine/src/intel_reports/adapters.py",
+   "file_sha256": "c3c14073f9d5834397622f2eabdbea180bf4abf60b8abf0805f28339f993f6fe",
+   "id": "re_report_signal",
+   "mutation_diff_sha256": "4979bbe6d4e531a373142137975d576cee1bb8030c8ee077a92a31d3bb303191",
+   "mutation_sha256": "4610fefe161fe25360e9fbd8cc27af8a0c290e90694eebb9f225bfd43cc4101f",
+   "output_sha256": "db2bc63b9f3dfe57be302a843966b151ce9a99543e890b7fe5baf1e4a23d1916",
+   "returncode": 1,
+   "seconds": 0.7,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_daily_isolation.py -k latest_signal"
+  },
+  {
+   "cwd": "services/decision-engine",
+   "expected_witness": "decide_refuses",
+   "failed_tests": [
+    "tests/test_intraday_daily_isolation.py::test_decide_refuses_a_non_daily_style_before_any_fetch[INTRADAY]",
+    "tests/test_intraday_daily_isolation.py::test_decide_refuses_a_non_daily_style_before_any_fetch[intraday]",
+    "tests/test_intraday_daily_isolation.py::test_decide_refuses_a_non_daily_style_before_any_fetch[SCALP]"
+   ],
+   "file": "services/decision-engine/src/api/routes.py",
+   "file_sha256": "9775cdf78dfb11a61a529b6600d4f604d7fcd1211038a5a9024bda80b101285f",
+   "id": "de_decide_style",
+   "mutation_diff_sha256": "fa6b54bfe6a1444981c121fe6849e7794f137c163e09a4dce788f5827602ebb4",
+   "mutation_sha256": "7aabe6c8369124d083a88b66f0e6ff423539bb2c64505b7c3e9bac965717dfaf",
+   "output_sha256": "06d760b41c664ebf7e359f4ebb093e43854291ed553262ff298381cc3caffe43",
+   "returncode": 1,
+   "seconds": 1.3,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_daily_isolation.py -k decide"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "exactly_on_a_bar_open",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_detection_exactly_on_a_bar_open_uses_the_next_open"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_strict_open",
+   "mutation_diff_sha256": "7fcc2d856168812fd5a3b2bb751079b525e6d0502b25d67e950f6146cb8ea610",
+   "mutation_sha256": "87d08df72f277222c54ccd171a557e38198b976547497e2e2a0085ed70cde541",
+   "output_sha256": "49b2e84ac118765a34548e71d753481db62a4e9f02109d03a19fe69934d637b1",
+   "returncode": 1,
+   "seconds": 0.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k exactly_on_a_bar_open"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "before_at_and_after_expiry",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_detection_before_at_and_after_expiry"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_expiry_exclusive",
+   "mutation_diff_sha256": "991adce4f9fc2651601704f7e195aab27abb6d0ea637eb15072466bde7b700dd",
+   "mutation_sha256": "be54cd3b1d761f311395adf97c2ae9b9fc3f36aeab680ebcc4a466a3c05ef8a4",
+   "output_sha256": "bb24c0fe4b313e6657259850c94fb681707a49d4f3697225c63559a4a1c52766",
+   "returncode": 1,
+   "seconds": 0.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k expiry"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "cancellation_timing_against_entry",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_cancellation_timing_against_entry"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_cancel_order",
+   "mutation_diff_sha256": "fe8e29de5465f8fa6a92762c51b7c691cbdc77b5561d73f1add0b28a5d7792d4",
+   "mutation_sha256": "355af70a857cf6bd7ca8faec3e357625d945c9c20d224b9fc51af8016443e92d",
+   "output_sha256": "a6d25a3c07bb354a1b8e651b38667002f0b2ab0240c6b3ab8483b13ffcd1ba31",
+   "returncode": 1,
+   "seconds": 0.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k cancellation_timing"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "exactly_at_the_entry_open",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_cancellation_exactly_at_the_entry_open_is_ambiguous"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_tie_ambiguous",
+   "mutation_diff_sha256": "b7d96476e395f02b9239244229221303585c4a1f13c7214cae0b6a243aff0260",
+   "mutation_sha256": "3579289ecdd3a9ed9b9461658e3093e7bbd4cf4bfaf9bde631281d0b0efd6ff1",
+   "output_sha256": "158560f63c8e98724f996b8b3221b41dd78cd24a57309ce3efa83b4095666c91",
+   "returncode": 1,
+   "seconds": 0.7,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k exactly_at_the_entry_open"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "not_backdated",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_a_late_observed_cancellation_is_not_backdated_to_eligibility"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_observed_clock",
+   "mutation_diff_sha256": "41193b2f1d15ea2dcce250bc8c046321edc4a4542d84d1fa61960dabb28fe32d",
+   "mutation_sha256": "d77f735f4229c512a713b6a667f7b6ab10791e96f3959b0ac874ed454fa98e84",
+   "output_sha256": "015c3c4327402f7e247a910c80d2ef2cfa765720ad2e863f7596aa4158d6b4a7",
+   "returncode": 1,
+   "seconds": 0.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k not_backdated"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "double_touch",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_entry_bar_double_touch_is_a_stop_and_intrabar_time_unknown"
+   ],
+   "file": "services/market-data/src/services/intraday/fills.py",
+   "file_sha256": "65d6243e899bc644cd5ab6b11dc6658eba9a64fb9f7d6d3d5ffa781d7d858cd4",
+   "id": "f_stop_wins",
+   "mutation_diff_sha256": "1a8e25c6d34e6b593366b88c3dbd9be427c30121ea9becf590466ee944fa63b0",
+   "mutation_sha256": "6d83b7bc51d3419cb9ab8e72b89592d2bf5c38ca72e68d05c2635ab9f75c2da8",
+   "output_sha256": "04f32b19c597212774b9bd2a334902d389c1286436280fbf747275efd6bb51a6",
+   "returncode": 1,
+   "seconds": 0.7,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k double_touch"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "trade_through",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_target_needs_a_trade_through"
+   ],
+   "file": "services/market-data/src/services/intraday/fills.py",
+   "file_sha256": "65d6243e899bc644cd5ab6b11dc6658eba9a64fb9f7d6d3d5ffa781d7d858cd4",
+   "id": "f_trade_through",
+   "mutation_diff_sha256": "73775318933c8f4f53b47d14028e51f70cbaf528fe587a8f354095206e34c2b2",
+   "mutation_sha256": "04390d4050b07a828b2170081e42cec9389847a6e39943d21e812e129ccb116d",
+   "output_sha256": "847c23493626a95162fe499b94776de907b7801cb0a295071bbe51197c0bfdcf",
+   "returncode": 1,
+   "seconds": 0.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k trade_through"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "gap_through_the_stop_at_entry",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_gap_through_the_stop_at_entry_rejects_the_bracket_without_moving_levels"
+   ],
+   "file": "services/market-data/src/services/intraday/fills.py",
+   "file_sha256": "65d6243e899bc644cd5ab6b11dc6658eba9a64fb9f7d6d3d5ffa781d7d858cd4",
+   "id": "f_bracket_reject",
+   "mutation_diff_sha256": "b8469d0e8474cbb3d9144fb54bce71ed599a025116324336e6a3cc19bead087d",
+   "mutation_sha256": "b2d9706d6f16f1aa4a92ec4e05b903707b4e31fef230a1dcbc540d33b26198ef",
+   "output_sha256": "9ebf8ee0f2e0a4e5ef9e5d8d50c4852fee2deb74cef33c50296a969099163722",
+   "returncode": 1,
+   "seconds": 0.9,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k gap_through_the_stop_at_entry"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "never_yields_a_confirmed",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_a_missing_holding_bar_never_yields_a_confirmed_outcome[True]",
+    "tests/test_intraday_contract.py::test_a_missing_holding_bar_never_yields_a_confirmed_outcome[False]"
+   ],
+   "file": "services/market-data/src/services/intraday/fills.py",
+   "file_sha256": "65d6243e899bc644cd5ab6b11dc6658eba9a64fb9f7d6d3d5ffa781d7d858cd4",
+   "id": "f_indeterminate",
+   "mutation_diff_sha256": "db6e18324984ada31ed9c82f98e4c0b7a44eb6d4164eb2d1525fa8ab582c9bf5",
+   "mutation_sha256": "de19db2602d73158d9a65d6e803d80e161fd3e2d34824ba97efe7e67f2dfc09d",
+   "output_sha256": "7bdaac867e811b3e33bfe36598eb9012f321774b0c065dedd8db436af50bc74a",
+   "returncode": 1,
+   "seconds": 0.9,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k never_yields"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "excursions_exclude",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_excursions_exclude_the_exit_bar_s_unordered_extremes"
+   ],
+   "file": "services/market-data/src/services/intraday/fills.py",
+   "file_sha256": "65d6243e899bc644cd5ab6b11dc6658eba9a64fb9f7d6d3d5ffa781d7d858cd4",
+   "id": "f_stop_excursion",
+   "mutation_diff_sha256": "534007b4c903a3e418b138c4d97efd53d2f2a171f010af203af487855c27c8f4",
+   "mutation_sha256": "0dfbaec6adee2b08173e55d83c031a3ec3248b48bc3d626f3562572076c3116e",
+   "output_sha256": "ec7e974af570cefe97eedcfa9c8b084258420c9750c40de1d19f05f03f4915a3",
+   "returncode": 1,
+   "seconds": 0.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k excursions_exclude"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "post_exit_extreme",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_changing_only_an_exit_bar_s_post_exit_extreme_does_not_move_excursions[exit_bar0-False]"
+   ],
+   "file": "services/market-data/src/services/intraday/fills.py",
+   "file_sha256": "65d6243e899bc644cd5ab6b11dc6658eba9a64fb9f7d6d3d5ffa781d7d858cd4",
+   "id": "f_target_excursion",
+   "mutation_diff_sha256": "7bf27c94475f3db6b7bd91be9810a0f5002b1c03f04ff6b5a81919efae6db2ef",
+   "mutation_sha256": "527dcd6eb35d88952168a63d05d7ceac3e9348e74984f6d14b435d8dccea5b80",
+   "output_sha256": "21ab8aa3754ac61ac99fd810db7c682ea018cb13711d4f43863580ff5c99fca3",
+   "returncode": 1,
+   "seconds": 0.9,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k post_exit_extreme"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "skips_the_writer",
+   "failed_tests": [
+    "intraday_store_suite.py::test_the_database_refuses_an_append_that_skips_the_writer"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "s_append_seq",
+   "mutation_diff_sha256": "d711f821e2f12ccf9e547bddcd708b648915b99100ca19c84fc7283871a985fa",
+   "mutation_sha256": "9596e072076ed5b07ee1f9935bb1fcb141a12d9e560777d32bb8f4219a26bac6",
+   "output_sha256": "a42de397980674278465a62ce5ed8a8deb427268a4780c699677730bc7f4aa6e",
+   "returncode": 1,
+   "seconds": 1.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k skips_the_writer"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "direct_update",
+   "failed_tests": [
+    "intraday_store_suite.py::test_direct_update_and_unguarded_delete_are_refused_by_the_database"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "s_deny_update",
+   "mutation_diff_sha256": "78a347dfa057e9b22396bc928f2f607d07b7b47fcf922fd57a917c50facf58f5",
+   "mutation_sha256": "f2adc87ff11594217bec0932fdf2fb83b24e79d662c237c92edd61e8dabae598",
+   "output_sha256": "df24e0c348288abf77dbc2df8d0d909fef003c737f064766e9346b525d63e232",
+   "returncode": 1,
+   "seconds": 1.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k direct_update"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "direct_update",
+   "failed_tests": [
+    "intraday_store_suite.py::test_direct_update_and_unguarded_delete_are_refused_by_the_database"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "s_guard_delete",
+   "mutation_diff_sha256": "7a0f2c3264c3eba5fea4509bd5197383f4f2910281294880d320a6e47084ed03",
+   "mutation_sha256": "10c9b5f91897897deae68d91c378aeca033fd3a0347af5f61fdc767f512f6681",
+   "output_sha256": "8a71f29b71937c79e464ba62e29bf7cc7059cfbbdadffd3a0e97ffffba1e6fb5",
+   "returncode": 1,
+   "seconds": 1.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k direct_update"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "late_evaluation_into_a_sealed",
+   "failed_tests": [
+    "intraday_store_suite.py::test_a_late_evaluation_into_a_sealed_session_is_refused"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "s_seal_check",
+   "mutation_diff_sha256": "4c936fcd45f7af02d0641c22134263423c7cdebea618d13954396bdc4b54f51e",
+   "mutation_sha256": "81de0344f2e051a298906ab892f38201b3e7b7f69510c62d4aaea9fbce65098a",
+   "output_sha256": "d1b474f316e4bd83556cf0bafcc58ace335a56ccc9f8cfe337b6c4014c5a0823",
+   "returncode": 1,
+   "seconds": 1.9,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k late_evaluation_into_a_sealed"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "behind_an_open_seal",
+   "failed_tests": [
+    "intraday_store_suite.py::test_an_insert_behind_an_open_seal_waits_and_is_then_refused"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "s_trigger_session_lock",
+   "mutation_diff_sha256": "b0e3781ba8c9fa7f6e247274079eef2cd98f3b6818215e2462e6d97310cc8b4a",
+   "mutation_sha256": "e3dac0bb96de39be3aa85cab5351df2dd6679e42b70547e3f0b046791f4e36d6",
+   "output_sha256": "13a54ae96e58fdc56063a934bd90b7167d49359f04b11d4cf941ed2c33ef435e",
+   "returncode": 1,
+   "seconds": 11.9,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k behind_an_open_seal"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "in_flight_insert",
+   "failed_tests": [
+    "intraday_store_suite.py::test_a_seal_waits_for_an_in_flight_insert_and_then_includes_it"
+   ],
+   "file": "services/market-data/src/services/intraday/store.py",
+   "file_sha256": "6c4a4e31fc167f6aa4c19b712c2a342737ad4a68697408acafea2d330fe26245",
+   "id": "s_sealer_session_lock",
+   "mutation_diff_sha256": "fc7d73da209eb03432d20d2fe077189bd7386800dc8a9c9281db5b345ee03e35",
+   "mutation_sha256": "1702b02beb48754869a4827597816925dd25488fe295442f12472de4c1b5dacc",
+   "output_sha256": "fd459020839fb3b05f76a17999a3ee93936c986cdbbc6aa7d7f4402f2bdc1f76",
+   "returncode": 1,
+   "seconds": 11.9,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k in_flight"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "read_committed",
+   "failed_tests": [
+    "intraday_store_suite.py::test_an_evaluation_insert_outside_read_committed_is_refused"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "s_read_committed",
+   "mutation_diff_sha256": "0d77eba9fe2d17580610dbfc9b5c87267934f69146e2a5edd6d9a60312eb1c33",
+   "mutation_sha256": "5f8d5aa41e094f2ee4c22702bf409cf9587d1177b99058f0a5ff67d3faa67989",
+   "output_sha256": "e5b18c3d30eb5f1b1d5d5f465f3c0eb62129d42bd393cc83eb1152947613254e",
+   "returncode": 1,
+   "seconds": 1.6,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k read_committed"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "cross_chain",
+   "failed_tests": [
+    "intraday_store_suite.py::test_duplicate_trade_roots_and_cross_chain_predecessors_are_rejected"
+   ],
+   "file": "services/market-data/src/services/intraday/models.py",
+   "file_sha256": "6220c6b080adc3c684d8408c246630a7d1832fc2ba665666c39c8ae2c6493e2c",
+   "id": "s_predecessor_fk",
+   "mutation_diff_sha256": "16c5af7a1999e509cbdbe5d5f259aa2a0059a7d9d09f03d328c776958863b5a2",
+   "mutation_sha256": "6e886169f21119ca842cb3c6898706d856c2ef8dcad690b23a687c5e1a80233b",
+   "output_sha256": "84138a2c94487f5a15d41377cad5c8947c385bf20df1bf1a9bfd3d100cdc6fee",
+   "returncode": 1,
+   "seconds": 1.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k cross_chain"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "partial_indexes",
+   "failed_tests": [
+    "intraday_store_suite.py::test_partial_indexes_refuse_a_second_terminal_or_reconciliation_even_without_the_trigger"
+   ],
+   "file": "services/market-data/src/services/intraday/models.py",
+   "file_sha256": "6220c6b080adc3c684d8408c246630a7d1832fc2ba665666c39c8ae2c6493e2c",
+   "id": "s_one_reconciled_index",
+   "mutation_diff_sha256": "8bbd87aa928853dfadf4b78660ec00aca825a7e01d162ddfc65f32b2a7424a3b",
+   "mutation_sha256": "a87dfbd5c02066d958d00515a46fd6389d52d7f7345af8191a721b83922609a6",
+   "output_sha256": "5aea4488400cbede0d0654adb474f4ce0f56a8cabead76ef120543e90d889aa3",
+   "returncode": 1,
+   "seconds": 1.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k partial_indexes"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "archive_is_atomic",
+   "failed_tests": [
+    "intraday_store_suite.py::test_archive_is_atomic_and_retry_safe"
+   ],
+   "file": "services/market-data/src/services/intraday/store.py",
+   "file_sha256": "6c4a4e31fc167f6aa4c19b712c2a342737ad4a68697408acafea2d330fe26245",
+   "id": "s_archive_retry",
+   "mutation_diff_sha256": "06ee2068d4346e1607e5e4e9e284980bbf8d24ee6e0adb9015f99ec4c569ec58",
+   "mutation_sha256": "b95b04e6ef2d490eef6cf48f8b112d3efedf18954b916bff2d76866fa2397f22",
+   "output_sha256": "825b282a53f40b62f73c0b78ea8f72aba5fe14582e47c08a882b81819e38c07a",
+   "returncode": 1,
+   "seconds": 1.7,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k archive_is_atomic"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "direct_sql_cannot_write_cross_mode",
+   "failed_tests": [
+    "intraday_store_suite.py::test_direct_sql_cannot_write_cross_mode_or_backwards_records"
+   ],
+   "file": "services/market-data/src/services/intraday/models.py",
+   "file_sha256": "6220c6b080adc3c684d8408c246630a7d1832fc2ba665666c39c8ae2c6493e2c",
+   "id": "s_clock_mode_transition",
+   "mutation_diff_sha256": "fa9beca3c43f6ff0c640de0a682837eafec4d313ae34baebfafdc974fa77beb1",
+   "mutation_sha256": "c68256f3120b16359077f0c61b21007b180252b65b6a63c2b790c2d2c3d80d2c",
+   "output_sha256": "372797336db796fb6fd27e44e592d640f1ccfdc5bdb67dc1c4527b8c8c0ffee5",
+   "returncode": 1,
+   "seconds": 1.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k direct_sql_cannot_write_cross_mode"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "direct_sql_cannot_write_cross_mode",
+   "failed_tests": [
+    "intraday_store_suite.py::test_direct_sql_cannot_write_cross_mode_or_backwards_records"
+   ],
+   "file": "services/market-data/src/services/intraday/models.py",
+   "file_sha256": "6220c6b080adc3c684d8408c246630a7d1832fc2ba665666c39c8ae2c6493e2c",
+   "id": "s_clock_mode_input",
+   "mutation_diff_sha256": "6923ab924ed37efd277b89f7142dd4d567af4cd4c53a15786d588489113e21d0",
+   "mutation_sha256": "6b250a6a201fb784633d6147a7cfd16d76f1afc13d17b7e4667f8181820d4dec",
+   "output_sha256": "e4562f4eac9f344d640f0e55c7c3036f42f26456725720a0aea4d90d3aa79e10",
+   "returncode": 1,
+   "seconds": 1.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k direct_sql_cannot_write_cross_mode"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "direct_sql_cannot_write_cross_mode",
+   "failed_tests": [
+    "intraday_store_suite.py::test_direct_sql_cannot_write_cross_mode_or_backwards_records"
+   ],
+   "file": "services/market-data/src/services/intraday/models.py",
+   "file_sha256": "6220c6b080adc3c684d8408c246630a7d1832fc2ba665666c39c8ae2c6493e2c",
+   "id": "s_effective_before_decided",
+   "mutation_diff_sha256": "1ae2b1645a7ec52cf100bcf163ab81084d2382d3589c0011bf0f2cbbb1b59fe7",
+   "mutation_sha256": "3dcd89f0c74ad98b7088c49d20ed5d399cdd4338f412a6c8f23d73f049287489",
+   "output_sha256": "7979f20183e449c3258f84dc444938811abd9ffc122d964a3946c0084608a32c",
+   "returncode": 1,
+   "seconds": 1.6,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k direct_sql_cannot_write_cross_mode"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "exit_before_its_entry",
+   "failed_tests": [
+    "intraday_store_suite.py::test_direct_sql_cannot_record_an_exit_before_its_entry"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "s_chronology_trigger",
+   "mutation_diff_sha256": "788254747a79064cab3d1c166a469266aca6bdba5ee0d2a16c7e3943f82be2db",
+   "mutation_sha256": "c7689367b93c9161fb37678c4c64efe4322fbee2f772819e43fd9d46fe918393",
+   "output_sha256": "eee7bd5ac1786e29d414d784f6198e0f5a76924265e0005cceebfbbceb24ed29",
+   "returncode": 1,
+   "seconds": 1.7,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k exit_before_its_entry"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "direct_sql_cannot_write_cross_mode",
+   "failed_tests": [
+    "intraday_store_suite.py::test_direct_sql_cannot_write_cross_mode_or_backwards_records"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "s_entry_window_trigger",
+   "mutation_diff_sha256": "d4c16dacfd0d1c2133fa007cf91660b2afd1bcce9317f1ec5a2de46ff47daf7f",
+   "mutation_sha256": "8254076cbd7fc0368c491d46384e070522e8f92bc703da3ec2c4aeb745934402",
+   "output_sha256": "f2ff54d0917c364b5382994d1acf33b66ac27676b7f65ec425fd0e6bdcd413dd",
+   "returncode": 1,
+   "seconds": 1.6,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k direct_sql_cannot_write_cross_mode"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "cross_mode_inputs_and_events",
+   "failed_tests": [
+    "intraday_store_suite.py::test_cross_mode_inputs_and_events_are_refused_by_the_writer"
+   ],
+   "file": "services/market-data/src/services/intraday/store.py",
+   "file_sha256": "6c4a4e31fc167f6aa4c19b712c2a342737ad4a68697408acafea2d330fe26245",
+   "id": "w_clock_mode",
+   "mutation_diff_sha256": "6d84e92127946802df98ae92e360079904625e2b858ad1696acf48406e6ff831",
+   "mutation_sha256": "ea934fc4bd8f570e498306c51cf14fe515e6be6fdd1077155d370b9bcae79123",
+   "output_sha256": "1d480c3b4c0856f7b5915b88b9ca83ade0efa498e8fadb32561f961a6d653c51",
+   "returncode": 1,
+   "seconds": 1.5,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k cross_mode_inputs"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "entry_after_its_expiry",
+   "failed_tests": [
+    "intraday_store_suite.py::test_an_entry_after_its_expiry_is_refused_by_the_writer"
+   ],
+   "file": "services/market-data/src/services/intraday/store.py",
+   "file_sha256": "6c4a4e31fc167f6aa4c19b712c2a342737ad4a68697408acafea2d330fe26245",
+   "id": "w_entry_window",
+   "mutation_diff_sha256": "e9f46d0a73ff05bf028a2652efa945349b9728efcafa5cca6cdf2738c5e8277e",
+   "mutation_sha256": "6c3bbc0273d26a8bb8678727e7f1c6c96fca4d9385af92850e933650ec2969c3",
+   "output_sha256": "262b0c5a40d62dcf20093abd9ef539a64ab4144de058b0e7e6738334e3701018",
+   "returncode": 1,
+   "seconds": 1.3,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k after_its_expiry"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "concurrent_identical",
+   "failed_tests": [
+    "intraday_store_suite.py::test_a_concurrent_identical_retry_returns_the_stored_row"
+   ],
+   "file": "services/market-data/src/services/intraday/store.py",
+   "file_sha256": "6c4a4e31fc167f6aa4c19b712c2a342737ad4a68697408acafea2d330fe26245",
+   "id": "w_idempotency_recheck",
+   "mutation_diff_sha256": "eb92945c02ea1241524bb38db0fdc36b1dc1ebad22c3ed81a846d058d2019322",
+   "mutation_sha256": "c910016a032c385ca97ea3c62d7b88283819a2b5f5904b59628debeba956ee2b",
+   "output_sha256": "fa099764744c57f5b68c17a0349a763ec9377f91704481405fc2f82369dc2056",
+   "returncode": 1,
+   "seconds": 1.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k concurrent_identical"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "tampered_evidence",
+   "failed_tests": [
+    "intraday_store_suite.py::test_tampered_evidence_is_refused_before_any_write"
+   ],
+   "file": "services/market-data/src/services/intraday/store.py",
+   "file_sha256": "6c4a4e31fc167f6aa4c19b712c2a342737ad4a68697408acafea2d330fe26245",
+   "id": "w_evidence_verify",
+   "mutation_diff_sha256": "d70553b0238ff470192b8368c23e7abca425122380b7f7e245efd36ed10976e1",
+   "mutation_sha256": "c88553420db428b1c04bcf1fb983c6a1987ea5a8e4641dd85afe35dafd12690d",
+   "output_sha256": "4521b8b7ec16e962243ba771fb3d17b23c1020d3fbc0cfd2be15be46a46fd88d",
+   "returncode": 1,
+   "seconds": 1.4,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k tampered_evidence"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "recompute_every_hash",
+   "failed_tests": [
+    "intraday_inputs_suite.py::test_stored_inputs_recompute_every_hash_after_the_sources_change_or_vanish[False]",
+    "intraday_inputs_suite.py::test_stored_inputs_recompute_every_hash_after_the_sources_change_or_vanish[True]"
+   ],
+   "file": "services/market-data/src/services/intraday/inputs.py",
+   "file_sha256": "2a4b4a717f2a33624240093dc11af5fd779f0bf8a1b669cb47900566415b9c6e",
+   "id": "i_evidence_persisted",
+   "mutation_diff_sha256": "1c85c0a81baf9bbb4901d2ac57275ceb457a3ad79fa33a0deb178e72166a388b",
+   "mutation_sha256": "ba3fd9a7623f301b15dd60a3b23344a164e9f837197770dd69814d37cbf42c78",
+   "output_sha256": "11670bcb9fb66c96f7c1bac161350ebc3802e4a400607c4dee8d1a813790d2e4",
+   "returncode": 1,
+   "seconds": 2.7,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_inputs_suite.py -k recompute"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "failed_trace",
+   "failed_tests": [
+    "intraday_inputs_suite.py::test_failed_trace_and_missing_provenance_keep_source_unknown"
+   ],
+   "file": "services/market-data/src/services/intraday/inputs.py",
+   "file_sha256": "2a4b4a717f2a33624240093dc11af5fd779f0bf8a1b669cb47900566415b9c6e",
+   "id": "i_provider_identity",
+   "mutation_diff_sha256": "d4eaf47238d49485d7f5b72c64c35e1c90d1e4d7308f507890a8f8b2050cc4a3",
+   "mutation_sha256": "eade3496621169149f667889df97c40284813be079b254dc63b33ff95c414eb1",
+   "output_sha256": "cdfb81a85c96fefa75a3acd3a23bfd1d261f2a6d1765a715d6db0bd61025b9e3",
+   "returncode": 1,
+   "seconds": 2.3,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_inputs_suite.py -k failed_trace"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "mode_and_run",
+   "failed_tests": [
+    "intraday_store_suite.py::test_mode_and_run_rules_and_hk_refusal"
+   ],
+   "file": "services/market-data/src/services/intraday/read.py",
+   "file_sha256": "3e4f6d01376b35fa91a391885b25bf397e070b89708a1779d98d0b2fcc4dc4eb",
+   "id": "r_mode_rules",
+   "mutation_diff_sha256": "03de75efdc61f3c14c0763e804d429a563f575e2e1d82ca0eeb8e7a2e61c4c76",
+   "mutation_sha256": "dc47bd3bd33b081172d9f937ebaf24d8ff12d5a9c1d6799f1f49a5cf095d3bb1",
+   "output_sha256": "16da35a748a035a8b6c3339f63c23c19f384a48d8c45e0d0a1c480b14bf5c57a",
+   "returncode": 1,
+   "seconds": 1.7,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k mode_and_run"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "never_pooled",
+   "failed_tests": [
+    "intraday_store_suite.py::test_two_replay_runs_and_two_identities_are_never_pooled"
+   ],
+   "file": "services/market-data/src/services/intraday/read.py",
+   "file_sha256": "3e4f6d01376b35fa91a391885b25bf397e070b89708a1779d98d0b2fcc4dc4eb",
+   "id": "r_identity_required",
+   "mutation_diff_sha256": "6188361917a92a72853318db04d8cfd7eee9032da12e05438fb359f010f7b804",
+   "mutation_sha256": "4c6138fe827ef98e62f87aa7f6e2a96347c2de7d61ec6804524d1f1ad5d84e68",
+   "output_sha256": "fdb01996e2cdf50fb415482480800d1fa56d30c222f6e31110c11c52dbfaf373",
+   "returncode": 1,
+   "seconds": 1.6,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k never_pooled"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "indeterminate_is_listed",
+   "failed_tests": [
+    "intraday_store_suite.py::test_path_indeterminate_is_listed_as_open_exposure"
+   ],
+   "file": "services/market-data/src/services/intraday/read.py",
+   "file_sha256": "3e4f6d01376b35fa91a391885b25bf397e070b89708a1779d98d0b2fcc4dc4eb",
+   "id": "r_open_exposure",
+   "mutation_diff_sha256": "11a562b9fe30bb4fd93e4ce67c268352934a196c658eb3417a8260ea07035b01",
+   "mutation_sha256": "4a5dd5579b76342304b01fa261b2c60a56a9aa46e85d5c48654a84c5262a7c1c",
+   "output_sha256": "b1e7a8f91b92dac9968862455faa1182e6ac1e3fcc1b42dfcdd25d88ed960b0c",
+   "returncode": 1,
+   "seconds": 1.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k indeterminate_is_listed"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "archived_identity",
+   "failed_tests": [
+    "intraday_store_suite.py::test_an_archived_identity_stays_discoverable"
+   ],
+   "file": "services/market-data/src/services/intraday/read.py",
+   "file_sha256": "3e4f6d01376b35fa91a391885b25bf397e070b89708a1779d98d0b2fcc4dc4eb",
+   "id": "r_archived_identity",
+   "mutation_diff_sha256": "78cd9143e84be03d2c0f70e7f001d376ab827e5970985e05267806f33e1e8501",
+   "mutation_sha256": "ce6098af024724745ec50a111a8c85b5466045052f75cae6dbc4f1decad1fc12",
+   "output_sha256": "56b804517207b0cde4f7692250c75755d7f43a0650dc069f8d05ac1cfb99710a",
+   "returncode": 1,
+   "seconds": 1.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k archived_identity"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "candidate_entry_open",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_candidate_entry_open_is_the_grid_rule_the_trigger_repeats[day0]",
+    "tests/test_intraday_contract.py::test_candidate_entry_open_is_the_grid_rule_the_trigger_repeats[day1]"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_candidate_open",
+   "mutation_diff_sha256": "b615461353e306060e612e33c86d596bcd5203f44be7a96dc877d109e6f3d8d6",
+   "mutation_sha256": "7367021c893931729df1859583d63f37c2d367d5cb4ac37f0ea64393a941dac2",
+   "output_sha256": "d8533307f15c07c622f26e4593bc55440a7ef57655c66e6040509c267ae16db4",
+   "returncode": 1,
+   "seconds": 1.0,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k candidate_entry_open"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "only_fill_states",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_only_fill_states_may_choose_their_effective_time"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_detection_time",
+   "mutation_diff_sha256": "0c9f945e391d6a8c43b80576223b909d7959ed950a94515e610c9175c8194623",
+   "mutation_sha256": "8b0a418727cb6d6c4bf329a8d4b68a400fd356bf8e4146592b8a3cec8db47d65",
+   "output_sha256": "231e9352c342342cbc201ea3ea3f456ce0da33c511c37a2513bcc5b2ba955e54",
+   "returncode": 1,
+   "seconds": 1.0,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k only_fill_states"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "only_fill_states",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_only_fill_states_may_choose_their_effective_time"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_expired_time",
+   "mutation_diff_sha256": "f270292a12045a34fd83a0d1ce20f518c51a1a074806e6dc58db6c286f69c8f7",
+   "mutation_sha256": "1ca5b7b7a117027a2767c9923e75714fbcb25d6b78d3e08aa04ed17901b755e4",
+   "output_sha256": "407f63586a8803f0eeca4aa45cec0496876dc1ada55b09d73f9483c8418d34c3",
+   "returncode": 1,
+   "seconds": 1.0,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k only_fill_states"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "missing_its_observation",
+   "failed_tests": [
+    "intraday_store_suite.py::test_a_cancellation_missing_its_observation_is_not_confirmed"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_decision_time",
+   "mutation_diff_sha256": "eda528c14bfc647b2664457cd87ae888b88528346aedf0b3fd0f54d9fc001767",
+   "mutation_sha256": "16006115ad960ea12abe62d6cd5ea5b2a0c483327f4a370afedae7411b79763d",
+   "output_sha256": "c0f0cf6c46c724c8e5127dccce135e1707b397e7c9c3b6f07277cc8ee1b896a0",
+   "returncode": 1,
+   "seconds": 1.7,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k missing_its_observation"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "only_fill_states",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_only_fill_states_may_choose_their_effective_time"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_unobserved_cancel",
+   "mutation_diff_sha256": "f119ef5e8c7feadb0975722ff9be8d02099159324af50d48b36d25df0f4cdcc2",
+   "mutation_sha256": "7b1a82a02b1ecbc1d3f214ff08183a2c204af127926a8afb4593247be9bc5d02",
+   "output_sha256": "82b03e6e3d7a238cb73218e2afec46c2b576efde4e391f4bf5a273f161917e1a",
+   "returncode": 1,
+   "seconds": 0.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k only_fill_states"
+  },
+  {
+   "cwd": "services/market-data",
+   "expected_witness": "beats_only_an_entry",
+   "failed_tests": [
+    "tests/test_intraday_contract.py::test_a_cancellation_beats_only_an_entry_it_precedes"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_cancel_reasons",
+   "mutation_diff_sha256": "19ac1dcd914a650463ebb9b8093b8ec2a45aec234ddda6cf220ad0b307a1157f",
+   "mutation_sha256": "1d603b354fe470ccbc9123dc313daedea0da3eb9de323ec03b88d1262fb0275d",
+   "output_sha256": "b2ee29a69ae947c286d11af9eab9a0400695dfe6a18ac0c7bf9ccb46d7f1d065",
+   "returncode": 1,
+   "seconds": 0.9,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore tests/test_intraday_contract.py -k beats_only_an_entry"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "entry_bars_own_absence",
+   "failed_tests": [
+    "intraday_store_suite.py::test_only_the_entry_bars_own_absence_cancels_after_it"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_entry_bar_absence",
+   "mutation_diff_sha256": "3d5b1639619206f3937b5bcacebca2f84787c85a94212cb4ac745119f9cd46ea",
+   "mutation_sha256": "59490429d51bf1965c054fa0d773b762f6df687707ab8e2fadbfa616da21dfc7",
+   "output_sha256": "af0a5b4013e2fefd2919b2a402f1cdeb519e0be72de03fa3909f46c73c687532",
+   "returncode": 1,
+   "seconds": 1.7,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k entry_bars_own_absence"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "cannot_be_backdated",
+   "failed_tests": [
+    "intraday_store_suite.py::test_an_observed_cancellation_cannot_be_backdated"
+   ],
+   "file": "services/market-data/src/services/intraday/store.py",
+   "file_sha256": "6c4a4e31fc167f6aa4c19b712c2a342737ad4a68697408acafea2d330fe26245",
+   "id": "w_required_effective",
+   "mutation_diff_sha256": "dea2d55958bcd3ad6696e6eec4beca9ee853b3c0e74490835012fa943a6c7d9e",
+   "mutation_sha256": "0c0eee4b92eec957226fc3f6a523926382320639bcb54a1e6cd5a188583778de",
+   "output_sha256": "6a5fc11e65f6afe583bef71e5c1fc2466c3be14406e6eb0b0bfab117fc573227",
+   "returncode": 1,
+   "seconds": 1.9,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k cannot_be_backdated"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "expiry_is_fixed",
+   "failed_tests": [
+    "intraday_store_suite.py::test_scheduled_and_fill_times_recorded_later_remain_valid_but_expiry_is_fixed"
+   ],
+   "file": "services/market-data/src/services/intraday/store.py",
+   "file_sha256": "6c4a4e31fc167f6aa4c19b712c2a342737ad4a68697408acafea2d330fe26245",
+   "id": "w_effective_from_rule",
+   "mutation_diff_sha256": "01f0adf719b323a80f4a0fcf193b840184ae956484ee28adbc36dac7f68ae43b",
+   "mutation_sha256": "5df05496c7d496ae519a154e906c7b3dff247d0113497b819844b75289e877af",
+   "output_sha256": "d592a78c09de37ff1687b7c467004b6a55179f7c8d24f8ecd117cf9d1f2f01c5",
+   "returncode": 1,
+   "seconds": 1.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k expiry_is_fixed"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "observed_after_the_candidate",
+   "failed_tests": [
+    "intraday_store_suite.py::test_a_revision_observed_after_the_candidate_entry_leaves_the_entry_standing"
+   ],
+   "file": "services/market-data/src/services/intraday/store.py",
+   "file_sha256": "6c4a4e31fc167f6aa4c19b712c2a342737ad4a68697408acafea2d330fe26245",
+   "id": "w_cancel_before_entry",
+   "mutation_diff_sha256": "a4275240eaec25be915adabb0b91e742d07e72402ea4bdd8f96830f345b9cf6d",
+   "mutation_sha256": "683856b819e377ee4e49b49b58f2a67de9297fe9fd39bc7b254805403501b6d1",
+   "output_sha256": "cf641feefb51242263988c613a483d7ffb06b55f70f27fe68d4d19c7f3760a0d",
+   "returncode": 1,
+   "seconds": 1.6,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k observed_after_the_candidate"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "bracket_rejection",
+   "failed_tests": [
+    "intraday_store_suite.py::test_a_bracket_rejection_is_a_fill_attempt_inside_the_entry_window"
+   ],
+   "file": "services/market-data/src/services/intraday/store.py",
+   "file_sha256": "6c4a4e31fc167f6aa4c19b712c2a342737ad4a68697408acafea2d330fe26245",
+   "id": "w_rejection_window",
+   "mutation_diff_sha256": "694c73f40a570f082395e2545a97f0c3e8dbb03162e2170de45cd350bb854a45",
+   "mutation_sha256": "ec8286e88ebcb241e8711bf68d324e3e7d4f70c3b601d6e1338793cf5695cbd3",
+   "output_sha256": "c2c6beddd513f8382a91fefcf6149b860a084f85dbb2b66106d4eb72b7b86643",
+   "returncode": 1,
+   "seconds": 1.3,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k bracket_rejection"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "cannot_backdate_or_unground",
+   "failed_tests": [
+    "intraday_store_suite.py::test_direct_sql_cannot_backdate_or_unground_a_cancellation"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "t_observed_cancel_time",
+   "mutation_diff_sha256": "ccd2234e98cf49b2ec7aa7045f39c5083eef8db0e8f59b904937fa727d095f64",
+   "mutation_sha256": "bace99470d49ddf03d0f495320ec6e4f4b16a691bc16bf2c03ecba483f459de6",
+   "output_sha256": "00012d8e8336c95677349ca1d1c6abffe80f4039a7d5e5d15125cd60a5ab1413",
+   "returncode": 1,
+   "seconds": 1.5,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k cannot_backdate_or_unground"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "replay_cancellation",
+   "failed_tests": [
+    "intraday_store_suite.py::test_a_replay_cancellation_takes_effect_at_eligible_plus_latency"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "t_replay_cancel_time",
+   "mutation_diff_sha256": "89aac0bcbce734ce508537fdb48d0cc502d5563d3bd33ad8ca31b874731486f7",
+   "mutation_sha256": "7491ff199bb807d5b1e878b2804bf997250ecda043855b4a69f04430cef5bdb5",
+   "output_sha256": "0db5de32f62bfbb903d4f793866749c2d5632d6c95d242e9c2e0e8bd3677d9a2",
+   "returncode": 1,
+   "seconds": 1.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k replay_cancellation"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "cannot_backdate_or_unground",
+   "failed_tests": [
+    "intraday_store_suite.py::test_direct_sql_cannot_backdate_or_unground_a_cancellation"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "t_cancel_reason",
+   "mutation_diff_sha256": "741468c3e9dec321fd2f400b895183d9d8b2f99deb6e97b2e13a84fc3e005119",
+   "mutation_sha256": "c76cc7746b59ccdf910d76214b99b9ab079d0b252fae167c5904a4b968e87dac",
+   "output_sha256": "8ed07cf33f7355efb15c389ca3c1f9ba08e3cf5d25689597e894f73d5221fc86",
+   "returncode": 1,
+   "seconds": 2.0,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k cannot_backdate_or_unground"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "cannot_backdate_or_unground",
+   "failed_tests": [
+    "intraday_store_suite.py::test_direct_sql_cannot_backdate_or_unground_a_cancellation"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "t_cancel_candidate",
+   "mutation_diff_sha256": "38b7f867d2a6d998318ceeaec35a677b3c69916198049be6b6c9ec62a1f48b2b",
+   "mutation_sha256": "3103fe5483b25dffbfee6fc650fc822607d5a81f16c43418270329c44bbc7eee",
+   "output_sha256": "ca6b25221c62ffa7105ba8846f30a5c30a747a8bd91d30189e98f836e6302509",
+   "returncode": 1,
+   "seconds": 1.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k cannot_backdate_or_unground"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "cannot_retime",
+   "failed_tests": [
+    "intraday_store_suite.py::test_direct_sql_cannot_retime_expiry_decisions_detection_or_a_rejection"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "t_expired_time",
+   "mutation_diff_sha256": "a2c825464ed8d59e52cca0f235a9365b6852d68c5396155ad89fbedbc0b3a368",
+   "mutation_sha256": "156747fed5b1372f98cdcd39376abd4008a6cebc37daf9616336c89c02e18a24",
+   "output_sha256": "1a24b2bf41b01f6b7cfe6d7f9d75332ac95878c72152fcd98d8f97ef3463fc6c",
+   "returncode": 1,
+   "seconds": 1.8,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k cannot_retime"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "cannot_retime",
+   "failed_tests": [
+    "intraday_store_suite.py::test_direct_sql_cannot_retime_expiry_decisions_detection_or_a_rejection"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "t_decision_time",
+   "mutation_diff_sha256": "184d13ccfb18954c88db84f1637fb47f70e6cfda722579bd642a88f18c00e4f4",
+   "mutation_sha256": "26c706528018b552916dbda388c6f96ce35029892e2fe9c9727651cb39fa0966",
+   "output_sha256": "f16488c8eab4a9690cc17d8d98ab73899a79eb8234553a2caf7fd2f646f7f07e",
+   "returncode": 1,
+   "seconds": 1.5,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k cannot_retime"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "cannot_retime",
+   "failed_tests": [
+    "intraday_store_suite.py::test_direct_sql_cannot_retime_expiry_decisions_detection_or_a_rejection"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "t_detection_time",
+   "mutation_diff_sha256": "9fdc0c910237a0f1125e6c424273f0db6ed477817fc8a48b3180c8ea461bf46c",
+   "mutation_sha256": "dbcfc1d067de4da03498c5ffa14c29dc258f48476f1ae0e31d27f4460e5afc39",
+   "output_sha256": "8ebed1f42d97b72047177a566d93ea6915c837e3a5992ce6d589a51573d9b69a",
+   "returncode": 1,
+   "seconds": 1.6,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k cannot_retime"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "cannot_retime",
+   "failed_tests": [
+    "intraday_store_suite.py::test_direct_sql_cannot_retime_expiry_decisions_detection_or_a_rejection"
+   ],
+   "file": "services/market-data/src/services/intraday/schema.py",
+   "file_sha256": "84b8326e61439088942e3b2f36eefb0deebe37d299ad90abce406c1836025663",
+   "id": "t_rejection_window",
+   "mutation_diff_sha256": "40dea00719249c298628be46dfd5ec13689b8043c3cb702c19322eed76f66e73",
+   "mutation_sha256": "297740c86e5f6885a93c3a4a75dae5e305a9ca186859d4a23b3284a0e657b00b",
+   "output_sha256": "07ce687aa6bd2941e6faeca076c68d9fcbdb51b20254c11462c7f1d6abfdb8a9",
+   "returncode": 1,
+   "seconds": 1.6,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k cannot_retime"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "disagreeing_with_its_evidence",
+   "failed_tests": [
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[bar",
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[constituent",
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[consumed",
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[derived",
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[derived",
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[derived",
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[price",
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[raw",
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[source",
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[timeframe]"
+   ],
+   "file": "services/market-data/src/services/intraday/store.py",
+   "file_sha256": "6c4a4e31fc167f6aa4c19b712c2a342737ad4a68697408acafea2d330fe26245",
+   "id": "w_input_consistency",
+   "mutation_diff_sha256": "dd2b1da467207ac80ffa383c9bf528331f96225cda50511f67b75c406569b830",
+   "mutation_sha256": "e8dddeabb703892436a548767a668bb1ee33b0979b61112932e1ddc5b6b2124f",
+   "output_sha256": "302933775d83a47e7fc768e455aab613e56f6296fd13ee9a4da2c2f23af481ad",
+   "returncode": 1,
+   "seconds": 2.0,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k disagreeing_with_its_evidence"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "consumed close",
+   "failed_tests": [
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[consumed",
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[price"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_values_bound",
+   "mutation_diff_sha256": "c18089e590d2912287cfd45015fadf606c4863240f31b21536a5a202ba788600",
+   "mutation_sha256": "54f095346a2da4d8ba4b5fc3ece0ad150c42d8f8a8e502e181a3fa272d9c964f",
+   "output_sha256": "d44eeb9c76942ebb78459ddb05257906adf432791bc6e11acb6ac40302f6cb59",
+   "returncode": 1,
+   "seconds": 2.0,
+   "verdict": "WRONG_REASON",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k disagreeing_with_its_evidence"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "bar open",
+   "failed_tests": [
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[bar"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_frame_and_open",
+   "mutation_diff_sha256": "a3248ff5b4402b380018a0952fac8359e2a01379895a6c9f8cdbf85d4afbebd3",
+   "mutation_sha256": "cdad6b73b24331e39baf9c209303f127805097ac4fa69f736638622a4ea2c697",
+   "output_sha256": "d3956749ca99e4dea132e260161072971d6d5a5721a38bf827a216fa66926a2e",
+   "returncode": 1,
+   "seconds": 1.5,
+   "verdict": "WRONG_REASON",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k disagreeing_with_its_evidence"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "source kind",
+   "failed_tests": [
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[source"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_source_kind",
+   "mutation_diff_sha256": "b6d40c4eb29472b4d7faab98b0e29718b02f1f3ef4c99b8ff213aa8c7d26961a",
+   "mutation_sha256": "9f59164991eb0fcc15f9014a7baa52351deaa73343d35aed94950b9e4ae3c7cf",
+   "output_sha256": "bf1fdd9f54174a2d2f6b6c4d13bf6624cdee5fb3df0ea837233adc6f051acf94",
+   "returncode": 1,
+   "seconds": 1.3,
+   "verdict": "WRONG_REASON",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k disagreeing_with_its_evidence"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "derived not 15m",
+   "failed_tests": [
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[derived"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_derived_frame",
+   "mutation_diff_sha256": "ad8079f9ba4303817d4d7659e4c59616e136853325683fc369be3c6409d794de",
+   "mutation_sha256": "80b4f17922ddd4f332e5e42810f2988f29cd89e883ca5bb6dff48524563929ff",
+   "output_sha256": "a4a0923245ccf01673ce27839565fc3c3060f36b0c09847052e0f0539ae59ba4",
+   "returncode": 1,
+   "seconds": 1.4,
+   "verdict": "WRONG_REASON",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k disagreeing_with_its_evidence"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "itself derived",
+   "failed_tests": [
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[constituent"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_constituent_native",
+   "mutation_diff_sha256": "829c2b717407a4d31b42b85b8e2a41591ff31914fe3ade732b693ebb9b338efb",
+   "mutation_sha256": "9b9a78cdf88ba2bdd7af52f43a8a19049a1600751e780713b87e3af0139eb890",
+   "output_sha256": "44c3cc99f50c58596de67bf2bb7adece36f3d7c797996b757f8c09f4e03ce575",
+   "returncode": 1,
+   "seconds": 1.5,
+   "verdict": "WRONG_REASON",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k disagreeing_with_its_evidence"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "another_stock",
+   "failed_tests": [
+    "intraday_store_suite.py::test_an_input_from_another_stock_is_refused"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_same_stock",
+   "mutation_diff_sha256": "a7e4c10ff4530ef9d5ba3b04bf4e4f3c64e4035559b9e9b3ce1af90d9a3add98",
+   "mutation_sha256": "6c9e0534d51e37ff22b794aad4cc29e060364e0ac67c2b9c9ab1173e46dc8d71",
+   "output_sha256": "5d73a263dac3ea60faca46575b671cd64ae97b33943ed1a35c5c54d64fb2d65e",
+   "returncode": 1,
+   "seconds": 1.4,
+   "verdict": "CAUGHT",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k another_stock"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "bar opens differ",
+   "failed_tests": [
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[raw"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_native_consistent",
+   "mutation_diff_sha256": "774f7e9b9f20adacaaa2bacbfd07832a86244cf7a8f5812d5b096c89787ae7f9",
+   "mutation_sha256": "07c998572e01d039512124d02f7f18ba3bbb48dbbae6f52166e9694b9b3819c6",
+   "output_sha256": "9339758fa6e018445bfc05bf2118bb49fa767c61d9e230be19972fc384569db4",
+   "returncode": 1,
+   "seconds": 1.7,
+   "verdict": "WRONG_REASON",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k disagreeing_with_its_evidence"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "missing a constituent",
+   "failed_tests": [
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[derived"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_constituent_shape",
+   "mutation_diff_sha256": "5bd64160da26670c27ae428bece86af137559f4669754e145b7d49870193f7c3",
+   "mutation_sha256": "4f1c70a7e9b9b2f5ad238e254e0fcc7d57dbe8d2376a189b70e72b32649befb8",
+   "output_sha256": "49c5824b2a7a702c62c4f330371b4e70887ac85ee1885fa7ecaf1dc86548c0cd",
+   "returncode": 1,
+   "seconds": 1.5,
+   "verdict": "WRONG_REASON",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k disagreeing_with_its_evidence"
+  },
+  {
+   "cwd": "services/market-data/tests",
+   "expected_witness": "not the aggregate",
+   "failed_tests": [
+    "intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[derived"
+   ],
+   "file": "services/market-data/src/services/intraday/contract.py",
+   "file_sha256": "50c84db4a02263050d1c880ebc49a441121ed9d911f9e06aab5a93e7a03d2e8a",
+   "id": "c_aggregate",
+   "mutation_diff_sha256": "85189086cd9d8c0df7c3235ce0acafce9fd93581224363571a5869588ea6063a",
+   "mutation_sha256": "ddc2ca10438b7ee876f8f10e8520658e93b51d1cb06543def10a74cbec5058df",
+   "output_sha256": "098de9cd87a41f4e828822fa95b4b60ca6df806eaf5ef1ab5a2e8e0eff7c0003",
+   "returncode": 1,
+   "seconds": 1.4,
+   "verdict": "WRONG_REASON",
+   "witness_cmd": "-m pytest -q -rf -p no:cacheprovider -W ignore --noconftest intraday_store_suite.py -k disagreeing_with_its_evidence"
+  }
+ ],
+ "summary": {
+  "CAUGHT": 85,
+  "WRONG_REASON": 8
+ }
+}

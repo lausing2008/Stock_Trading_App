@@ -1,0 +1,28 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_______ test_a_replay_cancellation_takes_effect_at_eligible_plus_latency _______
+
+engine = Engine(postgresql+psycopg2://postgres:***@127.0.0.1:55448/icr)
+
+    def test_a_replay_cancellation_takes_effect_at_eligible_plus_latency(engine):
+        with engine.begin() as conn:
+            i = ident(conn)
+            store.ensure_replay_run(conn, "r1", input_snapshot_hash="h", as_of=at(21, 0), now=at(21, 0))
+            sid = a_setup(conn, i, batch(conn, i, "r1"), run_key="r1")["setup_id"]
+            rev = c.EventTimes(at(14, 8), None, at(14, 9), "replay_logical")
+            with pytest.raises(c.ContractViolation, match="cannot be dated"):
+                _cancel(conn, sid, rev, effective_at=at(14, 8))
+            _cancel(conn, sid, rev)
+            eff = conn.execute(select(m.transitions.c.effective_at).where(
+                m.transitions.c.setup_id == sid, m.transitions.c.to_state == "cancelled")).scalar()
+        assert c.utc(eff) == at(14, 9)                                   # 14:08 + the 60 s replay latency
+        if PG:
+            with engine.begin() as conn:
+                s2 = a_setup(conn, i, batch(conn, i, "r1"), run_key="r1", symbol="BBB", stock_id=2)["setup_id"]
+>           with pytest.raises(DBAPIError, match="replay cancellation"):
+E           Failed: DID NOT RAISE <class 'sqlalchemy.exc.DBAPIError'>
+
+intraday_store_suite.py:907: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_a_replay_cancellation_takes_effect_at_eligible_plus_latency
+1 failed, 56 deselected in 1.41s

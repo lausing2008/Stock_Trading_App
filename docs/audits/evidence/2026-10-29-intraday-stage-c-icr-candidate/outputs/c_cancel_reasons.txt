@@ -1,0 +1,20 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_____________ test_a_cancellation_beats_only_an_entry_it_precedes ______________
+
+    def test_a_cancellation_beats_only_an_entry_it_precedes():
+        a = at(14, 7)                                                                   # candidate entry 14:10
+        c.check_cancellation_before_entry(effective_at=at(14, 9), actionable_at=a, reason="input_revised", eligible_at=None)
+        for eff in (at(14, 10), at(14, 17)):
+            with pytest.raises(c.ContractViolation, match="the entry stands"):
+                c.check_cancellation_before_entry(effective_at=eff, actionable_at=a, reason="input_revised",
+                                                  eligible_at=at(14, 8))
+        c.check_cancellation_before_entry(effective_at=at(14, 18), actionable_at=a, reason="data_unavailable",
+                                          eligible_at=at(14, 17))                       # the entry bar's own absence
+>       with pytest.raises(c.ContractViolation, match="not one of"):
+E       Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+tests/test_intraday_contract.py:407: Failed
+=========================== short test summary info ============================
+FAILED tests/test_intraday_contract.py::test_a_cancellation_beats_only_an_entry_it_precedes
+1 failed, 43 deselected in 0.13s

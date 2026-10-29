@@ -1,0 +1,19 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________ test_an_entry_after_its_expiry_is_refused_by_the_writer ____________
+
+engine = Engine(sqlite://)
+
+    def test_an_entry_after_its_expiry_is_refused_by_the_writer(engine):
+        """Witness of the writer's entry-window check alone: forward in time (chronology fine), but
+        the fill is after the setup's expiry."""
+        with engine.begin() as conn:
+            i = ident(conn)
+            sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+>           with pytest.raises(c.ContractViolation, match="entry fill outside"):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:673: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_an_entry_after_its_expiry_is_refused_by_the_writer
+1 failed, 56 deselected in 1.18s

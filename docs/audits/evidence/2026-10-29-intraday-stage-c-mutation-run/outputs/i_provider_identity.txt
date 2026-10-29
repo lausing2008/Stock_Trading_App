@@ -1,0 +1,25 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_________ test_failed_trace_and_missing_provenance_keep_source_unknown _________
+
+engine = Engine(postgresql+psycopg2://postgres:***@localhost:55441/intraday)
+
+    def test_failed_trace_and_missing_provenance_keep_source_unknown(engine):
+        _core(engine, PV.delete().where(PV.c.ts == OPEN))
+        s = snap(engine)
+        assert by_open(s, 13, 30).extra["provider_basis"] == "provenance_missing"
+        assert by_open(s, 13, 30).source_hash == c.source_hash(by_open(s, 13, 30).raw_hash, None)
+        with Session(engine) as ses:
+            ses.add(BarSessionAuthority(stock_id=1, timeframe="5m", session_date=datetime(2026, 10, 28),
+                                        authority="unusual_whales", recorded_at=OPEN, protected=0, replaced=0,
+                                        trace_failed=True))
+            ses.commit()
+        s = snap(engine)
+>       assert all(r.extra["provider"] == "unknown" for r in s.bars_5m)
+E       assert False
+E        +  where False = all(<generator object test_failed_trace_and_missing_provenance_keep_source_unknown.<locals>.<genexpr> at 0x77c42eafdcb0>)
+
+intraday_inputs_suite.py:165: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_inputs_suite.py::test_failed_trace_and_missing_provenance_keep_source_unknown
+1 failed, 12 deselected in 1.57s

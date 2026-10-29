@@ -1,0 +1,24 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______________ test_signal_freshness_checks_ignore_non_daily_rows ______________
+
+    def test_signal_freshness_checks_ignore_non_daily_rows():
+        """The DQ freshness check builds its SQL at import; read the evaluated strings."""
+        tree = ast.parse((SRC / "scheduler.py").read_text())
+        node = next(n for n in ast.walk(tree) if isinstance(n, ast.AnnAssign) and getattr(n.target, "id", None) == "_DQ_CHECKS")
+        sig = {}
+        for d in (n for n in node.value.elts if isinstance(n, ast.Dict)):
+            fields = {k.value: v for k, v in zip(d.keys, d.values) if isinstance(k, ast.Constant)}
+            name = getattr(fields.get("name"), "value", None)
+            if name in ("signals_us", "signals_hk"):
+                sig[name] = eval(compile(ast.Expression(fields["query"]), "dq", "eval"),  # noqa: S307 - string expr
+                                 {"_DAILY_HORIZONS": DAILY_HORIZONS})
+>       assert len(sig) == 2 and all(DAILY_IN in q for q in sig.values())
+E       assert (2 == 2 and False)
+E        +  where 2 = len({'signals_hk': "SELECT MAX(sig.ts) FROM signals sig JOIN stocks st ON sig.stock_id=st.id WHERE st.market='HK'", 'signa...s st ON sig.stock_id=st.id WHERE st.market='US' AND CAST(sig.horizon AS text) IN ('SHORT', 'SWING', 'LONG', 'GROWTH')"})
+E        +  and   False = all(<generator object test_signal_freshness_checks_ignore_non_daily_rows.<locals>.<genexpr> at 0x750d1715bb90>)
+
+tests/test_intraday_daily_isolation.py:63: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_daily_isolation.py::test_signal_freshness_checks_ignore_non_daily_rows
+1 failed, 5 deselected in 0.80s

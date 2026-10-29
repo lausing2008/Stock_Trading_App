@@ -1,0 +1,17 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___ test_both_outcome_loops_route_hold_days_through_the_guard_code_presence ____
+
+    def test_both_outcome_loops_route_hold_days_through_the_guard_code_presence():
+        """code presence: both passes read the hold window only through _hold_days_for, inside a
+        try that catches UnsupportedHorizon (a direct _OUTCOME_HOLD_DAYS[...] would KeyError)."""
+        path = SRC / "api" / "outcomes.py"
+>       assert len(_calls_in("evaluate_signal_outcomes", path, "_hold_days_for")) == 2
+E       AssertionError: assert 1 == 2
+E        +  where 1 = len([<ast.Call object at 0x7c40c7d65910>])
+E        +    where [<ast.Call object at 0x7c40c7d65910>] = _calls_in('evaluate_signal_outcomes', PosixPath('/tmp/claude-1000/-home-lausing-Documents-MyProjects-Stock-Trading-App/be0e4437-7986-4c6c-bfa0-318d04257b46/scratchpad/wt-intraday/services/signal-engine/src/api/outcomes.py'), '_hold_days_for')
+
+intraday_isolation_suite.py:113: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_isolation_suite.py::test_both_outcome_loops_route_hold_days_through_the_guard_code_presence
+1 failed, 24 deselected in 1.85s
