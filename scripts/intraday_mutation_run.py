@@ -8,6 +8,11 @@ Usage (from a clean checkout of the commit under test):
 Writes OUT_DIR/results.json (per case: file and mutation hashes, witness command, failing tests,
 verdict, output hash) and OUT_DIR/outputs/<case>.txt. Every mutated file is restored from an
 in-memory copy and verified by hash after each case.
+
+Bytecode: every __pycache__ under the checkout is purged first and every witness runs with
+PYTHONDONTWRITEBYTECODE=1, so no compiled file can outlive its source. (Found 2026-10-29: a
+same-length mutation restored within the same second left a .pyc that Python still trusted --
+its validation is mtime-seconds + size -- so later runs executed the mutated code.)
 """
 import hashlib
 import json
@@ -239,11 +244,23 @@ def git_head():
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
 
 
+def purge_bytecode():
+    for d in ROOT.rglob("__pycache__"):
+        if ".git" not in d.parts:
+            for f in d.iterdir():
+                f.unlink()
+            d.rmdir()
+    left = [str(p) for p in ROOT.rglob("*.pyc") if ".git" not in p.parts]
+    if left:
+        sys.exit(f"refusing: compiled files remain after purge: {left[:3]}")
+
+
 def main():
     if subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, capture_output=True,
                       text=True).stdout.strip():
         sys.exit("refusing: the checkout has uncommitted changes; run against an exact commit")
     head = git_head()
+    purge_bytecode()
     (OUT / "outputs").mkdir(parents=True, exist_ok=True)
     results = []
     for cid, rel, old, new, (cwd, cmd, env), expect in CASES:
@@ -262,7 +279,7 @@ def main():
         try:
             path.write_text(mutated)
             r = subprocess.run(cmd, cwd=ROOT / cwd, capture_output=True, text=True, timeout=240,
-                               env=dict(os.environ, **{k: v for k, v in env.items()}))
+                               env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1", **env))
             out = r.stdout + r.stderr
             failed = re.findall(r"^FAILED (\S+)", out, flags=re.M)
             errored = bool(re.search(r"\b\d+ errors?\b", out.splitlines()[-1] if out.splitlines() else ""))
@@ -285,7 +302,9 @@ def main():
         results.append(rec)
         print(f"{verdict:22} {cid:28} {rec['seconds']}s", flush=True)
     summary = {v: sum(r["verdict"] == v for r in results) for v in sorted({r["verdict"] for r in results})}
+    stray = [str(p) for p in ROOT.rglob("*.pyc") if ".git" not in p.parts]
     doc = {"commit": head, "required_cases": len(CASES), "summary": summary, "results": results,
+           "bytecode_written_during_run": stray,
            "not_required": NOT_REQUIRED, "pg_url_host": PG.split("@")[-1]}
     (OUT / "results.json").write_text(json.dumps(doc, indent=1, sort_keys=True))
     print(json.dumps({"commit": head, "summary": summary}), flush=True)
