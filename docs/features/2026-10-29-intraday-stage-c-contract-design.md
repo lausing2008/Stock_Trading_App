@@ -1,11 +1,12 @@
-# Intraday Stage C — contract and storage design (revision 2)
+# Intraday Stage C — contract and storage design (revision 3)
 
 Date: **2026-10-29**. Branch: `intraday-contracts`. Status: **design; nothing built**.
 - **Inputs:**
   - the [Stage C inventory](2026-10-29-intraday-stage-c-inventory.md);
   - the [Intraday plan](2026-10-26-intraday-and-signal-performance-plan.md);
   - the [design review](../audits/2026-10-29-intraday-stage-c-design-review.md) of revision 1
-    (`c6254311`), findings CDR-01..CDR-06. This revision resolves each one; §13 maps them.
+    (`c6254311`), findings CDR-01..CDR-06, and of revision 2 (`0217a3be`), findings
+    CDR-R2-01..CDR-R2-04. This revision resolves each one; §13 maps them.
 - **Decided by the reviewer:**
   - separate Intraday storage;
   - US-only v1;
@@ -110,23 +111,37 @@ timestamp.
 
 ## 5. Evaluations, setups and their states (CDR-03)
 
-**Strategy and config identity:**
-- `strategy_id`: `AI_INTRADAY`. RZY keeps `LITTLE_RZY_INSPIRED_V1` and is never relabelled.
-- `strategy_version` and `contract_version`.
-- `config_hash`: the canonical hash of every parameter, including the session offsets, entry
+**Algorithm identity** (CDR-R2-02). `identity_hash = sha256(canonical(strategy_id,
+strategy_version, strategy_source_hash, contract_version, config_hash))`, where:
+- `strategy_id` is `AI_INTRADAY`. RZY keeps `LITTLE_RZY_INSPIRED_V1` and is never relabelled.
+- `strategy_source_hash` is the SHA-256 of the strategy and contract modules' source, computed at
+  import. A logic change therefore yields a new identity even if nobody bumps
+  `strategy_version`. A deploy that leaves those modules untouched keeps the identity.
+- `config_hash` is the canonical hash of every parameter, including the session offsets, entry
   window, max hold, fill model, slippage and costs.
 
-**Evaluation (always written).** One row per `(run_key, config_hash, stock_id, trigger_bar_open)`,
-which is unique, and it is the denominator. Its `result` is one of:
-- `setup` (it references exactly one setup);
+Each identity is stored once in `intraday_identities`. Each evaluation batch (one scan) is stored
+in `intraday_evaluation_batches`: run, identity, release `code_version` (the git commit),
+`started_at` and `data_cutoff`. The observed `run_key` is only a namespace; the identity and
+code version live on the batch, never on the run row.
+
+**Evaluation (always written).** Its key is `evaluation_key = sha256(canonical(run_key,
+identity_hash, stock_id, trigger_bar_open))`, not null and unique. It is the denominator. Its
+`result` (not null) is one of:
+- `setup` (exactly one setup references it);
 - `no_setup`, `wait`, `data_unavailable`;
 - `unsupported_market`, `calendar_coverage_expired`.
 
-Each trigger bar is accounted for exactly once per run and config.
+- **Rerunning the same identity on the same bar** is a duplicate: `ON CONFLICT DO NOTHING`, then
+  read back. It stays idempotent even across a restart or a deploy that did not change the
+  strategy modules.
+- **Evaluating a different identity** (new code or config) is a separate, coexisting row.
+  Coverage is always reported per identity and never pooled.
 
 **Setup.** Written for every detected pattern, whether or not it is actionable:
-- **Identity:** `occurrence_key`, not null and unique, `sha256(canonical(run_key, strategy_id,
-  strategy_version, config_hash, symbol, trigger_bar_open, direction))`.
+- **Identity:** `occurrence_key`, not null and unique, `sha256(canonical(run_key, identity_hash,
+  symbol, trigger_bar_open, direction))`. Each setup references its evaluation through a
+  same-run foreign key (§9).
 - **Frozen proposal:** levels (`entry_reference`, `stop`, `target`, `risk_per_share`), reasons,
   input hashes and times.
 - **Nullable:** `actionable_at` is null when the setup never becomes actionable.
@@ -147,14 +162,37 @@ Each trigger bar is accounted for exactly once per run and config.
      is simulated.
 4. **Otherwise** the setup becomes `actionable`, with `actionable_at = detected_at`.
 
-**Events after actionable, before entry.** Each event is timed at the `readable_at` of the bar
-that shows it; the earliest event wins, and a tie goes to cancellation:
-- `cancelled(invalidated_price | input_revised | data_unavailable)`;
-- `expired` at `entry_expires_at`;
-- `entered` at a fill (§6).
+**Event timing after actionable** (CDR-R2-01). Every later event (cancellation, reactive exit,
+reconciliation) stores three separate times:
 
-A bar that is readable only after a fill can never cancel that fill. Future bars never undo a
-past event.
+| Time | Meaning |
+|---|---|
+| `evidence_eligible_at` | the earliest time the evidence could be read: the bar's `readable_at`, or for an absent bar the `readable_at` it would have had. It is a **lower bound only**. |
+| `evidence_observed_at` | when the evaluator actually read the evidence: the revised version, or the confirmed absence |
+| `decided_at` | when the transition was decided and written |
+
+They satisfy `evidence_eligible_at ≤ evidence_observed_at ≤ decided_at`. An event's
+**effective time** is set by `clock_basis`:
+- **`observed`:** the effective time is `decided_at`, the real processing time. An event is never
+  dated at its eligibility time.
+  - A revised bar's cancellation is effective when the revision was read, not at the original
+    bar's close.
+  - A missing bar's cancellation is effective when its absence was observed.
+- **`replay_logical`** (replay only): the effective time is `evidence_eligible_at + replay_latency`,
+  a versioned config parameter labelled as an assumption.
+
+**Ordering against an entry.** The entry fills at the open `t` of a bar (§6).
+- A cancellation whose effective time is **before** `t` defeats the entry: the order was
+  cancelled before that bar opened.
+- A cancellation effective at or after `t` cannot undo it: the entry stands and the event is
+  recorded as `post_entry_evidence` on the outcome.
+- If either time is unknown, for example a write whose `decided_at` was lost to a crash and later
+  reconstructed, the setup records `chronology_ambiguous`. It is reported, never resolved by
+  picking cancellation.
+- `expired` is effective at `entry_expires_at` (exclusive).
+- Reactive exits (§6) are ready at their `decided_at`.
+- Scheduled orders and resting brackets keep their own adjudication rules (§6), which do not
+  depend on processing time.
 
 **Invariants by state:**
 
@@ -162,7 +200,8 @@ past event.
 |---|---|
 | every setup | `readable_at ≤ input_read_at ≤ detected_at` for every input |
 | `actionable` | `detected_at = actionable_at < entry_expires_at ≤ last_entry_at` |
-| `entered` | `actionable_at < entry_fill_at < entry_expires_at` |
+| `entered` | `actionable_at < entry_fill_at < entry_expires_at`, and no cancellation effective before `entry_fill_at` |
+| any later event | `evidence_eligible_at ≤ evidence_observed_at ≤ decided_at` (observed mode) |
 
 **Email expiry is not eligibility.** A later notification carries its own `deliver_by`. A test
 asserts that no eligibility path reads it.
@@ -218,15 +257,27 @@ Two kinds, never merged.
 - `realized` only for recorded exits;
 - `unresolved_exit_at_close` carries a `mark` and no realized P&L.
 
-**Revision identity is independent of code version.** `outcome_key = sha256(setup occurrence_key,
-kind, window, evaluator_version, evidence_hash)`, where `evidence_hash` hashes the `source_hash`es
-of every bar the evaluation used. Changed input evidence under the same evaluator code is a new
-revision.
+**Window.** `window` is NOT NULL: `'30'`, `'60'` or `'120'` for forecasts, and the sentinel
+`'trade'` for the managed-trade outcome. A CHECK ties each kind to its windows, so PostgreSQL's
+NULL-distinct uniqueness can never admit a second root.
 
-**Chain.** Each row names `supersedes_id`. A unique partial index allows one root per
-`(setup, kind, window)` where `supersedes_id IS NULL`, and `UNIQUE (supersedes_id)` gives each row
-at most one successor. The current outcome is the chain's tip. Writing a revision locks the
-setup (§9).
+**Revision identity is independent of code version.** `outcome_key = sha256(canonical(setup
+occurrence_key, kind, window, evaluator_version, evidence_hash))`, where `evidence_hash` hashes
+the `source_hash`es of every bar the evaluation used. Changed input evidence under the same
+evaluator code is a new revision; an identical re-evaluation is a duplicate (`ON CONFLICT DO
+NOTHING`).
+
+**Chain** (CDR-R2-02):
+- **Root:** each chain has exactly one root per `(setup, kind, window)`, the row with
+  `supersedes_id IS NULL` (unique partial index).
+- **One successor:** `UNIQUE (supersedes_id)`.
+- **Same-chain predecessor:** a composite foreign key `(supersedes_id, setup_id, kind, window,
+  run_key) → intraday_outcomes (id, setup_id, kind, window, run_key)` makes a predecessor
+  belong to the same setup, kind, window and run. A cross-setup, cross-window, cross-run or
+  orphan predecessor is rejected by the database. The FK is `MATCH SIMPLE`, so it applies to
+  every non-root row.
+- **Current outcome:** the chain's tip.
+- **Lock:** writing a revision locks the setup (§9).
 
 ## 8. Unresolved exposure (CDR-06)
 
@@ -239,94 +290,175 @@ distinct from `expired`, where an entry was never filled.
     counted as flat.
 - **Reconciliation** is explicit research accounting: an appended `reconciled` transition, with
   the evidence used (for example the next session's first executable open, labelled
-  `reconciliation_mark`). It is never folded into the same-session score. No broker exists in
-  this release.
+  `reconciliation_mark`), carrying the three event times of §5. It is never folded into the
+  same-session score. No broker exists in this release.
+- **State classes** (CDR-R2-03):
+  - `unresolved_exit_at_close` is **session-terminal but not final**.
+  - `reconciled` is **final**.
+  - Every other session-terminal state is also final.
+  - The two partial unique indexes in §9 enforce one session-terminal transition and at most one
+    `reconciled` transition per setup, so a setup can be reconciled exactly once.
 - **Retention** never deletes an unresolved or unreconciled setup (§9).
 
-## 9. Storage and constraints (CDR-04)
+## 9. Storage and constraints (CDR-04, CDR-R2-02, CDR-R2-03)
 
 All tables are new, market-data-owned and registered before startup `create_all`. Each is
-insert-only. Vocabularies are `VARCHAR` with `CHECK`.
+insert-only. Every column below is `NOT NULL` unless marked `NULL`, and every vocabulary is a
+`VARCHAR` with a `CHECK`.
 
 ```
-intraday_runs            run_key VARCHAR(64) PK, record_mode CHECK IN ('observed','replay'),
-                         input_snapshot_hash, code_version, config_hash, as_of, created_at
-                         UNIQUE (run_key, record_mode)
-                         CHECK (record_mode='observed') = (run_key='observed')      -- one observed run
-                         a sentinel row ('observed','observed') is inserted by the schema step
+intraday_runs              run_key VARCHAR(64) PK, record_mode ('observed'|'replay'), created_at,
+                           replay: input_snapshot_hash NULL, as_of NULL
+                           UNIQUE (run_key, record_mode)
+                           CHECK ((record_mode='observed') = (run_key='observed'))
+                           CHECK (record_mode='observed' OR (input_snapshot_hash IS NOT NULL AND as_of IS NOT NULL))
+                           sentinel row ('observed','observed') inserted by the schema step: a namespace only
 
-intraday_evaluations     id PK, run_key, record_mode, config_hash, stock_id, trigger_bar_open,
-                         result CHECK IN (...), detected_at, data_cutoff, setup_occurrence_key NULL
-                         FK (run_key, record_mode) -> intraday_runs (run_key, record_mode)
-                         UNIQUE (run_key, config_hash, stock_id, trigger_bar_open)
-                         CHECK (result='setup') = (setup_occurrence_key IS NOT NULL)
+intraday_identities        identity_hash CHAR(64) PK, strategy_id, strategy_version,
+                           strategy_source_hash, contract_version, config_hash, config JSON
 
-intraday_setups          id PK, occurrence_key CHAR(64) NOT NULL UNIQUE, run_key, record_mode,
-                         strategy_id, strategy_version, contract_version, config_hash, stock_id,
-                         symbol, session_date, trigger_bar_open, direction, levels..., reasons,
-                         detected_at, actionable_at NULL, entry_expires_at, last_entry_at,
-                         liquidation_at, session_close
-                         FK (run_key, record_mode) -> intraday_runs
-                         UNIQUE (id, run_key)               -- target for child lineage FKs
+intraday_evaluation_batches batch_id PK, run_key, record_mode, identity_hash, code_version,
+                           started_at, data_cutoff
+                           FK (run_key, record_mode) -> intraday_runs (run_key, record_mode)
+                           FK identity_hash -> intraday_identities
+                           UNIQUE (batch_id, run_key, identity_hash)
 
-intraday_setup_inputs    setup_id, run_key, role ('trigger'|'context'|'lookback'), timeframe,
-                         bar_open, source ('native'|'derived_from_5m'), values, raw/source/input/
-                         derived hashes, the §4 times and bases
-                         FK (setup_id, run_key) -> intraday_setups (id, run_key)
-                         UNIQUE (setup_id, role, timeframe, bar_open)
+intraday_evaluations       id PK, evaluation_key CHAR(64) UNIQUE, batch_id, run_key, identity_hash,
+                           stock_id, symbol, session_date, trigger_bar_open,
+                           result ('setup'|'no_setup'|'wait'|'data_unavailable'|'unsupported_market'
+                                   |'calendar_coverage_expired'),
+                           detected_at, data_cutoff
+                           FK (batch_id, run_key, identity_hash) -> intraday_evaluation_batches
+                           UNIQUE (id, run_key, identity_hash)
 
-intraday_setup_transitions setup_id, run_key, seq, from_state, to_state, at, reason, evidence,
-                         idempotency_key UNIQUE
-                         FK (setup_id, run_key) -> intraday_setups (id, run_key)
-                         UNIQUE (setup_id, seq)
-                         CHECK (from_state, to_state) IN (the legal pairs below)
-                         UNIQUE (setup_id) WHERE to_state IN (terminal states)    -- one terminal
+intraday_setups            id PK, occurrence_key CHAR(64) UNIQUE, evaluation_id UNIQUE, run_key,
+                           identity_hash, stock_id, symbol, session_date, trigger_bar_open,
+                           direction ('bullish'|'bearish'), levels, reasons, detected_at,
+                           actionable_at NULL, entry_expires_at, last_entry_at, liquidation_at,
+                           session_close
+                           FK (evaluation_id, run_key, identity_hash)
+                              -> intraday_evaluations (id, run_key, identity_hash)
+                           UNIQUE (id, run_key)
+                           CONSTRAINT TRIGGER (DEFERRABLE INITIALLY DEFERRED): its evaluation's
+                              result = 'setup'; and every 'setup' evaluation has exactly one setup
 
-intraday_outcomes        id PK, outcome_key UNIQUE, setup_id, run_key, kind ('forecast'|'trade'),
-                         window, evaluator_version, evidence_hash, supersedes_id NULL, status, ...
-                         FK (setup_id, run_key) -> intraday_setups (id, run_key)
-                         UNIQUE (supersedes_id); UNIQUE (setup_id, kind, window) WHERE supersedes_id IS NULL
+intraday_setup_inputs      setup_id, run_key, role ('trigger'|'context'|'lookback'), timeframe,
+                           bar_open, source ('native'|'derived_from_5m'), values, the four §4
+                           hashes, readable_at, input_read_at, first_available_at NULL,
+                           availability_basis, provider_published_at NULL
+                           FK (setup_id, run_key) -> intraday_setups (id, run_key)
+                           UNIQUE (setup_id, role, timeframe, bar_open)
 
-intraday_evaluation_daily_counts  run_key, config_hash, session_date, result, count   -- archived
-                         before evaluation retention; PK on all but count
+intraday_setup_transitions setup_id, run_key, seq, from_state NULL (only for seq 1), to_state,
+                           evidence_eligible_at NULL, evidence_observed_at NULL, decided_at,
+                           clock_basis ('observed'|'replay_logical'), reason, evidence,
+                           idempotency_key UNIQUE
+                           FK (setup_id, run_key) -> intraday_setups (id, run_key)
+                           UNIQUE (setup_id, seq)
+                           CHECK ((from_state, to_state) IN legal pairs)
+                           UNIQUE (setup_id) WHERE to_state IN (session-terminal states)
+                           UNIQUE (setup_id) WHERE to_state = 'reconciled'
+                           BEFORE INSERT trigger: append validation (below)
+
+intraday_outcomes          id PK, outcome_key CHAR(64) UNIQUE, setup_id, run_key,
+                           kind ('forecast'|'trade'), window, evaluator_version, evidence_hash,
+                           supersedes_id NULL, status, values
+                           CHECK ((kind='forecast' AND window IN ('30','60','120'))
+                                  OR (kind='trade' AND window='trade'))
+                           FK (setup_id, run_key) -> intraday_setups (id, run_key)
+                           UNIQUE (id, setup_id, kind, window, run_key)
+                           FK (supersedes_id, setup_id, kind, window, run_key)
+                              -> intraday_outcomes (id, setup_id, kind, window, run_key)
+                           UNIQUE (supersedes_id)
+                           UNIQUE (setup_id, kind, window) WHERE supersedes_id IS NULL
+
+intraday_session_seals     run_key, identity_hash, session_date, sealed_at, PK (all but sealed_at)
+
+intraday_evaluation_counts run_key, identity_hash, session_date, result, count, archived_at
+                           PK (run_key, identity_hash, session_date, result)
+                           FK (run_key, identity_hash, session_date) -> intraday_session_seals
 ```
 
-- **Legal transitions:**
-  - A setup is inserted together with its first transition, `seq = 1`, `(NULL → detected)`, in
-    the same transaction. A setup with no transitions cannot exist.
-  - `detected` goes to `actionable`, `expired_before_detection`, `no_fill_opportunity`,
-    `cancelled_before_actionable` or `research_only_unsupported_direction`.
-  - `actionable` goes to `entered`, `expired`, `cancelled` or `rejected_invalid_bracket_at_fill`.
-  - `entered` goes to `exited` or `unresolved_exit_at_close`.
-  - `unresolved_exit_at_close` goes to `reconciled`.
-- **Run key and lineage:** observed records use `run_key = 'observed'`, which is not null, so
-  identity uniqueness never relies on a NULL. Every child carries `run_key` in a composite foreign
-  key to its parent, so a replay child cannot attach to an observed setup or the reverse.
-- **Concurrency:** a transition or outcome writer runs in one transaction that:
-  1. takes `SELECT … FOR UPDATE` on the setup row (a lock, not a modification);
-  2. reads the latest transition;
-  3. validates the pair;
-  4. inserts `seq = latest + 1`.
-  `UNIQUE (setup_id, seq)` and the one-terminal index reject a concurrent contradictory append,
-  even if a writer skipped the lock. Evaluations and setups are inserted with `ON CONFLICT DO
-  NOTHING` on their unique keys and then read back, so duplicate detection is idempotent.
-- **Update denial:** a `BEFORE UPDATE` trigger on every table raises. It is created idempotently
-  in `_apply_isolated_ddl` (`CREATE OR REPLACE FUNCTION` and `DROP TRIGGER IF EXISTS`/`CREATE
-  TRIGGER`).
-- **Delete guard:**
-  - A `BEFORE DELETE` trigger raises unless the transaction has run
-    `SET LOCAL stockai.intraday_retention = 'on'`.
-  - All services share one database credential (`docker/docker-compose.yml`, `env_file:
-    ../.env`), so this is a guard against accidental deletion, not a permission boundary. A
-    dedicated retention role would be new infrastructure and is out of scope; the doc does not
-    claim one.
-- **Retention:** run by the named job `intraday_retention`, in this order:
-  1. Archive `intraday_evaluation_daily_counts` for sessions older than 35 days, then delete those
-     evaluations.
-  2. Delete inputs older than 35 days for setups that are terminal and resolved.
-  3. Keep setups, transitions and outcomes for 400 days, matching `signal_outcomes`.
-  4. Never delete a setup in `unresolved_exit_at_close` (unreconciled), a setup with an
-     unresolved outcome, or a row another row references.
+**Legal transitions.**
+- A setup is inserted with its first transition, `seq = 1`, `(NULL → detected)`, in the same
+  transaction. A deferred constraint trigger rejects a commit in which a setup has no `seq = 1`.
+- `detected` goes to `actionable`, `expired_before_detection`, `no_fill_opportunity`,
+  `cancelled_before_actionable`, `research_only_unsupported_direction` or
+  `chronology_ambiguous`.
+- `actionable` goes to `entered`, `expired`, `cancelled`, `rejected_invalid_bracket_at_fill` or
+  `chronology_ambiguous`.
+- `entered` goes to `exited` or `unresolved_exit_at_close`.
+- `unresolved_exit_at_close` goes to `reconciled`.
+
+**State classes.** Two partial unique indexes enforce them:
+- **Session-terminal:** `expired_before_detection`, `no_fill_opportunity`,
+  `cancelled_before_actionable`, `research_only_unsupported_direction`, `expired`, `cancelled`,
+  `rejected_invalid_bracket_at_fill`, `exited`, `unresolved_exit_at_close` and
+  `chronology_ambiguous`.
+- **Final:** every session-terminal state except `unresolved_exit_at_close`, plus `reconciled`.
+
+**Append validation is done in the database, not only by the pair CHECK.** A `BEFORE INSERT`
+trigger on transitions does all of the following:
+1. Takes `SELECT … FOR UPDATE` on the setup row. That serialises every append for the setup,
+   including writers that forgot to lock.
+2. Reads the latest transition.
+3. Requires either `seq = 1` with `from_state IS NULL` and `to_state = 'detected'` and no prior
+   row, or `seq = latest.seq + 1` with `from_state = latest.to_state`.
+4. Raises otherwise.
+
+The pair CHECK and the two partial indexes remain as independent backstops. A duplicate append
+with the same `idempotency_key` is `ON CONFLICT DO NOTHING`, then read back. Two competing appends
+from one state (for example `entered` and `cancelled`, or two `reconciled`): the second sees the
+first as latest and is rejected.
+
+**Run key and lineage.**
+- `run_key` is never NULL; `'observed'` is a namespace.
+- Every child reaches its parent through a composite FK including `run_key`, and evaluations and
+  setups also include `identity_hash`. A cross-run or cross-identity link is rejected by the
+  database: evaluation→batch, setup→evaluation, input, transition and outcome→setup, and
+  outcome→predecessor.
+
+**Mutation denial.**
+- A `BEFORE UPDATE` trigger on every table raises.
+- A `BEFORE DELETE` trigger raises unless the transaction has run `SET LOCAL
+  stockai.intraday_retention = 'on'`.
+- Both are created idempotently in `_apply_isolated_ddl`.
+- All services share one database credential (`docker/docker-compose.yml`, `env_file: ../.env`),
+  so the delete guard prevents accidents. It is not a permission boundary, and none is claimed.
+
+**Seals: closing a session's membership.**
+- A seal row for `(run_key, identity_hash, session_date)` means no more evaluations or setups may
+  be inserted for that key. A `BEFORE INSERT` trigger on evaluations and setups rejects writes to
+  a sealed key.
+- **Observed:** the `intraday_seal` job seals each identity's session at `session_close + 2 h`.
+  A later observed evaluation for that session is impossible, since the bar's session is over.
+  An attempt is rejected and counted, never silently added.
+- **Replay:** a run seals each session when it finishes it.
+- Transitions and outcomes may still be appended after a seal: reconciliation and outcome
+  revisions are expected.
+
+**Retention.** The named job `intraday_retention` runs one transaction per (run, identity,
+session), so it is atomic and retry-safe:
+1. Only **sealed** sessions older than 35 days are eligible.
+2. Insert the per-result counts, computed from that session's evaluations, into
+   `intraday_evaluation_counts` with `ON CONFLICT DO NOTHING`.
+3. Check that the stored counts equal the computed counts. Abort on a mismatch.
+4. Delete that session's evaluations whose `result <> 'setup'`.
+5. Commit.
+
+A retry after a failure finds nothing committed and redoes it. A retry after success finds the
+counts present, identical, and nothing left to delete. Late evaluations cannot exist, because the
+session is sealed. Inputs of resolved final setups are deleted after 35 days.
+
+**400-day deletion of a setup**, again in one transaction, in this order:
+1. Delete **all outcome rows of the setup in a single statement**. FK `NO ACTION` checks run at
+   statement end, so a whole chain is deleted together and no orphan or broken predecessor can
+   remain.
+2. Delete its transitions, then its inputs, the setup, and its `'setup'` evaluation.
+
+A setup whose latest state is `unresolved_exit_at_close` (not reconciled) is never deleted, and
+neither is any row it references. The archived counts and seals are kept indefinitely (a few rows
+per session).
 
 ## 10. Daily isolation and the guard coverage matrix (CDR-05)
 
@@ -340,40 +472,61 @@ witness for any filter.**
 |---|---|---|
 | PostgreSQL enum lacks INTRADAY | raw PostgreSQL 16 insert of `'INTRADAY'` into `signals`/`signal_outcomes` fails | yes (fails if the value is ever added) |
 | `parse_daily_horizon` at the two signal upserts | API test: `style=INTRADAY` gets 422 before any SQL; a spy asserts the upsert is not called | yes |
-| outcome writer guard (`outcomes.py:378, 683`) | SQLite: a contaminated `signals` row with horizon `'INTRADAY'` (SQLAlchemy 2.0 `Enum` adds no CHECK on SQLite) is skipped and counted, and the batch completes | yes |
+| outcome writer guard (`outcomes.py:229, 378, 683`) | SQLAlchemy 2.0's `Enum` adds no CHECK on SQLite, but its **result decoder raises `LookupError`** on an unknown value, so a contaminated ORM row cannot reach the guard. Two witnesses instead: (a) a compiled-query test that the pending-signal select carries `horizon IN DAILY_HORIZONS`; (b) a documented seam: the per-row hold-days function, called with a string horizon `'INTRADAY'`, skips and counts it, and the batch completes | yes (a: code presence; b: behaviour) |
 | unknown-style fallbacks (`routes.py:60, 633, 1131, 1311`, decision-engine, watchlist, curation) | request tests expect 422/skip, not all-horizons or SWING | yes |
 | daily maps pinned to `DAILY_HORIZONS` | key-set equality test | yes |
-| **reader filters** (seven high-risk + medium) | on PostgreSQL the filter `horizon IN DAILY_HORIZONS` matches every possible enum value, so **no data witness exists there**. Witness at a documented seam instead: SQLite readers get a contaminated `'INTRADAY'` row and must exclude it; PostgreSQL-only SQL (`DISTINCT ON`, `LATERAL`) gets a construction test asserting the predicate and bound values in the compiled statement | yes, but **as a code-presence check for PG-only SQL**. Labelled as such; it is defence in depth behind the enum, not an independent data guard |
+| **reader filters** (seven high-risk + medium) | on PostgreSQL the filter `horizon IN DAILY_HORIZONS` matches every possible enum value, so **no data witness exists there**. Witness at a documented seam instead: **raw `text()` readers** that run on SQLite (the column read as a string, no enum decoder) get a contaminated `'INTRADAY'` row and must exclude it; **ORM readers** and PostgreSQL-only SQL (`DISTINCT ON`, `LATERAL`) get a compiled-statement test asserting the predicate and bound values | yes, but **as a code-presence check for PG-only SQL**. Labelled as such; it is defence in depth behind the enum, not an independent data guard |
 
 Each row names its test, and the sabotage pass removes each guard and checks that its own witness
 fails. A row whose witness is not data-based is labelled as such.
 
-## 11. Read API (CDR-06)
+## 11. Read API (CDR-06, CDR-R2-04)
 
 These are admin-only research endpoints in market-data (`require_model_admin`). Records are
 platform-wide over the active US universe and carry no user data. The gateway gets a new
 `/intraday` prefix in `proxy.py` `_ROUTES`, covered by the scan-every-service test.
 
 ```
-GET /intraday/setups?market=US&session=YYYY-MM-DD&mode=observed|replay[&run_key=][&symbol=][&cursor=][&limit<=500]
-GET /intraday/evaluations?...   (same parameters)
+GET /intraday/evaluations?market=US&session=D&mode=observed|replay[&run_key=]&identity=<hash>[&symbol=][&cursor=][&limit<=500]
+GET /intraday/setups?market=US&session=D&mode=…[&run_key=]&identity=<hash>[&symbol=][&cursor=][&limit<=500]
+GET /intraday/identities?mode=…[&run_key=]&session=D      -- which identities have records that session
+GET /intraday/unresolved?mode=…[&run_key=][&cursor=]     -- every unreconciled exposure, any session
 ```
 
-- **Mode and run.**
-  - `mode=replay` **requires** `run_key`, and `mode=observed` **rejects** it.
-  - Two runs can never be pooled, and there is no default mode.
-- **Ordering and pagination.**
-  - Results are ordered by `(trigger_bar_open, symbol, occurrence_key)`.
-  - A keyset cursor carries those three values, so page boundaries stay stable while new rows
-    arrive.
-- **Every response carries:**
-  - `run_key`, `record_mode`, `config_hash` and `contract_version`;
-  - `production_generation: "disabled"`;
-  - `coverage`: evaluations by result for the session, the retention horizon, and whether the
-    session's evaluations are archived.
-  - Unresolved outcomes are listed and never filtered out.
-- **Errors:** missing authentication is 401 at the gateway, a non-US market returns
-  `unsupported_market`, and there is no write endpoint.
+- **Mode and run.** `mode=replay` requires `run_key`, and `mode=observed` rejects it. There is
+  no default.
+- **Identity.**
+  - `identity` is **required** on `evaluations` and `setups`, so two configs or code versions are
+    never pooled.
+  - `/intraday/identities` lists what exists, with per-identity counts.
+  - Every record also carries its own `identity_hash`, and the response echoes the selected
+    identity's strategy, contract, config and code versions.
+- **Ordering keys:** unique, not null, endpoint-specific.
+
+| Endpoint | Ordering key |
+|---|---|
+| evaluations | `(trigger_bar_open, symbol, evaluation_key)`. Covers non-setup results, which have no occurrence key. |
+| setups | `(trigger_bar_open, symbol, occurrence_key)` |
+| unresolved | `(session_date, trigger_bar_open, occurrence_key)` |
+
+  The keyset cursor carries the full key.
+- **Membership:**
+  - **Sealed session:** membership is frozen (§9). A full keyset traversal returns every record
+    exactly once. The response says `membership: "sealed"` and includes the seal time.
+  - **Unsealed session:** the response says `membership: "changing_view"`. A row inserted
+    concurrently with an earlier key than the cursor can be missed by that traversal. The
+    contract is: re-read after the seal for complete coverage, or re-scan from the start. No
+    complete-coverage claim is made for an unsealed session.
+- **Coverage** is returned per identity:
+  - evaluations by result, read from the live rows or, after retention, from
+    `intraday_evaluation_counts`, with that source named;
+  - the retention horizon;
+  - whether non-setup rows were archived.
+- **Unresolved exposure** stays discoverable through `/intraday/unresolved` after its session
+  ages out of ordinary pages. Unresolved outcomes are never filtered from any response.
+- **Errors:** missing authentication is 401 at the gateway, and a non-US market returns
+  `unsupported_market`. There is no write endpoint, and every response carries
+  `production_generation: "disabled"`.
 
 ## 12. Rollout
 
@@ -387,14 +540,14 @@ One release, with no generator and no enum change.
 2. **Host pre-checks:** drift 12/12 clean, deploy lock free, and rollback images tagged for all
    12 backends. `shared/` changes (registry and guards), and shared is one unit.
 3. **Deploy the 12 backends sequentially** with `scripts/deploy.sh`:
-   - market-data's startup `create_all` creates the seven tables under the cross-service lock;
+   - market-data's startup `create_all` creates the ten tables under the cross-service lock;
    - `_apply_isolated_ddl` adds the triggers and the observed-run sentinel row idempotently;
    - there is no `ALTER` on any existing table or type.
 4. **Post-checks:**
    - drift 12/12 and 15/15 healthy;
    - the M24 capability check reports the tables, unique constraints, foreign keys and triggers;
    - a direct SQL `UPDATE` and an unguarded `DELETE` fail on production;
-   - the tables are empty apart from the sentinel;
+   - every Intraday business table is empty, and `intraday_runs` holds only the `('observed','observed')` sentinel;
    - `GET /intraday/setups` reports generation disabled;
    - `style=INTRADAY` on a daily endpoint returns 422;
    - one daily signal refresh and one outcome evaluation complete normally.
@@ -403,7 +556,7 @@ One release, with no generator and no enum change.
    - the old code never reads or writes them;
    - no existing table or type was altered, so nothing needs reverting;
    - dropping the tables is a separately approved step, allowed only while they hold nothing but
-     the sentinel.
+     the observed sentinel in `intraday_runs`.
 6. **The shadow generator** is a later, separately approved release. It writes
    `record_mode='observed'` research records only.
 
@@ -417,6 +570,10 @@ One release, with no generator and no enum change.
 | CDR-04 append-only contracts | §9: full keys, `run_key` lineage FKs, transition sequencing under a lock, legal pairs, one terminal, outcome revision chain, update/delete triggers, retention order and archive |
 | CDR-05 isolation witnesses | §10: coverage matrix; structural test not counted for filters; seam witnesses labelled |
 | CDR-06 replay, API, exposure | §8, §11: `run_key` required for replay; admin auth; keyset pages; coverage; `unresolved_exit_at_close` accounting and reconciliation |
+| CDR-R2-01 backdated events | §5: evidence-eligible, observed and decided times stored for every later event; observed mode uses the real decision time; replay uses a labelled logical clock; `chronology_ambiguous` instead of choosing cancellation |
+| CDR-R2-02 lineage and uniqueness | §5, §7, §9: algorithm identity (incl. strategy source hash) and per-batch code version; versioned `evaluation_key`; composite FKs evaluation→batch, setup→evaluation; same-chain outcome predecessor FK; NOT NULL trade-window sentinel; NOT NULL vocabularies; deferred setup/evaluation consistency; SQLite decoder seam in §10 |
+| CDR-R2-03 reconciliation and retention | §8, §9: session-terminal vs final state classes and two partial indexes; database append validation (first transition, `seq`, `from_state` = latest); seals block late evaluations; one atomic, retry-safe archive transaction per session; single-statement chain deletion; unresolved setups never deleted |
+| CDR-R2-04 pagination and identity | §11: endpoint-specific unique keys (evaluation key for the ledger); identity required, `/identities` and per-record identity; sealed = frozen membership, unsealed = labelled changing view; `/unresolved` endpoint |
 | Clarifications | trigger-close forecast labelled descriptive with truncation and missing-terminal statuses (§7); inventory enum recommendation superseded; the volume column is no longer part of rollback |
 
 ## 14. Tracked separately (not Stage C)
@@ -447,6 +604,19 @@ One release, with no generator and no enum change.
      direct `UPDATE`/unguarded `DELETE`.
    - **CDR-06:** two replay runs not pooled, missing authentication refused, stable pages, and
      unresolved outcomes always visible.
+   - **CDR-R2-01:** a delayed missing bar and a delayed revised bar, each eligible before an
+     entry but read after it, do not cancel it. A reactive exit is ready at its actual decision
+     time. An earlier observed cancellation still defeats a later entry.
+   - **CDR-R2-02 (PostgreSQL 16):** orphan and cross-run evaluation links, cross-setup or
+     cross-window predecessors, duplicate trade roots and code-version collisions are rejected or
+     kept apart as specified. A genuine duplicate stays idempotent.
+   - **CDR-R2-03 (PostgreSQL 16):** enter → unresolved → reconcile succeeds exactly once, and
+     competing reconciliations fail. An archive retry neither loses nor doubles counts. A late
+     evaluation into a sealed session is rejected and counted. Deleting an eligible whole chain
+     leaves no orphan.
+   - **CDR-R2-04:** non-setup evaluations page correctly, two identities are never pooled, a
+     concurrent late insert follows the stated membership rule, and a sealed result set returns
+     every record exactly once.
 5. Deployed per §12 with no generator; production generation disabled.
 
 Not claimed: execution readiness, provider latency or availability, a working generator, or any

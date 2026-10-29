@@ -149,9 +149,8 @@ without `max_hold_days` raises `KeyError`. Recorded, not fixed here.
 
 The inventory supports this shape, which the Stage C design will specify:
 
-1. **Explicit enum migration**: add `INTRADAY` to `signalhorizon` as a one-time, ledgered
-   migration run under the deploy lock — not the startup `ADD VALUE` pattern, and not in the same
-   transaction as anything that uses the value.
+1. ~~Explicit enum migration~~ — **withdrawn.** `INTRADAY` is **not** added to `signalhorizon`;
+   the shared enum stays unchanged (contract design §1).
 2. **Intraday rows never enter the daily tables.** They go to new tables (setups/occurrences,
    immutable plan snapshots, forecast and managed-trade outcomes). The `signals` upsert and the
    outcome writers refuse `INTRADAY` explicitly. This is what makes the high-risk readers above
