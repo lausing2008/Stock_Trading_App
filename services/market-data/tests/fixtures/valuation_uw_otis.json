@@ -1,0 +1,167 @@
+{
+  "profile": {
+    "symbol": "OTIS",
+    "logo": "https://storage.googleapis.com/uwassets/logos-v2/OTIS.png",
+    "beta": "0.2033",
+    "full_name": "OTIS WORLDWIDE",
+    "sector": "Industrials",
+    "issue_type": "Common Stock",
+    "marketcap_size": "large",
+    "has_options": true,
+    "outstanding": "380669339",
+    "marketcap": "27739374733",
+    "announce_time": "premarket",
+    "next_earnings_date": "2026-10-28",
+    "avg30_volume": "4855988.909090909091",
+    "uw_tags": [
+      "female_power"
+    ],
+    "short_name": "OTIS WORLDWIDE",
+    "short_description": "at otis, we are dedicated to connecting you to the people and places that matter. for over 160 years, we\u2019ve continually reinvented the way our ...",
+    "has_investment_arm": false,
+    "has_dividend": true,
+    "has_earnings_history": true
+  },
+  "financials": {
+    "income_statements": [
+      {
+        "report_type": "annual",
+        "fiscal_date_ending": "2025-12-31",
+        "reported_currency": "USD",
+        "ebit": "2130000000",
+        "income_before_tax": "1934000000",
+        "income_tax_expense": "479000000",
+        "total_revenue": "14431000000",
+        "net_income": "1384000000",
+        "interest_expense": "196000000",
+        "updated_at": "2026-10-29T06:34:13Z"
+      },
+      {
+        "report_type": "annual",
+        "fiscal_date_ending": "2024-12-31",
+        "reported_currency": "USD",
+        "ebit": "2051000000",
+        "income_before_tax": "2039000000",
+        "income_tax_expense": "305000000",
+        "total_revenue": "14261000000",
+        "net_income": "1645000000",
+        "interest_expense": "31000000",
+        "updated_at": "2026-10-29T06:34:13Z"
+      }
+    ],
+    "cash_flows": [
+      {
+        "report_type": "annual",
+        "fiscal_date_ending": "2025-12-31",
+        "reported_currency": "USD",
+        "operating_cashflow": "1596000000",
+        "capital_expenditures": "152000000",
+        "depreciation_depletion_and_amortization": "175000000"
+      },
+      {
+        "report_type": "annual",
+        "fiscal_date_ending": "2024-12-31",
+        "reported_currency": "USD",
+        "operating_cashflow": "1563000000",
+        "capital_expenditures": "126000000",
+        "depreciation_depletion_and_amortization": "181000000"
+      }
+    ],
+    "balance_sheets": [
+      {
+        "report_type": "annual",
+        "fiscal_date_ending": "2025-12-31",
+        "reported_currency": "USD",
+        "short_long_term_debt_total": "8750000000",
+        "cash_and_short_term_investments": "1096000000",
+        "total_shareholder_equity": "-5392000000"
+      },
+      {
+        "report_type": "annual",
+        "fiscal_date_ending": "2024-12-31",
+        "reported_currency": "USD",
+        "short_long_term_debt_total": "8742000000",
+        "cash_and_short_term_investments": "2300000000",
+        "total_shareholder_equity": "-4848000000"
+      }
+    ],
+    "earnings": [
+      {
+        "report_type": "quarterly",
+        "fiscal_date_ending": "2026-09-30",
+        "report_date": "2026-10-28",
+        "reported_eps": "1.05"
+      },
+      {
+        "report_type": "quarterly",
+        "fiscal_date_ending": "2026-06-30",
+        "report_date": "2026-07-22",
+        "reported_eps": "1.01"
+      },
+      {
+        "report_type": "quarterly",
+        "fiscal_date_ending": "2026-03-31",
+        "report_date": "2026-04-22",
+        "reported_eps": "0.89"
+      },
+      {
+        "report_type": "quarterly",
+        "fiscal_date_ending": "2025-12-31",
+        "report_date": "2026-01-28",
+        "reported_eps": "1.03"
+      }
+    ]
+  },
+  "opinions": [
+    {
+      "timestamp": "2026-09-25T13:36:10.000000Z",
+      "ticker": "OTIS",
+      "action": "initiated",
+      "target": "77.0000",
+      "sector": "Industrials",
+      "recommendation": "sell",
+      "analyst_name": "Stephen Tusa",
+      "firm": "Wells Fargo"
+    },
+    {
+      "timestamp": "2026-07-23T19:26:45.000000Z",
+      "ticker": "OTIS",
+      "action": "maintained",
+      "target": "90.0000",
+      "sector": "Industrials",
+      "recommendation": "buy",
+      "analyst_name": "Varun Govindaraj",
+      "firm": "Bernstein"
+    },
+    {
+      "timestamp": "2026-07-23T13:07:05.000000Z",
+      "ticker": "OTIS",
+      "action": "maintained",
+      "target": "95.0000",
+      "sector": "Industrials",
+      "recommendation": "buy",
+      "analyst_name": "Alexander Virgo",
+      "firm": "Evercore ISI Group"
+    },
+    {
+      "timestamp": "2026-04-23T17:24:46.000000Z",
+      "ticker": "OTIS",
+      "action": "maintained",
+      "target": "105.0000",
+      "sector": "Industrials",
+      "recommendation": "buy",
+      "analyst_name": "Nick Housden",
+      "firm": "RBC Capital"
+    },
+    {
+      "timestamp": "2026-04-23T15:26:53.000000Z",
+      "ticker": "OTIS",
+      "action": "maintained",
+      "target": "77.0000",
+      "sector": "Industrials",
+      "recommendation": "sell",
+      "analyst_name": "Julian Mitchell",
+      "firm": "Barclays"
+    }
+  ]
+}

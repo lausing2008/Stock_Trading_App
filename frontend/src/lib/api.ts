@@ -95,6 +95,7 @@ export type QualityValueReport = {
 // consumes them (lib/ivHvChart.ts), and are re-exported below so callers can keep
 // importing every API type from this one module.
 import type { IvHvResponse } from './ivHvChart';
+import type { ValuationReport, ValuationJob, ValuationHistory } from './valuationReport';
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
@@ -359,6 +360,11 @@ export const api = {
   stockOutcomes: (symbol: string) =>
     request<StockOutcomes>(`/intelligence/outcomes/${encodeURIComponent(symbol)}`),
   intelContract: () => request<{ contract_version: number; report_types: string[] }>(`/intel/contract`),
+  valuationLatest: () => request<{ report: ValuationReport | null }>('/intel/valuation/latest'),
+  valuationGenerate: () => request<ValuationJob>('/intel/valuation/generate', { method: 'POST' }),
+  valuationJob: (id: string) => request<ValuationJob>(`/intel/valuation/jobs/${encodeURIComponent(id)}`),
+  valuationHistory: () => request<{ reports: ValuationHistory[] }>('/intel/valuation/history'),
+  valuationReport: (id: number) => request<ValuationReport>(`/intel/valuation/reports/${id}`),
   generateIntelReport: (body: { report_type: string; symbol?: string; market?: string; event_id?: number }) =>
     // Generation walks the whole covered universe for breadth and leadership, so it is slower
     // than an ordinary read; the default 30s timeout is not enough on a cold cache.

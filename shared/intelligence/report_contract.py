@@ -29,6 +29,7 @@ CONTRACT_VERSION = 3
 
 
 class ReportType(str, Enum):
+    US_EQUITY_VALUATION = "us_equity_valuation"
     MARKET_OUTLOOK = "market_outlook"
     STOCK_OUTLOOK = "stock_outlook"
     PRE_EARNINGS = "pre_earnings"

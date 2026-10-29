@@ -16,9 +16,10 @@ import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import { api, type InstitutionalFund, type RankingRow, type SectorGroup } from '@/lib/api';
 import { getSession } from '@/lib/auth';
+import ValuationReportTab from '@/components/reports/ValuationReport';
 
 type Market = 'US' | 'HK';
-type Tab = 'trend' | 'assets' | 'top' | 'flow' | 'smartmoney' | 'funds' | 'tuning';
+type Tab = 'trend' | 'assets' | 'top' | 'flow' | 'smartmoney' | 'funds' | 'tuning' | 'valuation';
 
 // AUD-REPORTSTAB-DEDUP (2026-09-22): 'News & Macro' and 'CAPE / Bubble Warning' tabs were
 // removed from here — both were near-duplicates of intelligence.tsx's own 'Overview' and
@@ -28,6 +29,7 @@ type Tab = 'trend' | 'assets' | 'top' | 'flow' | 'smartmoney' | 'funds' | 'tunin
 // The two Reports nav items for them now deep-link straight to /intelligence instead — see
 // _app.tsx's NAV_GROUPS.
 const TABS: { key: Tab; label: string }[] = [
+  { key: 'valuation', label: 'Valuation & Opportunities' },
   { key: 'trend',  label: 'Market Trend' },
   { key: 'assets', label: 'Key Assets' },
   { key: 'top',    label: 'Top Stocks' },
@@ -815,7 +817,7 @@ function TuningTab() {
   );
 }
 
-const VALID_TABS: Tab[] = ['trend', 'assets', 'top', 'flow', 'smartmoney', 'funds', 'tuning'];
+const VALID_TABS: Tab[] = TABS.map(t => t.key);
 
 function tabFromQuery(q: string | string[] | undefined): Tab {
   const v = Array.isArray(q) ? q[0] : q;
@@ -872,7 +874,7 @@ export default function ReportsPage() {
       </div>
 
       <div style={{ background: '#111827', borderBottom: '1px solid #1f2937', padding: '0 24px' }}>
-        <div style={{ maxWidth: 1400, margin: '0 auto', display: 'flex', gap: 0 }}>
+        <div style={{ maxWidth: 1400, margin: '0 auto', display: 'flex', gap: 0, overflowX: 'auto' }}>
           {TABS.map(t => (
             <button
               key={t.key}
@@ -891,6 +893,7 @@ export default function ReportsPage() {
 
       <div style={{ maxWidth: 1400, margin: '0 auto', padding: '28px 24px' }}>
         {tab === 'trend'  && <TrendTab market={market} />}
+        {tab === 'valuation' && <ValuationReportTab market={market} />}
         {tab === 'assets' && <AssetsTab market={market} />}
         {tab === 'top'    && <TopStocksTab market={market} />}
         {tab === 'flow'   && <FlowTab market={market} />}
