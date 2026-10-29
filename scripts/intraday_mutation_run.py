@@ -354,7 +354,8 @@ def main():
             r = subprocess.run(cmd, cwd=ROOT / cwd, capture_output=True, text=True, timeout=240,
                                env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1", **env))
             out = r.stdout + r.stderr
-            failed = re.findall(r"^FAILED (\S+)", out, flags=re.M)
+            # the whole node id: a parametrized id may contain spaces; `-rf` appends " - <message>"
+            failed = re.findall(r"^FAILED (.+?)(?: - .*)?$", out, flags=re.M)
             errored = bool(re.search(r"\b\d+ errors?\b", out.splitlines()[-1] if out.splitlines() else ""))
             if r.returncode == 1 and not errored and any(expect in f for f in failed):
                 verdict = "CAUGHT"
