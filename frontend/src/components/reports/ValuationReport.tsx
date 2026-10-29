@@ -23,10 +23,10 @@ function when(value: string | null | undefined) {
 }
 function Metric({ metric, money = false }: { metric?: ValuationMetric; money?: boolean }) {
   const state = metric?.state || 'UNAVAILABLE';
-  return <span title={metric?.reason || undefined} style={{ color: state === 'OK' ? '#e2e8f0' : '#fbbf24' }}>
+  return <span title={metric?.reason || undefined} style={{ position: 'relative', color: state === 'OK' ? '#e2e8f0' : '#fbbf24' }}>
     {metric?.value == null ? '—' : `${money ? '$' : ''}${num(metric.value, money ? 2 : 1)}`}
     {state === 'STALE' && <small> stale</small>}
-    {metric?.value == null && <span style={{ position: 'absolute', width: 1, height: 1, padding: 0,
+    {metric?.value == null && <span style={{ position: 'absolute', left: 0, top: 0, width: 1, height: 1, padding: 0,
       overflow: 'hidden', clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', border: 0 }}> {metric?.reason || 'Unavailable'}</span>}
   </span>;
 }
