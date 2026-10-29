@@ -2,6 +2,8 @@
 
 Date: **October 28, 2026, America/Los_Angeles**. Reviewed `c30b380df4d00c78b80207ac271f9aa2e10b3ea5` in an isolated detached worktree. Its history includes the deployed S0-3 change. Related: [first review](2026-10-28-f04-fencing-s03-independent-review.md), [implementation](../features/2026-10-28-f04-publication-fencing.md) on the submitted branch.
 
+**Later status:** RF-01/RF-02 are corrected in `61fcd58c`; see the final verification below. The original verdict and witnesses follow as the historical record.
+
 **Verdict: keep the fencing branch held for the residual policy failure handling below.** The submitted fixes address the original resweep, promotion, byte-integrity and rollback witnesses. The established-policy marker fixes the ordinary missing-policy case, and malformed JSON becomes ML-unavailable. Two remaining policy-error cases still break the declared fail-closed contract. No application code, production configuration, models, jobs or deployments were changed by this review; unrelated valuation work is untouched.
 
 ## Disposition of the original findings
@@ -54,3 +56,20 @@ Before v2 activation, preserve the detailed upstream reason in signal lineage an
 ## Next action
 
 Fix RF-01/RF-02, add behavioral regressions and rerun the affected ML routes and publication tests. Keep v2 off and promotion disabled. Once these pass, the fencing code can release before the purged-baseline study; neither this review nor the guarded release qualifies any v2 model. No additional performance experiment is needed to correct the policy-error response contract.
+
+## Final RF-01/RF-02 verification — October 28, 2026
+
+Reviewed branch commit **`61fcd58c6389371166fbe59cbbb6292d28ef3d5d`** in a separate detached checkout. **The review hold is closed: no remaining blocker found for the guarded release with v2 off and promotion refused.** This clears the fencing implementation; it does not qualify v2 artifacts or approve changing the trainer split.
+
+- **RF-01 closed:** `_present()` distinguishes absence from filesystem errors. Policy and marker discovery errors normalize to `PolicyUnreadable`/`ServingUnavailable`; the serving cache is evicted. The real prediction routes return the unavailable envelope instead of 500 for the reviewed permission/I/O cases.
+- **RF-02 closed:** nested cohort/selection validation runs before caching. Malformed present records cannot pass as absent keys, and serving uses explicit key presence. A malformed record makes the whole policy unavailable.
+- The new signal-engine tests use the real ML-unavailable response, real fetch and fusion code: zero weight, no ML probability and the approved suppression/gate metadata survive. The 500 negative control still demonstrates why the unavailable envelope matters.
+- The four independent witnesses from the previous review were converted to **positive acceptance checks**, requiring explicit unavailability instead of the previously witnessed defects. No stub was added to production qualification.
+
+Fresh checks by this reviewer: **552 ML tests passed, 1 container module skipped locally** (six existing deprecation warnings, 9.06 seconds); **17 signal-engine regression tests passed** (0.28 seconds). The separate offline container run covers the **8 new actual-route tests plus the 4 independent positive acceptance checks**; **12 passed, 12 deselected, in 87.15 seconds**, with the fixture warnings preserved in the final evidence folder. The original 12 actual-nightly-path tests were independently rerun at `c30b380d` in the prior review, not claimed as another fresh full 20-test run here. The submitter's reported full-backend/full-20 checks remain separate evidence.
+
+[Final evidence and source identities](evidence/2026-10-28-f04-fencing-final-review/). Sources were streamed into a disposable local ML image with network disabled, bounded resources, temporary synthetic model roots and no host volumes or production credentials. This review changed documentation/evidence only and did not inspect or alter production. The valuation work remains untouched.
+
+**Release conditions:** merge the reviewed code onto current `prod`, verify the final release diff and deploy from a clean pinned source so unrelated shared valuation edits cannot ship. Application changes require market-data (explicit nightly v1 request) and ml-prediction; signal-engine changes in this branch are tests only. Confirm policy is default-off/disabled with no unexpected selections, all promotions still refuse, and unaffected v1 cells retain the legacy path. Save rollback images and verify source parity/normal jobs under the existing deployment lock and backup constraints. Do not trigger an extra production training or suppression resweep merely to test deployment.
+
+The coarse signal-engine unavailable reason remains the documented non-blocking observability limitation. Preserve its current gate compatibility until a coordinated reason-propagation change is reviewed. Versioned qualification, exact family-level activation policy, purged baseline B and later allocation C remain open F04 work.

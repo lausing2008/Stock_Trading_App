@@ -1,0 +1,28 @@
+{
+  "date": "2026-10-28 America/Los_Angeles",
+  "review_commit": "61fcd58c6389371166fbe59cbbb6292d28ef3d5d",
+  "review_worktree": "/tmp/stockai-f04-final-review-20261028",
+  "local_ml_image_id": "f9ff13606a52",
+  "source_sha256": {
+    "services/ml-prediction/src/training/publication.py": "e9c134f158587182382ddb9a0521a1fb08a21dfae937618877c46c6ed43af69d",
+    "services/ml-prediction/src/training/trainer.py": "cfee88df7bd90c1b94e2a27b5d8385ddbd888432e20864a6bbd1a14a96777159",
+    "services/ml-prediction/src/api/routes.py": "00142b3c210558a5b8020871ce5f05d8a46534f0b906ef8381634be79d8b3225",
+    "services/ml-prediction/tests/test_f04_publication_nightly_path_container.py": "9e5dd38037fec93f1466c9e438e97d3985c3551d9273fc54d4593dca8e8978c3",
+    "services/signal-engine/tests/test_f04_ml_unavailable.py": "549dab9c0dda54711e157e6fe50cbe43b4914b1c7abd5106432a694eb14c04f6"
+  },
+  "evidence_sha256": {
+    "container-results.txt": "528f7034c0a5e190c5aaca1b71fb8e2c1aabde5c86f4bca45822b577a1da27f4",
+    "test_closed_policy_errors.py": "d3e1a6468dc3754db34d5b3ed7bf1e92ef23d1384a04dd61fcffc4ad72b7bc3f"
+  },
+  "checks": {
+    "local_ml": "552 passed, 1 skipped in 9.06s",
+    "signal_engine_f04": "17 passed in 0.28s",
+    "container": "12 passed, 12 deselected, 642 warnings in 87.15s: 8 new routes plus 4 independent acceptance cases"
+  },
+  "limitations": [
+    "No production inspection, merge or deployment.",
+    "Full backend/full 20-container tests reported by submitter were not repeated wholesale.",
+    "Future selection tests use qualification stubs; production promotion remains refused.",
+    "Log trailing whitespace normalized."
+  ]
+}

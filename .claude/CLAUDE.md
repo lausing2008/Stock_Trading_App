@@ -492,4 +492,4 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 - **`docs/audits/2026-10-28-f04-fencing-s03-independent-review.md`** — Fencing held: resweep race, selection identity/integrity and rollback gaps; S0-3 source passes review, replay counts qualified. Offline witnesses; no deployment.
 
-- **`docs/audits/2026-10-28-f04-fencing-remediation-review.md`** — Re-review c30b380d: resweep/promotion/integrity/rollback fixes verified; hold for policy stat errors and malformed selections. Offline route/cascade witnesses; v2 off.
+- **`docs/audits/2026-10-28-f04-fencing-remediation-review.md`** — Final review 61fcd58c closes RF-01/RF-02; guarded deployment cleared after offline tests. V2 off, promotion refused; qualification and baseline B remain open.
