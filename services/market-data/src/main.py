@@ -38,6 +38,10 @@ async def on_startup():
     init_db()
     from .services.dark_pool_ledger import ensure_schema
     ensure_schema()
+    # Intraday Stage C: new tables + insert-only triggers. A failure is recorded and reported by
+    # /intraday/* as schema_unavailable; it must not take market-data down (no generator exists).
+    from .services.intraday.schema import ensure_schema_safely
+    ensure_schema_safely()
     start_scheduler()
     # T230-DATA-STREAMING-QUOTES: long-lived real-time quote WebSocket task, started once at
     # startup on FastAPI's own event loop (this is safe here specifically because on_startup is
