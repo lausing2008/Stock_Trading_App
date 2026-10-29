@@ -85,7 +85,7 @@ def an_input(trigger, run_key=c.OBSERVED_RUN, stock_id=1, symbol="AAA"):
                         dict(timeframe="5m", bar_open=trigger, open=100.0, high=100.5, low=99.5, close=100.2,
                              volume=1000.0, price_basis="raw", price_basis_reason="no adjusted close"))
     h = c.hashes_from_evidence(ev)
-    return c.InputRecord(role="trigger", timeframe="5m", bar_open=trigger, source="native", values={"o": 1},
+    return c.InputRecord(role="trigger", timeframe="5m", bar_open=trigger, source="native", values=c.consumed_values(ev),
                          raw_hash=h["raw_hash"], source_hash=h["source_hash"], input_hash=h["input_hash"],
                          derived_hash=None, readable_at=trigger + timedelta(minutes=7),
                          input_read_at=trigger + timedelta(minutes=7),
@@ -96,7 +96,7 @@ def a_setup(conn, identity, b, *, symbol="AAA", trigger=None, run_key=c.OBSERVED
     trigger = trigger or at(14, 0)
     det = c.decide_at_detection(trigger_bar_open=trigger, detected_at=trigger + timedelta(minutes=7), direction="bullish",
                                 times=T, stop_breached=False, inputs_ok=True)
-    inp = an_input(trigger, run_key)
+    inp = an_input(trigger, run_key, stock_id=stock_id, symbol=symbol)
     return store.record_evaluation(conn, batch_id=b, run_key=run_key, identity=identity, stock_id=stock_id,
                                    symbol=symbol, trigger_bar_open=trigger, result="setup",
                                    detected_at=trigger + timedelta(minutes=7), data_cutoff=trigger + timedelta(minutes=7),
@@ -765,3 +765,289 @@ def test_an_archived_identity_stays_discoverable(engine):
         assert conn.execute(select(func.count()).select_from(m.evaluations)).scalar() == 0
         found = R.list_identities(conn, market="US", mode="observed", run_key=None, session_date=D)["identities"]
         assert [(x["identity_hash"], x["evaluations"]) for x in found] == [(i, 2)]
+
+
+# ── Candidate review ICR-01: transition timing by event type ──────────────────────────────
+# Fixture setup: trigger 14:00, detected/actionable 14:07, candidate entry open 14:10, expiry 14:20.
+
+def _cancel(conn, sid, event, key="c", reason="input_revised", **kw):
+    return store.append_transition(conn, setup_id=sid, to_state="cancelled", reason=reason, event=event,
+                                   idempotency_key=key, **kw)
+
+
+def _cancel_row(sid, **kw):
+    row = dict(setup_id=sid, run_key="observed", seq=3, from_state="actionable", to_state="cancelled",
+               reason="input_revised", clock_basis="observed", idempotency_key="raw")
+    return {**row, **kw}
+
+
+def test_an_observed_cancellation_cannot_be_backdated(engine):
+    """The review's witness: a revision observed at 14:17, dated 14:08, would beat a 14:10 entry."""
+    with engine.begin() as conn:
+        i = ident(conn)
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        late = c.EventTimes(at(14, 8), at(14, 17), at(14, 17), "observed")
+        with pytest.raises(c.ContractViolation, match="cannot be dated"):
+            _cancel(conn, sid, late, effective_at=at(14, 8))
+        with pytest.raises(c.ContractViolation, match="the entry stands"):
+            _cancel(conn, sid, late)                               # at its real time it is after the entry
+        assert states(conn, sid) == ["detected", "actionable"]
+
+
+@pg_only
+def test_direct_sql_cannot_backdate_or_unground_a_cancellation(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+    t = dict(evidence_eligible_at=at(14, 8), evidence_observed_at=at(14, 9), decided_at=at(14, 9))
+    for bad, why in ((dict(evidence_eligible_at=at(14, 8), evidence_observed_at=at(14, 17), decided_at=at(14, 17),
+                           effective_at=at(14, 8)), "takes effect when decided"),             # the review's witness
+                     (dict(evidence_eligible_at=at(14, 8), evidence_observed_at=at(14, 17), decided_at=at(14, 17),
+                           effective_at=at(14, 17)), "not before the candidate entry"),
+                     (dict(t, effective_at=at(14, 9), evidence_observed_at=None), "with its observation"),
+                     (dict(t, effective_at=at(14, 9), reason="session_end"), "not data-dependent"),
+                     (dict(t, effective_at=at(14, 10), decided_at=at(14, 10)), "not before the candidate entry")):
+        with pytest.raises(DBAPIError, match=why):
+            with engine.begin() as conn:
+                conn.execute(m.transitions.insert().values(**_cancel_row(sid, **bad)))
+    with engine.begin() as conn:                                 # the same row, honestly timed, is accepted
+        conn.execute(m.transitions.insert().values(**_cancel_row(sid, **t, effective_at=at(14, 9))))
+        assert states(conn, sid) == ["detected", "actionable", "cancelled"]
+
+
+def test_a_cancellation_decided_before_the_candidate_entry_defeats_it(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        _cancel(conn, sid, c.EventTimes(at(14, 8), at(14, 9), at(14, 9), "observed"))
+        with pytest.raises(c.ContractViolation):
+            store.append_transition(conn, setup_id=sid, to_state="entered", effective_at=at(14, 10),
+                                    idempotency_key="e", event=ev(at(14, 12)))
+        row = conn.execute(select(m.transitions.c.effective_at).where(
+            m.transitions.c.setup_id == sid, m.transitions.c.to_state == "cancelled")).scalar()
+        assert c.utc(row) == at(14, 9) and states(conn, sid) == ["detected", "actionable", "cancelled"]
+
+
+def test_a_revision_observed_after_the_candidate_entry_leaves_the_entry_standing(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        for decided in (at(14, 12), at(14, 10)):                  # after the entry, and the exact tie
+            with pytest.raises(c.ContractViolation, match="the entry stands"):
+                _cancel(conn, sid, c.EventTimes(at(14, 8), decided, decided, "observed"), key=f"c{decided.minute}")
+        store.append_transition(conn, setup_id=sid, to_state="entered", effective_at=at(14, 10), idempotency_key="e",
+                                event=ev(at(14, 12)))
+        assert states(conn, sid) == ["detected", "actionable", "entered"]
+
+
+def test_a_cancellation_missing_its_observation_is_not_confirmed(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        unknown = c.EventTimes(at(14, 8), None, at(14, 9), "observed")
+        with pytest.raises(c.ContractViolation, match="chronology_ambiguous"):
+            _cancel(conn, sid, unknown)
+        with pytest.raises(c.ContractViolation, match="cannot be dated"):
+            store.append_transition(conn, setup_id=sid, to_state="chronology_ambiguous", event=unknown,
+                                    effective_at=at(14, 8), idempotency_key="a0")
+        store.append_transition(conn, setup_id=sid, to_state="chronology_ambiguous", event=unknown, idempotency_key="a")
+        assert states(conn, sid) == ["detected", "actionable", "chronology_ambiguous"]
+
+
+def test_only_the_entry_bars_own_absence_cancels_after_it(engine):
+    """The entry bar (14:10) is missing: its absence is knowable from its readable_at, 14:17."""
+    with engine.begin() as conn:
+        i = ident(conn)
+        b = batch(conn, i)
+        s1, s2, s3 = (a_setup(conn, i, b, symbol=x, stock_id=n)["setup_id"] for n, x in ((1, "AAA"), (2, "BBB"), (3, "CCC")))
+        absent = c.EventTimes(at(14, 17), at(14, 18), at(14, 18), "observed")
+        with pytest.raises(c.ContractViolation, match="the entry stands"):
+            _cancel(conn, s1, absent, reason="input_revised")                 # not the absence
+        with pytest.raises(c.ContractViolation, match="the entry stands"):
+            _cancel(conn, s2, c.EventTimes(at(14, 16), at(14, 18), at(14, 18), "observed"), reason="data_unavailable")
+        _cancel(conn, s3, absent, reason="data_unavailable", key="ok")
+        assert states(conn, s3)[-1] == "cancelled" and states(conn, s1)[-1] == states(conn, s2)[-1] == "actionable"
+
+
+def test_scheduled_and_fill_times_recorded_later_remain_valid_but_expiry_is_fixed(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        b = batch(conn, i)
+        sid = a_setup(conn, i, b)["setup_id"]
+        store.append_transition(conn, setup_id=sid, to_state="entered", effective_at=at(14, 10), idempotency_key="e",
+                                event=ev(at(14, 12)))
+        store.append_transition(conn, setup_id=sid, to_state="exited", reason="liquidation", effective_at=T.liquidation_at,
+                                idempotency_key="x", event=c.EventTimes(T.close, T.close, T.close + timedelta(minutes=5),
+                                                                        "observed"))
+        s2 = a_setup(conn, i, b, symbol="BBB", stock_id=2)["setup_id"]
+        with pytest.raises(c.ContractViolation, match="cannot be dated"):
+            store.append_transition(conn, setup_id=s2, to_state="expired", effective_at=at(14, 15),
+                                    idempotency_key="x2", event=ev(at(14, 25)))
+        store.append_transition(conn, setup_id=s2, to_state="expired", idempotency_key="x3", event=ev(at(14, 25)))
+        rows = dict(conn.execute(select(m.transitions.c.idempotency_key, m.transitions.c.effective_at).where(
+            m.transitions.c.idempotency_key.in_(("x", "x3")))).all())
+    assert c.utc(rows["x"]) == T.liquidation_at and c.utc(rows["x3"]) == at(14, 20)
+
+
+def test_a_replay_cancellation_takes_effect_at_eligible_plus_latency(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        store.ensure_replay_run(conn, "r1", input_snapshot_hash="h", as_of=at(21, 0), now=at(21, 0))
+        sid = a_setup(conn, i, batch(conn, i, "r1"), run_key="r1")["setup_id"]
+        rev = c.EventTimes(at(14, 8), None, at(14, 9), "replay_logical")
+        with pytest.raises(c.ContractViolation, match="cannot be dated"):
+            _cancel(conn, sid, rev, effective_at=at(14, 8))
+        _cancel(conn, sid, rev)
+        eff = conn.execute(select(m.transitions.c.effective_at).where(
+            m.transitions.c.setup_id == sid, m.transitions.c.to_state == "cancelled")).scalar()
+    assert c.utc(eff) == at(14, 9)                                   # 14:08 + the 60 s replay latency
+    if PG:
+        with engine.begin() as conn:
+            s2 = a_setup(conn, i, batch(conn, i, "r1"), run_key="r1", symbol="BBB", stock_id=2)["setup_id"]
+        with pytest.raises(DBAPIError, match="replay cancellation"):
+            with engine.begin() as conn:
+                conn.execute(m.transitions.insert().values(**_cancel_row(
+                    s2, run_key="r1", clock_basis="replay_logical", evidence_eligible_at=at(14, 8),
+                    decided_at=at(14, 9), effective_at=at(14, 8))))
+
+
+# ── Candidate review ICR-02: consumed values are bound to their hashed evidence ───────────
+
+def _native(t, *, stock_id=1, symbol="AAA", close=100.2, basis="raw", adj_close=None, high=100.5, volume=1000.0):
+    return c.bar_evidence(dict(stock_id=stock_id, symbol=symbol, timeframe="5m", bar_open=t, open=100.0, high=high,
+                               low=99.5, close=close, adj_close=adj_close, volume=volume, session="REGULAR"),
+                          "unusual_whales", "provenance_matches",
+                          dict(timeframe="5m", bar_open=t, open=100.0, high=high, low=99.5, close=close, volume=volume,
+                               price_basis=basis, price_basis_reason="window basis"))
+
+
+def _record(ev_, *, role="trigger", timeframe=None, bar_open=None, source=None, values=None):
+    h = c.hashes_from_evidence(ev_)
+    t = datetime.fromisoformat(ev_["transformed"]["bar_open"].replace("Z", "+00:00"))
+    tf = timeframe or ev_["transformed"]["timeframe"]
+    return c.InputRecord(role=role, timeframe=tf, bar_open=bar_open or t,
+                         source=source or ("derived_from_5m" if "constituents" in ev_ else "native"),
+                         values=c.consumed_values(ev_) if values is None else values, raw_hash=h["raw_hash"],
+                         source_hash=h["source_hash"], input_hash=h["input_hash"], derived_hash=h["derived_hash"],
+                         readable_at=c.readable_at(t, "15m" if "constituents" in ev_ else "5m", T), input_read_at=at(14, 7),
+                         evidence=ev_)
+
+
+def _derived(t, members):
+    mts = [x["transformed"] for x in members]
+    return c.derived_evidence(dict(timeframe="15m", bar_open=t, open=mts[0]["open"], high=max(x["high"] for x in mts),
+                                   low=min(x["low"] for x in mts), close=mts[-1]["close"],
+                                   volume=sum(x["volume"] for x in mts), price_basis=mts[0]["price_basis"],
+                                   price_basis_reason=mts[0]["price_basis_reason"]), members)
+
+
+def _write(conn, records, *, stock_id=1, symbol="AAA"):
+    i = ident(conn)
+    det = c.decide_at_detection(trigger_bar_open=at(14, 0), detected_at=at(14, 7), direction="bullish", times=T,
+                                stop_breached=False, inputs_ok=True)
+    return store.record_evaluation(conn, batch_id=batch(conn, i), run_key="observed", identity=i, stock_id=stock_id,
+                                   symbol=symbol, trigger_bar_open=at(14, 0), result="setup", detected_at=at(14, 7),
+                                   data_cutoff=at(14, 7), setup=SETUP, input_records=records, detection=det, times=T)
+
+
+def _retimed(ev_, timeframe):
+    return dict(ev_, transformed=dict(ev_["transformed"], timeframe=timeframe))
+
+
+_GOOD = _native(at(14, 0))
+_TAMPERED = {
+    "consumed close": lambda: _record(_GOOD, values=dict(c.consumed_values(_GOOD), close=199.0)),
+    "price basis": lambda: _record(_GOOD, values=dict(c.consumed_values(_GOOD), price_basis="adjusted")),
+    "timeframe": lambda: _record(_GOOD, timeframe="15m"),
+    "bar open": lambda: _record(_GOOD, bar_open=at(14, 5)),
+    "source kind": lambda: _record(_GOOD, source="derived_from_5m"),
+    "derived missing a constituent": lambda: _record(
+        _derived(at(13, 45), [_native(at(13, 45)), _native(at(13, 50))]), role="context"),
+    "derived not 15m": lambda: _record(_retimed(_derived(at(13, 45), [_native(at(13, 45 + 5 * k)) for k in range(3)]),
+                                                "1h"), role="context"),
+    "raw and transformed bar opens differ": lambda: _record(dict(_GOOD, raw=dict(_GOOD["raw"],
+                                                                                bar_open=c._norm(at(14, 5))))),
+    "constituent is itself derived": lambda: _record(_derived(at(13, 45), [
+        _derived(at(13, 45), [_native(at(13, 45 + 5 * k)) for k in range(3)])] * 3), role="context"),
+    "derived not the aggregate": lambda: _record(dict(
+        _derived(at(13, 45), [_native(at(13, 45 + 5 * k)) for k in range(3)]),
+        transformed=dict(_derived(at(13, 45), [_native(at(13, 45 + 5 * k)) for k in range(3)])["transformed"],
+                         high=101.0)), role="context"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_TAMPERED))
+def test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write(engine, case):
+    rec = _TAMPERED[case]()
+    assert c.hashes_from_evidence(rec.evidence)["input_hash"] == rec.input_hash      # the hashes still recompute
+    with engine.begin() as conn:
+        with pytest.raises(c.ContractViolation):
+            _write(conn, [rec])
+        assert conn.execute(select(func.count()).select_from(m.evaluations)).scalar() == 0
+
+
+def test_an_input_from_another_stock_is_refused(engine):
+    with engine.begin() as conn:
+        with pytest.raises(c.ContractViolation, match="another stock"):
+            _write(conn, [_record(_GOOD)], stock_id=2, symbol="BBB")
+        assert conn.execute(select(func.count()).select_from(m.evaluations)).scalar() == 0
+
+
+def test_untampered_native_adjusted_and_derived_inputs_round_trip_from_storage_alone(engine):
+    records = [_record(_GOOD),
+               _record(_native(at(13, 55), basis="adjusted", adj_close=50.1), role="lookback"),
+               _record(_derived(at(13, 45), [_native(at(13, 45 + 5 * k), close=100 + k, volume=10.0 * (k + 1))
+                                             for k in range(3)]), role="context")]
+    with engine.begin() as conn:
+        sid = _write(conn, records)["setup_id"]
+    with engine.begin() as conn:                                     # no source table exists in this database
+        rows = conn.execute(select(m.inputs).where(m.inputs.c.setup_id == sid).order_by(m.inputs.c.id)).all()
+    assert [r.source for r in rows] == ["native", "native", "derived_from_5m"]
+    for r, rec in zip(rows, records):
+        assert r.bar_values == c.consumed_values(r.evidence) == rec.values
+        assert c.hashes_from_evidence(r.evidence) == dict(raw_hash=r.raw_hash, source_hash=r.source_hash,
+                                                          input_hash=r.input_hash, derived_hash=r.derived_hash)
+        assert r.first_available_at is None and r.availability_basis == "unknown_exact_version"
+
+
+def test_a_bracket_rejection_is_a_fill_attempt_inside_the_entry_window(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        with pytest.raises(c.ContractViolation, match="entry fill outside"):
+            store.append_transition(conn, setup_id=sid, to_state="rejected_invalid_bracket_at_fill",
+                                    effective_at=at(14, 25), idempotency_key="r", event=ev(at(14, 26)))
+        store.append_transition(conn, setup_id=sid, to_state="rejected_invalid_bracket_at_fill",
+                                effective_at=at(14, 10), idempotency_key="r2", event=ev(at(14, 12)))
+
+
+@pg_only
+def test_direct_sql_cannot_retime_expiry_decisions_detection_or_a_rejection(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+    row = dict(setup_id=sid, run_key="observed", seq=3, from_state="actionable", clock_basis="observed",
+               idempotency_key="raw", decided_at=at(14, 25))
+    for bad, why in ((dict(to_state="expired", effective_at=at(14, 15)), "at expiry"),
+                     (dict(to_state="chronology_ambiguous", effective_at=at(14, 8)), "when decided"),
+                     (dict(to_state="rejected_invalid_bracket_at_fill", effective_at=at(14, 22)), "entry fill")):
+        with pytest.raises(DBAPIError, match=why):
+            with engine.begin() as conn:
+                conn.execute(m.transitions.insert().values(**{**row, **bad}))
+    with pytest.raises(DBAPIError, match="decided at detection"):
+        with engine.begin() as conn:                                # a detection-time state dated later
+            eid = conn.execute(m.evaluations.insert().values(
+                evaluation_key="k" * 64, batch_id=batch(conn, i), run_key="observed", identity_hash=i, stock_id=9,
+                symbol="ZZZ", session_date=D, trigger_bar_open=at(14, 0), result="setup", detected_at=at(14, 7),
+                data_cutoff=at(14, 7)).returning(m.evaluations.c.id)).scalar()
+            s2 = conn.execute(m.setups.insert().values(
+                occurrence_key="o" * 64, evaluation_id=eid, run_key="observed", identity_hash=i, stock_id=9,
+                symbol="ZZZ", session_date=D, trigger_bar_open=at(14, 0), direction="bullish", entry_reference=1,
+                stop=0.5, target=2, risk_per_share=0.5, reasons={}, detected_at=at(14, 7), actionable_at=at(14, 7),
+                entry_expires_at=at(14, 20), last_entry_at=at(19, 30), liquidation_at=at(19, 50),
+                session_close=at(20, 0)).returning(m.setups.c.id)).scalar()
+            base = dict(setup_id=s2, run_key="observed", clock_basis="observed")
+            conn.execute(m.transitions.insert().values(**base, seq=1, from_state=None, to_state="detected",
+                                                       decided_at=at(14, 7), effective_at=at(14, 7), idempotency_key="d1"))
+            conn.execute(m.transitions.insert().values(**base, seq=2, from_state="detected", to_state="actionable",
+                                                       decided_at=at(14, 9), effective_at=at(14, 9), idempotency_key="d2"))

@@ -109,6 +109,8 @@ def test_baseline_snapshot(engine):
         assert r.readable_at <= r.input_read_at == CUTOFF + timedelta(seconds=3)
     assert by_open(s, 13, 30).extra["provider"] == "unusual_whales"
     assert all(r.source == "derived_from_5m" and r.derived_hash for r in s.bars_15m)
+    for r in s.bars_5m + s.bars_15m:            # review ICR-02: the writer's consistency rule accepts the reader
+        c.check_input_consistency(r, stock_id=1, symbol="TEST", times=c.session_times("US", D))
 
 
 def test_a_bar_not_yet_settled_is_not_read(engine):
@@ -247,6 +249,7 @@ def test_stored_inputs_recompute_every_hash_after_the_sources_change_or_vanish(e
         recomputed = c.hashes_from_evidence(row.evidence)
         assert recomputed == {"raw_hash": row.raw_hash, "source_hash": row.source_hash,
                               "input_hash": row.input_hash, "derived_hash": row.derived_hash}, row.role
+        assert row.bar_values == c.consumed_values(row.evidence), row.role      # one representation (ICR-02)
     providers = {row.evidence.get("provider") for row in stored if row.source == "native"}
     assert "unknown" in providers and "unusual_whales" in providers
     derived = next(row for row in stored if row.source == "derived_from_5m")

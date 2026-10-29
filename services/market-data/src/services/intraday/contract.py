@@ -207,7 +207,9 @@ LEGAL_PAIRS = frozenset(
                                    "chronology_ambiguous")]
     + [("entered", "exited"), ("entered", "unresolved_exit_at_close"), ("entered", "path_indeterminate"),
        ("unresolved_exit_at_close", "reconciled"), ("path_indeterminate", "reconciled")])
-CANCEL_REASONS = ("invalidated_price", "input_revised", "data_unavailable", "session_end")
+#: A post-actionable cancellation is always decided from data. The session's end is not a
+#: cancellation: an unfilled setup is `expired`, an open one is liquidated or left unresolved.
+CANCEL_REASONS = ("invalidated_price", "input_revised", "data_unavailable")
 RESULTS = ("setup", "no_setup", "wait", "data_unavailable", "unsupported_market", "calendar_coverage_expired")
 
 
@@ -284,6 +286,69 @@ def effective_time(ev: EventTimes, params: Params = Params()):
     raise ContractViolation(f"unknown clock basis {ev.clock_basis!r}")
 
 
+def candidate_entry_open(actionable_at: datetime) -> datetime:
+    """The first 5m grid open strictly after `actionable_at`: where a market entry would fill.
+    US sessions open on a 5-minute boundary, so the grid is the 5-minute clock (equal to
+    first_grid_open_after within a session; the database trigger uses the same arithmetic)."""
+    a = utc(actionable_at)
+    floor = a - timedelta(minutes=a.minute % 5, seconds=a.second, microseconds=a.microsecond)
+    return floor + timedelta(minutes=5)
+
+
+def entry_bar_readable_at(entry_open: datetime) -> datetime:
+    """When the entry bar's absence becomes knowable: its readable_at. The entry precedes the last
+    entry time, so the bar never reaches the session close."""
+    return utc(entry_open) + timedelta(minutes=STEP_MIN["5m"]) + SETTLE
+
+
+# ── Transition timing by event type (review ICR-01) ───────────────────────────────────────
+
+#: Research fills and scheduled orders: they take effect at their bar open, which may precede
+#: the time they are recorded. Their own fill rules (§6) and chronology bound them.
+FILL_STATES = ("entered", "rejected_invalid_bracket_at_fill", "exited", "unresolved_exit_at_close",
+               "path_indeterminate")
+#: Records that claim no market time: they take effect when decided.
+DECISION_TIME_STATES = ("chronology_ambiguous", "reconciled")
+
+
+def required_effective_time(to_state: str, ev: EventTimes, *, detected_at, entry_expires_at,
+                            params: Params = Params()):
+    """The only effective time a non-fill transition may carry, or None for a fill state (which
+    supplies its own). A data-dependent cancellation takes effect when it was decided (observed)
+    or at eligible + replay latency (replay): it is never dated earlier, and without its
+    observation evidence it is not a cancellation at all (record chronology_ambiguous)."""
+    if to_state in FILL_STATES:
+        return None
+    if to_state == "detected" or to_state in ("actionable",) + PRE_ACTIONABLE_TERMINAL:
+        return utc(detected_at)
+    if to_state == "expired":
+        return utc(entry_expires_at)
+    if to_state in DECISION_TIME_STATES:
+        return utc(ev.decided_at)
+    if to_state == "cancelled":
+        eff = effective_time(ev, params)
+        if eff is None:
+            raise ContractViolation("a cancellation without its observation evidence has no known time: "
+                                    "record chronology_ambiguous")
+        return eff
+    raise ContractViolation(f"no timing rule for {to_state!r}")
+
+
+def check_cancellation_before_entry(*, effective_at, actionable_at, reason, eligible_at) -> None:
+    """A cancellation defeats the entry only if it took effect before the candidate entry opened
+    (§5); at or after it the entry stands, and a tie is chronology_ambiguous. The one exception
+    is the entry bar's own confirmed absence, which is knowable only after that bar."""
+    if reason not in CANCEL_REASONS:
+        raise ContractViolation(f"cancellation reason {reason!r} is not one of {CANCEL_REASONS}")
+    t = candidate_entry_open(actionable_at)
+    if utc(effective_at) < t:
+        return
+    if reason == "data_unavailable" and eligible_at is not None and utc(eligible_at) == entry_bar_readable_at(t):
+        return
+    raise ContractViolation(f"cancellation effective {utc(effective_at).isoformat()} is not before the "
+                            f"candidate entry {t.isoformat()}: the entry stands")
+
+
 def cancellation_vs_entry(cancel_effective, entry_open) -> str:
     """'cancelled' when the cancellation took effect before the entry bar opened, 'entered'
     when it took effect after, 'chronology_ambiguous' when either time is unknown or the two
@@ -356,6 +421,54 @@ def derived_evidence(transformed: dict, constituents: list[dict]) -> dict:
     native evidence, so the constituent source hashes need no other table."""
     return {"version": EVIDENCE_VERSION, "transformed": {k: _norm(transformed[k]) for k in TRANSFORMED_FIELDS},
             "constituents": list(constituents)}
+
+
+CONSUMED_FIELDS = ("open", "high", "low", "close", "volume", "price_basis")
+
+
+def consumed_values(ev: dict) -> dict:
+    """The strategy-facing values of an input: a projection of its hashed evidence, the one
+    authoritative representation (review ICR-02)."""
+    return {k: ev["transformed"][k] for k in CONSUMED_FIELDS}
+
+
+def check_input_consistency(rec: InputRecord, *, stock_id: int, symbol: str, times: SessionTimes) -> None:
+    """Refuse an input whose consumed values, timeframe, bar open, source kind, stock/symbol or
+    constituent shape differ from the evidence its hashes are computed from (review ICR-02)."""
+    ev = rec.evidence or {}
+    hashes_from_evidence(ev)                       # version and structure
+    tr = ev["transformed"]
+    if rec.values != consumed_values(ev):
+        raise ContractViolation("consumed values differ from the evidence they are hashed from")
+    if rec.timeframe != tr["timeframe"] or _norm(utc(rec.bar_open)) != tr["bar_open"]:
+        raise ContractViolation("input timeframe or bar open differs from its evidence")
+    derived = "constituents" in ev
+    if rec.source != ("derived_from_5m" if derived else "native"):
+        raise ContractViolation(f"source {rec.source!r} does not match {'derived' if derived else 'native'} evidence")
+    if rec.timeframe != ("15m" if derived else "5m"):
+        raise ContractViolation(f"a {'derived' if derived else 'native'} input cannot be {rec.timeframe}")
+    members = ev["constituents"] if derived else [ev]
+    for mem in members:
+        if "constituents" in mem or "raw" not in mem:
+            raise ContractViolation("a constituent must be native evidence")
+        raw, mt = mem["raw"], mem["transformed"]
+        if raw["stock_id"] != stock_id or raw["symbol"] != symbol.upper():
+            raise ContractViolation("input evidence belongs to another stock")
+        if not (raw["timeframe"] == mt["timeframe"] == "5m" and raw["bar_open"] == mt["bar_open"]):
+            raise ContractViolation("native evidence timeframe or bar open is inconsistent")
+    if derived:
+        t = utc(rec.bar_open)
+        end = min(t + timedelta(minutes=STEP_MIN["15m"]), times.close)
+        expected = [_norm(t + timedelta(minutes=5 * k)) for k in range(int((end - t).total_seconds() // 300))]
+        mts = [mem["transformed"] for mem in members]
+        if [x["bar_open"] for x in mts] != expected:
+            raise ContractViolation("derived bar does not have its complete, ordered 5m constituents")
+        agg = dict(open=mts[0]["open"], high=max(x["high"] for x in mts), low=min(x["low"] for x in mts),
+                   close=mts[-1]["close"], volume=sum(x["volume"] for x in mts))
+        if any(tr[k] != v for k, v in agg.items()) or any(
+                (x["price_basis"], x["price_basis_reason"]) != (tr["price_basis"], tr["price_basis_reason"])
+                for x in mts):
+            raise ContractViolation("derived values are not the aggregate of their constituents")
 
 
 def hashes_from_evidence(ev: dict) -> dict:

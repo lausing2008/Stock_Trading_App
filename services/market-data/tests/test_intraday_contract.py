@@ -365,3 +365,45 @@ def test_forecast_resolved_truncated_and_missing_terminal_bar():
                                                         times=T, bars=bars(at(13, 30), 78, skip={at(15, 0)}))}
     assert gap[60].status == "missing_terminal_bar" and gap[60].ret is None
     assert all(o.entry_basis == "trigger_close_descriptive" for o in out.values())
+
+
+# ── Candidate review ICR-01: timing by event type ─────────────────────────────────────────
+
+@pytest.mark.parametrize("day", [date(2026, 10, 28), date(2026, 11, 27)])     # full day, early close
+def test_candidate_entry_open_is_the_grid_rule_the_trigger_repeats(day):
+    times = c.session_times("US", day)
+    for k in range(int((times.last_entry_at - times.open).total_seconds() // 60)):
+        a = times.open + timedelta(minutes=k, seconds=17 * (k % 3))
+        assert c.candidate_entry_open(a) == c.first_grid_open_after(a, times.close, times)
+
+
+def test_only_fill_states_may_choose_their_effective_time():
+    ev = c.EventTimes(at(14, 8), at(14, 17), at(14, 17), "observed")
+    kw = dict(detected_at=at(14, 7), entry_expires_at=at(14, 20))
+    assert all(c.required_effective_time(s, ev, **kw) is None for s in c.FILL_STATES)
+    assert c.required_effective_time("cancelled", ev, **kw) == at(14, 17)            # never its eligible time
+    assert c.required_effective_time("expired", ev, **kw) == at(14, 20)
+    assert c.required_effective_time("actionable", ev, **kw) == at(14, 7)
+    assert c.required_effective_time("reconciled", ev, **kw) == at(14, 17)
+    replay = c.EventTimes(at(14, 8), None, at(14, 10), "replay_logical")
+    assert c.required_effective_time("cancelled", replay, params=c.Params(replay_latency_s=90), **kw) == \
+        at(14, 8) + timedelta(seconds=90)
+    with pytest.raises(c.ContractViolation, match="chronology_ambiguous"):
+        c.required_effective_time("cancelled", c.EventTimes(at(14, 8), None, at(14, 17), "observed"), **kw)
+    covered = set(c.FILL_STATES) | set(c.DECISION_TIME_STATES) | {"detected", "actionable", "expired", "cancelled"} \
+        | set(c.PRE_ACTIONABLE_TERMINAL)
+    assert covered == set(c.STATES)                                                 # every state has a rule
+
+
+def test_a_cancellation_beats_only_an_entry_it_precedes():
+    a = at(14, 7)                                                                   # candidate entry 14:10
+    c.check_cancellation_before_entry(effective_at=at(14, 9), actionable_at=a, reason="input_revised", eligible_at=None)
+    for eff in (at(14, 10), at(14, 17)):
+        with pytest.raises(c.ContractViolation, match="the entry stands"):
+            c.check_cancellation_before_entry(effective_at=eff, actionable_at=a, reason="input_revised",
+                                              eligible_at=at(14, 8))
+    c.check_cancellation_before_entry(effective_at=at(14, 18), actionable_at=a, reason="data_unavailable",
+                                      eligible_at=at(14, 17))                       # the entry bar's own absence
+    with pytest.raises(c.ContractViolation, match="not one of"):
+        c.check_cancellation_before_entry(effective_at=at(14, 9), actionable_at=a, reason="session_end",
+                                          eligible_at=None)

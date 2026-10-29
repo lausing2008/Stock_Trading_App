@@ -1,7 +1,8 @@
 # Intraday Stage C — implementation record
 
-Date: **2026-10-29**. Branch: `intraday-contracts`. Status: **release candidate `c49a6e17` (code), awaiting
-review; IC-01..IC-05 fixed; not deployed; no generator**. See [Release candidate](#release-candidate-c49a6e17). Production generation is disabled (`INTRADAY_PRODUCTION_ENABLED = False`, a
+Date: **2026-10-29**. Branch: `intraday-contracts`. Status: **IC-01..IC-05 and ICR-01..ICR-02 fixed; a new
+release candidate supersedes `c49a6e17`; not deployed; no generator**. See
+[Candidate review remediation](#candidate-review-remediation-icr-01-icr-02). Production generation is disabled (`INTRADAY_PRODUCTION_ENABLED = False`, a
 code constant). Implements the [contract design](2026-10-29-intraday-stage-c-contract-design.md)
 (revision 3), after the [inventory](2026-10-29-intraday-stage-c-inventory.md) and two review
 rounds ([review](../audits/2026-10-29-intraday-stage-c-design-review.md), CDR-01..06 and
@@ -164,7 +165,26 @@ a behavioural regression that runs through the real writer and, where it matters
   holds the session lock, so the sealer waits, which is the fixed behaviour. It was stopped by
   timeout. Its later clock and backdating steps are covered by the regressions above.
 
-## Release candidate `c49a6e17`
+## Candidate review remediation (ICR-01, ICR-02)
+
+The [candidate review](../audits/2026-10-29-intraday-stage-c-candidate-review.md) of `c49a6e17` found two
+residual defects, each with a PostgreSQL witness that committed through the real writer. Both are
+fixed in the writer **and**, for ICR-01, at the database boundary.
+
+| Finding | Fix | Behavioural regression |
+|---|---|---|
+| **ICR-01** — an observed cancellation could be backdated through `effective_at` (observed 14:17, dated 14:08, beating a 14:10 entry) | Timing is classified by event type (`contract.required_effective_time`). Only research fills and scheduled orders (`FILL_STATES`: entered, bracket rejection, exited, unresolved, path-indeterminate) may carry an effective time earlier than their decision. A cancellation takes effect when decided (observed) or at eligible + the identity's replay latency (replay); without its observation (or, in replay, its eligibility) it is refused, so it must be recorded as `chronology_ambiguous`. A cancellation must also take effect **before** the candidate entry open (`candidate_entry_open`, the first 5m open after `actionable_at`). The tie is refused too, so it is recorded as ambiguous. The one exception is the entry bar's own confirmed absence (`data_unavailable`, eligible exactly at that bar's `readable_at`). `expired` takes effect at `entry_expires_at`; detection-time states at `detected_at`; `chronology_ambiguous` and `reconciled` at `decided_at`. A bracket rejection must lie in the entry window, like an entry. `session_end` is no longer a cancellation reason: nothing used it, and an unfilled setup at the end is `expired`. The trigger repeats every rule, including the replay latency read from the identity's config and the 5-minute grid arithmetic. | Helper and direct SQL both refuse the review's witness. A revision observed after the entry (and the exact tie) leaves the entry standing. A cancellation decided at 14:09 defeats the 14:10 entry. A missing observation is refused. A liquidation recorded at 16:05 keeps its 15:50 fill time. Expiry cannot be retimed. A replay cancellation lands at eligible + 60 s. Both databases are covered. |
+| **ICR-02** — consumed values were not bound to their hashed evidence (stored close 199.0 beside evidence 100.2, all hashes recomputing) | One authoritative representation: `contract.consumed_values(evidence)` (OHLCV plus price basis, projected from `evidence.transformed`). The writer refuses before any insert (`check_input_consistency`) unless the record's values, timeframe, bar open and source kind match the evidence. Every native bar, and every constituent, must belong to the evaluation's stock and symbol, with raw and transformed agreeing. A derived bar must be 15m, built from native constituents, have exactly its ordered 5m constituents, and equal their aggregate and price basis. `bar_values` is written from the evidence projection. | Changing only the consumed close, price basis, timeframe, bar open or source kind is refused before any write. So are a derived bar missing a constituent, one that is not the aggregate, one not 15m, a nested derived constituent, mismatched raw/transformed opens and another stock's evidence. Untampered native, adjusted and derived inputs round-trip with `bar_values == consumed_values(evidence)` and recompute every hash from storage alone. The real snapshot reader's records (raw and adjusted basis, derived 15m) pass the same check. The incomplete canned fixture (`values={'o': 1}`) is replaced. |
+
+**Not changed:** the architecture, timing defaults, shared enum and disabled generation. **Not
+enforced:** a direct-SQL input insert can still disagree with its own evidence (the JSON payloads are
+not compared in the database). The review leaves this as a separate enforcement decision. The
+supported writer refuses, and readers have one authoritative representation, `evidence`.
+
+The mutation set grows from 64 to **93 required cases**: 19 for ICR-01 (contract, writer, trigger)
+and 10 for ICR-02. Each guard has its own witness, under the same bounded, expected-witness rule.
+
+## Release candidate `c49a6e17` (superseded by the ICR remediation)
 
 Every result in this section was produced against **commit `c49a6e17`**. The hash was recorded
 before and after the checks, and was identical. Evidence and a SHA-256 manifest are in

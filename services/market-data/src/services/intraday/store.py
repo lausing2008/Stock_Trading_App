@@ -45,7 +45,7 @@ def _session_lock(conn, run_key, identity, session_date):
 
 
 def _lock_setup(conn, setup_id):
-    q = select(setups.c.id, setups.c.run_key, setups.c.detected_at, setups.c.actionable_at,
+    q = select(setups.c.id, setups.c.run_key, setups.c.identity_hash, setups.c.detected_at, setups.c.actionable_at,
                setups.c.entry_expires_at).where(setups.c.id == setup_id)
     if conn.dialect.name == "postgresql":
         q = q.with_for_update()
@@ -113,6 +113,10 @@ def record_evaluation(conn, *, batch_id: str, run_key: str, identity: str, stock
                   "derived_hash": i.derived_hash}
         if c.hashes_from_evidence(i.evidence) != stated:
             raise c.ContractViolation("input hashes do not recompute from its evidence")
+    if input_records and times is None:
+        raise c.ContractViolation("inputs need the session times to check their shape")
+    for i in input_records or []:
+        c.check_input_consistency(i, stock_id=stock_id, symbol=symbol, times=times)
     if setup is not None:
         if detection is None or times is None:
             raise c.ContractViolation("a setup needs its detection decision and session times")
@@ -152,7 +156,7 @@ def record_evaluation(conn, *, batch_id: str, run_key: str, identity: str, stock
     for i in input_records or []:
         conn.execute(inputs.insert().values(
             setup_id=sid, run_key=run_key, role=i.role, timeframe=i.timeframe, bar_open=_naive(i.bar_open),
-            source=i.source, bar_values=i.values, evidence=i.evidence, raw_hash=i.raw_hash, source_hash=i.source_hash,
+            source=i.source, bar_values=c.consumed_values(i.evidence), evidence=i.evidence, raw_hash=i.raw_hash, source_hash=i.source_hash,
             input_hash=i.input_hash, derived_hash=i.derived_hash, readable_at=_naive(i.readable_at),
             input_read_at=_naive(i.input_read_at), read_clock_basis=i.read_clock_basis,
             first_available_at=_naive(i.first_available_at),
@@ -175,10 +179,12 @@ def append_transition(conn, *, setup_id: int, to_state: str, event: c.EventTimes
     a no-op that returns the stored row (checked again under the lock, so a concurrent identical
     retry returns the stored row rather than hitting the unique key).
 
-    `effective_at` is when the research event happened (an entry fill's bar open, a scheduled
-    exit's open); it defaults to `decided_at` for a decision. It may precede `decided_at` (a fill
-    recorded later) but never the previous transition's, and neither time may go backwards. The
-    clock basis must be the run's own: observed runs observe, replays use the logical clock."""
+    Timing depends on the event type (review ICR-01). Only a research fill or scheduled order
+    (`contract.FILL_STATES`) may pass an `effective_at` earlier than `decided_at`: its bar open,
+    never before the previous transition's. Every other state's effective time is fixed by the
+    contract (`required_effective_time`): a cancellation takes effect when decided (observed) or
+    at eligible + replay latency, and only before the candidate entry. The clock basis must be
+    the run's own: observed runs observe, replays use the logical clock."""
     def _done():
         row = conn.execute(select(transitions.c.seq).where(transitions.c.idempotency_key == idempotency_key)).first()
         return None if row is None else {"seq": row.seq, "created": False}
@@ -193,7 +199,15 @@ def append_transition(conn, *, setup_id: int, to_state: str, event: c.EventTimes
         raise c.ContractViolation("a transition needs its decided_at")
     if event.clock_basis == "observed":
         c.effective_time(event)            # validates eligible <= observed <= decided
-    eff = c.utc(effective_at) if effective_at is not None else c.utc(event.decided_at)
+    config = conn.execute(select(identities.c.config).where(identities.c.identity_hash == setup.identity_hash)).scalar()
+    required = c.required_effective_time(to_state, event, detected_at=setup.detected_at,
+                                         entry_expires_at=setup.entry_expires_at,
+                                         params=c.Params(replay_latency_s=config["replay_latency_s"]))
+    if required is not None and effective_at is not None and c.utc(effective_at) != required:
+        raise c.ContractViolation(f"{to_state} takes effect at {required.isoformat()}; it cannot be dated "
+                                  f"{c.utc(effective_at).isoformat()}")
+    eff = required if required is not None else (c.utc(effective_at) if effective_at is not None
+                                                 else c.utc(event.decided_at))
     if eff > c.utc(event.decided_at):
         raise c.ContractViolation("an event cannot take effect after it was decided/recorded")
     latest = conn.execute(select(transitions.c.seq, transitions.c.to_state, transitions.c.effective_at,
@@ -206,7 +220,10 @@ def append_transition(conn, *, setup_id: int, to_state: str, event: c.EventTimes
     c.check_append(latest_t, seq, from_state, to_state)
     if latest is not None and (eff < c.utc(latest.effective_at) or c.utc(event.decided_at) < c.utc(latest.decided_at)):
         raise c.ContractViolation("transition chronology goes backwards")
-    if to_state == "entered" and not (setup.actionable_at is not None
+    if to_state == "cancelled":
+        c.check_cancellation_before_entry(effective_at=eff, actionable_at=setup.actionable_at, reason=reason,
+                                          eligible_at=event.eligible_at)
+    if to_state in ("entered", "rejected_invalid_bracket_at_fill") and not (setup.actionable_at is not None
                                       and c.utc(setup.actionable_at) < eff < c.utc(setup.entry_expires_at)):
         raise c.ContractViolation("entry fill outside (actionable_at, entry_expires_at)")
     conn.execute(transitions.insert().values(

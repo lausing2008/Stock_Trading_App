@@ -26,10 +26,13 @@ _PG_FUNCTIONS = [
        END $$""",
     # Append validation: serialise on the setup row, then require the next seq from the latest
     # state. The pair CHECK and the partial unique indexes stay as independent backstops.
+    # Timing by event type (review ICR-01) mirrors contract.required_effective_time and
+    # check_cancellation_before_entry: only fills may be dated before they were decided.
     """CREATE OR REPLACE FUNCTION intraday_validate_append() RETURNS trigger LANGUAGE plpgsql AS $$
        DECLARE last_seq integer; last_state text; last_eff timestamp; last_dec timestamp; s record;
+               latency integer; cand timestamp;
        BEGIN
-         SELECT detected_at, actionable_at, entry_expires_at INTO s FROM intraday_setups
+         SELECT detected_at, actionable_at, entry_expires_at, identity_hash INTO s FROM intraday_setups
            WHERE id = NEW.setup_id FOR UPDATE;
          IF NOT FOUND THEN RAISE EXCEPTION 'intraday_append: setup % does not exist', NEW.setup_id; END IF;
          SELECT seq, to_state, effective_at, decided_at INTO last_seq, last_state, last_eff, last_dec
@@ -45,10 +48,43 @@ _PG_FUNCTIONS = [
          ELSIF NEW.effective_at < last_eff OR NEW.decided_at < last_dec THEN
            RAISE EXCEPTION 'intraday_append: chronology goes backwards (effective % < %, or decided % < %)',
              NEW.effective_at, last_eff, NEW.decided_at, last_dec;
-         ELSIF NEW.to_state = 'entered' AND NOT (s.actionable_at IS NOT NULL AND NEW.effective_at > s.actionable_at
-                                                AND NEW.effective_at < s.entry_expires_at) THEN
+         ELSIF NEW.to_state IN ('entered', 'rejected_invalid_bracket_at_fill')
+               AND NOT (s.actionable_at IS NOT NULL AND NEW.effective_at > s.actionable_at
+                        AND NEW.effective_at < s.entry_expires_at) THEN
            RAISE EXCEPTION 'intraday_append: entry fill % outside (actionable %, expiry %)',
              NEW.effective_at, s.actionable_at, s.entry_expires_at;
+         ELSIF NEW.from_state = 'detected' AND NEW.effective_at <> s.detected_at THEN
+           RAISE EXCEPTION 'intraday_timing: % is decided at detection %, not %', NEW.to_state, s.detected_at, NEW.effective_at;
+         ELSIF NEW.to_state = 'expired' AND NEW.effective_at <> s.entry_expires_at THEN
+           RAISE EXCEPTION 'intraday_timing: expired takes effect at expiry %, not %', s.entry_expires_at, NEW.effective_at;
+         ELSIF NEW.to_state IN ('chronology_ambiguous', 'reconciled') AND NEW.effective_at <> NEW.decided_at THEN
+           RAISE EXCEPTION 'intraday_timing: % takes effect when decided', NEW.to_state;
+         END IF;
+         IF NEW.to_state = 'cancelled' THEN
+           IF NEW.reason IS NULL OR NEW.reason NOT IN ('invalidated_price', 'input_revised', 'data_unavailable') THEN
+             RAISE EXCEPTION 'intraday_timing: cancellation reason % is not data-dependent', NEW.reason;
+           END IF;
+           IF NEW.clock_basis = 'observed' THEN
+             IF NEW.evidence_observed_at IS NULL OR NEW.effective_at <> NEW.decided_at THEN
+               RAISE EXCEPTION 'intraday_timing: an observed cancellation takes effect when decided (%), with its observation, not %',
+                 NEW.decided_at, NEW.effective_at;
+             END IF;
+           ELSE
+             SELECT (config->>'replay_latency_s')::integer INTO latency FROM intraday_identities
+               WHERE identity_hash = s.identity_hash;
+             IF NEW.evidence_eligible_at IS NULL OR latency IS NULL
+                OR NEW.effective_at <> NEW.evidence_eligible_at + make_interval(secs => latency) THEN
+               RAISE EXCEPTION 'intraday_timing: a replay cancellation takes effect at eligible + % s, not %',
+                 latency, NEW.effective_at;
+             END IF;
+           END IF;
+           -- the first 5m grid open strictly after actionable_at (contract.candidate_entry_open)
+           cand := to_timestamp(floor(extract(epoch FROM s.actionable_at) / 300) * 300 + 300) AT TIME ZONE 'UTC';
+           IF NOT (NEW.effective_at < cand
+                   OR (NEW.reason = 'data_unavailable' AND NEW.evidence_eligible_at = cand + interval '7 minutes')) THEN
+             RAISE EXCEPTION 'intraday_timing: cancellation effective % is not before the candidate entry %',
+               NEW.effective_at, cand;
+           END IF;
          END IF;
          RETURN NEW;
        END $$""",
