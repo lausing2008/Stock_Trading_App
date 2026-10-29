@@ -12,7 +12,7 @@ from intelligence.report_contract import (
 
 REPORT_TYPE = "us_equity_valuation"
 SUBJECT = "valuation:US:covered-sample"
-POLICY = "valuation-v1-fcff-scenarios"
+POLICY = "valuation-v2-provider-rsi"
 
 
 def finite(value):
@@ -192,7 +192,21 @@ def build_row(raw, session_day, now, quality=None):
                     "fair_value": metric(fair), "price_fair_value": metric(ratio),
                     "discount_pct": metric(discount, unit="%"), "upside_pct": metric(upside, unit="%")})
     if raw.get("provider") == "Unusual Whales":
-        metrics["rsi"]["reason"] = "UW daily-price adjustment basis is unverified; adjusted RSI cannot be established"
+        metrics["rsi"]["reason"] = "UW price adjustment basis is unverified and no same-session provider RSI was supplied"
+    technical = raw.get("technical") or {}
+    value = finite(technical.get("rsi_14"))
+    same_session = technical.get("as_of") == session_day
+    if metrics["rsi"]["value"] is not None:
+        metrics["rsi"].update(source="Calculated Wilder RSI", as_of=last.get("date"),
+                               basis="14-period RSI on dividend/split-adjusted daily closes")
+    elif same_session and value is not None and 0 <= value <= 100:
+        metrics["rsi"] = {**metric(value), "source": technical.get("provider"), "as_of": technical["as_of"],
+                          "basis": "Provider-reported 14 regular-session close periods; adjustment basis unverified"}
+    growth = finite(technical.get("eps_yoy_growth"))
+    metrics["eps_yoy_growth_pct"] = {**metric(growth * 100 if same_session and growth is not None else None,
+                                            reason="No same-session reported EPS growth observation", unit="%"),
+                                      "source": technical.get("provider"), "as_of": technical.get("as_of"),
+                                      "basis": "Reported EPS versus four reports earlier, divided by absolute prior EPS; quarterly YoY context, not forward growth or TTM PEG"}
     # Stale numbers can be inspected but never masquerade as current classifications.
     if not fresh:
         for m in metrics.values():
@@ -295,7 +309,8 @@ def build_report(inputs, *, now, quality=None, previous=None):
             "horizon": "3–5 year business research; five-year cash-flow scenarios",
             "notes": ["Bounded discovery sample, not all US listings; independent of user watchlists",
                       "Model fair values are conditional scenarios, not Morningstar ratings or analyst targets",
-                      "RSI uses dividend/split-adjusted daily closes where verified; UW adjustment gaps remain unavailable",
+                      "RSI uses adjusted daily closes when available; otherwise dated UW daily-screener RSI is labeled as provider-reported with an unverified adjustment basis",
+                      "Quarterly EPS YoY growth is historical context; it is not used to fabricate forward EPS or PEG",
                       "PEG is provider-reported; growth horizon and accounting basis are unverified",
                       "Qualified opportunities require existing Quality & Value passes and verified valuation inputs",
                       inputs.get("uw_note", "UW enrichment unavailable")]}

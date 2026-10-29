@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -26,6 +27,47 @@ def number(value):
         return n if math.isfinite(n) else None
     except (TypeError, ValueError):
         return None
+
+
+def closed_technical_inputs(cache, symbols, session_day, now):
+    """One dated UW batch; a forming-session screener row can never become an EOD RSI."""
+    wanted = sorted(set(symbols))
+    if not wanted:
+        return {}
+    digest = hashlib.sha256(",".join(wanted).encode()).hexdigest()[:20]
+    key = f"stockai:valuation:technical:v1:{session_day.isoformat()}:{digest}"
+    try:
+        cached = cache.get(key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+    try:
+        from . import unusual_whales as U
+        if not U.is_available():
+            return {}
+        rows = U._get("/api/screener/stocks", params={"ticker": ",".join(wanted),
+                      "date": session_day.isoformat(), "limit": len(wanted)}, endpoint="/api/screener/stocks")
+        result = {}
+        for row in rows or []:
+            symbol = row.get("ticker")
+            if symbol not in wanted or row.get("date") != session_day.isoformat():
+                continue
+            value = number(row.get("rsi_14"))
+            result[symbol] = {"as_of": row["date"], "retrieved_at": now.isoformat(),
+                              "rsi_14": value if value is not None and 0 <= value <= 100 else None,
+                              "eps_yoy_growth": number(row.get("eps_growth_4q")),
+                              "provider": "Unusual Whales daily screener",
+                              "endpoint": "/api/screener/stocks"}
+        try:
+            # Retry partial/missing coverage sooner; immutable complete sessions can be reused.
+            cache.setex(key, CACHE_SECONDS if len(result) == len(wanted) else 300,
+                        json.dumps(result, allow_nan=False))
+        except Exception:
+            pass
+        return result
+    except Exception:
+        return {}  # Technical enrichment never takes down fundamentals/valuation coverage.
 
 
 def completed_session(now: datetime):
@@ -211,8 +253,10 @@ def collect_inputs(cache, tracked, *, now=None, progress=None):
             rows.append(row)
             if progress:
                 progress(len(rows), len(symbols))
-    # Existing cached UW data only: enrichment cannot exhaust provider quota or hold up Yahoo.
+    # One dated technical batch; short-interest enrichment remains cache-only.
+    technical = closed_technical_inputs(cache, symbols, day, now)
     for row in rows:
+        row["technical"] = technical.get(row["symbol"])
         try:
             raw = cache.get(f"stockai:uw:short_interest:{row['symbol']}")
             row["uw_short_interest"] = json.loads(raw) if raw else None

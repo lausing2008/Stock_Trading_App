@@ -23,9 +23,11 @@ function when(value: string | null | undefined) {
 }
 function Metric({ metric, money = false }: { metric?: ValuationMetric; money?: boolean }) {
   const state = metric?.state || 'UNAVAILABLE';
-  return <span title={metric?.reason || undefined} style={{ position: 'relative', color: state === 'OK' ? '#e2e8f0' : '#fbbf24' }}>
+  const provenance = [metric?.reason, metric?.source, metric?.as_of, metric?.basis].filter(Boolean).join(' · ');
+  return <span title={provenance || undefined} style={{ position: 'relative', color: state === 'OK' ? '#e2e8f0' : '#fbbf24' }}>
     {metric?.value == null ? '—' : `${money ? '$' : ''}${num(metric.value, money ? 2 : 1)}`}
     {state === 'STALE' && <small> stale</small>}
+    {metric?.value != null && metric.source?.startsWith('Unusual Whales') && <small style={{ color: '#94a3b8' }}> UW</small>}
     {metric?.value == null && <span style={{ position: 'absolute', left: 0, top: 0, width: 1, height: 1, padding: 0,
       overflow: 'hidden', clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', border: 0 }}> {metric?.reason || 'Unavailable'}</span>}
   </span>;
@@ -81,6 +83,11 @@ function CompanyDetail({ row }: { row: ValuationRow }) {
         <p>Forward P/E: <Metric metric={row.metrics.forward_pe} /></p>
         <p style={muted}>{row.peer_pe.note}</p>
         {row.eps_note && <p style={muted}>{row.eps_note}</p>}
+        <h4>Momentum &amp; reported growth</h4>
+        <p>RSI (14): <Metric metric={row.metrics.rsi} /></p>
+        {row.metrics.rsi.source && <p style={muted}>{row.metrics.rsi.source} · {row.metrics.rsi.as_of}<br />{row.metrics.rsi.basis}</p>}
+        <p>Quarterly EPS growth (YoY, %): <Metric metric={row.metrics.eps_yoy_growth_pct} /></p>
+        <p style={muted}>{row.metrics.eps_yoy_growth_pct?.basis || 'Reported quarterly EPS growth unavailable.'}</p>
       </div>
       <div>
         <h4 style={{ margin: '0 0 8px' }}>Analyst view · {row.provider || 'Yahoo'}</h4>
@@ -232,7 +239,7 @@ export default function ValuationReportTab({ market }: { market: 'US' | 'HK' }) 
             <button style={control} disabled={(page + 1) * 20 >= rows.length} onClick={() => setPage(page + 1)}>Next</button>
           </div>
         </>}
-        <p style={{ ...muted, marginBottom: 0 }}>* PEG is provider-reported; its growth horizon is unverified. Expand a company for sources, missing metrics and scenario assumptions. RSI describes momentum.</p>
+        <p style={{ ...muted, marginBottom: 0 }}>* PEG is provider-reported; its growth horizon is unverified. UW beside RSI identifies a dated provider reading; its price-adjustment basis is unverified. Expand a company for sources and assumptions. RSI describes momentum.</p>
       </section>
     </>}
   </div>;

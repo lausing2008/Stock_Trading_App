@@ -22,7 +22,10 @@ describe('valuation research ordering and export', () => {
   it('exports frozen values with source dates and protects spreadsheet text cells', () => {
     const company = { ...row('TEST', 20), name: '=HYPERLINK("bad")',
       source_url: 'https://finance.yahoo.com/quote/TEST/', price_session: '2026-10-27',
-      fetched_at: '2026-10-28T12:00:00Z', analyst: { mean: 100, note: 'Undated aggregate' },
+      fetched_at: '2026-10-28T12:00:00Z', analyst: { mean: 100, median: 100, low: 80, high: 120,
+        analyst_count: 10, consensus: 'buy', state: 'UNKNOWN', note: 'Undated aggregate', upside_pct: null },
+      metrics: { ...row('TEST', 20).metrics, rsi: { value: 49.75, state: 'OK', reason: null,
+        source: 'Unusual Whales daily screener', as_of: '2026-10-27', basis: 'Adjustment basis unverified' } },
       blockers: ['Missing evidence'] } as ValuationRow;
     const report = { id: 4, version: 2, generated_at: '2026-10-28T12:00:00Z',
       valuation: { rows: [company], policy_version: 'v1' } } as ValuationReport;
@@ -33,5 +36,8 @@ describe('valuation research ordering and export', () => {
     expect(csv).toContain('"\'=HYPERLINK(""bad"")"');
     expect(csv).toContain('"20","OK"');
     expect(csv).toContain('Undated aggregate');
+    expect(csv).toContain('rsi_source');
+    expect(csv).toContain('Unusual Whales daily screener');
+    expect(csv).toContain('Adjustment basis unverified');
   });
 });

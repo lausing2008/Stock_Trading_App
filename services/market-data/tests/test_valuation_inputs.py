@@ -39,7 +39,7 @@ def test_failed_provider_refresh_keeps_dated_old_input(monkeypatch):
     assert result["rows"][0]["fetched_at"] == old["fetched_at"]
     assert "refresh_failed_using_old_inputs" in result["rows"][0]["errors"]
     assert result["price_session"] == "2026-10-27"
-    cache.setex.assert_not_called()
+    assert not any(call.args[0] == "stockai:valuation:input:v1:OLD" for call in cache.setex.call_args_list)
 
 
 def test_uw_live_shapes_normalize_positive_capex_and_keep_unknown_metrics_unknown():
@@ -73,3 +73,40 @@ def test_yahoo_failure_uses_uw_without_losing_a_new_discovery(monkeypatch):
     result = V.collect_inputs(cache, set(), now=datetime(2026, 10, 28, 14, tzinfo=timezone.utc))
     assert result["rows"][0]["provider"] == "Unusual Whales"
     assert result["rows"][0]["tracked"] is False
+
+
+def test_closed_technical_batch_rejects_forming_rows_and_preserves_zero_rsi(monkeypatch):
+    from src.services import unusual_whales as U
+    cache = MagicMock(); cache.get.return_value = None
+    observed = {}
+    monkeypatch.setattr(U, "is_available", lambda: True)
+    def get(path, params, endpoint):
+        observed.update(params)
+        return [{"ticker": "ZERO", "date": "2026-10-27", "rsi_14": "0", "eps_growth_4q": "0.25"},
+                {"ticker": "FORMING", "date": "2026-10-28", "rsi_14": 80},
+                {"ticker": "BAD", "date": "2026-10-27", "rsi_14": 101},
+                {"ticker": "OTHER", "date": "2026-10-27", "rsi_14": 50}]
+    monkeypatch.setattr(U, "_get", get)
+    now = datetime(2026, 10, 28, 14, tzinfo=timezone.utc)
+    result = V.closed_technical_inputs(cache, ["ZERO", "FORMING", "BAD"], now.date().replace(day=27), now)
+    assert observed == {"ticker": "BAD,FORMING,ZERO", "date": "2026-10-27", "limit": 3}
+    assert result["ZERO"]["rsi_14"] == 0
+    assert result["ZERO"]["eps_yoy_growth"] == .25
+    assert result["BAD"]["rsi_14"] is None
+    assert "FORMING" not in result and "OTHER" not in result
+
+
+def test_closed_technical_batch_reuses_source_timestamp_and_fails_open(monkeypatch):
+    import json
+    from src.services import unusual_whales as U
+    cache = MagicMock()
+    frozen = {"ABC": {"as_of": "2026-10-27", "retrieved_at": "2026-10-28T14:00:00+00:00", "rsi_14": 40}}
+    cache.get.return_value = json.dumps(frozen)
+    get = MagicMock(side_effect=RuntimeError("UW outage"))
+    monkeypatch.setattr(U, "_get", get)
+    monkeypatch.setattr(U, "is_available", lambda: True)
+    now = datetime(2026, 10, 28, 14, tzinfo=timezone.utc)
+    assert V.closed_technical_inputs(cache, ["ABC"], now.date().replace(day=27), now) == frozen
+    get.assert_not_called()
+    cache.get.return_value = None
+    assert V.closed_technical_inputs(cache, ["ABC"], now.date().replace(day=27), now) == {}

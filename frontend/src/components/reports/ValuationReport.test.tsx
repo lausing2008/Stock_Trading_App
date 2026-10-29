@@ -69,4 +69,16 @@ describe('Valuation report user flow', () => {
     expect(screen.getByText(/Select US to view the report/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Refresh report/ })).toBeNull();
   });
+
+  it('labels a dated provider RSI separately from its unknown adjustment basis', () => {
+    state.latest.report.valuation.rows[0].metrics.rsi = { value: 49.75, state: 'OK', reason: null,
+      source: 'Unusual Whales daily screener', as_of: '2026-10-27', basis: 'Adjustment basis unverified' };
+    state.latest.report.valuation.rows[0].metrics.eps_yoy_growth_pct = { value: 10.7, state: 'OK', reason: null,
+      basis: 'Historical quarterly growth; not forward PEG' };
+    render(<ValuationReport market="US" />);
+    fireEvent.click(screen.getByRole('button', { name: '+ NEW' }));
+    expect(screen.getByText(/Unusual Whales daily screener · 2026-10-27/)).toBeTruthy();
+    expect(screen.getByText('Historical quarterly growth; not forward PEG')).toBeTruthy();
+    expect(screen.getAllByTitle(/Adjustment basis unverified/).length).toBeGreaterThan(0);
+  });
 });

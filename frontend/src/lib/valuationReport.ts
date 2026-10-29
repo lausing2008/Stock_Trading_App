@@ -1,6 +1,7 @@
 import type { QvEvaluation } from './api';
 
-export type ValuationMetric = { value: number | null; state: string; reason: string | null; unit?: string | null };
+export type ValuationMetric = { value: number | null; state: string; reason: string | null; unit?: string | null;
+  source?: string | null; as_of?: string | null; basis?: string | null };
 export type ValuationScenario = { fair_value: number; growth_pct: number; discount_rate_pct: number;
   terminal_growth_pct: number; terminal_value_share_pct: number; enterprise_value: number; equity_value: number };
 export type ValuationRow = {
@@ -62,15 +63,16 @@ function csvCell(value: unknown) {
 }
 
 export function valuationCsv(report: ValuationReport) {
-  const metrics = ['price', 'fair_value', 'price_fair_value', 'discount_pct', 'upside_pct', 'trailing_pe', 'forward_pe', 'peg', 'rsi'];
+  const metrics = ['price', 'fair_value', 'price_fair_value', 'discount_pct', 'upside_pct', 'trailing_pe', 'forward_pe', 'peg', 'rsi', 'eps_yoy_growth_pct'];
   const headers = ['report_id', 'version', 'generated_at', 'price_session', 'policy', 'symbol', 'name',
-    'provider', 'classification', 'qualified', ...metrics.flatMap(k => [k, `${k}_state`, `${k}_reason`]),
+    'provider', 'classification', 'qualified', ...metrics.flatMap(k => [k, `${k}_state`, `${k}_reason`, `${k}_source`, `${k}_as_of`, `${k}_basis`]),
     'analyst_target_mean', 'analyst_target_note', 'annual_period', 'uncertainty', 'bear_value', 'bull_value',
     'base_growth_pct', 'base_discount_rate_pct', 'terminal_growth_pct', 'model_limitations',
     'source_url', 'fetched_at', 'blockers'];
   const body = report.valuation.rows.map(r => [report.id, report.version, report.generated_at, r.price_session,
     report.valuation.policy_version, r.symbol, r.name, r.provider || 'Yahoo', r.classification, r.qualified,
-    ...metrics.flatMap(k => [r.metrics[k]?.value, r.metrics[k]?.state, r.metrics[k]?.reason]),
+    ...metrics.flatMap(k => [r.metrics[k]?.value, r.metrics[k]?.state, r.metrics[k]?.reason,
+      r.metrics[k]?.source, r.metrics[k]?.as_of, r.metrics[k]?.basis]),
     r.analyst.mean, r.analyst.note, r.valuation?.period_end, r.valuation?.uncertainty,
     r.valuation?.scenarios?.bear?.fair_value, r.valuation?.scenarios?.bull?.fair_value,
     r.valuation?.scenarios?.base?.growth_pct, r.valuation?.scenarios?.base?.discount_rate_pct,

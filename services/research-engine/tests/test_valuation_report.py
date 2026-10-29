@@ -84,6 +84,34 @@ def test_uw_cashflow_proxy_is_explicit_and_never_fabricates_working_capital():
     assert not row["qualified"]
 
 
+def test_dated_provider_rsi_and_historical_growth_do_not_invent_forward_ratios():
+    raw = source(); raw["provider"] = "Unusual Whales"
+    raw["bars"] = [{**b, "adj_close": None} for b in raw["bars"]]
+    raw["technical"] = {"as_of": "2026-10-27", "rsi_14": 0, "eps_yoy_growth": .25,
+                        "provider": "Unusual Whales daily screener"}
+    raw["info"].pop("pegRatio"); raw["info"].pop("forwardEps")
+    row = V.build_row(raw, "2026-10-27", NOW)
+    assert row["metrics"]["rsi"]["value"] == 0
+    assert row["metrics"]["rsi"]["state"] == "OK"
+    assert row["metrics"]["rsi"]["as_of"] == "2026-10-27"
+    assert "unverified" in row["metrics"]["rsi"]["basis"]
+    assert row["metrics"]["eps_yoy_growth_pct"]["value"] == 25
+    assert row["metrics"]["peg"]["value"] is None
+    assert row["metrics"]["forward_pe"]["value"] is None
+
+
+def test_forming_provider_rsi_is_not_used_and_adjusted_calculation_retains_its_source():
+    raw = source()
+    raw["technical"] = {"as_of": "2026-10-28", "rsi_14": 99, "eps_yoy_growth": .25,
+                        "provider": "Unusual Whales daily screener"}
+    row = V.build_row(raw, "2026-10-27", NOW)
+    assert row["metrics"]["rsi"]["value"] == 50
+    assert row["metrics"]["rsi"]["source"] == "Calculated Wilder RSI"
+    assert row["metrics"]["eps_yoy_growth_pct"]["value"] is None
+    raw["bars"] = [{**b, "adj_close": None} for b in raw["bars"]]
+    assert V.build_row(raw, "2026-10-27", NOW)["metrics"]["rsi"]["value"] is None
+
+
 @pytest.mark.parametrize("field,value,expected", [
     ("sector", "Financial Services", "NOT_APPLICABLE"),
     ("financial_currency", "EUR", "UNAVAILABLE"),

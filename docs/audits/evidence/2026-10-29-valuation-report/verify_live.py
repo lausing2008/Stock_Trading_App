@@ -83,7 +83,7 @@ def api_check(credential):
         print(json.dumps(summary), flush=True)
 
 
-def browser_check(credential):
+def browser_check(credential, require_technical=False):
     from playwright.sync_api import sync_playwright
     results = []
     with sync_playwright() as p:
@@ -103,11 +103,16 @@ def browser_check(credential):
             first = page.locator("tbody button[aria-expanded]").first
             first.click()
             page.get_by_text("Investment case to investigate", exact=True).wait_for()
+            if require_technical:
+                page.get_by_text("Momentum & reported growth", exact=True).wait_for()
             page.get_by_text("Inputs and limitations", exact=True).first.click()
             with page.expect_download() as download:
                 page.get_by_role("button", name="Export full CSV", exact=True).click()
             csv = pathlib.Path(download.value.path()).read_text()
             assert "report_id" in csv and "model_limitations" in csv
+            if require_technical:
+                assert "rsi_source" in csv and "eps_yoy_growth_pct" in csv
+                assert "Unusual Whales daily screener" in csv
             geometry = page.evaluate("({viewport:innerWidth,width:document.documentElement.scrollWidth})")
             page.screenshot(path=str(HERE / f"report-{width}.png"), full_page=True)
             results.append({"width": width, "geometry": geometry, "runtime_errors": errors,
