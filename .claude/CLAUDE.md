@@ -491,3 +491,5 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **2026-10-25 RZY ingestion:** [session counters, observed post-close writes and protected evidence capture](../docs/2026-10-25/rzy-ingest-observations-and-session-evidence.md); incremental loading and trading acceptance remain open.
 
 - **`docs/audits/2026-10-28-f04-fencing-s03-independent-review.md`** — Fencing held: resweep race, selection identity/integrity and rollback gaps; S0-3 source passes review, replay counts qualified. Offline witnesses; no deployment.
+
+- **`docs/audits/2026-10-28-f04-fencing-remediation-review.md`** — Re-review c30b380d: resweep/promotion/integrity/rollback fixes verified; hold for policy stat errors and malformed selections. Offline route/cascade witnesses; v2 off.

@@ -78,3 +78,8 @@ The comparison script uses `_load_conviction_edges = lambda: {}`. Therefore “0
 2. Replace spelling/order-only checks with behavioral regressions for these failures, then repeat the combined nightly path and affected suites.
 3. Correct the S0-3 output-count/gate wording. Its source correction can release separately; do not hold it for baseline-B research.
 4. Continue full US/HK monitoring independently. This review did not run or reschedule production session collection.
+
+
+## Remediation re-review
+
+The [independent re-review of `c30b380d`](2026-10-28-f04-fencing-remediation-review.md) verifies the original resweep/promotion/integrity/rollback repairs and documents residual fail-closed policy handling. This original report remains the historical finding record.

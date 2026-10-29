@@ -1,6 +1,6 @@
 # S0-3 — two-model ensemble quality: fix and forced-fallback replay
 
-Date: **2026-10-28**. Branch: `f04-s0-3-two-model-quality`. Status: **implemented and replayed; not deployed**.
+Date: **2026-10-28**. Branch: `f04-s0-3-two-model-quality`. Status: **deployed 2026-10-29 (`fa1a3e22`), released separately from fencing**.
 Finding: [Stage 0 S0-3](2026-10-28-f04-stage0-inventory-and-no-model-trace.md).
 Evidence: [`evidence/2026-10-28-s0-3-two-model-replay/`](evidence/2026-10-28-s0-3-two-model-replay/)
 ([manifest](evidence/2026-10-28-s0-3-two-model-replay/manifest.json)).
@@ -68,3 +68,22 @@ replay confirms it.
 **What the signal changes mean.** They are the fallback path's own changes on frozen inputs. In
 production these signals change only when the three-model endpoint has failed, and then the
 fallback now agrees with what the primary path would have produced.
+
+## Deployment (2026-10-29)
+
+- **Approval:** released separately from the fencing branch, with this corrected report, after the
+  [independent review](2026-10-28-f04-fencing-s03-independent-review.md) found no code blocker.
+- **Merged:** `fa1a3e22` on `prod`. The diff against the running services touched only
+  `services/ml-prediction/src/training/trainer.py` (19 lines) and two tests.
+- **Verified before deploy:** `make test` on a clean worktree at `fa1a3e22`: every backend suite
+  passed (ml-prediction 477, market-data 5,967, signal-engine 1,003, all others green).
+- **Rollback image:** `stockai-ml-prediction:rollback-before-fa1a3e22` (`49df3f924a55`), the image
+  that was serving before this deploy.
+- **Deployed:** `scripts/deploy.sh ml-prediction` (host lock, `--no-deps`); healthy after the
+  settle. All 15 containers healthy. `check_deploy_drift.sh` from a clean worktree at `fa1a3e22`:
+  OK for all 12 backend services. The running `trainer.py` hash matches the commit.
+- **Live check (read-only, inside the running service):** the 3 SWING xgboost/random_forest pairs
+  with exactly one suppressed member each report one eligible contributor and that member's own
+  test AUC as the pair's quality.
+- This establishes the fallback reports correct quality. It is not evidence of improved returns,
+  and the fallback still runs only when the three-model endpoint fails.

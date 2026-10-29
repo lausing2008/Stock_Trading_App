@@ -1,0 +1,30 @@
+{
+  "date": "2026-10-28 America/Los_Angeles",
+  "review_commit": "c30b380df4d00c78b80207ac271f9aa2e10b3ea5",
+  "review_worktree": "/tmp/stockai-f04-fencing-rereview-20261028",
+  "local_ml_image_id": "f9ff13606a52",
+  "source_sha256": {
+    "services/ml-prediction/src/training/publication.py": "469071b811155cd90bf1335bf41dd8d70c44991aba21575b6826efddcacb2064",
+    "services/ml-prediction/src/training/trainer.py": "cfee88df7bd90c1b94e2a27b5d8385ddbd888432e20864a6bbd1a14a96777159",
+    "services/ml-prediction/src/api/routes.py": "00142b3c210558a5b8020871ce5f05d8a46534f0b906ef8381634be79d8b3225",
+    "services/ml-prediction/tests/test_f04_publication_nightly_path_container.py": "c2d4e78d514b3ce3caa92407af6407fbcb68b3fe3154e0dd594e7c2f193e9a08",
+    "services/signal-engine/src/generators/signals.py": "844e2a94dc346e422a380eb195a9a1fee3476b22a935896ee1f9a5e600f33a7b",
+    "services/market-data/src/services/scheduler.py": "de5729234e8052f04db6e0b0edf5b8db7308ca760472fe918c68b41de5c5e2be"
+  },
+  "evidence_sha256": {
+    "cascade-results.json": "7917c5f5ddd3039fd8313e82a456450818f59b7ceadc4eca8fe8f243a6976486",
+    "container-results.txt": "26c978e00adb85d8b75a76eef878a9b89ae5efdafcc0eecfe5c3aef4a2f7f72a",
+    "test_residual_fail_closed.py": "b291086b0e238482a9c7cb351c69b8b397491b900cbd212595c8c104243280f5",
+    "trace_unavailable_cascade.py": "72cb73713bb7c67e1d8a0fb8459822852f5b27ca105f097b60d0c85166189810"
+  },
+  "checks": {
+    "local_ml": "525 passed, 1 skipped, 6 warnings in 9.57s",
+    "offline_container": "12 existing nightly-path tests + 4 residual witnesses = 16 passed in 161.87s",
+    "cascade": "actual function with mocked 500 vs 200 HTTP, no external I/O"
+  },
+  "notes": [
+    "Witness passing means the defect was reproduced, not fixed.",
+    "Container log trailing whitespace normalized before hashing.",
+    "No application changes or production operations."
+  ]
+}
