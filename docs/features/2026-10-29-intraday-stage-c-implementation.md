@@ -1,8 +1,8 @@
 # Intraday Stage C — implementation record
 
-Date: **2026-10-29**. Branch: `intraday-contracts`. Status: **IC-01..IC-05 and ICR-01..ICR-02 fixed; a new
-release candidate supersedes `c49a6e17`; not deployed; no generator**. See
-[Candidate review remediation](#candidate-review-remediation-icr-01-icr-02). Production generation is disabled (`INTRADAY_PRODUCTION_ENABLED = False`, a
+Date: **2026-10-29**. Branch: `intraday-contracts`. Status: **release candidate `cfd86973` (code), awaiting
+review; IC-01..IC-05 and ICR-01..ICR-02 fixed; not deployed; no generator**. See
+[Release candidate `cfd86973`](#release-candidate-cfd86973). Production generation is disabled (`INTRADAY_PRODUCTION_ENABLED = False`, a
 code constant). Implements the [contract design](2026-10-29-intraday-stage-c-contract-design.md)
 (revision 3), after the [inventory](2026-10-29-intraday-stage-c-inventory.md) and two review
 rounds ([review](../audits/2026-10-29-intraday-stage-c-design-review.md), CDR-01..06 and
@@ -183,6 +183,47 @@ supported writer refuses, and readers have one authoritative representation, `ev
 
 The mutation set grows from 64 to **93 required cases**: 19 for ICR-01 (contract, writer, trigger)
 and 10 for ICR-02. Each guard has its own witness, under the same bounded, expected-witness rule.
+
+## Release candidate `cfd86973`
+
+`75af1708` holds the ICR fixes. `cfd86973` adds only a runner parser fix (below). Every result here
+was produced against **`cfd86973`**: its hash was recorded before and after the checks, unchanged,
+with a clean tree. Evidence and a SHA-256 manifest of 194 files are in
+[`docs/audits/evidence/2026-10-29-intraday-stage-c-icr-candidate/`](../audits/evidence/2026-10-29-intraday-stage-c-icr-candidate/MANIFEST.json).
+
+- **Mutation run:** 93 required cases, **93 CAUGHT**: 0 missed, 0 wrong reason, 0 inconclusive.
+  The longest case took 11.8 s, against the 240 s bound. The caught rule is unchanged, and no
+  bytecode was written during the run. The 64 earlier cases are included, with the two re-anchored
+  ones described in the remediation section.
+- **`make test`:** all services passed.
+
+  | Service | Passed | Skipped |
+  |---|---|---|
+  | market-data | 6020 | 30 |
+  | signal-engine | 1008 | 9 |
+  | research-engine | 731 | 8 |
+  | event-intelligence | 635 | — |
+  | ml-prediction | 555 | 1 |
+  | decision-engine | 393 | — |
+  | ranking-engine | 201 | — |
+  | news-intelligence | 200 | — |
+  | portfolio-optimizer | 83 | — |
+  | technical-analysis | 67 | — |
+  | strategy-engine | 62 | — |
+  | api-gateway | 58 | — |
+  | scripts | 44 | — |
+
+- **`make test-integration-pg-schema`:** 10 passed, REQUIRED PostgreSQL 16, no skips. This target
+  runs the 57-test storage and 13-test input suites, subprocessed.
+- **ML container suite in the production image:** 24 passed.
+- **Frontend:** not run. The branch changes no frontend file.
+
+**Runner defect found in this round.** The first full run, at `75af1708`, reported 85 CAUGHT and
+8 WRONG_REASON, all in the ICR-02 group. The runner's failed-test parser cut each node id at its
+first space. Parametrized ids such as `[consumed close]` were therefore truncated, and the expected
+witness never matched. Each saved output does show the intended case failing. Even so, that run is
+**not counted**: it is kept under `superseded-75af1708/`. The parser was fixed in `cfd86973`, and
+the full set was rerun on that commit.
 
 ## Release candidate `c49a6e17` (superseded by the ICR remediation)
 

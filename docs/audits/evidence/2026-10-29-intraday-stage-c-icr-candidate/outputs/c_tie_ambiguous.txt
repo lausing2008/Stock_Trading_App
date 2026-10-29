@@ -1,0 +1,14 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________ test_cancellation_exactly_at_the_entry_open_is_ambiguous ___________
+
+    def test_cancellation_exactly_at_the_entry_open_is_ambiguous():
+>       assert c.cancellation_vs_entry(at(14, 10), at(14, 10)) == "chronology_ambiguous"
+E       AssertionError: assert 'entered' == 'chronology_ambiguous'
+E         - chronology_ambiguous
+E         + entered
+
+tests/test_intraday_contract.py:314: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_contract.py::test_cancellation_exactly_at_the_entry_open_is_ambiguous
+1 failed, 43 deselected in 0.14s

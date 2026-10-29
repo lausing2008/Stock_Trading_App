@@ -1,0 +1,27 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_________ test_direct_sql_cannot_write_cross_mode_or_backwards_records _________
+
+engine = Engine(postgresql+psycopg2://postgres:***@127.0.0.1:55448/icr)
+
+    @pg_only
+    def test_direct_sql_cannot_write_cross_mode_or_backwards_records(engine):
+        with engine.begin() as conn:
+            i = ident(conn)
+            sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        base = dict(setup_id=sid, run_key="observed", seq=3, from_state="actionable", to_state="entered")
+        for bad, why in ((dict(decided_at=at(14, 12), effective_at=at(14, 10), clock_basis="replay_logical",
+                               idempotency_key="d1"), "clock_mode"),
+                         (dict(decided_at=at(13, 30), effective_at=at(13, 30), clock_basis="observed",
+                               idempotency_key="d2"), "chronology|entry fill"),
+                         (dict(decided_at=at(14, 9), effective_at=at(14, 10), clock_basis="observed",
+                               idempotency_key="d3"), "effective_before_decided"),
+                         (dict(decided_at=at(14, 30), effective_at=at(14, 25), clock_basis="observed",
+                               idempotency_key="d4"), "entry fill")):
+>           with pytest.raises(DBAPIError, match=why):
+E           Failed: DID NOT RAISE <class 'sqlalchemy.exc.DBAPIError'>
+
+intraday_store_suite.py:655: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_direct_sql_cannot_write_cross_mode_or_backwards_records
+1 failed, 56 deselected in 1.19s

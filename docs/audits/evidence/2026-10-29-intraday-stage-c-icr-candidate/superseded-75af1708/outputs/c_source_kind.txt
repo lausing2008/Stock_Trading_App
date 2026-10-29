@@ -1,0 +1,18 @@
+........F.                                                               [100%]
+=================================== FAILURES ===================================
+_ test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[source kind] _
+
+engine = Engine(sqlite://), case = 'source kind'
+
+    @pytest.mark.parametrize("case", sorted(_TAMPERED))
+    def test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write(engine, case):
+        rec = _TAMPERED[case]()
+        assert c.hashes_from_evidence(rec.evidence)["input_hash"] == rec.input_hash      # the hashes still recompute
+        with engine.begin() as conn:
+>           with pytest.raises(c.ContractViolation):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:984: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[source kind]
+1 failed, 9 passed, 47 deselected in 0.97s

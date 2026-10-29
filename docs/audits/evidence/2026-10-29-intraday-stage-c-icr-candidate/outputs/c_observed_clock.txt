@@ -1,0 +1,16 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______ test_a_late_observed_cancellation_is_not_backdated_to_eligibility _______
+
+    def test_a_late_observed_cancellation_is_not_backdated_to_eligibility():
+        # missing/revised bar eligible 14:07 but only read at 14:12, after the 14:10 entry open
+        ev = c.EventTimes(eligible_at=at(14, 7), observed_at=at(14, 12), decided_at=at(14, 12, ), clock_basis="observed")
+        eff = c.effective_time(ev)
+>       assert eff == at(14, 12)
+E       assert datetime.datetime(2026, 10, 28, 14, 7, tzinfo=datetime.timezone.utc) == datetime.datetime(2026, 10, 28, 14, 12, tzinfo=datetime.timezone.utc)
+E        +  where datetime.datetime(2026, 10, 28, 14, 12, tzinfo=datetime.timezone.utc) = at(14, 12)
+
+tests/test_intraday_contract.py:166: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_contract.py::test_a_late_observed_cancellation_is_not_backdated_to_eligibility
+1 failed, 43 deselected in 0.14s

@@ -1,0 +1,28 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_ test_partial_indexes_refuse_a_second_terminal_or_reconciliation_even_without_the_trigger _
+
+engine = Engine(postgresql+psycopg2://postgres:***@127.0.0.1:55448/icr)
+
+    @pg_only
+    def test_partial_indexes_refuse_a_second_terminal_or_reconciliation_even_without_the_trigger(engine):
+        """The one-session-terminal and one-reconciled indexes are backstops behind the append
+        trigger and the pair CHECK. Witnessed with the trigger disabled inside the test transaction
+        (rolled back), appending a stale-but-legal pair a second time."""
+        with engine.begin() as conn:
+            i = ident(conn)
+            sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+            store.append_transition(conn, setup_id=sid, to_state="entered", event=ev(at(14, 12)), idempotency_key="e")
+            store.append_transition(conn, setup_id=sid, to_state="unresolved_exit_at_close", event=ev(at(20, 1)),
+                                    idempotency_key="u")
+            store.append_transition(conn, setup_id=sid, to_state="reconciled", event=ev(at(20, 30)), idempotency_key="r")
+        raw = dict(setup_id=sid, run_key="observed", decided_at=at(21, 0), effective_at=at(21, 0), clock_basis="observed")
+        for extra in (dict(seq=6, from_state="unresolved_exit_at_close", to_state="reconciled", idempotency_key="r2"),
+                      dict(seq=6, from_state="entered", to_state="unresolved_exit_at_close", idempotency_key="u2")):
+>           with pytest.raises(IntegrityError, match="uq_intraday_one_"):
+E           Failed: DID NOT RAISE <class 'sqlalchemy.exc.IntegrityError'>
+
+intraday_store_suite.py:511: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_partial_indexes_refuse_a_second_terminal_or_reconciliation_even_without_the_trigger
+1 failed, 56 deselected in 1.47s

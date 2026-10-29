@@ -1,0 +1,136 @@
+FFF                                                                      [100%]
+=================================== FAILURES ===================================
+_______ test_decide_refuses_a_non_daily_style_before_any_fetch[INTRADAY] _______
+
+style = 'INTRADAY'
+
+    @pytest.mark.parametrize("style", ["INTRADAY", "intraday", "SCALP"])
+    def test_decide_refuses_a_non_daily_style_before_any_fetch(style):
+        with patch.object(routes, "fetch_all", side_effect=AssertionError("fetched for a refused style")):
+            # routes.HTTPException: the class the code raises (another test in this suite stubs fastapi)
+            with pytest.raises(routes.HTTPException) as e:
+>               asyncio.run(routes._decide("AAA", DecisionRequest(style=style)))
+
+tests/test_intraday_daily_isolation.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/home/lausing/anaconda3/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/home/lausing/anaconda3/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/home/lausing/anaconda3/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+src/api/routes.py:84: in _decide
+    signal_data, research_data, yf_price = await fetch_all(symbol, style)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <AsyncMock name='fetch_all' id='132320408828816'>
+args = ('AAA', 'INTRADAY'), kwargs = {}, _call = call('AAA', 'INTRADAY')
+effect = AssertionError('fetched for a refused style')
+
+    async def _execute_mock_call(self, /, *args, **kwargs):
+        # This is nearly just like super(), except for special handling
+        # of coroutines
+    
+        _call = _Call((args, kwargs), two=True)
+        self.await_count += 1
+        self.await_args = _call
+        self.await_args_list.append(_call)
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+>               raise effect
+E               AssertionError: fetched for a refused style
+
+/home/lausing/anaconda3/lib/python3.12/unittest/mock.py:2282: AssertionError
+_______ test_decide_refuses_a_non_daily_style_before_any_fetch[intraday] _______
+
+style = 'intraday'
+
+    @pytest.mark.parametrize("style", ["INTRADAY", "intraday", "SCALP"])
+    def test_decide_refuses_a_non_daily_style_before_any_fetch(style):
+        with patch.object(routes, "fetch_all", side_effect=AssertionError("fetched for a refused style")):
+            # routes.HTTPException: the class the code raises (another test in this suite stubs fastapi)
+            with pytest.raises(routes.HTTPException) as e:
+>               asyncio.run(routes._decide("AAA", DecisionRequest(style=style)))
+
+tests/test_intraday_daily_isolation.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/home/lausing/anaconda3/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/home/lausing/anaconda3/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/home/lausing/anaconda3/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+src/api/routes.py:84: in _decide
+    signal_data, research_data, yf_price = await fetch_all(symbol, style)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <AsyncMock name='fetch_all' id='132320409012608'>
+args = ('AAA', 'INTRADAY'), kwargs = {}, _call = call('AAA', 'INTRADAY')
+effect = AssertionError('fetched for a refused style')
+
+    async def _execute_mock_call(self, /, *args, **kwargs):
+        # This is nearly just like super(), except for special handling
+        # of coroutines
+    
+        _call = _Call((args, kwargs), two=True)
+        self.await_count += 1
+        self.await_args = _call
+        self.await_args_list.append(_call)
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+>               raise effect
+E               AssertionError: fetched for a refused style
+
+/home/lausing/anaconda3/lib/python3.12/unittest/mock.py:2282: AssertionError
+________ test_decide_refuses_a_non_daily_style_before_any_fetch[SCALP] _________
+
+style = 'SCALP'
+
+    @pytest.mark.parametrize("style", ["INTRADAY", "intraday", "SCALP"])
+    def test_decide_refuses_a_non_daily_style_before_any_fetch(style):
+        with patch.object(routes, "fetch_all", side_effect=AssertionError("fetched for a refused style")):
+            # routes.HTTPException: the class the code raises (another test in this suite stubs fastapi)
+            with pytest.raises(routes.HTTPException) as e:
+>               asyncio.run(routes._decide("AAA", DecisionRequest(style=style)))
+
+tests/test_intraday_daily_isolation.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/home/lausing/anaconda3/lib/python3.12/asyncio/runners.py:194: in run
+    return runner.run(main)
+/home/lausing/anaconda3/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+/home/lausing/anaconda3/lib/python3.12/asyncio/base_events.py:687: in run_until_complete
+    return future.result()
+src/api/routes.py:84: in _decide
+    signal_data, research_data, yf_price = await fetch_all(symbol, style)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <AsyncMock name='fetch_all' id='132320407433824'>
+args = ('AAA', 'SCALP'), kwargs = {}, _call = call('AAA', 'SCALP')
+effect = AssertionError('fetched for a refused style')
+
+    async def _execute_mock_call(self, /, *args, **kwargs):
+        # This is nearly just like super(), except for special handling
+        # of coroutines
+    
+        _call = _Call((args, kwargs), two=True)
+        self.await_count += 1
+        self.await_args = _call
+        self.await_args_list.append(_call)
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+>               raise effect
+E               AssertionError: fetched for a refused style
+
+/home/lausing/anaconda3/lib/python3.12/unittest/mock.py:2282: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_daily_isolation.py::test_decide_refuses_a_non_daily_style_before_any_fetch[INTRADAY]
+FAILED tests/test_intraday_daily_isolation.py::test_decide_refuses_a_non_daily_style_before_any_fetch[intraday]
+FAILED tests/test_intraday_daily_isolation.py::test_decide_refuses_a_non_daily_style_before_any_fetch[SCALP]
+3 failed in 0.80s

@@ -1,0 +1,17 @@
+F.                                                                       [100%]
+=================================== FAILURES ===================================
+__________________ test_detection_before_at_and_after_expiry ___________________
+
+    def test_detection_before_at_and_after_expiry():
+        # trigger 14:00-14:05, readable 14:07, expires 14:20 (exclusive)
+        d = detect(at(14, 7))
+        assert d.state == "actionable" and d.actionable_at == at(14, 7) and d.entry_expires_at == at(14, 20)
+>       assert detect(at(14, 20)).state == "expired_before_detection"
+E       AssertionError: assert 'no_fill_opportunity' == 'expired_before_detection'
+E         - expired_before_detection
+E         + no_fill_opportunity
+
+tests/test_intraday_contract.py:129: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_contract.py::test_detection_before_at_and_after_expiry
+1 failed, 1 passed, 42 deselected in 0.13s

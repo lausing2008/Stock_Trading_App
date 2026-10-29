@@ -1,0 +1,69 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_________ test_a_cancellation_missing_its_observation_is_not_confirmed _________
+
+engine = Engine(sqlite://)
+
+    def test_a_cancellation_missing_its_observation_is_not_confirmed(engine):
+        with engine.begin() as conn:
+            i = ident(conn)
+            sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+            unknown = c.EventTimes(at(14, 8), None, at(14, 9), "observed")
+            with pytest.raises(c.ContractViolation, match="chronology_ambiguous"):
+                _cancel(conn, sid, unknown)
+            with pytest.raises(c.ContractViolation, match="cannot be dated"):
+>               store.append_transition(conn, setup_id=sid, to_state="chronology_ambiguous", event=unknown,
+                                        effective_at=at(14, 8), idempotency_key="a0")
+
+intraday_store_suite.py:851: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../src/services/intraday/store.py:203: in append_transition
+    required = c.required_effective_time(to_state, event, detected_at=setup.detected_at,
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+to_state = 'chronology_ambiguous'
+ev = EventTimes(eligible_at=datetime.datetime(2026, 10, 28, 14, 8, tzinfo=datetime.timezone.utc), observed_at=None, decided_at=datetime.datetime(2026, 10, 28, 14, 9, tzinfo=datetime.timezone.utc), clock_basis='observed')
+
+    def required_effective_time(to_state: str, ev: EventTimes, *, detected_at, entry_expires_at,
+                                params: Params = Params()):
+        """The only effective time a non-fill transition may carry, or None for a fill state (which
+        supplies its own). A data-dependent cancellation takes effect when it was decided (observed)
+        or at eligible + replay latency (replay): it is never dated earlier, and without its
+        observation evidence it is not a cancellation at all (record chronology_ambiguous)."""
+        if to_state in FILL_STATES:
+            return None
+        if to_state == "detected" or to_state in ("actionable",) + PRE_ACTIONABLE_TERMINAL:
+            return utc(detected_at)
+        if to_state == "expired":
+            return utc(entry_expires_at)
+        if to_state == "cancelled":
+            eff = effective_time(ev, params)
+            if eff is None:
+                raise ContractViolation("a cancellation without its observation evidence has no known time: "
+                                        "record chronology_ambiguous")
+            return eff
+>       raise ContractViolation(f"no timing rule for {to_state!r}")
+E       src.services.intraday.contract.ContractViolation: no timing rule for 'chronology_ambiguous'
+
+../src/services/intraday/contract.py:332: ContractViolation
+
+During handling of the above exception, another exception occurred:
+
+engine = Engine(sqlite://)
+
+    def test_a_cancellation_missing_its_observation_is_not_confirmed(engine):
+        with engine.begin() as conn:
+            i = ident(conn)
+            sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+            unknown = c.EventTimes(at(14, 8), None, at(14, 9), "observed")
+            with pytest.raises(c.ContractViolation, match="chronology_ambiguous"):
+                _cancel(conn, sid, unknown)
+>           with pytest.raises(c.ContractViolation, match="cannot be dated"):
+E           AssertionError: Regex pattern did not match.
+E            Regex: 'cannot be dated'
+E            Input: "no timing rule for 'chronology_ambiguous'"
+
+intraday_store_suite.py:850: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_a_cancellation_missing_its_observation_is_not_confirmed
+1 failed, 56 deselected in 1.05s

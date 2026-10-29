@@ -1,0 +1,50 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_ test_daily_reader_statements_carry_the_daily_predicate_compiled[walkforward_backtest-<lambda>] _
+
+name = 'walkforward_backtest', call = <function <lambda> at 0x7a38c57e8860>
+
+    @pytest.mark.parametrize("name,call", [
+        # Both are behind F12's @research_only guard (they return before any SQL in production);
+        # the witness exercises the wrapped body so the filter is there if the guard is ever lifted.
+        ("calibrate_ta_weights",
+         lambda s: calibration.calibrate_ta_weights.__wrapped__(lookback_days=365, session=s, _="u")),
+        ("calibrate_conviction_weights",
+         lambda s: calibration.calibrate_conviction_weights.__wrapped__(lookback_days=365, min_count=10, session=s, _="u")),
+        ("outcomes_calibration", lambda s: calibration.outcomes_calibration(days=180, session=s)),
+        ("signal_accuracy", lambda s: analytics.signal_accuracy(lookback_days=90, symbol=None, market=None, from_date=None,
+                                                                 to_date=None, page=1, page_size=200, session=s)),
+        ("rolling_accuracy", lambda s: analytics.rolling_accuracy(window=30, lookback_days=180, session=s)),
+        ("factor_exposure", lambda s: analytics.factor_exposure(lookback_days=90, session=s)),
+        ("walkforward_backtest", lambda s: analytics.walkforward_backtest(train_days=180, test_days=30, lookback_days=365,
+                                                                           hold_days=5, session=s)),
+        ("outcomes_summary", lambda s: analytics.outcomes_summary(horizon=None, days=90, market=None, symbol=None, session=s)),
+        ("signal_consensus", lambda s: routes.signal_consensus(market=None, session=s, _="u")),
+    ])
+    def test_daily_reader_statements_carry_the_daily_predicate_compiled(name, call):
+        s = _CaptureSession()
+        with patch.object(analytics, "_get_redis", return_value=None, create=True), \
+             patch.object(calibration, "_get_redis", return_value=None, create=True):
+            try:
+                call(s)
+            except HTTPException:
+                pass                    # e.g. "need >= 30 outcomes": the guarded read already ran
+>       _assert_guarded(s)
+
+intraday_isolation_suite.py:196: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+session = <intraday_isolation_suite._CaptureSession object at 0x7a38c6ef2c00>
+
+    def _assert_guarded(session, *, tables=("signals", "signal_outcomes", "signal_outcome_horizons")):
+        reads = [s for s in map(_sql, session.stmts) if any(f"FROM {t}" in s or f"JOIN {t}" in s for t in tables)]
+        assert reads, "the reader executed no statement against the daily tables"
+        for s in reads:
+>           assert DAILY_SQL in s, s[:400]
+E           AssertionError: SELECT signals.id, signals.stock_id, signals.ts, signals.signal, signals.horizon, signals.confidence, signals.bullish_probability, signals.reasons, signals.source, signals.first_buy_sell_at, signals.first_buy_sell_signal, signals.first_buy_sell_confidence, signals.first_buy_sell_bullish_probability, signals.first_buy_sell_reasons, signals.alert_delivery_state, signals.alert_delivered_recipient_cou
+E           assert "horizon IN ('SHORT', 'SWING', 'LONG', 'GROWTH')" in "SELECT signals.id, signals.stock_id, signals.ts, signals.signal, signals.horizon, signals.confidence, signals.bullish....ts <= '2026-10-23 13:58:25.739797+00:00' AND signals.signal = 'BUY' AND stocks.active IS true ORDER BY signals.ts ASC"
+
+intraday_isolation_suite.py:168: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_isolation_suite.py::test_daily_reader_statements_carry_the_daily_predicate_compiled[walkforward_backtest-<lambda>]
+1 failed, 24 deselected in 2.01s

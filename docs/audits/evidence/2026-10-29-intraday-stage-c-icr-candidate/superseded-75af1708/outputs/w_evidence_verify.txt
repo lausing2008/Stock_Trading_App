@@ -1,0 +1,64 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______________ test_tampered_evidence_is_refused_before_any_write ______________
+
+engine = Engine(sqlite://)
+
+    def test_tampered_evidence_is_refused_before_any_write(engine):
+        """IC-03: an input whose stated hashes do not recompute from its evidence is refused, and
+        nothing is written."""
+        with engine.begin() as conn:
+            i = ident(conn)
+            b = batch(conn, i)
+            bad = an_input(at(14, 0))
+            bad.evidence = dict(bad.evidence, transformed=dict(bad.evidence["transformed"], close=999.0))
+            det = c.decide_at_detection(trigger_bar_open=at(14, 0), detected_at=at(14, 7), direction="bullish", times=T,
+                                        stop_breached=False, inputs_ok=True)
+            with pytest.raises(c.ContractViolation, match="recompute"):
+>               store.record_evaluation(conn, batch_id=b, run_key="observed", identity=i, stock_id=1, symbol="AAA",
+                                        trigger_bar_open=at(14, 0), result="setup", detected_at=at(14, 7),
+                                        data_cutoff=at(14, 7), setup=SETUP, input_records=[bad], detection=det, times=T)
+
+intraday_store_suite.py:737: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../src/services/intraday/store.py:119: in record_evaluation
+    c.check_input_consistency(i, stock_id=stock_id, symbol=symbol, times=times)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+rec = InputRecord(role='trigger', timeframe='5m', bar_open=datetime.datetime(2026, 10, 28, 14, 0, tzinfo=datetime.timezone.u...ed close'}}, first_available_at=None, availability_basis='unknown_exact_version', provider_published_at=None, extra={})
+
+    def check_input_consistency(rec: InputRecord, *, stock_id: int, symbol: str, times: SessionTimes) -> None:
+        """Refuse an input whose consumed values, timeframe, bar open, source kind, stock/symbol or
+        constituent shape differ from the evidence its hashes are computed from (review ICR-02)."""
+        ev = rec.evidence or {}
+        hashes_from_evidence(ev)                       # version and structure
+        tr = ev["transformed"]
+        if rec.values != consumed_values(ev):
+>           raise ContractViolation("consumed values differ from the evidence they are hashed from")
+E           src.services.intraday.contract.ContractViolation: consumed values differ from the evidence they are hashed from
+
+../src/services/intraday/contract.py:442: ContractViolation
+
+During handling of the above exception, another exception occurred:
+
+engine = Engine(sqlite://)
+
+    def test_tampered_evidence_is_refused_before_any_write(engine):
+        """IC-03: an input whose stated hashes do not recompute from its evidence is refused, and
+        nothing is written."""
+        with engine.begin() as conn:
+            i = ident(conn)
+            b = batch(conn, i)
+            bad = an_input(at(14, 0))
+            bad.evidence = dict(bad.evidence, transformed=dict(bad.evidence["transformed"], close=999.0))
+            det = c.decide_at_detection(trigger_bar_open=at(14, 0), detected_at=at(14, 7), direction="bullish", times=T,
+                                        stop_breached=False, inputs_ok=True)
+>           with pytest.raises(c.ContractViolation, match="recompute"):
+E           AssertionError: Regex pattern did not match.
+E            Regex: 'recompute'
+E            Input: 'consumed values differ from the evidence they are hashed from'
+
+intraday_store_suite.py:736: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_tampered_evidence_is_refused_before_any_write
+1 failed, 56 deselected in 0.98s

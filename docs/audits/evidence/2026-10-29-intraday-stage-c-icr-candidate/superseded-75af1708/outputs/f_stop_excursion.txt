@@ -1,0 +1,21 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+__________ test_excursions_exclude_the_exit_bar_s_unordered_extremes ___________
+
+    def test_excursions_exclude_the_exit_bar_s_unordered_extremes():
+        """IC-05 witness: entry 100, stop 99, target 102, entry bar high 200 / low 98. The stop-first
+        exit at 99 is known; the 200 and 98 may come after it, so they are bounds, not MAE/MFE."""
+        bs = bars(at(14, 0), 40)
+        bs[2] = f.Bar(at(14, 10), 100.0, 200.0, 98.0, 100.0)
+        r = sim(bs)
+        assert (r.exit_reason, r.exit_price) == ("stop", 99.0)
+>       assert r.mae == pytest.approx(-0.01) and r.mfe == pytest.approx(0.0)
+E       assert (-0.02 == -0.01 ± 1.0e-08
+E         comparison failed
+E         Obtained: -0.02
+E         Expected: -0.01 ± 1.0e-08)
+
+tests/test_intraday_contract.py:291: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_contract.py::test_excursions_exclude_the_exit_bar_s_unordered_extremes
+1 failed, 43 deselected in 0.14s

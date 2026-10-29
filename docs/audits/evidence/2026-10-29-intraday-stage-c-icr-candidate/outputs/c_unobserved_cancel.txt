@@ -1,0 +1,22 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+____________ test_only_fill_states_may_choose_their_effective_time _____________
+
+    def test_only_fill_states_may_choose_their_effective_time():
+        ev = c.EventTimes(at(14, 8), at(14, 17), at(14, 17), "observed")
+        kw = dict(detected_at=at(14, 7), entry_expires_at=at(14, 20))
+        assert all(c.required_effective_time(s, ev, **kw) is None for s in c.FILL_STATES)
+        assert c.required_effective_time("cancelled", ev, **kw) == at(14, 17)            # never its eligible time
+        assert c.required_effective_time("expired", ev, **kw) == at(14, 20)
+        assert c.required_effective_time("actionable", ev, **kw) == at(14, 7)
+        assert c.required_effective_time("reconciled", ev, **kw) == at(14, 17)
+        replay = c.EventTimes(at(14, 8), None, at(14, 10), "replay_logical")
+        assert c.required_effective_time("cancelled", replay, params=c.Params(replay_latency_s=90), **kw) == \
+            at(14, 8) + timedelta(seconds=90)
+>       with pytest.raises(c.ContractViolation, match="chronology_ambiguous"):
+E       Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+tests/test_intraday_contract.py:391: Failed
+=========================== short test summary info ============================
+FAILED tests/test_intraday_contract.py::test_only_fill_states_may_choose_their_effective_time
+1 failed, 43 deselected in 0.15s

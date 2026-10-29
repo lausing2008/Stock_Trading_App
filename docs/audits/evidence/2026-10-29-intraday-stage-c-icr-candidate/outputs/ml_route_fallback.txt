@@ -1,0 +1,23 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_____ test_no_route_defaults_a_horizon_for_an_unknown_style_code_presence ______
+
+    def test_no_route_defaults_a_horizon_for_an_unknown_style_code_presence():
+        """code presence: every style->horizon lookup in the routes goes through the strict helper."""
+        src = (SRC / "api" / "routes.py").read_text()
+>       assert "_HORIZON_BY_STYLE.get(" not in src
+E       assert '_HORIZON_BY_STYLE.get(' not in '"""ML endpo...n=dry_run)\n'
+E         '_HORIZON_BY_STYLE.get(' is contained here:
+E              return _HORIZON_BY_STYLE.get(req.style.upper(), req.horizon)
+E         ?           ++++++++++++++++++++++
+E           
+E           
+E           @router.post("/predict")
+E           def predict(req: PredictRequest, _: str = Depends(get_current_username)):...
+E         
+E         ...Full output truncated (402 lines hidden), use '-vv' to show
+
+tests/test_intraday_daily_isolation.py:31: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_daily_isolation.py::test_no_route_defaults_a_horizon_for_an_unknown_style_code_presence
+1 failed, 2 deselected in 0.04s

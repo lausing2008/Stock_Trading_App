@@ -1,0 +1,80 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_ test_stored_inputs_recompute_every_hash_after_the_sources_change_or_vanish[False] _
+
+engine = Engine(postgresql+psycopg2://postgres:***@127.0.0.1:55448/icr)
+adjusted = False
+
+    @pytest.mark.parametrize("adjusted", [False, True])
+    def test_stored_inputs_recompute_every_hash_after_the_sources_change_or_vanish(engine, adjusted):
+        """Review IC-03 acceptance: store a real snapshot (raw or adjusted basis, one unknown source,
+        derived 15m), drop the in-memory records, revise and delete the source price/provenance rows,
+        then recompute all four hashes solely from the persisted Intraday evidence."""
+        from sqlalchemy import select
+        from src.services.intraday import models as im, schema, store
+        if adjusted:
+            _exec(engine, "UPDATE prices SET adj_close = close * 0.5")
+        _core(engine, PV.delete().where(PV.c.ts == OPEN + timedelta(minutes=5)))        # one unknown source
+>       s = snap(engine)
+
+intraday_inputs_suite.py:222: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+intraday_inputs_suite.py:80: in snap
+    return read_snapshot(engine, stock_id=1, symbol="TEST", market="US", session_date=D, data_cutoff=CUTOFF,
+../src/services/intraday/inputs.py:120: in read_snapshot
+    h = c.hashes_from_evidence(ev)
+../src/services/intraday/contract.py:480: in hashes_from_evidence
+    members = [hashes_from_evidence(m) for m in ev["constituents"]]
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+ev = {'raw': {}, 'transformed': {}, 'version': 1}
+
+    def hashes_from_evidence(ev: dict) -> dict:
+        """Recompute every hash a stored input advertises, solely from its evidence payload."""
+        if ev.get("version") != EVIDENCE_VERSION:
+            raise ContractViolation(f"unknown evidence version {ev.get('version')!r}")
+>       ih = input_hash(**ev["transformed"])
+E       TypeError: input_hash() missing 9 required keyword-only arguments: 'timeframe', 'bar_open', 'open', 'high', 'low', 'close', 'volume', 'price_basis', and 'price_basis_reason'
+
+../src/services/intraday/contract.py:478: TypeError
+_ test_stored_inputs_recompute_every_hash_after_the_sources_change_or_vanish[True] _
+
+engine = Engine(postgresql+psycopg2://postgres:***@127.0.0.1:55448/icr)
+adjusted = True
+
+    @pytest.mark.parametrize("adjusted", [False, True])
+    def test_stored_inputs_recompute_every_hash_after_the_sources_change_or_vanish(engine, adjusted):
+        """Review IC-03 acceptance: store a real snapshot (raw or adjusted basis, one unknown source,
+        derived 15m), drop the in-memory records, revise and delete the source price/provenance rows,
+        then recompute all four hashes solely from the persisted Intraday evidence."""
+        from sqlalchemy import select
+        from src.services.intraday import models as im, schema, store
+        if adjusted:
+            _exec(engine, "UPDATE prices SET adj_close = close * 0.5")
+        _core(engine, PV.delete().where(PV.c.ts == OPEN + timedelta(minutes=5)))        # one unknown source
+>       s = snap(engine)
+
+intraday_inputs_suite.py:222: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+intraday_inputs_suite.py:80: in snap
+    return read_snapshot(engine, stock_id=1, symbol="TEST", market="US", session_date=D, data_cutoff=CUTOFF,
+../src/services/intraday/inputs.py:120: in read_snapshot
+    h = c.hashes_from_evidence(ev)
+../src/services/intraday/contract.py:480: in hashes_from_evidence
+    members = [hashes_from_evidence(m) for m in ev["constituents"]]
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+ev = {'raw': {}, 'transformed': {}, 'version': 1}
+
+    def hashes_from_evidence(ev: dict) -> dict:
+        """Recompute every hash a stored input advertises, solely from its evidence payload."""
+        if ev.get("version") != EVIDENCE_VERSION:
+            raise ContractViolation(f"unknown evidence version {ev.get('version')!r}")
+>       ih = input_hash(**ev["transformed"])
+E       TypeError: input_hash() missing 9 required keyword-only arguments: 'timeframe', 'bar_open', 'open', 'high', 'low', 'close', 'volume', 'price_basis', and 'price_basis_reason'
+
+../src/services/intraday/contract.py:478: TypeError
+=========================== short test summary info ============================
+FAILED intraday_inputs_suite.py::test_stored_inputs_recompute_every_hash_after_the_sources_change_or_vanish[False]
+FAILED intraday_inputs_suite.py::test_stored_inputs_recompute_every_hash_after_the_sources_change_or_vanish[True]
+2 failed, 11 deselected in 2.17s

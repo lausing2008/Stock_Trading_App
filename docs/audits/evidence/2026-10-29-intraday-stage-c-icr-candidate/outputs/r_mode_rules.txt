@@ -1,0 +1,16 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+____________________ test_mode_and_run_rules_and_hk_refusal ____________________
+
+engine = Engine(postgresql+psycopg2://postgres:***@127.0.0.1:55448/icr)
+
+    def test_mode_and_run_rules_and_hk_refusal(engine):
+        with engine.begin() as conn:
+            for mode, rk in (("observed", "r1"), ("replay", None), ("replay", "observed"), (None, None), ("both", None)):
+>               with pytest.raises(R.BadRequest):
+E               Failed: DID NOT RAISE <class 'src.services.intraday.read.BadRequest'>
+
+intraday_store_suite.py:408: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_mode_and_run_rules_and_hk_refusal - Fail...
+1 failed, 56 deselected in 1.38s

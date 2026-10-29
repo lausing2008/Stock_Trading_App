@@ -1,0 +1,19 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+____________ test_only_fill_states_may_choose_their_effective_time _____________
+
+    def test_only_fill_states_may_choose_their_effective_time():
+        ev = c.EventTimes(at(14, 8), at(14, 17), at(14, 17), "observed")
+        kw = dict(detected_at=at(14, 7), entry_expires_at=at(14, 20))
+        assert all(c.required_effective_time(s, ev, **kw) is None for s in c.FILL_STATES)
+        assert c.required_effective_time("cancelled", ev, **kw) == at(14, 17)            # never its eligible time
+>       assert c.required_effective_time("expired", ev, **kw) == at(14, 20)
+E       AssertionError: assert datetime.datetime(2026, 10, 28, 14, 17, tzinfo=datetime.timezone.utc) == datetime.datetime(2026, 10, 28, 14, 20, tzinfo=datetime.timezone.utc)
+E        +  where datetime.datetime(2026, 10, 28, 14, 17, tzinfo=datetime.timezone.utc) = <function required_effective_time at 0x720f3d9a7060>('expired', EventTimes(eligible_at=datetime.datetime(2026, 10, 28, 14, 8, tzinfo=datetime.timezone.utc), observed_at=datetime.date...imezone.utc), decided_at=datetime.datetime(2026, 10, 28, 14, 17, tzinfo=datetime.timezone.utc), clock_basis='observed'), **{'detected_at': datetime.datetime(2026, 10, 28, 14, 7, tzinfo=datetime.timezone.utc), 'entry_expires_at': datetime.datetime(2026, 10, 28, 14, 20, tzinfo=datetime.timezone.utc)})
+E        +    where <function required_effective_time at 0x720f3d9a7060> = c.required_effective_time
+E        +  and   datetime.datetime(2026, 10, 28, 14, 20, tzinfo=datetime.timezone.utc) = at(14, 20)
+
+tests/test_intraday_contract.py:385: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_contract.py::test_only_fill_states_may_choose_their_effective_time
+1 failed, 43 deselected in 0.15s
