@@ -33,11 +33,24 @@ correctly, but **reported quality averaged over both members with the suppressed
 | Coverage | 796 expected; **792 compared in all three passes**; 4 identical SSNLF no-price-data failures; 0 missing; 0 replay misses |
 | Control | Reproduced the old pass in all 792 cells |
 | Fallback in effect | Every ML cell went through the two-model function (`ensemble_xgb_rf` 83, `xgboost` 1, `none_eligible` 617) |
-| Cells changed (old → new) | **54**, all mixed pairs: quality e.g. 0.325 → 0.65, ML weight 0 → 0.15 |
+| Decision-output changes (old → new) | **54** cells, all mixed pairs: signal, confidence or probability changes, and ML weight changes in every one (quality e.g. 0.325 → 0.65, weight 0 → 0.15) |
+| Quality-only changes | **15** further cells: only `reasons.ml_test_auc` changes. The surviving contributor's corrected quality is still below the weight cut-off, so weight and output are unchanged |
+| Any recorded payload change | **69** cells (54 + 15), excluding the per-run `input_contract` metadata present on every row |
 | Signal changes | 11: SWING SELL→WAIT 1 and BUY→HOLD 1; LONG SELL→WAIT 1 and BUY→HOLD 1; GROWTH HOLD→BUY 2, BUY→HOLD 1, WAIT→SELL 1, SELL→WAIT 1, WAIT→HOLD 2 |
-| New BUYs / newly actionable | 2 / **0** (both new BUYs fail the conviction gate) |
-| Lost BUYs / no longer actionable | 3 / 2 |
+| New BUYs / newly actionable (base gate) | 2 / **0** (both new BUYs fail the base conviction gate) |
+| Lost BUYs / no longer actionable (base gate) | 3 / 2 |
 | SELL changes | 1 new, 3 lost |
+
+**Gate counts are base-gate replay results.** The comparison evaluates `_is_conviction_buy` with
+`_load_conviction_edges` stubbed to `{}`, identically in every pass. The actionability counts
+therefore use the base soft-layer edges, not the calibrated per-regime overrides stored in
+production on 2026-10-28. They are not a verified replay of the production gate configuration.
+
+**Correction (2026-10-28, after independent review).** This report first said "54 cells changed"
+without separating decision output from quality-only metadata, and did not label the gate counts
+as base-gate. Both are corrected above; the figures are re-derived from `old.jsonl.gz` and
+`new.jsonl.gz` and match the [review](2026-10-28-f04-fencing-s03-independent-review.md). No code or
+replay output changed.
 
 **Consistency with the primary path.** The deployed three-model path already uses an eligible
 survivor's own quality. So the corrected fallback should give the primary path's signals, and the
