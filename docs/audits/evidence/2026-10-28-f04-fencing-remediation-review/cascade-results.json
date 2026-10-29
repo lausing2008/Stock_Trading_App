@@ -1,0 +1,21 @@
+{
+  "500": {
+    "endpoint_attempts": 3,
+    "probability": null,
+    "quality": 0.0,
+    "metadata": {}
+  },
+  "200": {
+    "endpoint_attempts": 1,
+    "probability": null,
+    "quality": 0.0,
+    "metadata": {
+      "ml_model": "none_served",
+      "ml_agreement": "no_eligible_model",
+      "ml_model_probs": null,
+      "ml_oos_suppressed": true,
+      "ml_quality_status": "no_eligible_model",
+      "ml_unavailable_reason": "no_eligible_model"
+    }
+  }
+}
