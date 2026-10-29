@@ -1,0 +1,11 @@
+{
+  "report_id": 54,
+  "policy": "valuation-v2-provider-rsi",
+  "price_session": "2026-10-29",
+  "rsi_count": 59,
+  "eps_yoy_count": 57,
+  "rsi_sources": [
+    "Calculated Wilder RSI",
+    "Unusual Whales daily screener"
+  ]
+}

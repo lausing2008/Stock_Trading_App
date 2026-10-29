@@ -1,0 +1,76 @@
+Updating c1cf0ecfe..f714fb764
+Fast-forward
+ .../2026-10-29-us-valuation-report-release.md      |  47 ++++++
+ .../2026-10-29-valuation-report/.gitignore         |   3 +
+ .../2026-10-29-valuation-report/api-summary.json   |  70 +++++++++
+ .../browser-summary.json                           |  22 +++
+ .../containers-after.json                          |  92 ++++++++++++
+ .../2026-10-29-valuation-report/deploy-final.txt   |  37 +++++
+ .../2026-10-29-valuation-report/deploy-initial.txt | 162 +++++++++++++++++++++
+ .../2026-10-29-valuation-report/deploy_pinned.sh   |   1 +
+ .../2026-10-29-valuation-report/drift-final.txt    |  20 +++
+ .../2026-10-29-valuation-report/drift-initial.txt  |  20 +++
+ .../2026-10-29-valuation-report/verify_live.py     | 136 +++++++++++++++++
+ .../evidence/2026-10-29-valuation-rsi/.gitignore   |   2 +
+ .../2026-10-29-valuation-rsi/verify_rsi.py         |  36 +++++
+ .../2026-10-27-us-stock-valuation-report-design.md |   2 +-
+ ...-28-us-stock-valuation-report-implementation.md |   4 +-
+ .../2026-10-29-valuation-technical-enrichment.md   |  22 +++
+ .../components/reports/ValuationReport.test.tsx    |  12 ++
+ .../src/components/reports/ValuationReport.tsx     |  11 +-
+ frontend/src/lib/valuationReport.test.ts           |   8 +-
+ frontend/src/lib/valuationReport.ts                |  10 +-
+ .../market-data/src/services/valuation_inputs.py   |  46 +++++-
+ .../market-data/tests/test_valuation_inputs.py     |  39 ++++-
+ .../src/intel_reports/valuation_report.py          |  21 ++-
+ .../research-engine/tests/test_valuation_report.py |  28 ++++
+ 24 files changed, 837 insertions(+), 14 deletions(-)
+ create mode 100644 docs/audits/2026-10-29-us-valuation-report-release.md
+ create mode 100644 docs/audits/evidence/2026-10-29-valuation-report/.gitignore
+ create mode 100644 docs/audits/evidence/2026-10-29-valuation-report/api-summary.json
+ create mode 100644 docs/audits/evidence/2026-10-29-valuation-report/browser-summary.json
+ create mode 100644 docs/audits/evidence/2026-10-29-valuation-report/containers-after.json
+ create mode 100644 docs/audits/evidence/2026-10-29-valuation-report/deploy-final.txt
+ create mode 100644 docs/audits/evidence/2026-10-29-valuation-report/deploy-initial.txt
+ create mode 100644 docs/audits/evidence/2026-10-29-valuation-report/drift-final.txt
+ create mode 100644 docs/audits/evidence/2026-10-29-valuation-report/drift-initial.txt
+ create mode 100644 docs/audits/evidence/2026-10-29-valuation-report/verify_live.py
+ create mode 100644 docs/audits/evidence/2026-10-29-valuation-rsi/.gitignore
+ create mode 100644 docs/audits/evidence/2026-10-29-valuation-rsi/verify_rsi.py
+ create mode 100644 docs/features/2026-10-29-valuation-technical-enrichment.md
+[33m  only 29G free — pruning before build[0m
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   72G   29G  72% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   72G   29G  72% /
+── market-data ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-market-data Built
+ Container stockai-market-data-1 Starting
+ Container stockai-market-data-1 Started
+── research-engine ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-research-engine Built
+ Container stockai-research-engine-1 Starting
+ Container stockai-research-engine-1 Started
+── frontend ───────────────────────────────────────────────
+ ---> d9330afd323e
+Successfully built d9330afd323e
+Successfully tagged stockai-frontend:latest
+ Container stockai-frontend-1 Starting
+ Container stockai-frontend-1 Started
+── verify (settling 45s) ──────────────────────────────
+[32m  market-data: running/healthy[0m
+[32m  research-engine: running/healthy[0m
+[32m  frontend: running/healthy[0m
+[32m  all declared services present[0m
+  host: 26G free, iowait 2.9%
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   75G   26G  75% /
+  Total reclaimed space: 1.612GB
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   73G   28G  73% /
+Pinned valuation rollout complete: f714fb7645ac65467d9c0366a664e1487c64a56f

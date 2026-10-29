@@ -1,0 +1,29 @@
+Updating f714fb764..f0c8a29e1
+Fast-forward
+ .../2026-10-29-valuation-report/deploy_pinned.sh   |  1 +
+ .../2026-10-29-valuation-technical-enrichment.md   |  1 +
+ .../market-data/src/services/valuation_inputs.py   | 20 +++++++++----
+ .../market-data/tests/test_valuation_inputs.py     | 33 ++++++++++++++++++++++
+ 4 files changed, 50 insertions(+), 5 deletions(-)
+[33m  only 28G free — pruning before build[0m
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   73G   28G  73% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   73G   28G  73% /
+── market-data ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-market-data Built
+ Container stockai-market-data-1 Starting
+ Container stockai-market-data-1 Started
+── verify (settling 45s) ──────────────────────────────
+[32m  market-data: running/healthy[0m
+[32m  all declared services present[0m
+  host: 28G free, iowait 0.0%
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   73G   28G  73% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   73G   28G  73% /
+Pinned valuation rollout complete: f0c8a29e1af0773f650f37388fba464b4d1ba4a6

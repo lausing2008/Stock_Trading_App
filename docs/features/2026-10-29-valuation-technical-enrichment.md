@@ -2,6 +2,8 @@
 
 October 29, 2026. Adds technical context to the existing Yahoo/UW valuation report using current UW access; no Advanced+ endpoints or new subscription.
 
+**Released and verified:** enrichment revision `f714fb76`, with source-selection correction `f0c8a29e`. [Live report](https://lausing.com/reports?tab=valuation) 54/v3 uses the completed **October 29** session. It has **59 RSI readings, 57 quarterly EPS-growth observations, 42 forward P/E values and 38 provider-reported PEG values**. Yahoo recovered during this run; the fallback remains available. Provider RSI and calculated Wilder RSI carry separate source labels. Both desktop and phone acceptance, CSV provenance, authenticated API and history checks passed.
+
 The previous implementation correctly refused to derive an adjusted RSI from UW candles whose adjustment basis was unknown. UW also exposes a separately observed RSI in its stock screener. The official schema defines `rsi_14` as 14 regular-session daily close periods and supports an explicit historical `date` and comma-separated ticker list. A live batch for the October 28 report session returned **59 dated RSI observations and 57 reported EPS growth observations** for the 60-name sample.
 
 ## Behavior
@@ -19,5 +21,9 @@ The previous implementation correctly refused to derive an adjusted RSI from UW 
 Tests cover exact-session/ticker filtering, invalid values and zero, cached source timestamps, optional outages, provider versus calculated RSI, rejection of forming readings, conversion of fractional EPS growth, unavailable forward ratios, UI source disclosure and CSV provenance.
 
 The change affects market-data, research-engine and frontend only. The pinned rollout script supports `--data-enrichment` for those three services, with the existing host lock, rollback images and health checks. Production acceptance is captured under [technical enrichment evidence](../audits/evidence/2026-10-29-valuation-rsi/verify_rsi.py).
+
+Validation: **1,000 frontend, 85 research, 9 market-data and 14 gateway tests passed (1,108 total)**; frontend typecheck and production build passed. The source-selection correction was deployed separately to market-data, and its issuer/provider exception distinction was exercised in an isolated deployed process without external provider calls. All 15 containers were healthy in the final manifest. Final source parity: [12 backends checked, zero drift](../audits/evidence/2026-10-29-valuation-rsi/drift-final.txt).
+
+Evidence: [metric availability](../audits/evidence/2026-10-29-valuation-rsi/api-summary.json), [dated technical coverage](../audits/evidence/2026-10-29-valuation-rsi/technical-summary.json), [browser acceptance](../audits/evidence/2026-10-29-valuation-rsi/browser-summary.json), [container manifest](../audits/evidence/2026-10-29-valuation-rsi/containers-after.json), and [provider-selection check](../audits/evidence/2026-10-29-valuation-rsi/provider-selection.json). Full payloads and screenshots are retained locally and excluded from git.
 
 Source contract: [UW official OpenAPI](https://api.unusualwhales.com/api/openapi), `Stock Screener response` definitions and `/api/screener/stocks` date/ticker parameters. Source data is explicitly provider-reported; price-adjustment comparability and forward estimates are not established by these fields.

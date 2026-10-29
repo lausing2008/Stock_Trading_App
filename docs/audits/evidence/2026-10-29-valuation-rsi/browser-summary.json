@@ -1,0 +1,22 @@
+[
+  {
+    "width": 1440,
+    "geometry": {
+      "viewport": 1440,
+      "width": 1440
+    },
+    "runtime_errors": [],
+    "export_verified": true,
+    "company_expansion_verified": true
+  },
+  {
+    "width": 390,
+    "geometry": {
+      "viewport": 390,
+      "width": 390
+    },
+    "runtime_errors": [],
+    "export_verified": true,
+    "company_expansion_verified": true
+  }
+]
