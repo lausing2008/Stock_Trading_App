@@ -1,0 +1,3 @@
+# Keep complete provider-derived captures local; publish acceptance summaries instead.
+live-report.json
+report-*.png

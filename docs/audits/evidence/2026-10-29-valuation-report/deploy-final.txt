@@ -1,0 +1,37 @@
+Updating efda21c5e..c1cf0ecfe
+Fast-forward
+ .../evidence/2026-10-29-valuation-report/deploy_pinned.sh  |  1 +
+ frontend/src/components/reports/ValuationReport.tsx        | 14 ++++++++------
+ frontend/src/pages/reports.tsx                             |  6 +++---
+ .../research-engine/src/intel_reports/valuation_report.py  |  4 ++--
+ services/research-engine/tests/test_valuation_report.py    |  6 ++++++
+ 5 files changed, 20 insertions(+), 11 deletions(-)
+[33m  only 30G free — pruning before build[0m
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   71G   30G  71% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   71G   30G  71% /
+── research-engine ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-research-engine Built
+ Container stockai-research-engine-1 Starting
+ Container stockai-research-engine-1 Started
+── frontend ───────────────────────────────────────────────
+ ---> 9326c2c5d682
+Successfully built 9326c2c5d682
+Successfully tagged stockai-frontend:latest
+ Container stockai-frontend-1 Starting
+ Container stockai-frontend-1 Started
+── verify (settling 45s) ──────────────────────────────
+[32m  research-engine: running/healthy[0m
+[32m  frontend: running/healthy[0m
+[32m  all declared services present[0m
+  host: 27G free, iowait 3.1%
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   74G   27G  74% /
+  Total reclaimed space: 1.611GB
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   72G   29G  72% /
+Pinned valuation rollout complete: c1cf0ecfe83c9f603270335b49e1956d69b1c2dd

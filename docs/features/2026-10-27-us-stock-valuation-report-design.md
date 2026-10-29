@@ -1,6 +1,6 @@
 # US Stock Valuation & Opportunities — design and implementation plan
 
-Date: 2026-10-27. Status: design specification; a bounded first version was implemented locally on October 28. See [implementation scope and validation](2026-10-28-us-stock-valuation-report-implementation.md) for delivered behavior and remaining phases.
+Date: 2026-10-27. Status: design specification; a bounded first version was implemented October 28 and [released to production October 29](../audits/2026-10-29-us-valuation-report-release.md). See [implementation scope and validation](2026-10-28-us-stock-valuation-report-implementation.md) for delivered behavior and remaining phases.
 
 Updated 2026-10-28: use yfinance plus existing Unusual Whales (UW) access for v1. No Morningstar subscription or new paid provider is required for the initial report.
 

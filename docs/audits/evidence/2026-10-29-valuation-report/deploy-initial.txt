@@ -1,0 +1,162 @@
+Updating 15e2abac4..efda21c5e
+Fast-forward
+ .claude/CLAUDE.md                                  |   4 +-
+ .../deploy-results.txt                             |  38 +++
+ .../drift-results.txt                              |  20 ++
+ .../manifest.json                                  |  10 +
+ .../verification-summary.json                      |  58 ++++
+ .../verify_live_prediction.py                      |  13 +
+ .../verify_policy.py                               |  24 ++
+ .../2026-10-29-valuation-report/deploy_pinned.sh   |  51 ++++
+ .../2026-10-27-us-stock-valuation-report-design.md | 200 +++++++++++++
+ .../features/2026-10-28-f04-publication-fencing.md |  27 +-
+ ...-28-us-stock-valuation-report-implementation.md |  53 ++++
+ .../components/reports/ValuationReport.test.tsx    |  72 +++++
+ .../src/components/reports/ValuationReport.tsx     | 252 ++++++++++++++++
+ frontend/src/lib/api.ts                            |   6 +
+ frontend/src/lib/valuationReport.test.ts           |  37 +++
+ frontend/src/lib/valuationReport.ts                |  80 +++++
+ frontend/src/pages/_app.tsx                        |   1 +
+ frontend/src/pages/reports.tsx                     |   9 +-
+ services/market-data/src/api/valuation.py          |  39 +++
+ services/market-data/src/main.py                   |   3 +-
+ .../market-data/src/services/valuation_inputs.py   | 226 +++++++++++++++
+ services/market-data/src/services/valuation_uw.py  |  94 ++++++
+ .../tests/fixtures/valuation_uw_otis.json          | 167 +++++++++++
+ .../market-data/tests/test_valuation_inputs.py     |  75 +++++
+ .../research-engine/src/api/valuation_routes.py    | 171 +++++++++++
+ .../src/intel_reports/valuation_report.py          | 322 +++++++++++++++++++++
+ services/research-engine/src/main.py               |   3 +-
+ .../tests/_valuation_report_probe.py               | 129 +++++++++
+ .../research-engine/tests/test_valuation_report.py | 161 +++++++++++
+ shared/intelligence/report_contract.py             |   1 +
+ 30 files changed, 2336 insertions(+), 10 deletions(-)
+ create mode 100644 docs/audits/evidence/2026-10-28-f04-fencing-deployment/deploy-results.txt
+ create mode 100644 docs/audits/evidence/2026-10-28-f04-fencing-deployment/drift-results.txt
+ create mode 100644 docs/audits/evidence/2026-10-28-f04-fencing-deployment/manifest.json
+ create mode 100644 docs/audits/evidence/2026-10-28-f04-fencing-deployment/verification-summary.json
+ create mode 100644 docs/audits/evidence/2026-10-28-f04-fencing-deployment/verify_live_prediction.py
+ create mode 100644 docs/audits/evidence/2026-10-28-f04-fencing-deployment/verify_policy.py
+ create mode 100644 docs/audits/evidence/2026-10-29-valuation-report/deploy_pinned.sh
+ create mode 100644 docs/features/2026-10-27-us-stock-valuation-report-design.md
+ create mode 100644 docs/features/2026-10-28-us-stock-valuation-report-implementation.md
+ create mode 100644 frontend/src/components/reports/ValuationReport.test.tsx
+ create mode 100644 frontend/src/components/reports/ValuationReport.tsx
+ create mode 100644 frontend/src/lib/valuationReport.test.ts
+ create mode 100644 frontend/src/lib/valuationReport.ts
+ create mode 100644 services/market-data/src/api/valuation.py
+ create mode 100644 services/market-data/src/services/valuation_inputs.py
+ create mode 100644 services/market-data/src/services/valuation_uw.py
+ create mode 100644 services/market-data/tests/fixtures/valuation_uw_otis.json
+ create mode 100644 services/market-data/tests/test_valuation_inputs.py
+ create mode 100644 services/research-engine/src/api/valuation_routes.py
+ create mode 100644 services/research-engine/src/intel_reports/valuation_report.py
+ create mode 100644 services/research-engine/tests/_valuation_report_probe.py
+ create mode 100644 services/research-engine/tests/test_valuation_report.py
+[33m  only 31G free — pruning before build[0m
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   70G   31G  70% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   70G   31G  70% /
+── market-data ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-market-data Built
+ Container stockai-market-data-1 Starting
+ Container stockai-market-data-1 Started
+── research-engine ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-research-engine Built
+ Container stockai-research-engine-1 Starting
+ Container stockai-research-engine-1 Started
+── signal-engine ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-signal-engine Built
+ Container stockai-signal-engine-1 Starting
+ Container stockai-signal-engine-1 Started
+── api-gateway ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-api-gateway Built
+ Container stockai-api-gateway-1 Starting
+ Container stockai-api-gateway-1 Started
+── ml-prediction ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-ml-prediction Built
+ Container stockai-ml-prediction-1 Starting
+ Container stockai-ml-prediction-1 Started
+── ranking-engine ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-ranking-engine Built
+ Container stockai-ranking-engine-1 Starting
+ Container stockai-ranking-engine-1 Started
+── strategy-engine ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-strategy-engine Built
+ Container stockai-strategy-engine-1 Starting
+ Container stockai-strategy-engine-1 Started
+── technical-analysis ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-technical-analysis Built
+ Container stockai-technical-analysis-1 Starting
+ Container stockai-technical-analysis-1 Started
+── portfolio-optimizer ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-portfolio-optimizer Built
+ Container stockai-portfolio-optimizer-1 Starting
+ Container stockai-portfolio-optimizer-1 Started
+── event-intelligence ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-event-intelligence Built
+ Container stockai-event-intelligence-1 Starting
+ Container stockai-event-intelligence-1 Started
+── news-intelligence ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-news-intelligence Built
+ Container stockai-news-intelligence-1 Starting
+ Container stockai-news-intelligence-1 Started
+── decision-engine ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-decision-engine Built
+ Container stockai-decision-engine-1 Starting
+ Container stockai-decision-engine-1 Started
+── frontend ───────────────────────────────────────────────
+ ---> 35374ff1f966
+Successfully built 35374ff1f966
+Successfully tagged stockai-frontend:latest
+ Container stockai-frontend-1 Starting
+ Container stockai-frontend-1 Started
+── verify (settling 45s) ──────────────────────────────
+[32m  market-data: running/healthy[0m
+[32m  research-engine: running/healthy[0m
+[32m  signal-engine: running/healthy[0m
+[32m  api-gateway: running/healthy[0m
+[32m  ml-prediction: running/healthy[0m
+[32m  ranking-engine: running/healthy[0m
+[32m  strategy-engine: running/healthy[0m
+[32m  technical-analysis: running/healthy[0m
+[32m  portfolio-optimizer: running/healthy[0m
+[32m  event-intelligence: running/healthy[0m
+[32m  news-intelligence: running/healthy[0m
+[32m  decision-engine: running/healthy[0m
+[32m  frontend: running/healthy[0m
+[32m  all declared services present[0m
+  host: 28G free, iowait 43.8%
+[33m  WARNING: iowait still 43.8% after deploy — watch for the credit-drain pattern.[0m
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   73G   28G  73% /
+  Total reclaimed space: 1.611GB
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   71G   30G  71% /
+Pinned valuation rollout complete: efda21c5e42e338b9f4e7861ad62ce347dde58f8
