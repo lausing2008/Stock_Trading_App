@@ -55,6 +55,7 @@ def _extract_predict_latest_ensemble_three():
     namespace: dict = {
         "predict_latest": None,        # set per-test
         "_artifact_path": None,        # set per-test
+        "_serving_artifact_path": None,
         "_FakePath": _FakePath,
         "_load_sector_and_market_cap": lambda symbol: (None, None),
         "log": _FakeLog(),
@@ -101,6 +102,7 @@ def _make_ensemble_three(xgb_result: dict, lgb_result: dict | None, rf_result: d
 
     fn.__globals__["predict_latest"] = _fake_predict_latest
     fn.__globals__["_artifact_path"] = _fake_artifact_path
+    fn.__globals__["_serving_artifact_path"] = _fake_artifact_path
     return fn
 
 

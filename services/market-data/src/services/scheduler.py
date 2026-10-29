@@ -910,7 +910,10 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
         _post(f"{_settings.signal_engine_url}/signals/refresh", params={"market": market})
 
         if post_close:
-            _post(f"{_settings.ml_prediction_url}/ml/train_all_horizons")
+            # F04 publication fencing: the nightly job is LEGACY v1 training and says so. It
+            # must never request v2; ml-prediction refuses v2 while disabled and fences any
+            # write for a cell an enabled v2 cohort owns (training/publication.py).
+            _post(f"{_settings.ml_prediction_url}/ml/train_all_horizons", params={"protocol": "v1"})
             # Evaluate any BUY/SELL signals whose hold window has now expired.
             _post(f"{_settings.signal_engine_url}/signals/outcomes/evaluate")
             # T232-DATA1: alert if outcome evaluation has gone stale (>3 days since the last

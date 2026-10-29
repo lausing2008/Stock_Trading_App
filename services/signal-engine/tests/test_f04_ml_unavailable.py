@@ -37,6 +37,7 @@ def _ensemble(path, members):
 
     env = {"predict_latest": predict_latest,
            "_artifact_path": lambda s, model, style="SWING": types.SimpleNamespace(exists=lambda m=model: exists[m]),
+           "_serving_artifact_path": lambda s, model, style="SWING": types.SimpleNamespace(exists=lambda m=model: exists[m]),
            "log": types.SimpleNamespace(warning=lambda *a, **k: None),
            "_meta_blend_enabled": lambda: False, "_meta_shadow_enabled": lambda: False,
            "_MetaDisabled": _MetaDisabled, "_load_sector_and_market_cap": lambda s: (None, None)}
@@ -172,3 +173,33 @@ def test_fetch_sets_the_sa27_flag_explicitly_for_unavailable_and_reports_no_qual
     ml_prob, quality, meta = _fetch(status, body)
     assert ml_prob is None and quality == 0.0
     assert meta["ml_oos_suppressed"] is True and meta["ml_quality_status"] == "no_eligible_model"
+
+
+def _serving_unavailable_envelope(reason):
+    """The REAL ml-prediction `_serving_unavailable` response (F04 fencing, RF-01)."""
+    node = next(n for n in ast.parse(TRAINER.read_text()).body
+                if isinstance(n, ast.FunctionDef) and n.name == "_serving_unavailable")
+    env = {}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(TRAINER), "exec"), env)
+    return env["_serving_unavailable"]("FIX", 10, reason)
+
+
+@pytest.mark.parametrize("reason", ["publication_policy_unavailable:PermissionError",
+                                    "publication_policy_unavailable:schema:selection:FIX|SWING|xgboost",
+                                    "selected_artifact_hash_mismatch:FIX|SWING|xgboost"])
+def test_a_serving_refusal_reaches_the_signal_as_zero_weight_unavailable_ml(reason):
+    """Publication-policy failures answer 200 + ml_available False; the fetch then records the
+    same unavailable metadata as all-suppressed (zero weight, SA-27 flag, the label the
+    conviction gate fails on) and stops the endpoint cascade."""
+    res = _fuse(_fetch(200, _serving_unavailable_envelope(reason)))
+    r = res.reasons
+    assert r["ml_probability"] is None and r["ml_weight"] == 0.0
+    assert r["ml_unavailable_reason"] == "no_eligible_model"
+    assert r["ml_oos_suppressed"] is True and r["low_oos_accuracy"] is True
+
+
+def test_negative_control_a_500_would_lose_the_unavailable_metadata():
+    """Why the routes must not 500 on a policy error: the fetch then reads it as 'no model',
+    which the conviction gate soft-PASSES."""
+    ml_prob, quality, meta = _fetch(500, {"detail": "Internal Server Error"})
+    assert ml_prob is None and meta == {}
