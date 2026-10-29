@@ -11,6 +11,7 @@ The previous implementation correctly refused to derive an adjusted RSI from UW 
 - Quarterly EPS growth is the provider's fractional `(current EPS − EPS four reports earlier) / abs(prior EPS)`, displayed as a percentage. It is historical quarterly YoY context and never supplies a forward EPS forecast or PEG denominator.
 - CSV includes metric source, date and basis alongside value/state/reason. Old snapshots retain their original gaps and do not acquire current data when opened.
 - Successful complete batches cache for 24 hours; partial coverage retries after five minutes. Optional technical-provider/cache errors preserve the fundamentals report. Existing short-interest enrichment remains cache-only.
+- A missing market cap for one issuer falls back to UW for that issuer only. Request failures or empty Yahoo responses can open the provider-wide circuit; an issuer-specific gap does not disable Yahoo for later symbols.
 - Policy changes to `valuation-v2-provider-rsi`. Valuation scenarios, classification thresholds and quality gates are unchanged; RSI and historical EPS growth do not promote a research lead to a qualified opportunity.
 
 ## Validation and integration

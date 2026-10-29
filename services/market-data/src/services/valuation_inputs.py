@@ -21,6 +21,10 @@ STALE_SECONDS = 7 * CACHE_SECONDS
 EXCHANGES = {"NYQ", "NMS", "NGM", "NCM", "ASE", "NYSE", "NASDAQ", "AMEX", "US"}
 
 
+class YahooUnavailable(RuntimeError):
+    """Provider/request failure, distinct from one issuer lacking usable fundamentals."""
+
+
 def number(value):
     try:
         n = float(value)
@@ -139,9 +143,14 @@ def _annuals(ticker, errors):
 
 def _fetch(symbol, session_day, now):
     ticker = yf.Ticker(symbol)
-    info = ticker.get_info() or {}
-    if not info or not info.get("marketCap"):
-        raise ValueError("No usable Yahoo company profile")
+    try:
+        info = ticker.get_info() or {}
+    except Exception as exc:
+        raise YahooUnavailable("Yahoo company-profile request failed") from exc
+    if not info or not any(v is not None for v in info.values()):
+        raise YahooUnavailable("Yahoo returned an empty company profile")
+    if not info.get("marketCap"):
+        raise ValueError("This issuer has no usable Yahoo market cap")
     errors = []
     bars = []
     try:
@@ -229,8 +238,9 @@ def collect_inputs(cache, tracked, *, now=None, progress=None):
             if not yahoo_failed.is_set():
                 try:
                     value = _fetch(symbol, day, now)
-                except Exception:
-                    yahoo_failed.set()
+                except Exception as exc:
+                    if isinstance(exc, YahooUnavailable):
+                        yahoo_failed.set()
                     from .valuation_uw import fetch
                     value = fetch(symbol, day, now)
             else:

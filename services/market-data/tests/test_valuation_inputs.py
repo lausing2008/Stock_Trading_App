@@ -110,3 +110,36 @@ def test_closed_technical_batch_reuses_source_timestamp_and_fails_open(monkeypat
     get.assert_not_called()
     cache.get.return_value = None
     assert V.closed_technical_inputs(cache, ["ABC"], now.date().replace(day=27), now) == {}
+
+
+def test_one_issuer_gap_does_not_disable_yahoo_for_other_symbols(monkeypatch):
+    from src.services import valuation_uw as UW
+    class SerialPool:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def map(self, fn, values): return map(fn, values)
+    monkeypatch.setattr(V, "ThreadPoolExecutor", SerialPool)
+    monkeypatch.setattr(V, "closed_technical_inputs", lambda *a: {})
+    monkeypatch.setattr(V.yf, "screen", lambda *a, **k: {"quotes": [
+        {"symbol": "MISSING", "exchange": "NYQ"}, {"symbol": "GOOD", "exchange": "NYQ"}]})
+    attempted = []
+    def fetch(symbol, *args):
+        attempted.append(symbol)
+        if symbol == "MISSING": raise ValueError("Issuer has no market cap")
+        return {"symbol": symbol, "provider": "Yahoo", "errors": [], "bars": []}
+    monkeypatch.setattr(V, "_fetch", fetch)
+    monkeypatch.setattr(UW, "fetch", lambda symbol, *a: {"symbol": symbol, "provider": "Unusual Whales", "errors": [], "bars": []})
+    cache = MagicMock(); cache.get.return_value = None
+    result = V.collect_inputs(cache, set(), now=datetime(2026, 10, 28, 14, tzinfo=timezone.utc))
+    assert attempted == ["MISSING", "GOOD"]
+    assert [r["provider"] for r in result["rows"]] == ["Unusual Whales", "Yahoo"]
+
+
+def test_yahoo_request_failure_and_issuer_gap_are_distinct(monkeypatch):
+    ticker = MagicMock(); monkeypatch.setattr(V.yf, "Ticker", lambda _: ticker)
+    ticker.get_info.return_value = {"symbol": "MISSING", "marketCap": None}
+    now = datetime(2026, 10, 28, 14, tzinfo=timezone.utc)
+    with pytest.raises(ValueError): V._fetch("MISSING", now.date(), now)
+    ticker.get_info.return_value = {}
+    with pytest.raises(V.YahooUnavailable): V._fetch("MISSING", now.date(), now)

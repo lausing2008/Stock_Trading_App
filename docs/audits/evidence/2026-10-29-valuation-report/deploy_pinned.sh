@@ -15,6 +15,7 @@ mkdir -p "$evidence"
 services=(market-data research-engine signal-engine api-gateway ml-prediction ranking-engine strategy-engine technical-analysis portfolio-optimizer event-intelligence news-intelligence decision-engine frontend)
 if [[ "${2:-}" == "--presentation-fix" ]]; then services=(research-engine frontend); fi
 if [[ "${2:-}" == "--data-enrichment" ]]; then services=(market-data research-engine frontend); fi
+if [[ "${2:-}" == "--market-data-only" ]]; then services=(market-data); fi
 declare -A old_images
 for svc in "${services[@]}"; do
   image=$(docker inspect -f '{{.Image}}' "stockai-$svc-1")
