@@ -251,7 +251,29 @@ The Stage 0 figures and this replay measure different things:
     after that session.
   - Alerts: 0. Paper exits: 0. Conviction tiers: 1 full, 1 failed; none record no-eligible-model.
   - [`post-hk-2026-10-28.json`](evidence/2026-10-28-f04-ml-unavailable-replay/monitoring/post-hk-2026-10-28.json)
-- **Still to capture:** US session 2026-10-28 (13:30–20:00 UTC).
+- **First full post-release US session (2026-10-28, captured 00:23 UTC 10-29):**
+
+  | | SHORT | SWING | LONG | GROWTH |
+  |---|---:|---:|---:|---:|
+  | ML unavailable (pre-release US 10-27) | 119 (0) | 129 (0) | 133 (0) | 128 (0) |
+  | Suppressed rows with ML weight (pre-release) | **0** (51) | **0** (67) | **0** (66) | **0** (67) |
+  | p = 0.45 (pre-release) | **0** (17) | **0** (29) | **0** (29) | **0** (33) |
+  | ML-weighted, eligible only (pre-release, all) | 23 (64) | 17 (80) | 14 (78) | 17 (86) |
+  | BUY, 10-28 vs 10-27 | 47 vs 2 | 29 vs 1 | 17 vs 10 | 10 vs 14 |
+  | SELL, 10-28 vs 10-27 | 3 vs 5 | 5 vs 6 | 11 vs 8 | 2 vs 2 |
+
+  - 156 signals per horizon on both days.
+  - **The BUY increase is not attributed to the fix.** On frozen inputs the fix produced 5 new BUYs
+    across all 792 cells (all gate-failed). The 10-28 increase is roughly 80 BUYs on a different
+    trading day, so it is overwhelmingly market input, not the change. Day-over-day counts cannot
+    separate the two.
+  - Conviction tiers: 6 full, 2 near, 50 failed (10-27: 1 full, 11 failed). 35 evaluations record
+    "ML probability unavailable: no eligible model", which counts as one soft failure, as approved.
+  - F03 occurrences opened: 320 (187 BUY, 133 SELL); closes: 113 to WAIT, 91 to HOLD, 116 still open.
+  - Alerts: 9 Little RZY (10-27: 15); no AI-signal alerts in the outbox. Paper exits: 0 on both days.
+  - [`post-us-2026-10-28.json`](evidence/2026-10-28-f04-ml-unavailable-replay/monitoring/post-us-2026-10-28.json)
+- Both first full post-release sessions show the intended behavior: no suppressed model carries
+  weight and the 0.45 cluster is gone. That establishes correct behavior, not improved returns.
 
 This release resolves the suppressed-model contribution defect. F04's evaluation-version, split and
 serving-qualification work remains open. The replay establishes behaviour on frozen inputs, not
