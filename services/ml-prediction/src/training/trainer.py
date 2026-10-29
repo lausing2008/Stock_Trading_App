@@ -1970,9 +1970,8 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5, style: str = "SWING")
     variance and smooths out individual model over-reactions to recent noise.
 
     Suppressed members are not contributors; with none eligible the result is ML-unavailable
-    (_no_eligible_model). The reported mean AUC still averages over both members with a
-    suppressed one zeroed, which understates a mixed pair; that is tracked separately (F04
-    Stage 0, finding S0-3) because this endpoint is only reached when the 3-model one errors.
+    (_no_eligible_model). Reported quality is the eligible contributors' own (S0-3). This
+    endpoint is reached only when the 3-model one returns a non-404 error.
     """
     xgb = predict_latest(symbol, "xgboost", horizon, style=style)
 
@@ -1995,6 +1994,7 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5, style: str = "SWING")
     _suppressed = [n for n, m in (("xgboost", xgb), ("random_forest", rf)) if m.get("oos_suppressed")]
     if len(_suppressed) == 2:
         return _no_eligible_model(symbol, horizon, _suppressed)
+    _eligible = [m for m in (xgb, rf) if not m.get("oos_suppressed")]
 
     # Prefer held-out test AUC (unbiased) over CV AUC for internal weighting.
     # T237-ML1B: `or` treats a real, legitimate auc=0.0 (a perfectly rank-inverted model —
@@ -2056,13 +2056,14 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5, style: str = "SWING")
         "ensemble": True,
         "weights": {"xgboost": round(w_xgb, 2), "random_forest": round(w_rf, 2)},
         "metrics": {
-            "mean_model_test_auc": round((xgb_auc + rf_auc) / 2, 4),
-            # Report each model's OWN real cv_auc_mean here — xgb_auc/rf_auc above are the
-            # (possibly zeroed-for-suppression) WEIGHTING values, not the raw metric, so
-            # reusing them as a fallback would misreport a suppressed model's real CV AUC as 0.
+            # S0-3 (F04 Stage 0): the reported quality is the ELIGIBLE contributors' own, as in
+            # the 3-model path. It used to average both members with a suppressed one zeroed,
+            # so an eligible rf at 0.62 beside a suppressed xgb reported 0.31 -- below
+            # signal-engine's 0.50 cut-off, silently zeroing a valid model's fusion weight.
+            "mean_model_test_auc": round(
+                sum(_model_auc(m) for m in _eligible) / len(_eligible), 4),
             "cv_auc_mean": round(
-                (_cv_auc_mean(xgb) + _cv_auc_mean(rf)) / 2, 4
-            ),
+                sum(_cv_auc_mean(m) for m in _eligible) / len(_eligible), 4),
             "buy_threshold": buy_threshold,
         },
         # T237-ML-OOS1 / F04 Stage 0: the flag now means "no eligible contributor", the same
