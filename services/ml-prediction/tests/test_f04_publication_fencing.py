@@ -332,6 +332,147 @@ def test_an_unreadable_policy_refuses_publication_and_serving(md):
         pub.serving_path(md, live(md), "AAA", "SWING", "xgboost")
 
 
+# ── Policy metadata errors (re-review RF-01) ──────────────────────────────────────────────
+
+def _fs_error(kind):
+    import errno
+    return {"permission": PermissionError(errno.EACCES, "denied"),
+            "io": OSError(errno.EIO, "I/O error"),
+            "not_a_directory": NotADirectoryError(errno.ENOTDIR, "not a directory")}[kind]
+
+
+def _break(monkeypatch, target: pathlib.Path, kind: str):
+    """Fail only `target`'s metadata and reads; every other filesystem call stays real."""
+    real_stat, real_read = pathlib.Path.stat, pathlib.Path.read_text
+
+    def stat(path, *a, **k):
+        if path == target:
+            raise _fs_error(kind)
+        return real_stat(path, *a, **k)
+
+    def read_text(path, *a, **k):
+        if path == target:
+            raise _fs_error(kind)
+        return real_read(path, *a, **k)
+    monkeypatch.setattr(pathlib.Path, "stat", stat)
+    monkeypatch.setattr(pathlib.Path, "read_text", read_text)
+
+
+@pytest.mark.parametrize("warm", [True, False])
+@pytest.mark.parametrize("kind", ["permission", "io", "not_a_directory"])
+def test_a_policy_metadata_error_is_unavailable_never_absent_or_raw(md, monkeypatch, kind, warm):
+    pub.set_v2_enabled(md, False, by="t")
+    live(md).write_bytes(b"v1")
+    if warm:
+        assert load(md) == b"v1"                       # a cached, valid policy before the error
+    _break(monkeypatch, pub.roots(md)[1] / "policy.json", kind)
+    for _ in range(2):
+        with pytest.raises(pub.ServingUnavailable, match="publication_policy_unavailable"):
+            load(md)
+        with pytest.raises(pub.ServingUnavailable, match="publication_policy_unavailable"):
+            pub.serving_path(md, live(md), "AAA", "SWING", "xgboost")
+        restart()
+    with pytest.raises(pub.PolicyUnreadable):
+        pub.read_policy(md)
+    with pytest.raises(pub.PublicationRefused, match="policy_unreadable"):
+        do(md, payload=b"nightly")
+    assert live(md).read_bytes() == b"v1" and candidates(md) == []
+
+
+@pytest.mark.parametrize("kind", ["permission", "io"])
+def test_a_marker_error_with_no_policy_is_not_read_as_first_time_legacy(md, monkeypatch, kind):
+    """Absence of the policy plus an UNKNOWN marker state is not the positively established
+    initial no-policy state: it must not return the default."""
+    pub.set_v2_enabled(md, False, by="t")
+    (pub.roots(md)[1] / "policy.json").unlink()
+    live(md).write_bytes(b"v1")
+    _break(monkeypatch, md / pub._MARKER, kind)
+    with pytest.raises(pub.ServingUnavailable, match="publication_policy_unavailable"):
+        load(md)
+    with pytest.raises(pub.PolicyUnreadable):
+        pub.read_policy(md)
+
+
+def test_a_policy_read_error_after_a_successful_stat_is_unavailable(md, monkeypatch):
+    import errno
+    pub.set_v2_enabled(md, False, by="t")
+    live(md).write_bytes(b"v1")
+    target, real_read = pub.roots(md)[1] / "policy.json", pathlib.Path.read_text
+
+    def read_text(path, *a, **k):
+        if path == target:
+            raise OSError(errno.EIO, "I/O error")
+        return real_read(path, *a, **k)
+    monkeypatch.setattr(pathlib.Path, "read_text", read_text)
+    with pytest.raises(pub.ServingUnavailable, match="publication_policy_unavailable"):
+        load(md)
+
+
+# ── Malformed selection and cohort entries (re-review RF-02) ──────────────────────────────
+
+_SHA = "a" * 64
+_GOOD = {"path": "/x/AAA_swing.v2.joblib", "sha256": _SHA, "kind": "candidate",
+         "rollback": {"path": "/x/pin.joblib", "sha256": _SHA}}
+
+
+def _drop(d, k):
+    return {x: v for x, v in d.items() if x != k}
+
+
+MALFORMED = {
+    "empty": ("selections", "AAA|SWING|xgboost", {}),
+    "null": ("selections", "AAA|SWING|xgboost", None),
+    "string": ("selections", "AAA|SWING|xgboost", "selected"),
+    "list": ("selections", "AAA|SWING|xgboost", [_SHA]),
+    "empty_path": ("selections", "AAA|SWING|xgboost", {**_GOOD, "path": ""}),
+    "missing_sha": ("selections", "AAA|SWING|xgboost", _drop(_GOOD, "sha256")),
+    "short_sha": ("selections", "AAA|SWING|xgboost", {**_GOOD, "sha256": "abc"}),
+    "upper_sha": ("selections", "AAA|SWING|xgboost", {**_GOOD, "sha256": "A" * 64}),
+    "unknown_kind": ("selections", "AAA|SWING|xgboost", {**_GOOD, "kind": "live"}),
+    "missing_kind": ("selections", "AAA|SWING|xgboost", _drop(_GOOD, "kind")),
+    "missing_rollback": ("selections", "AAA|SWING|xgboost", _drop(_GOOD, "rollback")),
+    "bad_rollback": ("selections", "AAA|SWING|xgboost", {**_GOOD, "rollback": {"path": "/p"}}),
+    "unknown_family": ("selections", "AAA|SWING|catboost", _GOOD),
+    "short_key": ("selections", "AAA|xgboost", _GOOD),
+    "other_cell_empty": ("selections", "ZZZ|LONG|lightgbm", {}),
+    "cohort_not_dict": ("cohort", "AAA|SWING", True),
+    "cohort_bad_key": ("cohort", "AAA", {}),
+}
+
+
+@pytest.mark.parametrize("case", sorted(MALFORMED))
+def test_a_malformed_entry_is_an_unreadable_policy_with_no_live_fallback(md, case):
+    section, key, value = MALFORMED[case]
+    pub.set_v2_enabled(md, False, by="t")
+    live(md).write_bytes(b"legacy-model")
+    assert load(md) == b"legacy-model"                 # warm cache on the valid policy
+    pfile = pub.roots(md)[1] / "policy.json"
+    policy = json.loads(pfile.read_text())
+    policy[section][key] = value
+    pfile.write_text(json.dumps(policy))
+    for _ in range(2):
+        with pytest.raises(pub.ServingUnavailable, match="publication_policy_unavailable"):
+            load(md)
+        with pytest.raises(pub.ServingUnavailable, match="publication_policy_unavailable"):
+            pub.serving_path(md, live(md), "AAA", "SWING", "xgboost")
+        restart()
+    with pytest.raises(pub.PolicyUnreadable, match="schema"):
+        pub.read_policy(md)
+    with pytest.raises(pub.PublicationRefused, match="policy_unreadable"):
+        do(md, payload=b"nightly")
+
+
+def test_well_formed_selection_records_written_by_the_control_plane_validate(md, qualified):
+    """Candidate and rollback records, and a no-live-artifact rollback, are all accepted."""
+    _selected(md)
+    pub.rollback(md, "AAA", "SWING", "xgboost", by="t")
+    assert pub.read_policy(md)["selections"]["AAA|SWING|xgboost"]["kind"] == "rollback"
+    path, sha, epoch = _v2_candidate(md, payload=b"bbb", sym="BBB")
+    pub.authorize(md, "BBB", "SWING", by="t")
+    promote(md, path, sha, pub.read_policy(md)["epoch"], sym="BBB")
+    assert pub.read_policy(md)["selections"]["BBB|SWING|xgboost"]["rollback"]["unavailable"] is True
+
+
 # ── Rollback (review PF-05) ────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("fence_off", ["disable", "revoke"])

@@ -231,6 +231,55 @@ def test_a_tampered_selected_member_fails_the_whole_cell_closed(env, qualified, 
     assert out["model_probabilities"] == {}
 
 
+def _unavailable_everywhere(client, sym="BBB"):
+    for route in ("predict", "predict_ensemble", "predict_ensemble_three"):
+        out = _predict(client, route, sym)          # 200, never a raw 500 (re-review RF-01)
+        assert out["ml_available"] is False and out["ml_unavailable_reason"] == "serving_unavailable", route
+        assert out["serving_unavailable_reason"].startswith("publication_policy_unavailable"), route
+        assert out["model_probabilities"] == {} and out["applied_weights"] == {}, route
+
+
+@pytest.mark.parametrize("warm", [True, False])
+@pytest.mark.parametrize("kind", ["permission", "io"])
+def test_a_policy_metadata_error_is_unavailable_through_every_route_not_a_500(env, monkeypatch, kind, warm):
+    import errno
+    import pathlib
+    md, client = env
+    client.post("/ml/train_all_horizons", params={"protocol": "v1"})
+    pub.set_v2_enabled(md, False, by="test")
+    if warm:
+        assert _predict(client, "predict_ensemble_three").get("ml_unavailable_reason") != "serving_unavailable"
+    target = pub.roots(md)[1] / "policy.json"
+    real_stat = pathlib.Path.stat
+    exc = PermissionError(errno.EACCES, "denied") if kind == "permission" else OSError(errno.EIO, "I/O error")
+
+    def stat(path, *a, **k):
+        if path == target:
+            raise exc
+        return real_stat(path, *a, **k)
+    monkeypatch.setattr(pathlib.Path, "stat", stat)
+    for _ in range(2):
+        _unavailable_everywhere(client)
+        pub._SERVING_CACHE.clear(); pub._BUNDLE_CACHE.clear()               # restart
+
+
+@pytest.mark.parametrize("record", [{}, None, "selected", {"path": "", "sha256": "0" * 64, "kind": "candidate"}])
+def test_a_malformed_selection_never_serves_live_v1_through_any_route(env, record):
+    import json
+    md, client = env
+    client.post("/ml/train_all_horizons", params={"protocol": "v1"})
+    pub.set_v2_enabled(md, False, by="test")
+    assert _predict(client, "predict_ensemble_three").get("ml_unavailable_reason") != "serving_unavailable"
+    pfile = pub.roots(md)[1] / "policy.json"
+    policy = json.loads(pfile.read_text())
+    policy["selections"]["BBB|SWING|xgboost"] = record
+    pfile.write_text(json.dumps(policy))
+    for _ in range(2):
+        _unavailable_everywhere(client)
+        _unavailable_everywhere(client, sym="AAA")                          # no cell is served
+        pub._SERVING_CACHE.clear(); pub._BUNDLE_CACHE.clear()               # restart
+
+
 def _flip_stored_flags(md):
     for sym in SYMS:
         p = _live(md, sym, "xgboost")

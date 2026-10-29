@@ -5,6 +5,8 @@ Date: **2026-10-28**. Branch: `f04-publication-fencing`.
   [independent review](../audits/2026-10-28-f04-fencing-s03-independent-review.md) (PF-01..PF-05)
   are fixed and tested (see [Review remediation](#review-remediation-2026-10-29)); **not
   deployed**; v2 activation **off**. Merged with `prod` at `fa1a3e22` (S0-3) and tested combined.
+  The [re-review](../audits/2026-10-28-f04-fencing-remediation-review.md)'s two residual policy
+  errors (RF-01, RF-02) are fixed too; see [Re-review remediation](#re-review-remediation-2026-10-29).
 - **Prerequisite for** the remaining F04 trainer changes (Option 1 of the
   [F04 plan](2026-10-27-f04-evaluation-version-comparison-and-rollout-plan.md)).
 - **Unchanged:** no trainer split, evaluation or artifact change is part of it.
@@ -79,14 +81,15 @@ fenced here.
 ## Tests
 
 - [`test_f04_publication_fencing.py`](../../services/ml-prediction/tests/test_f04_publication_fencing.py)
-  — 39 tests on the control plane: real files, the real lock and real threads.
+  — 66 tests on the control plane: real files, the real lock and real threads (27 added for
+  RF-01/RF-02).
 - [`test_f04_publication_wiring.py`](../../services/ml-prediction/tests/test_f04_publication_wiring.py)
   — 9 tests checking that every entry point routes through it, including the scheduler's nightly
   call, the member re-raise and the served routes.
 - [`test_f04_publication_nightly_path_container.py`](../../services/ml-prediction/tests/test_f04_publication_nightly_path_container.py)
   — the **actual nightly path**, run inside the ml-prediction image. The chain
   `POST /ml/train_all_horizons` → `BackgroundTasks` → the real `train_model` (XGBoost and
-  RandomForest fitted on synthetic prices) → `publish` → disk is exercised. **12 passed**
+  RandomForest fitted on synthetic prices) → `publish` → disk is exercised. **20 passed**
   (production image, `--network none`, sources streamed in, no volumes). It covers:
   - v1 live publication and v2 refusal;
   - an owned cell fenced while others retrain live;
@@ -99,7 +102,9 @@ fenced here.
     the whole cell closed;
   - the review's resweep race, through the real trainer;
   - a model trained between the resweep's scan and its rewrite, which is kept;
-  - the resweep skipping an owned cell.
+  - the resweep skipping an owned cell;
+  - a permission or I/O error on the policy (warm and cold cache, across a restart) and four
+    malformed selection records, each answered 200 + ML-unavailable by all three routes.
 - **Existing harnesses:** those that extract the ensembles now also stub `_serving_artifact_path`.
 - **Sabotage checks** (each reverted in turn; tests fail as expected):
   - a direct write in `train_model`;
@@ -113,6 +118,8 @@ fenced here.
     caught.**
 - **Full backend suites:** `make test` on the combined branch (fencing + review fixes + `prod`
   at `fa1a3e22`): every service passed, ml-prediction 525 (1 skipped: the container module).
+  After the re-review fixes (merged with `prod` at `8f2a5be4`): every service passed again,
+  ml-prediction 552 (1 skipped), signal-engine 1007.
 
 ## Review remediation (2026-10-29)
 
@@ -130,6 +137,27 @@ The user approved the defaults below for the [independent review](../audits/2026
 (`ml_model: none_served` distinguishes it). The gate effect is the approved one: missing ML is a
 soft failure and never satisfies a new-entry gate. A distinct downstream label would be a
 signal-engine change, not part of this branch.
+
+## Re-review remediation (2026-10-29)
+
+| Finding | Fix |
+|---|---|
+| RF-01 policy metadata errors returned HTTP 500 | Only `FileNotFoundError` means absent. Any other error on the policy or marker (stat or read) is `PolicyUnreadable`, so serving is `ServingUnavailable` and the routes answer 200 + `ml_available: false`. Writers refuse. A failure evicts the cache before raising, so a warm cache cannot hide it. |
+| RF-02 malformed selection served live v1 | `read_policy` validates every cohort and selection entry: key shape, known family, non-empty path, lowercase 64-hex SHA-256, kind `candidate`/`rollback`, and a valid or explicitly unavailable rollback record. Any malformed entry makes the whole policy unreadable. Serving tests key presence, not truthiness. |
+
+- **Downstream:** a signal-engine test sends the real `_serving_unavailable` response through the
+  real fetch and fusion: zero ML weight, SA-27 flag set, `ml_unavailable_reason:
+  no_eligible_model` (the label the conviction gate fails on). A negative control shows a 500 loses
+  that metadata, which is why the route must never 500.
+- **Review witnesses:** all four now fail, for the intended reasons (200 instead of 500;
+  `ServingUnavailable` instead of loading v1).
+- **Sabotage:** the pre-fix `publication.py` fails 25 of the 27 new unit tests (the other two check
+  well-formed records are still accepted and a read error already handled). Five targeted reverts
+  were each caught: no stat-error branch, no entry validation, an error read as absence, no
+  rollback-record check, any kind accepted.
+- **Before v2 activation (not a release blocker):** keep the detailed upstream reason in signal
+  lineage and monitoring, without renaming `no_eligible_model`. The gate matches that exact label,
+  so a rename alone would soft-pass it.
 
 ## Not done here
 

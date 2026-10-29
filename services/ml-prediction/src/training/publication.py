@@ -42,8 +42,10 @@ the exact cell/family path, so it is exercised by tests; the candidate manifest 
 
 SERVING (review PF-03..PF-05):
   no policy and never established -> the live path (today's behaviour).
-  policy unreadable, or missing after establishment -> ServingUnavailable: ML is unavailable.
-      Never a silent return to v1 -- the policy may have held a selection.
+  policy unreadable, malformed (nested cohort/selection entries included), missing after
+      establishment, or not inspectable (permission/I/O error on the policy or marker) ->
+      ServingUnavailable: ML is unavailable. Never a silent return to v1 -- the policy may have
+      held a selection. Only FileNotFoundError counts as absence (re-review RF-01/RF-02).
   selection -> its file, verified: the bytes deserialised are the bytes hashed, against the
       selection's sha256. A mismatch or a missing file is ServingUnavailable. The bundle cache
       is keyed by that hash, and the file is re-read and re-hashed on every load, so a cache
@@ -62,6 +64,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -114,12 +117,58 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _present(path: Path) -> bool:
+    """True/False only when the filesystem positively says so. Absence is FileNotFoundError and
+    nothing else: a permission or I/O error (or a path component that is not a directory) is
+    PolicyUnreadable, never "no policy" -- inferring absence from an error is how a lost policy
+    would serve v1 (review RF-01)."""
+    try:
+        path.stat()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise PolicyUnreadable(f"{path}: {type(exc).__name__}") from exc
+
+
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+_SELECTION_KINDS = ("candidate", "rollback")
+
+
+def _check_artifact_ref(ref, where: str) -> None:
+    if not isinstance(ref, dict) or not isinstance(ref.get("path"), str) or not ref["path"] \
+            or not isinstance(ref.get("sha256"), str) or not _SHA256_HEX.fullmatch(ref["sha256"]):
+        raise PolicyUnreadable(f"schema:{where}")
+
+
+def _validate_entries(policy: dict) -> None:
+    """Every present cohort and selection entry must be well formed. A malformed entry is an
+    unreadable policy, not an absent one: `{}` under a selection key must never read as "no
+    selection" and serve live v1 (review RF-02)."""
+    for key, rec in policy["cohort"].items():
+        parts = key.split("|") if isinstance(key, str) else []
+        if len(parts) != 2 or not all(parts) or not isinstance(rec, dict):
+            raise PolicyUnreadable(f"schema:cohort:{key!r}")
+    for key, sel in policy["selections"].items():
+        parts = key.split("|") if isinstance(key, str) else []
+        if len(parts) != 3 or not all(parts[:2]) or parts[2] not in FAMILIES:
+            raise PolicyUnreadable(f"schema:selection_key:{key!r}")
+        _check_artifact_ref(sel, f"selection:{key}")
+        if sel.get("kind") not in _SELECTION_KINDS:
+            raise PolicyUnreadable(f"schema:selection:{key}:kind")
+        rb = sel.get("rollback")
+        if not isinstance(rb, dict) or not (rb.get("unavailable") is True and isinstance(rb.get("reason"), str)):
+            _check_artifact_ref(rb, f"selection:{key}:rollback")
+
+
 def read_policy(model_dir) -> dict:
-    """Missing and never established -> the default (v2 off). Present but unreadable, or missing
-    after a policy was established -> PolicyUnreadable."""
-    path = roots(model_dir)[1] / "policy.json"
-    if not path.exists():
-        if (roots(model_dir)[0] / _MARKER).exists():
+    """Missing and never established -> the default (v2 off). Present but unreadable, malformed
+    anywhere (nested entries included), missing after a policy was established, or not
+    determinable because of a filesystem error -> PolicyUnreadable."""
+    live, pdir, _ = roots(model_dir)
+    path = pdir / "policy.json"
+    if not _present(path):
+        if _present(live / _MARKER):
             raise PolicyUnreadable(f"{path}: missing after establishment")
         return json.loads(json.dumps(DEFAULT_POLICY))
     try:
@@ -130,6 +179,7 @@ def read_policy(model_dir) -> dict:
             or not isinstance(policy.get("v2_enabled"), bool) or not isinstance(policy.get("cohort"), dict) \
             or not isinstance(policy.get("selections"), dict):
         raise PolicyUnreadable(f"{path}: schema")
+    _validate_entries(policy)
     return policy
 
 
@@ -407,18 +457,31 @@ _BUNDLE_CACHE_MAX = 256
 
 
 def _selections(model_dir, log=None) -> dict:
-    """The policy's selections, or ServingUnavailable when the policy is unreadable or was lost
-    after being established. Never an empty dict for a lost policy."""
+    """The policy's validated selections, or ServingUnavailable when the policy is unreadable,
+    malformed, was lost after being established, or cannot be inspected at all (permission or
+    I/O error). Never an empty dict for a policy that could not be positively read; only a fully
+    validated policy is cached, and a failure evicts the cache first."""
     pfile = roots(model_dir)[1] / "policy.json"
+
+    def unavailable(event, detail, exc=None):
+        _SERVING_CACHE.pop(str(pfile), None)
+        if log is not None:
+            log.error(event, policy=str(pfile), error=detail)
+        raise ServingUnavailable(f"publication_policy_unavailable:{detail}") from exc
+
     try:
         st = pfile.stat()
     except FileNotFoundError:
-        if (roots(model_dir)[0] / _MARKER).exists():
-            _SERVING_CACHE.pop(str(pfile), None)
-            if log is not None:
-                log.error("publication.policy_missing_serving_unavailable", policy=str(pfile))
-            raise ServingUnavailable("publication_policy_unavailable:missing_after_establishment")
+        try:
+            established = _present(roots(model_dir)[0] / _MARKER)
+        except PolicyUnreadable as exc:
+            unavailable("publication.policy_unreadable_serving_unavailable", str(exc), exc)
+        if established:
+            unavailable("publication.policy_missing_serving_unavailable", "missing_after_establishment")
+        _SERVING_CACHE.pop(str(pfile), None)
         return {}
+    except OSError as exc:
+        unavailable("publication.policy_unreadable_serving_unavailable", f"{pfile}: {type(exc).__name__}", exc)
     # Every policy write is an os.replace of a NEW file, so the inode changes on each change.
     # mtime alone is not enough (clock-tick coarse): a deselect once kept serving the candidate.
     # ctime is added because it cannot be set back by utime after an in-place write.
@@ -428,10 +491,7 @@ def _selections(model_dir, log=None) -> dict:
         try:
             cached = (stamp, read_policy(model_dir)["selections"])
         except PolicyUnreadable as exc:
-            _SERVING_CACHE.pop(str(pfile), None)
-            if log is not None:
-                log.error("publication.policy_unreadable_serving_unavailable", error=str(exc))
-            raise ServingUnavailable(f"publication_policy_unavailable:{exc}") from exc
+            unavailable("publication.policy_unreadable_serving_unavailable", str(exc), exc)
         _SERVING_CACHE[str(pfile)] = cached
     return cached[1]
 
@@ -439,9 +499,10 @@ def _selections(model_dir, log=None) -> dict:
 def serving_path(model_dir, live_path: Path, symbol: str, style: str, family: str, log=None) -> Path:
     """Which file a prediction would load. No selection -> `live_path` (today's behaviour). A
     selection whose file is gone is ServingUnavailable, not "not trained"."""
-    sel = _selections(model_dir, log).get(selection_key(symbol, style, family))
-    if not sel:
+    sels = _selections(model_dir, log)
+    if selection_key(symbol, style, family) not in sels:
         return Path(live_path)
+    sel = sels[selection_key(symbol, style, family)]
     path = Path(sel["path"])
     if not path.exists():
         raise ServingUnavailable(f"selected_artifact_missing:{selection_key(symbol, style, family)}")
@@ -453,13 +514,14 @@ def load_serving(model_dir, live_path: Path, symbol: str, style: str, family: st
     (joblib.load). For a selection the bytes are read once, hashed, compared with the
     selection's sha256 and deserialised from that same buffer (review PF-04)."""
     import io
-    sel = _selections(model_dir, log).get(selection_key(symbol, style, family))
-    if not sel:
+    key = selection_key(symbol, style, family)
+    sels = _selections(model_dir, log)
+    if key not in sels:     # presence, not truthiness: a present entry was validated (RF-02)
         live_path = Path(live_path)
         if not live_path.exists():
             raise FileNotFoundError(f"No trained model at {live_path}")
         return loader(live_path)
-    key = selection_key(symbol, style, family)
+    sel = sels[key]
     try:
         data = Path(sel["path"]).read_bytes()
     except OSError as exc:
