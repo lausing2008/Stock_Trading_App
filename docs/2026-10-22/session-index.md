@@ -62,6 +62,11 @@ START HERE for this session. Each line states the state as **deployed**, **commi
 
 ## Pending checks (keep open until evidence exists)
 
+> **2026-10-28 status:** see [`../2026-10-28/open-items-status.md`](../2026-10-28/open-items-status.md).
+> - Passed: duplicate-print check; 457a and 457b accepted in production; snapshot and nightly chain-capture scheduled runs verified.
+> - Still open: email provider acceptance; RZY readiness; 457c; retention decision.
+> - The list below is the Oct 23 state.
+
 - **Duplicate-print query:** needs new dark-pool prints after the 00:10 UTC Oct 23 deploy. A background check reruns it after 50 new prints.
 - **Provider acceptance of the first new-format emails:** premarket brief 08:00 ET, watchlist digest 09:10 ET on Oct 23.
 - **Classify the 3 unaccepted Oct 22 5m RZY signals** before calling delivery dependable.

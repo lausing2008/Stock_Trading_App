@@ -1,0 +1,78 @@
+{
+ "window": [
+  "2026-10-28T13:30:00",
+  "2026-10-28T20:00:00"
+ ],
+ "market": "US",
+ "signals_by_horizon": {
+  "GROWTH": {
+   "signals": 156,
+   "ml_unavailable": 128,
+   "suppressed_with_ml_weight": 0,
+   "ml_probability_0.45": 0,
+   "ml_weighted": 17,
+   "WAIT": 58,
+   "HOLD": 86,
+   "SELL": 2,
+   "BUY": 10
+  },
+  "LONG": {
+   "signals": 156,
+   "ml_unavailable": 133,
+   "suppressed_with_ml_weight": 0,
+   "ml_probability_0.45": 0,
+   "ml_weighted": 14,
+   "WAIT": 65,
+   "HOLD": 63,
+   "BUY": 17,
+   "SELL": 11
+  },
+  "SHORT": {
+   "signals": 156,
+   "ml_unavailable": 119,
+   "suppressed_with_ml_weight": 0,
+   "ml_probability_0.45": 0,
+   "ml_weighted": 23,
+   "WAIT": 80,
+   "BUY": 47,
+   "HOLD": 26,
+   "SELL": 3
+  },
+  "SWING": {
+   "signals": 156,
+   "ml_unavailable": 129,
+   "suppressed_with_ml_weight": 0,
+   "ml_probability_0.45": 0,
+   "ml_weighted": 17,
+   "WAIT": 83,
+   "BUY": 29,
+   "HOLD": 39,
+   "SELL": 5
+  }
+ },
+ "occurrences_opened": {
+  "GROWTH:BUY": 29,
+  "GROWTH:SELL": 19,
+  "LONG:BUY": 48,
+  "LONG:SELL": 48,
+  "SHORT:BUY": 56,
+  "SHORT:SELL": 26,
+  "SWING:BUY": 54,
+  "SWING:SELL": 40
+ },
+ "occurrence_close_reasons": {
+  "to_wait": 113,
+  "open": 116,
+  "to_hold": 91
+ },
+ "alerts_created": {
+  "little_rzy:accepted": 9
+ },
+ "paper_exits": {},
+ "conviction_tiers_snapshot": {
+  "failed": 50,
+  "full": 6,
+  "near": 2
+ },
+ "conviction_no_eligible_model": 35
+}

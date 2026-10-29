@@ -383,6 +383,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
 - **`docs/audits/2026-10-26-little-rzy-ai-signals-full-review.md`** — RZY/AI correctness review, reproduced measurement defects, production evidence and staged Intraday/performance plan; documentation only.
+- **`docs/2026-10-28/open-items-status.md`** — 457a/457b accepted in production (final candle = provider OHLCV; off-grid received/rejected, 0 persisted); snapshot + full-list chain capture runs verified; dup-print passed. Chain retention recommendation awaiting approval [457, opthist]
 - **`docs/audits/2026-10-27-session-index.md`** — START HERE for 10-26/27: F01/F02 deployed, F03 observation collecting, F04 held + plan review, signals/alert-delivery deadlock fixed (8dc84150), RZY timeframe guide; tier 475 [session index]
 - **`docs/features/2026-10-27-f03-signal-occurrence-and-delivery-attribution-design.md`** — F03: §12 observation phase DEPLOYED 1be6c90c (occurrences per venue session, snapshots, completed close); collecting ≥5 sessions/market. Pre-existing signals-upsert/alert deadlock. F04 held on branch.
 - **`docs/audits/2026-10-27-signal-upsert-delivery-deadlock-review.md`** — Canonical delivery write order deployed `8dc84150`; PostgreSQL race/negative control and production cutover recorded. Full-session evidence pending; no retry. F04 held.
@@ -488,3 +489,5 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **2026-10-25 RZY reliability:** [scan cost, latency/readiness, durable simulator journal and forward metrics](../docs/2026-10-25/rzy-reliability-and-forward-journal.md); research only, 457/458 and execution/edge gates remain open.
 
 - **2026-10-25 RZY ingestion:** [session counters, observed post-close writes and protected evidence capture](../docs/2026-10-25/rzy-ingest-observations-and-session-evidence.md); incremental loading and trading acceptance remain open.
+
+- **`docs/audits/2026-10-28-f04-fencing-s03-independent-review.md`** — Fencing held: resweep race, selection identity/integrity and rollback gaps; S0-3 source passes review, replay counts qualified. Offline witnesses; no deployment.

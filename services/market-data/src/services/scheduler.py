@@ -16200,6 +16200,34 @@ _OPTHIST_SYMBOLS = [
 # scheduler_jobs did.
 _OPTHIST_RETENTION_DAYS = 800
 
+# Tiered retention (approved 2026-10-28). Since the nightly full-list capture (2026-10-23) the
+# symbols OUTSIDE _OPTHIST_SYMBOLS add ~150k rows a session (~26 GB at 800 days), but no reader
+# needs them deep: the IV/HV table reads <=40 sessions, the income engine <=5 days (its universe
+# is inside the LEAPS list), the chain/flow routes the latest session. Only the LEAPS backtest
+# reads the full archive, and only for LEAPS symbols. 90 days (~62 sessions) covers every other
+# reader with margin; a deleted session can be recaptured while it is inside UW's ~2-year window.
+# See docs/2026-10-28/open-items-status.md.
+_OPTHIST_NON_LEAPS_RETENTION_DAYS = 90
+
+# Module-level so the PostgreSQL test runs exactly these statements (the unit suite mocks SQLAlchemy).
+# ONE delete per table: no index leads with as_of, so each statement is a sequential scan of a
+# ~16 GB table, and a separate per-tier statement would double the weekly I/O. The tier split is
+# counted server-side, so no deleted row is sent back.
+_OPTHIST_PURGE_SQL = (
+    "WITH d AS (DELETE FROM option_chain_history "
+    "WHERE as_of < :c OR (as_of < :cn AND NOT (symbol = ANY(:leaps))) RETURNING as_of) "
+    "SELECT count(*) FILTER (WHERE as_of < :c), count(*) FILTER (WHERE as_of >= :c) FROM d",
+    # Coverage rows go with the history they describe, so "complete" always means the rows exist.
+    "DELETE FROM option_chain_coverage WHERE as_of < :c OR (as_of < :cn AND NOT (symbol = ANY(:leaps)))",
+)
+
+
+def _opthist_purge_params(today: "date") -> dict:
+    from datetime import timedelta as _td
+    return {"c": today - _td(days=_OPTHIST_RETENTION_DAYS),
+            "cn": today - _td(days=_OPTHIST_NON_LEAPS_RETENTION_DAYS),
+            "leaps": [s.upper() for s in _OPTHIST_SYMBOLS]}
+
 # Fix B (2026-10-23): provider exclusions live in uw_option_chain (BRK-A explicit; HK by market).
 from .uw_option_chain import PROVIDER_EXCLUDED as _OPTHIST_PROVIDER_EXCLUDED, provider_excluded as opthist_provider_excluded  # noqa: E402
 
@@ -16331,19 +16359,23 @@ def _purge_option_chain_history() -> None:
     option_chain_history was 69% of the entire database before this existed, and unlike
     prices_5m (90d) and signals (365d) it had NO retention policy — the same unbounded-growth
     shape scheduler_jobs still has. Runs weekly, right after db_purge_weekly's own slot.
+
+    Two tiers (_OPTHIST_PURGE_SQL): every symbol at _OPTHIST_RETENTION_DAYS, symbols outside the
+    LEAPS list at _OPTHIST_NON_LEAPS_RETENTION_DAYS. Deletes by as_of, never fetched_at.
     """
-    from datetime import date as _date, timedelta as _td
+    from datetime import date as _date
     from db import SessionLocal as _SL
     from sqlalchemy import text as _text
     _t0 = time.monotonic()
     try:
-        cutoff = _date.today() - _td(days=_OPTHIST_RETENTION_DAYS)
+        p = _opthist_purge_params(_date.today())
         with _SL() as sess:
-            res = sess.execute(
-                _text("DELETE FROM option_chain_history WHERE as_of < :c"), {"c": cutoff}
-            )
+            rows, non_leaps_rows = sess.execute(_text(_OPTHIST_PURGE_SQL[0]), p).one()
+            cov = sess.execute(_text(_OPTHIST_PURGE_SQL[1]), p)
             sess.commit()
-            log.info("opthist.purged", cutoff=cutoff.isoformat(), rows=res.rowcount)
+            log.info("opthist.purged", cutoff=p["c"].isoformat(), rows=rows,
+                     non_leaps_cutoff=p["cn"].isoformat(), non_leaps_rows=non_leaps_rows,
+                     coverage_rows=cov.rowcount)
         _record_job_status("option_chain_history_purge", "ok", time.monotonic() - _t0)
     except Exception as exc:
         log.error("opthist.purge_failed", error=str(exc), exc_info=True)
@@ -16366,17 +16398,18 @@ def capture_option_chain_history(
     resumable and cheap to re-run as the window advances, rather than re-fetching thousands of
     settled rows for no reason.
 
-    Weekends/holidays are not pre-filtered: UW returns an empty list for a non-trading day, and
-    treating "no rows" as a normal outcome is simpler and more robust than maintaining a
-    market-calendar per exchange here.
+    Non-session dates (weekends, NYSE holidays) are skipped before any lookup or fetch
+    (2026-10-28). UW returns an empty chain for them, which used to be stored as a "complete"
+    coverage row with 0 rows: ~316 wasted calls a week, and a date that read as a captured session.
     """
     from datetime import timedelta as _td
     from db import SessionLocal as _SL
     from sqlalchemy import text as _text
+    from common.market_calendar import session_close as _session_close
     from . import unusual_whales as _uw
 
     _t0 = time.monotonic()
-    days_done = days_skipped = days_empty = days_incomplete = 0
+    days_done = days_skipped = days_empty = days_incomplete = days_non_session = 0
     incomplete_symbols: set = set()
     rows_written = 0
     errors = 0
@@ -16385,7 +16418,11 @@ def capture_option_chain_history(
         cur = start
         while cur <= end:
             as_of = cur.isoformat()
+            is_session = _session_close("US", cur) is not None
             cur = cur + _td(days=1)
+            if not is_session:
+                days_non_session += 1
+                continue
             try:
                 with _SL() as sess:
                     if skip_existing:
@@ -16493,6 +16530,7 @@ def capture_option_chain_history(
     elapsed = time.monotonic() - _t0
     log.info("scheduler.opthist_done", days_done=days_done, days_skipped=days_skipped,
              days_empty=days_empty, days_incomplete=days_incomplete,
+             days_non_session=days_non_session,
              rows=rows_written, errors=errors, elapsed_s=round(elapsed))
     _record_job_status("option_chain_history_capture",
                        "ok" if errors == 0 and days_incomplete == 0 else "partial", elapsed)
@@ -16501,6 +16539,7 @@ def capture_option_chain_history(
         "days_captured": days_done,
         "days_skipped_existing": days_skipped,
         "days_empty_non_trading": days_empty,
+        "days_non_session_skipped": days_non_session,
         "days_incomplete": days_incomplete,
         "rows_written": rows_written,
         "errors": errors,

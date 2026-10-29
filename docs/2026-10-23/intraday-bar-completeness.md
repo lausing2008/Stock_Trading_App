@@ -84,3 +84,17 @@ The option-chain archive gaps, the backup restore test and the Friday snapshot-r
   - **persisted:** off-grid 5m rows in `prices` for the session (target 0).
 
   A zero rejected count proves nothing unless snapshots were received. The first yfinance premarket run (04:00 ET Fri 2026-10-23) must show received > 0 and persisted = 0.
+
+## Production acceptance (2026-10-28)
+
+**457a and 457b accepted; 457c open.** Evidence and tables: [`../2026-10-28/open-items-status.md`](../2026-10-28/open-items-status.md).
+
+- **457a:**
+  - US final candle 156/156 (Oct 27) and 155/156 (Oct 26, AMZA missing). Each was first written about 2 minutes after the close, by the 16:02 ET pass.
+  - HK 41/41 on Oct 27–28, written by the 16:12 HKT pass.
+  - 20/20 sampled US Oct 27 final candles equal Unusual Whales' completed candle on all five fields.
+  - HK was not re-compared, because yfinance was rate-limited during the check.
+- **457b:**
+  - Off-grid rows were received and rejected in every session: US 962 (Oct 26) and 893 (Oct 27); HK 18 (Oct 27).
+  - 0 off-grid 5m/15m rows persisted since 2026-10-23.
+- **457c:** the remaining `partial` results are thin names (BRK-A, AMADY, AMZA final candles; internal gaps in 13 US and 4 HK symbols). RZY readiness stays open.

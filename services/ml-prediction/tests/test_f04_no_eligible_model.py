@@ -141,13 +141,14 @@ def test_mixed_three_with_one_survivor_returns_that_model_alone():
     assert res["eligible_contributors"] == 1 and sorted(res["suppressed_members"]) == ["lightgbm", "xgboost"]
 
 
-def test_mixed_two_model_uses_only_the_eligible_member_and_keeps_the_tracked_quality_issue():
+def test_mixed_two_model_uses_only_the_eligible_member_for_probability_and_quality():
     res = two({"xgboost": m(.9, .50, True), "random_forest": m(.4, .60)})
     assert res["bullish_probability"] == pytest.approx(0.4)
     assert res["weights"] == {"xgboost": 0.0, "random_forest": 1.0}
     assert res["oos_suppressed"] is False and res["suppressed_members"] == ["xgboost"]
-    # S0-3, tracked separately and deliberately unchanged: mean over both with one zeroed.
-    assert res["metrics"]["mean_model_test_auc"] == pytest.approx(0.30)
+    # S0-3 fixed: the eligible member's own quality, not (0.0 + 0.60) / 2 = 0.30.
+    assert res["metrics"]["mean_model_test_auc"] == pytest.approx(0.60)
+    assert res["metrics"]["cv_auc_mean"] == pytest.approx(0.60)
 
 
 def test_two_model_eligible_member_with_real_zero_auc_never_hands_weight_back_to_the_suppressed_one():

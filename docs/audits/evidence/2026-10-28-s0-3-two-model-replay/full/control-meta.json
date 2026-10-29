@@ -1,0 +1,22 @@
+{
+ "mode": "replay",
+ "pass": "control",
+ "app_root": "/app",
+ "ensemble_src": "/replay/trainer_prod.py",
+ "started": "2026-10-28T07:12:19.719311+00:00",
+ "finished": "2026-10-28T07:12:30.734832+00:00",
+ "symbols": 199,
+ "rows": 792,
+ "errors": [
+  {
+   "symbol": "SSNLF",
+   "error": "ValueError: No price data for SSNLF"
+  }
+ ],
+ "misses": 0,
+ "miss_sample": [],
+ "recorded_http": 1952,
+ "recorded_redis": 30,
+ "recorded_sql": 784,
+ "recorded_members": 2388
+}

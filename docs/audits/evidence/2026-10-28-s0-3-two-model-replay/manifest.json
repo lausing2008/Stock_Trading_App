@@ -1,0 +1,28 @@
+{
+ "run": "2026-10-28 07:11-07:12 UTC, production EC2, --network none, replay mode only",
+ "frozen_inputs": {
+  "recording.json (from the ML-unavailable replay, raw)": "4767e2db3a282d2774164401f5a93a197a9b16af0f82408aa82ea727e9fd0fa1",
+  "source": "docs/audits/evidence/2026-10-28-f04-ml-unavailable-replay/full/recording.json.gz"
+ },
+ "code": {
+  "generator": "deployed signal-engine image (prod f5beb232)",
+  "old ensemble": "prod trainer.py",
+  "new ensemble": "branch f04-s0-3-two-model-quality trainer.py",
+  "replay.py": "56325575d95a21d00f444775dc98e4c3d2f3aabaaf40e9dca2274b247338330c"
+ },
+ "outputs_raw_sha256": {
+  "old.jsonl": "5f99fdeb4e97c0ddd5514fae9ffd3fb044d38aee951ad043298980edafb7d94c",
+  "control.jsonl": "359b91956440b50c79d23d23efdb58b1fde264dd95ba0a69800f70f4ac9e0fbb",
+  "new.jsonl": "682af550eaa4cbca611cb67cd136802731887e7614ee2670d49e2fe92fa38d6c",
+  "old-meta.json": "5d3a40fb010ac7e67855a0b09e00994a43ed34096bdea85528cf7cce1ebb76cc",
+  "control-meta.json": "86924c0cbfd3ddea64f80b907c5572b22e355bddf322292839bd09cd194fdf49",
+  "new-meta.json": "b0fc2a8faf9e091c88703b5d12461721fee0026a1bd07118a6a49c470ec1e1f5",
+  "compare.json": "39a8baa6320af7763418fef6538b654a1e9fd0323fb5357a5bf6d3d35f0b1ed6"
+ },
+ "outputs_gzip_sha256": {
+  "old.jsonl.gz": "dde0cdfb5e341715ffe5b395b057fe966c899fc6d43998522c8451b1fda4e463",
+  "control.jsonl.gz": "217f229d6c1750f6da5b8dbea30b112678d2f426c7cb6fadd175bf7cfcd83ce8",
+  "new.jsonl.gz": "e8929912922f284e9bbadf96f156d48a902b8d40384b4f8178087b0ebd17ba21"
+ },
+ "note": "compare.json was produced by the ML-unavailable replay's compare.py with old->record, new->replay; control is the OLD code run twice."
+}
