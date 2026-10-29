@@ -183,3 +183,25 @@ def test_replay_reads_at_the_logical_cutoff_and_hk_is_refused(engine):
     from common.horizons import UnsupportedMarket
     with pytest.raises(UnsupportedMarket):
         read_snapshot(engine, stock_id=1, symbol="TEST", market="HK", session_date=D, data_cutoff=CUTOFF)
+
+
+@pytest.mark.skipif(not PG, reason="the database enum guard exists only on PostgreSQL")
+def test_postgresql_refuses_intraday_in_every_daily_horizon_column(engine):
+    """Guard-matrix row 1: the real signalhorizon enum (unchanged by Stage C) rejects INTRADAY in
+    signals, signal_outcomes and signal_outcome_horizons. Fails if the value is ever added."""
+    from sqlalchemy.exc import DBAPIError
+    models.Base.metadata.create_all(engine, tables=[models.Signal.__table__, models.SignalOutcome.__table__,
+                                                    models.SignalOutcomeHorizon.__table__])
+    with pytest.raises(DBAPIError, match="invalid input value for enum signalhorizon"):
+        with engine.begin() as conn:
+            conn.execute(text("SELECT CAST('INTRADAY' AS signalhorizon)"))   # what every daily write binds
+    for table in ("signals", "signal_outcomes", "signal_outcome_horizons"):  # ...and all three use that type
+        with engine.begin() as conn:
+            assert conn.execute(text(
+                "SELECT count(*) FROM information_schema.columns c JOIN pg_type t ON t.typname = c.udt_name "
+                "WHERE c.table_name = :t AND c.column_name = 'horizon' AND t.typname = 'signalhorizon'"),
+                {"t": table}).scalar() == 1
+    with engine.begin() as conn:
+        labels = conn.execute(text("SELECT enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid "
+                                   "WHERE t.typname = 'signalhorizon' ORDER BY e.enumsortorder")).scalars().all()
+    assert labels == ["SHORT", "SWING", "LONG", "GROWTH"]

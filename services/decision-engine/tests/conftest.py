@@ -76,7 +76,8 @@ if _calendar_path.exists():
 # unreadable timestamp BLOCKS would pass against a module that approved it, and one asserting
 # that a stale conviction record no longer vetoes would pass against one that still did. Pure
 # stdlib, nothing to stub. Order matters: conviction_gate imports signal_time.
-for _sr_mod in ("signal_time", "conviction_gate"):
+# Intraday Stage C: the horizon registry is pure stdlib and must be real for the same reason.
+for _sr_mod in ("signal_time", "conviction_gate", "horizons"):
     _sr_path = (
         _pathlib.Path(__file__).resolve().parents[3] / "shared" / "common" / f"{_sr_mod}.py"
     )

@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
+from common.horizons import UnsupportedHorizon, parse_daily_horizon
 from common.jwt_auth import get_current_username, require_model_admin
 from common.logging import get_logger
 
@@ -42,6 +43,15 @@ class PredictRequest(BaseModel):
     model: str = "xgboost"
     horizon: int = 5
     style: str = "SWING"  # route to per-style artifact; falls back to SWING if absent
+
+
+def _daily_horizon_days(style: str) -> int:
+    """Intraday Stage C §10: the label horizon for a DAILY style. INTRADAY or an unknown style is
+    refused (422) rather than trained or predicted on daily bars with a defaulted horizon."""
+    try:
+        return _HORIZON_BY_STYLE[parse_daily_horizon(style)]
+    except UnsupportedHorizon as exc:
+        raise HTTPException(422, {"error": "unsupported_horizon", "horizon": style, "hint": exc.hint}) from exc
 
 
 def _require_v1(protocol: str) -> str:
@@ -105,7 +115,7 @@ def ml_status():
 def train(req: TrainRequest, tasks: BackgroundTasks, _: str = Depends(require_model_admin)):
     if req.model not in list_models():
         raise HTTPException(400, f"Unknown model: {req.model}")
-    horizon = _HORIZON_BY_STYLE.get(req.style.upper(), req.horizon)
+    horizon = _daily_horizon_days(req.style)
     protocol = _require_v1(req.protocol)
     tasks.add_task(train_model, req.symbol, req.model, horizon, style=req.style, protocol=protocol)
     return {"status": "scheduled", "symbol": req.symbol, "model": req.model, "style": req.style, "horizon": horizon}
@@ -140,7 +150,7 @@ def train_all(tasks: BackgroundTasks, style: str = "SWING", protocol: str = "v1"
             select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
         ).scalars())
 
-    horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
+    horizon = _daily_horizon_days(style)
     for sym in symbols:
         tasks.add_task(train_model, sym, "xgboost", horizon, style=style, protocol=protocol)
 
@@ -150,7 +160,7 @@ def train_all(tasks: BackgroundTasks, style: str = "SWING", protocol: str = "v1"
 @router.post("/tune")
 def tune(req: TuneRequest, tasks: BackgroundTasks, _: str = Depends(require_model_admin)):
     """Run Optuna hyperparameter search for one symbol, then retrain with best params."""
-    horizon = _HORIZON_BY_STYLE.get(req.style.upper(), req.horizon)
+    horizon = _daily_horizon_days(req.style)
     tasks.add_task(tune_symbol, req.symbol, req.n_trials, horizon, req.style)
     return {"status": "scheduled", "symbol": req.symbol, "n_trials": req.n_trials, "style": req.style, "horizon": horizon}
 
@@ -173,7 +183,7 @@ def feature_ablation(
     feature_ablation.py's own module docstring for the full design/scoping rationale.
     """
     from ..training.feature_ablation import run_feature_ablation
-    horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
+    horizon = _daily_horizon_days(style)
     return run_feature_ablation(symbol, horizon=horizon, style=style)
 
 
@@ -219,7 +229,7 @@ def tune_all(
             select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
         ).scalars())
 
-    horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
+    horizon = _daily_horizon_days(style)
 
     def _run_all():
         results = []
@@ -323,7 +333,7 @@ def _resolve_horizon(req: "PredictRequest") -> int:
     against any future feature that reads horizon for an X-column. Derive it server-side from
     style, matching the same _HORIZON_BY_STYLE mapping already used at train time, rather than
     trusting a fixed request-body default."""
-    return _HORIZON_BY_STYLE.get(req.style.upper(), req.horizon)
+    return _daily_horizon_days(req.style)
 
 
 @router.post("/predict")
@@ -401,7 +411,7 @@ def train_all_ensemble_three(tasks: BackgroundTasks, style: str = "SWING", proto
             select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
         ).scalars())
 
-    horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
+    horizon = _daily_horizon_days(style)
     for sym in symbols:
         tasks.add_task(train_model, sym, "xgboost", horizon, style=style, protocol=protocol)
         tasks.add_task(train_model, sym, "lightgbm", horizon, style=style, protocol=protocol)
@@ -447,7 +457,7 @@ def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING", protocol: s
             select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
         ).scalars())
 
-    horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
+    horizon = _daily_horizon_days(style)
     for sym in symbols:
         tasks.add_task(train_model, sym, "xgboost", horizon, style=style, protocol=protocol)
         tasks.add_task(train_model, sym, "random_forest", horizon, style=style, protocol=protocol)

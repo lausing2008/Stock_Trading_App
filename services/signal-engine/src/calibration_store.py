@@ -1,7 +1,8 @@
 """Point-in-time database adapter for read-only calibration research."""
 from datetime import timedelta
 from sqlalchemy import select
-from db.models import Signal, SignalOutcomeHorizon as Outcome, Stock
+from common.horizons import DAILY_HORIZONS
+from db.models import Signal, SignalHorizon, SignalOutcomeHorizon as Outcome, Stock
 from .calibration_research import Observation,compare
 
 
@@ -10,7 +11,8 @@ def load_comparison(session, *, now, include_provisional=False):
                                 Stock.market,Signal.first_buy_sell_signal)
         .join(Signal,Signal.id==Outcome.signal_id).join(Stock,Stock.id==Outcome.stock_id)
         .where(Outcome.status=='resolved',Outcome.signal_date>=(now-timedelta(days=180)).date(),
-               Outcome.window_days.in_([5,10]),Outcome.horizon_unit=='calendar_days')
+               Outcome.window_days.in_([5,10]),Outcome.horizon_unit=='calendar_days',
+               Outcome.horizon.in_([SignalHorizon(h) for h in DAILY_HORIZONS]))  # Intraday Stage C §10
         .order_by(Outcome.signal_date.desc(),Outcome.id.desc()).limit(30001)).all()
     if len(rows)>30000:
         return {'status':'bounded_read_exceeded','reason':'More than 30,000 observations; run a bounded offline study.',

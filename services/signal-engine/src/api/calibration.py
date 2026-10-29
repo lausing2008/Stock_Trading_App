@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from common.horizons import DAILY_HORIZONS
 from common.jwt_auth import get_current_username
 from common.outcome_price_basis import (
     KNOWN_CORRUPT as _KNOWN_CORRUPT,
@@ -31,6 +32,10 @@ from .signals_shared import (
 )
 
 from .calibration_safety import research_only, promotion_status, evidence_eligible
+
+#: Intraday Stage C: daily calibration reads daily horizons only. Defence in depth behind the
+#: database enum, which cannot hold INTRADAY (docs/features/2026-10-29-intraday-stage-c-contract-design.md §10).
+_DAILY_ENUMS = [SignalHorizon(h) for h in DAILY_HORIZONS]
 
 router = APIRouter(prefix="/signals", tags=["signals"])
 
@@ -703,6 +708,7 @@ def calibrate_ta_weights(
             SignalOutcome.is_correct.is_not(None),
             SignalOutcome.pct_return.is_not(None),
             Signal.reasons.is_not(None),
+            SignalOutcome.horizon.in_(_DAILY_ENUMS),
         )
         # Chronological order is load-bearing: TimeSeriesSplit assumes the input is already
         # time-ordered — feeding it unordered rows (the pre-fix behavior) makes its CV folds
@@ -975,6 +981,7 @@ def calibrate_conviction_weights(
             SignalOutcome.is_correct.is_not(None),
             SignalOutcome.pct_return.is_not(None),
             Signal.reasons.is_not(None),
+            SignalOutcome.horizon.in_(_DAILY_ENUMS),
         )
         # Chronological order is load-bearing: the train/validation split below assumes the
         # OLDER slice trains and the NEWER slice (never seen while fitting) validates.
@@ -1174,6 +1181,7 @@ def outcomes_calibration(
             SignalOutcome.signal_date >= cutoff,
             SignalOutcome.is_correct.is_not(None),
             SignalOutcome.signal_direction == "BUY",
+            SignalOutcome.horizon.in_(_DAILY_ENUMS),
         )
     ).scalars().all()
 

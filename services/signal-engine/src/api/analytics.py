@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from common.jwt_auth import get_current_username
+from common.horizons import DAILY_HORIZONS
 from db import Price, Signal, SignalHorizon, SignalOutcome, SignalOutcomeHorizon, SignalType, Stock, TimeFrame, get_session
 
 from .signals_shared import (
@@ -24,6 +25,10 @@ from .signals_shared import (
     _OUTCOME_WIN_HURDLE_PCT, _cache_get,
     _cache_set, _service_token, _settings,
 )
+
+#: Intraday Stage C: these readers measure DAILY signals only. Defence in depth behind the
+#: database enum, which cannot hold INTRADAY (docs/features/2026-10-29-intraday-stage-c-contract-design.md §10).
+_DAILY_ENUMS = [SignalHorizon(h) for h in DAILY_HORIZONS]
 
 router = APIRouter(prefix="/signals", tags=["signals"])
 
@@ -70,6 +75,7 @@ def signal_accuracy(
         .join(Stock, Signal.stock_id == Stock.id)
         .where(Signal.ts >= cutoff, Signal.ts <= outcome_cutoff)
         .where(Signal.signal.in_([SignalType.BUY, SignalType.SELL]))
+        .where(Signal.horizon.in_(_DAILY_ENUMS))
         .order_by(Signal.ts.desc())
     )
     if symbol:
@@ -277,6 +283,7 @@ def rolling_accuracy(
             Signal.ts >= cutoff,
             Signal.ts <= outcome_cutoff,
             Signal.signal == SignalType.BUY,
+            Signal.horizon.in_(_DAILY_ENUMS),
         )
         .order_by(Signal.ts.asc())
     ).all()
@@ -407,6 +414,7 @@ def factor_exposure(
         .join(Stock, Signal.stock_id == Stock.id)
         .where(Signal.ts >= cutoff, Signal.ts <= outcome_cutoff)
         .where(Signal.signal == SignalType.BUY)
+        .where(Signal.horizon.in_(_DAILY_ENUMS))
     ).all()
 
     if not rows:
@@ -1246,6 +1254,7 @@ def walkforward_backtest(
             Signal.ts <= outcome_cutoff,
             Signal.signal == SignalType.BUY,
             Stock.active.is_(True),
+            Signal.horizon.in_(_DAILY_ENUMS),
         )
         .order_by(Signal.ts.asc())
     ).all()
@@ -1517,6 +1526,7 @@ def outcomes_summary(
     q = select(SignalOutcome).where(
         SignalOutcome.signal_date >= cutoff,
         SignalOutcome.is_correct.is_not(None),
+        SignalOutcome.horizon.in_(_DAILY_ENUMS),
     )
     if horizon:
         try:
@@ -1542,6 +1552,7 @@ def outcomes_summary(
     censored_q = select(func.count()).select_from(SignalOutcome).where(
         SignalOutcome.signal_date >= cutoff,
         SignalOutcome.skip_reason == "no_exit_price",
+        SignalOutcome.horizon.in_(_DAILY_ENUMS),
     )
     if horizon:
         censored_q = censored_q.where(SignalOutcome.horizon == SignalHorizon(horizon.upper()))

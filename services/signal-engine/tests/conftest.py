@@ -30,6 +30,15 @@ _spec.loader.exec_module(_indicators_mod)
 sys.modules["common.indicators"] = _indicators_mod
 setattr(sys.modules["common"], "indicators", _indicators_mod)
 
+# Intraday Stage C: the horizon registry is pure stdlib and must be REAL -- under the "common"
+# MagicMock, parse_daily_horizon would accept anything and every rejection test would pass.
+_hz_path = _pathlib.Path(__file__).resolve().parents[3] / "shared" / "common" / "horizons.py"
+_hz_spec = _ilu.spec_from_file_location("common.horizons", _hz_path)
+_hz_mod = _ilu.module_from_spec(_hz_spec)
+sys.modules["common.horizons"] = _hz_mod
+_hz_spec.loader.exec_module(_hz_mod)
+setattr(sys.modules["common"], "horizons", _hz_mod)
+
 # common.price_basis is likewise pure pandas/numpy with no env/structlog dependency, and the
 # real implementation is what decides whether a window uses an adjusted or a raw basis (AQ04).
 # Under the blanket "common" stub it returns a MagicMock and every comparison downstream raises

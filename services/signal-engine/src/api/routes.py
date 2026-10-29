@@ -14,6 +14,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from common.horizons import DAILY_HORIZONS, UnsupportedHorizon, parse_daily_horizon
 from common.jwt_auth import get_current_username
 from db import Price, Signal, SignalHorizon, Stock, TimeFrame, get_session
 
@@ -25,6 +26,19 @@ from .signals_shared import (
 )
 
 router = APIRouter(prefix="/signals", tags=["signals"])
+
+
+#: Defence in depth behind the database enum, which cannot hold INTRADAY (design §10).
+_DAILY_ENUMS = [SignalHorizon(h) for h in DAILY_HORIZONS]
+
+
+def _daily_style_or_422(style: str) -> str:
+    """Intraday Stage C: an unknown or INTRADAY style is refused, never widened to every horizon
+    or narrowed to SWING (docs/features/2026-10-29-intraday-stage-c-contract-design.md §10)."""
+    try:
+        return parse_daily_horizon(style)
+    except UnsupportedHorizon as exc:
+        raise HTTPException(422, {"error": "unsupported_horizon", "horizon": style, "hint": exc.hint}) from exc
 
 @router.get("")
 def all_latest_signals(
@@ -39,7 +53,7 @@ def all_latest_signals(
     """
     # Preference order when no style specified: SWING wins if available, then LONG, GROWTH, SHORT.
     _STYLE_PREFERENCE = ["SWING", "LONG", "GROWTH", "SHORT"]
-    horizon_filter = style.upper() if style else None
+    horizon_filter = _daily_style_or_422(style) if style else None
     # Subquery: latest ts per (stock_id, horizon)
     latest_subq = (
         select(Signal.stock_id, Signal.horizon, func.max(Signal.ts).label("max_ts"))
@@ -56,11 +70,8 @@ def all_latest_signals(
     )
     horizon_enum = None
     if horizon_filter:
-        try:
-            horizon_enum = SignalHorizon(horizon_filter)
-            q = q.where(Signal.horizon == horizon_enum)
-        except ValueError:
-            pass  # unknown style — return all
+        horizon_enum = SignalHorizon(horizon_filter)
+        q = q.where(Signal.horizon == horizon_enum)
     rows = session.execute(q).all()
 
     # When no style specified, apply preference order (SWING > LONG > GROWTH > SHORT)
@@ -156,7 +167,7 @@ def signal_consensus(
         .join(latest_subq, (Signal.stock_id == latest_subq.c.stock_id)
               & (Signal.horizon == latest_subq.c.horizon)
               & (Signal.ts == latest_subq.c.max_ts))
-        .where(Stock.active.is_(True))
+        .where(Stock.active.is_(True), Signal.horizon.in_(_DAILY_ENUMS))
     )
     if market:
         q = q.where(Stock.market == market.upper())
@@ -491,7 +502,7 @@ def _bulk_persist(symbols: list[str]) -> None:
                         dict(
                             sid=stock.id,
                             sig=ai.signal,
-                            hor=ai.horizon,
+                            hor=parse_daily_horizon(ai.horizon),
                             conf=ai.confidence,
                             bp=ai.bullish_probability,
                             # BUG-REASONSJSON-NAN: a NaN/Inf float anywhere in reasons (e.g.
@@ -605,7 +616,7 @@ def suppressed_signals(
     the reasons JSON, so the UI can show which conditions are suppressing each signal.
     Sorted by suppression_count descending, then bullish_probability descending.
     """
-    horizon_filter = style.upper()
+    horizon_filter = _daily_style_or_422(style)
 
     latest_subq = (
         select(Signal.stock_id, Signal.horizon, func.max(Signal.ts).label("max_ts"))
@@ -629,10 +640,7 @@ def suppressed_signals(
         .where(Stock.active.is_(True))
     )
 
-    try:
-        q = q.where(Signal.horizon == SignalHorizon(horizon_filter))
-    except ValueError:
-        pass
+    q = q.where(Signal.horizon == SignalHorizon(horizon_filter))
 
     if market:
         q = q.where(Stock.market == market.upper())
@@ -841,6 +849,7 @@ def recent_signal_changes(
         .where(
             Signal.stock_id.in_(stock_ids),
             Signal.ts >= cutoff,
+            Signal.horizon.in_(_DAILY_ENUMS),
         )
         .subquery()
     )
@@ -891,10 +900,7 @@ def signal_history(
     Used by the stock detail page sparkline.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    try:
-        horizon = SignalHorizon(style.upper())
-    except ValueError:
-        horizon = SignalHorizon.SWING
+    horizon = SignalHorizon(_daily_style_or_422(style))
 
     stock = session.execute(
         select(Stock).where(Stock.symbol == symbol.upper())
@@ -1089,6 +1095,8 @@ def signal_for(
     live=False (default on detail page): reads latest stored DB signal — consistent with signal filter.
     live=True + persist=True: recomputes fresh and overwrites DB — used by the Refresh button.
     """
+    if style:
+        style = _daily_style_or_422(style)
     stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
 
     if not live and not persist:
@@ -1252,7 +1260,7 @@ def signal_for(
                 dict(
                     sid=stock.id,
                     sig=ai.signal,
-                    hor=ai.horizon,
+                    hor=parse_daily_horizon(ai.horizon),
                     conf=ai.confidence,
                     bp=ai.bullish_probability,
                     # BUG-REASONSJSON-NAN: see the identical fix + comment in _bulk_persist()
@@ -1308,7 +1316,7 @@ def signal_for(
     # written above, must keep the raw value) — apply it only to the OUTGOING dict.
     if style:
         style_key = style.upper()
-        ai = all_sig.get(style_key) or all_sig["SWING"]
+        ai = all_sig[style_key]          # validated above: one of the four generated daily styles
         return _json_safe({"symbol": symbol, "source": "live", **asdict(ai)})
 
     return _json_safe({
