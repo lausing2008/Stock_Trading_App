@@ -52,8 +52,8 @@ class UnsupportedHorizon(ValueError):
 
     def __init__(self, horizon):
         self.horizon = horizon
-        self.hint = ("INTRADAY is a separate same-session horizon served by /intraday/*, not by "
-                     "daily signal endpoints") if str(horizon).upper() == INTRADAY.id else None
+        self.hint = ("INTRADAY is a separate same-session horizon served by /stocks/intraday/*, "
+                     "not by daily signal endpoints") if str(horizon).upper() == INTRADAY.id else None
         super().__init__(f"unsupported_horizon:{horizon!r}")
 
 

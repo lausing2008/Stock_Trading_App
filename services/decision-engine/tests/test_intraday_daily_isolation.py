@@ -6,7 +6,6 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
-from fastapi import HTTPException
 
 from src.api import routes
 from src.api.core.models import DecisionRequest
@@ -15,6 +14,7 @@ from src.api.core.models import DecisionRequest
 @pytest.mark.parametrize("style", ["INTRADAY", "intraday", "SCALP"])
 def test_decide_refuses_a_non_daily_style_before_any_fetch(style):
     with patch.object(routes, "fetch_all", side_effect=AssertionError("fetched for a refused style")):
-        with pytest.raises(HTTPException) as e:
+        # routes.HTTPException: the class the code raises (another test in this suite stubs fastapi)
+        with pytest.raises(routes.HTTPException) as e:
             asyncio.run(routes._decide("AAA", DecisionRequest(style=style)))
     assert e.value.status_code == 422 and e.value.detail["error"] == "unsupported_horizon"

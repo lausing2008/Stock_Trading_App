@@ -195,13 +195,13 @@ def test_postgresql_refuses_intraday_in_every_daily_horizon_column(engine):
     with pytest.raises(DBAPIError, match="invalid input value for enum signalhorizon"):
         with engine.begin() as conn:
             conn.execute(text("SELECT CAST('INTRADAY' AS signalhorizon)"))   # what every daily write binds
-    for table in ("signals", "signal_outcomes", "signal_outcome_horizons"):  # ...and all three use that type
-        with engine.begin() as conn:
+    with engine.begin() as conn:                                       # scoped to this schema: a shared
+        for table in ("signals", "signal_outcomes", "signal_outcome_horizons"):  # database holds others
             assert conn.execute(text(
-                "SELECT count(*) FROM information_schema.columns c JOIN pg_type t ON t.typname = c.udt_name "
-                "WHERE c.table_name = :t AND c.column_name = 'horizon' AND t.typname = 'signalhorizon'"),
-                {"t": table}).scalar() == 1
-    with engine.begin() as conn:
-        labels = conn.execute(text("SELECT enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid "
-                                   "WHERE t.typname = 'signalhorizon' ORDER BY e.enumsortorder")).scalars().all()
+                "SELECT udt_name FROM information_schema.columns WHERE table_schema = current_schema() "
+                "AND table_name = :t AND column_name = 'horizon'"), {"t": table}).scalar() == "signalhorizon"
+        labels = conn.execute(text(
+            "SELECT e.enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid "
+            "JOIN pg_namespace n ON n.oid = t.typnamespace "
+            "WHERE t.typname = 'signalhorizon' AND n.nspname = current_schema() ORDER BY e.enumsortorder")).scalars().all()
     assert labels == ["SHORT", "SWING", "LONG", "GROWTH"]
