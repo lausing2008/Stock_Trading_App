@@ -381,3 +381,99 @@ def test_whole_setup_deletion_leaves_no_orphans_and_never_takes_unresolved_expos
         for t in (m.outcomes, m.transitions, m.inputs):
             assert conn.execute(select(func.count()).select_from(t).where(t.c.setup_id == s_final)).scalar() == 0
         assert conn.execute(select(m.setups.c.id)).scalars().all() == [s_open]
+
+
+# ── Read side (CDR-06, CDR-R2-04) ─────────────────────────────────────────────────────────
+
+from src.services.intraday import read as R  # noqa: E402
+
+
+def test_mode_and_run_rules_and_hk_refusal(engine):
+    with engine.begin() as conn:
+        for mode, rk in (("observed", "r1"), ("replay", None), ("replay", "observed"), (None, None), ("both", None)):
+            with pytest.raises(R.BadRequest):
+                R.list_identities(conn, market="US", mode=mode, run_key=rk, session_date=D)
+        from common.horizons import UnsupportedMarket
+        with pytest.raises(UnsupportedMarket):
+            R.list_identities(conn, market="HK", mode="observed", run_key=None, session_date=D)
+        out = R.list_identities(conn, market="US", mode="observed", run_key=None, session_date=D)
+        assert out["production_generation"] == "disabled" and out["identities"] == []
+
+
+def test_two_replay_runs_and_two_identities_are_never_pooled(engine):
+    with engine.begin() as conn:
+        i1, i2 = ident(conn), ident(conn, strategy_source_hash="t" * 64)
+        for rk in ("r1", "r2"):
+            store.ensure_replay_run(conn, rk, input_snapshot_hash="h" + rk, as_of=at(21, 0), now=at(21, 0))
+        a_setup(conn, i1, batch(conn, i1, "r1"), run_key="r1")
+        a_setup(conn, i1, batch(conn, i1, "r2"), run_key="r2", symbol="BBB", stock_id=2)
+        a_setup(conn, i2, batch(conn, i2, "r1"), run_key="r1", symbol="CCC", stock_id=3)
+        r1 = R.list_setups(conn, market="US", mode="replay", run_key="r1", identity=i1, session_date=D)
+        assert [x["symbol"] for x in r1["items"]] == ["AAA"] and r1["identity"]["identity_hash"] == i1
+        with pytest.raises(R.BadRequest):
+            R.list_setups(conn, market="US", mode="replay", run_key="r1", identity=None, session_date=D)
+        ids = R.list_identities(conn, market="US", mode="replay", run_key="r1", session_date=D)["identities"]
+        assert sorted(x["identity_hash"] for x in ids) == sorted([i1, i2])
+
+
+def test_no_setup_evaluations_page_once_each_on_a_sealed_session(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        b = batch(conn, i)
+        for sid, sym in ((1, "AAA"), (2, "BBB"), (3, "CCC")):
+            for mi in (0, 5):
+                store.record_evaluation(conn, batch_id=b, run_key="observed", identity=i, stock_id=sid, symbol=sym,
+                                        trigger_bar_open=at(15, mi), result="no_setup", detected_at=at(15, mi + 7),
+                                        data_cutoff=at(15, mi + 7))
+        first = R.list_evaluations(conn, market="US", mode="observed", run_key=None, identity=i, session_date=D, limit=4)
+        assert first["membership"] == "changing_view"
+        store.seal_session(conn, run_key="observed", identity=i, session_date=D, now=at(22, 0))
+        seen, cur = [], None
+        while True:
+            page = R.list_evaluations(conn, market="US", mode="observed", run_key=None, identity=i, session_date=D,
+                                      cursor=cur, limit=4)
+            seen += [x["evaluation_key"] for x in page["items"]]
+            cur = page["next_cursor"]
+            if not cur:
+                break
+        assert page["membership"] == "sealed" and len(seen) == 6 == len(set(seen))
+        assert page["coverage"]["by_result"] == {"no_setup": 6}
+        with pytest.raises(R.BadRequest):
+            R.list_evaluations(conn, market="US", mode="observed", run_key=None, identity=i, session_date=D,
+                               cursor="garbage", limit=4)
+
+
+def test_late_insert_behind_the_cursor_follows_the_changing_view_rule(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        b = batch(conn, i)
+        for mi in (0, 10):
+            store.record_evaluation(conn, batch_id=b, run_key="observed", identity=i, stock_id=1, symbol="AAA",
+                                    trigger_bar_open=at(15, mi), result="no_setup", detected_at=at(15, mi + 7),
+                                    data_cutoff=at(15, mi + 7))
+        p1 = R.list_evaluations(conn, market="US", mode="observed", run_key=None, identity=i, session_date=D, limit=1)
+        # a late row with an EARLIER key than the cursor arrives between pages
+        store.record_evaluation(conn, batch_id=b, run_key="observed", identity=i, stock_id=1, symbol="AAA",
+                                trigger_bar_open=at(14, 55), result="wait", detected_at=at(15, 30),
+                                data_cutoff=at(15, 30))
+        p2 = R.list_evaluations(conn, market="US", mode="observed", run_key=None, identity=i, session_date=D,
+                                cursor=p1["next_cursor"], limit=10)
+        assert p1["membership"] == "changing_view"
+        assert len(p1["items"]) + len(p2["items"]) == 2                    # missed, as the view states
+        assert R.list_evaluations(conn, market="US", mode="observed", run_key=None, identity=i,
+                                  session_date=D, limit=10)["coverage"]["by_result"] == {"no_setup": 2, "wait": 1}
+
+
+def test_unresolved_exposure_stays_visible_after_its_session(engine):
+    with engine.begin() as conn:
+        i = ident(conn)
+        b = batch(conn, i)
+        sid = a_setup(conn, i, b)["setup_id"]
+        a_setup(conn, i, b, symbol="BBB", stock_id=2)
+        store.append_transition(conn, setup_id=sid, to_state="entered", event=ev(at(14, 12)), idempotency_key="e")
+        store.append_transition(conn, setup_id=sid, to_state="unresolved_exit_at_close", event=ev(at(20, 1)),
+                                idempotency_key="u")
+        out = R.list_unresolved(conn, market="US", mode="observed", run_key=None)
+        assert [x["symbol"] for x in out["items"]] == ["AAA"] and out["items"][0]["execution_grade"] is False
+        store.append_transition(conn, setup_id=sid, to_state="reconciled", event=ev(at(20, 30)), idempotency_key="r")
+        assert R.list_unresolved(conn, market="US", mode="observed", run_key=None)["items"] == []
