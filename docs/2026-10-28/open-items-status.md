@@ -12,7 +12,7 @@ Continues [the Oct 22 session index](../2026-10-22/session-index.md). Every stat
 | 457c sparse intervals | 457 | Open | Unchanged; thin names still partial in reconciliation |
 | Snapshot job (fix A) | 465 | **Scheduled runs verified** | Runs on Oct 23, 26 and 27 each wrote 37 rows, every one from the expected session |
 | Nightly full-list chain capture (fix B) | 466 | **Scheduled runs verified** | Sessions Oct 23 and 26 archived for 158/158 symbols by the 18:45 ET run |
-| Option-chain storage retention | 466 | **Decision needed** | Recommendation below |
+| Option-chain storage retention | 466 | **Approved and deployed 2026-10-29** (`eda934f3`) | Recommendation and deploy record below |
 | RZY readiness, 458 latency, host-stall cause | 457/458, 460 | Open | Not changed by this check |
 
 ## 457a: final candle
@@ -84,7 +84,7 @@ The status is therefore `partial` on a day when nothing went wrong. A possible r
 
 ## New observations (not fixed)
 
-1. **Weekend sessions are "captured".** Sat/Sun dates (Oct 3–4, 10–11, 17–18, 24–25) have `complete` coverage rows with 0 rows returned.
+1. **Weekend sessions are "captured".** *Fixed and deployed 2026-10-29 (`eda934f3`).* Sat/Sun dates (Oct 3–4, 10–11, 17–18, 24–25) have `complete` coverage rows with 0 rows returned.
    - Cost: about 316 Unusual Whales calls a week.
    - A weekend marker looks like a completed session in any count that doesn't filter by calendar.
    - Fix: iterate exchange sessions, not calendar days. Small change; needs approval.
@@ -148,3 +148,36 @@ Risks and limits:
 Alternative if raw history matters more than disk: keep 800 days for everything and grow the EBS volume. gp3 storage costs about $0.08 per GB-month, so +100 GB is about $8 a month. The cost is bigger nightly dumps and slower restores; the Oct 23 restore took 628 s at today's size.
 
 Implementation is a small change to `_purge_option_chain_history`: two deletes, one per tier, with tests. It **needs your approval because it deletes history**, and nothing has been changed.
+
+### Deployed 2026-10-29 00:25 UTC
+
+You approved the recommendation and the weekend fix on 2026-10-28. Both were deployed in market-data `eda934f3`.
+
+**Deploy:**
+- `rollback-before-eda934f3f` is kept.
+- Logs were saved to `~/container-logs/market-data-before-eda934f3.log` first.
+- The container's `src`/`shared` match the commit, and all 15 containers are healthy.
+- The deploy ran after tonight's 18:45 ET capture finished (0 errors, 0 incomplete).
+
+**Purge, as built:**
+- One `DELETE` per table: `as_of < 800 d OR (as_of < 90 d AND symbol NOT IN LEAPS list)`.
+- The independent review noted that no index leads with `as_of`, so each statement is a sequential scan of the table. A separate statement per tier would have doubled the weekly scan.
+- The two tier counts are computed in PostgreSQL and logged.
+- Coverage rows are deleted with the history they describe.
+
+**Capture:** skips weekends and NYSE holidays before any lookup or fetch, and counts them as `days_non_session_skipped`.
+
+**Tests:**
+- The PostgreSQL probe (real array binding) passes.
+- Sabotage checks: removing the non-LEAPS tier, setting 90 → 800, or removing the session skip each fail the tests.
+- market-data suite: 5,970 passed.
+- Independent review: no blockers.
+
+**Not changed:**
+- Existing weekend coverage markers age out.
+- Unannounced closures that aren't in the NYSE holiday table are still fetched, as before.
+- An admin backfill of non-LEAPS sessions older than 90 days would be deleted again by the next weekly purge.
+
+**Space:**
+- Nothing is deleted before about 2026-12-09.
+- PostgreSQL reuses freed space but does not return it to the disk, so the effect is avoided growth: non-LEAPS data levels off near 3 GB instead of growing about 12 GB a year. That is about 9 GB less table after one year (plus a proportional saving in the 7 nightly dumps), and about 23 GB at steady state.
