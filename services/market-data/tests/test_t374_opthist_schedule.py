@@ -147,14 +147,15 @@ def test_the_purge_deletes_by_as_of_not_fetched_at():
     """fetched_at is when WE captured it; as_of is the market date the data describes. Purging on
     fetched_at would delete a freshly-backfilled 2024 row immediately."""
     fn = _fn("_purge_option_chain_history")
-    assert "WHERE as_of < :c" in fn
-    assert "fetched_at" not in fn
+    assert "_OPTHIST_PURGE_SQL" in fn and "fetched_at" not in fn.split('"""', 2)[2]
+    assert "WHERE as_of < :c OR (as_of < :cn AND NOT (symbol = ANY(:leaps))) RETURNING as_of" in SRC
+    assert "fetched_at" not in SRC[SRC.index("_OPTHIST_PURGE_SQL = ("):SRC.index("def _opthist_purge_params")]
 
 
 def test_the_purge_logs_how_many_rows_it_removed():
     """A purge that reports nothing makes an over-aggressive cutoff invisible."""
     fn = _fn("_purge_option_chain_history")
-    assert "rows=res.rowcount" in fn
+    assert "rows=rows" in fn and "non_leaps_rows=non_leaps_rows" in fn and "coverage_rows=cov.rowcount" in fn
 
 
 def test_the_purge_runs_after_the_main_db_purge():
