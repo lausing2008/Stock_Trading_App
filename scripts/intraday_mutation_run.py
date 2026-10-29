@@ -221,8 +221,8 @@ CASES = [
     ("r_open_exposure", f"{MD}/src/services/intraday/read.py", "where(latest_q.c.to_state.in_(c.OPEN_EXPOSURE))",
      "where(latest_q.c.to_state == \"unresolved_exit_at_close\")", STORE("indeterminate_is_listed"), "indeterminate_is_listed"),
     ("r_archived_identity", f"{MD}/src/services/intraday/read.py",
-     "        found[h] = dict(_identity_row(conn, h), evaluations=int(n))       # archive is the full count\n", "",
-     STORE("archived_identity"), "archived_identity"),
+     "        found[h] = dict(_identity_row(conn, h), evaluations=int(n))       # archive is the full count\n",
+     "        pass\n", STORE("archived_identity"), "archived_identity"),
 ]
 
 NOT_REQUIRED = [
