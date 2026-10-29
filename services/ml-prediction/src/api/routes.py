@@ -10,6 +10,8 @@ from common.logging import get_logger
 log = get_logger("ml.routes")
 
 from ..models import list_models
+from ..training.publication import ServingUnavailable
+from ..training.trainer import _serving_unavailable
 from ..training import predict_latest, predict_latest_ensemble, predict_latest_ensemble_three, predict_single_served, train_model, tune_symbol, validate_walkforward, _HORIZON_BY_STYLE
 
 router = APIRouter(prefix="/ml", tags=["ml"])
@@ -331,6 +333,11 @@ def predict(req: PredictRequest, _: str = Depends(get_current_username)):
         return predict_single_served(req.symbol, req.model, _resolve_horizon(req), style=req.style)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except ServingUnavailable as exc:
+        # F04 review PF-03/PF-04: the publication layer refused to serve (policy lost or
+        # unreadable, selected artifact missing or not its approved bytes). ML is
+        # unavailable for this cell -- answered, not an error, so no caller falls back.
+        return _serving_unavailable(req.symbol, _resolve_horizon(req), exc.reason)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -346,6 +353,8 @@ def predict_ensemble(req: PredictRequest, _: str = Depends(get_current_username)
         return predict_latest_ensemble(req.symbol, _resolve_horizon(req), style=req.style)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except ServingUnavailable as exc:
+        return _serving_unavailable(req.symbol, _resolve_horizon(req), exc.reason)
 
 
 @router.post("/predict_ensemble_three")
@@ -359,6 +368,8 @@ def predict_ensemble_three(req: PredictRequest, _: str = Depends(get_current_use
         return predict_latest_ensemble_three(req.symbol, _resolve_horizon(req), style=req.style)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except ServingUnavailable as exc:
+        return _serving_unavailable(req.symbol, _resolve_horizon(req), exc.reason)
 
 
 @router.post("/train_all_ensemble_three")

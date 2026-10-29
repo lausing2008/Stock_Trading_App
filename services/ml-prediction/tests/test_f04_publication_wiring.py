@@ -61,16 +61,49 @@ def test_train_model_refuses_non_v1_and_publishes_only_through_the_control_plane
 
 
 def test_every_prediction_path_resolves_through_the_selection_manifest():
-    for name in ("predict_latest", "load_trained", "predict_latest_ensemble", "predict_latest_ensemble_three"):
+    """Loads go through the verified loader (hash-checked, fail-closed); existence probes go
+    through the selection-aware path. No bare live path or direct joblib.load remains."""
+    for name in ("predict_latest", "load_trained"):
+        body = ast.unparse(_fn(TRAINER, name))
+        assert "_load_serving_bundle(" in body, name
+        assert not _calls(_fn(TRAINER, name), "load"), f"{name} deserialises outside the verified loader"
+    for name in ("predict_latest_ensemble", "predict_latest_ensemble_three"):
         body = ast.unparse(_fn(TRAINER, name))
         assert "_serving_artifact_path(" in body, name
         assert "_artifact_path(" not in body.replace("_serving_artifact_path(", ""), name
+        assert not _calls(_fn(TRAINER, name), "load"), name
 
 
-def test_resweep_never_rewrites_an_owned_cell():
-    body = ast.unparse(_fn(TRAINER, "resweep_oos_suppression"))
-    assert "owned" in body and "write_skipped" in body
-    assert body.index("_fenced") < body.index("joblib.dump(bundle, tmp)")
+def test_a_serving_failure_in_one_member_fails_the_whole_cell_closed():
+    """Member try-blocks catch Exception and drop the member; a publication refusal must not be
+    swallowed there, or a tampered selected member would silently leave the ensemble."""
+    checked = 0
+    for name in ("predict_latest_ensemble", "predict_latest_ensemble_three"):
+        for t in (n for n in ast.walk(_fn(TRAINER, name)) if isinstance(n, ast.Try)):
+            if not any(_calls(b, "predict_latest") for b in t.body):
+                continue
+            types = [ast.unparse(h.type) for h in t.handlers if h.type is not None]
+            if "Exception" in types:
+                assert "ServingUnavailable" in types[:types.index("Exception")], name
+                checked += 1
+    assert checked == 3
+
+
+def test_the_served_routes_answer_ml_unavailable_on_a_serving_refusal():
+    for name in ("predict", "predict_ensemble", "predict_ensemble_three"):
+        fn = _fn(ROUTES, name)
+        handlers = [h for t in ast.walk(fn) if isinstance(t, ast.Try) for h in t.handlers]
+        sv = [h for h in handlers if h.type is not None and ast.unparse(h.type) == "ServingUnavailable"]
+        assert sv and _calls(sv[0], "_serving_unavailable"), name
+
+
+def test_resweep_writes_only_through_the_locked_rewrite():
+    fn = _fn(TRAINER, "resweep_oos_suppression")
+    assert len(_calls(fn, "rewrite_live")) == 1
+    assert not _calls(fn, "replace") and not _calls(fn, "mkstemp"), "no direct artifact write remains"
+    lambda_dumps = {id(c) for lam in ast.walk(fn) if isinstance(lam, ast.Lambda) for c in _calls(lam, "dump")}
+    stray = [c.lineno for c in _calls(fn, "dump") if id(c) not in lambda_dumps]
+    assert lambda_dumps and not stray, f"joblib.dump outside the rewrite_live writer at lines {stray}"
 
 
 def test_tuning_publishes_as_v1_only():

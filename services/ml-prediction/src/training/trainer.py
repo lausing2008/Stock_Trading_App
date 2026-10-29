@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import functools as _functools
 import os
-import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -28,6 +27,7 @@ from sqlalchemy import desc as sa_desc
 
 from ..features import build_features, compute_label_threshold, fetch_macro_features, fetch_sector_features, fetch_signal_outcome_features, FEATURE_COLUMNS, FUNDAMENTAL_COLUMNS, SECTOR_COLUMNS, WEEKLY_COLUMNS, OUTCOME_COLUMNS
 from ..models import BaseModel, get_model
+from .publication import ServingUnavailable
 
 log = get_logger("trainer")
 _settings = get_settings()
@@ -275,6 +275,16 @@ def _serving_artifact_path(symbol: str, model_name: str, style: str = "SWING") -
     from .publication import serving_path
     return serving_path(_settings.model_dir, _artifact_path(symbol, model_name, style),
                         symbol, style, model_name, log=log)
+
+
+def _load_serving_bundle(symbol: str, model_name: str, style: str = "SWING") -> dict:
+    """The bundle a prediction uses. A selected artifact is hash-verified on the same bytes it is
+    deserialised from; a lost or unreadable publication policy raises ServingUnavailable (F04
+    review PF-03/PF-04). With no selection this is joblib.load of the live artifact, as before."""
+    import joblib
+    from .publication import load_serving
+    return load_serving(_settings.model_dir, _artifact_path(symbol, model_name, style),
+                        symbol, style, model_name, joblib.load, log=log)
 
 
 def _params_path(symbol: str) -> Path:
@@ -1751,11 +1761,7 @@ def train_model(
 
 
 def load_trained(symbol: str, model_name: str, style: str = "SWING") -> tuple[BaseModel, StandardScaler, dict]:
-    import joblib
-    path = _serving_artifact_path(symbol, model_name, style)
-    if not path.exists():
-        raise FileNotFoundError(f"No trained model at {path}")
-    bundle = joblib.load(path)
+    bundle = _load_serving_bundle(symbol, model_name, style)
     return bundle["model"], bundle["scaler"], bundle["metrics"]
 
 
@@ -1763,13 +1769,9 @@ _MODEL_STALE_DAYS = 30  # warn when a model artifact is older than this
 
 
 def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, style: str = "SWING") -> dict:
-    import joblib
     import structlog as _slog
     _log = _slog.get_logger()
-    path = _serving_artifact_path(symbol, model_name, style)
-    if not path.exists():
-        raise FileNotFoundError(f"No trained model at {path}")
-    bundle = joblib.load(path)
+    bundle = _load_serving_bundle(symbol, model_name, style)
     model = bundle["model"]
     scaler = bundle["scaler"]
     calibrator = bundle.get("calibrator")
@@ -1962,6 +1964,22 @@ def _no_eligible_model(symbol: str, horizon: int, suppressed: list[str]) -> dict
     }
 
 
+def _serving_unavailable(symbol: str, horizon: int, reason: str) -> dict:
+    """The publication layer refused to serve (policy lost or unreadable, or a selected artifact
+    missing or not the approved bytes): ML is unavailable for this cell. Never a fallback to the
+    live v1 file, and no member contributes (F04 review PF-03/PF-04)."""
+    return {
+        "symbol": symbol, "model": "none_served",
+        "bullish_probability": 0.5, "direction": "neutral", "confidence": 0.0,
+        "horizon_days": horizon, "ensemble": False,
+        "ml_available": False, "ml_unavailable_reason": "serving_unavailable",
+        "serving_unavailable_reason": reason,
+        "eligible_contributors": 0, "suppressed_members": [],
+        "model_probabilities": {}, "ensemble_agreement": "serving_unavailable",
+        "applied_weights": {}, "metrics": {}, "oos_suppressed": False,
+    }
+
+
 def predict_single_served(symbol: str, model_name: str, horizon: int = 5, style: str = "SWING") -> dict:
     """POST /ml/predict: one family's prediction, ML-unavailable when that model is suppressed.
 
@@ -1999,6 +2017,8 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5, style: str = "SWING")
 
     try:
         rf = predict_latest(symbol, "random_forest", horizon, style=style)
+    except ServingUnavailable:
+        raise                      # fail the whole cell closed, never drop the member
     except Exception as exc:
         log.warning("predict_latest_ensemble.rf_predict_failed", symbol=symbol, error=str(exc))
         return _xgb_only()
@@ -2190,6 +2210,8 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
     if lgb_path.exists():
         try:
             lgb_res = predict_latest(symbol, "lightgbm", horizon, style=style)
+        except ServingUnavailable:
+            raise                      # fail the whole cell closed, never drop the member
         except Exception as exc:
             log.warning("predict_latest_ensemble_three.lgb_predict_failed", symbol=symbol, error=str(exc))
             lgb_res = None
@@ -2198,6 +2220,8 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
     if rf_path.exists():
         try:
             rf_res = predict_latest(symbol, "random_forest", horizon, style=style)
+        except ServingUnavailable:
+            raise                      # fail the whole cell closed, never drop the member
         except Exception as exc:
             log.warning("predict_latest_ensemble_three.rf_predict_failed", symbol=symbol, error=str(exc))
             rf_res = None
@@ -2656,33 +2680,35 @@ def resweep_oos_suppression(dry_run: bool = True) -> dict:
         changed.append(rec)
 
         if not dry_run:
-            # F04 fencing: never rewrite a live artifact for a cell an enabled v2 cohort owns.
-            from .publication import cell_key as _ck, owned_by_v2 as _owned, read_policy as _rp
+            # F04 fencing (review PF-01): the read -> ownership check -> recompute -> replace runs
+            # under the publication lock, deserialising from the exact bytes it then guards. A
+            # cell authorized for v2 meanwhile is skipped, and a model a training run published
+            # since the unlocked scan above is re-judged from ITS OWN stored metrics, never
+            # overwritten with the bundle read earlier. The atomic temp-file + os.replace
+            # (RACE-001) means a concurrent predict_latest() never observes a torn bundle.
+            from .publication import rewrite_live
             _sym, _sty = _cell_from_artifact(artifact)
+
+            def _rewrite(data: bytes):
+                import io
+                fresh = joblib.load(io.BytesIO(data))
+                fm = fresh.get("metrics") or {}
+                now, _ = _compute_oos_suppression(
+                    fm.get("cv_auc_mean"), fm.get("recall", -1.0), fm.get("precision", -1.0),
+                    fm.get("overfit_gap"), fm.get("evaluation_valid"))
+                if now == bool(fresh.get("oos_suppressed", False)):
+                    return None
+                fresh["oos_suppressed"] = now
+                return lambda tmp: joblib.dump(fresh, tmp)
+
             try:
-                _fenced = _owned(_rp(_settings.model_dir), _sym, _sty)
-            except Exception:
-                _fenced = True     # unreadable policy: fail closed, write nothing
-            if _fenced:
-                rec["write_skipped"] = f"publication_fenced:{_ck(_sym, _sty)}"
-                continue
-            try:
-                bundle["oos_suppressed"] = should
-                # Same atomic-write discipline as train_model()'s own save (RACE-001):
-                # write to a temp file in the SAME directory, then os.replace, so a concurrent
-                # predict_latest() can never observe a torn bundle.
-                fd, tmp = tempfile.mkstemp(dir=os.path.dirname(artifact), suffix=".tmp")
-                os.close(fd)
-                joblib.dump(bundle, tmp)
-                os.replace(tmp, artifact)
+                res = rewrite_live(_settings.model_dir, Path(artifact), symbol=_sym, style=_sty, rewrite=_rewrite)
+                if not res["written"]:
+                    rec["write_skipped"] = res["reason"]
             except Exception as exc:
-                rec["write_error"] = str(exc)[:120]
-                failed.append({"artifact": rec["artifact"], "error": str(exc)[:120]})
-                try:
-                    if os.path.exists(tmp):
-                        os.unlink(tmp)
-                except Exception:
-                    pass
+                reason = getattr(exc, "reason", None) or str(exc)[:120]
+                rec["write_error"] = reason
+                failed.append({"artifact": rec["artifact"], "error": reason})
 
     log.info("resweep_oos_suppression.done", dry_run=dry_run,
              changed=len(changed), unchanged=unchanged, failed=len(failed))

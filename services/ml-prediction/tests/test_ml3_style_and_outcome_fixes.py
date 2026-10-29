@@ -197,17 +197,19 @@ def test_resweep_writes_atomically():
     An earlier version of this test only asserted that "os.replace" appeared SOMEWHERE in the
     function — a sabotage that swapped the real write for a direct `joblib.dump(bundle,
     artifact)` (i.e. non-atomic, torn-read-capable) passed all 15 tests. Assert on the actual
-    write statements instead.
+    write statements instead. Since F04 review PF-01 the write happens in
+    publication.rewrite_live, under the publication lock; its temp file + rename is also
+    exercised behaviourally in test_f04_publication_fencing.py.
     """
     body = _code_only(TRAINER, "resweep_oos_suppression")
-    assert "tempfile.mkstemp" in body
-    assert "dir=os.path.dirname(artifact)" in body, "temp file must share the artifact's filesystem"
-    assert "os.replace(tmp, artifact)" in body, "the publish step must be an atomic rename"
-    # The bundle must be dumped to the TEMP path, never straight over the live artifact.
-    assert "joblib.dump(bundle, tmp)" in body
+    assert "rewrite_live(" in body
+    assert "joblib.dump(fresh, tmp)" in body, "the bundle is dumped to the TEMP path the rewrite supplies"
     code_lines = [ln.split("#", 1)[0] for ln in body.splitlines()]
-    assert not any("joblib.dump(bundle, artifact)" in ln for ln in code_lines), \
+    assert not any("joblib.dump(bundle, artifact)" in ln or "os.replace" in ln for ln in code_lines), \
         "must never write directly over the live artifact — that is a torn read for any concurrent predict"
+    rw = _code_only((_SVC / "src" / "training" / "publication.py").read_text(), "rewrite_live")
+    assert "tempfile.mkstemp(dir=artifact.parent" in rw, "temp file must share the artifact's filesystem"
+    assert "os.replace(tmp, artifact)" in rw, "the publish step must be an atomic rename"
 
 
 def test_resweep_recomputes_nothing_it_only_reapplies_the_rule():
