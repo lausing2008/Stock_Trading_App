@@ -19,7 +19,7 @@ from db import Price, SessionLocal, Stock, TimeFrame
 
 from ..adapters import get_adapter, get_adapters, primary_provider
 from .bar_provenance import (observe_bar_writes, record_daily_fetch, authorize_bar_writes, mark_trace_failed,
-                             fail_closed_rows, AUTHORITY_FAILED_KEY)
+                             fail_closed_rows, AUTHORITY_FAILED_KEY, DailyIngestRecord)
 from .bar_ingest_observations import record_ingest_observation
 
 log = get_logger("ingestion")
@@ -236,6 +236,57 @@ def _last_bar_ts(session, stock_id: int, timeframe: TimeFrame) -> datetime | Non
     return session.execute(stmt).scalar_one_or_none()
 
 
+# AUD-UW-COOLDOWN-YFSPILL (2026-10-30): a single Unusual Whales 429 arms the adapter's shared
+# 120 s cooldown (AUD-UW-BURST), and while it is armed the registry used to hand EVERY US bar
+# ingest to yfinance. Oct 28 close window: daily-bar fetches went 85 UW / 661 yfinance in the ten
+# minutes with two UW 429s, 336 / 10 once they stopped. That burst got this host rate-limited by
+# Yahoo (592 failed symbol ingests across 153 symbols), and the fundamentals/earnings fetches that
+# have no other source failed with it. During the regular session most of those yfinance bars were
+# discarded anyway: UW owns the session's completed bars (bar_session_authority).
+#
+# So a symbol whose bars are still fresh SKIPS this run instead; the next run five minutes later
+# is incremental and catches up from UW. It still falls back once its newest data is older than
+# the window below, so a long UW outage cannot leave US bars stale. Outside the regular session
+# (premarket, the post-close final-candle passes) nothing changes.
+_PRIMARY_COOLDOWN_MAX_STALENESS = timedelta(minutes=15)
+_INTRADAY_BAR_MINUTES = {"5m": 5, "15m": 15, "1h": 60}
+
+
+def _skip_during_primary_cooldown(session, stock, market: str, timeframe: str, head, adapters,
+                                  now: datetime | None = None) -> bool:
+    if market != "US" or head is None:
+        return False
+    if timeframe != "1d" and timeframe not in _INTRADAY_BAR_MINUTES:
+        return False
+    if primary_provider(market, timeframe) in {a.name for a in adapters}:
+        return False  # the primary is available; nothing is stepping aside
+    from common.market_calendar import is_regular_session
+    now = now or datetime.now(timezone.utc)
+    if not is_regular_session(market, now):
+        return False
+    bar_minutes = _INTRADAY_BAR_MINUTES.get(timeframe)
+    if bar_minutes is not None:
+        # Price.ts is naive UTC and marks the bar's START; measure from its end.
+        newest = head + timedelta(minutes=bar_minutes)
+    else:
+        # The daily head is a date, so freshness is the last successful daily fetch.
+        rec = session.get(DailyIngestRecord, stock.id)
+        newest = rec.last_success_at if rec is not None else None
+    if newest is None:
+        return False
+    return now.astimezone(timezone.utc).replace(tzinfo=None) - newest <= _PRIMARY_COOLDOWN_MAX_STALENESS
+
+
+def _count_cooldown_skip(timeframe: str) -> None:
+    try:
+        r = get_redis()
+        key = f"stockai:metric:ingest_primary_cooldown_skips:{timeframe}:{datetime.now(timezone.utc):%Y%m%d%H}"
+        if r.incr(key) == 1:
+            r.expire(key, 49 * 3600)
+    except Exception:
+        pass
+
+
 def ingest_symbol(
     symbol: str,
     market: str = "US",
@@ -330,6 +381,11 @@ def ingest_symbol(
                 # — one doomed request beats no request.
                 if _without_polygon:
                     adapters = _without_polygon
+            if _skip_during_primary_cooldown(session, stock, market, timeframe, head, adapters):
+                log.info("ingest.skipped_primary_cooldown", symbol=symbol, tf=timeframe,
+                         head=str(head))
+                _count_cooldown_skip(timeframe)
+                return {"symbol": symbol, "inserted": 0, "tf": timeframe, "skipped": "primary_cooldown"}
 
         # T230-CHARTING-PREMARKET: only the US-intraday prepost=True path can legitimately
         # produce real zero-volume bars (yfinance's extended-hours quirk) — daily/weekly bars

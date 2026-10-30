@@ -85,6 +85,14 @@ _COUNTER_TTL_S = 49 * 3600
 _COOLDOWN_KEY = "stockai:uw_adapter:cooldown"
 _COOLDOWN_SECONDS = 120
 
+# AUD-UW-COOLDOWN-YFSPILL (2026-10-30): every 429 on Oct 28-29 (115) was on THIS endpoint, at
+# ~24-29k calls/day against a 120k quota, each within seconds of a 5-minute run starting — a
+# per-minute burst, not the daily budget. This path never read UW's per-minute headers, so how
+# close a run comes to the limit was unknown. One hash per hour, field = minute (UTC), value = the
+# LOWEST remaining UW reported in that minute; "limit" = counter + remaining as last reported.
+# Read-compare-write races between ingest threads can only keep a slightly higher minimum.
+_MINUTE_HEADROOM_PREFIX = "stockai:metric:uw_bar_minute_remaining"
+
 _BASE = "https://api.unusualwhales.com"
 # See note 2 above — a larger value silently returns an empty list.
 _MAX_LIMIT = 500
@@ -135,6 +143,31 @@ class UnusualWhalesAdapter(DataAdapter):
             pass
 
     @staticmethod
+    def _note_minute_headroom(headers) -> tuple[int | None, int | None]:
+        """Record the per-minute headroom UW reported. Never raises; returns (used, remaining)."""
+        try:
+            used = headers.get("x-uw-minute-req-counter")
+            remaining = headers.get("x-uw-req-per-minute-remaining")
+            used = int(used) if used is not None else None
+            remaining = int(remaining) if remaining is not None else None
+            if remaining is None:
+                return used, None
+            from datetime import datetime, timezone
+            from common.redis_client import get_redis
+            now = datetime.now(timezone.utc)
+            key = f"{_MINUTE_HEADROOM_PREFIX}:{now:%Y%m%d%H}"
+            r = get_redis()
+            cur = r.hget(key, f"{now:%M}")
+            if cur is None or remaining < int(cur):
+                r.hset(key, f"{now:%M}", remaining)
+            if used is not None:
+                r.hset(key, "limit", used + remaining)
+            r.expire(key, _COUNTER_TTL_S)
+            return used, remaining
+        except Exception:
+            return None, None
+
+    @staticmethod
     def _arm_cooldown() -> None:
         try:
             from common.redis_client import get_redis
@@ -176,12 +209,17 @@ class UnusualWhalesAdapter(DataAdapter):
                     headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
                     params={"limit": _MAX_LIMIT},
                 )
+                _headers = getattr(r, "headers", None) or {}
+                _used, _remaining = self._note_minute_headroom(_headers)
                 if r.status_code == 429:
                     # Feed the EXISTING gauge, which this path never reached before, and step
                     # aside so the next 141 symbols in this burst do not each pay for the same
                     # refusal.
                     self._note("fail", "rate_limited")
                     self._arm_cooldown()
+                    log.warning("unusual_whales.bar_rate_limited", symbol=symbol, tf=timeframe,
+                                minute_used=_used, minute_remaining=_remaining,
+                                minute_reset_ms=_headers.get("x-uw-req-per-minute-reset"))
                     try:
                         from ..services.unusual_whales import _incr_rate_limit_counter
                         _incr_rate_limit_counter()
