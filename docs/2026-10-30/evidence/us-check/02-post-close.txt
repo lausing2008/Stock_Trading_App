@@ -1,0 +1,22 @@
+Fri Oct 30 20:47:10 UTC 2026
+host HEAD 49802ce516fe064e9356d90d1bd675a442097d4a
+stockai-market-data-1 started 2026-10-30T13:40:17.446494177Z
+stockai-research-engine-1 started 2026-10-30T13:40:22.951997365Z
+stockai-frontend-1 started 2026-10-30T13:44:19.984120302Z
+stockai-signal-engine-1 started 2026-10-30T00:12:25.032443295Z
+--- signal-engine evaluation
+{"horizon_created": 0, "horizon_resolved": 376, "horizon_missing": 0, "event": "outcomes.evaluate_horizons_done", "request_id": "fefb425b-100b-4a7a-9a6c-759281ba9b92", "level": "info", "timestamp": "2026-10-30T20:34:51.106908Z"}
+{"evaluated": 234, "skipped_open": 2025, "skipped_no_price": 27, "censored": 0, "updated_windows": 191, "event": "outcomes.evaluate_done", "request_id": "fefb425b-100b-4a7a-9a6c-759281ba9b92", "level": "info", "timestamp": "2026-10-30T20:34:51.113606Z"}
+{"horizon_created": 0, "horizon_resolved": 0, "horizon_missing": 0, "event": "outcomes.evaluate_horizons_done", "request_id": "fefb425b-100b-4a7a-9a6c-759281ba9b92", "level": "info", "timestamp": "2026-10-30T20:35:47.350815Z"}
+{"evaluated": 0, "skipped_open": 2025, "skipped_no_price": 27, "censored": 0, "updated_windows": 191, "event": "outcomes.evaluate_done", "request_id": "fefb425b-100b-4a7a-9a6c-759281ba9b92", "level": "info", "timestamp": "2026-10-30T20:35:47.352029Z"}
+{"horizon_created": 0, "horizon_resolved": 0, "horizon_missing": 0, "event": "outcomes.evaluate_horizons_done", "request_id": "fefb425b-100b-4a7a-9a6c-759281ba9b92", "level": "info", "timestamp": "2026-10-30T20:35:48.299393Z"}
+{"evaluated": 0, "skipped_open": 2025, "skipped_no_price": 27, "censored": 0, "updated_windows": 191, "event": "outcomes.evaluate_done", "request_id": "fefb425b-100b-4a7a-9a6c-759281ba9b92", "level": "info", "timestamp": "2026-10-30T20:35:48.306936Z"}
+signal-engine tracebacks since 20:15Z: 0
+--- market-data scheduler
+{"url": "http://signal-engine:8005/signals/outcomes/evaluate", "attempt": 1, "error": "timed out", "event": "scheduler.http_retry", "level": "warning", "timestamp": "2026-10-30T20:30:46.147541Z"}
+{"url": "http://signal-engine:8005/signals/outcomes/evaluate", "attempt": 2, "error": "timed out", "event": "scheduler.http_retry", "level": "warning", "timestamp": "2026-10-30T20:31:04.469966Z"}
+{"url": "http://signal-engine:8005/signals/outcomes/evaluate", "attempts": 3, "error": "timed out", "event": "scheduler.http_failed", "level": "error", "timestamp": "2026-10-30T20:31:27.572311Z"}
+--- market-data QueuePool
+"event": "ingest.symbol_failed",  timestamp": "2026-10-30T19:00:50.714994Z"
+"event": "squeeze_watch.failed",  timestamp": "2026-10-30T19:00:59.086962Z"
+"event": "squeeze_watch.failed",  timestamp": "2026-10-30T19:35:57.987629Z"

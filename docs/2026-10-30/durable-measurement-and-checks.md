@@ -13,7 +13,7 @@ Requested on Fri Oct 30:
 | Fresh five-session trial | Starts with the first complete US session after deployment. Oct 23–29 is exploratory evidence only |
 | Paper entry receipts | Built and tested. First production attempts are expected Mon Nov 2 |
 | RZY rebuild investigation | Done, read-only: [rzy-rebuild-investigation.md](rzy-rebuild-investigation.md) |
-| Friday US check | Combined-release check; the UW cooldown commits shipped. Open burst passed; post-close pending |
+| Friday US check | Combined-release check: the UW cooldown commits shipped, and `49802ce5` was deployed mid-session. Open burst and post-close evaluation passed; the scheduler's call to the evaluation times out |
 | Provider errors and coverage | Counted; fundamentals coverage measured, not inferred from HTTP 200 |
 
 Price-risk email delivery stays off. Stage C stays deployed, with US daily-path verification
@@ -114,15 +114,15 @@ market-data reads it today.
 - **PostgreSQL** (`make test-integration-pg-schema`): 11 of 11, including the new receipts test.
   Removing the trigger failed it.
 - **Existing suites:** price-risk detector and probe (32) and portfolio concentration (23) pass.
-- **`make test`** ([output](evidence/make_test.txt)): every backend suite and the scripts suite
-  pass, including market-data's 6,070.
+- **`make test`** on the commit rebased onto `49802ce5` ([output](evidence/make_test.txt)): every
+  backend suite and the scripts suite pass, including market-data's 6,083.
   - **Two tests updated.** `test_aud_pth03` now reads the sizing body in
     `_open_paper_trade_sized`. The host-lock test excludes the two read-only git calls and checks
     that they run after the pull, under the lock.
   - **The one failure is pre-existing:** research-engine's `test_candidate_qualification.py`
-    cannot import `intelligence`. It fails the same way at `b345752a`, the host's commit, and
-    came in with `55dae269`; it is not touched here. The other 748 research-engine tests pass
-    with that file excluded.
+    cannot import `intelligence`. It fails the same way at `b345752a` and at `49802ce5`, came in
+    with `55dae269`, and is not touched here. The other 794 research-engine tests pass with that
+    file excluded.
 
 ## 5. Friday's US check: a combined-release check
 
@@ -137,13 +137,33 @@ Running identities, read at 13:32 UTC ([evidence](evidence/us-check/01-identitie
   - candidate qualification (`55dae269`).
 - market-data was recreated at 04:57 UTC and research-engine at 00:58 UTC.
 
-Friday's US results therefore describe a **combined release** and cannot isolate Stage C's effect.
+**A further release landed mid-session.** At 13:40–13:45 UTC another session deployed `49802ce5`
+(SEC verification, valuation jobs and outcomes) to market-data, research-engine and the frontend,
+through the locked script (`valuation-report`, exit 0). The host is now at `49802ce5`, and the
+identities read at 13:32 describe only the session's first ten minutes.
 
-**Results so far:**
+Friday's US results therefore describe a **combined release** (Stage C, the UW cooldown, the
+commits above and `49802ce5`) and cannot isolate Stage C's effect.
+
+**Results:**
 - **US open burst:** all four horizons wrote at 13:33 UTC, 127 rows each in 15 minutes, against
   156 rows over the previous 20 hours. No tracebacks.
 - **Outcome evaluation:** HK's post-close evaluation ran at 08:30 UTC (26,986 rows vs a baseline
-  of 26,881). **The US post-close evaluation (20:30 UTC) is pending until observed.**
+  of 26,881).
+- **US post-close evaluation, read at 20:45 UTC: passed, with a caller-side timeout.**
+  - signal-engine finished at 20:34:51: 234 outcomes evaluated, 376 horizon outcomes resolved,
+    2,025 skipped as still open, 27 skipped for no price, 0 censored.
+  - `signal_outcomes` holds 27,220 rows (+234), newest `ts_evaluated` 20:32:39.
+  - market-data's scheduler call timed out on all three attempts (20:30:46, 20:31:04,
+    20:31:27) while the first request was still running. The two retries evaluated 0 rows, so
+    they were harmless, but the job is recorded as failed when it succeeded. Not changed here.
+  - US signals were still writing at 20:45. signal-engine logged no tracebacks in the
+    evaluation window.
+- **Connection pool, not caused by this check:** market-data hit `QueuePool limit of size 5
+  overflow 10 reached` three times since its 13:40 start: `ingest.symbol_failed` at 19:00:50,
+  then `squeeze_watch.failed` at 19:00:59 and 19:35:57. There were none in signal-engine. That
+  is the [pool exhaustion](../incidents/db-connection-pool-exhaustion.md) class; recorded here,
+  not investigated ([evidence](evidence/us-check/02-post-close.txt)).
 
 ## 6. Handled provider errors and data coverage
 

@@ -1,8 +1,8 @@
 # Intraday Stage C — implementation record
 
 Date: **2026-10-29**. Branch: `intraday-contracts`. Status: **deployed to production as merge
-`a3107b47` (reviewed code `cfd86973`), 2026-10-30 00:01–00:14 UTC; scheduled daily-path verification
-pending; no generator**. See [Production deployment](#production-deployment-2026-10-30-utc) and the
+`a3107b47` (reviewed code `cfd86973`), 2026-10-30 00:01–00:14 UTC; scheduled daily-path checks observed on Oct 30 as a
+combined-release operational check; no generator**. See [Production deployment](#production-deployment-2026-10-30-utc) and the
 [final review](../audits/2026-10-29-intraday-stage-c-final-review.md) that cleared
 [Release candidate `cfd86973`](#release-candidate-cfd86973). Production generation is disabled (`INTRADAY_PRODUCTION_ENABLED = False`, a
 code constant). Implements the [contract design](2026-10-29-intraday-stage-c-contract-design.md)
@@ -188,7 +188,7 @@ and 10 for ICR-02. Each guard has its own witness, under the same bounded, expec
 
 ## Production deployment (2026-10-30 UTC)
 
-**Deployed; scheduled daily-path verification pending.** Contract-only: no generator, scheduler,
+**Deployed; scheduled daily-path checks observed Oct 30 (combined release, below).** Contract-only: no generator, scheduler,
 alert delivery, training activation or model promotion. `INTRADAY_PRODUCTION_ENABLED` stays `False`
 and the shared `signalhorizon` enum is unchanged. Evidence:
 [`evidence/2026-10-29-intraday-stage-c-deployment/`](../audits/evidence/2026-10-29-intraday-stage-c-deployment/).
@@ -228,10 +228,15 @@ Every other reviewed code file is byte-identical to the branch.
 | Check | Baseline | Due | Status |
 |---|---|---|---|
 | HK scheduled refresh writes advance, all four horizons | HK `signals.ts` last 2026-10-29 08:33:26 UTC | HK open burst 01:25 UTC Oct 30 | **Pass, closed.** Read 01:50 UTC: all four horizons at 01:46:48 UTC, 42 rows each; 0 tracebacks; every container healthy. Logged Yahoo and UW errors are handled fetch noise ([hk-refresh-check.txt](../audits/evidence/2026-10-29-intraday-stage-c-deployment/hk-refresh-check.txt)) |
-| US scheduled refresh writes advance, all four horizons | US `signals.ts` last 2026-10-29 22:24:16 UTC | US open burst 13:25 UTC Oct 30 | Pending |
-| Outcome evaluation completes after the release | `max(signal_outcomes.ts_evaluated)` 2026-10-29 20:32:12 UTC, 26,881 rows | HK post-close 08:30 UTC, US post-close 20:30 UTC Oct 30 | Pending: US outcomes stay pending until the US post-close run is observed |
+| US scheduled refresh writes advance, all four horizons | US `signals.ts` last 2026-10-29 22:24:16 UTC | US open burst 13:25 UTC Oct 30 | **Pass, combined release.** All four horizons at 13:33 UTC, 127 rows each; 0 tracebacks ([US check](../2026-10-30/durable-measurement-and-checks.md#5-fridays-us-check-a-combined-release-check)) |
+| Outcome evaluation completes after the release | `max(signal_outcomes.ts_evaluated)` 2026-10-29 20:32:12 UTC, 26,881 rows | HK post-close 08:30 UTC, US post-close 20:30 UTC Oct 30 | **Pass, combined release.** HK at 08:30 UTC (26,986 rows). US finished 20:34:51 UTC: 234 evaluated, 376 horizon outcomes resolved, 27,220 rows. The scheduler's HTTP call timed out on all three attempts while the first request ran, so the job is logged as failed although it completed ([evidence](../2026-10-30/evidence/us-check/02-post-close.txt)) |
 
-These are on the Fri Oct 30 13:45 PT calendar checkpoint and the
+**Combined release.** By Friday's US session production also ran the UW cooldown commits
+(`1d85a240`, `ad55a635`) and others deployed after Stage C. At 13:40–13:45 UTC `49802ce5` was deployed
+to market-data, research-engine and the frontend. These checks confirm the daily path ran on that
+combined release. They cannot isolate Stage C's own effect.
+
+These were on the Fri Oct 30 13:45 PT calendar checkpoint and the
 [Deferred Checks Calendar](https://claude.ai/code/artifact/f2462c2d-bde6-4f30-99d9-121ede27f411).
 Still separate future gates: sealing and retention before a shadow producer's first write, execution
 and profitability qualification, and any generator.
