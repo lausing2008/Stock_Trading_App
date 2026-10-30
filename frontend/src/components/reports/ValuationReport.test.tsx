@@ -37,6 +37,30 @@ beforeEach(() => { state.latest = fixture(); state.error = undefined; sessionSto
 afterEach(cleanup);
 
 describe('Valuation report user flow', () => {
+  it('filters reviewed leads and exposes source-linked research without implying qualification', () => {
+    state.latest.report.valuation.rows[0].candidate_review = {
+      version: 1, reviewed_at: '2026-10-29', author: 'Issuer review', status: 'current', decision: 'Research only',
+      summary: 'Owner costs reduce the apparent discount.', thesis: ['Test recurring cash generation'],
+      findings: [{ claim: 'Filed cash flow', counterevidence: 'Compensation is an owner cost', source_ids: ['annual'] }],
+      sources: [{ id: 'annual', title: 'Issuer 10-K', url: 'https://www.sec.gov/Archives/filing.htm',
+        published_at: '2026-01-15', period_end: '2025-11-28' }],
+      invalidation: ['Retention weakens'], monitor: ['Next organic growth report'], unresolved: ['AI durability unresolved'],
+      qualification_blockers: ['AI durability unresolved'],
+      sensitivity: { method: 'Owner-cash equity sensitivity', period_end: '2025-11-28', cashflow: 7910e6,
+        diluted_shares: 427e6, limitations: ['Uncalibrated assumptions'],
+        scenarios: { bear: { fair_value: 180 }, base: { fair_value: 260 }, bull: { fair_value: 340 } } },
+    };
+    render(<ValuationReport market="US" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Reviewed candidates' }));
+    fireEvent.click(screen.getByRole('button', { name: '+ NEW' }));
+    expect(screen.getByRole('region', { name: 'Issuer qualification review' })).toBeTruthy();
+    expect(screen.getByText('Owner costs reduce the apparent discount.')).toBeTruthy();
+    expect(screen.getByText('Retention weakens')).toBeTruthy();
+    expect(screen.getByText(/\$180 \/ \$260 \/ \$340/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Issuer 10-K' }).getAttribute('href')).toContain('sec.gov');
+    fireEvent.click(screen.getByRole('button', { name: 'Qualified opportunities' }));
+    expect(screen.getByText(/No companies meet all opportunity requirements/)).toBeTruthy();
+  });
   it('discovers a non-watchlist stock, expands evidence and explains an empty qualified screen', () => {
     render(<ValuationReport market="US" />);
     expect(screen.getByText('New Company')).toBeTruthy();

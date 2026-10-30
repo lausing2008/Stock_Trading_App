@@ -18,6 +18,8 @@ describe('valuation research ordering and export', () => {
     const flagged = { ...row('RISK', 25), risk_flags: [{ kind: 'analyst', text: 'downgrade' }] };
     expect(selectValuationRows([flagged, row('EXPENSIVE', -30, 'overvalued')], { ...options, filter: 'analyst_risk' }).map(r => r.symbol)).toEqual(['RISK']);
     expect(selectValuationRows([flagged], { ...options, filter: 'qualified' })).toEqual([]);
+    const reviewed = { ...flagged, candidate_review: { version: 1 } } as ValuationRow;
+    expect(selectValuationRows([reviewed, row('OTHER', 40)], { ...options, filter: 'reviewed' })).toEqual([reviewed]);
   });
   it('exports frozen values with source dates and protects spreadsheet text cells', () => {
     const company = { ...row('TEST', 20), name: '=HYPERLINK("bad")',
@@ -39,5 +41,7 @@ describe('valuation research ordering and export', () => {
     expect(csv).toContain('rsi_source');
     expect(csv).toContain('Unusual Whales daily screener');
     expect(csv).toContain('Adjustment basis unverified');
+    expect(csv).toContain('thesis_invalidation');
+    expect(csv).toContain('owner_cash_base');
   });
 });

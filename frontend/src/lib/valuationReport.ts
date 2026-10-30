@@ -4,6 +4,14 @@ export type ValuationMetric = { value: number | null; state: string; reason: str
   source?: string | null; as_of?: string | null; basis?: string | null };
 export type ValuationScenario = { fair_value: number; growth_pct: number; discount_rate_pct: number;
   terminal_growth_pct: number; terminal_value_share_pct: number; enterprise_value: number; equity_value: number };
+export type CandidateReview = {
+  version: number; reviewed_at: string; author: string; decision: string; status: string; summary: string;
+  sources: { id: string; title: string; url: string; published_at: string; period_end: string }[];
+  findings: { claim: string; source_ids: string[]; counterevidence: string }[];
+  thesis: string[]; monitor: string[]; invalidation: string[]; unresolved: string[]; qualification_blockers: string[];
+  sensitivity?: { method: string; period_end: string; cashflow: number; diluted_shares: number;
+    scenarios: Record<string, Omit<ValuationScenario, 'enterprise_value'>>; limitations: string[] };
+};
 export type ValuationRow = {
   symbol: string; name: string; sector: string; industry?: string | null; country?: string | null;
   provider?: string; eps_note?: string | null; listing_basis?: string | null;
@@ -16,6 +24,7 @@ export type ValuationRow = {
   analyst_actions: { date: string; firm: string; rating: string; action: string; target?: number | null }[];
   risk_flags: { kind: string; text: string; date?: string | null }[];
   quality: QvEvaluation; thesis: string[]; research_checks: string[]; catalyst_note: string;
+  candidate_review?: CandidateReview | null;
   uw: { si_float?: number | null; days_to_cover?: number | null; fee_rate?: number | null; market_date?: string | null } | null;
   errors: string[]; fetched_at: string | null; price_session: string | null; source_url?: string;
   peer_pe: { count: number; median: number | null; note: string };
@@ -29,7 +38,7 @@ export type ValuationReport = {
 };
 export type ValuationJob = { job_id: string; state: string; stage?: string; report_id?: number; error?: string; created?: boolean };
 export type ValuationHistory = { id: number; version: number; generated_at: string; price_session: string };
-export type ValuationFilter = 'all' | 'undervalued' | 'overvalued' | 'qualified' | 'analyst_risk';
+export type ValuationFilter = 'all' | 'undervalued' | 'overvalued' | 'qualified' | 'analyst_risk' | 'reviewed';
 
 export const classificationLabel = (value: string) => ({
   undervalued: 'Below model value', overvalued: 'Above model value', near_fair_value: 'Near model value',
@@ -44,6 +53,7 @@ export function selectValuationRows(rows: ValuationRow[], opts: {
     && (!opts.sector || r.sector === opts.sector)
     && (opts.filter === 'all' || r.classification === opts.filter
       || (opts.filter === 'qualified' && r.qualified)
+      || (opts.filter === 'reviewed' && !!r.candidate_review)
       || (opts.filter === 'analyst_risk' && r.risk_flags.some(f => f.kind === 'analyst'))))
     .sort((a, b) => {
       if (opts.sort === 'symbol') return (opts.ascending ? 1 : -1) * a.symbol.localeCompare(b.symbol);
@@ -68,7 +78,8 @@ export function valuationCsv(report: ValuationReport) {
     'provider', 'classification', 'qualified', ...metrics.flatMap(k => [k, `${k}_state`, `${k}_reason`, `${k}_source`, `${k}_as_of`, `${k}_basis`]),
     'analyst_target_mean', 'analyst_target_note', 'annual_period', 'uncertainty', 'bear_value', 'bull_value',
     'base_growth_pct', 'base_discount_rate_pct', 'terminal_growth_pct', 'model_limitations',
-    'source_url', 'fetched_at', 'blockers'];
+    'source_url', 'fetched_at', 'blockers', 'review_version', 'review_date', 'review_status', 'review_decision',
+    'review_sources', 'review_unresolved', 'thesis_invalidation', 'owner_cash_bear', 'owner_cash_base', 'owner_cash_bull', 'owner_cash_limits'];
   const body = report.valuation.rows.map(r => [report.id, report.version, report.generated_at, r.price_session,
     report.valuation.policy_version, r.symbol, r.name, r.provider || 'Yahoo', r.classification, r.qualified,
     ...metrics.flatMap(k => [r.metrics[k]?.value, r.metrics[k]?.state, r.metrics[k]?.reason,
@@ -77,6 +88,11 @@ export function valuationCsv(report: ValuationReport) {
     r.valuation?.scenarios?.bear?.fair_value, r.valuation?.scenarios?.bull?.fair_value,
     r.valuation?.scenarios?.base?.growth_pct, r.valuation?.scenarios?.base?.discount_rate_pct,
     r.valuation?.scenarios?.base?.terminal_growth_pct, r.valuation?.limitations?.join('; '),
-    r.source_url, r.fetched_at, r.blockers.join('; ')]);
+    r.source_url, r.fetched_at, r.blockers.join('; '), r.candidate_review?.version,
+    r.candidate_review?.reviewed_at, r.candidate_review?.status, r.candidate_review?.decision,
+    r.candidate_review?.sources.map(s => s.url).join('; '), r.candidate_review?.unresolved.join('; '),
+    r.candidate_review?.invalidation.join('; '), r.candidate_review?.sensitivity?.scenarios.bear?.fair_value,
+    r.candidate_review?.sensitivity?.scenarios.base?.fair_value, r.candidate_review?.sensitivity?.scenarios.bull?.fair_value,
+    r.candidate_review?.sensitivity?.limitations.join('; ')]);
   return [headers, ...body].map(row => row.map(csvCell).join(',')).join('\r\n');
 }

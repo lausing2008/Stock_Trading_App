@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 from datetime import date, datetime, timezone
 from statistics import median
+from .candidate_qualification import resolve_review, REQUIRED_GATES
 
 from intelligence.report_contract import (
     Evidence, EvidenceBook, Field, FieldState, StatementClass, Section,
@@ -12,7 +13,7 @@ from intelligence.report_contract import (
 
 REPORT_TYPE = "us_equity_valuation"
 SUBJECT = "valuation:US:covered-sample"
-POLICY = "valuation-v2-provider-rsi"
+POLICY = "valuation-v3-candidate-review"
 
 
 def finite(value):
@@ -164,7 +165,31 @@ def build_row(raw, session_day, now, quality=None):
     dollar_volume = sum(b["volume"] * b["close"] for b in recent) / 60 if liquid else None
     if dollar_volume is None or dollar_volume < 5e6:
         exclusions.append("60-session average dollar volume below $5m or unavailable")
-    model = valuation_model(raw, now)
+    review, review_blockers, model_raw = resolve_review(raw, now)
+    model = valuation_model(model_raw, now)
+    if review and not review_blockers and model["state"] == "OK":
+        model["eligibility_blockers"] = []
+        model["limitations"] = [s for s in model["limitations"] if not (
+            s.startswith("Latest annual cash/debt") or s.startswith("Statement accounting basis"))]
+        model["limitations"].append("Reconciled issuer inputs and diluted-share basis from the dated qualification review; scenario uncertainty remains")
+        model["inputs"]["review_version"] = review["version"]
+    if review and review.get("owner_cash_sensitivity"):
+        sensitivity = review["owner_cash_sensitivity"]
+        owner_cash = sensitivity["operating_cashflow"] - sensitivity["capex"] - sensitivity["stock_compensation"]
+        review["sensitivity"] = {"method": "Owner-cash equity sensitivity after stock compensation",
+            "period_end": sensitivity["period_end"], "cashflow": owner_cash,
+            "diluted_shares": sensitivity["diluted_shares"],
+            "scenarios": {label: dcf(owner_cash, sensitivity["diluted_shares"], 0, 0, *assumptions)
+                          for label, assumptions in sensitivity["scenarios"].items()},
+            "limitations": ["OCF minus capex minus stock compensation is a conservative owner-cash proxy, not a calibrated forecast",
+                            "Discount rates 12%/11%/10%, growth 0%/5%/8% and terminal growth 2%/2.5%/2.5% are research assumptions",
+                            "Equity cash flow is discounted directly; no enterprise-to-equity debt/cash adjustment or buyback benefit is added",
+                            "FY2025 diluted weighted-average shares are a conservative denominator, not current fully diluted shares; acquisitions and financing changes need reconciliation"]}
+        # The DCF helper is an FCFF bridge. With zero debt/cash its arithmetic also gives an
+        # equity sensitivity, but enterprise-value labels would misrepresent that result.
+        for scenario in review["sensitivity"]["scenarios"].values():
+            if scenario:
+                scenario.pop("enterprise_value", None)
     if model["state"] == "OK" and not fresh:
         model = {**model, "state": "STALE", "reason": "Inputs or price session are stale"}
     state = "insufficient_evidence"
@@ -236,12 +261,20 @@ def build_row(raw, session_day, now, quality=None):
     blockers = list(exclusions)
     blockers.extend(quality.get("blocking") or [])
     blockers.extend(model.get("eligibility_blockers") or [])
+    blockers.extend(review_blockers)
     if state != "undervalued" or discount is None or discount < 30:
         blockers.append("High-uncertainty opportunity screen requires at least 30% model discount")
     if not fresh:
         blockers.append("Current completed-session inputs required")
-    qualified = bool(quality.get("gates")) and all(
-        g["status"] == "pass" for g in quality.get("gates", [])) and not blockers
+    gates = quality.get("gates") or []
+    by_gate = {g.get("gate"): g.get("status") for g in gates}
+    missing_gates = [gate for gate in REQUIRED_GATES if gate not in by_gate]
+    blockers.extend(f"Required quality gate missing: {gate}" for gate in missing_gates)
+    blockers.extend(f"Required quality gate has not passed: {gate}" for gate in REQUIRED_GATES
+                    if gate in by_gate and by_gate[gate] != "pass")
+    if len(by_gate) != len(gates):
+        blockers.append("Duplicate quality gates require review")
+    qualified = all(by_gate.get(gate) == "pass" for gate in REQUIRED_GATES) and not blockers
     target = finite(info.get("targetMeanPrice"))
     targets = {"mean": target, "low": finite(info.get("targetLowPrice")),
                "high": finite(info.get("targetHighPrice")), "median": finite(info.get("targetMedianPrice")),
@@ -264,7 +297,7 @@ def build_row(raw, session_day, now, quality=None):
             "tracked": bool(raw.get("tracked")), "classification": state,
             "qualified": qualified, "exclusions": exclusions, "blockers": sorted(set(blockers)),
             "metrics": metrics, "valuation": model, "analyst": targets, "analyst_actions": actions,
-            "risk_flags": risks, "quality": quality, "thesis": thesis,
+            "risk_flags": risks, "quality": quality, "thesis": thesis, "candidate_review": review,
             "research_checks": ["Verify latest filings, diluted shares and senior claims",
                                 "Test competitive durability and recurring cash-flow growth",
                                 "Revisit thesis if cash generation or competitive position deteriorates"],
@@ -289,7 +322,8 @@ def build_report(inputs, *, now, quality=None, previous=None):
                              -(r["metrics"]["discount_pct"]["value"] or -1e9), r["symbol"]))
     counts = {key: sum(r["classification"] == key for r in rows)
               for key in ("undervalued", "overvalued", "near_fair_value", "insufficient_evidence")}
-    counts.update(qualified=sum(r["qualified"] for r in rows), analyst_risk=sum(
+    counts.update(reviewed=sum(bool(r.get("candidate_review")) for r in rows),
+                  qualified=sum(r["qualified"] for r in rows), analyst_risk=sum(
         any(f["kind"] == "analyst" for f in r["risk_flags"]) for r in rows))
     old = {r["symbol"]: r for r in (previous or {}).get("rows", [])}
     changes = []
@@ -312,7 +346,7 @@ def build_report(inputs, *, now, quality=None, previous=None):
                       "RSI uses adjusted daily closes when available; otherwise dated UW daily-screener RSI is labeled as provider-reported with an unverified adjustment basis",
                       "Quarterly EPS YoY growth is historical context; it is not used to fabricate forward EPS or PEG",
                       "PEG is provider-reported; growth horizon and accounting basis are unverified",
-                      "Qualified opportunities require existing Quality & Value passes and verified valuation inputs",
+                      "Qualified opportunities require all five Quality & Value gates, a sourced issuer review within 30 days, a filing check within seven days, reconciled inputs and a 30% model discount",
                       inputs.get("uw_note", "UW enrichment unavailable")]}
     book = EvidenceBook()
     ids = []
@@ -322,6 +356,15 @@ def build_report(inputs, *, now, quality=None, previous=None):
             value=raw, retrieved_at=(datetime.fromisoformat(raw["fetched_at"]) if raw.get("fetched_at") else None),
             observed_period=inputs["price_session"],
             note="Frozen provider inputs and optional cached UW short-interest data; issuer publication dates not verified")))
+    for row in rows:
+        review = row.get("candidate_review")
+        if review:
+            for source in review.get("sources", []):
+                ids.append(book.add(Evidence(
+                    evidence_id=f"issuer-review:{row['symbol']}:{review['version']}:{source['id']}",
+                    source=source["url"], value={"source": source, "review": review},
+                    observed_period=source.get("period_end"),
+                    note="Dated code-reviewed issuer findings; source publication and review date are frozen in the value")))
     fields = {"valuation": Field(value=data, evidence_ids=ids,
                                   statement=StatementClass.CONDITIONAL_SCENARIO, section=Section.METRICS)}
     cov = {"total": len(rows), "ok": len(rows) - counts["insufficient_evidence"],

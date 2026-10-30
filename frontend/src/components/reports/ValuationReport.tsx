@@ -11,7 +11,7 @@ const control: React.CSSProperties = { background: '#0b1220', color: '#e2e8f0', 
   borderRadius: 7, padding: '8px 12px', fontSize: 13 };
 const muted: React.CSSProperties = { color: '#94a3b8', fontSize: 12, lineHeight: 1.7 };
 const labels: [ValuationFilter, string][] = [['all', 'All companies'], ['undervalued', 'Undervalued research'],
-  ['overvalued', 'Overvalued'], ['analyst_risk', 'Analyst risk flags'], ['qualified', 'Qualified opportunities']];
+  ['overvalued', 'Overvalued'], ['analyst_risk', 'Analyst risk flags'], ['reviewed', 'Reviewed candidates'], ['qualified', 'Qualified opportunities']];
 const columns = [['symbol', 'Company'], ['price', 'Price'], ['fair_value', 'Model value'],
   ['discount_pct', 'Discount %'], ['trailing_pe', 'P/E (TTM)'], ['peg', 'PEG*'], ['rsi', 'RSI (14)']];
 
@@ -42,6 +42,34 @@ function CompanyDetail({ row }: { row: ValuationRow }) {
       {row.source_url && <a href={row.source_url} target="_blank" rel="noreferrer" style={{ color: '#a5b4fc' }}>{row.provider || 'Yahoo'} source ↗</a>}
       <Link href="/quality-value" style={{ color: '#a5b4fc' }}>Quality &amp; Value ↗</Link>
     </div>
+    {row.candidate_review && <section style={{ ...panel, marginBottom: 20 }} aria-label="Issuer qualification review">
+      <h4 style={{ marginTop: 0 }}>Issuer qualification review · {row.candidate_review.decision}</h4>
+      <p style={muted}>Reviewed {row.candidate_review.reviewed_at} · v{row.candidate_review.version} · {row.candidate_review.author} · {row.candidate_review.status}</p>
+      <p>{row.candidate_review.summary}</p>
+      <ul>{row.candidate_review.thesis.map(t => <li key={t}>{t}</li>)}</ul>
+      {row.candidate_review.findings.map(f => <div key={f.claim}>
+        <p>{f.claim} {f.source_ids.map(id => {
+          const source = row.candidate_review?.sources.find(s => s.id === id);
+          return source ? <a key={id} href={source.url} target="_blank" rel="noreferrer" style={{ color: '#a5b4fc' }}>[{id}] </a> : null;
+        })}</p><p style={muted}>Counterevidence: {f.counterevidence}</p>
+      </div>)}
+      {row.candidate_review.sensitivity && <>
+        <h4>Owner-cash sensitivity</h4>
+        <p style={muted}>{row.candidate_review.sensitivity.method} · fiscal period {row.candidate_review.sensitivity.period_end}. This is a separate stress test; the table’s provider model is unchanged.</p>
+        <p>Bear / base / bull: {['bear', 'base', 'bull'].map(k => `$${num(row.candidate_review?.sensitivity?.scenarios[k]?.fair_value, 2)}`).join(' / ')}</p>
+        <ul style={muted}>{row.candidate_review.sensitivity.limitations.map(t => <li key={t}>{t}</li>)}</ul>
+      </>}
+      <h4>What would invalidate the thesis</h4>
+      <ul>{row.candidate_review.invalidation.map(t => <li key={t}>{t}</li>)}</ul>
+      <h4>Next evidence to monitor</h4>
+      <ul>{row.candidate_review.monitor.map(t => <li key={t}>{t}</li>)}</ul>
+      <h4>Unresolved research</h4>
+      <ul>{row.candidate_review.unresolved.map(t => <li key={t}>{t}</li>)}</ul>
+      <details><summary>Primary sources</summary><ul>{row.candidate_review.sources.map(s => <li key={s.id}>
+        <a href={s.url} target="_blank" rel="noreferrer" style={{ color: '#a5b4fc' }}>{s.title}</a>
+        <span style={muted}> · filed {s.published_at} · period {s.period_end}</span>
+      </li>)}</ul></details>
+    </section>}
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 20 }}>
       <div>
         <h4 style={{ margin: '0 0 8px', color: '#e2e8f0' }}>Investment case to investigate</h4>
@@ -194,7 +222,7 @@ export default function ValuationReportTab({ market }: { market: 'US' | 'HK' }) 
         {!!data.queries_failed.length && `Yahoo screens unavailable: ${data.queries_failed.join(', ')}. ${data.uw_discovery ? 'UW discovery supplied fallback coverage.' : 'Coverage is partial.'}`}
       </div>}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
-        {([['undervalued', 'Below model value'], ['overvalued', 'Above model value'], ['analyst_risk', 'Analyst risk flags'], ['qualified', 'Qualified opportunities']] as const).map(([key, label]) => <div key={key} style={panel}>
+        {([['undervalued', 'Below model value'], ['overvalued', 'Above model value'], ['analyst_risk', 'Analyst risk flags'], ['reviewed', 'Reviewed candidates'], ['qualified', 'Qualified opportunities']] as const).map(([key, label]) => <div key={key} style={panel}>
           <div style={muted}>{label}</div><strong style={{ fontSize: 27 }}>{data.counts[key] || 0}</strong></div>)}
       </div>
       <section style={panel}>
