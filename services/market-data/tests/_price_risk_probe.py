@@ -639,5 +639,71 @@ for broken in (False, True):
             ss.commit()
         check('quiet hours resume an unexpired email after the window', spy.calls == 1 and result['accepted'] == 1, result)
 
+# SCAN RECORDS (2026-10-30): every subject accounted for once, every non-emission named, the
+# configuration hashed, the release named, and the record written beside the events.
+import os  # noqa: E402
+from src.services.receipts import models as receipt_models  # noqa: E402
+from src.services.receipts.identity import RELEASE_ENV  # noqa: E402
+from src.services.receipts.record import record_price_risk_scan  # noqa: E402
+os.environ[RELEASE_ENV] = 'probe-sha'
+receipt_models.metadata.create_all(engine)
+
+
+def scan_run(now=NOW, quotes=None, config=None):
+    with Session(engine, autoflush=False) as s:
+        result = detect(s, now=now, redis_client=Redis(False, quotes, config), trigger='probe')
+        scan = result.pop('scan')
+        scan_id = record_price_risk_scan(s, {'run_id': 'r1', **scan})
+        s.commit()
+        row = s.execute(select(receipt_models.price_risk_scans).where(
+            receipt_models.price_risk_scans.c.scan_id == scan_id)).mappings().one()
+        return result, scan, dict(row)
+
+
+build({'NVDA': [100, 100, 100, 100, 100, 94], 'SPLT': [100, 100, 100, 100, 100, 50],
+       'FLAT': [100] * 6, 'OLD': [100] * 6},
+      split_for='SPLT', end_for={'OLD': TODAY - timedelta(days=60)})
+result, scan, row = scan_run()
+cov = row['coverage'] or {}
+check('SCAN every subject appears in coverage exactly once',
+      sum(c['subjects'] for c in cov.values()) == result['subjects'] == row['subjects'], (cov, result))
+check('SCAN measured + excluded = subjects', row['measured'] + row['excluded'] == row['subjects'], row)
+excl = {e['symbol']: e for e in row['excluded_subjects']}
+check('SCAN a subject with no recent bars is listed with its factor',
+      excl.get('OLD', {}).get('factor') == 'no_price_data'
+      and excl['OLD'].get('stage') == 'before_measurement', row['excluded_subjects'])
+check('SCAN a split window is listed as unusable, not dropped',
+      excl.get('SPLT', {}).get('stage') == 'unusable_window', row['excluded_subjects'])
+check('SCAN measured subjects are counted, not listed', 'NVDA' not in excl and 'FLAT' not in excl)
+check('SCAN every event is in the record, marked shadow',
+      len(row['events_detail']) == result['events'] > 0
+      and all(e['delivery'] == 'shadow_suppressed' for e in row['events_detail']), row['events_detail'])
+check('SCAN release and code fingerprint recorded',
+      row['release_sha'] == 'probe-sha' and len(row['code_fingerprint']) == 64
+      and 'src.services.price_risk' in row['identity']['fingerprint_modules'], row['identity'])
+check('SCAN status, trigger, session flags, config and hash recorded',
+      row['status'] == 'completed' and row['trigger'] == 'probe' and row['us_session_date'] is not None
+      and row['config']['watch']['max_quote_age_minutes'] == 10 and len(row['config_hash']) == 64, row)
+first_hash = row['config_hash']
+result, scan, row = scan_run()
+check('SCAN a re-run names why it emitted nothing',
+      result['events'] == 0 and sum(row['suppressions']['counts'].values()) > 0
+      and set(row['suppressions']['counts']) <= {'same_episode', 'event_key_exists', 'open_pullback_episode'},
+      row['suppressions'])
+check('SCAN the same rules hash the same', row['config_hash'] == first_hash)
+result, scan, row = scan_run(config={'slow_decline_sessions': 6})
+check('SCAN a threshold override changes the hash', row['config_hash'] != first_hash)
+build({'NVDA': [100, 100, 100, 100, 100, 100]})
+result, scan, row = scan_run(now=MORNING, quotes=q(80.0, prev=120.0))
+check('SCAN a refused quote is recorded by status and symbol',
+      row['quote_refusals'] == {'counts': {'quote_mismatch': 1}, 'symbols': {'quote_mismatch': ['NVDA']}},
+      row['quote_refusals'])
+check('SCAN regular-session flag reflects the scan time', row['us_regular_session'] is True, row)
+result, scan, row = scan_run(now=MORNING, quotes=q(96.0))
+cov_us = (row['coverage'] or {}).get('US', {})
+check('SCAN live-quote measurement and quote age are recorded per market',
+      cov_us.get('measured_live_quote') == 1 and cov_us.get('live_quote_age_minutes', {}).get('n') == 1,
+      row['coverage'])
+
 print('FAILURES:', failures)
 sys.exit(1 if failures else 0)

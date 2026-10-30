@@ -371,13 +371,90 @@ def close_recovered_episodes(session, subject: str, closes: list, mode: str, as_
     return closed
 
 
+def config_snapshot(cfg: dict) -> dict:
+    """Everything that decides what a scan reports, so a trial can name the rules it measured.
+
+    The runtime overrides (`cfg`), this module's freshness and delivery limits, the rule module's
+    constants, and the baskets. Hashed in the scan record; a change of any of them changes the
+    hash, so two trials under different rules cannot be pooled by accident.
+    """
+    rules = {k: v for k, v in vars(price_risk).items()
+             if k.isupper() and isinstance(v, (int, float, str, bool, tuple, list, dict))}
+    return {"effective": {k: v for k, v in cfg.items() if k != "errors"},
+            "watch": {"max_quote_age_minutes": MAX_QUOTE_AGE.total_seconds() / 60,
+                      "max_quote_clock_skew_minutes": MAX_QUOTE_CLOCK_SKEW.total_seconds() / 60,
+                      "quote_prev_close_tolerance": QUOTE_PREV_CLOSE_TOLERANCE,
+                      "settled_lag_sessions": SETTLED_LAG_SESSIONS,
+                      "episode_max_age_days": EPISODE_MAX_AGE_DAYS,
+                      "max_emails_per_user_per_day": MAX_EMAILS_PER_USER_PER_DAY,
+                      "max_evidence_age_hours": MAX_EVIDENCE_AGE.total_seconds() / 3600,
+                      "lookback_sessions": _LOOKBACK_SESSIONS, "lookback_days": _LOOKBACK_DAYS},
+            "rules": rules, "themes": price_risk_themes(), "benchmarks": dict(BENCHMARKS)}
+
+
+def _identity_modules():
+    import sys
+    from common import market_calendar, outcome_price_basis
+    from . import theme_baskets
+    return [price_risk, sys.modules[__name__], theme_baskets, outcome_price_basis, market_calendar]
+
+
+def _scan_record(*, scope, mode, trigger, now, cfg, redis_client, status_of, excluded_subjects,
+                 refused, quote_ages, events_detail, suppressed, summary) -> dict:
+    """The durable scan record (2026-10-30). Every subject appears in `coverage` exactly once:
+    measured from a live quote, measured from settled bars, excluded before measurement, or
+    measured with an unusable window. Only the non-measured subjects are listed by name."""
+    from .receipts.identity import identity
+    outcomes = ("measured_live_quote", "measured_settled", "excluded", "unusable_window")
+    coverage: dict[str, dict] = {}
+    for market, outcome in status_of.values():
+        c = coverage.setdefault(market, {"subjects": 0, **{o: 0 for o in outcomes}})
+        c["subjects"] += 1
+        c[outcome] += 1
+    for market, ages in quote_ages.items():
+        a = sorted(ages)
+        coverage.setdefault(market, {"subjects": 0, **{o: 0 for o in outcomes}})["live_quote_age_minutes"] = {
+            "n": len(a), "min": round(a[0], 2), "median": round(a[len(a) // 2], 2), "max": round(a[-1], 2)}
+    reasons: dict[str, int] = {}
+    for s in suppressed:
+        reasons[s["reason_class"]] = reasons.get(s["reason_class"], 0) + 1
+    snapshot = config_snapshot(cfg)
+    ident = identity(_identity_modules())
+    return {
+        "scope": scope, "mode": mode, "status": "completed", "trigger": trigger,
+        "started_at": now, "finished_at": max(now, datetime.now(timezone.utc)),
+        "us_session_date": _session_date("US", now), "us_regular_session": is_regular_session("US", now),
+        "hk_session_date": _session_date("HK", now), "hk_regular_session": is_regular_session("HK", now),
+        "subjects": summary["subjects"],
+        "measured": sum(c["measured_live_quote"] + c["measured_settled"] for c in coverage.values()),
+        "excluded": sum(c["excluded"] + c["unusable_window"] for c in coverage.values()),
+        "events": summary["events"], "receipts": summary["receipts"],
+        "intraday_quotes": summary.get("intraday_quotes", 0),
+        "episodes_closed": summary.get("episodes_closed", 0),
+        "coverage": coverage, "exclusions": summary.get("exclusions", {}),
+        "excluded_subjects": excluded_subjects,
+        "quote_refusals": {"counts": {k: len(v) for k, v in refused.items()}, "symbols": refused},
+        "events_detail": events_detail,
+        "suppressions": {"counts": reasons, "items": suppressed},
+        "config": snapshot,
+        "config_hash": hashlib.sha256(json.dumps(snapshot, sort_keys=True, default=str).encode()).hexdigest(),
+        "config_errors": cfg["errors"], "delivery_enabled": delivery_enabled(redis_client),
+        "release_sha": ident["release_sha"], "code_fingerprint": ident["code_fingerprint"],
+        "identity": ident,
+    }
+
+
 def detect(session, *, now: datetime | None = None, redis_client=None,
            symbols: list[str] | None = None, quotes: dict | None = None,
-           scope: str = "symbol") -> dict:
+           scope: str = "symbol", trigger: str = "manual") -> dict:
     """Run detection over followed subjects. Returns a summary; writes events and receipts.
 
     In LIVE mode this also queues one digest per eligible user in the notification outbox. It
     never calls a mail provider: the drain job does, on the alerting side of the scheduler.
+
+    The summary carries `scan`, the full scan record, as data. The scheduler persists it in the
+    same transaction as the events (`receipts.record.record_price_risk_scan`); this function
+    never writes it, so it stays testable without that table.
     """
     if scope not in ("symbol", "benchmark"):
         raise ValueError("Unsupported risk scope")
@@ -389,6 +466,26 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
     cfg = load_config(redis_client)
     slow_n = cfg["slow_decline_sessions"]
     slow_steps = tuple(cfg["slow_decline_steps"])
+    #: Scan-record trace. `status_of` holds every subject's single outcome; the lists hold the
+    #: detail a later reader needs to re-check coverage, refusals and every non-emission.
+    status_of: dict[str, tuple[str, str]] = {}
+    excluded_subjects: list[dict] = []
+    refused: dict[str, list[str]] = {}
+    quote_ages: dict[str, list[float]] = {}
+    events_detail: list[dict] = []
+    suppressed: list[dict] = []
+
+    def record(summary: dict) -> dict:
+        summary["scan"] = _scan_record(
+            scope=scope, mode=mode, trigger=trigger, now=now, cfg=cfg, redis_client=redis_client,
+            status_of=status_of, excluded_subjects=excluded_subjects, refused=refused,
+            quote_ages=quote_ages, events_detail=events_detail, suppressed=suppressed,
+            summary=summary)
+        return summary
+
+    def suppress(scope_: str, subject: str, rule: str, step, reason_class: str, why: str) -> None:
+        suppressed.append({"scope": scope_, "subject": subject, "rule": rule, "step": step,
+                           "reason_class": reason_class, "reason": why})
 
     watched = {r[0] for r in session.execute(
         select(Stock.symbol).join(WatchlistItem, WatchlistItem.stock_id == Stock.id)).all()}
@@ -397,8 +494,8 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
     if scope == "symbol":
         universe = sorted(set(universe) | (theme_members & watched)) if universe else sorted(theme_members)
     if not universe:
-        return {"mode": mode, "subjects": 0, "events": 0, "unmeasurable": 0, "receipts": 0,
-                "config_errors": cfg["errors"]}
+        return record({"mode": mode, "subjects": 0, "events": 0, "unmeasurable": 0, "receipts": 0,
+                       "config_errors": cfg["errors"]})
 
     stocks = {s.symbol: s for s in session.execute(
         select(Stock).where(Stock.symbol.in_(universe))).scalars()}
@@ -416,13 +513,17 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
     #: move for a symbol the evidence contract already refused.
     measured: dict[str, dict | None] = {}
 
-    def exclude(symbol: str, factor: str, reason: str, as_of: date | None) -> None:
+    def exclude(symbol: str, factor: str, reason: str, as_of: date | None,
+                market: str = "unknown") -> None:
         """EVERY scanned subject is accounted for. A symbol that silently produced nothing
         looked exactly like a quiet market (AUD 2026-10-14 F4)."""
         nonlocal unmeasurable
         unmeasurable += 1
         exclusions[factor] = exclusions.get(factor, 0) + 1
         measured[symbol] = None
+        status_of[symbol] = (market, "excluded")
+        excluded_subjects.append({"symbol": symbol, "market": market, "stage": "before_measurement",
+                                  "factor": factor, "reason": reason, "as_of": as_of})
         _persist(session, {"scope": scope, "subject": symbol, "rule": price_risk.UNMEASURABLE,
                            "step": 0, "evidence_status": "unverified",
                            "limiting_factor": factor, "reason": reason,
@@ -442,23 +543,32 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
                   if settled_through is not None and b[0] <= settled_through]
         if not series:
             exclude(symbol, "no_price_data",
-                    f"no settled daily bar in the last {_LOOKBACK_DAYS} days", None)
+                    f"no settled daily bar in the last {_LOOKBACK_DAYS} days", None, market)
             continue
         lag = sessions_between(market, series[-1][0], settled_through)
         if lag > SETTLED_LAG_SESSIONS:
             exclude(symbol, "stale_observation",
                     f"latest settled bar {series[-1][0].isoformat()} is {lag} sessions behind "
-                    f"the last completed session {settled_through.isoformat()}", series[-1][0])
+                    f"the last completed session {settled_through.isoformat()}", series[-1][0],
+                    market)
             continue
         quote = quotes.get(symbol)
         series, quote_status = with_live_quote(series, quote, market, now)
         if quote_status == "live_quote":
             intraday += 1
+            try:
+                fetched = datetime.fromisoformat(str(quote.get("fetched_at")).replace("Z", "+00:00"))
+                fetched = fetched if fetched.tzinfo else fetched.replace(tzinfo=timezone.utc)
+                quote_ages.setdefault(market, []).append((now - fetched).total_seconds() / 60)
+            except (TypeError, ValueError):
+                pass
         elif quote_status:
             quote_refusals[quote_status] = quote_refusals.get(quote_status, 0) + 1
+            refused.setdefault(quote_status, []).append(symbol)
         if len(series) < 2:
             exclude(symbol, "insufficient_history",
-                    f"{len(series)} settled bar(s); a move needs at least two", series[-1][0])
+                    f"{len(series)} settled bar(s); a move needs at least two", series[-1][0],
+                    market)
             continue
         fresh_through[symbol] = settled_through
         markets[symbol] = market
@@ -504,8 +614,14 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
                                 "price_source": ("live_quote" if quote_status == "live_quote"
                                                  else "settled_daily_bars"),
                                 "observed_at": observed_at(market, window_end, quote_time)}
+            status_of[symbol] = (market, "measured_live_quote" if quote_status == "live_quote"
+                                 else "measured_settled")
         else:
             measured[symbol] = None
+            status_of[symbol] = (market, "unusable_window")
+            excluded_subjects.append({"symbol": symbol, "market": market, "stage": "unusable_window",
+                                      "factor": verdict.get("limiting_factor") or "unmeasurable",
+                                      "reason": verdict.get("reason"), "as_of": window_end})
         if verdict.get("usable"):
             episodes_closed += close_recovered_episodes(session, symbol, list(usable), mode,
                                                         window_end, scope=scope)
@@ -535,19 +651,27 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
                 open_pullback = _prior_state(session, scope, symbol, "pullback",
                                              cand["as_of"], mode, closes=list(usable))
                 if open_pullback is not None and not open_pullback["episode_closed"]:
+                    suppress(scope, symbol, "slow_decline", cand.get("step"), "open_pullback_episode",
+                             "pullback episode still open; the same move is not a new slow decline")
                     continue
             prior = _prior_state(session, scope, symbol, cand["rule"], cand["as_of"], mode,
                                  closes=list(usable))
             emit, why = price_risk.should_emit(prior, cand)
             if not emit:
+                suppress(scope, symbol, cand["rule"], cand.get("step"), "same_episode", why)
                 continue
             cand["episode_after"] = _episode_for(prior)
             event = _persist(session, cand, mode, today, now, note=why)
-            if event is not None:
+            if event is None:
+                suppress(scope, symbol, cand["rule"], cand.get("step"), "event_key_exists",
+                         "an event with this key was already recorded")
+            else:
                 created += 1
-                receipts += _record_receipts(
-                    session, event, symbol, live, now, pending,
-                    deliverable=_deliverable(cand, settled_through, now))
+                history_only = _deliverable(cand, settled_through, now)
+                n = _record_receipts(session, event, symbol, live, now, pending,
+                                     deliverable=history_only)
+                receipts += n
+                events_detail.append(_event_detail(event, cand, history_only, n, live))
 
     for theme, members in (price_risk_themes().items() if scope == "symbol" else []):
         present = [m for m in members if m in measured]
@@ -603,22 +727,42 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
             prior = _prior_state(session, "theme", theme, rule, reference, mode)
             emit, why = price_risk.should_emit(prior, cand)
             if not emit:
+                suppress("theme", theme, rule, 1, "same_episode", why)
                 continue
             cand["episode_after"] = _episode_for(prior)
             event = _persist(session, cand, mode, today, now, note=why)
-            if event is not None:
+            if event is None:
+                suppress("theme", theme, rule, 1, "event_key_exists",
+                         "an event with this key was already recorded")
+            else:
                 created += 1
                 newest_settled = max(fresh_through[m] for m in declined_syms)
-                receipts += _record_receipts(session, event, declined_syms, live, now, pending,
-                                             deliverable=_deliverable(cand, newest_settled, now))
+                history_only = _deliverable(cand, newest_settled, now)
+                n = _record_receipts(session, event, declined_syms, live, now, pending,
+                                     deliverable=history_only)
+                receipts += n
+                events_detail.append(_event_detail(event, cand, history_only, n, live))
 
     queued = _queue_digests(session, pending, now) if live else {"emails": 0, "in_app": 0}
-    return {"mode": mode, "subjects": len(universe), "events": created,
-            "unmeasurable": unmeasurable, "receipts": receipts,
-            "intraday_quotes": intraday, "quote_refusals": quote_refusals,
-            "exclusions": exclusions,
-            "episodes_closed": episodes_closed,
-            "config_errors": cfg["errors"], **queued}
+    return record({"mode": mode, "subjects": len(universe), "events": created,
+                   "unmeasurable": unmeasurable, "receipts": receipts,
+                   "intraday_quotes": intraday, "quote_refusals": quote_refusals,
+                   "exclusions": exclusions,
+                   "episodes_closed": episodes_closed,
+                   "config_errors": cfg["errors"], **queued})
+
+
+def _event_detail(event: RiskEvent, cand: dict, history_only: str | None, receipts: int,
+                  live: bool) -> dict:
+    """What a scan reader needs about one event without joining risk_events."""
+    return {"event_id": event.id, "event_key": event.event_key, "scope": event.scope,
+            "subject": event.subject, "rule": event.rule, "step": event.step,
+            "change_pct": event.change_pct, "as_of": cand.get("as_of"),
+            "evidence_status": event.evidence_status, "price_source": cand.get("price_source"),
+            "observed_at": cand.get("observed_at"), "receipts": receipts,
+            "delivery": ("shadow_suppressed" if not live
+                         else "history_only" if history_only else "eligible"),
+            "history_only_reason": history_only}
 
 
 def _episode_for(prior: dict | None) -> int | None:

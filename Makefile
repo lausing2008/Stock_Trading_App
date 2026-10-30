@@ -120,7 +120,10 @@ test-integration-pg-schema:
 	 RZY_PG_REQUIRED=1 \
 	 INTRADAY_PG_URL=postgresql+psycopg2://postgres:probe@localhost:55439/schemaprobe \
 	 INTRADAY_PG_REQUIRED=1 \
+	 RECEIPTS_PG_URL=postgresql+psycopg2://postgres:probe@localhost:55439/schemaprobe \
+	 RECEIPTS_PG_REQUIRED=1 \
 	 python3 -m pytest -q -p no:randomly \
+		services/market-data/tests/test_receipts_postgres.py \
 		services/market-data/tests/test_news_impact_postgres.py \
 		services/market-data/tests/test_ddl_guard_postgres.py \
 		services/market-data/tests/test_little_rzy_postgres.py \

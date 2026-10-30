@@ -17,6 +17,12 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 COMPOSE="docker compose -f docker/docker-compose.yml"
+# Release identity for durable measurement records: the commit this checkout builds, marked
+# "-dirty" when tracked service/shared/docker files differ from it. docker-compose.yml passes it
+# into every Python container; a container recreated outside this script reports "unrecorded".
+STOCKAI_RELEASE_SHA="$(git rev-parse HEAD 2>/dev/null || echo unrecorded)"
+git diff --quiet HEAD -- services shared docker 2>/dev/null || STOCKAI_RELEASE_SHA="${STOCKAI_RELEASE_SHA}-dirty"
+export STOCKAI_RELEASE_SHA
 MIN_FREE_GB_BUILD="${MIN_FREE_GB_BUILD:-25}"
 WARN_FREE_GB="${WARN_FREE_GB:-40}"
 DEPLOY_SETTLE_S="${DEPLOY_SETTLE_S:-45}"

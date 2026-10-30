@@ -2108,6 +2108,12 @@ def get_last_hk_regime() -> dict:
 
 # ── Live price fetch ──────────────────────────────────────────────────────────
 
+#: {symbol: {source, fetched_at, session_date}} for the prices of the LATEST _fetch_live_prices
+#: call. One call per paper step (the job runs max_instances=1), read by entry receipts in the
+#: same step. A symbol absent here was priced some other way and is recorded as "unrecorded".
+_LIVE_PRICE_PROVENANCE: dict[str, dict] = {}
+
+
 def _fetch_live_prices(symbols: list[str]) -> dict[str, float]:
     """Live prices: the shared live-price cache first, then one yf.download() for the rest.
 
@@ -2127,10 +2133,15 @@ def _fetch_live_prices(symbols: list[str]) -> dict[str, float]:
     # The shared minute-fresh live-price cache already holds the same 2-day daily close for the
     # whole universe, so read it and download only what it cannot answer.
     prices: dict[str, float] = {}
+    # Where each price came from and when, for paper entry receipts. Replaced, not merged, so a
+    # symbol priced last cycle and missing now has no provenance rather than a stale one.
+    provenance: dict[str, dict] = {}
+    _LIVE_PRICE_PROVENANCE.clear()
     try:
         from ..api.routes import prices_from_live_cache
-        cached, symbols = prices_from_live_cache(symbols)
+        cached, symbols = prices_from_live_cache(symbols, provenance=provenance)
         prices.update({s: p for s, p in cached.items() if p >= 0.50})
+        _LIVE_PRICE_PROVENANCE.update({s: provenance[s] for s in prices if s in provenance})
     except Exception as exc:
         log.warning("paper.live_price_cache_read_failed", error=str(exc))
     if not symbols:
@@ -2150,6 +2161,12 @@ def _fetch_live_prices(symbols: list[str]) -> dict[str, float]:
                 p = float(closes.iloc[-1])
                 if p >= 0.50:  # reject zero, $0.01 delisted/error prices
                     prices[sym] = p
+                    # A 2-day DAILY download: the bar's date is the session, and the value is
+                    # that bar's latest close, which is not a timestamped quote.
+                    _LIVE_PRICE_PROVENANCE[sym] = {
+                        "source": "yf_download_2d_daily",
+                        "fetched_at": datetime.now(timezone.utc).isoformat(),
+                        "session_date": str(getattr(closes.index[-1], "date", lambda: closes.index[-1])())}
             except Exception:
                 continue
     except Exception as exc:
@@ -5091,6 +5108,102 @@ def _open_paper_trade(
     live_prices: dict[str, float], prefetched_open: list, atr: float | None,
     de_min_score: int | None = None,
 ) -> tuple["PaperTrade | None", str | None]:
+    """Size and open one paper position, and record ONE durable entry receipt for the attempt.
+
+    The receipt (2026-10-30) exists for the fresh-mark decision: every attempt, opened or
+    rejected, organic or conditional order, with the candidate's price and its timestamp, and —
+    when the attempt reached the exposure reservation — every open position's mark and where it
+    came from. Logs held this before and were lost on each container recreate. Recording never
+    changes the outcome: see `receipts.record.record_entry_receipt`.
+    """
+    receipt: dict = {}
+    trade, reason = _open_paper_trade_sized(
+        session, portfolio, stock, sig, ranking, live_price, game_plan, score, notes,
+        gate_source, cfg, style, equity, regime_size_mult, live_regime, live_prices,
+        prefetched_open, atr, de_min_score=de_min_score, _receipt=receipt)
+    _record_entry_receipt(session, portfolio, stock, cfg, style, gate_source, live_price, equity,
+                          trade, reason, receipt)
+    return trade, reason
+
+
+def _price_provenance(symbol: str, price) -> dict:
+    """Where `price` came from, if it is the price this step's fetch produced for `symbol`.
+    A price that does not match (a caller's own fallback, say) is `unrecorded`, not attributed."""
+    p = _LIVE_PRICE_PROVENANCE.get(symbol)
+    if p is None or price is None:
+        return {"source": "unrecorded", "fetched_at": None, "session_date": None}
+    return dict(p)
+
+
+def _parse_ts(value):
+    if not value:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return ts.astimezone(timezone.utc).replace(tzinfo=None) if ts.tzinfo else ts
+
+
+def _parse_date(value):
+    try:
+        return date.fromisoformat(str(value)[:10]) if value else None
+    except ValueError:
+        return None
+
+
+def _record_entry_receipt(session, portfolio, stock, cfg, style, gate_source, live_price, equity,
+                          trade, reason, receipt: dict) -> None:
+    import sys
+    from common.market_calendar import is_regular_session
+    from .receipts.identity import identity
+    from .receipts.record import record_entry_receipt
+    market = cfg.get("market", "US")
+    tel = receipt.get("telemetry") or {}
+    marks = receipt.get("marks")
+    if marks is None:
+        freshness = "not_evaluated"
+    elif tel.get("unvaluable"):
+        freshness = "unvaluable"
+    elif not marks:
+        freshness = "no_sector_positions"
+    elif tel.get("fallback_marks"):
+        freshness = "fallback_marks"
+    else:
+        freshness = "all_marks_live"
+    cand = _price_provenance(stock.symbol, live_price)
+    ident = identity([sys.modules[__name__], _exposure])
+    now = datetime.now(timezone.utc)
+    record_entry_receipt(session, {
+        "decided_at": now, "portfolio_id": portfolio.id, "market": market, "horizon": style,
+        "symbol": stock.symbol, "sector": (stock.sector or None) and str(stock.sector)[:64],
+        "origin": (gate_source or "")[:24], "session_date": _trading_date_for(market, now),
+        "regular_session": is_regular_session(market, now),
+        "outcome": "opened" if trade is not None else "rejected",
+        "reason": "opened" if trade is not None else str(reason or "unknown")[:64],
+        "trade_id": getattr(trade, "id", None), "freshness": freshness,
+        "reservation_reason": receipt.get("reservation_reason"),
+        "would_block_on_fresh_marks": tel.get("would_block_on_fresh_marks"),
+        "decision_would_change": tel.get("decision_would_change"),
+        "fresh_marks_enforced": receipt.get("fresh_marks_enforced"),
+        "candidate_price": live_price, "candidate_price_source": cand["source"],
+        "candidate_price_fetched_at": _parse_ts(cand["fetched_at"]),
+        "candidate_price_session_date": _parse_date(cand["session_date"]),
+        "position_value": receipt.get("position_value"), "equity": equity, "marks": marks,
+        "fallback_marks": tel.get("fallback_marks"), "fallback_value": tel.get("fallback_value"),
+        "committed": tel.get("committed"), "reserved": tel.get("reserved"),
+        "projected_pct": tel.get("projected_pct"), "cap_pct": tel.get("cap_pct"),
+        "release_sha": ident["release_sha"], "code_fingerprint": ident["code_fingerprint"],
+    })
+
+
+def _open_paper_trade_sized(
+    session, portfolio: PaperPortfolio, stock: Stock, sig: Signal, ranking: "Ranking | None",
+    live_price: float, game_plan: dict, score: int, notes: list[str], gate_source: str,
+    cfg: dict, style: str, equity: float, regime_size_mult: float, live_regime: dict | None,
+    live_prices: dict[str, float], prefetched_open: list, atr: float | None,
+    de_min_score: int | None = None, _receipt: dict | None = None,
+) -> tuple["PaperTrade | None", str | None]:
     """T286-CONDITIONAL-ORDER: position-sizing + PaperTrade-opening logic, extracted VERBATIM
     (same variable names, same order of checks, same audit-comment history) out of
     _scan_for_entries()'s own candidate loop so a conditional order's "buy" action can open a
@@ -5413,19 +5526,35 @@ def _open_paper_trade(
     # records how often it WOULD have refused an entry, so enabling it can rest on a measured
     # block rate instead of a guess. A fallback price is a number, not current exposure.
     _exposure_telemetry: dict = {}
-    _reservation, _res_reason = _exposure.reserve(
-        session, portfolio_id=portfolio.id,
-        intent_id=f"entry:{portfolio.id}:{stock.symbol}:{_uuid4().hex}",
-        symbol=stock.symbol, sector=_sector, value=position_value,
-        equity=max(equity, 1), cap_pct=cfg["max_sector_pct"],
+    _marks: list = []
+
+    def _price_for(t):
         # Valuation stays this module's definition (`_best_price`'s live-mark-then-entry-price
         # rule); only the ROW SET is read fresh inside the lock. The flag reports whether a
         # fallback was used, which is what the separate stale-mark finding needs.
         # Provenance, not a boolean: "entry_price" names WHICH substitute was used, so a later
         # reconciliation can recompute the same exposure against a mark that has since arrived.
-        price_for=lambda t: ((live_prices[t.symbol], None) if t.symbol in live_prices
-                             else (t.entry_price, "entry_price")),
+        price, provenance = ((live_prices[t.symbol], None) if t.symbol in live_prices
+                             else (t.entry_price, "entry_price"))
+        # Entry receipt: every valued position, its mark, and where and when that mark came from.
+        src = (_price_provenance(t.symbol, price) if provenance is None
+               else {"source": provenance, "fetched_at": None, "session_date": None})
+        _marks.append({"symbol": t.symbol, "trade_id": t.id, "provenance": provenance or "live",
+                       "price": price, "shares": float(t.shares),
+                       "value": None if price is None else float(price) * float(t.shares), **src})
+        return price, provenance
+
+    _reservation, _res_reason = _exposure.reserve(
+        session, portfolio_id=portfolio.id,
+        intent_id=f"entry:{portfolio.id}:{stock.symbol}:{_uuid4().hex}",
+        symbol=stock.symbol, sector=_sector, value=position_value,
+        equity=max(equity, 1), cap_pct=cfg["max_sector_pct"],
+        price_for=_price_for,
         telemetry=_exposure_telemetry)
+    if _receipt is not None:
+        _receipt.update(marks=_marks, telemetry=dict(_exposure_telemetry),
+                        reservation_reason=_res_reason, position_value=position_value,
+                        fresh_marks_enforced=False)
     if _exposure_telemetry.get("fallback_marks"):
         # Everything needed to separate an over-strict freshness policy from a fallback hiding
         # material exposure. Emitted per ATTEMPT; `symbol` plus the session date is what makes

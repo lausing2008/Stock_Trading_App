@@ -18,6 +18,11 @@ x-logging: &default-logging
 
 x-py-common: &py-common
   env_file: ../.env
+  # The commit a container was built from, exported by scripts/deploy_remote.sh. A container
+  # recreated any other way reports "unrecorded" rather than a guess (services/market-data
+  # src/services/receipts/identity.py).
+  environment:
+    STOCKAI_RELEASE_SHA: ${STOCKAI_RELEASE_SHA:-unrecorded}
   depends_on:
     redis:
       condition: service_healthy

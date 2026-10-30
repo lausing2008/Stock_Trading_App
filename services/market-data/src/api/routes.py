@@ -1066,7 +1066,7 @@ def _is_post_close_row(row: dict, market: str, now: datetime) -> bool:
     return close is not None and fetched >= close + _CLOSE_SETTLE
 
 
-def prices_from_live_cache(symbols) -> tuple[dict[str, float], list[str]]:
+def prices_from_live_cache(symbols, provenance: dict | None = None) -> tuple[dict[str, float], list[str]]:
     """(prices, to_fetch) for per-cycle consumers of the shared live-price cache.
 
     YF-ALERTS-LIVECACHE / YF-PAPER-LIVECACHE (2026-10-30). An open market's price comes from
@@ -1077,6 +1077,10 @@ def prices_from_live_cache(symbols) -> tuple[dict[str, float], list[str]]:
     close). `to_fetch` lists everything not answered that way (missing, stale, or outside the
     stock universe); the caller asks Yahoo for those, as before. Raw values are returned (a 0
     is a 0); each caller applies its own validity rule.
+
+    `provenance`, when given, receives {symbol: {source, fetched_at, session_date}} for every
+    answered symbol: which copy the price came from and when it was fetched. Paper entry receipts
+    record it, so a price can be judged fresh or stale after the fact.
     """
     now = datetime.now(timezone.utc)
     open_markets = live_price_markets_open(now)
@@ -1097,6 +1101,10 @@ def prices_from_live_cache(symbols) -> tuple[dict[str, float], list[str]]:
                         if c is not None and _is_post_close_row(c, market, now)), None)
         if row is not None and row.get("price") is not None:
             prices[sym] = float(row["price"])
+            if provenance is not None:
+                provenance[sym] = {
+                    "source": "live_cache" if row is live.get(sym) else "live_cache_last_snapshot",
+                    "fetched_at": row.get("fetched_at"), "session_date": row.get("session_date")}
         else:
             to_fetch.append(sym)
     return prices, to_fetch

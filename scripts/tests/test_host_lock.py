@@ -377,9 +377,16 @@ def test_deploy_refuses_while_backup_runs(env):
 def test_deploy_holds_lock_from_pull_through_build_recreate_and_prune(env):
     r = run(["bash", str(DEPLOY), "signal-engine"], env["env"], timeout=120)
     assert r.returncode == 0, r.stdout + r.stderr
-    remote_steps = [c for c in calls(env) if c.split()[0] in ("git", "build", "up", "prune")]
+    # deploy_remote.sh reads the release identity with two read-only git calls (rev-parse, diff);
+    # they must come AFTER the pull, so the SHA names the code being built, and under the lock.
+    identity = [c for c in calls(env) if c.startswith(("git rev-parse", "git diff"))]
+    remote_steps = [c for c in calls(env) if c.split()[0] in ("git", "build", "up", "prune")
+                    and c not in identity]
     assert [c.split()[0] for c in remote_steps] == ["git", "build", "up", "prune", "prune"]
-    assert all(c.endswith("held=1") for c in remote_steps), remote_steps
+    assert all(c.endswith("held=1") for c in remote_steps + identity), remote_steps + identity
+    log = calls(env)
+    assert identity and all(log.index(remote_steps[0]) < log.index(c) < log.index(remote_steps[1])
+                            for c in identity), log
     assert "nested under" in r.stderr  # deploy_remote.sh re-acquired as a nested holder
     assert "state=completed what=deploy.sh:signal-engine" in env["status"].read_text()
     assert lock_is_free(env["env"])

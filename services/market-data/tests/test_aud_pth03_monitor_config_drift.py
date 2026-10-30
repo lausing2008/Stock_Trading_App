@@ -108,7 +108,9 @@ def test_post_loop_sector_cap_monitor_still_uses_portfolio_level_cfg():
 def test_open_paper_trade_snapshots_the_resolved_config_at_entry():
     """_open_paper_trade() must persist the SAME cfg it already sized/priced the trade
     against, so exit_config_snapshot is never a value the entry decision didn't actually see."""
-    start = _SOURCE.index("def _open_paper_trade(")
+    # The sizing body moved into `_open_paper_trade_sized` (2026-10-30); `_open_paper_trade`
+    # is now the receipt-recording wrapper around it.
+    start = _SOURCE.index("def _open_paper_trade_sized(")
     end = _SOURCE.index("\ndef ", start + 1)
     body = _SOURCE[start:end]
     assert "exit_config_snapshot  = dict(cfg)," in body

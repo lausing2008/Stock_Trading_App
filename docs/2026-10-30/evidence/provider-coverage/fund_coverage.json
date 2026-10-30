@@ -1,0 +1,33 @@
+{
+ "read_at": "2026-10-30T13:51:03.618584+00:00",
+ "symbols": 199,
+ "by_market": {
+  "HK": {
+   "fresh:has_data": 42,
+   "failure_remembered": 0
+  },
+  "US": {
+   "fresh:has_data": 155,
+   "failure_remembered": 0,
+   "fresh:no_data": 2
+  }
+ },
+ "no_data": [
+  {
+   "symbol": "AAOX",
+   "market": "US",
+   "state": "fresh",
+   "has_data": false,
+   "failure_remembered": false,
+   "fresh_age_hours": 21.53
+  },
+  {
+   "symbol": "GLD",
+   "market": "US",
+   "state": "fresh",
+   "has_data": false,
+   "failure_remembered": false,
+   "fresh_age_hours": 20.09
+  }
+ ]
+}

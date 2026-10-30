@@ -44,6 +44,10 @@ async def on_startup():
     # /intraday/* as schema_unavailable; it must not take market-data down (no generator exists).
     from .services.intraday.schema import ensure_schema_safely
     ensure_schema_safely()
+    # Price-risk scan records and paper entry receipts (2026-10-30). Same contract: recorded,
+    # never fatal to startup.
+    from .services.receipts.schema import ensure_schema_safely as ensure_receipts_schema
+    ensure_receipts_schema()
     start_scheduler()
     # T230-DATA-STREAMING-QUOTES: long-lived real-time quote WebSocket task, started once at
     # startup on FastAPI's own event loop (this is safe here specifically because on_startup is

@@ -1,0 +1,16 @@
+Read 2026-10-30 13:32 UTC (09:32 ET), read-only.
+Host checkout: b345752a. scripts/check_deploy_drift.sh from a clean b345752a worktree: 12/12 OK, 0 drifted.
+Commits running beyond the Stage C release a3107b47 (backend code):
+  1d85a240, ad55a635  UW cooldown: trace yfinance 429s; skip fresh US ingests during cooldown  -> SHIPPED
+  851b6189, 9772c2ab  per-market Yahoo live prices, cached price alerts                       -> SHIPPED
+  5e2127a3            fundamentals remember Yahoo failures; paper trading reads the live cache -> SHIPPED
+  41d55f51            closed market's cached price taken as close only if fetched after it   -> SHIPPED
+  55dae269            candidate qualification (research-engine)                               -> SHIPPED
+Container starts: market-data 04:57:23Z, research-engine 00:58:40Z, frontend 05:03:20Z; the other
+ten backends 00:03-00:13Z (Stage C release). All healthy.
+=> Friday's US check is a COMBINED-RELEASE operational check; it cannot isolate Stage C's effect.
+
+US open burst: signals max(ts) 13:33:12 UTC for SHORT/SWING/LONG/GROWTH, 127 rows each in the
+last 15 min (baseline 22:24:16 Oct 29, 156 rows/20h). 0 Tracebacks in market-data, last 20 min.
+signal_outcomes: max(ts_evaluated) 2026-10-30 08:30:18 UTC (HK post-close), 26,986 rows
+(baseline 20:32:12 Oct 29, 26,881). US post-close evaluation (20:30 UTC) still pending.

@@ -2706,6 +2706,7 @@ def run_price_risk_detection() -> None:
     """
     import uuid as _uuid
     from .price_risk_watch import detect
+    from .receipts.record import record_price_risk_scan
     started = time.monotonic()
     lock_key = "stockai:lock:price_risk_detection"
     lock_token = _uuid.uuid4().hex
@@ -2716,21 +2717,31 @@ def run_price_risk_detection() -> None:
     except Exception as exc:
         log.warning("price_risk.lock_unavailable", error=str(exc))
         return
+    # SCAN RECORDS (2026-10-30). Each scope's record is written in the same transaction as its
+    # events, so an event never exists without the scan that produced it. A scope that raises
+    # writes a `failed` record afterwards, in a new session once the failed one is closed, so a
+    # missing scan is visible rather than looking like a quiet market.
+    run_id, run_started, scope = _uuid.uuid4().hex, datetime.now(timezone.utc), "symbol"
     try:
         with SessionLocal() as session:
-            result = detect(session, redis_client=redis_client)
+            result = detect(session, redis_client=redis_client, trigger="scheduled")
+            record_price_risk_scan(session, {"run_id": run_id, **result.pop("scan")})
             session.commit()
-            log.info("price_risk.scan", **result)
+            log.info("price_risk.scan", run_id=run_id, **result)
             # Same completed-price/evidence contract, separate 2% benchmark ladder and
             # unconditional shadow mode. This never expands the live email audience.
-            benchmarks = detect(session, redis_client=redis_client, scope="benchmark")
+            scope = "benchmark"
+            benchmarks = detect(session, redis_client=redis_client, scope="benchmark",
+                                trigger="scheduled")
+            record_price_risk_scan(session, {"run_id": run_id, **benchmarks.pop("scan")})
             session.commit()
-            log.info("price_risk.benchmarks_shadow", **benchmarks)
+            log.info("price_risk.benchmarks_shadow", run_id=run_id, **benchmarks)
         _record_job_status("run_price_risk_detection", "ok", time.monotonic() - started)
     except Exception as exc:
-        log.error("price_risk.failed", error=str(exc))
+        log.error("price_risk.failed", run_id=run_id, scope=scope, error=str(exc))
         _record_job_status("run_price_risk_detection", "error", time.monotonic() - started,
                            str(exc))
+        _record_failed_price_risk_scan(run_id, scope, run_started, exc)
     finally:
         try:
             rc = _get_redis()
@@ -2738,6 +2749,26 @@ def run_price_risk_detection() -> None:
                 rc.delete(lock_key)
         except Exception:  # noqa: BLE001
             pass
+
+
+def _record_failed_price_risk_scan(run_id: str, scope: str, run_started: datetime,
+                                   exc: Exception) -> None:
+    """A `failed` scan record for a scope that raised. Best effort: if this write fails too
+    (the table itself is missing, say), the error log above is what remains."""
+    try:
+        from . import price_risk_watch
+        from .receipts.identity import identity
+        from .receipts.record import record_price_risk_scan
+        ident = identity(price_risk_watch._identity_modules())
+        with SessionLocal() as session:
+            record_price_risk_scan(session, {
+                "run_id": run_id, "scope": scope, "status": "failed", "trigger": "scheduled",
+                "started_at": run_started, "finished_at": datetime.now(timezone.utc),
+                "release_sha": ident["release_sha"], "code_fingerprint": ident["code_fingerprint"],
+                "identity": ident, "error": f"{type(exc).__name__}: {exc}"[:2000]})
+            session.commit()
+    except Exception as record_exc:  # noqa: BLE001
+        log.error("price_risk.failed_scan_record_failed", run_id=run_id, error=str(record_exc))
 
 
 def drain_price_risk_outbox() -> None:
