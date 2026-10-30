@@ -9232,8 +9232,9 @@ def _alert_prices(symbols) -> dict[str, float]:
       * stockai:live_prices first (refreshed every minute while a market is in its window);
       * for a market outside its window, its last snapshot row (the close — what fast_info
         returned for a closed market anyway);
-      * Yahoo only for a symbol missing from both whose market is in its window.
-    Outside both windows this makes no Yahoo request at all. A raw 0 is returned as-is: callers
+      * Yahoo only for a symbol missing from both whose market is in its window, or one the
+        snapshot has never held (outside the universe, or newly added).
+    Outside both windows universe symbols make no Yahoo request at all. A raw 0 is returned as-is: callers
     decide (price alerts reject it, the drawdown alert treats it as -100%).
     """
     from ..api.routes import _LIVE_KEY, _LIVE_LAST_KEY, live_price_markets_open
@@ -9253,7 +9254,10 @@ def _alert_prices(symbols) -> dict[str, float]:
             p = last.get(sym)
         if p is not None:
             prices[sym] = float(p)
-        elif market in open_markets:
+        elif market in open_markets or sym not in last:
+            # A symbol the snapshot has never held (an alert on something outside the stock
+            # universe, e.g. BTC-USD or ^HSI, or one just added) keeps its old behaviour:
+            # asked directly, at any hour. Universe symbols of a closed market never are.
             missing.append(sym)
     if missing:
         import yfinance as yf

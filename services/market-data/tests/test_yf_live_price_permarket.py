@@ -175,9 +175,17 @@ def test_a_closed_market_uses_its_snapshot_and_outside_windows_yahoo_is_never_ca
 
 
 def test_only_open_market_symbols_missing_from_the_cache_go_to_yahoo():
-    p, calls = _alert(["AAPL", "NVDA", "9988.HK"], [_row("AAPL", 1.5)], [], {"US"})
+    p, calls = _alert(["AAPL", "NVDA", "9988.HK"], [_row("AAPL", 1.5)], [_row("9988.HK", 4.0)], {"US"})
     assert calls == ["NVDA"]
-    assert p == {"AAPL": 1.5, "NVDA": 2.0}
+    assert p == {"AAPL": 1.5, "NVDA": 2.0, "9988.HK": 4.0}
+
+
+def test_a_symbol_the_snapshot_never_held_is_still_asked_at_any_hour():
+    """Review finding: an alert on BTC-USD or ^HSI is not in the universe, so it is never in the
+    snapshot; treating it as a closed US symbol would silence it outside US hours."""
+    p, calls = _alert(["BTC-USD", "AAPL"], [], SNAP, set())
+    assert calls == ["BTC-USD"]
+    assert p == {"BTC-USD": 2.0, "AAPL": 9.0}
 
 
 def test_an_open_markets_snapshot_is_never_used_for_a_live_price():
