@@ -1,0 +1,18 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_________ test_an_evaluation_insert_outside_read_committed_is_refused __________
+
+engine = Engine(postgresql+psycopg2://postgres:***@127.0.0.1:55448/icr)
+
+    @pg_only
+    def test_an_evaluation_insert_outside_read_committed_is_refused(engine):
+        with engine.begin() as conn:
+            i = ident(conn)
+            b = batch(conn, i)
+>       with pytest.raises(DBAPIError, match="requires READ COMMITTED"):
+E       Failed: DID NOT RAISE <class 'sqlalchemy.exc.DBAPIError'>
+
+intraday_store_suite.py:605: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_an_evaluation_insert_outside_read_committed_is_refused
+1 failed, 56 deselected in 1.22s

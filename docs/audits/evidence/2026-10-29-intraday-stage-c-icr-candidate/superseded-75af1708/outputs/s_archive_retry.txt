@@ -1,0 +1,41 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+____________________ test_archive_is_atomic_and_retry_safe _____________________
+
+engine = Engine(postgresql+psycopg2://postgres:***@127.0.0.1:55448/icr)
+
+    def test_archive_is_atomic_and_retry_safe(engine):
+        with engine.begin() as conn:
+            i = ident(conn)
+            b = batch(conn, i)
+            for mi in (0, 5, 10):
+                _no_setup(conn, i, b, mi)
+            a_setup(conn, i, b)
+            with pytest.raises(c.ContractViolation):
+                store.archive_session(conn, run_key="observed", identity=i, session_date=D, now=at(22, 0))
+            store.seal_session(conn, run_key="observed", identity=i, session_date=D, now=at(22, 0))
+        # a failing archive commits nothing
+        with pytest.raises(RuntimeError):
+            with engine.begin() as conn:
+                store.archive_session(conn, run_key="observed", identity=i, session_date=D, now=at(22, 0))
+                raise RuntimeError("crash after archive, before commit")
+        with engine.begin() as conn:
+            assert conn.execute(select(func.count()).select_from(m.evaluation_counts)).scalar() == 0
+            first = store.archive_session(conn, run_key="observed", identity=i, session_date=D, now=at(22, 0))
+        with engine.begin() as conn:
+            again = store.archive_session(conn, run_key="observed", identity=i, session_date=D, now=at(23, 0))
+            counts = dict(conn.execute(select(m.evaluation_counts.c.result, m.evaluation_counts.c.count)).all())
+            remaining = conn.execute(select(m.evaluations.c.result)).scalars().all()
+        assert first["deleted"] == 3 and again["deleted"] == 0
+        assert counts == {"no_setup": 3, "setup": 1} and remaining == ["setup"]
+>       assert first["counts"] == again["counts"] == {"no_setup": 3, "setup": 1}    # a retry reports the archive
+E       AssertionError: assert {'no_setup': 3, 'setup': 1} == {'setup': 1}
+E         Omitting 1 identical items, use -vv to show
+E         Left contains 1 more item:
+E         {'no_setup': 3}
+E         Use -v to get more diff
+
+intraday_store_suite.py:372: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_archive_is_atomic_and_retry_safe - Asser...
+1 failed, 56 deselected in 1.31s

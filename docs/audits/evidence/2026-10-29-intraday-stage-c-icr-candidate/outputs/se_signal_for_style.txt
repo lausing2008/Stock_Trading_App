@@ -1,0 +1,92 @@
+...FF                                                                    [100%]
+=================================== FAILURES ===================================
+_______ test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>3] ________
+
+call = <function <lambda> at 0x7a6ffdbc99e0>
+
+    @pytest.mark.parametrize("call", [
+        lambda s: routes.all_latest_signals(style="INTRADAY", session=s, _="u"),
+        lambda s: routes.suppressed_signals(style="INTRADAY", market=None, session=s),
+        lambda s: routes.signal_history(symbol="AAA", style="intraday", days=60, session=s),
+        lambda s: routes.signal_for("AAA", persist=False, live=False, style="INTRADAY", session=s),
+        lambda s: routes.signal_for("AAA", persist=True, live=True, style="BOGUS", session=s),
+    ])
+    def test_unknown_or_intraday_style_is_422_before_any_sql(call):
+        with patch.object(routes, "generate_all_signals", side_effect=AssertionError("live regeneration ran")):
+            with pytest.raises(HTTPException) as exc:
+>               call(_no_sql_session())
+
+intraday_isolation_suite.py:83: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+intraday_isolation_suite.py:77: in <lambda>
+    lambda s: routes.signal_for("AAA", persist=False, live=False, style="INTRADAY", session=s),
+../src/api/routes.py:1098: in signal_for
+    stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
+/home/lausing/anaconda3/lib/python3.12/unittest/mock.py:1139: in __call__
+    return self._mock_call(*args, **kwargs)
+/home/lausing/anaconda3/lib/python3.12/unittest/mock.py:1143: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <MagicMock name='mock.query' id='134621417423072'>
+args = (<class 'db.models.Stock'>,), kwargs = {}
+effect = AssertionError('SQL ran for a refused style')
+
+    def _execute_mock_call(self, /, *args, **kwargs):
+        # separate from _increment_mock_call so that awaited functions are
+        # executed separately from their call, also AsyncMock overrides this method
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+>               raise effect
+E               AssertionError: SQL ran for a refused style
+
+/home/lausing/anaconda3/lib/python3.12/unittest/mock.py:1198: AssertionError
+_______ test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>4] ________
+
+call = <function <lambda> at 0x7a6ffdbc9a80>
+
+    @pytest.mark.parametrize("call", [
+        lambda s: routes.all_latest_signals(style="INTRADAY", session=s, _="u"),
+        lambda s: routes.suppressed_signals(style="INTRADAY", market=None, session=s),
+        lambda s: routes.signal_history(symbol="AAA", style="intraday", days=60, session=s),
+        lambda s: routes.signal_for("AAA", persist=False, live=False, style="INTRADAY", session=s),
+        lambda s: routes.signal_for("AAA", persist=True, live=True, style="BOGUS", session=s),
+    ])
+    def test_unknown_or_intraday_style_is_422_before_any_sql(call):
+        with patch.object(routes, "generate_all_signals", side_effect=AssertionError("live regeneration ran")):
+            with pytest.raises(HTTPException) as exc:
+>               call(_no_sql_session())
+
+intraday_isolation_suite.py:83: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+intraday_isolation_suite.py:78: in <lambda>
+    lambda s: routes.signal_for("AAA", persist=True, live=True, style="BOGUS", session=s),
+../src/api/routes.py:1098: in signal_for
+    stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
+/home/lausing/anaconda3/lib/python3.12/unittest/mock.py:1139: in __call__
+    return self._mock_call(*args, **kwargs)
+/home/lausing/anaconda3/lib/python3.12/unittest/mock.py:1143: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <MagicMock name='mock.query' id='134621417438864'>
+args = (<class 'db.models.Stock'>,), kwargs = {}
+effect = AssertionError('SQL ran for a refused style')
+
+    def _execute_mock_call(self, /, *args, **kwargs):
+        # separate from _increment_mock_call so that awaited functions are
+        # executed separately from their call, also AsyncMock overrides this method
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+>               raise effect
+E               AssertionError: SQL ran for a refused style
+
+/home/lausing/anaconda3/lib/python3.12/unittest/mock.py:1198: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_isolation_suite.py::test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>3]
+FAILED intraday_isolation_suite.py::test_unknown_or_intraday_style_is_422_before_any_sql[<lambda>4]
+2 failed, 3 passed, 20 deselected in 2.23s

@@ -1,0 +1,205 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_________ test_cross_mode_inputs_and_events_are_refused_by_the_writer __________
+
+self = <sqlalchemy.engine.base.Connection object at 0x735d11017ef0>
+dialect = <sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite object at 0x735d11775cd0>
+context = <sqlalchemy.dialects.sqlite.base.SQLiteExecutionContext object at 0x735d1106ffb0>
+statement = <sqlalchemy.dialects.sqlite.base.SQLiteCompiler object at 0x735d1106f9b0>
+parameters = [(1, 'observed', 3, 'actionable', 'entered', '2026-10-28 14:09:00.000000', ...)]
+
+    def _exec_single_context(
+        self,
+        dialect: Dialect,
+        context: ExecutionContext,
+        statement: Union[str, Compiled],
+        parameters: Optional[_AnyMultiExecuteParams],
+    ) -> CursorResult[Any]:
+        """continue the _execute_context() method for a single DBAPI
+        cursor.execute() or cursor.executemany() call.
+    
+        """
+        if dialect.bind_typing is BindTyping.SETINPUTSIZES:
+            generic_setinputsizes = context._prepare_set_input_sizes()
+    
+            if generic_setinputsizes:
+                try:
+                    dialect.do_set_input_sizes(
+                        context.cursor, generic_setinputsizes, context
+                    )
+                except BaseException as e:
+                    self._handle_dbapi_exception(
+                        e, str(statement), parameters, None, context
+                    )
+    
+        cursor, str_statement, parameters = (
+            context.cursor,
+            context.statement,
+            context.parameters,
+        )
+    
+        effective_parameters: Optional[_AnyExecuteParams]
+    
+        if not context.executemany:
+            effective_parameters = parameters[0]
+        else:
+            effective_parameters = parameters
+    
+        if self._has_events or self.engine._has_events:
+            for fn in self.dispatch.before_cursor_execute:
+                str_statement, effective_parameters = fn(
+                    self,
+                    cursor,
+                    str_statement,
+                    effective_parameters,
+                    context,
+                    context.executemany,
+                )
+    
+        if self._echo:
+            self._log_info(str_statement)
+    
+            stats = context._get_cache_stats()
+    
+            if not self.engine.hide_parameters:
+                self._log_info(
+                    "[%s] %r",
+                    stats,
+                    sql_util._repr_params(
+                        effective_parameters,
+                        batches=10,
+                        ismulti=context.executemany,
+                    ),
+                )
+            else:
+                self._log_info(
+                    "[%s] [SQL parameters hidden due to hide_parameters=True]",
+                    stats,
+                )
+    
+        evt_handled: bool = False
+        try:
+            if context.execute_style is ExecuteStyle.EXECUTEMANY:
+                effective_parameters = cast(
+                    "_CoreMultiExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_executemany:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_executemany(
+                        cursor,
+                        str_statement,
+                        effective_parameters,
+                        context,
+                    )
+            elif not effective_parameters and context.no_parameters:
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute_no_params:
+                        if fn(cursor, str_statement, context):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_execute_no_params(
+                        cursor, str_statement, context
+                    )
+            else:
+                effective_parameters = cast(
+                    "_CoreSingleExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+>                   self.dialect.do_execute(
+                        cursor, str_statement, effective_parameters, context
+                    )
+
+/home/lausing/anaconda3/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1964: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite object at 0x735d11775cd0>
+cursor = <sqlite3.Cursor object at 0x735d1107a1c0>
+statement = 'INSERT INTO intraday_setup_transitions (setup_id, run_key, seq, from_state, to_state, evidence_eligible_at, evidence_...cided_at, effective_at, clock_basis, reason, evidence, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+parameters = (1, 'observed', 3, 'actionable', 'entered', '2026-10-28 14:09:00.000000', ...)
+context = <sqlalchemy.dialects.sqlite.base.SQLiteExecutionContext object at 0x735d1106ffb0>
+
+    def do_execute(self, cursor, statement, parameters, context=None):
+>       cursor.execute(statement, parameters)
+E       sqlite3.IntegrityError: CHECK constraint failed: ck_intraday_transition_clock_mode
+
+/home/lausing/anaconda3/lib/python3.12/site-packages/sqlalchemy/engine/default.py:942: IntegrityError
+
+The above exception was the direct cause of the following exception:
+
+engine = Engine(sqlite://)
+
+    def test_cross_mode_inputs_and_events_are_refused_by_the_writer(engine):
+        with engine.begin() as conn:
+            i = ident(conn)
+            store.ensure_replay_run(conn, "r1", input_snapshot_hash="h", as_of=at(21, 0), now=at(21, 0))
+            rb = batch(conn, i, "r1")
+            det = c.decide_at_detection(trigger_bar_open=at(14, 0), detected_at=at(14, 7), direction="bullish", times=T,
+                                        stop_breached=False, inputs_ok=True)
+            with pytest.raises(c.ContractViolation, match="read clock"):
+                store.record_evaluation(conn, batch_id=rb, run_key="r1", identity=i, stock_id=1, symbol="AAA",
+                                        trigger_bar_open=at(14, 0), result="setup", detected_at=at(14, 7),
+                                        data_cutoff=at(14, 7), setup=SETUP, input_records=[an_input(at(14, 0))],
+                                        detection=det, times=T)
+        with engine.begin() as conn:
+            sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+            with pytest.raises(c.ContractViolation, match="clock on a observed record"):
+>               store.append_transition(conn, setup_id=sid, to_state="entered", idempotency_key="x",
+                                        event=c.EventTimes(at(14, 9), at(14, 10), at(14, 10), "replay_logical"))
+
+intraday_store_suite.py:628: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../src/services/intraday/store.py:229: in append_transition
+    conn.execute(transitions.insert().values(
+/home/lausing/anaconda3/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1416: in execute
+    return meth(
+/home/lausing/anaconda3/lib/python3.12/site-packages/sqlalchemy/sql/elements.py:515: in _execute_on_connection
+    return connection._execute_clauseelement(
+/home/lausing/anaconda3/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1638: in _execute_clauseelement
+    ret = self._execute_context(
+/home/lausing/anaconda3/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1843: in _execute_context
+    return self._exec_single_context(
+/home/lausing/anaconda3/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1983: in _exec_single_context
+    self._handle_dbapi_exception(
+/home/lausing/anaconda3/lib/python3.12/site-packages/sqlalchemy/engine/base.py:2352: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+/home/lausing/anaconda3/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1964: in _exec_single_context
+    self.dialect.do_execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite object at 0x735d11775cd0>
+cursor = <sqlite3.Cursor object at 0x735d1107a1c0>
+statement = 'INSERT INTO intraday_setup_transitions (setup_id, run_key, seq, from_state, to_state, evidence_eligible_at, evidence_...cided_at, effective_at, clock_basis, reason, evidence, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+parameters = (1, 'observed', 3, 'actionable', 'entered', '2026-10-28 14:09:00.000000', ...)
+context = <sqlalchemy.dialects.sqlite.base.SQLiteExecutionContext object at 0x735d1106ffb0>
+
+    def do_execute(self, cursor, statement, parameters, context=None):
+>       cursor.execute(statement, parameters)
+E       sqlalchemy.exc.IntegrityError: (sqlite3.IntegrityError) CHECK constraint failed: ck_intraday_transition_clock_mode
+E       [SQL: INSERT INTO intraday_setup_transitions (setup_id, run_key, seq, from_state, to_state, evidence_eligible_at, evidence_observed_at, decided_at, effective_at, clock_basis, reason, evidence, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)]
+E       [parameters: (1, 'observed', 3, 'actionable', 'entered', '2026-10-28 14:09:00.000000', '2026-10-28 14:10:00.000000', '2026-10-28 14:10:00.000000', '2026-10-28 14:10:00.000000', 'replay_logical', None, 'null', 'x')]
+E       (Background on this error at: https://sqlalche.me/e/20/gkpj)
+
+/home/lausing/anaconda3/lib/python3.12/site-packages/sqlalchemy/engine/default.py:942: IntegrityError
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_cross_mode_inputs_and_events_are_refused_by_the_writer
+1 failed, 56 deselected in 1.09s

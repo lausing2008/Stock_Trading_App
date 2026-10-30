@@ -1,0 +1,15 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+____________________ test_cancellation_timing_against_entry ____________________
+
+    def test_cancellation_timing_against_entry():
+        bs = bars(at(14, 0), 40)
+>       assert sim(bs, cancellation_effective=at(14, 9)).state == "cancelled"
+E       AssertionError: assert 'exited' == 'cancelled'
+E         - cancelled
+E         + exited
+
+tests/test_intraday_contract.py:333: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_contract.py::test_cancellation_timing_against_entry
+1 failed, 43 deselected in 0.12s

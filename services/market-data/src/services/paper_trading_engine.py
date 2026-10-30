@@ -58,6 +58,7 @@ def _get_redis_safe():
         return None
 from common.logging import get_logger
 from common.indicators import atr as _canon_atr
+from common.horizons import DAILY_HORIZONS as _DAILY_HORIZONS
 from db import (
     AlertPreference,
     BrokerConnection, Indicator, PaperEntryScanLog, PaperEquityCurve, PaperPortfolio, PaperTrade,
@@ -3208,9 +3209,11 @@ def _monitor_positions(
                     "FROM signals sig JOIN stocks s ON s.id = sig.stock_id "
                     "WHERE s.symbol = ANY(:syms) AND sig.reasons->>'rsi' IS NOT NULL "
                     "AND sig.ts <= :as_of "
+                    "AND CAST(sig.horizon AS text) = ANY(:daily_horizons) "  # Intraday Stage C §10
                     "ORDER BY s.symbol, sig.ts DESC"
                 ),
-                {"syms": list(armed_symbols), "as_of": _exit_as_of()},
+                {"syms": list(armed_symbols), "as_of": _exit_as_of(),
+                 "daily_horizons": list(_DAILY_HORIZONS)},
             ).all()
             for sym, rsi_val in _rsi_rows:
                 # Keep the original > 75 threshold. `float()` rather than a truthiness test:

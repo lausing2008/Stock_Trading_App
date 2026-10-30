@@ -1,0 +1,22 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_____ test_direct_update_and_unguarded_delete_are_refused_by_the_database ______
+
+engine = Engine(postgresql+psycopg2://postgres:***@127.0.0.1:55448/icr)
+
+    @pg_only
+    def test_direct_update_and_unguarded_delete_are_refused_by_the_database(engine):
+        with engine.begin() as conn:
+            i = ident(conn)
+            sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        for stmt in ("UPDATE intraday_setups SET stop = 1 WHERE id = :s",
+                     "UPDATE intraday_setup_transitions SET reason = 'x' WHERE setup_id = :s",
+                     "DELETE FROM intraday_setup_inputs WHERE setup_id = :s",
+                     "DELETE FROM intraday_runs WHERE run_key = 'observed'"):
+>           with pytest.raises(DBAPIError, match="intraday_(insert_only|delete_refused)"):
+E           Failed: DID NOT RAISE <class 'sqlalchemy.exc.DBAPIError'>
+
+intraday_store_suite.py:323: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_direct_update_and_unguarded_delete_are_refused_by_the_database
+1 failed, 56 deselected in 1.42s

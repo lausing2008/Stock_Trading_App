@@ -63,6 +63,16 @@ _PHASE3_SRC = "if True:\n" + _extract(
 )
 
 
+# Intraday Stage C: Phase 3 reads its hold window through the real `_hold_days_for` (a module-
+# level helper), which validates the horizon with the real registry.
+_HOLD_DAYS_FOR_SRC = _extract("def _hold_days_for(", "\n\n\n")
+_hz_spec = importlib.util.spec_from_file_location(
+    "horizons_t410", pathlib.Path(__file__).resolve().parents[3] / "shared" / "common" / "horizons.py")
+_horizons = importlib.util.module_from_spec(_hz_spec)
+sys.modules["horizons_t410"] = _horizons
+_hz_spec.loader.exec_module(_horizons)
+
+
 _next_horizon_id = [0]
 
 
@@ -130,6 +140,9 @@ def _run_phase3(session, pending_signals, price_map: dict, today: date):
         "session": session, "pending_signals": pending_signals, "today": today,
         "log": _NullLog(),
     }
+    namespace.update(parse_daily_horizon=_horizons.parse_daily_horizon,
+                     UnsupportedHorizon=_horizons.UnsupportedHorizon)
+    exec(_HOLD_DAYS_FOR_SRC, namespace)  # noqa: S102 — isolated eval of real production source
     exec(_PRICE_HELPERS_SRC, namespace)  # noqa: S102 — isolated eval of real production source
     namespace["_window_return"] = namespace["_window_return"]  # defined by the block above
     exec(_PHASE3_SRC, namespace)  # noqa: S102 — isolated eval of real production source

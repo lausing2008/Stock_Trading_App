@@ -74,6 +74,15 @@ _cal_spec.loader.exec_module(_calendar_mod)
 sys.modules["common.market_calendar"] = _calendar_mod
 setattr(sys.modules["common"], "market_calendar", _calendar_mod)
 
+# Intraday Stage C: common.horizons is the horizon registry (pure stdlib). Real for the same
+# reason as the calendar: under the MagicMock every membership test and every raise would pass.
+_horizons_path = _pathlib.Path(__file__).resolve().parents[3] / "shared" / "common" / "horizons.py"
+_hz_spec = _ilu.spec_from_file_location("common.horizons", _horizons_path)
+_horizons_mod = _ilu.module_from_spec(_hz_spec)
+sys.modules["common.horizons"] = _horizons_mod      # before exec: @dataclass resolves its module
+_hz_spec.loader.exec_module(_horizons_mod)
+setattr(sys.modules["common"], "horizons", _horizons_mod)
+
 # SR-01/SR-02: common.signal_time and common.conviction_gate must be REAL for the same reason
 # as the three above. Both are pure decision logic over values, and under the blanket "common"
 # MagicMock every call returns a truthy Mock — so a test asserting that a STALE conviction

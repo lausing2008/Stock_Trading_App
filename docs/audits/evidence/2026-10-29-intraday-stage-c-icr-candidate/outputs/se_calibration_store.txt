@@ -1,0 +1,28 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_______ test_calibration_store_read_carries_the_daily_predicate_compiled _______
+
+    def test_calibration_store_read_carries_the_daily_predicate_compiled():
+        from datetime import datetime, timezone
+        s = _CaptureSession()
+        with patch.object(calibration_store, "compare", return_value={}):
+            calibration_store.load_comparison(s, now=datetime(2026, 10, 29, tzinfo=timezone.utc))
+>       _assert_guarded(s)
+
+intraday_isolation_suite.py:212: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+session = <intraday_isolation_suite._CaptureSession object at 0x78d6c8248980>
+
+    def _assert_guarded(session, *, tables=("signals", "signal_outcomes", "signal_outcome_horizons")):
+        reads = [s for s in map(_sql, session.stmts) if any(f"FROM {t}" in s or f"JOIN {t}" in s for t in tables)]
+        assert reads, "the reader executed no statement against the daily tables"
+        for s in reads:
+>           assert DAILY_SQL in s, s[:400]
+E           AssertionError: SELECT signal_outcome_horizons.id, signal_outcome_horizons.signal_id, signal_outcome_horizons.stock_id, signal_outcome_horizons.symbol, signal_outcome_horizons.horizon, signal_outcome_horizons.signal_direction, signal_outcome_horizons.signal_date, signal_outcome_horizons.window_days, signal_outcome_horizons.horizon_unit, signal_outcome_horizons.is_primary_window, signal_outcome_horizons.entry_date
+E           assert "horizon IN ('SHORT', 'SWING', 'LONG', 'GROWTH')" in "SELECT signal_outcome_horizons.id, signal_outcome_horizons.signal_id, signal_outcome_horizons.stock_id, signal_outcom...it = 'calendar_days' ORDER BY signal_outcome_horizons.signal_date DESC, signal_outcome_horizons.id DESC \n LIMIT 30001"
+
+intraday_isolation_suite.py:168: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_isolation_suite.py::test_calibration_store_read_carries_the_daily_predicate_compiled
+1 failed, 24 deselected in 2.06s

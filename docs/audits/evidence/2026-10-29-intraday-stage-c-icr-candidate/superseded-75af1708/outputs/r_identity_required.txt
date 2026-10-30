@@ -1,0 +1,24 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________ test_two_replay_runs_and_two_identities_are_never_pooled ___________
+
+engine = Engine(postgresql+psycopg2://postgres:***@127.0.0.1:55448/icr)
+
+    def test_two_replay_runs_and_two_identities_are_never_pooled(engine):
+        with engine.begin() as conn:
+            i1, i2 = ident(conn), ident(conn, strategy_source_hash="t" * 64)
+            for rk in ("r1", "r2"):
+                store.ensure_replay_run(conn, rk, input_snapshot_hash="h" + rk, as_of=at(21, 0), now=at(21, 0))
+            a_setup(conn, i1, batch(conn, i1, "r1"), run_key="r1")
+            a_setup(conn, i1, batch(conn, i1, "r2"), run_key="r2", symbol="BBB", stock_id=2)
+            a_setup(conn, i2, batch(conn, i2, "r1"), run_key="r1", symbol="CCC", stock_id=3)
+            r1 = R.list_setups(conn, market="US", mode="replay", run_key="r1", identity=i1, session_date=D)
+>           assert [x["symbol"] for x in r1["items"]] == ["AAA"] and r1["identity"]["identity_hash"] == i1
+E           AssertionError: assert (['AAA', 'CCC'] == ['AAA']
+E             Left contains one more item: 'CCC'
+E             Use -v to get more diff)
+
+intraday_store_suite.py:426: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_two_replay_runs_and_two_identities_are_never_pooled
+1 failed, 56 deselected in 1.24s

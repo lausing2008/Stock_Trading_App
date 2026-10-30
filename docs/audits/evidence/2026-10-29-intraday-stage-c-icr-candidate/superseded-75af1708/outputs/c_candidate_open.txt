@@ -1,0 +1,42 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_____ test_candidate_entry_open_is_the_grid_rule_the_trigger_repeats[day0] _____
+
+day = datetime.date(2026, 10, 28)
+
+    @pytest.mark.parametrize("day", [date(2026, 10, 28), date(2026, 11, 27)])     # full day, early close
+    def test_candidate_entry_open_is_the_grid_rule_the_trigger_repeats(day):
+        times = c.session_times("US", day)
+        for k in range(int((times.last_entry_at - times.open).total_seconds() // 60)):
+            a = times.open + timedelta(minutes=k, seconds=17 * (k % 3))
+>           assert c.candidate_entry_open(a) == c.first_grid_open_after(a, times.close, times)
+E           assert datetime.datetime(2026, 10, 28, 13, 30, tzinfo=datetime.timezone.utc) == datetime.datetime(2026, 10, 28, 13, 35, tzinfo=datetime.timezone.utc)
+E            +  where datetime.datetime(2026, 10, 28, 13, 30, tzinfo=datetime.timezone.utc) = <function candidate_entry_open at 0x75e95e2fef20>(datetime.datetime(2026, 10, 28, 13, 30, tzinfo=datetime.timezone.utc))
+E            +    where <function candidate_entry_open at 0x75e95e2fef20> = c.candidate_entry_open
+E            +  and   datetime.datetime(2026, 10, 28, 13, 35, tzinfo=datetime.timezone.utc) = <function first_grid_open_after at 0x75e95e2fe200>(datetime.datetime(2026, 10, 28, 13, 30, tzinfo=datetime.timezone.utc), datetime.datetime(2026, 10, 28, 20, 0, tzinfo=datetime.timezone.utc), SessionTimes(session_date=datetime.date(2026, 10, 28), open=datetime.datetime(2026, 10, 28, 13, 30, tzinfo=datetime.ti...0, tzinfo=datetime.timezone.utc), liquidation_at=datetime.datetime(2026, 10, 28, 19, 50, tzinfo=datetime.timezone.utc)))
+E            +    where <function first_grid_open_after at 0x75e95e2fe200> = c.first_grid_open_after
+E            +    and   datetime.datetime(2026, 10, 28, 20, 0, tzinfo=datetime.timezone.utc) = SessionTimes(session_date=datetime.date(2026, 10, 28), open=datetime.datetime(2026, 10, 28, 13, 30, tzinfo=datetime.ti...0, tzinfo=datetime.timezone.utc), liquidation_at=datetime.datetime(2026, 10, 28, 19, 50, tzinfo=datetime.timezone.utc)).close
+
+tests/test_intraday_contract.py:377: AssertionError
+_____ test_candidate_entry_open_is_the_grid_rule_the_trigger_repeats[day1] _____
+
+day = datetime.date(2026, 11, 27)
+
+    @pytest.mark.parametrize("day", [date(2026, 10, 28), date(2026, 11, 27)])     # full day, early close
+    def test_candidate_entry_open_is_the_grid_rule_the_trigger_repeats(day):
+        times = c.session_times("US", day)
+        for k in range(int((times.last_entry_at - times.open).total_seconds() // 60)):
+            a = times.open + timedelta(minutes=k, seconds=17 * (k % 3))
+>           assert c.candidate_entry_open(a) == c.first_grid_open_after(a, times.close, times)
+E           assert datetime.datetime(2026, 11, 27, 14, 30, tzinfo=datetime.timezone.utc) == datetime.datetime(2026, 11, 27, 14, 35, tzinfo=datetime.timezone.utc)
+E            +  where datetime.datetime(2026, 11, 27, 14, 30, tzinfo=datetime.timezone.utc) = <function candidate_entry_open at 0x75e95e2fef20>(datetime.datetime(2026, 11, 27, 14, 30, tzinfo=datetime.timezone.utc))
+E            +    where <function candidate_entry_open at 0x75e95e2fef20> = c.candidate_entry_open
+E            +  and   datetime.datetime(2026, 11, 27, 14, 35, tzinfo=datetime.timezone.utc) = <function first_grid_open_after at 0x75e95e2fe200>(datetime.datetime(2026, 11, 27, 14, 30, tzinfo=datetime.timezone.utc), datetime.datetime(2026, 11, 27, 18, 0, tzinfo=datetime.timezone.utc), SessionTimes(session_date=datetime.date(2026, 11, 27), open=datetime.datetime(2026, 11, 27, 14, 30, tzinfo=datetime.ti...0, tzinfo=datetime.timezone.utc), liquidation_at=datetime.datetime(2026, 11, 27, 17, 50, tzinfo=datetime.timezone.utc)))
+E            +    where <function first_grid_open_after at 0x75e95e2fe200> = c.first_grid_open_after
+E            +    and   datetime.datetime(2026, 11, 27, 18, 0, tzinfo=datetime.timezone.utc) = SessionTimes(session_date=datetime.date(2026, 11, 27), open=datetime.datetime(2026, 11, 27, 14, 30, tzinfo=datetime.ti...0, tzinfo=datetime.timezone.utc), liquidation_at=datetime.datetime(2026, 11, 27, 17, 50, tzinfo=datetime.timezone.utc)).close
+
+tests/test_intraday_contract.py:377: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_contract.py::test_candidate_entry_open_is_the_grid_rule_the_trigger_repeats[day0]
+FAILED tests/test_intraday_contract.py::test_candidate_entry_open_is_the_grid_rule_the_trigger_repeats[day1]
+2 failed, 42 deselected in 0.17s

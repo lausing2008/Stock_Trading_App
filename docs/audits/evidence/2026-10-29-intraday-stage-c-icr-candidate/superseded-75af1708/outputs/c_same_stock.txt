@@ -1,0 +1,15 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_________________ test_an_input_from_another_stock_is_refused __________________
+
+engine = Engine(sqlite://)
+
+    def test_an_input_from_another_stock_is_refused(engine):
+        with engine.begin() as conn:
+>           with pytest.raises(c.ContractViolation, match="another stock"):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:991: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_an_input_from_another_stock_is_refused
+1 failed, 56 deselected in 0.94s

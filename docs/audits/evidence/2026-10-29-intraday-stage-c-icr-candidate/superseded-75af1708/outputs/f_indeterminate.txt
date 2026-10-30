@@ -1,0 +1,162 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+______ test_a_missing_holding_bar_never_yields_a_confirmed_outcome[True] _______
+
+winner = True
+
+    @pytest.mark.parametrize("winner", [True, False])
+    def test_a_missing_holding_bar_never_yields_a_confirmed_outcome(winner):
+        """IC-04 acceptance: drop one holding bar from an otherwise winning and an otherwise losing
+        path; neither stays a confirmed result. The complete-data control keeps its result."""
+        bs = bars(at(14, 0), 40)
+        late = f.Bar(at(14, 20), 101.0, 102.5, 100.5, 102.0) if winner else f.Bar(at(14, 20), 99.5, 99.6, 98.0, 98.5)
+        bs[4] = late
+        control = sim(bs)
+        assert control.state == "exited" and control.exit_reason == ("target" if winner else "stop")
+>       gapped = sim([b for b in bs if b.open_at != at(14, 15)])
+
+tests/test_intraday_contract.py:279: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_intraday_contract.py:195: in sim
+    return f.simulate_long(entry_reference=100.0, stop=stop, target=target, actionable_at=actionable,
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def simulate_long(*, entry_reference: float, stop: float, target: float, actionable_at: datetime,
+                      entry_expires_at: datetime, times: SessionTimes, bars: list[Bar], params: Params = Params(),
+                      cancellation_effective: datetime | None = None, cancellation_known: bool = True,
+                      cancellation_reason: str = "invalidated_price") -> TradeResult:
+        """Simulate one bullish setup. `cancellation_effective` is the effective time (contract.
+        effective_time) of the earliest pre-entry cancellation, if any; `cancellation_known=False`
+        means a cancellation exists whose chronology is unknown."""
+        if not stop < entry_reference < target:
+            raise ContractViolation("bullish bracket must satisfy stop < entry < target")
+        by_open = _index(bars)
+        slip = params.slippage_bps / 1e4
+    
+        # Entry: a market order active from actionable_at; the first grid open strictly after it and
+        # strictly before expiry. A missing bar there is unobservable, never skipped to a later one.
+        entry_open = first_grid_open_after(actionable_at, entry_expires_at, times)
+        if entry_open is None:
+            return TradeResult("expired")
+        if not cancellation_known:
+            return TradeResult("chronology_ambiguous", reason=cancellation_reason)
+        if cancellation_effective is not None:
+            verdict = cancellation_vs_entry(cancellation_effective, entry_open)
+            if verdict != "entered":
+                return TradeResult(verdict, reason=cancellation_reason)
+        entry_bar = by_open.get(entry_open)
+        if entry_bar is None:
+            return TradeResult("cancelled", reason="data_unavailable",
+                               evidence_eligible_at=readable_at(entry_open, "5m", times))
+        fill = entry_bar.open * (1 + slip)
+        if fill <= stop or fill >= target:
+            return TradeResult("rejected_invalid_bracket_at_fill", entry_fill_at=entry_open, entry_fill_price=fill)
+        risk = fill - stop
+    
+        time_exit = first_grid_open_at_or_after(entry_open + timedelta(minutes=params.max_hold_min), times)
+        scheduled = min(t for t in (time_exit, times.liquidation_at) if t is not None)
+        scheduled_reason = "max_hold" if time_exit is not None and time_exit < times.liquidation_at else "liquidation"
+    
+        res = TradeResult("entered", entry_fill_at=entry_open, entry_fill_price=fill)
+        lo, hi = fill, fill                         # known excursions: fill, fully held bars, exit price
+        t = entry_open
+        last_seen = None
+        while t < times.close:
+            b = by_open.get(t)
+            if b is None and False:
+                # A held interval with no bar: an exit may have happened unseen. Not a confirmed path.
+                res.state = "path_indeterminate"
+                res.first_unobserved_at = t
+                res.unobserved_intervals = sum(1 for u in _grid(t, times) if u not in by_open)
+                _mark(res, last_seen, times, lo, hi, fill)
+                return res
+            if t >= scheduled:
+                # Scheduled order, ready since entry: fills at this open, before anything inside it.
+                reason = "liquidation" if t >= times.liquidation_at else scheduled_reason
+                return _exit(res, t, b.open * (1 - slip), reason, None, risk, fill, lo, hi, params, None)
+>           if t != entry_open and b.open <= stop:
+E           AttributeError: 'NoneType' object has no attribute 'open'
+
+src/services/intraday/fills.py:128: AttributeError
+______ test_a_missing_holding_bar_never_yields_a_confirmed_outcome[False] ______
+
+winner = False
+
+    @pytest.mark.parametrize("winner", [True, False])
+    def test_a_missing_holding_bar_never_yields_a_confirmed_outcome(winner):
+        """IC-04 acceptance: drop one holding bar from an otherwise winning and an otherwise losing
+        path; neither stays a confirmed result. The complete-data control keeps its result."""
+        bs = bars(at(14, 0), 40)
+        late = f.Bar(at(14, 20), 101.0, 102.5, 100.5, 102.0) if winner else f.Bar(at(14, 20), 99.5, 99.6, 98.0, 98.5)
+        bs[4] = late
+        control = sim(bs)
+        assert control.state == "exited" and control.exit_reason == ("target" if winner else "stop")
+>       gapped = sim([b for b in bs if b.open_at != at(14, 15)])
+
+tests/test_intraday_contract.py:279: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_intraday_contract.py:195: in sim
+    return f.simulate_long(entry_reference=100.0, stop=stop, target=target, actionable_at=actionable,
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def simulate_long(*, entry_reference: float, stop: float, target: float, actionable_at: datetime,
+                      entry_expires_at: datetime, times: SessionTimes, bars: list[Bar], params: Params = Params(),
+                      cancellation_effective: datetime | None = None, cancellation_known: bool = True,
+                      cancellation_reason: str = "invalidated_price") -> TradeResult:
+        """Simulate one bullish setup. `cancellation_effective` is the effective time (contract.
+        effective_time) of the earliest pre-entry cancellation, if any; `cancellation_known=False`
+        means a cancellation exists whose chronology is unknown."""
+        if not stop < entry_reference < target:
+            raise ContractViolation("bullish bracket must satisfy stop < entry < target")
+        by_open = _index(bars)
+        slip = params.slippage_bps / 1e4
+    
+        # Entry: a market order active from actionable_at; the first grid open strictly after it and
+        # strictly before expiry. A missing bar there is unobservable, never skipped to a later one.
+        entry_open = first_grid_open_after(actionable_at, entry_expires_at, times)
+        if entry_open is None:
+            return TradeResult("expired")
+        if not cancellation_known:
+            return TradeResult("chronology_ambiguous", reason=cancellation_reason)
+        if cancellation_effective is not None:
+            verdict = cancellation_vs_entry(cancellation_effective, entry_open)
+            if verdict != "entered":
+                return TradeResult(verdict, reason=cancellation_reason)
+        entry_bar = by_open.get(entry_open)
+        if entry_bar is None:
+            return TradeResult("cancelled", reason="data_unavailable",
+                               evidence_eligible_at=readable_at(entry_open, "5m", times))
+        fill = entry_bar.open * (1 + slip)
+        if fill <= stop or fill >= target:
+            return TradeResult("rejected_invalid_bracket_at_fill", entry_fill_at=entry_open, entry_fill_price=fill)
+        risk = fill - stop
+    
+        time_exit = first_grid_open_at_or_after(entry_open + timedelta(minutes=params.max_hold_min), times)
+        scheduled = min(t for t in (time_exit, times.liquidation_at) if t is not None)
+        scheduled_reason = "max_hold" if time_exit is not None and time_exit < times.liquidation_at else "liquidation"
+    
+        res = TradeResult("entered", entry_fill_at=entry_open, entry_fill_price=fill)
+        lo, hi = fill, fill                         # known excursions: fill, fully held bars, exit price
+        t = entry_open
+        last_seen = None
+        while t < times.close:
+            b = by_open.get(t)
+            if b is None and False:
+                # A held interval with no bar: an exit may have happened unseen. Not a confirmed path.
+                res.state = "path_indeterminate"
+                res.first_unobserved_at = t
+                res.unobserved_intervals = sum(1 for u in _grid(t, times) if u not in by_open)
+                _mark(res, last_seen, times, lo, hi, fill)
+                return res
+            if t >= scheduled:
+                # Scheduled order, ready since entry: fills at this open, before anything inside it.
+                reason = "liquidation" if t >= times.liquidation_at else scheduled_reason
+                return _exit(res, t, b.open * (1 - slip), reason, None, risk, fill, lo, hi, params, None)
+>           if t != entry_open and b.open <= stop:
+E           AttributeError: 'NoneType' object has no attribute 'open'
+
+src/services/intraday/fills.py:128: AttributeError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_contract.py::test_a_missing_holding_bar_never_yields_a_confirmed_outcome[True]
+FAILED tests/test_intraday_contract.py::test_a_missing_holding_bar_never_yields_a_confirmed_outcome[False]
+2 failed, 42 deselected in 0.18s

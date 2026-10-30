@@ -1,0 +1,22 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+____________ test_only_the_entry_bars_own_absence_cancels_after_it _____________
+
+engine = Engine(sqlite://)
+
+    def test_only_the_entry_bars_own_absence_cancels_after_it(engine):
+        """The entry bar (14:10) is missing: its absence is knowable from its readable_at, 14:17."""
+        with engine.begin() as conn:
+            i = ident(conn)
+            b = batch(conn, i)
+            s1, s2, s3 = (a_setup(conn, i, b, symbol=x, stock_id=n)["setup_id"] for n, x in ((1, "AAA"), (2, "BBB"), (3, "CCC")))
+            absent = c.EventTimes(at(14, 17), at(14, 18), at(14, 18), "observed")
+            with pytest.raises(c.ContractViolation, match="the entry stands"):
+                _cancel(conn, s1, absent, reason="input_revised")                 # not the absence
+>           with pytest.raises(c.ContractViolation, match="the entry stands"):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:866: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_only_the_entry_bars_own_absence_cancels_after_it
+1 failed, 56 deselected in 0.95s

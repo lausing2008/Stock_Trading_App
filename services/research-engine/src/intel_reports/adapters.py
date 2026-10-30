@@ -16,9 +16,10 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, func, text
 
-from db import Price, Signal, Stock, EarningsEvent
+from db import Price, Signal, SignalHorizon, Stock, EarningsEvent
 from db.models import TimeFrame
 from common.market_calendar import calendar_coverage, session_bounds
+from common.horizons import DAILY_HORIZONS
 from intelligence.report_contract import (
     Evidence, EvidenceBook, Field, FieldState, StatementClass,
     calculated, observed, stale, unavailable, unknown,
@@ -389,7 +390,8 @@ def latest_signal(session, stock_id: int, now: datetime, *,
     observation, and its age matters.
     """
     row = session.execute(
-        select(Signal).where(Signal.stock_id == stock_id, Signal.ts <= now)
+        select(Signal).where(Signal.stock_id == stock_id, Signal.ts <= now,
+                             Signal.horizon.in_([SignalHorizon(h) for h in DAILY_HORIZONS]))  # Intraday Stage C §10
         # signal-engine writes every horizon with the same timestamp; without a tie-break the
         # database may return any of them, so copilot/report fingerprints flipped between calls
         # (409 "plan changed" on the Game Plan's LLM alternative, 2026-10-21). Newest id wins.

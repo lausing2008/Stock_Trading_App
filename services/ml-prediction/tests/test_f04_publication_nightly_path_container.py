@@ -376,3 +376,17 @@ def test_resweep_skips_an_owned_cell_and_still_corrects_others(env):
     recs = {c["artifact"]: c for c in out["newly_suppressed"] + out["newly_unsuppressed"]}
     assert recs["xgboost/AAA_swing.joblib"]["write_skipped"].startswith("publication_fenced")
     assert "write_skipped" not in recs["xgboost/BBB_swing.joblib"]
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/ml/predict", {"symbol": "AAA", "style": "INTRADAY"}),
+    ("/ml/predict_ensemble_three", {"symbol": "AAA", "style": "intraday"}),
+    ("/ml/train", {"symbol": "AAA", "style": "INTRADAY"}),
+    ("/ml/predict", {"symbol": "AAA", "style": "SWINGX"}),
+])
+def test_routes_refuse_intraday_and_unknown_styles(env, path, body):
+    """Intraday Stage C §10 behaviour witness: a non-daily style is 422, never a defaulted
+    daily horizon (the routes used to fall back to req.horizon / 5)."""
+    md, client = env
+    r = client.post(path, json=body)
+    assert r.status_code == 422 and r.json()["detail"]["error"] == "unsupported_horizon", r.text

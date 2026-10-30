@@ -1,0 +1,17 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______ test_a_bracket_rejection_is_a_fill_attempt_inside_the_entry_window ______
+
+engine = Engine(sqlite://)
+
+    def test_a_bracket_rejection_is_a_fill_attempt_inside_the_entry_window(engine):
+        with engine.begin() as conn:
+            i = ident(conn)
+            sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+>           with pytest.raises(c.ContractViolation, match="entry fill outside"):
+E           Failed: DID NOT RAISE <class 'src.services.intraday.contract.ContractViolation'>
+
+intraday_store_suite.py:1017: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_a_bracket_rejection_is_a_fill_attempt_inside_the_entry_window
+1 failed, 56 deselected in 0.97s

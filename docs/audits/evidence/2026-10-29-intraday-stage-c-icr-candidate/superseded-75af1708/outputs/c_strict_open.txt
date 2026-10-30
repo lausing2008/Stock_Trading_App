@@ -1,0 +1,15 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________ test_detection_exactly_on_a_bar_open_uses_the_next_open ____________
+
+    def test_detection_exactly_on_a_bar_open_uses_the_next_open():
+        r = sim(bars(at(14, 0), 40), actionable=at(14, 10))
+>       assert r.entry_fill_at == at(14, 15)                     # strict: not the 14:10 open
+E       AssertionError: assert datetime.datetime(2026, 10, 28, 14, 10, tzinfo=datetime.timezone.utc) == datetime.datetime(2026, 10, 28, 14, 15, tzinfo=datetime.timezone.utc)
+E        +  where datetime.datetime(2026, 10, 28, 14, 10, tzinfo=datetime.timezone.utc) = TradeResult(state='exited', reason=None, entry_fill_at=datetime.datetime(2026, 10, 28, 14, 10, tzinfo=datetime.timezon...vidence_eligible_at=None, unobserved_intervals=0, fill_basis='next_bar_open_research', execution_grade=False, notes=[]).entry_fill_at
+E        +  and   datetime.datetime(2026, 10, 28, 14, 15, tzinfo=datetime.timezone.utc) = at(14, 15)
+
+tests/test_intraday_contract.py:201: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_contract.py::test_detection_exactly_on_a_bar_open_uses_the_next_open
+1 failed, 43 deselected in 0.15s

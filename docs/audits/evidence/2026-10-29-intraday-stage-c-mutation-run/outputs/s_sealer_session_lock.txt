@@ -1,0 +1,38 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________ test_a_seal_waits_for_an_in_flight_insert_and_then_includes_it ________
+
+engine = Engine(postgresql+psycopg2://postgres:***@localhost:55441/intraday)
+
+    @pg_only
+    def test_a_seal_waits_for_an_in_flight_insert_and_then_includes_it(engine):
+        import time
+        with engine.begin() as conn:
+            i = ident(conn)
+            b = batch(conn, i)
+        writer = engine.connect()
+        tx = writer.begin()
+        _no_setup(writer, i, b, 0)                                   # in flight, holds the session lock
+        sealed = {}
+    
+        def seal():
+            with engine.begin() as conn:
+                conn.execute(text("SET LOCAL lock_timeout = '20s'"))     # a failing run cannot hang
+                store.seal_session(conn, run_key="observed", identity=i, session_date=D, now=at(22, 0))
+                sealed["count_at_seal"] = conn.execute(select(func.count()).select_from(m.evaluations)).scalar()
+        t = threading.Thread(target=seal, daemon=True)
+        t.start()
+        try:
+            deadline = time.time() + 10
+            while not _blocked_on_advisory_lock(engine) and time.time() < deadline:
+                time.sleep(0.05)
+>           assert t.is_alive() and _blocked_on_advisory_lock(engine), "the sealer must wait for the in-flight insert"
+E           AssertionError: the sealer must wait for the in-flight insert
+E           assert (False)
+E            +  where False = <bound method Thread.is_alive of <Thread(Thread-1 (seal), stopped daemon 136376695649984)>>()
+E            +    where <bound method Thread.is_alive of <Thread(Thread-1 (seal), stopped daemon 136376695649984)>> = <Thread(Thread-1 (seal), stopped daemon 136376695649984)>.is_alive
+
+intraday_store_suite.py:547: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_a_seal_waits_for_an_in_flight_insert_and_then_includes_it
+1 failed, 34 deselected in 11.51s

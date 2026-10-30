@@ -1,0 +1,59 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______________ test_an_observed_cancellation_cannot_be_backdated _______________
+
+engine = Engine(sqlite://)
+
+    def test_an_observed_cancellation_cannot_be_backdated(engine):
+        """The review's witness: a revision observed at 14:17, dated 14:08, would beat a 14:10 entry."""
+        with engine.begin() as conn:
+            i = ident(conn)
+            sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+            late = c.EventTimes(at(14, 8), at(14, 17), at(14, 17), "observed")
+            with pytest.raises(c.ContractViolation, match="cannot be dated"):
+>               _cancel(conn, sid, late, effective_at=at(14, 8))
+
+intraday_store_suite.py:791: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+intraday_store_suite.py:774: in _cancel
+    return store.append_transition(conn, setup_id=sid, to_state="cancelled", reason=reason, event=event,
+../src/services/intraday/store.py:224: in append_transition
+    c.check_cancellation_before_entry(effective_at=eff, actionable_at=setup.actionable_at, reason=reason,
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def check_cancellation_before_entry(*, effective_at, actionable_at, reason, eligible_at) -> None:
+        """A cancellation defeats the entry only if it took effect before the candidate entry opened
+        (§5); at or after it the entry stands, and a tie is chronology_ambiguous. The one exception
+        is the entry bar's own confirmed absence, which is knowable only after that bar."""
+        if reason not in CANCEL_REASONS:
+            raise ContractViolation(f"cancellation reason {reason!r} is not one of {CANCEL_REASONS}")
+        t = candidate_entry_open(actionable_at)
+        if utc(effective_at) < t:
+            return
+        if reason == "data_unavailable" and eligible_at is not None and utc(eligible_at) == entry_bar_readable_at(t):
+            return
+>       raise ContractViolation(f"cancellation effective {utc(effective_at).isoformat()} is not before the "
+                                f"candidate entry {t.isoformat()}: the entry stands")
+E       src.services.intraday.contract.ContractViolation: cancellation effective 2026-10-28T14:17:00+00:00 is not before the candidate entry 2026-10-28T14:10:00+00:00: the entry stands
+
+../src/services/intraday/contract.py:348: ContractViolation
+
+During handling of the above exception, another exception occurred:
+
+engine = Engine(sqlite://)
+
+    def test_an_observed_cancellation_cannot_be_backdated(engine):
+        """The review's witness: a revision observed at 14:17, dated 14:08, would beat a 14:10 entry."""
+        with engine.begin() as conn:
+            i = ident(conn)
+            sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+            late = c.EventTimes(at(14, 8), at(14, 17), at(14, 17), "observed")
+>           with pytest.raises(c.ContractViolation, match="cannot be dated"):
+E           AssertionError: Regex pattern did not match.
+E            Regex: 'cannot be dated'
+E            Input: 'cancellation effective 2026-10-28T14:17:00+00:00 is not before the candidate entry 2026-10-28T14:10:00+00:00: the entry stands'
+
+intraday_store_suite.py:790: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_an_observed_cancellation_cannot_be_backdated
+1 failed, 56 deselected in 0.98s

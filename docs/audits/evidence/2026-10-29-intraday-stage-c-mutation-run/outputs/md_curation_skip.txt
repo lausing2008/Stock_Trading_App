@@ -1,0 +1,20 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________ test_watchlist_curation_skips_a_non_daily_style_code_presence _________
+
+    def test_watchlist_curation_skips_a_non_daily_style_code_presence():
+        fn = _fn(SRC / "scheduler.py", "_run_watchlist_auto_rotation")
+        loop = next(n for n in ast.walk(fn) if isinstance(n, ast.For) and "watchlists" in ast.unparse(n.iter))
+        first = loop.body[0]
+>       assert isinstance(first, ast.If) and "_is_daily_horizon(style)" in ast.unparse(first.test)
+E       AssertionError: assert (True and '_is_daily_horizon(style)' in 'False')
+E        +  where True = isinstance(<ast.If object at 0x7dea186aa3d0>, <class 'ast.If'>)
+E        +    where <class 'ast.If'> = ast.If
+E        +  and   'False' = <function unparse at 0x7dea3c421c60>(<ast.Constant object at 0x7dea186aa410>)
+E        +    where <function unparse at 0x7dea3c421c60> = ast.unparse
+E        +    and   <ast.Constant object at 0x7dea186aa410> = <ast.If object at 0x7dea186aa3d0>.test
+
+tests/test_intraday_daily_isolation.py:70: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_daily_isolation.py::test_watchlist_curation_skips_a_non_daily_style_code_presence
+1 failed, 5 deselected in 0.70s

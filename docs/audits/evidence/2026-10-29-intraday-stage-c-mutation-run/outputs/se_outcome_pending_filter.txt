@@ -1,0 +1,22 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+__________ test_outcome_evaluator_pending_read_is_daily_only_compiled __________
+
+    def test_outcome_evaluator_pending_read_is_daily_only_compiled():
+        """compiled: the evaluator's pending-signal select (frozen first BUY/SELL) carries the
+        daily predicate. Code presence on PostgreSQL."""
+        s = _CaptureSession()
+        try:
+            outcomes.evaluate_signal_outcomes(session=s, _="u")
+        except Exception:  # noqa: BLE001 - only the statements already issued matter
+            pass
+        pending = [q for q in map(_sql, s.stmts) if "first_buy_sell_signal IN" in q and "FROM signals" in q]
+>       assert len(pending) == 1 and DAILY_SQL in pending[0], pending
+E       AssertionError: ["SELECT signals.id, signals.stock_id, signals.ts, signals.signal, signals.horizon, signals.confidence, signals.bullis...l IN ('BUY', 'SELL') AND signals.first_buy_sell_at <= '2026-10-24 23:59:59.999999' ORDER BY signals.first_buy_sell_at"]
+E       assert (1 == 1 and "horizon IN ('SHORT', 'SWING', 'LONG', 'GROWTH')" in "SELECT signals.id, signals.stock_id, signals.ts, signals.signal, signals.horizon, signals.confidence, signals.bullish...al IN ('BUY', 'SELL') AND signals.first_buy_sell_at <= '2026-10-24 23:59:59.999999' ORDER BY signals.first_buy_sell_at")
+E        +  where 1 = len(["SELECT signals.id, signals.stock_id, signals.ts, signals.signal, signals.horizon, signals.confidence, signals.bullis...l IN ('BUY', 'SELL') AND signals.first_buy_sell_at <= '2026-10-24 23:59:59.999999' ORDER BY signals.first_buy_sell_at"])
+
+intraday_isolation_suite.py:300: AssertionError
+=========================== short test summary info ============================
+FAILED intraday_isolation_suite.py::test_outcome_evaluator_pending_read_is_daily_only_compiled
+1 failed, 24 deselected in 1.94s

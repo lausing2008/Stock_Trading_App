@@ -1,0 +1,28 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_____ test_watchlist_style_must_be_a_daily_horizon[CreateWatchlistRequest] _____
+
+model = <class 'src.api.watchlist.CreateWatchlistRequest'>
+
+    @pytest.mark.parametrize("model", [CreateWatchlistRequest, RenameWatchlistRequest])
+    def test_watchlist_style_must_be_a_daily_horizon(model):
+        for bad in ("INTRADAY", "intraday", "SCALP"):
+>           with pytest.raises(ValidationError):
+E           Failed: DID NOT RAISE <class 'pydantic_core._pydantic_core.ValidationError'>
+
+tests/test_intraday_daily_isolation.py:30: Failed
+_____ test_watchlist_style_must_be_a_daily_horizon[RenameWatchlistRequest] _____
+
+model = <class 'src.api.watchlist.RenameWatchlistRequest'>
+
+    @pytest.mark.parametrize("model", [CreateWatchlistRequest, RenameWatchlistRequest])
+    def test_watchlist_style_must_be_a_daily_horizon(model):
+        for bad in ("INTRADAY", "intraday", "SCALP"):
+>           with pytest.raises(ValidationError):
+E           Failed: DID NOT RAISE <class 'pydantic_core._pydantic_core.ValidationError'>
+
+tests/test_intraday_daily_isolation.py:30: Failed
+=========================== short test summary info ============================
+FAILED tests/test_intraday_daily_isolation.py::test_watchlist_style_must_be_a_daily_horizon[CreateWatchlistRequest]
+FAILED tests/test_intraday_daily_isolation.py::test_watchlist_style_must_be_a_daily_horizon[RenameWatchlistRequest]
+2 failed, 4 deselected in 0.64s

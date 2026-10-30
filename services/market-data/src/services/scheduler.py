@@ -86,6 +86,7 @@ from sqlalchemy.orm import selectinload, Session
 from common.config import get_settings
 from common.logging import get_logger
 from common.outcome_price_basis import resolve_window as _resolve_outcome_basis
+from common.horizons import DAILY_HORIZONS as _DAILY_HORIZONS, is_daily_horizon as _is_daily_horizon
 from db import AlertCondition, AnalystPriceTarget, CorporateAction, CorporateActionCoverage, DarkPoolAlertOutcome, DarkPoolPrint, EarningsEvent, EconomicEvent, FixRecord, FixSnapshot, FundamentalsSnapshot, LlmCallLog, Market, OptionsFlowAlertOutcome, OptionsFlowSnapshot, OptionsGamePlanSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, UserRole, UserTier, VolumeAreaLevel, Watchlist, WatchlistItem
 
 
@@ -11527,6 +11528,12 @@ def _run_watchlist_auto_rotation() -> None:
             ).all()
 
             for wl_id, style, wl_name in watchlists:
+                # Intraday Stage C §10: a free-text style that is not a daily horizon (INTRADAY,
+                # a typo) skips THIS watchlist; it no longer aborts curation for every watchlist.
+                if not _is_daily_horizon(style):
+                    log.warning("watchlist_curation.unsupported_style", watchlist_id=wl_id, style=style)
+                    continue
+                style = style.strip().upper()
                 # This watchlist's own current membership + market composition.
                 member_rows = session.execute(
                     select(WatchlistItem.id, WatchlistItem.stock_id, Stock.market)
@@ -13470,12 +13477,14 @@ _DQ_CHECKS: list[dict] = [
     },
     {
         "name": "signals_us", "description": "US signal generation (all horizons)",
-        "query": "SELECT MAX(sig.ts) FROM signals sig JOIN stocks st ON sig.stock_id=st.id WHERE st.market='US'",
+        "query": "SELECT MAX(sig.ts) FROM signals sig JOIN stocks st ON sig.stock_id=st.id WHERE st.market='US'"
+                 " AND CAST(sig.horizon AS text) IN " + str(tuple(_DAILY_HORIZONS)),  # Intraday Stage C §10
         "max_age_hours": 30, "is_date": False, "market": "US",
     },
     {
         "name": "signals_hk", "description": "HK signal generation (all horizons)",
-        "query": "SELECT MAX(sig.ts) FROM signals sig JOIN stocks st ON sig.stock_id=st.id WHERE st.market='HK'",
+        "query": "SELECT MAX(sig.ts) FROM signals sig JOIN stocks st ON sig.stock_id=st.id WHERE st.market='HK'"
+                 " AND CAST(sig.horizon AS text) IN " + str(tuple(_DAILY_HORIZONS)),  # Intraday Stage C §10
         "max_age_hours": 30, "is_date": False, "market": "HK",
     },
     {

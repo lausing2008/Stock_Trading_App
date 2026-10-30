@@ -1,0 +1,26 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+__________ test_direct_sql_cannot_backdate_or_unground_a_cancellation __________
+
+engine = Engine(postgresql+psycopg2://postgres:***@127.0.0.1:55448/icr)
+
+    @pg_only
+    def test_direct_sql_cannot_backdate_or_unground_a_cancellation(engine):
+        with engine.begin() as conn:
+            i = ident(conn)
+            sid = a_setup(conn, i, batch(conn, i))["setup_id"]
+        t = dict(evidence_eligible_at=at(14, 8), evidence_observed_at=at(14, 9), decided_at=at(14, 9))
+        for bad, why in ((dict(evidence_eligible_at=at(14, 8), evidence_observed_at=at(14, 17), decided_at=at(14, 17),
+                               effective_at=at(14, 8)), "takes effect when decided"),             # the review's witness
+                         (dict(evidence_eligible_at=at(14, 8), evidence_observed_at=at(14, 17), decided_at=at(14, 17),
+                               effective_at=at(14, 17)), "not before the candidate entry"),
+                         (dict(t, effective_at=at(14, 9), evidence_observed_at=None), "with its observation"),
+                         (dict(t, effective_at=at(14, 9), reason="session_end"), "not data-dependent"),
+                         (dict(t, effective_at=at(14, 10), decided_at=at(14, 10)), "not before the candidate entry")):
+>           with pytest.raises(DBAPIError, match=why):
+E           Failed: DID NOT RAISE <class 'sqlalchemy.exc.DBAPIError'>
+
+intraday_store_suite.py:810: Failed
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_direct_sql_cannot_backdate_or_unground_a_cancellation
+1 failed, 56 deselected in 1.31s

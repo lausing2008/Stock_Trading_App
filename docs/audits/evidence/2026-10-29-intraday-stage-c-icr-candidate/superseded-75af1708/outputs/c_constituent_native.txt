@@ -1,0 +1,50 @@
+.F........                                                               [100%]
+=================================== FAILURES ===================================
+_ test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[constituent is itself derived] _
+
+engine = Engine(sqlite://), case = 'constituent is itself derived'
+
+    @pytest.mark.parametrize("case", sorted(_TAMPERED))
+    def test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write(engine, case):
+        rec = _TAMPERED[case]()
+        assert c.hashes_from_evidence(rec.evidence)["input_hash"] == rec.input_hash      # the hashes still recompute
+        with engine.begin() as conn:
+            with pytest.raises(c.ContractViolation):
+>               _write(conn, [rec])
+
+intraday_store_suite.py:985: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+intraday_store_suite.py:948: in _write
+    return store.record_evaluation(conn, batch_id=batch(conn, i), run_key="observed", identity=i, stock_id=stock_id,
+../src/services/intraday/store.py:119: in record_evaluation
+    c.check_input_consistency(i, stock_id=stock_id, symbol=symbol, times=times)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+rec = InputRecord(role='context', timeframe='15m', bar_open=datetime.datetime(2026, 10, 28, 13, 45, tzinfo=datetime.timezone...asis'}}]}]}, first_available_at=None, availability_basis='unknown_exact_version', provider_published_at=None, extra={})
+
+    def check_input_consistency(rec: InputRecord, *, stock_id: int, symbol: str, times: SessionTimes) -> None:
+        """Refuse an input whose consumed values, timeframe, bar open, source kind, stock/symbol or
+        constituent shape differ from the evidence its hashes are computed from (review ICR-02)."""
+        ev = rec.evidence or {}
+        hashes_from_evidence(ev)                       # version and structure
+        tr = ev["transformed"]
+        if rec.values != consumed_values(ev):
+            raise ContractViolation("consumed values differ from the evidence they are hashed from")
+        if rec.timeframe != tr["timeframe"] or _norm(utc(rec.bar_open)) != tr["bar_open"]:
+            raise ContractViolation("input timeframe or bar open differs from its evidence")
+        derived = "constituents" in ev
+        if rec.source != ("derived_from_5m" if derived else "native"):
+            raise ContractViolation(f"source {rec.source!r} does not match {'derived' if derived else 'native'} evidence")
+        if rec.timeframe != ("15m" if derived else "5m"):
+            raise ContractViolation(f"a {'derived' if derived else 'native'} input cannot be {rec.timeframe}")
+        members = ev["constituents"] if derived else [ev]
+        for mem in members:
+            if False:
+                raise ContractViolation("a constituent must be native evidence")
+>           raw, mt = mem["raw"], mem["transformed"]
+E           KeyError: 'raw'
+
+../src/services/intraday/contract.py:454: KeyError
+=========================== short test summary info ============================
+FAILED intraday_store_suite.py::test_an_input_disagreeing_with_its_evidence_is_refused_before_any_write[constituent is itself derived]
+1 failed, 9 passed, 47 deselected in 1.09s

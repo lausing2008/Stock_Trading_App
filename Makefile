@@ -118,10 +118,13 @@ test-integration-pg-schema:
 	 DDL_GUARD_PG_REQUIRED=1 \
 	 RZY_PG_URL=postgresql+psycopg2://postgres:probe@localhost:55439/schemaprobe \
 	 RZY_PG_REQUIRED=1 \
+	 INTRADAY_PG_URL=postgresql+psycopg2://postgres:probe@localhost:55439/schemaprobe \
+	 INTRADAY_PG_REQUIRED=1 \
 	 python3 -m pytest -q -p no:randomly \
 		services/market-data/tests/test_news_impact_postgres.py \
 		services/market-data/tests/test_ddl_guard_postgres.py \
 		services/market-data/tests/test_little_rzy_postgres.py \
+		services/market-data/tests/test_intraday_store.py \
 		services/market-data/tests/test_bar_provenance.py::test_bar_trace_on_postgresql \
 		services/market-data/tests/test_bar_ingest_observations.py::test_real_ingest_and_report_on_postgresql; \
 	 rc=$$?; docker rm -f stockai-schema-pg >/dev/null 2>&1; exit $$rc

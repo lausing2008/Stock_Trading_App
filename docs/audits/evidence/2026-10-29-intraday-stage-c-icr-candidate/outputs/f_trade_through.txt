@@ -1,0 +1,18 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______________________ test_target_needs_a_trade_through _______________________
+
+    def test_target_needs_a_trade_through():
+        bs = bars(at(14, 0), 40)
+        bs[3] = f.Bar(at(14, 15), 100.0, 102.0, 99.8, 101.0)     # touches, does not trade through
+        bs[4] = f.Bar(at(14, 20), 101.0, 102.5, 100.5, 102.0)
+        r = sim(bs)
+>       assert (r.exit_reason, r.exit_at, r.exit_price) == ("target", at(14, 20), 102.0)
+E       AssertionError: assert ('target', da...e.utc), 102.0) == ('target', da...e.utc), 102.0)
+E         At index 1 diff: datetime.datetime(2026, 10, 28, 14, 15, tzinfo=datetime.timezone.utc) != datetime.datetime(2026, 10, 28, 14, 20, tzinfo=datetime.timezone.utc)
+E         Use -v to get more diff
+
+tests/test_intraday_contract.py:236: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_intraday_contract.py::test_target_needs_a_trade_through - A...
+1 failed, 43 deselected in 0.14s
