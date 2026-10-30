@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { selectValuationRows, valuationCsv, type ValuationRow, type ValuationReport } from './valuationReport';
+import { selectValuationRows, valuationCsv, valuationPerformanceCsv, type ValuationRow, type ValuationReport, type ValuationPerformance } from './valuationReport';
 
 const row = (symbol: string, value: number | null, classification = 'undervalued') => ({
   symbol, name: symbol, sector: 'Technology', classification, qualified: false, risk_flags: [],
@@ -8,6 +8,15 @@ const row = (symbol: string, value: number | null, classification = 'undervalued
 const options = { filter: 'all' as const, search: '', sector: '', sort: 'discount_pct', ascending: false };
 
 describe('valuation research ordering and export', () => {
+  it('exports pending outcome values as missing rather than zero returns', () => {
+    const evaluation: ValuationPerformance = { report_id: 55, evaluated_at: '2026-10-30', published_at: '2026-10-30', benchmark: 'SPY', notes: [],
+      horizons: [{ sessions: 5, entry_session: '2026-10-30', end_session: '2026-11-06', due_at: '2026-11-06T21:30:00Z', benchmark_return_pct: null,
+        groups: { undervalued_research: { state: 'PENDING', expected: 1, observed: 0,
+          return_pct: null, excess_percentage_points: null } } }] };
+    const csv = valuationPerformanceCsv(evaluation);
+    expect(csv).toContain('"PENDING","1","0","","SPY","",""');
+    expect(csv).toContain('excess_percentage_points');
+  });
   it('sorts unavailable values last in both directions and keeps stable symbol ties', () => {
     const rows = [row('C', null), row('B', 20), row('A', 20), row('D', 30)];
     expect(selectValuationRows(rows, options).map(r => r.symbol)).toEqual(['D', 'A', 'B', 'C']);

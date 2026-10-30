@@ -3,7 +3,7 @@ import Link from 'next/link';
 import useSWR from 'swr';
 import { api } from '@/lib/api';
 import WatchlistPickerButton from '@/components/WatchlistPickerButton';
-import { classificationLabel, selectValuationRows, valuationCsv,
+import { classificationLabel, selectValuationRows, valuationCsv, valuationPerformanceCsv,
   type ValuationFilter, type ValuationMetric, type ValuationRow } from '@/lib/valuationReport';
 
 const panel: React.CSSProperties = { background: '#111827', border: '1px solid #253047', borderRadius: 12, padding: 20, minWidth: 0 };
@@ -46,6 +46,13 @@ function CompanyDetail({ row }: { row: ValuationRow }) {
       <h4 style={{ marginTop: 0 }}>Issuer qualification review · {row.candidate_review.decision}</h4>
       <p style={muted}>Reviewed {row.candidate_review.reviewed_at} · v{row.candidate_review.version} · {row.candidate_review.author} · {row.candidate_review.status}</p>
       <p>{row.candidate_review.summary}</p>
+      {!!Object.keys(row.candidate_review.gates || {}).length && <details>
+        <summary>Issuer assessment findings</summary>
+        {Object.entries(row.candidate_review.gates || {}).map(([name, gate]) => <div key={name}>
+          <strong>{name.replaceAll('_', ' ')} · {gate.status}</strong>
+          <p>{gate.rationale}</p><p style={muted}>Counterevidence: {gate.counterevidence}</p>
+        </div>)}
+      </details>}
       <ul>{row.candidate_review.thesis.map(t => <li key={t}>{t}</li>)}</ul>
       {row.candidate_review.findings.map(f => <div key={f.claim}>
         <p>{f.claim} {f.source_ids.map(id => {
@@ -65,6 +72,26 @@ function CompanyDetail({ row }: { row: ValuationRow }) {
       <ul>{row.candidate_review.monitor.map(t => <li key={t}>{t}</li>)}</ul>
       <h4>Unresolved research</h4>
       <ul>{row.candidate_review.unresolved.map(t => <li key={t}>{t}</li>)}</ul>
+      {row.candidate_review.financial_verification && <details>
+        <summary>SEC annual financial verification · {row.candidate_review.financial_verification.state}</summary>
+        <p style={muted}>Annual period {row.candidate_review.financial_verification.latest_period_end || 'unavailable'} · checked {when(row.candidate_review.financial_verification.checked_at)}</p>
+        <p style={muted}>{row.candidate_review.financial_verification.reason || 'Annual facts retain their filing dates, concepts and units. Interim changes and full dilution still require review.'}</p>
+        <ul>{row.candidate_review.reconciliation_flags?.map(f => <li key={f}>{f}</li>)}</ul>
+        <dl>{Object.entries(row.candidate_review.financial_verification.latest_annual || {}).map(([name, fact]) => <div key={name}>
+          <dt>{name.replaceAll('_', ' ')}: {num(fact.value, 2)} {fact.unit}</dt>
+          <dd style={{ ...muted, marginLeft: 0, overflowWrap: 'anywhere' }}>{fact.concept} · period {fact.period_end} · filed {fact.filed}</dd>
+        </div>)}</dl>
+      </details>}
+      {row.candidate_review.filing_verification && <details>
+        <summary>SEC filing verification · {row.candidate_review.filing_verification.state}</summary>
+        <p style={muted}>Checked {when(row.candidate_review.filing_verification.checked_at)} · since {row.candidate_review.filing_verification.since}</p>
+        <p style={muted}>{row.candidate_review.filing_verification.reason || row.candidate_review.filing_verification.scope}</p>
+        <p style={muted}>Finding a filing does not establish that its contents have been reviewed.</p>
+        <ul>{row.candidate_review.filing_verification.filings?.slice(0, 20).map(f => <li key={f.accession}>
+          <a href={f.url} target="_blank" rel="noreferrer" style={{ color: '#a5b4fc' }}>{f.form} · {f.filed}</a>
+        </li>)}</ul>
+        {(row.candidate_review.filing_verification.filings?.length || 0) > 20 && <p style={muted}>Showing the latest 20; the full inventory is included in CSV.</p>}
+      </details>}
       <details><summary>Primary sources</summary><ul>{row.candidate_review.sources.map(s => <li key={s.id}>
         <a href={s.url} target="_blank" rel="noreferrer" style={{ color: '#a5b4fc' }}>{s.title}</a>
         <span style={muted}> · filed {s.published_at} · period {s.period_end}</span>
@@ -90,6 +117,7 @@ function CompanyDetail({ row }: { row: ValuationRow }) {
       <div>
         <h4 style={{ margin: '0 0 8px' }}>Model fair value · {row.valuation.uncertainty || 'Unrated'} uncertainty</h4>
         {row.valuation.reason && <p style={{ color: '#fbbf24' }}>{row.valuation.reason}</p>}
+        {row.valuation.diagnostics?.historical_cash_runway_months != null && <p style={muted}>Historical cash runway: {num(row.valuation.diagnostics.historical_cash_runway_months)} months at the last annual cash-burn rate. Financing needs may differ.</p>}
         {row.valuation.scenarios && <>
           <p style={muted}>{row.valuation.method} · annual period {row.valuation.period_end}</p>
           <table style={{ width: '100%', textAlign: 'left', fontSize: 12 }}>
@@ -98,7 +126,9 @@ function CompanyDetail({ row }: { row: ValuationRow }) {
               <td>{name}</td><td>${num(s.fair_value, 2)}</td><td>{num(s.growth_pct)}%</td><td>{num(s.discount_rate_pct)}%</td>
             </tr>)}</tbody>
           </table>
-          <p style={muted}>Base terminal-value share: {num(row.valuation.scenarios.base?.terminal_value_share_pct)}%. Terminal growth: {num(row.valuation.scenarios.base?.terminal_growth_pct)}%.</p>
+          <p style={muted}>{row.valuation.scenarios.base?.multiple != null
+            ? `Base FFO multiple: ${num(row.valuation.scenarios.base.multiple)}×. This sensitivity is not a calibrated fair value.`
+            : `Base terminal-value share: ${num(row.valuation.scenarios.base?.terminal_value_share_pct)}%. Terminal growth: ${num(row.valuation.scenarios.base?.terminal_growth_pct)}%.`}</p>
           <details><summary>Inputs and limitations</summary>
             <dl>{Object.entries(row.valuation.inputs || {}).map(([key, value]) => <div key={key}>
               <dt style={muted}>{key.replaceAll('_', ' ')}</dt><dd style={{ marginLeft: 0 }}>{num(value, 2)}</dd></div>)}</dl>
@@ -144,6 +174,7 @@ export default function ValuationReportTab({ market }: { market: 'US' | 'HK' }) 
   const enabled = market === 'US';
   const { data: latest, error: latestError, mutate: reloadLatest } = useSWR(enabled ? 'valuation-latest' : null, api.valuationLatest, { revalidateOnFocus: false });
   const { data: history, mutate: reloadHistory } = useSWR(enabled ? 'valuation-history' : null, api.valuationHistory);
+  const { data: automation } = useSWR(enabled ? 'valuation-status' : null, api.valuationStatus, { refreshInterval: 60000 });
   const [selected, setSelected] = useState<number | null>(null);
   const { data: archived, error: archiveError } = useSWR(enabled && selected ? ['valuation-report', selected] : null, () => api.valuationReport(selected!));
   const [jobId, setJobId] = useState<string | null>(null);
@@ -172,6 +203,11 @@ export default function ValuationReportTab({ market }: { market: 'US' | 'HK' }) 
   }, [jobError]);
   const report = selected ? archived : latest?.report;
   const data = report?.valuation;
+  const { data: measured, error: performanceError } = useSWR(report ? ['valuation-performance', report.id] : null,
+    () => api.valuationPerformance(report!.id), { refreshInterval: d => !d?.evaluation ? 10000
+      : d.evaluation.horizons.some(h => Object.values(h.groups).some(g => ['PENDING', 'UNAVAILABLE'].includes(g.state))) ? 60000 : 0,
+      revalidateOnFocus: false });
+  const evaluation = measured?.evaluation;
   const rows = useMemo(() => selectValuationRows(data?.rows || [], { filter, search, sector, sort, ascending }),
     [data, filter, search, sector, sort, ascending]);
   useEffect(() => { setPage(0); }, [filter, search, sector, sort, ascending, report?.id]);
@@ -184,11 +220,13 @@ export default function ValuationReportTab({ market }: { market: 'US' | 'HK' }) 
     } catch (err) { setMessage(err instanceof Error ? err.message : 'Generation failed'); }
     finally { setStarting(false); }
   }
-  function exportCsv() {
-    if (!report) return;
-    const url = URL.createObjectURL(new Blob([valuationCsv(report)], { type: 'text/csv;charset=utf-8' }));
-    const link = document.createElement('a'); link.href = url; link.download = `us-valuation-${report.id}-v${report.version}.csv`;
+  function downloadCsv(csv: string, name: string) {
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a'); link.href = url; link.download = name;
     link.click(); URL.revokeObjectURL(url);
+  }
+  function exportCsv() {
+    if (report) downloadCsv(valuationCsv(report), `us-valuation-${report.id}-v${report.version}.csv`);
   }
   if (!enabled) return <div style={panel}>Valuation &amp; Opportunities currently covers US-listed companies. Select US to view the report.</div>;
   return <div style={{ display: 'grid', gap: 18, minWidth: 0 }}>
@@ -204,7 +242,7 @@ export default function ValuationReportTab({ market }: { market: 'US' | 'HK' }) 
         </div>
       </div>
       <div role="status" aria-live="polite" style={{ ...muted, marginTop: 12 }}>
-        {busy ? (job?.stage || 'Starting background refresh…') + ' You can leave this page and return.' : message}
+        {busy ? (job?.stage || 'Starting background refresh…') + (job?.retry_at ? ` Next attempt: ${when(job.retry_at)}.` : '') + ' You can leave this page and return.' : message}
       </div>
       {report && <p style={{ ...muted, marginBottom: 0 }}>Price session {data?.price_session} · Generated {when(report.generated_at)} · v{report.version} · {report.status} coverage</p>}
     </section>
@@ -217,6 +255,24 @@ export default function ValuationReportTab({ market }: { market: 'US' | 'HK' }) 
       <p style={muted}>No Morningstar subscription required. Available UW cache data adds risk context.</p>
     </section>}
     {report && data && <>
+      <section style={panel}>
+        <h3 style={{ marginTop: 0 }}>Frozen cohort outcomes</h3>
+        <p style={muted}>Returns begin at the first session close after publication and the information cutoff. Membership stays fixed. Missing or delisted names remain in the coverage denominator.</p>
+        {performanceError ? <p style={muted}>Outcome observations could not be loaded.</p> : !evaluation ? <p style={muted}>{measured?.note || 'Loading outcome observations…'}</p> : <>
+          <p style={muted}>Published {when(evaluation.published_at)} · evaluated {when(evaluation.evaluated_at)} · benchmark {evaluation.benchmark}</p>
+          {measured?.status === 'retrying' && <p style={{ ...muted, color: '#fbbf24' }}>{measured.note}</p>}
+          <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', minWidth: 650, textAlign: 'left', fontSize: 12 }}>
+            <thead><tr><th>Cohort</th><th>Sessions</th><th>Status</th><th>Observed</th><th>Return</th><th>SPY</th><th>Excess (pp)</th></tr></thead>
+            <tbody>{evaluation.horizons.flatMap(h => Object.entries(h.groups).map(([name, group]) => <tr key={`${h.sessions}-${name}`} title={`Entry ${h.entry_session} · end ${h.end_session}`}>
+              <td>{name === 'qualified' ? 'Qualified opportunities' : 'Undervalued research'}</td><td>{h.sessions}</td>
+              <td>{group.state === 'NO_COHORT' ? 'None in snapshot' : group.state === 'PENDING' ? 'Awaiting sessions' : group.state === 'UNAVAILABLE' ? 'Missing observations' : 'Measured'}</td>
+              <td>{group.observed}/{group.expected}</td><td>{num(group.return_pct, 2)}%</td><td>{num(h.benchmark_return_pct, 2)}%</td><td>{num(group.excess_percentage_points, 2)}</td>
+            </tr>))}</tbody>
+          </table></div>
+          <details style={{ margin: '12px 0' }}><summary>Measurement rules</summary><ul style={muted}>{evaluation.notes.map(note => <li key={note}>{note}</li>)}</ul></details>
+          <button style={control} onClick={() => downloadCsv(valuationPerformanceCsv(evaluation), `us-valuation-${report.id}-outcomes.csv`)}>Export outcomes CSV</button>
+        </>}
+      </section>
       {(Date.now() - Date.parse(report.generated_at) > 36 * 3600_000 || !!data.queries_failed.length) && <div role="status" style={{ ...panel, color: '#fbbf24' }}>
         {Date.now() - Date.parse(report.generated_at) > 36 * 3600_000 && 'This is an older snapshot. Refresh to check current inputs. '}
         {!!data.queries_failed.length && `Yahoo screens unavailable: ${data.queries_failed.join(', ')}. ${data.uw_discovery ? 'UW discovery supplied fallback coverage.' : 'Coverage is partial.'}`}
@@ -232,11 +288,18 @@ export default function ValuationReportTab({ market }: { market: 'US' | 'HK' }) 
             <option value="">Latest</option>{history?.reports.map(h => <option key={h.id} value={h.id}>v{h.version} · {h.price_session}</option>)}
           </select></label>
         </div>
+        {automation && <p style={muted}>Automatic refresh: {automation.automatic_refresh} · {automation.schedule}</p>}
+        {data.catalog && <p style={muted}>
+          US listing catalog: {num(data.catalog.eligible_count, 0)} candidates · {data.catalog.state.toLowerCase()} · {data.catalog.selected_count || 0} directory selections in this batch.<br />
+          {data.catalog.scope || data.catalog.reason} The catalog count does not mean that every company has current ratings.<br />
+          {Object.entries(data.catalog.source_dates || {}).map(([name, day]) => `${name}: ${day}`).join(' · ')}
+          {data.catalog.rotation_persisted === false && ' · Rotation progress could not be saved.'}
+        </p>}
         <details><summary style={{ cursor: 'pointer', fontSize: 13 }}>Read assumptions and source limits</summary>
           <p style={muted}>{data.horizon} · Policy {data.policy_version}</p><ul style={muted}>{data.notes.map(n => <li key={n}>{n}</li>)}</ul>
         </details>
         <details style={{ marginTop: 12 }}><summary style={{ cursor: 'pointer', fontSize: 13 }}>Changes since previous snapshot ({data.changes.length})</summary>
-          <p style={muted}>{data.comparison_note}</p>{data.changes.length ? <ul style={muted}>{data.changes.map(c => <li key={c.symbol}>{c.symbol}: {c.kind === 'new_coverage' ? 'new coverage' : `${classificationLabel(c.before || '')} → ${classificationLabel(c.after)}`}</li>)}</ul> : <p style={muted}>No classification changes recorded.</p>}
+          <p style={muted}>{data.comparison_note}</p>{data.changes.length ? <ul style={muted}>{data.changes.map(c => <li key={c.symbol}>{c.symbol}: {c.kind === 'new_coverage' ? 'new coverage' : `${classificationLabel(c.before || '')} → ${classificationLabel(c.after)}${c.kind === 'methodology_changed' ? ' (methodology changed)' : ''}`}</li>)}</ul> : <p style={muted}>No classification changes recorded.</p>}
         </details>
       </section>
       <section style={panel}>

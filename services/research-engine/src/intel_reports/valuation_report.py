@@ -5,6 +5,7 @@ import math
 from datetime import date, datetime, timezone
 from statistics import median
 from .candidate_qualification import resolve_review, REQUIRED_GATES
+from .sector_valuation import model as sector_model
 
 from intelligence.report_contract import (
     Evidence, EvidenceBook, Field, FieldState, StatementClass, Section,
@@ -13,7 +14,7 @@ from intelligence.report_contract import (
 
 REPORT_TYPE = "us_equity_valuation"
 SUBJECT = "valuation:US:covered-sample"
-POLICY = "valuation-v3-candidate-review"
+POLICY = "valuation-v5-phased-research"
 
 
 def finite(value):
@@ -75,6 +76,9 @@ def dcf(fcff, shares, debt, cash, growth, discount, terminal=0.025, senior_claim
 
 
 def valuation_model(raw, now):
+    special = sector_model(raw, now)
+    if special is not None:
+        return special
     sector = str(raw.get("sector") or "").lower()
     industry = str(raw.get("industry") or "").lower()
     if sector in ("financial services", "financials", "finance", "real estate") or any(
@@ -254,8 +258,9 @@ def build_row(raw, session_day, now, quality=None):
             risks.append({"kind": "analyst", "text": f"{a.get('firm')}: {a.get('rating')} ({a.get('action')})", "date": a["date"]})
     if info.get("profitMargins") is not None and info["profitMargins"] < 0:
         risks.append({"kind": "financial", "text": "Negative provider profit margin", "date": raw.get("fetched_at")})
-    if model.get("state") == "OK" and model["scenarios"]["base"]["terminal_value_share_pct"] >= 70:
-        risks.append({"kind": "model", "text": "At least 70% of enterprise value depends on terminal value", "date": model.get("period_end")})
+    terminal_share = finite(model.get("scenarios", {}).get("base", {}).get("terminal_value_share_pct"))
+    if model.get("state") == "OK" and terminal_share is not None and terminal_share >= 70:
+        risks.append({"kind": "model", "text": "At least 70% of modeled value depends on long-run assumptions", "date": model.get("period_end")})
     quality = quality or {"state": "insufficient_evidence", "gates": [],
                           "blocking": ["No stored Quality & Value evidence for this symbol"]}
     blockers = list(exclusions)
@@ -326,10 +331,13 @@ def build_report(inputs, *, now, quality=None, previous=None):
                   qualified=sum(r["qualified"] for r in rows), analyst_risk=sum(
         any(f["kind"] == "analyst" for f in r["risk_flags"]) for r in rows))
     old = {r["symbol"]: r for r in (previous or {}).get("rows", [])}
+    policy_changed = bool(previous and previous.get("policy_version") != POLICY)
     changes = []
     for row in rows:
         prior = old.get(row["symbol"])
         kind = "new_coverage" if prior is None else "classification_changed" if prior["classification"] != row["classification"] else None
+        if kind == "classification_changed" and policy_changed:
+            kind = "methodology_changed"
         if kind:
             changes.append({"symbol": row["symbol"], "kind": kind,
                             "before": prior["classification"] if prior else None, "after": row["classification"]})
@@ -338,8 +346,9 @@ def build_report(inputs, *, now, quality=None, previous=None):
             "sampled": inputs["sampled"], "sample_limit": inputs["sample_limit"],
             "queries": inputs["queries"], "queries_failed": inputs["queries_failed"],
             "uw_discovery": inputs.get("uw_discovery", False),
+            "catalog": inputs.get("catalog"),
             "policy_version": POLICY, "changes": changes,
-            "comparison_note": "Since previous generated snapshot; new coverage is not a rating transition",
+            "comparison_note": "Since previous generated snapshot; new coverage and methodology changes are not current rating transitions",
             "horizon": "3–5 year business research; five-year cash-flow scenarios",
             "notes": ["Bounded discovery sample, not all US listings; independent of user watchlists",
                       "Model fair values are conditional scenarios, not Morningstar ratings or analyst targets",

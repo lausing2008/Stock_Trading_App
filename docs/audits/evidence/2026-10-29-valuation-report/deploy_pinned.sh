@@ -10,7 +10,7 @@ git fetch origin prod
 test "$(git rev-parse origin/prod)" = "$release"
 git merge --ff-only "$release"
 test "$(git rev-parse HEAD)" = "$release"
-evidence=/home/ec2-user/deploy-evidence/2026-10-29-valuation-report
+evidence=${3:-/home/ec2-user/deploy-evidence/2026-10-29-valuation-report}
 mkdir -p "$evidence"
 services=(market-data research-engine signal-engine api-gateway ml-prediction ranking-engine strategy-engine technical-analysis portfolio-optimizer event-intelligence news-intelligence decision-engine frontend)
 if [[ "${2:-}" == "--presentation-fix" ]]; then services=(research-engine frontend); fi

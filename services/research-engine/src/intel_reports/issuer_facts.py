@@ -68,6 +68,7 @@ CONCEPTS = {
                      "WeightedAverageNumberOfSharesOutstanding"],
     "shares_outstanding": ["CommonStockSharesOutstanding"],
     "rd_expense": ["ResearchAndDevelopmentExpense"],
+    "stock_compensation": ["ShareBasedCompensation"],
 }
 
 #: Forms that report a completed fiscal YEAR. 10-K only — a 10-Q's annual-to-date figure is not

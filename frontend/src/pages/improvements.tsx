@@ -22377,6 +22377,7 @@ const ITEMS: Item[] = [
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = {
+  476: "Tier 476 — Yahoo request budgets and live-cache usage (2026-10-30)",
   475: "Tier 475 — AI signals F01–F04, signals deadlock and RZY timeframe guide (2026-10-27)",
   474: "Tier 474 — Market indexes, futures and detail pages (2026-10-26)",
   473: "Tier 473 — Daily crossover and intraday chart history (2026-10-23)",
@@ -22850,6 +22851,7 @@ const TIER_LABEL: Record<Tier, string> = {
 };
 
 const TIER_COLOR: Record<Tier, string> = {
+  476: '#38bdf8',
   475: '#34d399',
   474: '#60a5fa',
   473: '#a78bfa',

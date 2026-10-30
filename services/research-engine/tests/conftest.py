@@ -32,3 +32,10 @@ _indicators_mod = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(_indicators_mod)
 sys.modules["common.indicators"] = _indicators_mod
 setattr(sys.modules["common"], "indicators", _indicators_mod)
+
+_calendar_path = _pathlib.Path(__file__).resolve().parents[3] / "shared" / "common" / "market_calendar.py"
+_calendar_spec = _ilu.spec_from_file_location("common.market_calendar", _calendar_path)
+_calendar_mod = _ilu.module_from_spec(_calendar_spec)
+_calendar_spec.loader.exec_module(_calendar_mod)
+sys.modules["common.market_calendar"] = _calendar_mod
+setattr(sys.modules["common"], "market_calendar", _calendar_mod)

@@ -16,6 +16,11 @@ async def on_startup():
     # lost on every restart. init_db() is idempotent (create_all() + safe migrations, the same
     # call every other service already makes at startup) — safe to add here for the first time.
     init_db()
+    from db.session import engine
+    from .intel_reports.valuation_jobs import init_store
+    from .intel_reports.valuation_worker import start
+    init_store(engine)
+    start()
 
 
 app = create_app("research-engine", routers=[router, ai_router, intelligence_router, quality_value_router, valuation_router,

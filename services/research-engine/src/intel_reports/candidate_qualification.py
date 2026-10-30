@@ -4,9 +4,12 @@ Reviews are research decisions, not provider ratings. Adding or changing one req
 reviewable source diff; there is deliberately no endpoint that accepts arbitrary gate passes.
 """
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime
 import math
+import re
 from urllib.parse import urlparse
+from .filing_verification import blockers as filing_blockers
+from .financial_verification import reconcile
 
 REQUIRED_GATES = ("business_quality", "competitive_durability", "valuation",
                   "entry_condition", "value_trap_risk")
@@ -18,7 +21,7 @@ RISK_CLASSES = ("leverage", "cash_burn", "customer_concentration", "dilution",
 
 REVIEWS = {
     "ADBE": {
-        "symbol": "ADBE", "cik": 796343, "version": 1, "reviewed_at": "2026-10-29",
+        "symbol": "ADBE", "cik": 796343, "version": 2, "reviewed_at": "2026-10-30",
         "author": "Issuer-filing research review", "decision": "Research only",
         "summary": "The large screen discount is sensitive to stock compensation, the share denominator and growth assumptions. Keep Adobe as a research lead; a durable AI-era advantage and a defensible valuation are unresolved.",
         "sources": [
@@ -45,7 +48,33 @@ REVIEWS = {
                        "A complete material-filing sweep through the report cutoff has not been verified.",
                        "The provider annual period (2025-11-30) differs from the filed fiscal year end (2025-11-28). Reconcile the statements before qualification.",
                        "The full value-trap risk checklist remains incomplete."],
-        "gates": {}, "input_checks": {}, "risk_checks": {},
+        "gates": {
+            "business_quality": {"status": "supported", "source_ids": ["annual"],
+                "rationale": "Annual operating cash generation remains positive after capital spending and stock compensation.",
+                "counterevidence": "Historical cash generation does not establish future AI-era retention or pricing."},
+            "competitive_durability": {"status": "insufficient", "source_ids": ["annual", "quarter"],
+                "rationale": "Established creative and document workflows support a durability hypothesis; disclosed financials do not isolate switching costs.",
+                "counterevidence": "Generative AI changes product substitution and pricing; retention evidence has not been established."},
+            "valuation": {"status": "insufficient", "source_ids": ["annual"],
+                "rationale": "The owner-cost sensitivity materially reduces the screen discount; no calibrated fair value establishes a 30% margin of safety.",
+                "counterevidence": "Different sustainable growth and discount assumptions produce a wide range of values."},
+            "value_trap_risk": {"status": "insufficient", "source_ids": ["annual", "quarter"],
+                "rationale": "Cash generation and disclosed debt provide useful checks, but the complete risk and filing-content review is unfinished.",
+                "counterevidence": "Liquidity alone cannot rule out structural competitive deterioration or legal exposure."},
+        },
+        "input_checks": {
+            "accounting_basis": {"status": "supported", "source_ids": ["annual"],
+                "rationale": "Annual reconciliation uses the issuer's US-GAAP facts with their period, unit and filing identities.",
+                "counterevidence": "Provider statement labels and interim changes still need reconciliation."},
+        },
+        "risk_checks": {
+            "cash_burn": {"status": "supported", "source_ids": ["annual"],
+                "rationale": "The filed annual period generates cash after capital spending and equity compensation.",
+                "counterevidence": "Annual cash generation is historical and acquisitions may consume future cash."},
+            "leverage": {"status": "supported", "source_ids": ["quarter"],
+                "rationale": "Quarterly debt, cash and near-term maturities are disclosed and included as research findings.",
+                "counterevidence": "Refinancing terms and post-quarter capital allocation remain uncertain."},
+        },
         # This is a sensitivity, not an approved model-input replacement or fair-value claim.
         "owner_cash_sensitivity": {"operating_cashflow": 10031e6, "capex": 179e6,
             "stock_compensation": 1942e6, "diluted_shares": 427e6,
@@ -69,6 +98,20 @@ def resolve_review(raw, now):
         return None, ["A dated issuer-specific qualification review is required"], raw
     review = deepcopy(spec)
     blockers = list(review.get("unresolved") or [])
+    review["filing_verification"] = deepcopy(raw.get("filing_verification"))
+    review["financial_verification"] = deepcopy(raw.get("financial_verification"))
+    review["reconciliation_flags"] = reconcile(raw, review["financial_verification"])
+    financial = review["financial_verification"] or {}
+    try:
+        observed = datetime.fromisoformat(financial["checked_at"])
+        financial_current = (financial.get("state") == "OK" and financial.get("cik") == review.get("cik")
+                             and observed.tzinfo is not None and 0 <= (now - observed).total_seconds() <= 86400
+                             and bool(financial.get("latest_annual")))
+    except (KeyError, TypeError, ValueError):
+        financial_current = False
+    if not financial_current:
+        blockers.append("Current issuer-matched SEC annual facts are required")
+    blockers.extend(filing_blockers(review["filing_verification"], review, now))
     age = _age(review.get("reviewed_at"), now)
     current = age is not None and 0 <= age <= 30
     if not current:
@@ -79,7 +122,7 @@ def resolve_review(raw, now):
         url = urlparse(source.get("url", ""))
         source_age = _age(source.get("published_at"), now)
         if (url.scheme == "https" and url.hostname == "www.sec.gov"
-                and f"/Archives/edgar/data/{review.get('cik')}/" in url.path
+                and re.fullmatch(rf"/Archives/edgar/data/{review.get('cik')}/\d{{18}}/[A-Za-z0-9_.-]+", url.path)
                 and source_age is not None and source_age >= 0 and source.get("id")):
             valid_sources.add(source["id"])
             period_age = _age(source.get("period_end"), now)
@@ -128,10 +171,22 @@ def resolve_review(raw, now):
                                                  if s.get("id") in refs} for row in annuals)):
         blockers.append("Reconciled annuals, explicit senior claims and a sourced diluted-share basis are required")
     review["status"] = "current" if current else "stale"
-    review["qualification_blockers"] = sorted(set(blockers))
     model_raw = raw
+    sector_inputs = review.get("sector_inputs")
+    if sector_inputs:
+        references = []
+        if sector_inputs.get("reit"):
+            references.extend(sector_inputs["reit"].get("source_ids") or [])
+        for scenario in (sector_inputs.get("unprofitable") or {}).values():
+            references.extend(scenario.get("source_ids") or [])
+        if references and all(ref in valid_sources for ref in references):
+            model_raw = {**raw, "sector_inputs": deepcopy(sector_inputs)}
+        else:
+            blockers.append("Sector model inputs lack valid issuer source references")
     if not blockers:
-        model_raw = {**raw, "annuals": deepcopy(annuals),
+        model_raw = {**model_raw, "annuals": deepcopy(annuals),
                      "currency": "USD", "financial_currency": "USD",
                      "info": {**raw.get("info", {}), "sharesOutstanding": verified["diluted_shares"]}}
+    blockers.extend(reconcile(model_raw, review["financial_verification"]))
+    review["qualification_blockers"] = sorted(set(blockers))
     return review, review["qualification_blockers"], model_raw

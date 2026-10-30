@@ -5,9 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ValuationReport from './ValuationReport';
 
 const state = vi.hoisted(() => ({ latest: undefined as any, error: undefined as any,
-  generate: vi.fn(), history: { reports: [] }, mutate: vi.fn() }));
+  generate: vi.fn(), history: { reports: [] }, mutate: vi.fn(), performance: undefined as any }));
 vi.mock('swr', () => ({ default: (key: any) => ({
-  data: key === 'valuation-latest' ? state.latest : key === 'valuation-history' ? state.history : undefined,
+  data: key === 'valuation-latest' ? state.latest : key === 'valuation-history' ? state.history
+    : Array.isArray(key) && key[0] === 'valuation-performance' ? state.performance : undefined,
   error: key === 'valuation-latest' ? state.error : undefined, mutate: state.mutate,
 }) }));
 vi.mock('@/lib/api', () => ({ api: { valuationGenerate: (...args: unknown[]) => state.generate(...args) } }));
@@ -33,10 +34,26 @@ function fixture() {
         catalyst_note: 'No future catalysts verified' }],
     } } };
 }
-beforeEach(() => { state.latest = fixture(); state.error = undefined; sessionStorage.clear(); vi.clearAllMocks(); });
+beforeEach(() => { state.latest = fixture(); state.error = undefined; state.performance = undefined; sessionStorage.clear(); vi.clearAllMocks(); });
 afterEach(cleanup);
 
 describe('Valuation report user flow', () => {
+  it('separates pending performance from missing returns and keeps catalog coverage honest', () => {
+    state.latest.report.valuation.catalog = { state: 'OK', eligible_count: 5600, selected_count: 40,
+      source_dates: { nasdaq: '2026-10-29' }, rotation_persisted: true };
+    state.performance = { evaluation: { report_id: 1, published_at: '2026-10-30T05:00:00Z',
+      evaluated_at: '2026-10-30T05:10:00Z', benchmark: 'SPY', notes: ['Membership remains frozen'],
+      horizons: [{ sessions: 5, entry_session: '2026-10-30', end_session: '2026-11-06',
+        benchmark_return_pct: null, groups: {
+          qualified: { state: 'NO_COHORT', expected: 0, observed: 0, return_pct: null, excess_percentage_points: null },
+          undervalued_research: { state: 'PENDING', expected: 1, observed: 0, return_pct: null, excess_percentage_points: null } } }] } };
+    render(<ValuationReport market="US" />);
+    expect(screen.getByText('Awaiting sessions')).toBeTruthy();
+    expect(screen.getByText('None in snapshot')).toBeTruthy();
+    expect(screen.getByText(/does not mean that every company has current ratings/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Export outcomes CSV' })).toBeTruthy();
+    expect(screen.getByText('0/1')).toBeTruthy();
+  });
   it('filters reviewed leads and exposes source-linked research without implying qualification', () => {
     state.latest.report.valuation.rows[0].candidate_review = {
       version: 1, reviewed_at: '2026-10-29', author: 'Issuer review', status: 'current', decision: 'Research only',
@@ -46,6 +63,10 @@ describe('Valuation report user flow', () => {
         published_at: '2026-01-15', period_end: '2025-11-28' }],
       invalidation: ['Retention weakens'], monitor: ['Next organic growth report'], unresolved: ['AI durability unresolved'],
       qualification_blockers: ['AI durability unresolved'],
+      filing_verification: { state: 'OK', checked_at: '2026-10-30T12:00:00Z', since: '2026-01-15',
+        scope: 'Filing inventory only', filings: [{ accession: '123', form: '10-Q', filed: '2026-09-22', url: 'https://www.sec.gov/Archives/quarter.htm' }] },
+      financial_verification: { state: 'OK', checked_at: '2026-10-30T12:00:00Z', latest_period_end: '2025-11-28' },
+      reconciliation_flags: ['Provider fiscal period differs'],
       sensitivity: { method: 'Owner-cash equity sensitivity', period_end: '2025-11-28', cashflow: 7910e6,
         diluted_shares: 427e6, limitations: ['Uncalibrated assumptions'],
         scenarios: { bear: { fair_value: 180 }, base: { fair_value: 260 }, bull: { fair_value: 340 } } },
@@ -58,6 +79,9 @@ describe('Valuation report user flow', () => {
     expect(screen.getByText('Retention weakens')).toBeTruthy();
     expect(screen.getByText(/\$180 \/ \$260 \/ \$340/)).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Issuer 10-K' }).getAttribute('href')).toContain('sec.gov');
+    expect(screen.getByText('Provider fiscal period differs')).toBeTruthy();
+    expect(screen.getByRole('link', { name: '10-Q · 2026-09-22' })).toBeTruthy();
+    expect(screen.getByText(/Finding a filing does not establish/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Qualified opportunities' }));
     expect(screen.getByText(/No companies meet all opportunity requirements/)).toBeTruthy();
   });

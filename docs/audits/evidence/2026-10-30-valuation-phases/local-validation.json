@@ -1,0 +1,9 @@
+{
+  "frontend": 1003,
+  "research_selected": 227,
+  "market_data": 22,
+  "gateway_route_coverage": 14,
+  "frontend_typecheck": "passed",
+  "postgresql_concurrency": "passed",
+  "gateway_async_host_harness": "hung; stopped; focused route checks passed"
+}

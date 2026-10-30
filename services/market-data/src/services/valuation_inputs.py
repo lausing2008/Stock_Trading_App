@@ -18,6 +18,7 @@ SCREENS = ("undervalued_large_caps", "undervalued_growth_stocks", "most_actives"
 MAX_SYMBOLS = 60
 CACHE_SECONDS = 24 * 3600
 STALE_SECONDS = 7 * CACHE_SECONDS
+INPUT_CACHE_PREFIX = "stockai:valuation:input:v2"
 EXCHANGES = {"NYQ", "NMS", "NGM", "NCM", "ASE", "NYSE", "NASDAQ", "AMEX", "US"}
 
 
@@ -124,6 +125,7 @@ def _annuals(ticker, errors):
                 "tax_provision": get(income, "Tax Provision"),
                 "revenue": get(income, "Total Revenue"),
                 "net_income": get(income, "Net Income"),
+                "net_income_common": get(income, "Net Income Common Stockholders"),
                 "depreciation": get(cash, "Depreciation Depletion And Amortization", "Depreciation And Amortization"),
                 "capital_expenditure": get(cash, "Capital Expenditure"),
                 "change_working_capital": get(cash, "Change In Working Capital"),
@@ -134,6 +136,7 @@ def _annuals(ticker, errors):
                 "preferred": get(balance, "Preferred Stock Equity", "Preferred Stock"),
                 "minority_interest": get(balance, "Minority Interest"),
                 "equity": get(balance, "Stockholders Equity"),
+                "common_equity": get(balance, "Common Stock Equity"),
             })
         return rows
     except Exception:
@@ -194,7 +197,7 @@ def _fetch(symbol, session_day, now):
     return out
 
 
-def collect_inputs(cache, tracked, *, now=None, progress=None):
+def collect_inputs(cache, tracked, *, now=None, progress=None, priority_symbols=()):
     """Called by an explicit background refresh, not on a page-view read."""
     now = now or datetime.now(timezone.utc)
     day = completed_session(now)
@@ -215,7 +218,24 @@ def collect_inputs(cache, tracked, *, now=None, progress=None):
             uw_discovery = bool(uw_quotes)
         except Exception:
             pass
-    symbols, discovered = select_symbols(quotes, tracked)
+    from .valuation_universe import catalog, rotating_symbols
+    directory = catalog(cache, now=now)
+    screen_symbols, _ = select_symbols(quotes, set())
+    priorities = [s for s in dict.fromkeys(priority_symbols) if isinstance(s, str)
+                  and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,14}", s)][:12]
+    if directory.get("rows"):
+        chosen = list(dict.fromkeys(priorities + screen_symbols[:20]))
+        rotated, offset = rotating_symbols(cache, directory, limit=MAX_SYMBOLS - len(chosen))
+        symbols = list(dict.fromkeys(chosen + rotated + sorted(tracked)))[:MAX_SYMBOLS]
+    else:
+        fallback, _ = select_symbols(quotes, tracked)
+        symbols = list(dict.fromkeys(priorities + fallback))[:MAX_SYMBOLS]
+        offset = None
+        rotated = []
+    discovered = len({r["symbol"] for r in directory.get("rows", [])} | set(screen_symbols) | set(tracked) | set(priorities))
+    catalog_info = {k: v for k, v in directory.items() if k != "rows"}
+    catalog_info.update(rotation_offset=offset, rotation_persisted=offset is not None,
+                        selected_count=len(rotated), selected_symbols=rotated)
     if not symbols:
         raise ValueError("Discovery returned no US companies and there are no covered US symbols")
 
@@ -224,13 +244,18 @@ def collect_inputs(cache, tracked, *, now=None, progress=None):
         yahoo_failed.set()
 
     def load(symbol):
-        key = f"stockai:valuation:input:v1:{symbol}"
+        key = f"{INPUT_CACHE_PREFIX}:{symbol}"
+        current_contract = True
         try:
             raw = cache.get(key)
             old = json.loads(raw) if raw else None
+            if old is None:
+                legacy = cache.get(f"stockai:valuation:input:v1:{symbol}")
+                old = json.loads(legacy) if legacy else None
+                current_contract = False
         except Exception:
             old = None
-        if old and old.get("bars") and old["bars"][-1]["date"] == day.isoformat():
+        if current_contract and old and old.get("bars") and old["bars"][-1]["date"] == day.isoformat():
             stamp = datetime.fromisoformat(old["fetched_at"])
             if (now - stamp).total_seconds() < CACHE_SECONDS:
                 return old
@@ -276,5 +301,7 @@ def collect_inputs(cache, tracked, *, now=None, progress=None):
     return {"price_session": day.isoformat(), "rows": rows, "queries": list(SCREENS),
             "queries_failed": failures, "discovered": discovered, "sampled": len(symbols),
             "sample_limit": MAX_SYMBOLS, "uw_discovery": uw_discovery,
-            "universe": "Yahoo/UW US stock screens plus covered US symbols; bounded sample, independent of watchlists",
+            "catalog": catalog_info,
+            "universe": "Rotating US exchange-directory candidates plus Yahoo/UW screens and reviewed issuers; bounded sample, independent of watchlists"
+                        if directory.get("rows") else "Yahoo/UW US stock screens plus covered US symbols; bounded fallback sample, independent of watchlists",
             "uw_note": "Existing UW short-interest cache only; missing cache means enrichment unavailable"}

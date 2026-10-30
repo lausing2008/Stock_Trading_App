@@ -174,6 +174,15 @@ def test_first_observation_is_new_coverage_and_previous_comparison_does_not_chan
     json.dumps(data, allow_nan=False)
 
 
+def test_policy_changes_are_not_reported_as_new_current_ratings():
+    first = V.build_report(inputs(), now=NOW)
+    prior = {**first[0]["valuation"].value, "policy_version": "older-policy",
+             "rows": [{**first[0]["valuation"].value["rows"][0], "classification": "overvalued"}]}
+    changed = V.build_report(inputs(), now=NOW, previous=prior)
+    assert changed[0]["valuation"].value["changes"][0]["kind"] == "methodology_changed"
+    assert changed[2]["fingerprint"] == first[2]["fingerprint"]
+
+
 def test_nonpositive_multiples_and_insufficient_peer_coverage_are_missing():
     raw = source(); raw["info"]["trailingEps"] = -10; raw["info"]["pegRatio"] = 0
     data = V.build_report(inputs(raw), now=NOW)[0]["valuation"].value

@@ -5,6 +5,12 @@ import pytest
 from src.services import valuation_inputs as V
 
 
+@pytest.fixture(autouse=True)
+def no_live_listing_directory(monkeypatch):
+    from src.services import valuation_universe
+    monkeypatch.setattr(valuation_universe, "catalog", lambda *a, **k: {"state": "UNAVAILABLE", "rows": []})
+
+
 def test_completed_session_handles_weekends_holidays_and_early_closes():
     assert V.completed_session(datetime(2026, 10, 25, 17, tzinfo=timezone.utc)).isoformat() == "2026-10-23"
     # Thanksgiving Friday closes at 13:00 NY; use a 30-minute finalization buffer.
@@ -25,6 +31,26 @@ def test_discovery_is_not_limited_to_tracked_stocks_and_excludes_foreign_exchang
     assert count == 2
 
 
+def test_catalog_rotation_preserves_reviewed_issuers_and_bounds_the_batch(monkeypatch):
+    from src.services import valuation_universe as U
+    from test_valuation_universe import Cache
+    cache = Cache()
+    monkeypatch.setattr(U, "catalog", lambda *a, **k: {"state": "OK", "eligible_count": 100,
+        "rows": [{"symbol": f"CAT{i:03}"} for i in range(100)]})
+    monkeypatch.setattr(V.yf, "screen", lambda *a, **k: {"quotes": [{"symbol": "SCREEN", "exchange": "NYQ"}]})
+    monkeypatch.setattr(V, "_fetch", lambda s, day, now: {"symbol": s, "bars": [], "errors": []})
+    monkeypatch.setattr(V, "closed_technical_inputs", lambda *a: {})
+    now = datetime(2026, 10, 30, 5, tzinfo=timezone.utc)
+    result = V.collect_inputs(cache, {"OLD"}, now=now, priority_symbols=["ADBE"])
+    symbols = [row["symbol"] for row in result["rows"]]
+    assert len(symbols) == 60 and symbols[:2] == ["ADBE", "SCREEN"]
+    assert result["discovered"] == 103
+    assert result["catalog"]["rotation_persisted"] is True
+    assert result["catalog"]["selected_count"] == 58
+    second = V.collect_inputs(cache, {"OLD"}, now=now, priority_symbols=["ADBE"])
+    assert second["catalog"]["rotation_offset"] == 58
+
+
 def test_failed_provider_refresh_keeps_dated_old_input(monkeypatch):
     import json
     cache = MagicMock()
@@ -39,7 +65,22 @@ def test_failed_provider_refresh_keeps_dated_old_input(monkeypatch):
     assert result["rows"][0]["fetched_at"] == old["fetched_at"]
     assert "refresh_failed_using_old_inputs" in result["rows"][0]["errors"]
     assert result["price_session"] == "2026-10-27"
-    assert not any(call.args[0] == "stockai:valuation:input:v1:OLD" for call in cache.setex.call_args_list)
+    assert not any(call.args[0] == f"{V.INPUT_CACHE_PREFIX}:OLD" for call in cache.setex.call_args_list)
+
+
+def test_legacy_same_session_cache_is_refreshed_for_the_new_common_equity_contract(monkeypatch):
+    import json
+    now = datetime(2026, 10, 30, 5, tzinfo=timezone.utc)
+    old = {"symbol": "OLD", "bars": [{"date": "2026-10-29"}], "fetched_at": now.isoformat(), "errors": []}
+    cache = MagicMock()
+    cache.get.side_effect = lambda key: json.dumps(old) if key == "stockai:valuation:input:v1:OLD" else None
+    monkeypatch.setattr(V.yf, "screen", lambda *a, **k: {"quotes": []})
+    calls = []
+    monkeypatch.setattr(V, "_fetch", lambda *a: calls.append(a[0]) or {**old, "annuals": [{"common_equity": 1e9}]})
+    monkeypatch.setattr(V, "closed_technical_inputs", lambda *a: {})
+    result = V.collect_inputs(cache, {"OLD"}, now=now)
+    assert calls == ["OLD"]
+    assert result["rows"][0]["annuals"][0]["common_equity"] == 1e9
 
 
 def test_uw_live_shapes_normalize_positive_capex_and_keep_unknown_metrics_unknown():

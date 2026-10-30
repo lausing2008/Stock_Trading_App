@@ -2,13 +2,20 @@ import type { QvEvaluation } from './api';
 
 export type ValuationMetric = { value: number | null; state: string; reason: string | null; unit?: string | null;
   source?: string | null; as_of?: string | null; basis?: string | null };
-export type ValuationScenario = { fair_value: number; growth_pct: number; discount_rate_pct: number;
-  terminal_growth_pct: number; terminal_value_share_pct: number; enterprise_value: number; equity_value: number };
+export type ValuationScenario = { fair_value: number; growth_pct: number | null; discount_rate_pct: number | null;
+  terminal_growth_pct: number | null; terminal_value_share_pct: number | null; enterprise_value: number | null; equity_value: number; multiple?: number };
 export type CandidateReview = {
   version: number; reviewed_at: string; author: string; decision: string; status: string; summary: string;
   sources: { id: string; title: string; url: string; published_at: string; period_end: string }[];
   findings: { claim: string; source_ids: string[]; counterevidence: string }[];
   thesis: string[]; monitor: string[]; invalidation: string[]; unresolved: string[]; qualification_blockers: string[];
+  filing_verification?: { state: string; checked_at: string; since: string; checked_through?: string;
+    source_url?: string; reason?: string; scope?: string;
+    filings?: { accession: string; form: string; filed: string; url: string }[] } | null;
+  financial_verification?: { state: string; checked_at: string; latest_period_end?: string; reason?: string;
+    latest_annual?: Record<string, { value: number; unit: string; period_end: string; filed: string; concept: string }> } | null;
+  reconciliation_flags?: string[];
+  gates?: Record<string, { status: string; rationale: string; counterevidence: string; source_ids: string[] }>;
   sensitivity?: { method: string; period_end: string; cashflow: number; diluted_shares: number;
     scenarios: Record<string, Omit<ValuationScenario, 'enterprise_value'>>; limitations: string[] };
 };
@@ -18,7 +25,7 @@ export type ValuationRow = {
   tracked: boolean; classification: string; qualified: boolean; exclusions: string[]; blockers: string[];
   metrics: Record<string, ValuationMetric>; valuation: { state: string; reason?: string; method?: string;
     period_end?: string; uncertainty?: string; scenarios?: Record<string, ValuationScenario>;
-    inputs?: Record<string, number>; limitations?: string[] };
+    inputs?: Record<string, number>; diagnostics?: Record<string, number | null>; limitations?: string[] };
   analyst: { mean: number | null; median: number | null; low: number | null; high: number | null;
     analyst_count: number | null; consensus: string | null; state: string; note: string; upside_pct: number | null };
   analyst_actions: { date: string; firm: string; rating: string; action: string; target?: number | null }[];
@@ -34,10 +41,18 @@ export type ValuationReport = {
   status: string; valuation: { rows: ValuationRow[]; counts: Record<string, number>; price_session: string;
     universe: string; discovered: number; sampled: number; sample_limit: number; queries: string[];
     queries_failed: string[]; uw_discovery?: boolean; policy_version: string; notes: string[]; horizon: string;
+    catalog?: { state: string; eligible_count: number; excluded_count?: number; retrieved_at?: string;
+      source_dates?: Record<string, string>; selected_count?: number; rotation_offset?: number | null;
+      rotation_persisted?: boolean; reason?: string; scope?: string } | null;
     changes: { symbol: string; kind: string; before: string | null; after: string }[]; comparison_note: string };
 };
-export type ValuationJob = { job_id: string; state: string; stage?: string; report_id?: number; error?: string; created?: boolean };
+export type ValuationJob = { job_id: string; state: string; stage?: string; report_id?: number; error?: string; created?: boolean;
+  durable?: boolean; attempts?: number; retry_at?: string | null };
 export type ValuationHistory = { id: number; version: number; generated_at: string; price_session: string };
+export type ValuationPerformance = { report_id: number; evaluated_at: string; published_at: string; benchmark: string;
+  notes: string[]; horizons: { sessions: number; entry_session: string; end_session: string; due_at: string;
+    benchmark_return_pct: number | null; groups: Record<string, { state: string; expected: number; observed: number;
+      return_pct: number | null; excess_percentage_points: number | null }> }[] };
 export type ValuationFilter = 'all' | 'undervalued' | 'overvalued' | 'qualified' | 'analyst_risk' | 'reviewed';
 
 export const classificationLabel = (value: string) => ({
@@ -79,7 +94,9 @@ export function valuationCsv(report: ValuationReport) {
     'analyst_target_mean', 'analyst_target_note', 'annual_period', 'uncertainty', 'bear_value', 'bull_value',
     'base_growth_pct', 'base_discount_rate_pct', 'terminal_growth_pct', 'model_limitations',
     'source_url', 'fetched_at', 'blockers', 'review_version', 'review_date', 'review_status', 'review_decision',
-    'review_sources', 'review_unresolved', 'thesis_invalidation', 'owner_cash_bear', 'owner_cash_base', 'owner_cash_bull', 'owner_cash_limits'];
+    'review_sources', 'review_unresolved', 'thesis_invalidation', 'owner_cash_bear', 'owner_cash_base', 'owner_cash_bull', 'owner_cash_limits',
+    'sec_inventory_state', 'sec_inventory_checked_at', 'sec_inventory_since', 'sec_filings',
+    'sec_facts_state', 'sec_annual_period', 'sec_reconciliation_flags'];
   const body = report.valuation.rows.map(r => [report.id, report.version, report.generated_at, r.price_session,
     report.valuation.policy_version, r.symbol, r.name, r.provider || 'Yahoo', r.classification, r.qualified,
     ...metrics.flatMap(k => [r.metrics[k]?.value, r.metrics[k]?.state, r.metrics[k]?.reason,
@@ -93,6 +110,20 @@ export function valuationCsv(report: ValuationReport) {
     r.candidate_review?.sources.map(s => s.url).join('; '), r.candidate_review?.unresolved.join('; '),
     r.candidate_review?.invalidation.join('; '), r.candidate_review?.sensitivity?.scenarios.bear?.fair_value,
     r.candidate_review?.sensitivity?.scenarios.base?.fair_value, r.candidate_review?.sensitivity?.scenarios.bull?.fair_value,
-    r.candidate_review?.sensitivity?.limitations.join('; ')]);
+    r.candidate_review?.sensitivity?.limitations.join('; '), r.candidate_review?.filing_verification?.state,
+    r.candidate_review?.filing_verification?.checked_at, r.candidate_review?.filing_verification?.since,
+    r.candidate_review?.filing_verification?.filings?.map(f => `${f.form} ${f.filed} ${f.accession} ${f.url}`).join('; '),
+    r.candidate_review?.financial_verification?.state, r.candidate_review?.financial_verification?.latest_period_end,
+    r.candidate_review?.reconciliation_flags?.join('; ')]);
   return [headers, ...body].map(row => row.map(csvCell).join(',')).join('\r\n');
+}
+
+export function valuationPerformanceCsv(evaluation: ValuationPerformance) {
+  const rows: unknown[][] = [['report_id', 'evaluated_at', 'published_at', 'cohort', 'sessions', 'entry_session',
+    'end_session', 'state', 'expected', 'observed', 'return_pct', 'benchmark', 'benchmark_return_pct', 'excess_percentage_points']];
+  evaluation.horizons.forEach(h => Object.entries(h.groups).forEach(([name, g]) => rows.push([
+    evaluation.report_id, evaluation.evaluated_at, evaluation.published_at, name, h.sessions, h.entry_session,
+    h.end_session, g.state, g.expected, g.observed, g.return_pct, evaluation.benchmark, h.benchmark_return_pct,
+    g.excess_percentage_points])));
+  return rows.map(row => row.map(csvCell).join(',')).join('\r\n');
 }

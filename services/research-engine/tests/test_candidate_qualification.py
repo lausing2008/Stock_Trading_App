@@ -11,9 +11,9 @@ from test_valuation_report import source, inputs, NOW
 
 def approved_review(raw):
     review = deepcopy(C.REVIEWS["ADBE"])
-    review.update(symbol=raw["symbol"], cik=123, reviewed_at=NOW.date().isoformat(),
+    review.update(symbol=raw["symbol"], cik=123, version=1, reviewed_at=NOW.date().isoformat(),
                   filings_checked_through=NOW.date().isoformat(), unresolved=[], decision="Qualified research")
-    review["sources"] = [{"id": str(i), "url": f"https://www.sec.gov/Archives/edgar/data/123/{i}/filing.htm",
+    review["sources"] = [{"id": str(i), "url": f"https://www.sec.gov/Archives/edgar/data/123/000000012326{i:06d}/filing.htm",
                           "published_at": NOW.date().isoformat(), "period_end": period}
                          for i, period in enumerate([r["period_end"] for r in raw["annuals"]] + ["2026-08-31"])]
     item = {"status": "supported", "rationale": "Reviewed source finding", "source_ids": ["0", "2"],
@@ -25,6 +25,8 @@ def approved_review(raw):
     review["verified_inputs"] = {"annuals": deepcopy(raw["annuals"]), "diluted_shares": 100e6,
                                  "source_ids": ["0", "1", "2"], "currency": "USD", "financial_currency": "USD"}
     review.pop("owner_cash_sensitivity", None)
+    review["filing_dispositions"] = {f"0000000123-26-{i:06d}": {"status": "reviewed", "rationale": "Reviewed fixture filing",
+        "reviewed_at": NOW.date().isoformat()} for i in range(3)}
     return review
 
 
@@ -37,6 +39,13 @@ def register(monkeypatch):
     for bar in raw["bars"]:
         bar["close"] = 10  # Genuine >=30% model discount, sufficient liquidity.
     review = approved_review(raw)
+    raw["filing_verification"] = {"state": "OK", "symbol": raw["symbol"], "cik": 123,
+        "checked_at": NOW.isoformat(), "since": NOW.date().isoformat(), "filings": [
+            {"accession": f"0000000123-26-{i:06d}", "form": "10-K" if i < 2 else "10-Q", "filed": NOW.date().isoformat()}
+            for i in range(3)]}
+    raw["financial_verification"] = {"state": "OK", "cik": 123, "checked_at": NOW.isoformat(),
+        "latest_period_end": raw["annuals"][0]["period_end"],
+        "latest_annual": {"revenue": {"value": raw["annuals"][0]["revenue"]}}}
     monkeypatch.setitem(C.REVIEWS, raw["symbol"], review)
     return raw, review
 
@@ -112,3 +121,12 @@ def test_review_revisions_change_fingerprint_without_mutating_prior_snapshot(mon
     assert old["qualified"]
     assert old["candidate_review"]["version"] == 1
     assert not second[0]["valuation"].value["rows"][0]["qualified"]
+
+
+def test_verified_inputs_can_resolve_a_provider_period_discrepancy(monkeypatch):
+    raw, _ = register(monkeypatch)
+    raw["annuals"][0]["period_end"] = "2025-12-30"
+    row = V.build_row(raw, "2026-10-27", NOW, quality())
+    assert row["candidate_review"]["reconciliation_flags"]
+    assert row["qualified"], row["blockers"]
+    assert row["valuation"]["period_end"] == "2025-12-31"
