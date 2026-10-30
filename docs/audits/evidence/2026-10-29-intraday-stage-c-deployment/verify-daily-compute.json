@@ -1,0 +1,47 @@
+{
+ "AAPL/GROWTH": {
+  "signal": "HOLD",
+  "status": 200,
+  "style": null
+ },
+ "AAPL/LONG": {
+  "signal": "HOLD",
+  "status": 200,
+  "style": null
+ },
+ "AAPL/SHORT": {
+  "signal": "BUY",
+  "status": 200,
+  "style": null
+ },
+ "AAPL/SWING": {
+  "signal": "HOLD",
+  "status": 200,
+  "style": null
+ },
+ "MSFT/GROWTH": {
+  "signal": "HOLD",
+  "status": 200,
+  "style": null
+ },
+ "MSFT/LONG": {
+  "signal": "HOLD",
+  "status": 200,
+  "style": null
+ },
+ "MSFT/SHORT": {
+  "signal": "BUY",
+  "status": 200,
+  "style": null
+ },
+ "MSFT/SWING": {
+  "signal": "HOLD",
+  "status": 200,
+  "style": null
+ },
+ "ok": true,
+ "token_revoked": {
+  "logout": 200,
+  "reuse_after_logout": 401
+ }
+}

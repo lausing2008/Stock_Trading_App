@@ -1,0 +1,18 @@
+alert_type,state,created_at,accepted_at,expires_at,subject
+little_rzy,accepted,2026-10-27T18:23:43.206590,2026-10-27T18:23:51.022015,2026-10-27T18:35:00,RZY research | UBER | bearish trigger | 15m
+little_rzy,accepted,2026-10-27T19:17:55.020065,2026-10-27T19:18:51.022269,2026-10-27T19:25:00,RZY research | AAOI | exhaustion watch | 5m
+little_rzy,accepted,2026-10-27T19:19:37.471126,2026-10-27T19:19:51.039115,2026-10-27T19:25:00,RZY research | MU | exhaustion watch | 5m
+short_term_digest,accepted,2026-10-27T13:11:16.538346,2026-10-27T13:11:34.629899,2026-10-27T13:30:00,Short-term watchlist digest · 2026-10-27
+little_rzy,accepted,2026-10-27T13:55:21.888872,2026-10-27T13:55:34.631491,2026-10-27T14:00:00,RZY research | SOXX | exhaustion watch | 5m
+little_rzy,accepted,2026-10-27T14:34:03.488815,2026-10-27T14:34:50.997034,2026-10-27T14:40:00,RZY research | KTOS | reversal watch | 5m
+little_rzy,accepted,2026-10-27T13:59:23.952546,2026-10-27T13:59:34.658946,2026-10-27T14:05:00,RZY research | NET | bullish trigger | 5m
+little_rzy,accepted,2026-10-27T14:24:34.771849,2026-10-27T14:24:50.995772,2026-10-27T14:30:00,RZY research | TMDX | bearish trigger | 5m
+little_rzy,accepted,2026-10-27T16:24:06.267371,2026-10-27T16:24:51.057239,2026-10-27T16:30:00,RZY research | AKAM | bullish trigger | 5m
+little_rzy,accepted,2026-10-27T16:24:54.069211,2026-10-27T16:25:51.009697,2026-10-27T16:30:00,RZY research | JPM | bullish trigger | 5m
+little_rzy,accepted,2026-10-27T18:22:40.092649,2026-10-27T18:22:50.995392,2026-10-27T18:25:00,RZY research | GOOG | bullish trigger | 5m
+little_rzy,accepted,2026-10-27T18:23:34.726688,2026-10-27T18:23:51.022015,2026-10-27T18:35:00,RZY research | SNOW | bullish trigger | 15m
+little_rzy,accepted,2026-10-27T19:21:19.832856,2026-10-27T19:21:50.995612,2026-10-27T19:25:00,RZY research | VICR | reversal watch | 5m
+little_rzy,accepted,2026-10-27T19:34:54.407095,2026-10-27T19:35:51.067678,2026-10-27T19:40:00,RZY research | AAOI | reversal watch | 5m
+little_rzy,accepted,2026-10-27T19:38:59.704176,2026-10-27T19:39:51.106556,2026-10-27T19:50:00,RZY research | LITE | reversal watch | 15m
+little_rzy,accepted,2026-10-27T19:49:43.994407,2026-10-27T19:49:51.015687,2026-10-27T20:05:00,RZY research | DDOG | bullish trigger | 15m
+little_rzy,accepted,2026-10-27T20:06:47.342172,2026-10-27T20:06:51.026612,2026-10-27T20:10:00,RZY research | NOK | reversal watch | 5m

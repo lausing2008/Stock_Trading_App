@@ -1,0 +1,31 @@
+── preflight ──────────────────────────────────────────
+  disk free : 28G
+  iowait    : 0.0%
+  TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+  Images          74        15        21.63GB   21.3GB (98%)
+  Containers      15        15        13.45MB   0B (0%)
+From https://github.com/lausing2008/Stock_Trading_App
+ * branch                prod       -> FETCH_HEAD
+Already up to date.
+[33m  only 28G free — pruning before build[0m
+── prune (dangling images + stopped containers only) ──
+deploy-lock: nested under owner=ec2-user pid=2660572 what=deploy.sh:ranking-engine started=2026-10-30T00:04:26Z token=e457f0192dc280a6
+  before: /dev/nvme0n1p1  100G   73G   28G  73% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   73G   28G  73% /
+── ranking-engine ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.2s
+ Image stockai-ranking-engine Built 
+ Container stockai-ranking-engine-1 Starting 
+ Container stockai-ranking-engine-1 Started 
+── verify (settling 45s) ──────────────────────────────
+[32m  ranking-engine: running/healthy[0m
+[32m  all declared services present[0m
+  host: 28G free, iowait 3.1%
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   73G   28G  73% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   73G   28G  73% /

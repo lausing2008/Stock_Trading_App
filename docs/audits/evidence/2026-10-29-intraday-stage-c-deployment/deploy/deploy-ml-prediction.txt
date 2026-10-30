@@ -1,0 +1,31 @@
+── preflight ──────────────────────────────────────────
+  disk free : 28G
+  iowait    : 0.0%
+  TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+  Images          80        15        21.64GB   21.31GB (98%)
+  Containers      15        15        12.68MB   0B (0%)
+From https://github.com/lausing2008/Stock_Trading_App
+ * branch                prod       -> FETCH_HEAD
+Already up to date.
+deploy-lock: nested under owner=ec2-user pid=2671877 what=deploy.sh:ml-prediction started=2026-10-30T00:10:17Z token=567fa155789cf1ab
+[33m  only 28G free — pruning before build[0m
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   73G   28G  73% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   73G   28G  73% /
+── ml-prediction ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-ml-prediction Built 
+ Container stockai-ml-prediction-1 Starting 
+ Container stockai-ml-prediction-1 Started 
+── verify (settling 45s) ──────────────────────────────
+[32m  ml-prediction: running/healthy[0m
+[32m  all declared services present[0m
+  host: 28G free, iowait 0.0%
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   73G   28G  73% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   73G   28G  73% /

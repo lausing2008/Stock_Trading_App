@@ -1,0 +1,1359 @@
+{
+ "session_day": "2026-10-27",
+ "window_utc": [
+  "2026-10-27T08:00:00",
+  "2026-10-28T00:00:00"
+ ],
+ "strategy_version": "LITTLE_RZY_INSPIRED_V1",
+ "note": "Provider acceptance is not confirmed inbox delivery. previous_provider_unknown counts toward neither hypothesis.",
+ "completed_bar_revisions": {
+  "total": 11795,
+  "by_classification": {
+   "same_provider": 8173,
+   "cross_provider": 3622
+  },
+  "by_timeframe": {
+   "5m": 11081,
+   "1d": 714
+  },
+  "provider_pairs": [
+   [
+    "unusual_whales->unusual_whales",
+    6142
+   ],
+   [
+    "yfinance->yfinance",
+    2031
+   ],
+   [
+    "yfinance->unusual_whales",
+    2001
+   ],
+   [
+    "unusual_whales->yfinance",
+    1621
+   ]
+  ],
+  "bar_age_minutes": {
+   "n": 11795,
+   "median": 0.58,
+   "p90": 100.45,
+   "p95": 995.35,
+   "max": 1170.01
+  },
+  "by_classification_and_age": {
+   "same_provider:>=6h": 851,
+   "same_provider:<6h": 611,
+   "same_provider:<60m": 952,
+   "cross_provider:>=6h": 63,
+   "same_provider:<15m": 5736,
+   "same_provider:<1d": 23,
+   "cross_provider:<1d": 173,
+   "cross_provider:<15m": 3304,
+   "cross_provider:<60m": 82
+  },
+  "max_rel_change_pct": {
+   "n": 11795,
+   "median": 0.13,
+   "p90": 0.49,
+   "p95": 0.72,
+   "max": 7.87
+  },
+  "changed_fields": [
+   [
+    "high,low,close,volume",
+    3818
+   ],
+   [
+    "open,high,low,close,volume",
+    1856
+   ],
+   [
+    "low,close,volume",
+    1430
+   ],
+   [
+    "high,close,volume",
+    1336
+   ],
+   [
+    "close",
+    1000
+   ],
+   [
+    "close,volume",
+    455
+   ],
+   [
+    "open,volume",
+    187
+   ],
+   [
+    "low",
+    135
+   ]
+  ],
+  "symbols": 209,
+  "top_symbols": [
+   [
+    "SOXL",
+    181
+   ],
+   [
+    "NU",
+    144
+   ],
+   [
+    "TSLA",
+    143
+   ],
+   [
+    "NVDA",
+    133
+   ],
+   [
+    "GLW",
+    133
+   ],
+   [
+    "TSM",
+    131
+   ],
+   [
+    "BEP",
+    131
+   ],
+   [
+    "AAOX",
+    127
+   ],
+   [
+    "BE",
+    125
+   ],
+   [
+    "GLD",
+    124
+   ]
+  ]
+ },
+ "completed_bar_hypothesis_tally": {
+  "cross_provider": 3622,
+  "same_provider": 8173,
+  "previous_provider_unknown_not_counted": 0,
+  "reading": "All timeframes and magnitudes pooled; read completed_bar_revisions_by_timeframe instead."
+ },
+ "completed_bar_revisions_by_timeframe": {
+  "intraday": {
+   "total": 11081,
+   "by_classification": {
+    "same_provider": 7632,
+    "cross_provider": 3449
+   },
+   "by_timeframe": {
+    "5m": 11081
+   },
+   "provider_pairs": [
+    [
+     "unusual_whales->unusual_whales",
+     5800
+    ],
+    [
+     "yfinance->unusual_whales",
+     1957
+    ],
+    [
+     "yfinance->yfinance",
+     1832
+    ],
+    [
+     "unusual_whales->yfinance",
+     1492
+    ]
+   ],
+   "bar_age_minutes": {
+    "n": 11081,
+    "median": 0.56,
+    "p90": 30.06,
+    "p95": 915.38,
+    "max": 1170.01
+   },
+   "by_classification_and_age": {
+    "same_provider:>=6h": 851,
+    "same_provider:<60m": 952,
+    "cross_provider:>=6h": 63,
+    "same_provider:<15m": 5736,
+    "same_provider:<6h": 93,
+    "cross_provider:<15m": 3304,
+    "cross_provider:<60m": 82
+   },
+   "max_rel_change_pct": {
+    "n": 11081,
+    "median": 0.13,
+    "p90": 0.49,
+    "p95": 0.72,
+    "max": 7.87
+   },
+   "changed_fields": [
+    [
+     "high,low,close,volume",
+     3811
+    ],
+    [
+     "open,high,low,close,volume",
+     1846
+    ],
+    [
+     "low,close,volume",
+     1392
+    ],
+    [
+     "high,close,volume",
+     1302
+    ],
+    [
+     "close",
+     1000
+    ],
+    [
+     "open,volume",
+     165
+    ],
+    [
+     "low",
+     135
+    ],
+    [
+     "high,low,volume",
+     123
+    ]
+   ],
+   "symbols": 174,
+   "top_symbols": [
+    [
+     "SOXL",
+     178
+    ],
+    [
+     "NU",
+     140
+    ],
+    [
+     "TSLA",
+     139
+    ],
+    [
+     "GLW",
+     130
+    ],
+    [
+     "NVDA",
+     129
+    ],
+    [
+     "TSM",
+     128
+    ],
+    [
+     "BEP",
+     128
+    ],
+    [
+     "AAOX",
+     124
+    ],
+    [
+     "BE",
+     122
+    ],
+    [
+     "GLD",
+     119
+    ]
+   ],
+   "by_magnitude": {
+    "rounding": 487,
+    "material": 10594
+   },
+   "material": {
+    "total": 10594,
+    "by_classification": {
+     "same_provider": 7210,
+     "cross_provider": 3384
+    },
+    "by_timeframe": {
+     "5m": 10594
+    },
+    "provider_pairs": [
+     [
+      "unusual_whales->unusual_whales",
+      5458
+     ],
+     [
+      "yfinance->unusual_whales",
+      1906
+     ],
+     [
+      "yfinance->yfinance",
+      1752
+     ],
+     [
+      "unusual_whales->yfinance",
+      1478
+     ]
+    ],
+    "bar_age_minutes": {
+     "n": 10594,
+     "median": 0.55,
+     "p90": 25.05,
+     "p95": 845.22,
+     "max": 1170.01
+    },
+    "by_classification_and_age": {
+     "same_provider:>=6h": 635,
+     "same_provider:<60m": 875,
+     "cross_provider:>=6h": 46,
+     "same_provider:<15m": 5634,
+     "same_provider:<6h": 66,
+     "cross_provider:<15m": 3262,
+     "cross_provider:<60m": 76
+    },
+    "max_rel_change_pct": {
+     "n": 10594,
+     "median": 0.14,
+     "p90": 0.5,
+     "p95": 0.74,
+     "max": 7.87
+    },
+    "changed_fields": [
+     [
+      "high,low,close,volume",
+      3784
+     ],
+     [
+      "open,high,low,close,volume",
+      1843
+     ],
+     [
+      "low,close,volume",
+      1365
+     ],
+     [
+      "high,close,volume",
+      1280
+     ],
+     [
+      "close",
+      737
+     ],
+     [
+      "open,volume",
+      149
+     ],
+     [
+      "low",
+      119
+     ],
+     [
+      "high,low,volume",
+      111
+     ]
+    ],
+    "symbols": 174,
+    "top_symbols": [
+     [
+      "SOXL",
+      172
+     ],
+     [
+      "TSLA",
+      130
+     ],
+     [
+      "GLW",
+      129
+     ],
+     [
+      "TSM",
+      128
+     ],
+     [
+      "BE",
+      121
+     ],
+     [
+      "NU",
+      120
+     ],
+     [
+      "GLD",
+      119
+     ],
+     [
+      "MU",
+      113
+     ],
+     [
+      "COHR",
+      113
+     ],
+     [
+      "QLD",
+      111
+     ]
+    ]
+   },
+   "hypothesis_tally": {
+    "by_magnitude": {
+     "material": {
+      "cross_provider": 3384,
+      "same_provider": 7210,
+      "previous_provider_unknown_not_counted": 0
+     },
+     "rounding": {
+      "cross_provider": 65,
+      "same_provider": 422,
+      "previous_provider_unknown_not_counted": 0
+     }
+    },
+    "total_by_magnitude": {
+     "rounding": 487,
+     "material": 10594
+    },
+    "reading": "material cross_provider supports vendor replacement; material same_provider supports corrections within one vendor; rounding-scale changes are precision noise and support neither; unknown supports neither."
+   }
+  },
+  "daily": {
+   "total": 714,
+   "by_classification": {
+    "same_provider": 541,
+    "cross_provider": 173
+   },
+   "by_timeframe": {
+    "1d": 714
+   },
+   "provider_pairs": [
+    [
+     "unusual_whales->unusual_whales",
+     342
+    ],
+    [
+     "yfinance->yfinance",
+     199
+    ],
+    [
+     "unusual_whales->yfinance",
+     129
+    ],
+    [
+     "yfinance->unusual_whales",
+     44
+    ]
+   ],
+   "bar_age_minutes": {
+    "n": 714,
+    "median": 30.05,
+    "p90": 1045.27,
+    "p95": 1065.23,
+    "max": 1095.53
+   },
+   "by_classification_and_age": {
+    "same_provider:<6h": 518,
+    "same_provider:<1d": 23,
+    "cross_provider:<1d": 173
+   },
+   "max_rel_change_pct": {
+    "n": 714,
+    "median": 0.1,
+    "p90": 0.45,
+    "p95": 0.67,
+    "max": 5.19
+   },
+   "changed_fields": [
+    [
+     "close,volume",
+     361
+    ],
+    [
+     "open,close,volume",
+     103
+    ],
+    [
+     "low,close,volume",
+     38
+    ],
+    [
+     "open,low,close,volume",
+     34
+    ],
+    [
+     "high,close,volume",
+     34
+    ],
+    [
+     "open,high,close,volume",
+     32
+    ],
+    [
+     "low,volume",
+     22
+    ],
+    [
+     "open,volume",
+     22
+    ]
+   ],
+   "symbols": 209,
+   "top_symbols": [
+    [
+     "2476.HK",
+     5
+    ],
+    [
+     "0100.HK",
+     5
+    ],
+    [
+     "2513.HK",
+     5
+    ],
+    [
+     "0939.HK",
+     5
+    ],
+    [
+     "9988.HK",
+     5
+    ],
+    [
+     "1810.HK",
+     5
+    ],
+    [
+     "9961.HK",
+     5
+    ],
+    [
+     "6082.HK",
+     5
+    ],
+    [
+     "6613.HK",
+     5
+    ],
+    [
+     "0981.HK",
+     5
+    ]
+   ],
+   "by_magnitude": {
+    "material": 641,
+    "rounding": 73
+   },
+   "material": {
+    "total": 641,
+    "by_classification": {
+     "same_provider": 510,
+     "cross_provider": 131
+    },
+    "by_timeframe": {
+     "1d": 641
+    },
+    "provider_pairs": [
+     [
+      "unusual_whales->unusual_whales",
+      322
+     ],
+     [
+      "yfinance->yfinance",
+      188
+     ],
+     [
+      "unusual_whales->yfinance",
+      123
+     ],
+     [
+      "yfinance->unusual_whales",
+      8
+     ]
+    ],
+    "bar_age_minutes": {
+     "n": 641,
+     "median": 30.03,
+     "p90": 1045.18,
+     "p95": 1045.27,
+     "max": 1085.27
+    },
+    "by_classification_and_age": {
+     "same_provider:<6h": 492,
+     "same_provider:<1d": 18,
+     "cross_provider:<1d": 131
+    },
+    "max_rel_change_pct": {
+     "n": 641,
+     "median": 0.12,
+     "p90": 0.48,
+     "p95": 0.7,
+     "max": 5.19
+    },
+    "changed_fields": [
+     [
+      "close,volume",
+      340
+     ],
+     [
+      "open,close,volume",
+      100
+     ],
+     [
+      "low,close,volume",
+      34
+     ],
+     [
+      "open,low,close,volume",
+      34
+     ],
+     [
+      "high,close,volume",
+      31
+     ],
+     [
+      "open,high,close,volume",
+      31
+     ],
+     [
+      "open,volume",
+      18
+     ],
+     [
+      "low,volume",
+      12
+     ]
+    ],
+    "symbols": 208,
+    "top_symbols": [
+     [
+      "2476.HK",
+      5
+     ],
+     [
+      "0100.HK",
+      5
+     ],
+     [
+      "2513.HK",
+      5
+     ],
+     [
+      "0939.HK",
+      5
+     ],
+     [
+      "9988.HK",
+      5
+     ],
+     [
+      "1810.HK",
+      5
+     ],
+     [
+      "9961.HK",
+      5
+     ],
+     [
+      "6082.HK",
+      5
+     ],
+     [
+      "6613.HK",
+      5
+     ],
+     [
+      "0981.HK",
+      5
+     ]
+    ]
+   },
+   "hypothesis_tally": {
+    "by_magnitude": {
+     "material": {
+      "cross_provider": 131,
+      "same_provider": 510,
+      "previous_provider_unknown_not_counted": 0
+     },
+     "rounding": {
+      "cross_provider": 42,
+      "same_provider": 31,
+      "previous_provider_unknown_not_counted": 0
+     }
+    },
+    "total_by_magnitude": {
+     "material": 641,
+     "rounding": 73
+    },
+    "reading": "material cross_provider supports vendor replacement; material same_provider supports corrections within one vendor; rounding-scale changes are precision noise and support neither; unknown supports neither."
+   }
+  }
+ },
+ "forming_bar_updates": {
+  "total": 10984,
+  "by_classification": {
+   "same_provider": 7332,
+   "cross_provider": 3652
+  },
+  "by_timeframe": {
+   "1d": 10984
+  },
+  "provider_pairs": [
+   [
+    "unusual_whales->unusual_whales",
+    6436
+   ],
+   [
+    "yfinance->unusual_whales",
+    1888
+   ],
+   [
+    "unusual_whales->yfinance",
+    1764
+   ],
+   [
+    "yfinance->yfinance",
+    896
+   ]
+  ],
+  "bar_age_minutes": {
+   "n": 10984,
+   "median": -199.59,
+   "p90": -59.77,
+   "p95": -19.37,
+   "max": -4.34
+  },
+  "by_classification_and_age": {
+   "same_provider:<6h": 7332,
+   "cross_provider:<6h": 3652
+  },
+  "max_rel_change_pct": {
+   "n": 10984,
+   "median": 0.12,
+   "p90": 0.47,
+   "p95": 0.67,
+   "max": 4.4
+  },
+  "changed_fields": [
+   [
+    "close,volume",
+    7325
+   ],
+   [
+    "open,close,volume",
+    1734
+   ],
+   [
+    "high,close,volume",
+    1166
+   ],
+   [
+    "low,close,volume",
+    315
+   ],
+   [
+    "open,high,close,volume",
+    264
+   ],
+   [
+    "open,low,close,volume",
+    84
+   ],
+   [
+    "open,volume",
+    39
+   ],
+   [
+    "high,low,close,volume",
+    20
+   ]
+  ],
+  "symbols": 167,
+  "top_symbols": [
+   [
+    "XLE",
+    130
+   ],
+   [
+    "RKLB",
+    70
+   ],
+   [
+    "AMD",
+    70
+   ],
+   [
+    "HOOD",
+    70
+   ],
+   [
+    "ASTS",
+    70
+   ],
+   [
+    "XLRE",
+    70
+   ],
+   [
+    "PLTR",
+    69
+   ],
+   [
+    "TQQQ",
+    69
+   ],
+   [
+    "USAR",
+    69
+   ],
+   [
+    "VBK",
+    69
+   ]
+  ]
+ },
+ "forming_bar_updates_by_timeframe": {
+  "intraday": {
+   "total": 0,
+   "by_classification": {},
+   "by_timeframe": {},
+   "provider_pairs": [],
+   "bar_age_minutes": {
+    "n": 0
+   },
+   "by_classification_and_age": {},
+   "max_rel_change_pct": {
+    "n": 0
+   },
+   "changed_fields": [],
+   "symbols": 0,
+   "top_symbols": []
+  },
+  "daily": {
+   "total": 10984,
+   "by_classification": {
+    "same_provider": 7332,
+    "cross_provider": 3652
+   },
+   "by_timeframe": {
+    "1d": 10984
+   },
+   "provider_pairs": [
+    [
+     "unusual_whales->unusual_whales",
+     6436
+    ],
+    [
+     "yfinance->unusual_whales",
+     1888
+    ],
+    [
+     "unusual_whales->yfinance",
+     1764
+    ],
+    [
+     "yfinance->yfinance",
+     896
+    ]
+   ],
+   "bar_age_minutes": {
+    "n": 10984,
+    "median": -199.59,
+    "p90": -59.77,
+    "p95": -19.37,
+    "max": -4.34
+   },
+   "by_classification_and_age": {
+    "same_provider:<6h": 7332,
+    "cross_provider:<6h": 3652
+   },
+   "max_rel_change_pct": {
+    "n": 10984,
+    "median": 0.12,
+    "p90": 0.47,
+    "p95": 0.67,
+    "max": 4.4
+   },
+   "changed_fields": [
+    [
+     "close,volume",
+     7325
+    ],
+    [
+     "open,close,volume",
+     1734
+    ],
+    [
+     "high,close,volume",
+     1166
+    ],
+    [
+     "low,close,volume",
+     315
+    ],
+    [
+     "open,high,close,volume",
+     264
+    ],
+    [
+     "open,low,close,volume",
+     84
+    ],
+    [
+     "open,volume",
+     39
+    ],
+    [
+     "high,low,close,volume",
+     20
+    ]
+   ],
+   "symbols": 167,
+   "top_symbols": [
+    [
+     "XLE",
+     130
+    ],
+    [
+     "RKLB",
+     70
+    ],
+    [
+     "AMD",
+     70
+    ],
+    [
+     "HOOD",
+     70
+    ],
+    [
+     "ASTS",
+     70
+    ],
+    [
+     "XLRE",
+     70
+    ],
+    [
+     "PLTR",
+     69
+    ],
+    [
+     "TQQQ",
+     69
+    ],
+    [
+     "USAR",
+     69
+    ],
+    [
+     "VBK",
+     69
+    ]
+   ]
+  }
+ },
+ "bar_provenance": {
+  "bars": 20131,
+  "provider_of_last_write": {
+   "yfinance": 8248,
+   "unusual_whales": 11883
+  },
+  "off_grid_by_provider": {},
+  "bars_with_completed_revisions": 11023,
+  "volume_only_revisions": 2739,
+  "provider_switches_same_values": 20,
+  "first_ingest_note": "Legacy first-storage-write metric can be negative for forming candles; it does not measure completed-candle availability. See observed post-close write timing.",
+  "close_to_first_ingest_minutes_5m": {
+   "n": 20131,
+   "median": 0.09,
+   "p90": 915.3,
+   "p95": 995.13,
+   "max": 1450.12
+  }
+ },
+ "scans": {
+  "runs": 129,
+  "session_runs": 100,
+  "duration_seconds": {
+   "n": 100,
+   "median": 214.87,
+   "p90": 285.67,
+   "p95": 352.86,
+   "max": 596.25
+  },
+  "minutes_between_session_scans": {
+   "n": 99,
+   "median": 4.0,
+   "p90": 5.0,
+   "p95": 6.0,
+   "max": 12.27
+  },
+  "stream_status_totals": {
+   "research_only": 31439,
+   "stale": 1396,
+   "no_completed_bars": 300,
+   "awaiting_backfill": 365,
+   "restatement_pending": 400
+  },
+  "paused_stream_scans": 400,
+  "too_late_to_mail": 843,
+  "new_emailable_events": 860,
+  "queued": 16
+ },
+ "scan_phases_seconds": {
+  "evaluate_total": {
+   "n": 100,
+   "median": 187.48,
+   "p90": 245.54,
+   "p95": 310.85,
+   "max": 518.16
+  },
+  "load_and_prepare_bars": {
+   "n": 100,
+   "median": 127.07,
+   "p90": 170.35,
+   "p95": 204.57,
+   "max": 277.79
+  },
+  "other": {
+   "n": 100,
+   "median": 1.42,
+   "p90": 2.43,
+   "p95": 3.13,
+   "max": 5.33
+  },
+  "snapshot_and_commit": {
+   "n": 100,
+   "median": 23.2,
+   "p90": 37.93,
+   "p95": 41.23,
+   "max": 75.09
+  }
+ },
+ "bar_session_authority": {
+  "sessions": 408,
+  "by_authority": {
+   "unusual_whales": 324,
+   "yfinance": 84
+  },
+  "by_timeframe": {
+   "1d": 210,
+   "5m": 198
+  },
+  "protected": 91617,
+  "replaced": 2814,
+  "sessions_with_protected": 296,
+  "trace_failed_sessions": 0,
+  "max_protected_divergence": {
+   "n": 296,
+   "median": 0.0,
+   "p90": 0.01,
+   "p95": 0.01,
+   "max": 0.05
+  }
+ },
+ "rzy_rebuilds": {
+  "source": "little_rzy_rebuilds (append-only)",
+  "total": 661,
+  "by_reason": {
+   "stored_completed_bar_changed": 548,
+   "gap_after_checkpoint": 113
+  },
+  "by_timeframe": {
+   "5m": 382,
+   "15m": 220,
+   "1h": 59
+  }
+ },
+ "rzy_streams_paused_at_report_time": null,
+ "pause_measurement": {
+  "source": "Latest current-config scan snapshots observed inside the session window, not a new report-time evaluation",
+  "observed_snapshots": 0
+ },
+ "ingest_observations": {
+  "available": true,
+  "groups": [
+   {
+    "session_day": "2026-10-27",
+    "session_kind": "PRE",
+    "market": "US",
+    "timeframe": "5m",
+    "provider": "yfinance",
+    "batch_session_groups": 5410,
+    "received": 150668,
+    "duplicate_dropped": 0,
+    "off_grid_rejected": 854,
+    "authority_rejected": 0,
+    "written": 149814
+   },
+   {
+    "session_day": "2026-10-27",
+    "session_kind": "REGULAR",
+    "market": "HK",
+    "timeframe": "5m",
+    "provider": "yfinance",
+    "batch_session_groups": 45,
+    "received": 2913,
+    "duplicate_dropped": 0,
+    "off_grid_rejected": 0,
+    "authority_rejected": 0,
+    "written": 2913
+   },
+   {
+    "session_day": "2026-10-27",
+    "session_kind": "REGULAR",
+    "market": "US",
+    "timeframe": "5m",
+    "provider": "unusual_whales",
+    "batch_session_groups": 8838,
+    "received": 361580,
+    "duplicate_dropped": 0,
+    "off_grid_rejected": 0,
+    "authority_rejected": 0,
+    "written": 361580
+   },
+   {
+    "session_day": "2026-10-27",
+    "session_kind": "REGULAR",
+    "market": "US",
+    "timeframe": "5m",
+    "provider": "yfinance",
+    "batch_session_groups": 2965,
+    "received": 87344,
+    "duplicate_dropped": 0,
+    "off_grid_rejected": 39,
+    "authority_rejected": 78372,
+    "written": 8933
+   }
+  ],
+  "note": "Post-validation received rows; written counts committed insert/update operations, not distinct candles. Missing telemetry is not zero ingestion."
+ },
+ "operational_timing": {
+  "by_timeframe": {
+   "15m": {
+    "trigger_occurrences": 3,
+    "invalid_timestamps": 0,
+    "post_close_write_missing": 0,
+    "post_close_write_timestamp_excluded": 0,
+    "segments_seconds": {
+     "observed_write_to_detection": {
+      "samples": 0,
+      "median": null,
+      "p95": null,
+      "max": null
+     }
+    },
+    "too_late_to_queue": 0,
+    "seconds_from_close": {
+     "detection": {
+      "samples": 3,
+      "median": 514.713524,
+      "p95": 523.164386,
+      "max": 523.164386
+     },
+     "queue": {
+      "samples": 3,
+      "median": 514.788225,
+      "p95": 523.305197,
+      "max": 523.305197
+     },
+     "provider_acceptance": {
+      "samples": 3,
+      "median": 531.022015,
+      "p95": 531.022015,
+      "max": 531.022015
+     },
+     "observed_post_close_write": {
+      "samples": 0,
+      "median": null,
+      "p95": null,
+      "max": null
+     }
+    },
+    "receipt_outcomes": {
+     "accepted": 3
+    }
+   },
+   "1h": {
+    "trigger_occurrences": 1,
+    "invalid_timestamps": 0,
+    "post_close_write_missing": 0,
+    "post_close_write_timestamp_excluded": 0,
+    "segments_seconds": {
+     "observed_write_to_detection": {
+      "samples": 0,
+      "median": null,
+      "p95": null,
+      "max": null
+     }
+    },
+    "too_late_to_queue": 1,
+    "seconds_from_close": {
+     "detection": {
+      "samples": 1,
+      "median": 60098.708231,
+      "p95": 60098.708231,
+      "max": 60098.708231
+     },
+     "queue": {
+      "samples": 0,
+      "median": null,
+      "p95": null,
+      "max": null
+     },
+     "provider_acceptance": {
+      "samples": 0,
+      "median": null,
+      "p95": null,
+      "max": null
+     },
+     "observed_post_close_write": {
+      "samples": 0,
+      "median": null,
+      "p95": null,
+      "max": null
+     }
+    },
+    "receipt_outcomes": {
+     "not_queued": 1
+    }
+   },
+   "5m": {
+    "trigger_occurrences": 5,
+    "invalid_timestamps": 0,
+    "post_close_write_missing": 0,
+    "post_close_write_timestamp_excluded": 0,
+    "segments_seconds": {
+     "observed_write_to_detection": {
+      "samples": 5,
+      "median": 261.323114,
+      "p95": 434.768018,
+      "max": 434.768018
+     }
+    },
+    "too_late_to_queue": 0,
+    "seconds_from_close": {
+     "detection": {
+      "samples": 5,
+      "median": 274.757978,
+      "p95": 460.045969,
+      "max": 460.045969
+     },
+     "queue": {
+      "samples": 5,
+      "median": 274.794461,
+      "p95": 460.256541,
+      "max": 460.256541
+     },
+     "provider_acceptance": {
+      "samples": 5,
+      "median": 291.057239,
+      "p95": 470.995392,
+      "max": 470.995392
+     },
+     "observed_post_close_write": {
+      "samples": 5,
+      "median": 15.678539,
+      "p95": 29.884628,
+      "max": 29.884628
+     }
+    },
+    "receipt_outcomes": {
+     "accepted": 5
+    }
+   }
+  },
+  "streams": [],
+  "readiness": "research_only",
+  "execution_ready": false,
+  "blockers": [
+   "Execution-grade provider timing and price basis are unverified.",
+   "Short availability and borrow evidence are unavailable.",
+   "Full-session latency/completeness acceptance and forward after-cost edge are not established."
+  ],
+  "note": "Session observation window. Detection/queue samples count incremental trigger occurrences; acceptance samples and receipt states count recipient receipts. Not_queued and receipt_outside_window count occurrences, not recipients, without asserting a cause. Observed post-close write timing is available only for native 5m bars since instrumentation began, not first-ever ingestion, provider finality or transaction commit time. Missing/late observation timestamps are excluded, never zero-filled. Provider acceptance is not inbox delivery. No signals is not proof of complete detection."
+ },
+ "occurrence_source": "little_rzy_occurrences (first observation, survives pruning)",
+ "occurrences_by_observation": {
+  "incremental": 503,
+  "rebuild": 33,
+  "bootstrap": 175
+ },
+ "research_alert_path": {
+  "5m": {
+   "signals": 15,
+   "close_to_recorded_minutes": {
+    "n": 15,
+    "median": 4.91,
+    "p90": 9.1,
+    "p95": 13.31,
+    "max": 13.31
+   },
+   "close_to_provider_accepted_minutes": {
+    "n": 12,
+    "median": 5.58,
+    "p90": 6.85,
+    "p95": 7.85,
+    "max": 7.85
+   },
+   "outcomes": {
+    "accepted": 12,
+    "recorded_too_late_not_queued": 3
+   }
+  },
+  "15m": {
+   "signals": 4,
+   "close_to_recorded_minutes": {
+    "n": 4,
+    "median": 8.72,
+    "p90": 8.99,
+    "p95": 8.99,
+    "max": 8.99
+   },
+   "close_to_provider_accepted_minutes": {
+    "n": 4,
+    "median": 8.85,
+    "p90": 9.85,
+    "p95": 9.85,
+    "max": 9.85
+   },
+   "outcomes": {
+    "accepted": 4
+   }
+  },
+  "1h": {
+   "signals": 1,
+   "close_to_recorded_minutes": {
+    "n": 1,
+    "median": 1001.65,
+    "p90": 1001.65,
+    "p95": 1001.65,
+    "max": 1001.65
+   },
+   "close_to_provider_accepted_minutes": {
+    "n": 0
+   },
+   "outcomes": {
+    "recorded_too_late_not_queued": 1
+   }
+  }
+ },
+ "outbox_states": {
+  "little_rzy:accepted": 16,
+  "short_term_digest:accepted": 1
+ },
+ "digest": [
+  {
+   "created": "2026-10-27T13:11:16.538346",
+   "accepted": "2026-10-27T13:11:34.629899",
+   "state": "accepted"
+  }
+ ]
+}

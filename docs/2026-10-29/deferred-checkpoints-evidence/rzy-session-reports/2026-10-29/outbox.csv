@@ -1,0 +1,9 @@
+alert_type,state,created_at,accepted_at,expires_at,subject
+little_rzy,accepted,2026-10-29T13:49:53.685070,2026-10-29T13:50:19.072222,2026-10-29T14:05:00,RZY research | CCJ | exhaustion watch | 15m
+little_rzy,accepted,2026-10-29T14:48:42.403445,2026-10-29T14:49:19.076294,2026-10-29T15:05:00,RZY research | APP | bearish trigger | 15m
+short_term_digest,accepted,2026-10-29T13:11:07.437067,2026-10-29T13:11:19.066436,2026-10-29T13:30:00,Short-term watchlist digest · 2026-10-29
+little_rzy,accepted,2026-10-29T13:49:58.580469,2026-10-29T13:50:19.072222,2026-10-29T13:55:00,RZY research | CRWD | exhaustion watch | 5m
+little_rzy,accepted,2026-10-29T14:49:21.869797,2026-10-29T14:50:19.065661,2026-10-29T15:05:00,RZY research | LITE | exhaustion watch | 15m
+little_rzy,accepted,2026-10-29T15:29:01.225530,2026-10-29T15:29:19.074279,2026-10-29T15:35:00,RZY research | DELL | bearish trigger | 5m
+little_rzy,accepted,2026-10-29T19:04:43.847256,2026-10-29T19:05:19.128210,2026-10-29T19:20:00,RZY research | ANF | bullish trigger | 15m
+little_rzy,accepted,2026-10-29T19:45:37.988902,2026-10-29T19:46:19.149629,2026-10-29T19:50:00,RZY research | NOW | reversal watch | 5m

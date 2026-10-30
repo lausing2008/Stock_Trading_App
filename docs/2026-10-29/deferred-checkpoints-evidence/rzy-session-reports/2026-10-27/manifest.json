@@ -1,0 +1,42 @@
+{
+ "created_at": "2026-10-30T00:28:29.077298+00:00",
+ "session_day": "2026-10-27",
+ "release": "unknown",
+ "config_hash": "8ceb8cf780c3eb981983",
+ "strategy_version": "LITTLE_RZY_INSPIRED_V1",
+ "code_sha256": {
+  "bar_provenance.py": "0c28a8a06977b02122a726db7a8e302c4ca262688ed9123010da40c885df0a6b",
+  "ingestion.py": "02c72eb1abf765b0ed1abdbd34c570f76067bc5908ac8123e7bfad33c77aba34",
+  "little_rzy.py": "945b62341d5b1dd2e77e26b6733864dd473475372a16ec89dd28cb26fb5e3810",
+  "rzy_data.py": "f2d90429474b0cb44a7c3dacb5b7892cb740265419cf56ec9324dc1089b00810",
+  "rzy_workflow.py": "e3bd199ae75ea786e79eef813484a4ad71d0f41cf2810e746fb916cba131d0f6",
+  "bar_ingest_observations.py": "6117c220bedcde20eb8f99fd92e0167e088da18c29d4b0f88ec72bf473d6d42b",
+  "rzy_monitoring.py": "05764921a948b7cf2602e525fc9592b96d47166fe312c9f1c8016aeebb38eafd",
+  "session_report.py": "66d8196249fc0e5e1c99aad96de0bc46390799c27e2c444a416f529dff1dedc8"
+ },
+ "files": {
+  "bar_provenance.csv": "898b07bfd63aba56b63770125d098660ad7efa6797926dea3998a58f042cb142",
+  "bar_revisions.csv": "97a389652fd676509a2e144aa10e48989b6005a77dee004c735139d92d98c081",
+  "bar_session_authority.csv": "7fb0a4adcfbf973110bfbd81435dc15232f7ac16360c6d9d6e20baeb488c5fed",
+  "ingest_observations.csv": "0ba68e8f2f0953e7dec41d24a621baa6989c3339762635c56d8b46eec8f11224",
+  "occurrences.csv": "861aee7a5ba27952a0a45b6c2dbc08db8c34d422dc9ec7fa8b09476b67442324",
+  "outbox.csv": "1b5a7028ff175b9637ccec18c78633ed89ac04c44291573a52d130d901824aef",
+  "post_close_writes.csv": "fdc142a40333acc3833907b1c8b4baa3c13e1e63a9de95f5177b8d3c8b4cae25",
+  "rebuilds.csv": "f7f44a23e74def2728f633db29deeff4c38ad88469a75ed13c1fedf2b0bc7f97",
+  "report.json": "9984b258cdd9d5c56de23e4a65bf7fa673c46866f572c920386199aeb7fdb6a7",
+  "rzy_alert_path.csv": "a7eef5eafaf291b6cfbbc99a684034635feeab89c8882bfd9f901de046dee13b",
+  "scan_phases.csv": "825e4b945a211b3fdba848ded8e22d38cf383d62136049a3f4136758975ede5c",
+  "scan_runs.csv": "66aba39ed0ea8439f64b4511b869956b68babe5a4758421944aa81d5bb7bab6d"
+ },
+ "rows": {
+  "bar_revisions": 22779,
+  "bar_provenance": 20131,
+  "scan_runs": 129,
+  "alert_path": 20,
+  "outbox": 17,
+  "occurrences": 711,
+  "rebuilds": 661,
+  "ingest_observations": 17258,
+  "post_close_writes": 11958
+ }
+}
