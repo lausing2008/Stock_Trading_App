@@ -111,7 +111,8 @@ The status is therefore `partial` on a day when nothing went wrong. A possible r
        - Each one can route the whole US ingest to yfinance for up to 2 minutes.
      - **Oct 29 not checked:** the container logs for that session were lost when the 00:02 UTC deploy recreated the container, so the yfinance side of that day is unmeasured.
      - **Also seen:** one symbol gets HTTP 422 from Unusual Whales on every run (about 4–22 an hour). Wasteful but harmless.
-     - **Fix options, not built (need approval):**
+     - **Deployed 2026-10-30 02:44 UTC (market-data `ad55a635`):** fix option 2 below, plus per-minute headroom logging on the bar path. Container `src`/`shared` match the commit, 15/15 healthy. Write-up: `docs/incidents/yfinance-rate-limit-amplification.md` (AUD-UW-COOLDOWN-YFSPILL). Request spacing (option 3) waits for two sessions of headroom data (tracker `UW-BAR-REQUEST-SPACING`).
+     - **Fix options as proposed (option 2 approved and built):**
        1. Shorten the cooldown to a few seconds; the limit that is being hit is per-minute.
        2. During the regular session, skip the symbol for that run instead of sending it to yfinance; the next 5-minute run catches up incrementally.
        3. Find which callers push Unusual Whales over its per-minute limit at :30/:35. The service-level counter records no endpoint path, so that needs instrumentation first.

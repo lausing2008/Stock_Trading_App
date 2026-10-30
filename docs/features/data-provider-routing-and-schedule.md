@@ -25,7 +25,8 @@ when UW refuses — it costs a wasted request and a delayed bar.
 
 **The fallback is also why both providers throttle together.** Every UW failure becomes a
 yfinance call for the same symbol, so one stream of traffic lands on both. When counting
-provider load, count the *attempts*, not the successes.
+provider load, count the *attempts*, not the successes. (Since 2026-10-30 a UW cooldown during
+the US regular session skips fresh symbols instead; see "Throttling behaviour" below.)
 
 ## When ingestion runs
 
@@ -92,6 +93,20 @@ A 120-second cooldown now turns that into one wasted call per window: the first 
 `supports()` reports False while it holds, and the registry routes straight to yfinance. It is
 deliberately short — a step-aside, not a circuit breaker with a long memory — and fail-open,
 so a Redis outage cannot remove a working data source.
+
+**Changed 2026-10-30 (`ad55a635`, AUD-UW-COOLDOWN-YFSPILL): the cooldown no longer hands the
+regular session to yfinance.** Sending every US symbol to yfinance whenever one UW request was
+refused got the host rate-limited by Yahoo; see `docs/incidents/yfinance-rate-limit-amplification.md`.
+Now, while the cooldown holds during the US regular session, a symbol whose data is fresh
+(newest intraday bar ended, or last successful daily fetch, within 15 minutes) skips that run;
+the next 5-minute run is incremental and catches up from UW. A stale symbol still falls back to
+yfinance, so a long UW outage cannot leave bars stale. Premarket, the post-close final-candle
+passes, first ingests, forced refreshes and HK route exactly as before.
+
+Two Redis metrics (49 h) cover it:
+- `stockai:metric:ingest_primary_cooldown_skips:{tf}:{YYYYMMDDHH}` counts skips.
+- `stockai:metric:uw_bar_minute_remaining:{YYYYMMDDHH}` holds the lowest per-minute headroom UW
+  reported in each minute (field = minute), plus `limit`.
 
 ## What this page does not settle
 

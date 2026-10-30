@@ -279,3 +279,57 @@ ingests the same bars in the same slots.
    exists to populate `session="PRE"` rows for one section of one daily email. Reducing the
    cadence, narrowing the symbol set, or accepting the cost are all legitimate; none is a bug
    fix.
+
+## AUD-UW-COOLDOWN-YFSPILL (2026-10-30) — one Unusual Whales 429 sent every US ingest to yfinance
+
+**Symptom.** From 09:34 ET on Oct 28, about 4,400 Yahoo rate-limit log lines in half an hour,
+mostly `fundamentals.fetch_failed`, `growth_vs_index_fetch_failed` and
+`earnings_consensus_fetch_failed`, which have no other source. US 5m bars looked unaffected.
+
+**Not a yfinance problem.** A 429 on the UW bar endpoint arms the adapter's shared 120 s
+cooldown (`AUD-UW-BURST`, `_COOLDOWN_SECONDS`). While it holds, `supports()` returns False, so
+`get_adapters()` omits UW and **every** US daily and 5m ingest goes to yfinance. Concentrated
+on one host, that load gets Yahoo to refuse it, and the fundamentals fetches share the address.
+This is the "fall back to X" shape again: the cooldown was written to stop wasted UW calls, and
+it silently made yfinance the primary for two minutes at a time.
+
+**Evidence (Oct 28 close window, from the saved pre-deploy log, by 10-minute window):**
+
+| Window (UTC) | UW 429 | Daily-bar fetches: UW / yfinance |
+|---|---|---|
+| 19:30 | 19:30:07, 19:35:18 | 85 / 661 |
+| 19:40 | 19:45:12 | 250 / 256 |
+| 19:50 | 19:50:36 | 299 / 72 |
+| 20:00–20:19 | none | 336 / 10 |
+
+592 symbol ingests failed with Yahoo 429 across 153 symbols. Redis counters (49 h): 40 UW 429s
+on Oct 28 and 75 on Oct 29, **all on `/api/stock/{symbol}/ohlc/{candle}`**, none on dark pool,
+flow alerts, chains or short interest, at 24–29k calls/day against a 120k quota. Each 429
+landed within ~35 s of a 5-minute run starting: a per-minute burst, not the daily budget. Each
+run sends about 300 bar requests at once, because the 5m ingest and the market refresh (daily
+bars) both walk ~150 US symbols in the same seconds.
+
+**Fixed (`ad55a635`, deployed 2026-10-30 02:44 UTC).** During the US regular session, while UW is
+cooling down, a symbol whose data is fresh skips the run (`ingest.skipped_primary_cooldown`).
+Fresh means its newest intraday bar ended, or its last daily fetch succeeded, within 15 minutes.
+The next incremental run catches up from UW. Stale symbols still fall back; premarket, the
+16:02/16:07 final-candle passes (session end is exclusive), first ingests, forced refreshes and
+HK are unchanged. The bar path now records UW's per-minute headroom
+(`uw_bar_minute_remaining`), and each 429 logs the headers (`unusual_whales.bar_rate_limited`).
+15 tests incl. a real-PostgreSQL ingest; 5 sabotages caught; independent review: nothing blocking.
+
+**Accepted limits (from the review).**
+- A forming bar written early in its interval stretches the window to about 19 minutes.
+- If a 429 lands at the start of every run, the symbols queued last skip each run and get yfinance only every 15–20 minutes.
+- A manual admin ingest during a cooldown returns `skipped: primary_cooldown`.
+
+**Open.** Pace the bar requests once two sessions of headroom data show the real per-minute limit
+(tracker `UW-BAR-REQUEST-SPACING`). Fetching daily bars less often would cut the most traffic,
+but it changes forming-bar freshness and needs a product decision.
+
+**Verify.**
+```bash
+docker exec stockai-redis-1 redis-cli --scan --pattern 'stockai:metric:ingest_primary_cooldown_skips:*'
+docker exec stockai-redis-1 redis-cli hgetall stockai:metric:uw_bar_minute_remaining:$(date -u +%Y%m%d%H)
+docker logs --since 1h stockai-market-data-1 2>&1 | grep -c 'Too Many Requests'
+```

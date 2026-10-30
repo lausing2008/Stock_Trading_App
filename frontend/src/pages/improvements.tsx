@@ -35,6 +35,23 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'UW-COOLDOWN-YF-SPILL', tier: 476, severity: 'medium', defaultStatus: 'done',
+    title: 'One Unusual Whales 429 sent every US bar ingest to yfinance',
+    file: 'docs/incidents/yfinance-rate-limit-amplification.md', effort: 'S',
+    impact: 'Yahoo rate-limited the host for hours (592 failed symbol ingests on Oct 28), taking down the fundamentals, earnings-consensus and growth-vs-index fetches that have no other source.',
+    what: 'A UW 429 arms a shared 120 s cooldown; while armed the registry dropped UW and routed all US daily/5m ingest to yfinance. Oct 28 close: daily fetches 85 UW / 661 yfinance in the ten minutes with two 429s, 336 / 10 once they stopped. 40 bar-endpoint 429s on Oct 28, 75 on Oct 29, all on that one endpoint, at 24-29k calls/day against a 120k quota.',
+    fix: 'During the regular session a fresh symbol (newest bar ended, or last daily fetch succeeded, within 15 min) skips the run; the next incremental run catches up from UW. Stale symbols, premarket, post-close passes and HK unchanged. The bar path now records UW per-minute headroom.',
+    implementedNote: 'DEPLOYED 2026-10-30 02:44 UTC (market-data ad55a635): container src/shared match the commit, 15/15 healthy. 15 tests incl. real PostgreSQL; 5 sabotages caught; independent review found nothing blocking. Watch ingest_primary_cooldown_skips and uw_bar_minute_remaining over the next sessions.',
+  },
+  {
+    id: 'UW-BAR-REQUEST-SPACING', tier: 476, severity: 'medium', defaultStatus: 'todo',
+    title: 'Space Unusual Whales bar requests within each 5-minute run',
+    file: 'docs/2026-10-28/open-items-status.md', effort: 'S',
+    impact: 'The bar endpoint still gets per-minute 429s at the start of runs; each now skips symbols for a run instead of spilling to yfinance, and the same late-queued symbols can be skipped run after run.',
+    what: 'The 5m ingest and the market refresh (daily bars) each walk ~150 US symbols in the same seconds, about 300 bar requests per run.',
+    fix: 'After 2 sessions of uw_bar_minute_remaining data, pace bar requests to the measured per-minute limit. Fetching daily bars less often is the alternative, but it changes forming-bar freshness and needs a product decision.',
+  },
+  {
     id: "AI-F01-CALIBRATION-PROJECTION",
     tier: 475,
     severity: "high",
