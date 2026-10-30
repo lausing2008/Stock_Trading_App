@@ -1037,34 +1037,67 @@ def _stock_market(row) -> str:
     return getattr(m, "value", m) or ("HK" if row.symbol.endswith(".HK") else "US")
 
 
+def _last_session_close(market: str, now: datetime) -> datetime | None:
+    """When `market`'s most recent completed regular session closed (early closes included)."""
+    from zoneinfo import ZoneInfo
+    from common.market_calendar import session_bounds
+    d = now.astimezone(ZoneInfo("Asia/Hong_Kong" if market == "HK" else "America/New_York")).date()
+    for back in range(12):
+        b = session_bounds(market, d - timedelta(days=back))
+        if b and b[1] <= now:
+            return b[1]
+    return None
+
+
+# A row counts as a closed market's close only when fetched this long after the close: HK's
+# closing auction runs to ~16:10, and the refresh window runs to 17:00 local, so a normal day
+# always qualifies.
+_CLOSE_SETTLE = timedelta(minutes=15)
+
+
+def _is_post_close_row(row: dict, market: str, now: datetime) -> bool:
+    close = _last_session_close(market, now)
+    try:
+        fetched = datetime.fromisoformat(str(row.get("fetched_at")).replace("Z", "+00:00"))
+    except Exception:
+        return False
+    if fetched.tzinfo is None:
+        fetched = fetched.replace(tzinfo=timezone.utc)
+    return close is not None and fetched >= close + _CLOSE_SETTLE
+
+
 def prices_from_live_cache(symbols) -> tuple[dict[str, float], list[str]]:
     """(prices, to_fetch) for per-cycle consumers of the shared live-price cache.
 
-    YF-ALERTS-LIVECACHE / YF-PAPER-LIVECACHE (2026-10-30). A price comes from stockai:live_prices
-    (refreshed every minute while a market is in its window), or, for a market outside its
-    window, its last snapshot row (its close, which is what Yahoo returns for a closed market).
-    `to_fetch` lists what the caller should still ask Yahoo for: an open market's symbol missing
-    from the cache, or a symbol the snapshot has never held (outside the stock universe, or just
-    added). Universe symbols of a closed market are never in it. Raw values are returned (a 0 is
-    a 0); each caller applies its own validity rule.
+    YF-ALERTS-LIVECACHE / YF-PAPER-LIVECACHE (2026-10-30). An open market's price comes from
+    stockai:live_prices (refreshed every minute in its window). A closed market's price comes
+    from the cache or its last snapshot, but ONLY when that row was fetched after the market's
+    last close (review finding: if Yahoo blocked the host before the close, the carried row is an
+    intraday price, and paper equity snapshots and options-income settlement would read it as the
+    close). `to_fetch` lists everything not answered that way (missing, stale, or outside the
+    stock universe); the caller asks Yahoo for those, as before. Raw values are returned (a 0
+    is a 0); each caller applies its own validity rule.
     """
-    open_markets = live_price_markets_open()
+    now = datetime.now(timezone.utc)
+    open_markets = live_price_markets_open(now)
     try:
         r = _get_redis()
-        live = {e["symbol"]: e.get("price") for e in json.loads(r.get(_LIVE_KEY) or "[]")}
-        last = {e["symbol"]: e.get("price") for e in json.loads(r.get(_LIVE_LAST_KEY) or "[]")}
+        live = {e["symbol"]: e for e in json.loads(r.get(_LIVE_KEY) or "[]")}
+        last = {e["symbol"]: e for e in json.loads(r.get(_LIVE_LAST_KEY) or "[]")}
     except Exception:
         live, last = {}, {}
     prices: dict[str, float] = {}
     to_fetch: list[str] = []
     for sym in symbols:
         market = "HK" if sym.endswith(".HK") else "US"
-        p = live.get(sym)
-        if p is None and market not in open_markets:
-            p = last.get(sym)
-        if p is not None:
-            prices[sym] = float(p)
-        elif market in open_markets or sym not in last:
+        if market in open_markets:
+            row = live.get(sym)
+        else:
+            row = next((c for c in (live.get(sym), last.get(sym))
+                        if c is not None and _is_post_close_row(c, market, now)), None)
+        if row is not None and row.get("price") is not None:
+            prices[sym] = float(row["price"])
+        else:
             to_fetch.append(sym)
     return prices, to_fetch
 
@@ -1738,7 +1771,9 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
                 return _refresh_days_to_earnings(json.loads(stale))
         except Exception:
             pass
-        _fallback = _fundamentals_fallback(symbol, mark_failed=True)
+        # Yahoo answered, just without these fields (e.g. a thin ticker): that is data, not a
+        # failure, so no failure marker here (review finding) — callers keep the partial fields.
+        _fallback = _fundamentals_fallback(symbol, mark_failed=False)
         if _fallback is not None:
             return _fallback
         return data

@@ -42,8 +42,13 @@ class _Session:
         return type("Res", (), {"all": lambda self: list(STOCKS)})()
 
 
-def _row(sym, price):
-    return {"symbol": sym, "price": price}
+CLOSE = datetime(2026, 10, 29, 20, 0, tzinfo=timezone.utc)
+POST_CLOSE_FETCH = "2026-10-29T20:59:00+00:00"
+PRE_CLOSE_FETCH = "2026-10-29T17:30:00+00:00"
+
+
+def _row(sym, price, fetched_at=POST_CLOSE_FETCH):
+    return {"symbol": sym, "price": price, "fetched_at": fetched_at}
 
 
 def _refresh(markets, snapshot=None, returns=None):
@@ -159,9 +164,33 @@ def _alert(symbols, live, last, open_markets):
     calls = []
     import sys
     with patch.object(R, "_get_redis", lambda: r), \
-         patch.object(R, "live_price_markets_open", lambda: set(open_markets)), \
+         patch.object(R, "live_price_markets_open", lambda *a: set(open_markets)), \
+         patch.object(R, "_last_session_close", lambda m, now: CLOSE), \
          patch.dict(sys.modules, {"yfinance": _YF(calls)}):
         return S._alert_prices(symbols), calls
+
+
+def test_a_closed_markets_row_fetched_before_its_close_is_not_used_as_the_close():
+    """Review finding: if Yahoo blocked the host before the close, the carried row is an
+    intraday price; paper snapshots and options settlement must not read it as the close."""
+    p, calls = _alert(["AAPL", "MSFT"], [_row("AAPL", 1.0, PRE_CLOSE_FETCH)],
+                      [_row("AAPL", 1.0, PRE_CLOSE_FETCH), _row("MSFT", 9.0)], set())
+    assert calls == ["AAPL"]
+    assert p == {"AAPL": 2.0, "MSFT": 9.0}
+
+
+def test_a_row_without_provenance_is_never_taken_as_a_close():
+    p, calls = _alert(["AAPL"], [], [{"symbol": "AAPL", "price": 1.0}], set())
+    assert calls == ["AAPL"]
+
+
+def test_last_session_close_handles_weekends_and_early_closes():
+    assert R._last_session_close("US", datetime(2026, 10, 31, 15, tzinfo=timezone.utc)) == \
+        datetime(2026, 10, 30, 20, tzinfo=timezone.utc)                       # Sat -> Fri 16:00 ET
+    assert R._last_session_close("US", datetime(2026, 11, 28, 15, tzinfo=timezone.utc)) == \
+        datetime(2026, 11, 27, 18, tzinfo=timezone.utc)                       # Fri 11-27 early close 13:00 ET
+    assert R._last_session_close("HK", datetime(2026, 10, 30, 7, 30, tzinfo=timezone.utc)) == \
+        datetime(2026, 10, 29, 8, tzinfo=timezone.utc)                        # 15:30 HKT -> prior 16:00 HKT
 
 
 def test_alert_prices_come_from_the_live_cache_without_yahoo():
@@ -234,7 +263,8 @@ def _paper(symbols, live, last, open_markets):
 
     import sys
     with patch.object(R, "_get_redis", lambda: r), \
-         patch.object(R, "live_price_markets_open", lambda: set(open_markets)), \
+         patch.object(R, "live_price_markets_open", lambda *a: set(open_markets)), \
+         patch.object(R, "_last_session_close", lambda m, now: CLOSE), \
          patch.dict(sys.modules, {"yfinance": YF}):
         return P._fetch_live_prices(symbols), asked
 
@@ -293,6 +323,15 @@ def test_inside_the_failure_window_yahoo_is_not_asked_again():
     out, calls, _ = _fund({R._FUND_FAIL_KEY.format("MU"): "1"})
     assert calls == 0
     assert getattr(out, "market_cap", None) is None
+
+
+def test_a_partial_answer_is_not_recorded_as_a_failure():
+    """Review finding: Yahoo answering without market cap/PE/revenue (a thin ticker) is data,
+    so the empty-fetch guard must not set the 20-minute failure marker."""
+    src = pathlib.Path(R.__file__).read_text()
+    i = src.index("if fetch_looks_empty:")
+    assert "_fundamentals_fallback(symbol, mark_failed=False)" in src[i:i + 900]
+    assert "mark_failed=True" not in src[i:i + 900]
 
 
 def test_an_explicit_refresh_still_asks_yahoo():
