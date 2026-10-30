@@ -91,3 +91,32 @@ A subagent read all 21 files. The headline claims were then re-checked on produc
 - the gamma alert's Yahoo options calls.
 
 The counts of alert symbols, open positions, portfolios and reporters are not knowable from code, so the per-day figures for those rows rest on stated assumptions.
+
+## Implemented 2026-10-30 (market-data `851b6189` + `9772c2ab`, deployed 04:18 UTC)
+
+Candidates 2 and the first half of 1 were approved and built:
+
+- **Live prices per market.** `refresh_live_price_cache(markets)` downloads only the symbols of
+  markets in their window. The closed market's rows are carried from `stockai:live_prices:last`
+  (a 7-day snapshot), so readers see the same shape and the same values. An open-market symbol
+  Yahoo missed is dropped, never carried stale. A closed-market symbol with no snapshot row is
+  fetched once. Outside both windows, `GET /stocks/latest_prices` serves the snapshot instead
+  of downloading per page view, and leaves `stockai:live_prices` unwritten.
+- **Price alerts and the drawdown alert** read the cache through `_alert_prices()`. Yahoo is
+  asked only for an open-market symbol missing from the cache, or a symbol the snapshot never
+  held (an alert outside the universe, such as BTC-USD; none exist today: all 63 alert symbols
+  are active stocks). A zero price still reaches the drawdown check as −100 %.
+- **Verified live (HK session):** the first run filled all 199 rows (no snapshot yet). From the
+  next minute: `count=42 carried=157 markets=["HK"]`. Container source matches the commit, no
+  errors, 15/15 healthy.
+- **Tests:** 16 new tests; 7 sabotages caught; the full market-data suite passes. An independent
+  review found nothing blocking. Its three low findings: suffix-based market inference (fixed
+  in `9772c2ab`); symbols missing from the snapshot show no price in the gaps until the next
+  window (accepted); a closed-market symbol Yahoo never returns is re-requested every minute
+  (efficiency only; production currently has full coverage, 199/199).
+- **Expected effect:** live-price requests fall from ≈176k to ≈89k a trading day (US ≈142 × 600
+  over the 10-hour US window, plus HK 42 × 480), and the price-alert load to near zero. To
+  confirm, count `live_prices.cache_refresh` lines and Yahoo 429s after the next US session.
+
+Still open: candidates 1b (US quotes from UW), 3 (paper trading), 4 (fundamentals) and 5
+(gamma alert).

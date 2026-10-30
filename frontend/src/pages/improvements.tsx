@@ -35,6 +35,32 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'YF-LIVEPRICE-PERMARKET', tier: 476, severity: 'high', defaultStatus: 'done',
+    title: 'Live-price cache downloaded every stock in both markets every minute',
+    file: 'docs/audits/2026-10-30-yfinance-usage-audit.md', effort: 'S',
+    impact: 'About 176k Yahoo requests a trading day, the bulk of this host\'s Yahoo load and a direct cause of its rate limiting. Every yf.download ticker is its own request (3 tickers measured 6).',
+    what: 'The per-minute refresh fetched all ~184 symbols whenever either market was in its window, and page views outside both windows re-downloaded the universe on every cache miss.',
+    fix: 'Download only the open market; carry the closed market from a 7-day snapshot (same values); serve the snapshot to page views outside both windows.',
+    implementedNote: 'DEPLOYED 2026-10-30 04:18 UTC (market-data 851b6189 + 9772c2ab). Live: count=42 carried=157 during the HK session. 16 tests, 7 sabotages caught, independent review nothing blocking. Expected ~176k -> ~89k requests/day.',
+  },
+  {
+    id: 'YF-ALERTS-LIVECACHE', tier: 476, severity: 'medium', defaultStatus: 'done',
+    title: 'Price alerts called Yahoo per symbol every minute, around the clock',
+    file: 'docs/audits/2026-10-30-yfinance-usage-audit.md', effort: 'S',
+    impact: 'An estimated ~43k Yahoo requests a day at 30 symbols, including nights and weekends when no price can change.',
+    what: 'check_price_alerts and its paper-position drawdown loop used fast_info per symbol every minute, unlike the other per-minute scanners that read stockai:live_prices.',
+    fix: 'Read the live cache (closed market: last snapshot); Yahoo only for an open-market symbol missing from it, or a symbol outside the universe.',
+    implementedNote: 'DEPLOYED 2026-10-30 04:18 UTC (851b6189 + 9772c2ab). Zero prices still reach the drawdown check; alerts outside the universe keep the old behaviour (none exist today).',
+  },
+  {
+    id: 'YF-REMAINING-CANDIDATES', tier: 476, severity: 'medium', defaultStatus: 'todo',
+    title: 'Remaining yfinance load: US quotes, paper trading, fundamentals, gamma alert',
+    file: 'docs/audits/2026-10-30-yfinance-usage-audit.md', effort: 'M',
+    impact: 'Paper trading ~10-17k/day; fundamentals has no negative cache and amplifies throttling; the gamma-unwind alert still calls Yahoo options, empty since 2026-09-15.',
+    what: 'Audit candidates 1b, 3, 4 and 5 are not built.',
+    fix: 'US quotes from UW /screener/stocks; paper trading reads the live cache; fundamentals negative cache + UW fallback; gamma alert on uw_option_chain.',
+  },
+  {
     id: 'UW-COOLDOWN-YF-SPILL', tier: 476, severity: 'medium', defaultStatus: 'done',
     title: 'One Unusual Whales 429 sent every US bar ingest to yfinance',
     file: 'docs/incidents/yfinance-rate-limit-amplification.md', effort: 'S',
