@@ -1,0 +1,31 @@
+── preflight ──────────────────────────────────────────
+  disk free : 28G
+  iowait    : 0.0%
+  TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+  Images          82        15        21.65GB   21.31GB (98%)
+  Containers      15        15        12.67MB   0B (0%)
+From https://github.com/lausing2008/Stock_Trading_App
+ * branch                prod       -> FETCH_HEAD
+Already up to date.
+deploy-lock: nested under owner=ec2-user pid=2675865 what=deploy.sh:signal-engine started=2026-10-30T00:12:20Z token=67c4a6d333586582
+[33m  only 28G free — pruning before build[0m
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   73G   28G  73% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   73G   28G  73% /
+── signal-engine ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-signal-engine Built 
+ Container stockai-signal-engine-1 Starting 
+ Container stockai-signal-engine-1 Started 
+── verify (settling 45s) ──────────────────────────────
+[32m  signal-engine: running/healthy[0m
+[32m  all declared services present[0m
+  host: 28G free, iowait 0.0%
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   73G   28G  73% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   73G   28G  73% /

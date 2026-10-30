@@ -1,0 +1,32 @@
+── preflight ──────────────────────────────────────────
+  disk free : 28G
+  iowait    : 6.2%
+  TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+  Images          73        15        21.63GB   21.3GB (98%)
+  Containers      15        15        13.29MB   0B (0%)
+From https://github.com/lausing2008/Stock_Trading_App
+ * branch                prod       -> FETCH_HEAD
+Already up to date.
+deploy-lock: nested under owner=ec2-user pid=2658840 what=deploy.sh:technical-analysis started=2026-10-30T00:03:27Z token=826f8ca37d1bad34
+[33m  only 28G free — pruning before build[0m
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   73G   28G  73% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   73G   28G  73% /
+── technical-analysis ───────────────────────────────────────────────
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-technical-analysis Built 
+ Container stockai-technical-analysis-1 Starting 
+ Container stockai-technical-analysis-1 Started 
+── verify (settling 45s) ──────────────────────────────
+[32m  technical-analysis: running/healthy[0m
+[32m  all declared services present[0m
+  host: 28G free, iowait 93.8%
+[33m  WARNING: iowait still 93.8% after deploy — watch for the credit-drain pattern.[0m
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   73G   28G  73% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   73G   28G  73% /

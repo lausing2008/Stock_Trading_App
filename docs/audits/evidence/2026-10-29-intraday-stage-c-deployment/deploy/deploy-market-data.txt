@@ -1,0 +1,33 @@
+2026-10-30T00:01:57Z
+── preflight ──────────────────────────────────────────
+  disk free : 28G
+  iowait    : 3.1%
+  TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+  Images          72        15        21.62GB   21.29GB (98%)
+  Containers      15        15        13.42MB   0B (0%)
+ create mode 100644 services/signal-engine/tests/intraday_isolation_suite.py
+ create mode 100644 services/signal-engine/tests/test_intraday_daily_isolation.py
+ create mode 100644 shared/common/horizons.py
+[33m  only 28G free — pruning before build[0m
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   73G   28G  73% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   73G   28G  73% /
+── market-data ───────────────────────────────────────────────
+deploy-lock: nested under owner=ec2-user pid=2656097 what=deploy.sh:market-data started=2026-10-30T00:02:02Z token=c601d48d664aa123
+#14 resolving provenance for metadata file
+#14 DONE 0.0s
+ Image stockai-market-data Built 
+ Container stockai-market-data-1 Starting 
+ Container stockai-market-data-1 Started 
+── verify (settling 45s) ──────────────────────────────
+[32m  market-data: running/healthy[0m
+[32m  all declared services present[0m
+  host: 28G free, iowait 6.2%
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   73G   28G  73% /
+  Total reclaimed space: 0B
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   73G   28G  73% /
+exit=0

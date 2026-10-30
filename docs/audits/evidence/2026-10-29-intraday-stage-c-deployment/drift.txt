@@ -1,0 +1,20 @@
+Comparing local working tree (clean, == a3107b47) against EC2 running containers...
+
+OK    market-data
+OK    signal-engine
+OK    api-gateway
+OK    ml-prediction
+OK    research-engine
+OK    ranking-engine
+OK    strategy-engine
+OK    technical-analysis
+OK    portfolio-optimizer
+OK    event-intelligence
+OK    news-intelligence
+OK    decision-engine
+
+Checked 12 service(s), 0 drifted/errored.
+Denominator: 12 backend service(s) with a docker-cp'able /app/src tree.
+NOT counted here: frontend (a built Next.js image with no comparable src/ tree — verify
+it by checking the SERVED chunks under /app/.next/static, never /app/.next/cache), and
+postgres/redis (no application source). A full deploy is 12 backends + frontend = 13.

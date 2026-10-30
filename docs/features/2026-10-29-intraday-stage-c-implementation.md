@@ -1,7 +1,9 @@
 # Intraday Stage C — implementation record
 
-Date: **2026-10-29**. Branch: `intraday-contracts`. Status: **release candidate `cfd86973` (code), awaiting
-review; IC-01..IC-05 and ICR-01..ICR-02 fixed; not deployed; no generator**. See
+Date: **2026-10-29**. Branch: `intraday-contracts`. Status: **deployed to production as merge
+`a3107b47` (reviewed code `cfd86973`), 2026-10-30 00:01–00:14 UTC; scheduled daily-path verification
+pending; no generator**. See [Production deployment](#production-deployment-2026-10-30-utc) and the
+[final review](../audits/2026-10-29-intraday-stage-c-final-review.md) that cleared
 [Release candidate `cfd86973`](#release-candidate-cfd86973). Production generation is disabled (`INTRADAY_PRODUCTION_ENABLED = False`, a
 code constant). Implements the [contract design](2026-10-29-intraday-stage-c-contract-design.md)
 (revision 3), after the [inventory](2026-10-29-intraday-stage-c-inventory.md) and two review
@@ -183,6 +185,56 @@ supported writer refuses, and readers have one authoritative representation, `ev
 
 The mutation set grows from 64 to **93 required cases**: 19 for ICR-01 (contract, writer, trigger)
 and 10 for ICR-02. Each guard has its own witness, under the same bounded, expected-witness rule.
+
+## Production deployment (2026-10-30 UTC)
+
+**Deployed; scheduled daily-path verification pending.** Contract-only: no generator, scheduler,
+alert delivery, training activation or model promotion. `INTRADAY_PRODUCTION_ENABLED` stays `False`
+and the shared `signalhorizon` enum is unchanged. Evidence:
+[`evidence/2026-10-29-intraday-stage-c-deployment/`](../audits/evidence/2026-10-29-intraday-stage-c-deployment/).
+
+**Merge.** `a3107b47` merges `origin/intraday-contracts` (`2131678`, code `cfd86973`) into `prod` at
+`8182b28b`. `prod` had gained five valuation commits since the branch base, two of them during the
+15-minute hold before the release. The only conflict was `services/market-data/src/main.py`: each
+side added one import and one router. Both are kept, in the order valuation, rzy, intraday, ahead of
+`data_router`'s catch-all; the prefixes `/stocks/valuation-inputs` and `/stocks/intraday` are distinct.
+Every other reviewed code file is byte-identical to the branch.
+
+**Checks on the merged commit** (HEAD `a3107b47` before and after, 0 dirty files):
+- `make test`: every backend service passed (market-data 6029 passed, 30 skipped; signal-engine 1008; research-engine 748; ml-prediction 555; the rest as listed in `release-checks/make_test.txt`).
+- `make test-integration-pg-schema`: 10 passed. This includes the Intraday storage (57) and input (13) PostgreSQL suites.
+- The ML production-image suite was not rerun. The merge adds nothing to ml-prediction beyond the reviewed branch.
+
+**Release.**
+- Pushed as a fast-forward of `origin/prod`.
+- Before any recreate: each of the 12 running backend images was tagged `rollback-before-a3107b47` (verified equal to the running image), and logs and identities were saved under `/home/ec2-user/deploy-evidence/2026-10-29-intraday-stage-c-a3107b47/`. **Log coverage:** each container's life since its last start, capped at 24 h. That is about 17 h for ten services, but only about 20 min for market-data and research-engine, which the valuation release had recreated at 23:34–23:41 UTC.
+- Deployed one service at a time with `scripts/deploy.sh` under the host lock: market-data first (00:01:57 UTC, it creates the schema), then technical-analysis, ranking-engine, strategy-engine, portfolio-optimizer, news-intelligence, event-intelligence, research-engine, ml-prediction, decision-engine, signal-engine and api-gateway (done 00:14:07). Every run ended `running/healthy`.
+- All 12 rollback tags were re-verified after the post-deploy prune. No older tags were removed.
+
+**Production checks.**
+- **Health:** 15 of 15 containers healthy. Every backend has a new image and a start time inside the window; the frontend was untouched.
+- **Source parity:** `scripts/check_deploy_drift.sh` at `a3107b47` finds 12 of 12 backends matching, 0 drifted.
+- **Remote checkout:** `a3107b47`.
+- **Schema** (`verify_intraday_release.py`, 18 of 18 checks pass): all 10 tables, 37 named constraints, 25 triggers (all enabled) and 7 functions present. The deployed `intraday_validate_append` carries the ICR-01 rules. The only run row is the `observed` sentinel; the 9 business tables are empty. `signalhorizon` = SHORT, SWING, LONG, GROWTH.
+- **Gateway access** to `/stocks/intraday/identities`: 401 unauthenticated, 403 for a non-admin, 200 for an admin with an empty page reporting `production_generation: disabled`. HK is refused with 422 `unsupported_market`.
+- **Daily isolation:** INTRADAY is refused with 422 `unsupported_horizon` by `/signals`, `/signals/suppressed`, `/signals/{symbol}` and `/decide/{symbol}`. `/signals?style=SWING` still returns 200 (200 rows).
+- **Daily path:** SHORT, SWING, LONG and GROWTH all compute for AAPL and MSFT through the gateway with `persist=false` (`verify_daily_compute.py`).
+- **Scheduler:** 290 executions in market-data since its restart and no errors in six service logs.
+- **Test tokens:** the two minted tokens were logged out, and reusing either returns 401.
+- **Host:** 28 GB free, I/O wait 0–6%.
+
+**Pending, recorded as not yet observed:**
+
+| Check | Baseline | Due | Status |
+|---|---|---|---|
+| HK scheduled refresh writes advance, all four horizons | HK `signals.ts` last 2026-10-29 08:33:26 UTC | HK open burst 01:25 UTC Oct 30 | **Pass, closed.** Read 01:50 UTC: all four horizons at 01:46:48 UTC, 42 rows each; 0 tracebacks; every container healthy. Logged Yahoo and UW errors are handled fetch noise ([hk-refresh-check.txt](../audits/evidence/2026-10-29-intraday-stage-c-deployment/hk-refresh-check.txt)) |
+| US scheduled refresh writes advance, all four horizons | US `signals.ts` last 2026-10-29 22:24:16 UTC | US open burst 13:25 UTC Oct 30 | Pending |
+| Outcome evaluation completes after the release | `max(signal_outcomes.ts_evaluated)` 2026-10-29 20:32:12 UTC, 26,881 rows | HK post-close 08:30 UTC, US post-close 20:30 UTC Oct 30 | Pending: US outcomes stay pending until the US post-close run is observed |
+
+These are on the Fri Oct 30 13:45 PT calendar checkpoint and the
+[Deferred Checks Calendar](https://claude.ai/code/artifact/f2462c2d-bde6-4f30-99d9-121ede27f411).
+Still separate future gates: sealing and retention before a shadow producer's first write, execution
+and profitability qualification, and any generator.
 
 ## Release candidate `cfd86973`
 

@@ -1,0 +1,183 @@
+{
+ "checks": {
+  "append_trigger_has_icr01_rules": {
+   "detail": {
+    "has_replay_latency": true,
+    "has_timing_prefix": true
+   },
+   "ok": true
+  },
+  "business_tables_empty": {
+   "detail": {
+    "intraday_evaluation_batches": 0,
+    "intraday_evaluation_counts": 0,
+    "intraday_evaluations": 0,
+    "intraday_identities": 0,
+    "intraday_outcomes": 0,
+    "intraday_session_seals": 0,
+    "intraday_setup_inputs": 0,
+    "intraday_setup_transitions": 0,
+    "intraday_setups": 0
+   },
+   "ok": true
+  },
+  "daily_rejects_intraday /signals/AAPL?style=INTRADAY&persist=false&live=false": {
+   "detail": {
+    "error": "unsupported_horizon",
+    "status": 422
+   },
+   "ok": true
+  },
+  "daily_rejects_intraday /signals/suppressed?style=INTRADAY": {
+   "detail": {
+    "error": "unsupported_horizon",
+    "status": 422
+   },
+   "ok": true
+  },
+  "daily_rejects_intraday /signals?style=INTRADAY": {
+   "detail": {
+    "error": "unsupported_horizon",
+    "status": 422
+   },
+   "ok": true
+  },
+  "daily_swing_signals_200": {
+   "detail": {
+    "rows": 200,
+    "status": 200
+   },
+   "ok": true
+  },
+  "decide_rejects_intraday": {
+   "detail": {
+    "detail": {
+     "error": "unsupported_horizon",
+     "hint": "INTRADAY is a separate same-session horizon served by /stocks/intraday/*, not by daily signal endpoints",
+     "horizon": "INTRADAY"
+    },
+    "status": 422
+   },
+   "ok": true
+  },
+  "functions_present": {
+   "detail": {
+    "expected": [
+     "intraday_check_eval_has_setup",
+     "intraday_check_setup_complete",
+     "intraday_deny_update",
+     "intraday_guard_delete",
+     "intraday_refuse_sealed",
+     "intraday_session_lock",
+     "intraday_validate_append"
+    ],
+    "missing": []
+   },
+   "ok": true
+  },
+  "intraday_admin_200_disabled_empty": {
+   "detail": {
+    "body": {
+     "contract_version": "intraday-c1",
+     "identities": [],
+     "production_generation": "disabled",
+     "record_mode": "observed",
+     "run_key": "observed",
+     "session": "2026-10-30"
+    },
+    "status": 200
+   },
+   "ok": true
+  },
+  "intraday_hk_422": {
+   "detail": {
+    "body": "{\"detail\":{\"error\":\"unsupported_market\",\"market\":\"HK\",\"detail\":\"Intraday v1 is US-only\"}}",
+    "status": 422
+   },
+   "ok": true
+  },
+  "intraday_non_admin_403": {
+   "detail": {
+    "status": 403
+   },
+   "ok": true
+  },
+  "intraday_unauthenticated_401": {
+   "detail": {
+    "status": 401
+   },
+   "ok": true
+  },
+  "named_constraints_present": {
+   "detail": {
+    "expected_count": 37,
+    "missing": []
+   },
+   "ok": true
+  },
+  "observed_sentinel_only": {
+   "detail": {
+    "runs": [
+     {
+      "record_mode": "observed",
+      "run_key": "observed"
+     }
+    ]
+   },
+   "ok": true
+  },
+  "signalhorizon_enum_unchanged": {
+   "detail": {
+    "labels": [
+     "SHORT",
+     "SWING",
+     "LONG",
+     "GROWTH"
+    ]
+   },
+   "ok": true
+  },
+  "tables_present": {
+   "detail": {
+    "expected": [
+     "intraday_evaluation_batches",
+     "intraday_evaluation_counts",
+     "intraday_evaluations",
+     "intraday_identities",
+     "intraday_outcomes",
+     "intraday_runs",
+     "intraday_session_seals",
+     "intraday_setup_inputs",
+     "intraday_setup_transitions",
+     "intraday_setups"
+    ],
+    "missing": []
+   },
+   "ok": true
+  },
+  "test_tokens_revoked": {
+   "detail": {
+    "admin": {
+     "logout": 200,
+     "reuse_after_logout": 401
+    },
+    "user": {
+     "logout": 200,
+     "reuse_after_logout": 401
+    }
+   },
+   "ok": true
+  },
+  "triggers_present_enabled": {
+   "detail": {
+    "disabled": [],
+    "expected_count": 25,
+    "missing": []
+   },
+   "ok": true
+  }
+ },
+ "failed": [],
+ "ok": true,
+ "schema_status_in_this_process": null
+}

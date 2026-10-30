@@ -1,0 +1,19 @@
+HK scheduled refresh check, read at 2026-10-30 01:50 UTC (Fri 09:50 HKT), read-only.
+
+signals, HK listings (BEGIN READ ONLY ... ROLLBACK):
+horizon | max(ts) UTC                  | rows in last 40 min
+SHORT   | 2026-10-30 01:46:48.340358   | 42
+SWING   | 2026-10-30 01:46:48.340358   | 42
+LONG    | 2026-10-30 01:46:48.340358   | 42
+GROWTH  | 2026-10-30 01:46:48.340358   | 42
+Baseline (signals-baseline.txt): all four 2026-10-29 08:33:26.686825, 42 rows each.
+
+stockai-market-data-1 log, last 40 min: 0 "Traceback" lines.
+Error-pattern lines (334) are yfinance's own stderr inside handled fetches, mostly between
+01:41 and 01:46 UTC: Yahoo "Invalid Crumb" 401 (52), quote 404s for COIIN, ASTA, SKHYV, US10Y,
+"No fundamentals data found" for ETFs (SPY, QQQ, SOXX and others), and UW 422 for BRK-A dark pool.
+The surrounding /stocks/<sym>/fundamentals requests returned 200. The saved pre-release
+market-data log covers only about 20 min after the US close, with no refresh in it, so it cannot
+serve as a baseline for these. COIIN, SKHYV and the BRK-A UW 422 do appear there.
+docker ps: every container healthy.
+Result: HK refresh check CLOSED. US refresh and outcome evaluation remain pending.
