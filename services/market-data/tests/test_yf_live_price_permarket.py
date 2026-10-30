@@ -158,7 +158,7 @@ def _alert(symbols, live, last, open_markets):
     r = _Redis({R._LIVE_KEY: json.dumps(live), R._LIVE_LAST_KEY: json.dumps(last)})
     calls = []
     import sys
-    with patch.object(S, "_get_redis", lambda: r), \
+    with patch.object(R, "_get_redis", lambda: r), \
          patch.object(R, "live_price_markets_open", lambda: set(open_markets)), \
          patch.dict(sys.modules, {"yfinance": _YF(calls)}):
         return S._alert_prices(symbols), calls
@@ -204,3 +204,103 @@ def test_check_price_alerts_no_longer_calls_yahoo_directly():
     body = src[i:src.index("\ndef ", i + 10)]
     assert "Tickers(" not in body and "fast_info" not in body and "import yfinance" not in body
     assert body.count("_alert_prices(") == 2
+
+
+# ── paper trading reads the cache ──────────────────────────────────────────────────────
+
+import src.services.paper_trading_engine as P  # noqa: E402
+
+
+class _Frame:
+    """Just enough of yf.download's group_by='ticker' frame for _fetch_live_prices."""
+    def __init__(self, syms, price):
+        import pandas as pd
+        self.syms, self.empty = syms, False
+        self._col = pd.Series([price - 1, price])
+
+    def __getitem__(self, k):
+        return {"Close": self._col} if k in self.syms else self._col if k == "Close" else None
+
+
+def _paper(symbols, live, last, open_markets):
+    r = _Redis({R._LIVE_KEY: json.dumps(live), R._LIVE_LAST_KEY: json.dumps(last)})
+    asked = []
+
+    class YF:
+        @staticmethod
+        def download(syms, **k):
+            asked.append(list(syms))
+            return _Frame(syms, 7.0)
+
+    import sys
+    with patch.object(R, "_get_redis", lambda: r), \
+         patch.object(R, "live_price_markets_open", lambda: set(open_markets)), \
+         patch.dict(sys.modules, {"yfinance": YF}):
+        return P._fetch_live_prices(symbols), asked
+
+
+def test_paper_prices_come_from_the_cache_and_only_the_rest_is_downloaded():
+    prices, asked = _paper(["AAPL", "NVDA", "0700.HK"], [_row("AAPL", 3.0)], SNAP, {"US"})
+    assert asked == [["NVDA"]]
+    assert prices == {"AAPL": 3.0, "NVDA": 7.0, "0700.HK": 5.0}
+
+
+def test_paper_makes_no_download_when_the_cache_answers_everything():
+    prices, asked = _paper(["AAPL", "0700.HK"], [_row("AAPL", 3.0), _row("0700.HK", 5.0)], [], {"US"})
+    assert asked == [] and prices == {"AAPL": 3.0, "0700.HK": 5.0}
+
+
+def test_paper_still_rejects_sub_50_cent_prices_from_the_cache():
+    prices, _ = _paper(["AAPL"], [_row("AAPL", 0.01)], [], {"US"})
+    assert prices == {}
+
+
+# ── fundamentals: remember failures, serve the last good copy ──────────────────────────
+
+class _Ticker:
+    calls = 0
+
+    def __init__(self, sym):
+        pass
+
+    @property
+    def info(self):
+        type(self).calls += 1
+        raise RuntimeError("Too Many Requests. Rate limited.")
+
+    def __getattr__(self, name):          # every other Yahoo sub-request on the same ticker
+        type(self).calls += 1
+        raise RuntimeError("Too Many Requests. Rate limited.")
+
+
+def _fund(redis_data, refresh=False):
+    r = _Redis(redis_data)
+    _Ticker.calls = 0
+    with patch.object(R, "_get_redis", lambda: r), patch.object(R.yf, "Ticker", _Ticker):
+        out = R.get_fundamentals("MU", refresh=refresh, db=None)
+    return out, _Ticker.calls, r
+
+
+def test_a_failed_info_stops_the_fetch_marks_failure_and_serves_the_last_good_copy():
+    last = {"market_cap": 123, "trailing_pe": 9.5}
+    out, calls, r = _fund({R._FUND_LAST_KEY.format("MU"): json.dumps(last)})
+    assert calls == 1
+    assert out["market_cap"] == 123
+    assert r.ttl[R._FUND_FAIL_KEY.format("MU")] == R._FUND_FAIL_TTL
+
+
+def test_inside_the_failure_window_yahoo_is_not_asked_again():
+    out, calls, _ = _fund({R._FUND_FAIL_KEY.format("MU"): "1"})
+    assert calls == 0
+    assert getattr(out, "market_cap", None) is None
+
+
+def test_an_explicit_refresh_still_asks_yahoo():
+    _, calls, _ = _fund({R._FUND_FAIL_KEY.format("MU"): "1"}, refresh=True)
+    assert calls == 1
+
+
+def test_a_successful_fetch_keeps_a_14_day_last_good_copy():
+    src = pathlib.Path(R.__file__).read_text()
+    assert "_get_redis().setex(_FUND_LAST_KEY.format(symbol.upper()), _FUND_LAST_TTL, data.model_dump_json())" in src
+    assert R._FUND_LAST_TTL >= 14 * 24 * 3600 and R._FUND_FAIL_TTL == 20 * 60

@@ -9228,37 +9228,13 @@ def _alert_prices(symbols) -> dict[str, float]:
 
     YF-ALERTS-LIVECACHE (2026-10-30): check_price_alerts used to call Yahoo `fast_info` once per
     alert symbol and once per open paper position EVERY MINUTE, around the clock, while the
-    ~16 other per-minute scanners already read stockai:live_prices. Now:
-      * stockai:live_prices first (refreshed every minute while a market is in its window);
-      * for a market outside its window, its last snapshot row (the close — what fast_info
-        returned for a closed market anyway);
-      * Yahoo only for a symbol missing from both whose market is in its window, or one the
-        snapshot has never held (outside the universe, or newly added).
-    Outside both windows universe symbols make no Yahoo request at all. A raw 0 is returned as-is: callers
-    decide (price alerts reject it, the drawdown alert treats it as -100%).
+    ~16 other per-minute scanners already read stockai:live_prices. Prices now come from the
+    cache (routes.prices_from_live_cache); Yahoo only for what that helper says to fetch, so
+    outside both windows universe symbols make no Yahoo request at all. A raw 0 is returned
+    as-is: callers decide (price alerts reject it, the drawdown alert treats it as -100%).
     """
-    from ..api.routes import _LIVE_KEY, _LIVE_LAST_KEY, live_price_markets_open
-    open_markets = live_price_markets_open()
-    try:
-        r = _get_redis()
-        live = {e["symbol"]: e.get("price") for e in json.loads(r.get(_LIVE_KEY) or "[]")}
-        last = {e["symbol"]: e.get("price") for e in json.loads(r.get(_LIVE_LAST_KEY) or "[]")}
-    except Exception:
-        live, last = {}, {}
-    prices: dict[str, float] = {}
-    missing = []
-    for sym in symbols:
-        market = "HK" if sym.endswith(".HK") else "US"
-        p = live.get(sym)
-        if p is None and market not in open_markets:
-            p = last.get(sym)
-        if p is not None:
-            prices[sym] = float(p)
-        elif market in open_markets or sym not in last:
-            # A symbol the snapshot has never held (an alert on something outside the stock
-            # universe, e.g. BTC-USD or ^HSI, or one just added) keeps its old behaviour:
-            # asked directly, at any hour. Universe symbols of a closed market never are.
-            missing.append(sym)
+    from ..api.routes import prices_from_live_cache
+    prices, missing = prices_from_live_cache(symbols)
     if missing:
         import yfinance as yf
         tickers = yf.Tickers(" ".join(missing))

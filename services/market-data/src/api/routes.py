@@ -1037,6 +1037,38 @@ def _stock_market(row) -> str:
     return getattr(m, "value", m) or ("HK" if row.symbol.endswith(".HK") else "US")
 
 
+def prices_from_live_cache(symbols) -> tuple[dict[str, float], list[str]]:
+    """(prices, to_fetch) for per-cycle consumers of the shared live-price cache.
+
+    YF-ALERTS-LIVECACHE / YF-PAPER-LIVECACHE (2026-10-30). A price comes from stockai:live_prices
+    (refreshed every minute while a market is in its window), or, for a market outside its
+    window, its last snapshot row (its close, which is what Yahoo returns for a closed market).
+    `to_fetch` lists what the caller should still ask Yahoo for: an open market's symbol missing
+    from the cache, or a symbol the snapshot has never held (outside the stock universe, or just
+    added). Universe symbols of a closed market are never in it. Raw values are returned (a 0 is
+    a 0); each caller applies its own validity rule.
+    """
+    open_markets = live_price_markets_open()
+    try:
+        r = _get_redis()
+        live = {e["symbol"]: e.get("price") for e in json.loads(r.get(_LIVE_KEY) or "[]")}
+        last = {e["symbol"]: e.get("price") for e in json.loads(r.get(_LIVE_LAST_KEY) or "[]")}
+    except Exception:
+        live, last = {}, {}
+    prices: dict[str, float] = {}
+    to_fetch: list[str] = []
+    for sym in symbols:
+        market = "HK" if sym.endswith(".HK") else "US"
+        p = live.get(sym)
+        if p is None and market not in open_markets:
+            p = last.get(sym)
+        if p is not None:
+            prices[sym] = float(p)
+        elif market in open_markets or sym not in last:
+            to_fetch.append(sym)
+    return prices, to_fetch
+
+
 def refresh_live_price_cache(markets: set[str] | None = None) -> int:
     """Fetch live prices for active stocks and write to Redis.
 
@@ -1215,6 +1247,28 @@ def _parse_ex_div_date(raw) -> str | None:
 
 
 _FUND_TTL = 60 * 60 * 24  # 24 hours — fundamentals change quarterly
+# YF-FUNDAMENTALS-NEGCACHE (2026-10-30): while Yahoo was refusing this host on 2026-10-28 every
+# caller re-fired the whole fetch (`.info` plus ~11 sub-requests on the same ticker) because
+# nothing remembered the failure, and once the 24 h copy expired callers got blanks. A failure
+# is now remembered for _FUND_FAIL_TTL, the fetch stops at an empty `.info`, and the last good
+# copy (kept _FUND_LAST_TTL; fundamentals change quarterly) is served instead of nothing.
+_FUND_LAST_KEY = "stockai:fundamentals:v2:last:{}"
+_FUND_LAST_TTL = 14 * 24 * 3600
+_FUND_FAIL_KEY = "stockai:fundamentals:fail:{}"
+_FUND_FAIL_TTL = 20 * 60
+
+
+def _fundamentals_fallback(symbol: str, *, mark_failed: bool):
+    """The last good fundamentals for `symbol` (dict), or None; optionally record a failure."""
+    sym = symbol.upper()
+    try:
+        r = _get_redis()
+        if mark_failed:
+            r.setex(_FUND_FAIL_KEY.format(sym), _FUND_FAIL_TTL, "1")
+        last = r.get(_FUND_LAST_KEY.format(sym))
+        return _refresh_days_to_earnings(json.loads(last)) if last else None
+    except Exception:
+        return None
 
 
 def _refresh_days_to_earnings(payload: dict) -> dict:
@@ -1306,6 +1360,11 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
                 return _refresh_days_to_earnings(json.loads(cached))
         except Exception:
             pass
+        try:
+            if _get_redis().get(_FUND_FAIL_KEY.format(symbol.upper())):
+                return _fundamentals_fallback(symbol, mark_failed=False) or FundamentalsOut()
+        except Exception:
+            pass
 
     info: dict = {}
     ticker = None
@@ -1314,6 +1373,11 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
         info = ticker.info or {}
     except Exception as exc:
         log.warning("fundamentals.fetch_failed", symbol=symbol, error=str(exc))
+    if not info:
+        # Every field below comes from the same ticker; when `.info` fails (rate limit) the ~11
+        # sub-requests that follow fail the same way, so stop here.
+        log.warning("fundamentals.info_empty_short_circuit", symbol=symbol)
+        return _fundamentals_fallback(symbol, mark_failed=True) or FundamentalsOut()
 
     # Analyst rating breakdown from recommendations_summary (current period)
     a_strong_buy = a_buy = a_hold = a_underperform = a_sell = None
@@ -1674,10 +1738,14 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
                 return _refresh_days_to_earnings(json.loads(stale))
         except Exception:
             pass
+        _fallback = _fundamentals_fallback(symbol, mark_failed=True)
+        if _fallback is not None:
+            return _fallback
         return data
 
     try:
         _get_redis().setex(cache_key, _FUND_TTL, data.model_dump_json())
+        _get_redis().setex(_FUND_LAST_KEY.format(symbol.upper()), _FUND_LAST_TTL, data.model_dump_json())
     except Exception:
         pass
 

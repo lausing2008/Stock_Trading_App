@@ -2109,7 +2109,7 @@ def get_last_hk_regime() -> dict:
 # ── Live price fetch ──────────────────────────────────────────────────────────
 
 def _fetch_live_prices(symbols: list[str]) -> dict[str, float]:
-    """Batch-fetch live prices via ONE yf.download() call.
+    """Live prices: the shared live-price cache first, then one yf.download() for the rest.
 
     BUG-YFCALLVOL (2026-08-07): this used to loop `tickers.tickers[sym].fast_info` per
     symbol — despite the docstring's own "batch" claim, `yf.Tickers(...)` does not actually
@@ -2122,14 +2122,26 @@ def _fetch_live_prices(symbols: list[str]) -> dict[str, float]:
     """
     if not symbols:
         return {}
+    # YF-PAPER-LIVECACHE (2026-10-30): each ticker in a yf.download is its own Yahoo request
+    # (3 tickers measured 6 on production), and this ran for ~100+ symbols every paper step.
+    # The shared minute-fresh live-price cache already holds the same 2-day daily close for the
+    # whole universe, so read it and download only what it cannot answer.
     prices: dict[str, float] = {}
+    try:
+        from ..api.routes import prices_from_live_cache
+        cached, symbols = prices_from_live_cache(symbols)
+        prices.update({s: p for s, p in cached.items() if p >= 0.50})
+    except Exception as exc:
+        log.warning("paper.live_price_cache_read_failed", error=str(exc))
+    if not symbols:
+        return prices
     try:
         import yfinance as yf
         raw = yf.download(
             symbols, period="2d", interval="1d", auto_adjust=True, progress=False, group_by="ticker",
         )
         if raw is None or raw.empty:
-            return {}
+            return prices
         for sym in symbols:
             try:
                 closes = raw[sym]["Close"].dropna() if len(symbols) > 1 else raw["Close"].dropna()
