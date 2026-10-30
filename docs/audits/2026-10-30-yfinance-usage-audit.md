@@ -78,7 +78,7 @@ estimates (`eps_trend`, `earnings_estimate`) have no confirmed UW equivalent.
 - `check_price_alerts` runs 24/7, including a second per-symbol drawdown loop.
 - **Amplification under throttling:** fundamentals has no negative cache. While Yahoo refuses, signal-engine's 4 GETs per symbol each re-fire about 12 Yahoo requests, which is up to ≈6,800 per signal cycle (E).
 - `latest_prices?symbols=` is uncached, despite its docstring promising per-symbol Redis keys.
-- **The gamma-unwind alert is probably dead.** Yahoo's options endpoint returned empty for every symbol from 2026-09-15 (T404), yet the alert still spends requests on it.
+- ~~The gamma-unwind alert is probably dead~~ **CORRECTED 2026-10-30:** it has fired every week since Sep 15 (`squeeze_alert_outcomes`, for example 29 in the week of Oct 26), so Yahoo's options data works for it again. It uses only open interest, which is published daily, at ≈360 requests a day. Moving it would change the data basis of its calibration for little saving, so it stays on Yahoo.
 - The average-volume refresh runs on weekends.
 - `sync_all_earnings` iterates all Stock rows, including inactive and delisted ones.
 
@@ -120,3 +120,22 @@ Candidates 2 and the first half of 1 were approved and built:
 
 Still open: candidates 1b (US quotes from UW), 3 (paper trading), 4 (fundamentals) and 5
 (gamma alert).
+
+## Implemented 2026-10-30, second batch (market-data `5e2127a3` + `41d55f51`, deployed 04:58 UTC)
+
+- **Fundamentals (candidate 4, first half):**
+  - An empty `.info` stops the fetch instead of firing about 11 more sub-requests on the same ticker.
+  - A failure is remembered for 20 minutes (`stockai:fundamentals:fail:{SYM}`).
+  - The last good copy is kept for 14 days (`stockai:fundamentals:v2:last:{SYM}`) and served instead of blanks.
+  - `?refresh=true` still asks Yahoo.
+  - A partial answer (a ticker without market cap, PE or revenue, e.g. SKHYV or US10Y) is not counted as a failure.
+  - The UW fallback (the second half) is not built.
+- **Paper trading (candidate 3, prices):** `_fetch_live_prices` reads `prices_from_live_cache`, now shared with the price alerts, and downloads only the rest. ATR, sector RS and the index `fast_info` calls are unchanged.
+- **The close-price freshness rule (from the review):** a closed market's cached row counts as its close only if it was fetched at least 15 minutes after that market's last session close (`session_bounds`, early closes included). Otherwise the caller downloads, as before. This matters for paper equity snapshots and options-income settlement.
+- **Verified live:**
+  - With the US closed, the cache answered AAPL and NVDA from last night's post-close rows, and the HK symbols from the live cache. Nothing went to Yahoo.
+  - The refresh still logs `count=42 carried=157`.
+  - The container matches the commit; no errors; 15/15 healthy.
+- **Tests:** 27 in `test_yf_live_price_permarket.py`, with 9 sabotages caught across this batch; the full market-data suite passes (6,069). An independent review found nothing blocking, and both findings it raised are fixed in `41d55f51`.
+
+Still open: 1b (US quotes from UW), the UW fallback for fundamentals, paper-trading ATR, sector RS and index calls.
