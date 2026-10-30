@@ -9223,6 +9223,51 @@ def _is_usable_price(p) -> bool:
     return p is not None and p > 0
 
 
+def _alert_prices(symbols) -> dict[str, float]:
+    """Last prices for the alert checks, from the shared live-price cache.
+
+    YF-ALERTS-LIVECACHE (2026-10-30): check_price_alerts used to call Yahoo `fast_info` once per
+    alert symbol and once per open paper position EVERY MINUTE, around the clock, while the
+    ~16 other per-minute scanners already read stockai:live_prices. Now:
+      * stockai:live_prices first (refreshed every minute while a market is in its window);
+      * for a market outside its window, its last snapshot row (the close — what fast_info
+        returned for a closed market anyway);
+      * Yahoo only for a symbol missing from both whose market is in its window.
+    Outside both windows this makes no Yahoo request at all. A raw 0 is returned as-is: callers
+    decide (price alerts reject it, the drawdown alert treats it as -100%).
+    """
+    from ..api.routes import _LIVE_KEY, _LIVE_LAST_KEY, live_price_markets_open
+    open_markets = live_price_markets_open()
+    try:
+        r = _get_redis()
+        live = {e["symbol"]: e.get("price") for e in json.loads(r.get(_LIVE_KEY) or "[]")}
+        last = {e["symbol"]: e.get("price") for e in json.loads(r.get(_LIVE_LAST_KEY) or "[]")}
+    except Exception:
+        live, last = {}, {}
+    prices: dict[str, float] = {}
+    missing = []
+    for sym in symbols:
+        market = "HK" if sym.endswith(".HK") else "US"
+        p = live.get(sym)
+        if p is None and market not in open_markets:
+            p = last.get(sym)
+        if p is not None:
+            prices[sym] = float(p)
+        elif market in open_markets:
+            missing.append(sym)
+    if missing:
+        import yfinance as yf
+        tickers = yf.Tickers(" ".join(missing))
+        for sym in missing:
+            try:
+                p = tickers.tickers[sym].fast_info.last_price
+                if p is not None:
+                    prices[sym] = float(p)
+            except Exception:
+                pass
+    return prices
+
+
 def check_little_rzy_workflows():
     """One opt-in watchlist channel; no AI signals or broker execution."""
     import uuid
@@ -9315,7 +9360,6 @@ def check_price_alerts() -> None:
     except Exception:
         pass  # Redis unavailable — allow through; rare double-send risk accepted
     try:
-        import yfinance as yf
         with SessionLocal() as session:
             alerts = session.execute(
                 select(PriceAlert).where(PriceAlert.triggered.is_(False))
@@ -9402,15 +9446,9 @@ def check_price_alerts() -> None:
             # no quote and the send below fell back to the configured THRESHOLD as the
             # displayed current price — a number no observation supports.
             symbols = list({a.symbol for a in alerts} | {u.symbol for u in _undelivered})
-            tickers = yf.Tickers(" ".join(symbols))
-            prices: dict[str, float] = {}
-            for sym in symbols:
-                try:
-                    p = tickers.tickers[sym].fast_info.last_price
-                    if _is_usable_price(p):
-                        prices[sym] = float(p)
-                except Exception:
-                    pass
+            prices: dict[str, float] = {
+                sym: p for sym, p in _alert_prices(symbols).items() if _is_usable_price(p)
+            }
 
             # BUG-ALERTS-DELISTED-SILENT: a delisted symbol never has a usable live price, so
             # its alert(s) would otherwise sit in `triggered=False` and be re-checked forever
@@ -9602,19 +9640,15 @@ def check_price_alerts() -> None:
 
             # T230-ALERTING-PORTFOLIO-ALERTS: notify users when a paper position is down ≥ 5%.
             try:
-                import yfinance as _yf2
                 open_trades = session.execute(
                     select(PaperTrade).where(PaperTrade.exit_price.is_(None))
                 ).scalars().all()
                 if open_trades:
                     trade_syms = list({t.symbol for t in open_trades})
-                    tickers = _yf2.Tickers(" ".join(trade_syms))
+                    _trade_prices = _alert_prices(trade_syms)
                     _rc = _get_redis()
                     for trade in open_trades:
-                        try:
-                            cur_px = tickers.tickers[trade.symbol].fast_info.last_price
-                        except Exception:
-                            continue
+                        cur_px = _trade_prices.get(trade.symbol)
                         if _drawdown_alert_should_skip(cur_px, trade.entry_price):
                             continue
                         pct = cur_px / trade.entry_price - 1
@@ -15767,7 +15801,7 @@ def start_scheduler() -> None:
         )
 
     # ── Live price cache refresh — every minute during market hours ──────────
-    # Lightweight: one yf.download() bulk call → Redis write. No DB writes,
+    # One yf.download() of the open market's symbols (one Yahoo request per ticker) → Redis write. No DB writes,
     # no ranking/signal computation. Keeps the UI price display current
     # between the 5-minute full refresh cycles.
     # Gated to US+HK combined market hours (09:00–17:00 ET or 09:00–17:00 HKT)
@@ -15792,8 +15826,10 @@ def start_scheduler() -> None:
         hk_open = (
             _is_hk_trading_day(now_hk) and 9 <= now_hk.hour < 17
         )
+        # YF-LIVEPRICE-PERMARKET (2026-10-30): download only the open market's symbols; the
+        # other market's rows are carried from its last snapshot (see refresh_live_price_cache).
         if us_open or hk_open:
-            refresh_live_price_cache()
+            refresh_live_price_cache({m for m, o in (("US", us_open), ("HK", hk_open)) if o})
 
     _scheduler.add_job(
         _live_price_refresh_job,

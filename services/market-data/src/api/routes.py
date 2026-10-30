@@ -79,6 +79,10 @@ def _get_redis() -> redis_lib.Redis:
 
 _LIVE_KEY = "stockai:live_prices"
 _LIVE_TTL = 90  # seconds — refreshed every 1 min by scheduler; 90s gives a 30s buffer
+# YF-LIVEPRICE-PERMARKET (2026-10-30): the last full set of rows, kept long enough to span a
+# holiday week, so a closed market's last prices can be carried instead of re-downloaded.
+_LIVE_LAST_KEY = "stockai:live_prices:last"
+_LIVE_LAST_TTL = 7 * 24 * 3600
 
 _AVG_VOLUME_KEY = "stockai:avg_volume"
 _AVG_VOLUME_TTL = 6 * 3600  # 6h — refreshed a few times/day; avg volume barely moves intraday
@@ -980,7 +984,23 @@ def latest_prices(
     if not stocks:
         return []
 
-    # 3. Single bulk download — one HTTP call instead of 68 parallel fast_info requests
+    # YF-LIVEPRICE-PERMARKET (2026-10-30): with neither market in its window the scheduled
+    # refresh is idle and the 90 s cache lapses, so every open tab re-downloaded the whole
+    # universe from Yahoo to get closing prices the snapshot already holds. Serve the snapshot
+    # and leave stockai:live_prices unwritten (BUG-VOLANOM-STALEMARKET: the alert scanners must
+    # not see a closed market refreshed by a page view). Downloads as before when the snapshot is
+    # missing or a market is open.
+    if not live_price_markets_open():
+        try:
+            _active = {s.symbol for s in stocks}
+            _snap = [e for e in json.loads(_get_redis().get(_LIVE_LAST_KEY) or "[]")
+                     if e.get("symbol") in _active]
+            if _snap:
+                return _snap
+        except Exception:
+            pass
+
+    # 3. Bulk download (one Yahoo request per ticker; see refresh_live_price_cache)
     bulk_results = _fetch_live_bulk(stocks)
 
     if not bulk_results:
@@ -997,12 +1017,42 @@ def latest_prices(
     return bulk_results
 
 
-def refresh_live_price_cache() -> int:
-    """Fetch live prices for all active stocks and write to Redis.
+def live_price_markets_open(now: datetime | None = None) -> set[str]:
+    """Markets inside their 09:00-17:00 local live-price window on a trading day."""
+    from zoneinfo import ZoneInfo
+    from common.market_calendar import is_hk_trading_day, is_us_trading_day
+    now = now or datetime.now(timezone.utc)
+    et = now.astimezone(ZoneInfo("America/New_York"))
+    hk = now.astimezone(ZoneInfo("Asia/Hong_Kong"))
+    out = set()
+    if is_us_trading_day(et) and 9 <= et.hour < 17:
+        out.add("US")
+    if is_hk_trading_day(hk) and 9 <= hk.hour < 17:
+        out.add("HK")
+    return out
+
+
+def _stock_market(row) -> str:
+    m = getattr(row, "market", None)
+    return getattr(m, "value", m) or ("HK" if row.symbol.endswith(".HK") else "US")
+
+
+def refresh_live_price_cache(markets: set[str] | None = None) -> int:
+    """Fetch live prices for active stocks and write to Redis.
 
     Designed to be called by the scheduler every minute during market hours.
     Returns the number of symbols successfully refreshed, or 0 on failure.
     Intentionally lightweight — no DB writes, no ranking/signal computation.
+
+    YF-LIVEPRICE-PERMARKET (2026-10-30): `markets` names the markets inside their window, and
+    only their symbols are downloaded. Every ticker is its own Yahoo request (a 3-ticker
+    `yf.download` measured 6 on production), and this ran every minute for all ~184 symbols
+    whenever EITHER market was open: ~176k requests a trading day, the bulk of this host's
+    Yahoo load. A closed market's rows are carried from the last snapshot. They are the same
+    values a download would return, since yfinance answers a closed market with its last
+    session. An open market's symbol that Yahoo missed is left out rather than carried, so a
+    stale price never stands in for a live one. A closed-market symbol with no snapshot row
+    yet is fetched once. `markets=None` fetches everything (the previous behaviour).
     """
     from db import SessionLocal
     try:
@@ -1010,18 +1060,38 @@ def refresh_live_price_cache() -> int:
             # AUD-CACHEDELISTBLIND: same fix as the sibling cache-writer above — this feeds
             # the same stockai:live_prices blob 7 every-minute alert scanners read directly.
             stocks = list(session.execute(
-                select(Stock.symbol, Stock.currency).where(
+                select(Stock.symbol, Stock.currency, Stock.market).where(
                     Stock.active.is_(True), Stock.delisted.is_(False),
                 )
             ).all())
         if not stocks:
             return 0
-        results = _fetch_live_bulk(stocks)
-        if results:
-            _get_redis().setex(_LIVE_KEY, _LIVE_TTL, json.dumps(results))
-            log.info("live_prices.cache_refresh", count=len(results))
-            return len(results)
-        return 0
+        r = _get_redis()
+        try:
+            last = {e["symbol"]: e for e in json.loads(r.get(_LIVE_LAST_KEY) or "[]")}
+        except Exception:
+            last = {}
+        if markets is None:
+            to_fetch = stocks
+        else:
+            to_fetch = [s for s in stocks if _stock_market(s) in markets or s.symbol not in last]
+        results = _fetch_live_bulk(to_fetch) if to_fetch else []
+        if not results:
+            return 0
+        fresh = {e["symbol"]: e for e in results}
+        rows = []
+        for s in stocks:
+            row = fresh.get(s.symbol)
+            if row is None and markets is not None and _stock_market(s) not in markets:
+                row = last.get(s.symbol)
+            if row is not None:
+                rows.append(row)
+        payload = json.dumps(rows)
+        r.setex(_LIVE_KEY, _LIVE_TTL, payload)
+        r.setex(_LIVE_LAST_KEY, _LIVE_LAST_TTL, payload)
+        log.info("live_prices.cache_refresh", count=len(results), carried=len(rows) - len(results),
+                 markets=sorted(markets) if markets is not None else "all")
+        return len(results)
     except Exception as exc:
         log.warning("live_prices.cache_refresh_failed", error=str(exc))
         return 0
