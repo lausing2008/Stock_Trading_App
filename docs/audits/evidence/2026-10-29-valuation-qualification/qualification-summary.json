@@ -1,0 +1,45 @@
+{
+  "report_id": 55,
+  "version": 4,
+  "policy": "valuation-v3-candidate-review",
+  "reviewed_symbols": [
+    "ADBE"
+  ],
+  "qualified": 0,
+  "adobe_sensitivity": {
+    "bear": 173.99,
+    "base": 247.84,
+    "bull": 318.67
+  },
+  "adobe_review_status": "current",
+  "primary_sources": [
+    "https://www.sec.gov/Archives/edgar/data/796343/000079634326000003/adbe-20251128.htm",
+    "https://www.sec.gov/Archives/edgar/data/796343/000079634326000156/adbe-20260828.htm"
+  ],
+  "browser": [
+    {
+      "viewport": 1440,
+      "geometry": {
+        "viewport": 1440,
+        "width": 1440
+      },
+      "reviewed_filter": true,
+      "source_links": true,
+      "sensitivity_and_invalidation": true,
+      "csv": true,
+      "runtime_errors": []
+    },
+    {
+      "viewport": 390,
+      "geometry": {
+        "viewport": 390,
+        "width": 390
+      },
+      "reviewed_filter": true,
+      "source_links": true,
+      "sensitivity_and_invalidation": true,
+      "csv": true,
+      "runtime_errors": []
+    }
+  ]
+}

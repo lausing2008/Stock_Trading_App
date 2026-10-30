@@ -1,0 +1,18 @@
+ Container stockai-research-engine-1 Started
+── frontend ───────────────────────────────────────────────
+ ---> d9c3eb229199
+Successfully built d9c3eb229199
+Successfully tagged stockai-frontend:latest
+ Container stockai-frontend-1 Starting
+ Container stockai-frontend-1 Started
+── verify (settling 45s) ──────────────────────────────
+  research-engine: running/healthy
+  frontend: running/healthy
+  all declared services present
+  host: 34G free, iowait 3.1%
+── prune (dangling images + stopped containers only) ──
+  before: /dev/nvme0n1p1  100G   67G   34G  67% /
+  Total reclaimed space: 1.612GB
+  Total reclaimed space: 0B
+  after:  /dev/nvme0n1p1  100G   66G   35G  66% /
+Pinned valuation rollout complete: 66e4c7eec8206dc725a15c846d9ec279734276e0

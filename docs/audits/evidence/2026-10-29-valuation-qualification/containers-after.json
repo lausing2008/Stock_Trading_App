@@ -1,0 +1,92 @@
+[
+  {
+    "name": "stockai-frontend-1",
+    "image": "sha256:d9c3eb229199a2f8f522b5bd87a40f0bcb986d5291fe827ae8a65c137e4a6e75",
+    "started_at": "2026-10-30T01:02:28.804605893Z",
+    "health": "healthy"
+  },
+  {
+    "name": "stockai-research-engine-1",
+    "image": "sha256:b0be2020e6e50b34425accb260714926e9929c162b8941bb0435cdd0a162c8fe",
+    "started_at": "2026-10-30T00:58:40.010765317Z",
+    "health": "healthy"
+  },
+  {
+    "name": "stockai-api-gateway-1",
+    "image": "sha256:187d989bca2858f10479616e397348fcd15e3d74698ef4fe9a57b39376ced39a",
+    "started_at": "2026-10-30T00:13:21.895500493Z",
+    "health": "healthy"
+  },
+  {
+    "name": "stockai-signal-engine-1",
+    "image": "sha256:5a9edf6a84b50646e863eac3a4e7e82806590fd67b377b71b4104895cd115629",
+    "started_at": "2026-10-30T00:12:25.032443295Z",
+    "health": "healthy"
+  },
+  {
+    "name": "stockai-decision-engine-1",
+    "image": "sha256:fbbdf267785c3db22dd3b2639f8f052d16a56976517ef6f502c61e0b6620df86",
+    "started_at": "2026-10-30T00:11:30.050745513Z",
+    "health": "healthy"
+  },
+  {
+    "name": "stockai-ml-prediction-1",
+    "image": "sha256:da33f4c98cfbb0b9dcdf28039d93a9fefc5a1fa9594cff11ad414153c9578c16",
+    "started_at": "2026-10-30T00:10:29.81067556Z",
+    "health": "healthy"
+  },
+  {
+    "name": "stockai-event-intelligence-1",
+    "image": "sha256:b2d9f4208577a23a69dc9ce62fcd85983273106094f7877fee5d9f6dd677cf65",
+    "started_at": "2026-10-30T00:08:33.799130491Z",
+    "health": "healthy"
+  },
+  {
+    "name": "stockai-news-intelligence-1",
+    "image": "sha256:aabb105ab8894a3a1289d3aec3636258852bfcb262468c83990cfcd633c35ea7",
+    "started_at": "2026-10-30T00:07:39.79209083Z",
+    "health": "healthy"
+  },
+  {
+    "name": "stockai-portfolio-optimizer-1",
+    "image": "sha256:5ef350b127312d749c6ffbf87e1d1311f9170a49afc77f8d6d3d548330bce845",
+    "started_at": "2026-10-30T00:06:46.221278325Z",
+    "health": "healthy"
+  },
+  {
+    "name": "stockai-strategy-engine-1",
+    "image": "sha256:31fa6ee10db29fba5bc646f2fac41a0383a983bac75be20f91d8491d7a930495",
+    "started_at": "2026-10-30T00:05:46.453960381Z",
+    "health": "healthy"
+  },
+  {
+    "name": "stockai-ranking-engine-1",
+    "image": "sha256:aee43b5507bb5d1af4e512c11d70c9332b8b04f42fad2a662f9099d258b87d44",
+    "started_at": "2026-10-30T00:04:48.586225729Z",
+    "health": "healthy"
+  },
+  {
+    "name": "stockai-technical-analysis-1",
+    "image": "sha256:52cd7d6c42fcd5e2a13693a6621d6bbf30729fddcc224781fc5f98badfcc55b2",
+    "started_at": "2026-10-30T00:03:31.526665474Z",
+    "health": "healthy"
+  },
+  {
+    "name": "stockai-market-data-1",
+    "image": "sha256:7e042fd67f26de21afaa4929c9257d5a890fe3640d1b22243e1f11005d11898d",
+    "started_at": "2026-10-30T00:02:15.650255506Z",
+    "health": "healthy"
+  },
+  {
+    "name": "stockai-postgres-1",
+    "image": "sha256:fff3594bf464bea0f502788874403882d8bbbe618b3250f8649e7e42fd118020",
+    "started_at": "2026-10-22T23:47:16.284451594Z",
+    "health": "healthy"
+  },
+  {
+    "name": "stockai-redis-1",
+    "image": "sha256:487efc0616382465781b8fdc3d6d1db449e6fd80ae23bf48432a2da6b6929908",
+    "started_at": "2026-10-22T23:47:15.037867617Z",
+    "health": "healthy"
+  }
+]
