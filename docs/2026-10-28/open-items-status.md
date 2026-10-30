@@ -93,6 +93,28 @@ The status is therefore `partial` on a day when nothing went wrong. A possible r
    - Also yfinance-only ingest failures (`SKHYV`, `US10Y`).
    - US 5m bars were not affected: 152–155 symbols per slot from Unusual Whales.
    - Not investigated further. The bug class is in `docs/incidents/yfinance-rate-limit-amplification.md`.
+   - **Traced 2026-10-30 (read-only; nothing changed).** The yfinance limits follow Unusual Whales 429s.
+     - **Mechanism:** a single 429 on the Unusual Whales bar endpoint arms a shared 120 s cooldown (`_COOLDOWN_SECONDS` in `unusual_whales_adapter.py`). While it is armed, `supports()` returns False and every US daily and 5m ingest goes to yfinance. Concentrated on this server, that load gets yfinance itself rate-limited, and the fundamentals fetches share the same address.
+     - **Oct 28 close window**, from the saved log, by 10-minute window (the log covers 19:12 UTC to Oct 29 00:24):
+
+       | Window (UTC) | Unusual Whales 429 | Daily-bar fetches: UW / yfinance |
+       |---|---|---|
+       | 19:30 | 19:30:07, 19:35:18 | 85 / 661 |
+       | 19:40 | 19:45:12 | 250 / 256 |
+       | 19:50 | 19:50:36 | 299 / 72 |
+       | 20:00–20:19 | none | 336 / 10 |
+
+       592 symbol ingests failed with yfinance 429, across 153 symbols. The last rate-limit line is at 21:04 UTC.
+     - **Unusual Whales 429s on the bar endpoint** (Redis `uw_adapter_failures:rate_limited`, 49 h retention):
+       - Oct 28: 40, between 13:00 and 19:59 UTC.
+       - Oct 29: 75, between 09:00 and 19:59 UTC.
+       - Each one can route the whole US ingest to yfinance for up to 2 minutes.
+     - **Oct 29 not checked:** the container logs for that session were lost when the 00:02 UTC deploy recreated the container, so the yfinance side of that day is unmeasured.
+     - **Also seen:** one symbol gets HTTP 422 from Unusual Whales on every run (about 4–22 an hour). Wasteful but harmless.
+     - **Fix options, not built (need approval):**
+       1. Shorten the cooldown to a few seconds; the limit that is being hit is per-minute.
+       2. During the regular session, skip the symbol for that run instead of sending it to yfinance; the next 5-minute run catches up incrementally.
+       3. Find which callers push Unusual Whales over its per-minute limit at :30/:35. The service-level counter records no endpoint path, so that needs instrumentation first.
 
 ## Option-chain storage retention: recommendation
 
