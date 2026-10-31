@@ -35,6 +35,99 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'PRICE-RISK-SCAN-RECORDS', tier: 477, severity: 'high', defaultStatus: 'done',
+    title: 'Price-risk scans left no durable record, so the shadow trial could not be judged',
+    file: 'docs/2026-10-30/durable-measurement-and-checks.md', effort: 'M',
+    impact: 'The Oct 23 review could not reach a verdict: per-scan coverage, refusals and exclusions existed only in log lines and a last-run Redis key, both lost on container recreate.',
+    what: 'run_price_risk_detection stored events and receipts, but not what each scan measured, excluded, refused or suppressed, nor the configuration and code it ran under.',
+    fix: 'One immutable price_risk_scans row per detect() call (symbol and benchmark scopes share a run_id): coverage per market, named exclusions, quote refusals, every event with its delivery state, every suppression with its reason, a config_hash and the release identity. Written in the same transaction as the events; a scope that raises leaves a failed row. PostgreSQL trigger refuses UPDATE.',
+    implementedNote: 'DEPLOYED 2026-10-30 23:38 UTC (market-data 18f10963). Tables and triggers verified on production; 0/12 drift. First scheduled scan (20:10 ET Oct 30) wrote both rows completed: 151 of 154 measured, SKHYV/SSNLF/US10Y excluded by name, 2 shadow events, 164 suppressions with reasons. 14 new probe checks and an 11/11 PostgreSQL suite; sabotages caught. Thresholds unchanged; email stays off.',
+  },
+  {
+    id: 'PAPER-ENTRY-RECEIPTS', tier: 477, severity: 'high', defaultStatus: 'done',
+    title: 'Fresh-mark decision had nothing to read: entry attempts were not recorded',
+    file: 'docs/2026-10-30/durable-measurement-and-checks.md', effort: 'M',
+    impact: 'The Oct 26 fresh-mark review was deferred at 0 of 0: the shadow line went only to the log, and no saved log covered any US session in October. Cap refusals were not recorded anywhere else.',
+    what: 'Paper entries that were rejected (sector cap, cash, minimum size) left no trace, and opened ones did not record which marks were live and which fell back to the entry price.',
+    fix: 'One paper_entry_receipts row per attempt, opened or rejected: reason, candidate price with source, fetch time and session date, every position mark valued for the sector check, the freshness result, whether enforcing fresh marks would change the decision, and the release. Written in a savepoint of the entry\'s own transaction on the same connection; a failure is logged and never changes the trade.',
+    implementedNote: 'DEPLOYED 2026-10-30 23:38 UTC (18f10963). Enforcement stays off (fresh_marks_enforced=false). Zero evaluated attempts is reported as "no opportunity to evaluate", never a pass. 19 probe checks, 3 sabotages caught.',
+  },
+  {
+    id: 'RELEASE-IDENTITY-ENV', tier: 477, severity: 'medium', defaultStatus: 'done',
+    title: 'Records could not say which release produced them',
+    file: 'docs/2026-10-30/durable-measurement-and-checks.md', effort: 'S',
+    impact: 'Friday\'s check needed the running service identities by hand; a later reader of any stored result could not tell which code made it.',
+    what: 'Containers carried no commit identity; a docker cp or an out-of-band recreate is invisible from inside.',
+    fix: 'deploy_remote.sh exports STOCKAI_RELEASE_SHA (commit, -dirty when tracked service/shared/docker files differ); compose passes it to every Python container; "unrecorded" otherwise. Scan rows also carry a sha256 fingerprint of the loaded detector modules.',
+    implementedNote: 'market-data reports 18f10963 since 2026-10-30. The other 11 backends receive it on their next deploy.',
+  },
+  {
+    id: 'PRICE-RISK-FRESH-TRIAL', tier: 477, severity: 'medium', defaultStatus: 'in-progress',
+    title: 'Fresh five-session price-risk trial, Nov 2-6',
+    file: 'docs/2026-10-30/durable-measurement-and-checks.md', effort: 'S',
+    impact: 'Oct 23-29 is exploratory evidence only; it cannot count as a completed acceptance trial because scans were not recorded.',
+    what: 'Current thresholds produce 17-25 alerts a session against a stated target near 10, but volume alone does not establish usefulness.',
+    fix: 'A session counts only if all five US scans (10:05, 12:05, 14:05, 15:40, 20:10 ET) are completed records under one config hash and one release, delivery off. Read Mon Nov 9 with scripts/measurement_report.py. Email stays off until approved.',
+  },
+  {
+    id: 'FRESH-MARK-RECEIPTS-READ', tier: 477, severity: 'medium', defaultStatus: 'todo',
+    title: 'First read of the fresh-mark entry receipts',
+    file: 'docs/2026-10-30/durable-measurement-and-checks.md', effort: 'S',
+    impact: 'Decides whether fresh-mark enforcement would change real entries, which a log-only shadow could not show.',
+    what: 'Also open: whether a 2-day daily close from the yfinance download fallback counts as a fresh mark.',
+    fix: 'Read Fri Nov 13: attempts by outcome and freshness, "N / M evaluated attempts" where enforcement would change the outcome, price sources. Zero evaluated attempts is no opportunity to evaluate.',
+  },
+  {
+    id: 'RZY-REBUILD-INVESTIGATION', tier: 477, severity: 'high', defaultStatus: 'done',
+    title: 'RZY rebuilds rising without more revised bars',
+    file: 'docs/2026-10-30/rzy-rebuild-investigation.md', effort: 'M',
+    impact: '5m rebuilds per evaluated stream went 3.26, 5.51, 7.12 (Oct 27-29) while distinct revised 5m bars stayed flat at 10,663, 7,480, 8,227.',
+    what: 'On Oct 29, 81% of rebuilds (6,927 of 8,528) were completed-bar revisions: 881 material OHLC triggers, 44 rounding-sized, 75 gap; 0 adjustment-basis or close-time changes. Mostly Unusual Whales revising its own just-completed bar within 15 minutes. 900 of 915 15m/1h rebuilds follow a 5m revision; no native/derived source switches.',
+    fix: 'Investigation only, read-only. Revision checks and trading rules unchanged. Representative before/after bars preserved in the evidence folder.',
+    implementedNote: 'Done 2026-10-30. Also recorded: _ohlc_revised rebuilds on any change above float noise while evaluate()\'s docstring says "material" (about 5% of triggers); not changed.',
+  },
+  {
+    id: 'RZY-REBUILD-RATE-CAUSE', tier: 477, severity: 'medium', defaultStatus: 'todo',
+    title: 'Why rebuilds per revised bar rose is not established',
+    file: 'docs/2026-10-30/rzy-rebuild-investigation.md', effort: 'S',
+    impact: 'OD-01 stays open: the rebuild count grows even though the revisions behind it do not.',
+    what: 'Scan consumption times and rebuild-throttle state are not stored, so a revision cannot be matched to the scan that consumed it.',
+    fix: 'Store per-scan consumption time and throttle state, then re-attribute rebuilds to revisions. No relaxation of revision checks to lower the count.',
+  },
+  {
+    id: 'STAGE-C-US-DAILY-PATH', tier: 477, severity: 'medium', defaultStatus: 'done',
+    title: 'Stage C daily path: US refresh and outcome evaluation observed',
+    file: 'docs/features/2026-10-29-intraday-stage-c-implementation.md', effort: 'S',
+    impact: 'Closes the US half of the post-release daily-path checks.',
+    what: 'Combined-release check: the UW cooldown commits had shipped, and 49802ce5 was deployed at 13:40 UTC mid-session, so Stage C\'s own effect cannot be isolated.',
+    fix: 'US open burst 13:33 UTC, four horizons, 127 rows each. Outcome evaluation finished 20:34 UTC: 234 evaluated, 376 horizon outcomes, 27,220 rows. No tracebacks.',
+    implementedNote: 'Observed 2026-10-30. Intraday generation stays disabled.',
+  },
+  {
+    id: 'OUTCOME-EVAL-CALLER-TIMEOUT', tier: 477, severity: 'medium', defaultStatus: 'todo',
+    title: 'Scheduler logs the outcome evaluation as failed when it succeeds',
+    file: 'docs/2026-10-30/evidence/us-check/02-post-close.txt', effort: 'S',
+    impact: 'The job status says failed, which hides real failures behind a known false one.',
+    what: 'market-data\'s call to signal-engine /signals/outcomes/evaluate timed out on all three attempts (20:30-20:31 UTC) while the first request ran to 20:34. The retries evaluated 0 rows, so they were harmless.',
+    fix: 'Give the call a timeout that fits the measured run time, or make the evaluation asynchronous with a status read. Not changed yet.',
+  },
+  {
+    id: 'MARKETDATA-POOL-1900', tier: 477, severity: 'medium', defaultStatus: 'todo',
+    title: 'market-data ran out of DB pool connections three times on Oct 30',
+    file: 'docs/incidents/db-connection-pool-exhaustion.md', effort: 'S',
+    impact: 'A pool timeout fails whatever job asks next; this class cascaded platform-wide on 2026-09-22.',
+    what: 'QueuePool limit reached at 19:00:50 (ingest.symbol_failed), 19:00:59 and 19:35:57 (squeeze_watch.failed). None in signal-engine.',
+    fix: 'Find which jobs held connections at those moments (overlapping scheduler runs, a nested session). Recorded, not investigated.',
+  },
+  {
+    id: 'RESEARCH-TEST-INTELLIGENCE-IMPORT', tier: 477, severity: 'low', defaultStatus: 'todo',
+    title: 'research-engine test_candidate_qualification cannot import "intelligence"',
+    file: 'services/research-engine/tests/test_candidate_qualification.py', effort: 'S',
+    impact: 'make test reports research-engine failed on every run, which masks a real failure in that suite.',
+    what: 'Collection error: ModuleNotFoundError: intelligence. Present since 55dae269, still at 49802ce5; the other 794 tests pass.',
+    fix: 'Fix the import path in the test (owned by the valuation work).',
+  },
+  {
     id: 'YF-LIVEPRICE-PERMARKET', tier: 476, severity: 'high', defaultStatus: 'done',
     title: 'Live-price cache downloaded every stock in both markets every minute',
     file: 'docs/audits/2026-10-30-yfinance-usage-audit.md', effort: 'S',
@@ -22377,6 +22470,7 @@ const ITEMS: Item[] = [
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = {
+  477: "Tier 477 — Durable measurement records and the RZY rebuild investigation (2026-10-30)",
   476: "Tier 476 — Yahoo request budgets and live-cache usage (2026-10-30)",
   475: "Tier 475 — AI signals F01–F04, signals deadlock and RZY timeframe guide (2026-10-27)",
   474: "Tier 474 — Market indexes, futures and detail pages (2026-10-26)",
@@ -22851,6 +22945,7 @@ const TIER_LABEL: Record<Tier, string> = {
 };
 
 const TIER_COLOR: Record<Tier, string> = {
+  477: '#f472b6',
   476: '#38bdf8',
   475: '#34d399',
   474: '#60a5fa',

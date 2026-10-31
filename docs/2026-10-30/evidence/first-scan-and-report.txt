@@ -1,0 +1,57 @@
+[{"symbol": "SKHYV", "market": "US", "stage": "before_measurement", "factor": "no_price_data", "reason": "no settled daily bar in the last 40 days", "as_of": null}, {"symbol": "SSNLF", "market": "US", "stage": "before_measurement", "factor": "no_price_data", "reason": "no settled daily bar in the last 40 days", "as_of": null}, {"symbol": "US10Y", "market": "US", "stage": "before_measurement", "factor": "no_price_data", "reason": "no settled daily bar in the last 40 days", "as_of": null}]
+{"no_price_data": 3}
+[{"event_id": 1832, "event_key": "risk:symbol:SOUN:session_decline:2026-10-30:s1:shadow:after1810", "scope": "symbol", "subject": "SOUN", "rule": "session_decline", "step": 1, "change_pct": -3.2110091743119393, "as_of": "2026-10-30", "evidence_status": "provisional", "price_source": "settled_daily_bars", "observed_at": "2026-10-30T16:00:00-04:00", "receipts": 1, "delivery": "shadow_suppressed", "history_only_reason": null}, {"event_id": 1834, "event_key": "risk:symbol:TTGT:session_decline:2026-10-30:s3:shadow", "scope": "symbol", "subject": "TTGT", "rule": "session_decline", "step": 3, "change_pct": -9.254498714652964, "as_of": "2026-10-30", "evidence_status": "provisional", "price_source": "settled_daily_bars", "observed_at": "2026-10-30T16:00:00-04:00", "receipts": 1, "delivery": "shadow_suppressed", "history_only_reason": null}]
+===REPORT
+{
+ "window": [
+  "2026-10-30",
+  "2026-10-30"
+ ],
+ "price_risk_trial": {
+  "complete_sessions": [],
+  "complete_count": 0,
+  "trial_status": "0 of 5 complete sessions",
+  "sessions": [
+   {
+    "session": "2026-10-30",
+    "complete": false,
+    "missing_slots": [
+     "10:05",
+     "12:05",
+     "14:05",
+     "15:40"
+    ],
+    "failed_slots": [],
+    "config_hashes": [
+     "ab32a4d0f5c50a7fbd80a8ab6c479a67791abd3b4cc27d7dcace13697e848987"
+    ],
+    "releases": [
+     "18f10963a964d189863ce37990406448628cd4e8/2bc351c9bc98"
+    ],
+    "delivery_enabled_seen": false,
+    "events": 2,
+    "excluded_per_scan": [
+     3
+    ],
+    "quote_refusals": 0,
+    "suppressions": {
+     "same_episode": 160,
+     "open_pullback_episode": 4
+    }
+   }
+  ],
+  "off_slot_scans": [],
+  "failed_scans": []
+ },
+ "entry_receipts": {
+  "attempts": 0,
+  "by_outcome_and_freshness": {},
+  "rejection_reasons": {},
+  "candidate_price_sources": {},
+  "releases": [],
+  "fresh_mark": {
+   "answer": "no opportunity to evaluate",
+   "why": "0 attempt(s), none reached the exposure reservation"
+  }
+ }
+}

@@ -214,5 +214,36 @@ See [rzy-rebuild-investigation.md](rzy-rebuild-investigation.md):
 
 ## Deployment
 
-Pending. market-data only, through `scripts/deploy.sh`, after the US post-close outcome
-evaluation has been observed, so the US check reads the release it started on.
+**Deployed 2026-10-30 23:38 UTC**, market-data only, through `scripts/deploy.sh` under the host
+lock (exit 0). That was after the US post-close evaluation had been observed, so the US check
+reads the release the session started on.
+- **Commits:** `76c170b8` (code) and `18f10963` (docs), rebased onto `49802ce5`. The rebase was
+  clean; the only shared file, `main.py`, changed in separate hunks.
+- **Rollback image:** `stockai-market-data:rollback-before-18f10963` = `cf9cb1f8…`, the image
+  that was running.
+- **Host checkout:** `18f10963`. market-data started 23:38:47 and is `running/healthy`, with 0
+  tracebacks since.
+- **Release identity:** `STOCKAI_RELEASE_SHA=18f10963a964…` in the container. The price-risk
+  `code_fingerprint` is `2bc351c9bc98…`.
+- **Schema:** both tables exist, empty, and both `*_no_update` triggers are enabled.
+- **Drift:** `check_deploy_drift.sh` from a clean `18f10963` worktree reports 12 of 12 backends
+  OK.
+- **Unchanged:** no thresholds, flags or trading rules. Price-risk email stays off and Intraday
+  generation stays disabled. The other 11 backends pick up `STOCKAI_RELEASE_SHA` on their next
+  deploy; only market-data reads it today.
+
+**First scheduled scan, 20:10 ET Oct 30 (00:10 UTC Oct 31)** ([evidence](evidence/first-scan-and-report.txt)):
+- **Rows.** Two `completed` rows share one `run_id`, both with release `18f10963`, fingerprint
+  `2bc351c9bc98`, one `config_hash` (`ab32a4d0…`) and delivery off.
+- **Symbol scope.** 154 subjects: 151 measured from settled bars (US 114, HK 37), 3 excluded.
+  - Excluded by name: SKHYV, SSNLF and US10Y, each `no_price_data` (no settled daily bar in 40
+    days).
+  - Events: SOUN session decline step 1 (−3.21%) and TTGT step 3 (−9.25%), both
+    `shadow_suppressed`.
+  - Suppressions: 160 `same_episode`, 4 `open_pullback_episode`.
+  - Quote refusals: 0.
+- **Benchmark scope.** 3 of 3 measured; 0 events; 3 `same_episode`.
+- **Report** for Oct 30: `0 of 5 complete sessions`. Oct 30 is incomplete, missing 10:05, 12:05,
+  14:05 and 15:40, as expected for a deploy after the close; it does not count. Entry receipts:
+  0 attempts, so the result is "no opportunity to evaluate". The first counted session can be
+  Mon Nov 2.
