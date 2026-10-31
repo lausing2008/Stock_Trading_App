@@ -15,6 +15,11 @@ them is reported incomplete with the missing slots named; it is never counted.
 ENTRY RECEIPTS (fresh-mark decision). Attempts by outcome and freshness. An attempt that stopped
 before the exposure reservation never valued a position (`not_evaluated`). If no attempt reached
 the reservation, the answer is "no opportunity to evaluate", never a pass.
+
+RZY REBUILD TRIGGERS. Per US session date (ET) and timeframe: rebuilds and throttled deferrals,
+affected symbols and distinct revised bars, by change class, with how many of the revised bars
+also changed volume, and the median age of a revised bar when the change was seen. Rows exist
+only from the 2026-10-30 release onward; earlier sessions are not in this table.
 """
 import json
 import sys
@@ -26,7 +31,8 @@ sys.path[:0] = ['/app', '/app/shared']
 from sqlalchemy import select, text  # noqa: E402
 from db import SessionLocal  # noqa: E402
 from common.market_calendar import session_bounds  # noqa: E402
-from src.services.receipts.models import paper_entry_receipts as R, price_risk_scans as P  # noqa: E402
+from src.services.receipts.models import (paper_entry_receipts as R, price_risk_scans as P,  # noqa: E402
+                                           rzy_rebuild_triggers as Z)
 
 NY = ZoneInfo('America/New_York')
 US_SLOTS = (time(10, 5), time(12, 5), time(14, 5), time(15, 40), time(20, 10))
@@ -54,6 +60,9 @@ def main(first: date, last: date):
                                  P.c.coverage, P.c.quote_refusals, P.c.suppressions, P.c.error)
                           .where(P.c.started_at >= lo, P.c.started_at < hi).order_by(P.c.started_at)).mappings().all()
         receipts = s.execute(select(R).where(R.c.decided_at >= lo, R.c.decided_at < hi)).mappings().all()
+        triggers = s.execute(select(Z.c.observed_at, Z.c.symbol, Z.c.timeframe, Z.c.outcome, Z.c.change_class,
+                                    Z.c.bar_time, Z.c.volume_before, Z.c.volume_after, Z.c.bar_age_seconds)
+                             .where(Z.c.observed_at >= lo, Z.c.observed_at < hi)).mappings().all()
 
     sessions = []
     by_day = defaultdict(dict)
@@ -99,6 +108,25 @@ def main(first: date, last: date):
                        with_fallback_marks=len(with_fallback),
                        enforcement_would_change_outcome=len(would_change),
                        rate_would_change=f'{len(would_change)} / {len(evaluated)} evaluated attempts'))
+    rzy = defaultdict(lambda: dict(rebuilt=0, deferred_by_throttle=0, symbols=set(), bars=set(),
+                                   classes=Counter(), volume_also_changed=0, ages=[]))
+    for t in triggers:
+        day = t['observed_at'].replace(tzinfo=timezone.utc).astimezone(NY).date().isoformat()
+        g = rzy[(day, t['timeframe'])]
+        g[t['outcome']] += 1
+        g['symbols'].add(t['symbol'])
+        if t['bar_time']:
+            g['bars'].add((t['symbol'], t['bar_time']))
+        g['classes'][f"{t['outcome']}:{t['change_class']}"] += 1
+        if t['volume_before'] is not None and t['volume_after'] is not None and t['volume_before'] != t['volume_after']:
+            g['volume_also_changed'] += 1
+        if t['bar_age_seconds'] is not None:
+            g['ages'].append(t['bar_age_seconds'])
+    rzy_out = [dict(session=d, timeframe=tf, rebuilt=g['rebuilt'], deferred_by_throttle=g['deferred_by_throttle'],
+                    affected_symbols=len(g['symbols']), distinct_revised_bars=len(g['bars']),
+                    by_class=dict(g['classes']), volume_also_changed=g['volume_also_changed'],
+                    median_bar_age_s=(sorted(g['ages'])[len(g['ages']) // 2] if g['ages'] else None))
+               for (d, tf), g in sorted(rzy.items())]
     print(json.dumps(dict(
         window=[first.isoformat(), last.isoformat()],
         price_risk_trial=dict(complete_sessions=complete, complete_count=len(complete),
@@ -112,7 +140,8 @@ def main(first: date, last: date):
                             rejection_reasons=dict(Counter(r['reason'] for r in receipts if r['outcome'] == 'rejected')),
                             candidate_price_sources=dict(Counter(r['candidate_price_source'] for r in receipts)),
                             releases=sorted({r['release_sha'] for r in receipts}),
-                            fresh_mark=fresh_mark)), indent=1, default=str))
+                            fresh_mark=fresh_mark),
+        rzy_rebuild_triggers=rzy_out or 'no trigger rows in this window'), indent=1, default=str))
 
 
 if __name__ == '__main__':

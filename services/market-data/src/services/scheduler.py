@@ -916,7 +916,10 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
             # write for a cell an enabled v2 cohort owns (training/publication.py).
             _post(f"{_settings.ml_prediction_url}/ml/train_all_horizons", params={"protocol": "v1"})
             # Evaluate any BUY/SELL signals whose hold window has now expired.
-            _post(f"{_settings.signal_engine_url}/signals/outcomes/evaluate")
+            # One long attempt (2026-10-30): the US run took ~4.5 min server-side, so the default
+            # 15 s x 3 attempts logged the job failed while it succeeded, and each retry started a
+            # duplicate evaluation beside the first (the weekly sweeps use the same pattern).
+            _post(f"{_settings.signal_engine_url}/signals/outcomes/evaluate", timeout=600, retries=1)
             # T232-DATA1: alert if outcome evaluation has gone stale (>3 days since the last
             # row was written) — evaluation feeding win-rate/calibration off silently stopped
             # once before (jose-missing pattern hit signal-engine multiple times) with no

@@ -1,0 +1,271 @@
+== market-data ==
+........................................................................ [  1%]
+...................................................................s.... [  2%]
+........................................................................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  5%]
+........................................................................ [  7%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 11%]
+........................................................................ [ 12%]
+........................................................................ [ 14%]
+..............ss......s...........s............s........................ [ 15%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+........................................................................ [ 23%]
+............s........................................................... [ 24%]
+s....................................................................... [ 25%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 30%]
+........................................................................ [ 31%]
+........................................................................ [ 32%]
+........................................................................ [ 34%]
+........................................................................ [ 35%]
+........................................................................ [ 36%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+...............................................ss....................... [ 40%]
+..........................................................s............. [ 41%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 45%]
+........................................................................ [ 47%]
+.............................s.......................................... [ 48%]
+........................................................................ [ 49%]
+s....................................................................... [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 52%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 57%]
+...sssssssssssssssss.................................................... [ 58%]
+........................................................................ [ 60%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 64%]
+...................................................................s.... [ 65%]
+........................................................................ [ 67%]
+........................................................................ [ 68%]
+........................................................................ [ 69%]
+........................................................................ [ 70%]
+........................................................................ [ 71%]
+........................................................................ [ 72%]
+........................................................................ [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 76%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 83%]
+........................................................................ [ 84%]
+........................................................................ [ 85%]
+........................................................................ [ 87%]
+........................................................................ [ 88%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 91%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+........................................................................ [ 95%]
+....................................................................s... [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+....................................................................     [100%]
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: Type google.protobuf.pyext._message.ScalarMapContainer uses PyType_Spec with a metaclass that has custom tp_new. This is deprecated and will no longer be allowed in Python 3.14.
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: Type google.protobuf.pyext._message.MessageMapContainer uses PyType_Spec with a metaclass that has custom tp_new. This is deprecated and will no longer be allowed in Python 3.14.
+
+../../../../../../../../home/lausing/anaconda3/lib/python3.12/site-packages/pydantic/_internal/_config.py:295
+../../../../../../../../home/lausing/anaconda3/lib/python3.12/site-packages/pydantic/_internal/_config.py:295
+../../../../../../../../home/lausing/anaconda3/lib/python3.12/site-packages/pydantic/_internal/_config.py:295
+  /home/lausing/anaconda3/lib/python3.12/site-packages/pydantic/_internal/_config.py:295: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.10/migration/
+    warnings.warn(DEPRECATION_MESSAGE, DeprecationWarning)
+
+src/api/routes.py:6187
+  /tmp/claude-1000/-home-lausing-Documents-MyProjects-Stock-Trading-App/be0e4437-7986-4c6c-bfa0-318d04257b46/scratchpad/wt-measure/services/market-data/src/api/routes.py:6187: FastAPIDeprecationWarning: `regex` has been deprecated, please use `pattern` instead
+    tf: str = Query("1d", regex="^(15m|1h|4h|1d)$"),
+
+src/api/admin.py:806
+  /tmp/claude-1000/-home-lausing-Documents-MyProjects-Stock-Trading-App/be0e4437-7986-4c6c-bfa0-318d04257b46/scratchpad/wt-measure/services/market-data/src/api/admin.py:806: FastAPIDeprecationWarning: `regex` has been deprecated, please use `pattern` instead
+    style: str = Query(..., regex="^(SHORT|SWING|LONG|GROWTH)$"),
+
+src/api/admin.py:1800
+  /tmp/claude-1000/-home-lausing-Documents-MyProjects-Stock-Trading-App/be0e4437-7986-4c6c-bfa0-318d04257b46/scratchpad/wt-measure/services/market-data/src/api/admin.py:1800: FastAPIDeprecationWarning: `regex` has been deprecated, please use `pattern` instead
+    market: str = Query("US", regex="^(US|HK)$"),
+
+tests/test_entry_gates_override.py::TestEntryGatesOverrideActive::test_future_timestamp_is_active
+  /tmp/claude-1000/-home-lausing-Documents-MyProjects-Stock-Trading-App/be0e4437-7986-4c6c-bfa0-318d04257b46/scratchpad/wt-measure/services/market-data/tests/test_entry_gates_override.py:66: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    until = (datetime.utcnow() + timedelta(hours=2)).isoformat()
+
+tests/test_entry_gates_override.py::TestEntryGatesOverrideActive::test_future_timestamp_is_active
+tests/test_entry_gates_override.py::TestEntryGatesOverrideActive::test_past_timestamp_is_inactive_expired_on_its_own
+  <string>:21: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+
+tests/test_entry_gates_override.py::TestEntryGatesOverrideActive::test_past_timestamp_is_inactive_expired_on_its_own
+  /tmp/claude-1000/-home-lausing-Documents-MyProjects-Stock-Trading-App/be0e4437-7986-4c6c-bfa0-318d04257b46/scratchpad/wt-measure/services/market-data/tests/test_entry_gates_override.py:70: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    until = (datetime.utcnow() - timedelta(hours=2)).isoformat()
+
+tests/test_liquidate_portfolio.py: 17 warnings
+  <string>:22: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+6084 passed, 32 skipped, 29 warnings in 410.05s (0:06:50)
+== technical-analysis ==
+...................................................................      [100%]
+67 passed in 1.67s
+== ml-prediction ==
+........................................................................ [ 12%]
+........................................................................ [ 25%]
+........................................................................ [ 38%]
+........................................................................ [ 51%]
+........................................................................ [ 64%]
+........................................................................ [ 77%]
+........................................................................ [ 90%]
+...................................................                      [100%]
+=============================== warnings summary ===============================
+src/training/meta_trainer.py:62
+src/training/meta_trainer.py:62
+tests/test_intraday_daily_isolation.py::test_meta_trainer_reads_daily_outcomes_only
+  /tmp/claude-1000/-home-lausing-Documents-MyProjects-Stock-Trading-App/be0e4437-7986-4c6c-bfa0-318d04257b46/scratchpad/wt-measure/services/ml-prediction/src/training/meta_trainer.py:62: DeprecationWarning: __package__ != __spec__.parent
+    from .trainer import _HORIZON_BY_STYLE as _HORIZON_DAYS
+
+tests/test_intraday_daily_isolation.py::test_meta_trainer_reads_daily_outcomes_only
+  /tmp/claude-1000/-home-lausing-Documents-MyProjects-Stock-Trading-App/be0e4437-7986-4c6c-bfa0-318d04257b46/scratchpad/wt-measure/services/ml-prediction/src/training/meta_trainer.py:93: DeprecationWarning: __package__ != __spec__.parent
+    from ..features.builder import FEATURE_COLUMNS, build_features, fetch_macro_features
+
+tests/test_meta_trainer.py::test_predict_meta_appends_direction_as_the_4th_meta_feature
+tests/test_meta_trainer.py::test_predict_meta_sell_direction_encodes_as_zero_at_index_minus_4
+tests/test_meta_trainer.py::test_predict_meta_meta_feature_suffix_matches_training_order
+tests/test_meta_trainer.py::test_predict_meta_leaves_missing_fundamental_columns_as_real_nan_not_zero
+  /tmp/claude-1000/-home-lausing-Documents-MyProjects-Stock-Trading-App/be0e4437-7986-4c6c-bfa0-318d04257b46/scratchpad/wt-measure/services/ml-prediction/src/training/meta_trainer.py:737: DeprecationWarning: __package__ != __spec__.parent
+    from ..features.builder import FEATURE_COLUMNS, build_features, fetch_macro_features, compute_label_threshold
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+555 passed, 1 skipped, 8 warnings in 9.25s
+== ranking-engine ==
+........................................................................ [ 35%]
+........................................................................ [ 71%]
+.........................................................                [100%]
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: Type google.protobuf.pyext._message.ScalarMapContainer uses PyType_Spec with a metaclass that has custom tp_new. This is deprecated and will no longer be allowed in Python 3.14.
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: Type google.protobuf.pyext._message.MessageMapContainer uses PyType_Spec with a metaclass that has custom tp_new. This is deprecated and will no longer be allowed in Python 3.14.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+201 passed, 2 warnings in 11.94s
+== signal-engine ==
+........................................................................ [  7%]
+.........s.............................................................. [ 14%]
+........................................................................ [ 21%]
+...................................ssssss............................... [ 28%]
+........................................................................ [ 35%]
+........................................................................ [ 42%]
+........................................................................ [ 49%]
+........................................................................ [ 56%]
+........................................................................ [ 63%]
+........................................................................ [ 70%]
+........................................................................ [ 77%]
+..................................ss.................................... [ 84%]
+........................................................................ [ 92%]
+........................................................................ [ 99%]
+.........                                                                [100%]
+=============================== warnings summary ===============================
+tests/test_f03_occurrence_observer.py: 63 warnings
+  /home/lausing/anaconda3/lib/python3.12/site-packages/sqlalchemy/engine/default.py:942: DeprecationWarning: The default date adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.execute(statement, parameters)
+
+tests/test_f03_occurrence_observer.py: 69 warnings
+  /home/lausing/anaconda3/lib/python3.12/site-packages/sqlalchemy/engine/default.py:942: DeprecationWarning: The default datetime adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.execute(statement, parameters)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1008 passed, 9 skipped, 132 warnings in 30.21s
+== strategy-engine ==
+..............................................................           [100%]
+62 passed in 1.13s
+== portfolio-optimizer ==
+........................................................................ [ 86%]
+...........                                                              [100%]
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: Type google.protobuf.pyext._message.ScalarMapContainer uses PyType_Spec with a metaclass that has custom tp_new. This is deprecated and will no longer be allowed in Python 3.14.
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: Type google.protobuf.pyext._message.MessageMapContainer uses PyType_Spec with a metaclass that has custom tp_new. This is deprecated and will no longer be allowed in Python 3.14.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+83 passed, 2 warnings in 1.65s
+== research-engine ==
+........................................................................ [  8%]
+...ssssssss............................................................. [ 17%]
+........................................................................ [ 26%]
+........................................................................ [ 34%]
+........................................................................ [ 43%]
+........................................................................ [ 52%]
+........................................................................ [ 61%]
+........................................................................ [ 69%]
+........................................................................ [ 78%]
+........................................................................ [ 87%]
+........................................................................ [ 96%]
+...............................                                          [100%]
+815 passed, 8 skipped in 40.32s
+== api-gateway ==
+..........................................................               [100%]
+58 passed in 1.92s
+== decision-engine ==
+........................................................................ [ 18%]
+........................................................................ [ 36%]
+........................................................................ [ 54%]
+........................................................................ [ 73%]
+........................................................................ [ 91%]
+.................................                                        [100%]
+393 passed in 2.16s
+== event-intelligence ==
+........................................................................ [ 11%]
+........................................................................ [ 22%]
+........................................................................ [ 34%]
+........................................................................ [ 45%]
+........................................................................ [ 56%]
+........................................................................ [ 68%]
+........................................................................ [ 79%]
+........................................................................ [ 90%]
+...........................................................              [100%]
+=============================== warnings summary ===============================
+tests/test_issuer_documents.py::test_committing_an_association_persists_who_why_and_what_it_replaced
+  /tmp/claude-1000/-home-lausing-Documents-MyProjects-Stock-Trading-App/be0e4437-7986-4c6c-bfa0-318d04257b46/scratchpad/wt-measure/services/event-intelligence/src/services/issuer_documents.py:253: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "associated_at": datetime.utcnow().isoformat() + "Z",
+
+tests/test_issuer_documents.py::test_committing_an_association_persists_who_why_and_what_it_replaced
+  /tmp/claude-1000/-home-lausing-Documents-MyProjects-Stock-Trading-App/be0e4437-7986-4c6c-bfa0-318d04257b46/scratchpad/wt-measure/services/event-intelligence/src/services/issuer_documents.py:265: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    ev.fetched_at = datetime.utcnow()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+635 passed, 2 warnings in 4.50s
+== news-intelligence ==
+........................................................................ [ 36%]
+........................................................................ [ 72%]
+........................................................                 [100%]
+200 passed in 2.33s
+== scripts (host lock, backup, deploy) ==
+............................................                             [100%]
+44 passed in 13.46s
+make test: all services passed
+exit=0

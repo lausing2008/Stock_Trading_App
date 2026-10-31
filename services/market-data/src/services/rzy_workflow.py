@@ -22,6 +22,7 @@ from .rzy_data import prepare_bars,aggregate_completed_bars,break_indices,MINUTE
 from .rzy_models import RzyStream,RzyEvent,RzyPreference,RzyStreamGeneration,RzyStreamSnapshot,RzyScanRun,RzyOccurrence,RzyRebuild,RzyScanPhases
 import time as _time
 from .rzy_email import render_event,render_event_html,event_subject
+from . import rzy_triggers
 
 NY=ZoneInfo('America/New_York')
 EMAIL_TYPES=('little_rzy','short_term_digest')
@@ -203,6 +204,11 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_
         due=utc(datetime.fromisoformat(prior['generation_started_at']))+REBUILD_MIN_INTERVAL
         if now<due:
             if persist and not prior.get('restatement_pending'):
+                # Durable trigger record (2026-10-30): the deferral, before the checkpoint moves.
+                rzy_triggers.record(session,outcome='deferred_by_throttle',stream_key=key,symbol=symbol,timeframe=timeframe,
+                    config_hash=cfg.hash,reason=reason,detail=detail,prior=prior,bars=bars,observed_at=now,
+                    recorded_at=(clock or _wall_clock)(),checkpoint_updated_at=row.updated_at,new_generation=None,
+                    noise_rel=NOISE_REL,min_interval=REBUILD_MIN_INTERVAL,throttle_due=due)
                 prior['restatement_pending']=dict(reason=reason,detail=detail,observed_at=now.isoformat())
                 row.checkpoint=prior; flag_modified(row,'checkpoint'); row.updated_at=now.replace(tzinfo=None)
             return empty('restatement_pending',reason=reason,rebuild_after=due.isoformat())
@@ -229,6 +235,11 @@ def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_
         if rebuilt:
             session.add(RzyRebuild(stream_key=key,symbol=symbol,timeframe=timeframe,generation=engine.s['generation'],
                 reason=(reason or '')[:64],rebuilt_at=persisted_at))
+            # Durable trigger record (2026-10-30): class, before/after bar and throttle state.
+            rzy_triggers.record(session,outcome='rebuilt',stream_key=key,symbol=symbol,timeframe=timeframe,
+                config_hash=cfg.hash,reason=reason,detail=detail,prior=prior,bars=bars,observed_at=now,
+                recorded_at=persisted_at,checkpoint_updated_at=row.updated_at,new_generation=engine.s['generation'],
+                noise_rel=NOISE_REL,min_interval=REBUILD_MIN_INTERVAL)
             session.add(RzyStreamGeneration(stream_key=key,generation=prior.get('generation') or 1,reason=reason,
                 detail=_archive_summary(prior,reason,detail,now),archived_at=now.replace(tzinfo=None)))
             session.flush()

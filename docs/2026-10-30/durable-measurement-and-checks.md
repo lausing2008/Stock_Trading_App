@@ -247,3 +247,70 @@ reads the release the session started on.
   14:05 and 15:40, as expected for a deploy after the close; it does not count. Entry receipts:
   0 attempts, so the result is "no opportunity to evaluate". The first counted session can be
   Mon Nov 2.
+
+## 8. Follow-ups closed the same night (second release)
+
+After the first release, these were still open from this work. Each was either built or
+recorded as not possible.
+
+**RZY rebuild triggers, recorded durably.** The investigation could not say why rebuilds per
+revised bar rose. Two things were missing: when a stream had consumed the bar that later changed,
+and whether the throttle had deferred the rebuild. The before/after bars existed only in
+generation archives, which are pruned to five per stream.
+
+`rzy_rebuild_triggers` now gets one immutable row per rebuild, plus one per throttled deferral
+(written when the deferral is first recorded). Each row holds:
+- the change class:
+  - `material_ohlc`;
+  - `rounding_ohlc`, where every change is within max(0.005, 2e-5 × price);
+  - `closed_at` or `price_basis`;
+  - `gap_after_checkpoint`, `bar_missing`, `off_grid` or `legacy_quarantine`;
+- the fields that changed, the largest absolute and relative change, and the bar before and
+  after, including volume;
+- the bar's age when the change was seen, and when the stream last advanced
+  (`checkpoint_updated_at`);
+- the generation start, any earlier deferral (`pending_since`), the throttle due time, and the
+  release.
+
+What does not change:
+- **Rules.** `_ohlc_revised`, the throttle and every trading rule are unchanged.
+- **Failure handling.** The write is a savepoint in the scan's own transaction; a failure is
+  logged and the rebuild proceeds.
+- **Volume-only revisions** cannot trigger a rebuild, so they never appear here. They remain
+  in the `bar_provenance` counter.
+
+`scripts/measurement_report.py` reports these per session and timeframe:
+- rebuilds and deferrals;
+- affected symbols and distinct revised bars;
+- the counts by class;
+- how many revised bars also changed volume;
+- the median bar age.
+
+Tests:
+- **Real-workflow probe:** it already drives material, legacy-quarantine, gap and throttled
+  rebuilds; it now also checks the rows each one writes. It also checks:
+  - the classifier's rounding boundary, and the price-basis and close-time classes;
+  - that a missing table never stops a rebuild.
+  Three sabotages (rounding never detected, rebuild not recorded, deferral not recorded) each
+  failed it.
+- **PostgreSQL:** the same probe passes, and so does the receipts probe, which also covers the
+  new table's UPDATE refusal and its class constraint. `make test-integration-pg-schema`: 11 of
+  11.
+
+**Outcome evaluation called with one long attempt.** The post-close call used the default
+15 s × 3 attempts. The US run took about 4.5 minutes, so the job was logged as failed although
+it succeeded. Each retry also started a duplicate evaluation beside the first: HK and US both
+ran three times on Oct 30, and the duplicates evaluated 0 rows. The call now uses
+`timeout=600, retries=1`, the pattern the weekly sweeps already use. To verify: Mon Nov 2's HK
+and US post-close runs should show one evaluation each, with no `scheduler.http_failed`.
+
+**research-engine `test_candidate_qualification.py`** failed to collect. It imported the
+valuation report before `shared/` was on the path, which only its sibling
+`test_valuation_report` put there, and that sibling is collected later. Production was never
+affected: the container imports `/app/shared/intelligence`. A test-only fix adds the same path
+line. research-engine now passes 815 tests, with 8 skipped.
+
+**Not possible: the 19:00 UTC pool exhaustion.** The 23:38 deploy recreated market-data, so
+the logs from 19:00–19:35 are gone. What remains is the three lines captured beforehand
+([evidence](evidence/us-check/02-post-close.txt)). It stays open, to be investigated on its next
+occurrence while the logs exist.

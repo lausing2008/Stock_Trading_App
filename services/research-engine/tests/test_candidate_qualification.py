@@ -1,9 +1,13 @@
 """Qualification can be reached with evidence, and cannot be reached by omitting gates."""
+import pathlib
+import sys
 from copy import deepcopy
 from datetime import timedelta
 
 import pytest
 
+# Collected before test_valuation_report, which is what put shared/ on the path for it.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / "shared"))
 from src.intel_reports import candidate_qualification as C
 from src.intel_reports import valuation_report as V
 from test_valuation_report import source, inputs, NOW

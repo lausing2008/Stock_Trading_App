@@ -226,6 +226,12 @@ what survived.
 
 No check was relaxed and no trading rule was changed.
 
+**Now recorded (2026-10-30, second release).** The missing ordering and throttle state are now
+stored per rebuild in `rzy_rebuild_triggers`, along with each trigger's change class and the bar
+before and after, including volume. Unlike the archives, these rows are never pruned. The
+question above becomes answerable from the sessions after that deploy. See
+[durable-measurement-and-checks.md §8](durable-measurement-and-checks.md#8-follow-ups-closed-the-same-night-second-release).
+
 ## Review note
 
 Re-counted independently on production (read-only, 14:00 UTC Oct 30) for Oct 29: rebuilds 5m 833,

@@ -5,7 +5,7 @@ from sqlalchemy import text
 
 from .models import metadata
 
-_TABLES = ("price_risk_scans", "paper_entry_receipts")
+_TABLES = ("price_risk_scans", "paper_entry_receipts", "rzy_rebuild_triggers")
 
 _PG_FUNCTION = """
 CREATE OR REPLACE FUNCTION measurement_refuse_update() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -38,7 +38,8 @@ SCHEMA_STATUS: str | None = None
 
 def ensure_schema_safely() -> str:
     """A failure is recorded and printed, and never takes market-data down: the scan job then
-    fails loudly on its first write, and entry receipts log an error per attempt."""
+    fails loudly on its first write, and entry receipts and RZY trigger records log an error per
+    attempt."""
     global SCHEMA_STATUS
     try:
         ensure_schema()

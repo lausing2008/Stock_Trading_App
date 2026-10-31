@@ -30,6 +30,9 @@ if url:
         conn.execute(text('DROP SCHEMA public CASCADE'));conn.execute(text('CREATE SCHEMA public'))
 else:engine=create_engine('sqlite:///'+str(pathlib.Path(tempfile.mkdtemp())/'rzy.db'))
 models.Base.metadata.create_all(engine);Session=sessionmaker(bind=engine,autoflush=False)
+from src.services.receipts import schema as _receipts_schema
+with engine.begin() as _c: _receipts_schema.create(_c)   # rzy_rebuild_triggers (+ PG trigger)
+os.environ['STOCKAI_RELEASE_SHA']='rzyprobe'
 base=datetime(2026,10,16,13,30,tzinfo=timezone.utc)
 clock=[base]
 outbox.utcnow=lambda:clock[0].replace(tzinfo=None)
@@ -288,6 +291,50 @@ with Session() as s:
     assert s.scalar(select(func.count()).select_from(RzyStreamGeneration).where(RzyStreamGeneration.stream_key==key))<=W.KEEP_GENERATIONS
     gens={e.payload.get('generation',1) for e in s.scalars(select(RzyEvent).where(RzyEvent.symbol=='TEST',RzyEvent.timeframe=='5m')).all()}
     assert all(g>=current-W.KEEP_GENERATIONS+1 for g in gens), (sorted(gens),current)
+    # Durable rebuild triggers (2026-10-30): one row per rebuild and per first throttled
+    # deferral, never pruned, classified, with the bar before and after and the throttle state.
+    from src.services.receipts.models import rzy_rebuild_triggers as T
+    from src.services.rzy_models import RzyRebuild
+    from src.services import rzy_triggers
+    rows=[dict(r) for r in s.execute(select(T).order_by(T.c.observed_at,T.c.recorded_at)).mappings()]
+    rebuilt_rows=[r for r in rows if r['outcome']=='rebuilt']
+    assert len(rebuilt_rows)==s.scalar(select(func.count()).select_from(RzyRebuild)), (len(rebuilt_rows),)
+    classes={r['change_class'] for r in rebuilt_rows}
+    assert {'material_ohlc','legacy_quarantine','gap_after_checkpoint'}<=classes, classes
+    first_material=next(r for r in rebuilt_rows if r['change_class']=='material_ohlc')
+    assert first_material['fields_changed']==['open'] and first_material['before']['open']!=first_material['after']['open']
+    assert first_material['volume_before'] is not None and first_material['bar_age_seconds']>0
+    assert first_material['prior_generation']==1 and first_material['new_generation']==2
+    assert first_material['checkpoint_updated_at'] is not None and first_material['checkpoint_last_bar']
+    deferred=[r for r in rows if r['outcome']=='deferred_by_throttle']
+    assert len(deferred)==1 and deferred[0]['throttle_due'] and deferred[0]['new_generation'] is None
+    after_defer=[r for r in rebuilt_rows if r['observed_at']>deferred[0]['observed_at']][0]
+    assert after_defer['pending_since']==deferred[0]['observed_at'].replace(tzinfo=timezone.utc).isoformat(), after_defer['pending_since']
+    assert all(r['release_sha']=='rzyprobe' and len(r['code_fingerprint'])==64 for r in rows)
+    # Classifier boundaries: the rounding scale is max(0.005, 2e-5 x price).
+    bar=dict(open=100.0,high=101.0,low=99.0,close=100.5,closed_at='t',price_basis='raw')
+    c=lambda **ch: rzy_triggers.classify('stored_completed_bar_changed',bar,dict(bar,**ch),W.NOISE_REL)['change_class']
+    assert c(close=100.504)=='rounding_ohlc' and c(close=100.51)=='material_ohlc'
+    assert c(price_basis='split_adjusted',close=50.0)=='price_basis' and c(closed_at='u')=='closed_at'
+    assert rzy_triggers.classify('checkpoint_bar_missing_from_source',None,None,W.NOISE_REL)['change_class']=='bar_missing'
+    # A missing table never changes whether a stream rebuilds (SQLite only: renaming under the
+    # PostgreSQL run would also exercise the trigger, covered there by its own refusal check).
+    if not url:
+        from sqlalchemy import text as _text
+        n_rebuilds=s.scalar(select(func.count()).select_from(RzyRebuild))
+        with engine.begin() as _c: _c.execute(_text('ALTER TABLE rzy_rebuild_triggers RENAME TO rzy_rebuild_triggers_off'))
+        s.get(models.Price,61).close+=.05;s.commit()
+        assert W.evaluate(s,'TEST','5m',later_t+timedelta(minutes=20),persist=True)['rebuilt'];s.commit()
+        assert s.scalar(select(func.count()).select_from(RzyRebuild))==n_rebuilds+1
+        with engine.begin() as _c: _c.execute(_text('ALTER TABLE rzy_rebuild_triggers_off RENAME TO rzy_rebuild_triggers'))
+    else:
+        from sqlalchemy import text as _text
+        try:
+            with engine.begin() as _c: _c.execute(_text("UPDATE rzy_rebuild_triggers SET reason='x'"))
+            raise AssertionError('rzy_rebuild_triggers must refuse UPDATE')
+        except AssertionError: raise
+        except Exception: pass
+    result['rebuild_trigger_records']=True
     result['generation_retention']=True
     # ── F02: delivery finds the current event through its occurrence record at ANY generation ──
     from src.services.rzy_models import RzyOccurrence,RzyRebuild
