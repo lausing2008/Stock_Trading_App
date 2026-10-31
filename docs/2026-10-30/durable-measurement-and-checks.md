@@ -314,3 +314,27 @@ line. research-engine now passes 815 tests, with 8 skipped.
 the logs from 19:00–19:35 are gone. What remains is the three lines captured beforehand
 ([evidence](evidence/us-check/02-post-close.txt)). It stays open, to be investigated on its next
 occurrence while the logs exist.
+
+**Second release, deployed 2026-10-31 00:46–00:52 UTC** (`d96a87a6`, market-data then frontend,
+each through `scripts/deploy.sh` under the host lock, both exit 0):
+- **Rollback images:** `stockai-market-data:rollback-before-d96a87a6` (`4f91eb3c…`) and
+  `stockai-frontend:rollback-before-d96a87a6` (`e8fb5f23…`).
+- **Tests before the deploy** ([output](evidence/make_test_release2.txt)): `make test` passed
+  every backend suite and the scripts suite (market-data 6,084, research-engine 815). PostgreSQL
+  integration: 11 of 11. Frontend: `tsc` clean; vitest 1,003 of 1,003, and the deploy's own
+  gate ran green.
+- **Frontend gate:** its first run refused because the worktree had no `node_modules`, so `npx`
+  fetched an incompatible vitest. It was re-run with the project's `node_modules` linked, not
+  skipped.
+- **market-data:**
+  - healthy, `STOCKAI_RELEASE_SHA=d96a87a6…`, 0 tracebacks;
+  - the served `scheduler.py` carries `timeout=600, retries=1`;
+  - `rzy_rebuild_triggers` exists, empty until the next US session, and all three
+    `*_no_update` triggers are enabled.
+- **Frontend:** healthy. The served `improvements` chunk contains tier 477; 0 served chunks
+  reference `localhost:8000`; `/improvements` returns 200.
+- **Report** over Oct 30 on production: `0 of 5 complete sessions` · "no opportunity to
+  evaluate" · "no trigger rows in this window".
+- **Drift:** `check_deploy_drift.sh` at `d96a87a6`: 12 of 12 backends OK.
+- **Unchanged:** thresholds, flags and trading rules; price-risk email off; Intraday generation
+  disabled.
