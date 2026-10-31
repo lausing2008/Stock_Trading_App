@@ -49,3 +49,29 @@ Requested: finish everything open that does not wait on data.
 | RZY source policy, incremental scan loading | the Nov 2–6 rebuild-trigger records; changing either now would confound them |
 | Pool exhaustion cause | its next occurrence, now logged with holders |
 | Price-risk trial, fresh-mark receipts | Nov 9 and Nov 13 reads |
+
+## Deployment (2026-10-31 02:10–02:16 UTC, `2609ff6c`)
+
+- **Order and lock:** market-data and event-intelligence first, then the frontend, each through
+  `scripts/deploy.sh` under the host lock (exit 0). The deploy waited for the 02:00 UTC backup
+  to release the lock; it finished at 02:09:43.
+- **Rollback images:** `rollback-before-2609ff6c` for market-data (`1b1ed6fa…`),
+  event-intelligence (`b2d9f420…`) and the frontend (`2c7bfc6a…`).
+- **Tests** ([output](evidence/make_test_release3.txt)):
+  - Every backend suite and the scripts suite pass (48).
+  - market-data was re-run (6,093 passed) after re-anchoring one source-text test: it looked for
+    the inline `yfinance` import that moved into `_index_quote`. What it protects, `_idx_ret`
+    being set before the `try`, still holds.
+  - Frontend: `tsc` clean, vitest 1,003 of 1,003, and the deploy gate green.
+- **The new log capture ran on this deploy.** It saved the outgoing market-data (76 KB),
+  event-intelligence (384 KB) and frontend logs to `~/deploy-evidence/container-logs/`.
+- **Checks on production:**
+  - all three healthy;
+  - market-data `STOCKAI_RELEASE_SHA=2609ff6c…`;
+  - 0 tracebacks in market-data and event-intelligence;
+  - no `pool_watch` install failure printed;
+  - the served code carries the paper caches, `rows_from_live_cache` and the earnings filter;
+  - the served `improvements` chunk has tier 478, 0 chunks reference `localhost:8000`, and
+    `/improvements` returns 200.
+- **Board poll on production:** `latest_prices?symbols=AAPL,NVDA,0700.HK` answered in 0.02 s,
+  all three from the post-close snapshot (both markets closed), with nothing sent to Yahoo.
