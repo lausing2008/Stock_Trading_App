@@ -37,3 +37,40 @@ Not established, because the evidence does not exist:
 2. Ship container logs off the container (e.g. the `local` driver with rotation into a host path, or CloudWatch Logs), so a recreate cannot erase them.
 3. Then decide memory controls: a market-data memory limit, running evidence reports outside the market-data container, or swappiness. Only with measurements.
 4. Ask whoever issued the 23:42 reboot what they saw; that observation is part of the evidence.
+
+## Correction and new evidence (2026-10-30)
+
+**"No memory history" was wrong.** sysstat was already installed and collecting every 10 minutes
+with 28 days of retention, PSI included, and `/var/log/sa/sa22` still holds Oct 22
+([extract](../2026-10-30/evidence/host-stall-sar/sa22_memory_psi_io_paging.txt)). What it shows:
+- **Memory was already short before the onset (19:40–20:30 UTC):**
+  - available memory 0.64–0.80 GB of 7.8 GB;
+  - page cache shrunk to 0.78–0.94 GB;
+  - committed memory 170–187% of RAM.
+- **The kernel reclaimed pages all afternoon:** from 18:10, about 1,000–1,700 pages/s scanned
+  and 1,600–2,700 stolen, with about 10–28 major faults/s.
+- **Memory pressure spiked:** PSI `some` memory reached 12.1% at 20:00 and 11.0% at 20:30.
+- **The collector died with the host.** The last sample is 20:30, seven minutes before the 20:37
+  onset; nothing more until the 23:47 reboot.
+
+This strengthens the page-cache-thrashing reading above, with measured memory starvation going
+into the event. The trigger is still not established, because the samples stop before the onset.
+
+**What changed since:**
+- **Container logs (item 2):** `scripts/deploy_remote.sh` now saves each outgoing container's
+  log, gzipped with timestamps, under `~/deploy-evidence/container-logs/` before every recreate,
+  keeping the newest 10 per service. A deploy can no longer erase them. A crash or a manual
+  recreate still can.
+- **1-minute sampling (item 1):** proposed as a systemd drop-in, not applied. The host change
+  was refused by the session's permission check and needs your approval:
+
+  ```
+  sudo mkdir -p /etc/systemd/system/sysstat-collect.timer.d
+  printf '[Timer]\nOnCalendar=\nOnCalendar=*:*:00\n' | sudo tee /etc/systemd/system/sysstat-collect.timer.d/10-every-minute.conf
+  sudo systemctl daemon-reload && sudo systemctl restart sysstat-collect.timer
+  ```
+
+  To revert, delete the file and run `daemon-reload`. It writes about 10× more sar data,
+  roughly 6 MB a day.
+- **Memory today:** 3.2 GB available on Oct 30, against 0.64–0.80 GB before the stall. Memory
+  controls (item 3) remain a decision to make with these figures.

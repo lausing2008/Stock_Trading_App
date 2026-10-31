@@ -937,19 +937,26 @@ def latest_prices(
     session: Session = Depends(get_session),
 ):
     """Live prices from yfinance fast_info, Redis-cached for 60 s; DB fallback.
-    Pass ?symbols=AAPL,TSM to get a small subset fetched directly (bypasses bulk cache)."""
+    Pass ?symbols=AAPL,TSM for a small subset: answered from the shared live-price cache where it
+    holds a usable row, and fetched from Yahoo per symbol only for the rest."""
     symbol_set = {s.strip().upper() for s in symbols.split(",")} if symbols else None
 
-    # Small filtered request — fetch only those symbols directly with per-symbol Redis keys
-    # so they never depend on the bulk cache that may be stale after a restart.
+    # Small filtered request (the board's 60 s poll). YF-LATESTPRICES-CACHE (2026-10-30): this
+    # made one fast_info request per symbol on every poll, uncached, although the docstring
+    # promised per-symbol keys. It now reads the same live-price cache and close rule as the
+    # alert scanners (rows_from_live_cache) and asks Yahoo only for what that cannot answer:
+    # a symbol outside the universe, a missing row, or a closed market without a post-close row.
     if symbol_set:
         results: list[dict] = []
         stocks_q = session.execute(
             select(Stock.symbol, Stock.currency)
             .where(Stock.active.is_(True), Stock.symbol.in_(symbol_set))
         ).all()
-        with ThreadPoolExecutor(max_workers=min(len(stocks_q), 6)) as pool:
-            futures = {pool.submit(_fetch_live_one, s.symbol, s.currency): s.symbol for s in stocks_q}
+        cached, to_fetch = rows_from_live_cache([s.symbol for s in stocks_q])
+        results.extend({k: v for k, v in row.items() if k != "_source"} for row in cached.values())
+        missing = [s for s in stocks_q if s.symbol in set(to_fetch)]
+        with ThreadPoolExecutor(max_workers=max(1, min(len(missing), 6))) as pool:
+            futures = {pool.submit(_fetch_live_one, s.symbol, s.currency): s.symbol for s in missing}
             for fut in as_completed(futures):
                 r = fut.result()
                 if r:
@@ -1082,6 +1089,20 @@ def prices_from_live_cache(symbols, provenance: dict | None = None) -> tuple[dic
     answered symbol: which copy the price came from and when it was fetched. Paper entry receipts
     record it, so a price can be judged fresh or stale after the fact.
     """
+    rows, to_fetch = rows_from_live_cache(symbols)
+    prices = {sym: float(row["price"]) for sym, row in rows.items()}
+    if provenance is not None:
+        for sym, row in rows.items():
+            provenance[sym] = {"source": row.pop("_source"), "fetched_at": row.get("fetched_at"),
+                               "session_date": row.get("session_date")}
+    return prices, to_fetch
+
+
+def rows_from_live_cache(symbols) -> tuple[dict[str, dict], list[str]]:
+    """({symbol: cached row}, to_fetch) under the rule prices_from_live_cache documents: an open
+    market's row from stockai:live_prices; a closed market's from the cache or the last snapshot
+    only when fetched after that market's close. Each returned row is a copy carrying `_source`
+    ("live_cache" or "live_cache_last_snapshot"), removed again before rows reach a response."""
     now = datetime.now(timezone.utc)
     open_markets = live_price_markets_open(now)
     try:
@@ -1090,7 +1111,7 @@ def prices_from_live_cache(symbols, provenance: dict | None = None) -> tuple[dic
         last = {e["symbol"]: e for e in json.loads(r.get(_LIVE_LAST_KEY) or "[]")}
     except Exception:
         live, last = {}, {}
-    prices: dict[str, float] = {}
+    rows: dict[str, dict] = {}
     to_fetch: list[str] = []
     for sym in symbols:
         market = "HK" if sym.endswith(".HK") else "US"
@@ -1100,14 +1121,10 @@ def prices_from_live_cache(symbols, provenance: dict | None = None) -> tuple[dic
             row = next((c for c in (live.get(sym), last.get(sym))
                         if c is not None and _is_post_close_row(c, market, now)), None)
         if row is not None and row.get("price") is not None:
-            prices[sym] = float(row["price"])
-            if provenance is not None:
-                provenance[sym] = {
-                    "source": "live_cache" if row is live.get(sym) else "live_cache_last_snapshot",
-                    "fetched_at": row.get("fetched_at"), "session_date": row.get("session_date")}
+            rows[sym] = dict(row, _source="live_cache" if row is live.get(sym) else "live_cache_last_snapshot")
         else:
             to_fetch.append(sym)
-    return prices, to_fetch
+    return rows, to_fetch
 
 
 def refresh_live_price_cache(markets: set[str] | None = None) -> int:

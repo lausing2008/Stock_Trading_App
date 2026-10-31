@@ -54,6 +54,13 @@ Each missing grid interval (excluding the item 1 final candle) was compared with
 
 Unusual Whales has no session data for AMADY and returns an error for BRK-A; yfinance serves both. No candles are manufactured.
 
+**Rechecked 2026-10-30:** the Oct 22 `ingestion_failure` class is now **0**. For XSD, BRK-A,
+AMADY and EE, no 5m grid interval that either provider serves for Oct 22 today is missing from
+the database ([evidence](../2026-10-30/evidence/sparse-recheck/)). The original 7 timestamps were
+not saved, so the comparison was repeated in full rather than matched one by one. What remains
+missing is `unknown_interval_omitted`: intervals neither provider serves (AMADY 61, BRK-A 8, EE 5,
+XSD 2). Confirming them as no-trade still needs trade-level data.
+
 ## Still separate
 
 The option-chain archive gaps, the backup restore test and the Friday snapshot-run verification are tracked on their own.

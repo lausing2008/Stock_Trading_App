@@ -139,3 +139,24 @@ Still open: candidates 1b (US quotes from UW), 3 (paper trading), 4 (fundamental
 - **Tests:** 27 in `test_yf_live_price_permarket.py`, with 9 sabotages caught across this batch; the full market-data suite passes (6,069). An independent review found nothing blocking, and both findings it raised are fixed in `41d55f51`.
 
 Still open: 1b (US quotes from UW), the UW fallback for fundamentals, paper-trading ATR, sector RS and index calls.
+
+## Third batch (2026-10-30, before the Nov 2–6 trial)
+
+Record: [pre-trial-engineering-batch.md](../2026-10-30/pre-trial-engineering-batch.md).
+- **Paper trading (candidate 3, second half):** ATR and 5-day sector returns are reused per
+  symbol for 15 minutes, and the index-trend quote for 60 s. Not per day: the downloads include
+  today's forming bar, so a per-day cache would have frozen it for the session.
+- **`latest_prices?symbols=`** (the board's poll, a listed defect) reads the shared live-price
+  cache under the same close rule, and asks Yahoo only for what the cache cannot answer.
+- **Average-volume refresh on non-trading days** (a listed defect) keeps the cached values alive
+  instead of downloading. A missing cache still refreshes.
+- **`sync_all_earnings`** (a listed defect) walks active, non-delisted stocks only: 199 of 223.
+- **Not built, on measurement: the UW fallback for fundamentals.**
+  - Coverage is 197 of 199 with no remembered failures. The 14-day last-good copy already covers
+    Yahoo outages, so the fallback would serve about one symbol (AAOX).
+  - It would silently mix UW's EPS, P/E and margin definitions into a payload signal-engine
+    scores on.
+  - Revisit if coverage drops.
+- **Still open, waiting on data: 1b (US quotes from UW).** It needs a measured US session after
+  the per-market change, and Oct 30's logs were lost to a recreate. Market overview stays on
+  Yahoo: it is cached for 60 s and its indexes and futures have no UW source.

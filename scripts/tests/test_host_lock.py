@@ -61,6 +61,7 @@ FAKES = {
           *"--format {{.Status}}"*) echo "Up 1 minute (healthy)" ;;
           *"--format {{.Names}}"*) echo "stockai-x-1" ;;
           *prune*) echo "prune held=$held" >>"$FAKE_LOG"; echo "Total reclaimed space: 0B" ;;
+          logs*) echo "logs held=$held" >>"$FAKE_LOG"; echo "2026-10-30T19:00:59Z QueuePool limit reached" ;;
           *"system df"*) echo "TYPE TOTAL" ;;
           *) echo "unexpected docker $*" >>"$FAKE_LOG" ;;
         esac
@@ -107,6 +108,7 @@ def env(tmp_path):
         REMOTE_DIR=str(REPO),
         EC2_KEY="/dev/null",
         SKIP_FRONTEND_TESTS="1",
+        DEPLOY_LOG_DIR=str(tmp_path / "container-logs"),
     )
     (tmp_path / "calls.log").touch()
     return {"env": e, "tmp": tmp_path, "backups": backups,
@@ -390,6 +392,58 @@ def test_deploy_holds_lock_from_pull_through_build_recreate_and_prune(env):
     assert "nested under" in r.stderr  # deploy_remote.sh re-acquired as a nested holder
     assert "state=completed what=deploy.sh:signal-engine" in env["status"].read_text()
     assert lock_is_free(env["env"])
+
+
+def test_outgoing_logs_saved_under_lock_after_build_before_recreate(env):
+    r = run(["bash", str(REMOTE), "signal-engine"], env["env"])
+    assert r.returncode == 0, r.stdout + r.stderr
+    order = [c.split()[0] for c in calls(env)]
+    assert order.index("build") < order.index("logs") < order.index("up"), order
+    assert "logs held=1" in calls(env)
+    saved = list((env["tmp"] / "container-logs").glob("signal-engine-*.log.gz"))
+    assert len(saved) == 1
+    text = subprocess.run(["gunzip", "-c", str(saved[0])], capture_output=True, text=True).stdout
+    assert "QueuePool limit reached" in text
+
+
+def test_outgoing_logs_keep_newest_n(env):
+    logs = env["tmp"] / "container-logs"
+    logs.mkdir()
+    for i in range(5):
+        old = logs / f"signal-engine-2026010{i}T000000Z-before-x.log.gz"
+        old.write_bytes(b"")
+        os.utime(old, (1_000_000 + i, 1_000_000 + i))
+    r = run(["bash", str(REMOTE), "signal-engine"], dict(env["env"], DEPLOY_LOG_KEEP="3"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    kept = {p.name for p in logs.glob("signal-engine-*.log.gz")}
+    old_kept = {n for n in kept if n.startswith("signal-engine-2026010")}
+    assert len(kept) == 3, kept
+    assert old_kept == {"signal-engine-20260103T000000Z-before-x.log.gz",
+                        "signal-engine-20260104T000000Z-before-x.log.gz"}, kept
+
+
+def test_failed_log_save_never_blocks_the_deploy(env):
+    # gzip cannot write (read-only dir): the partial file is removed, the listing is then empty,
+    # and an empty listing must not abort the deploy under set -e / pipefail.
+    logs = env["tmp"] / "container-logs"
+    logs.mkdir()
+    logs.chmod(0o500)
+    try:
+        r = run(["bash", str(REMOTE), "signal-engine"], env["env"])
+    finally:
+        logs.chmod(0o700)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "could not save outgoing logs" in r.stdout + r.stderr
+    assert any(c.startswith("up") for c in calls(env))
+
+
+def test_unwritable_log_dir_never_blocks_the_deploy(env):
+    blocker = env["tmp"] / "not-a-dir"
+    blocker.write_text("x")
+    r = run(["bash", str(REMOTE), "signal-engine"], dict(env["env"], DEPLOY_LOG_DIR=str(blocker / "sub")))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "logs not saved" in r.stdout + r.stderr
+    assert any(c.startswith("up") for c in calls(env))
 
 
 def test_backup_started_during_deploy_waits_for_it(env):

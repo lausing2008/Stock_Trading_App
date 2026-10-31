@@ -69,7 +69,8 @@ def test_idx_ret_is_hoisted_with_a_typed_none_default_before_the_conditional_blo
     start = _pte_source.index("_idx_ret: float | None = None")
     assert start != -1
     # Must appear BEFORE the try/except block that conditionally assigns a real value.
-    try_start = _pte_source.index("try:\n            import yfinance as yf", start)
+    # The quote now comes from _index_quote() (cached 60 s, 2026-10-30), still inside the try.
+    try_start = _pte_source.index("try:\n            _idx_prev, _idx_last = _index_quote(_idx_sym)", start)
     assert start < try_start
 
 

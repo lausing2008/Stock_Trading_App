@@ -1266,6 +1266,36 @@ def _ewm_atr_from_ohlc(high: "pd.Series", low: "pd.Series", close: "pd.Series", 
     return val if pd.notna(val) and val > 0 else None
 
 
+#: Live paper inputs that depend on today's forming bar are reused for this long (2026-10-30).
+_LIVE_INPUT_TTL_S = 900.0
+#: The index-trend gate's quote is reused for this long within a scan cycle.
+_INDEX_QUOTE_TTL_S = 60.0
+_ATR_CACHE: dict[tuple[str, int], tuple[float, float]] = {}
+_RET5_CACHE: dict[str, tuple[float, float]] = {}
+_INDEX_QUOTE_CACHE: dict[str, tuple[float, float, float]] = {}
+
+
+def _monotonic() -> float:
+    import time as _t
+    return _t.monotonic()
+
+
+def _index_quote(symbol: str) -> tuple[float | None, float | None]:
+    """(previous_close, last_price) for the index-trend gate, reused for _INDEX_QUOTE_TTL_S:
+    every portfolio's scan in the same cycle asked Yahoo for the same quote. Raises like
+    fast_info does; the caller fails open."""
+    now = _monotonic()
+    hit = _INDEX_QUOTE_CACHE.get(symbol)
+    if hit is not None and now - hit[0] < _INDEX_QUOTE_TTL_S:
+        return hit[1], hit[2]
+    import yfinance as yf
+    fi = yf.Ticker(symbol).fast_info
+    prev, last = getattr(fi, "previous_close", None), getattr(fi, "last_price", None)
+    if prev and last:
+        _INDEX_QUOTE_CACHE[symbol] = (now, float(prev), float(last))
+    return prev, last
+
+
 def _compute_atr(symbol: str, period: int = 14) -> float | None:
     """EWM-ATR(14) for a single symbol. Prefer _batch_compute_atr() for multiple symbols."""
     try:
@@ -1350,6 +1380,30 @@ def _batch_compute_atr(
         return {}
     if as_of is not None:
         return _batch_compute_atr_as_of(symbols, period, as_of)
+    # YF-PAPER-ATRCACHE (2026-10-30): each ticker in yf.download is its own Yahoo request, and
+    # every paper step (~150 a day) re-downloaded the same symbols. Live values are reused for
+    # _LIVE_INPUT_TTL_S. The download includes today's forming bar, so a cached value can lag by
+    # at most that long of today's range; a per-day cache would have frozen it for the session.
+    now = _monotonic()
+    result: dict[str, float | None] = {}
+    missing = []
+    for sym in symbols:
+        hit = _ATR_CACHE.get((sym, period))
+        if hit is not None and now - hit[0] < _LIVE_INPUT_TTL_S:
+            result[sym] = hit[1]
+        else:
+            missing.append(sym)
+    if missing:
+        fetched = _batch_compute_atr_live(missing, period)
+        for sym, val in fetched.items():
+            result[sym] = val
+            if val is not None:          # a failure is retried next step, never cached
+                _ATR_CACHE[(sym, period)] = (now, val)
+    return result
+
+
+def _batch_compute_atr_live(symbols: list[str], period: int) -> dict[str, float | None]:
+    """The yfinance download behind _batch_compute_atr's live path, uncached."""
     result: dict[str, float | None] = {sym: None for sym in symbols}
     try:
         import yfinance as yf
@@ -1429,20 +1483,32 @@ def _batch_sector_rs_lag(sym_sector_pairs: list[tuple[str, str | None]]) -> dict
     all_syms = list(set(stock_syms + etf_syms))
 
     try:
-        import yfinance as yf
-        raw = yf.download(all_syms, period="15d", auto_adjust=True, progress=False)
-        closes = raw["Close"] if "Close" in raw.columns else raw
-
-        # Handle single-ticker edge case (yfinance returns Series, not DataFrame)
-        if hasattr(closes, "name"):
-            closes = closes.to_frame(name=closes.name)
-
+        # 5-day returns are reused for _LIVE_INPUT_TTL_S (2026-10-30), as ATR is; only symbols
+        # without a fresh value are downloaded.
+        now = _monotonic()
         returns_5d: dict[str, float] = {}
+        missing = []
         for sym in all_syms:
-            if sym in closes.columns:
-                s = closes[sym].dropna()
-                if len(s) >= 6:
-                    returns_5d[sym] = float(s.iloc[-1]) / float(s.iloc[-6]) - 1
+            hit = _RET5_CACHE.get(sym)
+            if hit is not None and now - hit[0] < _LIVE_INPUT_TTL_S:
+                returns_5d[sym] = hit[1]
+            else:
+                missing.append(sym)
+        if missing:
+            import yfinance as yf
+            raw = yf.download(sorted(missing), period="15d", auto_adjust=True, progress=False)
+            closes = raw["Close"] if "Close" in raw.columns else raw
+
+            # Handle single-ticker edge case (yfinance returns Series, not DataFrame)
+            if hasattr(closes, "name"):
+                closes = closes.to_frame(name=closes.name)
+
+            for sym in missing:
+                if sym in closes.columns:
+                    s = closes[sym].dropna()
+                    if len(s) >= 6:
+                        returns_5d[sym] = float(s.iloc[-1]) / float(s.iloc[-6]) - 1
+                        _RET5_CACHE[sym] = (now, returns_5d[sym])
 
         result: dict[str, bool] = {}
         for stock_sym, sector in sym_sector_pairs:
@@ -6469,10 +6535,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         _idx_sym = "^HSI" if _mkt == "HK" else "SPY"
         _idx_threshold = float(cfg.get("index_trend_gate_pct", -0.015))
         try:
-            import yfinance as yf
-            _idx_fi = yf.Ticker(_idx_sym).fast_info
-            _idx_prev = getattr(_idx_fi, "previous_close", None)
-            _idx_last = getattr(_idx_fi, "last_price", None)
+            _idx_prev, _idx_last = _index_quote(_idx_sym)
             if _idx_prev and _idx_last and float(_idx_prev) > 0:
                 _idx_ret = (float(_idx_last) - float(_idx_prev)) / float(_idx_prev)
                 if _idx_ret < _idx_threshold:

@@ -15859,6 +15859,12 @@ def start_scheduler() -> None:
     # intraday — needs a wider (1mo) download window than the live-price job's 2d window,
     # so it stays off the hot path that runs every minute all day.
     def _avg_volume_refresh_job() -> None:
+        # YF-AVGVOL-NONTRADING (2026-10-30): on a day neither market trades no average can move,
+        # yet this downloaded a month of history for every symbol every 4 h all weekend. Keep the
+        # cached values alive instead (their 6 h TTL would otherwise lapse and blank every RVOL
+        # reader until Monday's first run, the MD-RVOL2 failure). A missing cache still refreshes.
+        if _avg_volume_keep_alive_on_closed_day():
+            return
         from db import SessionLocal
         with SessionLocal() as session:
             # BUG-DELISTED-GENERATION-BLIND: Stock.delisted never flips Stock.active — this
@@ -16863,3 +16869,22 @@ def capture_institutional_ownership(symbols: list[str]) -> dict:
         log.warning("inst_ownership.empty_symbols", symbols=empty)
     log.info("inst_ownership.captured", symbols=len(symbols), rows=written, errors=errors)
     return {"symbols": len(symbols), "rows_written": written, "empty": empty, "errors": errors}
+
+
+def _avg_volume_keep_alive_on_closed_day(now: datetime | None = None) -> bool:
+    """True when neither market trades today (local dates) and the cached averages were kept
+    alive instead of re-downloaded; False means refresh as usual."""
+    from zoneinfo import ZoneInfo
+    from common.market_calendar import is_hk_trading_day, is_us_trading_day
+    from ..api.routes import _AVG_VOLUME_TTL
+    now = now or datetime.now(timezone.utc)
+    if is_us_trading_day(now.astimezone(ZoneInfo("America/New_York"))) or \
+            is_hk_trading_day(now.astimezone(ZoneInfo("Asia/Hong_Kong"))):
+        return False
+    try:
+        if _get_redis().expire(_AVG_VOLUME_KEY, _AVG_VOLUME_TTL):
+            log.info("avg_volume.kept_alive_closed_day")
+            return True
+    except Exception as exc:  # noqa: BLE001 - fall back to the refresh, never to an empty cache
+        log.warning("avg_volume.keep_alive_failed", error=str(exc))
+    return False

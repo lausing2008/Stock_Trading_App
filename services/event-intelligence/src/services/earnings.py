@@ -1420,8 +1420,13 @@ def _compute_strength(eps_est: float | None, eps_act: float | None, surprise_pct
 
 async def sync_all_earnings() -> dict:
     """Sync earnings for all tracked stocks. Runs yfinance calls in thread pool."""
+    # YF-EARNINGS-ACTIVEONLY (2026-10-30): tracked, live names only, as the discovery path below
+    # already does. This walked every Stock row: 24 of 223 on production were inactive benchmark
+    # ETFs, retired aliases or delisted names, each costing Yahoo requests for earnings that do
+    # not exist or cannot be acted on.
     with SessionLocal() as s:
-        stocks = s.execute(select(Stock.id, Stock.symbol)).all()
+        stocks = s.execute(select(Stock.id, Stock.symbol)
+                           .where(Stock.active.is_(True), Stock.delisted.is_(False))).all()
 
     loop = asyncio.get_running_loop()
     total = 0

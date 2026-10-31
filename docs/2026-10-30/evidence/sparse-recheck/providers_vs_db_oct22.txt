@@ -1,0 +1,6 @@
+Sat Oct 31 01:47:38 AM UTC 2026
+XSD    db_missing= 2 yf_serves=76 uw_serves=70 provider_has_but_db_missing=0  
+BRK-A  db_missing= 8 yf_serves=69 uw_serves= 0 provider_has_but_db_missing=0  uw error HTTPStatusError
+AMADY  db_missing=61 yf_serves=17 uw_serves= 0 provider_has_but_db_missing=0  
+EE     db_missing= 5 yf_serves=72 uw_serves=69 provider_has_but_db_missing=0  
+total still missing that a provider serves: 0

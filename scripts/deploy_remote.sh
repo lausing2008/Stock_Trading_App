@@ -26,6 +26,9 @@ export STOCKAI_RELEASE_SHA
 MIN_FREE_GB_BUILD="${MIN_FREE_GB_BUILD:-25}"
 WARN_FREE_GB="${WARN_FREE_GB:-40}"
 DEPLOY_SETTLE_S="${DEPLOY_SETTLE_S:-45}"
+# Outgoing container logs are kept here before each recreate (2026-10-30), newest N per service.
+DEPLOY_LOG_DIR="${DEPLOY_LOG_DIR:-$HOME/deploy-evidence/container-logs}"
+DEPLOY_LOG_KEEP="${DEPLOY_LOG_KEEP:-10}"
 
 c_red=$'\033[31m'; c_yel=$'\033[33m'; c_grn=$'\033[32m'; c_off=$'\033[0m'
 say()  { printf '%s\n' "$*"; }
@@ -42,6 +45,26 @@ do_prune() {
   docker image prune -f | tail -1 | sed 's/^/  /'
   docker container prune -f | tail -1 | sed 's/^/  /'
   df -h / | tail -1 | sed 's/^/  after:  /'
+}
+
+# A recreate deletes the old container and its json-file log with it. Twice that erased the only
+# evidence of an incident: the 2026-10-22 host stall, and the 2026-10-30 19:00 UTC connection-pool
+# exhaustion in market-data, recreated by the 23:38 deploy. So the outgoing container's log is
+# saved first. Best effort by design: a failure here warns and the deploy continues.
+save_outgoing_logs() {
+  local svc="$1" name="stockai-$1-1" out
+  docker inspect "$name" >/dev/null 2>&1 || return 0
+  mkdir -p "$DEPLOY_LOG_DIR" 2>/dev/null || { warn "  could not create $DEPLOY_LOG_DIR; logs not saved"; return 0; }
+  out="$DEPLOY_LOG_DIR/$svc-$(date -u +%Y%m%dT%H%M%SZ)-before-${STOCKAI_RELEASE_SHA:0:12}.log.gz"
+  if docker logs --timestamps "$name" 2>&1 | gzip -c >"$out"; then
+    say "  saved outgoing logs: $out ($(du -h "$out" | cut -f1))"
+  else
+    warn "  could not save outgoing logs for $svc"; rm -f "$out"
+  fi
+  # shellcheck disable=SC2012
+  # `|| true`: with pipefail, an empty listing (ls exits 2) must not abort the deploy under set -e.
+  { ls -1t "$DEPLOY_LOG_DIR/$svc-"*.log.gz 2>/dev/null | tail -n +"$((DEPLOY_LOG_KEEP + 1))" | xargs -r rm -f; } || true
+  return 0
 }
 
 deploy_service() {
@@ -65,6 +88,7 @@ deploy_service() {
   # `up -d --no-deps api-gateway`.
   #
   # Every dependency is already running during a deploy, so --no-deps changes nothing else.
+  save_outgoing_logs "$svc"
   $COMPOSE up -d --no-deps --force-recreate "$svc" 2>&1 | tail -2
 }
 

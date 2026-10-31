@@ -343,3 +343,58 @@ def test_a_successful_fetch_keeps_a_14_day_last_good_copy():
     src = pathlib.Path(R.__file__).read_text()
     assert "_get_redis().setex(_FUND_LAST_KEY.format(symbol.upper()), _FUND_LAST_TTL, data.model_dump_json())" in src
     assert R._FUND_LAST_TTL >= 14 * 24 * 3600 and R._FUND_FAIL_TTL == 20 * 60
+
+
+# ── the board's filtered poll reads the cache (YF-LATESTPRICES-CACHE) ─────────────────
+
+class _RowsSession(_Session):
+    def __init__(self, rows):
+        self.rows = rows
+
+    def execute(self, *a, **k):
+        rows = self.rows
+        return type("Res", (), {"all": lambda self: list(rows)})()
+
+
+def _filtered(rows, live, last, open_markets):
+    r = _Redis({R._LIVE_KEY: json.dumps(live), R._LIVE_LAST_KEY: json.dumps(last)})
+    asked = []
+
+    def one(sym, currency):
+        asked.append(sym)
+        return {"symbol": sym, "price": 9.0, "currency": currency}
+
+    with patch.object(R, "_get_redis", lambda: r), patch.object(R, "_fetch_live_one", one), \
+         patch.object(R, "live_price_markets_open", lambda *a: set(open_markets)), \
+         patch.object(R, "_last_session_close", lambda m, now: CLOSE):
+        out = R.latest_prices(symbols=",".join(x.symbol for x in rows), session=_RowsSession(rows))
+    return {e["symbol"]: e for e in out}, asked
+
+
+def test_filtered_poll_serves_open_market_rows_from_the_cache_without_yahoo():
+    out, asked = _filtered(STOCKS[:2], [_row("AAPL", 1.0), _row("MSFT", 2.0)], [], {"US"})
+    assert asked == [] and out["AAPL"]["price"] == 1.0 and out["MSFT"]["price"] == 2.0
+    assert all("_source" not in e for e in out.values())
+
+
+def test_filtered_poll_fetches_only_what_the_cache_cannot_answer():
+    out, asked = _filtered(STOCKS[:2], [_row("AAPL", 1.0)], [], {"US"})
+    assert asked == ["MSFT"] and out["AAPL"]["price"] == 1.0 and out["MSFT"]["price"] == 9.0
+
+
+def test_filtered_poll_never_serves_a_pre_close_row_as_a_closed_markets_price():
+    out, asked = _filtered(STOCKS[2:3], [], [_row("0700.HK", 1.0, PRE_CLOSE_FETCH)], set())
+    assert asked == ["0700.HK"] and out["0700.HK"]["price"] == 9.0
+    out, asked = _filtered(STOCKS[2:3], [], [_row("0700.HK", 1.0)], set())
+    assert asked == [] and out["0700.HK"]["price"] == 1.0
+
+
+def test_prices_from_live_cache_provenance_is_unchanged_by_the_refactor():
+    r = _Redis({R._LIVE_KEY: json.dumps([_row("AAPL", 1.0)]), R._LIVE_LAST_KEY: json.dumps([_row("0700.HK", 2.0)])})
+    prov = {}
+    with patch.object(R, "_get_redis", lambda: r), \
+         patch.object(R, "live_price_markets_open", lambda *a: {"US"}), \
+         patch.object(R, "_last_session_close", lambda m, now: CLOSE):
+        prices, to_fetch = R.prices_from_live_cache(["AAPL", "0700.HK", "MSFT"], provenance=prov)
+    assert prices == {"AAPL": 1.0, "0700.HK": 2.0} and to_fetch == ["MSFT"]
+    assert prov["AAPL"]["source"] == "live_cache" and prov["0700.HK"]["source"] == "live_cache_last_snapshot"

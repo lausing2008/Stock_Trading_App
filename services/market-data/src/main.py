@@ -48,6 +48,9 @@ async def on_startup():
     # never fatal to startup.
     from .services.receipts.schema import ensure_schema_safely as ensure_receipts_schema
     ensure_receipts_schema()
+    # Log who holds DB connections when the pool runs low (2026-10-30). Observation only.
+    from .services.pool_watch import install_safely as install_pool_watch
+    install_pool_watch()
     start_scheduler()
     # T230-DATA-STREAMING-QUOTES: long-lived real-time quote WebSocket task, started once at
     # startup on FastAPI's own event loop (this is safe here specifically because on_startup is

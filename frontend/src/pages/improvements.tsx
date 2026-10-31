@@ -35,6 +35,68 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'DEPLOY-SAVES-CONTAINER-LOGS', tier: 478, severity: 'high', defaultStatus: 'done',
+    title: 'A deploy erased the only evidence of two incidents',
+    file: 'docs/2026-10-30/pre-trial-engineering-batch.md', effort: 'S',
+    impact: 'The Oct 22 host stall and the Oct 30 19:00 UTC pool exhaustion could not be traced: the container logs were deleted when a deploy recreated the containers.',
+    what: 'docker keeps json-file logs only for the container that wrote them; --force-recreate removes it.',
+    fix: 'deploy_remote.sh saves the outgoing container\'s log (gzipped, timestamped) to ~/deploy-evidence/container-logs/ after a successful build and before the recreate, under the host lock; newest 10 per service; a failure warns and never blocks the deploy.',
+    implementedNote: 'BUILT 2026-10-30. 4 tests; 3 sabotages caught, one of which first exposed a real defect (an empty listing under pipefail would have aborted the deploy). A crash or a manual recreate can still lose logs.',
+  },
+  {
+    id: 'POOL-HOLDER-LOGGING', tier: 478, severity: 'medium', defaultStatus: 'done',
+    title: 'Log who holds market-data\'s DB connections when the pool runs low',
+    file: 'docs/2026-10-30/pre-trial-engineering-batch.md', effort: 'S',
+    impact: 'A QueuePool timeout names the job that could not get a connection, not the holders; the 2026-09-22 incident needed a live py-spy dump.',
+    what: 'No record of which code holds connections when the pool nears its limit.',
+    fix: 'pool_watch: db.pool_pressure with every holder (age, thread, our call site) once the pool is within 2 of its 15-connection limit, at most once a minute. Observation only.',
+    implementedNote: 'BUILT 2026-10-30. Real-QueuePool probe; 2 sabotages caught. With the deploy log capture, the next occurrence leaves its holders on record.',
+  },
+  {
+    id: 'YF-PAPER-ATR-RS-INDEX', tier: 478, severity: 'medium', defaultStatus: 'done',
+    title: 'Paper trading re-downloaded ATR, sector returns and the index quote every step',
+    file: 'docs/audits/2026-10-30-yfinance-usage-audit.md', effort: 'S',
+    impact: 'Each ticker in yf.download is its own Yahoo request; ~150 paper steps a day repeated the same downloads.',
+    what: 'ATR and 5-day sector returns were downloaded per step; every portfolio scan fetched the same index fast_info.',
+    fix: 'ATR and 5-day returns reused per symbol for 15 min, the index quote for 60 s. Not per day: the downloads include today\'s forming bar. Failures are not cached; the rewindable as_of path is untouched.',
+    implementedNote: 'BUILT 2026-10-30. Probe with counted downloads; 3 sabotages caught.',
+  },
+  {
+    id: 'YF-LATESTPRICES-FILTERED', tier: 478, severity: 'medium', defaultStatus: 'done',
+    title: 'The board\'s price poll made a Yahoo request per symbol, uncached',
+    file: 'docs/audits/2026-10-30-yfinance-usage-audit.md', effort: 'S',
+    impact: 'Every open board tab caused fast_info calls every 60 s, despite a docstring promising per-symbol caching.',
+    what: 'latest_prices?symbols= bypassed the shared live-price cache.',
+    fix: 'Reads the live-price cache under the same close rule as the alert scanners (rows_from_live_cache, shared with prices_from_live_cache); Yahoo only for what the cache cannot answer.',
+    implementedNote: 'BUILT 2026-10-30. 4 tests; 2 sabotages caught; the existing 27 live-price tests pass.',
+  },
+  {
+    id: 'YF-AVGVOL-CLOSEDDAY', tier: 478, severity: 'low', defaultStatus: 'done',
+    title: 'Average volume re-downloaded every 4 h on non-trading days',
+    file: 'docs/audits/2026-10-30-yfinance-usage-audit.md', effort: 'S',
+    impact: 'A month of history per symbol every 4 h all weekend, for averages that cannot move.',
+    what: 'Simply skipping would let the 6 h TTL lapse and blank every RVOL reader (the MD-RVOL2 failure).',
+    fix: 'When neither market trades, extend the cache TTL instead of downloading; a missing cache or Redis error still refreshes.',
+    implementedNote: 'BUILT 2026-10-30. 3 tests; sabotage caught.',
+  },
+  {
+    id: 'YF-EARNINGS-ACTIVEONLY', tier: 478, severity: 'low', defaultStatus: 'done',
+    title: 'Earnings sync walked inactive and delisted stocks',
+    file: 'docs/audits/2026-10-30-yfinance-usage-audit.md', effort: 'S',
+    impact: '24 of 223 rows (benchmark ETFs, retired aliases, delisted names) cost Yahoo requests each sync.',
+    what: 'sync_all_earnings selected every Stock row; the discovery path already filtered.',
+    fix: 'Active, non-delisted only (event-intelligence).',
+    implementedNote: 'BUILT 2026-10-30. Behavioural test over real Stock rows; sabotage caught.',
+  },
+  {
+    id: 'SYSSTAT-ONE-MINUTE', tier: 478, severity: 'medium', defaultStatus: 'todo',
+    title: 'Sample sysstat every minute',
+    file: 'docs/incidents/2026-10-22-post-close-host-stall.md', effort: 'S',
+    impact: 'The 10-minute samples stopped at 20:30, seven minutes before the Oct 22 stall began, so its trigger is still unknown.',
+    what: 'sysstat already records memory and PSI (the incident\'s "no memory history" was wrong; Oct 22 shows 0.64-0.80 GB available and constant page reclaim before the onset).',
+    fix: 'Systemd drop-in OnCalendar=*:*:00 for sysstat-collect.timer; about 6 MB a day. Refused by the session permission check; needs approval. Command in the incident file.',
+  },
+  {
     id: 'PRICE-RISK-SCAN-RECORDS', tier: 477, severity: 'high', defaultStatus: 'done',
     title: 'Price-risk scans left no durable record, so the shadow trial could not be judged',
     file: 'docs/2026-10-30/durable-measurement-and-checks.md', effort: 'M',
@@ -120,6 +182,7 @@ const ITEMS: Item[] = [
     impact: 'A pool timeout fails whatever job asks next; this class cascaded platform-wide on 2026-09-22.',
     what: 'QueuePool limit reached at 19:00:50 (ingest.symbol_failed), 19:00:59 and 19:35:57 (squeeze_watch.failed). None in signal-engine.',
     fix: 'Find which jobs held connections at those moments (overlapping scheduler runs, a nested session) on the next occurrence, while the logs exist. The Oct 30 logs were lost when the 23:38 deploy recreated market-data.',
+    implementedNote: 'Waiting on the next occurrence, which will now be on record: pool_watch logs the holders (tier 478) and deploys save the outgoing logs.',
   },
   {
     id: 'RESEARCH-TEST-INTELLIGENCE-IMPORT', tier: 477, severity: 'low', defaultStatus: 'done',
@@ -164,6 +227,7 @@ const ITEMS: Item[] = [
     impact: 'US live quotes (~85k/day) and HK (~20k) remain the bulk; fundamentals still has no second source.',
     what: 'Audit candidate 1b and the second half of 4 are not built; paper ATR, sector RS and index fast_info still call Yahoo. The gamma-unwind alert stays on Yahoo by decision (it works; ~360/day).',
     fix: 'US quotes from UW /screener/stocks after measuring tonight\'s US session; UW /info,/financials fallback for fundamentals; cache ATR/sector RS per day.',
+    implementedNote: '2026-10-30: paper ATR/sector RS/index cached (15 min / 60 s, not per day: today\'s bar is live), board poll from cache, weekend avg-volume and earnings scope fixed (tier 478). UW fundamentals fallback NOT built on measurement: 197/199 covered and a 14-day last-good copy; it would mix UW metric definitions into signal inputs. Still open, waiting on data: US quotes from UW (needs a measured session).',
   },
   {
     id: 'UW-COOLDOWN-YF-SPILL', tier: 476, severity: 'medium', defaultStatus: 'done',
@@ -669,6 +733,7 @@ const ITEMS: Item[] = [
     impact: 'The host stopped making progress after the Oct 22 close: the session-evidence capture never finished, PostgreSQL went silent and the instance needed a reboot.',
     what: 'From 20:37 UTC reads pinned at the gp3 throughput limit (131 MB/s) with near-zero writes for three hours; CPU about 50%; no OOM; PostgreSQL silent after 20:57; RebootInstances by IAM user lausing at 23:42:58 (CloudTrail). Onset matches the capture report starting just after the post-close job; cause not established (no memory history; market-data/frontend container logs lost when the deploy recreated them).',
     fix: 'Evidence preserved on EC2 and locally (journal, kernel log, container logs, CloudWatch 1-minute metrics, CloudTrail). The capture report now runs under timeout, ionice -c3 and nice 19 and records its exit code (7cb109d1); the re-run finished in 30 s. Proposed, awaiting approval: sysstat/PSI memory history, durable container logs, then evidence-based memory controls.',
+    implementedNote: '2026-10-30: "no memory history" was wrong; sysstat held Oct 22. Before the onset: 0.64-0.80 GB available of 7.8, page cache under 1 GB, commit 170-187%, constant page reclaim, PSI memory to 12%. The collector stopped at 20:30, before the 20:37 onset. Deploys now save container logs (tier 478). 1-minute sampling needs approval (SYSSTAT-ONE-MINUTE). Memory controls remain a decision.',
   },
   {
     id: 'OPTION-CHAIN-RETENTION', tier: 466, severity: 'medium', defaultStatus: 'done',
@@ -797,7 +862,7 @@ const ITEMS: Item[] = [
     impact: 'Absent candles for thin names are explained by evidence, not assumed to be no-trade.',
     what: 'Missing grid intervals on Oct 21/22 compared with Unusual Whales and yfinance now: provider_unavailable 78/77 (SSNLF), unknown_interval_omitted 188/156 (both providers serve the session but omit the interval; no-trade NOT confirmed), ingestion_failure 0/7 (XSD, BRK-A, AMADY, EE). No candles manufactured.',
     fix: 'Recheck the 7 ingestion failures after the next-morning fetch/reconciliation; confirmed no-trade needs trade-level evidence. RZY data-readiness gate stays open until classification is complete and 457a/457b are verified in production. Detail: docs/2026-10-23/intraday-bar-completeness.md.',
-    implementedNote: '2026-10-28: still open. The reconcile partial results are thin names only: US Oct 27 final candle missing for BRK-A/AMADY/AMZA, internal gaps in 13 symbols; HK Oct 28 internal gaps in 4 symbols. RZY readiness stays open.',
+    implementedNote: '2026-10-28: still open. The reconcile partial results are thin names only: US Oct 27 final candle missing for BRK-A/AMADY/AMZA, internal gaps in 13 symbols; HK Oct 28 internal gaps in 4 symbols. RZY readiness stays open. 2026-10-30 RECHECK: Oct 22 ingestion_failure is now 0 (no interval either provider serves is missing for XSD/BRK-A/AMADY/EE). What remains is unknown_interval_omitted; confirmed no-trade needs trade-level data.',
   },
   {
     id: 'INTRADAY-BAR-RESTATEMENTS', tier: 457, severity: 'high', defaultStatus: 'in-progress',
@@ -22473,6 +22538,7 @@ const ITEMS: Item[] = [
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = {
+  478: "Tier 478 — Pre-trial engineering: evidence capture and Yahoo load (2026-10-30)",
   477: "Tier 477 — Durable measurement records and the RZY rebuild investigation (2026-10-30)",
   476: "Tier 476 — Yahoo request budgets and live-cache usage (2026-10-30)",
   475: "Tier 475 — AI signals F01–F04, signals deadlock and RZY timeframe guide (2026-10-27)",
@@ -22948,6 +23014,7 @@ const TIER_LABEL: Record<Tier, string> = {
 };
 
 const TIER_COLOR: Record<Tier, string> = {
+  478: '#facc15',
   477: '#f472b6',
   476: '#38bdf8',
   475: '#34d399',
