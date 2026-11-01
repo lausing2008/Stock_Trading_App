@@ -330,6 +330,36 @@ but it changes forming-bar freshness and needs a product decision.
 **Verify.**
 ```bash
 docker exec stockai-redis-1 redis-cli --scan --pattern 'stockai:metric:ingest_primary_cooldown_skips:*'
-docker exec stockai-redis-1 redis-cli hgetall stockai:metric:uw_bar_minute_remaining:$(date -u +%Y%m%d%H)
 docker logs --since 1h stockai-market-data-1 2>&1 | grep -c 'Too Many Requests'
 ```
+
+### Follow-up: AUD-UW-429-RETRY (2026-11-01) — the skip worked, but it made bars late
+
+First full session with the skip (Oct 30, read from Redis and `bar_provenance`; the container log
+was lost to a recreate at 00:46 UTC Oct 31, before deploys saved outgoing logs):
+
+| | Oct 29 | Oct 30 |
+|---|---|---|
+| UW bar 429s | 75 | 63 |
+| Regular-session US 5m bars written by yfinance | 87 | 84 (UW: ~11,900) |
+| US 5m bars > 5 min late | ~1,100 | ~1,960 |
+| Symbol-runs skipped during the cooldown (1d + 5m) | — | ~7,200 |
+
+So nothing spilled to Yahoo, but 63 refusals × a 120 s pause covered about a third of the
+session, and late bars rose ~75% — which feeds Little RZY's alert latency (OD-02). The headroom
+metric added in `ad55a635` read **1,000,000 remaining every minute** (UW also reports a 100M daily
+limit), so the refusals are not the per-minute quota; a concurrency limit is the likely cause
+(6 ingest workers per run, 5m and daily jobs overlapping) but UW's 429 body was never captured.
+
+**Fix.** A 429 is retried once after 1.5 s (`Retry-After` honoured, capped at 5 s); only a
+second refusal fails the fetch and arms the cooldown, cut from 120 s to 30 s. The refusal log now
+carries UW's headers and body so the actual limit can be read. The useless headroom hash was
+removed. 12 new behavioural tests through the real `fetch_ohlcv`; 3 sabotages caught (no retry,
+cooldown on the first refusal, uncapped `Retry-After`); `make test` green.
+
+**Verify after the next US session.**
+```bash
+docker exec stockai-redis-1 redis-cli --scan --pattern 'stockai:metric:uw_adapter_failures:rate_limited*' | sort
+docker logs stockai-market-data-1 2>&1 | grep unusual_whales.bar_rate_limited | tail -5
+```
+Compare late US 5m bars (`bar_provenance.first_written_at - ts > 600 s`) with the table above.

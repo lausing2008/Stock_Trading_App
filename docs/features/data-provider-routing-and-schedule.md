@@ -89,7 +89,7 @@ Option chains dominate. The bar path is ~16% of true usage and was 100% of the i
 UW starts refusing, each symbol used to pay a full round trip to be told 429 before falling
 through — 142 wasted calls per burst, against the quota that was already exhausted.
 
-A 120-second cooldown now turns that into one wasted call per window: the first 429 arms it,
+A cooldown (120 s until 2026-11-01, 30 s since) turns that into one wasted call per window: a 429 arms it,
 `supports()` reports False while it holds, and the registry routes straight to yfinance. It is
 deliberately short — a step-aside, not a circuit breaker with a long memory — and fail-open,
 so a Redis outage cannot remove a working data source.
@@ -103,10 +103,17 @@ the next 5-minute run is incremental and catches up from UW. A stale symbol stil
 yfinance, so a long UW outage cannot leave bars stale. Premarket, the post-close final-candle
 passes, first ingests, forced refreshes and HK route exactly as before.
 
-Two Redis metrics (49 h) cover it:
-- `stockai:metric:ingest_primary_cooldown_skips:{tf}:{YYYYMMDDHH}` counts skips.
-- `stockai:metric:uw_bar_minute_remaining:{YYYYMMDDHH}` holds the lowest per-minute headroom UW
-  reported in each minute (field = minute), plus `limit`.
+`stockai:metric:ingest_primary_cooldown_skips:{tf}:{YYYYMMDDHH}` (49 h) counts skips.
+
+**Changed 2026-11-01 (AUD-UW-429-RETRY): a refusal is retried once before the cooldown arms.**
+The 429s are not the per-minute quota: on Oct 30 UW reported 1,000,000 requests/minute remaining
+in every minute while the bar endpoint refused 63 times. A 429 now waits 1.5 s (UW's
+`Retry-After` if given, capped at 5 s) and retries; only a second refusal fails the fetch and arms
+the cooldown, now 30 s. Failure counters by cause: `rate_limited_retried` (first refusals) and
+`rate_limited` (fetches that failed, the same meaning as before). Each refusal logs
+`unusual_whales.bar_rate_limited` with `attempt`, UW's `x-*`/`retry-after` headers and the first
+300 characters of the body. The per-minute headroom hash (`uw_bar_minute_remaining`) was removed:
+it read 1,000,000 every minute.
 
 ## What this page does not settle
 

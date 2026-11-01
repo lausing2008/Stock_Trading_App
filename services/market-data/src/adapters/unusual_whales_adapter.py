@@ -40,6 +40,7 @@ keeps routing HK to yfinance, unchanged.
 """
 from __future__ import annotations
 
+import time
 from datetime import date
 
 import httpx
@@ -83,15 +84,20 @@ _COUNTER_TTL_S = 49 * 3600
 # Deliberately short — this is a step-aside, not a circuit breaker with a long memory, and UW
 # must get a chance to come back on its own.
 _COOLDOWN_KEY = "stockai:uw_adapter:cooldown"
-_COOLDOWN_SECONDS = 120
+_COOLDOWN_SECONDS = 30
 
-# AUD-UW-COOLDOWN-YFSPILL (2026-10-30): every 429 on Oct 28-29 (115) was on THIS endpoint, at
-# ~24-29k calls/day against a 120k quota, each within seconds of a 5-minute run starting — a
-# per-minute burst, not the daily budget. This path never read UW's per-minute headers, so how
-# close a run comes to the limit was unknown. One hash per hour, field = minute (UTC), value = the
-# LOWEST remaining UW reported in that minute; "limit" = counter + remaining as last reported.
-# Read-compare-write races between ingest threads can only keep a slightly higher minimum.
-_MINUTE_HEADROOM_PREFIX = "stockai:metric:uw_bar_minute_remaining"
+# AUD-UW-429-RETRY (2026-11-01): the 429s are NOT the per-minute quota. On Oct 30 UW's own
+# headers reported 1,000,000 requests/minute remaining and a 100M daily limit on every minute,
+# while this endpoint still refused 63 times. Each refusal armed a 120 s cooldown, and with
+# AUD-UW-COOLDOWN-YFSPILL's skip that paused US ingest for ~a third of the session: US 5m bars
+# more than 5 min late rose from ~1,100 (Oct 29) to ~1,960. So a refusal is retried once after a
+# short pause, and only a second refusal fails the fetch and arms the (now 30 s) cooldown.
+# `rate_limited` keeps its meaning — a fetch that FAILED on 429 — and `rate_limited_retried`
+# counts first refusals. Each refusal logs UW's body and headers: what the limit actually is
+# has never been captured.
+_RETRY_DELAY_S = 1.5
+_RETRY_DELAY_MAX_S = 5.0
+_retry_sleep = time.sleep
 
 _BASE = "https://api.unusualwhales.com"
 # See note 2 above — a larger value silently returns an empty list.
@@ -143,29 +149,29 @@ class UnusualWhalesAdapter(DataAdapter):
             pass
 
     @staticmethod
-    def _note_minute_headroom(headers) -> tuple[int | None, int | None]:
-        """Record the per-minute headroom UW reported. Never raises; returns (used, remaining)."""
+    def _retry_delay(headers) -> float:
+        """UW's Retry-After when it gives a usable one, else the default; never above the cap."""
         try:
-            used = headers.get("x-uw-minute-req-counter")
-            remaining = headers.get("x-uw-req-per-minute-remaining")
-            used = int(used) if used is not None else None
-            remaining = int(remaining) if remaining is not None else None
-            if remaining is None:
-                return used, None
-            from datetime import datetime, timezone
-            from common.redis_client import get_redis
-            now = datetime.now(timezone.utc)
-            key = f"{_MINUTE_HEADROOM_PREFIX}:{now:%Y%m%d%H}"
-            r = get_redis()
-            cur = r.hget(key, f"{now:%M}")
-            if cur is None or remaining < int(cur):
-                r.hset(key, f"{now:%M}", remaining)
-            if used is not None:
-                r.hset(key, "limit", used + remaining)
-            r.expire(key, _COUNTER_TTL_S)
-            return used, remaining
+            v = float(headers.get("retry-after"))
+            if v > 0:
+                return min(v, _RETRY_DELAY_MAX_S)
+        except (TypeError, ValueError):
+            pass
+        return _RETRY_DELAY_S
+
+    @staticmethod
+    def _log_refusal(r, symbol: str, timeframe: str, attempt: int) -> None:
+        """Log what UW said when it refused. Never raises."""
+        try:
+            headers = getattr(r, "headers", None) or {}
+            uw_headers = {k: v for k, v in dict(headers).items()
+                          if k.lower().startswith("x-") or k.lower() == "retry-after"}
+            body = getattr(r, "text", "") or ""
+            log.warning("unusual_whales.bar_rate_limited", symbol=symbol, tf=timeframe,
+                        attempt=attempt, headers=uw_headers,
+                        body=body[:300] if isinstance(body, str) else None)
         except Exception:
-            return None, None
+            pass
 
     @staticmethod
     def _arm_cooldown() -> None:
@@ -204,22 +210,27 @@ class UnusualWhalesAdapter(DataAdapter):
         self._note("call", "/api/stock/{symbol}/ohlc/{candle}")
         try:
             with httpx.Client(timeout=30) as client:
-                r = client.get(
-                    f"{_BASE}/api/stock/{symbol}/ohlc/{candle}",
-                    headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
-                    params={"limit": _MAX_LIMIT},
-                )
-                _headers = getattr(r, "headers", None) or {}
-                _used, _remaining = self._note_minute_headroom(_headers)
+                def _get():
+                    return client.get(
+                        f"{_BASE}/api/stock/{symbol}/ohlc/{candle}",
+                        headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+                        params={"limit": _MAX_LIMIT},
+                    )
+                r = _get()
+                if r.status_code == 429:
+                    # AUD-UW-429-RETRY: one pause and one retry before giving up.
+                    self._note("fail", "rate_limited_retried")
+                    self._log_refusal(r, symbol, timeframe, attempt=1)
+                    _retry_sleep(self._retry_delay(getattr(r, "headers", None) or {}))
+                    self._note("call", "/api/stock/{symbol}/ohlc/{candle}")
+                    r = _get()
                 if r.status_code == 429:
                     # Feed the EXISTING gauge, which this path never reached before, and step
                     # aside so the next 141 symbols in this burst do not each pay for the same
                     # refusal.
                     self._note("fail", "rate_limited")
                     self._arm_cooldown()
-                    log.warning("unusual_whales.bar_rate_limited", symbol=symbol, tf=timeframe,
-                                minute_used=_used, minute_remaining=_remaining,
-                                minute_reset_ms=_headers.get("x-uw-req-per-minute-reset"))
+                    self._log_refusal(r, symbol, timeframe, attempt=2)
                     try:
                         from ..services.unusual_whales import _incr_rate_limit_counter
                         _incr_rate_limit_counter()

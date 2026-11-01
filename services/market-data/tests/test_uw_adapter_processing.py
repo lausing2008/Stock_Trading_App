@@ -79,6 +79,9 @@ def env(monkeypatch):
             return False
 
         def get(self, *a, **k):
+            state["gets"] = state.get("gets", 0) + 1
+            if state.get("seq"):
+                return state["seq"].pop(0)
             return state["resp"]
     import sys
     import types
@@ -90,6 +93,8 @@ def env(monkeypatch):
                                        HTTPStatusError=_HTTPStatusError)
     monkeypatch.setattr(U, "httpx", fake_httpx)
     monkeypatch.setattr(U.UnusualWhalesAdapter, "_key", staticmethod(lambda: "k"))
+    state["slept"] = []
+    monkeypatch.setattr(U, "_retry_sleep", state["slept"].append)
     return state, red
 
 
@@ -167,6 +172,102 @@ def test_http_and_rate_limit_accounting_are_unchanged(env):
         U.UnusualWhalesAdapter().fetch_ohlcv("GDX", date(2026, 10, 13), date(2026, 10, 14), "1h")
     assert _fails(red, prefix="rate_limited") and not _fails(red)
     assert red.get(U._COOLDOWN_KEY) == "1", "the 429 cooldown still arms"
+
+
+# ── AUD-UW-429-RETRY (2026-11-01) ───────────────────────────────────────────────────────
+
+class _Resp429(_Resp):
+    def __init__(self, headers=None, text='{"message":"slow down"}'):
+        super().__init__(429, [])
+        self.headers, self.text = headers or {}, text
+
+
+def _count(red, prefix, name):
+    return sum(v for k, v in red.d.items() if k.startswith(prefix) and k.split(":")[3] == name)
+
+
+def test_a_single_refusal_is_retried_and_the_bars_are_returned(env):
+    state, red = env
+    state["seq"] = [_Resp429(), _Resp(200, _intraday("2026-10-14", [14]))]
+    df = U.UnusualWhalesAdapter().fetch_ohlcv("GDX", date(2026, 10, 14), date(2026, 10, 14), "1h").df
+    assert len(df) == 1 and state["gets"] == 2
+    assert state["slept"] == [U._RETRY_DELAY_S]
+    assert red.get(U._COOLDOWN_KEY) is None, "a recovered refusal must not pause US ingest"
+    assert _count(red, U._FAILURE_COUNTER_PREFIX, "rate_limited_retried") == 1
+    assert _count(red, U._FAILURE_COUNTER_PREFIX, "rate_limited") == 0
+    assert _count(red, U._CALL_COUNTER_PREFIX, "/api/stock/{symbol}/ohlc/{candle}") == 2
+
+
+def test_a_second_refusal_fails_the_fetch_and_arms_the_cooldown(env):
+    state, red = env
+    state["seq"] = [_Resp429(), _Resp429()]
+    with pytest.raises(RuntimeError):
+        U.UnusualWhalesAdapter().fetch_ohlcv("GDX", date(2026, 10, 14), date(2026, 10, 14), "1h")
+    assert state["gets"] == 2, "exactly one retry"
+    assert red.get(U._COOLDOWN_KEY) == "1"
+    assert _count(red, U._FAILURE_COUNTER_PREFIX, "rate_limited") == 1
+    assert _count(red, U._FAILURE_COUNTER_PREFIX, "rate_limited_retried") == 1
+
+
+def test_a_success_is_not_retried(env):
+    state, red = env
+    state["resp"] = _Resp(200, _intraday("2026-10-14", [14]))
+    U.UnusualWhalesAdapter().fetch_ohlcv("GDX", date(2026, 10, 14), date(2026, 10, 14), "1h")
+    assert state["gets"] == 1 and state["slept"] == []
+
+
+def test_other_errors_are_not_retried(env):
+    state, red = env
+    state["seq"] = [_Resp(503, []), _Resp(200, [])]
+    with pytest.raises(Exception):
+        U.UnusualWhalesAdapter().fetch_ohlcv("GDX", date(2026, 10, 14), date(2026, 10, 14), "1h")
+    assert state["gets"] == 1 and state["slept"] == []
+
+
+@pytest.mark.parametrize("hdr,expected", [
+    ({"retry-after": "2"}, 2.0),
+    ({"retry-after": "60"}, U._RETRY_DELAY_MAX_S),
+    ({"retry-after": "0"}, U._RETRY_DELAY_S),
+    ({"retry-after": "Fri, 31 Oct 2026 20:00:00 GMT"}, U._RETRY_DELAY_S),
+    ({}, U._RETRY_DELAY_S),
+])
+def test_retry_after_is_honoured_but_capped(env, hdr, expected):
+    state, red = env
+    state["seq"] = [_Resp429(headers=hdr), _Resp(200, [])]
+    U.UnusualWhalesAdapter().fetch_ohlcv("GDX", date(2026, 10, 14), date(2026, 10, 14), "1h")
+    assert state["slept"] == [expected]
+
+
+def test_the_refusal_is_logged_with_body_and_uw_headers(env, monkeypatch):
+    state, red = env
+    seen = []
+    monkeypatch.setattr(U.log, "warning", lambda ev, **kw: seen.append((ev, kw)))
+    state["seq"] = [_Resp429(headers={"x-uw-daily-req-count": "609", "content-type": "json",
+                                      "retry-after": "1"}, text="x" * 500),
+                    _Resp429(text="concurrency")]
+    with pytest.raises(RuntimeError):
+        U.UnusualWhalesAdapter().fetch_ohlcv("GDX", date(2026, 10, 14), date(2026, 10, 14), "1h")
+    assert [kw["attempt"] for ev, kw in seen if ev == "unusual_whales.bar_rate_limited"] == [1, 2]
+    first = seen[0][1]
+    assert first["headers"] == {"x-uw-daily-req-count": "609", "retry-after": "1"}
+    assert len(first["body"]) == 300 and seen[1][1]["body"] == "concurrency"
+
+
+def test_a_broken_response_object_cannot_break_refusal_logging(env):
+    class _Weird(_Resp):
+        status_code = 429
+
+        def __init__(self):
+            super().__init__(429, [])
+
+        @property
+        def headers(self):
+            raise RuntimeError("boom")
+    U.UnusualWhalesAdapter._log_refusal(_Weird(), "GDX", "1h", 1)
+
+
+def test_the_cooldown_is_shorter_than_before():
+    assert U._COOLDOWN_SECONDS <= 30
 
 
 def test_datetime_bounds_are_instants(env):

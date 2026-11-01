@@ -99,7 +99,7 @@ def test_one_counter_per_endpoint_not_one_per_ticker():
 def test_a_429_feeds_the_existing_rate_limit_gauge():
     """The gauge undercounted by ~33x because this path never reached it."""
     body = _fetch_body()
-    i = body.index("rate_limited")
+    i = body.index('"rate_limited")')
     assert "_incr_rate_limit_counter" in body[i:i + 600]
 
 

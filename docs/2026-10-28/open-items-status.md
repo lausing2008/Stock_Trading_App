@@ -116,6 +116,8 @@ The status is therefore `partial` on a day when nothing went wrong. A possible r
        1. Shorten the cooldown to a few seconds; the limit that is being hit is per-minute.
        2. During the regular session, skip the symbol for that run instead of sending it to yfinance; the next 5-minute run catches up incrementally.
        3. Find which callers push Unusual Whales over its per-minute limit at :30/:35. The service-level counter records no endpoint path, so that needs instrumentation first.
+     - **Oct 30 result and follow-up (2026-11-01, AUD-UW-429-RETRY):** no regular-session spill to yfinance (84 bars vs 87), but US 5m bars more than 5 min late rose from ~1,100 to ~1,960, because 63 refusals each paused ingest 120 s. UW's headers showed 1,000,000/minute remaining throughout, so option 1's premise ("the limit is per-minute") was wrong. A 429 is now retried once after 1.5 s and the cooldown is 30 s; the refusal log carries UW's body and headers. Detail: the incident file's follow-up section.
+     - **Also fixed (AUD-DQ-NAMEONLY):** the `check_llm_daily_budget` and `capture_prospective_estimates` data-quality checks were name-only since Oct 5/6 and raised KeyError on every run. The jobs themselves were healthy (estimate capture has no gaps through Oct 31). A new test requires every check to carry the keys its branch reads.
 
 ## Option-chain storage retention: recommendation
 

@@ -112,50 +112,6 @@ def test_the_skip_sits_on_the_us_incremental_branch_only():
     assert '"skipped": "primary_cooldown"' in src[j:k]
 
 
-# ── per-minute headroom on the bar path ─────────────────────────────────────────────────
-
-class _Redis:
-    def __init__(self):
-        self.h, self.ttl = {}, {}
-
-    def hget(self, k, f):
-        return self.h.get(k, {}).get(f)
-
-    def hset(self, k, f, v):
-        self.h.setdefault(k, {})[f] = str(v)
-
-    def expire(self, k, s):
-        self.ttl[k] = s
-
-
-def test_the_lowest_remaining_per_minute_is_kept():
-    r = _Redis()
-    with patch("common.redis_client.get_redis", lambda: r):
-        for used, rem in ((10, 110), (90, 30), (40, 80)):
-            assert UWA.UnusualWhalesAdapter._note_minute_headroom(
-                {"x-uw-minute-req-counter": str(used), "x-uw-req-per-minute-remaining": str(rem)}) == (used, rem)
-    (key, fields), = r.h.items()
-    assert key.startswith("stockai:metric:uw_bar_minute_remaining:")
-    minute = [f for f in fields if f != "limit"]
-    assert len(minute) == 1 and fields[minute[0]] == "30"
-    assert fields["limit"] == "120"
-    assert r.ttl[key] >= 48 * 3600
-
-
-def test_headroom_recording_never_raises():
-    def boom():
-        raise RuntimeError("redis down")
-    with patch("common.redis_client.get_redis", boom):
-        assert UWA.UnusualWhalesAdapter._note_minute_headroom({"x-uw-req-per-minute-remaining": "5"}) == (None, None)
-    assert UWA.UnusualWhalesAdapter._note_minute_headroom({}) == (None, None)
-
-
-def test_headers_are_read_before_the_429_branch_so_refusals_are_measured():
-    src = pathlib.Path(UWA.__file__).read_text()
-    i = src.index("self._note_minute_headroom(_headers)")
-    assert i < src.index("if r.status_code == 429:") < src.index('"unusual_whales.bar_rate_limited"')
-
-
 # ── real ingest_symbol on PostgreSQL ────────────────────────────────────────────────────
 
 URL = os.environ.get("RZY_PG_URL")

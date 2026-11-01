@@ -13795,8 +13795,20 @@ _DQ_CHECKS: list[dict] = [
         "job_name": "llm_usage_spike_check", "source": "job_status",
         "max_age_hours": 1, "is_date": False,
     },
-        {"name": "check_llm_daily_budget", "description": "Claude daily token-ceiling alert liveness (30-min interval) — a LEVEL check, distinct from the spike check's change check"},
-    {"name": "capture_prospective_estimates", "description": "Daily consensus snapshot into estimate_snapshots (11:00 UTC). A MISSED DAY IS UNRECOVERABLE — the upstream value is overwritten in place, so a gap here is permanent"},
+    # AUD-DQ-NAMEONLY (2026-11-01): these two were registered as name + description only, so
+    # every run raised KeyError on them (since 2026-10-05/06) and neither was ever watched.
+    {
+        "name": "check_llm_daily_budget", "description": "Claude daily token-ceiling alert liveness (30-min interval) — a LEVEL check, distinct from the spike check's change check",
+        "job_name": "llm_daily_budget_check", "source": "job_status",
+        "max_age_hours": 2, "is_date": False,
+    },
+    # The capture job records no scheduler:job status, so this reads what it writes. It runs
+    # daily at 11:00 UTC, weekends included; 28h alerts within ~3h of a missed run.
+    {
+        "name": "capture_prospective_estimates", "description": "Daily consensus snapshot into estimate_snapshots (11:00 UTC). A MISSED DAY IS UNRECOVERABLE — the upstream value is overwritten in place, so a gap here is permanent",
+        "query": "SELECT MAX(captured_at) FROM estimate_snapshots",
+        "max_age_hours": 28, "is_date": False,
+    },
     {
         "name": "check_early_earnings_news_alerts", "description": "Early (pre-EDGAR) earnings-surprise news alert liveness (per-minute cron)",
         "job_name": "check_early_earnings_news_alerts", "source": "job_status",
