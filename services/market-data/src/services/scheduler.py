@@ -13803,11 +13803,13 @@ _DQ_CHECKS: list[dict] = [
         "max_age_hours": 2, "is_date": False,
     },
     # The capture job records no scheduler:job status, so this reads what it writes. It runs
-    # daily at 11:00 UTC, weekends included; 28h alerts within ~3h of a missed run.
+    # daily at 11:00 UTC, weekends included, and stamps captured_at with the capture DAY at
+    # midnight (production: 2026-10-31 00:00:00), so age runs 11h -> 35h between runs; 38h alerts
+    # ~3h after a missed one. 28h, the first value deployed, would have fired every morning.
     {
         "name": "capture_prospective_estimates", "description": "Daily consensus snapshot into estimate_snapshots (11:00 UTC). A MISSED DAY IS UNRECOVERABLE — the upstream value is overwritten in place, so a gap here is permanent",
         "query": "SELECT MAX(captured_at) FROM estimate_snapshots",
-        "max_age_hours": 28, "is_date": False,
+        "max_age_hours": 38, "is_date": False,
     },
     {
         "name": "check_early_earnings_news_alerts", "description": "Early (pre-EDGAR) earnings-surprise news alert liveness (per-minute cron)",

@@ -63,3 +63,11 @@ def test_the_two_previously_name_only_checks_are_now_watched():
     assert 'id="llm_daily_budget_check"' in _SRC or "id='llm_daily_budget_check'" in _SRC
     seg = _SRC[_SRC.index('"name": "capture_prospective_estimates"'):][:600]
     assert "FROM estimate_snapshots" in seg and "captured_at" in seg
+
+
+def test_the_capture_window_allows_for_a_midnight_stamped_daily_run():
+    """captured_at is the capture DAY at 00:00 and the run is at 11:00 UTC, so a healthy series
+    is up to 35h old just before the next run; anything under that alarms every morning."""
+    seg = _SRC[_SRC.index('"name": "capture_prospective_estimates"'):][:600]
+    max_age = int(seg.split('"max_age_hours":')[1].split(",")[0])
+    assert 35 < max_age <= 40
