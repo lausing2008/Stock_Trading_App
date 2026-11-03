@@ -90,6 +90,8 @@ HK, Nov 2: 42 symbols, 35 complete. The gaps are in thin names; 0117.HK has no f
 - Fix: add the phase (`lunch`/`close`, or the `until` time) to the key.
 - **Not done now.** It is a market-data change, and deploying during Nov 2–6 splits a trial
   session. Do it after Fri Nov 6's 20:10 ET scan.
+- **Superseded 2026-11-03:** fixed in `61ddccb7` and deployed with the pool fix at 08:40 UTC
+  Nov 3, between sessions (see §5, Deployed).
 
 ## 4. Late US 5m bars, after the UW 429 retry (f5eabd6a)
 
@@ -162,6 +164,25 @@ that fetch. Pool exhaustion predates it: 3 times on Oct 30, 19:00–19:35 UTC.
   records, and deploying it would split a trial session. Build and test it now; deploy it after
   Fri Nov 6's 20:10 ET scan.
 
+**Superseded 2026-11-03: built and deployed early.** The trial check showed a deploy between
+sessions does not split one: a session counts as complete only when all of its own scans share
+one release. So the fix shipped at a gap in the trading day instead of waiting until Nov 6.
+
+**Deployed (2026-11-03 08:40–08:41 UTC, `92ae1f28`, market-data only).**
+- Timing: after HK's close (08:00), its two close passes (08:12, 08:17) and post-close
+  (`hk_post_close` ok at 08:32), and about six hours before the US open (14:30 UTC).
+- Rollback image: `stockai-market-data:rollback-before-92ae1f28` (image `d150584a7b87`).
+- Outgoing log saved by the deploy script:
+  `~/deploy-evidence/container-logs/market-data-20261103T084025Z-before-92ae1f281edf.log.gz`.
+- Verified: `STOCKAI_RELEASE_SHA=92ae1f28…`, healthy, fix present in `/app/src`, 0 tracebacks,
+  0 QueuePool errors, 0 non-healthy containers, drift 0 of 12.
+- **Not yet verified:** whether the fix works in production. Both markets were closed at deploy
+  time, so no ingest had run. The first real test is the US session on Nov 3. That evening's
+  17:35 UTC evidence save should show no `QueuePool limit` errors and fewer ingest holders
+  in `db.pool_pressure`.
+- Effect on reads: Nov 2 ran on `6797e1b9` and Nov 3–6 run on `92ae1f28`. The price-risk trial
+  is unaffected; the RZY rebuild counts are read per release.
+
 ## 6. Paper entry receipts: no opportunity yet
 
 - `paper_entry_receipts` has 0 rows for Nov 2, and `paper.entry_receipt_failed` appears 0 times.
@@ -214,6 +235,8 @@ Saved 2026-11-03 05:16 UTC.
 
 **Why it was saved now.** The market-data log is the only full record of the pool exhaustion, and
 the next recreate deletes it. That recreate includes the fix's own deploy after Nov 6.
+(Update: that deploy happened at 08:40 UTC Nov 3. The deploy script saved the full outgoing
+log beforehand; see §5, Deployed.)
 
 **Full logs.** Not in git: they can contain usernames and request details. sha256 files sit
 beside them.

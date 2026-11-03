@@ -209,6 +209,8 @@ Extracts are in `docs/2026-11-02/evidence/`, and the full log is kept off-git at
   QueuePool and counts the checked-out connections while the fake provider is being asked.
   Incremental: 0, and the write still advances the head. Force: 1, held deliberately.
   Removing the commit fails the test (1 held).
+- Deployed 2026-11-03 08:40 UTC as `92ae1f28` (market-data), between sessions. Healthy, drift 0/12,
+  no pool errors at startup. Production effect is unconfirmed until a US session has run on it.
 
 ## The lesson
 
