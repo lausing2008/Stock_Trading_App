@@ -1,0 +1,110 @@
+{
+ "window": [
+  "2026-11-02",
+  "2026-11-02"
+ ],
+ "price_risk_trial": {
+  "complete_sessions": [
+   "2026-11-02"
+  ],
+  "complete_count": 1,
+  "trial_status": "1 of 5 complete sessions",
+  "sessions": [
+   {
+    "session": "2026-11-02",
+    "complete": true,
+    "missing_slots": [],
+    "failed_slots": [],
+    "config_hashes": [
+     "ab32a4d0f5c50a7fbd80a8ab6c479a67791abd3b4cc27d7dcace13697e848987"
+    ],
+    "releases": [
+     "6797e1b9b1d7a8b06d071105966bedc657f11491/2bc351c9bc98"
+    ],
+    "delivery_enabled_seen": false,
+    "events": 124,
+    "excluded_per_scan": [
+     3,
+     3,
+     3,
+     3,
+     3
+    ],
+    "quote_refusals": 1,
+    "suppressions": {
+     "open_pullback_episode": 33,
+     "same_episode": 407
+    }
+   }
+  ],
+  "off_slot_scans": [
+   "2026-11-02T07:30:00.004863",
+   "2026-11-03T03:30:00.019771"
+  ],
+  "failed_scans": []
+ },
+ "entry_receipts": {
+  "attempts": 0,
+  "by_outcome_and_freshness": {},
+  "rejection_reasons": {},
+  "candidate_price_sources": {},
+  "releases": [],
+  "fresh_mark": {
+   "answer": "no opportunity to evaluate",
+   "why": "0 attempt(s), none reached the exposure reservation"
+  }
+ },
+ "rzy_rebuild_triggers": [
+  {
+   "session": "2026-11-02",
+   "timeframe": "15m",
+   "rebuilt": 331,
+   "deferred_by_throttle": 32,
+   "affected_symbols": 100,
+   "distinct_revised_bars": 277,
+   "by_class": {
+    "rebuilt:material_ohlc": 276,
+    "rebuilt:rounding_ohlc": 24,
+    "rebuilt:gap_after_checkpoint": 31,
+    "deferred_by_throttle:material_ohlc": 27,
+    "deferred_by_throttle:rounding_ohlc": 5
+   },
+   "volume_also_changed": 190,
+   "median_bar_age_s": 489.60984
+  },
+  {
+   "session": "2026-11-02",
+   "timeframe": "1h",
+   "rebuilt": 168,
+   "deferred_by_throttle": 19,
+   "affected_symbols": 95,
+   "distinct_revised_bars": 141,
+   "by_class": {
+    "rebuilt:material_ohlc": 135,
+    "rebuilt:rounding_ohlc": 20,
+    "rebuilt:gap_after_checkpoint": 13,
+    "deferred_by_throttle:material_ohlc": 12,
+    "deferred_by_throttle:rounding_ohlc": 7
+   },
+   "volume_also_changed": 74,
+   "median_bar_age_s": 6849.610611
+  },
+  {
+   "session": "2026-11-02",
+   "timeframe": "5m",
+   "rebuilt": 413,
+   "deferred_by_throttle": 67,
+   "affected_symbols": 105,
+   "distinct_revised_bars": 335,
+   "by_class": {
+    "rebuilt:material_ohlc": 331,
+    "rebuilt:rounding_ohlc": 32,
+    "rebuilt:gap_after_checkpoint": 50,
+    "deferred_by_throttle:material_ohlc": 58,
+    "deferred_by_throttle:rounding_ohlc": 9
+   },
+   "volume_also_changed": 233,
+   "median_bar_age_s": 1329.610843
+  }
+ ]
+}

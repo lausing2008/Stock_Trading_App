@@ -1,0 +1,207 @@
+BEGIN
+per US session (ET date of detection), events by rule
+     d      |        rule         |  n  | subj | avg_chg 
+------------+---------------------+-----+------+---------
+ 2026-10-22 | pullback            |   2 |    2 |   -8.42
+ 2026-10-22 | session_decline     |  10 |   10 |   -4.86
+ 2026-10-22 | unmeasurable        |   3 |    3 |        
+ 2026-10-23 | pullback            |   5 |    4 |  -15.95
+ 2026-10-23 | session_decline     |  21 |   17 |   -6.13
+ 2026-10-23 | slow_decline        |   1 |    1 |   -5.23
+ 2026-10-23 | unmeasurable        |   3 |    3 |        
+ 2026-10-25 | unmeasurable        |   3 |    3 |        
+ 2026-10-26 | pullback            |   3 |    3 |  -19.61
+ 2026-10-26 | session_decline     |  25 |   17 |   -5.84
+ 2026-10-26 | unmeasurable        |   3 |    3 |        
+ 2026-10-27 | pullback            |  14 |   14 |   -9.30
+ 2026-10-27 | session_decline     |  15 |   14 |   -4.62
+ 2026-10-27 | slow_decline        |   3 |    3 |   -5.97
+ 2026-10-27 | unmeasurable        |   3 |    3 |        
+ 2026-10-28 | pullback            |   4 |    4 |  -12.12
+ 2026-10-28 | session_decline     |  21 |   20 |   -5.33
+ 2026-10-28 | slow_decline        |   1 |    1 |   -5.15
+ 2026-10-28 | unmeasurable        |   3 |    3 |        
+ 2026-10-29 | pullback            |  16 |   16 |  -13.56
+ 2026-10-29 | session_decline     |  55 |   48 |   -6.06
+ 2026-10-29 | unmeasurable        |   3 |    3 |        
+ 2026-10-30 | basket_breadth      |   1 |    1 |   -5.02
+ 2026-10-30 | pullback            |  72 |   58 |  -11.68
+ 2026-10-30 | session_decline     | 148 |   82 |   -7.29
+ 2026-10-30 | slow_decline        |   3 |    3 |   -5.48
+ 2026-10-30 | unmeasurable        |   3 |    3 |        
+ 2026-11-01 | pullback            |   1 |    1 |   -7.79
+ 2026-11-01 | session_decline     |   2 |    2 |   -3.83
+ 2026-11-01 | unmeasurable        |   3 |    3 |        
+ 2026-11-02 | basket_slow_decline |   1 |    1 |   -5.35
+ 2026-11-02 | pullback            |  45 |   39 |  -14.54
+ 2026-11-02 | session_decline     |  94 |   57 |   -5.78
+ 2026-11-02 | slow_decline        |   3 |    3 |   -5.90
+ 2026-11-02 | unmeasurable        |   3 |    3 |        
+(35 rows)
+
+Nov 2 top subjects
+         subject         |        rule         | step |     change_pct      |  utc  
+-------------------------+---------------------+------+---------------------+-------
+ 0100.HK                 | session_decline     |    1 | -3.1952662721893526 | 03:30
+ 0117.HK                 | session_decline     |    2 |  -7.492796151773007 | 03:30
+ 0992.HK                 | session_decline     |    1 |  -4.823307107442113 | 03:30
+ 1347.HK                 | session_decline     |    2 |  -5.439999999999998 | 03:30
+ 1671.HK                 | session_decline     |    2 |  -5.263156705946131 | 03:30
+ 2513.HK                 | pullback            |    3 |  -19.54505686789151 | 03:30
+ 2513.HK                 | session_decline     |    1 |  -4.288092039593824 | 03:30
+ 3986.HK                 | session_decline     |    1 |  -3.113554918644486 | 03:30
+ 6082.HK                 | session_decline     |    1 |   -4.98007932024679 | 03:30
+ 6082.HK                 | pullback            |    3 | -19.015278300063358 | 03:30
+ 6088.HK                 | session_decline     |    1 |  -4.123710801562568 | 03:30
+ 6088.HK                 | pullback            |    2 | -12.382232161428446 | 03:30
+ 6608.HK                 | session_decline     |    1 |  -4.745764251551154 | 03:30
+ 6608.HK                 | pullback            |    1 |  -7.489709029639884 | 03:30
+ 6682.HK                 | pullback            |    1 |  -7.632261520828518 | 03:30
+ 9903.HK                 | session_decline     |    2 | -6.1738412415324415 | 03:30
+ AAOI                    | session_decline     |    3 |  -8.942795076031858 | 19:05
+ AAOX                    | session_decline     |    2 |  -5.526315789473683 | 17:05
+ AAOX                    | session_decline     |    4 |  -18.28947368421052 | 19:05
+ AI / GPU Semiconductors | basket_slow_decline |    1 |               -5.35 | 17:05
+ AKAM                    | session_decline     |    1 |  -3.311044003451244 | 17:05
+ AKAM                    | session_decline     |    2 |  -5.457290767903367 | 19:05
+ AKAM                    | pullback            |    2 | -12.441008133346722 | 20:40
+ AMD                     | session_decline     |    2 |  -5.473454833597463 | 19:05
+ AMD                     | pullback            |    3 | -19.215476108152966 | 20:40
+ ANET                    | pullback            |    1 | -11.288770053475943 | 15:05
+ ANET                    | pullback            |    2 | -12.184491978609625 | 19:05
+ ASTS                    | session_decline     |    1 |  -3.978276787893579 | 15:05
+ ASTS                    | pullback            |    2 | -13.559322033898313 | 19:05
+ ASTS                    | session_decline     |    3 |  -9.128630705394196 | 19:05
+ BKSY                    | session_decline     |    1 | -3.9171796306659163 | 17:05
+ BKSY                    | session_decline     |    2 |   -7.44264129826526 | 19:05
+ BKSY                    | pullback            |    2 | -13.854166666666668 | 19:05
+ BRAZ                    | slow_decline        |    1 |  -6.537334497789664 | 20:40
+ BRAZ                    | pullback            |    1 |  -7.428850445841382 | 01:10
+ CBRS                    | session_decline     |    3 |  -8.724125297673572 | 15:05
+ CBRS                    | pullback            |    2 | -16.473891543039144 | 15:05
+ CBRS                    | pullback            |    3 | -18.573464085156314 | 19:05
+ CBRS                    | session_decline     |    4 | -12.447334676680713 | 20:40
+ CCJ                     | session_decline     |    1 | -3.2505525939409705 | 19:05
+ CCJ                     | pullback            |    2 | -12.476145038167948 | 01:10
+ COHR                    | pullback            |    2 | -12.279310488751625 | 15:05
+ COHR                    | session_decline     |    1 |  -3.711011791555728 | 19:05
+ COHR                    | session_decline     |    2 |  -5.294313427158611 | 20:40
+ COIN                    | session_decline     |    1 |  -3.644280339974916 | 19:05
+ CRWD                    | session_decline     |    1 | -3.7834923930838933 | 20:40
+ DDOG                    | pullback            |    3 |  -19.45018161099637 | 15:05
+ DDOG                    | session_decline     |    1 | -3.8551451523781277 | 15:05
+ DDOG                    | session_decline     |    2 |  -6.384154375823526 | 19:05
+ DDOG                    | session_decline     |    3 |  -8.148085178730827 | 01:10
+ DELL                    | session_decline     |    1 |  -3.153429177468771 | 15:05
+ DELL                    | pullback            |    3 | -18.136903338911463 | 15:05
+ DELL                    | session_decline     |    2 |  -5.107235446617962 | 19:05
+ DFNS                    | pullback            |    1 |  -7.626903553299493 | 15:05
+ DFNS                    | session_decline     |    1 | -3.6211699164345377 | 17:05
+ DFNS                    | pullback            |    2 | -12.182741116751268 | 17:05
+ DFNS                    | session_decline     |    2 |  -5.013927576601664 | 01:10
+ DT                      | pullback            |    2 | -12.215643502648804 | 15:05
+ DT                      | session_decline     |    1 | -3.9348240596290456 | 19:05
+ EWZ                     | slow_decline        |    1 |  -5.519769960919181 | 20:40
+ FLBR                    | slow_decline        |    1 |  -5.643659066778104 | 20:40
+ FRNM                    | session_decline     |    1 |    -4.5272435897436 | 19:05
+ FRNM                    | session_decline     |    2 |  -6.169871794871791 | 20:40
+ FRNM                    | pullback            |    2 |   -12.8720238095238 | 20:40
+ GRNT                    | session_decline     |    1 |  -4.188481675392674 | 15:05
+ GRNT                    | pullback            |    1 |  -7.106598984771573 | 15:05
+ GRNT                    | session_decline     |    2 |  -6.020942408376974 | 17:05
+ GRNT                    | session_decline     |    3 |  -8.551483420593371 | 01:10
+ HPE                     | pullback            |    2 | -13.839579224194612 | 19:05
+ HPE                     | session_decline     |    1 |  -4.846614630604469 | 19:05
+ HPE                     | session_decline     |    2 |  -7.406062806316946 | 20:40
+ INTC                    | session_decline     |    1 |  -4.356751824817521 | 17:05
+ INTC                    | session_decline     |    2 |  -7.154653284671536 | 19:05
+ INTC                    | session_decline     |    3 |  -9.282998783454989 | 20:40
+ IONQ                    | session_decline     |    2 | -5.0532623169107875 | 19:05
+ IREN                    | session_decline     |    1 |                -3.8 | 15:05
+ IREN                    | session_decline     |    2 |    -6.7223382045929 | 19:05
+ IREN                    | session_decline     |    3 |  -8.058455114822547 | 01:10
+ KGS                     | session_decline     |    1 | -4.1186513017498925 | 19:05
+ KGS                     | pullback            |    1 |  -7.508815598423559 | 20:40
+ KGS                     | session_decline     |    2 |  -5.121638924455823 | 01:10
+ KTOS                    | pullback            |    1 |  -8.442303280568952 | 19:05
+ LITE                    | session_decline     |    3 | -11.177590103485194 | 15:05
+ LITE                    | pullback            |    3 | -18.792209063325824 | 15:05
+ LITE                    | session_decline     |    4 |  -13.73795646485072 | 17:05
+ LITE                    | pullback            |    4 | -25.634835187541466 | 20:40
+ MRVL                    | session_decline     |    2 |  -6.288187372708755 | 15:05
+ MRVL                    | pullback            |    4 |  -26.86270613947943 | 15:05
+ MRVL                    | session_decline     |    3 |   -8.25865580448065 | 17:05
+ MRVL                    | session_decline     |    4 | -13.910386965376778 | 20:40
+ MU                      | pullback            |    2 | -12.710657730134356 | 17:05
+ MU                      | session_decline     |    1 |  -4.759601690892238 | 19:05
+ MU                      | session_decline     |    2 |  -5.948640278499898 | 20:40
+ MUU                     | session_decline     |    2 |  -5.876245847176077 | 17:05
+ MUU                     | session_decline     |    3 |  -9.572259136212624 | 19:05
+ MUU                     | pullback            |    4 | -27.368245496998007 | 19:05
+ MXL                     | session_decline     |    1 |   -3.60160071142729 | 15:05
+ MXL                     | session_decline     |    2 |  -6.210167481843779 | 19:05
+ MXL                     | session_decline     |    3 |  -9.493108048021345 | 20:40
+ MXL                     | pullback            |    3 | -18.731700825126435 | 20:40
+ NET                     | pullback            |    3 | -19.436449105044296 | 15:05
+ NET                     | session_decline     |    1 |   -4.75304595653722 | 15:05
+ NET                     | session_decline     |    1 |  -4.378339864624141 | 19:05
+ NET                     | session_decline     |    2 |  -5.374421090131818 | 20:40
+ NOK                     | session_decline     |    1 |  -3.037383177570091 | 01:10
+ ORCL                    | session_decline     |    2 |  -6.084028468661506 | 15:05
+ ORCL                    | pullback            |    2 | -15.096167150961668 | 15:05
+ ORCL                    | session_decline     |    3 |  -8.605647815106751 | 20:40
+ PL                      | session_decline     |    1 |  -3.155159613956946 | 19:05
+ PLTR                    | session_decline     |    1 | -3.1339959806637387 | 01:10
+ POET                    | session_decline     |    1 | -3.4615384615384728 | 15:05
+ POET                    | session_decline     |    2 |  -6.950000000000012 | 19:05
+ QLD                     | pullback            |    2 | -12.041798883904143 | 20:40
+ QUCY                    | session_decline     |    1 |    -3.4047619047619 | 17:05
+ QUCY                    | pullback            |    3 | -19.791666666666664 | 19:05
+ QUCY                    | session_decline     |    3 |  -8.333333333333327 | 19:05
+ SCTX                    | session_decline     |    2 |  -5.901426718547342 | 15:05
+ SKHYV                   | unmeasurable        |    0 |                     | 01:10
+ SMTC                    | session_decline     |    1 |  -4.215732454074415 | 20:40
+ SNOW                    | session_decline     |    1 |  -3.311225823314164 | 19:05
+ SNOW                    | session_decline     |    2 |  -5.751764244641911 | 20:40
+ SOUN                    | session_decline     |    1 | -3.0805687203791448 | 01:10
+ SOUN                    | pullback            |    1 |  -7.882882882882894 | 01:10
+ SOXX                    | session_decline     |    1 | -2.4983563445101846 | 19:05
+ SOXX                    | session_decline     |    1 | -3.8758456872600746 | 20:40
+ SOXX                    | pullback            |    2 | -13.163390428018554 | 20:40
+ SOXX                    | pullback            |    2 | -13.163390428018554 | 20:40
+ SOXX                    | session_decline     |    2 | -3.8758456872600746 | 20:40
+ SSNLF                   | unmeasurable        |    0 |                     | 01:10
+ TQQQ                    | session_decline     |    1 | -3.9509756490888495 | 20:40
+ TSEM                    | session_decline     |    2 |  -7.072921672272932 | 15:05
+ TSEM                    | pullback            |    3 | -20.057358412567176 | 15:05
+ US10Y                   | unmeasurable        |    0 |                     | 01:10
+ USAR                    | session_decline     |    2 |  -5.873180873180869 | 19:05
+ USAR                    | pullback            |    2 | -13.925855513307983 | 19:05
+ UUUU                    | pullback            |    1 |  -7.806912991656737 | 17:05
+ UUUU                    | session_decline     |    1 | -3.8261997405966266 | 19:05
+ VICR                    | pullback            |    2 | -13.413339487652898 | 15:05
+ VICR                    | session_decline     |    1 | -3.0666178240619675 | 17:05
+ VICR                    | session_decline     |    2 |  -5.609922026270343 | 19:05
+ VICR                    | pullback            |    3 |  -19.48765289637664 | 20:40
+ VICR                    | session_decline     |    3 |  -8.718404940080589 | 20:40
+ XLE                     | session_decline     |    1 | -3.3561839474435797 | 19:05
+ ZS                      | session_decline     |    1 |  -3.607618887440614 | 19:05
+ ZS                      | pullback            |    2 | -13.707007103090799 | 20:40
+ ZS                      | session_decline     |    2 |  -5.499684648698653 | 20:40
+(146 rows)
+
+SPY/QQQ day move Nov 2 vs Oct 30 close
+ symbol |     ts     | close  
+--------+------------+--------
+ QQQ    | 2026-10-29 | 715.34
+ QQQ    | 2026-10-30 | 690.49
+ QQQ    | 2026-11-02 | 681.09
+ SMH    | 2026-10-29 | 561.67
+ SMH    | 2026-10-30 | 522.49
+ SMH    | 2026-11-02 | 508.31
+ SPY    | 2026-10-29 | 769.36
+ SPY    | 2026-10-30 | 755.72
+ SPY    | 2026-11-02 |  752.1
+(9 rows)
+
+ROLLBACK

@@ -1,0 +1,30 @@
+BEGIN
+M08 prebreakout: fires, names, top-name share (all time; and since Oct 13)
+ fires | names | top_pct |      top3      
+-------+-------+---------+----------------
+    70 |     8 |    42.9 | {AI,BKSY,POET}
+(1 row)
+
+ fires_since_1013 | names_since_1013 | string_agg 
+------------------+------------------+------------
+                0 |                0 | 
+(1 row)
+
+squeeze family by type (all time / since Oct 13)
+     alert_type     | total | since_1013 | names 
+--------------------+-------+------------+-------
+ gamma_unwind_puts  |   540 |        156 |    52
+ gamma_unwind_calls |   240 |         29 |    52
+ short_squeeze      |    22 |          4 |    16
+ squeeze_ignition   |    13 |          6 |     8
+(4 rows)
+
+M09 GEX control arm: uncorroborated, resolved at 5d
+ gex_corroborated |  n  | resolved_5d 
+------------------+-----+-------------
+ f                |  40 |          38
+                  | 309 |         309
+ t                | 431 |         387
+(3 rows)
+
+ROLLBACK

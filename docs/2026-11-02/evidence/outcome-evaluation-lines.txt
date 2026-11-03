@@ -1,0 +1,6 @@
+2026-11-02T08:30:58.419072315Z {"horizon_created": 2156, "horizon_resolved": 299, "horizon_missing": 0, "event": "outcomes.evaluate_horizons_done", "request_id": "e5c99db4-e7b7-4728-b9cd-c92c371d2ea4", "level": "info", "timestamp": "2026-11-02T08:30:58.418869Z"}
+2026-11-02T08:30:58.424928675Z {"evaluated": 142, "skipped_open": 2498, "skipped_no_price": 27, "censored": 0, "updated_windows": 145, "event": "outcomes.evaluate_done", "request_id": "e5c99db4-e7b7-4728-b9cd-c92c371d2ea4", "level": "info", "timestamp": "2026-11-02T08:30:58.420358Z"}
+2026-11-02T08:30:58.584351001Z INFO:     172.18.0.7:38516 - "POST /signals/outcomes/evaluate HTTP/1.1" 200 OK
+2026-11-02T21:32:24.075549675Z {"horizon_created": 0, "horizon_resolved": 1472, "horizon_missing": 0, "event": "outcomes.evaluate_horizons_done", "request_id": "231a395d-6799-47af-b004-f827e7403e7f", "level": "info", "timestamp": "2026-11-02T21:32:24.075305Z"}
+2026-11-02T21:32:24.076047861Z {"evaluated": 764, "skipped_open": 1734, "skipped_no_price": 27, "censored": 0, "updated_windows": 99, "event": "outcomes.evaluate_done", "request_id": "231a395d-6799-47af-b004-f827e7403e7f", "level": "info", "timestamp": "2026-11-02T21:32:24.075931Z"}
+2026-11-02T21:32:24.629049717Z INFO:     172.18.0.7:43512 - "POST /signals/outcomes/evaluate HTTP/1.1" 200 OK
