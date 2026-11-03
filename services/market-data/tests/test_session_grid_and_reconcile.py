@@ -118,6 +118,30 @@ def test_each_pass_is_kept_per_session_after_the_latest_key_moves_on():
     assert json.loads(redis["scheduler:job:us_5m_reconcile:detail"])["pass"] == 2
 
 
+def test_hk_close_passes_do_not_overwrite_the_lunch_record():
+    """Found 2026-11-02: lunch and close passes are both numbered 1 and 2, so the close passes
+    replaced the lunch record. The lunch pass now keeps its own key; the close keeps the
+    existing format that calendar checks and saved evidence already use."""
+    import json
+    redis, hk = {}, _naive(expected_grid("HK", date(2026, 10, 22)))
+    lunch = [t for t in hk if t.hour < 4]
+    morning_gap = [t for t in lunch if t != lunch[5]]               # one interior morning candle missing
+    for when, second in ((datetime(2026, 10, 22, 4, 2, tzinfo=UTC), False), (datetime(2026, 10, 22, 4, 7, tzinfo=UTC), True)):
+        _reconcile([("0700.HK", t) for t in morning_gap], symbols=("0700.HK",), market="HK", now=when, second_pass=second,
+                   written={"0700.HK": datetime(2026, 10, 22, 4, 2)}, redis=redis)
+    for when, second in ((datetime(2026, 10, 22, 8, 12, tzinfo=UTC), False), (datetime(2026, 10, 22, 8, 17, tzinfo=UTC), True)):
+        _reconcile([("0700.HK", t) for t in hk[:-1]], symbols=("0700.HK",), market="HK", now=when, second_pass=second,
+                   written={"0700.HK": datetime(2026, 10, 22, 8, 12)}, redis=redis)
+    base = "scheduler:job:hk_5m_reconcile:detail:2026-10-22"
+    for p in ("p1", "p2"):
+        lunch_rec, close_rec = json.loads(redis[f"{base}:lunch:{p}"]), json.loads(redis[f"{base}:{p}"])
+        assert lunch_rec["phase"] == "lunch" and lunch_rec["final_candle_missing"] == []
+        assert lunch_rec["missing_candles"] == {"0700.HK": 1}
+        assert close_rec["phase"] == "close" and close_rec["final_candle_missing"] == ["0700.HK"]
+    us = _reconcile([("AAPL", t) for t in GRID], symbols=("AAPL",), written=DONE)[0]
+    assert us["phase"] == "close"
+
+
 def test_ingest_failure_is_an_error_status_and_a_holiday_does_nothing():
     _, _, redis = _reconcile([("AAPL", t) for t in GRID] + [("SMH", t) for t in GRID], written=DONE, ingest_raises=True)
     assert redis["status"] == "error"

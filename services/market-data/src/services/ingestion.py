@@ -428,6 +428,16 @@ def ingest_symbol(
             or _effective_market == "HK"
         )
 
+        # AUD-POOL-INGESTHOLD (2026-11-02): everything above only reads, but the session has held a
+        # pooled connection since its first SELECT, and the provider request below takes seconds
+        # (up to 18.5 s observed; the UW 429 retry waits inside it). Two 6-worker ingest jobs then
+        # pinned up to 12 of the 15 connections and exhausted the pool 11 times on Nov 2
+        # (docs/2026-11-02/nov2-checks.md §5). End the read transaction so the connection goes
+        # back to the pool during the fetch; the writes below check one out again. force=True
+        # keeps its transaction: its DELETE must commit together with the INSERT.
+        if not force:
+            session.commit()
+
         last_err: Exception | None = None
         df: pd.DataFrame | None = None
         # AUD-SURVIVORSHIP-DELISTDETECT: only the DAILY-bar ingestion cycle drives the

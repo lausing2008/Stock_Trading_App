@@ -12543,7 +12543,10 @@ def _reconcile_session_5m(market: str, now: "datetime | None" = None, *, second_
     except Exception as exc:  # recorded; completeness below still reports what is stored
         error = str(exc)[:200]
         log.error("scheduler.5m_reconcile_ingest_failed", market=market, error=error)
-    detail: dict = {"market": market, "session": day.isoformat(), "pass": 2 if second_pass else 1,
+    # HK reconciles twice a session (12:02/12:07 lunch, 16:12/16:17 close), both numbered pass
+    # 1 and 2, so the close passes overwrote the lunch record kept below (found 2026-11-02).
+    phase = "lunch" if market == "HK" and now.astimezone(tz).hour < 13 else "close"
+    detail: dict = {"market": market, "session": day.isoformat(), "phase": phase, "pass": 2 if second_pass else 1,
                     "symbols": len(symbols), "complete": 0, "final_candle_missing": [], "final_candle_forming": [],
                     "missing_candles": {}, "off_grid_rows": {}, "no_session_data": [], "ingest_error": error}
     try:
@@ -12589,7 +12592,8 @@ def _reconcile_session_5m(market: str, now: "datetime | None" = None, *, second_
     # log line goes with the container. On 2026-10-26 a recreate left no record of Friday's
     # passes, so a session could not be verified after the fact. Keep each pass for 30 days.
     try:
-        _get_redis().setex(f"{key}:{detail['session']}:p{detail['pass']}", 86400 * 30,
+        _get_redis().setex(f"{key}:{detail['session']}{':lunch' if phase == 'lunch' else ''}:p{detail['pass']}",
+                           86400 * 30,
                            json.dumps(detail, default=str))
     except Exception:
         pass

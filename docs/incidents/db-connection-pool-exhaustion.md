@@ -167,3 +167,53 @@ already have open, and does this need its own connection at all, or can it ride 
 already there" — a resource-composition question no amount of green tests in isolation will
 surface, and the kind of check that needs to happen at write time, not discovered live in
 production hours later.
+
+---
+
+# AUD-POOL-INGESTHOLD — ingest held a pooled connection through every provider request (2026-11-02)
+
+## Symptom
+
+On Mon 2026-11-02, market-data's pool (`pool_size=5, max_overflow=10`) ran out 11 times between
+16:45 and 20:40 UTC (`QueuePool limit of size 5 overflow 10 reached`). Each time one caller
+failed: three HTTP requests, an alert check, an ingest, squeeze ignition, the RZY mail drain and
+options flow. The same had happened 3 times on Oct 30, 19:00–19:35 UTC.
+
+## Evidence
+
+The `pool_watch` holder log added on Oct 30 (`2609ff6c`) recorded 117 `db.pool_pressure` lines.
+There were 12 snapshots at 15 of 15 connections; in every one of them, 5 to 12 of the holders
+were `ingestion.py:306 ingest_symbol ← ingestion.py:702 _fetch`, each held for up to 18.5 s.
+Extracts are in `docs/2026-11-02/evidence/`, and the full log is kept off-git at
+`~/evidence/2026-11-02/` on EC2.
+
+## Root cause
+
+- `ingest_symbol` opens `with SessionLocal() as session` and reads the stock, the head bar and
+  the cooldown record.
+- It then calls `adapter.fetch_ohlcv` (a provider HTTP request) inside the same session, and only
+  commits after the upsert.
+- A session keeps its connection from the first SELECT until it commits, so every ingest worker
+  held a pooled connection through the whole network round trip.
+- `ingest_universe` runs 6 workers. When the 5m ingest and the market refresh overlap, up to 12
+  of 15 connections are pinned.
+- The UW 429 retry (`f5eabd6a`, Nov 1) waits 1.5–5 s *inside* that request, which lengthened the
+  holds. It did not start the problem, which predates it.
+
+## Fix
+
+- Commit the read-only transaction immediately before the provider loop, so the connection goes
+  back to the pool during the fetch. The writes check one out again.
+- `force=True` is excluded: its DELETE must commit together with the INSERT.
+- Test: `test_ingest_pool_hold.py` runs the real `ingest_symbol` on PostgreSQL with a real
+  QueuePool and counts the checked-out connections while the fake provider is being asked.
+  Incremental: 0, and the write still advances the head. Force: 1, held deliberately.
+  Removing the commit fails the test (1 held).
+
+## The lesson
+
+- A session is a connection lease from its first query, not from its first write.
+- Any I/O placed between a read and a write inside one session holds a pool slot for the length
+  of that I/O, whether it is HTTP, a sleep or a retry wait.
+- `pool_watch`'s call-site attribution is what made this a one-line diagnosis rather than another
+  open-ended investigation.

@@ -128,6 +128,7 @@ test-integration-pg-schema:
 		services/market-data/tests/test_ddl_guard_postgres.py \
 		services/market-data/tests/test_little_rzy_postgres.py \
 		services/market-data/tests/test_intraday_store.py \
+		services/market-data/tests/test_ingest_pool_hold.py \
 		services/market-data/tests/test_bar_provenance.py::test_bar_trace_on_postgresql \
 		services/market-data/tests/test_bar_ingest_observations.py::test_real_ingest_and_report_on_postgresql; \
 	 rc=$$?; docker rm -f stockai-schema-pg >/dev/null 2>&1; exit $$rc
