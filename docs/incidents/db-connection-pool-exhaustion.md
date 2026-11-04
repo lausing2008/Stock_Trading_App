@@ -211,6 +211,10 @@ Extracts are in `docs/2026-11-02/evidence/`, and the full log is kept off-git at
   Removing the commit fails the test (1 held).
 - Deployed 2026-11-03 08:40 UTC as `92ae1f28` (market-data), between sessions. Healthy, drift 0/12,
   no pool errors at startup. Production effect is unconfirmed until a US session has run on it.
+- First US session on it (Nov 3, saved evidence `~/stockai-evidence/2026-11-03`): 0 pool-exhaustion
+  errors (Nov 2: 11). Ingest holders moved from `ingestion.py:306` (the head read, held through the
+  fetch, max 18.5 s) to `:523` (the write, max 2.7 s). The pool still reached 15/15 twice
+  (16:35, 20:01 UTC; Nov 2: 12 times) without a failed checkout, so the headroom is thin, not gone.
 
 ## The lesson
 
