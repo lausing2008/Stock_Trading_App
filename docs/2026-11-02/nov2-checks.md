@@ -178,7 +178,7 @@ one release. So the fix shipped at a gap in the trading day instead of waiting u
   0 QueuePool errors, 0 non-healthy containers, drift 0 of 12.
 - **Not yet verified:** whether the fix works in production. Both markets were closed at deploy
   time, so no ingest had run. The first real test is the US session on Nov 3. That evening's
-  17:35 UTC evidence save should show no `QueuePool limit` errors and fewer ingest holders
+  17:35 PT (01:35 UTC next day) evidence save should show no `QueuePool limit` errors and fewer ingest holders
   in `db.pool_pressure`.
 - Effect on reads: Nov 2 ran on `6797e1b9` and Nov 3–6 run on `92ae1f28`. The price-risk trial
   is unaffected; the RZY rebuild counts are read per release.
