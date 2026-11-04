@@ -1,6 +1,6 @@
 # Earnings results not recorded since October; one idle-transaction kill (2026-11-03)
 
-Read-only investigation. Nothing was changed in production. Two findings from the Nov 3
+Investigation on Nov 3; fixes deployed on Nov 4 (see the end). Two findings from the Nov 3
 evidence save (`~/stockai-evidence/2026-11-03`).
 
 ## 1. Earnings history write fails on every run: results are not being recorded
@@ -93,3 +93,56 @@ existing_pending = s.execute(
   under pool pressure. Logging any connection held longer than about 240 s at check-in or
   close would name the holder the next time this happens.
 - Impact so far: one stale connection discarded; no failed request has been attributed to it.
+
+## Deployed 2026-11-04 (`de639a94`)
+
+### Earnings (event-intelligence, 04:41 UTC)
+
+- History rows are matched by date: the row at the real announcement date, else the nearest
+  pending row inside the period's 100-day window, else a period-end stand-in. Duplicates for one
+  report are merged and their issuer documents re-pointed. Each row runs in its own savepoint.
+  The calendar writes nothing when the provider still shows a report already recorded.
+- `test_earnings_pending_match.py` runs the real sync on PostgreSQL over six production shapes.
+  Against the old code it reproduces production (`IntegrityError 1, PendingRollbackError 3`).
+- Before deploying: rollback image `stockai-event-intelligence:rollback-before-de639a94`, and
+  snapshots of `earnings_events` (903 rows) and the issuer-document links in
+  `~/evidence/2026-11-04/` on EC2.
+- A full `sync_all_earnings` ran 04:42–04:45 UTC (202 symbols, 715 rows; `ok` 143, `ok_empty` 47,
+  `partial` 12). Output: `~/evidence/2026-11-04/backfill-de639a94.out`.
+
+| | Before | After |
+|---|---|---|
+| Reports since Oct 19 with EPS recorded | 1 of 48 | 45 of 53 |
+| Past-dated pending rows | 74 (49 stocks) | 56 (24 stocks) |
+| Stocks with more than one pending row in the last 100 days | 19 | 6 |
+| `partial` history attempts per daily pass | 146 | 12 |
+| `uq_earnings` violations | 95–741 a day | 30 in the backfill |
+
+What remains:
+
+- **44 pending HK rows:** the provider has no EPS for those reports. Expected, not a failure.
+- **10 pending US rows:**
+  - AMD, ALAB, CORT and ASX reported in the last two days; they wait on the provider.
+  - GOOGL is inactive.
+  - SKHY, SKHYV and SSNLF have no provider EPS.
+- **Six stocks with two pending rows:** the dates are 20–120 days apart, too far to treat as one
+  report.
+- **AUD-EARNINGS-EPSMATCH (not fixed, all HK):** the 15 remaining `history_row_failed` rows.
+  - Cause: `_match_report_dates_to_history` pairs announcements with quarters by EPS rounded to
+    two decimals. 0981.HK reported 0.02 in four quarters, so every 0.02 quarter gets 2026-05-13
+    and the move is refused.
+  - Effect: no data is lost. Those quarters are already stored at their period ends with the
+    right EPS, and the savepoint confines the failure to that row. It still counts as
+    `partial` and logs a PostgreSQL error every day.
+  - Proposed fix: skip the EPS match when two history rows share a value.
+- **`calendar_skip` (about 20 symbols, mostly HK):** the provider returns an empty calendar
+  (`list index out of range`). This was logged at DEBUG before; it is noise, not damage.
+
+### Idle-transaction holder (market-data, 08:40 UTC)
+
+- The `pool_watch` long-hold log described in the incident file was deployed after the HK
+  post-close run. The next idle-in-transaction kill should be preceded by a `db.long_hold` line
+  naming the holder.
+- Verified healthy: release `de639a94`, 0 tracebacks, 0 pool errors, drift 0/12.
+- Rollback image: `stockai-market-data:rollback-before-longhold` (`25c566d45c60`).
+- Trial: Nov 4's sessions each run on a single release (`de639a94`).

@@ -215,6 +215,12 @@ Extracts are in `docs/2026-11-02/evidence/`, and the full log is kept off-git at
   errors (Nov 2: 11). Ingest holders moved from `ingestion.py:306` (the head read, held through the
   fetch, max 18.5 s) to `:523` (the write, max 2.7 s). The pool still reached 15/15 twice
   (16:35, 20:01 UTC; Nov 2: 12 times) without a failed checkout, so the headroom is thin, not gone.
+- AUD-IDLETX-LONGHOLD: `pool_watch` now logs `db.long_hold` once for any connection held past
+  240 s, and `db.long_hold_released` when it returns, both with the call-site origin. This is to
+  name the session behind the 300 s idle-in-transaction kills
+  (`docs/audits/2026-11-03-earnings-history-write-and-idle-transaction.md`). Deployed
+  2026-11-04 08:40 UTC as `de639a94` (market-data), after the HK post-close run. Healthy, 0
+  tracebacks, 0 pool errors, drift 0/12. Rollback image `stockai-market-data:rollback-before-longhold`.
 
 ## The lesson
 
