@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx
 import pandas as pd
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from common.config import get_settings
@@ -948,6 +948,92 @@ def _match_report_dates_to_history(
     return matched
 
 
+# AUD-EARNINGS-PENDINGMATCH (2026-11-03): both write paths used to take "the first row of this
+# stock with eps_actual IS NULL" as the event being written. That predicate matches the next
+# UPCOMING report, a duplicate projection, or an old HK row the provider never gave an EPS. The
+# history pass replays the oldest quarter first, so it tried to move the upcoming row onto an old
+# quarter's date; the unique key refused it, the failed flush poisoned the session, and every
+# later row, the new quarter included, was dropped. From Oct 19 to Nov 3, 1 of 48 reports was
+# recorded (docs/audits/2026-11-03-earnings-history-write-and-idle-transaction.md). A row is now
+# the same event only by date: within the announcement window after its period end, or near the
+# calendar's projection.
+_ANNOUNCE_WINDOW = timedelta(days=100)
+_CALENDAR_DRIFT = timedelta(days=45)
+
+
+def _absorb_duplicate(s, keep, dup) -> None:
+    """Fold a second row for the same event into `keep`: issuer documents follow, then it goes."""
+    from db import IssuerDocument
+    s.execute(update(IssuerDocument).where(IssuerDocument.event_id == dup.id).values(event_id=keep.id))
+    s.delete(dup)
+    s.flush()
+
+
+def _history_target(s, stock_id: int, period_end: date, report_date: date,
+                    eps_act: float | None, other_period_ends: set[date]):
+    """The stored row that IS this reported quarter, or None to insert one.
+
+    `report_date` is the joined announcement date, or `period_end` when none was found. Its
+    candidates are rows dated from the period end to `_ANNOUNCE_WINDOW` after it: the row
+    already at `report_date`, a pending row the calendar wrote (it then takes the real date when
+    known), and the period-end stand-in an earlier pass wrote before the real date was known.
+    Further pending rows or a matching stand-in for the same event are folded into the one
+    kept. A quarter with no actual moves and merges nothing, and a date that is another
+    quarter's period end is that quarter's own row, never this one's.
+    """
+    rows = s.execute(select(EarningsEvent).where(
+        EarningsEvent.stock_id == stock_id,
+        EarningsEvent.report_date >= period_end,
+        EarningsEvent.report_date <= period_end + _ANNOUNCE_WINDOW,
+    ).order_by(EarningsEvent.report_date)).scalars().all()
+    at_date = next((r for r in rows if r.report_date == report_date), None)
+    if eps_act is None:
+        return at_date
+    real_known = report_date != period_end
+    pending = [r for r in rows if r is not at_date and r.eps_actual is None
+               and r.report_date > period_end and r.report_date not in other_period_ends]
+    stand_in = next((r for r in rows if r is not at_date and real_known and r.report_date == period_end
+                     and (r.eps_actual is None or round(r.eps_actual, 2) == round(eps_act, 2))), None)
+    if at_date is not None:
+        target, dups = at_date, pending
+    elif pending:
+        target = min(pending, key=lambda r: abs((r.report_date - report_date).days))
+        dups = [r for r in pending if r is not target]
+    elif stand_in is not None:
+        target, dups, stand_in = stand_in, [], None
+    else:
+        return None
+    for d in dups + ([stand_in] if stand_in is not None else []):
+        _absorb_duplicate(s, target, d)
+    if real_known and target.report_date != report_date:
+        target.report_date = report_date
+        s.flush()
+    return target
+
+
+def _calendar_target(s, stock_id: int, upcoming: date, period_ends: set[date]):
+    """(pending row to move to `upcoming` or None to insert, skip).
+
+    Only pending rows within `_CALENDAR_DRIFT` of the projection are the same event; the nearest
+    is kept and the rest folded into it. A REPORTED row that close means the provider's
+    calendar still shows the event that already happened: nothing is written, and stray pending
+    rows for it are folded into the reported one.
+    """
+    rows = s.execute(select(EarningsEvent).where(
+        EarningsEvent.stock_id == stock_id,
+        EarningsEvent.report_date >= upcoming - _CALENDAR_DRIFT,
+        EarningsEvent.report_date <= upcoming + _CALENDAR_DRIFT,
+    )).scalars().all()
+    near = lambda r: abs((r.report_date - upcoming).days)  # noqa: E731
+    reported = [r for r in rows if r.eps_actual is not None]
+    pending = [r for r in rows if r.eps_actual is None and r.report_date not in period_ends]
+    keep = min(reported, key=near) if reported else (min(pending, key=near) if pending else None)
+    for d in pending:
+        if d is not keep:
+            _absorb_duplicate(s, keep, d)
+    return (None, True) if reported else (keep, False)
+
+
 def _fetch_earnings_for_symbol(symbol: str, stock_id: int, stats: dict | None = None) -> int:
     """Fetch earnings history + calendar from yfinance and upsert to DB. Returns rows upserted.
 
@@ -967,6 +1053,7 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int, stats: dict | None = 
         import yfinance as yf
         ticker = yf.Ticker(symbol)
         upserted = 0
+        period_ends: set[date] = set()
 
         # Historical earnings (EPS beats)
         try:
@@ -1040,6 +1127,8 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int, stats: dict | None = 
                 except Exception as exc:
                     log.debug("earnings.revenue_actual_join_skip", symbol=symbol, error=str(exc))
 
+                period_ends = {(i.date() if hasattr(i, "date") else date.fromisoformat(str(i)[:10]))
+                               for i in hist.index}
                 with SessionLocal() as s:
                     for idx, row in hist.iterrows():
                         try:
@@ -1072,101 +1161,90 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int, stats: dict | None = 
                             # upsert so it reflects "last time this row was actually touched," not
                             # "first time this row ever existed."
                             _now = datetime.now(timezone.utc)
-                            # AUD264: the calendar path (below) may have already written a
-                            # PENDING row (eps_actual IS NULL) for this exact event under its
-                            # own earlier, projected report_date — which can genuinely differ
-                            # from the real, joined announcement date resolved above. A bare
-                            # ON CONFLICT (stock_id, report_date) would miss that row entirely
-                            # (different dates) and insert a second, duplicate row for the same
-                            # event. Find and update any such pending row in place first, same
-                            # reasoning as the calendar path's own existing_pending handling.
-                            existing_pending = s.execute(
-                                select(EarningsEvent).where(
-                                    EarningsEvent.stock_id == stock_id,
-                                    EarningsEvent.eps_actual.is_(None),
-                                )
-                            ).scalars().first()
-                            # MU-01: which branch claimed this period, and whether an actual
-                            # was present to write. A pending row updated with eps_act=None is
-                            # the signature of the MU failure and is now visible as such.
-                            log.info("earnings.history_map",
-                                     symbol=symbol, period_end=period_end.isoformat(),
-                                     report_date=report_date.isoformat(),
-                                     eps_actual=eps_act, eps_estimate=eps_est,
-                                     matched_pending=existing_pending is not None)
-                            if existing_pending is not None:
-                                # revenue_estimate was already set by the earlier calendar-path
-                                # write that created this pending row (see the calendar block
-                                # below) — reuse it here to compute the surprise, matching the
-                                # EPS surprise computation above exactly. A row that was never
-                                # seen by the calendar path first (rare — a report syncing before
-                                # its own pending calendar entry ever ran) has revenue_estimate
-                                # still None, so rev_surprise correctly stays None too, same as
-                                # the pre-existing eps `surprise is None` fallback above.
-                                rev_surprise = _compute_surprise_pct(existing_pending.revenue_estimate, rev_act)
-                                existing_pending.report_date = report_date
-                                existing_pending.period = f"Q{fq} {fy}"
-                                existing_pending.fiscal_year = fy
-                                existing_pending.fiscal_quarter = fq
-                                existing_pending.eps_estimate = eps_est
-                                existing_pending.eps_actual = eps_act
-                                existing_pending.surprise_pct = surprise
-                                existing_pending.revenue_actual = rev_act
-                                existing_pending.revenue_surprise_pct = rev_surprise
-                                existing_pending.earnings_strength_score = strength
-                                existing_pending.fetched_at = _now
-                                s.flush()
-                                upserted += 1
-                                # The other history write path. Both must feed the watermark, or
-                                # a pass that only updated pending rows would report no coverage.
-                                if stats is not None:
-                                    prev = stats.get("history_newest_written")
-                                    if prev is None or report_date > prev:
-                                        stats["history_newest_written"] = report_date
-                            else:
-                                # No prior pending row (and therefore no revenue_estimate ever
-                                # captured for this event) — revenue_surprise_pct correctly
-                                # stays unset, matching eps `surprise`'s own identical
-                                # both-sides-required convention immediately above.
-                                stmt = (
-                                    pg_insert(EarningsEvent)
-                                    .values(
-                                        stock_id=stock_id,
-                                        report_date=report_date,
-                                        period=f"Q{fq} {fy}",
-                                        fiscal_year=fy,
-                                        fiscal_quarter=fq,
-                                        eps_estimate=eps_est,
-                                        eps_actual=eps_act,
-                                        surprise_pct=surprise,
-                                        revenue_actual=rev_act,
-                                        earnings_strength_score=strength,
-                                        fetched_at=_now,
-                                    )
-                                    .on_conflict_do_update(
-                                        constraint="uq_earnings_stock_report_date",
-                                        set_=dict(
+                            # AUD-EARNINGS-PENDINGMATCH: the stored row for THIS quarter, found by
+                            # date (see _history_target), in its own savepoint so one bad row can
+                            # no longer poison the session and drop every row after it.
+                            with s.begin_nested():
+                                target = _history_target(s, stock_id, period_end, report_date, eps_act,
+                                                         period_ends - {period_end})
+                                # MU-01: which row claimed this period, and whether an actual was
+                                # present to write.
+                                log.info("earnings.history_map",
+                                         symbol=symbol, period_end=period_end.isoformat(),
+                                         report_date=report_date.isoformat(),
+                                         eps_actual=eps_act, eps_estimate=eps_est,
+                                         matched_row=None if target is None else target.id,
+                                         matched_pending=target is not None and target.eps_actual is None)
+                                if target is not None:
+                                    # revenue_estimate was set by the calendar write that created a
+                                    # pending row; a row the calendar never saw keeps it None, so
+                                    # rev_surprise stays None, as `surprise` does above.
+                                    rev_surprise = _compute_surprise_pct(target.revenue_estimate, rev_act)
+                                    report_date = target.report_date
+                                    target.period = f"Q{fq} {fy}"
+                                    target.fiscal_year = fy
+                                    target.fiscal_quarter = fq
+                                    target.eps_estimate = eps_est
+                                    target.eps_actual = eps_act
+                                    target.surprise_pct = surprise
+                                    target.revenue_actual = rev_act
+                                    target.revenue_surprise_pct = rev_surprise
+                                    target.earnings_strength_score = strength
+                                    target.fetched_at = _now
+                                    s.flush()
+                                    upserted += 1
+                                    # The other history write path. Both must feed the watermark, or
+                                    # a pass that only updated existing rows would report no coverage.
+                                    if stats is not None:
+                                        prev = stats.get("history_newest_written")
+                                        if prev is None or report_date > prev:
+                                            stats["history_newest_written"] = report_date
+                                else:
+                                    # No prior pending row (and therefore no revenue_estimate ever
+                                    # captured for this event) — revenue_surprise_pct correctly
+                                    # stays unset, matching eps `surprise`'s own identical
+                                    # both-sides-required convention immediately above.
+                                    stmt = (
+                                        pg_insert(EarningsEvent)
+                                        .values(
+                                            stock_id=stock_id,
+                                            report_date=report_date,
+                                            period=f"Q{fq} {fy}",
+                                            fiscal_year=fy,
+                                            fiscal_quarter=fq,
                                             eps_estimate=eps_est,
                                             eps_actual=eps_act,
                                             surprise_pct=surprise,
                                             revenue_actual=rev_act,
                                             earnings_strength_score=strength,
                                             fetched_at=_now,
-                                        ),
+                                        )
+                                        .on_conflict_do_update(
+                                            constraint="uq_earnings_stock_report_date",
+                                            set_=dict(
+                                                eps_estimate=eps_est,
+                                                eps_actual=eps_act,
+                                                surprise_pct=surprise,
+                                                revenue_actual=rev_act,
+                                                earnings_strength_score=strength,
+                                                fetched_at=_now,
+                                            ),
+                                        )
                                     )
-                                )
-                                result = s.execute(stmt)
-                                upserted += result.rowcount
-                                if result.rowcount and stats is not None:
-                                    prev = stats.get("history_newest_written")
-                                    if prev is None or report_date > prev:
-                                        stats["history_newest_written"] = report_date
+                                    result = s.execute(stmt)
+                                    upserted += result.rowcount
+                                    if result.rowcount and stats is not None:
+                                        prev = stats.get("history_newest_written")
+                                        if prev is None or report_date > prev:
+                                            stats["history_newest_written"] = report_date
                         except Exception as _row_exc:            # noqa: BLE001
                             # COUNTED, NOT SWALLOWED. A row that silently `continue`d was
                             # indistinguishable afterwards from one that never arrived.
                             if stats is not None:
                                 key = type(_row_exc).__name__
                                 stats["dropped"][key] = stats["dropped"].get(key, 0) + 1
+                            log.warning("earnings.history_row_failed", symbol=symbol,
+                                        period=str(idx)[:10], error=f"{type(_row_exc).__name__}: {_row_exc}"[:300])
                             continue
                     s.commit()
                     # Attributed to the HISTORY stage specifically: a calendar write must never
@@ -1175,7 +1253,7 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int, stats: dict | None = 
                         stats["history_rows_written"] = upserted
                         stats["rows_mapped"] = upserted + sum(stats["dropped"].values())
         except Exception as exc:
-            log.debug("earnings.history_skip", symbol=symbol, error=str(exc))
+            log.warning("earnings.history_skip", symbol=symbol, error=str(exc)[:300])
             if stats is not None:
                 stats["history_error"] = f"{type(exc).__name__}: {exc}"[:300]
 
@@ -1216,18 +1294,25 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int, stats: dict | None = 
                         # in this codebase to mean "not yet reported") — find and update it in
                         # place if it exists under a DIFFERENT date than today's estimate,
                         # rather than letting the insert path create a duplicate.
-                        existing_pending = s.execute(
-                            select(EarningsEvent).where(
-                                EarningsEvent.stock_id == stock_id,
-                                EarningsEvent.eps_actual.is_(None),
-                            )
-                        ).scalars().first()
+                        # AUD-EARNINGS-PENDINGMATCH: "any row with eps_actual IS NULL" also matched
+                        # old HK rows with no EPS and duplicate projections, and moved them here.
+                        # Only a pending row near this projection is the same event.
+                        existing_pending, already_reported = _calendar_target(
+                            s, stock_id, upcoming, period_ends)
                         # See DQ-EARNINGS-FETCHED-AT-FROZEN comment above — same reasoning applies
                         # to the upcoming-earnings-calendar upsert path.
                         _now = datetime.now(timezone.utc)
                         _est = float(eps_est) if eps_est and pd.notna(eps_est) else None
                         _rev_est = float(rev_est) if rev_est and pd.notna(rev_est) else None
-                        if existing_pending is not None:
+                        if already_reported:
+                            # The provider still shows the report that already happened. Writing
+                            # its estimate onto the reported row, or a new pending row beside it,
+                            # would restate an event that is over.
+                            log.info("earnings.calendar_already_reported", symbol=symbol,
+                                     upcoming=upcoming.isoformat())
+                            s.commit()
+                            upcoming = None
+                        elif existing_pending is not None:
                             existing_pending.report_date = upcoming
                             existing_pending.period = f"Q{fq} {fy}"
                             existing_pending.fiscal_year = fy
@@ -1258,10 +1343,11 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int, stats: dict | None = 
                                 )
                             )
                             s.execute(stmt)
-                        s.commit()
-                        upserted += 1
+                        if upcoming is not None:
+                            s.commit()
+                            upserted += 1
         except Exception as exc:
-            log.debug("earnings.calendar_skip", symbol=symbol, error=str(exc))
+            log.warning("earnings.calendar_skip", symbol=symbol, error=str(exc)[:300])
             if stats is not None:
                 stats["calendar_error"] = f"{type(exc).__name__}: {exc}"[:300]
         if stats is not None:
@@ -1278,11 +1364,11 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int, stats: dict | None = 
 def _backfill_report_dates_for_symbol(symbol: str, stock_id: int) -> int:
     """AUD264-EARNINGS-FISCAL-QUARTER-FROM-ANNOUNCEMENT-MONTH one-time backfill: rows already
     persisted BEFORE this fix shipped have report_date set to the fiscal PERIOD-END date, not
-    the real announcement date (see _match_report_dates_to_history()'s own docstring). The
-    normal sync path (_fetch_earnings_for_symbol) does NOT self-heal these — its
-    existing_pending lookup only matches eps_actual IS NULL rows, so re-running the ordinary
-    daily sync against an already-reported stale row would INSERT A DUPLICATE under the
-    correct date rather than fix the original. This function instead finds each already-
+    the real announcement date (see _match_report_dates_to_history()'s own docstring). When it
+    was written, the normal sync path did not self-heal these and would insert a duplicate under
+    the correct date. Since AUD-EARNINGS-PENDINGMATCH it moves a stand-in for a quarter still in
+    the provider's history window (_history_target); this function also reaches rows that have
+    rolled out of that window. It finds each already-
     reported row (eps_actual IS NOT NULL) for the symbol and updates report_date/period/
     fiscal_year/fiscal_quarter IN PLACE, matched by eps_actual — the exact same reliable join
     key _match_report_dates_to_history() already uses. Returns the count of rows corrected.

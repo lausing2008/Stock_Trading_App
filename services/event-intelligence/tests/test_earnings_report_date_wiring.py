@@ -46,25 +46,25 @@ def test_earnings_dates_join_itself_is_wrapped_in_its_own_try_except():
 
 # ── Both paths avoid duplicate rows when the projected/real date shifts ─────────────────────
 
-def test_historical_path_updates_an_existing_pending_row_in_place():
-    """If the calendar path already wrote a PENDING row (eps_actual IS NULL) for this exact
-    event under an earlier, different projected date, the historical sync (which now has the
-    real, joined announcement date) must find and update that SAME row rather than insert a
-    second, duplicate one for the same event."""
+def test_historical_path_updates_the_row_for_this_quarter_in_place():
+    """If the calendar path already wrote a PENDING row for this exact event under an earlier
+    projected date, the historical sync must update that SAME row rather than insert a second
+    one. AUD-EARNINGS-PENDINGMATCH: the row is found by date (_history_target), before the
+    insert path, never as "any pending row": that lookup is what stopped every report from
+    being recorded. Behaviour is covered on PostgreSQL by test_earnings_pending_match.py."""
     body = _fetch_body()
-    assert "EarningsEvent.eps_actual.is_(None)" in body
-    hist_pending_idx = body.index("existing_pending = s.execute(")
+    hist_target_idx = body.index("target = _history_target(")
     conflict_idx = body.index('constraint="uq_earnings_stock_report_date"')
-    assert hist_pending_idx < conflict_idx
+    assert hist_target_idx < conflict_idx
+    assert "with s.begin_nested():" in body[:conflict_idx]
 
 
-def test_calendar_path_updates_an_existing_pending_row_in_place():
-    """yfinance's own projected earnings date for an unreported quarter routinely shifts by a
-    few days as the real date is confirmed — daily re-syncs must update the ONE real pending
-    row in place, not insert a new row every time the estimate moves."""
+def test_neither_path_matches_any_pending_row_of_the_stock():
+    """The bare `eps_actual IS NULL` lookup matched the next upcoming report, duplicate
+    projections and HK rows without EPS. Both paths now go through a date-windowed helper."""
     body = _fetch_body()
-    # Two existing_pending lookups must exist — one for the historical path, one for calendar.
-    assert body.count("EarningsEvent.eps_actual.is_(None)") == 2
+    assert "EarningsEvent.eps_actual.is_(None)" not in body
+    assert "_calendar_target(" in body
 
 
 def test_neither_path_still_references_the_old_dropped_constraint():

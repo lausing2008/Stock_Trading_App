@@ -108,11 +108,11 @@ def test_existing_pending_branch_sets_both_new_fields():
     revenue_actual and revenue_surprise_pct — a fix that only set one would silently leave
     the other permanently null even when the data to compute it was available."""
     body = _fetch_body()
-    pending_idx = body.index("if existing_pending is not None:")
-    insert_idx = body.index("            else:", pending_idx)
+    pending_idx = body.index("if target is not None:")
+    insert_idx = body.index("                                else:", pending_idx)
     pending_block = body[pending_idx:insert_idx]
-    assert "existing_pending.revenue_actual = rev_act" in pending_block
-    assert "existing_pending.revenue_surprise_pct = rev_surprise" in pending_block
+    assert "target.revenue_actual = rev_act" in pending_block
+    assert "target.revenue_surprise_pct = rev_surprise" in pending_block
 
 
 def test_revenue_surprise_reuses_the_row_own_revenue_estimate_not_a_fresh_fetch():
@@ -121,7 +121,7 @@ def test_revenue_surprise_reuses_the_row_own_revenue_estimate_not_a_fresh_fetch(
     re-derive or assume a separate revenue_estimate source (there isn't one at this point in
     the historical-report path)."""
     body = _fetch_body()
-    assert "_compute_surprise_pct(existing_pending.revenue_estimate, rev_act)" in body
+    assert "_compute_surprise_pct(target.revenue_estimate, rev_act)" in body
 
 
 def test_insert_branch_sets_revenue_actual_in_both_the_values_and_conflict_update_clauses():
@@ -130,7 +130,7 @@ def test_insert_branch_sets_revenue_actual_in_both_the_values_and_conflict_updat
     on_conflict_do_update() set_= clause must carry revenue_actual, or a re-run of this sync
     would silently drop the value it just inserted the first time."""
     body = _fetch_body()
-    insert_idx = body.index("stmt = (\n                                    pg_insert(EarningsEvent)")
+    insert_idx = body.index("stmt = (\n                                        pg_insert(EarningsEvent)")
     conflict_idx = body.index('constraint="uq_earnings_stock_report_date"', insert_idx)
     values_block = body[insert_idx:conflict_idx]
     set_block = body[conflict_idx:conflict_idx + 400]

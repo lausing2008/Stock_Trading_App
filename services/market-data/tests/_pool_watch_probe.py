@@ -67,5 +67,39 @@ for c in conns:
 check("all holders released", W.snapshot() == [])
 with engine.connect() as c:
     check("connections still work", c.execute(text("select 1")).scalar() == 1)
+
+# AUD-IDLETX-LONGHOLD: a connection held past LONG_HOLD_S is named while still held (once), and
+# again with its total age when it returns, however empty the pool is. A fake clock drives it.
+T = [10_000.0]
+W._clock = lambda: T[0]
+W._last_sweep[0] = 0.0
+logged.clear()
+
+
+def leak_in_named_function():
+    return engine.connect()
+
+
+held = leak_in_named_function()
+short = engine.connect(); short.close()
+T[0] += 250
+probe1 = engine.connect(); probe1.close()            # the next checkout sweeps
+lh = [kw for e, kw in logged if e == "db.long_hold"]
+check("long hold logged while still held", len(lh) == 1 and lh[0]["age_s"] == 250.0, logged)
+check("long hold names its origin", lh and any("leak_in_named_function" in o for o in lh[0]["origin"]), lh)
+check("a short hold is never logged", not [kw for e, kw in logged if e == "db.long_hold_released"], logged)
+T[0] += 120
+probe2 = engine.connect(); probe2.close()
+check("logged once per holder, not every sweep", len([1 for e, _ in logged if e == "db.long_hold"]) == 1, logged)
+held.close()
+rel = [kw for e, kw in logged if e == "db.long_hold_released"]
+check("release logged with total age and how", len(rel) == 1 and rel[0]["age_s"] == 370.0 and rel[0]["how"] == "checkin", rel)
+gone = leak_in_named_function()
+T[0] += 300
+gone.invalidate()                                    # a dead connection is closed, not checked in
+rel = [kw for e, kw in logged if e == "db.long_hold_released"]
+check("an invalidated long hold is logged once", len(rel) == 2 and rel[1]["age_s"] == 300.0, rel)
+gone.close()
+check("no holder left behind", W.snapshot() == [] and not W._reported, (W.snapshot(), W._reported))
 print("FAILED" if fails else "pool_watch probe passed")
 sys.exit(1 if fails else 0)
