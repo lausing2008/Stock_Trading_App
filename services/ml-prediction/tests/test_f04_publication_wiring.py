@@ -27,7 +27,8 @@ def test_every_queued_training_task_carries_the_checked_protocol():
     tree = ast.parse(ROUTES)
     enqueuers = 0
     for fn in (n for n in tree.body if isinstance(n, ast.FunctionDef)):
-        adds = [c for c in _calls(fn, "add_task") if c.args and getattr(c.args[0], "id", None) == "train_model"]
+        adds = [c for c in _calls(fn, "add_task") if c.args
+                and getattr(c.args[0], "id", None) in ("train_model", "run_training_batch")]
         if not adds:
             continue
         enqueuers += 1
@@ -38,6 +39,18 @@ def test_every_queued_training_task_carries_the_checked_protocol():
             assert kw.get("protocol") == "protocol", f"{fn.name} line {c.lineno} drops the protocol"
             assert c.lineno > first_check, f"{fn.name}: task queued before the check"
     assert enqueuers == 5      # train, train_all, train_all_ensemble(_three), train_all_horizons
+
+
+def test_the_nightly_batch_passes_the_checked_protocol_to_every_job():
+    """train_all_horizons hands its jobs to training/batch.py (AUD-ML-TRAINCHILD), which must
+    forward the protocol both to the child process and to each train_model call."""
+    batch = (ROOT / "src/training/batch.py").read_text()
+    run = _fn(batch, "run_jobs")
+    trains = [c for c in ast.walk(run) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "train"]
+    assert len(trains) == 1
+    assert {k.arg: ast.unparse(k.value) for k in trains[0].keywords}.get("protocol") == "protocol"
+    spawn = ast.unparse(_fn(batch, "run_training_batch"))
+    assert "'--protocol', protocol" in spawn and "run_jobs(jobs, protocol)" in spawn
 
 
 def test_require_v1_refuses_v2_while_disabled_and_v2_is_never_implemented():
@@ -116,4 +129,5 @@ def test_the_scheduler_nightly_job_requests_v1_and_never_v2():
     nightly = [c for c in _calls(ast.parse(SCHEDULER), "_post") if "train_all_horizons" in ast.unparse(c.args[0])]
     assert len(nightly) == 1
     assert "'protocol': 'v1'" in ast.unparse(nightly[0])
+    assert "'market': market" in ast.unparse(nightly[0]), "each post-close trains only its own market"
     assert "'v2'" not in SCHEDULER and '"v2"' not in SCHEDULER.split("train_all_horizons")[1][:400]

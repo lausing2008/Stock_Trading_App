@@ -1,6 +1,7 @@
 """F04 publication fencing -- the ACTUAL nightly path, executed in the ml-prediction image.
 
-POST /ml/train_all_horizons (the scheduler's nightly call) -> FastAPI BackgroundTasks -> the REAL
+POST /ml/train_all_horizons (the scheduler's nightly call) -> FastAPI BackgroundTasks -> the batch
+(run in-process here so the loader stubs apply; production spawns it, covered below) -> the REAL
 train_model (XGBoost + RandomForest fitted on synthetic prices) -> training/publication.py -> the
 filesystem. Only the data loaders are replaced (synthetic prices, no macro/sector/outcome/
 fundamental rows) and the symbol query returns two fixture symbols; everything from the route to
@@ -32,6 +33,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import db  # noqa: E402
 from src.api import routes  # noqa: E402
+from src.training import batch  # noqa: E402
 from src.training import publication as pub  # noqa: E402
 from src.training import trainer  # noqa: E402
 
@@ -66,6 +68,8 @@ def env(tmp_path, monkeypatch):
     md = tmp_path / "data" / "models"
     md.mkdir(parents=True)
     monkeypatch.setattr(trainer._settings, "model_dir", str(md))
+    monkeypatch.setattr(batch, "IN_PROCESS", True)
+    monkeypatch.setattr(batch, "_lock_dir", lambda: tmp_path)
     monkeypatch.setattr(db, "SessionLocal", _Session)
     monkeypatch.setattr(trainer, "_load_prices", _prices)
     empty = lambda *a, **k: pd.DataFrame()  # noqa: E731
@@ -131,13 +135,13 @@ def test_a_job_queued_before_authorization_is_fenced_when_it_runs(env):
     routes.train_all_horizons(tasks, protocol="v1", _="test")          # queued, not yet run
     pub.set_v2_enabled(md, True, by="test")
     pub.authorize(md, "AAA", "SWING", by="test")
-    for t in tasks.tasks:
-        t.func(*t.args, **t.kwargs)
+    (t,) = tasks.tasks
+    t.func(*t.args, **t.kwargs)
     assert _sha(_live(md, "AAA", "xgboost")) == aaa
     pub.revoke(md, "AAA", "SWING", by="test")                          # retry after revocation
-    retry = [t for t in tasks.tasks if t.args[:2] == ("AAA", "xgboost")]   # order is day-rotated
+    retry = [j for j in t.args[0] if tuple(j[:2]) == ("AAA", "xgboost")]   # order is day-rotated
     assert len(retry) == 1
-    retry[0].func(*retry[0].args, **retry[0].kwargs)
+    batch.run_jobs(retry, t.kwargs["protocol"])
     assert _sha(_live(md, "AAA", "xgboost")) != aaa
 
 
@@ -390,3 +394,24 @@ def test_routes_refuse_intraday_and_unknown_styles(env, path, body):
     md, client = env
     r = client.post(path, json=body)
     assert r.status_code == 422 and r.json()["detail"]["error"] == "unsupported_horizon", r.text
+
+
+def test_production_runs_the_batch_in_a_child_that_imports_the_real_trainer(tmp_path, monkeypatch):
+    """AUD-ML-TRAINCHILD: the spawned interpreter starts from the image's working directory,
+    imports the real trainer and exits 0. Jobs are empty: the child cannot see this file's stubs."""
+    import subprocess as sp
+    md = tmp_path / "models"
+    md.mkdir()
+    monkeypatch.setenv("MODEL_DIR", str(md))
+    monkeypatch.setattr(batch, "IN_PROCESS", False)
+    real = sp.run
+    seen = {}
+
+    def run(cmd, **kw):
+        out = real(cmd, capture_output=True, **kw)
+        seen.update(rc=out.returncode, out=out.stdout + out.stderr)
+        return out
+    monkeypatch.setattr(batch.subprocess, "run", run)
+    assert batch.run_training_batch([], "v1", market="US") == 0, seen.get("out")
+    assert '"train.batch_start"' in seen["out"] and '"train.batch_done"' in seen["out"], seen["out"]
+    assert (tmp_path / "ml_training" / "US.lock").exists()

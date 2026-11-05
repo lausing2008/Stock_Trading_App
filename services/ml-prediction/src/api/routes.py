@@ -12,6 +12,7 @@ log = get_logger("ml.routes")
 
 from ..models import list_models
 from ..training.publication import ServingUnavailable
+from ..training.batch import run_training_batch
 from ..training.trainer import _serving_unavailable
 from ..training import predict_latest, predict_latest_ensemble, predict_latest_ensemble_three, predict_single_served, train_model, tune_symbol, validate_walkforward, _HORIZON_BY_STYLE
 
@@ -473,16 +474,28 @@ def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING", protocol: s
 
 
 @router.post("/train_all_horizons")
-def train_all_horizons(tasks: BackgroundTasks, protocol: str = "v1", _: str = Depends(require_model_admin)):
+def train_all_horizons(tasks: BackgroundTasks, protocol: str = "v1", market: str | None = None,
+                       _: str = Depends(require_model_admin)):
     """Train XGBoost + RandomForest for all 4 horizon-specific styles for every active stock.
 
     T217-C: RF trained alongside XGBoost so predict_latest_ensemble_three() has
     all three models (XGB + LGB + RF) available. Signal engine auto-routes by style.
     Run nightly after market close.
+
+    AUD-ML-TRAINCHILD: `market` limits the run to one market's stocks. Each market's
+    post-close job trains only its own models; both used to retrain every model, so each run
+    refit the other market's models on data that had not changed. Omitted = every market.
+    The batch runs in a child process (training/batch.py).
     """
     protocol = _require_v1(protocol)
     from sqlalchemy import or_, select
-    from db import Stock, SessionLocal
+    from db import Market, Stock, SessionLocal
+
+    if market is not None:
+        try:
+            market = Market(market.upper()).value
+        except ValueError:
+            raise HTTPException(422, f"unknown market {market!r}")
 
     # T14-SURVIVORSHIP-REAPPLY: re-applies the training-universe fix originally shipped in
     # e32f9bd (2026-06-19), reverted 2 days later in 399e34e because the `delisted` column's
@@ -498,10 +511,11 @@ def train_all_horizons(tasks: BackgroundTasks, protocol: str = "v1", _: str = De
     # way on 2026-09-08. So this OR is live behaviour now, not a placeholder: delisted rows are
     # deliberately KEPT in the training universe (T14-SURVIVORSHIP) so their history still
     # counts against survivorship bias.
+    stmt = select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
+    if market is not None:
+        stmt = stmt.where(Stock.market == Market(market))
     with SessionLocal() as session:
-        symbols = list(session.execute(
-            select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
-        ).scalars())
+        symbols = list(session.execute(stmt).scalars())
 
     # AUD-ML3-STYLESTARVATION: the enqueue order used to be style-outer / symbol-inner —
     # all SHORT, then all SWING, then all LONG, then all GROWTH. BackgroundTasks runs
@@ -525,19 +539,22 @@ def train_all_horizons(tasks: BackgroundTasks, protocol: str = "v1", _: str = De
     #
     # This does NOT make the job finish — that needs real parallelism or a smaller universe.
     # It makes the part that DOES finish uniformly distributed rather than systematically
-    # starving two styles and a fixed alphabetical tail. `train_model` is idempotent, so a
-    # re-post that overlaps a running queue is safe.
+    # starving two styles and a fixed alphabetical tail. A re-post for a market whose batch
+    # is still running is skipped by the batch's lock (training/batch.py).
     _rotate = date.today().timetuple().tm_yday % max(len(symbols), 1)
     ordered_symbols = symbols[_rotate:] + symbols[:_rotate]
 
+    jobs = []
     for sym in ordered_symbols:
         for style, horizon in _HORIZON_BY_STYLE.items():
-            tasks.add_task(train_model, sym, "xgboost", horizon, style=style, protocol=protocol)
-            tasks.add_task(train_model, sym, "random_forest", horizon, style=style, protocol=protocol)
+            jobs.append((sym, "xgboost", horizon, style))
+            jobs.append((sym, "random_forest", horizon, style))
+    tasks.add_task(run_training_batch, jobs, protocol=protocol, market=market or "ALL")
 
     scheduled = [{"style": s, "horizon": h} for s, h in _HORIZON_BY_STYLE.items()]
     return {
         "status": "scheduled",
+        "market": market or "ALL",
         "symbol_count": len(symbols),
         "styles": scheduled,
         "total_tasks": len(symbols) * len(_HORIZON_BY_STYLE) * 2,

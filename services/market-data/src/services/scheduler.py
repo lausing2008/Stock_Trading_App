@@ -847,7 +847,7 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
       1. ingest_universe  — fetch latest daily OHLCV bars from yfinance → DB
       2. /rankings/refresh — ranking-engine recalculates K-Scores for the market
       3. /signals/refresh  — signal-engine regenerates buy/sell signals
-      4. /ml/train_all     — (post_close only) retrain ML models on the day's data
+      4. /ml/train_all_horizons — (post_close only) retrain this market's ML models
       5. check_signal_alerts / check_technical_alerts — fire any triggered alerts
 
     Called by every scheduled job (open burst, regular, close burst, post-close).
@@ -914,7 +914,10 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
             # F04 publication fencing: the nightly job is LEGACY v1 training and says so. It
             # must never request v2; ml-prediction refuses v2 while disabled and fences any
             # write for a cell an enabled v2 cohort owns (training/publication.py).
-            _post(f"{_settings.ml_prediction_url}/ml/train_all_horizons", params={"protocol": "v1"})
+            # AUD-ML-TRAINCHILD: only this market's models. Both post-close jobs used to retrain
+            # every model, so each refit the other market's models on unchanged data.
+            _post(f"{_settings.ml_prediction_url}/ml/train_all_horizons",
+                  params={"protocol": "v1", "market": market})
             # Evaluate any BUY/SELL signals whose hold window has now expired.
             # One long attempt (2026-10-30): the US run took ~4.5 min server-side, so the default
             # 15 s x 3 attempts logged the job failed while it succeeded, and each retry started a
