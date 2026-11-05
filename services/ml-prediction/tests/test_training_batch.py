@@ -43,8 +43,9 @@ def locks(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _main(market, train, jobs=JOBS):
-    return batch.main(["--market", market, "--protocol", "v1"], stdin=io.StringIO(json.dumps(jobs)), train=train)
+def _main(market, train, jobs=JOBS, **kw):
+    kw.setdefault("poll_s", 0.05)
+    return batch.main(["--market", market, "--protocol", "v1"], stdin=io.StringIO(json.dumps(jobs)), train=train, **kw)
 
 
 def test_every_job_runs_in_order_with_the_protocol(locks):
@@ -81,6 +82,32 @@ def test_another_market_waits_for_the_running_batch(locks):
     assert done.is_set() and len(t.calls) == 4
 
 
+def test_waiting_for_another_batch_gives_up_instead_of_blocking_forever(locks):
+    """A stuck batch used to hold batch.lock forever; the next market then waited forever."""
+    with open(locks / "batch.lock", "w") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        t = _Trainer()
+        assert _main("HK", t, wait_limit_s=0.2) == 3
+        assert t.calls == []
+
+
+def test_a_batch_where_every_job_failed_exits_non_zero(locks):
+    class _All(_Trainer):
+        def __call__(self, *a, **k):
+            raise RuntimeError("database down")
+    assert _main("US", _All()) == 1
+    assert _main("US", _Trainer(fail=("AAA", "xgboost"))) == 0     # partial failure is counted, not fatal
+
+
+def test_a_child_over_the_run_limit_is_killed_and_reported(monkeypatch):
+    def run(cmd, **kw):
+        assert kw["timeout"] == batch.RUN_LIMIT_S
+        raise batch.subprocess.TimeoutExpired(cmd, kw["timeout"])
+    monkeypatch.setattr(batch.subprocess, "run", run)
+    monkeypatch.setattr(batch, "IN_PROCESS", False)
+    assert batch.run_training_batch(JOBS, "v1", market="US") is None
+
+
 def test_production_spawns_a_fresh_interpreter_with_the_jobs_on_stdin(monkeypatch):
     seen = {}
 
@@ -100,3 +127,43 @@ def test_production_spawns_a_fresh_interpreter_with_the_jobs_on_stdin(monkeypatc
 
 def test_in_process_mode_is_for_tests_only():
     assert batch.IN_PROCESS is False
+
+
+def test_tuning_runs_through_the_same_child_entry_point(locks):
+    """tune_all used to run in the API process and keep its peak there all week."""
+    seen = []
+
+    def tune(sym, n_trials, horizon, style, triggered_by):
+        seen.append((sym, n_trials, horizon, style, triggered_by))
+        return {"symbol": sym, "skipped": True, "reason": "fixture"}     # no post-refresh HTTP
+    payload = {"symbols": ["AAA", "BBB"], "n_trials": 3, "horizon": 10, "style": "SWING", "triggered_by": "weekly"}
+    rc = batch.main(["--kind", "tune", "--market", "TUNE", "--protocol", "v1"],
+                    stdin=io.StringIO(json.dumps(payload)), tune=tune, poll_s=0.05)
+    assert seen == [("AAA", 3, 10, "SWING", "weekly"), ("BBB", 3, 10, "SWING", "weekly")]
+    assert rc == 1, "every symbol skipped is reported as a failed batch"
+
+
+def test_tuning_waits_for_a_running_training_batch(locks):
+    with open(locks / "batch.lock", "w") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        payload = {"symbols": ["AAA"], "n_trials": 1, "horizon": 10, "style": "SWING", "triggered_by": "stale_guard"}
+        rc = batch.main(["--kind", "tune", "--market", "TUNE", "--protocol", "v1"],
+                        stdin=io.StringIO(json.dumps(payload)), tune=lambda *a, **k: {}, wait_limit_s=0.2, poll_s=0.05)
+        assert rc == 3
+
+
+def test_tune_spawn_uses_its_own_kind_and_longer_limit(monkeypatch):
+    seen = {}
+
+    class _Done:
+        returncode = 0
+
+    def run(cmd, **kw):
+        seen.update(cmd=cmd, **kw)
+        return _Done()
+    monkeypatch.setattr(batch.subprocess, "run", run)
+    monkeypatch.setattr(batch, "IN_PROCESS", False)
+    assert batch.run_tune_batch(["AAA"], 60, 10, "SWING", "weekly") == 0
+    assert seen["cmd"][-6:] == ["--kind", "tune", "--market", "TUNE", "--protocol", "v1"]
+    assert seen["timeout"] == batch.TUNE_LIMIT_S > batch.RUN_LIMIT_S
+    assert json.loads(seen["input"])["symbols"] == ["AAA"]

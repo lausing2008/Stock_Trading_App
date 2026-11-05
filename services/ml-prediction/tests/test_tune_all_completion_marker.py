@@ -25,6 +25,22 @@ def _tune_all_body() -> str:
     return _ROUTES_SOURCE[start:end]
 
 
+# AUD-ML-TRAINCHILD (2026-11-05): the run moved verbatim into training/batch.py, where it runs
+# in the batch child process; tune_all only enqueues it.
+_BATCH_SOURCE = (_ROUTES_PATH.parents[1] / "training" / "batch.py").read_text()
+
+
+def _run_body() -> str:
+    start = _BATCH_SOURCE.index("def run_tune_jobs(")
+    end = _BATCH_SOURCE.index("\n\n\ndef ", start)
+    return _BATCH_SOURCE[start:end]
+
+
+def test_tune_all_hands_its_run_to_the_batch_child():
+    body = _tune_all_body()
+    assert "tasks.add_task(run_tune_batch, symbols" in body and "triggered_by=triggered_by" in body
+
+
 def test_tune_all_accepts_a_triggered_by_query_param_defaulting_to_weekly():
     body = _tune_all_body()
     assert "triggered_by: str = \"weekly\"" in body
@@ -34,14 +50,14 @@ def test_completion_marker_is_written_unconditionally_not_only_when_tuned_count_
     """The marker must be written BEFORE the `if tuned_count > 0:` branch — a run that
     genuinely finished with zero symbols tuned (every symbol legitimately failed) must still
     be distinguishable from a run that never finished at all."""
-    body = _tune_all_body()
+    body = _run_body()
     marker_idx = body.index('"stockai:tune_all_completed"')
     branch_idx = body.index("if tuned_count > 0:")
     assert marker_idx < branch_idx
 
 
 def test_completion_marker_records_triggered_by_tuned_and_total():
-    body = _tune_all_body()
+    body = _run_body()
     marker_call = body[body.index('"stockai:tune_all_completed"'):body.index('"stockai:tune_all_completed"') + 600]
     assert '"tuned": tuned_count' in marker_call
     assert '"total": len(symbols)' in marker_call
@@ -53,7 +69,7 @@ def test_completion_marker_write_is_wrapped_in_try_except():
     """A Redis hiccup while writing the marker must never mask that tuning itself genuinely
     completed — the marker write is a diagnostic add-on, not something that should be able to
     make a real, finished run look like it crashed."""
-    body = _tune_all_body()
+    body = _run_body()
     marker_idx = body.index('"stockai:tune_all_completed"')
     # Walk backward from the marker call to find its enclosing try block.
     try_idx = body.rindex("try:", 0, marker_idx)
@@ -62,5 +78,5 @@ def test_completion_marker_write_is_wrapped_in_try_except():
 
 
 def test_run_all_threads_triggered_by_into_each_tune_symbol_call():
-    body = _tune_all_body()
+    body = _run_body()
     assert "tune_symbol(sym, n_trials=n_trials, horizon=horizon, style=style, triggered_by=triggered_by)" in body

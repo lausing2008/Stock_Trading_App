@@ -12,7 +12,7 @@ log = get_logger("ml.routes")
 
 from ..models import list_models
 from ..training.publication import ServingUnavailable
-from ..training.batch import run_training_batch
+from ..training.batch import run_training_batch, run_tune_batch
 from ..training.trainer import _serving_unavailable
 from ..training import predict_latest, predict_latest_ensemble, predict_latest_ensemble_three, predict_single_served, train_model, tune_symbol, validate_walkforward, _HORIZON_BY_STYLE
 
@@ -232,73 +232,9 @@ def tune_all(
 
     horizon = _daily_horizon_days(style)
 
-    def _run_all():
-        results = []
-        for sym in symbols:
-            try:
-                result = tune_symbol(sym, n_trials=n_trials, horizon=horizon, style=style, triggered_by=triggered_by)
-            except Exception as exc:
-                log.warning("tune_all.symbol_failed", symbol=sym, error=str(exc))
-                result = {"symbol": sym, "skipped": True, "reason": str(exc)}
-            results.append(result)
-
-        # TIER95: After all models are retrained, trigger signal refreshes so new models
-        # are used immediately (not at the next scheduled refresh 5× per day).
-        tuned_count = sum(1 for r in results if not r.get("skipped"))
-
-        # AUD263-TUNEALL-STALE-GUARD-NOT-WEEKLY: this is the real completion marker
-        # (scheduler.py's own "tune_all_sent" only records that the POST was DISPATCHED, not
-        # that this ~2-4h background run actually finished). Written unconditionally, even
-        # when tuned_count is 0 — a run that genuinely finished with zero symbols tuned (e.g.
-        # every symbol legitimately failed) must still be distinguishable from a run that never
-        # finished at all (container recreate mid-run, an unhandled crash outside the per-symbol
-        # try/except above). Fails open — a Redis hiccup here must never mask that tuning itself
-        # genuinely completed.
-        try:
-            from common.redis_client import get_redis as _get_pool_redis
-            import json as _json
-            from datetime import datetime as _dt, timezone as _tz
-            _get_pool_redis().set(
-                "stockai:tune_all_completed",
-                _json.dumps({
-                    "completed_at": _dt.now(_tz.utc).isoformat(),
-                    "tuned": tuned_count,
-                    "total": len(symbols),
-                    "triggered_by": triggered_by,
-                }),
-            )
-        except Exception as _mark_exc:
-            log.warning("tune_all.completion_marker_failed", error=str(_mark_exc))
-
-        if tuned_count > 0:
-            log.info("tune_all.complete", tuned=tuned_count, total=len(symbols))
-            try:
-                from common.config import get_settings as _gs
-                import httpx as _hx
-                import uuid as _uuid
-                from jose import jwt as _jwt
-                _s = _gs()
-                _tok = _jwt.encode(
-                    {"sub": "ml-prediction", "jti": str(_uuid.uuid4()), "exp": int(__import__("time").time()) + 3600},
-                    _s.jwt_secret, algorithm="HS256",
-                )
-                _hdrs = {"Authorization": f"Bearer {_tok}"}
-                for _mkt in ("US", "HK"):
-                    try:
-                        _r = _hx.post(
-                            f"{_s.signal_engine_url}/signals/refresh",
-                            params={"market": _mkt},
-                            headers=_hdrs, timeout=30,
-                        )
-                        log.info("tune_all.post_signal_refresh", market=_mkt, status=_r.status_code)
-                    except Exception as _exc:
-                        log.warning("tune_all.post_signal_refresh_failed", market=_mkt, error=str(_exc))
-            except Exception as _exc:
-                log.warning("tune_all.post_refresh_setup_failed", error=str(_exc))
-
-        return results
-
-    tasks.add_task(_run_all)
+    # AUD-ML-TRAINCHILD: tuning runs in the batch child process too (training/batch.py).
+    tasks.add_task(run_tune_batch, symbols, n_trials=n_trials, horizon=horizon, style=style,
+                   triggered_by=triggered_by)
     return {
         "status": "scheduled",
         "count": len(symbols),
