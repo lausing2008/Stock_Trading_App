@@ -35,6 +35,86 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'SIG-REFRESH-OVERLAP', tier: 479, severity: 'critical', defaultStatus: 'done',
+    title: 'Signal refreshes stacked up and exhausted market-data\'s connection pool',
+    file: 'docs/incidents/db-connection-pool-exhaustion.md', effort: 'S',
+    impact: 'Late in the 2026-11-04 US session about a dozen full signal passes ran at once; thread starvation left connections idle in transaction until PostgreSQL killed them.',
+    what: 'A US pass takes ~9 min (estimate from the measured HK rate, 3.3 s per symbol), but a refresh is requested every 5 min and each request started another pass. Nothing checked whether one was running.',
+    fix: 'One pass per market at a time; a request during a pass is skipped (signals.refresh.skip_overlap). Each pass logs signals.refresh.pass_done with its duration.',
+    implementedNote: 'DEPLOYED 2026-11-05 08:45 UTC (4b945abe, release 1dc3e338). 3 tests, 3 sabotages caught. To read: US pass durations, skip count and pool errors in the Nov 5 session.',
+  },
+  {
+    id: 'ML-TRAIN-CHILD-PER-MARKET', tier: 479, severity: 'high', defaultStatus: 'done',
+    title: 'Nightly training retrained every market twice a day, inside the API process',
+    file: 'services/ml-prediction/src/training/batch.py', effort: 'M',
+    impact: 'Both post-closes retrained all models; ml-prediction kept its 2.57 GB training peak all day, and the host was down to ~160 MB available with swap full.',
+    what: 'train_all_horizons had no market filter and ran in the API process. A fork is not safe with GNU OpenMP.',
+    fix: 'The HK post-close trains HK and the US post-close trains US, in a fresh interpreter (python -m src.training.batch). Per-market lock skips a duplicate run; markets take turns. Limits: 4 h per run, 8 h for weekly tuning, 3 h waiting. An all-failed batch exits 1; tune_all runs in the child too.',
+    implementedNote: 'DEPLOYED 2026-11-05 (62c0d240 at 04:36 UTC; c16e4a6c at 09:27 UTC). The 08:30 batch: 1,640 done, 0 failed, 56 min, child peak 1.05 GiB of the 3 GiB limit. ml-prediction restarted at 340 MB; host 4.2 GB available. To read: the Nov 5 US post-close trains US only.',
+  },
+  {
+    id: 'DIGEST-CLOSED-SESSION', tier: 479, severity: 'high', defaultStatus: 'done',
+    title: 'The morning digest held a DB connection idle in transaction twice a day',
+    file: 'services/market-data/src/services/scheduler.py', effort: 'S',
+    impact: 'A connection sat idle in transaction ~15 min per digest run, until PostgreSQL killed it; it was the unknown holder from 2026-11-04 00:55 UTC.',
+    what: 'send_morning_digest passed its session to _may_send after the with-block had closed it; a closed Session silently begins a new transaction nothing ends. Found by the db.long_hold log.',
+    fix: 'Preferences are checked inside the session block. A new test scans all market-data source for a session used after its with-block; it fails on the old code.',
+    implementedNote: 'DEPLOYED 2026-11-05 08:41 UTC (91d6a040, release 1dc3e338). To read: no db.long_hold from send_morning_digest on Nov 6.',
+  },
+  {
+    id: 'HK5M-DELAYED-RECONCILE', tier: 479, severity: 'medium', defaultStatus: 'done',
+    title: 'HK lunch reconcile reported every symbol missing its 11:55 bar',
+    file: 'docs/features/data-provider-routing-and-schedule.md', effort: 'S',
+    impact: 'A false "missing bar" for all 42 HK symbols every day; every HK intraday step acts on a market about 15 min old.',
+    what: 'Yahoo serves HKEX data on delayed terms: a 5m candle arrives 12–15 min after it completes. The reconcile ran at 12:02/12:07 HKT.',
+    fix: 'Reconcile at 12:20/12:25 and 16:22/16:27 HKT. The delay itself is documented; removing it needs a paid real-time HKEX feed (a cost decision).',
+    implementedNote: 'DEPLOYED 2026-11-05 08:41 UTC (91d6a040). To read: the Nov 6 lunch reconcile.',
+  },
+  {
+    id: 'MD-MALLOC-ARENAS-LOGCAP', tier: 479, severity: 'medium', defaultStatus: 'done',
+    title: 'market-data memory in malloc arenas; logs lost within a day',
+    file: 'docker/docker-compose.yml', effort: 'S',
+    impact: 'market-data reached 2.58 GB after 17 h, 1.27 GB of it in glibc per-thread arenas. The 100 MB log cap had lost the Nov 4 US session by the next morning.',
+    what: 'glibc creates a 64 MB arena per thread; the json-file cap rotated under a day of logs.',
+    fix: 'MALLOC_ARENA_MAX=2 and a 500 MB (10 × 50 MB) log cap for market-data.',
+    implementedNote: 'DEPLOYED 2026-11-05 08:41 UTC (91d6a040); restarted at 682 MB. To read: memory after a full US session.',
+  },
+  {
+    id: 'RANK-SECTOR-LOGSPAM', tier: 479, severity: 'low', defaultStatus: 'done',
+    title: 'ranking-engine logged 231,657 identical sector warnings a day',
+    file: 'services/ranking-engine/src/api/routes.py', effort: 'S',
+    impact: '99.9% of ranking-engine\'s log volume, hiding everything else.',
+    what: 'The "Unknown" sector placeholder logged sector_label_unmapped on every lookup.',
+    fix: 'Placeholders (unknown, n/a, none) fall back to SPY silently; a real unmapped label logs once per process.',
+    implementedNote: 'DEPLOYED 2026-11-05 08:46 UTC (06ea966c, release 1dc3e338).',
+  },
+  {
+    id: 'INGEST-POOL-DURING-FETCH', tier: 479, severity: 'high', defaultStatus: 'done',
+    title: 'Ingest held a pooled connection through the provider request',
+    file: 'docs/incidents/db-connection-pool-exhaustion.md', effort: 'S',
+    impact: 'The pool ran out 11 times on 2026-11-02 and 3 times on 2026-10-30; two 6-worker ingest jobs could take 12 of 15 connections.',
+    what: 'ingest_symbol kept its transaction open across adapter.fetch_ohlcv (up to 18.5 s).',
+    fix: 'Read the head, end the transaction, fetch, then write; force=True stays one transaction. HK reconcile records keyed by lunch/close phase.',
+    implementedNote: 'DEPLOYED 2026-11-03 08:40 UTC (61ddccb7). Nov 3 US session: 0 pool errors (Nov 2: 11); connections held only while writing (max 2.7 s).',
+  },
+  {
+    id: 'EARNINGS-HISTORY-BYDATE', tier: 479, severity: 'high', defaultStatus: 'done',
+    title: 'Earnings results stopped being recorded after Oct 19',
+    file: 'docs/audits/2026-11-03-earnings-history-write-and-idle-transaction.md', effort: 'S',
+    impact: 'Only 1 of 48 reports since Oct 19 had its EPS recorded.',
+    what: 'The history pass took the next pending row for every quarter; the first move hit the unique key and poisoned the rest of that stock\'s rows.',
+    fix: 'Rows matched by date, a savepoint per row, duplicate projections merged. Plus db.long_hold: any connection held past 240 s is logged with its call site.',
+    implementedNote: 'DEPLOYED 2026-11-04 (de639a94) and backfilled: 45 of 53 recent reports now carry EPS. Open: 15 HK rows matched by an EPS value several quarters share (AUD-EARNINGS-EPSMATCH).',
+  },
+  {
+    id: 'NOV5-REVIEW-DEFERRED', tier: 479, severity: 'medium', defaultStatus: 'todo',
+    title: 'Deferred from the 2026-11-05 platform review',
+    file: 'docs/audits/2026-11-05-pool-memory-cpu-and-platform-review.md', effort: 'M',
+    impact: 'Remaining headroom and data-quality items found in the review.',
+    what: 'Pool wait is 30 s (in shared/, so all 12 backends rebuild); AAOI, HOOD, TSEM, BEP, BEPC, CBRS, USAR have sector "Unknown"; 106 earnings history rows failed on Nov 4 (AUD-EARNINGS-EPSMATCH); ~35% of HK predict_ensemble_three calls 404; swap.',
+    fix: 'Pool wait 30 s → 5 s at the next all-service rebuild; sectors from a sourced value; EPS matching by date not value; read the 404 rate after per-market training; revisit swap once memory is measured.',
+  },
+  {
     id: 'DEPLOY-SAVES-CONTAINER-LOGS', tier: 478, severity: 'high', defaultStatus: 'done',
     title: 'A deploy erased the only evidence of two incidents',
     file: 'docs/2026-10-30/pre-trial-engineering-batch.md', effort: 'S',
@@ -22556,6 +22636,7 @@ const ITEMS: Item[] = [
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = {
+  479: "Tier 479 — Pool exhaustion, nightly training and platform review (2026-11-03–05)",
   478: "Tier 478 — Pre-trial engineering: evidence capture and Yahoo load (2026-10-30)",
   477: "Tier 477 — Durable measurement records and the RZY rebuild investigation (2026-10-30)",
   476: "Tier 476 — Yahoo request budgets and live-cache usage (2026-10-30)",
@@ -23032,6 +23113,7 @@ const TIER_LABEL: Record<Tier, string> = {
 };
 
 const TIER_COLOR: Record<Tier, string> = {
+  479: '#fb923c',
   478: '#facc15',
   477: '#f472b6',
   476: '#38bdf8',
