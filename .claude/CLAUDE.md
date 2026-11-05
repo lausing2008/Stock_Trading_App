@@ -497,3 +497,5 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/audits/2026-10-28-f04-fencing-remediation-review.md`** — Final review 61fcd58c closes RF-01/RF-02; guarded deployment cleared after offline tests. V2 off, promotion refused; qualification and baseline B remain open.
 
 - **`docs/features/2026-10-28-f04-publication-fencing.md`** — DEPLOYED 15e2abac to ML/market-data, 15 healthy and 0/12 drift; v2 off, promotion refused, rollback images retained. Qualification and baseline B remain open.
+
+- **`docs/audits/2026-11-05-pool-memory-cpu-and-platform-review.md`** — Nov 4 pool collapse: 5-min refreshes started ~9-min signal passes that stacked ~12 deep, no free memory. Fixes: one pass per market, training in a child, digest closed session, HK bars ~15 min late [pool, memory]

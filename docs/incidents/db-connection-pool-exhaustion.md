@@ -229,3 +229,69 @@ Extracts are in `docs/2026-11-02/evidence/`, and the full log is kept off-git at
   of that I/O, whether it is HTTP, a sleep or a retry wait.
 - `pool_watch`'s call-site attribution is what made this a one-line diagnosis rather than another
   open-ended investigation.
+
+---
+
+# AUD-SIG-REFRESHOVERLAP: stacked signal refresh passes exhausted market-data's pool (2026-11-04)
+
+## Symptom
+
+- **When:** from 21:03 UTC on 2026-11-04, the last hour of the US session.
+- **Failures:** market-data logged 6,722 tracebacks, 2,160 of them `QueuePool limit of size 5
+  overflow 10 reached`. `get_prices` accounted for 4,879 of the 5,495 failed requests; the
+  others were `fundamentals_bulk` 264, user authentication 166, `latest_prices` 144 and
+  `data_freshness` 38.
+- **Knock-on:** the US post-close run and `flow_digest_close` failed on the same timeout.
+
+## Cause, in order
+
+1. **The host had no memory headroom.**
+   - Usage: market-data 2.58 GB (1.27 GB of it glibc per-thread arenas), ml-prediction 2.57 GB
+     (the training peak, kept all day), signal-engine 1.87 GB (1.05 GB of it in swap).
+   - The host has 7.6 GB of RAM plus 2 GB of swap, and the swap was full; about 160 MB was free
+     even with the market closed.
+   - During market hours both cores ran about 90% busy.
+2. **market-data slowed from about 19:16 UTC.** signal-engine gives up on a price request after
+   15 s, while market-data waits up to 30 s for a connection, so abandoned requests kept using
+   its capacity.
+3. **Refresh passes stacked.**
+   - market-data posts `/signals/refresh` every 5 minutes, and a US pass over ~160 symbols takes
+     about 9 minutes (HK was measured at 3.3 s per symbol).
+   - Nothing stopped a new pass while one was running, so about a dozen ran at once: AAPL was
+     attempted 12 times and NVDA 14 times in 21:00–21:10.
+   - On 2026-11-03 passes started from 19:38 UTC finished between 23:21 and 23:39.
+4. **Thread starvation turned slow into stuck.** market-data's handlers are sync, and closing a
+   request's session needs a free threadpool worker. Once every worker waited for a connection,
+   used connections sat idle in transaction until PostgreSQL's 300 s kill.
+
+## Fix
+
+- **signal-engine (`AUD-SIG-REFRESHOVERLAP`):** one pass per market at a time.
+  - A request while a pass is running returns `skipped_running`; the next request after it ends
+    runs.
+  - Each pass now logs `signals.refresh.pass_done` with its duration. A pass with no failures
+    used to log nothing, so passes could not be timed.
+  - Test: `test_refresh_overlap_guard.py` compiles the real endpoint and task from the source.
+    Removing either check, or the release, fails it.
+- **ml-prediction (`AUD-ML-TRAINCHILD`):** nightly training and `tune_all` run in a child process
+  that exits, so the training peak is not kept. Each market trains only after its own close.
+- **market-data (`AUD-MD-ARENAS`):** `MALLOC_ARENA_MAX=2`, and a 500 MB log cap (it was 100 MB,
+  which kept less than a day).
+- **Not done:** a shorter connection wait. The pool is configured in `shared/db/session.py`, so
+  changing it means rebuilding all 12 backends. Revisit if pool errors recur with the guard in
+  place.
+
+# AUD-DIGEST-CLOSEDSESSION: the morning digest used its session after closing it (2026-11-05)
+
+- **What:** `send_morning_digest` passed `session` to `_may_send` in its send loop, which runs
+  after `with SessionLocal() as session:` has exited.
+- **Why that leaks:** a closed Session silently checks out a new connection and begins a
+  transaction that nothing ends.
+- **Seen:** the HK digest's connection was opened at 00:50:06 UTC. PostgreSQL killed it at
+  00:55:05 (idle-in-transaction timeout), and garbage collection released it at 01:05:08. That
+  caused the traceback at 01:05. It happened on every digest, twice a day.
+- **Found by:** the `db.long_hold` log added under AUD-IDLETX-LONGHOLD, its first real catch.
+- **Fix:** the preference is read in its own short session before any SMTP send.
+- **Tests:** `test_no_session_use_after_with.py` scans every market-data module for a session
+  used after its `with` block. It fails on the old code. A repo-wide scan found no other
+  instance.

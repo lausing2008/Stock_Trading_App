@@ -23,6 +23,26 @@ Adapter priority is global — `_PRIORITY = ["unusual_whales", "yfinance", "alph
 is not a change. A UW failure falls through to the next adapter in the list, so no bar is lost
 when UW refuses — it costs a wasted request and a delayed bar.
 
+**HK bars are about 15 minutes late (measured 2026-11-05, `AUD-HK5M-DELAYED`).** Yahoo serves
+HKEX data on the exchange's delayed-data terms. A 5-minute candle arrives 12–15 minutes after
+it completes:
+
+| Fetch (UTC) | Newest bar returned |
+|---|---|
+| 03:55 | 03:35 |
+| 04:02 | 03:45 |
+| 04:07 | 03:50 |
+
+So:
+
+- every HK intraday step (5-minute paper trading, HK RZY alerts, intraday gates) acts on a market
+  about 15 minutes old;
+- the 11:55 HKT candle only lands after the lunch break.
+
+The HK reconcile passes run after the delay: 12:20/12:25 and 16:22/16:27 HKT. At 12:02/12:07
+they reported every symbol missing the 11:55 candle. Closing the gap needs a real-time HKEX
+feed, which is a cost decision. US bars come from UW and are not delayed this way.
+
 **The fallback is also why both providers throttle together.** Every UW failure becomes a
 yfinance call for the same symbol, so one stream of traffic lands on both. When counting
 provider load, count the *attempts*, not the successes. (Since 2026-10-30 a UW cooldown during
