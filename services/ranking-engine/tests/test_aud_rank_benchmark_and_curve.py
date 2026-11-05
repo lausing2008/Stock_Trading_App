@@ -416,3 +416,15 @@ def test_brinson_aliases_cover_the_yfinance_consumer_labels():
     m = m[:m.index("}")]
     for label in ("Consumer Cyclical", "Consumer Defensive", "Basic Materials"):
         assert f'"{label}"' in m, f"{label} missing from brinson's alias map"
+
+
+
+def test_the_unknown_placeholder_is_not_logged_and_a_real_label_logs_once(monkeypatch):
+    """AUD-RANK-SECTORLOGSPAM: 231,657 identical warnings in one day, all sector="Unknown"."""
+    seen = []
+    monkeypatch.setattr(routes.log, "warning", lambda event, **kw: seen.append((event, kw)))
+    monkeypatch.setattr(routes, "_UNMAPPED_LOGGED", set())
+    for _ in range(50):
+        assert routes._resolve_sector_etf("Unknown") == routes._US_FALLBACK
+        assert routes._resolve_sector_etf("Space Mining") == routes._US_FALLBACK
+    assert seen == [("ranking.sector_label_unmapped", {"sector": "Space Mining", "fallback": routes._US_FALLBACK})]

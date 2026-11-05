@@ -118,8 +118,20 @@ def _resolve_sector_etf(sector: str | None) -> str:
     hit = folded.get(key.casefold())
     if hit:
         return hit
-    log.warning("ranking.sector_label_unmapped", sector=key, fallback=_US_FALLBACK)
+    # AUD-RANK-SECTORLOGSPAM (2026-11-05): "Unknown" is the provider's placeholder for NO
+    # sector (34 US symbols, mostly ETFs), not a label variant, and it was logged on every
+    # lookup: 231,657 identical warnings on 2026-11-04, 99.9% of this service's log volume.
+    # A real unmapped label is still logged, once per label per process.
+    if key.casefold() in _NO_SECTOR_PLACEHOLDERS:
+        return _US_FALLBACK
+    if key not in _UNMAPPED_LOGGED:
+        _UNMAPPED_LOGGED.add(key)
+        log.warning("ranking.sector_label_unmapped", sector=key, fallback=_US_FALLBACK)
     return _US_FALLBACK
+
+
+_NO_SECTOR_PLACEHOLDERS = frozenset({"unknown", "n/a", "none"})
+_UNMAPPED_LOGGED: set[str] = set()
 _HK_BENCHMARK = "^HSI"   # Hang Seng Index for HK stocks
 _US_FALLBACK  = "SPY"
 
