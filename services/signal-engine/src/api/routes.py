@@ -6,6 +6,9 @@ calibration.py (self-tuning/calibration mechanisms), and outcomes.py (analytics/
 outcome-evaluation). See shared.py's own module docstring for what lives there and why.
 Verbatim extraction — no logic changes; a bug found here was already present before the split.
 """
+import collections
+import threading
+import time
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import json
@@ -207,14 +210,41 @@ def refresh_signals(
     if market:
         q = q.where(Stock.market == market.upper())
     symbols = list(session.execute(q).scalars())
+    scope = market.upper() if market else "ALL"
+    if _REFRESH_LOCKS[scope].locked():
+        log.info("signals.refresh.skip_overlap", market=scope)
+        return {"status": "skipped_running", "count": len(symbols)}
     try:
         r = _get_redis()
         for key in r.scan_iter("signals:cache:*"):
             r.delete(key)
     except Exception:
         pass
-    tasks.add_task(_bulk_persist, symbols)
+    tasks.add_task(_guarded_refresh, scope, symbols)
     return {"status": "scheduled", "count": len(symbols)}
+
+
+# AUD-SIG-REFRESHOVERLAP (2026-11-05): market-data posts /signals/refresh every 5 minutes, and
+# a US pass over ~160 symbols takes ~9 minutes even on a calm day (HK measured at 3.3 s per
+# symbol). Every request started another full pass, so passes stacked: on 2026-11-03 passes
+# begun from 19:38 UTC finished between 23:21 and 23:39, and on 2026-11-04 about a dozen ran at
+# once against market-data and exhausted its connection pool. One pass per market at a time;
+# a request while one runs is skipped, not queued, and the next request after it ends runs.
+_REFRESH_LOCKS: "collections.defaultdict[str, threading.Lock]" = collections.defaultdict(threading.Lock)
+
+
+def _guarded_refresh(scope: str, symbols: list[str]) -> None:
+    lock = _REFRESH_LOCKS[scope]
+    if not lock.acquire(blocking=False):
+        log.info("signals.refresh.skip_overlap", market=scope)
+        return
+    t0 = time.monotonic()
+    try:
+        _bulk_persist(symbols)
+    finally:
+        lock.release()
+        log.info("signals.refresh.pass_done", market=scope, symbols=len(symbols),
+                 seconds=round(time.monotonic() - t0, 1))
 
 
 @router.post("/reset")
