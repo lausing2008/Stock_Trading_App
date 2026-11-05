@@ -13,12 +13,14 @@ from src.intel_reports import valuation_report as V
 from test_valuation_report import source, inputs, NOW
 
 
-def approved_review(raw):
+def approved_review(raw, now=NOW):
+    """`now` lets a caller on the real clock (the valuation-report probe) date the review the same
+    day; the fixed NOW aged past the seven-day filing check on 2026-11-04 and failed it."""
     review = deepcopy(C.REVIEWS["ADBE"])
-    review.update(symbol=raw["symbol"], cik=123, version=1, reviewed_at=NOW.date().isoformat(),
-                  filings_checked_through=NOW.date().isoformat(), unresolved=[], decision="Qualified research")
+    review.update(symbol=raw["symbol"], cik=123, version=1, reviewed_at=now.date().isoformat(),
+                  filings_checked_through=now.date().isoformat(), unresolved=[], decision="Qualified research")
     review["sources"] = [{"id": str(i), "url": f"https://www.sec.gov/Archives/edgar/data/123/000000012326{i:06d}/filing.htm",
-                          "published_at": NOW.date().isoformat(), "period_end": period}
+                          "published_at": now.date().isoformat(), "period_end": period}
                          for i, period in enumerate([r["period_end"] for r in raw["annuals"]] + ["2026-08-31"])]
     item = {"status": "supported", "rationale": "Reviewed source finding", "source_ids": ["0", "2"],
             "counterevidence": "The adverse case was considered and is bounded by these assumptions"}
@@ -30,7 +32,7 @@ def approved_review(raw):
                                  "source_ids": ["0", "1", "2"], "currency": "USD", "financial_currency": "USD"}
     review.pop("owner_cash_sensitivity", None)
     review["filing_dispositions"] = {f"0000000123-26-{i:06d}": {"status": "reviewed", "rationale": "Reviewed fixture filing",
-        "reviewed_at": NOW.date().isoformat()} for i in range(3)}
+        "reviewed_at": now.date().isoformat()} for i in range(3)}
     return review
 
 

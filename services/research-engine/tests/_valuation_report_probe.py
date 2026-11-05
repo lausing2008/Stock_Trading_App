@@ -139,7 +139,7 @@ with tempfile.TemporaryDirectory() as temp:
     for i, bar in enumerate(qualified_raw["bars"]):
         bar["date"] = (now - timedelta(days=119-i)).date().isoformat()
         bar["close"] = 11 if i >= 118 else 10
-    approved = approved_review(qualified_raw)
+    approved = approved_review(qualified_raw, now)
     C.REVIEWS["QUAL"] = approved
     qualified_raw["filing_verification"] = {"state": "OK", "symbol": "QUAL", "cik": 123,
         "checked_at": now.isoformat(), "since": approved["reviewed_at"], "filings": [
