@@ -71,6 +71,19 @@ services:
     #ports: ["8001:8001"]
     volumes:
       - datavol:/data
+    # AUD-MD-ARENAS (2026-11-05): 1.27 GB of market-data's 2.58 GB was glibc per-thread malloc
+    # arenas (64 MB each, one per busy thread) after 17 hours. Two arenas bound that growth.
+    # The merge key is shallow, so the anchor's STOCKAI_RELEASE_SHA is repeated here.
+    environment:
+      STOCKAI_RELEASE_SHA: ${STOCKAI_RELEASE_SHA:-unrecorded}
+      MALLOC_ARENA_MAX: "2"
+    # ~616k lines a day: the shared 100 MB cap kept under one day, so the Nov 4 US session was
+    # gone before it could be read the next morning. 500 MB keeps several sessions.
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
 
   technical-analysis:
     <<: *py-common

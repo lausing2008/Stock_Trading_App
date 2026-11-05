@@ -12546,7 +12546,7 @@ def _reconcile_session_5m(market: str, now: "datetime | None" = None, *, second_
     except Exception as exc:  # recorded; completeness below still reports what is stored
         error = str(exc)[:200]
         log.error("scheduler.5m_reconcile_ingest_failed", market=market, error=error)
-    # HK reconciles twice a session (12:02/12:07 lunch, 16:12/16:17 close), both numbered pass
+    # HK reconciles twice a session (12:20/12:25 lunch, 16:22/16:27 close), both numbered pass
     # 1 and 2, so the close passes overwrote the lunch record kept below (found 2026-11-02).
     phase = "lunch" if market == "HK" and now.astimezone(tz).hour < 13 else "close"
     detail: dict = {"market": market, "session": day.isoformat(), "phase": phase, "pass": 2 if second_pass else 1,
@@ -13064,10 +13064,20 @@ def send_morning_digest(markets: list | None = None) -> None:
         _rc = _get_redis()
         sent = 0
         errors = 0
-        for user in users:
-            # EA-05: this type is user-manageable; honour the preference.
-            if not _may_send(session, user, "morning_digest"):
-                continue
+        # EA-05: this type is user-manageable; honour the preference.
+        # AUD-DIGEST-CLOSEDSESSION (2026-11-05): this loop runs after the `with SessionLocal()`
+        # block above has closed, and used to pass that closed `session` to _may_send. A closed
+        # Session silently checks out a NEW connection and begins a transaction that nothing
+        # ends: on 2026-11-05 the HK digest's connection sat idle in transaction from 00:50:06
+        # until PostgreSQL killed it at 00:55 and garbage collection released it at 01:05:08.
+        # The preference is read in its own short session, before any SMTP send.
+        allowed = []
+        with SessionLocal() as pref_session:
+            for u in users:
+                if not _may_send(pref_session, u, "morning_digest"):
+                    continue
+                allowed.append(u)
+        for user in allowed:
             redis_key = f"stockai:morning_digest:{user.id}:{market_key}:{today_str}"
             try:
                 if _rc and _rc.exists(redis_key):
@@ -15041,16 +15051,21 @@ def start_scheduler() -> None:
         id="us_5m_reconcile_retry", replace_existing=True, **_JOB_DEFAULTS,
     )
     # HK afternoon passes wait for the closing auction (16:00 to ~16:10 HKT, random match).
+    # AUD-HK5M-DELAYED (2026-11-05): Yahoo serves HK 5-minute bars 12-15 minutes after each
+    # candle completes (HKEX's delayed-data rule). At 12:02/12:07 the 11:55 candle could not
+    # exist yet, so every lunch pass reported all 41 symbols missing it while the bar landed
+    # after the break (fetch at 04:07 UTC returned up to 03:50). Both phases now run after the
+    # delay: 12:20/12:25 and 16:22/16:27 HKT.
     _scheduler.add_job(
         lambda: _reconcile_session_5m("HK"),
-        OrTrigger([CronTrigger(hour=12, minute=2, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
-                   CronTrigger(hour=16, minute=12, day_of_week="mon-fri", timezone="Asia/Hong_Kong")]),
+        OrTrigger([CronTrigger(hour=12, minute=20, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+                   CronTrigger(hour=16, minute=22, day_of_week="mon-fri", timezone="Asia/Hong_Kong")]),
         id="hk_5m_reconcile", replace_existing=True, **_JOB_DEFAULTS,
     )
     _scheduler.add_job(
         lambda: _reconcile_session_5m("HK", second_pass=True),
-        OrTrigger([CronTrigger(hour=12, minute=7, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
-                   CronTrigger(hour=16, minute=17, day_of_week="mon-fri", timezone="Asia/Hong_Kong")]),
+        OrTrigger([CronTrigger(hour=12, minute=25, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+                   CronTrigger(hour=16, minute=27, day_of_week="mon-fri", timezone="Asia/Hong_Kong")]),
         id="hk_5m_reconcile_retry", replace_existing=True, **_JOB_DEFAULTS,
     )
 

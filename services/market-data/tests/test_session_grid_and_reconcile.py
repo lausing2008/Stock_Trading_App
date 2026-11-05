@@ -173,7 +173,7 @@ def test_reconciliation_runs_after_each_close_and_after_the_hk_auction():
     t = _cron_kwargs_by_job()
     assert t["us_5m_reconcile"] == [dict(hour=16, minute=2, day_of_week="mon-fri", timezone="America/New_York")]
     assert t["us_5m_reconcile_retry"] == [dict(hour=16, minute=7, day_of_week="mon-fri", timezone="America/New_York")]
-    assert [(x["hour"], x["minute"], x["timezone"]) for x in t["hk_5m_reconcile"]] == [(12, 2, "Asia/Hong_Kong"), (16, 12, "Asia/Hong_Kong")]
-    assert [(x["hour"], x["minute"]) for x in t["hk_5m_reconcile_retry"]] == [(12, 7), (16, 17)]
+    assert [(x["hour"], x["minute"], x["timezone"]) for x in t["hk_5m_reconcile"]] == [(12, 20, "Asia/Hong_Kong"), (16, 22, "Asia/Hong_Kong")]
+    assert [(x["hour"], x["minute"]) for x in t["hk_5m_reconcile_retry"]] == [(12, 25), (16, 27)]
     # The US intraday job's last fire is 15:55: the gap the reconciliation exists for.
     assert t["us_5m_intraday"][0]["hour"] == "9,10,11,12,13,14,15"
