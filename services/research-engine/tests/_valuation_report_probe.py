@@ -116,6 +116,7 @@ with tempfile.TemporaryDirectory() as temp:
         assert second["version"] == 2 and second["supersedes_id"] == first["id"]
         old = R.report(first["id"], _user="tester")
         assert old["valuation"] == original
+        assert old == {**first, "status": "superseded"}
         assert len(R.history(limit=20, _user="tester")["reports"]) == 2
         # A completely failed refresh does not replace a successful snapshot.
         clear_cooldown()
@@ -132,8 +133,11 @@ with tempfile.TemporaryDirectory() as temp:
     # Prove that a fully sourced registry review reaches the real route's gates, rather
     # than only qualifying when a unit test injects a made-up all-pass quality dictionary.
     from test_candidate_qualification import approved_review
-    from test_valuation_report import source as company_source
+    from test_valuation_report import source as company_source, NOW as review_now
     from src.intel_reports import candidate_qualification as C
+    # Qualification fixtures have dated evidence; keep their clock deterministic.
+    now = review_now
+    day = now.date().isoformat()
     qualified_raw = company_source("QUAL")
     qualified_raw["fetched_at"] = now.isoformat()
     for i, bar in enumerate(qualified_raw["bars"]):

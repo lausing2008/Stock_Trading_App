@@ -10,6 +10,8 @@ The user approved both the report roadmap and the remaining issuer checks, deliv
 
 All three software phases are implemented; production release verification is pending. Substantive issuer judgments can remain insufficient after research, and performance horizons need time to mature. An empty qualified list is a valid conclusion.
 
+November 5 continuation: the user requested local work only, with no production deployment. The historical-snapshot acceptance check now permits the existing lifecycle transition to `superseded` while requiring every other serialized field to remain unchanged. Local report/SEC/job/model/outcome checks passed (116 tests); see [local validation and remaining work](../audits/2026-11-05-valuation-local-validation.md). Live acceptance remains unverified by this continuation.
+
 ## Phase 1 design
 
 Fetch SEC submissions and companyfacts only for issuers with a reviewed CIK. Reuse the existing declaring User-Agent. Serialize requests, cache submissions for one hour and annual facts for 24 hours, preserve original observation timestamps and bound each enrichment pass to 45 seconds with five-second requests. A provider outage must preserve a usable report with explicit missing verification.

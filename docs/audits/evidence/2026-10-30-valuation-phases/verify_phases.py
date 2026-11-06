@@ -13,6 +13,16 @@ base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
 
 
+def assert_frozen_history(before, after, latest_id):
+    """Stored content is frozen; supersession changes only lifecycle status."""
+    expected_status = before["status"] if latest_id == before["id"] else "superseded"
+    assert after.get("status") == expected_status, "Unexpected historical report status"
+    changed = {key for key in before.keys() | after.keys()
+               if key != "status" and (key not in before or key not in after
+                                        or before[key] != after[key])}
+    assert not changed, f"Historical report fields changed: {sorted(changed)}"
+
+
 def api_check(credential):
     with httpx.Client(base_url=base.BASE, timeout=45) as client:
         assert client.get("/api/intel/valuation/latest").status_code == 401
@@ -55,7 +65,9 @@ def api_check(credential):
         assert review["financial_verification"]["latest_annual"]["stock_compensation"]["value"] == 1942e6
         assert client.get(f"/api/intel/valuation/reports/{report['id']}").json() == report
         if before:
-            assert client.get(f"/api/intel/valuation/reports/{before['id']}").json() == before
+            historical = client.get(f"/api/intel/valuation/reports/{before['id']}")
+            historical.raise_for_status()
+            assert_frozen_history(before, historical.json(), report["id"])
         history = client.get("/api/intel/valuation/history").json()["reports"]
         assert report["id"] in {r["id"] for r in history}
         deadline = time.monotonic() + 90
