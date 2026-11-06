@@ -1,0 +1,54 @@
+{
+  "report_id": 62,
+  "version": 11,
+  "price_session": "2026-11-05",
+  "policy": "valuation-v5-phased-research",
+  "catalog_candidates": 5629,
+  "sampled": 60,
+  "outside_tracked": 57,
+  "counts": {
+    "undervalued": 1,
+    "overvalued": 4,
+    "near_fair_value": 2,
+    "insufficient_evidence": 53,
+    "reviewed": 1,
+    "qualified": 0,
+    "analyst_risk": 18
+  },
+  "job_durable": true,
+  "attempts": 1,
+  "worker": "active",
+  "sec_filings": 22,
+  "sec_annual_period": "2025-11-28",
+  "frozen_history_verified": true,
+  "outcomes": [
+    {
+      "sessions": 5,
+      "entry": "2026-11-06",
+      "end": "2026-11-13",
+      "states": {
+        "qualified": "NO_COHORT",
+        "undervalued_research": "PENDING"
+      }
+    },
+    {
+      "sessions": 20,
+      "entry": "2026-11-06",
+      "end": "2026-12-07",
+      "states": {
+        "qualified": "NO_COHORT",
+        "undervalued_research": "PENDING"
+      }
+    },
+    {
+      "sessions": 60,
+      "entry": "2026-11-06",
+      "end": "2027-02-04",
+      "states": {
+        "qualified": "NO_COHORT",
+        "undervalued_research": "PENDING"
+      }
+    }
+  ],
+  "outcome_input_validation": 400
+}

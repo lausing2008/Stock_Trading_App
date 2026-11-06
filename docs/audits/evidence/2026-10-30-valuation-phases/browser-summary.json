@@ -1,0 +1,26 @@
+[
+  {
+    "viewport": 1440,
+    "geometry": {
+      "viewport": 1440,
+      "width": 1440
+    },
+    "runtime_errors": [],
+    "automation_and_catalog": true,
+    "sec_panels": true,
+    "outcome_csv": true,
+    "report_csv": true
+  },
+  {
+    "viewport": 390,
+    "geometry": {
+      "viewport": 390,
+      "width": 390
+    },
+    "runtime_errors": [],
+    "automation_and_catalog": true,
+    "sec_panels": true,
+    "outcome_csv": true,
+    "report_csv": true
+  }
+]
