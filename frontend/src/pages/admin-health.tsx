@@ -3,6 +3,7 @@ import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import { api, type SchedulerJob, type MlModelMetric, type SignalSummary, type ServiceHealthReport, type LlmUsageReport, type UwUsageReport } from '@/lib/api';
 import { getSession } from '@/lib/auth';
+import { splitAdapterFailures } from '../lib/uwAdapterFailures';
 
 const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string }> = {
   // Key scheduled jobs
@@ -264,6 +265,7 @@ export default function AdminHealthPage() {
     () => api.uwUsage(),
     { revalidateOnFocus: false, refreshInterval: 60_000 },
   );
+  const uwFailSplit = splitAdapterFailures(uwUsageData?.adapter_failures_24h);
 
   const signalCounts = useMemo(() => {
     const counts: Record<string, number> = { BUY: 0, SELL: 0, WAIT: 0, HOLD: 0 };
@@ -1051,9 +1053,10 @@ export default function AdminHealthPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
             <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>UNUSUAL WHALES API USAGE</div>
             {(() => {
-              const errs = uwUsageData?.adapter_failures_24h_total ?? 0;
-              const rl = uwUsageData?.rate_limit_events_48h ?? 0;
               if (!uwUsageData) return null;
+              const split = uwFailSplit;
+              const errs = split.failedTotal;
+              const rl = uwUsageData.rate_limit_events_48h ?? 0;
               if (errs === 0 && rl === 0) {
                 return (
                   <span style={{ fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '999px', background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.3)', color: '#4ade80' }}>
@@ -1061,13 +1064,14 @@ export default function AdminHealthPage() {
                   </span>
                 );
               }
-              const top = uwUsageData.adapter_failures_24h?.[0];
+              const top = split.failed[0];
               return (
                 <span
                   title={[
                     errs ? `${errs.toLocaleString()} bar-ingest failures in the last 24h` : '',
                     top ? `largest cause: ${top.reason} (${top.count.toLocaleString()})` : '',
                     rl ? `${rl.toLocaleString()} rate-limit events in 48h` : '',
+                    split.recoveredTotal ? `${split.recoveredTotal.toLocaleString()} refusals recovered on retry (not counted as errors)` : '',
                     'Failures fall through to the next provider — data is not lost, but each one spends quota and delays the bar.',
                   ].filter(Boolean).join('\n')}
                   style={{ fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '999px', background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.4)', color: '#f87171', cursor: 'help' }}
@@ -1162,16 +1166,22 @@ export default function AdminHealthPage() {
                 were known but only 2,789 could be attributed — the rest lived in container
                 logs a rebuild had already erased. These counters are hourly and survive a
                 restart, so the question is answerable from stored state. */}
-            <div style={{ marginTop: '14px', padding: '14px 16px', borderRadius: '10px', background: '#0d1424', border: `1px solid ${(uwUsageData.adapter_failures_24h_total ?? 0) > 0 ? 'rgba(248,113,113,0.35)' : '#1e293b'}` }}>
+            <div style={{ marginTop: '14px', padding: '14px 16px', borderRadius: '10px', background: '#0d1424', border: `1px solid ${uwFailSplit.failedTotal > 0 ? 'rgba(248,113,113,0.35)' : '#1e293b'}` }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '10px' }}>
                 <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', letterSpacing: '0.04em' }}>BAR-INGEST FAILURES BY CAUSE (24H)</div>
-                {(uwUsageData.adapter_failures_24h_total ?? 0) > 0 && (
+                {uwFailSplit.failedTotal > 0 && (
                   <div style={{ fontSize: '11px', fontWeight: 700, color: '#f87171' }}>
-                    {uwUsageData.adapter_failures_24h_total.toLocaleString()} total
+                    {uwFailSplit.failedTotal.toLocaleString()} total
                   </div>
                 )}
               </div>
-              {(uwUsageData.adapter_failures_24h ?? []).length === 0 ? (
+              {uwFailSplit.recoveredTotal > 0 && (
+                <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '8px' }}>
+                  {uwFailSplit.recoveredTotal.toLocaleString()} UW refusals recovered on the retry
+                  (rate_limited_retried): the fetch succeeded, so they are not counted above.
+                </div>
+              )}
+              {uwFailSplit.failed.length === 0 ? (
                 <div style={{ fontSize: '12px', color: '#334155' }}>
                   None recorded in the last 24h. After a restart this is &quot;nothing recorded yet&quot;
                   rather than &quot;nothing happened&quot; — the counters expire after 49 hours.
@@ -1186,7 +1196,7 @@ export default function AdminHealthPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {uwUsageData.adapter_failures_24h.map(row => (
+                      {uwFailSplit.failed.map(row => (
                         <tr key={row.reason} style={{ borderBottom: '1px solid #131b2e' }}>
                           <td style={{ padding: '6px 8px', color: '#fca5a5', fontFamily: 'monospace' }}>{row.reason}</td>
                           <td style={{ padding: '6px 8px', textAlign: 'right', color: '#fca5a5', fontFamily: 'monospace', fontWeight: 700 }}>{row.count.toLocaleString()}</td>

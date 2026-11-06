@@ -35,6 +35,14 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'UW-RETRY-ADMINTOTAL', tier: 480, severity: 'low', defaultStatus: 'done',
+    title: 'Admin Health counted recovered UW retries as bar-ingest errors',
+    file: 'docs/audits/2026-11-03-uw-429-retry-first-session-review.md', effort: 'XS',
+    impact: 'On Nov 2 the UW badge read about 145 errors / 24h when 3 fetches actually failed; the other refusals succeeded on the retry.',
+    what: 'The retry counts first refusals as rate_limited_retried under the same Redis prefix as failures, and adapter_failures_24h_total sums every reason (review finding R1).',
+    fix: 'Admin Health splits the reasons: the badge, total and cause table count only fetches that failed; recovered retries show on their own grey line. Frontend only; the API is unchanged.',
+  },
+  {
     id: 'SIG-REFRESH-OVERLAP', tier: 479, severity: 'critical', defaultStatus: 'done',
     title: 'Signal refreshes stacked up and exhausted market-data\'s connection pool',
     file: 'docs/incidents/db-connection-pool-exhaustion.md', effort: 'S',
@@ -316,15 +324,15 @@ const ITEMS: Item[] = [
     impact: 'Yahoo rate-limited the host for hours (592 failed symbol ingests on Oct 28), taking down the fundamentals, earnings-consensus and growth-vs-index fetches that have no other source.',
     what: 'A UW 429 arms a shared 120 s cooldown; while armed the registry dropped UW and routed all US daily/5m ingest to yfinance. Oct 28 close: daily fetches 85 UW / 661 yfinance in the ten minutes with two 429s, 336 / 10 once they stopped. 40 bar-endpoint 429s on Oct 28, 75 on Oct 29, all on that one endpoint, at 24-29k calls/day against a 120k quota.',
     fix: 'During the regular session a fresh symbol (newest bar ended, or last daily fetch succeeded, within 15 min) skips the run; the next incremental run catches up from UW. Stale symbols, premarket, post-close passes and HK unchanged. The bar path now records UW per-minute headroom.',
-    implementedNote: 'DEPLOYED 2026-10-30 02:44 UTC (market-data ad55a635): container src/shared match the commit, 15/15 healthy. 15 tests incl. real PostgreSQL; 5 sabotages caught; independent review found nothing blocking. Watch ingest_primary_cooldown_skips and uw_bar_minute_remaining over the next sessions.',
+    implementedNote: 'DEPLOYED 2026-10-30 02:44 UTC (market-data ad55a635): container src/shared match the commit, 15/15 healthy. 15 tests incl. real PostgreSQL; 5 sabotages caught; independent review found nothing blocking. Watch ingest_primary_cooldown_skips over the next sessions. (uw_bar_minute_remaining was removed in f5eabd6a: it read 1,000,000 every minute.)',
   },
   {
     id: 'UW-BAR-REQUEST-SPACING', tier: 476, severity: 'medium', defaultStatus: 'todo',
     title: 'Find the real Unusual Whales bar limit, then shape requests to it',
     file: 'docs/incidents/yfinance-rate-limit-amplification.md', effort: 'S',
-    impact: 'Bar-endpoint 429s still happen at the start of runs (63 on Oct 30); with the retry most should now recover, but the cause is unknown.',
-    what: 'UW reported 1,000,000 requests/minute remaining in every minute on Oct 30, so the refusals are not the per-minute quota. Likely a concurrency limit: 6 ingest workers per run, with the 5m and daily jobs overlapping.',
-    fix: 'Read the 429 body and headers now logged by unusual_whales.bar_rate_limited after the next sessions. If it is concurrency, cap concurrent bar requests; if it is something else, shape to that.',
+    impact: 'On Nov 2 the retry recovered 130 of 133 bar refusals, but each still costs at least 1.5 s and takes a slot the other UW features need.',
+    what: 'Answered on Nov 2 from the logged 429 body: UW allows 3 requests in flight per account, across all tokens; it is not a per-minute or daily quota. The bar ingest alone runs 6 workers, and the 5m and daily jobs overlap.',
+    fix: 'Cap concurrent UW bar requests at 2 (for example a Redis semaphore), leaving a slot for chains, flow and the other UW callers. Market-data change; not yet approved.',
   },
   {
     id: 'UW-429-RETRY', tier: 476, severity: 'medium', defaultStatus: 'done',
@@ -22636,6 +22644,7 @@ const ITEMS: Item[] = [
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TIER_LABEL: Record<Tier, string> = {
+  480: "Tier 480 — UW retry follow-ups (2026-11-05)",
   479: "Tier 479 — Pool exhaustion, nightly training and platform review (2026-11-03–05)",
   478: "Tier 478 — Pre-trial engineering: evidence capture and Yahoo load (2026-10-30)",
   477: "Tier 477 — Durable measurement records and the RZY rebuild investigation (2026-10-30)",
@@ -23113,6 +23122,7 @@ const TIER_LABEL: Record<Tier, string> = {
 };
 
 const TIER_COLOR: Record<Tier, string> = {
+  480: '#38bdf8',
   479: '#fb923c',
   478: '#facc15',
   477: '#f472b6',
