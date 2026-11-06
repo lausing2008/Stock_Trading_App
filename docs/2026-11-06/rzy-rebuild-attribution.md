@@ -101,6 +101,12 @@ A and B are complementary. B is the general correction, A removes the most commo
 
 ## Next
 
-Step 2: did these rebuilds change any RZY event? In particular, were events emitted from partial
+Step 2, initial bounded check: [rzy-alert-impact-initial.md](rzy-alert-impact-initial.md).
+Of 48 same-day 5m events persisted before a material correction to their signal candle, 45 are
+unchanged in the current generation; three (none emailed) are absent but not attributed to a
+specific rebuild. ANF's Nov 4 emailed alert was accepted before the correction and survives with
+unchanged figures. Not yet covered: higher timeframes, morning rebuilds, indirect effects.
+
+Step 2 in full: did these rebuilds change any RZY event? In particular, were events emitted from partial
 candles during the skip windows, and withdrawn or altered after the rebuild? That decides how
 urgent B is.
