@@ -15,12 +15,14 @@
 # Usage:
 #   bash scripts/download_weekly_backup.sh
 #
-# DAILY cron since 2026-11-04 (06:00 local time, after the 02:00 UTC nightly backup under any US
-# timezone). It used to run weekly, which moved the same bytes but left no slack: one missed
+# DAILY cron since 2026-11-04. Since 2026-11-05 at 15:00 Pacific: after the US close and its
+# training batch (done ~14:25 PST on 2026-11-05) and before HK opens (17:30 PST / 18:30 PDT), so
+# the copy runs while both markets are closed. It picks up the 02:00 UTC backup from the night
+# before. (It ran at 06:00 local from 2026-11-04, during the US premarket ingest.) It used to run weekly, which moved the same bytes but left no slack: one missed
 # Saturday (the workstation was off on Sep 26) meant the Sep 20-26 dumps rotated off EC2's
 # 7-day window before they were ever copied. Run daily, a missed day is picked up the next day.
 #   crontab -e
-#   0 6 * * * /usr/bin/bash /home/lausing/Documents/MyProjects/Stock_Trading_App/scripts/download_weekly_backup.sh >> /home/lausing/Documents/Stock_AI/db_backups/download.log 2>&1
+#   0 15 * * * /usr/bin/bash /home/lausing/Documents/MyProjects/Stock_Trading_App/scripts/download_weekly_backup.sh >> /home/lausing/Documents/Stock_AI/db_backups/download.log 2>&1
 #
 # Local retention (by the date in the file name, not mtime): every dump for DAILY_KEEP_DAYS,
 # then only Sunday dumps up to LOCAL_RETENTION_DAYS. Keeping every daily for 90 days would be
