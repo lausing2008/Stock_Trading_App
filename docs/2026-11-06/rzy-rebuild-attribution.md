@@ -99,7 +99,23 @@ item (scan latency).
 
 A and B are complementary. B is the general correction, A removes the most common trigger.
 
-### Built 2026-11-06 (not deployed)
+### Built 2026-11-06, deployed 2026-11-07 05:36 UTC (release `75a6f97c`)
+
+Deployed between sessions (Fri evening Pacific; no market open) with `scripts/deploy.sh market-data`.
+- The image built from EC2 at `75a6f97c`; the container is healthy and reports `STOCKAI_RELEASE_SHA=75a6f97c`.
+- The drift check, run locally from a clean `75a6f97c` checkout, shows 0 of 12 drifted.
+- Rollback image: `stockai-market-data:rollback-before-75a6f97c` (previous release `1dc3e338`).
+- Shipped exactly A and B: 4 market-data files, nothing in `shared/`.
+
+The price-risk trial still stands at **four complete sessions** (Nov 2, 3, 5, 6; Nov 4 is missing its
+15:40 scan). Monday Nov 9 is the fifth and the first on this release. That session still runs on a
+single release, and the trial configuration is unchanged. Monday's 17:35 PT evidence capture remains
+scheduled.
+
+Still to measure on Monday:
+- A: `ingest.cooldown_completion_retry` and `ingest_cooldown_completion_pending`;
+- B: `held_until_post_close_write` and streams reading `stale`;
+- the in-session 5m rebuild count against Nov 2 and Nov 6.
 
 **A, `c4599c51`.** The cooldown skip itself is unchanged. A skipped symbol whose newest intraday
 bar has closed without a post-close write is marked `completion_pending`. `ingest_universe` then
