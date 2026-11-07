@@ -80,6 +80,8 @@ def env(monkeypatch):
 
         def get(self, *a, **k):
             state["gets"] = state.get("gets", 0) + 1
+            if state.get("hook"):
+                state["hook"]()
             if state.get("seq"):
                 return state["seq"].pop(0)
             return state["resp"]
@@ -283,3 +285,108 @@ def test_the_old_comparison_really_raised_on_this_payload():
     ts = pd.to_datetime(pd.Series(["2026-10-14T14:00:00Z"]))
     with pytest.raises(TypeError, match="Invalid comparison"):
         _ = ts >= pd.Timestamp(date(2026, 10, 14))
+
+
+# ── AUD-UW-BAR-INFLIGHT: at most _BAR_MAX_IN_FLIGHT bar requests in flight per process ────────
+
+def _inflight_probe(state, hold_s=0.05):
+    """A client.get that records how many calls overlap, holding each briefly."""
+    import threading
+    import time as _t
+    lock = threading.Lock()
+    seen = {"now": 0, "max": 0}
+
+    def hook():
+        with lock:
+            seen["now"] += 1
+            seen["max"] = max(seen["max"], seen["now"])
+        _t.sleep(hold_s)
+        with lock:
+            seen["now"] -= 1
+    state["hook"] = hook
+    return seen
+
+
+def test_six_concurrent_fetches_never_exceed_the_cap(env, monkeypatch):
+    import threading
+    state, red = env
+    monkeypatch.setattr(U, "_bar_slots", threading.BoundedSemaphore(2))
+    seen = _inflight_probe(state)
+    errors = []
+
+    def run():
+        try:
+            U.UnusualWhalesAdapter().fetch_ohlcv("GDX", date(2026, 10, 13), date(2026, 10, 14), "1d")
+        except Exception as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+    threads = [threading.Thread(target=run) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert errors == []
+    assert state["gets"] == 6, "every fetch still runs"
+    # <= 2 is the property; >= 1 only guards that the probe ran. Without the cap this is 6.
+    assert 1 <= seen["max"] <= 2
+
+
+def test_the_default_cap_leaves_one_uw_slot_free(monkeypatch):
+    monkeypatch.delenv("UW_BAR_MAX_IN_FLIGHT", raising=False)
+    assert U._bar_max_in_flight() == 2
+
+
+@pytest.mark.parametrize("raw,expected", [("3", 3), ("0", 1), ("x", 2), (None, 2)])
+def test_the_cap_can_be_overridden_but_not_below_one(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("UW_BAR_MAX_IN_FLIGHT", raising=False)
+    else:
+        monkeypatch.setenv("UW_BAR_MAX_IN_FLIGHT", raw)
+    assert U._bar_max_in_flight() == expected
+
+
+def test_no_slot_is_held_during_the_retry_pause(env, monkeypatch):
+    import threading
+    state, red = env
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(U, "_bar_slots", slots)
+    free_while_sleeping = []
+
+    def sleep(_s):
+        ok = slots.acquire(blocking=False)
+        free_while_sleeping.append(ok)
+        if ok:
+            slots.release()
+    monkeypatch.setattr(U, "_retry_sleep", sleep)
+    state["seq"] = [_Resp(429, []), _Resp(200, [])]
+    U.UnusualWhalesAdapter().fetch_ohlcv("GDX", date(2026, 10, 13), date(2026, 10, 14), "1d")
+    assert free_while_sleeping == [True]
+
+
+def test_a_request_that_raises_still_releases_its_slot(env, monkeypatch):
+    import threading
+    state, red = env
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(U, "_bar_slots", slots)
+
+    def boom():
+        raise _TimeoutException("slow")
+    state["hook"] = boom
+    with pytest.raises(_TimeoutException):
+        U.UnusualWhalesAdapter().fetch_ohlcv("GDX", date(2026, 10, 13), date(2026, 10, 14), "1d")
+    assert slots.acquire(blocking=False), "slot leaked after an exception"
+
+
+def test_a_slot_wait_timeout_proceeds_instead_of_failing(env, monkeypatch):
+    import threading
+    state, red = env
+    slots = threading.BoundedSemaphore(1)
+    slots.acquire()  # held elsewhere and never released
+    monkeypatch.setattr(U, "_bar_slots", slots)
+    monkeypatch.setattr(U, "_BAR_SLOT_WAIT_S", 0.01)
+    state["resp"] = _Resp(200, [])
+    U.UnusualWhalesAdapter().fetch_ohlcv("GDX", date(2026, 10, 13), date(2026, 10, 14), "1d")
+    assert state["gets"] == 1
+    slots.release()  # the outside holder's slot: releasing once must not over-release
+    with pytest.raises(ValueError):
+        slots.release()
+

@@ -694,6 +694,32 @@ def _open_markets(markets: list[str], job: str) -> list[str]:
     return open_
 
 
+def _session_ingest_symbols(market: str, symbols: list[str] | None = None) -> list[str]:
+    """`_symbols_for(market)` minus confirmed-delisted symbols, for the ingest passes that run
+    every five minutes in session (5m bars, the regular 1d refresh, premarket, 5m reconcile).
+
+    AUD-UW-DELISTED-INTRADAY (2026-11-07): SKHYV and US10Y are flagged delisted yet were fetched
+    157 times each on 2026-11-02, failing on both providers every run. Each UW attempt (a 422)
+    also takes one of the account's 3 concurrent request slots. `_symbols_for()` keeps them on
+    purpose (AUD-ING7-DELISTNEVERFIRES: ingestion is what detects and reconfirms delisting), so
+    they stay in the once-a-day post-close pass and the weekly forced refresh, and leave only
+    the repeated session passes. Fails open: if the flag cannot be read, nothing is dropped.
+    """
+    if symbols is None:
+        symbols = _symbols_for(market)
+    try:
+        with SessionLocal() as session:
+            delisted = set(session.execute(
+                select(Stock.symbol).where(Stock.market == market, Stock.delisted.is_(True))
+            ).scalars())
+    except Exception as exc:
+        log.warning("scheduler.delisted_lookup_failed", market=market, error=str(exc))
+        return symbols
+    if not delisted:
+        return symbols
+    return [x for x in symbols if x not in delisted]
+
+
 def _symbols_for(market: str) -> list[str]:
     """Return all active stock symbols for the given market ('US' or 'HK').
 
@@ -874,7 +900,8 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
     # Stage 1: Ingest — isolated so a yfinance blip doesn't kill alerts/paper trading
     _ingest_ok = True
     try:
-        ingest_universe(symbols, "1d")
+        # AUD-UW-DELISTED-INTRADAY: the post-close pass keeps delisted symbols for detection.
+        ingest_universe(symbols if post_close else _session_ingest_symbols(market, symbols), "1d")
     except Exception as _ie:
         _ingest_ok = False
         log.error("scheduler.ingest_failed", market=market, error=str(_ie), exc_info=True)
@@ -12432,7 +12459,7 @@ def _refresh_5m(market: str) -> None:
         return
     if market == "US" and not _is_us_trading_day():
         return
-    symbols = _symbols_for(market)
+    symbols = _session_ingest_symbols(market)
     if not symbols:
         return
     log.info("scheduler.5m_ingest_start", market=market, count=len(symbols))
@@ -12527,7 +12554,7 @@ def _reconcile_session_5m(market: str, now: "datetime | None" = None, *, second_
     day = now.astimezone(tz).date()
     if (market == "HK" and not _is_hk_trading_day(now)) or (market == "US" and not _is_us_trading_day(now)):
         return {"status": "not_a_trading_day"}
-    symbols = _symbols_for(market)
+    symbols = _session_ingest_symbols(market)
     key = f"scheduler:job:{market.lower()}_5m_reconcile:detail"
     if second_pass:
         try:
@@ -12622,7 +12649,7 @@ def _refresh_premarket_5m() -> None:
     """
     if not _is_us_trading_day():
         return
-    symbols = _symbols_for("US")
+    symbols = _session_ingest_symbols("US")
     if not symbols:
         return
     log.info("scheduler.premarket_5m_ingest_start", count=len(symbols))
@@ -14144,9 +14171,12 @@ def run_data_quality_checks() -> None:
                         })
                 except Exception as _check_exc:
                     log.warning("dq_check.query_failed", check=check["name"], error=str(_check_exc))
+                    # AUD-DQ-GAUGEERROR (2026-11-07): gauge and ratio checks carry no
+                    # max_age_hours, so indexing it here raised KeyError out of this handler and
+                    # ended the whole run, skipping every later check.
                     query_errors.append({
                         "name": check["name"], "description": check["description"],
-                        "age_hours": None, "max_age_hours": check["max_age_hours"],
+                        "age_hours": None, "max_age_hours": check.get("max_age_hours"),
                     })
                     # T243-DQ4: Postgres aborts the whole transaction block on any SQL error —
                     # without an explicit rollback, every check AFTER this one in _DQ_CHECKS list

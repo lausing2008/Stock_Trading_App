@@ -5,7 +5,8 @@ This reviews the first US session (Mon 2026-11-02) after market-data `f5eabd6a` 
 code review of both commits ran at the same time.
 
 **Status:** written 2026-11-03 as documentation only. On 2026-11-05 P3 and P5 were built as a
-frontend-only change (tracker tier 480); see §7. P1, P2, P4 and P6 still wait for approval.
+frontend-only change (tracker tier 480); see §7. P1, P2, P4 and P6 were done on 2026-11-07;
+see §8.
 
 Sources:
 - Redis counters and the `market-data` container log. The container started 2026-11-01 18:09 UTC, recreated by another session's `deploy_remote.sh` at HEAD `6797e1b9`, a frontend-only commit, so the market-data code was unchanged. The log is capped at 5 × 20 MB.
@@ -100,12 +101,12 @@ The review found nothing blocking. It confirmed the following:
 
 | # | Change | Why | Size |
 |---|---|---|---|
-| P1 | Cap concurrent UW bar requests (for example a Redis-backed semaphore of 2, leaving 1 slot for the other UW callers), or cut the ingest pool to 2 workers for US/UW | The limit is now known to be 3 in flight per account. The retry absorbs most refusals, but each still costs at least 1.5 s and blocks other UW callers. | S–M |
-| P2 | Stop intraday/daily ingest of SKHYV and US10Y, by marking them non-ingestable or routing US10Y to its index source | About 314 doomed requests a day, half of them taking UW concurrency slots | S |
+| P1 (**done**, §8) | Cap concurrent UW bar requests (for example a Redis-backed semaphore of 2, leaving 1 slot for the other UW callers), or cut the ingest pool to 2 workers for US/UW | The limit is now known to be 3 in flight per account. The retry absorbs most refusals, but each still costs at least 1.5 s and blocks other UW callers. | S–M |
+| P2 (**done**, §8) | Stop intraday/daily ingest of SKHYV and US10Y, by marking them non-ingestable or routing US10Y to its index source | About 314 doomed requests a day, half of them taking UW concurrency slots | S |
 | P3 (**done**, §7) | Exclude `rate_limited_retried` from the admin error total (R1) | The admin badge reports about 50× more errors than actually happened | XS |
-| P4 | Make the DQ test real: check that `job_name` is a key `_record_job_status` writes, and run the runner on synthetic ages | Test weaknesses above | S |
+| P4 (**done**, §8) | Make the DQ test real: check that `job_name` is a key `_record_job_status` writes, and run the runner on synthetic ages | Test weaknesses above | S |
 | P5 (**done**, §7) | Update the stale tracker text that mentions `uw_bar_minute_remaining` | Docs accuracy | XS |
-| P6 | Compare the 35 symbols with old option-chain history against the LEAPS list, and confirm the Nov 2 chain capture runs | Purge and capture verification gaps | XS (read-only) |
+| P6 (**done**, §8) | Compare the 35 symbols with old option-chain history against the LEAPS list, and confirm the Nov 2 chain capture runs | Purge and capture verification gaps | XS (read-only) |
 
 The incident file (`docs/incidents/yfinance-rate-limit-amplification.md`, AUD-UW-429-RETRY) and
 `docs/2026-10-28/open-items-status.md` should point here. That was not done, to keep this change
@@ -125,4 +126,54 @@ Asked for fixes that could ship without touching the market-data service, so onl
   account) and P1 as its fix, still to do.
 - **Tests.** 4 new vitest cases; removing `rate_limited_retried` from the recovered set fails 3
   of them. `tsc` clean, full frontend suite 1,007 passed.
+
+## 8. Built 2026-11-07 (market-data)
+
+Approved by the user ("let's finish them all").
+
+- **P1, AUD-UW-BAR-INFLIGHT.** UW bar requests hold one of 2 process-wide slots
+  (`threading.BoundedSemaphore`, override with `UW_BAR_MAX_IN_FLIGHT`) only while the HTTP call
+  is in flight, not during the retry pause. All bar requests run in market-data's single uvicorn
+  process. A slot that does not free within 10 s is skipped and logged
+  (`unusual_whales.bar_slot_wait_timeout`), never failed.
+  - Baseline from `bar_provenance` (forming 5m bar written per symbol, US, regular session):
+    Nov 5 median run 33.8 s, p90 41.7 s, max 65 s; Nov 6 median 33.4 s, p90 38.9 s, max 44.8 s.
+    The container logs for those days were lost to a 05:36 UTC Nov 7 recreate.
+  - To read after the next session: run length on the same query, first and final 429 counts
+    (`rate_limited_retried`, `rate_limited`), slot-wait timeouts and late US 5m bars.
+- **P2, AUD-UW-DELISTED-INTRADAY.** SKHYV, US10Y and SSNLF are already flagged `delisted` but
+  stay `active`, and `_symbols_for()` keeps delisted symbols on purpose
+  (AUD-ING7-DELISTNEVERFIRES). The new `_session_ingest_symbols()` drops them only from the
+  repeated session passes: 5m, premarket 5m, 5m reconcile and the in-session daily refresh. The
+  post-close daily pass and the weekly forced refresh still fetch them, so detection keeps its
+  evidence. Fails open.
+- **P4.** The DQ test now checks that every `job_status` check names a job that records status
+  anywhere in the service, checks the budget `job_name` value, and runs the real
+  `run_data_quality_checks` (extracted by `ast`) against stand-ins: capture at 35 h passes and
+  59 h fails, the budget record fresh/stale/missing, and a raising gauge.
+  - That last test found a real runner bug, **AUD-DQ-GAUGEERROR**: the per-check error handler
+    read `check["max_age_hours"]`, which gauge and ratio checks do not have, so a raising gauge
+    ended the whole run and skipped every later check. Now `check.get(...)`.
+- **P6 (read-only).**
+  - The 35 symbols with option-chain history older than 90 days are exactly the 35 on
+    `_OPTHIST_SYMBOLS`: none missing, none extra.
+  - Coverage holds 161 symbols for every session Oct 28 to Nov 3 and 160 for Nov 4 and 5; the
+    missing one is SSNLF, newly flagged delisted, which the capture list excludes.
+  - No coverage for Nov 6 is expected: the 18:45 ET run captures the previous session, so
+    Monday's run takes Nov 6.
+- **Independent review:** nothing blocking. Acted on: the slot wait was cut from 30 s to 10 s
+  (a hung UW holds both slots for the 30 s request timeout), and the concurrency test now asserts
+  `1 <= max <= 2` instead of an exact overlap. Noted, not changed: the free third slot is not
+  enforced for the other UW callers, which take no slot; the env override is read at import, so
+  it needs a restart; nothing ever clears `delisted`, so AUD-ING7's "reconfirm" path does not
+  exist (detection runs only on daily fetches of not-yet-flagged symbols).
+- **Suites.** The first `make test` run failed one existing guard,
+  `test_ingest_universe_must_KEEP_including_delisted_symbols`. It slices the source text from
+  `def _symbols_for(` to the next constant, and the new helper had been placed inside that slice.
+  `_symbols_for` itself was unchanged; the helper now sits above it. After the move: market-data
+  6,157 passed (0 failed); every other backend suite had already passed in the first run;
+  frontend 1,007 passed and `tsc` is clean.
+- **Sabotage checks.** Removing the semaphore fails 2 tests, removing its release fails 4,
+  returning the unfiltered list fails 2, reverting the `.get` fails 1, and a wrong budget
+  `job_name` fails 2.
 

@@ -35,6 +35,31 @@ interface Item {
 
 const ITEMS: Item[] = [
   {
+    id: 'UW-BAR-INFLIGHT', tier: 480, severity: 'medium', defaultStatus: 'done',
+    title: 'At most 2 Unusual Whales bar requests in flight at once',
+    file: 'docs/audits/2026-11-03-uw-429-retry-first-session-review.md', effort: 'S',
+    impact: 'UW allows 3 requests in flight per account. Bar ingest ran up to 12 at once (6 workers, 5m and daily jobs overlapping), so it collided with itself and starved option-chain capture and other UW callers.',
+    what: 'On Nov 2 the retry recovered 130 of 133 bar refusals, but each refusal costs at least 1.5 s and the cause remained.',
+    fix: 'A process-wide semaphore of 2 (UW_BAR_MAX_IN_FLIGHT) held only while the request is in flight, not during the retry pause. A 10 s wait proceeds rather than fails. Baseline: a US 5m run writes its forming bars in ~33 s median.',
+    implementedNote: 'Built 2026-11-07, deployed with this tier. To read after the next US session: run length (baseline 33 s median), 429 counts, slot-wait timeouts, late 5m bars.',
+  },
+  {
+    id: 'UW-DELISTED-INTRADAY', tier: 480, severity: 'low', defaultStatus: 'done',
+    title: 'Delisted symbols were fetched every 5 minutes in session',
+    file: 'docs/audits/2026-11-03-uw-429-retry-first-session-review.md', effort: 'S',
+    impact: 'SKHYV and US10Y failed on both providers 157 times each on Nov 2; each UW attempt took one of the 3 concurrency slots.',
+    what: 'Both were already flagged delisted (as is SSNLF) but stay active, and the ingest universe keeps delisted symbols on purpose so ingestion can detect and reconfirm delisting.',
+    fix: 'Skip delisted symbols only in the repeated session passes (5m, premarket, 5m reconcile, in-session daily). The post-close daily pass and weekly refresh still fetch them, so detection keeps its evidence.',
+  },
+  {
+    id: 'DQ-RUNNER-GAUGEERROR', tier: 480, severity: 'medium', defaultStatus: 'done',
+    title: 'One failing gauge check could end the whole data-quality run',
+    file: 'docs/audits/2026-11-03-uw-429-retry-first-session-review.md', effort: 'XS',
+    impact: 'Every check after the failing one was skipped and no infrastructure alert went out.',
+    what: 'The per-check error handler read max_age_hours, which gauge and ratio checks do not have, so its KeyError escaped the handler. Found by the new test that runs the real runner; the old tests only read the check list.',
+    fix: 'check.get("max_age_hours"). The DQ tests now run the runner against stand-ins and check that every job_status check names a job that records status.',
+  },
+  {
     id: 'UW-RETRY-ADMINTOTAL', tier: 480, severity: 'low', defaultStatus: 'done',
     title: 'Admin Health counted recovered UW retries as bar-ingest errors',
     file: 'docs/audits/2026-11-03-uw-429-retry-first-session-review.md', effort: 'XS',
@@ -327,12 +352,13 @@ const ITEMS: Item[] = [
     implementedNote: 'DEPLOYED 2026-10-30 02:44 UTC (market-data ad55a635): container src/shared match the commit, 15/15 healthy. 15 tests incl. real PostgreSQL; 5 sabotages caught; independent review found nothing blocking. Watch ingest_primary_cooldown_skips over the next sessions. (uw_bar_minute_remaining was removed in f5eabd6a: it read 1,000,000 every minute.)',
   },
   {
-    id: 'UW-BAR-REQUEST-SPACING', tier: 476, severity: 'medium', defaultStatus: 'todo',
+    id: 'UW-BAR-REQUEST-SPACING', tier: 476, severity: 'medium', defaultStatus: 'done',
     title: 'Find the real Unusual Whales bar limit, then shape requests to it',
     file: 'docs/incidents/yfinance-rate-limit-amplification.md', effort: 'S',
     impact: 'On Nov 2 the retry recovered 130 of 133 bar refusals, but each still costs at least 1.5 s and takes a slot the other UW features need.',
     what: 'Answered on Nov 2 from the logged 429 body: UW allows 3 requests in flight per account, across all tokens; it is not a per-minute or daily quota. The bar ingest alone runs 6 workers, and the 5m and daily jobs overlap.',
-    fix: 'Cap concurrent UW bar requests at 2 (for example a Redis semaphore), leaving a slot for chains, flow and the other UW callers. Market-data change; not yet approved.',
+    fix: 'Cap concurrent UW bar requests at 2, leaving a slot for chains, flow and the other UW callers. Built as UW-BAR-INFLIGHT (tier 480).',
+    implementedNote: 'Answered and built 2026-11-07; see UW-BAR-INFLIGHT.',
   },
   {
     id: 'UW-429-RETRY', tier: 476, severity: 'medium', defaultStatus: 'done',

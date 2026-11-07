@@ -40,6 +40,8 @@ keeps routing HK to yfinance, unchanged.
 """
 from __future__ import annotations
 
+import os
+import threading
 import time
 from datetime import date
 
@@ -98,6 +100,30 @@ _COOLDOWN_SECONDS = 30
 _RETRY_DELAY_S = 1.5
 _RETRY_DELAY_MAX_S = 5.0
 _retry_sleep = time.sleep
+
+# AUD-UW-BAR-INFLIGHT (2026-11-07): THE LIMIT IS CONCURRENCY. Every refusal body logged on
+# 2026-11-02 reads "Your account can have 3 API requests running at a time across all of its API
+# tokens"; it is not a per-minute or daily quota. `ingest_universe` runs 6 workers and the 5m and
+# 1d jobs overlap, so up to 12 bar requests competed for 3 slots, and session-time option-chain
+# capture in this same process needs one too. Bar requests now hold one of 2 process-wide slots
+# while the HTTP call is in flight (not during the retry pause), leaving the third for every other
+# UW caller. All bar requests run in market-data's single uvicorn process, so a thread semaphore
+# covers them. A slot that does not free within _BAR_SLOT_WAIT_S is skipped, not failed: the
+# worst case is the old behaviour (a possible 429 and its retry), never a lost fetch. The wait is
+# short because a hung UW holds both slots for the full 30 s request timeout, and every waiting
+# symbol would otherwise add that much again before proceeding anyway.
+# Baseline before this change (2026-11-05/06): a US 5m run wrote its forming bars in ~33 s
+# median, ~40 s p90. Override the cap with UW_BAR_MAX_IN_FLIGHT if run time grows too far.
+def _bar_max_in_flight() -> int:
+    try:
+        return max(1, int(os.environ.get("UW_BAR_MAX_IN_FLIGHT", "2")))
+    except ValueError:
+        return 2
+
+
+_BAR_MAX_IN_FLIGHT = _bar_max_in_flight()
+_bar_slots = threading.BoundedSemaphore(_BAR_MAX_IN_FLIGHT)
+_BAR_SLOT_WAIT_S = 10.0
 
 
 def cooldown_remaining_s() -> float:
@@ -222,11 +248,20 @@ class UnusualWhalesAdapter(DataAdapter):
         try:
             with httpx.Client(timeout=30) as client:
                 def _get():
-                    return client.get(
-                        f"{_BASE}/api/stock/{symbol}/ohlc/{candle}",
-                        headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
-                        params={"limit": _MAX_LIMIT},
-                    )
+                    # AUD-UW-BAR-INFLIGHT: hold a slot only while the request is in flight.
+                    got = _bar_slots.acquire(timeout=_BAR_SLOT_WAIT_S)
+                    if not got:
+                        log.warning("unusual_whales.bar_slot_wait_timeout", symbol=symbol,
+                                    tf=timeframe, waited_s=_BAR_SLOT_WAIT_S)
+                    try:
+                        return client.get(
+                            f"{_BASE}/api/stock/{symbol}/ohlc/{candle}",
+                            headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+                            params={"limit": _MAX_LIMIT},
+                        )
+                    finally:
+                        if got:
+                            _bar_slots.release()
                 r = _get()
                 if r.status_code == 429:
                     # AUD-UW-429-RETRY: one pause and one retry before giving up.
