@@ -30,8 +30,9 @@ _BENCH = {"US": "SPY", "HK": "^HSI"}
 
 def _fetch_returns(symbols: list[str], days: int = 60) -> pd.DataFrame:
     """Fetch daily closes from market-data's own prices endpoint and return a DataFrame of
-    daily % returns — same shape/behavior as the original direct-DB version, just fetched over
-    HTTP instead (this service has no DB access of its own)."""
+    daily % returns (this service has no DB access of its own). Rows are NOT aligned here:
+    each column keeps its own history, NaN elsewhere, so _prepare_book() can see how much
+    history each symbol has before choosing the common window."""
     start = (date.today() - timedelta(days=days)).isoformat()
     series: dict[str, pd.Series] = {}
     with httpx.Client(timeout=30) as c:
@@ -51,7 +52,7 @@ def _fetch_returns(symbols: list[str], days: int = 60) -> pd.DataFrame:
                 continue
     if not series:
         return pd.DataFrame()
-    return pd.DataFrame(series).dropna()
+    return pd.DataFrame(series)
 
 
 def _fetch_stock_meta(symbols: list[str]) -> dict[str, dict]:
@@ -218,6 +219,8 @@ def run_stress_test(betas: dict[str, float], weights: dict[str, float], scenario
 _MAX_SYMBOLS = 10
 _HK_BENCH_SHARE = 0.5
 _WEIGHT_EPS = 1e-9  # equal weights like 3 of 6 can sum to 0.5000000001 in float
+# Same floor compute_var_cvar() applies: fewer common days than this and every figure is noise.
+_MIN_COMMON_OBS = 20
 
 
 def _parse_book(symbols: str, weights: str | None) -> tuple[list[str], list[float]]:
@@ -254,10 +257,14 @@ def _parse_book(symbols: str, weights: str | None) -> tuple[list[str], list[floa
     else:
         raw_w = [1.0] * len(sym_list)
 
-    total_w = sum(raw_w)
-    if total_w <= 0:
+    max_w = max(raw_w)
+    if max_w <= 0:
         raise HTTPException(status_code=400, detail="weights must sum to a positive value")
-    return sym_list, [w / total_w for w in raw_w]
+    # Scale by the largest weight before summing: finite weights like 1e308,1e308 overflow a
+    # plain sum to inf and would normalise to [0, 0]. Scaled, the sum is at most _MAX_SYMBOLS.
+    scaled = [w / max_w for w in raw_w]
+    total_w = sum(scaled)
+    return sym_list, [w / total_w for w in scaled]
 
 
 def _benchmark_returns(bench_ticker: str) -> pd.Series:
@@ -279,10 +286,22 @@ def _prepare_book(symbols: str, weights: str | None) -> dict:
     covered symbols/weights, coverage disclosure, benchmark choice and per-symbol betas."""
     sym_list, w_list = _parse_book(symbols, weights)
 
-    df = _fetch_returns(sym_list)
-    available = [s for s in sym_list if s in df.columns]
+    raw = _fetch_returns(sym_list)
+    # A column existing is not history: a symbol needs _MIN_COMMON_OBS returns of its own, and
+    # the covered symbols need that many days IN COMMON. Disjoint histories used to align to
+    # zero rows and report 100% coverage with NaN volatility.
+    available = [s for s in sym_list if s in raw.columns and raw[s].notna().sum() >= _MIN_COMMON_OBS]
     if len(available) < 2:
         raise HTTPException(status_code=422, detail="Insufficient price history for at least 2 symbols")
+    df = raw[available].dropna()
+    if len(df) < _MIN_COMMON_OBS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Only {len(df)} trading days where {', '.join(available)} all have returns; "
+                f"at least {_MIN_COMMON_OBS} are needed"
+            ),
+        )
 
     w_map = dict(zip(sym_list, w_list))
     covered_w = sum(w_map[s] for s in available)
@@ -297,7 +316,6 @@ def _prepare_book(symbols: str, weights: str | None) -> dict:
     hk_share = sum(w for s, w in zip(available, avail_w) if "HK" in market_map[s].upper())
     bench_ticker = _BENCH["HK"] if hk_share > _HK_BENCH_SHARE + _WEIGHT_EPS else _BENCH["US"]
 
-    df = df[available]
     bench_rets = _benchmark_returns(bench_ticker)
     betas: dict[str, float] = {}
     for sym in available:
@@ -321,12 +339,21 @@ def _prepare_book(symbols: str, weights: str | None) -> dict:
             # Share of the REQUESTED weight the figures actually measure; the response's own
             # "weights" are the covered symbols rescaled to 100%.
             "covered_weight_pct": round(covered_w * 100, 2),
+            # The common window every figure is measured over. One short-history holding
+            # shortens it for the whole book, so it is disclosed rather than assumed.
+            "observations": len(df),
+            "window_start": _date_label(df.index[0]),
+            "window_end": _date_label(df.index[-1]),
         },
         "benchmark_basis": {
             "rule": f"^HSI when HK symbols hold more than {_HK_BENCH_SHARE:.0%} of covered weight, else SPY",
             "hk_weight_pct": round(hk_share * 100, 2),
         },
     }
+
+
+def _date_label(ts) -> str:
+    return ts.date().isoformat() if hasattr(ts, "date") else str(ts)
 
 
 def _coverage_warning(coverage: dict) -> str | None:

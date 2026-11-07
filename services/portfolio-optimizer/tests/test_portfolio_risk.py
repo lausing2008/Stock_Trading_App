@@ -251,11 +251,10 @@ def test_missing_history_is_disclosed_with_its_weight(monkeypatch):
     _stub_book(monkeypatch, ["AAPL", "MSFT"], {"AAPL": "US", "MSFT": "US", "NEWCO": "US"})
     result = portfolio_risk(symbols="AAPL,MSFT,NEWCO", weights="25,25,50", _user="t")
 
-    assert result["coverage"] == {
-        "requested_symbols": ["AAPL", "MSFT", "NEWCO"],
-        "missing_symbols": ["NEWCO"],
-        "covered_weight_pct": 50.0,
-    }
+    cov = result["coverage"]
+    assert cov["requested_symbols"] == ["AAPL", "MSFT", "NEWCO"]
+    assert cov["missing_symbols"] == ["NEWCO"]
+    assert cov["covered_weight_pct"] == 50.0
     assert result["weights"] == pytest.approx([0.5, 0.5])  # covered symbols, rescaled
     assert any("NEWCO" in w and "50%" in w for w in result["warnings"])
 
@@ -311,3 +310,68 @@ def test_stress_test_carries_the_same_coverage_and_benchmark(monkeypatch):
     assert result["coverage"]["missing_symbols"] == ["NEWCO"]
     assert result["coverage"]["covered_weight_pct"] == 90.0
     assert "NEWCO" in result["coverage_warning"]
+
+
+# ── I06 follow-up: overflow-safe weights and a real common measurement window ───────────────
+
+def _dated(seed, start, periods):
+    rng = np.random.default_rng(seed)
+    return pd.Series(rng.normal(0.0005, 0.01, periods), index=pd.date_range(start, periods=periods, freq="B"))
+
+
+def _stub_series(monkeypatch, series: dict):
+    """Stub _fetch_returns with UNALIGNED per-symbol histories, as the real fetch returns them."""
+    monkeypatch.setattr(risk_mod, "_fetch_returns", lambda symbols, days=60: pd.DataFrame(
+        {s: v for s, v in series.items() if s in symbols}))
+    monkeypatch.setattr(risk_mod, "_fetch_stock_meta", lambda symbols: {
+        s: {"sector": "Tech", "market": "US"} for s in symbols})
+    monkeypatch.setattr(risk_mod, "yf", type("FakeYf", (), {
+        "download": staticmethod(lambda *a, **kw: pd.DataFrame({"Close": np.linspace(100, 110, 90)}))
+    }))
+
+
+def test_huge_finite_weights_do_not_overflow_to_zero():
+    """1e308 + 1e308 is inf in float; dividing by it turned both weights into 0."""
+    _, w = risk_mod._parse_book("AAPL,MSFT", "1e308,1e308")
+    assert w == pytest.approx([0.5, 0.5])
+    _, w = risk_mod._parse_book("AAPL,MSFT,NVDA", "1e308,1e308,0")
+    assert w == pytest.approx([0.5, 0.5, 0.0])
+
+
+def test_disjoint_histories_are_a_422_not_100pct_coverage_with_nan(monkeypatch):
+    _stub_series(monkeypatch, {"A": _dated(0, "2026-01-01", 30), "B": _dated(1, "2026-03-02", 30)})
+    with pytest.raises(HTTPException) as exc:
+        portfolio_risk(symbols="A,B", weights=None, _user="t")
+    assert exc.value.status_code == 422
+    assert "Only 0 trading days" in exc.value.detail
+
+
+def test_stress_test_also_rejects_a_too_short_common_window(monkeypatch):
+    _stub_series(monkeypatch, {"A": _dated(0, "2026-01-01", 30), "B": _dated(1, "2026-02-05", 30)})
+    with pytest.raises(HTTPException) as exc:
+        portfolio_stress_test(symbols="A,B", weights=None, scenario="covid_2020", _user="t")
+    assert exc.value.status_code == 422
+
+
+def test_a_symbol_below_the_observation_floor_is_excluded_and_disclosed(monkeypatch):
+    """Ten days of history used to shrink EVERY symbol's window to those ten days."""
+    _stub_series(monkeypatch, {
+        "A": _dated(0, "2026-01-01", 40), "B": _dated(1, "2026-01-01", 40),
+        "IPO": _dated(2, "2026-02-12", 10),
+    })
+    result = portfolio_risk(symbols="A,B,IPO", weights="40,40,20", _user="t")
+    cov = result["coverage"]
+    assert cov["missing_symbols"] == ["IPO"]
+    assert cov["covered_weight_pct"] == 80.0
+    assert cov["observations"] == 40
+    assert result["historical_var"]["insufficient_data"] is False
+
+
+def test_the_common_window_is_disclosed_when_one_history_shortens_it(monkeypatch):
+    _stub_series(monkeypatch, {"A": _dated(0, "2026-01-01", 40), "B": _dated(1, "2026-01-15", 30)})
+    result = portfolio_risk(symbols="A,B", weights=None, _user="t")
+    cov = result["coverage"]
+    assert cov["observations"] == 30
+    assert cov["window_start"] == "2026-01-15"
+    assert cov["window_end"] == _dated(1, "2026-01-15", 30).index[-1].date().isoformat()
+    assert result["var_95_pct"] == result["var_95_pct"]  # not NaN
