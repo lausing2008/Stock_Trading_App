@@ -30,6 +30,25 @@ if url:
         conn.execute(text('DROP SCHEMA public CASCADE'));conn.execute(text('CREATE SCHEMA public'))
 else:engine=create_engine('sqlite:///'+str(pathlib.Path(tempfile.mkdtemp())/'rzy.db'))
 models.Base.metadata.create_all(engine);Session=sessionmaker(bind=engine,autoflush=False)
+# AUD-RZY-PARTIALCANDLE: Little RZY consumes an intraday bar only after a provenance-recorded write
+# at/after its close. Ingest records that for every write; these fixtures insert Price rows
+# directly, so each insert/update records it here as a write at the bar's close (the completed
+# bars the scenarios model). Partial-candle scenarios override the row explicitly.
+from sqlalchemy import event as _event, delete as _pdel, insert as _pins
+from src.services.bar_provenance import BarProvenance as _BP
+_FIXTURE_TF={'5m':5,'15m':15,'1h':60}
+def _fixture_provenance(mapper,conn,p):
+    tf=getattr(p.timeframe,'value',p.timeframe)
+    if tf not in _FIXTURE_TF: return
+    t=_BP.__table__; conn.execute(_pdel(t).where(t.c.stock_id==p.stock_id,t.c.timeframe==tf,t.c.ts==p.ts))
+    closed=p.ts+timedelta(minutes=_FIXTURE_TF[tf])
+    conn.execute(_pins(t).values(stock_id=p.stock_id,timeframe=tf,ts=p.ts,provider='fixture',first_written_at=closed,
+        last_written_at=closed,open=p.open,high=p.high,low=p.low,close=p.close,volume=p.volume or 0,
+        ohlc_revisions=0,volume_only_revisions=0,provider_switches_same_values=0,off_grid=False))
+def _fixture_provenance_delete(mapper,conn,p):
+    t=_BP.__table__; conn.execute(_pdel(t).where(t.c.stock_id==p.stock_id,t.c.ts==p.ts,t.c.timeframe==getattr(p.timeframe,'value',p.timeframe)))
+_event.listen(models.Price,'after_insert',_fixture_provenance);_event.listen(models.Price,'after_update',_fixture_provenance)
+_event.listen(models.Price,'after_delete',_fixture_provenance_delete)
 from src.services.receipts import schema as _receipts_schema
 with engine.begin() as _c: _receipts_schema.create(_c)   # rzy_rebuild_triggers (+ PG trigger)
 os.environ['STOCKAI_RELEASE_SHA']='rzyprobe'

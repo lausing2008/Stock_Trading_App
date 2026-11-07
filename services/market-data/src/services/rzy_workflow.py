@@ -19,6 +19,7 @@ from common.price_basis import resolve_ohlc
 from common.outbox import enqueue
 from .little_rzy import Engine,Config,VERSION,stable,planning_reference,generation_event_id
 from .rzy_data import prepare_bars,aggregate_completed_bars,break_indices,MINUTES,utc
+from .bar_provenance import BarProvenance
 from .rzy_models import RzyStream,RzyEvent,RzyPreference,RzyStreamGeneration,RzyStreamSnapshot,RzyScanRun,RzyOccurrence,RzyRebuild,RzyScanPhases
 import time as _time
 from .rzy_email import render_event,render_event_html,event_subject
@@ -141,6 +142,7 @@ def load_bars(session,symbol,timeframe,now,cache=None):
     # history window: arbitrarily shortening it can hide revisions or change rebuilds.
     columns=[getattr(Price,k) for k in ('ts','open','high','low','close','adj_close','volume','session')]
     rows=session.execute(select(*columns).where(Price.stock_id==stock.id,Price.timeframe==tf).order_by(Price.ts.desc()).limit(6000)).all()
+    written_at=_latest_session_write_times(session,stock.id,timeframe,rows) if timeframe!='1d' else None
     if timeframe in ('15m','1h'):
         # One canonical source per evaluation, never spliced (RZA-07): native rows win only when
         # they are current and at least as recent as bars derived from complete 5m constituents.
@@ -149,15 +151,31 @@ def load_bars(session,symbol,timeframe,now,cache=None):
         derived=(derived[0],dict(derived[1],source='derived_from_5m'))
         result=derived
         if rows:
-            native=prepare_bars(list(reversed(rows)),timeframe,now,session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)
+            native=prepare_bars(list(reversed(rows)),timeframe,now,session_bounds=session_bounds,resolve_ohlc=resolve_ohlc,written_at=written_at)
             native=(native[0],dict(native[1],source='native'))
             if native[0] and native[1]['status']=='research_only' and (not derived[0] or native[1].get('data_as_of','')>=derived[1].get('data_as_of','')):
                 result=(native[0],dict(native[1],alternative=dict(source='derived_from_5m',status=derived[1].get('status'),data_as_of=derived[1].get('data_as_of'))))
             else:
                 result=(derived[0],dict(derived[1],alternative=dict(source='native',status=native[1].get('status'),data_as_of=native[1].get('data_as_of'))))
-    else: result=prepare_bars(list(reversed(rows)),timeframe,now,session_bounds=session_bounds,resolve_ohlc=resolve_ohlc)
+    else: result=prepare_bars(list(reversed(rows)),timeframe,now,session_bounds=session_bounds,resolve_ohlc=resolve_ohlc,written_at=written_at)
     if cache is not None: cache[(symbol,timeframe)]=result
     return result
+
+
+def _latest_session_write_times(session,stock_id,timeframe,rows):
+    """AUD-RZY-PARTIALCANDLE: bar_provenance write time and last-written OHLC for the newest
+    REGULAR-session day among `rows` (newest first), keyed by naive UTC bar time. Read after the
+    prices: rzy_data.hold_unwritten_tail holds a bar whose provenance values differ from the
+    price read, so a write landing between the two reads cannot pair a partial price with a
+    post-close write time."""
+    newest=next((r.ts for r in rows if (r.session or 'REGULAR')=='REGULAR'),None)
+    if newest is None: return {}
+    day=utc(newest).astimezone(NY).date()
+    since=datetime(day.year,day.month,day.day,tzinfo=NY).astimezone(timezone.utc).replace(tzinfo=None)
+    p=BarProvenance
+    return {r.ts:(r.last_written_at,(r.open,r.high,r.low,r.close)) for r in session.execute(
+        select(p.ts,p.last_written_at,p.open,p.high,p.low,p.close).where(
+            p.stock_id==stock_id,p.timeframe==timeframe,p.ts>=since)).all()}
 
 
 def evaluate(session,symbol,timeframe,now=None,*,persist=False,config=None,bars_cache=None,allow_rebuild=True,clock=None,timings=None,include_chart=True):

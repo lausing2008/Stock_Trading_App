@@ -10,7 +10,41 @@ def utc(value):
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
-def prepare_bars(rows, timeframe, now, *, session_bounds, resolve_ohlc):
+def _same_ohlc(row, values):
+    for k, v in zip(('open', 'high', 'low', 'close'), values):
+        a = float(getattr(row, k)); b = float(v)
+        if abs(a - b) > 1e-6 * max(abs(a), abs(b)):
+            return False
+    return True
+
+
+def hold_unwritten_tail(accepted, excluded, written_at):
+    """AUD-RZY-PARTIALCANDLE (2026-11-06): a stored intraday bar is consumed only once it has been
+    written AFTER its close. Ingest writes the newest bar while it is forming; if the next run is
+    skipped or fails, that snapshot outlives its close and was consumed as completed (Nov 2/6:
+    every skipped symbol's streams then rebuilt on the correction). `written_at` maps the latest
+    session's bar times (naive UTC) to bar_provenance.last_written_at, which also advances on an
+    unchanged re-send after completion. The first bar of that session without such a write, and
+    every later one, is held (never a gap: the series stays contiguous and reads as stale until
+    a later write completes it). A bar with no provenance is held too, and so is one whose
+    last-written OHLC differs from the price read (a write landed between the two reads).
+    Earlier sessions are not re-checked. Returns the number held."""
+    if not accepted or written_at is None:
+        return 0
+    latest_day = accepted[-1][1].astimezone(NY).date()
+    for i, (row, stamp, closed) in enumerate(accepted):
+        if stamp.astimezone(NY).date() != latest_day:
+            continue
+        w = written_at.get(stamp.astimezone(timezone.utc).replace(tzinfo=None))
+        if w is None or w[0] is None or utc(w[0]) < closed or not _same_ohlc(row, w[1]):
+            held = accepted[i:]
+            del accepted[i:]
+            excluded.extend({'time': s.isoformat(), 'reason': 'not_written_after_close'} for _, s, _ in held)
+            return len(held)
+    return 0
+
+
+def prepare_bars(rows, timeframe, now, *, session_bounds, resolve_ohlc, written_at=None):
     import pandas as pd
     if timeframe not in MINUTES: raise ValueError('Unsupported RZY timeframe')
     # Performance only (OD-02, 2026-10-22): a scan called the calendar once per row (~83k calls)
@@ -37,7 +71,8 @@ def prepare_bars(rows, timeframe, now, *, session_bounds, resolve_ohlc):
         if closed+timedelta(minutes=2)>now:
             excluded.append({'time':stamp.isoformat(),'reason':'incomplete_or_settling'}); continue
         accepted.append((row,stamp,closed))
-    if not accepted: return [],dict(exclusions=excluded,status='no_completed_bars',provider='stored_prices_upstream_not_retained')
+    held=hold_unwritten_tail(accepted,excluded,written_at) if timeframe!='1d' else 0
+    if not accepted: return [],dict(exclusions=excluded,status='no_completed_bars',provider='stored_prices_upstream_not_retained',held_until_post_close_write=held)
     frame=pd.DataFrame([{key:getattr(r,key,None) for key in ('open','high','low','close','adj_close')} for r,_,_ in accepted])
     basis=resolve_ohlc(frame)
     cols={key:basis[key].tolist() for key in ('open','high','low','close')}
@@ -81,6 +116,7 @@ def prepare_bars(rows, timeframe, now, *, session_bounds, resolve_ohlc):
         gaps=gaps,exclusions=excluded,provider='stored_prices_upstream_not_retained',data_as_of=latest.isoformat(),
         expected_latest_close=expected_close.isoformat() if expected_close else None,
         delay='unknown',price_basis=basis['basis'],price_basis_reason=basis['reason'],stale=stale,
+        held_until_post_close_write=held,
         paper_blockers=['provider_delay_unverified','borrow_availability_not_stored','execution_basis_unverified'])
 
 
@@ -121,12 +157,17 @@ def aggregate_completed_bars(source, evidence, timeframe, now, *, session_bounds
         opening=start+timedelta(minutes=offset*MINUTES[timeframe])
         buckets.setdefault((opening,end),[]).append(bar)
     first_time=utc(datetime.fromisoformat(source[0]['time']))
+    # 5m constituents held by hold_unwritten_tail: the bin waits for them, it is not a gap.
+    held={utc(datetime.fromisoformat(x['time'])) for x in evidence.get('exclusions',[])
+          if x.get('reason')=='not_written_after_close'}
     for (opening,end),members in sorted(buckets.items()):
         closing=min(opening+timedelta(minutes=MINUTES[timeframe]),end)
         if closing+timedelta(minutes=2)>now:
             excluded.append(dict(time=opening.isoformat(),reason='incomplete_aggregate'));continue
         expected=[opening+timedelta(minutes=5*i) for i in range(int((closing-opening).total_seconds()//300))]
         observed=[utc(datetime.fromisoformat(b['time'])) for b in members]
+        if observed!=expected and held.intersection(expected):
+            excluded.append(dict(time=opening.isoformat(),reason='awaiting_post_close_write'));continue
         if observed!=expected:
             # A bounded history query may start part-way through its oldest bin. This is
             # excluded warmup, never an invented candle. Any later missing bin fails closed.
