@@ -384,6 +384,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
+- **`docs/2026-11-06-platform-audit/README.md`** — Trading/system audits, learning wiki, institutional controls, consolidation and UX roadmap; documentation only. Known gaps and unverified production/return claims remain explicit.
 - **`docs/audits/2026-10-26-little-rzy-ai-signals-full-review.md`** — RZY/AI correctness review, reproduced measurement defects, production evidence and staged Intraday/performance plan; documentation only.
 - **`docs/2026-10-28/open-items-status.md`** — 457a/457b accepted (final candle = provider OHLCV; 0 off-grid persisted); chain capture verified; tiered retention + session-only capture deployed eda934f3; yfinance 429s traced to the UW-cooldown fallback [457, opthist]
 - **`docs/audits/2026-10-27-session-index.md`** — START HERE for 10-26/27: F01/F02 deployed, F03 observation collecting, F04 held + plan review, signals/alert-delivery deadlock fixed (8dc84150), RZY timeframe guide; tier 475 [session index]
