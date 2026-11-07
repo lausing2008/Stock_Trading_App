@@ -99,6 +99,36 @@ item (scan latency).
 
 A and B are complementary. B is the general correction, A removes the most common trigger.
 
+### Built 2026-11-06 (not deployed)
+
+**A, `c4599c51`.** The cooldown skip itself is unchanged. A skipped symbol whose newest intraday
+bar has closed without a post-close write is marked `completion_pending`. `ingest_universe` then
+waits for the UW cooldown to end and re-fetches those symbols once, from Unusual Whales.
+- The wait is bounded at 35 s.
+- There is no Yahoo fallback. At a cycle boundary every symbol's head is partial, so a fallback
+  would recreate the 2026-10-30 Yahoo burst. During the session the fallback's bars would also be
+  refused by bar authority.
+- Anything still pending waits for the next run.
+- New metric: `stockai:metric:ingest_cooldown_completion_pending:{tf}:{hour}`. New log line:
+  `ingest.cooldown_completion_retry`.
+
+**B, `53467241`.** A bar of the latest regular session is consumed only when two conditions hold:
+- `bar_provenance` shows a write at or after its close;
+- the provenance values match the price that was read.
+
+The first bar that fails this, and every bar after it, is held. The stream then reads as
+`stale` and resumes on the next completing write, with no gap and no rebuild. A bar with no
+provenance is held too. A 15m or 1h bin with a held 5m constituent reports
+`awaiting_post_close_write`. The 15:30 ET hour still closes at 16:00.
+
+The read-only check of 2026-11-06 found all 12,115 regular-session 5m bars written after their
+close, so nothing is held over the weekend or at Monday's maintenance scans.
+
+Qualifications:
+- The 48 in the step-2 check were events, not emailed alerts.
+- B's wait is normally one ingest cycle. It can be longer when ingestion keeps failing, and B
+  then holds the stream rather than act on a partial candle.
+
 ## Next
 
 Step 2, initial bounded check: [rzy-alert-impact-initial.md](rzy-alert-impact-initial.md).
