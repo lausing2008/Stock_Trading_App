@@ -1,6 +1,8 @@
 """Ingestion service — incremental loads, validation, Parquet + Postgres sinks."""
 from __future__ import annotations
 
+import time
+
 from datetime import date, datetime, timedelta, timezone
 from datetime import time as dtime
 from pathlib import Path
@@ -277,12 +279,40 @@ def _skip_during_primary_cooldown(session, stock, market: str, timeframe: str, h
     return now.astimezone(timezone.utc).replace(tzinfo=None) - newest <= _PRIMARY_COOLDOWN_MAX_STALENESS
 
 
-def _count_cooldown_skip(timeframe: str) -> None:
+# AUD-RZY-PARTIALCANDLE (2026-11-06): the skip above left a PARTIAL candle in place. Every run
+# writes the newest bar while it is still forming (ANF's 15:25 UTC bar on Nov 6 was written at
+# 15:25:27), and the next run normally rewrites it with its final values. A skipped run does not,
+# so the bar stayed a 27-second snapshot past its close, Little RZY consumed it as completed, and
+# the run after that corrected it: every skipped symbol's streams rebuilt at once. Cooldown skips
+# and rebuild bursts coincided exactly on Nov 2 and Nov 6 (docs/2026-11-06/rzy-rebuild-attribution.md).
+#
+# A skipped symbol whose newest bar has closed without a write after its close is therefore
+# marked completion-pending, and ingest_universe re-fetches those symbols once from the primary
+# when its cooldown ends. Never from the fallback: every symbol's head is partial at a cycle
+# boundary, so a fallback would recreate the whole Yahoo burst the skip exists to prevent.
+def _head_needs_completion(session, stock, market: str, timeframe: str, head,
+                           now: datetime | None = None) -> bool:
+    if timeframe not in _INTRADAY_BAR_MINUTES or head is None:
+        return False
+    from .bar_provenance import BarProvenance, _completed_at
+    completed = _completed_at(timeframe, head, market)
+    now_naive = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(tzinfo=None)
+    if completed > now_naive:
+        return False  # still forming: the next run completes it as usual
+    prov = session.get(BarProvenance, (stock.id, timeframe, head))
+    return prov is None or prov.last_written_at is None or prov.last_written_at < completed
+
+
+def _count_cooldown_skip(timeframe: str, completion_pending: bool = False) -> None:
     try:
         r = get_redis()
-        key = f"stockai:metric:ingest_primary_cooldown_skips:{timeframe}:{datetime.now(timezone.utc):%Y%m%d%H}"
-        if r.incr(key) == 1:
-            r.expire(key, 49 * 3600)
+        hour = f"{datetime.now(timezone.utc):%Y%m%d%H}"
+        keys = [f"stockai:metric:ingest_primary_cooldown_skips:{timeframe}:{hour}"]
+        if completion_pending:
+            keys.append(f"stockai:metric:ingest_cooldown_completion_pending:{timeframe}:{hour}")
+        for key in keys:
+            if r.incr(key) == 1:
+                r.expire(key, 49 * 3600)
     except Exception:
         pass
 
@@ -382,10 +412,12 @@ def ingest_symbol(
                 if _without_polygon:
                     adapters = _without_polygon
             if _skip_during_primary_cooldown(session, stock, market, timeframe, head, adapters):
+                pending = _head_needs_completion(session, stock, market, timeframe, head)
                 log.info("ingest.skipped_primary_cooldown", symbol=symbol, tf=timeframe,
-                         head=str(head))
-                _count_cooldown_skip(timeframe)
-                return {"symbol": symbol, "inserted": 0, "tf": timeframe, "skipped": "primary_cooldown"}
+                         head=str(head), completion_pending=pending)
+                _count_cooldown_skip(timeframe, pending)
+                return {"symbol": symbol, "inserted": 0, "tf": timeframe, "skipped": "primary_cooldown",
+                        "completion_pending": pending}
 
         # T230-CHARTING-PREMARKET: only the US-intraday prepost=True path can legitimately
         # produce real zero-volume bars (yfinance's extended-hours quirk) — daily/weekly bars
@@ -716,10 +748,38 @@ def ingest_universe(symbols: list[str], timeframe: str = "1d", max_workers: int 
 
     results: list[dict] = [{}] * len(symbols)
     index = {sym: i for i, sym in enumerate(symbols)}
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_fetch, sym): sym for sym in symbols}
-        for fut in as_completed(futures):
-            sym = futures[fut]
-            results[index[sym]] = fut.result()
+
+    def _run(batch: list[str]) -> None:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_fetch, sym): sym for sym in batch}
+            for fut in as_completed(futures):
+                sym = futures[fut]
+                results[index[sym]] = fut.result()
+
+    _run(symbols)
+    # AUD-RZY-PARTIALCANDLE: one bounded re-fetch, from the primary, of the symbols a cooldown
+    # skip left with a partial candle (see _head_needs_completion). Anything still pending after
+    # it waits for the next run; Little RZY does not consume a bar without a post-close write.
+    pending = [s for s in symbols if results[index[s]].get("completion_pending")]
+    if pending:
+        waited = _wait_for_primary_cooldown()
+        _run(pending)
+        still = [s for s in pending if results[index[s]].get("completion_pending")]
+        log.info("ingest.cooldown_completion_retry", tf=timeframe, pending=len(pending),
+                 still_pending=len(still), waited_s=round(waited, 1))
     _bust_live_price_cache()
     return results
+
+
+#: Upper bound on the wait for the primary's cooldown before the completion re-fetch: the
+#: adapter's cooldown (30 s) plus a margin. Bounded so a job can never stall on a broken TTL.
+_COMPLETION_WAIT_MAX_S = 35.0
+_completion_sleep = time.sleep
+
+
+def _wait_for_primary_cooldown() -> float:
+    from ..adapters.unusual_whales_adapter import cooldown_remaining_s
+    wait = min(max(cooldown_remaining_s(), 0.0), _COMPLETION_WAIT_MAX_S)
+    if wait > 0:
+        _completion_sleep(wait + 0.5)
+    return wait

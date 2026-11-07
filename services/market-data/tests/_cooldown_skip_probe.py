@@ -33,13 +33,13 @@ db.SessionLocal = Session
 
 import common.market_calendar as CAL  # noqa: E402
 from src.services import ingestion as ING  # noqa: E402
-from src.services.bar_provenance import DailyIngestRecord  # noqa: E402
+from src.services.bar_provenance import DailyIngestRecord, BarProvenance  # noqa: E402
 from src.adapters.base import OHLCV  # noqa: E402
 models.Base.metadata.create_all(engine)
 ING.SessionLocal = Session
 ING._write_parquet = lambda *a, **k: None
 ING._polygon_budget_available = lambda: True
-ING._count_cooldown_skip = lambda tf: None
+ING._count_cooldown_skip = lambda *a: None
 ING._bust_live_price_cache = lambda: None
 CAL.is_regular_session = lambda market, now=None: True     # the run is "inside the session"
 ING.primary_provider = lambda market, tf: "unusual_whales"
@@ -82,4 +82,24 @@ class _UW(Fake):
     name = "unusual_whales"
 adapters["list"] = [_UW()]
 out["uw_available"] = {"skipped": ING.ingest_symbol("TEST", timeframe="1d").get("skipped"), "fetches": len(fetches)}
+# AUD-RZY-PARTIALCANDLE: a fresh 5m head skips either way, and is completion-pending only while
+# its provenance shows no write after the candle's close.
+adapters["list"] = [Fake()]
+now = datetime.now(timezone.utc).replace(tzinfo=None)
+head = now.replace(second=0, microsecond=0) - timedelta(minutes=now.minute % 5 + 5)      # closed <= 5 min ago
+with Session() as s:
+    s.add(models.Price(stock_id=1, ts=head, timeframe=models.TimeFrame.M5, open=10, high=11, low=9, close=10.5,
+                       volume=1000, adj_close=10.5, session="REGULAR"))
+    s.add(BarProvenance(stock_id=1, timeframe="5m", ts=head, provider="unusual_whales", first_written_at=head + timedelta(seconds=27),
+                        last_written_at=head + timedelta(seconds=27), open=10, high=11, low=9, close=10.5, volume=1000,
+                        ohlc_revisions=0, volume_only_revisions=0, provider_switches_same_values=0, off_grid=False))
+    s.commit()
+n = len(fetches)
+r = ING.ingest_symbol("TEST", timeframe="5m")
+out["partial_5m"] = {"skipped": r.get("skipped"), "completion_pending": r.get("completion_pending"), "fetched": len(fetches) - n}
+with Session() as s:
+    s.get(BarProvenance, (1, "5m", head)).last_written_at = head + timedelta(minutes=5, seconds=1)
+    s.commit()
+r = ING.ingest_symbol("TEST", timeframe="5m")
+out["completed_5m"] = {"skipped": r.get("skipped"), "completion_pending": r.get("completion_pending"), "fetched": len(fetches) - n}
 print(json.dumps(out, default=str))

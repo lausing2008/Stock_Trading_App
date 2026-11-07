@@ -99,6 +99,17 @@ _RETRY_DELAY_S = 1.5
 _RETRY_DELAY_MAX_S = 5.0
 _retry_sleep = time.sleep
 
+
+def cooldown_remaining_s() -> float:
+    """Seconds left on the AUD-UW-BURST cooldown; 0 when none is armed or Redis cannot say
+    (fail-open, as supports() is: the caller then retries at once rather than waiting)."""
+    try:
+        from common.redis_client import get_redis
+        ttl = get_redis().ttl(_COOLDOWN_KEY)
+        return float(ttl) if ttl and ttl > 0 else 0.0
+    except Exception:
+        return 0.0
+
 _BASE = "https://api.unusualwhales.com"
 # See note 2 above — a larger value silently returns an empty list.
 _MAX_LIMIT = 500
