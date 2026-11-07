@@ -14,6 +14,7 @@ yet a scheduled daily job — see this tracker item's own note for why that phas
 frontend dashboard) were deliberately deferred to keep this fix reviewable in one pass.
 """
 import json
+import math
 from datetime import date
 
 import httpx
@@ -68,11 +69,68 @@ def _service_token() -> str:
         return ""
 
 
+def _select_snapshot_book(symbols, weights):
+    """Deterministic top ten of the existing positive-cost-basis book."""
+    if any(not math.isfinite(w) for w in weights):
+        raise HTTPException(status_code=400, detail="Position cost basis must be finite")
+    ranked = sorted(zip(symbols, weights), key=lambda item: (-item[1], item[0]))
+    scale = max(weights)
+    total = math.fsum(w / scale for w in weights)
+    selected = ranked[:10]
+    selected_pct = 100 * math.fsum(w / scale for _, w in selected) / total
+    coverage = {
+        "weight_basis": "positive_cost_basis_no_fx_conversion",
+        "requested_symbols": sorted(symbols),
+        "selected_symbols": [symbol for symbol, _ in selected],
+        "excluded_positions": [
+            {"symbol": symbol, "cost_basis": weight,
+             "weight_pct": 100 * (weight / scale) / total}
+            for symbol, weight in ranked[10:]
+        ],
+        "selected_weight_pct": selected_pct,
+    }
+    return [s for s, _ in selected], [w for _, w in selected], coverage
+
+
+def _upstream_data(response):
+    if 400 <= response.status_code < 500:
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        detail = body.get("detail") if isinstance(body, dict) else None
+        if detail is None:
+            detail = getattr(response, "text", "") or f"Portfolio optimizer returned HTTP {response.status_code}"
+        raise HTTPException(status_code=response.status_code, detail=detail)
+    response.raise_for_status()
+    return response.json()
+
+
+def _snapshot_coverage(selection, data):
+    upstream = data.get("coverage")
+    covered = upstream.get("covered_weight_pct") if upstream else None
+    warnings = list(data.get("warnings") or [])
+    if selection["excluded_positions"]:
+        excluded = ", ".join(p["symbol"] for p in selection["excluded_positions"])
+        warnings.append(
+            f"Top-10 cost-basis selection excludes {excluded}; selected positions represent "
+            f"{selection['selected_weight_pct']:.2f}% of eligible positive cost basis. "
+            "Risk figures describe the covered subset, not the entire book."
+        )
+    return {
+        **selection,
+        "optimizer_coverage": upstream,
+        "covered_weight_pct": (
+            selection["selected_weight_pct"] * covered / 100 if covered is not None else None
+        ),
+        "benchmark_basis": data.get("benchmark_basis"),
+        "warnings": warnings,
+    }
+
+
 def _user_symbols_and_weights(session: Session, user_id: int) -> tuple[list[str], list[float]]:
     """Build a (symbols, weights) pair from the user's REAL current UserPosition holdings,
-    weighted by market value (shares * avg_cost — the same cost-basis convention
-    positions.py's own PositionOut already surfaces; a live-price weighting would need an
-    extra price fetch this snapshot doesn't otherwise need)."""
+    weighted by cost basis (shares * avg_cost), without live prices or FX conversion."""
     rows = session.execute(
         select(UserPosition.symbol, UserPosition.shares, UserPosition.avg_cost)
         .where(UserPosition.user_id == user_id)
@@ -95,17 +153,19 @@ def save_var_snapshot(
     'never persisted' half of this tracker item's own finding."""
     symbols, weights = _user_symbols_and_weights(session, user.id)
     if len(symbols) < 2:
-        raise HTTPException(status_code=400, detail="At least 2 positions with real market value required")
+        raise HTTPException(status_code=400, detail="At least 2 positions with positive cost basis required")
 
+    symbols, weights, selection = _select_snapshot_book(symbols, weights)
     try:
         with httpx.Client(timeout=30) as c:
             r = c.get(
                 f"{_settings.portfolio_optimizer_url}/portfolio-risk/risk",
-                params={"symbols": ",".join(symbols[:10]), "weights": ",".join(str(w) for w in weights[:10])},
+                params={"symbols": ",".join(symbols), "weights": ",".join(str(w) for w in weights)},
                 headers={"Authorization": f"Bearer {_service_token()}"},
             )
-            r.raise_for_status()
-            data = r.json()
+            data = _upstream_data(r)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"portfolio-optimizer risk call failed: {exc}")
 
@@ -115,6 +175,7 @@ def save_var_snapshot(
         "user_id": user.id,
         "as_of": today,
         "symbols_json": json.dumps(sorted(data.get("symbols", symbols))),
+        "coverage": _snapshot_coverage(selection, data),
         "portfolio_beta": data.get("portfolio_beta"),
         "var_95_pct": data.get("var_95_pct"),
         "var_95_1d_pct": hv.get("var_95_1d_pct"),
@@ -155,6 +216,7 @@ def var_snapshot_history(
         {
             "as_of": r.as_of.isoformat(),
             "symbols": json.loads(r.symbols_json),
+            "coverage": r.coverage,
             "portfolio_beta": r.portfolio_beta,
             "var_95_pct": r.var_95_pct,
             "var_95_1d_pct": r.var_95_1d_pct,
@@ -181,23 +243,21 @@ def save_stress_test(
     the result — closing the 'stress testing is entirely absent' half of this tracker item."""
     symbols, weights = _user_symbols_and_weights(session, user.id)
     if len(symbols) < 2:
-        raise HTTPException(status_code=400, detail="At least 2 positions with real market value required")
+        raise HTTPException(status_code=400, detail="At least 2 positions with positive cost basis required")
 
+    symbols, weights, selection = _select_snapshot_book(symbols, weights)
     try:
         with httpx.Client(timeout=30) as c:
             r = c.get(
                 f"{_settings.portfolio_optimizer_url}/portfolio-risk/stress-test",
                 params={
-                    "symbols": ",".join(symbols[:10]),
-                    "weights": ",".join(str(w) for w in weights[:10]),
+                    "symbols": ",".join(symbols),
+                    "weights": ",".join(str(w) for w in weights),
                     "scenario": scenario,
                 },
                 headers={"Authorization": f"Bearer {_service_token()}"},
             )
-            if r.status_code == 400:
-                raise HTTPException(status_code=400, detail=r.json().get("detail", "Invalid scenario"))
-            r.raise_for_status()
-            data = r.json()
+            data = _upstream_data(r)
     except HTTPException:
         raise
     except Exception as exc:
@@ -210,6 +270,7 @@ def save_stress_test(
         "scenario": data["scenario"],
         "scenario_label": data["label"],
         "symbols_json": json.dumps(sorted(data.get("symbols", symbols))),
+        "coverage": _snapshot_coverage(selection, data),
         "benchmark_move_pct": data["benchmark_move_pct"],
         "portfolio_impact_pct": data["portfolio_impact_pct"],
         "per_position_impact_json": json.dumps(data["per_position_impact_pct"]),
@@ -242,6 +303,7 @@ def stress_test_history(
             "scenario": r.scenario,
             "scenario_label": r.scenario_label,
             "symbols": json.loads(r.symbols_json),
+            "coverage": r.coverage,
             "benchmark_move_pct": r.benchmark_move_pct,
             "portfolio_impact_pct": r.portfolio_impact_pct,
             "per_position_impact_pct": json.loads(r.per_position_impact_json),

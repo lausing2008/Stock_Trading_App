@@ -147,6 +147,11 @@ def _create_schema() -> None:
         Base.metadata.create_all(bind=conn)
         conn.execute(text("ALTER TABLE IF EXISTS options_flow_snapshots ADD COLUMN IF NOT EXISTS evidence JSON"))
 
+    # I06-F2: nullable metadata preserves legacy rows and old-reader compatibility.
+    with _ddl_begin() as conn:
+        for table in ("portfolio_risk_metrics", "stress_test_results"):
+            conn.execute(text(f"ALTER TABLE IF EXISTS {table} ADD COLUMN IF NOT EXISTS coverage JSON"))
+
     _run_migrations()
     _apply_isolated_ddl()
     _apply_one_shot_migrations()

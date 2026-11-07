@@ -108,6 +108,8 @@ The formula alone would select HSI for one HK symbol, but neither endpoint suppo
 - **I06-F1 — snapshot error handling.** market-data's `risk_snapshots.py` maps every non-2xx from these endpoints (except the stress endpoint's 400) to a 502. Books that now get a 422 (too little common history) or a 400 surface as a gateway failure rather than the endpoint's own reason.
 - **I06-F2 — first-10-position truncation.** The same snapshot code sends `symbols[:10]`, so positions beyond the tenth never reach the endpoint and cannot appear in `coverage`. The persisted snapshot then describes part of the book without saying so.
 
+**Local follow-up implementation (2026-11-07):** I06-F1/F2 are implemented in an isolated branch; see [snapshot behavior, validation and rollout](i06-snapshot-followups.md). Top-ten ranking uses the existing cost-basis convention, with persisted exclusions and combined coverage. Production verification is still pending.
+
 ### P06 — Medium: investment and operational concepts are scattered across navigation
 
 [`_app.tsx`](../../frontend/src/pages/_app.tsx) organizes Markets, Reports, Research, Options Flow, Portfolio, Tools, Learning and Admin with many individual links. Reports repeats market/valuation/discovery context; Tools includes risk/decision/macro features; paper and diagnostic workflows sit in Admin. This reflects organic growth rather than one user journey.

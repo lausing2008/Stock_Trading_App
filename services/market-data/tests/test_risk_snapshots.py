@@ -18,6 +18,8 @@ _saved_stubs = {_mod: sys.modules.pop(_mod, None) for _mod in _STUBBED_MODULES}
 import importlib.util
 import json
 import pathlib
+
+import pytest
 from unittest.mock import MagicMock
 
 from sqlalchemy import create_engine, select as _REAL_SELECT
@@ -150,7 +152,7 @@ def _extract_route_function(name: str, end_marker: str):
     from fastapi import Depends as _Depends, HTTPException as _HTTPException
 
     start = _RISK_SNAP_SOURCE.index(f"def {name}(")
-    end = _RISK_SNAP_SOURCE.index(end_marker, start)
+    end = _RISK_SNAP_SOURCE.index(end_marker, start) if end_marker else len(_RISK_SNAP_SOURCE)
     func_source = _RISK_SNAP_SOURCE[start:end]
     fake_httpx = _FakeHttpxModule()
     namespace = {
@@ -166,6 +168,11 @@ def _extract_route_function(name: str, end_marker: str):
         "date": __import__("datetime").date,
         "router": MagicMock(),
     }
+    import math
+    namespace["math"] = math
+    helpers = _RISK_SNAP_SOURCE[_RISK_SNAP_SOURCE.index("def _select_snapshot_book("):
+                                _RISK_SNAP_SOURCE.index("def _user_symbols_and_weights(")]
+    exec(helpers, namespace)
     exec(func_source, namespace)  # noqa: S102 — isolated eval of real source
     fn = namespace[name]
     fn.__httpx_module__ = fake_httpx  # expose so tests can monkeypatch .Client on it
@@ -368,3 +375,99 @@ def test_save_stress_test_sends_a_real_authorization_header(monkeypatch):
         assert "Authorization" in headers
         assert headers["Authorization"].startswith("Bearer ")
         assert headers["Authorization"] != "Bearer "
+
+
+@pytest.mark.parametrize("route", [save_var_snapshot, save_stress_test])
+@pytest.mark.parametrize("status", [400, 401, 403, 422, 429, 500])
+def test_upstream_error_status_and_reason(route, status, monkeypatch):
+    from fastapi import HTTPException
+    client = _FakeClient(_FakeResp(status, {"detail": "Only 0 shared trading days"}))
+    monkeypatch.setattr(route.__httpx_module__, "Client", lambda **kw: client)
+    monkeypatch.setitem(route.__globals__, "_user_symbols_and_weights", lambda *a: (["A", "B"], [1, 1]))
+    session = MagicMock()
+    kwargs = {"scenario": "covid_2020"} if route is save_stress_test else {}
+    with pytest.raises(HTTPException) as error:
+        route(session=session, user=MagicMock(id=1), **kwargs)
+    assert error.value.status_code == (status if status < 500 else 502)
+    if status < 500:
+        assert error.value.detail == "Only 0 shared trading days"
+    session.execute.assert_not_called()
+    session.commit.assert_not_called()
+
+
+@pytest.mark.parametrize("route", [save_var_snapshot, save_stress_test])
+def test_connection_failure_is_502(route, monkeypatch):
+    from fastapi import HTTPException
+    monkeypatch.setitem(route.__globals__, "_user_symbols_and_weights", lambda *a: (["A", "B"], [1, 1]))
+    def fail(**kwargs):
+        raise ConnectionError("unavailable")
+    monkeypatch.setattr(route.__httpx_module__, "Client", fail)
+    with pytest.raises(HTTPException) as error:
+        route(session=MagicMock(), user=MagicMock(id=1), **({"scenario": "x"} if route is save_stress_test else {}))
+    assert error.value.status_code == 502
+
+
+@pytest.mark.parametrize("route,model,uid", [(save_var_snapshot, PortfolioRiskMetric, 9401),
+                                            (save_stress_test, StressTestResult, 9402)])
+def test_top_ten_and_full_book_coverage_persist(route, model, uid, monkeypatch):
+    with _session() as session:
+        for i in range(1, 13):
+            _add_position(session, uid, f"S{i:02}", 1, i)
+        selected = [f"S{i:02}" for i in range(12, 2, -1)]
+        payload = {"symbols": selected, "coverage": {"covered_weight_pct": 80, "observations": 25},
+                   "scenario": "covid_2020", "label": "COVID", "benchmark_move_pct": -30,
+                   "portfolio_impact_pct": -25, "per_position_impact_pct": {},
+                   "warnings": ["Missing history"]}
+        client = _FakeClient(_FakeResp(200, payload))
+        monkeypatch.setattr(route.__httpx_module__, "Client", lambda **kw: client)
+        result = route(session=session, user=MagicMock(id=uid), **({"scenario": "covid_2020"} if route is save_stress_test else {}))
+        assert client.last_kwargs["params"]["symbols"].split(",") == selected
+        assert client.last_kwargs["params"]["weights"] == ",".join(str(float(i)) for i in range(12, 2, -1))
+        coverage = result["coverage"]
+        assert coverage["selected_weight_pct"] == pytest.approx(75 / 78 * 100)
+        assert coverage["covered_weight_pct"] == pytest.approx(75 / 78 * 80)
+        assert [p["symbol"] for p in coverage["excluded_positions"]] == ["S02", "S01"]
+        row = session.query(model).filter_by(user_id=uid).one()
+        assert row.coverage == coverage
+        assert "S02, S01" in coverage["warnings"][-1]
+        history_name = "var_snapshot_history" if route is save_var_snapshot else "stress_test_history"
+        end = '\n\n\n@router.post("/stress-test")' if route is save_var_snapshot else None
+        history = _extract_route_function(history_name, end)
+        assert history(session=session, user=MagicMock(id=uid))[0]["coverage"] == coverage
+        row.coverage = None
+        session.commit()
+        assert history(session=session, user=MagicMock(id=uid))[0]["coverage"] is None
+
+
+def test_equal_weights_deterministic_and_large_weights_safe():
+    select_book = save_var_snapshot.__globals__["_select_snapshot_book"]
+    symbols, weights, coverage = select_book(["B", "A"], [1e308, 1e308])
+    assert symbols == ["A", "B"]
+    assert coverage["selected_weight_pct"] == 100
+    assert coverage["excluded_positions"] == []
+
+
+def test_non_json_4xx_keeps_status():
+    from fastapi import HTTPException
+    response = MagicMock(status_code=422, text="Insufficient shared history")
+    response.json.side_effect = ValueError("not JSON")
+    with pytest.raises(HTTPException) as error:
+        save_var_snapshot.__globals__["_upstream_data"](response)
+    assert error.value.status_code == 422
+    assert error.value.detail == response.text
+
+
+@pytest.mark.parametrize("weight", [float("inf"), float("nan")])
+def test_non_finite_selection_rejected(weight):
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as error:
+        save_var_snapshot.__globals__["_select_snapshot_book"](["A", "B"], [weight, 1])
+    assert error.value.status_code == 400
+
+
+def test_cutoff_ties_use_symbol_order_and_unknown_upstream_coverage_stays_unknown():
+    ns = save_var_snapshot.__globals__
+    symbols, _, selection = ns["_select_snapshot_book"](list("LKJIHGFEDCBA"), [1] * 12)
+    assert symbols == list("ABCDEFGHIJ")
+    assert [p["symbol"] for p in selection["excluded_positions"]] == ["K", "L"]
+    assert ns["_snapshot_coverage"](selection, {})["covered_weight_pct"] is None

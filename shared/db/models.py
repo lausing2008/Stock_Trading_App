@@ -3010,6 +3010,7 @@ class PortfolioRiskMetric(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     as_of: Mapped[date] = mapped_column(Date, index=True)
     symbols_json: Mapped[str] = mapped_column(Text)  # sorted JSON list, e.g. ["AAPL","MSFT"]
+    coverage: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # null for legacy snapshots
     portfolio_beta: Mapped[float | None] = mapped_column(Float, nullable=True)
     var_95_pct: Mapped[float | None] = mapped_column(Float, nullable=True)  # pre-existing parametric 1d/95%
     var_95_1d_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -3043,6 +3044,7 @@ class StressTestResult(Base):
     scenario: Mapped[str] = mapped_column(String(64))
     scenario_label: Mapped[str] = mapped_column(String(256))
     symbols_json: Mapped[str] = mapped_column(Text)
+    coverage: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # null for legacy snapshots
     benchmark_move_pct: Mapped[float] = mapped_column(Float)
     portfolio_impact_pct: Mapped[float] = mapped_column(Float)
     per_position_impact_json: Mapped[str] = mapped_column(Text)  # {"AAPL": -34.2, ...}
