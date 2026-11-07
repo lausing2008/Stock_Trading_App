@@ -203,51 +203,64 @@ def run_stress_test(betas: dict[str, float], weights: dict[str, float], scenario
     }
 
 
-@router.get("/risk")
-def portfolio_risk(
-    symbols: str = Query(..., description="Comma-separated stock symbols"),
-    weights: str | None = Query(None, description="Comma-separated position weights (any units, auto-normalised)"),
-    _user: str = Depends(get_current_username),
-):
+# ── I06 (platform audit 2026-11-06, P05): one book-preparation path for both endpoints ───────
+# portfolio_risk() and portfolio_stress_test() each carried their own copy of the same parsing,
+# weighting and benchmark code, and both copies had the same three defects:
+#   1. abs() on every weight, so a short/hedge weight was silently counted as LONG exposure;
+#   2. symbols without price history were dropped and the rest rescaled to 100%, with nothing in
+#      the response saying how much of the requested book was actually measured;
+#   3. the benchmark was picked by HK symbol COUNT among covered symbols (the comment said "any
+#      HK stock"; the code was a strict count majority), so a book 90% in one HK name used SPY.
+# These endpoints model long-only books. Rather than guess at signed-exposure semantics, a
+# negative weight is now rejected; coverage is reported; the benchmark follows HK WEIGHT share.
+# With equal (default) weights the weight-share rule picks the same benchmark the count rule did.
+
+_MAX_SYMBOLS = 10
+_HK_BENCH_SHARE = 0.5
+_WEIGHT_EPS = 1e-9  # equal weights like 3 of 6 can sum to 0.5000000001 in float
+
+
+def _parse_book(symbols: str, weights: str | None) -> tuple[list[str], list[float]]:
+    """Validate the requested book and return (symbols, weights normalised to sum to 1)."""
     sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     if len(sym_list) < 2:
         raise HTTPException(status_code=400, detail="At least 2 symbols required")
-    if len(sym_list) > 10:
-        raise HTTPException(status_code=400, detail="Maximum 10 symbols per request")
+    if len(sym_list) > _MAX_SYMBOLS:
+        raise HTTPException(status_code=400, detail=f"Maximum {_MAX_SYMBOLS} symbols per request")
+    dupes = sorted({s for s in sym_list if sym_list.count(s) > 1})
+    if dupes:
+        # A dict keyed by symbol used to keep only the LAST weight, silently dropping the rest.
+        raise HTTPException(status_code=400, detail=f"Duplicate symbols: {', '.join(dupes)} — combine them into one weight")
 
-    # Normalise weights
     if weights:
-        raw_w = [abs(float(w)) for w in weights.split(",") if w.strip()]
-        if len(raw_w) != len(sym_list):
+        parts = [w.strip() for w in weights.split(",") if w.strip()]
+        if len(parts) != len(sym_list):
             raise HTTPException(status_code=400, detail="weights count must match symbols count")
+        try:
+            raw_w = [float(p) for p in parts]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="weights must be numbers")
+        if not all(np.isfinite(w) for w in raw_w):
+            raise HTTPException(status_code=400, detail="weights must be finite numbers")
+        negative = [s for s, w in zip(sym_list, raw_w) if w < 0]
+        if negative:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Negative weights are not supported ({', '.join(negative)}): this analysis "
+                    "models long-only books and cannot represent short or hedge positions"
+                ),
+            )
     else:
         raw_w = [1.0] * len(sym_list)
-    total_w = sum(raw_w) or 1.0
-    w_list = [w / total_w for w in raw_w]
 
-    # Fetch price history
-    df = _fetch_returns(sym_list)
-    available = [s for s in sym_list if s in df.columns]
-    if len(available) < 2:
-        raise HTTPException(status_code=422, detail="Insufficient price history for at least 2 symbols")
+    total_w = sum(raw_w)
+    if total_w <= 0:
+        raise HTTPException(status_code=400, detail="weights must sum to a positive value")
+    return sym_list, [w / total_w for w in raw_w]
 
-    # Align weights with available symbols
-    w_map = {sym: w for sym, w in zip(sym_list, w_list)}
-    avail_w = [w_map[s] for s in available]
-    avail_total = sum(avail_w) or 1.0
-    avail_w = [w / avail_total for w in avail_w]
-    df = df[available]
 
-    # Correlation matrix
-    corr = df.corr()
-
-    # Determine benchmark — if any HK stock, use HSI; else SPY
-    stock_meta = _fetch_stock_meta(available)
-    market_map = {s: stock_meta.get(s, {}).get("market", "") for s in available}
-    sector_map = {s: stock_meta.get(s, {}).get("sector", "Unknown") for s in available}
-    hk_count = sum(1 for m in market_map.values() if "HK" in m.upper())
-    bench_ticker = _BENCH["HK"] if hk_count > len(available) // 2 else _BENCH["US"]
-
+def _benchmark_returns(bench_ticker: str) -> pd.Series:
     try:
         bench_raw = yf.download(bench_ticker, period="3mo", interval="1d", progress=False, auto_adjust=True)
         if isinstance(bench_raw.columns, pd.MultiIndex):
@@ -256,9 +269,36 @@ def portfolio_risk(
             bench_raw = bench_raw["Close"] if "Close" in bench_raw else bench_raw.iloc[:, 0]
         bench_rets = bench_raw.squeeze().pct_change().dropna()
         bench_rets.index = pd.to_datetime(bench_rets.index).tz_localize(None)
+        return bench_rets
     except Exception:
-        bench_rets = pd.Series(dtype=float)
+        return pd.Series(dtype=float)
 
+
+def _prepare_book(symbols: str, weights: str | None) -> dict:
+    """Fetch history for the requested book and compute everything both endpoints share:
+    covered symbols/weights, coverage disclosure, benchmark choice and per-symbol betas."""
+    sym_list, w_list = _parse_book(symbols, weights)
+
+    df = _fetch_returns(sym_list)
+    available = [s for s in sym_list if s in df.columns]
+    if len(available) < 2:
+        raise HTTPException(status_code=422, detail="Insufficient price history for at least 2 symbols")
+
+    w_map = dict(zip(sym_list, w_list))
+    covered_w = sum(w_map[s] for s in available)
+    if covered_w <= 0:
+        raise HTTPException(status_code=422, detail="None of the requested weight has price history")
+    avail_w = [w_map[s] / covered_w for s in available]
+    missing = [s for s in sym_list if s not in available]
+
+    stock_meta = _fetch_stock_meta(available)
+    market_map = {s: stock_meta.get(s, {}).get("market", "") for s in available}
+    sector_map = {s: stock_meta.get(s, {}).get("sector", "Unknown") for s in available}
+    hk_share = sum(w for s, w in zip(available, avail_w) if "HK" in market_map[s].upper())
+    bench_ticker = _BENCH["HK"] if hk_share > _HK_BENCH_SHARE + _WEIGHT_EPS else _BENCH["US"]
+
+    df = df[available]
+    bench_rets = _benchmark_returns(bench_ticker)
     betas: dict[str, float] = {}
     for sym in available:
         if len(bench_rets) > 0:
@@ -267,6 +307,51 @@ def portfolio_risk(
             betas[sym] = _beta(stock_rets, bench_rets)
         else:
             betas[sym] = 1.0
+
+    return {
+        "df": df,
+        "available": available,
+        "avail_w": avail_w,
+        "sector_map": sector_map,
+        "bench_ticker": bench_ticker,
+        "betas": betas,
+        "coverage": {
+            "requested_symbols": sym_list,
+            "missing_symbols": missing,
+            # Share of the REQUESTED weight the figures actually measure; the response's own
+            # "weights" are the covered symbols rescaled to 100%.
+            "covered_weight_pct": round(covered_w * 100, 2),
+        },
+        "benchmark_basis": {
+            "rule": f"^HSI when HK symbols hold more than {_HK_BENCH_SHARE:.0%} of covered weight, else SPY",
+            "hk_weight_pct": round(hk_share * 100, 2),
+        },
+    }
+
+
+def _coverage_warning(coverage: dict) -> str | None:
+    missing = coverage["missing_symbols"]
+    if not missing:
+        return None
+    covered = coverage["covered_weight_pct"]
+    return (
+        f"No usable price history for {', '.join(missing)} ({100 - covered:.0f}% of requested weight) — "
+        f"figures cover the remaining {covered:.0f}%, rescaled to 100%"
+    )
+
+
+@router.get("/risk")
+def portfolio_risk(
+    symbols: str = Query(..., description="Comma-separated stock symbols"),
+    weights: str | None = Query(None, description="Comma-separated non-negative position weights (any units, auto-normalised; long-only)"),
+    _user: str = Depends(get_current_username),
+):
+    book = _prepare_book(symbols, weights)
+    df, available, avail_w = book["df"], book["available"], book["avail_w"]
+    sector_map, betas, bench_ticker = book["sector_map"], book["betas"], book["bench_ticker"]
+
+    # Correlation matrix
+    corr = df.corr()
 
     portfolio_beta = float(sum(betas[s] * w for s, w in zip(available, avail_w)))
 
@@ -287,6 +372,9 @@ def portfolio_risk(
 
     # Warnings
     warnings: list[str] = []
+    coverage_warning = _coverage_warning(book["coverage"])
+    if coverage_warning:
+        warnings.append(coverage_warning)
     sorted_pos = sorted(zip(available, avail_w), key=lambda x: -x[1])
     if len(sorted_pos) >= 2 and sorted_pos[0][1] + sorted_pos[1][1] > 0.5:
         warnings.append(
@@ -318,6 +406,8 @@ def portfolio_risk(
         "var_95_pct": round(var_95_pct, 2),
         "historical_var": hist_risk,
         "benchmark": bench_ticker,
+        "benchmark_basis": book["benchmark_basis"],
+        "coverage": book["coverage"],
         "warnings": warnings,
     }
 
@@ -325,75 +415,27 @@ def portfolio_risk(
 @router.get("/stress-test")
 def portfolio_stress_test(
     symbols: str = Query(..., description="Comma-separated stock symbols"),
-    weights: str | None = Query(None, description="Comma-separated position weights (any units, auto-normalised)"),
+    weights: str | None = Query(None, description="Comma-separated non-negative position weights (any units, auto-normalised; long-only)"),
     scenario: str = Query(..., description=f"One of: {', '.join(STRESS_SCENARIOS.keys())}"),
     _user: str = Depends(get_current_username),
 ):
     """IF-01: apply a predefined historical stress scenario to a real weighted portfolio.
 
-    Reuses portfolio_risk()'s own symbol/weight validation and beta computation (a genuinely
-    different endpoint, not a duplicate — this one applies a scenario shock to the SAME beta
-    figures the risk endpoint already computes, rather than re-deriving them independently).
+    Shares portfolio_risk()'s book preparation (_prepare_book) — validation, coverage, benchmark
+    and betas — and applies a scenario shock to those same betas rather than re-deriving them.
     """
     if scenario not in STRESS_SCENARIOS:
         raise HTTPException(status_code=400, detail=f"Unknown scenario '{scenario}'. Valid: {', '.join(STRESS_SCENARIOS.keys())}")
 
-    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-    if len(sym_list) < 2:
-        raise HTTPException(status_code=400, detail="At least 2 symbols required")
-    if len(sym_list) > 10:
-        raise HTTPException(status_code=400, detail="Maximum 10 symbols per request")
-
-    if weights:
-        raw_w = [abs(float(w)) for w in weights.split(",") if w.strip()]
-        if len(raw_w) != len(sym_list):
-            raise HTTPException(status_code=400, detail="weights count must match symbols count")
-    else:
-        raw_w = [1.0] * len(sym_list)
-    total_w = sum(raw_w) or 1.0
-    w_list = [w / total_w for w in raw_w]
-
-    df = _fetch_returns(sym_list)
-    available = [s for s in sym_list if s in df.columns]
-    if len(available) < 2:
-        raise HTTPException(status_code=422, detail="Insufficient price history for at least 2 symbols")
-
-    w_map = {sym: w for sym, w in zip(sym_list, w_list)}
-    avail_w = [w_map[s] for s in available]
-    avail_total = sum(avail_w) or 1.0
-    avail_w = [w / avail_total for w in avail_w]
-    df = df[available]
-
-    stock_meta = _fetch_stock_meta(available)
-    market_map = {s: stock_meta.get(s, {}).get("market", "") for s in available}
-    hk_count = sum(1 for m in market_map.values() if "HK" in m.upper())
-    bench_ticker = _BENCH["HK"] if hk_count > len(available) // 2 else _BENCH["US"]
-
-    try:
-        bench_raw = yf.download(bench_ticker, period="3mo", interval="1d", progress=False, auto_adjust=True)
-        if isinstance(bench_raw.columns, pd.MultiIndex):
-            bench_raw = bench_raw["Close"]
-        else:
-            bench_raw = bench_raw["Close"] if "Close" in bench_raw else bench_raw.iloc[:, 0]
-        bench_rets = bench_raw.squeeze().pct_change().dropna()
-        bench_rets.index = pd.to_datetime(bench_rets.index).tz_localize(None)
-    except Exception:
-        bench_rets = pd.Series(dtype=float)
-
-    betas: dict[str, float] = {}
-    for sym in available:
-        if len(bench_rets) > 0:
-            stock_rets = df[sym].copy()
-            stock_rets.index = pd.to_datetime(stock_rets.index).tz_localize(None)
-            betas[sym] = _beta(stock_rets, bench_rets)
-        else:
-            betas[sym] = 1.0
-
-    weight_map = dict(zip(available, avail_w))
-    result = run_stress_test(betas, weight_map, scenario)
-    result["symbols"] = available
-    result["weights"] = avail_w
-    result["benchmark"] = bench_ticker
+    book = _prepare_book(symbols, weights)
+    weight_map = dict(zip(book["available"], book["avail_w"]))
+    result = run_stress_test(book["betas"], weight_map, scenario)
+    result["symbols"] = book["available"]
+    result["weights"] = book["avail_w"]
+    result["benchmark"] = book["bench_ticker"]
+    result["benchmark_basis"] = book["benchmark_basis"]
+    result["coverage"] = book["coverage"]
+    result["coverage_warning"] = _coverage_warning(book["coverage"])
     return result
 
 

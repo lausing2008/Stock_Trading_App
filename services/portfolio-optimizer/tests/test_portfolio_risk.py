@@ -192,3 +192,122 @@ def test_beta_uses_a_real_epsilon_not_a_hardcoded_literal_in_source():
     source = risk_path.read_text()
     assert "_BETA_VAR_EPS = 1e-9" in source
     assert "var > _BETA_VAR_EPS" in source
+
+
+# ── I06 (platform audit 2026-11-06, P05): signed weights, coverage, weight-based benchmark ───
+
+import src.api.risk as risk_mod  # noqa: E402
+from src.api.risk import portfolio_stress_test  # noqa: E402
+
+
+def _stub_book(monkeypatch, history_syms, markets):
+    """Stub market-data and yfinance: only `history_syms` have price history."""
+    monkeypatch.setattr(risk_mod, "_fetch_returns", lambda symbols, days=60: _returns_df(history_syms))
+    monkeypatch.setattr(risk_mod, "_fetch_stock_meta", lambda symbols: {
+        s: {"sector": "Tech", "market": markets[s]} for s in symbols
+    })
+    downloaded: list[str] = []
+
+    def _download(ticker, *a, **kw):
+        downloaded.append(ticker)
+        return pd.DataFrame({"Close": np.linspace(100, 110, 90)})
+    monkeypatch.setattr(risk_mod, "yf", type("FakeYf", (), {"download": staticmethod(_download)}))
+    return downloaded
+
+
+@pytest.mark.parametrize("endpoint", ["risk", "stress"])
+def test_negative_weight_is_rejected_not_counted_as_long(endpoint):
+    """A -30 hedge used to become +30 via abs(), turning a hedge into added long exposure."""
+    with pytest.raises(HTTPException) as exc:
+        if endpoint == "risk":
+            portfolio_risk(symbols="AAPL,SPY", weights="100,-30", _user="t")
+        else:
+            portfolio_stress_test(symbols="AAPL,SPY", weights="100,-30", scenario="covid_2020", _user="t")
+    assert exc.value.status_code == 400
+    assert "SPY" in exc.value.detail and "long-only" in exc.value.detail
+
+
+def test_non_numeric_weight_is_a_400_not_a_server_error():
+    with pytest.raises(HTTPException) as exc:
+        portfolio_risk(symbols="AAPL,MSFT", weights="50,abc", _user="t")
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.parametrize("weights", ["0,0", "nan,1", "inf,1"])
+def test_degenerate_weights_are_rejected(weights):
+    with pytest.raises(HTTPException) as exc:
+        portfolio_risk(symbols="AAPL,MSFT", weights=weights, _user="t")
+    assert exc.value.status_code == 400
+
+
+def test_duplicate_symbols_are_rejected_instead_of_dropping_a_weight():
+    with pytest.raises(HTTPException) as exc:
+        portfolio_risk(symbols="AAPL,MSFT,AAPL", weights="10,10,80", _user="t")
+    assert exc.value.status_code == 400
+    assert "AAPL" in exc.value.detail
+
+
+def test_missing_history_is_disclosed_with_its_weight(monkeypatch):
+    _stub_book(monkeypatch, ["AAPL", "MSFT"], {"AAPL": "US", "MSFT": "US", "NEWCO": "US"})
+    result = portfolio_risk(symbols="AAPL,MSFT,NEWCO", weights="25,25,50", _user="t")
+
+    assert result["coverage"] == {
+        "requested_symbols": ["AAPL", "MSFT", "NEWCO"],
+        "missing_symbols": ["NEWCO"],
+        "covered_weight_pct": 50.0,
+    }
+    assert result["weights"] == pytest.approx([0.5, 0.5])  # covered symbols, rescaled
+    assert any("NEWCO" in w and "50%" in w for w in result["warnings"])
+
+
+def test_full_coverage_reports_100_pct_and_no_coverage_warning(monkeypatch):
+    _stub_book(monkeypatch, ["AAPL", "MSFT"], {"AAPL": "US", "MSFT": "US"})
+    result = portfolio_risk(symbols="AAPL,MSFT", weights=None, _user="t")
+    assert result["coverage"]["covered_weight_pct"] == 100.0
+    assert result["coverage"]["missing_symbols"] == []
+    assert not any("price history" in w for w in result["warnings"])
+
+
+def test_all_requested_weight_on_symbols_without_history_is_a_422(monkeypatch):
+    _stub_book(monkeypatch, ["AAPL", "MSFT"], {"AAPL": "US", "MSFT": "US", "NEWCO": "US"})
+    with pytest.raises(HTTPException) as exc:
+        portfolio_risk(symbols="AAPL,MSFT,NEWCO", weights="0,0,100", _user="t")
+    assert exc.value.status_code == 422
+
+
+def test_benchmark_follows_hk_weight_not_symbol_count(monkeypatch):
+    """The audit's example: 90% in one HK name, 10% across two US names. Count rule -> SPY."""
+    markets = {"0700.HK": "HK", "AAPL": "US", "MSFT": "US"}
+    downloaded = _stub_book(monkeypatch, list(markets), markets)
+    result = portfolio_risk(symbols="0700.HK,AAPL,MSFT", weights="90,5,5", _user="t")
+    assert result["benchmark"] == "^HSI"
+    assert downloaded == ["^HSI"]  # betas were measured against the chosen benchmark
+    assert result["benchmark_basis"]["hk_weight_pct"] == 90.0
+
+
+def test_mostly_us_weight_uses_spy_even_with_a_majority_of_hk_symbols(monkeypatch):
+    markets = {"0700.HK": "HK", "9988.HK": "HK", "AAPL": "US"}
+    _stub_book(monkeypatch, list(markets), markets)
+    result = portfolio_risk(symbols="0700.HK,9988.HK,AAPL", weights="10,10,80", _user="t")
+    assert result["benchmark"] == "SPY"
+
+
+@pytest.mark.parametrize("n_hk,n_us,expected", [(2, 2, "SPY"), (3, 3, "SPY"), (2, 1, "^HSI"), (3, 2, "^HSI")])
+def test_equal_weights_keep_the_previous_count_majority_result(monkeypatch, n_hk, n_us, expected):
+    """Unweighted calls must pick the same benchmark as before; ties stay SPY, including 3-of-6,
+    where float sums of 1/6 can land a hair above 0.5."""
+    markets = {**{f"{i}.HK": "HK" for i in range(n_hk)}, **{f"US{i}": "US" for i in range(n_us)}}
+    _stub_book(monkeypatch, list(markets), markets)
+    result = portfolio_risk(symbols=",".join(markets), weights=None, _user="t")
+    assert result["benchmark"] == expected
+
+
+def test_stress_test_carries_the_same_coverage_and_benchmark(monkeypatch):
+    markets = {"0700.HK": "HK", "AAPL": "US", "MSFT": "US", "NEWCO": "US"}
+    _stub_book(monkeypatch, ["0700.HK", "AAPL", "MSFT"], markets)
+    result = portfolio_stress_test(symbols="0700.HK,AAPL,MSFT,NEWCO", weights="80,5,5,10",
+                                   scenario="covid_2020", _user="t")
+    assert result["benchmark"] == "^HSI"
+    assert result["coverage"]["missing_symbols"] == ["NEWCO"]
+    assert result["coverage"]["covered_weight_pct"] == 90.0
+    assert "NEWCO" in result["coverage_warning"]
