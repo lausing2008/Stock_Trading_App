@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { SWRConfig } from 'swr';
 const m = vi.hoisted(() => ({ replace: vi.fn(), role: 'admin' as string | null,
@@ -103,8 +103,8 @@ it('shows latency denominators, execution blockers and durable performance witho
 });
 it('explains what each timeframe measures and labels multi-timeframe entry use as untested', async () => {
   view();
-  await screen.findByText(/Reading the timeframes/);
-  const rows = ['5m', '15m', '1h', '1d'].map(tf => screen.getAllByText(tf).find(e => e.closest('details'))?.closest('tr'));
+  const reference = (await screen.findByText(/Reading the timeframes/)).closest('details') as HTMLElement;
+  const rows = ['5m', '15m', '1h', '1d'].map(tf => within(reference).getAllByText(tf).find(e => e.closest('tr'))?.closest('tr'));
   expect(rows.every(Boolean)).toBe(true);
   expect(rows[0]?.textContent).toContain('35 min');
   expect(rows[2]?.textContent).toContain('too few');
@@ -114,4 +114,20 @@ it('explains what each timeframe measures and labels multi-timeframe entry use a
   expect(diagrams.some(l => /seven bars shaded/.test(l))).toBe(true);
   expect(diagrams.some(l => /pivots A, B and C/.test(l))).toBe(true);
   expect(diagrams.some(l => /if they disagree, skip/.test(l))).toBe(true);
+});
+it('opens with a beginner guide that defines bars, timeframes and streams before the technical reference', async () => {
+  view();
+  const guide = (await screen.findByText(/Start here: a beginner’s guide to Little RZY/)).closest('details') as HTMLElement;
+  expect(guide.hasAttribute('open')).toBe(true);
+  const reference = screen.getByText(/Reading the timeframes/).closest('details') as HTMLElement;
+  expect(guide.compareDocumentPosition(reference) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  for (const id of ['rzy-what', 'rzy-bars', 'rzy-timeframes', 'rzy-streams', 'rzy-pattern', 'rzy-life', 'rzy-page', 'rzy-routine', 'rzy-evidence', 'rzy-glossary'])
+    expect(guide.querySelector(`#${id}`)).toBeTruthy();
+  // No 10-minute timeframe exists; the guide says so and lists the real four.
+  expect(within(guide).getByText(/There is no 10-minute timeframe/)).toBeTruthy();
+  const tfTable = within(guide).getByText('Bars per trading day').closest('table') as HTMLElement;
+  expect(['5m', '15m', '1h', '1d'].every(tf => within(tfTable).getByText(tf))).toBe(true);
+  // Stream statuses come from the shared reason table, so they cannot drift from Data health.
+  expect(within(guide).getByText('research_only')).toBeTruthy();
+  expect(within(guide).getByText(/no evidence that these signals beat random entry timing/)).toBeTruthy();
 });

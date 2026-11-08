@@ -4,6 +4,7 @@ import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type RzyAdminOverview } from '@/lib/api';
 import { getSession } from '@/lib/auth';
+import LittleRzyBeginnerGuide from '@/components/LittleRzyBeginnerGuide';
 import { RZY_ALERT_STATE, RZY_CANCELLATION, RZY_EXCLUSION, RZY_STREAM_STATUS, cancellationParts, countReasons, groupExclusions, rzyReasonText } from '@/lib/rzyReasons';
 
 const card = 'rounded-lg border border-slate-700 bg-slate-900/60 p-4';
@@ -133,7 +134,7 @@ function TopDownDiagram() {
 
 function TimeframeGuide() {
   return <details className={card}>
-    <summary className="cursor-pointer font-semibold text-teal-400">Reading the timeframes: what 5m, 15m, 1h and daily tell you, and how to use them for entries</summary>
+    <summary className="cursor-pointer font-semibold text-teal-400">Reading the timeframes (technical reference): what 5m, 15m, 1h and daily tell you, and how to use them for entries</summary>
     <div className="mt-3 space-y-4 text-sm text-slate-300">
       <p>Each symbol and timeframe is its own stream: the scanner runs the same rules separately on 5m, 15m, 1h and daily bars and never compares them. 15m and 1h bars are built from completed 5m bars; an incomplete bin is withheld, not filled in. Because every rule is counted in <i>bars</i>, the same settings mean very different clock time:</p>
       <div className="overflow-x-auto"><table className="w-full">
@@ -203,6 +204,8 @@ export default function LittleRzyAdminPage() {
       </p>
       <p className="text-xs text-slate-500">Strategy {overview?.strategy_version ?? '…'} · config {overview?.config_hash ?? '…'} · email preferences live in <Link className="text-teal-400 underline" href="/settings">Settings</Link>.</p>
     </header>
+
+    <LittleRzyBeginnerGuide />
 
     <TimeframeGuide />
 
