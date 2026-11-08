@@ -1,6 +1,6 @@
 # I06-F1/F2: snapshot errors and top-ten disclosure
 
-Implemented in isolated branch `fix/i06-snapshot-coverage`, based on `f8a00b5e`. Production deployment is not recorded by this document. The original dirty `prod` checkout is unchanged.
+Implemented in `44c8b24e` on isolated branch `fix/i06-snapshot-coverage`, based on `f8a00b5e`, and pushed to remote `prod`. Deployed as a scoped market-data hotfix on **2026-11-08 04:06 UTC** (Saturday November 7, 20:06 Pacific). The original dirty local `prod` checkout is unchanged.
 
 ## Behavior and API contract
 
@@ -41,3 +41,29 @@ This release includes `risk_snapshots.py`, shared `db/models.py`, and shared `db
 Use the host deploy lock and a weekend window before Monday opens. Check remote head, file drift and current ingest/scheduler/paper-trading activity before proceeding. Back up all three running files; preserve unrelated production changes. Use the repository's durable deployment procedure, or explicitly record a temporary copy as a hotfix. Restart **market-data**, then verify health, hashes, scheduler/ingest/paper-trading recovery and API saves/history. Test synthetic books in an isolated process or dedicated test account; do not overwrite a real user's daily snapshots to prove coverage.
 
 Rollback restores the previous route and shared files together and restarts market-data. Leave the nullable columns and metadata in place; old readers ignore them. Do not drop columns or rewrite history during rollback. Deployment and live verification remain separate from local test evidence.
+
+
+## Production deployment evidence
+
+The three target files matched the expected pre-change hashes before deployment, checked again under the host deploy lock. The EC2 checkout was clean and fast-forwarded to `44c8b24e`. Both nullable JSON columns were added under the existing startup schema lock and bounded DDL transaction before replacing the running files. Only market-data was restarted. The lock finished at `2026-11-08T04:06:56Z`, `state=completed`, `exit=0`.
+
+| Running file | SHA-256 after deployment |
+|---|---|
+| `/app/src/api/risk_snapshots.py` | `4c6f92cda8b469252ae9cbad1308b742a59c5e7b9a01f340d3b1cf8b4a94131e` |
+| `/app/shared/db/models.py` | `60d978426a2dea7eceab7aa2817a81ca88e9175271fea65432636031150beee0` |
+| `/app/shared/db/session.py` | `20c9c0b6f290e414da120a32e87669d4a378855e432b1a1e1edb3802775de1e3` |
+
+All match the commit. Container health is `running healthy`; HTTP `/health` reports `status=ok` and migrations OK. The existing `option_prospective_capture` capability remains degraded exactly as before deployment; this release does not resolve it.
+
+The [deployed-module probe](evidence/i06-snapshot-live-probe.py) ran in a separate process inside market-data. It used synthetic position books and a session that captures writes without executing them, while the unmodified route functions made real HTTP calls to portfolio-optimizer. It did not call the inbound snapshot HTTP routes or save production snapshots:
+
+- Both save routes selected the largest ten out of twelve synthetic positive-cost-basis holdings, excluding MSFT (2/78) and AAPL (1/78), and prepared the expected coverage field for the database insert.
+- Selection coverage was **96.153846%**. The real optimizer returned 80% coverage and 42 common observations; combined coverage was **76.923077%** for both routes.
+- Both preserved real optimizer **422**, `Insufficient price history for at least 2 symbols`, for nonexistent symbols, without preparing a write.
+- Stress preserved real optimizer **400** and its invalid-scenario reason, without preparing a write.
+
+Production persistence/history round trips were not exercised against users' accounts. Those paths passed local SQLite tests; PostgreSQL JSON and additive migration semantics passed the rollback-only local probe. After restart, logs showed scheduler startup, ingest/refresh job registration, successful recurring jobs including live-price refresh, and paper regime classification. This confirms resumed background activity, not that new market-session ingest or paper entries/exits were exercised during the weekend.
+
+Rollback files and before/after health JSON are on EC2 at `/home/ec2-user/rollback/i06-snapshots-44c8b24e/`: `risk_snapshots.py`, `models.py`, `session.py`, `health-before.json`, `health-after.json`, and `image-before.txt`. Restore all three source files to their matching container paths under the deploy lock, restart market-data, and verify health. Leave the additive columns in place.
+
+**Durability limitation:** this was a `docker cp` hotfix, not an image rebuild. The image remains `sha256:c92f633dad80bb30ce986fe30e249553e4195321a6160bed9f6c3207cffc883a`; container recreation can revert the code. A durable rebuild remains separate work and must reconcile all running source drift first. The changes are committed remotely so they are available for that rebuild.
