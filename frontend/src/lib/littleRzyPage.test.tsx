@@ -4,7 +4,7 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { SWRConfig } from 'swr';
 const m = vi.hoisted(() => ({ replace: vi.fn(), role: 'admin' as string | null,
-  api: { rzyAdminOverview: vi.fn(), rzyDigest: vi.fn(), rzyPaper: vi.fn() } }));
+  api: { rzyAdminOverview: vi.fn(), rzyDigest: vi.fn(), rzyPaper: vi.fn(), rzyEvaluation: vi.fn() } }));
 vi.mock('next/router', () => ({ useRouter: () => ({ replace: m.replace }) }));
 vi.mock('@/lib/auth', () => ({ getSession: () => (m.role ? { username: 'lausing', role: m.role } : null) }));
 vi.mock('@/lib/api', () => ({ api: m.api }));
@@ -23,7 +23,26 @@ const digest = { available: true, snapshot_from: '2026-10-21T14:59:00', snapshot
 const paper = { note: 'n', provenance: 'Current configuration only.', positions: [
   { symbol: 'ZS', timeframe: '5m', state: 'CLOSED', cancelled: true, reason: 'data_basis_or_freshness_unverified,actual_fill_reward_risk_or_gap', generation: 3 },
   { symbol: 'SOXL', timeframe: '5m', state: 'CLOSED', cancelled: true, reason: 'data_basis_or_freshness_unverified,shortability_or_borrow_cost_unverified', generation: 1 }] };
-beforeEach(() => { m.role = 'admin'; m.replace.mockReset(); Object.values(m.api).forEach(f => f.mockReset()); m.api.rzyAdminOverview.mockResolvedValue(overview); m.api.rzyDigest.mockResolvedValue(digest); m.api.rzyPaper.mockResolvedValue(paper); });
+const noRuns = { strategy_version: 'V', config_hash: 'abc', positioning: 'p', latest: null, runs: [], forward_journal: { by_cohort: {}, note: 'Live simulated fills are blocked.' } };
+const stats = (trades: number, edge: number, verdict: string) => ({ trades, symbols: 40, win_rate: .41, mean_r: -.09, edge_vs_control_r: edge,
+  edge_ci95_by_symbol: [edge - .07, edge + .07] as [number, number], mean_mfe_r: .8, mean_mae_r: .9, reached_1r_rate: .3, target_exit_rate: .08,
+  mean_cost_r: .1, exits: { line_invalidation: 600, stop: 50, target: 40 }, avg_holding_bars: 4.2, max_drawdown_r: 70, verdict });
+const evaluation = { ...noRuns,
+  latest: { run_id: 'abcdef1234567890', created_at: '2026-11-08T16:00:00', snapshot_exported_at: '2026-11-08T15:00:00', analysis_version: 'RZY_EVALUATION_V2',
+    git_revision: '0123456789ab', git_dirty: false, config_hash: 'abc', current_config: true, trades: 812, edge_vs_control_r: .004, verdict: 'no measurable edge vs control',
+    summary: { analysis_version: 'RZY_EVALUATION_V2', unseen_after: '2026-10-20T14:04:54+00:00', snapshot: { exported_at: '2026-11-08T15:00:00', coverage: { '5m': { symbols: 150, bars: 9, first: '2026-07-21T13:30:00+00:00', last: '2026-11-06T20:55:00+00:00' } } },
+      headline: { all_data: 'no measurable edge', unseen: 'insufficient sample', daily_alignment: 'no measurable difference' },
+      hypotheses: [
+        { id: 'H3', role: 'primary', kind: 'difference', question: 'Do intraday trades aligned with the daily trend have a larger edge?', groups: ['aligned with daily', 'not aligned'], trades: [300, 280], edge_r: [.01, -.02], difference_r: .03, ci95: [-.05, .11], verdict: 'no measurable difference' },
+        { id: 'H2', role: 'secondary', kind: 'edge', question: 'Unseen sessions edge?', trades: 22, edge_r: .05, ci95: null, verdict: 'insufficient sample' }],
+      scorecard: { cells_tested: 60, better: 2, worse: 1, expected_by_chance_each_side: 1.5, reading: 'Treat an isolated one as a lead.', better_cells: [{ slice: 'time_of_day', cell: '12:00-14:00', trades: 90, edge_r: .2 }], worse_cells: [] },
+      baseline: { overall: stats(812, .004, 'no measurable edge vs control'), long_only: stats(400, .01, 'no measurable edge vs control'),
+        by_htf_daily: { aligned: stats(300, .01, 'no measurable edge vs control'), opposed: stats(150, -.02, 'no measurable edge vs control'), not_applicable: stats(80, 0, 'x') },
+        by_period: { seen_by_v1: stats(790, .003, 'no measurable edge vs control'), 'unseen_after_2026-10-20': stats(22, .05, 'insufficient sample (<30 trades)') } },
+      variants: [{ name: 'baseline', note: 'The live rules.', overall: stats(812, .004, 'no measurable edge vs control') }] } },
+  runs: [{ run_id: 'abcdef1234567890', created_at: '2026-11-08T16:00:00', snapshot_exported_at: '2026-11-08T15:00:00', analysis_version: 'RZY_EVALUATION_V2', git_revision: '0123', git_dirty: false, config_hash: 'abc', current_config: true, trades: 812, edge_vs_control_r: .004, verdict: 'no measurable edge vs control' },
+    { run_id: 'old', created_at: '2026-10-20T16:00:00', snapshot_exported_at: '2026-10-20T14:04:54', analysis_version: 'RZY_EVALUATION_V2', git_revision: '07c8', git_dirty: false, config_hash: 'abc', current_config: true, trades: 692, edge_vs_control_r: .001, verdict: 'no measurable edge vs control' }] };
+beforeEach(() => { m.role = 'admin'; m.replace.mockReset(); Object.values(m.api).forEach(f => f.mockReset()); m.api.rzyAdminOverview.mockResolvedValue(overview); m.api.rzyDigest.mockResolvedValue(digest); m.api.rzyPaper.mockResolvedValue(paper); m.api.rzyEvaluation.mockResolvedValue(noRuns); });
 afterEach(cleanup);
 const view = () => render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}><Page /></SWRConfig>);
 it('labels write counts and missing observation timing without inventing zero delay', async () => {
@@ -130,4 +149,41 @@ it('opens with a beginner guide that defines bars, timeframes and streams before
   // Stream statuses come from the shared reason table, so they cannot drift from Data health.
   expect(within(guide).getByText('research_only')).toBeTruthy();
   expect(within(guide).getByText(/no evidence that these signals beat random entry timing/)).toBeTruthy();
+});
+
+it('says when no evaluation has been published instead of showing empty results', async () => {
+  view();
+  expect(await screen.findByText(/No evaluation has been published yet/)).toBeTruthy();
+});
+
+it('shows the published evaluation: headlines, the primary question, plain-language slices and the luck check', async () => {
+  m.api.rzyEvaluation.mockResolvedValue(evaluation);
+  view();
+  const section = (await screen.findByText('How good is Little RZY? Test results')).closest('details') as HTMLElement;
+  expect(section.hasAttribute('open')).toBe(true);
+  const s = within(section);
+  expect(await s.findByText('Trading with the daily trend')).toBeTruthy();
+  expect(s.getAllByText('no measurable difference').length).toBeGreaterThan(0);
+  // The primary hypothesis is marked and its two groups are named.
+  const h3 = s.getByText('H3').closest('tr') as HTMLElement;
+  expect(within(h3).getByText('primary')).toBeTruthy();
+  expect(within(h3).getByText(/aligned with daily vs not aligned/)).toBeTruthy();
+  expect(within(h3).getByText('-0.050 to +0.110')).toBeTruthy();
+  // Labels are translated; the not-applicable bucket is hidden from the alignment table.
+  expect(s.getByText('With the trend')).toBeTruthy();
+  expect(s.getByText('Against the trend')).toBeTruthy();
+  expect(s.queryByText('Not applicable')).toBeNull();
+  expect(s.getByText('Unseen sessions (after Oct 20)')).toBeTruthy();
+  expect(s.getAllByText('Too few trades to tell.').length).toBeGreaterThan(0);
+  expect(s.getByText(/60 groups with at least 30 trades were tested\. 2 looked better/)).toBeTruthy();
+  expect(s.getByText(/about 1\.5 of each would be expected/)).toBeTruthy();
+  expect(s.getByText(/Live simulated fills are blocked/)).toBeTruthy();
+  expect(s.getByText('Earlier runs')).toBeTruthy();
+  expect(s.getAllByText('+0.004').length).toBeGreaterThanOrEqual(3); // headline stat, variant row, run history
+});
+
+it('reports an unavailable evaluation instead of hiding it', async () => {
+  m.api.rzyEvaluation.mockRejectedValue(new Error('boom'));
+  view();
+  expect(await screen.findByText(/Test results unavailable: boom/)).toBeTruthy();
 });

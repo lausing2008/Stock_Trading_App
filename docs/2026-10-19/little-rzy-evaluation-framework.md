@@ -1,6 +1,6 @@
 # Little RZY evaluation framework — 2026-10-19
 
-How `LITTLE_RZY_INSPIRED_V1` is tested on real stored bars, and what a result does and does not mean. Code: `services/market-data/src/services/rzy_evaluation.py` (pure), `scripts/evaluate_little_rzy.py` (read-only production runner), tests in `services/market-data/tests/test_rzy_evaluation.py`.
+How `LITTLE_RZY_INSPIRED_V1` is tested on real stored bars, and what a result does and does not mean. **v2 (2026-11-08) adds cross-stream context, an unseen period and a results page: `docs/features/2026-11-08-rzy-evaluation-v2.md`.** Code: `services/market-data/src/services/rzy_evaluation.py` (pure), `scripts/evaluate_little_rzy.py` (read-only production runner), tests in `services/market-data/tests/test_rzy_evaluation.py`.
 
 ## Questions it answers
 

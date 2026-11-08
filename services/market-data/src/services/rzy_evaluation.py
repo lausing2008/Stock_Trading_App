@@ -91,6 +91,13 @@ def run_segment(symbol, timeframe, bars, config, engine_cls=_FullHistory):
             continue
         trig = pos['trigger_index']
         atr = engine.ind(trig)['atr']
+        # Excursions (v2): best and worst price reached while the position was open, in R. Bars from
+        # entry up to (not including) the exit bar, whose intrabar order after the exit is unknown,
+        # plus the realised gross result. Magnitudes, so MAE is a positive number.
+        held = [bars[k] for k in range(pos['entry_index'], pos['exit_index'])]
+        favourable = max([sign * ((b['high'] if sign == 1 else b['low']) - pos['fill']) for b in held] + [0.])
+        adverse = max([sign * (pos['fill'] - (b['low'] if sign == 1 else b['high'])) for b in held] + [0.])
+        gross = pos['gross']
         trades.append(dict(
             symbol=symbol, timeframe=timeframe, direction=st['direction'],
             sequence=st['sequence_number'], sequence_confidence=st['sequence_confidence'],
@@ -103,6 +110,9 @@ def run_segment(symbol, timeframe, bars, config, engine_cls=_FullHistory):
             cost_r=(2 * pos['fill'] * fr + pos['fees']) / risk,
             stop_atr=risk / atr if atr else None,
             target_atr=sign * (st['target'] - pos['fill']) / atr if atr else None,
+            signal_time=bars[trig]['closed_at'],
+            atr_pct=atr / bars[trig]['close'] if atr and bars[trig]['close'] else None,
+            mfe_r=max(favourable, gross) / risk, mae_r=max(adverse, -gross) / risk,
             exit_reason=_REASONS.get(exit_reason.get(ident), exit_reason.get(ident, 'unknown'))))
     return engine, trades, cancelled, unresolved
 
@@ -219,6 +229,12 @@ def summarize(trades, rng, unresolved=0):
         # Two-sided 5%, 80% power, by trade (optimistic under dependence).
         min_detectable_edge_r=2.8 * pstdev(edges) / math.sqrt(len(edges)) if len(edges) > 1 else None,
     )
+    mfe = [t['mfe_r'] for t in trades if t.get('mfe_r') is not None]
+    mae = [t['mae_r'] for t in trades if t.get('mae_r') is not None]
+    out.update(mean_mfe_r=mean(mfe) if mfe else None, median_mfe_r=median(mfe) if mfe else None,
+               mean_mae_r=mean(mae) if mae else None,
+               reached_1r_rate=sum(x >= 1 for x in mfe) / len(mfe) if mfe else None,
+               target_exit_rate=sum(t['exit_reason'] in ('target', 'runner_target') for t in trades) / n)
     ci = out['edge_ci95_by_symbol']
     out['verdict'] = ('insufficient sample (<30 trades)' if n < 30 else
                       'no measurable edge vs control' if not ci or ci[0] <= 0 <= ci[1] else
@@ -282,7 +298,8 @@ def chronological_cut(coverage, fraction=HELD_OUT_FRACTION):
     return cuts
 
 
-def report(results, cuts=None, seed=11):
+def report(results, cuts=None, seed=11, slices=()):
+    """`slices`: extra trade label fields (v2 context labels) reported as by_<field>, plus by_symbol."""
     rng = random.Random(seed)
     cuts = cuts or {}
     out = {}
@@ -305,4 +322,11 @@ def report(results, cuts=None, seed=11):
             by_month=by(lambda t: None if t.get('entry_time') is None else f"{t['timeframe']}:{t['entry_time'][:7]}"),
             by_sequence=by(lambda t: None if 'sequence' not in t else ('unknown' if t['sequence_confidence'] != 'known' else str(min(t['sequence'], 4)) + ('+' if t['sequence'] >= 4 else ''))),
             cancelled=res['cancelled'], unresolved_at_segment_end=len(unresolved))
+        for field in slices:
+            # Context labels exist on closed trades only; unresolved positions are not split by them.
+            out[name][f'by_{field}'] = {str(v): summarize([t for t in trades if t.get(field) == v], rng)
+                                        for v in sorted({t.get(field) for t in trades if t.get(field) is not None}, key=str)}
+        if slices:
+            out[name]['by_symbol'] = {s: summarize([t for t in trades if t['symbol'] == s], rng)
+                                      for s in sorted({t['symbol'] for t in trades})}
     return out

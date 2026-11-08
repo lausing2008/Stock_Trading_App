@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { api, type RzyAdminOverview } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 import LittleRzyBeginnerGuide from '@/components/LittleRzyBeginnerGuide';
+import LittleRzyEvaluation from '@/components/LittleRzyEvaluation';
 import { RZY_ALERT_STATE, RZY_CANCELLATION, RZY_EXCLUSION, RZY_STREAM_STATUS, cancellationParts, countReasons, groupExclusions, rzyReasonText } from '@/lib/rzyReasons';
 
 const card = 'rounded-lg border border-slate-700 bg-slate-900/60 p-4';
@@ -186,6 +187,8 @@ export default function LittleRzyAdminPage() {
   const { data: overview, error: overviewError } = useSWR<RzyAdminOverview>(allowed ? 'rzy-admin-overview' : null, api.rzyAdminOverview, { refreshInterval: 60_000 });
   const { data: digest, error: digestError } = useSWR(allowed ? 'rzy-digest-snapshot' : null, api.rzyDigest, { refreshInterval: 60_000 });
   const { data: paper, error: paperError } = useSWR(allowed ? 'rzy-paper' : null, api.rzyPaper, { refreshInterval: 60_000 });
+  // Published runs change rarely (one per evaluation), so no polling.
+  const { data: evaluation, error: evaluationError } = useSWR(allowed ? 'rzy-evaluation' : null, api.rzyEvaluation);
   if (!allowed) return null;
 
   const status = overview?.streams.by_status ?? {};
@@ -208,6 +211,8 @@ export default function LittleRzyAdminPage() {
     <LittleRzyBeginnerGuide />
 
     <TimeframeGuide />
+
+    <LittleRzyEvaluation data={evaluation} error={evaluationError} />
 
     {overviewError && <p role="alert" className="text-red-400">Overview unavailable: {String(overviewError.message ?? overviewError)}</p>}
     <div className="grid grid-cols-2 gap-3 md:grid-cols-4">

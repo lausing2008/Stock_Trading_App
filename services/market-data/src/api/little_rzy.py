@@ -134,6 +134,31 @@ def admin_overview(_admin=Depends(get_admin_user),session=Depends(get_session)):
                          terminal_reason=m.terminal_reason) for m in mail[:40]]))
 
 
+@router.get('/evaluation')
+def evaluation(_user=Depends(get_current_user),session=Depends(get_session)):
+    """Published historical evaluations (scripts/evaluate_little_rzy.py publish). Reads stored
+    summaries only; never runs an evaluation. Declared before /{symbol}, which would shadow it."""
+    from sqlalchemy import func
+    from ..services.rzy_models import RzyEvaluationRun,RzyPaperJournal
+    runs=session.scalars(select(RzyEvaluationRun).order_by(RzyEvaluationRun.snapshot_exported_at.desc(),RzyEvaluationRun.created_at.desc()).limit(20)).all()
+    cfg=W.current_config()
+    def brief(r):
+        o=(r.summary or {}).get('baseline',{}).get('overall',{})
+        return dict(run_id=r.run_id,created_at=r.created_at.isoformat(),snapshot_exported_at=r.snapshot_exported_at.isoformat(),
+            analysis_version=r.analysis_version,git_revision=r.git_revision,git_dirty=r.git_dirty,config_hash=r.config_hash,
+            current_config=r.config_hash==cfg.hash,trades=o.get('trades'),edge_vs_control_r=o.get('edge_vs_control_r'),verdict=o.get('verdict'))
+    journal=dict(session.execute(select(RzyPaperJournal.observed_in,func.count()).where(RzyPaperJournal.config_hash==cfg.hash)
+        .group_by(RzyPaperJournal.observed_in)).all())
+    latest=runs[0] if runs else None
+    return dict(strategy_version=VERSION,config_hash=cfg.hash,
+        latest=dict(brief(latest),summary=latest.summary) if latest else None,
+        runs=[brief(r) for r in runs],
+        forward_journal=dict(by_cohort=journal,
+            note='Live simulated fills are blocked until execution-grade data exists, so the live journal cannot score trades yet. '
+                 'Unseen-session evidence comes from re-running this evaluation on sessions after its unseen-period start.'),
+        positioning='Historical research under stated assumptions. Not a forecast, not verified execution and not a recommendation.')
+
+
 @router.get('/{symbol}')
 def review(symbol:str,timeframe:str=Query('5m',pattern=r'^(5m|15m|1h|1d)$'),include_superseded:bool=False,_user=Depends(get_current_user),session=Depends(get_session)):
     if len(symbol)>20: raise HTTPException(400,'Invalid symbol')

@@ -15,6 +15,15 @@
 
    Writes report.json, trades.csv and manifest.json (code sha256, snapshot sha256, config,
    seeds, assumptions). Inputs and code identity are enough to reproduce the run exactly.
+   v2 (2026-11-08) also labels every trade with causal cross-stream context, runs the predeclared
+   hypotheses (docs/2026-11-08/rzy-evaluation-v2-preregistration.md) and writes summary.json
+   (what the RZY page shows) and report.md (the same, readable).
+
+3. publish (inside the market-data container; inserts ONE row, idempotent by run id):
+
+    docker cp <out_dir>/summary.json stockai-market-data-1:/tmp/rzy-run/summary.json
+    docker cp <out_dir>/manifest.json stockai-market-data-1:/tmp/rzy-run/manifest.json
+    docker exec -w /app stockai-market-data-1 python /tmp/evaluate_little_rzy.py publish /tmp/rzy-run
 """
 import argparse
 import csv
@@ -105,10 +114,16 @@ def evaluate(snapshot_dir, out_dir, only=None):
     from src.services.rzy_evaluation import (research_bars, evaluate_streams, report, chronological_cut,
                                              ASSUMPTIONS, HELD_OUT_FRACTION)
     from src.services.little_rzy import Config, VERSION
+    from src.services import rzy_evaluation_context as C
     os.makedirs(out_dir, exist_ok=True); started = time.time()
     meta, streams = load_snapshot(snapshot_dir)
     streams = [(sym, tf, [research_bars(seg) for seg in segs]) for sym, tf, segs in streams]
+    timelines = C.trend_timelines(streams)
+    regime = C.regime_timeline(streams)
+    print('context timelines ready in %ds' % (time.time() - started), flush=True)
     results = evaluate_streams(streams, controls=20, only=only)
+    for res in results.values():
+        C.label_trades(res['trades'], timelines, regime)
     cuts = chronological_cut(meta['coverage'])
     rep = dict(strategy_version=VERSION, config_hash=Config().hash, snapshot=meta, assumptions=ASSUMPTIONS,
                chronological_cut=cuts, held_out_fraction=HELD_OUT_FRACTION,
@@ -118,25 +133,63 @@ def evaluate(snapshot_dir, out_dir, only=None):
                            periods='per timeframe, the last 30% of the covered span is a RETROSPECTIVE holdout (already visible to earlier runs); nothing is fitted on either period; unseen evidence requires later sessions',
                            fills='next bar open with half-spread + slippage; stop before target; gaps fill at the worse open',
                            tuning='none; all variants reported; research_stop_target_only is NOT a live default'),
-               runtime_seconds=None, variants=report(results, cuts))
+               analysis_version=C.ANALYSIS_VERSION, unseen_after=C.UNSEEN_AFTER,
+               regime_symbol_present=any(sym == C.REGIME_SYMBOL and tf == '1d' for sym, tf, _ in streams),
+               runtime_seconds=None, variants=report(results, cuts, slices=C.CONTEXT_SLICES))
+    hyps = C.hypotheses(results['baseline']['trades']) if 'baseline' in results else []
+    score = C.scorecard(rep['variants'].get('baseline', {}))
+    rep['hypotheses'] = hyps; rep['scorecard'] = score
     rep['runtime_seconds'] = round(time.time() - started)
     with open(os.path.join(out_dir, 'report.json'), 'w') as f:
         json.dump(rep, f, indent=1, default=str)
-    fields = ['variant', 'symbol', 'timeframe', 'direction', 'sequence', 'sequence_confidence', 'entry_time', 'exit_time',
-              'holding_bars', 'fill', 'stop', 'target', 'r', 'ret', 'cost_r', 'control_mean_r', 'controls', 'exit_reason']
+    summary = C.build_summary(rep, hyps, score)
+    with open(os.path.join(out_dir, 'summary.json'), 'w') as f:
+        json.dump(summary, f, indent=1, default=str)
+    with open(os.path.join(out_dir, 'report.md'), 'w') as f:
+        f.write(C.render_markdown(summary))
+    fields = ['variant', 'symbol', 'timeframe', 'direction', 'sequence', 'sequence_confidence', 'signal_time', 'entry_time', 'exit_time',
+              'holding_bars', 'fill', 'stop', 'target', 'r', 'ret', 'cost_r', 'control_mean_r', 'controls', 'exit_reason',
+              'mfe_r', 'mae_r', 'atr_pct', *C.CONTEXT_SLICES]
     with open(os.path.join(out_dir, 'trades.csv'), 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore'); w.writeheader()
         for res in results.values(): w.writerows(res['trades'])
     code = {p: sha256(REPO / p) for p in ('services/market-data/src/services/little_rzy.py', 'services/market-data/src/services/rzy_data.py',
-                                          'services/market-data/src/services/rzy_evaluation.py', 'scripts/evaluate_little_rzy.py')}
+                                          'services/market-data/src/services/rzy_evaluation.py',
+                                          'services/market-data/src/services/rzy_evaluation_context.py', 'scripts/evaluate_little_rzy.py')}
     manifest = dict(created_at=datetime.now(timezone.utc).isoformat(), git_revision=os.popen(f'git -C {REPO} rev-parse HEAD').read().strip(),
                     git_dirty=bool(os.popen(f'git -C {REPO} status --porcelain -- services/market-data/src scripts/evaluate_little_rzy.py').read().strip()),
                     code_sha256=code, snapshot_bars_sha256=meta['bars_sha256'], snapshot_exported_at=meta['exported_at'],
                     variants=list(results), controls=20, seeds=dict(evaluate=7, report=11), assumptions=ASSUMPTIONS,
-                    outputs_sha256={n: sha256(os.path.join(out_dir, n)) for n in ('report.json', 'trades.csv')})
+                    analysis_version=C.ANALYSIS_VERSION,
+                    outputs_sha256={n: sha256(os.path.join(out_dir, n)) for n in ('report.json', 'trades.csv', 'summary.json', 'report.md')})
     with open(os.path.join(out_dir, 'manifest.json'), 'w') as f:
         json.dump(manifest, f, indent=1)
     print('done in %ds' % rep['runtime_seconds'], flush=True)
+
+
+def publish(run_dir):
+    """Store one run's summary so the RZY page can show it. Idempotent: the run id is derived from
+    the snapshot and code identity, so publishing the same run twice changes nothing."""
+    sys.path[:0] = [os.environ.get('RZY_EVAL_ROOT', '/app'), '/app/shared']
+    from db import SessionLocal
+    from src.services.rzy_models import RzyEvaluationRun
+    summary = json.load(open(os.path.join(run_dir, 'summary.json')))
+    manifest = json.load(open(os.path.join(run_dir, 'manifest.json')))
+    if manifest.get('outputs_sha256', {}).get('summary.json') != sha256(os.path.join(run_dir, 'summary.json')):
+        raise SystemExit('summary.json does not match its manifest; refusing to publish')
+    run_id = hashlib.sha256(json.dumps([manifest['snapshot_bars_sha256'], manifest['code_sha256'],
+                                        manifest.get('analysis_version')], sort_keys=True).encode()).hexdigest()[:32]
+    with SessionLocal() as s:
+        if s.get(RzyEvaluationRun, run_id) is not None:
+            print('already published', run_id); return
+        s.add(RzyEvaluationRun(run_id=run_id, created_at=datetime.fromisoformat(manifest['created_at']).replace(tzinfo=None),
+                               published_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                               analysis_version=manifest.get('analysis_version') or 'unknown', git_revision=manifest.get('git_revision') or '',
+                               git_dirty=bool(manifest.get('git_dirty')), snapshot_sha256=manifest['snapshot_bars_sha256'],
+                               snapshot_exported_at=datetime.fromisoformat(manifest['snapshot_exported_at']).replace(tzinfo=None),
+                               config_hash=summary.get('config_hash') or '', summary=summary))
+        s.commit()
+    print('published', run_id)
 
 
 if __name__ == '__main__':
@@ -144,6 +197,8 @@ if __name__ == '__main__':
     sub = ap.add_subparsers(dest='cmd', required=True)
     e = sub.add_parser('export'); e.add_argument('out')
     v = sub.add_parser('evaluate'); v.add_argument('snapshot'); v.add_argument('out'); v.add_argument('--only')
+    p = sub.add_parser('publish'); p.add_argument('run_dir')
     a = ap.parse_args()
     if a.cmd == 'export': export(a.out)
+    elif a.cmd == 'publish': publish(a.run_dir)
     else: evaluate(a.snapshot, a.out, set(a.only.split(',')) if a.only else None)

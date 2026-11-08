@@ -136,3 +136,22 @@ class RzyPaperJournal(Base):
     first_seen_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime)
     payload: Mapped[dict] = mapped_column(JSON)
+
+
+class RzyEvaluationRun(Base):
+    """One published historical evaluation (scripts/evaluate_little_rzy.py publish).
+
+    Stores only the compact summary the RZY page shows; the full report, trade list and input
+    snapshot stay with the run's files, identified by the hashes below. Append-only: a new run
+    is a new row, and the page shows the latest by snapshot export time."""
+    __tablename__ = 'little_rzy_evaluation_runs'
+    run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    published_at: Mapped[datetime] = mapped_column(DateTime)
+    analysis_version: Mapped[str] = mapped_column(String(32))
+    git_revision: Mapped[str] = mapped_column(String(64))
+    git_dirty: Mapped[bool] = mapped_column(Boolean, default=False)
+    snapshot_sha256: Mapped[str] = mapped_column(String(64))
+    snapshot_exported_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    config_hash: Mapped[str] = mapped_column(String(24))
+    summary: Mapped[dict] = mapped_column(JSON)
