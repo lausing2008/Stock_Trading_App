@@ -112,6 +112,26 @@ The price-risk trial still stands at **four complete sessions** (Nov 2, 3, 5, 6;
 single release, and the trial configuration is unchanged. Monday's 17:35 PT evidence capture remains
 scheduled.
 
+**Later the same weekend, from another session:** market-data was redeployed as `bdbbed83`
+(Nov 7, UW bar requests capped at 2 in flight; delisted symbols skipped in session ingest) and
+all 12 backends as `2c2078d3` (Nov 8 17:13–17:25 UTC, risk snapshots). Both include A and B.
+Monday therefore runs on `2c2078d3`. The in-flight cap targets the 429s behind the cooldown
+skips, so a rebuild drop on Monday cannot be credited to A/B without counting the skips.
+
+Read with `scripts/rzy_ab_read.py` (`627250ed`, read-only). Monday's evidence save runs it and
+the session report. Pre-B baseline, same rule:
+
+| Session | Held 5m bars | Hold after close, median / p90 | Emailable events, held / unaffected | In-session 5m rebuilds |
+|---|---:|---|---|---:|
+| Nov 2 | 628 of 12,132 | 5.5 / 222 min | 0 / 14 | 316 |
+| Nov 5 (no skips) | 203 of 12,187 | 2.4 / 15 min | 0 / 14 | 103 |
+| Nov 6 | 480 of 12,115 | 5.2 / 5.5 min | 3 / 18 | 278 |
+
+"Held" means the bar's first post-close write came after the first session scan that could have
+consumed it. Scan time is the scan's start, so the split is approximate for bars written while a
+scan is running. On Nov 2, a tenth of held bars waited hours for their first post-close write;
+under B their streams wait that long.
+
 Still to measure on Monday:
 - A: `ingest.cooldown_completion_retry` and `ingest_cooldown_completion_pending`;
 - B: `held_until_post_close_write` and streams reading `stale`;
