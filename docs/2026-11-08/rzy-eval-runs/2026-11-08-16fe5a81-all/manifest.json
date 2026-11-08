@@ -1,0 +1,41 @@
+{
+ "created_at": "2026-11-08T22:57:29.858762+00:00",
+ "git_revision": "16fe5a8125f489ffed3814e678c0239edb110494",
+ "git_dirty": false,
+ "code_sha256": {
+  "services/market-data/src/services/little_rzy.py": "945b62341d5b1dd2e77e26b6733864dd473475372a16ec89dd28cb26fb5e3810",
+  "services/market-data/src/services/rzy_data.py": "236a87bd3433e6586b51d621f263456d9b35f2f3703dc5537f81d9803907acdf",
+  "services/market-data/src/services/rzy_evaluation.py": "720f54e2651ce447867eb570b94dba883ec2343a0d66e830f1d749bb9ff5676d",
+  "services/market-data/src/services/rzy_evaluation_context.py": "0dc168b15cdf71ef193031dd838c9ae9e1ef0b28fbf3669942bdda8d707476b0",
+  "scripts/evaluate_little_rzy.py": "ce00254fd6ccb9470806ad42aefee25b2657bba069455d6d599ce698fcdf8dde"
+ },
+ "snapshot_bars_sha256": "cb264cdc5abeda727bd393b4b8709c5d0715b8301d0b681132bf042da97cb42e",
+ "snapshot_exported_at": "2026-11-08T22:25:20.500794+00:00",
+ "variants": [
+  "baseline",
+  "no_bollinger_context",
+  "no_chase_filter_off",
+  "unrestricted_sequence",
+  "partial_runner",
+  "line_stop",
+  "research_stop_target_only"
+ ],
+ "controls": 20,
+ "seeds": {
+  "evaluate": 7,
+  "report": 11
+ },
+ "assumptions": {
+  "execution_eligible": "assumed True for research (stored prices carry no verified provider delay)",
+  "shortable": "assumed True for research; long-only results reported separately",
+  "borrow_rate_annual": 0.005,
+  "note": "Assumptions make paper fills possible; they are not verified execution or borrow data."
+ },
+ "analysis_version": "RZY_EVALUATION_V2",
+ "outputs_sha256": {
+  "report.json": "d84f38702e66ff7eebcdace74d3436282d1a743a76e178df05ba827e860b7866",
+  "trades.csv": "daa83f2e30c674704a3191cf9dc606e3e5776b0169517ed95b7e081cb0f7da8b",
+  "summary.json": "32de56be044c25a3457fa5d37d6b4bea08cd8c8490b67fa024b4f76c25e48e50",
+  "report.md": "a7a84ae184b0d63986469f113241465926e918630fd9a7a03f261121c4fde413"
+ }
+}

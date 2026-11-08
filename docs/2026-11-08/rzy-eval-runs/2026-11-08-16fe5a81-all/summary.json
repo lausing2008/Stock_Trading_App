@@ -1,0 +1,3680 @@
+{
+ "analysis_version": "RZY_EVALUATION_V2",
+ "strategy_version": "LITTLE_RZY_INSPIRED_V1",
+ "config_hash": "8ceb8cf780c3eb981983",
+ "unseen_after": "2026-10-20T14:04:54+00:00",
+ "snapshot": {
+  "exported_at": "2026-11-08T22:25:20.500794+00:00",
+  "coverage": {
+   "5m": {
+    "symbols": 155,
+    "segments": 434,
+    "bars": 776002,
+    "first": "2026-08-04T13:30:00+00:00",
+    "last": "2026-11-06T20:55:00+00:00"
+   },
+   "15m": {
+    "symbols": 151,
+    "segments": 257,
+    "bars": 252750,
+    "first": "2026-08-04T13:30:00+00:00",
+    "last": "2026-11-06T20:45:00+00:00"
+   },
+   "1h": {
+    "symbols": 145,
+    "segments": 168,
+    "bars": 65115,
+    "first": "2026-08-04T13:30:00+00:00",
+    "last": "2026-11-06T20:30:00+00:00"
+   },
+   "1d": {
+    "symbols": 159,
+    "segments": 310,
+    "bars": 109148,
+    "first": "2023-12-26T00:00:00+00:00",
+    "last": "2026-11-06T00:00:00+00:00"
+   }
+  },
+  "bars_sha256": "cb264cdc5abeda727bd393b4b8709c5d0715b8301d0b681132bf042da97cb42e"
+ },
+ "headline": {
+  "all_data": "no measurable edge",
+  "unseen": "edge below zero",
+  "daily_alignment": "first group better"
+ },
+ "hypotheses": [
+  {
+   "id": "H3",
+   "role": "primary",
+   "question": "Do intraday trades aligned with the daily trend have a larger edge than intraday trades that are not?",
+   "kind": "difference",
+   "groups": [
+    "aligned with daily",
+    "not aligned"
+   ],
+   "trades": [
+    212,
+    474
+   ],
+   "edge_r": [
+    0.09520205403418815,
+    -0.06730216189672789
+   ],
+   "difference_r": 0.16250421593091602,
+   "ci95": [
+    0.026180911340689436,
+    0.3121896185006705
+   ],
+   "verdict": "first group better"
+  },
+  {
+   "id": "H1",
+   "role": "secondary",
+   "question": "Is the baseline edge above zero on all data?",
+   "kind": "edge",
+   "trades": 744,
+   "symbols": 150,
+   "edge_r": -0.016774291511939335,
+   "ci95": [
+    -0.0795799700604788,
+    0.04661400005550439
+   ],
+   "verdict": "no measurable edge"
+  },
+  {
+   "id": "H2",
+   "role": "secondary",
+   "question": "Is the baseline edge above zero on sessions no earlier evaluation saw?",
+   "kind": "edge",
+   "trades": 125,
+   "symbols": 86,
+   "edge_r": -0.1885329884645311,
+   "ci95": [
+    -0.2756370371348719,
+    -0.09758625156165184
+   ],
+   "verdict": "edge below zero"
+  },
+  {
+   "id": "H4",
+   "role": "secondary",
+   "question": "Same as H3 using the next higher timeframe (5m\u219215m, 15m\u21921h, 1h\u2192daily).",
+   "kind": "difference",
+   "groups": [
+    "aligned with next higher",
+    "not aligned"
+   ],
+   "trades": [
+    255,
+    385
+   ],
+   "edge_r": [
+    -0.0020331449192466564,
+    -0.0008516033520215865
+   ],
+   "difference_r": -0.0011815415672250698,
+   "ci95": [
+    -0.14401900927722722,
+    0.1472591080506721
+   ],
+   "verdict": "no measurable difference"
+  },
+  {
+   "id": "H5",
+   "role": "secondary",
+   "question": "Do trades whose other three timeframes all agree beat the rest?",
+   "kind": "difference",
+   "groups": [
+    "all aligned",
+    "others"
+   ],
+   "trades": [
+    24,
+    560
+   ],
+   "edge_r": [
+    0.31027388420020047,
+    -0.01718567575230222
+   ],
+   "difference_r": 0.3274595599525027,
+   "ci95": [
+    -0.2675674943354364,
+    1.0310409258494078
+   ],
+   "verdict": "insufficient sample"
+  }
+ ],
+ "scorecard": {
+  "cells_tested": 49,
+  "better": 0,
+  "worse": 4,
+  "expected_by_chance_each_side": 1.2,
+  "reading": "A handful of \"better\" cells is expected by chance when many are tested; treat an isolated one as a lead for later sessions, not a finding.",
+  "better_cells": [],
+  "worse_cells": [
+   {
+    "slice": "period",
+    "cell": "unseen_after_2026-10-20",
+    "trades": 125,
+    "edge_r": -0.1885329884645311,
+    "ci95": [
+     -0.278722774722767,
+     -0.10197882521588546
+    ],
+    "verdict": "worse than control"
+   },
+   {
+    "slice": "period_direction",
+    "cell": "15m:retrospective_holdout:short",
+    "trades": 34,
+    "edge_r": -0.2057998868978243,
+    "ci95": [
+     -0.34359898918671145,
+     -0.07794062761885148
+    ],
+    "verdict": "worse than control"
+   },
+   {
+    "slice": "month",
+    "cell": "15m:2026-10",
+    "trades": 65,
+    "edge_r": -0.20363706800584316,
+    "ci95": [
+     -0.35935671063374436,
+     -0.019354885353319265
+    ],
+    "verdict": "worse than control"
+   },
+   {
+    "slice": "month",
+    "cell": "5m:2026-11",
+    "trades": 30,
+    "edge_r": -0.26077663326429046,
+    "ci95": [
+     -0.40726393399761907,
+     -0.12626047822770758
+    ],
+    "verdict": "worse than control"
+   }
+  ]
+ },
+ "baseline": {
+  "overall": {
+   "trades": 744,
+   "symbols": 150,
+   "win_rate": 0.22043010752688172,
+   "win_rate_wilson95": [
+    0.19212075285163194,
+    0.2516117166980695
+   ],
+   "mean_r": -0.13270609444484183,
+   "mean_r_ci95": [
+    -0.19393850048211927,
+    -0.07402822185977195
+   ],
+   "median_r": -0.20755543438720148,
+   "profit_factor": 0.5833148358941476,
+   "avg_win_r": 0.8427813955669299,
+   "avg_loss_r": -0.40853359162058417,
+   "mean_cost_r": 0.0931023100547286,
+   "total_r": -98.73333426696232,
+   "max_drawdown_r": 101.53132965499704,
+   "avg_holding_bars": 7.193548387096774,
+   "exits": {
+    "line_invalidation": 670,
+    "stop": 52,
+    "target": 22
+   },
+   "control_mean_r": -0.11593180293290249,
+   "edge_vs_control_r": -0.016774291511939335,
+   "edge_ci95_by_symbol": [
+    -0.08084783883511619,
+    0.047394491902983824
+   ],
+   "min_detectable_edge_r": 0.09225472673495477,
+   "mean_mfe_r": 0.48169223412733697,
+   "median_mfe_r": 0.19580712960325453,
+   "mean_mae_r": 0.39332700069408066,
+   "reached_1r_rate": 0.12768817204301075,
+   "target_exit_rate": 0.02956989247311828,
+   "unresolved": 5,
+   "verdict": "no measurable edge vs control"
+  },
+  "long_only": {
+   "trades": 361,
+   "symbols": 141,
+   "win_rate": 0.2188365650969529,
+   "win_rate_wilson95": [
+    0.1792676444517365,
+    0.2643265070923856
+   ],
+   "mean_r": -0.13969350609384873,
+   "mean_r_ci95": [
+    -0.22314047324179176,
+    -0.05305266170849115
+   ],
+   "median_r": -0.2140968986918669,
+   "profit_factor": 0.5546527994884007,
+   "avg_win_r": 0.7950213853115959,
+   "avg_loss_r": -0.401546259359913,
+   "mean_cost_r": 0.09517753075784599,
+   "total_r": -50.429355699879395,
+   "max_drawdown_r": 56.358284650991955,
+   "avg_holding_bars": 6.85595567867036,
+   "exits": {
+    "line_invalidation": 326,
+    "stop": 24,
+    "target": 11
+   },
+   "control_mean_r": -0.14180499140633898,
+   "edge_vs_control_r": 0.0021114853124902396,
+   "edge_ci95_by_symbol": [
+    -0.0872543633600823,
+    0.09659420438409656
+   ],
+   "min_detectable_edge_r": 0.12349199841716106,
+   "mean_mfe_r": 0.4656071621497907,
+   "median_mfe_r": 0.2145671552691114,
+   "mean_mae_r": 0.39026240438489007,
+   "reached_1r_rate": 0.12188365650969529,
+   "target_exit_rate": 0.030470914127423823,
+   "unresolved": 3,
+   "verdict": "no measurable edge vs control"
+  },
+  "by_timeframe": {
+   "15m": {
+    "trades": 189,
+    "symbols": 106,
+    "win_rate": 0.24338624338624337,
+    "win_rate_wilson95": [
+     0.18771523545887708,
+     0.3092812632219055
+    ],
+    "mean_r": -0.07107081428529241,
+    "mean_r_ci95": [
+     -0.21326320949231373,
+     0.0944681108675183
+    ],
+    "median_r": -0.16798662121404576,
+    "profit_factor": 0.785907005683504,
+    "avg_win_r": 1.0719239333234403,
+    "avg_loss_r": -0.4387474463832064,
+    "mean_cost_r": 0.06702553858612861,
+    "total_r": -13.432383899920264,
+    "max_drawdown_r": 29.19052949781659,
+    "avg_holding_bars": 7.428571428571429,
+    "exits": {
+     "line_invalidation": 164,
+     "stop": 20,
+     "target": 5
+    },
+    "control_mean_r": -0.0657008921437082,
+    "edge_vs_control_r": -0.005369922141584209,
+    "edge_ci95_by_symbol": [
+     -0.16925035371491748,
+     0.1700123919413639
+    ],
+    "min_detectable_edge_r": 0.2233689712343876,
+    "mean_mfe_r": 0.5868762403911328,
+    "median_mfe_r": 0.22587312718466895,
+    "mean_mae_r": 0.4216972958604109,
+    "reached_1r_rate": 0.13756613756613756,
+    "target_exit_rate": 0.026455026455026454,
+    "unresolved": 3,
+    "verdict": "no measurable edge vs control"
+   },
+   "1d": {
+    "trades": 53,
+    "symbols": 45,
+    "win_rate": 0.33962264150943394,
+    "win_rate_wilson95": [
+     0.22686862857429074,
+     0.4740546388917903
+    ],
+    "mean_r": 0.012554781720268148,
+    "mean_r_ci95": [
+     -0.25063337312324563,
+     0.36373158013648277
+    ],
+    "median_r": -0.17727319236203515,
+    "profit_factor": 1.0443049771312582,
+    "avg_win_r": 0.8713394194927764,
+    "avg_loss_r": -0.4291058891341647,
+    "mean_cost_r": 0.01259025806435054,
+    "total_r": 0.6654034311742119,
+    "max_drawdown_r": 6.971035431321344,
+    "avg_holding_bars": 7.660377358490566,
+    "exits": {
+     "line_invalidation": 47,
+     "stop": 3,
+     "target": 3
+    },
+    "control_mean_r": 0.04268407233370288,
+    "edge_vs_control_r": -0.030129290613434744,
+    "edge_ci95_by_symbol": [
+     -0.30847062275751436,
+     0.32794550475208767
+    ],
+    "min_detectable_edge_r": 0.45980297187138086,
+    "mean_mfe_r": 0.6324762483843984,
+    "median_mfe_r": 0.21961165053965034,
+    "mean_mae_r": 0.4146858304177002,
+    "reached_1r_rate": 0.20754716981132076,
+    "target_exit_rate": 0.05660377358490566,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "1h": {
+    "trades": 29,
+    "symbols": 27,
+    "win_rate": 0.2413793103448276,
+    "win_rate_wilson95": [
+     0.12218268185062131,
+     0.4210795221832869
+    ],
+    "mean_r": -0.10586617787077857,
+    "mean_r_ci95": [
+     -0.3405661255717221,
+     0.15817192207577105
+    ],
+    "median_r": -0.2408028254803562,
+    "profit_factor": 0.6632095124063736,
+    "avg_win_r": 0.8636705713744034,
+    "avg_loss_r": -0.4143551435397001,
+    "mean_cost_r": 0.02754871844391326,
+    "total_r": -3.0701191582525786,
+    "max_drawdown_r": 4.224080566984022,
+    "avg_holding_bars": 11.310344827586206,
+    "exits": {
+     "line_invalidation": 26,
+     "stop": 3
+    },
+    "control_mean_r": -0.08089556329132781,
+    "edge_vs_control_r": -0.024970614579450757,
+    "edge_ci95_by_symbol": [
+     -0.28412013374788,
+     0.2483357688566505
+    ],
+    "min_detectable_edge_r": 0.3978423982736693,
+    "mean_mfe_r": 0.5452387369410646,
+    "median_mfe_r": 0.22757701304528072,
+    "mean_mae_r": 0.4609988576279447,
+    "reached_1r_rate": 0.1724137931034483,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "5m": {
+    "trades": 473,
+    "symbols": 145,
+    "win_rate": 0.19661733615221988,
+    "win_rate_wilson95": [
+     0.16330473499016163,
+     0.23481824756840708
+    ],
+    "mean_r": -0.17525631002106487,
+    "mean_r_ci95": [
+     -0.23697494384443088,
+     -0.10716550060472554
+    ],
+    "median_r": -0.2306582989689507,
+    "profit_factor": 0.4476312286838721,
+    "avg_win_r": 0.722342412791478,
+    "avg_loss_r": -0.39493178691992403,
+    "mean_cost_r": 0.11656256950455754,
+    "total_r": -82.89623463996368,
+    "max_drawdown_r": 82.8962346399637,
+    "avg_holding_bars": 6.79492600422833,
+    "exits": {
+     "line_invalidation": 433,
+     "stop": 26,
+     "target": 14
+    },
+    "control_mean_r": -0.15592405341470686,
+    "edge_vs_control_r": -0.019332256606358005,
+    "edge_ci95_by_symbol": [
+     -0.08982228558182764,
+     0.05083542715307698
+    ],
+    "min_detectable_edge_r": 0.0991983195618455,
+    "mean_mfe_r": 0.4188715607212486,
+    "median_mfe_r": 0.16886893026480918,
+    "mean_mae_r": 0.37544859136454517,
+    "reached_1r_rate": 0.11205073995771671,
+    "target_exit_rate": 0.02959830866807611,
+    "unresolved": 2,
+    "verdict": "no measurable edge vs control"
+   }
+  },
+  "by_direction": {
+   "long": {
+    "trades": 361,
+    "symbols": 141,
+    "win_rate": 0.2188365650969529,
+    "win_rate_wilson95": [
+     0.1792676444517365,
+     0.2643265070923856
+    ],
+    "mean_r": -0.13969350609384873,
+    "mean_r_ci95": [
+     -0.22068730371481815,
+     -0.05519124863977646
+    ],
+    "median_r": -0.2140968986918669,
+    "profit_factor": 0.5546527994884007,
+    "avg_win_r": 0.7950213853115959,
+    "avg_loss_r": -0.401546259359913,
+    "mean_cost_r": 0.09517753075784599,
+    "total_r": -50.429355699879395,
+    "max_drawdown_r": 56.358284650991955,
+    "avg_holding_bars": 6.85595567867036,
+    "exits": {
+     "line_invalidation": 326,
+     "stop": 24,
+     "target": 11
+    },
+    "control_mean_r": -0.14180499140633898,
+    "edge_vs_control_r": 0.0021114853124902396,
+    "edge_ci95_by_symbol": [
+     -0.08562632245190585,
+     0.09432067167525758
+    ],
+    "min_detectable_edge_r": 0.12349199841716106,
+    "mean_mfe_r": 0.4656071621497907,
+    "median_mfe_r": 0.2145671552691114,
+    "mean_mae_r": 0.39026240438489007,
+    "reached_1r_rate": 0.12188365650969529,
+    "target_exit_rate": 0.030470914127423823,
+    "unresolved": 3,
+    "verdict": "no measurable edge vs control"
+   },
+   "short": {
+    "trades": 383,
+    "symbols": 137,
+    "win_rate": 0.22193211488250653,
+    "win_rate_wilson95": [
+     0.18319125609303707,
+     0.26619577984105064
+    ],
+    "mean_r": -0.1261200484780233,
+    "mean_r_ci95": [
+     -0.2131810742574331,
+     -0.03161114678639371
+    ],
+    "median_r": -0.2047318323629813,
+    "profit_factor": 0.6095494608523464,
+    "avg_win_r": 0.887170110980711,
+    "avg_loss_r": -0.4151457651021589,
+    "mean_cost_r": 0.09114629262959709,
+    "total_r": -48.30397856708292,
+    "max_drawdown_r": 52.362822638746174,
+    "avg_holding_bars": 7.511749347258486,
+    "exits": {
+     "line_invalidation": 344,
+     "stop": 28,
+     "target": 11
+    },
+    "control_mean_r": -0.09154480283130831,
+    "edge_vs_control_r": -0.03457524564671499,
+    "edge_ci95_by_symbol": [
+     -0.12738069067660712,
+     0.06607394302594272
+    ],
+    "min_detectable_edge_r": 0.13621429763817175,
+    "mean_mfe_r": 0.496853359411656,
+    "median_mfe_r": 0.18048967006214184,
+    "mean_mae_r": 0.396215562750524,
+    "reached_1r_rate": 0.13315926892950392,
+    "target_exit_rate": 0.028720626631853787,
+    "unresolved": 2,
+    "verdict": "no measurable edge vs control"
+   }
+  },
+  "by_timeframe_direction": {
+   "15m:long": {
+    "trades": 87,
+    "symbols": 65,
+    "win_rate": 0.21839080459770116,
+    "win_rate_wilson95": [
+     0.14450701870548616,
+     0.31609253039976964
+    ],
+    "mean_r": -0.06259842162016237,
+    "mean_r_ci95": [
+     -0.2726315659326438,
+     0.1813019571101898
+    ],
+    "median_r": -0.17614902980554442,
+    "profit_factor": 0.8031140426981422,
+    "avg_win_r": 1.1692072850666861,
+    "avg_loss_r": -0.4067794279003112,
+    "mean_cost_r": 0.06838518859283478,
+    "total_r": -5.4460626809541255,
+    "max_drawdown_r": 14.773340017783623,
+    "avg_holding_bars": 6.609195402298851,
+    "exits": {
+     "line_invalidation": 76,
+     "stop": 9,
+     "target": 2
+    },
+    "control_mean_r": -0.07494552185571908,
+    "edge_vs_control_r": 0.012347100235556713,
+    "edge_ci95_by_symbol": [
+     -0.19862678279247337,
+     0.25475908407770825
+    ],
+    "min_detectable_edge_r": 0.3240344998860486,
+    "mean_mfe_r": 0.5426184229886961,
+    "median_mfe_r": 0.23313724391732576,
+    "mean_mae_r": 0.4179268505583392,
+    "reached_1r_rate": 0.11494252873563218,
+    "target_exit_rate": 0.022988505747126436,
+    "unresolved": 2,
+    "verdict": "no measurable edge vs control"
+   },
+   "15m:short": {
+    "trades": 102,
+    "symbols": 73,
+    "win_rate": 0.2647058823529412,
+    "win_rate_wilson95": [
+     0.188762815237447,
+     0.3577293012838453
+    ],
+    "mean_r": -0.07829726685260921,
+    "mean_r_ci95": [
+     -0.27324409417680806,
+     0.13448521035532512
+    ],
+    "median_r": -0.16023997214518548,
+    "profit_factor": 0.7723390054777587,
+    "avg_win_r": 1.003465278393008,
+    "avg_loss_r": -0.46773178314103137,
+    "mean_cost_r": 0.06586583710982041,
+    "total_r": -7.986321218966139,
+    "max_drawdown_r": 16.368359714417068,
+    "avg_holding_bars": 8.127450980392156,
+    "exits": {
+     "line_invalidation": 88,
+     "stop": 11,
+     "target": 3
+    },
+    "control_mean_r": -0.057815766801110675,
+    "edge_vs_control_r": -0.020481500051498524,
+    "edge_ci95_by_symbol": [
+     -0.21561365734689233,
+     0.20170823425548234
+    ],
+    "min_detectable_edge_r": 0.30802471880182575,
+    "mean_mfe_r": 0.6246255552343877,
+    "median_mfe_r": 0.2156764763449115,
+    "mean_mae_r": 0.4249132639121779,
+    "reached_1r_rate": 0.1568627450980392,
+    "target_exit_rate": 0.029411764705882353,
+    "unresolved": 1,
+    "verdict": "no measurable edge vs control"
+   },
+   "1d:long": {
+    "trades": 31,
+    "symbols": 27,
+    "win_rate": 0.3548387096774194,
+    "win_rate_wilson95": [
+     0.21116447741565816,
+     0.530523619571851
+    ],
+    "mean_r": -0.06795805359088168,
+    "mean_r_ci95": [
+     -0.33691101961245784,
+     0.25094213553128053
+    ],
+    "median_r": -0.17727319236203515,
+    "profit_factor": 0.7840707785136523,
+    "avg_win_r": 0.6954305894451556,
+    "avg_loss_r": -0.4878218072607022,
+    "mean_cost_r": 0.012203404176697304,
+    "total_r": -2.106699661317332,
+    "max_drawdown_r": 3.8729426247628167,
+    "avg_holding_bars": 9.129032258064516,
+    "exits": {
+     "line_invalidation": 27,
+     "stop": 2,
+     "target": 2
+    },
+    "control_mean_r": 0.14142186176808977,
+    "edge_vs_control_r": -0.20937991535897146,
+    "edge_ci95_by_symbol": [
+     -0.4525778041002155,
+     0.05452599696358144
+    ],
+    "min_detectable_edge_r": 0.34910069211188044,
+    "mean_mfe_r": 0.6295711382596374,
+    "median_mfe_r": 0.2568056398599273,
+    "mean_mae_r": 0.47545548948148386,
+    "reached_1r_rate": 0.25806451612903225,
+    "target_exit_rate": 0.06451612903225806,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "1d:short": {
+    "trades": 22,
+    "symbols": 19,
+    "win_rate": 0.3181818181818182,
+    "win_rate_wilson95": [
+     0.1636038735469248,
+     0.5268177721716065
+    ],
+    "mean_r": 0.1260046860223429,
+    "mean_r_ci95": [
+     -0.30649428380541016,
+     0.8568340168191897
+    ],
+    "median_r": -0.1719906016898206,
+    "profit_factor": 1.526788459340604,
+    "avg_win_r": 1.1477675809961805,
+    "avg_loss_r": -0.35081799829878135,
+    "mean_cost_r": 0.01313537036058919,
+    "total_r": 2.7721030924915437,
+    "max_drawdown_r": 3.634878964988113,
+    "avg_holding_bars": 5.590909090909091,
+    "exits": {
+     "line_invalidation": 20,
+     "stop": 1,
+     "target": 1
+    },
+    "control_mean_r": -0.0964464491420241,
+    "edge_vs_control_r": 0.222451135164367,
+    "edge_ci95_by_symbol": [
+     -0.2762876496787552,
+     0.9558794532183121
+    ],
+    "min_detectable_edge_r": 0.9727105666136392,
+    "mean_mfe_r": 0.6365698126511071,
+    "median_mfe_r": 0.21914136525094963,
+    "mean_mae_r": 0.32905585628236866,
+    "reached_1r_rate": 0.13636363636363635,
+    "target_exit_rate": 0.045454545454545456,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1h:long": {
+    "trades": 8,
+    "symbols": 8,
+    "win_rate": 0.125,
+    "win_rate_wilson95": [
+     0.02241690886329617,
+     0.4708948057698615
+    ],
+    "mean_r": -0.24577029764198594,
+    "mean_r_ci95": [
+     -0.6234648577633313,
+     0.22442260813399176
+    ],
+    "median_r": -0.3000364788848854,
+    "profit_factor": 0.3796947064465796,
+    "avg_win_r": 1.2035064925129595,
+    "avg_loss_r": -0.4528098390926924,
+    "mean_cost_r": 0.026395403331865554,
+    "total_r": -1.9661623811358875,
+    "max_drawdown_r": 3.1696688736488468,
+    "avg_holding_bars": 9.75,
+    "exits": {
+     "line_invalidation": 7,
+     "stop": 1
+    },
+    "control_mean_r": -0.2700671582890253,
+    "edge_vs_control_r": 0.024296860647039335,
+    "edge_ci95_by_symbol": [
+     -0.4383807208169174,
+     0.6206135474388176
+    ],
+    "min_detectable_edge_r": 0.7803377534304875,
+    "mean_mfe_r": 0.48618405246198454,
+    "median_mfe_r": 0.24612532806589582,
+    "mean_mae_r": 0.4904934291119874,
+    "reached_1r_rate": 0.125,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1h:short": {
+    "trades": 21,
+    "symbols": 20,
+    "win_rate": 0.2857142857142857,
+    "win_rate_wilson95": [
+     0.13813675745628204,
+     0.49956773822837586
+    ],
+    "mean_r": -0.05256937033889005,
+    "mean_r_ci95": [
+     -0.3459555518817928,
+     0.25016189794691096
+    ],
+    "median_r": -0.16727861152814544,
+    "profit_factor": 0.8143407350464824,
+    "avg_win_r": 0.807031251184644,
+    "avg_loss_r": -0.3964096189483037,
+    "mean_cost_r": 0.027988076581836194,
+    "total_r": -1.1039567771166912,
+    "max_drawdown_r": 1.7430294852468948,
+    "avg_holding_bars": 11.904761904761905,
+    "exits": {
+     "line_invalidation": 19,
+     "stop": 2
+    },
+    "control_mean_r": -0.00883019376839545,
+    "edge_vs_control_r": -0.0437391765704946,
+    "edge_ci95_by_symbol": [
+     -0.34600842209011307,
+     0.30561206778040995
+    ],
+    "min_detectable_edge_r": 0.46151362145106267,
+    "mean_mfe_r": 0.5677357595997619,
+    "median_mfe_r": 0.22757701304528072,
+    "mean_mae_r": 0.4497628303959284,
+    "reached_1r_rate": 0.19047619047619047,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "5m:long": {
+    "trades": 235,
+    "symbols": 122,
+    "win_rate": 0.20425531914893616,
+    "win_rate_wilson95": [
+     0.1576615016132208,
+     0.2603628291566283
+    ],
+    "mean_r": -0.17408694032541297,
+    "mean_r_ci95": [
+     -0.2557539714987741,
+     -0.08337755362189667
+    ],
+    "median_r": -0.22304456993083957,
+    "profit_factor": 0.4368750386941165,
+    "avg_win_r": 0.6612189176445703,
+    "avg_loss_r": -0.3884970001251948,
+    "mean_cost_r": 0.11838344016967334,
+    "total_r": -40.91043097647205,
+    "max_drawdown_r": 42.55928650002173,
+    "avg_holding_bars": 6.548936170212766,
+    "exits": {
+     "line_invalidation": 216,
+     "stop": 12,
+     "target": 7
+    },
+    "control_mean_r": -0.1995526891265506,
+    "edge_vs_control_r": 0.02546574880113763,
+    "edge_ci95_by_symbol": [
+     -0.07331234693736284,
+     0.12390014478371678
+    ],
+    "min_detectable_edge_r": 0.1362121379538984,
+    "mean_mfe_r": 0.41476682991622654,
+    "median_mfe_r": 0.19183569164434658,
+    "mean_mae_r": 0.36537031650020385,
+    "reached_1r_rate": 0.10638297872340426,
+    "target_exit_rate": 0.029787234042553193,
+    "unresolved": 1,
+    "verdict": "no measurable edge vs control"
+   },
+   "5m:short": {
+    "trades": 238,
+    "symbols": 116,
+    "win_rate": 0.18907563025210083,
+    "win_rate_wilson95": [
+     0.14441677882611575,
+     0.24361241052757682
+    ],
+    "mean_r": -0.1764109397625699,
+    "mean_r_ci95": [
+     -0.26998225656631836,
+     -0.07043110349715413
+    ],
+    "median_r": -0.231380169134196,
+    "profit_factor": 0.45772389097195865,
+    "avg_win_r": 0.7875408076148463,
+    "avg_loss_r": -0.401166528529325,
+    "mean_cost_r": 0.11476465099068268,
+    "total_r": -41.98580366349164,
+    "max_drawdown_r": 41.98580366349165,
+    "avg_holding_bars": 7.03781512605042,
+    "exits": {
+     "line_invalidation": 217,
+     "stop": 14,
+     "target": 7
+    },
+    "control_mean_r": -0.11284535848914688,
+    "edge_vs_control_r": -0.06356558127342302,
+    "edge_ci95_by_symbol": [
+     -0.1693219996515916,
+     0.0489002191032333
+    ],
+    "min_detectable_edge_r": 0.14369397928143685,
+    "mean_mfe_r": 0.4229245512220057,
+    "median_mfe_r": 0.14294831140422837,
+    "mean_mae_r": 0.3853998291507645,
+    "reached_1r_rate": 0.11764705882352941,
+    "target_exit_rate": 0.029411764705882353,
+    "unresolved": 1,
+    "verdict": "no measurable edge vs control"
+   }
+  },
+  "by_period": {
+   "seen_by_v1": {
+    "trades": 619,
+    "symbols": 146,
+    "win_rate": 0.2455573505654281,
+    "win_rate_wilson95": [
+     0.21328718170952246,
+     0.2809662528715973
+    ],
+    "mean_r": -0.10320928240077729,
+    "mean_r_ci95": [
+     -0.1736926927047743,
+     -0.02793144615760236
+    ],
+    "median_r": -0.20540875966880726,
+    "profit_factor": 0.6738892623158751,
+    "avg_win_r": 0.8685388655921467,
+    "avg_loss_r": -0.4194956175076819,
+    "mean_cost_r": 0.09422893104098462,
+    "total_r": -63.88654580608114,
+    "max_drawdown_r": 69.80900182029889,
+    "avg_holding_bars": 7.638126009693053,
+    "exits": {
+     "line_invalidation": 555,
+     "stop": 43,
+     "target": 21
+    },
+    "control_mean_r": -0.12111970352062142,
+    "edge_vs_control_r": 0.017910421119844137,
+    "edge_ci95_by_symbol": [
+     -0.05859512839889897,
+     0.10007115765070367
+    ],
+    "min_detectable_edge_r": 0.10764956080749573,
+    "mean_mfe_r": 0.5254528562517465,
+    "median_mfe_r": 0.2104795047493887,
+    "mean_mae_r": 0.3947328275262755,
+    "reached_1r_rate": 0.14539579967689822,
+    "target_exit_rate": 0.033925686591276254,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "unseen_after_2026-10-20": {
+    "trades": 125,
+    "symbols": 86,
+    "win_rate": 0.096,
+    "win_rate_wilson95": [
+     0.05577067419104216,
+     0.16032102290058042
+    ],
+    "mean_r": -0.2787743076870494,
+    "mean_r_ci95": [
+     -0.36181864717476764,
+     -0.18582495412095384
+    ],
+    "median_r": -0.2383162809095609,
+    "profit_factor": 0.1510107639982525,
+    "avg_win_r": 0.516520108580851,
+    "avg_loss_r": -0.3632303518924902,
+    "mean_cost_r": 0.08752328293078883,
+    "total_r": -34.84678846088118,
+    "max_drawdown_r": 34.84678846088118,
+    "avg_holding_bars": 4.992,
+    "exits": {
+     "line_invalidation": 115,
+     "stop": 9,
+     "target": 1
+    },
+    "control_mean_r": -0.09024131922251837,
+    "edge_vs_control_r": -0.1885329884645311,
+    "edge_ci95_by_symbol": [
+     -0.278722774722767,
+     -0.10197882521588546
+    ],
+    "min_detectable_edge_r": 0.12293107708604493,
+    "mean_mfe_r": 0.2649896333672606,
+    "median_mfe_r": 0.13781591996174142,
+    "mean_mae_r": 0.38636534622105206,
+    "reached_1r_rate": 0.04,
+    "target_exit_rate": 0.008,
+    "unresolved": 0,
+    "verdict": "worse than control"
+   }
+  },
+  "by_htf_daily": {
+   "aligned": {
+    "trades": 212,
+    "symbols": 101,
+    "win_rate": 0.2358490566037736,
+    "win_rate_wilson95": [
+     0.18371934338414503,
+     0.29738161213138126
+    ],
+    "mean_r": -0.037647390562359814,
+    "mean_r_ci95": [
+     -0.16377721395044192,
+     0.1129453715729492
+    ],
+    "median_r": -0.18167914714557304,
+    "profit_factor": 0.867493590034414,
+    "avg_win_r": 1.0450332841414183,
+    "avg_loss_r": -0.3718080926314271,
+    "mean_cost_r": 0.10486709286341744,
+    "total_r": -7.98124679922028,
+    "max_drawdown_r": 16.260262431808332,
+    "avg_holding_bars": 7.438679245283019,
+    "exits": {
+     "line_invalidation": 194,
+     "stop": 11,
+     "target": 7
+    },
+    "control_mean_r": -0.13284944459654793,
+    "edge_vs_control_r": 0.09520205403418815,
+    "edge_ci95_by_symbol": [
+     -0.029667689536654496,
+     0.2355165392708079
+    ],
+    "min_detectable_edge_r": 0.20121043106661046,
+    "mean_mfe_r": 0.5261405494043068,
+    "median_mfe_r": 0.19754651722830222,
+    "mean_mae_r": 0.35314050541672415,
+    "reached_1r_rate": 0.12264150943396226,
+    "target_exit_rate": 0.0330188679245283,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "neutral": {
+    "trades": 272,
+    "symbols": 114,
+    "win_rate": 0.19852941176470587,
+    "win_rate_wilson95": [
+     0.15546693842480913,
+     0.24998894640184494
+    ],
+    "mean_r": -0.17710458970779794,
+    "mean_r_ci95": [
+     -0.2705098736980903,
+     -0.07486036980140304
+    ],
+    "median_r": -0.2070788808478168,
+    "profit_factor": 0.4672106173555052,
+    "avg_win_r": 0.7822797751511033,
+    "avg_loss_r": -0.4147502580673423,
+    "mean_cost_r": 0.08917116805984154,
+    "total_r": -48.17244840052104,
+    "max_drawdown_r": 48.461367334976394,
+    "avg_holding_bars": 6.959558823529412,
+    "exits": {
+     "line_invalidation": 241,
+     "stop": 23,
+     "target": 8
+    },
+    "control_mean_r": -0.10345152642167968,
+    "edge_vs_control_r": -0.07365306328611826,
+    "edge_ci95_by_symbol": [
+     -0.16579431442347248,
+     0.008717502165845529
+    ],
+    "min_detectable_edge_r": 0.13820862737588713,
+    "mean_mfe_r": 0.4456066458433399,
+    "median_mfe_r": 0.17404628491961605,
+    "mean_mae_r": 0.41048042569729726,
+    "reached_1r_rate": 0.11764705882352941,
+    "target_exit_rate": 0.029411764705882353,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "not_applicable": {
+    "trades": 53,
+    "symbols": 45,
+    "win_rate": 0.33962264150943394,
+    "win_rate_wilson95": [
+     0.22686862857429074,
+     0.4740546388917903
+    ],
+    "mean_r": 0.012554781720268148,
+    "mean_r_ci95": [
+     -0.25113200524952384,
+     0.38277721356801625
+    ],
+    "median_r": -0.17727319236203515,
+    "profit_factor": 1.0443049771312582,
+    "avg_win_r": 0.8713394194927764,
+    "avg_loss_r": -0.4291058891341647,
+    "mean_cost_r": 0.01259025806435054,
+    "total_r": 0.6654034311742119,
+    "max_drawdown_r": 6.971035431321344,
+    "avg_holding_bars": 7.660377358490566,
+    "exits": {
+     "line_invalidation": 47,
+     "stop": 3,
+     "target": 3
+    },
+    "control_mean_r": 0.04268407233370288,
+    "edge_vs_control_r": -0.030129290613434744,
+    "edge_ci95_by_symbol": [
+     -0.3164136880522202,
+     0.32131481952380886
+    ],
+    "min_detectable_edge_r": 0.45980297187138086,
+    "mean_mfe_r": 0.6324762483843984,
+    "median_mfe_r": 0.21961165053965034,
+    "mean_mae_r": 0.4146858304177002,
+    "reached_1r_rate": 0.20754716981132076,
+    "target_exit_rate": 0.05660377358490566,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "opposed": {
+    "trades": 202,
+    "symbols": 106,
+    "win_rate": 0.20297029702970298,
+    "win_rate_wilson95": [
+     0.15328793374544522,
+     0.2637395281475833
+    ],
+    "mean_r": -0.2115525121298061,
+    "mean_r_ci95": [
+     -0.301230900615497,
+     -0.11554330667967685
+    ],
+    "median_r": -0.25682342922352347,
+    "profit_factor": 0.3944779345502672,
+    "avg_win_r": 0.6790135510072522,
+    "avg_loss_r": -0.4383426275870694,
+    "mean_cost_r": 0.10801999292263308,
+    "total_r": -42.73360745022083,
+    "max_drawdown_r": 44.701609423832636,
+    "avg_holding_bars": 7.118811881188119,
+    "exits": {
+     "line_invalidation": 183,
+     "stop": 15,
+     "target": 4
+    },
+    "control_mean_r": -0.1528020590346336,
+    "edge_vs_control_r": -0.058750453095172524,
+    "edge_ci95_by_symbol": [
+     -0.16593756385905045,
+     0.041329547619276326
+    ],
+    "min_detectable_edge_r": 0.14321744189043578,
+    "mean_mfe_r": 0.44344293621753167,
+    "median_mfe_r": 0.1985874186559136,
+    "mean_mae_r": 0.41239730579524475,
+    "reached_1r_rate": 0.12376237623762376,
+    "target_exit_rate": 0.019801980198019802,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "unknown": {
+    "trades": 5,
+    "symbols": 2,
+    "win_rate": 0.2,
+    "win_rate_wilson95": [
+     0.03622316096978745,
+     0.6244717358814613
+    ],
+    "mean_r": -0.10228700963487497,
+    "mean_r_ci95": [
+     -0.17922885884336384,
+     0.04829490076226909
+    ],
+    "median_r": -0.1758302464623872,
+    "profit_factor": 0.2788022023430656,
+    "avg_win_r": 0.19771166557870662,
+    "avg_loss_r": -0.17728667843827037,
+    "mean_cost_r": 0.0588830067228454,
+    "total_r": -0.5114350481743748,
+    "max_drawdown_r": 0.5114350481743748,
+    "avg_holding_bars": 7.6,
+    "exits": {
+     "line_invalidation": 5
+    },
+    "control_mean_r": -0.2693207699209366,
+    "edge_vs_control_r": 0.16703376028606165,
+    "edge_ci95_by_symbol": [
+     -0.3379783821868557,
+     0.293286795904291
+    ],
+    "min_detectable_edge_r": 0.7890134577211241,
+    "mean_mfe_r": 0.5071007534645356,
+    "median_mfe_r": 0.3521597252000628,
+    "mean_mae_r": 0.1672441591216196,
+    "reached_1r_rate": 0.2,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   }
+  },
+  "by_htf_next": {
+   "aligned": {
+    "trades": 255,
+    "symbols": 118,
+    "win_rate": 0.2,
+    "win_rate_wilson95": [
+     0.15551917355358555,
+     0.25338573199482706
+    ],
+    "mean_r": -0.11765707297279744,
+    "mean_r_ci95": [
+     -0.22120432378489138,
+     0.009694006572379987
+    ],
+    "median_r": -0.18589119843405408,
+    "profit_factor": 0.6187252897643728,
+    "avg_win_r": 0.9546582111744754,
+    "avg_loss_r": -0.3857358940096156,
+    "mean_cost_r": 0.10059983619214838,
+    "total_r": -30.002553608063344,
+    "max_drawdown_r": 32.7510150285647,
+    "avg_holding_bars": 7.733333333333333,
+    "exits": {
+     "line_invalidation": 227,
+     "stop": 20,
+     "target": 8
+    },
+    "control_mean_r": -0.11562392805355078,
+    "edge_vs_control_r": -0.0020331449192466564,
+    "edge_ci95_by_symbol": [
+     -0.11250414702019776,
+     0.12543339359703853
+    ],
+    "min_detectable_edge_r": 0.1608220391546675,
+    "mean_mfe_r": 0.451486548740035,
+    "median_mfe_r": 0.1730870906637329,
+    "mean_mae_r": 0.3824573198566426,
+    "reached_1r_rate": 0.09803921568627451,
+    "target_exit_rate": 0.03137254901960784,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "neutral": {
+    "trades": 222,
+    "symbols": 113,
+    "win_rate": 0.2072072072072072,
+    "win_rate_wilson95": [
+     0.15909243062159223,
+     0.2652828837580437
+    ],
+    "mean_r": -0.18245972695333018,
+    "mean_r_ci95": [
+     -0.2651253343707553,
+     -0.09270008943029212
+    ],
+    "median_r": -0.20829354227297925,
+    "profit_factor": 0.40199566741015325,
+    "avg_win_r": 0.5919420678544607,
+    "avg_loss_r": -0.38486019605082095,
+    "mean_cost_r": 0.0911713466361478,
+    "total_r": -40.5060593836393,
+    "max_drawdown_r": 42.638386845287,
+    "avg_holding_bars": 6.193693693693693,
+    "exits": {
+     "line_invalidation": 206,
+     "stop": 11,
+     "target": 5
+    },
+    "control_mean_r": -0.13177819247211903,
+    "edge_vs_control_r": -0.050681534481211155,
+    "edge_ci95_by_symbol": [
+     -0.1344997019917782,
+     0.04016496555780106
+    ],
+    "min_detectable_edge_r": 0.1309194633767393,
+    "mean_mfe_r": 0.3696967996559741,
+    "median_mfe_r": 0.1704537037249551,
+    "mean_mae_r": 0.3602227283540143,
+    "reached_1r_rate": 0.0945945945945946,
+    "target_exit_rate": 0.02252252252252252,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "not_applicable": {
+    "trades": 53,
+    "symbols": 45,
+    "win_rate": 0.33962264150943394,
+    "win_rate_wilson95": [
+     0.22686862857429074,
+     0.4740546388917903
+    ],
+    "mean_r": 0.012554781720268148,
+    "mean_r_ci95": [
+     -0.25318008183333857,
+     0.37636049670188826
+    ],
+    "median_r": -0.17727319236203515,
+    "profit_factor": 1.0443049771312582,
+    "avg_win_r": 0.8713394194927764,
+    "avg_loss_r": -0.4291058891341647,
+    "mean_cost_r": 0.01259025806435054,
+    "total_r": 0.6654034311742119,
+    "max_drawdown_r": 6.971035431321344,
+    "avg_holding_bars": 7.660377358490566,
+    "exits": {
+     "line_invalidation": 47,
+     "stop": 3,
+     "target": 3
+    },
+    "control_mean_r": 0.04268407233370288,
+    "edge_vs_control_r": -0.030129290613434744,
+    "edge_ci95_by_symbol": [
+     -0.30254663378920593,
+     0.34919047567412304
+    ],
+    "min_detectable_edge_r": 0.45980297187138086,
+    "mean_mfe_r": 0.6324762483843984,
+    "median_mfe_r": 0.21961165053965034,
+    "mean_mae_r": 0.4146858304177002,
+    "reached_1r_rate": 0.20754716981132076,
+    "target_exit_rate": 0.05660377358490566,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "opposed": {
+    "trades": 163,
+    "symbols": 97,
+    "win_rate": 0.2331288343558282,
+    "win_rate_wilson95": [
+     0.17482025937480014,
+     0.30372705736155337
+    ],
+    "mean_r": -0.0947376073898765,
+    "mean_r_ci95": [
+     -0.23662223077695346,
+     0.06508365785780895
+    ],
+    "median_r": -0.24146388607183802,
+    "profit_factor": 0.7117172275074671,
+    "avg_win_r": 1.0032639526978337,
+    "avg_loss_r": -0.4285300816565404,
+    "mean_cost_r": 0.10406852395692923,
+    "total_r": -15.442230004549868,
+    "max_drawdown_r": 26.019068099328454,
+    "avg_holding_bars": 7.466257668711656,
+    "exits": {
+     "line_invalidation": 146,
+     "stop": 11,
+     "target": 6
+    },
+    "control_mean_r": -0.16175253600521738,
+    "edge_vs_control_r": 0.06701492861534089,
+    "edge_ci95_by_symbol": [
+     -0.06716067768394748,
+     0.21267695994946606
+    ],
+    "min_detectable_edge_r": 0.21761769209875845,
+    "mean_mfe_r": 0.5973631028808091,
+    "median_mfe_r": 0.24448722774035483,
+    "mean_mae_r": 0.4090557985580103,
+    "reached_1r_rate": 0.1656441717791411,
+    "target_exit_rate": 0.03680981595092025,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "unknown": {
+    "trades": 51,
+    "symbols": 42,
+    "win_rate": 0.21568627450980393,
+    "win_rate_wilson95": [
+     0.12493811244188556,
+     0.3462662287881296
+    ],
+    "mean_r": -0.26368420984086305,
+    "mean_r_ci95": [
+     -0.4857455040116429,
+     -0.029525297308263976
+    ],
+    "median_r": -0.2946413317828702,
+    "profit_factor": 0.38703246526156204,
+    "avg_win_r": 0.7719186571259469,
+    "avg_loss_r": -0.5484749982567357,
+    "mean_cost_r": 0.1126405571785371,
+    "total_r": -13.447894701884016,
+    "max_drawdown_r": 13.63398734976247,
+    "avg_holding_bars": 7.490196078431373,
+    "exits": {
+     "line_invalidation": 44,
+     "stop": 7
+    },
+    "control_mean_r": -0.06688222479312549,
+    "edge_vs_control_r": -0.19680198504773755,
+    "edge_ci95_by_symbol": [
+     -0.429669475779871,
+     0.06774794301960847
+    ],
+    "min_detectable_edge_r": 0.344139028963093,
+    "mean_mfe_r": 0.5938399177344806,
+    "median_mfe_r": 0.26049487712180464,
+    "mean_mae_r": 0.5193094525738665,
+    "reached_1r_rate": 0.21568627450980393,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   }
+  },
+  "by_confluence": {
+   "all_aligned": {
+    "trades": 24,
+    "symbols": 20,
+    "win_rate": 0.125,
+    "win_rate_wilson95": [
+     0.04344255039315584,
+     0.3100428814785757
+    ],
+    "mean_r": 0.0611454312545097,
+    "mean_r_ci95": [
+     -0.43590574634798973,
+     0.7079796659330265
+    ],
+    "median_r": -0.29001913448283945,
+    "profit_factor": 1.1687963665404435,
+    "avg_win_r": 3.387113566271988,
+    "avg_loss_r": -0.41399287374798716,
+    "mean_cost_r": 0.12663686915947098,
+    "total_r": 1.4674903501082328,
+    "max_drawdown_r": 4.456070084028025,
+    "avg_holding_bars": 8.833333333333334,
+    "exits": {
+     "line_invalidation": 20,
+     "stop": 2,
+     "target": 2
+    },
+    "control_mean_r": -0.24912845294569075,
+    "edge_vs_control_r": 0.31027388420020047,
+    "edge_ci95_by_symbol": [
+     -0.24835372504946682,
+     0.9576122796731923
+    ],
+    "min_detectable_edge_r": 0.8968464999189647,
+    "mean_mfe_r": 0.6312891072898533,
+    "median_mfe_r": 0.1348242366429543,
+    "mean_mae_r": 0.41836056668635924,
+    "reached_1r_rate": 0.125,
+    "target_exit_rate": 0.08333333333333333,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "incomplete": {
+    "trades": 160,
+    "symbols": 103,
+    "win_rate": 0.25,
+    "win_rate_wilson95": [
+     0.1892984089436348,
+     0.32242510938138147
+    ],
+    "mean_r": -0.13376816104996048,
+    "mean_r_ci95": [
+     -0.26307745017524403,
+     0.02339963426791693
+    ],
+    "median_r": -0.17990196831906163,
+    "profit_factor": 0.6049405699342194,
+    "avg_win_r": 0.8193378659118845,
+    "avg_loss_r": -0.45147017003724216,
+    "mean_cost_r": 0.08746854341797068,
+    "total_r": -21.402905767993676,
+    "max_drawdown_r": 24.200901156028408,
+    "avg_holding_bars": 7.65,
+    "exits": {
+     "line_invalidation": 141,
+     "stop": 14,
+     "target": 5
+    },
+    "control_mean_r": -0.06937648802247028,
+    "edge_vs_control_r": -0.0643916730274902,
+    "edge_ci95_by_symbol": [
+     -0.20269475328990114,
+     0.0994843387690475
+    ],
+    "min_detectable_edge_r": 0.2102959385975551,
+    "mean_mfe_r": 0.5617992684173627,
+    "median_mfe_r": 0.23177033518270534,
+    "mean_mae_r": 0.4256099028576737,
+    "reached_1r_rate": 0.2,
+    "target_exit_rate": 0.03125,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "majority_aligned": {
+    "trades": 135,
+    "symbols": 84,
+    "win_rate": 0.26666666666666666,
+    "win_rate_wilson95": [
+     0.19928173359132412,
+     0.34696377207844636
+    ],
+    "mean_r": 0.0009413757445224547,
+    "mean_r_ci95": [
+     -0.14002682002934896,
+     0.1678976874285553
+    ],
+    "median_r": -0.14050036078284148,
+    "profit_factor": 1.0038515211718984,
+    "avg_win_r": 0.9200924429821726,
+    "avg_loss_r": -0.3332953759782594,
+    "mean_cost_r": 0.10175876008027218,
+    "total_r": 0.12708572551053138,
+    "max_drawdown_r": 6.865458828654483,
+    "avg_holding_bars": 7.57037037037037,
+    "exits": {
+     "line_invalidation": 126,
+     "stop": 4,
+     "target": 5
+    },
+    "control_mean_r": -0.10898947592148087,
+    "edge_vs_control_r": 0.10993085166600333,
+    "edge_ci95_by_symbol": [
+     -0.043973530179376226,
+     0.28541994242894714
+    ],
+    "min_detectable_edge_r": 0.22196230724884963,
+    "mean_mfe_r": 0.5111752993192601,
+    "median_mfe_r": 0.1730870906637329,
+    "mean_mae_r": 0.3123775885254782,
+    "reached_1r_rate": 0.13333333333333333,
+    "target_exit_rate": 0.037037037037037035,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "minority_aligned": {
+    "trades": 425,
+    "symbols": 132,
+    "win_rate": 0.2,
+    "win_rate_wilson95": [
+     0.1647332950753391,
+     0.2406415566181533
+    ],
+    "mean_r": -0.18570589311667626,
+    "mean_r_ci95": [
+     -0.25739390115811966,
+     -0.10881131019247454
+    ],
+    "median_r": -0.22258442166979883,
+    "profit_factor": 0.44057738164761784,
+    "avg_win_r": 0.7312701834156111,
+    "avg_loss_r": -0.4149499122497481,
+    "mean_cost_r": 0.09057984532512642,
+    "total_r": -78.9250045745874,
+    "max_drawdown_r": 84.4169994407482,
+    "avg_holding_bars": 6.8094117647058825,
+    "exits": {
+     "line_invalidation": 383,
+     "stop": 32,
+     "target": 10
+    },
+    "control_mean_r": -0.12814202630208874,
+    "edge_vs_control_r": -0.057563866814587514,
+    "edge_ci95_by_symbol": [
+     -0.13062616082620776,
+     0.015501155493538676
+    ],
+    "min_detectable_edge_r": 0.10966490602185801,
+    "mean_mfe_r": 0.43372125943742135,
+    "median_mfe_r": 0.18900336413884292,
+    "mean_mae_r": 0.40547312001824953,
+    "reached_1r_rate": 0.0988235294117647,
+    "target_exit_rate": 0.023529411764705882,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   }
+  },
+  "by_market_regime": {
+   "unknown": {
+    "trades": 744,
+    "symbols": 150,
+    "win_rate": 0.22043010752688172,
+    "win_rate_wilson95": [
+     0.19212075285163194,
+     0.2516117166980695
+    ],
+    "mean_r": -0.13270609444484183,
+    "mean_r_ci95": [
+     -0.19271649425860396,
+     -0.07002809121805857
+    ],
+    "median_r": -0.20755543438720148,
+    "profit_factor": 0.5833148358941476,
+    "avg_win_r": 0.8427813955669299,
+    "avg_loss_r": -0.40853359162058417,
+    "mean_cost_r": 0.0931023100547286,
+    "total_r": -98.73333426696232,
+    "max_drawdown_r": 101.53132965499704,
+    "avg_holding_bars": 7.193548387096774,
+    "exits": {
+     "line_invalidation": 670,
+     "stop": 52,
+     "target": 22
+    },
+    "control_mean_r": -0.11593180293290249,
+    "edge_vs_control_r": -0.016774291511939335,
+    "edge_ci95_by_symbol": [
+     -0.08092340455343093,
+     0.048874692312614695
+    ],
+    "min_detectable_edge_r": 0.09225472673495477,
+    "mean_mfe_r": 0.48169223412733697,
+    "median_mfe_r": 0.19580712960325453,
+    "mean_mae_r": 0.39332700069408066,
+    "reached_1r_rate": 0.12768817204301075,
+    "target_exit_rate": 0.02956989247311828,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   }
+  },
+  "by_time_of_day": {
+   "09:30-10:30": {
+    "trades": 28,
+    "symbols": 22,
+    "win_rate": 0.2857142857142857,
+    "win_rate_wilson95": [
+     0.15253815848329969,
+     0.470596357370175
+    ],
+    "mean_r": 0.1671546300004466,
+    "mean_r_ci95": [
+     -0.29243076470721885,
+     0.7410143076706411
+    ],
+    "median_r": -0.39724981056936537,
+    "profit_factor": 1.4477034778264837,
+    "avg_win_r": 1.8918016703029017,
+    "avg_loss_r": -0.5227041861205354,
+    "mean_cost_r": 0.05799952293733249,
+    "total_r": 4.680329640012506,
+    "max_drawdown_r": 4.2802655483101555,
+    "avg_holding_bars": 19.357142857142858,
+    "exits": {
+     "line_invalidation": 22,
+     "stop": 3,
+     "target": 3
+    },
+    "control_mean_r": -0.08947595742686407,
+    "edge_vs_control_r": 0.2566305874273107,
+    "edge_ci95_by_symbol": [
+     -0.21530502033253685,
+     0.7979624157908629
+    ],
+    "min_detectable_edge_r": 0.7782035767840015,
+    "mean_mfe_r": 1.0741533830472174,
+    "median_mfe_r": 0.4014802177705398,
+    "mean_mae_r": 0.5114214913387674,
+    "reached_1r_rate": 0.2857142857142857,
+    "target_exit_rate": 0.10714285714285714,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "10:30-12:00": {
+    "trades": 152,
+    "symbols": 92,
+    "win_rate": 0.2565789473684211,
+    "win_rate_wilson95": [
+     0.19374610833686737,
+     0.33141277093541943
+    ],
+    "mean_r": -0.1493522768521734,
+    "mean_r_ci95": [
+     -0.19976879005134668,
+     -0.10118588250254641
+    ],
+    "median_r": -0.16181492455874819,
+    "profit_factor": 0.304128845197061,
+    "avg_win_r": 0.25440146447943585,
+    "avg_loss_r": -0.28870091324095887,
+    "mean_cost_r": 0.09282548373797989,
+    "total_r": -22.701546081530356,
+    "max_drawdown_r": 23.656117663907107,
+    "avg_holding_bars": 7.842105263157895,
+    "exits": {
+     "line_invalidation": 152
+    },
+    "control_mean_r": -0.17229120975829687,
+    "edge_vs_control_r": 0.02293893290612348,
+    "edge_ci95_by_symbol": [
+     -0.04223480747559889,
+     0.10012433791613781
+    ],
+    "min_detectable_edge_r": 0.10240688587666369,
+    "mean_mfe_r": 0.34879051437322806,
+    "median_mfe_r": 0.20645311037700081,
+    "mean_mae_r": 0.2747800785911718,
+    "reached_1r_rate": 0.09210526315789473,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "12:00-14:00": {
+    "trades": 290,
+    "symbols": 122,
+    "win_rate": 0.17586206896551723,
+    "win_rate_wilson95": [
+     0.13636428831272976,
+     0.22383522053829744
+    ],
+    "mean_r": -0.1837259104213064,
+    "mean_r_ci95": [
+     -0.24811567095283504,
+     -0.11048890302048445
+    ],
+    "median_r": -0.18218381399927575,
+    "profit_factor": 0.32433758615558833,
+    "avg_win_r": 0.5014940096372964,
+    "avg_loss_r": -0.3299443870865313,
+    "mean_cost_r": 0.09592613721809985,
+    "total_r": -53.280514022178856,
+    "max_drawdown_r": 53.28051402217888,
+    "avg_holding_bars": 5.9,
+    "exits": {
+     "line_invalidation": 272,
+     "stop": 15,
+     "target": 3
+    },
+    "control_mean_r": -0.1155321569845731,
+    "edge_vs_control_r": -0.0681937534367333,
+    "edge_ci95_by_symbol": [
+     -0.13483284626027095,
+     0.00947726973484339
+    ],
+    "min_detectable_edge_r": 0.10177371301698208,
+    "mean_mfe_r": 0.3338221816953093,
+    "median_mfe_r": 0.15644273038862683,
+    "mean_mae_r": 0.322197423952428,
+    "reached_1r_rate": 0.07586206896551724,
+    "target_exit_rate": 0.010344827586206896,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "14:00-15:00": {
+    "trades": 126,
+    "symbols": 82,
+    "win_rate": 0.18253968253968253,
+    "win_rate_wilson95": [
+     0.12482691576112775,
+     0.25903773162460997
+    ],
+    "mean_r": -0.1505447283966427,
+    "mean_r_ci95": [
+     -0.2999195660201453,
+     0.01579330215570889
+    ],
+    "median_r": -0.26691941894976334,
+    "profit_factor": 0.5607263466919028,
+    "avg_win_r": 1.0527471351474225,
+    "avg_loss_r": -0.4192409697705602,
+    "mean_cost_r": 0.11203706013207833,
+    "total_r": -18.96863577797698,
+    "max_drawdown_r": 19.134118697368258,
+    "avg_holding_bars": 6.563492063492063,
+    "exits": {
+     "line_invalidation": 114,
+     "stop": 7,
+     "target": 5
+    },
+    "control_mean_r": -0.13571410025526437,
+    "edge_vs_control_r": -0.014830628141378317,
+    "edge_ci95_by_symbol": [
+     -0.15762729426765817,
+     0.16644952091431384
+    ],
+    "min_detectable_edge_r": 0.23167524279949958,
+    "mean_mfe_r": 0.48743808041882825,
+    "median_mfe_r": 0.16898848039504394,
+    "mean_mae_r": 0.4167412372340124,
+    "reached_1r_rate": 0.12698412698412698,
+    "target_exit_rate": 0.03968253968253968,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "15:00-16:00": {
+    "trades": 95,
+    "symbols": 71,
+    "win_rate": 0.2631578947368421,
+    "win_rate_wilson95": [
+     0.18506401390488098,
+     0.3596620933212263
+    ],
+    "mean_r": -0.09608812059434571,
+    "mean_r_ci95": [
+     -0.39580840823397323,
+     0.20517790252256385
+    ],
+    "median_r": -0.3660814340313125,
+    "profit_factor": 0.8393315566344393,
+    "avg_win_r": 1.9074636098036992,
+    "avg_loss_r": -0.8116423100222189,
+    "mean_cost_r": 0.11507500487366766,
+    "total_r": -9.128371456462842,
+    "max_drawdown_r": 25.315792738900306,
+    "avg_holding_bars": 7.094736842105263,
+    "exits": {
+     "line_invalidation": 63,
+     "stop": 24,
+     "target": 8
+    },
+    "control_mean_r": -0.09702762491434604,
+    "edge_vs_control_r": 0.0009395043200003307,
+    "edge_ci95_by_symbol": [
+     -0.2862476986763288,
+     0.3180944499589091
+    ],
+    "min_detectable_edge_r": 0.42788116196279125,
+    "mean_mfe_r": 0.8793652346515869,
+    "median_mfe_r": 0.3140720562034396,
+    "mean_mae_r": 0.7223570206655222,
+    "reached_1r_rate": 0.25263157894736843,
+    "target_exit_rate": 0.08421052631578947,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "not_applicable": {
+    "trades": 53,
+    "symbols": 45,
+    "win_rate": 0.33962264150943394,
+    "win_rate_wilson95": [
+     0.22686862857429074,
+     0.4740546388917903
+    ],
+    "mean_r": 0.012554781720268148,
+    "mean_r_ci95": [
+     -0.24563655090335632,
+     0.3796826006452926
+    ],
+    "median_r": -0.17727319236203515,
+    "profit_factor": 1.0443049771312582,
+    "avg_win_r": 0.8713394194927764,
+    "avg_loss_r": -0.4291058891341647,
+    "mean_cost_r": 0.01259025806435054,
+    "total_r": 0.6654034311742119,
+    "max_drawdown_r": 6.971035431321344,
+    "avg_holding_bars": 7.660377358490566,
+    "exits": {
+     "line_invalidation": 47,
+     "stop": 3,
+     "target": 3
+    },
+    "control_mean_r": 0.04268407233370288,
+    "edge_vs_control_r": -0.030129290613434744,
+    "edge_ci95_by_symbol": [
+     -0.3130872543958376,
+     0.3280137159036929
+    ],
+    "min_detectable_edge_r": 0.45980297187138086,
+    "mean_mfe_r": 0.6324762483843984,
+    "median_mfe_r": 0.21961165053965034,
+    "mean_mae_r": 0.4146858304177002,
+    "reached_1r_rate": 0.20754716981132076,
+    "target_exit_rate": 0.05660377358490566,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   }
+  },
+  "by_volatility": {
+   "high": {
+    "trades": 249,
+    "symbols": 80,
+    "win_rate": 0.23694779116465864,
+    "win_rate_wilson95": [
+     0.18837981562989614,
+     0.2935092406013569
+    ],
+    "mean_r": -0.12946567934598455,
+    "mean_r_ci95": [
+     -0.21171830597108166,
+     -0.043146205605485974
+    ],
+    "median_r": -0.17122211837182613,
+    "profit_factor": 0.5104629779594424,
+    "avg_win_r": 0.5697452303343231,
+    "avg_loss_r": -0.3465890670888169,
+    "mean_cost_r": 0.05238576287404388,
+    "total_r": -32.23695415715015,
+    "max_drawdown_r": 32.236954157150144,
+    "avg_holding_bars": 6.678714859437751,
+    "exits": {
+     "line_invalidation": 233,
+     "stop": 13,
+     "target": 3
+    },
+    "control_mean_r": -0.09899865558237263,
+    "edge_vs_control_r": -0.030467023763611916,
+    "edge_ci95_by_symbol": [
+     -0.12304093479867165,
+     0.06811030992111862
+    ],
+    "min_detectable_edge_r": 0.13205822875150425,
+    "mean_mfe_r": 0.41689010982711466,
+    "median_mfe_r": 0.20321756953523154,
+    "mean_mae_r": 0.3429655837783706,
+    "reached_1r_rate": 0.08433734939759036,
+    "target_exit_rate": 0.012048192771084338,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "low": {
+    "trades": 246,
+    "symbols": 83,
+    "win_rate": 0.21138211382113822,
+    "win_rate_wilson95": [
+     0.16499777426368373,
+     0.2666421127687401
+    ],
+    "mean_r": -0.15383100801665336,
+    "mean_r_ci95": [
+     -0.28254919743425905,
+     -0.013508400029406198
+    ],
+    "median_r": -0.29496787556735454,
+    "profit_factor": 0.6027263179074207,
+    "avg_win_r": 1.1040938962626483,
+    "avg_loss_r": -0.49100675555543527,
+    "mean_cost_r": 0.14863458718212466,
+    "total_r": -37.84242797209673,
+    "max_drawdown_r": 51.153422981578075,
+    "avg_holding_bars": 7.695121951219512,
+    "exits": {
+     "line_invalidation": 215,
+     "stop": 21,
+     "target": 10
+    },
+    "control_mean_r": -0.1799122993248977,
+    "edge_vs_control_r": 0.026081291308244308,
+    "edge_ci95_by_symbol": [
+     -0.09992936630630336,
+     0.16531835792323268
+    ],
+    "min_detectable_edge_r": 0.19802882427624105,
+    "mean_mfe_r": 0.542461143136659,
+    "median_mfe_r": 0.19537926946831186,
+    "mean_mae_r": 0.45264894864427224,
+    "reached_1r_rate": 0.14634146341463414,
+    "target_exit_rate": 0.04065040650406504,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "mid": {
+    "trades": 249,
+    "symbols": 102,
+    "win_rate": 0.21285140562248997,
+    "win_rate_wilson95": [
+     0.16657164814455516,
+     0.2678568636193318
+    ],
+    "mean_r": -0.11507611300287324,
+    "mean_r_ci95": [
+     -0.20895675346319487,
+     -0.011602177791454258
+    ],
+    "median_r": -0.22111339322952078,
+    "profit_factor": 0.6221901089762836,
+    "avg_win_r": 0.8903452391998816,
+    "avg_loss_r": -0.38695025415974066,
+    "mean_cost_r": 0.07895564368786544,
+    "total_r": -28.653952137715436,
+    "max_drawdown_r": 28.653952137715425,
+    "avg_holding_bars": 7.21285140562249,
+    "exits": {
+     "line_invalidation": 222,
+     "stop": 18,
+     "target": 9
+    },
+    "control_mean_r": -0.06965530324555758,
+    "edge_vs_control_r": -0.045420809757315654,
+    "edge_ci95_by_symbol": [
+     -0.13387387265745895,
+     0.05730401037292482
+    ],
+    "min_detectable_edge_r": 0.14205630238775657,
+    "mean_mfe_r": 0.48645760494846996,
+    "median_mfe_r": 0.17459668237365214,
+    "mean_mae_r": 0.38508119192405926,
+    "reached_1r_rate": 0.15261044176706828,
+    "target_exit_rate": 0.03614457831325301,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   }
+  },
+  "by_sequence": {
+   "1": {
+    "trades": 573,
+    "symbols": 143,
+    "win_rate": 0.2024432809773124,
+    "win_rate_wilson95": [
+     0.17157367854252692,
+     0.2372761686252225
+    ],
+    "mean_r": -0.1426937426242274,
+    "mean_r_ci95": [
+     -0.2072430680231479,
+     -0.06815303674802592
+    ],
+    "median_r": -0.2047318323629813,
+    "profit_factor": 0.5446167981911437,
+    "avg_win_r": 0.8429767333174564,
+    "avg_loss_r": -0.3928858109157708,
+    "mean_cost_r": 0.09488899713838896,
+    "total_r": -81.7635145236823,
+    "max_drawdown_r": 88.90944014452022,
+    "avg_holding_bars": 7.30890052356021,
+    "exits": {
+     "line_invalidation": 521,
+     "stop": 37,
+     "target": 15
+    },
+    "control_mean_r": -0.11555006875254466,
+    "edge_vs_control_r": -0.027143673871682754,
+    "edge_ci95_by_symbol": [
+     -0.09625452072086793,
+     0.04333606097216598
+    ],
+    "min_detectable_edge_r": 0.10056050919836264,
+    "mean_mfe_r": 0.46860285243037514,
+    "median_mfe_r": 0.16834186811577073,
+    "mean_mae_r": 0.38545938785954054,
+    "reached_1r_rate": 0.13089005235602094,
+    "target_exit_rate": 0.02617801047120419,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "2": {
+    "trades": 145,
+    "symbols": 90,
+    "win_rate": 0.296551724137931,
+    "win_rate_wilson95": [
+     0.22823803121969663,
+     0.37536741241971583
+    ],
+    "mean_r": -0.023696816118315474,
+    "mean_r_ci95": [
+     -0.16916129529200236,
+     0.14832690985044275
+    ],
+    "median_r": -0.17614902980554442,
+    "profit_factor": 0.9203317602107044,
+    "avg_win_r": 0.9230999616308717,
+    "avg_loss_r": -0.4228366341890512,
+    "mean_cost_r": 0.08616364684312713,
+    "total_r": -3.4360383371557437,
+    "max_drawdown_r": 17.331542535276657,
+    "avg_holding_bars": 6.889655172413793,
+    "exits": {
+     "line_invalidation": 127,
+     "stop": 11,
+     "target": 7
+    },
+    "control_mean_r": -0.13087526313948356,
+    "edge_vs_control_r": 0.10717844702116808,
+    "edge_ci95_by_symbol": [
+     -0.0480799888893082,
+     0.27556833024309946
+    ],
+    "min_detectable_edge_r": 0.24542817815096132,
+    "mean_mfe_r": 0.5557034678357835,
+    "median_mfe_r": 0.26778562116577564,
+    "mean_mae_r": 0.3871478753576748,
+    "reached_1r_rate": 0.12413793103448276,
+    "target_exit_rate": 0.04827586206896552,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "unknown": {
+    "trades": 26,
+    "symbols": 25,
+    "win_rate": 0.19230769230769232,
+    "win_rate_wilson95": [
+     0.08506935771788268,
+     0.3787663615465
+    ],
+    "mean_r": -0.5205300540817027,
+    "mean_r_ci95": [
+     -0.7605713960205286,
+     -0.31976988611457224
+    ],
+    "median_r": -0.37984472458121243,
+    "profit_factor": 0.051680496026962376,
+    "avg_win_r": 0.1475098916048169,
+    "avg_loss_r": -0.6795871840070645,
+    "mean_cost_r": 0.09242286646799144,
+    "total_r": -13.53378140612427,
+    "max_drawdown_r": 13.533781406124271,
+    "avg_holding_bars": 6.346153846153846,
+    "exits": {
+     "line_invalidation": 22,
+     "stop": 4
+    },
+    "control_mean_r": -0.041006108909471255,
+    "edge_vs_control_r": -0.4795239451722314,
+    "edge_ci95_by_symbol": [
+     -0.717590456070462,
+     -0.26908795897241095
+    ],
+    "min_detectable_edge_r": 0.3049631371222724,
+    "mean_mfe_r": 0.3574071119978898,
+    "median_mfe_r": 0.24617071585866138,
+    "mean_mae_r": 0.6011775902314012,
+    "reached_1r_rate": 0.07692307692307693,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   }
+  },
+  "by_month": {
+   "15m:2026-08": {
+    "trades": 48,
+    "symbols": 43,
+    "win_rate": 0.3125,
+    "win_rate_wilson95": [
+     0.19945512167731494,
+     0.4533333725049633
+    ],
+    "mean_r": 0.1878756618097855,
+    "mean_r_ci95": [
+     -0.23115654743541875,
+     0.6742718012421429
+    ],
+    "median_r": -0.16800399949376077,
+    "profit_factor": 1.5085522939251246,
+    "avg_win_r": 1.783385592279446,
+    "avg_loss_r": -0.5373561247673329,
+    "mean_cost_r": 0.07716702054263004,
+    "total_r": 9.018031766869703,
+    "max_drawdown_r": 6.740113831026619,
+    "avg_holding_bars": 9.666666666666666,
+    "exits": {
+     "line_invalidation": 39,
+     "stop": 7,
+     "target": 2
+    },
+    "control_mean_r": -0.09999337463079844,
+    "edge_vs_control_r": 0.2878690364405839,
+    "edge_ci95_by_symbol": [
+     -0.1782143101401112,
+     0.7950564155763771
+    ],
+    "min_detectable_edge_r": 0.6344572611820871,
+    "mean_mfe_r": 0.9881123630969751,
+    "median_mfe_r": 0.25534102749588056,
+    "mean_mae_r": 0.5213516857386792,
+    "reached_1r_rate": 0.3125,
+    "target_exit_rate": 0.041666666666666664,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "15m:2026-09": {
+    "trades": 67,
+    "symbols": 52,
+    "win_rate": 0.2835820895522388,
+    "win_rate_wilson95": [
+     0.18970136157200856,
+     0.40093464890770947
+    ],
+    "mean_r": -0.05520969180203844,
+    "mean_r_ci95": [
+     -0.2677117766881028,
+     0.21685804848639254
+    ],
+    "median_r": -0.15540953089626708,
+    "profit_factor": 0.8113558912504284,
+    "avg_win_r": 0.8373454629070031,
+    "avg_loss_r": -0.40851277387436735,
+    "mean_cost_r": 0.07309511974475809,
+    "total_r": -3.699049350736576,
+    "max_drawdown_r": 11.528643670482586,
+    "avg_holding_bars": 6.880597014925373,
+    "exits": {
+     "line_invalidation": 57,
+     "stop": 7,
+     "target": 3
+    },
+    "control_mean_r": -0.07621545448165214,
+    "edge_vs_control_r": 0.021005762679613696,
+    "edge_ci95_by_symbol": [
+     -0.1927136858767105,
+     0.28855381573468525
+    ],
+    "min_detectable_edge_r": 0.3492902496472451,
+    "mean_mfe_r": 0.5552456294749074,
+    "median_mfe_r": 0.26646785118947575,
+    "mean_mae_r": 0.3724110800963352,
+    "reached_1r_rate": 0.11940298507462686,
+    "target_exit_rate": 0.04477611940298507,
+    "unresolved": 1,
+    "verdict": "no measurable edge vs control"
+   },
+   "15m:2026-10": {
+    "trades": 65,
+    "symbols": 56,
+    "win_rate": 0.16923076923076924,
+    "win_rate_wilson95": [
+     0.09721118666132769,
+     0.27816649195160403
+    ],
+    "mean_r": -0.24868286751116542,
+    "mean_r_ci95": [
+     -0.4091288224614453,
+     -0.06360236941710429
+    ],
+    "median_r": -0.18253922562997477,
+    "profit_factor": 0.2896944378657421,
+    "avg_win_r": 0.59932373766164,
+    "avg_loss_r": -0.4214249537500703,
+    "mean_cost_r": 0.05913477098720599,
+    "total_r": -16.164386388225754,
+    "max_drawdown_r": 17.14641828391956,
+    "avg_holding_bars": 6.753846153846154,
+    "exits": {
+     "line_invalidation": 59,
+     "stop": 6
+    },
+    "control_mean_r": -0.04504579950532226,
+    "edge_vs_control_r": -0.20363706800584316,
+    "edge_ci95_by_symbol": [
+     -0.35935671063374436,
+     -0.019354885353319265
+    ],
+    "min_detectable_edge_r": 0.2375198803881247,
+    "mean_mfe_r": 0.37379311679798644,
+    "median_mfe_r": 0.18900336413884292,
+    "mean_mae_r": 0.4121485588096572,
+    "reached_1r_rate": 0.046153846153846156,
+    "target_exit_rate": 0.0,
+    "unresolved": 1,
+    "verdict": "worse than control"
+   },
+   "15m:2026-11": {
+    "trades": 9,
+    "symbols": 9,
+    "win_rate": 0.1111111111111111,
+    "win_rate_wilson95": [
+     0.019890371327130535,
+     0.4350062147680601
+    ],
+    "mean_r": -0.2874422142030711,
+    "mean_r_ci95": [
+     -0.49966554761364024,
+     -0.11733977365179463
+    ],
+    "median_r": -0.16319690414225935,
+    "profit_factor": 0.02103713267449723,
+    "avg_win_r": 0.05559213917546469,
+    "avg_loss_r": -0.33032150837538804,
+    "mean_cost_r": 0.02474185218498718,
+    "total_r": -2.58697992782764,
+    "max_drawdown_r": 2.58697992782764,
+    "avg_holding_bars": 4.444444444444445,
+    "exits": {
+     "line_invalidation": 9
+    },
+    "control_mean_r": 0.04629175391490185,
+    "edge_vs_control_r": -0.33373396811797296,
+    "edge_ci95_by_symbol": [
+     -0.574617493255746,
+     -0.1294312986172602
+    ],
+    "min_detectable_edge_r": 0.3222956123316971,
+    "mean_mfe_r": 0.22135624873126464,
+    "median_mfe_r": 0.1750054791754992,
+    "mean_mae_r": 0.32607881256431986,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2024-04": {
+    "trades": 5,
+    "symbols": 5,
+    "win_rate": 0.6,
+    "win_rate_wilson95": [
+     0.23071993220883708,
+     0.8823817688407467
+    ],
+    "mean_r": -0.18993390478318872,
+    "mean_r_ci95": [
+     -0.4949916806819746,
+     0.09233791540783257
+    ],
+    "median_r": 0.01586459586779772,
+    "profit_factor": 0.2009152824957424,
+    "avg_win_r": 0.0795923621511601,
+    "avg_loss_r": -0.5942233051847119,
+    "mean_cost_r": 0.0191971589147482,
+    "total_r": -0.9496695239159436,
+    "max_drawdown_r": 0.9496695239159436,
+    "avg_holding_bars": 2.4,
+    "exits": {
+     "line_invalidation": 5
+    },
+    "control_mean_r": 0.10580135328202012,
+    "edge_vs_control_r": -0.29573525806520884,
+    "edge_ci95_by_symbol": [
+     -0.5882221835767087,
+     -0.02799376690648551
+    ],
+    "min_detectable_edge_r": 0.40414703281562964,
+    "mean_mfe_r": 0.22830746056881585,
+    "median_mfe_r": 0.2568056398599273,
+    "mean_mae_r": 0.3616527880051224,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2024-05": {
+    "trades": 1,
+    "symbols": 1,
+    "win_rate": 0.0,
+    "win_rate_wilson95": [
+     0.0,
+     0.7934567085261071
+    ],
+    "mean_r": -0.7075352281880345,
+    "mean_r_ci95": null,
+    "median_r": -0.7075352281880345,
+    "profit_factor": 0.0,
+    "avg_win_r": null,
+    "avg_loss_r": -0.7075352281880345,
+    "mean_cost_r": 0.004959120637102991,
+    "total_r": -0.7075352281880345,
+    "max_drawdown_r": 0.7075352281880345,
+    "avg_holding_bars": 4,
+    "exits": {
+     "line_invalidation": 1
+    },
+    "control_mean_r": -0.12068281024510512,
+    "edge_vs_control_r": -0.5868524179429294,
+    "edge_ci95_by_symbol": null,
+    "min_detectable_edge_r": null,
+    "mean_mfe_r": 0.10666184642898706,
+    "median_mfe_r": 0.10666184642898706,
+    "mean_mae_r": 0.8658424822940699,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2024-10": {
+    "trades": 1,
+    "symbols": 1,
+    "win_rate": 0.0,
+    "win_rate_wilson95": [
+     0.0,
+     0.7934567085261071
+    ],
+    "mean_r": -0.9708620403105674,
+    "mean_r_ci95": null,
+    "median_r": -0.9708620403105674,
+    "profit_factor": 0.0,
+    "avg_win_r": null,
+    "avg_loss_r": -0.9708620403105674,
+    "mean_cost_r": 0.03420124379995383,
+    "total_r": -0.9708620403105674,
+    "max_drawdown_r": 0.9708620403105674,
+    "avg_holding_bars": 3,
+    "exits": {
+     "line_invalidation": 1
+    },
+    "control_mean_r": -0.06932749904355742,
+    "edge_vs_control_r": -0.90153454126701,
+    "edge_ci95_by_symbol": null,
+    "min_detectable_edge_r": null,
+    "mean_mfe_r": 0.206675259795005,
+    "median_mfe_r": 0.206675259795005,
+    "mean_mae_r": 0.9533925941912315,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2024-11": {
+    "trades": 1,
+    "symbols": 1,
+    "win_rate": 0.0,
+    "win_rate_wilson95": [
+     0.0,
+     0.7934567085261071
+    ],
+    "mean_r": -0.966804847838601,
+    "mean_r_ci95": null,
+    "median_r": -0.966804847838601,
+    "profit_factor": 0.0,
+    "avg_win_r": null,
+    "avg_loss_r": -0.966804847838601,
+    "mean_cost_r": 0.017944154415580327,
+    "total_r": -0.966804847838601,
+    "max_drawdown_r": 0.966804847838601,
+    "avg_holding_bars": 3,
+    "exits": {
+     "line_invalidation": 1
+    },
+    "control_mean_r": -0.03411630313123021,
+    "edge_vs_control_r": -0.9326885447073707,
+    "edge_ci95_by_symbol": null,
+    "min_detectable_edge_r": null,
+    "mean_mfe_r": 0.14305897621749117,
+    "median_mfe_r": 0.14305897621749117,
+    "mean_mae_r": 0.9613580186106534,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2024-12": {
+    "trades": 1,
+    "symbols": 1,
+    "win_rate": 0.0,
+    "win_rate_wilson95": [
+     0.0,
+     0.7934567085261071
+    ],
+    "mean_r": -0.0933887603895068,
+    "mean_r_ci95": null,
+    "median_r": -0.0933887603895068,
+    "profit_factor": 0.0,
+    "avg_win_r": null,
+    "avg_loss_r": -0.0933887603895068,
+    "mean_cost_r": 0.018599484644783636,
+    "total_r": -0.0933887603895068,
+    "max_drawdown_r": 0.0933887603895068,
+    "avg_holding_bars": 8,
+    "exits": {
+     "line_invalidation": 1
+    },
+    "control_mean_r": 0.5024886029140455,
+    "edge_vs_control_r": -0.5958773633035523,
+    "edge_ci95_by_symbol": null,
+    "min_detectable_edge_r": null,
+    "mean_mfe_r": 0.9333386176496907,
+    "median_mfe_r": 0.9333386176496907,
+    "mean_mae_r": 0.256180643486204,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2025-04": {
+    "trades": 1,
+    "symbols": 1,
+    "win_rate": 0.0,
+    "win_rate_wilson95": [
+     0.0,
+     0.7934567085261071
+    ],
+    "mean_r": -0.35377557197233084,
+    "mean_r_ci95": null,
+    "median_r": -0.35377557197233084,
+    "profit_factor": 0.0,
+    "avg_win_r": null,
+    "avg_loss_r": -0.35377557197233084,
+    "mean_cost_r": 0.007345187560519762,
+    "total_r": -0.35377557197233084,
+    "max_drawdown_r": 0.35377557197233084,
+    "avg_holding_bars": 5,
+    "exits": {
+     "line_invalidation": 1
+    },
+    "control_mean_r": -0.28816421561979416,
+    "edge_vs_control_r": -0.06561135635253668,
+    "edge_ci95_by_symbol": null,
+    "min_detectable_edge_r": null,
+    "mean_mfe_r": 0.23553579185739543,
+    "median_mfe_r": 0.23553579185739543,
+    "mean_mae_r": 0.35229340804939413,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2025-05": {
+    "trades": 1,
+    "symbols": 1,
+    "win_rate": 0.0,
+    "win_rate_wilson95": [
+     0.0,
+     0.7934567085261071
+    ],
+    "mean_r": -0.8539995861840785,
+    "mean_r_ci95": null,
+    "median_r": -0.8539995861840785,
+    "profit_factor": 0.0,
+    "avg_win_r": null,
+    "avg_loss_r": -0.8539995861840785,
+    "mean_cost_r": 0.00683164572161303,
+    "total_r": -0.8539995861840785,
+    "max_drawdown_r": 0.8539995861840785,
+    "avg_holding_bars": 5,
+    "exits": {
+     "line_invalidation": 1
+    },
+    "control_mean_r": 0.030619358134843552,
+    "edge_vs_control_r": -0.884618944318922,
+    "edge_ci95_by_symbol": null,
+    "min_detectable_edge_r": null,
+    "mean_mfe_r": 0.2842801267406024,
+    "median_mfe_r": 0.2842801267406024,
+    "mean_mae_r": 0.8519416881538993,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2025-07": {
+    "trades": 2,
+    "symbols": 2,
+    "win_rate": 0.5,
+    "win_rate_wilson95": [
+     0.09452865480086614,
+     0.9054713451991339
+    ],
+    "mean_r": -0.20623971352329273,
+    "mean_r_ci95": [
+     -1.008797663350105,
+     0.5963182363035195
+    ],
+    "median_r": -0.20623971352329273,
+    "profit_factor": 0.5911177810654447,
+    "avg_win_r": 0.5963182363035195,
+    "avg_loss_r": -1.008797663350105,
+    "mean_cost_r": 0.012667682112178459,
+    "total_r": -0.41247942704658547,
+    "max_drawdown_r": 1.008797663350105,
+    "avg_holding_bars": 6.5,
+    "exits": {
+     "line_invalidation": 1,
+     "stop": 1
+    },
+    "control_mean_r": 0.15704093595957383,
+    "edge_vs_control_r": -0.36328064948286665,
+    "edge_ci95_by_symbol": [
+     -1.2000023101208337,
+     0.47344101115510046
+    ],
+    "min_detectable_edge_r": 1.6566243685677715,
+    "mean_mfe_r": 0.5691192288715367,
+    "median_mfe_r": 0.5691192288715367,
+    "mean_mae_r": 0.7048751028373252,
+    "reached_1r_rate": 0.5,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2025-08": {
+    "trades": 3,
+    "symbols": 3,
+    "win_rate": 0.3333333333333333,
+    "win_rate_wilson95": [
+     0.0614903152761605,
+     0.7923450448735121
+    ],
+    "mean_r": -0.17006175119319727,
+    "mean_r_ci95": [
+     -0.30175647028527214,
+     0.06458319967639566
+    ],
+    "median_r": -0.27301198297071533,
+    "profit_factor": 0.11236385593283756,
+    "avg_win_r": 0.06458319967639566,
+    "avg_loss_r": -0.28738422662799373,
+    "mean_cost_r": 0.010423659109927038,
+    "total_r": -0.5101852535795918,
+    "max_drawdown_r": 0.5747684532559875,
+    "avg_holding_bars": 5.666666666666667,
+    "exits": {
+     "line_invalidation": 3
+    },
+    "control_mean_r": 0.07180102479350664,
+    "edge_vs_control_r": -0.24186277598670392,
+    "edge_ci95_by_symbol": [
+     -0.31386190777462136,
+     -0.18293527437013604
+    ],
+    "min_detectable_edge_r": 0.08768959944163973,
+    "mean_mfe_r": 0.47489728454750724,
+    "median_mfe_r": 0.1008615661883,
+    "mean_mae_r": 0.30067426092094135,
+    "reached_1r_rate": 0.3333333333333333,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2025-09": {
+    "trades": 5,
+    "symbols": 5,
+    "win_rate": 0.6,
+    "win_rate_wilson95": [
+     0.23071993220883708,
+     0.8823817688407467
+    ],
+    "mean_r": 0.4371730786808159,
+    "mean_r_ci95": [
+     -0.5867132166073243,
+     1.940911366329065
+    ],
+    "median_r": 0.04610856554363819,
+    "profit_factor": 2.6016624038786067,
+    "avg_win_r": 1.1835377626369705,
+    "avg_loss_r": -0.6823739472534159,
+    "mean_cost_r": 0.015571013477215487,
+    "total_r": 2.1858653934040797,
+    "max_drawdown_r": 1.1984437574397426,
+    "avg_holding_bars": 10.8,
+    "exits": {
+     "line_invalidation": 3,
+     "stop": 1,
+     "target": 1
+    },
+    "control_mean_r": 0.2668427489795908,
+    "edge_vs_control_r": 0.17033032970122503,
+    "edge_ci95_by_symbol": [
+     -0.6704858094151349,
+     1.3382483225662554
+    ],
+    "min_detectable_edge_r": 1.415417985098728,
+    "mean_mfe_r": 1.0751142289828297,
+    "median_mfe_r": 0.58264785103708,
+    "mean_mae_r": 0.30985998493510375,
+    "reached_1r_rate": 0.4,
+    "target_exit_rate": 0.2,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2025-10": {
+    "trades": 2,
+    "symbols": 2,
+    "win_rate": 0.5,
+    "win_rate_wilson95": [
+     0.09452865480086614,
+     0.9054713451991339
+    ],
+    "mean_r": 0.1819480866875082,
+    "mean_r_ci95": [
+     -0.17727319236203515,
+     0.5411693657370515
+    ],
+    "median_r": 0.1819480866875082,
+    "profit_factor": 3.052742259144584,
+    "avg_win_r": 0.5411693657370515,
+    "avg_loss_r": -0.17727319236203515,
+    "mean_cost_r": 0.0067949743722262555,
+    "total_r": 0.3638961733750164,
+    "max_drawdown_r": 0.17727319236203515,
+    "avg_holding_bars": 17,
+    "exits": {
+     "line_invalidation": 2
+    },
+    "control_mean_r": 0.28029473769457236,
+    "edge_vs_control_r": -0.09834665100706416,
+    "edge_ci95_by_symbol": [
+     -0.26011939326874717,
+     0.06342609125461884
+    ],
+    "min_detectable_edge_r": 0.3202936885802629,
+    "mean_mfe_r": 1.065452103374401,
+    "median_mfe_r": 1.065452103374401,
+    "mean_mae_r": 0.29721852387379555,
+    "reached_1r_rate": 0.5,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2025-11": {
+    "trades": 2,
+    "symbols": 2,
+    "win_rate": 0.0,
+    "win_rate_wilson95": [
+     0.0,
+     0.6576280471103807
+    ],
+    "mean_r": -0.31329715078863296,
+    "mean_r_ci95": [
+     -0.3182358745472635,
+     -0.3083584270300024
+    ],
+    "median_r": -0.31329715078863296,
+    "profit_factor": 0.0,
+    "avg_win_r": null,
+    "avg_loss_r": -0.31329715078863296,
+    "mean_cost_r": 0.024946389710027418,
+    "total_r": -0.6265943015772659,
+    "max_drawdown_r": 0.6265943015772659,
+    "avg_holding_bars": 5.5,
+    "exits": {
+     "line_invalidation": 2
+    },
+    "control_mean_r": -0.08700577281054347,
+    "edge_vs_control_r": -0.22629137797808946,
+    "edge_ci95_by_symbol": [
+     -0.24831070288561496,
+     -0.20427205307056395
+    ],
+    "min_detectable_edge_r": 0.04359603908593117,
+    "mean_mfe_r": 0.7535500185608938,
+    "median_mfe_r": 0.7535500185608938,
+    "mean_mae_r": 0.8398081442055546,
+    "reached_1r_rate": 0.5,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2025-12": {
+    "trades": 6,
+    "symbols": 6,
+    "win_rate": 0.5,
+    "win_rate_wilson95": [
+     0.18761280689940868,
+     0.8123871931005913
+    ],
+    "mean_r": 1.1155880603763582,
+    "mean_r_ci95": [
+     -0.09349156722703482,
+     3.4531650028128715
+    ],
+    "median_r": -0.03329287690286969,
+    "profit_factor": 21.742578997718997,
+    "avg_win_r": 2.338741150202433,
+    "avg_loss_r": -0.10756502944971656,
+    "mean_cost_r": 0.019562968994170687,
+    "total_r": 6.693528362258149,
+    "max_drawdown_r": 0.32269508834914973,
+    "avg_holding_bars": 8,
+    "exits": {
+     "line_invalidation": 5,
+     "target": 1
+    },
+    "control_mean_r": -0.059570556752161906,
+    "edge_vs_control_r": 1.17515861712852,
+    "edge_ci95_by_symbol": [
+     -0.10723645927336778,
+     3.6687404575245335
+    ],
+    "min_detectable_edge_r": 3.167372046128503,
+    "mean_mfe_r": 1.3246832526132513,
+    "median_mfe_r": 0.21782558238185457,
+    "mean_mae_r": 0.12779683915225576,
+    "reached_1r_rate": 0.16666666666666666,
+    "target_exit_rate": 0.16666666666666666,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2026-01": {
+    "trades": 1,
+    "symbols": 1,
+    "win_rate": 1.0,
+    "win_rate_wilson95": [
+     0.20654329147389294,
+     1.0
+    ],
+    "mean_r": 0.47472870699714187,
+    "mean_r_ci95": null,
+    "median_r": 0.47472870699714187,
+    "profit_factor": null,
+    "avg_win_r": 0.47472870699714187,
+    "avg_loss_r": null,
+    "mean_cost_r": 0.005420349725211953,
+    "total_r": 0.47472870699714187,
+    "max_drawdown_r": 0.0,
+    "avg_holding_bars": 39,
+    "exits": {
+     "line_invalidation": 1
+    },
+    "control_mean_r": 0.23755406262942508,
+    "edge_vs_control_r": 0.2371746443677168,
+    "edge_ci95_by_symbol": null,
+    "min_detectable_edge_r": null,
+    "mean_mfe_r": 1.9871401367768375,
+    "median_mfe_r": 1.9871401367768375,
+    "mean_mae_r": 0.5078442054200835,
+    "reached_1r_rate": 1.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2026-03": {
+    "trades": 8,
+    "symbols": 8,
+    "win_rate": 0.25,
+    "win_rate_wilson95": [
+     0.07147768885802763,
+     0.5907301208974108
+    ],
+    "mean_r": -0.11038135190243498,
+    "mean_r_ci95": [
+     -0.596588018022139,
+     0.4660227285616365
+    ],
+    "median_r": -0.3444193464412866,
+    "profit_factor": 0.7130044009717238,
+    "avg_win_r": 1.096914237822728,
+    "avg_loss_r": -0.5128132151441559,
+    "mean_cost_r": 0.011129141514346347,
+    "total_r": -0.8830508152194798,
+    "max_drawdown_r": 2.4162780152859344,
+    "avg_holding_bars": 6.625,
+    "exits": {
+     "line_invalidation": 6,
+     "stop": 1,
+     "target": 1
+    },
+    "control_mean_r": -0.10919141936770448,
+    "edge_vs_control_r": -0.0011899325347304937,
+    "edge_ci95_by_symbol": [
+     -0.6095712839403514,
+     0.683899641457097
+    ],
+    "min_detectable_edge_r": 0.9617642185841161,
+    "mean_mfe_r": 0.5261795168725627,
+    "median_mfe_r": 0.2267777702084014,
+    "mean_mae_r": 0.531072636775504,
+    "reached_1r_rate": 0.25,
+    "target_exit_rate": 0.125,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2026-04": {
+    "trades": 2,
+    "symbols": 2,
+    "win_rate": 0.0,
+    "win_rate_wilson95": [
+     0.0,
+     0.6576280471103807
+    ],
+    "mean_r": -0.3292504858839753,
+    "mean_r_ci95": [
+     -0.3371473051851062,
+     -0.32135366658284437
+    ],
+    "median_r": -0.3292504858839753,
+    "profit_factor": 0.0,
+    "avg_win_r": null,
+    "avg_loss_r": -0.3292504858839753,
+    "mean_cost_r": 0.0060483900375376005,
+    "total_r": -0.6585009717679506,
+    "max_drawdown_r": 0.6585009717679506,
+    "avg_holding_bars": 6.5,
+    "exits": {
+     "line_invalidation": 2
+    },
+    "control_mean_r": -0.07991820804157798,
+    "edge_vs_control_r": -0.2493322778423973,
+    "edge_ci95_by_symbol": [
+     -0.42345567677338025,
+     -0.07520887891141434
+    ],
+    "min_detectable_edge_r": 0.3447467412125757,
+    "mean_mfe_r": 0.5214791991953369,
+    "median_mfe_r": 0.5214791991953369,
+    "mean_mae_r": 0.32790234673560764,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2026-05": {
+    "trades": 2,
+    "symbols": 2,
+    "win_rate": 0.5,
+    "win_rate_wilson95": [
+     0.09452865480086614,
+     0.9054713451991339
+    ],
+    "mean_r": 0.20338254169458414,
+    "mean_r_ci95": [
+     -0.437465564625664,
+     0.8442306480148323
+    ],
+    "median_r": 0.20338254169458414,
+    "profit_factor": 1.9298219477851568,
+    "avg_win_r": 0.8442306480148323,
+    "avg_loss_r": -0.437465564625664,
+    "mean_cost_r": 0.0067981713005648954,
+    "total_r": 0.4067650833891683,
+    "max_drawdown_r": 0.437465564625664,
+    "avg_holding_bars": 26,
+    "exits": {
+     "line_invalidation": 2
+    },
+    "control_mean_r": 0.6823437173125946,
+    "edge_vs_control_r": -0.47896117561801044,
+    "edge_ci95_by_symbol": [
+     -0.49411066611671667,
+     -0.46381168511930415
+    ],
+    "min_detectable_edge_r": 0.029994460896837823,
+    "mean_mfe_r": 1.1675902555798638,
+    "median_mfe_r": 1.1675902555798638,
+    "mean_mae_r": 0.42803246565053454,
+    "reached_1r_rate": 0.5,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2026-06": {
+    "trades": 1,
+    "symbols": 1,
+    "win_rate": 0.0,
+    "win_rate_wilson95": [
+     0.0,
+     0.7934567085261071
+    ],
+    "mean_r": -0.33115073784672355,
+    "mean_r_ci95": null,
+    "median_r": -0.33115073784672355,
+    "profit_factor": 0.0,
+    "avg_win_r": null,
+    "avg_loss_r": -0.33115073784672355,
+    "mean_cost_r": 0.00699218098305449,
+    "total_r": -0.33115073784672355,
+    "max_drawdown_r": 0.33115073784672355,
+    "avg_holding_bars": 3,
+    "exits": {
+     "line_invalidation": 1
+    },
+    "control_mean_r": 0.05958372304323578,
+    "edge_vs_control_r": -0.39073446088995933,
+    "edge_ci95_by_symbol": null,
+    "min_detectable_edge_r": null,
+    "mean_mfe_r": 0.2807586139235215,
+    "median_mfe_r": 0.2807586139235215,
+    "mean_mae_r": 0.32974505249048225,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2026-07": {
+    "trades": 2,
+    "symbols": 2,
+    "win_rate": 0.0,
+    "win_rate_wilson95": [
+     0.0,
+     0.6576280471103807
+    ],
+    "mean_r": -0.3625174843486275,
+    "mean_r_ci95": [
+     -0.42489094120365956,
+     -0.3001440274935955
+    ],
+    "median_r": -0.3625174843486275,
+    "profit_factor": 0.0,
+    "avg_win_r": null,
+    "avg_loss_r": -0.3625174843486275,
+    "mean_cost_r": 0.006592187769852277,
+    "total_r": -0.725034968697255,
+    "max_drawdown_r": 0.725034968697255,
+    "avg_holding_bars": 3.5,
+    "exits": {
+     "line_invalidation": 2
+    },
+    "control_mean_r": -0.10361216587310541,
+    "edge_vs_control_r": -0.2589053184755221,
+    "edge_ci95_by_symbol": [
+     -0.42298501333766075,
+     -0.09482562361338343
+    ],
+    "min_detectable_edge_r": 0.3248612216977057,
+    "mean_mfe_r": 0.0505985137335459,
+    "median_mfe_r": 0.0505985137335459,
+    "mean_mae_r": 0.4257169986959019,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2026-08": {
+    "trades": 2,
+    "symbols": 2,
+    "win_rate": 0.5,
+    "win_rate_wilson95": [
+     0.09452865480086614,
+     0.9054713451991339
+    ],
+    "mean_r": -0.04188052234389754,
+    "mean_r_ci95": [
+     -0.2070277666816794,
+     0.12326672199388433
+    ],
+    "median_r": -0.04188052234389754,
+    "profit_factor": 0.5954115429521881,
+    "avg_win_r": 0.12326672199388433,
+    "avg_loss_r": -0.2070277666816794,
+    "mean_cost_r": 0.0031301857501991703,
+    "total_r": -0.08376104468779508,
+    "max_drawdown_r": 0.2070277666816794,
+    "avg_holding_bars": 3,
+    "exits": {
+     "line_invalidation": 2
+    },
+    "control_mean_r": -0.23488619629106322,
+    "edge_vs_control_r": 0.19300567394716567,
+    "edge_ci95_by_symbol": [
+     0.11121914692617133,
+     0.27479220096816004
+    ],
+    "min_detectable_edge_r": 0.16192906202547733,
+    "mean_mfe_r": 0.17593260631313618,
+    "median_mfe_r": 0.17593260631313618,
+    "mean_mae_r": 0.11806217747688232,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2026-09": {
+    "trades": 3,
+    "symbols": 3,
+    "win_rate": 0.0,
+    "win_rate_wilson95": [
+     0.0,
+     0.5615060804490177
+    ],
+    "mean_r": -0.12431919351921254,
+    "mean_r_ci95": [
+     -0.21982472991625124,
+     -0.06488057683612006
+    ],
+    "median_r": -0.08825227380526635,
+    "profit_factor": 0.0,
+    "avg_win_r": null,
+    "avg_loss_r": -0.12431919351921254,
+    "mean_cost_r": 0.004087194511966628,
+    "total_r": -0.3729575805576376,
+    "max_drawdown_r": 0.3729575805576376,
+    "avg_holding_bars": 4.666666666666667,
+    "exits": {
+     "line_invalidation": 3
+    },
+    "control_mean_r": -0.09996171372524124,
+    "edge_vs_control_r": -0.024357479793971317,
+    "edge_ci95_by_symbol": [
+     -0.20080087469476135,
+     0.15406168732365733
+    ],
+    "min_detectable_edge_r": 0.23420823210775285,
+    "mean_mfe_r": 0.154866721123812,
+    "median_mfe_r": 0.03598358867637523,
+    "mean_mae_r": 0.344034176133059,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1d:2026-10": {
+    "trades": 1,
+    "symbols": 1,
+    "win_rate": 1.0,
+    "win_rate_wilson95": [
+     0.20654329147389294,
+     1.0
+    ],
+    "mean_r": 0.040370371530003855,
+    "mean_r_ci95": null,
+    "median_r": 0.040370371530003855,
+    "profit_factor": null,
+    "avg_win_r": 0.040370371530003855,
+    "avg_loss_r": null,
+    "mean_cost_r": 0.0072499789122921375,
+    "total_r": 0.040370371530003855,
+    "max_drawdown_r": 0.0,
+    "avg_holding_bars": 2,
+    "exits": {
+     "line_invalidation": 1
+    },
+    "control_mean_r": 0.16800307004524465,
+    "edge_vs_control_r": -0.12763269851524078,
+    "edge_ci95_by_symbol": null,
+    "min_detectable_edge_r": null,
+    "mean_mfe_r": 0.17241182829396146,
+    "median_mfe_r": 0.17241182829396146,
+    "mean_mae_r": 0.3094680955101904,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1h:2026-08": {
+    "trades": 6,
+    "symbols": 6,
+    "win_rate": 0.16666666666666666,
+    "win_rate_wilson95": [
+     0.03005258587173032,
+     0.563509436563646
+    ],
+    "mean_r": -0.42576818150928025,
+    "mean_r_ci95": [
+     -0.7362118133632897,
+     -0.14785421120030456
+    ],
+    "median_r": -0.26082635388230735,
+    "profit_factor": 0.005092791994167147,
+    "avg_win_r": 0.013076689576957139,
+    "avg_loss_r": -0.5135371557265277,
+    "mean_cost_r": 0.03207820102151644,
+    "total_r": -2.554609089055681,
+    "max_drawdown_r": 2.554609089055681,
+    "avg_holding_bars": 5.833333333333333,
+    "exits": {
+     "line_invalidation": 5,
+     "stop": 1
+    },
+    "control_mean_r": -0.09643593501378825,
+    "edge_vs_control_r": -0.329332246495492,
+    "edge_ci95_by_symbol": [
+     -0.638063332422983,
+     -0.11253782388138724
+    ],
+    "min_detectable_edge_r": 0.3953442801109437,
+    "mean_mfe_r": 0.2956969860122061,
+    "median_mfe_r": 0.22445284535262305,
+    "mean_mae_r": 0.561245334283882,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1h:2026-09": {
+    "trades": 13,
+    "symbols": 13,
+    "win_rate": 0.3076923076923077,
+    "win_rate_wilson95": [
+     0.12680497161618087,
+     0.5763111218666236
+    ],
+    "mean_r": 0.07401377238263976,
+    "mean_r_ci95": [
+     -0.28220674828847453,
+     0.4554310030515289
+    ],
+    "median_r": -0.018231037836712524,
+    "profit_factor": 1.3501960293145685,
+    "avg_win_r": 0.9274307900891844,
+    "avg_loss_r": -0.3052826799313801,
+    "mean_cost_r": 0.02649643340718459,
+    "total_r": 0.9621790409743168,
+    "max_drawdown_r": 1.8483247263896248,
+    "avg_holding_bars": 18.076923076923077,
+    "exits": {
+     "line_invalidation": 13
+    },
+    "control_mean_r": -0.11843841438841568,
+    "edge_vs_control_r": 0.19245218677105544,
+    "edge_ci95_by_symbol": [
+     -0.15376340464753505,
+     0.6049247841788807
+    ],
+    "min_detectable_edge_r": 0.5493102463533702,
+    "mean_mfe_r": 0.7190487589213365,
+    "median_mfe_r": 0.24448722774035483,
+    "mean_mae_r": 0.3988418523803888,
+    "reached_1r_rate": 0.23076923076923078,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1h:2026-10": {
+    "trades": 9,
+    "symbols": 9,
+    "win_rate": 0.2222222222222222,
+    "win_rate_wilson95": [
+     0.06322376231222723,
+     0.5474166563271946
+    ],
+    "mean_r": -0.11717193001381974,
+    "mean_r_ci95": [
+     -0.5823322759964967,
+     0.4061500817640996
+    ],
+    "median_r": -0.2408028254803562,
+    "profit_factor": 0.6877673931765866,
+    "avg_win_r": 1.1614470748435646,
+    "avg_loss_r": -0.48249164568735814,
+    "mean_cost_r": 0.02816038411951473,
+    "total_r": -1.0545473701243777,
+    "max_drawdown_r": 2.0575537746114483,
+    "avg_holding_bars": 5.666666666666667,
+    "exits": {
+     "line_invalidation": 7,
+     "stop": 2
+    },
+    "control_mean_r": -0.02421968192536922,
+    "edge_vs_control_r": -0.09295224808845051,
+    "edge_ci95_by_symbol": [
+     -0.6439348296045311,
+     0.5747624494557316
+    ],
+    "min_detectable_edge_r": 0.9013450059006517,
+    "mean_mfe_r": 0.4904000877068526,
+    "median_mfe_r": 0.20248942201682923,
+    "mean_mae_r": 0.4882762783234855,
+    "reached_1r_rate": 0.2222222222222222,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "1h:2026-11": {
+    "trades": 1,
+    "symbols": 1,
+    "win_rate": 0.0,
+    "win_rate_wilson95": [
+     0.0,
+     0.7934567085261071
+    ],
+    "mean_r": -0.42314174004683625,
+    "mean_r_ci95": null,
+    "median_r": -0.42314174004683625,
+    "profit_factor": 0.0,
+    "avg_win_r": null,
+    "avg_loss_r": -0.42314174004683625,
+    "mean_cost_r": 0.008546537375353578,
+    "total_r": -0.42314174004683625,
+    "max_drawdown_r": 0.42314174004683625,
+    "avg_holding_bars": 7,
+    "exits": {
+     "line_invalidation": 1
+    },
+    "control_mean_r": -0.009679200988050305,
+    "edge_vs_control_r": -0.41346253905878594,
+    "edge_ci95_by_symbol": null,
+    "min_detectable_edge_r": null,
+    "mean_mfe_r": 0.27650679987859056,
+    "median_mfe_r": 0.27650679987859056,
+    "mean_mae_r": 0.42206427965067983,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 0,
+    "verdict": "insufficient sample (<30 trades)"
+   },
+   "5m:2026-08": {
+    "trades": 145,
+    "symbols": 96,
+    "win_rate": 0.2413793103448276,
+    "win_rate_wilson95": [
+     0.17898361610507632,
+     0.31712499869078725
+    ],
+    "mean_r": -0.16882073089425592,
+    "mean_r_ci95": [
+     -0.2592624079855783,
+     -0.0739375563268088
+    ],
+    "median_r": -0.17122211837182613,
+    "profit_factor": 0.41201227344073715,
+    "avg_win_r": 0.49008073029349053,
+    "avg_loss_r": -0.3784711958176298,
+    "mean_cost_r": 0.12142438795966083,
+    "total_r": -24.479005979667107,
+    "max_drawdown_r": 26.80710935103292,
+    "avg_holding_bars": 7.517241379310345,
+    "exits": {
+     "line_invalidation": 134,
+     "stop": 7,
+     "target": 4
+    },
+    "control_mean_r": -0.16386846207657935,
+    "edge_vs_control_r": -0.004952268817676587,
+    "edge_ci95_by_symbol": [
+     -0.10556586602727666,
+     0.09375491793363641
+    ],
+    "min_detectable_edge_r": 0.14746375458204172,
+    "mean_mfe_r": 0.42973026489164917,
+    "median_mfe_r": 0.245771909623856,
+    "mean_mae_r": 0.35841681246957374,
+    "reached_1r_rate": 0.12413793103448276,
+    "target_exit_rate": 0.027586206896551724,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "5m:2026-09": {
+    "trades": 135,
+    "symbols": 90,
+    "win_rate": 0.2074074074074074,
+    "win_rate_wilson95": [
+     0.14757651088698176,
+     0.2834297581274923
+    ],
+    "mean_r": -0.13737555031149504,
+    "mean_r_ci95": [
+     -0.25972149943564227,
+     -0.002626168920206326
+    ],
+    "median_r": -0.2608430411652955,
+    "profit_factor": 0.5368336352527485,
+    "avg_win_r": 0.7676935428320235,
+    "avg_loss_r": -0.3742160606668083,
+    "mean_cost_r": 0.11221784273620168,
+    "total_r": -18.54569929205183,
+    "max_drawdown_r": 19.269661780969113,
+    "avg_holding_bars": 7.977777777777778,
+    "exits": {
+     "line_invalidation": 126,
+     "stop": 6,
+     "target": 3
+    },
+    "control_mean_r": -0.1517660647763512,
+    "edge_vs_control_r": 0.01439051446485617,
+    "edge_ci95_by_symbol": [
+     -0.11971427596057924,
+     0.1716392254197933
+    ],
+    "min_detectable_edge_r": 0.19665082304804254,
+    "mean_mfe_r": 0.44517463118286255,
+    "median_mfe_r": 0.15807993670821355,
+    "mean_mae_r": 0.3431179858043492,
+    "reached_1r_rate": 0.11851851851851852,
+    "target_exit_rate": 0.022222222222222223,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "5m:2026-10": {
+    "trades": 163,
+    "symbols": 105,
+    "win_rate": 0.1656441717791411,
+    "win_rate_wilson95": [
+     0.11640845090996538,
+     0.2302772677597189
+    ],
+    "mean_r": -0.17996597922960395,
+    "mean_r_ci95": [
+     -0.3148006224920688,
+     -0.0499722719856076
+    ],
+    "median_r": -0.24373493721067419,
+    "profit_factor": 0.48751439416180425,
+    "avg_win_r": 1.0335227129274678,
+    "avg_loss_r": -0.42087917546666964,
+    "mean_cost_r": 0.12274418822167747,
+    "total_r": -29.334454614425443,
+    "max_drawdown_r": 30.586737103856407,
+    "avg_holding_bars": 5.662576687116564,
+    "exits": {
+     "line_invalidation": 146,
+     "stop": 10,
+     "target": 7
+    },
+    "control_mean_r": -0.16434942186106957,
+    "edge_vs_control_r": -0.015616557368534352,
+    "edge_ci95_by_symbol": [
+     -0.14977705790152168,
+     0.1280942381607124
+    ],
+    "min_detectable_edge_r": 0.19286828411499352,
+    "mean_mfe_r": 0.43940479520416126,
+    "median_mfe_r": 0.13949977778231606,
+    "mean_mae_r": 0.4119452362504887,
+    "reached_1r_rate": 0.1165644171779141,
+    "target_exit_rate": 0.04294478527607362,
+    "unresolved": 0,
+    "verdict": "no measurable edge vs control"
+   },
+   "5m:2026-11": {
+    "trades": 30,
+    "symbols": 28,
+    "win_rate": 0.1,
+    "win_rate_wilson95": [
+     0.03459925995971615,
+     0.25621441315266624
+    ],
+    "mean_r": -0.35123582512731016,
+    "mean_r_ci95": [
+     -0.4834151064828511,
+     -0.21866880462827046
+    ],
+    "median_r": -0.292548925410799,
+    "profit_factor": 0.05594973440131374,
+    "avg_win_r": 0.20816212699899939,
+    "avg_loss_r": -0.41339115314134456,
+    "mean_cost_r": 0.07902825573280789,
+    "total_r": -10.537074753819304,
+    "max_drawdown_r": 10.537074753819304,
+    "avg_holding_bars": 4.133333333333334,
+    "exits": {
+     "line_invalidation": 27,
+     "stop": 3
+    },
+    "control_mean_r": -0.09045919186301969,
+    "edge_vs_control_r": -0.26077663326429046,
+    "edge_ci95_by_symbol": [
+     -0.40726393399761907,
+     -0.12626047822770758
+    ],
+    "min_detectable_edge_r": 0.20024126689612026,
+    "mean_mfe_r": 0.13646009946322427,
+    "median_mfe_r": 0.08205371071348014,
+    "mean_mae_r": 0.404958143830829,
+    "reached_1r_rate": 0.0,
+    "target_exit_rate": 0.0,
+    "unresolved": 1,
+    "verdict": "worse than control"
+   }
+  }
+ },
+ "variants": [
+  {
+   "name": "baseline",
+   "note": "The live rules.",
+   "overall": {
+    "trades": 744,
+    "symbols": 150,
+    "win_rate": 0.22043010752688172,
+    "win_rate_wilson95": [
+     0.19212075285163194,
+     0.2516117166980695
+    ],
+    "mean_r": -0.13270609444484183,
+    "mean_r_ci95": [
+     -0.19393850048211927,
+     -0.07402822185977195
+    ],
+    "median_r": -0.20755543438720148,
+    "profit_factor": 0.5833148358941476,
+    "avg_win_r": 0.8427813955669299,
+    "avg_loss_r": -0.40853359162058417,
+    "mean_cost_r": 0.0931023100547286,
+    "total_r": -98.73333426696232,
+    "max_drawdown_r": 101.53132965499704,
+    "avg_holding_bars": 7.193548387096774,
+    "exits": {
+     "line_invalidation": 670,
+     "stop": 52,
+     "target": 22
+    },
+    "control_mean_r": -0.11593180293290249,
+    "edge_vs_control_r": -0.016774291511939335,
+    "edge_ci95_by_symbol": [
+     -0.08084783883511619,
+     0.047394491902983824
+    ],
+    "min_detectable_edge_r": 0.09225472673495477,
+    "mean_mfe_r": 0.48169223412733697,
+    "median_mfe_r": 0.19580712960325453,
+    "mean_mae_r": 0.39332700069408066,
+    "reached_1r_rate": 0.12768817204301075,
+    "target_exit_rate": 0.02956989247311828,
+    "unresolved": 5,
+    "verdict": "no measurable edge vs control"
+   }
+  },
+  {
+   "name": "no_bollinger_context",
+   "note": "Skips the Bollinger-band pullback check.",
+   "overall": {
+    "trades": 767,
+    "symbols": 150,
+    "win_rate": 0.22164276401564537,
+    "win_rate_wilson95": [
+     0.19367545860785565,
+     0.2523845360784716
+    ],
+    "mean_r": -0.1338886159510084,
+    "mean_r_ci95": [
+     -0.19219304000127582,
+     -0.0721072034175931
+    ],
+    "median_r": -0.20787487705327656,
+    "profit_factor": 0.5760047502834881,
+    "avg_win_r": 0.8206446996002262,
+    "avg_loss_r": -0.4056987728081439,
+    "mean_cost_r": 0.09277058627104093,
+    "total_r": -102.69256843442344,
+    "max_drawdown_r": 105.04462976340311,
+    "avg_holding_bars": 7.127770534550195,
+    "exits": {
+     "line_invalidation": 693,
+     "stop": 52,
+     "target": 22
+    },
+    "control_mean_r": -0.09619709980061085,
+    "edge_vs_control_r": -0.03769151615039754,
+    "edge_ci95_by_symbol": [
+     -0.10391461549856149,
+     0.027302596064248025
+    ],
+    "min_detectable_edge_r": 0.08996678714166648,
+    "mean_mfe_r": 0.47373177259182986,
+    "median_mfe_r": 0.19232961669670431,
+    "mean_mae_r": 0.389685533273774,
+    "reached_1r_rate": 0.12385919165580182,
+    "target_exit_rate": 0.028683181225554105,
+    "unresolved": 5,
+    "verdict": "no measurable edge vs control"
+   }
+  },
+  {
+   "name": "no_chase_filter_off",
+   "note": "Allows entries that close outside the band (no-chase filter off).",
+   "overall": {
+    "trades": 773,
+    "symbols": 150,
+    "win_rate": 0.21992238033635186,
+    "win_rate_wilson95": [
+     0.19214764949658475,
+     0.25046716412822634
+    ],
+    "mean_r": -0.13035348541899414,
+    "mean_r_ci95": [
+     -0.18734339094526348,
+     -0.06658628787349401
+    ],
+    "median_r": -0.2179196634521291,
+    "profit_factor": 0.5926380220124986,
+    "avg_win_r": 0.8623076537825736,
+    "avg_loss_r": -0.41020820128013263,
+    "mean_cost_r": 0.09239321608485486,
+    "total_r": -100.76324422888247,
+    "max_drawdown_r": 103.95838095624327,
+    "avg_holding_bars": 7.240620957309185,
+    "exits": {
+     "line_invalidation": 695,
+     "stop": 53,
+     "target": 25
+    },
+    "control_mean_r": -0.09331751214310208,
+    "edge_vs_control_r": -0.037035973275892066,
+    "edge_ci95_by_symbol": [
+     -0.10347477362944371,
+     0.031249934750548297
+    ],
+    "min_detectable_edge_r": 0.09032537480865792,
+    "mean_mfe_r": 0.48132761338301167,
+    "median_mfe_r": 0.19438413477131508,
+    "mean_mae_r": 0.3953607617264375,
+    "reached_1r_rate": 0.12807244501940493,
+    "target_exit_rate": 0.03234152652005175,
+    "unresolved": 5,
+    "verdict": "no measurable edge vs control"
+   }
+  },
+  {
+   "name": "unrestricted_sequence",
+   "note": "Allows every pullback in a trend, not only the 1st and 2nd.",
+   "overall": {
+    "trades": 793,
+    "symbols": 150,
+    "win_rate": 0.22068095838587642,
+    "win_rate_wilson95": [
+     0.19320155419938664,
+     0.25085357545247894
+    ],
+    "mean_r": -0.11109385326126439,
+    "mean_r_ci95": [
+     -0.175140455353199,
+     -0.0452685483716491
+    ],
+    "median_r": -0.20723599172112636,
+    "profit_factor": 0.6524214299194371,
+    "avg_win_r": 0.944931647581272,
+    "avg_loss_r": -0.4101302005872254,
+    "mean_cost_r": 0.09324491341859893,
+    "total_r": -88.09742563618266,
+    "max_drawdown_r": 94.13097529396303,
+    "avg_holding_bars": 7.335435056746532,
+    "exits": {
+     "line_invalidation": 713,
+     "stop": 53,
+     "target": 27
+    },
+    "control_mean_r": -0.08645250154374233,
+    "edge_vs_control_r": -0.024641351717522072,
+    "edge_ci95_by_symbol": [
+     -0.09476730390335639,
+     0.043687481048366936
+    ],
+    "min_detectable_edge_r": 0.09449853303195117,
+    "mean_mfe_r": 0.5031918854564656,
+    "median_mfe_r": 0.19523985504120042,
+    "mean_mae_r": 0.39449023039501313,
+    "reached_1r_rate": 0.13366960907944514,
+    "target_exit_rate": 0.034047919293820936,
+    "unresolved": 5,
+    "verdict": "no measurable edge vs control"
+   }
+  },
+  {
+   "name": "partial_runner",
+   "note": "Takes half at the target and runs the rest to a 2x target.",
+   "overall": {
+    "trades": 734,
+    "symbols": 150,
+    "win_rate": 0.2220708446866485,
+    "win_rate_wilson95": [
+     0.19349204861242617,
+     0.25354373793037654
+    ],
+    "mean_r": -0.1383110144264911,
+    "mean_r_ci95": [
+     -0.1972870011987859,
+     -0.07445558077708819
+    ],
+    "median_r": -0.2087143147869822,
+    "profit_factor": 0.5667743199422154,
+    "avg_win_r": 0.8148190884824563,
+    "avg_loss_r": -0.41039543960014857,
+    "mean_cost_r": 0.09433761358496022,
+    "total_r": -101.52028458904446,
+    "max_drawdown_r": 103.2048866011651,
+    "avg_holding_bars": 8.287465940054496,
+    "exits": {
+     "line_invalidation": 670,
+     "runner_target": 8,
+     "stop": 55,
+     "stop_after_partial": 1
+    },
+    "control_mean_r": -0.10411484715748996,
+    "edge_vs_control_r": -0.03419616726900113,
+    "edge_ci95_by_symbol": [
+     -0.1022360690868413,
+     0.03204424451758308
+    ],
+    "min_detectable_edge_r": 0.09257351903830081,
+    "mean_mfe_r": 0.5235507868322568,
+    "median_mfe_r": 0.19754651722830222,
+    "mean_mae_r": 0.3941741505539937,
+    "reached_1r_rate": 0.12806539509536785,
+    "target_exit_rate": 0.010899182561307902,
+    "unresolved": 5,
+    "verdict": "no measurable edge vs control"
+   }
+  },
+  {
+   "name": "line_stop",
+   "note": "Puts the stop at the trendline instead of below the structure.",
+   "overall": {
+    "trades": 990,
+    "symbols": 151,
+    "win_rate": 0.20707070707070707,
+    "win_rate_wilson95": [
+     0.18298490322538302,
+     0.2334210914522396
+    ],
+    "mean_r": -0.38147663062297765,
+    "mean_r_ci95": [
+     -0.4918657127339718,
+     -0.27095200398887975
+    ],
+    "median_r": -0.7486825328285098,
+    "profit_factor": 0.4984179364164987,
+    "avg_win_r": 1.8306315229771926,
+    "avg_loss_r": -0.9591609255121941,
+    "mean_cost_r": 0.2645243588894023,
+    "total_r": -377.6618643167479,
+    "max_drawdown_r": 394.7905490647297,
+    "avg_holding_bars": 6.380808080808081,
+    "exits": {
+     "line_invalidation": 609,
+     "stop": 344,
+     "target": 37
+    },
+    "control_mean_r": -0.2532965537314357,
+    "edge_vs_control_r": -0.12818007689154193,
+    "edge_ci95_by_symbol": [
+     -0.24180155075945295,
+     -0.010581676615860633
+    ],
+    "min_detectable_edge_r": 0.16094729261354096,
+    "mean_mfe_r": 1.0523949868140443,
+    "median_mfe_r": 0.4423818283999278,
+    "mean_mae_r": 0.8506012362690714,
+    "reached_1r_rate": 0.29797979797979796,
+    "target_exit_rate": 0.03737373737373737,
+    "unresolved": 4,
+    "verdict": "worse than control"
+   }
+  },
+  {
+   "name": "research_stop_target_only",
+   "note": "Exits only at the stop or target, never on a close through the line.",
+   "overall": {
+    "trades": 709,
+    "symbols": 149,
+    "win_rate": 0.2397743300423131,
+    "win_rate_wilson95": [
+     0.20980296899280523,
+     0.27255047390390563
+    ],
+    "mean_r": -0.28408347169704135,
+    "mean_r_ci95": [
+     -0.42668280429173083,
+     -0.1254839026734438
+    ],
+    "median_r": -1.0416046987777179,
+    "profit_factor": 0.7177884138987491,
+    "avg_win_r": 3.0134562096255886,
+    "avg_loss_r": -1.3241238164555702,
+    "mean_cost_r": 0.09651527647144546,
+    "total_r": -201.4151814332023,
+    "max_drawdown_r": 211.19686597244865,
+    "avg_holding_bars": 39.78984485190409,
+    "exits": {
+     "stop": 539,
+     "target": 170
+    },
+    "control_mean_r": -0.10624110521289003,
+    "edge_vs_control_r": -0.1778423664841513,
+    "edge_ci95_by_symbol": [
+     -0.3154088570071998,
+     -0.037144781796848846
+    ],
+    "min_detectable_edge_r": 0.22288404430785325,
+    "mean_mfe_r": 1.3133145426286486,
+    "median_mfe_r": 0.787125052924332,
+    "mean_mae_r": 1.1023219321318267,
+    "reached_1r_rate": 0.44710860366713684,
+    "target_exit_rate": 0.2397743300423131,
+    "unresolved": 30,
+    "verdict": "worse than control"
+   }
+  }
+ ],
+ "assumptions": {
+  "execution_eligible": "assumed True for research (stored prices carry no verified provider delay)",
+  "shortable": "assumed True for research; long-only results reported separately",
+  "borrow_rate_annual": 0.005,
+  "note": "Assumptions make paper fills possible; they are not verified execution or borrow data."
+ },
+ "method": {
+  "unit": "R = net P&L per share / initial risk (fill to frozen stop)",
+  "control": "20 random-timing twins per trade inside the same segment, full holding window observable: same direction, stop/target in ATR, costs and borrow; borrow accrues only until the actual exit",
+  "intervals": "edge 95% CI bootstrapped by symbol (verdict); by-trade CI and minimum detectable edge reported alongside",
+  "periods": "per timeframe, the last 30% of the covered span is a RETROSPECTIVE holdout (already visible to earlier runs); nothing is fitted on either period; unseen evidence requires later sessions",
+  "fills": "next bar open with half-spread + slippage; stop before target; gaps fill at the worse open",
+  "tuning": "none; all variants reported; research_stop_target_only is NOT a live default"
+ }
+}
