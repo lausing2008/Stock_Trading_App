@@ -1814,7 +1814,14 @@ def trigger_morning_digest(
 
 @router.get("/scheduler-status")
 def scheduler_status(_: User = Depends(get_admin_user)):
-    """Return last-run status for all tracked scheduler jobs (from Redis)."""
+    """Return last-run status for all tracked scheduler jobs (from Redis).
+
+    AUD-SCHEDSTATUS-DETAILKEYS (2026-11-08): the `scheduler:job:*` prefix is shared with
+    per-job DETAIL reports (`scheduler:job:<job>:detail[:<session>[:pN]]`, written by the 5m
+    reconcile and options-flow EOD jobs since 2026-10-22). Those are not liveness records — they
+    carry no `job`/`status` — and returning them crashed the System Health page on
+    `job.status.startsWith`. Only a record with a string `job` and `status` is a job status.
+    """
     r = _get_redis()
     keys = sorted(r.keys("scheduler:job:*"))
     jobs = []
@@ -1822,9 +1829,15 @@ def scheduler_status(_: User = Depends(get_admin_user)):
         val = r.get(key)
         if val:
             try:
-                jobs.append(json.loads(val))
+                rec = json.loads(val)
             except Exception:
-                pass
+                continue
+            if (
+                isinstance(rec, dict)
+                and isinstance(rec.get("job"), str)
+                and isinstance(rec.get("status"), str)
+            ):
+                jobs.append(rec)
     return {"jobs": jobs}
 
 
