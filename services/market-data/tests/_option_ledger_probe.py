@@ -80,10 +80,18 @@ with Session(engine) as session:
     # Real SQL filtering/pagination, not a mocked .execute chain.
     stock = models.Stock(symbol='TEST', name='Test', exchange=models.Exchange.NASDAQ, market=models.Market.US)
     session.add(stock); session.flush()
-    same_day_expiry = dt.date(2026, 10, 9)
+    # Relative to today: the most recent regular session at least 20 days back, so it stays
+    # inside the 30-day window below and older than the 10-day horizon. A fixed 2026-10-09 fell
+    # out of that window on 2026-11-09 and failed the suite; a weekend date is not eligible.
+    from common.market_calendar import NYSE_HOLIDAYS
+    day = dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=20)
+    while day.weekday() >= 5 or day in NYSE_HOLIDAYS:
+        day -= dt.timedelta(days=1)
+    fired_at = dt.datetime(day.year, day.month, day.day, 14)
+    same_day_expiry = day
     for i in range(3):
         session.add(models.OptionsFlowAlertOutcome(id=i+1, stock_id=stock.id, symbol='TEST', option_chain=f'TEST{i}', option_type='call',
-            direction='bullish', fired_date=same_day_expiry, fired_at=dt.datetime(2026, 10, 9, 14), expiry=same_day_expiry,
+            direction='bullish', fired_date=same_day_expiry, fired_at=fired_at, expiry=same_day_expiry,
             alert_price=100, ask_side_dominant=True, total_premium=1000 + i, entry_date=same_day_expiry, return_10d=.01, is_correct_10d=True))
     session.commit()
     args = dict(days_back=30, limit=1, offset=1, symbol='TEST', direction='bullish', sweep_only=False,
