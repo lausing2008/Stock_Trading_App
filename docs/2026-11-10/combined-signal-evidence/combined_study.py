@@ -66,7 +66,9 @@ def rank(values, eligible):
     return s.rank(pct=True).values
 
 
-def main(bars, earn, analyst, universe, out_dir):
+def main(bars, earn, analyst, universe, out_dir, month_mask=None):
+    """`month_mask(date, symbols) -> bool array` optionally restricts eligibility each month
+    (added post-hoc for the point-in-time membership check; None reproduces the primary run)."""
     os.makedirs(out_dir, exist_ok=True)
     d = load(bars); o, c, v = d['open'].values, d['close'].values, d['volume']
     idx = d['close'].index; syms = list(d['close'].columns)
@@ -82,6 +84,8 @@ def main(bars, earn, analyst, universe, out_dir):
         close_t = pd.Timestamp(f'{idx[a].date()} 16:00', tz='America/New_York').tz_convert('UTC').value
         start = close_t - 90 * 86400 * 10**9
         eligible = elig_all[a] & ~np.isnan(o[k0]) & ~np.isnan(o[k1])
+        if month_mask is not None:
+            eligible &= month_mask(idx[a], syms)
         ret = o[k1] / o[k0] - 1
         mom = c[a - 21] / c[a - 252] - 1
         pull = -(c[a] / c[a - 5] - 1)

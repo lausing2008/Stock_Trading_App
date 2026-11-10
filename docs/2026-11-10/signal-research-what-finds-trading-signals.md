@@ -1,5 +1,10 @@
 # What actually finds trading signals: tests and evidence (2026-11-10)
 
+> **Update 2026-11-10:** the four experiments in section 7d were run as one test
+> (`combined-signal-results.md`). The combined score failed, momentum's and pullback's results in
+> section 3 come almost entirely from using today's stock list, and the +4.19% earnings figure in
+> section 5 is a measurement error. Read that document before acting on sections 3, 5 or 7.
+
 Written for the platform owner. The question was: what is the most effective and accurate way
 to find a trading signal? This answers it with tests on 993 US stocks from 2005 to 2026, the
 platform's own measured history, and the published research. Evidence and scripts:
