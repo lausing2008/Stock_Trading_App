@@ -155,9 +155,28 @@ evaluation v2 and a System Health status fix, nothing in live ingest or live RZY
   lines, no pending counters, and four UW 429 lines all day.
 - **B's cost on alerts is unmeasured:** no emailable event had a held bar.
 - **The drop can't be attributed.** With no skips, it cannot be split between B and the cap.
-- **165 in-session 5m rebuilds changed an older bar,** against about 47 on Nov 5. This is not the
-  partial-candle defect, and it is not explained yet.
-- **Stale stream-scans rose to 4,184** (5.3% of 79,500); the pre-B rate has not been computed.
+- **Stale stream-scans rose to 4,184** (5.3% of 78,546 session stream-scans), against
+  3.8–4.5% on Nov 2, 5 and 6.
+
+**Explained later the same evening: a defect in B (AUD-RZY-OPENHOLD).**
+- **What it cost:** 165 in-session 5m rebuilds changed an older bar, against about 47 on Nov 5.
+  103 of them, plus 104 on 15m and 101 on 1h, were `bar_missing` rebuilds between 09:30 and
+  09:45 ET. They are one burst at the open.
+- **The cause:**
+  - Monday's first 5m bar is stored while it is still forming, from 14:30:02 UTC.
+  - `_latest_session_write_times` then read provenance for Monday only.
+  - The newest *completed* bars, which `hold_unwritten_tail` checks, were still Friday's.
+  - With no Monday record for Friday's 09:30 bar, the whole Friday session was held, so 96
+    streams lost their checkpoint bars and rebuilt.
+- **No wrong alert:** no mail went out. Three UBER 1h events from Friday were recorded on Monday
+  labelled as `incremental`.
+- **This recurs at every session open,** not only after a weekend.
+- **The fix** (branch `fix/rzy-openhold`, not deployed) reads provenance for the two newest
+  regular sessions. In a regression test through the real workflow, it holds 78 bars without
+  the fix and 0 with it.
+
+**The other 62 older-bar rebuilds** are `gap_after_checkpoint` (56) and `material_ohlc` (6), in
+line with Nov 5–6 (47 and 53), from the same handful of thinly traded symbols (BRK-A, FLBR, AMZA).
 
 **Latency trade-off needing a decision:** none yet. Re-read the held group after a session with
 cooldown skips.
