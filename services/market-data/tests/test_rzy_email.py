@@ -230,3 +230,14 @@ def test_structure_terminal_messages_do_not_claim_a_trade_exit():
         text=render_event(e,(),config=CFG,**TIMES)
         assert 'not a trade exit' in text
         assert 'does not confirm a fill or close a position you hold' in text
+
+
+def test_emailed_timeframes_state_what_the_study_measured_and_others_do_not():
+    hourly = render_event(sample(timeframe='1h'), BLOCKERS, config=CFG, **TIMES)
+    daily = render_event(sample(timeframe='1d'), BLOCKERS, config=CFG, **TIMES)
+    assert 'No measured edge on this timeframe' in hourly and '3,333 independent 1-hour trades' in hourly
+    assert 'No measured edge on this timeframe' in daily and '1,652 independent daily trades' in daily
+    assert 'not as a buy or sell signal' in hourly and 'not as a buy or sell signal' in daily
+    # The note is in the HTML too, and a timeframe without one adds nothing.
+    assert 'No measured edge on this timeframe' in render_event_html(sample(timeframe='1h'), BLOCKERS, config=CFG, **TIMES)
+    assert 'No measured edge on this timeframe' not in render_event(sample(timeframe='5m'), BLOCKERS, config=CFG, **TIMES)

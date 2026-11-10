@@ -11,6 +11,12 @@ spec=importlib.util.spec_from_file_location('db.models',ROOT/'shared/db/models.p
 models=importlib.util.module_from_spec(spec);sys.modules['db.models']=models;spec.loader.exec_module(models)
 for key in vars(models):setattr(db,key,getattr(models,key))
 from src.services import rzy_workflow as W
+# Owner decision 2026-11-10: only 1h and daily triggers are emailed. The mail mechanics below
+# (dedup, rebuild suppression, consent) are exercised on the 5m fixture, so they opt 5m back in;
+# the default rule itself is tested on a copy of the database at the first scan.
+assert W.EMAIL_TIMEFRAMES==('1h','1d')
+DEFAULT_EMAIL_TIMEFRAMES=W.EMAIL_TIMEFRAMES
+W.EMAIL_TIMEFRAMES=('5m','15m','1h','1d')
 from src.services import bar_provenance as _bar_provenance  # register its tables before create_all
 from src.services.rzy_models import RzyStream,RzyEvent,RzyPreference,RzyStreamSnapshot
 from common import outbox
@@ -102,8 +108,22 @@ with Session() as s:
     clock[0]=now
     pre=W.digest_snapshot(s,1,now)
     assert pre['available'] is False and 'not available yet' in pre['message']
+    if not url:
+        # The same scan under the default rule, on a copy: the 5m trigger is fresh and emailable
+        # but is never queued.
+        import shutil
+        s.commit(); twin=str(pathlib.Path(tempfile.mkdtemp())/'twin.db'); shutil.copy(engine.url.database,twin)
+        W.EMAIL_TIMEFRAMES=DEFAULT_EMAIL_TIMEFRAMES
+        try:
+            with sessionmaker(bind=create_engine('sqlite:///'+twin),autoflush=False)() as s2:
+                held=W.scan(s2,now);s2.commit()
+                assert held['queued']==0 and held['not_emailed_timeframe']==1 and held['too_late_to_mail']==0,held
+                assert s2.scalar(select(func.count()).select_from(models.NotificationOutbox))==0
+                assert s2.scalar(select(func.count()).select_from(RzyEvent).where(RzyEvent.event_type=='TRIGGERED'))>=1
+        finally: W.EMAIL_TIMEFRAMES=('5m','15m','1h','1d')
+    result['timing_only_timeframes_not_emailed']=True
     scanned=W.scan(s,now);s.commit()
-    assert scanned['queued']==1,scanned
+    assert scanned['queued']==1 and scanned['not_emailed_timeframe']==0,scanned
     # The interactive preview reads saved snapshots only; evaluating during the request fails.
     real_evaluate=W.evaluate
     def forbidden(*a,**k): raise AssertionError('preview must not evaluate streams')

@@ -162,7 +162,8 @@ function TimeframeGuide() {
         <TopDownDiagram />
         <figcaption className="text-xs text-slate-500">Read from the top down. Each step only narrows the previous one; none of it is automated.</figcaption>
       </figure>
-      <p className="text-amber-300">This is a reading practice, not something the scanner does. Combining timeframes has not been implemented or tested here, and no single timeframe has shown an edge over random entry timing. Treat it as a way to filter and time setups, not as a validated method.</p>
+      <p className="text-amber-300">This is a reading practice, not something the scanner does, and it has now been tested (2026-11-10, 996 stocks, 9,000 trades on data no earlier evaluation had seen). It did not help: 1h setups taken only with the daily trend lost more than all 1h setups (−0.12R against −0.08R per trade), and 5m setups with the daily trend lost 0.24R. No timeframe, filter or exit rule showed an edge over random entry timing. Read the steps below as a way to understand a chart, not as a method that improves results.</p>
+      <p className="text-slate-400">Pattern emails are sent for 1h and daily setups only. 5m and 15m lost after costs under every rule tested, so they are shown here as timing context and are not emailed. On daily bars, one variant did beat the live rules (long only, stock above its 200-day average, exit only at the stop or target), but its gain matched what random long entries in the same uptrends earned, and it has lost since 2021.</p>
       <ol className="list-decimal space-y-1 pl-5 text-slate-400">
         <li><b className="text-slate-200">Direction from the top (daily, then 1h).</b> Note whether the higher timeframe is trending up, trending down or unclear. Prefer lower-timeframe setups in the same direction. A sequence of 3 or more, or an exhaustion warning, means that trend is late: be more selective, not more aggressive.</li>
         <li><b className="text-slate-200">Setup on 15m.</b> Look for an armed A–B–C structure in that direction with planned reward/risk of at least 1.5, where C pulled back to near the middle band. The line through A and C is where the entry should happen; D is the measured target.</li>
@@ -171,7 +172,7 @@ function TimeframeGuide() {
         <li><b className="text-slate-200">Recheck at the next open, and stand aside on conflict.</b> Reward/risk must still be at least 1.5 at the actual next-bar open. If the timeframes disagree (for example a 5m long trigger inside a daily downtrend), treat it as counter-trend and skip it, or treat it only as an exhaustion/reversal watch.</li>
         <li><b className="text-slate-200">Check the data first.</b> Use only streams shown as usable in Data health below. 15m and 1h are built from 5m, so a 5m restatement or missing bin affects all three.</li>
       </ol>
-      <p className="text-xs text-slate-500">Sources: rule defaults in docs/2026-10-19/little-rzy-parameters.md; evaluation figures from docs/2026-10-19/little-rzy-evaluation-results.md and docs/2026-10-20/little-rzy-evaluation-rerun.md (5m/15m/1h Jul 21 – Oct 20 2026; daily Dec 2023 – Oct 2026; costs as modelled there).</p>
+      <p className="text-xs text-slate-500">Sources: rule defaults in docs/2026-10-19/little-rzy-parameters.md; evaluation figures from docs/2026-10-19/little-rzy-evaluation-results.md and docs/2026-10-20/little-rzy-evaluation-rerun.md (5m/15m/1h Jul 21 – Oct 20 2026; daily Dec 2023 – Oct 2026; costs as modelled there); the 2026-11-10 test in docs/2026-11-10/rzy-deep-review-and-improvement-results.md.</p>
     </div>
   </details>;
 }

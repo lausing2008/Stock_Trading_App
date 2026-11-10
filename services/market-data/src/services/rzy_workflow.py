@@ -27,6 +27,11 @@ from . import rzy_triggers
 
 NY=ZoneInfo('America/New_York')
 EMAIL_TYPES=('little_rzy','short_term_digest')
+# Owner decision 2026-11-10 (D1), from docs/2026-11-10/rzy-deep-review-and-improvement-results.md:
+# 5m and 15m triggers lost after costs under every rule tested on independent data, so they are
+# timing context only. Their streams are still scanned, recorded and shown; pattern emails go
+# out only for these timeframes. The morning digest is a separate channel and is unchanged.
+EMAIL_TIMEFRAMES=('1h','1d')
 # Measured 2026-10-19 over 95 streams: 96% of re-fetched OHLC values differ by <1e-6 relative
 # (storage noise); volume is routinely restated. Decisions keep the volume known at the time.
 NOISE_REL=1e-6
@@ -399,7 +404,7 @@ def scan(session,now=None,clock=None):
         keys={f'{sym}:{tf}:{cfg.hash}':(sym,tf) for sym,tf in jobs}
         fresh=set(session.scalars(select(RzyStream.stream_key).where(RzyStream.stream_key.in_(list(keys)),RzyStream.updated_at>=window))) if keys else set()
         jobs=set(sorted(v for k,v in keys.items() if k not in fresh)[:MAINTENANCE_BATCH])
-    queued=0; statuses={}; cache={}; previous_symbol=None; emailable_new=0; too_late=0
+    queued=0; statuses={}; cache={}; previous_symbol=None; emailable_new=0; too_late=0; not_emailed_timeframe=0
     # load_and_prepare_bars is a SUBSET of evaluate_total (never add them); snapshot_and_commit
     # includes email rendering/enqueue; every stream path stops both timers.
     phases={'load_and_prepare_bars':0.0,'evaluate_total':0.0,'snapshot_and_commit':0.0}
@@ -429,6 +434,10 @@ def scan(session,now=None,clock=None):
             checked=utc(clock())
             if checked-signal>timedelta(minutes=MINUTES[tf]+3):
                 too_late+=1; continue
+            # Counted above as a fresh emailable event (latency records stay comparable); a
+            # timing-only timeframe is simply never queued.
+            if tf not in EMAIL_TIMEFRAMES:
+                not_emailed_timeframe+=1; continue
             cfg=current_config()
             for uid,(user,pref,symbols) in audience.items():
                 if symbol not in symbols or tf not in pref.timeframes or not eligible(session,user,pref,'little_rzy'): continue
@@ -467,7 +476,7 @@ def scan(session,now=None,clock=None):
     purge_observations(session,now)
     session.commit()
     return {'status':'maintenance' if maintenance else 'ok','streams':len(jobs),'queued':queued,'stream_status':statuses,
-            'duration_seconds':round(duration,1),'too_late_to_mail':too_late}
+            'duration_seconds':round(duration,1),'too_late_to_mail':too_late,'not_emailed_timeframe':not_emailed_timeframe}
 
 
 GUIDANCE='Wait for a completed trendline-rejection candle after the open; recheck gap, fresh data, stop and actual-fill R/R >={minimum:g}. Stop and entry shown here are provisional references, not confirmed orders.'

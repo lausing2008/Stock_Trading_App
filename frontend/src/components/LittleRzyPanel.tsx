@@ -30,6 +30,7 @@ export default function LittleRzyPanel() {
           const next = e.target.checked ? [...preferences.timeframes, tf] : preferences.timeframes.filter(x => x !== tf);
           if (!next.length) { setMessage('Keep at least one timeframe.'); return; } void update({ timeframes: next });
         }} /> {tf}</label>)}
+        <p style={{ fontSize: 13, opacity: 0.8 }}>Pattern emails are sent for 1h and daily setups only. 5m and 15m are still scanned and shown on the Little RZY page as timing context: in testing on independent data they lost after costs under every rule tried. No timeframe has shown an edge over random entry timing.</p>
       </fieldset>}
     </>
     {isAdmin && <p>The digest preview, research alerts, data health and research paper ledger are on <Link href="/little-rzy" style={{ color: '#2dd4bf' }}>Admin → Little RZY</Link>.</p>}

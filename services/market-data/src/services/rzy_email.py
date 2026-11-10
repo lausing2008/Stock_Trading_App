@@ -302,6 +302,18 @@ def _exit_lines(event):
     return lines
 
 
+# What the 2026-11-10 study measured for each emailed timeframe (independent data, after costs).
+# Figures: docs/2026-11-10/rzy-deep-review-and-improvement-results.md, section 4a.
+EVIDENCE_NOTES = {
+    '1h': ('No measured edge on this timeframe: across 3,333 independent 1-hour trades, entering on a trigger did no better '
+           'than entering the same stock at a random time, and the live rules lost about 0.08R per trade after costs. '
+           'Use this as chart context, not as a buy or sell signal.'),
+    '1d': ('No measured edge on this timeframe: across 1,652 independent daily trades (2016-2026) the live rules lost about '
+           '0.09R per trade after costs and did slightly worse than random entry timing. '
+           'Use this as chart context, not as a buy or sell signal.'),
+}
+
+
 def chart_url(event, base_url=CHART_BASE_URL):
     params = {'tf': event.get('timeframe') or ''}
     if event.get('occurrence_id'):
@@ -334,7 +346,8 @@ def sections(event, paper_blockers=(), *, evaluated_at=None, rendered_at=None, c
         out.append(('Setup levels', _levels(event)))
     out.append(('How to interpret this', [
         'A bearish setup looks for a falling price; a bullish setup looks for a rising price. These are conditional pattern signals, not instructions to trade.',
-        'RZY is an independent rule-based research signal, not the AI signal. Historical evaluation has not demonstrated a trading edge.']))
+        'RZY is an independent rule-based research signal, not the AI signal. Historical evaluation has not demonstrated a trading edge.',
+        *([EVIDENCE_NOTES[event['timeframe']]] if event.get('timeframe') in EVIDENCE_NOTES else [])]))
     out.append(('Chart', [('link', 'Open the stock chart', chart_url(event, base_url)),
                           'The chart shows the CURRENT state, which may differ from this archived email. '
                           'Select the timeframe on the chart page; it opens on its default view.']))

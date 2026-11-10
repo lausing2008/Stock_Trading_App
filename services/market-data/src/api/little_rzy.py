@@ -27,6 +27,7 @@ class Preferences(BaseModel):
 def preferences(user=Depends(get_current_user),session=Depends(get_session)):
     row=session.get(RzyPreference,user.id)
     return dict(pattern_email=W.eligible(session,user,row,'little_rzy'),morning_digest=W.eligible(session,user,row,'short_term_digest'),timeframes=row.timeframes if row else ['5m','15m','1h'],
+        email_timeframes=list(W.EMAIL_TIMEFRAMES),
         schedule='20 minutes before US regular open (normally 09:10 America/New_York)',scope='my US watchlist',strategy_version=VERSION)
 
 @router.put('/preferences')
