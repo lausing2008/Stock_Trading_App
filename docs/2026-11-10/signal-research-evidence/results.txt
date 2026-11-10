@@ -1,0 +1,217 @@
+signal                                               H  period     events  excess%   95% interval      beat  abs%   abs win
+momentum_top_decile (monthly, 12-1 month)             5 all         19159   -0.14   -0.45 to  +0.17  48.5%  +0.14  51.5%
+momentum_top_decile (monthly, 12-1 month)             5 2005-2015    7604   -0.34   -0.63 to  -0.04  47.6%  -0.38  49.6%
+momentum_top_decile (monthly, 12-1 month)             5 2016-2020    4953   -0.08   -0.67 to  +0.46  49.3%  +0.71  54.7%
+momentum_top_decile (monthly, 12-1 month)             5 2021-2026    6602   +0.04   -0.76 to  +0.76  48.8%  +0.30  51.3%
+momentum_top_decile (monthly, 12-1 month)            20 all         19061   +0.38   -0.24 to  +0.93  48.9%  +1.50  54.0%
+momentum_top_decile (monthly, 12-1 month)            20 2005-2015    7604   -0.16   -0.70 to  +0.37  49.4%  +0.46  53.7%
+momentum_top_decile (monthly, 12-1 month)            20 2016-2020    4953   +0.52   -0.32 to  +1.46  48.4%  +2.08  55.7%
+momentum_top_decile (monthly, 12-1 month)            20 2021-2026    6504   +0.91   -0.58 to  +2.23  48.7%  +2.27  53.2%
+momentum_top_decile (monthly, 12-1 month)            60 all         18865   +1.25   +0.30 to  +2.28  47.8%  +5.02  57.1%
+momentum_top_decile (monthly, 12-1 month)            60 2005-2015    7604   -0.44   -1.35 to  +0.45  47.8%  +2.13  56.1%
+momentum_top_decile (monthly, 12-1 month)            60 2016-2020    4953   +1.19   -0.45 to  +2.90  47.0%  +6.62  60.6%
+momentum_top_decile (monthly, 12-1 month)            60 2021-2026    6308   +3.34   +1.26 to  +5.50  48.4%  +7.25  55.7%
+momentum_bottom_decile (monthly)                      5 all         18909   +0.19   -0.13 to  +0.55  48.6%  +0.47  52.1%
+momentum_bottom_decile (monthly)                      5 2005-2015    7484   +0.13   -0.29 to  +0.58  47.4%  +0.08  49.6%
+momentum_bottom_decile (monthly)                      5 2016-2020    4893   +0.49   -0.37 to  +1.46  49.5%  +1.29  54.9%
+momentum_bottom_decile (monthly)                      5 2021-2026    6532   +0.04   -0.45 to  +0.56  49.1%  +0.30  52.9%
+momentum_bottom_decile (monthly)                     20 all         18812   +0.18   -0.41 to  +0.77  47.6%  +1.30  52.8%
+momentum_bottom_decile (monthly)                     20 2005-2015    7484   -0.05   -0.85 to  +0.85  46.6%  +0.58  51.5%
+momentum_bottom_decile (monthly)                     20 2016-2020    4893   +0.75   -0.54 to  +2.17  50.6%  +2.31  56.0%
+momentum_bottom_decile (monthly)                     20 2021-2026    6435   +0.01   -0.81 to  +0.89  46.4%  +1.37  51.9%
+momentum_bottom_decile (monthly)                     60 all         18618   +2.07   +0.35 to  +4.30  47.4%  +5.84  56.7%
+momentum_bottom_decile (monthly)                     60 2005-2015    7484   +0.47   -1.09 to  +2.42  46.6%  +3.04  54.9%
+momentum_bottom_decile (monthly)                     60 2016-2020    4893   +5.93   +0.56 to +13.77  50.2% +11.37  61.4%
+momentum_bottom_decile (monthly)                     60 2021-2026    6241   +0.97   -0.65 to  +2.61  46.1%  +4.88  55.1%
+new_52_week_closing_high                              5 all         68765   -0.14   -0.21 to  -0.08  47.3%  -0.02  50.8%
+new_52_week_closing_high                              5 2005-2015   28077   -0.13   -0.19 to  -0.07  47.0%  -0.08  50.3%
+new_52_week_closing_high                              5 2016-2020   18891   -0.18   -0.34 to  -0.06  47.4%  +0.04  51.9%
+new_52_week_closing_high                              5 2021-2026   21797   -0.12   -0.27 to  +0.01  47.6%  +0.02  50.4%
+new_52_week_closing_high                             20 all         68576   -0.18   -0.36 to  -0.01  47.5%  +0.55  54.7%
+new_52_week_closing_high                             20 2005-2015   28077   -0.11   -0.29 to  +0.08  48.6%  +0.44  55.4%
+new_52_week_closing_high                             20 2016-2020   18891   -0.28   -0.62 to  +0.06  46.8%  +0.58  56.4%
+new_52_week_closing_high                             20 2021-2026   21608   -0.20   -0.64 to  +0.28  46.8%  +0.67  52.5%
+new_52_week_closing_high                             60 all         68298   -0.43   -0.83 to  -0.07  46.3%  +2.51  58.6%
+new_52_week_closing_high                             60 2005-2015   28077   -0.16   -0.51 to  +0.21  47.5%  +2.26  59.8%
+new_52_week_closing_high                             60 2016-2020   18891   -0.73   -1.89 to  +0.12  47.0%  +2.73  61.6%
+new_52_week_closing_high                             60 2021-2026   21330   -0.51   -1.27 to  +0.20  44.2%  +2.66  54.3%
+new_52_week_closing_low                               5 all         19220   -0.10   -0.30 to  +0.10  48.9%  +0.24  52.4%
+new_52_week_closing_low                               5 2005-2015    7574   -0.23   -0.53 to  +0.08  48.3%  +0.81  53.3%
+new_52_week_closing_low                               5 2016-2020    4360   -0.35   -0.78 to  +0.25  47.6%  -1.64  46.7%
+new_52_week_closing_low                               5 2021-2026    7286   +0.17   -0.06 to  +0.42  50.2%  +0.78  54.9%
+new_52_week_closing_low                              20 all         19134   +0.20   -0.28 to  +0.69  49.7%  +1.88  57.3%
+new_52_week_closing_low                              20 2005-2015    7574   -0.02   -0.83 to  +0.89  49.1%  +1.15  54.6%
+new_52_week_closing_low                              20 2016-2020    4360   +0.32   -0.65 to  +1.26  51.3%  +1.82  59.7%
+new_52_week_closing_low                              20 2021-2026    7200   +0.38   -0.31 to  +1.05  49.5%  +2.68  58.6%
+new_52_week_closing_low                              60 all         18891   +1.40   -0.06 to  +3.77  48.7%  +6.94  61.9%
+new_52_week_closing_low                              60 2005-2015    7574   +0.84   -0.46 to  +2.20  49.3%  +3.55  57.1%
+new_52_week_closing_low                              60 2016-2020    4360   +3.95   -1.17 to +15.24  48.9% +13.77  69.8%
+new_52_week_closing_low                              60 2021-2026    6957   +0.41   -0.94 to  +1.65  47.8%  +6.36  62.2%
+cross_above_200_day_average                           5 all         49888   -0.11   -0.18 to  -0.04  47.6%  +0.06  51.9%
+cross_above_200_day_average                           5 2005-2015   18896   -0.21   -0.31 to  -0.11  46.3%  -0.05  50.8%
+cross_above_200_day_average                           5 2016-2020   12798   -0.13   -0.29 to  +0.04  47.7%  -0.02  53.0%
+cross_above_200_day_average                           5 2021-2026   18194   +0.02   -0.09 to  +0.11  48.8%  +0.24  52.1%
+cross_above_200_day_average                          20 all         49591   -0.20   -0.34 to  -0.05  47.3%  +1.00  55.8%
+cross_above_200_day_average                          20 2005-2015   18896   -0.27   -0.52 to  -0.05  48.0%  +0.57  55.7%
+cross_above_200_day_average                          20 2016-2020   12798   -0.29   -0.62 to  +0.03  47.3%  +1.29  58.5%
+cross_above_200_day_average                          20 2021-2026   17897   -0.05   -0.29 to  +0.19  46.6%  +1.26  54.0%
+cross_above_200_day_average                          60 all         49110   -0.59   -0.90 to  -0.30  45.7%  +3.39  59.6%
+cross_above_200_day_average                          60 2005-2015   18896   -0.61   -0.98 to  -0.25  47.0%  +2.14  59.4%
+cross_above_200_day_average                          60 2016-2020   12798   -0.97   -1.72 to  -0.29  45.4%  +5.28  65.0%
+cross_above_200_day_average                          60 2021-2026   17416   -0.28   -0.73 to  +0.14  44.6%  +3.36  55.8%
+golden_cross_50_over_200                              5 all         11505   -0.12   -0.22 to  -0.03  48.0%  +0.11  51.9%
+golden_cross_50_over_200                              5 2005-2015    4183   -0.17   -0.31 to  -0.02  46.9%  -0.04  51.1%
+golden_cross_50_over_200                              5 2016-2020    3390   -0.06   -0.22 to  +0.10  49.4%  +0.28  54.5%
+golden_cross_50_over_200                              5 2021-2026    3932   -0.12   -0.28 to  +0.04  48.0%  +0.11  50.4%
+golden_cross_50_over_200                             20 all         11482   -0.12   -0.36 to  +0.13  47.5%  +0.86  55.3%
+golden_cross_50_over_200                             20 2005-2015    4183   -0.26   -0.57 to  +0.08  47.1%  +0.44  54.3%
+golden_cross_50_over_200                             20 2016-2020    3390   -0.08   -0.49 to  +0.37  48.3%  +1.33  60.3%
+golden_cross_50_over_200                             20 2021-2026    3909   +0.00   -0.46 to  +0.52  47.3%  +0.89  52.0%
+golden_cross_50_over_200                             60 all         11380   -0.37   -0.87 to  +0.11  45.9%  +3.64  59.5%
+golden_cross_50_over_200                             60 2005-2015    4183   -0.56   -1.18 to  +0.06  46.0%  +3.18  60.5%
+golden_cross_50_over_200                             60 2016-2020    3390   -0.16   -1.32 to  +0.97  48.7%  +5.01  65.7%
+golden_cross_50_over_200                             60 2021-2026    3807   -0.35   -1.22 to  +0.54  43.3%  +2.93  53.1%
+breakout_20_day_high_on_2x_volume                     5 all         29578   -0.19   -0.28 to  -0.10  46.8%  -0.00  49.9%
+breakout_20_day_high_on_2x_volume                     5 2005-2015   12249   -0.19   -0.30 to  -0.08  46.1%  -0.11  49.2%
+breakout_20_day_high_on_2x_volume                     5 2016-2020    7846   -0.40   -0.57 to  -0.26  45.4%  -0.15  49.1%
+breakout_20_day_high_on_2x_volume                     5 2021-2026    9483   -0.01   -0.22 to  +0.18  48.7%  +0.26  51.5%
+breakout_20_day_high_on_2x_volume                    20 all         29418   -0.21   -0.41 to  -0.01  46.6%  +0.78  54.7%
+breakout_20_day_high_on_2x_volume                    20 2005-2015   12249   -0.12   -0.32 to  +0.08  47.8%  +0.40  54.3%
+breakout_20_day_high_on_2x_volume                    20 2016-2020    7846   -0.49   -0.80 to  -0.22  45.7%  +0.93  57.0%
+breakout_20_day_high_on_2x_volume                    20 2021-2026    9323   -0.08   -0.57 to  +0.40  45.9%  +1.17  53.3%
+breakout_20_day_high_on_2x_volume                    60 all         29319   -0.15   -0.49 to  +0.22  46.1%  +2.97  58.5%
+breakout_20_day_high_on_2x_volume                    60 2005-2015   12249   -0.13   -0.47 to  +0.20  47.7%  +2.12  58.5%
+breakout_20_day_high_on_2x_volume                    60 2016-2020    7846   -0.47   -1.26 to  +0.25  46.5%  +3.55  62.4%
+breakout_20_day_high_on_2x_volume                    60 2021-2026    9224   +0.10   -0.72 to  +0.90  43.8%  +3.61  55.2%
+pullback_in_uptrend (RSI2 < 10, above 200-day)        5 all        102569   -0.04   -0.10 to  +0.02  48.1%  +0.31  54.1%
+pullback_in_uptrend (RSI2 < 10, above 200-day)        5 2005-2015   42323   -0.06   -0.11 to  +0.00  47.8%  +0.38  55.1%
+pullback_in_uptrend (RSI2 < 10, above 200-day)        5 2016-2020   25155   -0.05   -0.15 to  +0.07  48.4%  +0.09  53.8%
+pullback_in_uptrend (RSI2 < 10, above 200-day)        5 2021-2026   35091   -0.01   -0.14 to  +0.13  48.4%  +0.40  53.2%
+pullback_in_uptrend (RSI2 < 10, above 200-day)       20 all        102347   -0.00   -0.13 to  +0.13  47.9%  +1.19  56.8%
+pullback_in_uptrend (RSI2 < 10, above 200-day)       20 2005-2015   42323   -0.06   -0.22 to  +0.08  48.1%  +1.18  57.7%
+pullback_in_uptrend (RSI2 < 10, above 200-day)       20 2016-2020   25155   +0.05   -0.21 to  +0.34  48.6%  +0.95  58.8%
+pullback_in_uptrend (RSI2 < 10, above 200-day)       20 2021-2026   34869   +0.04   -0.22 to  +0.30  47.2%  +1.37  54.2%
+pullback_in_uptrend (RSI2 < 10, above 200-day)       60 all        101166   -0.19   -0.43 to  +0.04  46.6%  +3.63  60.5%
+pullback_in_uptrend (RSI2 < 10, above 200-day)       60 2005-2015   42323   -0.21   -0.45 to  +0.02  47.7%  +3.13  61.3%
+pullback_in_uptrend (RSI2 < 10, above 200-day)       60 2016-2020   25155   -0.44   -1.13 to  +0.17  46.6%  +3.86  63.3%
+pullback_in_uptrend (RSI2 < 10, above 200-day)       60 2021-2026   33688   +0.01   -0.45 to  +0.43  45.3%  +4.07  57.4%
+oversold_below_200_day (RSI2 < 10, below 200-day)     5 all         89126   -0.06   -0.15 to  +0.03  47.6%  +0.40  53.0%
+oversold_below_200_day (RSI2 < 10, below 200-day)     5 2005-2015   34202   -0.16   -0.28 to  -0.04  46.8%  +0.46  53.2%
+oversold_below_200_day (RSI2 < 10, below 200-day)     5 2016-2020   21674   +0.01   -0.20 to  +0.25  47.9%  +0.26  53.2%
+oversold_below_200_day (RSI2 < 10, below 200-day)     5 2021-2026   33250   -0.00   -0.13 to  +0.15  48.3%  +0.42  52.6%
+oversold_below_200_day (RSI2 < 10, below 200-day)    20 all         88756   +0.06   -0.13 to  +0.24  48.2%  +1.58  56.6%
+oversold_below_200_day (RSI2 < 10, below 200-day)    20 2005-2015   34202   -0.02   -0.26 to  +0.23  48.2%  +1.08  56.1%
+oversold_below_200_day (RSI2 < 10, below 200-day)    20 2016-2020   21674   +0.12   -0.34 to  +0.61  48.5%  +2.03  59.0%
+oversold_below_200_day (RSI2 < 10, below 200-day)    20 2021-2026   32880   +0.10   -0.19 to  +0.40  48.1%  +1.80  55.5%
+oversold_below_200_day (RSI2 < 10, below 200-day)    60 all         87539   +0.22   -0.12 to  +0.59  47.5%  +4.97  61.0%
+oversold_below_200_day (RSI2 < 10, below 200-day)    60 2005-2015   34202   +0.19   -0.22 to  +0.61  49.0%  +3.32  59.6%
+oversold_below_200_day (RSI2 < 10, below 200-day)    60 2016-2020   21674   +0.42   -0.48 to  +1.52  46.7%  +7.82  66.3%
+oversold_below_200_day (RSI2 < 10, below 200-day)    60 2021-2026   31663   +0.11   -0.44 to  +0.68  46.5%  +4.80  58.9%
+five_day_losers_bottom_decile                         5 all        116814   +0.07   -0.01 to  +0.15  48.9%  +0.37  52.5%
+five_day_losers_bottom_decile                         5 2005-2015   46525   +0.05   -0.06 to  +0.16  48.6%  +0.28  51.9%
+five_day_losers_bottom_decile                         5 2016-2020   30237   +0.06   -0.10 to  +0.26  49.4%  +0.47  54.2%
+five_day_losers_bottom_decile                         5 2021-2026   40052   +0.10   -0.04 to  +0.23  49.0%  +0.38  51.8%
+five_day_losers_bottom_decile                        20 all        116499   +0.22   +0.06 to  +0.36  48.7%  +1.49  55.6%
+five_day_losers_bottom_decile                        20 2005-2015   46525   +0.13   -0.05 to  +0.31  49.1%  +1.09  55.4%
+five_day_losers_bottom_decile                        20 2016-2020   30237   +0.33   -0.01 to  +0.66  49.2%  +2.16  58.8%
+five_day_losers_bottom_decile                        20 2021-2026   39737   +0.23   -0.01 to  +0.48  47.9%  +1.46  53.3%
+five_day_losers_bottom_decile                        60 all        115315   +0.53   +0.24 to  +0.84  47.8%  +4.49  59.2%
+five_day_losers_bottom_decile                        60 2005-2015   46525   +0.33   -0.02 to  +0.69  49.2%  +3.18  58.9%
+five_day_losers_bottom_decile                        60 2016-2020   30237   +0.58   -0.17 to  +1.37  47.3%  +6.49  63.7%
+five_day_losers_bottom_decile                        60 2021-2026   38553   +0.74   +0.28 to  +1.22  46.5%  +4.50  56.1%
+five_day_winners_top_decile                           5 all        118226   -0.21   -0.28 to  -0.14  46.6%  +0.10  51.9%
+five_day_winners_top_decile                           5 2005-2015   47153   -0.22   -0.31 to  -0.14  46.3%  +0.01  51.5%
+five_day_winners_top_decile                           5 2016-2020   30919   -0.24   -0.41 to  -0.09  46.9%  +0.18  53.0%
+five_day_winners_top_decile                           5 2021-2026   40154   -0.17   -0.28 to  -0.05  46.9%  +0.16  51.5%
+five_day_winners_top_decile                          20 all        117785   -0.12   -0.25 to  +0.01  47.3%  +1.18  55.3%
+five_day_winners_top_decile                          20 2005-2015   47153   -0.24   -0.36 to  -0.12  47.4%  +0.69  54.9%
+five_day_winners_top_decile                          20 2016-2020   30919   -0.13   -0.36 to  +0.11  47.7%  +1.74  58.9%
+five_day_winners_top_decile                          20 2021-2026   39713   +0.03   -0.26 to  +0.35  46.9%  +1.32  53.1%
+five_day_winners_top_decile                          60 all        116683   -0.01   -0.27 to  +0.27  46.3%  +4.03  58.8%
+five_day_winners_top_decile                          60 2005-2015   47153   -0.28   -0.53 to  -0.02  47.1%  +2.63  58.1%
+five_day_winners_top_decile                          60 2016-2020   30919   +0.03   -0.63 to  +0.61  46.8%  +5.97  63.8%
+five_day_winners_top_decile                          60 2021-2026   38611   +0.30   -0.26 to  +0.83  44.9%  +4.18  55.5%
+close_below_lower_bollinger_in_uptrend                5 all         38352   -0.02   -0.11 to  +0.06  48.4%  +0.40  55.2%
+close_below_lower_bollinger_in_uptrend                5 2005-2015   15784   -0.06   -0.15 to  +0.04  48.2%  +0.51  56.7%
+close_below_lower_bollinger_in_uptrend                5 2016-2020    9631   +0.05   -0.09 to  +0.20  49.9%  +0.21  55.6%
+close_below_lower_bollinger_in_uptrend                5 2021-2026   12937   -0.04   -0.23 to  +0.16  47.6%  +0.40  53.2%
+close_below_lower_bollinger_in_uptrend               20 all         38255   +0.05   -0.14 to  +0.23  48.1%  +1.42  57.8%
+close_below_lower_bollinger_in_uptrend               20 2005-2015   15784   +0.02   -0.21 to  +0.26  48.4%  +1.48  58.7%
+close_below_lower_bollinger_in_uptrend               20 2016-2020    9631   +0.08   -0.32 to  +0.46  49.2%  +0.89  58.8%
+close_below_lower_bollinger_in_uptrend               20 2021-2026   12840   +0.05   -0.31 to  +0.41  46.8%  +1.75  55.9%
+close_below_lower_bollinger_in_uptrend               60 all         37825   -0.10   -0.52 to  +0.33  46.7%  +3.84  61.1%
+close_below_lower_bollinger_in_uptrend               60 2005-2015   15784   -0.15   -0.57 to  +0.24  47.8%  +3.15  61.3%
+close_below_lower_bollinger_in_uptrend               60 2016-2020    9631   -0.71   -1.76 to  +0.15  45.0%  +3.47  62.1%
+close_below_lower_bollinger_in_uptrend               60 2021-2026   12410   +0.44   -0.39 to  +1.37  46.6%  +5.02  59.9%
+gap_up_4pct_on_3x_volume_closing_strong               5 all          4134   -0.16   -0.42 to  +0.08  48.8%  +0.02  51.2%
+gap_up_4pct_on_3x_volume_closing_strong               5 2005-2015    1618   +0.07   -0.26 to  +0.39  49.3%  +0.03  50.9%
+gap_up_4pct_on_3x_volume_closing_strong               5 2016-2020    1073   -0.31   -0.92 to  +0.26  49.3%  -0.03  53.0%
+gap_up_4pct_on_3x_volume_closing_strong               5 2021-2026    1443   -0.30   -0.73 to  +0.10  47.8%  +0.04  50.0%
+gap_up_4pct_on_3x_volume_closing_strong              20 all          4122   +0.31   -0.27 to  +0.89  48.9%  +1.43  55.8%
+gap_up_4pct_on_3x_volume_closing_strong              20 2005-2015    1618   +0.36   -0.14 to  +0.85  50.5%  +0.69  55.8%
+gap_up_4pct_on_3x_volume_closing_strong              20 2016-2020    1073   +0.00   -0.91 to  +0.98  50.3%  +2.19  60.6%
+gap_up_4pct_on_3x_volume_closing_strong              20 2021-2026    1431   +0.49   -0.81 to  +1.88  46.0%  +1.71  52.1%
+gap_up_4pct_on_3x_volume_closing_strong              60 all          4100   +3.03   +0.64 to  +6.98  47.2%  +7.09  59.0%
+gap_up_4pct_on_3x_volume_closing_strong              60 2005-2015    1618   +0.79   -0.27 to  +1.80  49.5%  +3.17  58.0%
+gap_up_4pct_on_3x_volume_closing_strong              60 2016-2020    1073   +8.89   +0.99 to +23.13  48.3% +15.94  66.6%
+gap_up_4pct_on_3x_volume_closing_strong              60 2021-2026    1409   +1.14   -1.13 to  +3.40  43.8%  +4.85  54.4%
+gap_down_4pct_on_3x_volume_closing_weak               5 all          4517   +0.06   -0.21 to  +0.32  48.0%  +0.09  49.6%
+gap_down_4pct_on_3x_volume_closing_weak               5 2005-2015    1594   -0.25   -0.68 to  +0.34  47.4%  +0.02  48.7%
+gap_down_4pct_on_3x_volume_closing_weak               5 2016-2020    1253   +0.26   -0.11 to  +0.62  49.0%  -0.52  48.4%
+gap_down_4pct_on_3x_volume_closing_weak               5 2021-2026    1670   +0.19   -0.23 to  +0.64  47.9%  +0.61  51.4%
+gap_down_4pct_on_3x_volume_closing_weak              20 all          4490   +0.15   -0.31 to  +0.67  46.9%  +1.22  52.8%
+gap_down_4pct_on_3x_volume_closing_weak              20 2005-2015    1594   -0.71   -1.29 to  -0.17  45.4%  -0.48  48.3%
+gap_down_4pct_on_3x_volume_closing_weak              20 2016-2020    1253   +0.78   +0.14 to  +1.40  48.3%  +2.18  56.7%
+gap_down_4pct_on_3x_volume_closing_weak              20 2021-2026    1643   +0.51   -0.46 to  +1.71  47.2%  +2.14  54.2%
+gap_down_4pct_on_3x_volume_closing_weak              60 all          4466   +4.94   +0.34 to +12.91  46.8%  +9.47  58.4%
+gap_down_4pct_on_3x_volume_closing_weak              60 2005-2015    1594   -0.15   -1.44 to  +1.14  46.3%  +2.00  53.5%
+gap_down_4pct_on_3x_volume_closing_weak              60 2016-2020    1253  +16.83   +1.41 to +47.45  51.2% +24.49  65.9%
+gap_down_4pct_on_3x_volume_closing_weak              60 2021-2026    1619   +0.76   -0.85 to  +2.59  44.0%  +5.21  57.6%
+gap_up_4pct_on_3x_volume_in_uptrend                   5 all          3381   -0.17   -0.40 to  +0.04  48.2%  +0.07  51.0%
+gap_up_4pct_on_3x_volume_in_uptrend                   5 2005-2015    1303   -0.01   -0.27 to  +0.26  48.4%  +0.02  50.7%
+gap_up_4pct_on_3x_volume_in_uptrend                   5 2016-2020     862   +0.08   -0.40 to  +0.49  50.9%  +0.52  54.8%
+gap_up_4pct_on_3x_volume_in_uptrend                   5 2021-2026    1216   -0.53   -0.92 to  -0.16  46.1%  -0.18  48.7%
+gap_up_4pct_on_3x_volume_in_uptrend                  20 all          3374   +0.22   -0.35 to  +0.84  48.3%  +1.26  55.1%
+gap_up_4pct_on_3x_volume_in_uptrend                  20 2005-2015    1303   +0.08   -0.38 to  +0.55  50.0%  +0.62  55.7%
+gap_up_4pct_on_3x_volume_in_uptrend                  20 2016-2020     862   +0.50   -0.45 to  +1.45  51.4%  +2.00  59.5%
+gap_up_4pct_on_3x_volume_in_uptrend                  20 2021-2026    1209   +0.16   -1.29 to  +1.68  44.3%  +1.41  51.3%
+gap_up_4pct_on_3x_volume_in_uptrend                  60 all          3356   +1.33   +0.20 to  +2.60  46.7%  +4.83  58.4%
+gap_up_4pct_on_3x_volume_in_uptrend                  60 2005-2015    1303   +0.42   -0.65 to  +1.37  49.1%  +2.62  58.0%
+gap_up_4pct_on_3x_volume_in_uptrend                  60 2016-2020     862   +2.61   +0.41 to  +5.28  47.7%  +7.87  64.8%
+gap_up_4pct_on_3x_volume_in_uptrend                  60 2021-2026    1191   +1.40   -1.16 to  +3.86  43.3%  +5.05  54.2%
+low_volatility_bottom_quintile (monthly)              5 all         37935   -0.22   -0.44 to  +0.01  46.3%  +0.06  52.5%
+low_volatility_bottom_quintile (monthly)              5 2005-2015   15021   -0.07   -0.35 to  +0.22  48.0%  -0.12  50.5%
+low_volatility_bottom_quintile (monthly)              5 2016-2020    9811   -0.39   -0.87 to  +0.09  44.6%  +0.41  55.7%
+low_volatility_bottom_quintile (monthly)              5 2021-2026   13103   -0.25   -0.66 to  +0.15  45.7%  +0.01  52.4%
+low_volatility_bottom_quintile (monthly)             20 all         37740   -0.44   -0.80 to  -0.06  46.8%  +0.68  56.3%
+low_volatility_bottom_quintile (monthly)             20 2005-2015   15021   -0.10   -0.67 to  +0.43  49.3%  +0.52  57.3%
+low_volatility_bottom_quintile (monthly)             20 2016-2020    9811   -0.67   -1.41 to  +0.04  45.6%  +0.89  57.7%
+low_volatility_bottom_quintile (monthly)             20 2021-2026   12908   -0.67   -1.35 to  +0.02  44.8%  +0.69  54.0%
+low_volatility_bottom_quintile (monthly)             60 all         37350   -1.31   -1.97 to  -0.61  44.5%  +2.47  62.2%
+low_volatility_bottom_quintile (monthly)             60 2005-2015   15021   -0.38   -1.36 to  +0.52  47.5%  +2.19  62.9%
+low_volatility_bottom_quintile (monthly)             60 2016-2020    9811   -2.43   -4.16 to  -0.90  42.0%  +3.02  65.9%
+low_volatility_bottom_quintile (monthly)             60 2021-2026   12518   -1.54   -2.68 to  -0.36  42.9%  +2.37  58.5%
+high_volatility_top_quintile (monthly)                5 all         38185   +0.10   -0.19 to  +0.38  49.0%  +0.38  51.6%
+high_volatility_top_quintile (monthly)                5 2005-2015   15141   -0.09   -0.40 to  +0.22  47.5%  -0.13  49.3%
+high_volatility_top_quintile (monthly)                5 2016-2020    9871   +0.40   -0.12 to  +0.98  50.8%  +1.20  54.9%
+high_volatility_top_quintile (monthly)                5 2021-2026   13173   +0.09   -0.51 to  +0.66  49.4%  +0.35  51.8%
+high_volatility_top_quintile (monthly)               20 all         37989   +0.61   +0.06 to  +1.16  48.9%  +1.73  53.1%
+high_volatility_top_quintile (monthly)               20 2005-2015   15141   +0.08   -0.53 to  +0.74  48.5%  +0.71  51.9%
+high_volatility_top_quintile (monthly)               20 2016-2020    9871   +1.01   +0.06 to  +2.07  50.6%  +2.57  56.1%
+high_volatility_top_quintile (monthly)               20 2021-2026   12977   +0.93   -0.22 to  +2.07  47.9%  +2.29  52.2%
+high_volatility_top_quintile (monthly)               60 all         37597   +2.85   +1.67 to  +4.12  49.6%  +6.63  56.8%
+high_volatility_top_quintile (monthly)               60 2005-2015   15141   +0.99   -0.01 to  +2.18  49.1%  +3.56  55.5%
+high_volatility_top_quintile (monthly)               60 2016-2020    9871   +5.11   +1.98 to  +9.18  52.1% +10.56  61.6%
+high_volatility_top_quintile (monthly)               60 2021-2026   12585   +3.33   +1.41 to  +5.25  48.2%  +7.24  54.7%
+momentum_top_quintile_and_pullback (RSI2 < 10)        5 all         38638   +0.10   -0.03 to  +0.24  50.3%  +0.48  54.7%
+momentum_top_quintile_and_pullback (RSI2 < 10)        5 2005-2015   15714   -0.00   -0.17 to  +0.15  49.9%  +0.53  55.5%
+momentum_top_quintile_and_pullback (RSI2 < 10)        5 2016-2020    9254   +0.04   -0.15 to  +0.24  49.5%  +0.07  53.6%
+momentum_top_quintile_and_pullback (RSI2 < 10)        5 2021-2026   13670   +0.27   -0.05 to  +0.58  51.3%  +0.69  54.5%
+momentum_top_quintile_and_pullback (RSI2 < 10)       20 all         38473   +0.37   +0.08 to  +0.67  49.5%  +1.69  56.7%
+momentum_top_quintile_and_pullback (RSI2 < 10)       20 2005-2015   15714   -0.07   -0.45 to  +0.27  48.6%  +1.18  56.5%
+momentum_top_quintile_and_pullback (RSI2 < 10)       20 2016-2020    9254   +0.39   -0.07 to  +0.87  50.0%  +1.53  58.1%
+momentum_top_quintile_and_pullback (RSI2 < 10)       20 2021-2026   13505   +0.86   +0.24 to  +1.50  50.2%  +2.39  55.9%
+momentum_top_quintile_and_pullback (RSI2 < 10)       60 all         38026   +0.65   +0.07 to  +1.27  47.6%  +4.91  59.7%
+momentum_top_quintile_and_pullback (RSI2 < 10)       60 2005-2015   15714   -0.41   -1.09 to  +0.21  47.7%  +2.98  58.6%
+momentum_top_quintile_and_pullback (RSI2 < 10)       60 2016-2020    9254   +0.23   -0.55 to  +0.96  47.0%  +5.87  63.4%
+momentum_top_quintile_and_pullback (RSI2 < 10)       60 2021-2026   13058   +2.22   +0.92 to  +3.69  47.8%  +6.56  58.4%
