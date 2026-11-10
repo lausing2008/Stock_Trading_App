@@ -8,9 +8,9 @@ Evidence save: `~/stockai-evidence/2026-11-09/`.
 
 ## Verdict
 
-**Not ready to enable email.** The trial met four of the six criteria:
-- **Volume fails.** It was about 2.5× the target.
-- **Duplicates fail,** narrowly.
+**Not ready to enable email.** The trial met five of the six criteria; **volume fails**, at about
+2.5× the target. (A first reading also failed duplicates; that was corrected the same evening,
+see criterion 4.)
 
 Separately, the review found **a false crash alert**. A stock split that had not yet been
 recorded made SOXX read −69%. With email on, that alert would have been sent. Both problems
@@ -24,7 +24,7 @@ trial.
 | 1 | Volume ≤ ~10 events per session for the enrolled account; digests ≤ 6 per day | **Fail** (digests pass) | Events reaching user 1, the only matched account: 127, 20, 208, 26 and 16 (median **26**). Digests: 5, 3, 5, 5 and 5. |
 | 2 | Freshness: intraday events use `live_quote` or settled bars | Pass | Every intraday US event used `live_quote`. About 430–440 live quotes per session over about 450 US subject-scans. At most 2 refusals per session (`quote_unusable` or `quote_mismatch`). |
 | 3 | Detection delay ≤ ~2 h | Pass, by schedule | All 25 scheduled scans ran. The gaps between slots are at most 2 h (10:05, 12:05, 14:05, 15:40). |
-| 4 | No repeated (subject, rule, session, step); no slow decline while a pullback is open | **Fail, narrowly** | **SOXX was alerted twice**, once as a watched symbol and once as a benchmark, on Nov 2, 4 and 5. NET's second event on Nov 2 is a correct new episode after a recovery. Slow decline never fired while a pullback was open; it fired 1–2 h *before* one, on six subjects, so one decline produced two alerts. |
+| 4 | No repeated (subject, rule, session, step); no slow decline while a pullback is open | Pass (corrected) | SOXX was recorded twice, as a watched symbol and as a benchmark, on Nov 2, 4 and 5. **Corrected:** benchmark scope is forced to shadow by design (2026-10-24), so it never delivers; only the symbol event could reach a user. My first reading counted benchmark receipts as deliveries. NET's second event on Nov 2 is a correct new episode after a recovery. Slow decline never fired while a pullback was open; it fired 1–2 h *before* one, on six subjects, so one decline produced two alerts. |
 | 5 | Re-alert after recovery observed | Pass | 28 events had `new episode after recovery`. Episodes closed per session: 14, 10, 5, 14 and 23. |
 | 6 | Not over-suppressed | Pass | All 2,231 `same_episode` suppressions had an earlier event for the same subject and rule within 15 days, so suppression only removed repeats. |
 
@@ -78,15 +78,30 @@ market:
 
 Two market-wide days carry most of the events, so neither figure is evidence of usefulness.
 
-## Recommendation
+## Built 2026-11-09 (commit `3369e1a5`)
+
+- **Unrecorded-split guard:** any one-session fall of 40% or more is held as
+  `possible_unrecorded_corporate_action` until corporate actions are refreshed after that
+  session's close. A recorded split takes the existing path. A genuine crash of that size is
+  delayed until the nightly refresh (about 00:50 UTC).
+- **Market-wide gate:** while a market's median measured session move is −1.5% or worse over
+  at least 20 subjects, a stock's session decline alerts only when it is at least a ladder
+  step (3%) worse than that median. One `market_breadth` event reports the market move. Calm
+  markets are unchanged. Pullback and slow-decline rules are not gated.
+- **Benchmark duplicate:** no code change; a probe now asserts a watched benchmark ETF is
+  deliverable exactly once.
+- **Expected effect on volume:** simulated on the trial with end-of-day medians, Nov 5 falls
+  from about 220 events to about 120 and Nov 2 from about 140 to about 105. Ordinary days
+  (16–26 events) are unchanged, so **volume is still likely to fail** the ≈10 target. Meeting it
+  needs a threshold decision, for example raising a single stock's first session step from 3%,
+  which is the user's to make.
+
+## Recommendation (as approved)
 
 1. Keep email **off**.
-2. Build three changes:
-   - the unrecorded-split guard;
-   - one alert per subject when it is both a watched symbol and a benchmark;
-   - the market-wide gate.
-   Then run a new five-session shadow period, measured with the same criteria and
-   `scripts/measurement_report.py`.
+2. Build the changes above, then run a new five-session shadow period from Tue Nov 10,
+   measured with the same criteria and `scripts/measurement_report.py`. The new rules change
+   the configuration hash, so the new trial cannot be pooled with this one.
 3. Go live only after that period passes, with one account first, as the design states.
 
 ## Side notes
