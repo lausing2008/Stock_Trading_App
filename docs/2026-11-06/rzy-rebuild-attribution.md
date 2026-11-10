@@ -132,10 +132,35 @@ consumed it. Scan time is the scan's start, so the split is approximate for bars
 scan is running. On Nov 2, a tenth of held bars waited hours for their first post-close write;
 under B their streams wait that long.
 
-Still to measure on Monday:
-- A: `ingest.cooldown_completion_retry` and `ingest_cooldown_completion_pending`;
-- B: `held_until_post_close_write` and streams reading `stale`;
-- the in-session 5m rebuild count against Nov 2 and Nov 6.
+### First live session, Mon 2026-11-09 (read the same evening)
+
+Market-data ran **`16fe5a81`** for the whole session (started Nov 8 22:29 UTC, a third redeploy
+from another session). It contains A, B, `bdbbed83` and `2c2078d3`; the additions are RZY
+evaluation v2 and a System Health status fix, nothing in live ingest or live RZY. Evidence:
+`~/stockai-evidence/2026-11-09/` (15 files, checksums OK), `rzy-ab-read.json`.
+
+| Session | Held 5m bars | Hold median / p90 / max | Emailable events, held / unaffected | In-session 5m rebuilds | Changed bar = last consumed |
+|---|---:|---|---|---:|---:|
+| Nov 9 | 173 of 12,148 | 2.4 / 15 / 25 min | 0 / 13 | 199 | 34 (17%) |
+
+**Observed.**
+- **Latency:** all 13 unaffected events were mailed. Candle close to recorded: median 2.6 min,
+  p90 3.5. To accepted mail: median 3.1, p90 4.1. That is the fastest of the five days, so the
+  in-flight cap did not slow ingest.
+- **Morning rebuilds** were unchanged: 86 5m streams before the open.
+- **The partial-candle signature is mostly gone:** the last-consumed share fell from 54–81% to 17%.
+
+**Still uncertain.**
+- **A is unobserved.** There were zero cooldown skips, zero `ingest.cooldown_completion_retry`
+  lines, no pending counters, and four UW 429 lines all day.
+- **B's cost on alerts is unmeasured:** no emailable event had a held bar.
+- **The drop can't be attributed.** With no skips, it cannot be split between B and the cap.
+- **165 in-session 5m rebuilds changed an older bar,** against about 47 on Nov 5. This is not the
+  partial-candle defect, and it is not explained yet.
+- **Stale stream-scans rose to 4,184** (5.3% of 79,500); the pre-B rate has not been computed.
+
+**Latency trade-off needing a decision:** none yet. Re-read the held group after a session with
+cooldown skips.
 
 **A, `c4599c51`.** The cooldown skip itself is unchanged. A skipped symbol whose newest intraday
 bar has closed without a post-close write is marked `completion_pending`. `ingest_universe` then
