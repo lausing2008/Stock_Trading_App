@@ -50,7 +50,8 @@ NYSE_HOLIDAYS: frozenset[date] = frozenset([
     date(2024,  5, 27), date(2024,  6, 19), date(2024,  7,  4), date(2024,  9,  2),
     date(2024, 11, 28), date(2024, 12, 25),
     # 2025
-    date(2025,  1,  1), date(2025,  1, 20), date(2025,  2, 17), date(2025,  4, 18),
+    date(2025,  1,  1), date(2025,  1,  9),  # 01-09: national day of mourning (President Carter), market closed
+    date(2025,  1, 20), date(2025,  2, 17), date(2025,  4, 18),
     date(2025,  5, 26), date(2025,  6, 19), date(2025,  7,  4), date(2025,  9,  1),
     date(2025, 11, 27), date(2025, 12, 25),
     # 2026
