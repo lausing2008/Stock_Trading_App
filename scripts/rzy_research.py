@@ -29,7 +29,7 @@ from statistics import mean
 from zoneinfo import ZoneInfo
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(REPO / 'services/market-data'), str(REPO / 'shared')]
+sys.path[:0] = [str(REPO / 'services/market-data'), str(REPO / 'shared'), str(REPO / 'scripts')]
 FIELDS = ('time', 'closed_at', 'open', 'high', 'low', 'close', 'volume', 'price_basis')
 INTRADAY = ('5m', '15m', '1h')
 NY = ZoneInfo('America/New_York')
@@ -185,7 +185,7 @@ _G = {}
 
 
 def _init(data_dir, variant_names, tfs):
-    from src.services.rzy_research import Series
+    from rzy_research_engine import Series
     market = json.load(open(os.path.join(data_dir, 'market.json')))['closes'] or []
     times = [datetime.fromisoformat(t) for t, _ in market]; closes = [c for _, c in market]
     regime = [None if k < 49 else ('above' if closes[k] > sum(closes[k - 49:k + 1]) / 50 else 'below') for k in range(len(closes))]
@@ -212,7 +212,7 @@ def _symbol(symbol):
     from src.services.little_rzy import Config
     from src.services.rzy_evaluation import matched_controls
     from dataclasses import replace
-    from src.services.rzy_research import run_stream, Series, ContextControls
+    from rzy_research_engine import run_stream, Series, ContextControls
     from src.services import rzy_evaluation_context as C
     cfg = Config()
     streams = {}
@@ -256,8 +256,10 @@ def _symbol(symbol):
                     t.update(variant=name, control_mean_r=mean(ctrl) if ctrl else None, controls=len(ctrl),
                              control_ctx_mean_r=mean(ctx) if ctx else None, controls_ctx=len(ctx))
                 rows.extend(trades)
-                s = stats.setdefault(f'{name}:{tf}', dict(bars=0, blocked={}))
+                s = stats.setdefault(f'{name}:{tf}', dict(bars=0, blocked={}, unresolved=0))
                 s['bars'] += len(seg)
+                # Positions still open when the data ends are not trades; counted, never scored.
+                s['unresolved'] += sum(1 for pos in engine.s['positions'].values() if pos['state'] != 'CLOSED' and not pos.get('cancelled'))
                 for reason, n in engine.blocked.items():
                     s['blocked'][reason] = s['blocked'].get(reason, 0) + n
     if dirty:
@@ -290,8 +292,8 @@ def run(data_dir, out_dir, variant_names, tfs, workers, symbols=None, split_modu
         for k, (r, s) in enumerate(pool.imap_unordered(_symbol, names, chunksize=4)):
             rows.extend(r)
             for key, v in s.items():
-                t = stats.setdefault(key, dict(bars=0, blocked={}))
-                t['bars'] += v['bars']
+                t = stats.setdefault(key, dict(bars=0, blocked={}, unresolved=0))
+                t['bars'] += v['bars']; t['unresolved'] += v.get('unresolved', 0)
                 for reason, n in v['blocked'].items():
                     t['blocked'][reason] = t['blocked'].get(reason, 0) + n
             if k % 100 == 99:
@@ -308,7 +310,7 @@ def run(data_dir, out_dir, variant_names, tfs, workers, symbols=None, split_modu
     with open(path, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=fields); w.writeheader(); w.writerows(rows)
     code = {p: sha256(REPO / p) for p in ('services/market-data/src/services/little_rzy.py', 'services/market-data/src/services/rzy_evaluation.py',
-                                          'services/market-data/src/services/rzy_research.py', 'scripts/rzy_research.py')}
+                                          'scripts/rzy_research_engine.py', 'scripts/rzy_research.py')}
     meta = dict(created_at=datetime.now(timezone.utc).isoformat(), data=json.load(open(os.path.join(data_dir, 'prepared.json'))),
                 variants={n: VARIANTS[n] for n in variant_names}, tfs=tfs, symbols=len(names), trades=len(rows), stats=stats,
                 controls=CONTROLS, seed=SEED, split_module=split_module, kept_set=keep, code_sha256=code, trades_sha256=sha256(path), seconds=round(time.time() - started),

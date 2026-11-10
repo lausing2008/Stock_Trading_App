@@ -1,0 +1,150 @@
+{
+ "created_at": "2026-11-10T05:52:51.472762+00:00",
+ "data": {
+  "prepared_at": "2026-11-10T03:41:08.983768+00:00",
+  "inputs": {
+   "bars.jsonl.gz": "cb264cdc5abeda727bd393b4b8709c5d0715b8301d0b681132bf042da97cb42e",
+   "market:1d.jsonl.gz": "d62308e9099f45c16a48a339ebc309e5bb5af6837530a6cad9dc1106969d412b"
+  },
+  "counts": {
+   "5m": {
+    "symbols": 155,
+    "segments": 434,
+    "bars": 776002
+   },
+   "15m": {
+    "symbols": 151,
+    "segments": 257,
+    "bars": 252750
+   },
+   "1h": {
+    "symbols": 145,
+    "segments": 168,
+    "bars": 65115
+   },
+   "1d": {
+    "symbols": 159,
+    "segments": 310,
+    "bars": 109148
+   },
+   "1w": {
+    "symbols": 155,
+    "segments": 302,
+    "bars": 22587
+   }
+  },
+  "symbols": 159,
+  "market_symbol": "SPY",
+  "market_bars": 5498
+ },
+ "variants": {
+  "baseline": {},
+  "lt_base": {
+   "gates": {
+    "long_only": true,
+    "d_sma200": true
+   }
+  },
+  "lt_off": {
+   "gates": {
+    "long_only": true,
+    "d_sma200": true
+   },
+   "exits": {
+    "line_exit": "off"
+   }
+  },
+  "lt_off_be1": {
+   "gates": {
+    "long_only": true,
+    "d_sma200": true
+   },
+   "exits": {
+    "line_exit": "off",
+    "breakeven_at_r": 1.0
+   }
+  },
+  "lt_off_t2": {
+   "gates": {
+    "long_only": true,
+    "d_sma200": true
+   },
+   "exits": {
+    "line_exit": "off",
+    "target_r": 2.0
+   }
+  },
+  "l_off": {
+   "gates": {
+    "long_only": true
+   },
+   "exits": {
+    "line_exit": "off"
+   }
+  }
+ },
+ "tfs": [
+  "1d"
+ ],
+ "symbols": 159,
+ "trades": 174,
+ "stats": {
+  "baseline:1d": {
+   "bars": 109148,
+   "blocked": {},
+   "unresolved": 0
+  },
+  "lt_base:1d": {
+   "bars": 109148,
+   "blocked": {
+    "long_only": 22,
+    "d_sma200": 9
+   },
+   "unresolved": 0
+  },
+  "lt_off:1d": {
+   "bars": 109148,
+   "blocked": {
+    "long_only": 22,
+    "d_sma200": 9
+   },
+   "unresolved": 2
+  },
+  "lt_off_be1:1d": {
+   "bars": 109148,
+   "blocked": {
+    "long_only": 22,
+    "d_sma200": 9
+   },
+   "unresolved": 1
+  },
+  "lt_off_t2:1d": {
+   "bars": 109148,
+   "blocked": {
+    "long_only": 22,
+    "d_sma200": 9
+   },
+   "unresolved": 1
+  },
+  "l_off:1d": {
+   "bars": 109148,
+   "blocked": {
+    "long_only": 22
+   },
+   "unresolved": 2
+  }
+ },
+ "controls": 20,
+ "seed": 7,
+ "split_module": null,
+ "kept_set": null,
+ "code_sha256": {
+  "services/market-data/src/services/little_rzy.py": "945b62341d5b1dd2e77e26b6733864dd473475372a16ec89dd28cb26fb5e3810",
+  "services/market-data/src/services/rzy_evaluation.py": "720f54e2651ce447867eb570b94dba883ec2343a0d66e830f1d749bb9ff5676d",
+  "scripts/rzy_research_engine.py": "b84e05bdbdb111545b898bbf1b837050a2768c3e34dc1e816fc16d2828e62eac",
+  "scripts/rzy_research.py": "1461c2f3c724e74be50d57c45bb2d4e1f8356d8cf5f459b6a250033630f040c0"
+ },
+ "trades_sha256": "509df50c01cd778206eb0c66c51b6ae8837722f92b373e879011a9f2fe22504c",
+ "seconds": 8,
+ "git_revision": "561423702e40f4ebd4ff637732fb9360bb19578b"
+}

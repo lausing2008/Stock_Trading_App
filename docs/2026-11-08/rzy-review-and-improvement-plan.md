@@ -1,5 +1,9 @@
 # Little RZY — implementation review and improvement plan (2026-11-08)
 
+> **Update 2026-11-10:** Phase 1 (V1–V4) and Phase 2 (M1–M3) were tested on independent data
+> (996 stocks, 9,000 baseline trades). None passed; V1 made 1h results worse. See
+> `docs/2026-11-10/rzy-deep-review-and-improvement-results.md` before acting on sections 5–7.
+
 Written for the platform owner deciding what to do with Little RZY, and for whoever builds the
 next version. It answers three questions: is RZY implemented correctly, why does it not work, and
 what should be tried next, in what order, and how we will know.

@@ -1,7 +1,9 @@
 """Little RZY research variants: entry gates and exit rules replayed inside the engine.
 
-Research only. Nothing here is imported by the live workflow, and no `Config` field is added, so
-live streams and their config hash never change (review plan P0-4). A variant is the shipped
+Research only. It lives in scripts/, outside the market-data service image, so nothing in the
+live workflow can import it and committing it creates no deploy drift. No `Config` field is
+added, so live streams and their config hash never change (review plan P0-4). Importing it needs
+services/market-data on sys.path (the runner and the tests add it). A variant is the shipped
 engine plus:
 
 - GATES: a triggered setup is refused when a causal feature of it fails a rule. A refused setup
@@ -19,7 +21,7 @@ from datetime import datetime
 from statistics import mean
 from zoneinfo import ZoneInfo
 
-from .rzy_evaluation import _FullHistory, _REASONS, _friction, simulate_control, BORROW_RATE
+from src.services.rzy_evaluation import _FullHistory, _REASONS, _friction, simulate_control, BORROW_RATE
 
 NY = ZoneInfo('America/New_York')
 EXIT_DEFAULTS = dict(
@@ -244,7 +246,9 @@ class ResearchEngine(_FullHistory):
                     capped = pos['fill'] + sign * x['target_r'] * pos['risk0']
                     if sign * (st['target'] - capped) > 0:
                         st['target'] = capped
-                        # The engine tested the entry bar against the uncapped target.
+                        # The engine tested the entry bar against the uncapped target. Known gap:
+                        # if that bar reached the UNCAPPED target the engine has already closed the
+                        # trade there (no such trade in the 2026-11-10 runs).
                         if (b['high'] >= capped) if sign == 1 else (b['low'] <= capped):
                             self._exit(st, pos, capped * (1 - sign * fr), pos['remaining'], 'primary_target', i)
                             continue

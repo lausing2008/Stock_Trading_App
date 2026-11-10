@@ -1,0 +1,42 @@
+{
+ "gate keeps the position": {
+  "test_filter": "gate_refuses",
+  "failed": true,
+  "tail": "1 failed, 9 deselected in 1.75s"
+ },
+ "series reads one step ahead": {
+  "test_filter": "features_ignore",
+  "failed": true,
+  "tail": "1 failed, 9 deselected in 1.14s"
+ },
+ "missing context passes a gate": {
+  "test_filter": "unknown_context",
+  "failed": true,
+  "tail": "1 failed, 9 deselected in 0.05s"
+ },
+ "line exit never switched off": {
+  "test_filter": "line_exit_off",
+  "failed": true,
+  "tail": "1 failed, 9 deselected in 0.85s"
+ },
+ "flat at close ignored": {
+  "test_filter": "flat_at_close",
+  "failed": true,
+  "tail": "1 failed, 9 deselected in 6.59s"
+ },
+ "context twins ignore the trend": {
+  "test_filter": "context_controls",
+  "failed": true,
+  "tail": "1 failed, 9 deselected in 0.51s"
+ },
+ "target cap ignored": {
+  "test_filter": "exit_rules",
+  "failed": true,
+  "tail": "1 failed, 9 deselected in 4.12s"
+ },
+ "time stop ignores the bar count": {
+  "test_filter": "exit_rules",
+  "failed": true,
+  "tail": "1 failed, 9 deselected in 6.54s"
+ }
+}

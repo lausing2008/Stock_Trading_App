@@ -1,10 +1,13 @@
 """Research variants: the default is the shipped engine; gates and exits do what they say."""
 import random
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import pytest
 from src.services.little_rzy import Config
 from src.services.rzy_evaluation import research_bars, run_segment, _FullHistoryStopTargetOnly
-from src.services.rzy_research import ResearchEngine, Series, run_stream, trigger_features, gate_reason, ContextControls
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'scripts'))  # research code lives outside the service image
+from rzy_research_engine import ResearchEngine, Series, run_stream, trigger_features, gate_reason, ContextControls  # noqa: E402
 
 T0 = datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc)
 
@@ -50,7 +53,7 @@ def test_line_exit_off_equals_the_existing_stop_target_only_variant():
 
 def test_gate_refuses_before_any_position_and_frees_the_stream():
     cfg = Config()
-    blocked = 0; freed = 0
+    blocked = 0
     for seed in range(10):
         bars = walk(seed)
         base = run_stream('X', '5m', bars, cfg)[1]
@@ -60,9 +63,10 @@ def test_gate_refuses_before_any_position_and_frees_the_stream():
         assert not any(p['state'] != 'CLOSED' and engine.s['structures'][k]['direction'] == 'short' for k, p in engine.s['positions'].items())
         refused = [s for s in engine.s['structures'].values() if s.get('reason') == 'research_gate:long_only']
         assert all(s['id'] not in engine.s['positions'] and s['state'] == 'REJECTED' for s in refused)
-        # A long the baseline rejected as overlapping an open short can trade once the short is refused.
-        freed += len({t['entry_index'] for t in got} - {t['entry_index'] for t in base})
-    assert blocked >= 5 and freed >= 0
+        # Refusing shorts can only ADD longs (ones the baseline rejected as overlapping an open
+        # short); it never removes one. Rare: none in these walks or on the real daily set.
+        assert {t['entry_index'] for t in base if t['direction'] == 'long'} <= {t['entry_index'] for t in got}
+    assert blocked >= 5
 
 
 def test_every_gate_rule_is_enforced_on_the_trades_it_lets_through():

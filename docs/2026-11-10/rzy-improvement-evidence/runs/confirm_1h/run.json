@@ -1,0 +1,155 @@
+{
+ "created_at": "2026-11-10T05:47:12.093429+00:00",
+ "data": {
+  "prepared_at": "2026-11-10T03:46:52.258748+00:00",
+  "inputs": {
+   "1d.jsonl.gz": "7dbfb25e95fcbeb63a828bcd17e082ff5fd3c82670b39b803238db3c89e5f1db",
+   "1h.jsonl.gz": "2ed70a4fa3de2e24920c7958e98ec757283488df933baa25970f54c058156cf1",
+   "5m.jsonl.gz": "ddad8364cc6afdd20c11868f91347697b3fcd6cf0c24fa895c8c173b1b11f271",
+   "market:1d.jsonl.gz": "d62308e9099f45c16a48a339ebc309e5bb5af6837530a6cad9dc1106969d412b"
+  },
+  "counts": {
+   "1d": {
+    "symbols": 993,
+    "segments": 993,
+    "bars": 4547537
+   },
+   "1w": {
+    "symbols": 987,
+    "segments": 987,
+    "bars": 943039
+   },
+   "1h": {
+    "symbols": 984,
+    "segments": 3185,
+    "bars": 4852324
+   },
+   "5m": {
+    "symbols": 985,
+    "segments": 3331,
+    "bars": 4021056
+   },
+   "15m": {
+    "symbols": 952,
+    "segments": 1914,
+    "bars": 1292694
+   }
+  },
+  "symbols": 996,
+  "market_symbol": "SPY",
+  "market_bars": 5498
+ },
+ "variants": {
+  "baseline": {},
+  "v1_htf": {
+   "gates": {
+    "htf_aligned": true
+   }
+  },
+  "v2_htf_vol": {
+   "gates": {
+    "htf_aligned": true,
+    "max_vol_ratio": 1.0
+   }
+  },
+  "v3_htf_regime": {
+   "gates": {
+    "htf_aligned": true,
+    "regime": true
+   }
+  },
+  "v4_cost": {
+   "gates": {
+    "max_cost_r": 0.1,
+    "min_price": 10.0
+   }
+  },
+  "lt_off": {
+   "gates": {
+    "long_only": true,
+    "d_sma200": true
+   },
+   "exits": {
+    "line_exit": "off"
+   }
+  },
+  "lt_base": {
+   "gates": {
+    "long_only": true,
+    "d_sma200": true
+   }
+  }
+ },
+ "tfs": [
+  "1h"
+ ],
+ "symbols": 996,
+ "trades": 5142,
+ "stats": {
+  "baseline:1h": {
+   "bars": 4852324,
+   "blocked": {},
+   "unresolved": 17
+  },
+  "v1_htf:1h": {
+   "bars": 4852324,
+   "blocked": {
+    "htf_aligned": 2407
+   },
+   "unresolved": 4
+  },
+  "v2_htf_vol:1h": {
+   "bars": 4852324,
+   "blocked": {
+    "htf_aligned": 2407,
+    "max_vol_ratio": 469
+   },
+   "unresolved": 3
+  },
+  "v3_htf_regime:1h": {
+   "bars": 4852324,
+   "blocked": {
+    "htf_aligned": 2407,
+    "regime": 445
+   },
+   "unresolved": 3
+  },
+  "v4_cost:1h": {
+   "bars": 4852324,
+   "blocked": {
+    "max_cost_r": 72,
+    "min_price": 42
+   },
+   "unresolved": 16
+  },
+  "lt_off:1h": {
+   "bars": 4852324,
+   "blocked": {
+    "long_only": 1707,
+    "d_sma200": 558
+   },
+   "unresolved": 28
+  },
+  "lt_base:1h": {
+   "bars": 4852324,
+   "blocked": {
+    "long_only": 1709,
+    "d_sma200": 558
+   },
+   "unresolved": 9
+  }
+ },
+ "controls": 20,
+ "seed": 7,
+ "split_module": "docs/2026-11-10/rzy-improvement-evidence/split.py",
+ "kept_set": "confirm",
+ "code_sha256": {
+  "services/market-data/src/services/little_rzy.py": "945b62341d5b1dd2e77e26b6733864dd473475372a16ec89dd28cb26fb5e3810",
+  "services/market-data/src/services/rzy_evaluation.py": "720f54e2651ce447867eb570b94dba883ec2343a0d66e830f1d749bb9ff5676d",
+  "scripts/rzy_research_engine.py": "b84e05bdbdb111545b898bbf1b837050a2768c3e34dc1e816fc16d2828e62eac",
+  "scripts/rzy_research.py": "1461c2f3c724e74be50d57c45bb2d4e1f8356d8cf5f459b6a250033630f040c0"
+ },
+ "trades_sha256": "fe1d2c98f1f1f74db76ff57ee640adce1f8a43295360d23f50bcb65a6516ba2b",
+ "seconds": 363,
+ "git_revision": "561423702e40f4ebd4ff637732fb9360bb19578b"
+}

@@ -1,0 +1,221 @@
+
+######## 5m  (1023 design trades)
+-- htf
+  group  trades    win  mean_r   edge  edge_lo  edge_hi
+aligned     312 +0.212  -0.171 -0.031   -0.132   +0.079
+neutral     363 +0.168  -0.199 -0.034   -0.121   +0.061
+opposed     342 +0.216  -0.144 -0.006   -0.088   +0.079
+-- regime
+group  trades    win  mean_r   edge  edge_lo  edge_hi
+False     539 +0.208  -0.153 -0.020   -0.088   +0.048
+ True     484 +0.188  -0.193 -0.027   -0.184   +0.054
+-- sma50
+group  trades    win  mean_r   edge  edge_lo  edge_hi
+False     154 +0.182  -0.165 +0.008   -0.169   +0.219
+ True     868 +0.202  -0.172 -0.027   -0.079   +0.026
+-- sma200
+group  trades    win  mean_r   edge  edge_lo  edge_hi
+False     203 +0.148  -0.270 -0.081   -0.238   +0.067
+ True     751 +0.206  -0.148 -0.013   -0.094   +0.061
+  nan      69 +0.261  -0.140 +0.033   -0.165   +0.361
+-- direction
+group  trades    win  mean_r   edge  edge_lo  edge_hi
+ long     492 +0.189  -0.174 -0.007   -0.072   +0.062
+short     531 +0.207  -0.170 -0.038   -0.111   +0.040
+-- tod
+      group  trades    win  mean_r   edge  edge_lo  edge_hi
+10:30-12:00     282 +0.248  -0.098 +0.062   -0.001   +0.134
+12:00-14:00     451 +0.173  -0.161 -0.032   -0.114   +0.032
+14:00-15:00     154 +0.221  -0.050 +0.105   -0.081   +0.316
+15:00-16:00     118 +0.153  -0.519 -0.327   -0.608   -0.057
+-- sequence
+group  trades    win  mean_r   edge  edge_lo  edge_hi
+    1     832 +0.196  -0.172 -0.025   -0.075   +0.029
+    2     191 +0.209  -0.170 -0.016   -0.175   +0.153
+                  group  trades    win  mean_r   edge  edge_lo  edge_hi
+vol_ratio:high(>=0.818)     341 +0.199  -0.199 -0.041   -0.147   +0.073
+  vol_ratio:low(<0.499)     341 +0.208  -0.134 -0.001   -0.067   +0.071
+          vol_ratio:mid     341 +0.188  -0.183 -0.026   -0.130   +0.073
+                         group  trades    win  mean_r   edge  edge_lo  edge_hi
+trigger_vol_ratio:high(>=1.08)     341 +0.205  -0.227 -0.069   -0.165   +0.030
+ trigger_vol_ratio:low(<0.659)     341 +0.208  -0.180 -0.038   -0.102   +0.024
+         trigger_vol_ratio:mid     341 +0.182  -0.108 +0.037   -0.067   +0.147
+                  group  trades    win  mean_r   edge  edge_lo  edge_hi
+slope_atr:high(>=0.194)     341 +0.243  -0.088 +0.024   -0.035   +0.089
+   slope_atr:low(<0.12)     341 +0.179  -0.247 -0.047   -0.189   +0.086
+          slope_atr:mid     341 +0.173  -0.181 -0.045   -0.120   +0.030
+                   group  trades    win  mean_r   edge  edge_lo  edge_hi
+impulse_atr:high(>=8.15)     341 +0.220  -0.135 -0.011   -0.098   +0.074
+  impulse_atr:low(<6.07)     341 +0.161  -0.234 -0.061   -0.170   +0.073
+         impulse_atr:mid     341 +0.214  -0.146 +0.003   -0.094   +0.088
+                group  trades    win  mean_r   edge  edge_lo  edge_hi
+retrace:high(>=0.624)     341 +0.170  -0.229 -0.050   -0.168   +0.062
+  retrace:low(<0.479)     341 +0.229  -0.134 -0.007   -0.082   +0.063
+          retrace:mid     341 +0.196  -0.153 -0.013   -0.101   +0.077
+                     group  trades    win  mean_r   edge  edge_lo  edge_hi
+stop_atr_plan:high(>=2.91)     341 +0.223  -0.118 -0.007   -0.104   +0.064
+  stop_atr_plan:low(<2.23)     341 +0.179  -0.259 -0.068   -0.174   +0.049
+         stop_atr_plan:mid     341 +0.194  -0.139 +0.005   -0.079   +0.092
+               group  trades    win  mean_r   edge  edge_lo  edge_hi
+rr_plan:high(>=4.46)     341 +0.179  -0.212 -0.048   -0.141   +0.062
+   rr_plan:low(<2.8)     341 +0.223  -0.140 -0.013   -0.086   +0.064
+         rr_plan:mid     341 +0.194  -0.164 -0.009   -0.101   +0.078
+             group  trades    win  mean_r   edge  edge_lo  edge_hi
+d_atr:high(>=8.13)     341 +0.179  -0.180 -0.063   -0.134   +0.008
+  d_atr:low(<5.76)     341 +0.194  -0.189 -0.016   -0.120   +0.095
+         d_atr:mid     341 +0.223  -0.146 +0.010   -0.086   +0.113
+                    group  trades    win  mean_r   edge  edge_lo  edge_hi
+cost_r_plan:high(>=0.164)     341 +0.132  -0.331 -0.124   -0.330   +0.007
+ cost_r_plan:low(<0.0992)     341 +0.243  -0.065 +0.026   -0.036   +0.088
+          cost_r_plan:mid     341 +0.220  -0.119 +0.029   -0.052   +0.114
+            group  trades    win  mean_r   edge  edge_lo  edge_hi
+price:high(>=156)     341 +0.194  -0.174 -0.065   -0.152   +0.031
+ price:low(<62.7)     341 +0.196  -0.173 +0.022   -0.071   +0.118
+        price:mid     341 +0.205  -0.169 -0.026   -0.101   +0.055
+             group  trades    win  mean_r   edge  edge_lo  edge_hi
+bars_ac:high(>=36)     342 +0.202  -0.132 +0.023   -0.127   +0.139
+  bars_ac:low(<23)     309 +0.214  -0.159 +0.002   -0.076   +0.075
+       bars_ac:mid     372 +0.183  -0.220 -0.087   -0.164   -0.008
+             group  trades    win  mean_r   edge  edge_lo  edge_hi
+bars_ct:high(>=11)     396 +0.182  -0.160 -0.036   -0.240   +0.051
+   bars_ct:low(<9)     285 +0.228  -0.139 +0.031   -0.064   +0.140
+       bars_ct:mid     342 +0.193  -0.213 -0.053   -0.132   +0.037
+                    group  trades    win  mean_r   edge  edge_lo  edge_hi
+ext_mid_atr:high(>=0.682)     341 +0.226  -0.162 -0.033   -0.136   +0.046
+  ext_mid_atr:low(<0.164)     341 +0.182  -0.209 -0.022   -0.117   +0.083
+          ext_mid_atr:mid     341 +0.188  -0.145 -0.015   -0.107   +0.088
+                       group  trades    win  mean_r   edge  edge_lo  edge_hi
+outer_band_c:high(>=-0.0667)     341 +0.211  -0.137 +0.002   -0.104   +0.112
+    outer_band_c:low(<-1.04)     341 +0.235  -0.141 +0.006   -0.061   +0.128
+            outer_band_c:mid     341 +0.150  -0.238 -0.078   -0.173   +0.022
+                group  trades    win  mean_r   edge  edge_lo  edge_hi
+mom20:high(>=0.00163)     341 +0.188  -0.187 -0.072   -0.157   +0.002
+ mom20:low(<-0.00157)     341 +0.208  -0.160 -0.004   -0.093   +0.101
+            mom20:mid     341 +0.199  -0.170 +0.007   -0.086   +0.112
+               group  trades    win  mean_r   edge  edge_lo  edge_hi
+mom60:high(>=0.0146)     340 +0.235  -0.082 +0.019   -0.049   +0.158
+ mom60:low(<0.00607)     339 +0.168  -0.275 -0.079   -0.218   +0.039
+           mom60:mid     339 +0.195  -0.154 -0.006   -0.101   +0.101
+                group  trades    win  mean_r   edge  edge_lo  edge_hi
+mom120:high(>=0.0196)     330 +0.212  -0.161 -0.034   -0.128   +0.044
+ mom120:low(<0.00373)     330 +0.200  -0.161 +0.017   -0.092   +0.139
+           mom120:mid     329 +0.176  -0.185 -0.044   -0.217   +0.056
+              group  trades    win  mean_r   edge  edge_lo  edge_hi
+rs63:high(>=0.0685)     339 +0.204  -0.206 -0.079   -0.154   +0.036
+ rs63:low(<-0.0809)     339 +0.180  -0.140 +0.023   -0.064   +0.117
+           rs63:mid     339 +0.209  -0.168 -0.015   -0.159   +0.084
+                  group  trades    win  mean_r   edge  edge_lo  edge_hi
+atr_pct:high(>=0.00276)     341 +0.258  -0.064 +0.062   -0.006   +0.160
+  atr_pct:low(<0.00186)     341 +0.152  -0.259 -0.092   -0.227   +0.026
+            atr_pct:mid     341 +0.185  -0.192 -0.040   -0.253   +0.045
+
+######## 15m  (343 design trades)
+-- htf
+  group  trades    win  mean_r   edge  edge_lo  edge_hi
+aligned     100 +0.220  +0.025 +0.113   -0.206   +0.376
+neutral     113 +0.177  -0.162 -0.092   -0.300   +0.360
+opposed     128 +0.141  -0.319 -0.217   -0.484   -0.001
+-- regime
+group  trades    win  mean_r   edge  edge_lo  edge_hi
+False     172 +0.180  -0.069 +0.003   -0.151   +0.173
+ True     171 +0.170  -0.270 -0.170   -0.474   +0.102
+-- sma50
+group  trades    win  mean_r   edge  edge_lo  edge_hi
+False      65 +0.138  -0.024 +0.073   -0.276   +0.537
+ True     277 +0.181  -0.214 -0.129   -0.259   -0.012
+-- sma200
+group  trades    win  mean_r   edge  edge_lo  edge_hi
+False      56 +0.125  -0.482 -0.346   -0.935   +0.763
+ True     220 +0.191  -0.064 +0.014   -0.134   +0.164
+  nan      67 +0.164  -0.255 -0.181   -0.358   -0.004
+-- direction
+group  trades    win  mean_r   edge  edge_lo  edge_hi
+ long     165 +0.152  -0.238 -0.146   -0.480   +0.096
+short     178 +0.197  -0.106 -0.025   -0.193   +0.122
+-- tod
+      group  trades    win  mean_r   edge  edge_lo  edge_hi
+09:30-10:30      30 +0.233  -0.121 -0.113   -0.410   +0.372
+10:30-12:00      41 +0.122  -0.197 -0.063   -0.225   +0.148
+12:00-14:00     123 +0.211  -0.074 +0.018   -0.142   +0.221
+14:00-15:00      76 +0.066  -0.238 -0.150   -0.400   +0.343
+15:00-16:00      73 +0.233  -0.262 -0.183   -0.649   +0.224
+-- sequence
+group  trades    win  mean_r   edge  edge_lo  edge_hi
+    1     256 +0.180  -0.180 -0.093   -0.251   +0.068
+    2      85 +0.165  -0.130 -0.045   -0.380   +0.281
+                 group  trades    win  mean_r   edge  edge_lo  edge_hi
+vol_ratio:high(>=1.02)     115 +0.148  -0.339 -0.235   -0.527   -0.021
+ vol_ratio:low(<0.641)     114 +0.149  -0.157 -0.053   -0.232   +0.177
+         vol_ratio:mid     114 +0.228  -0.011 +0.040   -0.373   +0.278
+                          group  trades    win  mean_r   edge  edge_lo  edge_hi
+trigger_vol_ratio:high(>=0.962)     115 +0.157  -0.239 -0.159   -0.480   +0.130
+  trigger_vol_ratio:low(<0.581)     114 +0.228  -0.022 +0.054   -0.222   +0.286
+          trigger_vol_ratio:mid     114 +0.140  -0.246 -0.145   -0.234   -0.045
+                  group  trades    win  mean_r   edge  edge_lo  edge_hi
+slope_atr:high(>=0.164)     115 +0.183  -0.122 -0.062   -0.176   +0.083
+  slope_atr:low(<0.106)     114 +0.184  -0.065 +0.023   -0.240   +0.344
+          slope_atr:mid     114 +0.158  -0.322 -0.211   -0.494   -0.004
+                   group  trades    win  mean_r   edge  edge_lo  edge_hi
+impulse_atr:high(>=8.51)     115 +0.165  -0.186 -0.126   -0.244   -0.024
+   impulse_atr:low(<6.2)     114 +0.140  -0.260 -0.162   -0.355   -0.008
+         impulse_atr:mid     114 +0.219  -0.062 +0.039   -0.334   +0.438
+                group  trades    win  mean_r   edge  edge_lo  edge_hi
+retrace:high(>=0.645)     115 +0.183  -0.153 -0.067   -0.421   +0.248
+   retrace:low(<0.49)     114 +0.175  -0.168 -0.111   -0.204   +0.000
+          retrace:mid     114 +0.167  -0.187 -0.072   -0.283   +0.136
+                     group  trades    win  mean_r   edge  edge_lo  edge_hi
+stop_atr_plan:high(>=2.74)     115 +0.226  -0.069 -0.016   -0.139   +0.135
+  stop_atr_plan:low(<2.11)     114 +0.167  -0.119 +0.020   -0.264   +0.295
+         stop_atr_plan:mid     114 +0.132  -0.321 -0.254   -0.549   +0.007
+              group  trades    win  mean_r   edge  edge_lo  edge_hi
+rr_plan:high(>=4.3)     115 +0.157  -0.152 -0.055   -0.422   +0.285
+ rr_plan:low(<2.67)     114 +0.184  -0.208 -0.161   -0.269   -0.051
+        rr_plan:mid     114 +0.184  -0.148 -0.034   -0.179   +0.306
+            group  trades    win  mean_r   edge  edge_lo  edge_hi
+d_atr:high(>=6.9)     115 +0.183  -0.120 -0.054   -0.385   +0.270
+ d_atr:low(<5.37)     114 +0.158  -0.277 -0.161   -0.391   -0.004
+        d_atr:mid     114 +0.184  -0.112 -0.035   -0.194   +0.257
+                     group  trades    win  mean_r   edge  edge_lo  edge_hi
+cost_r_plan:high(>=0.0917)     115 +0.148  -0.180 -0.028   -0.254   +0.250
+  cost_r_plan:low(<0.0598)     114 +0.175  -0.260 -0.233   -0.521   -0.040
+           cost_r_plan:mid     114 +0.202  -0.068 +0.010   -0.271   +0.207
+            group  trades    win  mean_r   edge  edge_lo  edge_hi
+price:high(>=139)     115 +0.174  -0.087 +0.003   -0.349   +0.346
+ price:low(<55.3)     114 +0.167  -0.216 -0.138   -0.270   +0.013
+        price:mid     114 +0.184  -0.207 -0.116   -0.256   +0.041
+             group  trades    win  mean_r   edge  edge_lo  edge_hi
+bars_ac:high(>=35)     120 +0.158  -0.099 -0.029   -0.247   +0.252
+  bars_ac:low(<26)     112 +0.179  -0.144 -0.038   -0.195   +0.133
+       bars_ac:mid     111 +0.189  -0.272 -0.188   -0.494   +0.045
+             group  trades    win  mean_r   edge  edge_lo  edge_hi
+bars_ct:high(>=11)     141 +0.184  -0.009 +0.059   -0.118   +0.263
+   bars_ct:low(<9)      93 +0.204  -0.160 -0.051   -0.269   +0.214
+       bars_ct:mid     109 +0.138  -0.385 -0.295   -0.599   -0.088
+                    group  trades    win  mean_r   edge  edge_lo  edge_hi
+ext_mid_atr:high(>=0.518)     115 +0.209  -0.215 -0.147   -0.463   +0.118
+ext_mid_atr:low(<-0.0241)     114 +0.175  -0.107 +0.016   -0.194   +0.322
+          ext_mid_atr:mid     114 +0.140  -0.186 -0.118   -0.242   +0.030
+                     group  trades    win  mean_r   edge  edge_lo  edge_hi
+outer_band_c:high(>=0.184)     115 +0.157  -0.144 -0.077   -0.222   +0.087
+  outer_band_c:low(<-1.04)     114 +0.202  -0.234 -0.169   -0.458   +0.061
+          outer_band_c:mid     114 +0.167  -0.131 -0.003   -0.254   +0.281
+                group  trades    win  mean_r   edge  edge_lo  edge_hi
+mom20:high(>=0.00272)     115 +0.191  -0.268 -0.200   -0.504   +0.026
+ mom20:low(<-0.00278)     114 +0.132  -0.167 -0.107   -0.289   +0.125
+            mom20:mid     114 +0.202  -0.073 +0.059   -0.135   +0.279
+               group  trades    win  mean_r   edge  edge_lo  edge_hi
+mom60:high(>=0.0259)     113 +0.168  -0.186 -0.139   -0.240   -0.022
+  mom60:low(<0.0122)     113 +0.159  -0.086 +0.023   -0.213   +0.304
+           mom60:mid     113 +0.195  -0.260 -0.153   -0.468   +0.089
+                group  trades    win  mean_r   edge  edge_lo  edge_hi
+mom120:high(>=0.0324)     104 +0.163  -0.131 -0.072   -0.235   +0.091
+ mom120:low(<0.00966)     104 +0.202  -0.279 -0.159   -0.509   +0.240
+           mom120:mid     103 +0.155  -0.105 -0.019   -0.221   +0.256
+              group  trades    win  mean_r   edge  edge_lo  edge_hi
+rs63:high(>=0.0785)     114 +0.228  -0.052 +0.031   -0.139   +0.226
+ rs63:low(<-0.0643)     114 +0.140  -0.332 -0.212   -0.482   +0.001
+           rs63:mid     113 +0.159  -0.114 -0.056   -0.309   +0.199
+                  group  trades    win  mean_r   edge  edge_lo  edge_hi
+atr_pct:high(>=0.00505)     115 +0.217  -0.273 -0.235   -0.528   -0.018
+  atr_pct:low(<0.00353)     114 +0.193  -0.065 +0.062   -0.172   +0.349
+            atr_pct:mid     114 +0.114  -0.169 -0.075   -0.204   +0.069
