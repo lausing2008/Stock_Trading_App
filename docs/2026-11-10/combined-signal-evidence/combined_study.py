@@ -66,7 +66,7 @@ def rank(values, eligible):
     return s.rank(pct=True).values
 
 
-def main(bars, earn, analyst, universe, out_dir, month_mask=None):
+def main(bars, earn, analyst, universe, out_dir, month_mask=None, first_month='2006-01'):
     """`month_mask(date, symbols) -> bool array` optionally restricts eligibility each month
     (added post-hoc for the point-in-time membership check; None reproduces the primary run)."""
     os.makedirs(out_dir, exist_ok=True)
@@ -139,7 +139,9 @@ def main(bars, earn, analyst, universe, out_dir, month_mask=None):
         blk = np.percentile(np.stack([x[s:s + block] for s in starts.ravel()]).reshape(n, -1)[:, :len(x)].mean(1), [2.5, 97.5])
         return [float(min(iid[0], blk[0])), float(max(iid[1], blk[1]))]
 
-    def stats(df, start='2006-01', end='2026-12'):
+    first = first_month
+
+    def stats(df, start=first, end='2026-12'):
         g = df[(df.month >= start) & (df.month <= end)].dropna(subset=['excess'])
         if len(g) < 12:
             return dict(months=len(g))
@@ -175,7 +177,7 @@ def main(bars, earn, analyst, universe, out_dir, month_mask=None):
     comp = res['portfolios']['composite3']
     res['primary'] = dict(
         best_single_input=best_single,
-        composite_minus_best_single=diff(P['composite3'], P[best_single], '2006-01', '2026-12'),
+        composite_minus_best_single=diff(P['composite3'], P[best_single], first, '2026-12'),
         pass_1_interval_above_zero=comp['ci_pct'][0] > 0,
         pass_2_beats_every_single_input={k: comp['mean_excess_pct'] > res['portfolios'][k]['mean_excess_pct'] for k in ('momentum', 'pullback', 'surprise')},
         pass_3_positive_in_every_period={p: comp[p]['mean_excess_pct'] > 0 for p, _, _ in PERIODS})
