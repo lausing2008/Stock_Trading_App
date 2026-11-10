@@ -705,5 +705,76 @@ check('SCAN live-quote measurement and quote age are recorded per market',
       cov_us.get('measured_live_quote') == 1 and cov_us.get('live_quote_age_minutes', {}).get('n') == 1,
       row['coverage'])
 
+# ── 2026-11-09 trial review ──
+# U. AUD-PRICERISK-UNRECORDEDSPLIT: SOXX's 3-for-1 split was recorded only after its ex-date
+#    session; the scan raised -69%. Held while the coverage predates the close, released after.
+build({'SOXX': [450, 452, 451, 449, 450.41, 139.0]})
+result, events, receipts, outbox = run()
+check('UNRECORDED SPLIT a -69% session raises no decline while actions predate the close',
+      not any(e.rule in ('session_decline', 'pullback', 'slow_decline') for e in events),
+      [(e.rule, e.change_pct) for e in events])
+held = {e['symbol']: e for e in result['scan']['excluded_subjects']}
+check('...and the scan names why',
+      held.get('SOXX', {}).get('factor') == 'possible_unrecorded_corporate_action'
+      and 'unrecorded split' in (held['SOXX'].get('reason') or ''), result['scan']['excluded_subjects'])
+with Session(engine, autoflush=False) as s:
+    for c in s.scalars(select(models.CorporateActionCoverage)):
+        c.retrieved_at = datetime(2026, 10, 12, 20, 30)          # after the 16:00 ET close
+    s.commit()
+result, events, receipts, outbox = run()
+check('...a refresh after the close with no split releases it as a genuine fall',
+      any(e.rule == 'session_decline' and e.subject == 'SOXX' and e.change_pct < -60 for e in events),
+      [(e.rule, e.change_pct) for e in events])
+
+# B. A watched ETF that is also a benchmark (SOXX) is recorded in both scopes, but only the
+#    symbol scope can deliver: benchmark scope is forced to shadow (2026-10-24 design).
+build({'SOXX': [100, 100, 100, 100, 100, 94]}, opt_in=(ALERT_TYPE_EMAIL, ALERT_TYPE_IN_APP))
+with Session(engine, autoflush=False) as s:
+    detect(s, now=NOW, redis_client=Redis(live=True)); s.commit()
+    detect(s, now=NOW, redis_client=Redis(live=True), scope='benchmark'); s.commit()
+    by_scope = {}
+    for r in s.scalars(select(models.RiskEventReceipt)):
+        by_scope.setdefault(s.get(models.RiskEvent, r.event_id).scope, []).append(r.state)
+    queued = len(list(s.scalars(select(models.NotificationOutbox))))
+check('BENCHMARK a watched benchmark ETF is deliverable once, through symbol scope',
+      by_scope.get('symbol') and all(x == 'email_queued' for x in by_scope['symbol'])
+      and all(x == 'shadow_suppressed' for x in by_scope.get('benchmark', [])) and queued == 1,
+      (by_scope, queued))
+
+# G. Market-wide gate: 22 of 25 stocks -4%, two -10%, one flat. Median -4%.
+crash = {f'S{i:02d}': [100, 100, 100, 100, 100, 96] for i in range(22)}
+crash.update({'BIG1': [100, 100, 100, 100, 100, 90], 'BIG2': [100, 100, 100, 100, 100, 90],
+              'FLAT': [100] * 6})
+build(crash)
+result, events, receipts, outbox = run()
+sd = sorted(e.subject for e in events if e.rule == 'session_decline')
+check('MARKET GATE only stocks a ladder step worse than the market alert on their own',
+      sd == ['BIG1', 'BIG2'], sd)
+mk = [e for e in events if e.rule == 'market_breadth']
+check('...one market_breadth event reports the market move',
+      len(mk) == 1 and mk[0].subject == 'US watch list' and mk[0].change_pct == -4.0
+      and mk[0].scope == 'theme', [(e.subject, e.change_pct, e.scope) for e in mk])
+check('...it names at most the worst ten and reaches the watching user',
+      mk and len(mk[0].evidence['member_moves']) == 10
+      and any(r.event_id == mk[0].id for r in receipts), mk and mk[0].evidence.get('member_moves'))
+check('...the outliers carry the market reference',
+      all((e.evidence or {}).get('market_median_pct') == -4.0 for e in events
+          if e.rule == 'session_decline'))
+sup = result['scan']['suppressions']['counts']
+check('...and the folded declines are named as market_wide, not dropped silently',
+      sup.get('market_wide') == 22, sup)
+result, events, receipts, outbox = run()
+check('...a re-run does not repeat the market event',
+      len([e for e in events if e.rule == 'market_breadth']) == 1)
+calm = {f'S{i:02d}': [100] * 6 for i in range(22)}
+calm.update({'DN1': [100, 100, 100, 100, 100, 96], 'DN2': [100, 100, 100, 100, 100, 96],
+             'DN3': [100, 100, 100, 100, 100, 96]})
+build(calm)
+result, events, receipts, outbox = run()
+check('MARKET GATE a calm market is unchanged: every -4% stock alerts, no market event',
+      sorted(e.subject for e in events if e.rule == 'session_decline') == ['DN1', 'DN2', 'DN3']
+      and not any(e.rule == 'market_breadth' for e in events),
+      [(e.subject, e.rule) for e in events])
+
 print('FAILURES:', failures)
 sys.exit(1 if failures else 0)

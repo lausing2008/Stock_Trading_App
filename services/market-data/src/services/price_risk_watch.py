@@ -58,7 +58,7 @@ MAX_QUOTE_AGE = timedelta(minutes=10)
 MAX_QUOTE_CLOCK_SKEW = timedelta(minutes=2)
 
 #: Rules whose episode is ONE SESSION. Everything else is episodic across sessions.
-SESSION_RULES = ("session_decline", "basket_breadth")
+SESSION_RULES = ("session_decline", "basket_breadth", "market_breadth")
 EPISODIC_SYMBOL_RULES = ("pullback", "slow_decline")
 #: An episodic event older than this cannot still be the same pullback: the window is 5
 #: sessions, so two calendar weeks is well past it even across a holiday.
@@ -174,6 +174,19 @@ def _evidence_for(session, symbols: set[str]):
         if prior is None or c.retrieved_at > prior.retrieved_at:
             coverage[c.symbol] = c
     return actions, coverage
+
+
+def _actions_refreshed_after(cov, market: str, day: date) -> bool:
+    """Was this symbol's corporate-action coverage retrieved after `day`'s session closed?
+
+    Only such a refresh can have seen a split taking effect that day; one from the morning
+    cannot (SOXX, Nov 5: the refresh before the open had no split, the one after did)."""
+    retrieved = getattr(cov, "retrieved_at", None)
+    bounds = session_bounds(market, day)
+    if retrieved is None or bounds is None:
+        return False
+    retrieved = retrieved if retrieved.tzinfo else retrieved.replace(tzinfo=timezone.utc)
+    return retrieved >= bounds[1]
 
 
 def _session_date(market: str, now: datetime) -> date:
@@ -529,6 +542,75 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
                            "limiting_factor": factor, "reason": reason,
                            "as_of": as_of or today}, mode, today, now)
 
+    #: Symbol-scope session declines, emitted after the loop (market-wide gate).
+    deferred: list[tuple] = []
+
+    def emit_symbol(symbol: str, cand: dict, usable_: list, settled_: date) -> None:
+        nonlocal created, receipts
+        if cand["rule"] == "slow_decline":
+            # Same move, other ladder: a pullback reported at -7% that eases to -6.5% is
+            # not a NEW slow decline. Quiet while the pullback episode is still open.
+            open_pullback = _prior_state(session, scope, symbol, "pullback",
+                                         cand["as_of"], mode, closes=usable_)
+            if open_pullback is not None and not open_pullback["episode_closed"]:
+                suppress(scope, symbol, "slow_decline", cand.get("step"), "open_pullback_episode",
+                         "pullback episode still open; the same move is not a new slow decline")
+                return
+        prior = _prior_state(session, scope, symbol, cand["rule"], cand["as_of"], mode,
+                             closes=usable_)
+        emit, why = price_risk.should_emit(prior, cand)
+        if not emit:
+            suppress(scope, symbol, cand["rule"], cand.get("step"), "same_episode", why)
+            return
+        cand["episode_after"] = _episode_for(prior)
+        event = _persist(session, cand, mode, today, now, note=why)
+        if event is None:
+            suppress(scope, symbol, cand["rule"], cand.get("step"), "event_key_exists",
+                     "an event with this key was already recorded")
+            return
+        created += 1
+        history_only = _deliverable(cand, settled_, now)
+        n = _record_receipts(session, event, symbol, live, now, pending, deliverable=history_only)
+        receipts += n
+        events_detail.append(_event_detail(event, cand, history_only, n, live))
+
+    def emit_market(market_: str, reference: date, mid: float, moves: dict) -> None:
+        nonlocal created, receipts
+        subject = f"{market_} watch list"
+        breadth = price_risk.basket_breadth(moves, len(moves),
+                                            decline_pct=price_risk.SESSION_DECLINE_STEPS[0],
+                                            min_observed=price_risk.MARKET_GATE_MIN_SUBJECTS)
+        declined_syms = breadth["declined_symbols"]
+        worst = sorted(declined_syms, key=lambda s: moves[s])[:price_risk.MARKET_BREADTH_NAMED]
+        observed = [measured[s]["observed_at"] for s in moves if measured[s]["observed_at"]]
+        cand = {"scope": "theme", "subject": subject, "rule": "market_breadth",
+                "step": price_risk.step_for(abs(mid), price_risk.BENCHMARK_DECLINE_STEPS) or 1,
+                "direction": "down", "as_of": reference, "from_date": reference,
+                "change_pct": round(mid, 2), "window_sessions": 1,
+                "evidence_status": "unverified", "reason": "median of measured watched stocks",
+                "breadth": breadth, "market_median_pct": round(mid, 2),
+                "price_source": ("live_quote" if any(measured[s]["price_source"] == "live_quote"
+                                                     for s in moves) else "settled_daily_bars"),
+                "observed_at": min(observed).isoformat() if observed else None,
+                "member_moves": {s: round(moves[s], 2) for s in worst}}
+        prior = _prior_state(session, "theme", subject, "market_breadth", reference, mode)
+        emit, why = price_risk.should_emit(prior, cand)
+        if not emit:
+            suppress("theme", subject, "market_breadth", cand["step"], "same_episode", why)
+            return
+        cand["episode_after"] = _episode_for(prior)
+        event = _persist(session, cand, mode, today, now, note=why)
+        if event is None:
+            suppress("theme", subject, "market_breadth", cand["step"], "event_key_exists",
+                     "an event with this key was already recorded")
+            return
+        created += 1
+        history_only = _deliverable(cand, max(fresh_through[s] for s in moves), now)
+        n = _record_receipts(session, event, declined_syms or list(moves), live, now, pending,
+                             deliverable=history_only)
+        receipts += n
+        events_detail.append(_event_detail(event, cand, history_only, n, live))
+
     for symbol in universe:
         stock = stocks.get(symbol)
         if stock is None:
@@ -593,6 +675,18 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
             resolved = {**resolved, "limiting_factor": "dividend_amount_unknown"}
         elif div_applied:
             verdict = {**verdict, "basis": f"{verdict.get('basis')}+cash_dividends_added_back"}
+        # UNRECORDED SPLIT (AUD-PRICERISK-UNRECORDEDSPLIT): a fall this large is held, like an
+        # unapplied split, until a corporate-action refresh after that session's close.
+        if verdict.get("usable"):
+            jump = price_risk.large_one_session_drop(list(usable))
+            if jump and not _actions_refreshed_after(coverage.get(symbol), market, jump["date"]):
+                verdict = {**verdict, "usable": False, "basis": None,
+                           "reason": (f"one-session fall of {jump['change_pct']:.1f}% on "
+                                      f"{jump['date'].isoformat()} ({jump['from_price']:,.2f} to "
+                                      f"{jump['to_price']:,.2f}); held until corporate actions "
+                                      "are refreshed after that session, in case it is an "
+                                      "unrecorded split")}
+                resolved = {**resolved, "limiting_factor": "possible_unrecorded_corporate_action"}
         # The LIMITING FACTOR travels with the exclusion, because "unmeasurable" alone cannot
         # be acted on. A stale span is fixed by a refresh; a missing completeness guarantee is
         # not fixable by one; an unappliable action is neither. See `best_achievable_status`.
@@ -645,33 +739,37 @@ def detect(session, *, now: datetime | None = None, redis_client=None,
                 exclusions[factor] = exclusions.get(factor, 0) + 1
                 _persist(session, cand, mode, today, now)
                 continue
-            if cand["rule"] == "slow_decline":
-                # Same move, other ladder: a pullback reported at -7% that eases to -6.5% is
-                # not a NEW slow decline. Quiet while the pullback episode is still open.
-                open_pullback = _prior_state(session, scope, symbol, "pullback",
-                                             cand["as_of"], mode, closes=list(usable))
-                if open_pullback is not None and not open_pullback["episode_closed"]:
-                    suppress(scope, symbol, "slow_decline", cand.get("step"), "open_pullback_episode",
-                             "pullback episode still open; the same move is not a new slow decline")
-                    continue
-            prior = _prior_state(session, scope, symbol, cand["rule"], cand["as_of"], mode,
-                                 closes=list(usable))
-            emit, why = price_risk.should_emit(prior, cand)
-            if not emit:
-                suppress(scope, symbol, cand["rule"], cand.get("step"), "same_episode", why)
+            if scope == "symbol" and cand["rule"] == "session_decline":
+                # Held until every subject is measured: the market-wide gate needs the median.
+                deferred.append((symbol, market, cand, list(usable), settled_through))
                 continue
-            cand["episode_after"] = _episode_for(prior)
-            event = _persist(session, cand, mode, today, now, note=why)
-            if event is None:
-                suppress(scope, symbol, cand["rule"], cand.get("step"), "event_key_exists",
-                         "an event with this key was already recorded")
-            else:
-                created += 1
-                history_only = _deliverable(cand, settled_through, now)
-                n = _record_receipts(session, event, symbol, live, now, pending,
-                                     deliverable=history_only)
-                receipts += n
-                events_detail.append(_event_detail(event, cand, history_only, n, live))
+            emit_symbol(symbol, cand, list(usable), settled_through)
+
+    # ── MARKET-WIDE GATE: one market move is one alert, not one per stock ──
+    for market_ in (sorted(set(markets.values())) if scope == "symbol" else []):
+        moves = {s: measured[s]["session"] for s, m in markets.items()
+                 if m == market_ and measured.get(s) and measured[s]["session"] is not None}
+        ref = max((measured[s]["as_of"] for s in moves), default=None)
+        moves = {s: v for s, v in moves.items() if measured[s]["as_of"] == ref}
+        mid = price_risk.median(list(moves.values()))
+        gate = (mid is not None and len(moves) >= price_risk.MARKET_GATE_MIN_SUBJECTS
+                and mid <= -price_risk.MARKET_GATE_MEDIAN_PCT)
+        for symbol, m, cand, usable_, settled_ in deferred:
+            if m != market_:
+                continue
+            if gate:
+                relative = cand["change_pct"] - mid
+                if price_risk.step_for(abs(min(relative, 0.0)), price_risk.SESSION_DECLINE_STEPS) == 0:
+                    suppress(scope, symbol, "session_decline", cand.get("step"), "market_wide",
+                             f"fell {cand['change_pct']:.1f}% with the {market_} watch list "
+                             f"(median {mid:.1f}% over {len(moves)} subjects); not a session-ladder "
+                             "step worse than the market, so the market_breadth event reports it")
+                    continue
+                cand["market_median_pct"] = round(mid, 2)
+                cand["relative_to_market_pct"] = round(relative, 2)
+            emit_symbol(symbol, cand, usable_, settled_)
+        if gate:
+            emit_market(market_, ref, mid, moves)
 
     for theme, members in (price_risk_themes().items() if scope == "symbol" else []):
         present = [m for m in members if m in measured]
@@ -1027,6 +1125,7 @@ _RULE_WORDS = {
     "session_decline": "fell {pct:.1f}% in one session",
     "pullback": "is down {pct:.1f}% from its recent high",
     "basket_breadth": "fell together in one session",
+    "market_breadth": "fell together in one session",
     "slow_decline": "is down {pct:.1f}% over {n} trading sessions",
     "basket_slow_decline": "have fallen together over {n} sessions",
 }

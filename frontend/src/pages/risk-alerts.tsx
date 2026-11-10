@@ -13,6 +13,7 @@ const RULE_LABEL: Record<string, string> = {
   session_decline: 'One-session decline',
   pullback: 'Pullback from recent peak',
   basket_breadth: 'Theme-wide decline',
+  market_breadth: 'Market-wide decline',
   unmeasurable: 'Could not be measured',
   slow_decline: 'Multi-session decline',
   basket_slow_decline: 'Multi-session theme decline',

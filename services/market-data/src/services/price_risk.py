@@ -63,6 +63,42 @@ EPISODE_RECOVERY_FRACTION = 0.5
 
 UNMEASURABLE = "unmeasurable"
 
+#: UNRECORDED CORPORATE ACTION (AUD-PRICERISK-UNRECORDEDSPLIT, 2026-11-09). SOXX split 3-for-1
+#: with ex-date Nov 5, but yfinance's record of it arrived at 00:50 UTC Nov 6, after the session;
+#: the 10:05 scan compared a 139.00 quote with the 450.41 pre-split close and raised -69.1%. A
+#: ratio test would not have caught it: the day also fell ~7%, so 450.41/139.00 is 3.24, not 3.
+#: A one-session fall this large is therefore held until a corporate-action refresh AFTER that
+#: session's close has had the chance to record a split. The cost is one refresh of delay on a
+#: genuine crash of this size.
+UNRECORDED_ACTION_DROP_PCT = 40.0
+
+#: MARKET-WIDE GATE (2026-11-09 trial review). On Nov 5 the watch list's median stock fell ~7%
+#: and 143 single-stock session declines restated one market move. While a market's median
+#: measured session move is at or below -MARKET_GATE_MEDIAN_PCT over at least
+#: MARKET_GATE_MIN_SUBJECTS subjects, a stock's session decline is reported only when it clears
+#: the session ladder RELATIVE to that median; one market_breadth event reports the market move.
+MARKET_GATE_MEDIAN_PCT = 1.5
+MARKET_GATE_MIN_SUBJECTS = 20
+#: Members named in a market_breadth event's text: the worst N, not all ~70 on a crash day.
+MARKET_BREADTH_NAMED = 10
+
+
+def large_one_session_drop(bars: list[tuple[date, float]],
+                           threshold_pct: float = UNRECORDED_ACTION_DROP_PCT) -> dict | None:
+    """The most recent adjacent-close fall of at least `threshold_pct` in `bars`, or None."""
+    for (d0, c0), (d1, c1) in reversed(list(zip(bars, bars[1:]))):
+        if c0 and c0 > 0 and _pct(c0, c1) <= -abs(threshold_pct):
+            return {"date": d1, "from_price": c0, "to_price": c1, "change_pct": round(_pct(c0, c1), 2)}
+    return None
+
+
+def median(values: list[float]) -> float | None:
+    v = sorted(values)
+    if not v:
+        return None
+    mid = len(v) // 2
+    return v[mid] if len(v) % 2 else (v[mid - 1] + v[mid]) / 2
+
 
 def _pct(from_value: float, to_value: float) -> float:
     return (to_value - from_value) / from_value * 100.0
