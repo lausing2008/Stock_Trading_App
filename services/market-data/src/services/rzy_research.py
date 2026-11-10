@@ -19,7 +19,7 @@ from datetime import datetime
 from statistics import mean
 from zoneinfo import ZoneInfo
 
-from .rzy_evaluation import _FullHistory, _REASONS, _friction
+from .rzy_evaluation import _FullHistory, _REASONS, _friction, simulate_control, BORROW_RATE
 
 NY = ZoneInfo('America/New_York')
 EXIT_DEFAULTS = dict(
@@ -31,10 +31,11 @@ EXIT_DEFAULTS = dict(
     time_stop_bars=None,    # exit at the next open when, after this many bars, ...
     time_stop_min_mfe_r=0.5,  # ... the best excursion is still below this
     target_r=None,          # cap the target at k times the initial risk from the fill
+    flat_at_close=False,    # intraday: exit at the close of a bar the runner marked session_last
 )
 RESEARCH_REASONS = dict(_REASONS, research_partial='partial', research_breakeven_stop='breakeven_stop',
                         research_time_stop='time_stop', research_line_buffer='line_buffer',
-                        research_two_closes='line_two_closes')
+                        research_two_closes='line_two_closes', research_session_close='session_close')
 
 
 class Series:
@@ -49,6 +50,11 @@ class Series:
     def at(self, when, back=0):
         k = self.index(when) - back
         return self.values[k] if k >= 0 else None
+
+    def last(self, when, n):
+        """The n most recent values as of `when`, or None when fewer exist."""
+        k = self.index(when)
+        return self.values[k - n + 1:k + 1] if k - n + 1 >= 0 else None
 
 
 def _dt(value):
@@ -109,6 +115,18 @@ def trigger_features(engine, st, i):
     state = regime.at(when) if regime is not None else None
     f['regime'] = None if state in (None, 'unknown') else (state == 'above') == (sign == 1)
     daily, market = ctx.get('daily'), ctx.get('market')
+    # Top-down inputs from the symbol's DAILY closes as of the trigger (for a daily stream these
+    # include the trigger bar itself, which has closed).
+    f.update(d_sma50=None, d_sma200=None, d_mom126=None)
+    if daily is not None:
+        last = daily.at(when)
+        for n in (50, 200):
+            window = daily.last(when, n)
+            if window:
+                f[f'd_sma{n}'] = sign * (last - mean(window)) > 0
+        base = daily.at(when, 126)
+        if last and base:
+            f['d_mom126'] = sign * (last / base - 1)
     f['rs63'] = None
     if daily is not None and market is not None:
         s0, s1, m0, m1 = daily.at(when, 63), daily.at(when), market.at(when, 63), market.at(when)
@@ -131,6 +149,9 @@ def gate_reason(features, direction, gates):
     if g.get('sma50') and f['sma50'] is not True: return 'sma50'
     if g.get('min_mom120') is not None and not (f['mom120'] is not None and f['mom120'] > g['min_mom120']): return 'min_mom120'
     if g.get('min_rs63') is not None and not (f['rs63'] is not None and f['rs63'] > g['min_rs63']): return 'min_rs63'
+    if g.get('d_sma200') and f['d_sma200'] is not True: return 'd_sma200'
+    if g.get('d_sma50') and f['d_sma50'] is not True: return 'd_sma50'
+    if g.get('min_d_mom126') is not None and not (f['d_mom126'] is not None and f['d_mom126'] > g['min_d_mom126']): return 'min_d_mom126'
     if g.get('min_stop_atr') is not None and f['stop_atr_plan'] < g['min_stop_atr']: return 'min_stop_atr'
     if g.get('min_slope_atr') is not None and f['slope_atr'] < g['min_slope_atr']: return 'min_slope_atr'
     if g.get('skip_tod') and f['tod'] in g['skip_tod']: return 'skip_tod'
@@ -141,8 +162,11 @@ class ResearchEngine(_FullHistory):
     """The shipped engine plus optional gates and exit rules. `context` supplies the causal
     cross-stream inputs: htf (trend timeline), regime, daily and market (close series)."""
 
-    def __init__(self, symbol, timeframe, config=None, gates=None, exits=None, context=None):
+    def __init__(self, symbol, timeframe, config=None, gates=None, exits=None, context=None, indicators=None):
         super().__init__(symbol, timeframe, config)
+        # Indicators depend only on the bars and the config, never on a variant: a runner may
+        # pass the list a previous replay of the SAME segment produced (speed only).
+        self._indicators = indicators
         self.gates = dict(gates or {})
         unknown = set(exits or {}) - set(EXIT_DEFAULTS)
         if unknown:
@@ -155,6 +179,19 @@ class ResearchEngine(_FullHistory):
             self.LINE_EXIT = self.x['line_exit'] == 'close'
         self.ctx = context or {}
         self.blocked = {}
+        self.trend_at = []
+
+    def step(self, candle):
+        events = super().step(candle)
+        # The stream's trend after each bar, for context-matched controls.
+        if len(self.trend_at) < self.s['offset'] + len(self.s['bars']):
+            self.trend_at.append(self.s['trend'])
+        return events
+
+    def indicators(self):
+        if self._indicators is not None:
+            return self._indicators[self.s['offset'] + len(self.s['bars']) - 1]
+        return super().indicators()
 
     def _active(self, i):
         ident = self.s['active']
@@ -211,6 +248,10 @@ class ResearchEngine(_FullHistory):
                         if (b['high'] >= capped) if sign == 1 else (b['low'] <= capped):
                             self._exit(st, pos, capped * (1 - sign * fr), pos['remaining'], 'primary_target', i)
                             continue
+            if x['flat_at_close'] and b.get('session_last'):
+                # Known from the clock, not from a later price: the session's final bar.
+                self._exit(st, pos, b['close'] * (1 - sign * fr), pos['remaining'], 'research_session_close', i)
+                continue
             if pos.get('exit_pending'):
                 continue
             pos['best'] = max(pos['best'], sign * ((b['high'] if sign == 1 else b['low']) - pos['fill']) / pos['risk0'])
@@ -232,9 +273,9 @@ class ResearchEngine(_FullHistory):
                 pos['exit_pending'] = True; pos['pending_reason'] = pending
 
 
-def run_stream(symbol, timeframe, bars, config, gates=None, exits=None, context=None):
+def run_stream(symbol, timeframe, bars, config, gates=None, exits=None, context=None, indicators=None):
     """Replay one contiguous segment. Returns (engine, closed trades with features)."""
-    engine = ResearchEngine(symbol, timeframe, config, gates, exits, context)
+    engine = ResearchEngine(symbol, timeframe, config, gates, exits, context, indicators)
     exit_reason = {}
     for bar in bars:
         for e in engine.step(bar):
@@ -274,3 +315,32 @@ def run_stream(symbol, timeframe, bars, config, gates=None, exits=None, context=
             exit_reason=RESEARCH_REASONS.get(reason, reason or 'unknown'), partial_taken=bool(pos.get('partial_taken')),
             **st.get('features', {})))
     return engine, trades
+
+
+class ContextControls:
+    """Random-timing twins drawn only from bars in the SAME context as the trade: the stream's
+    own trend equals the trade direction and the close is on the same side of the stream's
+    200-bar average as it was at the trade's trigger. Plain twins show whether an entry beats
+    random timing; these show whether the trigger adds anything beyond "be in such a trend"."""
+
+    def __init__(self, bars, engine, length=200):
+        self.bars, self.engine = bars, engine
+        total, sums = 0., []
+        for b in bars:
+            total += b['close']; sums.append(total)
+        self.above = [None if k < length - 1 else b['close'] > (sums[k] - (sums[k - length] if k >= length else 0.)) / length
+                      for k, b in enumerate(bars)]
+
+    def draw(self, trade, config, rng, k=20, borrow=BORROW_RATE):
+        sign = 1 if trade['direction'] == 'long' else -1
+        want = trade.get('sma200')
+        holding, inds, trend = trade['holding_bars'], self.engine.s['indicators'], self.engine.trend_at
+        candidates = [t for t in range(len(self.bars) - holding) if inds[t]['atr'] and t != trade['trigger_index']
+                      and trend[t] == trade['direction']
+                      and (None if self.above[t] is None else self.above[t] == (sign == 1)) == want]
+        out = []
+        for t in rng.sample(candidates, min(k, len(candidates))):
+            r = simulate_control(self.bars, inds, t, trade['direction'], trade['stop_atr'], trade['target_atr'], holding, config, borrow)
+            if r is not None:
+                out.append(r)
+        return out

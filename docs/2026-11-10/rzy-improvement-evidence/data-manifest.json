@@ -1,0 +1,151 @@
+{
+ "1d": {
+  "symbols": 993,
+  "segments": 993,
+  "bars": 4547537,
+  "missing": [
+   "ROKU",
+   "TCBI",
+   "VYLR"
+  ],
+  "first": "2005-01-03T00:00:00+00:00",
+  "last": "2026-11-09T00:00:00+00:00",
+  "sha256": "7dbfb25e95fcbeb63a828bcd17e082ff5fd3c82670b39b803238db3c89e5f1db",
+  "seconds": 404,
+  "fetched_at": "2026-11-10T03:33:04.607230+00:00"
+ },
+ "1h": {
+  "symbols": 984,
+  "segments": 3185,
+  "bars": 4852324,
+  "missing": [
+   "AHR",
+   "ALAB",
+   "BRAZ",
+   "BTSG",
+   "FRNM",
+   "GEV",
+   "MUU",
+   "NBIS",
+   "RDDT",
+   "SARO",
+   "SOLV",
+   "ULS"
+  ],
+  "first": "2023-12-12T14:30:00+00:00",
+  "last": "2026-11-09T20:30:00+00:00",
+  "sha256": "2ed70a4fa3de2e24920c7958e98ec757283488df933baa25970f54c058156cf1",
+  "seconds": 271,
+  "fetched_at": "2026-11-10T03:37:35.410976+00:00"
+ },
+ "5m": {
+  "symbols": 985,
+  "segments": 3331,
+  "bars": 4021056,
+  "missing": [
+   "AMADY",
+   "AMZA",
+   "BRAZ",
+   "BRK-A",
+   "CAR",
+   "ERIE",
+   "GATX",
+   "GEF",
+   "MORN",
+   "MSA",
+   "NEU"
+  ],
+  "first": "2026-08-17T13:30:00+00:00",
+  "last": "2026-11-09T20:55:00+00:00",
+  "sha256": "ddad8364cc6afdd20c11868f91347697b3fcd6cf0c24fa895c8c173b1b11f271",
+  "seconds": 153,
+  "fetched_at": "2026-11-10T03:40:08.467313+00:00"
+ },
+ "market_SPY_1d": {
+  "symbols": 1,
+  "segments": 1,
+  "bars": 5498,
+  "missing": [],
+  "first": "2005-01-03T00:00:00+00:00",
+  "last": "2026-11-09T00:00:00+00:00",
+  "sha256": "d62308e9099f45c16a48a339ebc309e5bb5af6837530a6cad9dc1106969d412b",
+  "seconds": 1,
+  "fetched_at": "2026-11-10T03:30:53.695149+00:00"
+ },
+ "prepared_yf": {
+  "prepared_at": "2026-11-10T03:46:52.258748+00:00",
+  "inputs": {
+   "1d.jsonl.gz": "7dbfb25e95fcbeb63a828bcd17e082ff5fd3c82670b39b803238db3c89e5f1db",
+   "1h.jsonl.gz": "2ed70a4fa3de2e24920c7958e98ec757283488df933baa25970f54c058156cf1",
+   "5m.jsonl.gz": "ddad8364cc6afdd20c11868f91347697b3fcd6cf0c24fa895c8c173b1b11f271",
+   "market:1d.jsonl.gz": "d62308e9099f45c16a48a339ebc309e5bb5af6837530a6cad9dc1106969d412b"
+  },
+  "counts": {
+   "1d": {
+    "symbols": 993,
+    "segments": 993,
+    "bars": 4547537
+   },
+   "1w": {
+    "symbols": 987,
+    "segments": 987,
+    "bars": 943039
+   },
+   "1h": {
+    "symbols": 984,
+    "segments": 3185,
+    "bars": 4852324
+   },
+   "5m": {
+    "symbols": 985,
+    "segments": 3331,
+    "bars": 4021056
+   },
+   "15m": {
+    "symbols": 952,
+    "segments": 1914,
+    "bars": 1292694
+   }
+  },
+  "symbols": 996,
+  "market_symbol": "SPY",
+  "market_bars": 5498
+ },
+ "prepared_snapshot": {
+  "prepared_at": "2026-11-10T03:41:08.983768+00:00",
+  "inputs": {
+   "bars.jsonl.gz": "cb264cdc5abeda727bd393b4b8709c5d0715b8301d0b681132bf042da97cb42e",
+   "market:1d.jsonl.gz": "d62308e9099f45c16a48a339ebc309e5bb5af6837530a6cad9dc1106969d412b"
+  },
+  "counts": {
+   "5m": {
+    "symbols": 155,
+    "segments": 434,
+    "bars": 776002
+   },
+   "15m": {
+    "symbols": 151,
+    "segments": 257,
+    "bars": 252750
+   },
+   "1h": {
+    "symbols": 145,
+    "segments": 168,
+    "bars": 65115
+   },
+   "1d": {
+    "symbols": 159,
+    "segments": 310,
+    "bars": 109148
+   },
+   "1w": {
+    "symbols": 155,
+    "segments": 302,
+    "bars": 22587
+   }
+  },
+  "symbols": 159,
+  "market_symbol": "SPY",
+  "market_bars": 5498
+ }
+}

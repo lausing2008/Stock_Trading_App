@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from src.services.little_rzy import Config
 from src.services.rzy_evaluation import research_bars, run_segment, _FullHistoryStopTargetOnly
-from src.services.rzy_research import ResearchEngine, Series, run_stream, trigger_features, gate_reason
+from src.services.rzy_research import ResearchEngine, Series, run_stream, trigger_features, gate_reason, ContextControls
 
 T0 = datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc)
 
@@ -74,9 +74,9 @@ def test_every_gate_rule_is_enforced_on_the_trades_it_lets_through():
 
 def test_unknown_context_fails_a_gate_instead_of_passing_it():
     f = dict(htf='unknown', regime=None, vol_ratio=None, cost_r_plan=None, price=10., sma200=None, sma50=None,
-             mom120=None, rs63=None, stop_atr_plan=2., slope_atr=.1, tod='10:30-12:00')
+             mom120=None, rs63=None, stop_atr_plan=2., slope_atr=.1, tod='10:30-12:00', d_sma200=None, d_sma50=None, d_mom126=None)
     for gate in (dict(htf_aligned=True), dict(regime=True), dict(max_vol_ratio=1.), dict(max_cost_r=.1), dict(sma200=True),
-                 dict(min_mom120=0.), dict(min_rs63=0.)):
+                 dict(min_mom120=0.), dict(min_rs63=0.), dict(d_sma200=True), dict(d_sma50=True), dict(min_d_mom126=0.)):
         assert gate_reason(f, 'long', gate) is not None, gate
     assert gate_reason(f, 'long', {}) is None and gate_reason(f, 'long', dict(htf_not_opposed=True)) is None
 
@@ -105,6 +105,7 @@ def test_features_ignore_context_stamped_after_the_trigger_close():
                     probe.step(b)
                 again = trigger_features(probe, probe.s['structures'][st['id']], t['trigger_index'])
                 assert again['rs63'] == t['rs63'] and again['regime'] == t['regime'] and again['vol_ratio'] == t['vol_ratio']
+                assert again['d_sma200'] == t['d_sma200'] and again['d_mom126'] == t['d_mom126'] and t['d_sma200'] is not None
         return got
     assert len(run(True)) >= 1
     s = Series([T0, T0 + timedelta(hours=1)], [1., 2.])
@@ -144,3 +145,42 @@ def test_unknown_exit_option_is_refused():
         ResearchEngine('X', '5m', Config(), exits=dict(trailing=1))
     with pytest.raises(ValueError):
         ResearchEngine('X', '5m', Config(), exits=dict(line_exit='sometimes'))
+
+
+def test_flat_at_close_never_carries_a_position_past_a_marked_session_end():
+    N = 20  # a short synthetic "session" so that live trades do cross its end
+    live, flat = [], []
+    for seed in range(8):
+        bars = walk(seed)
+        for k, b in enumerate(bars):
+            b['session_last'] = k % N == N - 1
+        live += run_stream('X', '5m', bars, Config())[1]
+        flat += run_stream('X', '5m', bars, Config(), exits=dict(flat_at_close=True))[1]
+    assert any(t['entry_index'] // N != t['exit_index'] // N for t in live)
+    assert flat and all(t['entry_index'] // N == t['exit_index'] // N for t in flat)
+    closed = [t for t in flat if t['exit_reason'] == 'session_close']
+    assert closed and all(t['exit_index'] % N == N - 1 for t in closed)
+
+
+def test_context_controls_are_drawn_only_from_the_trades_own_context():
+    cfg = Config(); seen = 0
+    for seed in range(6):
+        bars = walk(seed)
+        engine, got = run_stream('X', '5m', bars, cfg)
+        assert len(engine.trend_at) == len(bars)
+        cc = ContextControls(bars, engine)
+        for t in got:
+            picked = []
+            class Spy(random.Random):
+                def sample(self, population, k):
+                    picked.extend(population); return super().sample(population, k)
+            out = cc.draw(t, cfg, Spy(1), 20)
+            seen += len(out)
+            want_above = None if t['sma200'] is None else (t['sma200'] == (t['direction'] == 'long'))
+            assert all(engine.trend_at[k] == t['direction'] and cc.above[k] == want_above and k != t['trigger_index'] for k in picked)
+            # Every drawn twin's whole holding window is inside the segment.
+            assert all(k + t['holding_bars'] <= len(bars) - 1 for k in picked)
+    assert seen >= 20
+    # The 200-bar side is the plain average of the last 200 closes, known at that bar.
+    k = 777
+    assert cc.above[k] == (bars[k]['close'] > sum(b['close'] for b in bars[k - 199:k + 1]) / 200) and cc.above[198] is None
