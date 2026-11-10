@@ -1,0 +1,9 @@
+Platform events with surprise > +10% and US daily bars here: 216
+A. platform definition, all: +4.06% (n=216) | stored post_earnings_return_5d (incl. gap): +5.83% (n=216)
+B. after close     platform definition +6.47% (n=103)  |  first open after announcement: raw +2.42% (n=103), net of universe +1.99% (n=103)
+B. before open     platform definition +0.88% (n=65)  |  first open after announcement: raw +2.65% (n=65), net of universe +2.63% (n=65)
+B. unknown         platform definition +3.18% (n=48)  |  first open after announcement: raw +nan% (n=0), net of universe +nan% (n=0)
+C. first open after announcement, all known times: raw +2.51% (n=168) | net of universe +2.24% (n=168)
+D. interval for C (net of universe, resampling months): -0.62 to +5.24; median +0.88%; beat universe 54.8%; dates 2024-11-12 to 2026-10-27; months 15
+   largest symbol contributions (sum of excess): VICR +95%, FCEL +52%, SNDK +44%, AAOI +44%, RXT +43%
+   without those 5 symbols: +0.63% (n=155)
