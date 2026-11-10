@@ -1,0 +1,20 @@
+
+H=5 sessions, beat above +10%: excess % after cost (95% interval), events, beat-benchmark rate
+  platform symbols                    +0.19 (-0.24 to +0.62)  n=  1644  beat 47.0%
+  other symbols                       +0.14 (+0.02 to +0.26)  n= 16124  beat 49.9%
+  platform, 2024-2026                 +0.77 (-0.34 to +1.86)  n=   455  beat 51.0%
+  low-volatility third                +0.08 (-0.08 to +0.27)  n=  5518  beat 50.0%
+  middle third                        +0.18 (+0.02 to +0.35)  n=  6121  beat 50.2%
+  high-volatility third               +0.16 (-0.07 to +0.40)  n=  6129  beat 48.8%
+  high-volatility third, 2021-2026    +0.20 (-0.21 to +0.59)  n=  2512  beat 49.0%
+  big beat minus big miss, all stocks: +0.45
+
+H=20 sessions, beat above +10%: excess % after cost (95% interval), events, beat-benchmark rate
+  platform symbols                    +0.17 (-0.65 to +1.03)  n=  1638  beat 46.1%
+  other symbols                       -0.06 (-0.26 to +0.15)  n= 15969  beat 47.7%
+  platform, 2024-2026                 +1.14 (-1.26 to +3.38)  n=   449  beat 47.0%
+  low-volatility third                -0.39 (-0.81 to +0.02)  n=  5468  beat 47.8%
+  middle third                        -0.11 (-0.39 to +0.17)  n=  6050  beat 47.4%
+  high-volatility third               +0.34 (-0.08 to +0.78)  n=  6089  beat 47.5%
+  high-volatility third, 2021-2026    +0.62 (-0.15 to +1.32)  n=  2472  beat 48.7%
+  big beat minus big miss, all stocks: +0.35

@@ -243,7 +243,8 @@ Nothing in the live service changed: no deploy, no `Config` field, no alert or p
 | D6 | Standing evaluation | Add context twins and a twin outlier guard to `rzy_evaluation.py` before the next published run, as a new analysis version. | R4, R5. |
 | D7 | The 2026-11-08 forward plan | Drop V1–V3 and the exit variants M1–M3; they have now been tested on more data than three months of new sessions would give. Keep the scheduled re-run to watch the baseline and, if D3 is taken, the shadow candidate. | Sections 4b, 4e. |
 
-None of these was done in this study.
+None of these was done in this study. The owner approved the recommendations the same day;
+section 10 records what was then done.
 
 ---
 
@@ -292,3 +293,37 @@ The confirmation trades themselves are in `rzy-improvement-evidence/runs/` (gzip
 engine at its first path (`services/market-data/src/services/rzy_research.py`); it was moved to
 `scripts/rzy_research_engine.py` afterwards with one import line changed, and the 744-trade
 identity check was repeated after the move.
+
+---
+
+## 10. Actions taken after approval (2026-11-10)
+
+| Decision | Done | Detail |
+|---|---|---|
+| D1: 5m and 15m emails | Yes, live | `EMAIL_TIMEFRAMES = ('1h', '1d')` in `rzy_workflow.py`. 5m and 15m streams are still scanned, recorded and shown; their triggers are counted (`not_emailed_timeframe` in the scan result) and never queued. The morning digest is unchanged. |
+| D2: 1h label | Yes, live | 1h and daily pattern emails carry a "No measured edge on this timeframe" line with the study's figures (`rzy_email.EVIDENCE_NOTES`). |
+| D3: daily long-trend candidate | Not promoted | No shadow strategy was built. |
+| D4: page and guide text | Yes, live | The page, the beginner guide and the settings panel say that combining timeframes was tested and did not help, and that only 1h and daily are emailed. |
+| D5: calendar | Prepared, not merged | Branch `fix/calendar-2025-01-09` (bbf66d52) adds the date with two tests. It is shared code, so it waits for a window in which all 12 backend services can be rebuilt together. |
+| D6, D7 | Not done | Evaluation changes and the forward plan are unchanged. |
+
+**Deployment (commit 2e93e854, 06:20–06:30 UTC).**
+
+- **Frontend:** `scripts/deploy_frontend.sh`, healthy, no `localhost` URLs in the build. It also
+  carried one inert label line from another session's commit 3369e1a5 (`market_breadth`).
+- **market-data:** a file-level hotfix, not an image rebuild. `prod` also holds two changes from
+  another session that are deliberately not deployed (the RZY open-hold fix 58d77de4, which is
+  part of an A/B read, and price-risk changes 3369e1a5). A rebuild from `prod` would have shipped
+  them. Instead only this change's hunks were applied to the three files the container was
+  running (`rzy_workflow.py`, `rzy_email.py`, `api/little_rzy.py`) and the container restarted:
+  healthy, `EMAIL_TIMEFRAMES` reads `('1h', '1d')` in the running code, 15 containers healthy.
+- **Caveats.** A container recreation from the current image reverts the hotfix; the next
+  market-data build from `prod` includes it permanently. The drift check will report these three
+  files, and the two price-risk files, as differing from `prod` until then. Pre-change copies
+  and logs: `~/container-logs/prehotfix-2e93e854-*` and `market-data-before-2e93e854-hotfix.log`
+  on the server.
+- **Side effect on other work:** the 5m alert-latency study (tracker 457/458) used queued 5m
+  mail as one of its measures. Detection times are still recorded for every 5m trigger; queue
+  and delivery times for 5m no longer exist from this deploy on.
+- **Tests:** all backend suites passed (market-data 6,205), frontend 1,011 passed, type check
+  clean. A copy-of-database test shows a fresh 5m trigger is recorded and not queued.
