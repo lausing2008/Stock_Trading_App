@@ -177,3 +177,41 @@ Approved by the user ("let's finish them all").
   returning the unfiltered list fails 2, reverting the `.get` fails 1, and a wrong budget
   `job_name` fails 2.
 
+
+## 9. First session with P1 and P2 live (Mon 2026-11-09, read 03:10 UTC Nov 10)
+
+The market-data container was recreated at 22:29 UTC Nov 8 by another session's deploy of
+`16fe5a81`, which contains `bdbbed83`; the running source has the semaphore and
+`_session_ingest_symbols`. So Nov 9 also carries that deploy's (RZY evaluation) changes.
+
+| | Nov 2 (retry only) | Nov 9 (2-request cap) |
+|---|---|---|
+| First 429s on the bar endpoint (`rate_limited_retried`) | ≈ 145 | **4** (all 20:00–20:45 UTC) |
+| Fetches that failed on 429 (`rate_limited`) | 3 | **0** |
+| Cooldown skips (`ingest_primary_cooldown_skips`) | 628 | **0** |
+| `bar_slot_wait_timeout` | — | **0** |
+| US 5m regular-session bars written by yfinance | 73 | 78 (UW: 12,070) |
+| Yahoo "Too Many Requests" | 0 | 0 |
+
+**Run length** (same `bar_provenance` query as §8: last forming-bar write per 5m cycle, US,
+UW provider, 77 cycles, ~116 symbols each):
+
+| | median | p90 | max |
+|---|---|---|---|
+| Nov 5 | 33.8 s | 41.7 s | 65.2 s |
+| Nov 6 | 33.4 s | 38.9 s | 44.8 s |
+| **Nov 9** | **34.3 s** | **42.1 s** | **51.0 s** |
+
+The cap cost no measurable run time; the "up to ~2×" estimate did not materialise.
+
+**US 5m regular-session bars > 5 min late** (14:30–20:55 UTC, on-grid): Nov 2 246, Nov 3 96,
+Nov 4 1,367 (the pool-collapse day), Nov 5 80, Nov 6 89, **Nov 9 57**.
+
+**Other checks.**
+- P2: no `bar_provenance` rows for any delisted symbol on Nov 9. SKHYV/US10Y/SSNLF appear only
+  in the separate fundamentals job's Yahoo 404s.
+- Chain capture: Nov 6 captured on Monday for 160 symbols, as expected.
+- `delisted_lookup_failed`, `dq_check.run_failed` and tracebacks: 0. 15 containers healthy.
+
+**Caveat.** One session. Treat P1/P2 as closed if refusals and late bars stay near these levels
+for the rest of the week.
