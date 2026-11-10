@@ -93,4 +93,19 @@ with Session() as s:
     fri=OPEN+timedelta(minutes=5*59)
     out['reader']=dict(premarket_head=len(W._latest_session_write_times(s,1,'5m',[R(OPEN+timedelta(days=3,hours=-1),'PRE'),R(fri,'REGULAR')])),
         regular_only=len(W._latest_session_write_times(s,1,'5m',[R(fri,'REGULAR')])))
+
+    # ── AUD-RZY-OPENHOLD: Monday's first bar is stored while forming; Friday's session must not be held ──
+    seed(s,3,'OPENX',78)                                      # all of Fri, each written after its close
+    fri_close=OPEN+timedelta(minutes=5*78)
+    W.evaluate(s,'OPENX','5m',fri_close+timedelta(minutes=5),persist=True);s.commit()
+    mon=OPEN+timedelta(days=3); m=naive(mon); c=100.0
+    s.add(models.Price(id=3999,stock_id=3,ts=m,timeframe=models.TimeFrame.M5,open=c,high=c+.3,low=c-.3,close=c+.1,volume=500,session='REGULAR'))
+    s.add(BarProvenance(stock_id=3,timeframe='5m',ts=m,provider='unusual_whales',first_written_at=m+timedelta(seconds=5),
+        last_written_at=m+timedelta(seconds=5),open=c,high=c+.3,low=c-.3,close=c+.1,volume=500,
+        ohlc_revisions=0,volume_only_revisions=0,provider_switches_same_values=0,off_grid=False));s.commit()
+    o=W.evaluate(s,'OPENX','5m',mon+timedelta(seconds=20),persist=True);s.commit()
+    cp=s.get(RzyStream,next(k for k in s.scalars(select(RzyStream.stream_key)) if k.startswith('OPENX:5m'))).checkpoint
+    out['monday_open']=dict(rebuilt=bool(o.get('rebuilt')),held=o['evidence'].get('held_until_post_close_write'),
+        last=cp['bars'][-1]['time'],rebuild_rows=s.scalar(select(func.count()).select_from(RzyRebuild).where(RzyRebuild.symbol=='OPENX')),
+        reader_days=len(W._latest_session_write_times(s,3,'5m',[R(mon,'REGULAR'),R(fri_close-timedelta(minutes=5),'REGULAR')])))
 print(json.dumps(out,default=str))

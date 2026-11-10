@@ -152,6 +152,14 @@ def test_real_reader_takes_the_latest_regular_session_not_a_premarket_head(evide
     assert evidence['reader'] == {'premarket_head': 60, 'regular_only': 60}
 
 
+def test_real_workflow_does_not_hold_the_previous_session_at_the_open(evidence):
+    """AUD-RZY-OPENHOLD (2026-11-09): with Monday's first bar stored while forming, the reader took
+    only Monday's provenance, so Friday's completed session was held and ~104 streams per
+    timeframe rebuilt as checkpoint_bar_missing. Friday stays consumed; nothing rebuilds."""
+    assert evidence['monday_open'] == {'rebuilt': False, 'held': 0, 'last': '2026-10-16T19:55:00+00:00',
+                                       'rebuild_rows': 0, 'reader_days': 79}
+
+
 def test_real_workflow_last_hour_waits_for_the_post_close_write(evidence):
     assert evidence['close_1h_held'] == {'last_closed': '2026-10-16T19:30:00+00:00', 'awaiting': True}
     assert evidence['close_1h_done'] == {'last_open': '2026-10-16T19:30:00+00:00',

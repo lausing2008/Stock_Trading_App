@@ -163,14 +163,26 @@ def load_bars(session,symbol,timeframe,now,cache=None):
 
 
 def _latest_session_write_times(session,stock_id,timeframe,rows):
-    """AUD-RZY-PARTIALCANDLE: bar_provenance write time and last-written OHLC for the newest
-    REGULAR-session day among `rows` (newest first), keyed by naive UTC bar time. Read after the
+    """AUD-RZY-PARTIALCANDLE: bar_provenance write time and last-written OHLC for the two newest
+    REGULAR-session days among `rows` (newest first), keyed by naive UTC bar time. Read after the
     prices: rzy_data.hold_unwritten_tail holds a bar whose provenance values differ from the
     price read, so a write landing between the two reads cannot pair a partial price with a
-    post-close write time."""
-    newest=next((r.ts for r in rows if (r.session or 'REGULAR')=='REGULAR'),None)
-    if newest is None: return {}
-    day=utc(newest).astimezone(NY).date()
+    post-close write time.
+
+    Two days, not one (AUD-RZY-OPENHOLD, 2026-11-09): in the first minutes of a session the
+    newest stored row is today's forming bar, while the newest COMPLETED bars, the ones
+    hold_unwritten_tail checks, are still the previous session's. Reading only today's provenance
+    held that whole previous session as unwritten, and ~104 streams per timeframe rebuilt
+    as checkpoint_bar_missing at Monday's open."""
+    days=[]
+    for r in rows:
+        if (r.session or 'REGULAR')!='REGULAR': continue
+        d=utc(r.ts).astimezone(NY).date()
+        if d not in days:
+            days.append(d)
+            if len(days)==2: break
+    if not days: return {}
+    day=days[-1]
     since=datetime(day.year,day.month,day.day,tzinfo=NY).astimezone(timezone.utc).replace(tzinfo=None)
     p=BarProvenance
     return {r.ts:(r.last_written_at,(r.open,r.high,r.low,r.close)) for r in session.execute(
