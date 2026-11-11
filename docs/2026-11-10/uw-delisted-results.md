@@ -123,7 +123,8 @@ not be reused.
 | A3 | Do not build a stock-selection or combined signal | Nothing passed with or without the filled data |
 | A4 | Paid point-in-time data | Only needed to settle 2012–2019 momentum. Unusual Whales cannot: it lacks most companies that left before 2020 |
 
-None of these has been done.
+A1 and A2 were done on 2026-11-10 (event-intelligence 17f93a8f): see
+`docs/features/earnings-data-and-forecasts.md`, AUD-EARNIMPACT-AFTEROPEN. A3 and A4 were not.
 
 ---
 

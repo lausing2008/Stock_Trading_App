@@ -331,7 +331,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/features/decision-engine-dualscorer-parity.md`** — `_should_enter()` / decision-engine Score Parity (T232-DL-DUALSCORER-DEBT, partial); T232-DL-DUALSCORER-DEBT — 4 DE-Only Hard Rejects, Test Coverage Added (2...
 - **`docs/features/delisted-stock-detection.md`** — aud14-survivorship — Real Delisting Detection Closes a Dead Column (Built 2026-07-27); T260-DELISTED-BADGE — Informational Badge, Deliberately No Auto-Remova...
 - **`docs/features/earnings-data-and-forecasts.md`** — T249-EARNINGS-LLM-IMPACT — Earnings LLM Impact Report (Built 2026-07-29); Earnings Calendar Now Shows Analyst Consensus + Beat-Rate History (Built 2026-08-25 … [migration]
-- **`docs/features/earnings-data-and-forecasts.md`** — AUD-EARNSURPRISE-SECTOR (2026-09-22): >10% EPS beat → +4.19% over 5d AFTER OPEN (n=250) vs −0.05% in-line; the platform gates AGAINST it. Two drift figures always — the gap is not tradeable [earnings, surprise, sector]
+- **`docs/features/earnings-data-and-forecasts.md`** — AUD-EARNSURPRISE-SECTOR (2026-09-22) earnings drift by sector. Its +4.19% "after open" included the overnight gap; fixed 2026-11-10 (AUD-EARNIMPACT-AFTEROPEN): first open after the news, net of VOO, forward record to 2027-02-10 [earnings]
 - **`docs/features/earnings-data-and-forecasts.md`** — T379-CALENDAR-PRICE (2026-09-10) — the calendar showed EPS/target/expected-move but not the PRICE they are relative to. ONE bulk Redis read, never per-symbol; NULL renders "—", never 0.0 [Events Calendar, live_prices]
 
 - **`docs/features/macro-valuation-cape.md`** — CAPE (Shiller PE) — AI Bubble Warning Indicator

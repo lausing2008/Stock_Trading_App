@@ -1006,3 +1006,44 @@ that is almost always a two-beat cohort rather than a discovery.
 An alert or signal that trades this. The edge is measured and surfaced; nothing acts on it. That
 remains the highest-value unbuilt item, and it must ship with an outcome table — news is the one
 alert family without one, and that is precisely where a backwards gate survived for months.
+
+---
+
+## AUD-EARNIMPACT-AFTEROPEN — the "after open" drift started before the news (Fixed 2026-11-10)
+
+**What was wrong.** `get_earnings_surprise_impact()` measured "after open" from the close of the
+first bar ON the report date. For an after-close report that close is before the announcement,
+so the figure still contained the overnight jump. On the platform's own events it reproduced as
++4.06% for beats above 10% (the tab showed +4.19%): +6.47% for after-close reports, +0.88% for
+before-open ones (`docs/2026-11-10/combined-signal-results.md`, section 3).
+
+**The fix (commit 17f93a8f, event-intelligence deployed 2026-11-11 01:13 UTC).**
+- **Entry** is the first open after the announcement: the report day's open for "premarket",
+  the next session's open for "postmarket". When the time is unknown, the next session's open,
+  which can never include the jump. The exit is the close 5 sessions later, counting the entry
+  session.
+- **Announcement times** come from Unusual Whales (`/api/earnings/{symbol}`, `report_time`).
+  `sync_earnings_report_times()` runs daily at 07:00 UTC, one request every 1.5 s, and stores them
+  in Redis (`stockai:earnings:report_times:{symbol}`, 8-day expiry). No schema change.
+  `POST /events/sync/earnings-report-times` refreshes on demand.
+- **`excess_after_open_pct`** subtracts VOO over the same days; `n_timing_from_provider` says how
+  many events used a provider time.
+- **`forward_record`**: beats above the threshold reported from 2026-11-10 on, measured the same
+  way. Research only: nothing alerts or emails from it. Read it after 2027-02-10, against the
+  backtest's +0.42%.
+
+**Figures after the fix** (platform events, 2026-11-11):
+
+| Surprise | Events | Incl. gap | After open | After open vs VOO | Provider time |
+|---|---|---|---|---|---|
+| Beat > 10% | 234 | +5.65% | +2.66% | +2.30% | 166 |
+| Within ±10% | 260 | +0.73% | +0.23% | −0.00% | 175 |
+| Miss > 10% | 103 | +1.37% | +1.74% | +1.30% | 63 |
+
+These are still far larger than the 4,466-event backtest (+0.42% net of the market, 2022–2026),
+because the platform's sample is small, recent and made of hand-picked growth stocks. The tab
+now quotes the backtest figure beside them. Sector figures in this file's earlier entries
+(Industrials +5.55% and others) used the old definition and are superseded.
+
+**Tests:** `services/event-intelligence/tests/test_earnings_after_open_drift.py` (5 tests;
+moving the entry back to the report date fails 4).
