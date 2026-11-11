@@ -1,5 +1,9 @@
 # Combined signal test — results (2026-11-10)
 
+> **Update 2026-11-10:** the delisted-company gap was partly filled from Unusual Whales
+> (`uw-delisted-results.md`). The stock-picking conclusion is unchanged; the earnings drift after a
+> big beat measures +0.42% over 5 days with exact announcement times (2022–2026).
+
 Written for the platform owner. It answers whether the four experiments proposed in
 `signal-research-what-finds-trading-signals.md` combine into one signal worth using. The plan
 and pass criteria were committed before any result (`combined-signal-plan.md`, be03edf7).

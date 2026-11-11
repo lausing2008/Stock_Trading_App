@@ -1,0 +1,9 @@
+{
+ "location": "~/Documents/MyProjects/rzy-eval-data/2026-11-10-improvement (workstation, not in git)",
+ "sha256": {
+  "uw-pull/uwpull-out/bars.jsonl": "74c125244838437ac866ea3ae2be869a03a094745edf9f3fcc478648d55c562a",
+  "uw-pull/uwpull-out/earnings.jsonl": "a607ee70c1610411ea5d07001e8519aa7a6b00b078915a7950e079a80b03720e",
+  "uw-work/merged-1d.jsonl.gz": "9f9bec92e6db45e802d16e6e17aef816d9799f735be007169c222de770119bb6",
+  "uw-work/uw-earnings.json.gz": "bd8e2891624b89bd435825d85b9c89410d87c77a878e764e4db11a7a82a9ea41"
+ }
+}

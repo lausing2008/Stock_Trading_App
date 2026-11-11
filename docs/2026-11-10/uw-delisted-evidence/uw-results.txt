@@ -1,0 +1,94 @@
+  bench=float(np.nanmean(ret[eligible])), ranks=r, n_eligible=int(eligible.sum()),
+  bench=float(np.nanmean(ret[eligible])), ranks=r, n_eligible=int(eligible.sum()),
+  bench=float(np.nanmean(ret[eligible])), ranks=r, n_eligible=int(eligible.sum()),
+  bench=float(np.nanmean(ret[eligible])), ranks=r, n_eligible=int(eligible.sum()),
+  bench=float(np.nanmean(ret[eligible])), ranks=r, n_eligible=int(eligible.sum()),
+  bench=float(np.nanmean(ret[eligible])), ranks=r, n_eligible=int(eligible.sum()),
+  bench=float(np.nanmean(ret[eligible])), ranks=r, n_eligible=int(eligible.sum()),
+  bench=float(np.nanmean(ret[eligible])), ranks=r, n_eligible=int(eligible.sum()),
+  bench=float(np.nanmean(ret[eligible])), ranks=r, n_eligible=int(eligible.sum()),
+  bench=float(np.nanmean(ret[eligible])), ranks=r, n_eligible=int(eligible.sum()),
+portfolio                      months  mean%/mo   95% interval      ann.excess  beat-mo  maxDD   ann.ret  bench  turnover | 2006-15  2016-20  2021-26
+-- all
+composite3                       178    +0.02   -0.37 to  +0.39    -0.19%   49.4%   29.2  +12.60% +12.60%   0.70 |  -0.16   +0.04   +0.18
+momentum                         178    +0.24   -0.46 to  +0.93    +1.45%   54.5%   34.2  +14.48% +12.60%   0.28 |  -0.07   -0.39   +1.21
+pullback                         178    +0.08   -0.50 to  +0.65    -0.00%   47.8%   38.1  +11.26% +12.60%   0.82 |  +0.05   -0.09   +0.28
+composite4                       178    +0.19   -0.19 to  +0.57    +1.89%   52.8%   27.0  +15.07% +12.60%   0.69 |  -0.09   +0.28   +0.39
+surprise                          56    +0.13   -0.68 to  +0.97    +1.20%   48.2%   24.5  +11.49% +10.42%   0.35 |    —       —     +0.13
+analyst                          135    -0.08   -0.47 to  +0.40    -1.22%   49.6%   40.6  +12.58% +13.49%   0.37 |  -0.47   +0.50   -0.57
+-- 2013 on
+composite3                       166    +0.03   -0.37 to  +0.45    -0.02%   50.0%   29.2  +12.71% +12.54%   0.71 |  -0.15   +0.04   +0.18
+momentum                         166    +0.29   -0.48 to  +1.04    +2.03%   56.0%   34.2  +15.02% +12.54%   0.28 |  +0.04   -0.39   +1.21
+pullback                         166    +0.10   -0.51 to  +0.69    +0.16%   48.8%   38.1  +11.29% +12.54%   0.83 |  +0.11   -0.09   +0.28
+composite4                       166    +0.19   -0.22 to  +0.61    +1.89%   52.4%   27.0  +15.02% +12.54%   0.69 |  -0.15   +0.28   +0.39
+surprise                          56    +0.13   -0.68 to  +0.97    +1.20%   48.2%   24.5  +11.49% +10.42%   0.35 |    —       —     +0.13
+analyst                          130    -0.06   -0.46 to  +0.44    -1.01%   50.0%   40.6  +12.26% +12.92%   0.37 |  -0.43   +0.50   -0.57
+PRIMARY {"best_single_input": "momentum", "composite_minus_best_single": {"months": 178, "difference_pct": -0.21780843925490462, "ci_pct": [-0.8464953339342082, 0.4757920292746574]}, "pass_1_interval_above_zero": false, "pass_2_beats_every_single_input": {"momentum": 0.0, "pullback": 0.0, "surprise": 0.0}, "pass_3_positive_in_every_period": {"2012-2016": 0.0, "2017-2021": 1.0, "2022-2026": 1.0}, "passed": false}
+SECONDARY {"months": 166, "difference_pct": 0.15733290471325972, "ci_pct": [-0.06725817829965333, 0.39485694487519085]}
+portfolio                      months  mean%/mo   95% interval      ann.excess  beat-mo  maxDD   ann.ret  bench  turnover | 2006-15  2016-20  2021-26
+-- all
+composite3                       178    -0.11   -0.50 to  +0.28    -1.74%   49.4%   34.7  +13.15% +14.84%   0.79 |  -0.38   -0.07   +0.13
+momentum                         178    +0.33   -0.38 to  +1.03    +2.49%   56.7%   28.5  +17.95% +14.84%   0.31 |  +0.05   -0.17   +1.14
+pullback                         178    +0.10   -0.49 to  +0.67    +0.28%   48.3%   42.6  +13.86% +14.84%   0.91 |  +0.18   -0.19   +0.32
+composite4                       178    +0.14   -0.26 to  +0.53    +1.27%   52.8%   30.9  +16.62% +14.84%   0.78 |  -0.03   +0.13   +0.33
+surprise                          56    +0.09   -0.61 to  +0.84    +0.73%   41.1%   21.6  +12.50% +11.84%   0.34 |    —       —     +0.09
+analyst                          176    -0.12   -0.42 to  +0.26    -1.63%   47.7%   44.1  +12.78% +14.40%   0.36 |  -0.10   +0.39   -0.67
+-- 2013 on
+composite3                       166    -0.08   -0.49 to  +0.35    -1.41%   50.0%   32.3  +13.20% +14.53%   0.80 |  -0.35   -0.07   +0.13
+momentum                         166    +0.36   -0.43 to  +1.11    +2.79%   56.6%   28.5  +17.95% +14.53%   0.31 |  +0.08   -0.17   +1.14
+pullback                         166    +0.11   -0.51 to  +0.72    +0.30%   48.2%   42.6  +13.54% +14.53%   0.91 |  +0.21   -0.19   +0.32
+composite4                       166    +0.16   -0.26 to  +0.57    +1.46%   53.0%   30.9  +16.50% +14.53%   0.78 |  -0.02   +0.13   +0.33
+surprise                          56    +0.09   -0.61 to  +0.84    +0.73%   41.1%   21.6  +12.50% +11.84%   0.34 |    —       —     +0.09
+analyst                          166    -0.08   -0.39 to  +0.30    -1.17%   48.8%   44.1  +13.47% +14.53%   0.35 |  +0.04   +0.39   -0.67
+PRIMARY {"best_single_input": "momentum", "composite_minus_best_single": {"months": 178, "difference_pct": -0.43793601718798436, "ci_pct": [-1.0615244168506077, 0.23398959265443345]}, "pass_1_interval_above_zero": false, "pass_2_beats_every_single_input": {"momentum": 0.0, "pullback": 0.0, "surprise": 0.0}, "pass_3_positive_in_every_period": {"2012-2016": 0.0, "2017-2021": 0.0, "2022-2026": 1.0}, "passed": false}
+SECONDARY {"months": 166, "difference_pct": 0.2370561076378168, "ci_pct": [-0.024455152649932393, 0.4684865324203233]}
+{
+ "earnings": {
+  "rows": 106676,
+  "kept": 19276,
+  "no_time": 248
+ },
+ "coverage_uw_filled": {
+  "mean": 0.9006879066959654,
+  "min": 0.738430583501006,
+  "by_year": {
+   "2012": 0.7456405097250167,
+   "2013": 0.7655935613682093,
+   "2014": 0.7753403848576972,
+   "2015": 0.7984383815067427,
+   "2016": 0.838410362775408,
+   "2017": 0.8706984828917674,
+   "2018": 0.8926754330708458,
+   "2019": 0.9214521452145217,
+   "2020": 0.955115511551155,
+   "2021": 0.9747524752475248,
+   "2022": 0.9970293755566032,
+   "2023": 1.0,
+   "2024": 1.0,
+   "2025": 1.0,
+   "2026": 1.0
+  }
+ },
+ "coverage_yahoo_only": {
+  "mean": 0.788143694585381,
+  "min": 0.635814889336016,
+  "by_year": {
+   "2012": 0.6435278336686786,
+   "2013": 0.6618041582830315,
+   "2014": 0.6644332747928876,
+   "2015": 0.6807927248544744,
+   "2016": 0.7096404205637956,
+   "2017": 0.7404068667736339,
+   "2018": 0.7592846762861006,
+   "2019": 0.7806930693069307,
+   "2020": 0.8173267326732674,
+   "2021": 0.8346534653465346,
+   "2022": 0.8597127779970083,
+   "2023": 0.8911530815109344,
+   "2024": 0.9133670201016127,
+   "2025": 0.9375414181577204,
+   "2026": 0.9743759664236801
+  }
+ }
+}
+merge: {'pulled': 274, 'with_bars': 122, 'kept': 114, 'splits': 8}

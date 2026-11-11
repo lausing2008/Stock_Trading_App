@@ -1,0 +1,2205 @@
+{
+ "n_months": 249,
+ "symbols": 1107,
+ "coverage": [
+  {
+   "month": "2006-02",
+   "eligible": 246,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2006-03",
+   "eligible": 247,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2006-04",
+   "eligible": 247,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2006-05",
+   "eligible": 250,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2006-06",
+   "eligible": 250,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2006-07",
+   "eligible": 251,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2006-08",
+   "eligible": 251,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2006-09",
+   "eligible": 251,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2006-10",
+   "eligible": 252,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2006-11",
+   "eligible": 252,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2006-12",
+   "eligible": 254,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2007-01",
+   "eligible": 255,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2007-02",
+   "eligible": 254,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2007-03",
+   "eligible": 255,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2007-04",
+   "eligible": 258,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2007-05",
+   "eligible": 260,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2007-06",
+   "eligible": 260,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2007-07",
+   "eligible": 260,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2007-08",
+   "eligible": 260,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2007-09",
+   "eligible": 261,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2007-10",
+   "eligible": 263,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2007-11",
+   "eligible": 265,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2007-12",
+   "eligible": 266,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2008-01",
+   "eligible": 269,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2008-02",
+   "eligible": 269,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2008-03",
+   "eligible": 269,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2008-04",
+   "eligible": 269,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2008-05",
+   "eligible": 269,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2008-06",
+   "eligible": 269,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2008-07",
+   "eligible": 269,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2008-08",
+   "eligible": 271,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2008-09",
+   "eligible": 273,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2008-10",
+   "eligible": 276,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2008-11",
+   "eligible": 278,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2008-12",
+   "eligible": 279,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2009-01",
+   "eligible": 281,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2009-02",
+   "eligible": 0,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2009-03",
+   "eligible": 0,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2009-04",
+   "eligible": 0,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2009-05",
+   "eligible": 0,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2009-06",
+   "eligible": 0,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2009-07",
+   "eligible": 0,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2009-08",
+   "eligible": 0,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2009-09",
+   "eligible": 0,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2009-10",
+   "eligible": 0,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2009-11",
+   "eligible": 0,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2009-12",
+   "eligible": 2,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2010-01",
+   "eligible": 5,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2010-02",
+   "eligible": 12,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2010-03",
+   "eligible": 14,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2010-04",
+   "eligible": 18,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2010-05",
+   "eligible": 21,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2010-06",
+   "eligible": 26,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2010-07",
+   "eligible": 27,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2010-08",
+   "eligible": 31,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2010-09",
+   "eligible": 33,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2010-10",
+   "eligible": 36,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2010-11",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2010-12",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2011-01",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2011-02",
+   "eligible": 343,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2011-03",
+   "eligible": 343,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2011-04",
+   "eligible": 343,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2011-05",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2011-06",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2011-07",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2011-08",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2011-09",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2011-10",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2011-11",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2011-12",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2012-01",
+   "eligible": 39,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2012-02",
+   "eligible": 39,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2012-03",
+   "eligible": 39,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2012-04",
+   "eligible": 39,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2012-05",
+   "eligible": 39,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2012-06",
+   "eligible": 353,
+   "with_surprise": 0,
+   "with_analyst": 254
+  },
+  {
+   "month": "2012-07",
+   "eligible": 355,
+   "with_surprise": 0,
+   "with_analyst": 259
+  },
+  {
+   "month": "2012-08",
+   "eligible": 357,
+   "with_surprise": 0,
+   "with_analyst": 266
+  },
+  {
+   "month": "2012-09",
+   "eligible": 357,
+   "with_surprise": 0,
+   "with_analyst": 269
+  },
+  {
+   "month": "2012-10",
+   "eligible": 358,
+   "with_surprise": 0,
+   "with_analyst": 275
+  },
+  {
+   "month": "2012-11",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2012-12",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2013-01",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2013-02",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2013-03",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2013-04",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2013-05",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2013-06",
+   "eligible": 39,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2013-07",
+   "eligible": 39,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2013-08",
+   "eligible": 39,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2013-09",
+   "eligible": 39,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2013-10",
+   "eligible": 39,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2013-11",
+   "eligible": 40,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2013-12",
+   "eligible": 40,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2014-01",
+   "eligible": 41,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2014-02",
+   "eligible": 41,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2014-03",
+   "eligible": 41,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2014-04",
+   "eligible": 41,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2014-05",
+   "eligible": 41,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2014-06",
+   "eligible": 42,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2014-07",
+   "eligible": 42,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2014-08",
+   "eligible": 39,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2014-09",
+   "eligible": 36,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2014-10",
+   "eligible": 34,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2014-11",
+   "eligible": 31,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2014-12",
+   "eligible": 30,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2015-01",
+   "eligible": 30,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2015-02",
+   "eligible": 30,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2015-03",
+   "eligible": 30,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2015-04",
+   "eligible": 31,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2015-05",
+   "eligible": 32,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2015-06",
+   "eligible": 32,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2015-07",
+   "eligible": 32,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2015-08",
+   "eligible": 33,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2015-09",
+   "eligible": 33,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2015-10",
+   "eligible": 36,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2015-11",
+   "eligible": 38,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2015-12",
+   "eligible": 40,
+   "with_surprise": 0,
+   "with_analyst": 0
+  },
+  {
+   "month": "2016-01",
+   "eligible": 389,
+   "with_surprise": 0,
+   "with_analyst": 271
+  },
+  {
+   "month": "2016-02",
+   "eligible": 393,
+   "with_surprise": 0,
+   "with_analyst": 285
+  },
+  {
+   "month": "2016-03",
+   "eligible": 394,
+   "with_surprise": 0,
+   "with_analyst": 297
+  },
+  {
+   "month": "2016-04",
+   "eligible": 397,
+   "with_surprise": 0,
+   "with_analyst": 308
+  },
+  {
+   "month": "2016-05",
+   "eligible": 398,
+   "with_surprise": 0,
+   "with_analyst": 303
+  },
+  {
+   "month": "2016-06",
+   "eligible": 402,
+   "with_surprise": 0,
+   "with_analyst": 283
+  },
+  {
+   "month": "2016-07",
+   "eligible": 403,
+   "with_surprise": 0,
+   "with_analyst": 275
+  },
+  {
+   "month": "2016-08",
+   "eligible": 407,
+   "with_surprise": 0,
+   "with_analyst": 282
+  },
+  {
+   "month": "2016-09",
+   "eligible": 407,
+   "with_surprise": 0,
+   "with_analyst": 302
+  },
+  {
+   "month": "2016-10",
+   "eligible": 410,
+   "with_surprise": 0,
+   "with_analyst": 309
+  },
+  {
+   "month": "2016-11",
+   "eligible": 412,
+   "with_surprise": 0,
+   "with_analyst": 300
+  },
+  {
+   "month": "2016-12",
+   "eligible": 412,
+   "with_surprise": 0,
+   "with_analyst": 284
+  },
+  {
+   "month": "2017-01",
+   "eligible": 412,
+   "with_surprise": 0,
+   "with_analyst": 264
+  },
+  {
+   "month": "2017-02",
+   "eligible": 413,
+   "with_surprise": 0,
+   "with_analyst": 260
+  },
+  {
+   "month": "2017-03",
+   "eligible": 414,
+   "with_surprise": 0,
+   "with_analyst": 252
+  },
+  {
+   "month": "2017-04",
+   "eligible": 418,
+   "with_surprise": 0,
+   "with_analyst": 240
+  },
+  {
+   "month": "2017-05",
+   "eligible": 420,
+   "with_surprise": 0,
+   "with_analyst": 211
+  },
+  {
+   "month": "2017-06",
+   "eligible": 420,
+   "with_surprise": 0,
+   "with_analyst": 199
+  },
+  {
+   "month": "2017-07",
+   "eligible": 420,
+   "with_surprise": 0,
+   "with_analyst": 193
+  },
+  {
+   "month": "2017-08",
+   "eligible": 423,
+   "with_surprise": 0,
+   "with_analyst": 264
+  },
+  {
+   "month": "2017-09",
+   "eligible": 423,
+   "with_surprise": 0,
+   "with_analyst": 300
+  },
+  {
+   "month": "2017-10",
+   "eligible": 425,
+   "with_surprise": 0,
+   "with_analyst": 319
+  },
+  {
+   "month": "2017-11",
+   "eligible": 426,
+   "with_surprise": 0,
+   "with_analyst": 320
+  },
+  {
+   "month": "2017-12",
+   "eligible": 426,
+   "with_surprise": 0,
+   "with_analyst": 333
+  },
+  {
+   "month": "2018-01",
+   "eligible": 426,
+   "with_surprise": 0,
+   "with_analyst": 335
+  },
+  {
+   "month": "2018-02",
+   "eligible": 427,
+   "with_surprise": 0,
+   "with_analyst": 300
+  },
+  {
+   "month": "2018-03",
+   "eligible": 427,
+   "with_surprise": 0,
+   "with_analyst": 331
+  },
+  {
+   "month": "2018-04",
+   "eligible": 428,
+   "with_surprise": 0,
+   "with_analyst": 341
+  },
+  {
+   "month": "2018-05",
+   "eligible": 429,
+   "with_surprise": 0,
+   "with_analyst": 349
+  },
+  {
+   "month": "2018-06",
+   "eligible": 430,
+   "with_surprise": 0,
+   "with_analyst": 341
+  },
+  {
+   "month": "2018-07",
+   "eligible": 429,
+   "with_surprise": 0,
+   "with_analyst": 337
+  },
+  {
+   "month": "2018-08",
+   "eligible": 429,
+   "with_surprise": 0,
+   "with_analyst": 333
+  },
+  {
+   "month": "2018-09",
+   "eligible": 431,
+   "with_surprise": 0,
+   "with_analyst": 340
+  },
+  {
+   "month": "2018-10",
+   "eligible": 431,
+   "with_surprise": 0,
+   "with_analyst": 340
+  },
+  {
+   "month": "2018-11",
+   "eligible": 433,
+   "with_surprise": 0,
+   "with_analyst": 351
+  },
+  {
+   "month": "2018-12",
+   "eligible": 435,
+   "with_surprise": 0,
+   "with_analyst": 352
+  },
+  {
+   "month": "2019-01",
+   "eligible": 438,
+   "with_surprise": 0,
+   "with_analyst": 349
+  },
+  {
+   "month": "2019-02",
+   "eligible": 438,
+   "with_surprise": 0,
+   "with_analyst": 314
+  },
+  {
+   "month": "2019-03",
+   "eligible": 439,
+   "with_surprise": 0,
+   "with_analyst": 319
+  },
+  {
+   "month": "2019-04",
+   "eligible": 439,
+   "with_surprise": 0,
+   "with_analyst": 310
+  },
+  {
+   "month": "2019-05",
+   "eligible": 438,
+   "with_surprise": 0,
+   "with_analyst": 315
+  },
+  {
+   "month": "2019-06",
+   "eligible": 438,
+   "with_surprise": 0,
+   "with_analyst": 322
+  },
+  {
+   "month": "2019-07",
+   "eligible": 438,
+   "with_surprise": 0,
+   "with_analyst": 320
+  },
+  {
+   "month": "2019-08",
+   "eligible": 441,
+   "with_surprise": 0,
+   "with_analyst": 331
+  },
+  {
+   "month": "2019-09",
+   "eligible": 443,
+   "with_surprise": 0,
+   "with_analyst": 349
+  },
+  {
+   "month": "2019-10",
+   "eligible": 444,
+   "with_surprise": 0,
+   "with_analyst": 357
+  },
+  {
+   "month": "2019-11",
+   "eligible": 445,
+   "with_surprise": 0,
+   "with_analyst": 352
+  },
+  {
+   "month": "2019-12",
+   "eligible": 446,
+   "with_surprise": 0,
+   "with_analyst": 360
+  },
+  {
+   "month": "2020-01",
+   "eligible": 450,
+   "with_surprise": 0,
+   "with_analyst": 365
+  },
+  {
+   "month": "2020-02",
+   "eligible": 451,
+   "with_surprise": 0,
+   "with_analyst": 365
+  },
+  {
+   "month": "2020-03",
+   "eligible": 451,
+   "with_surprise": 0,
+   "with_analyst": 371
+  },
+  {
+   "month": "2020-04",
+   "eligible": 455,
+   "with_surprise": 0,
+   "with_analyst": 378
+  },
+  {
+   "month": "2020-05",
+   "eligible": 456,
+   "with_surprise": 0,
+   "with_analyst": 382
+  },
+  {
+   "month": "2020-06",
+   "eligible": 457,
+   "with_surprise": 0,
+   "with_analyst": 387
+  },
+  {
+   "month": "2020-07",
+   "eligible": 459,
+   "with_surprise": 0,
+   "with_analyst": 387
+  },
+  {
+   "month": "2020-08",
+   "eligible": 458,
+   "with_surprise": 0,
+   "with_analyst": 383
+  },
+  {
+   "month": "2020-09",
+   "eligible": 458,
+   "with_surprise": 0,
+   "with_analyst": 376
+  },
+  {
+   "month": "2020-10",
+   "eligible": 459,
+   "with_surprise": 0,
+   "with_analyst": 378
+  },
+  {
+   "month": "2020-11",
+   "eligible": 460,
+   "with_surprise": 0,
+   "with_analyst": 371
+  },
+  {
+   "month": "2020-12",
+   "eligible": 461,
+   "with_surprise": 0,
+   "with_analyst": 372
+  },
+  {
+   "month": "2021-01",
+   "eligible": 461,
+   "with_surprise": 0,
+   "with_analyst": 367
+  },
+  {
+   "month": "2021-02",
+   "eligible": 463,
+   "with_surprise": 0,
+   "with_analyst": 372
+  },
+  {
+   "month": "2021-03",
+   "eligible": 463,
+   "with_surprise": 0,
+   "with_analyst": 380
+  },
+  {
+   "month": "2021-04",
+   "eligible": 465,
+   "with_surprise": 0,
+   "with_analyst": 385
+  },
+  {
+   "month": "2021-05",
+   "eligible": 466,
+   "with_surprise": 0,
+   "with_analyst": 387
+  },
+  {
+   "month": "2021-06",
+   "eligible": 467,
+   "with_surprise": 0,
+   "with_analyst": 390
+  },
+  {
+   "month": "2021-07",
+   "eligible": 467,
+   "with_surprise": 0,
+   "with_analyst": 386
+  },
+  {
+   "month": "2021-08",
+   "eligible": 467,
+   "with_surprise": 0,
+   "with_analyst": 381
+  },
+  {
+   "month": "2021-09",
+   "eligible": 470,
+   "with_surprise": 0,
+   "with_analyst": 386
+  },
+  {
+   "month": "2021-10",
+   "eligible": 469,
+   "with_surprise": 0,
+   "with_analyst": 385
+  },
+  {
+   "month": "2021-11",
+   "eligible": 470,
+   "with_surprise": 0,
+   "with_analyst": 386
+  },
+  {
+   "month": "2021-12",
+   "eligible": 423,
+   "with_surprise": 0,
+   "with_analyst": 382
+  },
+  {
+   "month": "2022-01",
+   "eligible": 424,
+   "with_surprise": 0,
+   "with_analyst": 387
+  },
+  {
+   "month": "2022-02",
+   "eligible": 425,
+   "with_surprise": 0,
+   "with_analyst": 386
+  },
+  {
+   "month": "2022-03",
+   "eligible": 426,
+   "with_surprise": 161,
+   "with_analyst": 394
+  },
+  {
+   "month": "2022-04",
+   "eligible": 427,
+   "with_surprise": 196,
+   "with_analyst": 399
+  },
+  {
+   "month": "2022-05",
+   "eligible": 428,
+   "with_surprise": 366,
+   "with_analyst": 403
+  },
+  {
+   "month": "2022-06",
+   "eligible": 429,
+   "with_surprise": 410,
+   "with_analyst": 406
+  },
+  {
+   "month": "2022-07",
+   "eligible": 433,
+   "with_surprise": 416,
+   "with_analyst": 415
+  },
+  {
+   "month": "2022-08",
+   "eligible": 433,
+   "with_surprise": 406,
+   "with_analyst": 413
+  },
+  {
+   "month": "2022-09",
+   "eligible": 433,
+   "with_surprise": 418,
+   "with_analyst": 411
+  },
+  {
+   "month": "2022-10",
+   "eligible": 434,
+   "with_surprise": 421,
+   "with_analyst": 411
+  },
+  {
+   "month": "2022-11",
+   "eligible": 437,
+   "with_surprise": 372,
+   "with_analyst": 415
+  },
+  {
+   "month": "2022-12",
+   "eligible": 484,
+   "with_surprise": 467,
+   "with_analyst": 419
+  },
+  {
+   "month": "2023-01",
+   "eligible": 486,
+   "with_surprise": 475,
+   "with_analyst": 426
+  },
+  {
+   "month": "2023-02",
+   "eligible": 490,
+   "with_surprise": 276,
+   "with_analyst": 419
+  },
+  {
+   "month": "2023-03",
+   "eligible": 490,
+   "with_surprise": 465,
+   "with_analyst": 424
+  },
+  {
+   "month": "2023-04",
+   "eligible": 500,
+   "with_surprise": 487,
+   "with_analyst": 427
+  },
+  {
+   "month": "2023-05",
+   "eligible": 500,
+   "with_surprise": 487,
+   "with_analyst": 427
+  },
+  {
+   "month": "2023-06",
+   "eligible": 502,
+   "with_surprise": 478,
+   "with_analyst": 425
+  },
+  {
+   "month": "2023-07",
+   "eligible": 501,
+   "with_surprise": 480,
+   "with_analyst": 426
+  },
+  {
+   "month": "2023-08",
+   "eligible": 501,
+   "with_surprise": 425,
+   "with_analyst": 428
+  },
+  {
+   "month": "2023-09",
+   "eligible": 501,
+   "with_surprise": 485,
+   "with_analyst": 428
+  },
+  {
+   "month": "2023-10",
+   "eligible": 500,
+   "with_surprise": 486,
+   "with_analyst": 432
+  },
+  {
+   "month": "2023-11",
+   "eligible": 500,
+   "with_surprise": 422,
+   "with_analyst": 422
+  },
+  {
+   "month": "2023-12",
+   "eligible": 498,
+   "with_surprise": 482,
+   "with_analyst": 424
+  },
+  {
+   "month": "2024-01",
+   "eligible": 500,
+   "with_surprise": 493,
+   "with_analyst": 429
+  },
+  {
+   "month": "2024-02",
+   "eligible": 500,
+   "with_surprise": 271,
+   "with_analyst": 427
+  },
+  {
+   "month": "2024-03",
+   "eligible": 498,
+   "with_surprise": 477,
+   "with_analyst": 434
+  },
+  {
+   "month": "2024-04",
+   "eligible": 500,
+   "with_surprise": 484,
+   "with_analyst": 438
+  },
+  {
+   "month": "2024-05",
+   "eligible": 497,
+   "with_surprise": 469,
+   "with_analyst": 442
+  },
+  {
+   "month": "2024-06",
+   "eligible": 499,
+   "with_surprise": 481,
+   "with_analyst": 442
+  },
+  {
+   "month": "2024-07",
+   "eligible": 498,
+   "with_surprise": 483,
+   "with_analyst": 442
+  },
+  {
+   "month": "2024-08",
+   "eligible": 498,
+   "with_surprise": 386,
+   "with_analyst": 432
+  },
+  {
+   "month": "2024-09",
+   "eligible": 498,
+   "with_surprise": 482,
+   "with_analyst": 438
+  },
+  {
+   "month": "2024-10",
+   "eligible": 499,
+   "with_surprise": 483,
+   "with_analyst": 441
+  },
+  {
+   "month": "2024-11",
+   "eligible": 498,
+   "with_surprise": 415,
+   "with_analyst": 441
+  },
+  {
+   "month": "2024-12",
+   "eligible": 498,
+   "with_surprise": 472,
+   "with_analyst": 445
+  },
+  {
+   "month": "2025-01",
+   "eligible": 500,
+   "with_surprise": 480,
+   "with_analyst": 449
+  },
+  {
+   "month": "2025-02",
+   "eligible": 497,
+   "with_surprise": 311,
+   "with_analyst": 443
+  },
+  {
+   "month": "2025-03",
+   "eligible": 498,
+   "with_surprise": 479,
+   "with_analyst": 445
+  },
+  {
+   "month": "2025-04",
+   "eligible": 501,
+   "with_surprise": 484,
+   "with_analyst": 451
+  },
+  {
+   "month": "2025-05",
+   "eligible": 502,
+   "with_surprise": 480,
+   "with_analyst": 455
+  },
+  {
+   "month": "2025-06",
+   "eligible": 503,
+   "with_surprise": 488,
+   "with_analyst": 456
+  },
+  {
+   "month": "2025-07",
+   "eligible": 500,
+   "with_surprise": 486,
+   "with_analyst": 456
+  },
+  {
+   "month": "2025-08",
+   "eligible": 501,
+   "with_surprise": 425,
+   "with_analyst": 455
+  },
+  {
+   "month": "2025-09",
+   "eligible": 502,
+   "with_surprise": 487,
+   "with_analyst": 461
+  },
+  {
+   "month": "2025-10",
+   "eligible": 502,
+   "with_surprise": 491,
+   "with_analyst": 463
+  },
+  {
+   "month": "2025-11",
+   "eligible": 499,
+   "with_surprise": 462,
+   "with_analyst": 460
+  },
+  {
+   "month": "2025-12",
+   "eligible": 498,
+   "with_surprise": 478,
+   "with_analyst": 462
+  },
+  {
+   "month": "2026-01",
+   "eligible": 499,
+   "with_surprise": 485,
+   "with_analyst": 467
+  },
+  {
+   "month": "2026-02",
+   "eligible": 499,
+   "with_surprise": 335,
+   "with_analyst": 465
+  },
+  {
+   "month": "2026-03",
+   "eligible": 501,
+   "with_surprise": 484,
+   "with_analyst": 473
+  },
+  {
+   "month": "2026-04",
+   "eligible": 500,
+   "with_surprise": 486,
+   "with_analyst": 475
+  },
+  {
+   "month": "2026-05",
+   "eligible": 499,
+   "with_surprise": 475,
+   "with_analyst": 479
+  },
+  {
+   "month": "2026-06",
+   "eligible": 500,
+   "with_surprise": 487,
+   "with_analyst": 482
+  },
+  {
+   "month": "2026-07",
+   "eligible": 499,
+   "with_surprise": 485,
+   "with_analyst": 483
+  },
+  {
+   "month": "2026-08",
+   "eligible": 496,
+   "with_surprise": 456,
+   "with_analyst": 485
+  },
+  {
+   "month": "2026-09",
+   "eligible": 500,
+   "with_surprise": 483,
+   "with_analyst": 486
+  },
+  {
+   "month": "2026-10",
+   "eligible": 494,
+   "with_surprise": 477,
+   "with_analyst": 488
+  }
+ ],
+ "portfolios": {
+  "composite3": {
+   "months": 178,
+   "first": "2012-01",
+   "last": "2026-10",
+   "mean_excess_pct": 0.018814516756639962,
+   "ci_pct": [
+    -0.36620617508441267,
+    0.3924950318713199
+   ],
+   "annual_excess_pct": -0.1850100249565334,
+   "months_beating_benchmark": 0.4943820224719101,
+   "max_drawdown_excess_pct": 29.248513680854458,
+   "annual_return_pct": 12.604914588349224,
+   "benchmark_annual_return_pct": 12.600168447122574,
+   "mean_turnover": 0.698876404494382,
+   "2012-2016": {
+    "months": 60,
+    "mean_excess_pct": -0.1575802238254098,
+    "ci_pct": [
+     -0.5346682546181056,
+     0.22855367672907
+    ]
+   },
+   "2017-2021": {
+    "months": 60,
+    "mean_excess_pct": 0.039170119809234856,
+    "ci_pct": [
+     -0.6094175793076236,
+     0.6929194288099851
+    ]
+   },
+   "2022-2026": {
+    "months": 58,
+    "mean_excess_pct": 0.1802343142009035,
+    "ci_pct": [
+     -0.6768775711019186,
+     1.054820171349316
+    ]
+   }
+  },
+  "momentum": {
+   "months": 178,
+   "first": "2012-01",
+   "last": "2026-10",
+   "mean_excess_pct": 0.23662295601154454,
+   "ci_pct": [
+    -0.461973412056436,
+    0.9334906709335985
+   ],
+   "annual_excess_pct": 1.4536786797179957,
+   "months_beating_benchmark": 0.5449438202247191,
+   "max_drawdown_excess_pct": 34.24977076149454,
+   "annual_return_pct": 14.483041937843089,
+   "benchmark_annual_return_pct": 12.600168447122574,
+   "mean_turnover": 0.2828651685393258,
+   "2012-2016": {
+    "months": 60,
+    "mean_excess_pct": -0.07032092189969218,
+    "ci_pct": [
+     -0.5201382171336457,
+     0.369530011704689
+    ]
+   },
+   "2017-2021": {
+    "months": 60,
+    "mean_excess_pct": -0.392690930400332,
+    "ci_pct": [
+     -1.2128044404038802,
+     0.4359268919597604
+    ]
+   },
+   "2022-2026": {
+    "months": 58,
+    "mean_excess_pct": 1.2051654708285584,
+    "ci_pct": [
+     -0.749683981088715,
+     3.055933626355647
+    ]
+   }
+  },
+  "pullback": {
+   "months": 178,
+   "first": "2012-01",
+   "last": "2026-10",
+   "mean_excess_pct": 0.07865673631881424,
+   "ci_pct": [
+    -0.5038127447603147,
+    0.6454738643780669
+   ],
+   "annual_excess_pct": -0.004505789015851747,
+   "months_beating_benchmark": 0.47752808988764045,
+   "max_drawdown_excess_pct": 38.14071384252345,
+   "annual_return_pct": 11.261591304774644,
+   "benchmark_annual_return_pct": 12.600168447122574,
+   "mean_turnover": 0.8151685393258429,
+   "2012-2016": {
+    "months": 60,
+    "mean_excess_pct": 0.054180684003508506,
+    "ci_pct": [
+     -0.42098392328751716,
+     0.5135168117408025
+    ]
+   },
+   "2017-2021": {
+    "months": 60,
+    "mean_excess_pct": -0.09209314391532766,
+    "ci_pct": [
+     -1.5312070384797525,
+     1.2453089801610375
+    ]
+   },
+   "2022-2026": {
+    "months": 58,
+    "mean_excess_pct": 0.2806145975768637,
+    "ci_pct": [
+     -0.5936863283586611,
+     1.2366222862866547
+    ]
+   }
+  },
+  "composite4": {
+   "months": 178,
+   "first": "2012-01",
+   "last": "2026-10",
+   "mean_excess_pct": 0.1891337673850119,
+   "ci_pct": [
+    -0.19133123295389692,
+    0.5702343728914001
+   ],
+   "annual_excess_pct": 1.8874817675077482,
+   "months_beating_benchmark": 0.5280898876404494,
+   "max_drawdown_excess_pct": 26.971132464418012,
+   "annual_return_pct": 15.074177561194757,
+   "benchmark_annual_return_pct": 12.600168447122574,
+   "mean_turnover": 0.6884831460674157,
+   "2012-2016": {
+    "months": 60,
+    "mean_excess_pct": -0.09140335346745751,
+    "ci_pct": [
+     -0.46148866884887924,
+     0.2678742904736661
+    ]
+   },
+   "2017-2021": {
+    "months": 60,
+    "mean_excess_pct": 0.2778588000302615,
+    "ci_pct": [
+     -0.4553930320723475,
+     1.0821990583351127
+    ]
+   },
+   "2022-2026": {
+    "months": 58,
+    "mean_excess_pct": 0.38756006553041183,
+    "ci_pct": [
+     -0.39986198045435944,
+     1.2597806234565512
+    ]
+   }
+  },
+  "surprise": {
+   "months": 56,
+   "first": "2022-03",
+   "last": "2026-10",
+   "mean_excess_pct": 0.13050565426303695,
+   "ci_pct": [
+    -0.6784911715567278,
+    0.9662423731287213
+   ],
+   "annual_excess_pct": 1.199637673355558,
+   "months_beating_benchmark": 0.48214285714285715,
+   "max_drawdown_excess_pct": 24.527722704060146,
+   "annual_return_pct": 11.488872769979697,
+   "benchmark_annual_return_pct": 10.424565234534278,
+   "mean_turnover": 0.3535714285714286,
+   "2012-2016": {
+    "months": 0,
+    "mean_excess_pct": NaN,
+    "ci_pct": null
+   },
+   "2017-2021": {
+    "months": 0,
+    "mean_excess_pct": NaN,
+    "ci_pct": null
+   },
+   "2022-2026": {
+    "months": 56,
+    "mean_excess_pct": 0.13050565426303695,
+    "ci_pct": [
+     -0.6784911715567278,
+     0.9662423731287213
+    ]
+   }
+  },
+  "analyst": {
+   "months": 135,
+   "first": "2012-06",
+   "last": "2026-10",
+   "mean_excess_pct": -0.07923432616276951,
+   "ci_pct": [
+    -0.47143742134204125,
+    0.3996815529091446
+   ],
+   "annual_excess_pct": -1.2210281363529085,
+   "months_beating_benchmark": 0.4962962962962963,
+   "max_drawdown_excess_pct": 40.55124943978405,
+   "annual_return_pct": 12.58133881817276,
+   "benchmark_annual_return_pct": 13.493622263233185,
+   "mean_turnover": 0.372962962962963,
+   "2012-2016": {
+    "months": 17,
+    "mean_excess_pct": -0.46886518451318865,
+    "ci_pct": [
+     -0.8646234043868939,
+     -0.07067061243426562
+    ]
+   },
+   "2017-2021": {
+    "months": 60,
+    "mean_excess_pct": 0.5044732950945253,
+    "ci_pct": [
+     -0.01018041229092093,
+     1.026991792693056
+    ]
+   },
+   "2022-2026": {
+    "months": 58,
+    "mean_excess_pct": -0.5688676482917447,
+    "ci_pct": [
+     -1.1905500132661353,
+     0.2644548218053511
+    ]
+   }
+  },
+  "composite3_top50": {
+   "months": 135,
+   "first": "2012-06",
+   "last": "2026-10",
+   "mean_excess_pct": 0.0484501428097108,
+   "ci_pct": [
+    -0.314612506350608,
+    0.4109845502682831
+   ],
+   "annual_excess_pct": 0.30485911785431696,
+   "months_beating_benchmark": 0.5407407407407407,
+   "max_drawdown_excess_pct": 30.634358417250386,
+   "annual_return_pct": 14.139367112035472,
+   "benchmark_annual_return_pct": 13.493622263233185,
+   "mean_turnover": 0.7096296296296297,
+   "2012-2016": {
+    "months": 17,
+    "mean_excess_pct": -0.3022288320664218,
+    "ci_pct": [
+     -1.2136605035727555,
+     0.7366897680450333
+    ]
+   },
+   "2017-2021": {
+    "months": 60,
+    "mean_excess_pct": -0.17300644711506713,
+    "ci_pct": [
+     -0.7022626187130189,
+     0.4200108584168404
+    ]
+   },
+   "2022-2026": {
+    "months": 58,
+    "mean_excess_pct": 0.3803283836438647,
+    "ci_pct": [
+     -0.17447805313335576,
+     0.9528010208284804
+    ]
+   }
+  },
+  "composite3_platform_symbols": {
+   "months": 135,
+   "first": "2012-06",
+   "last": "2026-10",
+   "mean_excess_pct": 0.04377038044707878,
+   "ci_pct": [
+    -0.2312471598344292,
+    0.3276002431503515
+   ],
+   "annual_excess_pct": 0.3664469188770614,
+   "months_beating_benchmark": 0.5185185185185185,
+   "max_drawdown_excess_pct": 13.773383053529908,
+   "annual_return_pct": 25.466418717913285,
+   "benchmark_annual_return_pct": 25.13592670673923,
+   "mean_turnover": 0.3066666666666667,
+   "2012-2016": {
+    "months": 17,
+    "mean_excess_pct": 0.05300057902079878,
+    "ci_pct": [
+     -0.2989905751301983,
+     0.48862164319372614
+    ]
+   },
+   "2017-2021": {
+    "months": 60,
+    "mean_excess_pct": -0.12736984904720564,
+    "ci_pct": [
+     -0.4117752606019573,
+     0.16547834142935094
+    ]
+   },
+   "2022-2026": {
+    "months": 58,
+    "mean_excess_pct": 0.21810659413507572,
+    "ci_pct": [
+     -0.33099370033664754,
+     0.8439775928380646
+    ]
+   }
+  }
+ },
+ "portfolios_2013_on": {
+  "composite3": {
+   "months": 166,
+   "first": "2013-01",
+   "last": "2026-10",
+   "mean_excess_pct": 0.033976131157084324,
+   "ci_pct": [
+    -0.3663091365506427,
+    0.4476967552116457
+   ],
+   "annual_excess_pct": -0.024367362201793696,
+   "months_beating_benchmark": 0.5,
+   "max_drawdown_excess_pct": 29.248513680854465,
+   "annual_return_pct": 12.71182276666063,
+   "benchmark_annual_return_pct": 12.536490460732042,
+   "mean_turnover": 0.7066265060240963,
+   "2012-2016": {
+    "months": 48,
+    "mean_excess_pct": -0.14924499250271867,
+    "ci_pct": [
+     -0.5855328669322772,
+     0.30422479704575506
+    ]
+   },
+   "2017-2021": {
+    "months": 60,
+    "mean_excess_pct": 0.039170119809234856,
+    "ci_pct": [
+     -0.6094175793076236,
+     0.6929194288099851
+    ]
+   },
+   "2022-2026": {
+    "months": 58,
+    "mean_excess_pct": 0.1802343142009035,
+    "ci_pct": [
+     -0.6768775711019186,
+     1.054820171349316
+    ]
+   }
+  },
+  "momentum": {
+   "months": 166,
+   "first": "2013-01",
+   "last": "2026-10",
+   "mean_excess_pct": 0.29058228054401947,
+   "ci_pct": [
+    -0.4848398781191342,
+    1.0351644745807302
+   ],
+   "annual_excess_pct": 2.0269620529782095,
+   "months_beating_benchmark": 0.5602409638554217,
+   "max_drawdown_excess_pct": 34.24977076149454,
+   "annual_return_pct": 15.016840021493305,
+   "benchmark_annual_return_pct": 12.536490460732042,
+   "mean_turnover": 0.2786144578313253,
+   "2012-2016": {
+    "months": 48,
+    "mean_excess_pct": 0.039552439297307736,
+    "ci_pct": [
+     -0.46460515864144475,
+     0.5141466886487299
+    ]
+   },
+   "2017-2021": {
+    "months": 60,
+    "mean_excess_pct": -0.392690930400332,
+    "ci_pct": [
+     -1.2128044404038802,
+     0.4359268919597604
+    ]
+   },
+   "2022-2026": {
+    "months": 58,
+    "mean_excess_pct": 1.2051654708285584,
+    "ci_pct": [
+     -0.749683981088715,
+     3.055933626355647
+    ]
+   }
+  },
+  "pullback": {
+   "months": 166,
+   "first": "2013-01",
+   "last": "2026-10",
+   "mean_excess_pct": 0.09640412441821274,
+   "ci_pct": [
+    -0.5133313139987944,
+    0.6919159232174243
+   ],
+   "annual_excess_pct": 0.16052459429429788,
+   "months_beating_benchmark": 0.4879518072289157,
+   "max_drawdown_excess_pct": 38.14071384252345,
+   "annual_return_pct": 11.292607962056467,
+   "benchmark_annual_return_pct": 12.536490460732042,
+   "mean_turnover": 0.8283132530120482,
+   "2012-2016": {
+    "months": 48,
+    "mean_excess_pct": 0.1094380547684353,
+    "ci_pct": [
+     -0.38590093996380015,
+     0.6225776403499165
+    ]
+   },
+   "2017-2021": {
+    "months": 60,
+    "mean_excess_pct": -0.09209314391532766,
+    "ci_pct": [
+     -1.5312070384797525,
+     1.2453089801610375
+    ]
+   },
+   "2022-2026": {
+    "months": 58,
+    "mean_excess_pct": 0.2806145975768637,
+    "ci_pct": [
+     -0.5936863283586611,
+     1.2366222862866547
+    ]
+   }
+  },
+  "composite4": {
+   "months": 166,
+   "first": "2013-01",
+   "last": "2026-10",
+   "mean_excess_pct": 0.19130903587034406,
+   "ci_pct": [
+    -0.21892600401775628,
+    0.6064102262394191
+   ],
+   "annual_excess_pct": 1.8899421859467358,
+   "months_beating_benchmark": 0.5240963855421686,
+   "max_drawdown_excess_pct": 26.971132464418012,
+   "annual_return_pct": 15.016959418351107,
+   "benchmark_annual_return_pct": 12.536490460732042,
+   "mean_turnover": 0.6924698795180723,
+   "2012-2016": {
+    "months": 48,
+    "mean_excess_pct": -0.1540148301688013,
+    "ci_pct": [
+     -0.5782506168094049,
+     0.2756452364559539
+    ]
+   },
+   "2017-2021": {
+    "months": 60,
+    "mean_excess_pct": 0.2778588000302615,
+    "ci_pct": [
+     -0.4553930320723475,
+     1.0821990583351127
+    ]
+   },
+   "2022-2026": {
+    "months": 58,
+    "mean_excess_pct": 0.38756006553041183,
+    "ci_pct": [
+     -0.39986198045435944,
+     1.2597806234565512
+    ]
+   }
+  },
+  "surprise": {
+   "months": 56,
+   "first": "2022-03",
+   "last": "2026-10",
+   "mean_excess_pct": 0.13050565426303695,
+   "ci_pct": [
+    -0.6784911715567278,
+    0.9662423731287213
+   ],
+   "annual_excess_pct": 1.199637673355558,
+   "months_beating_benchmark": 0.48214285714285715,
+   "max_drawdown_excess_pct": 24.527722704060146,
+   "annual_return_pct": 11.488872769979697,
+   "benchmark_annual_return_pct": 10.424565234534278,
+   "mean_turnover": 0.3535714285714286,
+   "2012-2016": {
+    "months": 0,
+    "mean_excess_pct": NaN,
+    "ci_pct": null
+   },
+   "2017-2021": {
+    "months": 0,
+    "mean_excess_pct": NaN,
+    "ci_pct": null
+   },
+   "2022-2026": {
+    "months": 56,
+    "mean_excess_pct": 0.13050565426303695,
+    "ci_pct": [
+     -0.6784911715567278,
+     0.9662423731287213
+    ]
+   }
+  },
+  "analyst": {
+   "months": 130,
+   "first": "2016-01",
+   "last": "2026-10",
+   "mean_excess_pct": -0.060583295614586655,
+   "ci_pct": [
+    -0.4619737406822779,
+    0.4424317262650551
+   ],
+   "annual_excess_pct": -1.0071104346970894,
+   "months_beating_benchmark": 0.5,
+   "max_drawdown_excess_pct": 40.55124943978405,
+   "annual_return_pct": 12.258095993186547,
+   "benchmark_annual_return_pct": 12.918337718889727,
+   "mean_turnover": 0.36999999999999994,
+   "2012-2016": {
+    "months": 12,
+    "mean_excess_pct": -0.4291585445538826,
+    "ci_pct": [
+     -0.8250756023220874,
+     0.008021370159218845
+    ]
+   },
+   "2017-2021": {
+    "months": 60,
+    "mean_excess_pct": 0.5044732950945253,
+    "ci_pct": [
+     -0.01018041229092093,
+     1.026991792693056
+    ]
+   },
+   "2022-2026": {
+    "months": 58,
+    "mean_excess_pct": -0.5688676482917447,
+    "ci_pct": [
+     -1.1905500132661353,
+     0.2644548218053511
+    ]
+   }
+  },
+  "composite3_top50": {
+   "months": 130,
+   "first": "2016-01",
+   "last": "2026-10",
+   "mean_excess_pct": 0.07113152836919058,
+   "ci_pct": [
+    -0.30445497222624646,
+    0.4322861644984177
+   ],
+   "annual_excess_pct": 0.5694597398399726,
+   "months_beating_benchmark": 0.5538461538461539,
+   "max_drawdown_excess_pct": 30.634358417250386,
+   "annual_return_pct": 13.860733557783988,
+   "benchmark_annual_return_pct": 12.918337718889727,
+   "mean_turnover": 0.7103076923076923,
+   "2012-2016": {
+    "months": 12,
+    "mean_excess_pct": -0.20263006137044554,
+    "ci_pct": [
+     -1.4600685299128886,
+     1.148262983748351
+    ]
+   },
+   "2017-2021": {
+    "months": 60,
+    "mean_excess_pct": -0.17300644711506713,
+    "ci_pct": [
+     -0.7022626187130189,
+     0.4200108584168404
+    ]
+   },
+   "2022-2026": {
+    "months": 58,
+    "mean_excess_pct": 0.3803283836438647,
+    "ci_pct": [
+     -0.17447805313335576,
+     0.9528010208284804
+    ]
+   }
+  },
+  "composite3_platform_symbols": {
+   "months": 130,
+   "first": "2016-01",
+   "last": "2026-10",
+   "mean_excess_pct": 0.05459466765314932,
+   "ci_pct": [
+    -0.23659686999265936,
+    0.3443361651212893
+   ],
+   "annual_excess_pct": 0.49120143291927487,
+   "months_beating_benchmark": 0.5307692307692308,
+   "max_drawdown_excess_pct": 13.773383053529908,
+   "annual_return_pct": 26.11125470070579,
+   "benchmark_annual_return_pct": 25.635163011114614,
+   "mean_turnover": 0.30923076923076925,
+   "2012-2016": {
+    "months": 12,
+    "mean_excess_pct": 0.1741096064922798,
+    "ci_pct": [
+     -0.29930868828764656,
+     0.6315516403473217
+    ]
+   },
+   "2017-2021": {
+    "months": 60,
+    "mean_excess_pct": -0.12736984904720564,
+    "ci_pct": [
+     -0.4117752606019573,
+     0.16547834142935094
+    ]
+   },
+   "2022-2026": {
+    "months": 58,
+    "mean_excess_pct": 0.21810659413507572,
+    "ci_pct": [
+     -0.33099370033664754,
+     0.8439775928380646
+    ]
+   }
+  }
+ },
+ "primary": {
+  "best_single_input": "momentum",
+  "composite_minus_best_single": {
+   "months": 178,
+   "difference_pct": -0.21780843925490462,
+   "ci_pct": [
+    -0.8464953339342082,
+    0.4757920292746574
+   ]
+  },
+  "pass_1_interval_above_zero": false,
+  "pass_2_beats_every_single_input": {
+   "momentum": 0.0,
+   "pullback": 0.0,
+   "surprise": 0.0
+  },
+  "pass_3_positive_in_every_period": {
+   "2012-2016": 0.0,
+   "2017-2021": 1.0,
+   "2022-2026": 1.0
+  },
+  "passed": false
+ },
+ "secondary": {
+  "composite4_minus_composite3_2013_on": {
+   "months": 166,
+   "difference_pct": 0.15733290471325972,
+   "ci_pct": [
+    -0.06725817829965333,
+    0.39485694487519085
+   ]
+  },
+  "analyst_only_2013_on": {
+   "months": 130,
+   "first": "2016-01",
+   "last": "2026-10",
+   "mean_excess_pct": -0.060583295614586655,
+   "ci_pct": [
+    -0.4619737406822779,
+    0.4424317262650551
+   ],
+   "annual_excess_pct": -1.0071104346970894,
+   "months_beating_benchmark": 0.5,
+   "max_drawdown_excess_pct": 40.55124943978405,
+   "annual_return_pct": 12.258095993186547,
+   "benchmark_annual_return_pct": 12.918337718889727,
+   "mean_turnover": 0.36999999999999994,
+   "2012-2016": {
+    "months": 12,
+    "mean_excess_pct": -0.4291585445538826,
+    "ci_pct": [
+     -0.8250756023220874,
+     0.008021370159218845
+    ]
+   },
+   "2017-2021": {
+    "months": 60,
+    "mean_excess_pct": 0.5044732950945253,
+    "ci_pct": [
+     -0.01018041229092093,
+     1.026991792693056
+    ]
+   },
+   "2022-2026": {
+    "months": 58,
+    "mean_excess_pct": -0.5688676482917447,
+    "ci_pct": [
+     -1.1905500132661353,
+     0.2644548218053511
+    ]
+   }
+  }
+ }
+}
