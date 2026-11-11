@@ -58,3 +58,21 @@ Three market-data files: `ingestion.py`, `scheduler.py` and `unusual_whales.py`.
   - Dark-pool runs: median **3.2 s** (39 s before), no overruns. The first run after the restart took 51 s because every answer was fetched fresh.
   - The cache-delete function is gone from the running code.
 - **Still to confirm at the next session:** that the gamma scan measures symbols again, and how many short-squeeze candidates appear.
+
+## Follow-up: make a silent zero visible, and stop restarts moving the scans (committed, not deployed)
+
+- **Degraded status (AUD-SCAN-SILENTZERO).** A scan that ran but measured nothing during the session now records `degraded: measured 0 of N (reasons)` instead of `ok`.
+  - **Gamma** counts why each symbol dropped out: no live price, no expiries from Yahoo, no expiry within 5 days, open interest unmeasured, below the notional floor, error. It logs the counts every run.
+  - **Pre-breakout** counts a symbol as measured once its short interest is read. Below the floor is then an answer, not a failure.
+  - **Short-squeeze and ignition** record `degraded` when the live-price cache is empty during a session, and `skipped` when markets are closed. Each such run increments a 48-hour counter (`live_cache_empty_in_session_48h`), shown as a gauge, because a minute job's record is overwritten every minute.
+- **Where it shows:**
+  - System Health shows an orange "△ Degraded" badge with the reason, and a count in the header.
+  - The data-quality check now fails a job whose latest record is degraded, and it watches the gamma and pre-breakout scans (30-hour window, US trading days).
+  - The alert email shows the reason in place of the age.
+- **Fixed times (AUD-SCAN-FIXEDTIMES).** Gamma runs at 10:12, 12:42 and 15:12 ET on weekdays; pre-breakout at 10:17, 12:47 and 15:17. Both are in session and never on a 5-minute ingest boundary. Before, a 4-hour interval restarted its clock with the container.
+  - Outside the session, gamma records `skipped: US market closed`. That gate sits before its lock, so it cannot hold the lock.
+  - It no longer runs overnight on the previous close's prices.
+- **Tests:**
+  - market-data: 6,384 passed (the prebreakout test fails on unmodified `HEAD` too);
+  - frontend: 1,062 passed, typecheck clean;
+  - sabotage of the status rule, the data-quality override, the empty-cache status, the run times and the health-page classification is each caught.

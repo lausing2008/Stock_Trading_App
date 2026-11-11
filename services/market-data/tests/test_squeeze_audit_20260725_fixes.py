@@ -249,7 +249,8 @@ def test_gauge_dq_checks_registered_for_both_new_counters():
     # single MAX() across a whole market, so one dead symbol among many healthy ones is invisible
     # — SSNLF (305 days stale) and SKHYV (53 days) sat unnoticed for months behind that aggregate.
     # Count was 4 before AUD-IGNITION-NEVERFIRES, 8 after, 9 now.
-    assert _scheduler_source.count('"source": "gauge"') == 9
+    # +1 on 2026-11-11: live_cache_empty_in_session_48h (AUD-SCAN-SILENTZERO), also a gauge.
+    assert _scheduler_source.count('"source": "gauge"') == 10
 
 
 def test_gauge_dq_check_dispatch_branch_always_reports_ok_true():

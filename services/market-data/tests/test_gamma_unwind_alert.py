@@ -237,12 +237,13 @@ def test_dedup_is_per_symbol_and_expiry_not_just_symbol():
     assert 'f"{sym}:{c[\'expiry\']}"' in body or "dedup_field" in body
 
 
-def test_job_is_registered_at_a_multi_hour_interval_not_every_minute():
+def test_job_runs_at_fixed_us_session_times_not_every_minute():
+    """AUD-SCAN-FIXEDTIMES (2026-11-11): a few fixed in-session times, not a restart-relative interval."""
     assert 'id="gamma_unwind_alert_check"' in _scheduler_source
     idx = _scheduler_source.index('id="gamma_unwind_alert_check"')
     preceding = _scheduler_source[max(0, idx - 300):idx]
-    assert "hours=" in preceding
-    assert "minutes=1" not in preceding
+    assert "_us_session_times_trigger(_GAMMA_SCAN_TIMES_ET)" in preceding
+    assert "minutes=1" not in preceding and "hours=4" not in preceding
 
 
 # ── AUD265-GAMMA-ASSUMES-SORTED-EXPIRIES ────────────────────────────────────────────────────

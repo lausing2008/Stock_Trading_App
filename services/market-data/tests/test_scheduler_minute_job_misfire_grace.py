@@ -103,7 +103,7 @@ def test_gamma_unwind_and_prebreakout_now_have_a_misfire_grace_time():
     absence) — locking the bug in rather than catching it."""
     for job_id in ("gamma_unwind_alert_check", "prebreakout_alert_check"):
         block = _registration_block(job_id)
-        assert "hours=4" in block
+        assert "_us_session_times_trigger(" in block   # AUD-SCAN-FIXEDTIMES: fixed times now
         assert "misfire_grace_time=60" in block, (
             f"{job_id} is missing misfire_grace_time — this 4-hour job's own execution "
             f"duration, not its cadence, is what makes the 1s scheduler default risky here."

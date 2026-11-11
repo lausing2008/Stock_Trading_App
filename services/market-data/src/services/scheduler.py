@@ -403,6 +403,10 @@ _ROLLING_COUNTER_TTL_S = 48 * 3600
 # source type (informational only — always ok=True, never triggers the failing-list/email path,
 # since a nonzero miss count is expected background noise, not itself a functional failure).
 _SQUEEZE_FUND_CACHE_MISS_COUNTER_KEY = "stockai:metric:squeeze_fund_cache_miss_count_48h"
+# AUD-SCAN-SILENTZERO: minute-scan runs that found the live-price cache empty during a session.
+# A minute job's status is overwritten every minute, so a gap that comes and goes (Nov 11: one
+# cycle in five) is only visible as a count.
+_LIVE_CACHE_EMPTY_COUNTER_KEY = "stockai:metric:live_cache_empty_in_session_48h"
 _SQUEEZE_WATCH_FUND_CACHE_MISS_COUNTER_KEY = "stockai:metric:squeeze_watch_fund_cache_miss_count_48h"
 # T260-SQUEEZE-IGNITION: same rolling-48h-counter convention, for the new early-warning tier.
 _SQUEEZE_IGNITION_FUND_CACHE_MISS_COUNTER_KEY = "stockai:metric:squeeze_ignition_fund_cache_miss_count_48h"
@@ -4359,7 +4363,9 @@ def check_short_squeeze_alerts() -> None:
         except Exception:
             _live_raw, _avg_vol_cache = [], {}
         if not _live_raw:
-            _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
+            # AUD-SCAN-SILENTZERO (2026-11-11): an empty live-price cache while a market is open
+            # is a failure, not a quiet market. On Nov 11 it went unseen behind "ok".
+            _record_job_status("check_short_squeeze_alerts", _empty_live_cache_status(), time.monotonic() - _t0)
             return
 
         from .paper_trading_engine import _is_market_hours
@@ -4738,7 +4744,9 @@ def check_squeeze_ignition_alerts() -> None:
         except Exception:
             _live_raw, _avg_vol_cache = [], {}
         if not _live_raw:
-            _record_job_status("check_squeeze_ignition_alerts", "ok", time.monotonic() - _t0)
+            # AUD-SCAN-SILENTZERO (2026-11-11): an empty live-price cache while a market is open
+            # is a failure, not a quiet market. On Nov 11 it went unseen behind "ok".
+            _record_job_status("check_squeeze_ignition_alerts", _empty_live_cache_status(), time.monotonic() - _t0)
             return
 
         from .paper_trading_engine import _is_market_hours
@@ -5317,7 +5325,7 @@ def check_prebreakout_alerts() -> None:
 
         _us_market_open = _is_market_hours("US")
         if not _us_market_open:
-            _record_job_status("check_prebreakout_alerts", "ok", time.monotonic() - _t0)
+            _record_job_status("check_prebreakout_alerts", "skipped: US market closed", time.monotonic() - _t0)
             return
 
         # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED (extended to this alert 2026-08-15): this
@@ -5373,18 +5381,28 @@ def check_prebreakout_alerts() -> None:
             )
 
             candidates: dict[str, dict] = {}
+            # AUD-SCAN-SILENTZERO: a symbol counts as measured once its short interest was read;
+            # being below the floor is then a real answer. No symbol measured is a failure.
+            _pb_skips: dict[str, int] = {}
+            _pb_measured = 0
+
+            def _pb_skip(reason: str) -> None:
+                _pb_skips[reason] = _pb_skips.get(reason, 0) + 1
             for stock_id, symbol in symbols:
                 try:
                     cached = _rc.get(f"stockai:fundamentals:v2:{symbol}")
                     if not cached:
-                        continue
+                        _pb_skip("no_fundamentals_cache"); continue
                     data = _json.loads(cached)
                     spf = data.get("short_percent_of_float")
-                    if spf is None or spf * 100 < _SQUEEZE_MIN_SHORT_FLOAT:
+                    if spf is None:
+                        _pb_skip("no_short_interest"); continue
+                    _pb_measured += 1
+                    if spf * 100 < _SQUEEZE_MIN_SHORT_FLOAT:
                         continue
                     _si_date = data.get("short_interest_date")
                     if _si_date is None or _si_date < _pb_stale_cutoff_str:
-                        continue
+                        _pb_skip("stale_short_interest"); continue
 
                     # AUD-SQZ-PREBREAKOUT-FORMINGBAR (2026-11-10): this job runs only in market
                     # hours, when today's daily bar is still forming. Its small high-low range
@@ -5400,9 +5418,9 @@ def check_prebreakout_alerts() -> None:
                         .limit(_PREBREAKOUT_MIN_DAILY_BARS)
                     ).all()
                     if len(price_rows) < _PREBREAKOUT_MIN_DAILY_BARS:
-                        continue
+                        _pb_skip("too_few_daily_bars"); continue
                     if not _prebreakout_bars_recent(price_rows[0].ts, _today_et()):
-                        continue
+                        _pb_skip("stale_daily_bars"); continue
                     price_rows = list(reversed(price_rows))  # back to ascending order
                     bars = _pd.DataFrame([r[:4] for r in price_rows], columns=["close", "high", "low", "volume"]).astype(float)
                     compression = detect_price_compression(bars["close"], bars["high"], bars["low"], bars["volume"])
@@ -5442,7 +5460,11 @@ def check_prebreakout_alerts() -> None:
                     }
                 except Exception as exc:
                     log.warning("prebreakout_alert.symbol_error", symbol=symbol, error=str(exc))
-                    continue
+                    _pb_skip("error"); continue
+
+            _pb_state = _scan_status(len(symbols), _pb_measured, _pb_skips)
+            log.info("prebreakout_alert.scan", symbols=len(symbols), measured=_pb_measured,
+                     candidates=len(candidates), skipped=_pb_skips, status=_pb_state)
 
             # T264-SHORTSQUEEZE-PREBREAKOUT: recorded ONCE per (symbol, day) globally, before the
             # per-recipient send loop — matches _record_squeeze_alert_outcome()'s own established
@@ -5458,7 +5480,7 @@ def check_prebreakout_alerts() -> None:
                 )
 
             if not candidates:
-                _record_job_status("check_prebreakout_alerts", "ok", time.monotonic() - _t0)
+                _record_job_status("check_prebreakout_alerts", _pb_state, time.monotonic() - _t0)
                 return
 
             from .email_service import send_prebreakout_email
@@ -5490,7 +5512,7 @@ def check_prebreakout_alerts() -> None:
                 except Exception:
                     pass
 
-            _record_job_status("check_prebreakout_alerts", "ok", time.monotonic() - _t0)
+            _record_job_status("check_prebreakout_alerts", _pb_state, time.monotonic() - _t0)
             log.info("prebreakout_alert.done", candidates=len(candidates), sent=sent, recipients=len(recipients))
     except Exception as exc:
         log.error("prebreakout_alert.failed", error=str(exc), exc_info=True)
@@ -5605,6 +5627,57 @@ _GAMMA_UNWIND_MIN_NOTIONAL_USD = 5_000_000  # floor so a thin/illiquid OR low-no
 _GEX_CORROBORATE_BAND_PCT = 0.03
 
 
+def _us_session_now() -> bool:
+    """AUD-SCAN-SILENTZERO: the regular US session, from the shared market-hours check (holidays
+    and half-days included). A calendar failure fails OPEN, the convention for these alerts."""
+    try:
+        from .paper_trading_engine import _is_market_hours
+        return bool(_is_market_hours("US"))
+    except Exception as exc:
+        log.warning("scan.market_hours_check_failed", error=str(exc))
+        return True
+
+
+# AUD-SCAN-FIXEDTIMES (2026-11-11): (hour, minute) in New York time, weekdays. Inside the regular
+# session, never on a 5-minute ingest boundary (:x0/:x5), five minutes apart so the two scans
+# do not start together. Holidays are handled inside each scan ("skipped: US market closed").
+_GAMMA_SCAN_TIMES_ET = ((10, 12), (12, 42), (15, 12))
+_PREBREAKOUT_SCAN_TIMES_ET = ((10, 17), (12, 47), (15, 17))
+
+
+def _us_session_times_trigger(times):
+    """An OrTrigger of weekday CronTriggers at the given New York (hour, minute) times."""
+    return OrTrigger([CronTrigger(hour=h, minute=m, day_of_week="mon-fri", timezone="America/New_York")
+                      for h, m in times])
+
+
+def _empty_live_cache_status() -> str:
+    """Status for a scan that found the live-price cache empty: degraded during a session
+    (US or HK), skipped otherwise (the cache is deliberately not written when both are closed)."""
+    try:
+        from .paper_trading_engine import _is_market_hours
+        if _is_market_hours("US") or _is_market_hours("HK"):
+            _incr_rolling_counter(_LIVE_CACHE_EMPTY_COUNTER_KEY)
+            return "degraded: live price cache empty during the session"
+    except Exception:
+        return "degraded: live price cache empty (market hours unknown)"
+    return "skipped: markets closed"
+
+
+def _scan_status(symbols: int, measured: int, skips: dict) -> str:
+    """AUD-SCAN-SILENTZERO (2026-11-11): "ok", or "degraded: ..." when a scan that had symbols
+    to look at measured none of them.
+
+    On Nov 11 the gamma scan recorded "ok" three times while measuring 0 of 39 symbols (the live
+    price cache had just been deleted). A zero that is really a failure must not look like a
+    quiet market. The reasons are carried so the health page says WHY.
+    """
+    if symbols > 0 and measured == 0:
+        why = ", ".join(f"{k} {v}" for k, v in sorted(skips.items(), key=lambda kv: -kv[1])) or "no reason recorded"
+        return f"degraded: measured 0 of {symbols} ({why})"
+    return "ok"
+
+
 def _gamma_oi_unmeasured(call_band, put_band) -> bool:
     """AUD-SQZ-GAMMA-OIFILL: True when either side's near-money open interest is entirely
     unreported (no rows, or every row NaN). Such a side is unknown, not zero, so no concentration
@@ -5642,6 +5715,12 @@ def check_gamma_unwind_alerts() -> None:
     don't change minute-to-minute), with a fixed inter-symbol sleep matching
     compute_options_flow_snapshots_eod()'s own established rate-limit discipline.
     """
+    # AUD-SCAN-SILENTZERO (2026-11-11): the scan needs live US prices, which exist only in the
+    # session. Outside it, say so rather than "ok" after measuring nothing. Checked before the
+    # lock, whose release lives in the finally below.
+    if not _us_session_now():
+        _record_job_status("check_gamma_unwind_alerts", "skipped: US market closed", 0.0)
+        return
     try:
         acquired = _get_redis().set(_GAMMA_UNWIND_LOCK_KEY, "1", nx=True, ex=_GAMMA_UNWIND_LOCK_TTL)
         if not acquired:
@@ -5649,6 +5728,10 @@ def check_gamma_unwind_alerts() -> None:
     except Exception:
         pass
     _t0 = time.monotonic()
+    _skips: dict[str, int] = {}
+
+    def _skip(reason: str) -> None:
+        _skips[reason] = _skips.get(reason, 0) + 1
     try:
         import json as _json
         import yfinance as _yf
@@ -5718,17 +5801,17 @@ def check_gamma_unwind_alerts() -> None:
                     live = _live_raw.get(symbol)
                     price = live.get("price") if live else None
                     if not price:
-                        continue
+                        _skip("no_live_price"); continue
                     t = _yf.Ticker(symbol)
                     expiries = t.options
                     if not expiries:
-                        continue
+                        _skip("no_expiries_from_yahoo"); continue
                     near_expiries = sorted(
                         e for e in expiries
                         if 0 <= (date.fromisoformat(e) - today).days <= _GAMMA_UNWIND_MAX_DAYS_TO_EXPIRY
                     )
                     if not near_expiries:
-                        continue
+                        _skip("no_expiry_within_window"); continue
                     # AUD265-GAMMA-ASSUMES-SORTED-EXPIRIES: near_expiries[0] is meant to be "the
                     # nearest expiry" — sorted() above makes that guarantee structural rather than
                     # dependent on yfinance's own (undocumented) ordering of t.options.
@@ -5745,13 +5828,13 @@ def check_gamma_unwind_alerts() -> None:
                     # "100% calls" alert could fire on missing put data. A side whose near-money
                     # OI is entirely unreported means the concentration is not measured: skip.
                     if _gamma_oi_unmeasured(_call_band, _put_band):
-                        continue
+                        _skip("oi_unmeasured"); continue
                     call_oi = int(_call_band.fillna(0).sum())
                     put_oi = int(_put_band.fillna(0).sum())
                     total_oi = call_oi + put_oi
                     notional_usd = total_oi * 100 * price
                     if notional_usd < _GAMMA_UNWIND_MIN_NOTIONAL_USD:
-                        continue
+                        _skip("below_notional_floor"); continue
                     call_share = call_oi / total_oi
                     scan_measured[symbol] = {
                         "put_share_pct": round((1 - call_share) * 100, 1),
@@ -5784,7 +5867,7 @@ def check_gamma_unwind_alerts() -> None:
                     }
                 except Exception as exc:
                     log.warning("gamma_unwind.symbol_error", symbol=symbol, error=str(exc))
-                    continue
+                    _skip("error"); continue
                 time.sleep(1.0)  # rate-limit discipline, matching compute_options_flow_snapshots_eod
 
             # BEARISH-PUTS-WATCH: cache the puts-dominant, 3-5-day subset (cross-checked against
@@ -5805,8 +5888,11 @@ def check_gamma_unwind_alerts() -> None:
                 log.warning("gamma_unwind.bearish_watch_cache_failed", error=str(exc))
                 bearish_watch = []
 
+            _scan_state = _scan_status(len(symbols), len(scan_measured), _skips)
+            log.info("gamma_unwind.scan", symbols=len(symbols), measured=len(scan_measured),
+                     candidates=len(candidates), skipped=_skips, status=_scan_state)
             if not candidates:
-                _record_job_status("check_gamma_unwind_alerts", "ok", time.monotonic() - _t0)
+                _record_job_status("check_gamma_unwind_alerts", _scan_state, time.monotonic() - _t0)
                 return
 
             # AUD-GEXCORROBORATE: real, independently-computed Unusual Whales GEX levels
@@ -5895,7 +5981,7 @@ def check_gamma_unwind_alerts() -> None:
                     except Exception:
                         pass
 
-            _record_job_status("check_gamma_unwind_alerts", "ok", time.monotonic() - _t0)
+            _record_job_status("check_gamma_unwind_alerts", _scan_state, time.monotonic() - _t0)
             log.info(
                 "gamma_unwind_alert.done", candidates=len(candidates), sent=sent,
                 recipients=len(recipients), bearish_watch=len(bearish_watch),
@@ -14126,6 +14212,18 @@ _DQ_CHECKS: list[dict] = [
         "max_age_hours": 1, "is_date": False,
     },
     {
+        # AUD-SCAN-SILENTZERO (2026-11-11): fixed US-session times, so a recent record exists on
+        # every trading day; a "degraded" record (measured 0 symbols) fails the check.
+        "name": "check_gamma_unwind_alerts", "description": "Gamma-unwind scan: ran and measured symbols (3x per US session)",
+        "job_name": "check_gamma_unwind_alerts", "source": "job_status",
+        "max_age_hours": 30, "is_date": False, "market": "US",
+    },
+    {
+        "name": "check_prebreakout_alerts", "description": "Pre-breakout scan: ran and read short-interest data (3x per US session)",
+        "job_name": "check_prebreakout_alerts", "source": "job_status",
+        "max_age_hours": 30, "is_date": False, "market": "US",
+    },
+    {
         "name": "check_squeeze_watch_reverts", "description": "Squeeze-watch (bearish puts) revert checker liveness (per-minute cron)",
         "job_name": "check_squeeze_watch_reverts", "source": "job_status",
         "max_age_hours": 1, "is_date": False,
@@ -14230,6 +14328,13 @@ _DQ_CHECKS: list[dict] = [
     # ok=True so it never enters the failing-list/email-alert path — purely observability,
     # closing the exact "only visible in logs" gap both audit issues described.
     {
+        # AUD-SCAN-SILENTZERO (2026-11-11): see _LIVE_CACHE_EMPTY_COUNTER_KEY. Should be 0.
+        "name": "live_cache_empty_in_session_48h",
+        "description": "Minute-scan runs that found the live-price cache empty during a session, last 48h (AUD-SCAN-SILENTZERO)",
+        "source": "gauge",
+        "counter_key": _LIVE_CACHE_EMPTY_COUNTER_KEY,
+    },
+    {
         "name": "squeeze_fund_cache_misses_48h",
         "description": "short_squeeze alert: stockai:fundamentals:v2:* cache misses in the last 48h (AUD-SQUEEZE250725-ISSUE1)",
         "source": "gauge",
@@ -14320,6 +14425,7 @@ def run_data_quality_checks() -> None:
     try:
         with SessionLocal() as session:
             for check in _DQ_CHECKS:
+                _job_degraded = None   # AUD-SCAN-SILENTZERO: set by the job_status branch below
                 try:
                     # AUD266-TWO-GATES-CONTRADICTORY-BARS: "ratio" checks have no age/staleness
                     # concept at all — handled entirely separately, before the age-based logic
@@ -14436,6 +14542,10 @@ def run_data_quality_checks() -> None:
                         else:
                             _status_payload = json.loads(_raw_status)
                             result = datetime.fromisoformat(_status_payload["last_run"])
+                            # AUD-SCAN-SILENTZERO: a job that ran but measured nothing is not
+                            # healthy because it ran recently.
+                            if str(_status_payload.get("status") or "").startswith("degraded"):
+                                _job_degraded = _status_payload["status"]
                     else:
                         result = session.execute(text(check["query"])).scalar()
                     # T242-DQ1: market-tagged checks (e.g. signals_us/signals_hk) are staleness
@@ -14479,6 +14589,8 @@ def run_data_quality_checks() -> None:
                             last_dt = result if result.tzinfo else result.replace(tzinfo=timezone.utc)
                         age_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
                         ok = age_hours <= check["max_age_hours"]
+                    if _job_degraded:
+                        ok = False
                     redis_client.setex(
                         f"dq_check:{check['name']}", 86400 * 7,
                         json.dumps({
@@ -14486,12 +14598,17 @@ def run_data_quality_checks() -> None:
                             "ok": ok, "age_hours": round(age_hours, 1) if age_hours is not None else None,
                             "max_age_hours": check["max_age_hours"],
                             "checked_at": datetime.now(timezone.utc).isoformat(),
+                            **({"degraded": _job_degraded} if _job_degraded else {}),
                         }),
                     )
                     if not ok:
                         failing.append({
                             "name": check["name"], "description": check["description"],
                             "age_hours": age_hours, "max_age_hours": check["max_age_hours"],
+                            # The email shows `detail` in place of the age, which alone would
+                            # read as healthy for a job that ran recently but measured nothing.
+                            **({"degraded": _job_degraded, "detail": f"ran, but {_job_degraded}"}
+                               if _job_degraded else {}),
                         })
                 except Exception as _check_exc:
                     log.warning("dq_check.query_failed", check=check["name"], error=str(_check_exc))
@@ -15910,10 +16027,13 @@ def start_scheduler() -> None:
         # next 4-hour tick under load, not less — a missed tick here costs 4 hours of total
         # silence on a genuinely rate-limit-fragile, real-money-adjacent alert, with no liveness
         # check to reveal the stall (unlike the 1-minute siblings, which DO have one).
+        # AUD-SCAN-FIXEDTIMES (2026-11-11): fixed US-session times, not "every 4 hours". An
+        # interval restarts its clock with the container, so a restart at 06:05 UTC put this
+        # scan at :05:53, 16 s after each 5-minute ingest, every run of Nov 11. Fixed times keep
+        # it in the session (when live prices exist) and off the ingest boundaries.
         _scheduler.add_job(
             check_gamma_unwind_alerts,
-            "interval",
-            hours=4,
+            _us_session_times_trigger(_GAMMA_SCAN_TIMES_ET),
             id="gamma_unwind_alert_check",
             replace_existing=True,
             max_instances=1, coalesce=True, misfire_grace_time=60,
@@ -15932,8 +16052,7 @@ def start_scheduler() -> None:
         # "the pillar produced no signal," rather than what actually happened ("the job never ran").
         _scheduler.add_job(
             check_prebreakout_alerts,
-            "interval",
-            hours=4,
+            _us_session_times_trigger(_PREBREAKOUT_SCAN_TIMES_ET),  # AUD-SCAN-FIXEDTIMES
             id="prebreakout_alert_check",
             replace_existing=True,
             max_instances=1, coalesce=True, misfire_grace_time=60,

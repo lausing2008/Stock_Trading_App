@@ -1,3 +1,4 @@
+import { degradedReason, jobStatusKind } from '@/lib/jobStatus';
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
@@ -91,11 +92,17 @@ function JobCard({ job }: { job: SchedulerJob }) {
   const ageDays = (Date.now() - new Date(job.last_run).getTime()) / 86400000;
   const stale = ageDays > meta.maxAgeDays;
 
-  const isSkipped = job.status.startsWith('skipped:') || job.status.startsWith('Need ');
-  const statusColor  = job.status === 'ok' ? '#4ade80' : job.status === 'error' ? '#f87171' : isSkipped ? '#fbbf24' : '#94a3b8';
-  const statusBg     = job.status === 'ok' ? 'rgba(74,222,128,0.08)' : job.status === 'error' ? 'rgba(239,68,68,0.1)' : isSkipped ? 'rgba(251,191,36,0.08)' : 'rgba(148,163,184,0.06)';
-  const statusBorder = job.status === 'ok' ? 'rgba(74,222,128,0.2)'  : job.status === 'error' ? 'rgba(239,68,68,0.3)'   : isSkipped ? 'rgba(251,191,36,0.2)'    : 'rgba(148,163,184,0.15)';
-  const statusLabel  = job.status === 'ok' ? '✓ OK' : job.status === 'error' ? '✗ Error' : isSkipped ? '⊘ Skipped' : '– Unknown';
+  // AUD-SCAN-SILENTZERO: "degraded" = the job ran but measured nothing; shown, not hidden as ok.
+  const kind = jobStatusKind(job.status);
+  const STYLE = {
+    ok:       ['#4ade80', 'rgba(74,222,128,0.08)', 'rgba(74,222,128,0.2)', '✓ OK'],
+    error:    ['#f87171', 'rgba(239,68,68,0.1)', 'rgba(239,68,68,0.3)', '✗ Error'],
+    degraded: ['#fb923c', 'rgba(251,146,60,0.1)', 'rgba(251,146,60,0.35)', '△ Degraded'],
+    skipped:  ['#fbbf24', 'rgba(251,191,36,0.08)', 'rgba(251,191,36,0.2)', '⊘ Skipped'],
+    unknown:  ['#94a3b8', 'rgba(148,163,184,0.06)', 'rgba(148,163,184,0.15)', '– Unknown'],
+  } as const;
+  const [statusColor, statusBg, statusBorder, statusLabel] = STYLE[kind];
+  const degradedWhy = degradedReason(job.status);
 
   return (
     <div style={{
@@ -131,6 +138,11 @@ function JobCard({ job }: { job: SchedulerJob }) {
           </div>
         )}
       </div>
+      {degradedWhy && (
+        <div data-testid="job-degraded-reason" style={{ marginTop: '8px', padding: '6px 10px', borderRadius: '5px', background: 'rgba(251,146,60,0.08)', border: '1px solid rgba(251,146,60,0.25)', fontSize: '11px', color: '#fb923c' }}>
+          Ran but {degradedWhy}
+        </div>
+      )}
       {job.error && (
         <div style={{ marginTop: '8px', padding: '6px 10px', borderRadius: '5px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', fontSize: '11px', color: '#f87171', fontFamily: 'monospace', wordBreak: 'break-all' }}>
           {job.error}
@@ -277,6 +289,7 @@ export default function AdminHealthPage() {
 
   const jobs = data?.jobs ?? [];
   const errorCount = jobs.filter(j => j.status === 'error').length;
+  const degradedCount = jobs.filter(j => jobStatusKind(j.status) === 'degraded').length;
   const staleCount = jobs.filter(j => {
     const meta = JOB_META[j.job];
     if (!meta) return false;
@@ -309,6 +322,11 @@ export default function AdminHealthPage() {
               {errorCount} error{errorCount !== 1 ? 's' : ''}
             </span>
           )}
+          {degradedCount > 0 && (
+            <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color: '#fb923c', background: 'rgba(251,146,60,0.1)', border: '1px solid rgba(251,146,60,0.35)' }}>
+              {degradedCount} degraded
+            </span>
+          )}
           {staleCount > 0 && (
             <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.3)' }}>
               {staleCount} stale
@@ -322,7 +340,7 @@ export default function AdminHealthPage() {
               {missingCount} missing
             </span>
           )}
-          {errorCount === 0 && staleCount === 0 && missingCount === 0 && jobs.length > 0 && (
+          {errorCount === 0 && degradedCount === 0 && staleCount === 0 && missingCount === 0 && jobs.length > 0 && (
             <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color: '#4ade80', background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.2)' }}>
               All healthy
             </span>
