@@ -120,7 +120,8 @@ def test_entries_only_on_the_first_session_of_each_week_and_trades_resolve():
     assert trades
     assert {date.fromisoformat(t["entry"]).weekday() for t in trades} == {0}          # Mondays only
     assert counters["entry_sessions"] == len({d.isocalendar()[:2] for d, _ in sessions})
-    assert {t["arm"] for t in trades} == {"lead", "preset", "random"}
+    # v2: the Call Finder's three long-call choices run beside the v1 arms.
+    assert {t["arm"] for t in trades} == {"lead", "preset", "random", "finder", "finder_aggressive", "finder_atm"}
     assert {t["strategy"] for t in trades} == set(ocs.STRATEGIES)
     assert {t["exit_type"] for t in trades} == {"holding", "expiry"}
 
@@ -221,3 +222,45 @@ def test_confidence_interval_resamples_dates_not_rows():
     mean, lo, hi = ocs._clustered_ci({"2026-03-02": [1.0] * 50, "2026-03-09": [0.0]}, 1)
     assert mean == pytest.approx(50 / 51)
     assert lo == pytest.approx(0.0) and hi == pytest.approx(1.0)
+
+
+
+# ── v2: the Call Finder's choices (2026-11-11) ──────────────────────────────────────────────
+
+def test_finder_arms_are_long_calls_from_the_real_finder_on_the_session_chain():
+    from src.services import option_call_finder as F
+    sessions, closes = _archive()
+    trades, counters = _run(sessions, closes)
+    finder = [t for t in trades if t["arm"].startswith("finder")]
+    assert finder and {t["strategy"] for t in finder} == {"long_call"}
+    assert {t["action"] for t in finder} == {"buy"} and {t["right"] for t in finder} == {"call"}
+    for t in finder:
+        hold = ocs.HOLDING_DAYS[t["horizon"]]
+        dte = (date.fromisoformat(t["expiry"]) - date.fromisoformat(t["entry"])).days
+        assert max(2 * hold, F.NEAR["min_dte_floor"]) <= dte <= F.NEAR["max_dte"]
+
+
+def test_finder_atm_shares_the_finders_expiry_and_is_nearest_the_money():
+    sessions, closes = _archive()
+    day, rows = sessions[0]
+    arms = ocs.finder_arms(SYM, day, rows, closes[day], {})
+    assert arms
+    for chosen in arms.values():
+        assert chosen["finder_atm"]["expiry"] == chosen["finder"]["expiry"]
+        assert abs(chosen["finder_atm"]["strike"] - closes[day]) <= abs(chosen["finder"]["strike"] - closes[day])
+
+
+def test_finder_entries_buy_at_the_archived_ask():
+    sessions, closes = _archive()
+    trades, _ = _run(sessions, closes)
+    asks = {(d.isoformat(), r["option_symbol"]): r["nbbo_ask"] for d, rows in sessions for r in rows}
+    t = next(t for t in trades if t["arm"] == "finder")
+    assert t["opt_entry"] == asks[(t["entry"], t["option_symbol"])]
+
+
+def test_finder_pairs_are_reported():
+    sessions, closes = _archive()
+    trades, _ = _run(sessions, closes)
+    names = {p["comparison"] for p in ocs.summarise(trades)["paired"]}
+    assert {"finder_minus_finder_atm", "finder_minus_finder_aggressive", "finder_minus_preset",
+            "finder_minus_random", "lead_minus_preset", "lead_minus_random"} <= names

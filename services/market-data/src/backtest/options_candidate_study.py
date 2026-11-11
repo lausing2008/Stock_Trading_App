@@ -36,7 +36,9 @@ import time as _time
 from collections import defaultdict
 from datetime import date, timedelta
 
-STUDY_VERSION = "options_candidate_study_v1"
+# v2 (2026-11-11): adds the Call Finder's long-call choices (finder, finder_aggressive,
+# finder_atm) and their paired comparisons. v1 arms and rules are unchanged.
+STUDY_VERSION = "options_candidate_study_v2"
 STRATEGIES = ("long_call", "protective_put", "covered_call", "cash_secured_put")
 # The desk's existing evaluation defaults (frontend OPTION_HOLDING_DEFAULTS), not optimal windows.
 HOLDING_DAYS = {"SHORT": 7, "SWING": 14, "LONG": 28, "GROWTH": 14}
@@ -274,11 +276,64 @@ def replay_symbol(symbol: str, sessions_iter, closes: dict, earnings: list[date]
                             "stock_ref": spot, "spread_pct": leg.get("spread_pct"), "oi": leg.get("oi")}
                     pending.append({**base, "exit_type": "holding", "target": as_of + timedelta(days=HOLDING_DAYS[horizon])})
                     pending.append({**base, "exit_type": "expiry", "target": None})
+        # v2: the Call Finder, run on this session's chain only, with the same fills and exits.
+        for horizon, chosen in finder_arms(symbol, as_of, rows, spot, counters).items():
+            for arm, c in chosen.items():
+                entry_row = by_symbol.get(c["option_symbol"])
+                px = entry_price("buy", entry_row)
+                if px is None:
+                    bump(f"arm_{arm}_entry_not_two_sided"); continue
+                base = {"symbol": symbol, "entry": as_of.isoformat(), "period": period_of(as_of),
+                        "strategy": "long_call", "horizon": horizon, "arm": arm, "option_symbol": c["option_symbol"],
+                        "right": "call", "action": "buy", "strike": float(c["strike"]), "expiry": c["expiry"],
+                        "opt_entry": px, "stock_entry": None, "stock_ref": spot,
+                        "spread_pct": c.get("spread_pct"), "oi": c.get("oi")}
+                pending.append({**base, "exit_type": "holding", "target": as_of + timedelta(days=HOLDING_DAYS[horizon])})
+                pending.append({**base, "exit_type": "expiry", "target": None})
     for t in pending:
         bump(f"unresolved_at_archive_end_{t['exit_type']}")
     # The same contract/exit can be chosen by several horizons or arms; each choice is its own
     # observation of that arm, which is what the comparison needs. Duplicates are not merged.
     return done
+
+
+def finder_arms(symbol: str, as_of: date, rows: list[dict], spot: float, counters: dict) -> dict:
+    """{horizon: {arm: contract}} from the real Call Finder on one session's chain.
+
+    finder            the half-move pick (the finder's headline)
+    finder_aggressive the highest return at the full target (its labelled alternative)
+    finder_atm        the eligible contract nearest the money in the SAME expiry, through the same
+                      gates: isolates the strike rule from the expiry rule
+    No IV rank, events or 200-day average existed historically, so warnings do not apply; the
+    target is the finder's own default (one implied standard deviation up).
+    """
+    from ..services import option_call_finder as F
+
+    def bump(k):
+        counters[k] = counters.get(k, 0) + 1
+
+    calls = [r for r in chain_rows(rows, symbol)
+             if r.get("expiry") and r["expiry"] > as_of.isoformat()
+             and str(r.get("option_symbol") or "")[-9:-8] == "C"]
+    out = {}
+    for horizon, hold in HOLDING_DAYS.items():
+        res = F.find("near", calls, spot=spot, today=as_of, hold_days=hold)
+        if not res.get("available"):
+            bump(f"arm_finder_unavailable"); continue
+        pick = res["pick"]
+        agg = res.get("aggressive_alternative") or pick
+        cands, _rej, _wide = F.eligible(calls, res["expiry"], spot, as_of, F.NEAR)
+        atm = min(cands, key=lambda c: (abs(c["strike"] - spot), c["strike"])) if cands else None
+        chosen = {"finder": pick, "finder_aggressive": agg}
+        if atm is not None:
+            chosen["finder_atm"] = atm
+        out[horizon] = chosen
+    return out
+
+
+# Paired comparisons: (arm, baseline), each on identical (symbol, entry, strategy, horizon, exit).
+PAIRS = (("lead", "preset"), ("lead", "random"),
+         ("finder", "finder_atm"), ("finder", "finder_aggressive"), ("finder", "preset"), ("finder", "random"))
 
 
 # ── aggregation ───────────────────────────────────────────────────────────────────────────
@@ -324,15 +379,17 @@ def summarise(trades: list[dict]) -> dict:
         keyed = defaultdict(dict)
         for t in pool:
             keyed[(t["period"], t["strategy"], t["horizon"], t["exit_type"], t["symbol"], t["entry"])][t["arm"]] = t["roc"]
-        for other in ("preset", "random"):
+        for arm_a, other in PAIRS:
             diffs = defaultdict(lambda: defaultdict(list))
             for (period, s, h, x, _sym, entry), arms in keyed.items():
-                if "lead" in arms and other in arms:
-                    diffs[(period, s, h, x)][entry].append(arms["lead"] - arms[other])
+                if arm_a in arms and other in arms:
+                    diffs[(period, s, h, x)][entry].append(arms[arm_a] - arms[other])
             for gk, by_date in sorted(diffs.items()):
-                mean, lo, hi = _clustered_ci(by_date, _seed(*gk, other, earnings_rule))
+                # v1 seeds kept for lead pairs so v1 figures reproduce exactly.
+                seed = _seed(*gk, other, earnings_rule) if arm_a == "lead" else _seed(*gk, arm_a, other, earnings_rule)
+                mean, lo, hi = _clustered_ci(by_date, seed)
                 out["paired"].append({"earnings": earnings_rule, "period": gk[0], "strategy": gk[1], "horizon": gk[2],
-                                      "exit": gk[3], "comparison": f"lead_minus_{other}",
+                                      "exit": gk[3], "comparison": f"{arm_a}_minus_{other}",
                                       "pairs": sum(len(v) for v in by_date.values()), "entry_dates": len(by_date),
                                       "mean_diff": mean, "ci95": [lo, hi]})
         if earnings_rule == "all":

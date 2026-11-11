@@ -79,6 +79,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import re
 
 import httpx
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
@@ -1458,6 +1459,21 @@ _FLOW_ALERT_MAX_AGE_HOURS = 48  # AUD-OPTIONSFLOW-STALEALERTS — see get_flow_a
 # outage, while excluding the multi-week backlog entirely.
 
 
+_SHARE_CLASS = re.compile(r"^([A-Z]{1,5})-([A-Z])$")
+
+
+def uw_ticker(symbol: str) -> str:
+    """The ticker as Unusual Whales spells it, for request URLs and parameters only.
+
+    AUD-UW-SHARECLASS (2026-11-11): this app stores US share classes with a dash (BRK-A, as Yahoo
+    does); Unusual Whales uses a dot. /api/darkpool/BRK-A returned HTTP 422 about once a minute
+    since at least 2026-11-10, while BRK.A answers (checked live against the API). Storage, cache
+    keys and every value shown to a user keep the app's own symbol.
+    """
+    m = _SHARE_CLASS.match(symbol or "")
+    return f"{m.group(1)}.{m.group(2)}" if m else symbol
+
+
 def get_flow_alerts(
     symbol: str,
     *,
@@ -1540,7 +1556,7 @@ def get_flow_alerts(
         data = _get(
             "/api/option-trades/flow-alerts",
             params={
-                "ticker_symbol": sym,
+                "ticker_symbol": uw_ticker(sym),
                 "min_premium": min_premium,
                 "min_volume_oi_ratio": min_volume_oi_ratio,
                 "is_sweep": "true" if is_sweep else "false",
@@ -1919,7 +1935,7 @@ def fetch_dark_pool_prints(symbol: str, *, limit: int = 50) -> DarkPoolFetch:
 
     fetched_at = datetime.now(timezone.utc).isoformat()
     try:
-        data = _get(f"/api/darkpool/{sym}", params={"limit": limit}, endpoint="/api/darkpool/{symbol}")
+        data = _get(f"/api/darkpool/{uw_ticker(sym)}", params={"limit": limit}, endpoint="/api/darkpool/{symbol}")
     except Exception as exc:
         status, http_status = _classify_dark_pool_exception(exc)
         log.warning("unusual_whales.dark_pool_failed", symbol=sym, status=status, error=str(exc))
