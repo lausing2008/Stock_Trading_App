@@ -1782,6 +1782,111 @@ def _row_to_dict(e: EarningsEvent) -> dict:
     }
 
 
+# ── AUD-EARNIMPACT-AFTEROPEN: announcement time of day, and the drift measured from it ───────
+
+_AFTER_OPEN_BENCHMARK = "VOO"  # SPY is not stored; VOO tracks the same index
+_AFTER_OPEN_SESSIONS = 5
+_REPORT_TIMES_KEY = "stockai:earnings:report_times:{symbol}"
+_REPORT_TIMES_TTL = 8 * 86400   # refreshed daily; survives a missed day or two
+_FORWARD_RECORD_START = date(2026, 11, 10)
+_FORWARD_RECORD_READ = date(2027, 2, 10)
+
+
+def after_open_drift(bars: list[tuple], market: dict, report_date: date,
+                     report_time: str | None) -> tuple[float, float | None, str] | None:
+    """(raw return, return net of the market, timing basis) from the first open after the
+    announcement to the close `_AFTER_OPEN_SESSIONS` sessions later, counting the entry session.
+
+    `bars` are (date, open, close) ascending; `market` maps date -> (open, close).
+    - "premarket": the news is out before the open, so the entry is the report date's open.
+    - "postmarket" or unknown: the entry is the next session's open. For an unknown time this
+      never includes the overnight jump, at the cost of skipping a before-open report's day.
+    Returns None when the window is not fully in the data.
+    """
+    if report_time == "premarket":
+        k = next((i for i, b in enumerate(bars) if b[0] >= report_date), None)
+    else:
+        k = next((i for i, b in enumerate(bars) if b[0] > report_date), None)
+    if k is None or k + _AFTER_OPEN_SESSIONS - 1 >= len(bars) or bars[k][1] <= 0:
+        return None
+    exit_bar = bars[k + _AFTER_OPEN_SESSIONS - 1]
+    raw = exit_bar[2] / bars[k][1] - 1.0
+    m0, m1 = market.get(bars[k][0]), market.get(exit_bar[0])
+    excess = raw - (m1[1] / m0[0] - 1.0) if m0 and m1 and m0[0] > 0 else None
+    basis = "provider_time" if report_time in ("premarket", "postmarket") else "assumed_after_close"
+    return raw, excess, basis
+
+
+def _report_times(symbols: set[str]) -> dict[tuple[str, str], str]:
+    """{(symbol, report_date ISO): "premarket" | "postmarket" | other} from Redis; {} when Redis
+    is unavailable (every event then uses the conservative next-session entry)."""
+    out: dict[tuple[str, str], str] = {}
+    try:
+        from common.redis_client import get_redis
+        pipe = get_redis().pipeline()
+        ordered = sorted(symbols)
+        for sym in ordered:
+            pipe.hgetall(_REPORT_TIMES_KEY.format(symbol=sym))
+        for sym, mapping in zip(ordered, pipe.execute()):
+            for d, t in (mapping or {}).items():
+                d = d.decode() if isinstance(d, bytes) else d
+                t = t.decode() if isinstance(t, bytes) else t
+                out[(sym, d)] = t
+    except Exception as exc:
+        log.warning("earnings.report_times_unavailable", error=str(exc))
+    return out
+
+
+def _fetch_uw_report_times(symbol: str) -> dict[str, str] | None:
+    """{report_date: report_time} from Unusual Whales' earnings history, or None on failure."""
+    from common.ai_keys import get_unusual_whales_key, is_unusual_whales_enabled
+    if not (is_unusual_whales_enabled() and get_unusual_whales_key()):
+        return None
+    try:
+        r = httpx.get(f"https://api.unusualwhales.com/api/earnings/{symbol}",
+                      headers={"Authorization": f"Bearer {get_unusual_whales_key()}", "Accept": "application/json"},
+                      timeout=30)
+        if r.status_code != 200:
+            log.warning("earnings.report_times_status", symbol=symbol, status=r.status_code)
+            return None
+        body = r.json()
+        rows = body.get("data") if isinstance(body, dict) else body
+        return {str(x["report_date"])[:10]: str(x.get("report_time") or "unknown")
+                for x in (rows or []) if isinstance(x, dict) and x.get("report_date")}
+    except Exception as exc:
+        log.warning("earnings.report_times_fetch_failed", symbol=symbol, error=str(exc))
+        return None
+
+
+async def sync_earnings_report_times() -> dict:
+    """Daily: store each tracked US stock's announcement times in Redis. One request at a
+    time, 1.5 s apart, off the event loop (AUD-EVENTINTEL-BLOCKEDLOOP)."""
+    with SessionLocal() as s:
+        symbols = sorted({sym for (sym,) in s.execute(
+            select(Stock.symbol).join(EarningsEvent, EarningsEvent.stock_id == Stock.id)
+            .where(EarningsEvent.report_date >= date.today() - timedelta(days=3 * 365))
+        ).all() if sym and "." not in sym})
+    loop = asyncio.get_running_loop()
+    stored = failed = 0
+    from common.redis_client import get_redis
+    for sym in symbols:
+        times = await loop.run_in_executor(_executor, _fetch_uw_report_times, sym)
+        if times is None:
+            failed += 1
+        elif times:
+            key = _REPORT_TIMES_KEY.format(symbol=sym)
+            try:
+                r = get_redis()
+                r.hset(key, mapping=times)
+                r.expire(key, _REPORT_TIMES_TTL)
+                stored += 1
+            except Exception as exc:
+                log.warning("earnings.report_times_store_failed", symbol=sym, error=str(exc))
+                failed += 1
+        await asyncio.sleep(1.5)
+    return {"symbols": len(symbols), "stored": stored, "failed": failed}
+
+
 # ── AUD-EARNSURPRISE-SECTOR: what an earnings surprise historically does, by sector ─────────
 
 _SURPRISE_MIN_SAMPLE = 30  # matches get_impact_direction_accuracy()'s own adequacy floor
@@ -1799,9 +1904,18 @@ def get_earnings_surprise_impact(beat_threshold_pct: float = 10.0) -> dict:
     than one. `post_earnings_return_5d` is baselined off the last close BEFORE report_date, so
     it INCLUDES the overnight announcement gap. That portion is only capturable by a position
     held THROUGH the report — an alert fired after the result lands has already missed it.
-    `drift_after_open_pct` re-measures from the first close ON/AFTER the report instead, which
-    is what a post-announcement entry could actually have captured. Reporting only the larger
-    figure would overstate a tradeable opportunity by roughly the gap.
+    `drift_after_open_pct` measures from the first OPEN after the announcement, which is what
+    a post-announcement entry could actually have captured. Reporting only the larger figure
+    would overstate a tradeable opportunity by roughly the gap.
+
+    AUD-EARNIMPACT-AFTEROPEN (2026-11-10): this used to start at the close of the first bar ON
+    the report date. For an after-close report that close is BEFORE the news, so the "after
+    open" figure still carried the whole overnight jump: +4.19% for beats above 10%, against
+    +2.2% measured correctly on the same events and +0.42% net of the market on 4,466 events
+    (docs/2026-11-10/uw-delisted-results.md). The time of day now comes from Unusual Whales
+    (sync_earnings_report_times); when it is unknown the entry is the next session's open,
+    which can never include the jump. `excess_after_open_pct` subtracts VOO over the same
+    window, because a raw return in a rising market is mostly the market.
 
     Every rate carries its own `n` and an explicit `sample_is_adequate`, matching
     get_impact_direction_accuracy()'s own convention — three findings in docs/2026-09-05
@@ -1823,32 +1937,31 @@ def get_earnings_surprise_impact(beat_threshold_pct: float = 10.0) -> dict:
             )
         ).all()
 
-        # Re-measure the post-announcement-only portion from real bars. Done per (stock,
-        # report_date) rather than trusting a stored column, because no stored column carries
-        # this baseline — the whole point is that it differs from post_earnings_return_5d.
-        after_open: dict[tuple[int, date], float] = {}
+        # Re-measure the post-announcement-only portion from real bars: first open after the
+        # announcement to the close 5 sessions later, raw and net of VOO over the same window.
+        after_open: dict[tuple[int, date], tuple[float, float | None, str]] = {}
         stock_ids = list({r.stock_id for r in rows})
         if stock_ids:
             earliest = min(r.report_date for r in rows) - timedelta(days=10)
+            market_id = s.execute(select(Stock.id).where(Stock.symbol == _AFTER_OPEN_BENCHMARK)).scalar()
             bars_by_stock: dict[int, list[tuple]] = {}
-            for p_stock, p_ts, p_close in s.execute(
-                select(Price.stock_id, Price.ts, Price.close).where(
-                    Price.stock_id.in_(stock_ids),
+            for p_stock, p_ts, p_open, p_close in s.execute(
+                select(Price.stock_id, Price.ts, Price.open, Price.close).where(
+                    Price.stock_id.in_(stock_ids + ([market_id] if market_id else [])),
                     Price.timeframe == TimeFrame.D1,
                     Price.ts >= datetime.combine(earliest, datetime.min.time()),
                 ).order_by(Price.stock_id, Price.ts)
             ).all():
                 bars_by_stock.setdefault(p_stock, []).append(
-                    ((p_ts.date() if hasattr(p_ts, "date") else p_ts), float(p_close))
+                    ((p_ts.date() if hasattr(p_ts, "date") else p_ts), float(p_open), float(p_close))
                 )
+            market = {d: (o, c) for d, o, c in bars_by_stock.get(market_id, [])}
+            times = _report_times({r.symbol for r in rows})
             for r in rows:
-                bars = bars_by_stock.get(r.stock_id) or []
-                idx = next((i for i, (d, _) in enumerate(bars) if d >= r.report_date), None)
-                if idx is None or idx + 5 >= len(bars):
-                    continue
-                base = bars[idx][1]
-                if base > 0:
-                    after_open[(r.stock_id, r.report_date)] = bars[idx + 5][1] / base - 1.0
+                measured = after_open_drift(bars_by_stock.get(r.stock_id) or [], market, r.report_date,
+                                            times.get((r.symbol, r.report_date.isoformat())))
+                if measured is not None:
+                    after_open[(r.stock_id, r.report_date)] = measured
 
     def _pct(vals: list[float]) -> float | None:
         return round(sum(vals) / len(vals) * 100, 2) if vals else None
@@ -1861,23 +1974,32 @@ def get_earnings_surprise_impact(beat_threshold_pct: float = 10.0) -> dict:
         return "inline"
 
     buckets: dict[str, dict[str, list[float]]] = {
-        b: {"d1": [], "d5": [], "after": []} for b in ("beat", "miss", "inline")
+        b: {"d1": [], "d5": [], "after": [], "excess": [], "timing_known": []} for b in ("beat", "miss", "inline")
     }
     by_sector: dict[str, dict[str, list[float]]] = {}
+    forward: list[float] = []
     for r in rows:
         b = _bucket_of(float(r.surprise_pct))
         if r.post_earnings_return_1d is not None:
             buckets[b]["d1"].append(float(r.post_earnings_return_1d))
         buckets[b]["d5"].append(float(r.post_earnings_return_5d))
-        a = after_open.get((r.stock_id, r.report_date))
-        if a is not None:
+        measured = after_open.get((r.stock_id, r.report_date))
+        a = measured[0] if measured else None
+        if measured:
             buckets[b]["after"].append(a)
+            buckets[b]["timing_known"].append(1.0 if measured[2] == "provider_time" else 0.0)
+            if measured[1] is not None:
+                buckets[b]["excess"].append(measured[1])
+                if b == "beat" and r.report_date >= _FORWARD_RECORD_START:
+                    forward.append(measured[1])
 
         sec = r.sector or "(unclassified)"
-        entry = by_sector.setdefault(sec, {"beat": [], "nonbeat": [], "beat_after": []})
+        entry = by_sector.setdefault(sec, {"beat": [], "nonbeat": [], "beat_after": [], "beat_excess": []})
         entry["beat" if b == "beat" else "nonbeat"].append(float(r.post_earnings_return_5d))
         if b == "beat" and a is not None:
             entry["beat_after"].append(a)
+            if measured[1] is not None:
+                entry["beat_excess"].append(measured[1])
 
     for sec, e in by_sector.items():
         n_beat, n_non = len(e["beat"]), len(e["nonbeat"])
@@ -1889,6 +2011,7 @@ def get_earnings_surprise_impact(beat_threshold_pct: float = 10.0) -> dict:
             "beat_drift_pct": beat_pct,
             "nonbeat_drift_pct": non_pct,
             "beat_drift_after_open_pct": _pct(e["beat_after"]),
+            "beat_excess_after_open_pct": _pct(e["beat_excess"]),
             "spread_pp": (round(beat_pct - non_pct, 2)
                           if (beat_pct is not None and non_pct is not None) else None),
             # The load-bearing field. Energy's +7.42% beat drift rests on 2 beats; without this
@@ -1908,16 +2031,34 @@ def get_earnings_surprise_impact(beat_threshold_pct: float = 10.0) -> dict:
                 "drift_1d_pct": _pct(v["d1"]),
                 "drift_5d_incl_gap_pct": _pct(v["d5"]),
                 "drift_after_open_pct": _pct(v["after"]),
+                "excess_after_open_pct": _pct(v["excess"]),
                 "n_after_open": len(v["after"]),
+                "n_timing_from_provider": int(sum(v["timing_known"])),
                 "sample_is_adequate": len(v["d5"]) >= _SURPRISE_MIN_SAMPLE,
             }
             for b, v in buckets.items()
         },
         "by_sector": out_sectors,
+        # AUD-EARNBEAT-FORWARD: the research-only forward record of the one effect that passed
+        # the 2026-11-10 tests. Beats reported from the start date on, measured exactly like
+        # excess_after_open_pct. No alert or email reads it; it is read once, after the date.
+        "forward_record": {
+            "started": _FORWARD_RECORD_START.isoformat(),
+            "read_after": _FORWARD_RECORD_READ.isoformat(),
+            "n": len(forward),
+            "excess_after_open_pct": _pct(forward),
+            "beat_rate": round(sum(1 for x in forward if x > 0) / len(forward), 3) if forward else None,
+            "expected_from_backtest_pct": 0.42,
+            "sample_is_adequate": len(forward) >= _SURPRISE_MIN_SAMPLE,
+        },
         "caveats": [
-            "drift_5d_incl_gap_pct includes the overnight announcement gap and is NOT fully "
-            "capturable by an alert fired after the result lands; drift_after_open_pct is the "
-            "post-announcement portion that is.",
+            "drift_5d_incl_gap_pct includes the overnight announcement gap and is NOT capturable "
+            "by an alert fired after the result lands. drift_after_open_pct starts at the first "
+            "open after the announcement; excess_after_open_pct subtracts VOO over the same days.",
+            "When the announcement time is unknown the entry is the next session's open, which "
+            "skips the report day itself for before-open reports (slightly conservative).",
+            "Backtest on 4,466 beats above 10% (2022-2026): +0.42% over 5 days net of the market, "
+            "beating it 52% of the time. A small tilt, not a reliable trade.",
             "Sectors with sample_is_adequate=false must not be ranked or acted on.",
             "Stock.sector carries a known label split ('Financial' vs 'Financial Services'); "
             "they are reported as-is rather than silently merged.",
@@ -1927,7 +2068,7 @@ def get_earnings_surprise_impact(beat_threshold_pct: float = 10.0) -> dict:
 
 # ── AUD-EARNSURPRISE-ALERT: fresh surprises worth attention, with their own base rate ───────
 
-_SURPRISE_EDGE_WINDOW_DAYS = 5  # the horizon the +4.19% drift was measured over
+_SURPRISE_EDGE_WINDOW_DAYS = 5  # the horizon the after-open drift is measured over
 
 
 def get_fresh_earnings_surprises(
@@ -1943,8 +2084,8 @@ def get_fresh_earnings_surprises(
          enormously by sector: Industrials beats drift +5.55% over 5 days (n=89, 50 beats)
          while Consumer Cyclical beats are NEGATIVE. An alert that does not say which of those
          you are looking at is just a notification.
-      2. TIME DECAY, stated rather than implied. The +4.19% edge is measured over 5 trading days
-         FROM THE REPORT. A surprise surfaced 4 days later has roughly one day of that window
+      2. TIME DECAY, stated rather than implied. The drift is measured over 5 trading days
+         FROM THE FIRST OPEN AFTER THE REPORT (+0.42% net of the market in the 2026-11-10 test). A surprise surfaced 4 days later has roughly one day of that window
          left, and `window_remaining_pct` says so instead of letting a stale row look as good as
          a fresh one.
 
@@ -1952,6 +2093,9 @@ def get_fresh_earnings_surprises(
     post-announcement portion — an alert fires once the result is public, so the gap is already
     gone. Quoting the gap-inclusive figure here would advertise a return this alert cannot reach;
     Communication Services is the cautionary case at +4.66% incl. gap and -0.10% after it.
+    (The sector figures above were measured with the pre-2026-11-10 after-open definition,
+    which still included the overnight jump for after-close reports; see
+    get_earnings_surprise_impact.)
 
     Untracked filers are excluded outright. That is the same lesson EDGAR taught expensively:
     97% of its classified filings mapped to no tracked symbol and could never influence anything.

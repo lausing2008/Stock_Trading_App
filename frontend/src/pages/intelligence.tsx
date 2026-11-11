@@ -756,8 +756,9 @@ function LiveSurprises() {
 // ── AUD-EARNSURPRISE-SECTOR: what an earnings surprise historically does, by sector ─────────
 // Two drift columns, never one. `drift_5d_incl_gap_pct` includes the overnight announcement
 // gap, which only a position held THROUGH the report captures; `after open` is what a
-// post-announcement entry could actually have caught. Communication Services is the cautionary
-// case: +4.66% including the gap, -0.10% after it.
+// post-announcement entry could actually have caught. AUD-EARNIMPACT-AFTEROPEN (2026-11-10):
+// "after open" now starts at the first open after the announcement (it used to start before the
+// news for after-close reports, showing +4.19% for big beats), and "vs market" nets out VOO.
 function SurpriseImpactTab() {
   const { data, isLoading } = useSWR('earningsSurpriseImpact', () => api.earningsSurpriseImpact());
 
@@ -797,7 +798,21 @@ function SurpriseImpactTab() {
         <strong style={{ color: '#d1d5db' }}> Read the &quot;after open&quot; column, not the headline one</strong> — the
         headline includes the overnight announcement gap, which only a position held <em>through</em> the report
         captures. An alert fired once the result is public has already missed it.
+        {' '}&quot;After open&quot; starts at the first market open after the announcement; &quot;vs market&quot; also
+        subtracts the S&amp;P 500 (VOO) over the same days. Tested on 4,466 large beats (2022–2026), the drift after the
+        open was about +0.4% over 5 days versus the market, with the stock beating the market only 52% of the time:
+        a small tilt, not a reliable trade.
       </p>
+      {d.forward_record && (
+        <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: 8, padding: 14, marginBottom: 20, fontSize: 13, color: '#9ca3af', maxWidth: 900 }}>
+          <strong style={{ color: '#d1d5db' }}>Forward record (research only, no alerts).</strong>{' '}
+          Beats reported since {d.forward_record.started}: n={d.forward_record.n}, 5d after open vs market{' '}
+          <strong style={{ color: col(d.forward_record.excess_after_open_pct) }}>{pct(d.forward_record.excess_after_open_pct)}</strong>
+          {d.forward_record.beat_rate != null && <>, beat the market {(d.forward_record.beat_rate * 100).toFixed(0)}%</>}.
+          {' '}Backtest expectation +{d.forward_record.expected_from_backtest_pct.toFixed(2)}%. Read after {d.forward_record.read_after}
+          {!d.forward_record.sample_is_adequate && '; too few events to judge yet'}.
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12, marginBottom: 28 }}>
         {order.map(k => {
@@ -808,6 +823,7 @@ function SurpriseImpactTab() {
               <div style={{ color: '#9ca3af', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', marginBottom: 8 }}>{label[k]}</div>
               <div style={{ fontSize: 28, fontWeight: 800, color: col(b.drift_after_open_pct) }}>{pct(b.drift_after_open_pct)}</div>
               <div style={{ color: '#6b7280', fontSize: 11, marginTop: 4 }}>5d after open · n={b.n_after_open}</div>
+              <div style={{ color: '#9ca3af', fontSize: 12, marginTop: 4 }}>vs market <strong style={{ color: col(b.excess_after_open_pct ?? null) }}>{pct(b.excess_after_open_pct ?? null)}</strong></div>
               <div style={{ color: '#4b5563', fontSize: 11, marginTop: 6, paddingTop: 6, borderTop: '1px solid #1f2937' }}>
                 incl. gap {pct(b.drift_5d_incl_gap_pct)} · 1d {pct(b.drift_1d_pct)}
               </div>

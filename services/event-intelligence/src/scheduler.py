@@ -61,6 +61,12 @@ async def job_check_earnings_impact_poll():
     await _run("check_earnings_impact_poll", earnings.check_earnings_impact_poll())
 
 
+async def job_sync_earnings_report_times():
+    # AUD-EARNIMPACT-AFTEROPEN: announcement time of day (before open / after close) from
+    # Unusual Whales, so the Earnings Impact drift starts at the first open after the news.
+    await _run("sync_earnings_report_times", earnings.sync_earnings_report_times())
+
+
 async def job_backfill_post_earnings_returns():
     # AUD-EARNINGSFORECAST-EXTEND: post_earnings_return_1d/_5d were real, DEFINED columns that
     # had never been written by any job — closes that gap. A daily cron (not check_earnings_
@@ -193,6 +199,8 @@ async def start_scheduler():
     # measured any faster regardless of cadence. 06:40 UTC, right after sync_earnings (06:30)
     # so any report synced that morning has its DB row available, though the real measurement
     # for most rows won't be fillable until several days later regardless.
+    # 07:00 UTC: after sync_earnings, hours before the US session's own Unusual Whales use.
+    _scheduler.add_job(job_sync_earnings_report_times, "cron", hour=7, minute=0, id="sync_earnings_report_times")
     _scheduler.add_job(
         job_backfill_post_earnings_returns, "cron", hour=6, minute=40, id="backfill_post_earnings_returns",
     )

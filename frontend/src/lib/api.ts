@@ -4376,9 +4376,13 @@ export type EarningsSurpriseBucket = {
   drift_1d_pct: number | null;
   /** Includes the overnight announcement gap — NOT fully capturable post-announcement. */
   drift_5d_incl_gap_pct: number | null;
-  /** The post-announcement portion an alert could actually have caught. */
+  /** From the first open after the announcement to the close 5 sessions later. */
   drift_after_open_pct: number | null;
+  /** The same window minus VOO's return over it (AUD-EARNIMPACT-AFTEROPEN). */
+  excess_after_open_pct?: number | null;
   n_after_open: number;
+  /** Events whose before-open / after-close time came from the provider; the rest assume after close. */
+  n_timing_from_provider?: number;
   sample_is_adequate: boolean;
 };
 
@@ -4389,6 +4393,7 @@ export type EarningsSurpriseSector = {
   beat_drift_pct: number | null;
   nonbeat_drift_pct: number | null;
   beat_drift_after_open_pct: number | null;
+  beat_excess_after_open_pct?: number | null;
   spread_pp: number | null;
   /** False below 30 beats. Rows where this is false must not be ranked or acted on. */
   sample_is_adequate: boolean;
@@ -4398,6 +4403,16 @@ export type EarningsSurpriseImpact = {
   beat_threshold_pct: number;
   overall: Record<string, EarningsSurpriseBucket>;
   by_sector: EarningsSurpriseSector[];
+  /** Research-only forward record of beats from `started` on, read once after `read_after`. */
+  forward_record?: {
+    started: string;
+    read_after: string;
+    n: number;
+    excess_after_open_pct: number | null;
+    beat_rate: number | null;
+    expected_from_backtest_pct: number;
+    sample_is_adequate: boolean;
+  };
   caveats: string[];
 };
 

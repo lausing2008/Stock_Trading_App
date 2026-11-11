@@ -171,13 +171,20 @@ def get_earnings_surprise_impact(
 
     Two drift figures are returned deliberately, never one: `drift_5d_incl_gap_pct` includes the
     overnight announcement gap (only capturable by a position held THROUGH the report), and
-    `drift_after_open_pct` is the portion a post-announcement alert could actually have caught.
+    `drift_after_open_pct` is the portion a post-announcement alert could actually have caught,
+    from the first open after the announcement; `excess_after_open_pct` nets out VOO.
     Showing only the larger number would overstate a tradeable opportunity.
 
     Every rate carries `n` and `sample_is_adequate` — see get_impact_direction_accuracy()'s own
     docstring for why that is non-negotiable here.
     """
     return earnings.get_earnings_surprise_impact(beat_threshold_pct)
+
+
+@router.post("/events/sync/earnings-report-times")
+async def sync_earnings_report_times(_: str = Depends(get_current_username)):
+    """AUD-EARNIMPACT-AFTEROPEN: refresh announcement times now (normally daily at 07:00 UTC)."""
+    return await earnings.sync_earnings_report_times()
 
 
 @router.get("/events/earnings/fresh-surprises")
