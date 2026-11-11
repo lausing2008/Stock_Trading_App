@@ -185,4 +185,3 @@ Validation step 1 ran: [Call Finder replay](../audits/2026-11-11-call-finder-rep
 - **Strike rule:** it picks lower leverage, not better contracts. Its edge over the alternatives moves opposite to the stock (correlation about −0.8 by month).
 - **The one consistent edge:** 7-day holds against the preset, explained by a narrower spread.
 - **Label:** the card keeps its "research candidate" label. A wording change is proposed in the report, not made.
-
