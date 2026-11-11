@@ -13,10 +13,10 @@ import re
 _ROUTES = (pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "routes.py").read_text()
 
 
-def test_all_four_options_endpoints_use_the_shared_classifier():
-    """Four endpoints hit this same dead end (flow, chain, expirations, game-plan). A fix
-    applied to one of them leaves the page three-quarters silent."""
-    assert _ROUTES.count("**_empty_chain_reason(session, sym)") == 4
+def test_every_options_endpoint_uses_the_shared_classifier():
+    """Five endpoints hit this same dead end (flow, chain, expirations, game-plan, and since
+    2026-11-10 the Call Finder). A fix applied to one of them leaves the page partly silent."""
+    assert _ROUTES.count("**_empty_chain_reason(session, sym)") == 5
 
 
 def test_no_endpoint_still_hardcodes_the_misleading_reason():
@@ -29,7 +29,7 @@ def test_every_call_site_actually_has_a_session_in_scope():
     raised NameError on the ALREADY-FAILING path — turning a blank panel into a 500."""
     lines = _ROUTES.split("\n")
     call_lines = [i for i, l in enumerate(lines) if "_empty_chain_reason(session, sym)" in l]
-    assert len(call_lines) == 4
+    assert len(call_lines) == 5
     for idx in call_lines:
         start = max((i for i in range(idx, -1, -1) if lines[i].startswith("def ")), default=None)
         assert start is not None, "call site is not inside a def"

@@ -2,8 +2,8 @@
 // Audit R03/R04 (2026-10-22): unknown moneyness, volume, OI and IV render as unknown in BOTH the
 // Options Flow card and the full chain table — never OTM, 0 or 0%.
 import React from 'react';
-import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import OptionsFlowCard from '@/components/OptionsFlowCard';
 import OptionsChainTable from '@/components/OptionsChainTable';
 import type { OptionsChainRow, OptionsFlow } from '@/lib/api';
@@ -83,6 +83,32 @@ describe('full chain table', () => {
     expect(tds(105).slice(3, 6)).toEqual(['0', '0', '0%']);
     expect(screen.getByLabelText('Chain field coverage').textContent)
       .toContain('IV unknown for 1 of 2 contracts');
+  });
+
+  it('shows provider delta and gamma, and — when the provider sent none (AUD-OPT-CHAIN-GREEKS)', () => {
+    render(<OptionsChainTable calls={[r(100, { delta: 0.5234, gamma: 0.02817 }), r(105, { delta: null, gamma: undefined })]} puts={[]} />);
+    const head = Array.from(document.querySelectorAll('th')).map(th => th.textContent);
+    expect(head.slice(0, 8)).toEqual(['Bid', 'Ask', 'Last', 'Vol', 'OI', 'IV', 'Delta', 'Gamma']);
+    expect(tds(100).slice(6, 8)).toEqual(['0.52', '0.028']);
+    expect(tds(105).slice(6, 8)).toEqual(['—', '—']);
+  });
+
+  it('badges the Call Finder picks and filters strikes to 15% of the price, keeping picks', () => {
+    const rows = [60, 95, 100, 105, 150].map(k => r(k, { option_symbol: `XYZC${k}` }));
+    const showAll = vi.fn();
+    render(<OptionsChainTable calls={rows} puts={[]} picks={{ XYZC95: 'Near-term pick', XYZC150: 'LEAPS pick' }}
+      nearStrikesOf={100} onShowAll={showAll} />);
+    expect(document.querySelector('tr[data-strike="60"]')).toBeNull();                 // 40% away: hidden
+    expect(document.querySelector('tr[data-strike="150"]')).not.toBeNull();            // a pick is never hidden
+    expect(rowFor(95).querySelector('[data-pick]')?.textContent).toBe('Near-term pick');
+    expect(screen.getByLabelText('Chain strike filter').textContent).toContain('1 more hidden');
+    fireEvent.click(screen.getByText('Show all strikes'));
+    expect(showAll).toHaveBeenCalled();
+  });
+
+  it('shows a missing ask as —, never as a 0.00 offer', () => {
+    render(<OptionsChainTable calls={[r(100, { bid: 0, ask: 0 })]} puts={[]} />);
+    expect(tds(100)[1]).toBe('—');
   });
 
   it('tints nothing as in the money when moneyness is unknown, and says why', () => {

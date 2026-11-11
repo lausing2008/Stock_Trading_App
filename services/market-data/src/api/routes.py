@@ -1367,6 +1367,10 @@ def _safe(info: dict, key: str):
     v = info.get(key)
     if v in (None, "N/A", "None", "", "Infinity", float("inf"), float("-inf")):
         return None
+    # AUD-SQZ-NAN (2026-11-10): NaN is not caught by `in` (NaN != NaN). A NaN short % of float
+    # passed every `< 15` gate (all NaN comparisons are False) and rendered as "nan%".
+    if isinstance(v, float) and v != v:
+        return None
     try:
         return v
     except Exception:
@@ -4501,6 +4505,11 @@ def _short_covering_pressure(score: float, has_uw_enrichment: bool) -> dict:
     return {"pressure": pressure, "confidence": confidence}
 
 
+# AUD-SQZ-DTC-INVERTED: days-to-cover score band (days). Matches the stock page's 3/5/8 steps.
+_SQUEEZE_DTC_ZERO_PTS = 3.0
+_SQUEEZE_DTC_FULL_PTS = 8.0
+
+
 def compute_short_squeeze_score(
     short_percent_of_float: float | None,
     days_to_cover: float | None,
@@ -4527,9 +4536,11 @@ def compute_short_squeeze_score(
         the p25 days-to-cover reading).
       - days_to_cover: the REAL, live-calibrated percentiles from _SQUEEZE_CRITICAL_DAYS_TO_
         COVER's own 2026-08-13 production analysis (scheduler.py: p10=1.13, p25=1.92, p50=4.65
-        among candidates that already clear the short-float floor) — LOWER is more acute (shorts
-        can't exit quietly), so this component scores INVERSELY: full 30 points at or below the
-        real p10, tapering to 0 at/above the real p50.
+        among candidates that already clear the short-float floor). AUD-SQZ-DTC-INVERTED
+        (2026-11-10): HIGHER is more acute — shorts need more days of normal volume to exit.
+        This used to score INVERSELY (full points at the p10), contradicting the screener's own
+        guide and the stock page. Now 0 points at or below 3 days, full 30 at or above 8 days,
+        linear between: the stock page's own 3/5/8 bands, made continuous.
       - momentum_score (K-Score's own 0-100 momentum component, already computed by
         ranking-engine) — scored 0-20, a straight 1:5 scale of the already-0-100 input.
       - change_pct (today's real move) — scored 0-10, capped at a 10% move (a squeeze is
@@ -4548,7 +4559,7 @@ def compute_short_squeeze_score(
     if days_to_cover is None:
         dtc_pts = 0.0
     else:
-        dtc_pts = min(30.0, max(0.0, (4.65 - days_to_cover) / (4.65 - 1.13) * 30.0))
+        dtc_pts = min(30.0, max(0.0, (days_to_cover - _SQUEEZE_DTC_ZERO_PTS) / (_SQUEEZE_DTC_FULL_PTS - _SQUEEZE_DTC_ZERO_PTS) * 30.0))
 
     mom_pts = 0.0 if momentum_score is None else min(20.0, max(0.0, momentum_score / 100.0 * 20.0))
 
@@ -5064,12 +5075,23 @@ def get_dark_pool_prints_route(symbol: str, session: Session = Depends(get_sessi
             "side_estimate": _uw.classify_dark_pool_side(r.price, r.nbbo_bid, r.nbbo_ask),
         })
     if not prints:
+        # AUD-DP-EMPTY-STATUS (2026-11-10): this used to overwrite the fetch status with
+        # "empty", so a FAILED fetch whose retained sample held only canceled prints, and an ok
+        # fetch whose prints were all canceled or held out, both read "the provider returned
+        # none". The fetch's own status is kept; `reason` and the count say what happened.
         return {"symbol":sym,"available":False,"source":"unusual_whales", "prints":[],
-                **status_fields,"status":"empty","reason":"no_active_prints"}
+                **status_fields,"reason":"no_active_prints","received_prints":len(rows)}
+    # AUD-DP-PRINT-ORDER (2026-11-10): usable_dark_pool_rows() returns ID-less prints first, and
+    # the panel shows only the first eight, so newer identified prints could be hidden behind
+    # older unidentified ones. Newest valid-time print first; a future-stamped or undateable
+    # print after every valid one, so it cannot take a slot from a real recent print.
+    prints.sort(key=lambda p: (p["time_status"] == "ok", p["executed_at_utc"] or ""), reverse=True)
     baseline = _dark_pool_baseline(session, sym)
     from ..services.dark_pool_sampling import coverage as sampling_coverage
     try:
-        sampling = sampling_coverage(_get_redis(), sym)
+        # AUD-DP-COVERAGE-WINDOW (2026-11-10): the same window as the baseline it sits beside.
+        from ..services.scheduler import _DARK_POOL_BASELINE_DAYS
+        sampling = sampling_coverage(_get_redis(), sym, window_seconds=_DARK_POOL_BASELINE_DAYS * 86400)
     except Exception:
         sampling = {"status": "query_failed", "note": "Sampling history unavailable; coverage is unknown."}
     return {
@@ -5248,8 +5270,14 @@ def get_dark_pool_alerts_recent_route(
         .order_by(DarkPoolAlertOutcome.fired_date.desc(), DarkPoolAlertOutcome.fired_at.desc())
         .limit(limit)
     ).all()
+    # AUD-DP-TAB-BASELINE (2026-11-10): the baseline each alert was judged against. Rows from
+    # before this was recorded carry None, which the tab shows as "not recorded".
+    from ..services.dark_pool_alert_baseline import lookup as _dp_baselines
+    _bl = _dp_baselines(session, [(row.stock_id, row.fired_date) for row, _sym in rows])
     return {
-        "scope": "price_alert_subscribed_and_top_k_symbols",
+        # AUD-DP-AUDIENCE: the scanned set now also includes followed symbols of recipients.
+        "scope": "price_alert_subscribed_top_k_and_followed_symbols",
+        "row_rule": "first qualifying print per symbol per ET day, during the regular US session",
         "alerts": [
             {
                 "symbol": symbol, "fired_date": row.fired_date.isoformat(),
@@ -5274,6 +5302,11 @@ def get_dark_pool_alerts_recent_route(
                     if row.qualifying_metric and (row.exec_price or row.alert_price)
                     else None
                 ),
+                "baseline": (lambda b: None if b is None else {
+                    "status": b["baseline_status"], "median": b["baseline_median"],
+                    "prints": b["baseline_prints"], "window_days": b["baseline_window_days"],
+                    "vs_baseline": b["vs_baseline"], "qualified_by": b["qualified_by"],
+                })(_bl.get((row.stock_id, row.fired_date))),
             }
             for row, symbol in rows
         ],
@@ -5515,6 +5548,38 @@ def compute_options_game_plan(
     return result
 
 
+_DESK_IV_RANK_MAX_AGE_DAYS = 7
+
+
+def _desk_iv_rank(symbol: str, today: date) -> tuple[float | None, str | None, str]:
+    """(iv_rank 0-100 or None, its date, status) for the options desk.
+
+    Used only when the reading is dated and at most 7 calendar days old: a stale percentile can
+    point the recommendation at selling premium after the volatility has already gone. Any
+    failure is "unavailable", and the recommendation then makes no cheap/rich claim.
+    """
+    try:
+        from ..services import unusual_whales as _uw
+        if not _uw.is_available():
+            return None, None, "provider_disabled"
+        data = _uw.get_iv_rank(symbol)
+    except Exception as exc:
+        log.warning("options_game_plan.iv_rank_failed", symbol=symbol, error=str(exc))
+        return None, None, "unavailable"
+    if data is None or data.iv_rank_1y is None:
+        return None, None, "unavailable"
+    try:
+        rank = float(data.iv_rank_1y)
+        as_of = date.fromisoformat(str(data.as_of_date)[:10])
+    except (TypeError, ValueError):
+        return None, None, "undated"
+    if not (0.0 <= rank <= 100.0) or rank != rank:
+        return None, as_of.isoformat(), "out_of_range"
+    if (today - as_of).days > _DESK_IV_RANK_MAX_AGE_DAYS or as_of > today:
+        return None, as_of.isoformat(), "stale"
+    return rank, as_of.isoformat(), "ok"
+
+
 @router.get("/{symbol}/options-game-plan")
 def get_options_game_plan(
     symbol: str,
@@ -5593,6 +5658,10 @@ def get_options_game_plan(
         except Exception as exc:
             log.warning("options_game_plan.call_fetch_failed", symbol=sym, expiry=call_exp, error=str(exc))
 
+        # AUD-OPT-IVRANK-DESK (2026-11-10): the strategy recommendation keys on where IV sits in
+        # this symbol's own year (rich IV favours selling premium), but this route never passed
+        # IV rank, so the regime was always "unknown" here. One cached provider read (15 min).
+        iv_rank, iv_rank_as_of, iv_rank_status = _desk_iv_rank(sym, today)
         plan = compute_options_game_plan(
             current_price=current_price,
             stop_loss=stop_loss,
@@ -5603,9 +5672,12 @@ def get_options_game_plan(
             call_expiries=[call_exp] if call_exp else [],
             call_rows=call_rows,
             shares=shares,
+            iv_rank=iv_rank,
             today=today,
         )
         plan["symbol"] = sym
+        plan["iv_rank_as_of"] = iv_rank_as_of
+        plan["iv_rank_status"] = iv_rank_status
         # T404: these are SETTLED closes from UW, not live quotes. Say so, every time — an
         # archived bid presented as a current fill is the A06 finding already on the tracker.
         plan["chain_as_of"] = chain_as_of
@@ -5651,10 +5723,133 @@ def get_options_game_plan(
             or matrix.get("singles") or matrix.get("combos")
             or any(review.get("alternatives") for review in matrix.get("candidate_review", {}).values())
         )
+        # Candidate outcome study Part B: an append-only record of what was served. Never
+        # raises and never changes the response.
+        from ..services.options_desk_record import record as _record_desk
+        _record_desk(session, symbol=sym, plan=plan, today=today, stop_loss=stop_loss,
+                     take_profit=take_profit, shares=shares, holding_days=holding_days,
+                     preferences=preferences, chain_session=source_session.isoformat())
         return plan
 
     except Exception as exc:
         log.warning("options_game_plan.error", symbol=sym, error=str(exc))
+        return {"symbol": sym, "available": False, "reason": "fetch_error"}
+
+
+def _call_finder_context(session: Session, sym: str, as_of: date) -> dict:
+    """Realised volatility (20 sessions), 200-day average and the latest settled close, all from
+    daily bars on or before the chain's session. Never raises."""
+    from ..services.volatility import annualized_vol, log_returns
+    try:
+        closes = [float(c) for (c,) in session.execute(
+            select(Price.close).join(Stock, Stock.id == Price.stock_id)
+            .where(Stock.symbol == sym, Price.timeframe == TimeFrame.D1,
+                   Price.ts < datetime.combine(as_of + timedelta(days=1), datetime.min.time()))
+            .order_by(Price.ts.desc()).limit(200)).all() if c is not None][::-1]
+    except Exception as exc:
+        log.warning("call_finder.context_failed", symbol=sym, error=str(exc))
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        return {"hv20": None, "sma200": None}
+    hv20 = annualized_vol(log_returns(closes[-21:])) if len(closes) >= 21 else None
+    return {"hv20": hv20, "sma200": sum(closes) / len(closes) if len(closes) == 200 else None}
+
+
+def _call_finder_events(sym: str) -> list[tuple[str, str]]:
+    """(label, YYYY-MM-DD) earnings and ex-dividend dates from the fundamentals cache."""
+    try:
+        cached = _get_redis().get(f"stockai:fundamentals:v2:{sym}")
+        data = json.loads(cached) if cached else {}
+    except Exception:
+        data = {}
+    out = []
+    for label, field in (("Earnings", "next_earnings_date"), ("Ex-dividend", "ex_dividend_date")):
+        v = data.get(field)
+        if isinstance(v, str) and len(v) >= 10:
+            out.append((label, v[:10]))
+    return out
+
+
+@router.get("/{symbol}/options-call-finder")
+def get_options_call_finder(
+    symbol: str,
+    holding_days: int = Query(14, ge=1, le=60),
+    target_price: float | None = Query(None, gt=0),
+    session: Session = Depends(get_session),
+    _user=Depends(get_advanced_user),
+):
+    """Call Finder (docs/features/2026-11-10-options-tab-call-finder-design.md): a near-term call
+    and a LEAPS call for a stated view, from the latest archived session's settled chain. One
+    archive read and no provider request beyond the cached IV rank. Research candidates, not
+    recommendations: the rule ranks against the reader's view and has not been validated on this
+    platform's data.
+    """
+    import math
+    from ..services import option_call_finder as F
+    from ..services.uw_option_chain import get_chain as _uw_get_chain
+    from ..services.options_contract import checked_contract_terms, supported_underlying
+    from ..services.options_scope import current_expiries as _current_expiries
+
+    sym = symbol.upper()
+    if not supported_underlying(sym):
+        return {"symbol": sym, "available": False, "reason": "unsupported_product_settlement"}
+    try:
+        source_session, session_expiries = _uw_session_expiries(session, sym)
+        if not session_expiries:
+            return {"symbol": sym, "available": False, **_empty_chain_reason(session, sym)}
+        current = set(_current_expiries(session_expiries, source_session, symbol=sym))
+        chain = _uw_get_chain(session, sym, as_of=source_session)
+        if not chain.get("available"):
+            return {"symbol": sym, "available": False, "reason": chain.get("reason") or "no_chain"}
+        reference = chain.get("moneyness_reference")
+        spot = reference.get("price") if isinstance(reference, dict) else None
+        if not spot:
+            return {"symbol": sym, "available": False, "reason": "price_basis_unverified",
+                    "detail": chain.get("moneyness_unknown_reason"),
+                    "source_session": source_session.isoformat()}
+        rows = []
+        for r in chain.get("calls") or []:
+            if r.get("expiry") not in current:
+                continue
+            rows.append({**r, "contract_terms": checked_contract_terms(
+                r.get("option_symbol"), sym, strike=r.get("strike"), expiry=r.get("expiry"), right="call")})
+        today = _today_et()
+        iv_rank, iv_rank_as_of, iv_rank_status = _desk_iv_rank(sym, today)
+        ctx = _call_finder_context(session, sym, source_session)
+        events = _call_finder_events(sym)
+        age = (today - source_session).days
+        common = dict(spot=float(spot), today=today, target=target_price, hv20=ctx["hv20"],
+                      iv_rank=iv_rank, sma200=ctx["sma200"], events=events, chain_age_days=age)
+        near = F.find("near", rows, hold_days=holding_days, **common)
+        leaps = F.find("leaps", rows, hold_days=holding_days, **common)
+        atm_iv = None
+        if near.get("available"):
+            atm_iv = min(rows, key=lambda r: (r.get("expiry") != near["expiry"], abs(r["strike"] - spot))).get("iv")
+        return {
+            "symbol": sym, "available": bool(near.get("available") or leaps.get("available")),
+            "method_version": F.METHOD_VERSION,
+            "source_session": source_session.isoformat(), "chain_age_days": age,
+            "glance": {
+                "price": float(spot), "price_basis": "the chain session's own close, checked against put-call parity (estimated)",
+                "atm_iv_pct": atm_iv, "hv20_pct": round(ctx["hv20"] * 100, 1) if ctx["hv20"] is not None else None,
+                "iv_rank": iv_rank, "iv_rank_as_of": iv_rank_as_of, "iv_rank_status": iv_rank_status,
+                "implied_move_pct": (round(atm_iv * math.sqrt(near["pick"]["dte"] / 365.0), 1)
+                                     if atm_iv and near.get("available") else None),
+                "implied_move_expiry": near.get("expiry") if near.get("available") else None,
+                "events": [{"label": l, "date": d} for l, d in events],
+            },
+            "near": near, "leaps": leaps,
+            "assumptions": [
+                "Settled end-of-day quotes from the source session; no live bid/ask, quote time or size. Confirm at your broker.",
+                "Black-Scholes with each contract's own IV held constant, a flat 4% rate and no dividends; a fall in IV (for example after earnings) makes real results worse.",
+                "Entry at the ask; exit at the model mid less half the contract's current spread.",
+                "Research candidates ranked against your view, not recommendations; the rule has not been validated on this platform's data.",
+            ],
+        }
+    except Exception as exc:
+        log.warning("call_finder.error", symbol=sym, error=str(exc))
         return {"symbol": sym, "available": False, "reason": "fetch_error"}
 
 

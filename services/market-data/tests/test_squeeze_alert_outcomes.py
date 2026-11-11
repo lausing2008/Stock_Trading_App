@@ -157,7 +157,9 @@ def _extract_record_squeeze_alert_outcome():
     end = _SCHEDULER_SOURCE.index("\n\ndef check_short_squeeze_alerts(", start)
     body = _SCHEDULER_SOURCE[start:end]
     fake_log = MagicMock()
-    namespace = {"select": select, "Stock": Stock, "SqueezeAlertOutcome": SqueezeAlertOutcome, "date": date, "log": fake_log}
+    # AUD-SQZ-GAMMA-UTCDATE: the recorder now dates rows with the real ET helper.
+    namespace = {"select": select, "Stock": Stock, "SqueezeAlertOutcome": SqueezeAlertOutcome, "date": date,
+                 "_today_et": _real_today_et(), "log": fake_log}
     exec(body, namespace)  # noqa: S102 — isolated eval of real source
     return namespace["_record_squeeze_alert_outcome"], fake_log
 
@@ -250,6 +252,9 @@ def _extract_squeeze_alert_backtest():
         "_SQUEEZE_MIN_INTRADAY_MOVE_PCT": const_namespace["_SQUEEZE_MIN_INTRADAY_MOVE_PCT"],
         "_SQUEEZE_RVOL_BASE": const_namespace["_SQUEEZE_RVOL_BASE"],
     }
+    # AUD-SQZ-BACKTEST-ENTRY: the window scoring is a real module-level helper; load its source too.
+    h_start = _ADMIN_SOURCE.index("def _squeeze_backtest_return(")
+    exec(_ADMIN_SOURCE[h_start:_ADMIN_SOURCE.index("\n\n\ndef squeeze_alert_backtest(", h_start)], namespace)  # noqa: S102
     exec(body, namespace)  # noqa: S102 — isolated eval of real source
     return namespace["squeeze_alert_backtest"]
 
@@ -269,7 +274,9 @@ def test_record_creates_a_new_row_on_first_fire():
     assert rows[0].symbol == "AAPL"
     assert rows[0].alert_price == 150.0
     assert rows[0].qualifying_metric == 22.5
-    assert rows[0].fired_date == date.today()
+    # AUD-SQZ-GAMMA-UTCDATE: the recorder dates rows in New York time; the local date differs
+    # for part of every day (this failed at 21:09 PST, already 00:09 ET).
+    assert rows[0].fired_date == _real_today_et()()
 
 
 def test_record_is_a_noop_on_a_second_call_same_day_same_type():
@@ -754,14 +761,18 @@ def test_backtest_reports_a_real_win_rate_and_avg_return_once_forward_windows_re
         date(2025, 12, 30): 100.0, date(2025, 12, 31): 100.0,
         date(2026, 1, 4): 100.0, date(2026, 1, 5): 105.0,
     }, volumes={date(2026, 1, 5): 3000.0})  # AUD-SQUEEZE2-BACKTESTNORVOLGATE: clears the RVOL gate
-    _make_price(session, st.id, date(2026, 1, 10), 110.0)  # 5d forward, +4.76% from entry (105)
+    # AUD-SQZ-BACKTEST-ENTRY: entry is the NEXT session's close (Jan 6, 106), and the 5-day window
+    # is counted from the entry: the first close on or after Jan 11 (108, +1.89%).
+    _make_price(session, st.id, date(2026, 1, 6), 106.0)
+    _make_price(session, st.id, date(2026, 1, 11), 108.0)
     backtest = _extract_squeeze_alert_backtest()
 
     result = backtest(weeks_back=520, min_samples=1, _=None, session=session)
 
     assert result["window_5d"]["n"] == 1
     assert result["window_5d"]["win_rate"] == 1.0
-    assert result["window_5d"]["avg_return_pct"] > 0
+    assert result["window_5d"]["avg_return_pct"] == round((108.0 / 106.0 - 1) * 100, 2)   # not 108/105
+    assert "next session's close" in result["entry_rule"]
 
 
 def test_backtest_reports_below_sample_floor_note_instead_of_a_fabricated_win_rate():

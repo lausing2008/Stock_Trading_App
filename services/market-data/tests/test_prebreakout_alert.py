@@ -134,7 +134,8 @@ def _extract_record_prebreakout_alert_outcome():
     end = _SCHEDULER_SOURCE.index("\n\n\n_GAMMA_UNWIND_LOCK_KEY", start)
     body = _SCHEDULER_SOURCE[start:end]
     fake_log = MagicMock()
-    namespace = {"select": select, "PreBreakoutAlertOutcome": PreBreakoutAlertOutcome, "date": date, "log": fake_log}
+    namespace = {"select": select, "PreBreakoutAlertOutcome": PreBreakoutAlertOutcome, "date": date,
+                 "timedelta": timedelta, "_today_et": _real_today_et(), "log": fake_log}
     exec(body, namespace)  # noqa: S102 — isolated eval of real source
     return namespace["_record_prebreakout_alert_outcome"], fake_log
 
@@ -253,7 +254,7 @@ def test_record_creates_a_new_row_on_first_fire():
     assert rows[0].volume_dried_up is True
     assert rows[0].options_modifier_applied is True
     assert rows[0].options_cp_ratio == 1.3
-    assert rows[0].fired_date == date.today()
+    assert rows[0].fired_date == _real_today_et()()
     # T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE: the two new signal fields default to None
     # when not passed — this call site (matching every pre-existing caller in this file)
     # never supplies them, so a real regression here would silently break every OTHER
@@ -606,3 +607,61 @@ def test_evaluate_leaves_a_window_open_when_it_hasnt_closed_yet():
         assert row.return_5d is None
         assert row.return_10d is None
         assert row.return_20d is None
+
+
+# ── AUD-SQZ-PREBREAKOUT-EPISODE (2026-11-10) ────────────────────────────────────────────────
+
+def test_record_skips_a_setup_already_recorded_within_the_episode_window():
+    """A coiling stock qualifies day after day; that is one observation, not one per day."""
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    today = _real_today_et()()
+    session.add(PreBreakoutAlertOutcome(id=_new_id(), stock_id=st.id, symbol="AAPL",
+                                        fired_date=today - timedelta(days=3), alert_price=99.0,
+                                        rule_gate_passed=True))
+    session.commit()
+    record, fake_log = _extract_record_prebreakout_alert_outcome()
+
+    record(session, st.id, "AAPL", 150.0, 22.5, 0.1, 0.15, True, None)
+
+    assert len(session.execute(select(PreBreakoutAlertOutcome)).scalars().all()) == 1
+    fake_log.warning.assert_not_called()
+
+
+def test_record_starts_a_new_episode_once_the_window_has_passed():
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    today = _real_today_et()()
+    session.add(PreBreakoutAlertOutcome(id=_new_id(), stock_id=st.id, symbol="AAPL",
+                                        fired_date=today - timedelta(days=7), alert_price=99.0,
+                                        rule_gate_passed=True))
+    session.commit()
+    record, _ = _extract_record_prebreakout_alert_outcome()
+
+    record(session, st.id, "AAPL", 150.0, 22.5, 0.1, 0.15, True, None)
+
+    rows = session.execute(select(PreBreakoutAlertOutcome).order_by(PreBreakoutAlertOutcome.fired_date)).scalars().all()
+    assert [r.fired_date for r in rows] == [today - timedelta(days=7), today]
+
+
+def test_record_episode_is_per_stock():
+    session = _make_session()
+    a, b = _make_stock(session, "AAPL"), _make_stock(session, "MSFT")
+    today = _real_today_et()()
+    session.add(PreBreakoutAlertOutcome(id=_new_id(), stock_id=a.id, symbol="AAPL",
+                                        fired_date=today - timedelta(days=1), alert_price=99.0,
+                                        rule_gate_passed=True))
+    session.commit()
+    record, _ = _extract_record_prebreakout_alert_outcome()
+    record(session, b.id, "MSFT", 300.0, 22.5, 0.1, 0.15, True, None)
+    assert {r.symbol for r in session.execute(select(PreBreakoutAlertOutcome)).scalars()} == {"AAPL", "MSFT"}
+
+
+def test_active_set_outlives_a_long_weekend():
+    start = _SCHEDULER_SOURCE.index("_PREBREAKOUT_ACTIVE_TTL_SECONDS = ")
+    ns: dict = {}
+    exec(_SCHEDULER_SOURCE[start:_SCHEDULER_SOURCE.index("\n", start)], ns)  # noqa: S102
+    assert ns["_PREBREAKOUT_ACTIVE_TTL_SECONDS"] >= 4 * 24 * 3600
+    body = _SCHEDULER_SOURCE[_SCHEDULER_SOURCE.index("def check_prebreakout_alerts("):]
+    body = body[:body.index("\ndef ")]
+    assert "_rc.expire(state_key, _PREBREAKOUT_ACTIVE_TTL_SECONDS)" in body

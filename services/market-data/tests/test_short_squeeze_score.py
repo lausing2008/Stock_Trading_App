@@ -40,9 +40,10 @@ def test_returns_none_when_short_percent_of_float_is_missing():
 
 def test_a_real_candidate_that_clears_every_bar_scores_high():
     """15%+ short float (the alert's own floor), a real p10-beating days-to-cover, strong
-    momentum, and a real move — should land well into the upper score range."""
+    momentum, and a real move — should land well into the upper score range. Days to cover is
+    8.0 (a long exit) since AUD-SQZ-DTC-INVERTED; it was 1.0 under the inverted scale."""
     result = compute_short_squeeze_score(
-        short_percent_of_float=30.0, days_to_cover=1.0, momentum_score=90.0, change_pct=8.0,
+        short_percent_of_float=30.0, days_to_cover=8.0, momentum_score=90.0, change_pct=8.0,
     )
     assert result is not None
     assert result["score"] >= 80.0
@@ -85,34 +86,41 @@ def test_short_float_component_floors_at_0_below_5_pct():
     assert result["components"]["short_float_pts"] == 0.0
 
 
-def test_days_to_cover_is_inverse_lower_is_more_acute():
-    """A lower days-to-cover (shorts can't exit quietly) should score HIGHER, not lower — the
-    exact opposite direction of a naive 'bigger number = more points' assumption."""
-    acute = compute_short_squeeze_score(
-        short_percent_of_float=20.0, days_to_cover=1.13, momentum_score=None, change_pct=None,
+def test_days_to_cover_higher_is_more_acute():
+    """AUD-SQZ-DTC-INVERTED (2026-11-10): more days of normal volume needed to cover = more
+    trapped shorts = more points. The score used to run the other way, against the screener's
+    own guide and the stock page."""
+    easy_exit = compute_short_squeeze_score(
+        short_percent_of_float=20.0, days_to_cover=1.0, momentum_score=None, change_pct=None,
     )
-    mild = compute_short_squeeze_score(
-        short_percent_of_float=20.0, days_to_cover=4.65, momentum_score=None, change_pct=None,
+    trapped = compute_short_squeeze_score(
+        short_percent_of_float=20.0, days_to_cover=9.0, momentum_score=None, change_pct=None,
     )
-    assert acute["components"]["days_to_cover_pts"] > mild["components"]["days_to_cover_pts"]
+    assert trapped["components"]["days_to_cover_pts"] > easy_exit["components"]["days_to_cover_pts"]
+    assert trapped["score"] > easy_exit["score"]
 
 
-def test_days_to_cover_at_the_real_p10_scores_near_the_full_30_points():
+def test_days_to_cover_at_or_below_3_days_scores_zero():
+    for dtc in (0.5, 1.13, 3.0):
+        result = compute_short_squeeze_score(
+            short_percent_of_float=20.0, days_to_cover=dtc, momentum_score=None, change_pct=None,
+        )
+        assert result["components"]["days_to_cover_pts"] == 0.0, dtc
+
+
+def test_days_to_cover_at_or_above_8_days_scores_the_full_30_points():
+    for dtc in (8.0, 12.0, 40.0):
+        result = compute_short_squeeze_score(
+            short_percent_of_float=20.0, days_to_cover=dtc, momentum_score=None, change_pct=None,
+        )
+        assert result["components"]["days_to_cover_pts"] == 30.0, dtc
+
+
+def test_days_to_cover_is_linear_between_3_and_8_days():
     result = compute_short_squeeze_score(
-        short_percent_of_float=20.0, days_to_cover=1.13, momentum_score=None, change_pct=None,
+        short_percent_of_float=20.0, days_to_cover=5.5, momentum_score=None, change_pct=None,
     )
-    assert result["components"]["days_to_cover_pts"] == 30.0
-
-
-def test_days_to_cover_at_or_beyond_the_real_p50_scores_zero():
-    result_at_p50 = compute_short_squeeze_score(
-        short_percent_of_float=20.0, days_to_cover=4.65, momentum_score=None, change_pct=None,
-    )
-    result_beyond = compute_short_squeeze_score(
-        short_percent_of_float=20.0, days_to_cover=10.0, momentum_score=None, change_pct=None,
-    )
-    assert result_at_p50["components"]["days_to_cover_pts"] == 0.0
-    assert result_beyond["components"]["days_to_cover_pts"] == 0.0
+    assert result["components"]["days_to_cover_pts"] == 15.0
 
 
 def test_days_to_cover_missing_contributes_zero_not_a_crash():
@@ -175,7 +183,7 @@ def test_uw_enrichment_never_pushes_the_score_above_100():
     """A degenerate case: every component maxed AND a maxed UW fee-rate bonus must still clamp
     at 100, never overshoot."""
     result = compute_short_squeeze_score(
-        short_percent_of_float=100.0, days_to_cover=0.0, momentum_score=100.0, change_pct=100.0,
+        short_percent_of_float=100.0, days_to_cover=20.0, momentum_score=100.0, change_pct=100.0,
         fee_rate=100.0,
     )
     assert result["score"] == 100.0
@@ -278,7 +286,7 @@ def test_utilization_and_borrow_fee_stack_additively():
 
 def test_utilization_enrichment_never_pushes_the_score_above_100():
     result = compute_short_squeeze_score(
-        short_percent_of_float=100.0, days_to_cover=0.0, momentum_score=100.0, change_pct=100.0,
+        short_percent_of_float=100.0, days_to_cover=20.0, momentum_score=100.0, change_pct=100.0,
         fee_rate=100.0, short_interest=2_000_000.0, short_shares_available=1_000_000.0,
     )
     assert result["score"] == 100.0
@@ -296,7 +304,7 @@ def test_covering_pressure_is_low_below_40():
 
 def test_covering_pressure_is_medium_between_40_and_70():
     result = compute_short_squeeze_score(
-        short_percent_of_float=20.0, days_to_cover=2.5, momentum_score=40.0, change_pct=3.0,
+        short_percent_of_float=20.0, days_to_cover=6.0, momentum_score=40.0, change_pct=3.0,
     )
     assert 40.0 <= result["score"] < 70.0
     assert result["covering_pressure"]["pressure"] == "MEDIUM"
@@ -304,7 +312,7 @@ def test_covering_pressure_is_medium_between_40_and_70():
 
 def test_covering_pressure_is_high_at_or_above_70():
     result = compute_short_squeeze_score(
-        short_percent_of_float=30.0, days_to_cover=1.0, momentum_score=90.0, change_pct=8.0,
+        short_percent_of_float=30.0, days_to_cover=8.0, momentum_score=90.0, change_pct=8.0,
     )
     assert result["score"] >= 70.0
     assert result["covering_pressure"]["pressure"] == "HIGH"
@@ -314,9 +322,8 @@ def test_covering_pressure_boundaries_are_inclusive_on_the_lower_edge():
     """Exactly 40.0 must read MEDIUM (not LOW); exactly 70.0 must read HIGH (not MEDIUM) — the
     real >= comparison, not a > that would misclassify the exact boundary value. Both inputs
     are hand-derived to sum to the exact boundary: spf=17.5 -> spf_pts=20.0, momentum=100.0
-    (capped) -> mom_pts=20.0, summing to exactly 40.0; adding days_to_cover=1.13 (the real p10,
-    already scoring the full 30 points elsewhere in this file) brings the same combination to
-    exactly 70.0."""
+    (capped) -> mom_pts=20.0, summing to exactly 40.0; adding a full-points days_to_cover brings the same combination to
+    exactly 70.0. (days_to_cover=8.0 since AUD-SQZ-DTC-INVERTED: the full-points edge.)"""
     at_40 = compute_short_squeeze_score(
         short_percent_of_float=17.5, days_to_cover=None, momentum_score=100.0, change_pct=None,
     )
@@ -324,7 +331,7 @@ def test_covering_pressure_boundaries_are_inclusive_on_the_lower_edge():
     assert at_40["covering_pressure"]["pressure"] == "MEDIUM"
 
     at_70 = compute_short_squeeze_score(
-        short_percent_of_float=17.5, days_to_cover=1.13, momentum_score=100.0, change_pct=None,
+        short_percent_of_float=17.5, days_to_cover=8.0, momentum_score=100.0, change_pct=None,
     )
     assert at_70["score"] == 70.0
     assert at_70["covering_pressure"]["pressure"] == "HIGH"
@@ -346,7 +353,7 @@ def test_covering_pressure_confidence_is_higher_with_real_uw_enrichment():
 
 def test_covering_pressure_confidence_never_exceeds_95():
     result = compute_short_squeeze_score(
-        short_percent_of_float=100.0, days_to_cover=0.0, momentum_score=100.0, change_pct=100.0,
+        short_percent_of_float=100.0, days_to_cover=20.0, momentum_score=100.0, change_pct=100.0,
         fee_rate=100.0, short_interest=2_000_000.0, short_shares_available=1_000_000.0,
     )
     assert result["covering_pressure"]["confidence"] <= 95.0

@@ -887,6 +887,14 @@ export const api = {
     const qs = params.toString();
     return request<OptionsGamePlan>(`/stocks/${symbol}/${opts.snapshotId ? `options-snapshot/${encodeURIComponent(opts.snapshotId)}/game-plan` : 'options-game-plan'}${qs ? `?${qs}` : ''}`);
   },
+  // Call Finder (docs/features/2026-11-10-options-tab-call-finder-design.md). Advanced tier.
+  getOptionsCallFinder: (symbol: string, opts: { holdingDays?: number; targetPrice?: number | null } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.holdingDays != null) params.set('holding_days', String(opts.holdingDays));
+    if (opts.targetPrice != null && opts.targetPrice > 0) params.set('target_price', String(opts.targetPrice));
+    const qs = params.toString();
+    return request<CallFinderResponse>(`/stocks/${symbol}/options-call-finder${qs ? `?${qs}` : ''}`);
+  },
   // AUD-OPTIONS4-GAMEPLANBATCH: one call for many symbols' already-computed daily snapshots —
   // for a scan-list/signals-table row, never a per-row live fetch. Advanced-tier gated
   // server-side (403 for a non-Advanced viewer), same as getOptionsGamePlan above.
@@ -1822,7 +1830,9 @@ export type OptionSnapshot = {
 export type OptionsRefreshResult = { available: boolean; status: string; snapshot?: OptionSnapshot; message?: string; retry_after?: number };
 
 export type OptionsChainRow = { strike: number; bid: number; ask: number; last_price: number; volume: number | null; oi: number | null; iv: number | null; itm: boolean | null; moneyness?: Moneyness | null;
-  option_symbol?: string | null; contract_terms?: ContractTerms | null };
+  option_symbol?: string | null; contract_terms?: ContractTerms | null;
+  /** Provider greeks; null when the contract did not trade that session (the provider sends none). */
+  delta?: number | null; gamma?: number | null };
 // IF-05: max pain — needs only strike + open interest, no IV/Black-Scholes/dealer-positioning
 // assumption. null when there's zero open interest to compute against for this expiry.
 export type MaxPain = { max_pain_strike: number; total_call_oi: number; total_put_oi: number; put_call_oi_ratio: number | null;
@@ -1997,10 +2007,43 @@ export type DarkPoolAlertRecent = {
   live_price?: number | null;
   side?: 'buy' | 'sell' | null;
   shares?: number | null;
+  /** AUD-DP-TAB-BASELINE: the baseline this alert was judged against; null before it was recorded. */
+  baseline?: DarkPoolAlertBaseline | null;
+};
+
+export type CallFinderReasons = { expiration: string; strike: string; delta: string; gamma: string; open_interest: string; iv: string };
+export type CallFinderContract = {
+  option_symbol: string | null; expiry: string; dte: number; strike: number; bid: number; ask: number; mid: number;
+  spread_pct: number; cost_per_contract: number; breakeven: number; breakeven_move_pct: number;
+  delta: number; gamma: number | null; greeks_estimated: boolean; oi: number; iv_pct: number;
+  scenarios: { target: number | null; half_move: number | null; flat: number | null; down_one_sigma: number | null;
+    target_twice_as_late: number | null; late_days: number };
+  model_prob_above_breakeven: number | null;
+  reasons: CallFinderReasons;
+};
+export type CallFinderPick = {
+  kind: 'near' | 'leaps'; available: boolean; reason?: string; method_version?: string;
+  expiry?: string; expiry_reason?: string; hold_days?: number; target?: number; target_basis?: string; spot?: number;
+  rule?: string; pick?: CallFinderContract; aggressive_alternative?: CallFinderContract | null;
+  eligible_count?: number; rejected?: Record<string, number>; wide_quote_fallback?: boolean; warnings?: string[];
+};
+export type CallFinderResponse = {
+  symbol: string; available: boolean; reason?: string; detail?: string | null; method_version?: string;
+  source_session?: string; chain_age_days?: number;
+  glance?: { price: number; price_basis: string; atm_iv_pct: number | null; hv20_pct: number | null;
+    iv_rank: number | null; iv_rank_as_of: string | null; iv_rank_status: string;
+    implied_move_pct: number | null; implied_move_expiry: string | null; events: { label: string; date: string }[] };
+  near?: CallFinderPick; leaps?: CallFinderPick; assumptions?: string[];
+};
+
+export type DarkPoolAlertBaseline = {
+  status: string; median: number | null; prints: number | null; window_days: number | null;
+  vs_baseline: number | null; qualified_by: 'floor_and_relative' | 'floor_only';
 };
 
 export type DarkPoolAlertsRecentResponse = {
   scope: string;
+  row_rule?: string;
   alerts: DarkPoolAlertRecent[];
 };
 
@@ -2471,6 +2514,9 @@ export type SqueezeCandidate = {
   ranking_as_of: string | null;
   ranking_is_stale: boolean;
   volume: number | null;
+  /** Settlement date of the short-interest reading, and whether it is older than 30 days. */
+  short_interest_date?: string | null;
+  is_stale?: boolean;
   // MPE-01/MPE-07
   squeeze_score: SqueezeScore | null;
   uw_short_shares_available: number | null;

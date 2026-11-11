@@ -1,0 +1,46 @@
+SET
+SET
+BEGIN
+=== ledger totals
+ events | symbols | canceled | ambiguous | no_premium |      first_observed       |       last_observed       |   first_executed    |    last_executed    
+--------+---------+----------+-----------+------------+---------------------------+---------------------------+---------------------+---------------------
+  95847 |      63 |       34 |      1965 |         34 | 2026-10-23 22:24:30.37356 | 2026-10-30 05:41:29.33871 | 2026-10-23 08:00:21 | 2026-10-29 23:59:59
+(1 row)
+
+=== versions per identity
+ identities | with_multiple_versions | max_versions | version_rows 
+------------+------------------------+--------------+--------------
+      95847 |                   2026 |           13 |        98309
+(1 row)
+
+=== baseline readiness (uncanceled, unambiguous, premium, executed in last 14 days; needs >= 20)
+ symbols_ready | symbols_short | median_prints | min | max  
+---------------+---------------+---------------+-----+------
+            55 |             8 |           672 |   1 | 6179
+(1 row)
+
+=== symbols in ledger with zero baseline-eligible prints
+ count 
+-------
+     0
+(1 row)
+
+=== daily intake by observation day (ET)
+    day     | events | canceled | ambiguous 
+------------+--------+----------+-----------
+ 2026-10-23 |    169 |        0 |         4
+ 2026-10-25 |    218 |        0 |         8
+ 2026-10-26 |  20087 |        4 |       362
+ 2026-10-27 |  22507 |       25 |       524
+ 2026-10-28 |  25085 |        3 |       525
+ 2026-10-29 |  26994 |        2 |       530
+ 2026-10-30 |    787 |        0 |        12
+(7 rows)
+
+=== legacy table since the ledger began
+ legacy_rows | symbols 
+-------------+---------
+      111203 |      61
+(1 row)
+
+ROLLBACK

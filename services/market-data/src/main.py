@@ -40,6 +40,12 @@ async def on_startup():
     init_db()
     from .services.dark_pool_ledger import ensure_schema
     ensure_schema()
+    # Options candidate study Part B (a new table; create_all never alters an existing one).
+    from .services.options_desk_record import ensure_schema as ensure_desk_record_schema
+    ensure_desk_record_schema()
+    # AUD-DP-TAB-BASELINE: a new market-data-only table (create_all never alters existing ones).
+    from .services.dark_pool_alert_baseline import ensure_schema as ensure_dp_baseline_schema
+    ensure_dp_baseline_schema()
     # Intraday Stage C: new tables + insert-only triggers. A failure is recorded and reported by
     # /intraday/* as schema_unavailable; it must not take market-data down (no generator exists).
     from .services.intraday.schema import ensure_schema_safely

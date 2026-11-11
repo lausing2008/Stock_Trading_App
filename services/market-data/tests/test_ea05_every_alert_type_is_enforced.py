@@ -181,7 +181,7 @@ def test_the_flow_digest_excludes_inactive_accounts():
 
 
 def test_the_single_recipient_gate_rejects_inactive_accounts():
-    """`filter_recipients` cannot see account state; the single-recipient gate closes that half."""
+    """The single-recipient gate; the batch filter's own check is tested below."""
     assert _load_gate()(_session_with(True), _user(is_active=False), "signal") is False
     assert _load_gate()(_session_with(True), _user(email=None), "signal") is False
 
@@ -328,3 +328,15 @@ def test_the_gate_is_negated_so_a_false_verdict_is_what_skips():
             assert isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not), (
                 f"the guard at line {node.lineno} is not negated — it skips the users who "
                 "are still subscribed")
+
+
+def test_the_batch_filter_drops_inactive_accounts():
+    """AUD-SQZ-INACTIVE-RECIPIENTS (2026-11-10): batch alerts call only filter_recipients, so an
+    inactive account with a leftover price alert kept receiving them."""
+    from src.services.alert_audience import filter_recipients
+    session = MagicMock()
+    session.execute.return_value.all.return_value = []   # nobody opted out
+    active, inactive, unknown = _user(is_active=True), _user(is_active=False), object()
+    out = filter_recipients(session, {1: active, 2: inactive, 3: unknown}, "short_squeeze")
+    assert set(out) == {1, 3}
+    assert filter_recipients(session, {2: inactive}, "short_squeeze") == {}

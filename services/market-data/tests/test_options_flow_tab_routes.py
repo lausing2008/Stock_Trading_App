@@ -125,7 +125,8 @@ def test_dark_pool_recent_queries_dark_pool_alert_outcome_not_a_live_uw_call():
 
 def test_dark_pool_recent_discloses_its_bounded_scope():
     assert '"scope"' in _DARKPOOL_RECENT_SOURCE
-    assert "price_alert_subscribed_and_top_k_symbols" in _DARKPOOL_RECENT_SOURCE
+    # AUD-DP-AUDIENCE (2026-11-10): the scan now also covers recipients' followed symbols.
+    assert "price_alert_subscribed_top_k_and_followed_symbols" in _DARKPOOL_RECENT_SOURCE
 
 
 def test_dark_pool_recent_orders_by_most_recent_first():

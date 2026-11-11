@@ -1581,6 +1581,15 @@ def _is_market_hours(market: str = "US", as_of: datetime | None = None) -> bool:
         return False
     market_open  = now_et.replace(hour=9,  minute=30, second=0, microsecond=0)
     market_close = now_et.replace(hour=16, minute=0,  second=0, microsecond=0)
+    # AUD-SQZ-HALFDAY (2026-11-10): NYSE half-days close at 13:00 ET. This kept the market
+    # "open" until 16:00 on those days, so the 1-minute squeeze jobs and paper trading acted on
+    # frozen post-close prices for three hours.
+    try:
+        from common.market_calendar import NYSE_EARLY_CLOSES
+        if now_et.date() in NYSE_EARLY_CLOSES:
+            market_close = now_et.replace(hour=13, minute=0, second=0, microsecond=0)
+    except ImportError:
+        pass
     return market_open <= now_et < market_close
 
 
@@ -5776,6 +5785,16 @@ def _open_paper_trade_sized(
     return trade, None
 
 
+# AUD-SQZ-PAPER-SIAGE: matches the squeeze alerts' 30-day short-interest staleness reject.
+_SQUEEZE_SI_MAX_AGE_DAYS = 30
+
+
+def _today_et_paper() -> date:
+    """The America/New_York calendar date (the container runs in UTC)."""
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
+
 def _squeeze_score_for(symbol: str, momentum_score: float | None) -> float | None:
     """MPE-05: cheap, fail-open squeeze-score lookup for a real candidate at the moment
     _scan_for_entries() considers it — reads the SAME already-cached fundamentals blob
@@ -5799,6 +5818,13 @@ def _squeeze_score_for(symbol: str, momentum_score: float | None) -> float | Non
         data = json.loads(cached)
         spf = data.get("short_percent_of_float")
         if spf is None:
+            return None
+        # AUD-SQZ-PAPER-SIAGE (2026-11-10): the same 30-day short-interest age rule the three
+        # squeeze alerts apply. This path had none, so a months-old reading still scored and
+        # fed the decision engine. Undated counts as stale, as it does in the alerts.
+        si_date = data.get("short_interest_date")
+        cutoff = (_today_et_paper() - timedelta(days=_SQUEEZE_SI_MAX_AGE_DAYS)).isoformat()
+        if not isinstance(si_date, str) or si_date[:10] < cutoff:
             return None
         result = compute_short_squeeze_score(
             short_percent_of_float=round(spf * 100, 2),

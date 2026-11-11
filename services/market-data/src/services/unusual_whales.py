@@ -1404,7 +1404,7 @@ def get_short_interest(symbol: str) -> ShortInterestData | None:
     if not data:
         result = None
     else:
-        row = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else None)
+        row = _latest_short_interest_row(data)
         if not row:
             result = None
         else:
@@ -1426,6 +1426,25 @@ def get_short_interest(symbol: str) -> ShortInterestData | None:
     except Exception:
         pass
     return result
+
+
+def _latest_short_interest_row(data) -> dict | None:
+    """AUD-SQZ-SI-ROWORDER (2026-11-10): the newest row by `market_date`, not `data[0]`.
+
+    The response is a dated series. T411-IVRANK-OLDESTROW found UW's iv-rank series ASCENDING,
+    so `rows[0]` there was the oldest reading; this endpoint took `data[0]` the same way, and the
+    short-squeeze alert's "UW disagrees" check compared against it. Selecting by date is correct
+    under either ordering. Rows without a readable date are used only when no row has one.
+    """
+    if isinstance(data, dict):
+        return data
+    if not isinstance(data, list) or not data:
+        return None
+    rows = [r for r in data if isinstance(r, dict)]
+    dated = [r for r in rows if isinstance(r.get("market_date"), str) and len(r["market_date"]) >= 10]
+    if dated:
+        return max(dated, key=lambda r: r["market_date"][:10])
+    return rows[0] if rows else None
 
 
 _FLOW_ALERT_MAX_AGE_HOURS = 48  # AUD-OPTIONSFLOW-STALEALERTS — see get_flow_alerts()'s own

@@ -8,5 +8,5 @@ def test_real_database_identity_versions_cancellations_and_capture_order():
     process=subprocess.run([sys.executable,str(probe)],capture_output=True,text=True,timeout=30)
     assert process.returncode==0,process.stdout+process.stderr
     data=json.loads(process.stdout.split('LEDGER_PROBE_JSON=')[-1])
-    assert data['distinct_events']==2 and data['retained_versions']>=7
-    assert data['active_unambiguous']==1 and data['stale_capture_cannot_revert']
+    assert data['distinct_events']==4 and data['retained_versions']>=7
+    assert data['multi_row_groups']==2 and data['active_unambiguous']==2 and data['stale_capture_cannot_revert']

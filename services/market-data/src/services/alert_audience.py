@@ -79,6 +79,13 @@ def filter_recipients(session, recipients: dict, alert_type: str) -> dict:
     """
     from common.alert_prefs import opt_in_only
 
+    # AUD-SQZ-INACTIVE-RECIPIENTS (2026-11-10): the batch alerts build recipients from open
+    # PriceAlert rows and call only this filter, so a deactivated account with a leftover alert
+    # kept receiving every squeeze, flow and dark-pool email. `may_notify` already refuses an
+    # inactive account; the batch path now applies the same rule. An unknown state (no
+    # attribute) is kept, matching may_notify's own default.
+    recipients = {uid: u for uid, u in (recipients or {}).items()
+                  if getattr(u, "is_active", True) is not False}
     if not recipients:
         return recipients
     if opt_in_only(alert_type):
@@ -112,3 +119,37 @@ def filter_recipients(session, recipients: dict, alert_type: str) -> dict:
     if not opted_out:
         return recipients
     return {uid: u for uid, u in recipients.items() if uid not in opted_out}
+
+
+def owned_symbols_by_user(session, user_ids) -> dict:
+    """{user_id: {SYMBOL, ...}}: the symbols each account follows itself.
+
+    AUD-DP-AUDIENCE (2026-11-10). "Own" means the account's watchlist items plus its open
+    (untriggered) price alerts. Watchlist ownership is resolved both ways, as in the October 24
+    owned-watchlist fix: an item's direct `user_id`, or the owner of the list it sits in. A lookup
+    failure returns {} for everyone, so a caller that filters on this sends NOTHING rather than
+    the whole shared list: "only your own symbols" cannot fail open into "everyone's".
+    """
+    from db import PriceAlert, Stock, Watchlist, WatchlistItem
+    from sqlalchemy import select
+
+    wanted = {uid for uid in (user_ids or []) if uid is not None}
+    if not wanted:
+        return {}
+    out: dict = {}
+    try:
+        for direct, owner, symbol in session.execute(
+                select(WatchlistItem.user_id, Watchlist.user_id, Stock.symbol)
+                .join(Stock, Stock.id == WatchlistItem.stock_id)
+                .outerjoin(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)):
+            uid = direct or owner
+            if uid in wanted and symbol:
+                out.setdefault(uid, set()).add(symbol.upper())
+        for uid, symbol in session.execute(
+                select(PriceAlert.user_id, PriceAlert.symbol).where(PriceAlert.triggered.is_(False))):
+            if uid in wanted and symbol:
+                out.setdefault(uid, set()).add(symbol.upper())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("alert_audience.owned_symbols_failed", error=str(exc))
+        return {}
+    return out

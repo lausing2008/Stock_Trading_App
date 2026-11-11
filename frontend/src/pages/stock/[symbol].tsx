@@ -16,6 +16,9 @@ import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
 import OptionsChainChart from '@/components/OptionsChainChart';
 import OptionsChainTable from '@/components/OptionsChainTable';
+import CallFinderCard from '@/components/CallFinderCard';
+import type { CallFinderContract } from '@/lib/api';
+import { OPTION_HOLDING_DEFAULTS } from '@/lib/optionResearchContext';
 import { unknownOiCount } from '@/lib/optionsChainChart';
 import { REFRESH_MS } from '@/lib/useNow';
 import { usePolledSWR } from '@/lib/usePolledSWR';
@@ -520,6 +523,17 @@ function EarningsHistoryAndEstimates({ f, symbol, sector }: { f: Fundamentals; s
 const PAGE_TABS = ['Overview', 'Options', 'Research', 'Goals'] as const;
 type PageTab = typeof PAGE_TABS[number];
 
+// Call Finder design: expiry buttons show days to expiry, mark LEAPS, and mark a Call Finder pick.
+// Days are counted from the chain's own session (the quotes' date), not from today.
+function chainExpiryLabel(exp: string, sourceSession: string | null | undefined,
+  picks: { near?: CallFinderContract; leaps?: CallFinderContract }): string {
+  const from = Date.parse(sourceSession ?? '');
+  const days = Number.isFinite(from) ? Math.round((Date.parse(exp) - from) / 86_400_000) : null;
+  const parts = [days != null && days >= 0 ? `${days}d` : null, days != null && days >= 365 ? 'LEAPS' : null,
+    picks.near?.expiry === exp ? 'near-term pick' : null, picks.leaps?.expiry === exp ? 'LEAPS pick' : null].filter(Boolean);
+  return parts.length ? ` · ${parts.join(' · ')}` : '';
+}
+
 export default function StockDetail() {
   const r = useRouter();
   const symbol = (r.query.symbol as string) ?? '';
@@ -687,6 +701,9 @@ export default function StockDetail() {
   const activeOptionSnapshot = snapshotCapture?.symbol === symbol ? snapshotCapture : undefined;
   const [chainOpen, setChainOpen] = useState(false);
   const [chainExpiry, setChainExpiry] = useState<string | undefined>(undefined);
+  // Call Finder: the two picked contracts, highlighted in the chain table.
+  const [finderPicks, setFinderPicks] = useState<{ near?: CallFinderContract; leaps?: CallFinderContract }>({});
+  const [chainAllStrikes, setChainAllStrikes] = useState(false);
   // Audit R02: refresh at the backend cache's cadence while the page is visible, so an open tab
   // does not keep pre-expiry eligibility or an old payload; hidden tabs pause, rate limits back off.
   const { data: optionsFlow, error: optionsFlowError, mutate: retryOptionsFlow } = usePolledSWR(
@@ -1173,104 +1190,31 @@ export default function StockDetail() {
           <div style={{ marginBottom: 4 }}>
             <h2 style={{ fontSize: 15, fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Options — {symbol}</h2>
             <p style={{ fontSize: 12, color: '#64748b', margin: '4px 0 0' }}>
-              Four strategy playbooks, a conditional preference, flow, dealer positioning and the options chain.{' '}
+              Find a contract, compare strategies, check volatility, then read flow and positioning.{' '}
               <a href="/option-trading-guide" style={{ color: '#38bdf8', textDecoration: 'none' }}>Options guide →</a>
             </p>
+            {/* Call Finder design: four sections, linked so the chain is never buried. */}
+            <nav aria-label="Options sections" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, marginTop: 6 }}>
+              {[['#find-a-contract', 'Find a contract'], ['#options-chain', 'Chain'], ['#option-strategies', 'Strategies'],
+                ['#option-volatility', 'Volatility'], ['#option-flow', 'Flow & positioning']].map(([href, name]) => (
+                <a key={href} href={href} onClick={() => { if (href === '#options-chain') setChainOpen(true); }}
+                  style={{ color: '#38bdf8', textDecoration: 'none' }}>{name}</a>
+              ))}
+            </nav>
           </div>
-        {(getSession()?.tier === 'advanced' || getSession()?.role === 'admin') && <OptionsSnapshotControls key={symbol} symbol={symbol} snapshot={activeOptionSnapshot} expiries={glLiveExpiries}
-          onSnapshot={value => {
-            setSnapshotCapture(value);
-            setChainExpiry(previous => value?.expiries.includes(previous ?? '') ? previous : undefined);
-            setGlExpiry(previous => value?.expiries.includes(previous ?? '') ? previous : undefined);
-          }} />}
-        <OptionsDominanceCard flow={optionsFlow} error={optionsFlowError} onRetry={() => void retryOptionsFlow()} />
-        {/* T322-OPTIONS-GAMEPLAN: Advanced-tier only — reuses the SAME nearest-support/
-            analyst-target values PositionSizer above already computes (not a second,
-            possibly-drifting derivation), so the hedge/income legs line up with what's
-            already shown on this page. */}
-        {(() => {
-          if (getSession()?.tier !== 'advanced' && getSession()?.role !== 'admin') return null;
-          const lp4 = allPrices?.find(p => p.symbol === symbol);
-          const curPx = lp4?.price ?? data.prices?.at(-1)?.close ?? undefined;
-          const nearestSupport = data.levels?.support_resistance
-            ?.filter(l => curPx == null || l.price < curPx)
-            .sort((a, b) => b.price - a.price)[0]?.price ?? undefined;
-          const takeProfit = data.fundamentals?.target_price ?? undefined;
-          const contextSignal = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig;
-          const activeSignal = contextSignal?.signal;
-          return (
-            <div>
-            <div className="option-strategy-inputs"><label style={{ maxWidth: 300 }}>Strategy research horizon<select aria-label="Strategy research horizon" value={selectedHorizon} onChange={e => setSelectedHorizon(e.target.value)}>
-              {['SHORT', 'SWING', 'LONG', 'GROWTH'].map(h => <option key={h} value={h}>{h}</option>)}
-            </select></label></div>
-            <OptionsGamePlanCard snapshotId={activeOptionSnapshot?.id}
-              researchContext={{ symbol: symbol as string, horizon: selectedHorizon, signal: contextSignal }}
-              calendarContext={data.fundamentals ? { symbol: symbol as string, retrievedAt: data.fundamentals.fetched_at,
-                earningsDate: data.fundamentals.next_earnings_date, exDividendDate: data.fundamentals.ex_dividend_date } : undefined}
-              symbol={symbol as string}
-              currentPrice={curPx}
-              stopLoss={nearestSupport}
-              takeProfit={takeProfit}
-              signal={activeSignal}
-            />
-            </div>
-          );
-        })()}
-
-        {/* T411-IVHV: placed ahead of Options Flow deliberately. Flow and dealer positioning
-            describe what other people are doing right now; these two describe what this
-            symbol's own options have been priced at and what they actually paid over the last
-            three weeks — the context a reader needs before reading anyone else's flow. */}
-        {ivHv && ivHv.available && (
-          <IvVsHvChart data={ivHv} days={ivHvDays} onDaysChange={setIvHvDays} />
-        )}
-        {optionsPerf && <OptionsPerformanceTable data={optionsPerf} />}
-
-        {(() => {
-          // Seeded from the same source the rest of this tab uses, so the table opens agreeing
-          // with the price shown above it — then the user can override it.
-          const liveSpot = activeOptionSnapshot?.stock_reference ?? allPrices?.find(p => p.symbol === symbol)?.price
-            ?? data.prices?.at(-1)?.close ?? 0;
-          const effectiveSpot = glSpotEdited && glSpot > 0 ? glSpot : liveSpot;
-          if (!effectiveSpot) return null;
-          return (
-            <GainLossTable
-              symbol={symbol as string}
-              spot={effectiveSpot}
-              onSpotChange={n => { setGlSpot(n); setGlSpotEdited(true); }}
-              expiries={glLiveExpiries}
-              expiry={glExpiry ?? glChain?.expiry}
-              onExpiryChange={setGlExpiry}
-              calls={glLiveExpiries.length ? glChain?.calls ?? [] : []}
-              puts={glLiveExpiries.length ? glChain?.puts ?? [] : []}
-              loading={glLoading}
-              unavailableReason={glChainError ? 'Selected chain could not be loaded. Refresh the option chain; no archive fallback was substituted.' : calculatorUnavailableReason(glChain, glLiveExpiries)}
-              action={glAction}
-              right={glRight}
-              onPositionChange={(a, r) => { setGlAction(a); setGlRight(r); }}
-              targetPrice={glTarget || effectiveSpot}
-              onTargetChange={setGlTarget}
-              contracts={glContracts}
-              onContractsChange={setGlContracts}
-              fillStrike={glFillStrike}
-              onFillStrikeChange={setGlFillStrike}
-              fillPremium={glFillPremium}
-              onFillPremiumChange={setGlFillPremium}
-            />
-          );
-        })()}
-
-        {/* Options Flow — Phase A card (request states, composition, coverage, premium vs turnover) */}
-        <OptionsFlowCard flow={optionsFlow} error={optionsFlowError} onRetry={() => void retryOptionsFlow()} />
-
-        {/* MPE-06/MPE-03: real Unusual Whales GEX + per-expiration OI concentration rollup —
-            self-contained, renders nothing when neither is available. */}
-        <MarketPressurePanel symbol={symbol} />
-
+          {(getSession()?.tier === 'advanced' || getSession()?.role === 'admin') && (
+            <CallFinderCard symbol={symbol as string}
+              holdingDays={OPTION_HOLDING_DEFAULTS[selectedHorizon] ?? 14}
+              analystTarget={data.fundamentals?.target_price ?? null}
+              onPick={setFinderPicks} />
+          )}
         {/* T230-DATA-OPTIONS-CHAIN: full strike/expiry matrix, opt-in expand (heavier fetch
             than the Options Flow summary above) */}
-        {optionsFlow && optionsFlow.available && (
-          <div style={{ marginBottom: 24 }}>
+        {/* AUD-OPT-CHAIN-HIDDEN (2026-11-10): this used to render only when the separate
+            flow summary loaded, so a flow failure hid a chain that would have loaded. The chain
+            endpoint reports its own "no chain" state when the expand is opened. */}
+        {(
+          <div id="options-chain" style={{ marginBottom: 24 }}>
             <div
               onClick={() => setChainOpen(o => !o)}
               style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: chainOpen ? 12 : 0, cursor: 'pointer' }}
@@ -1301,7 +1245,7 @@ export default function StockDetail() {
                             color: optionsChain.expiry === exp ? '#38bdf8' : '#94a3b8',
                           }}
                         >
-                          {exp}{optionsChain.current_expiries && !optionsChain.current_expiries.includes(exp) ? ' (expired)' : ''}
+                          {exp}{chainExpiryLabel(exp, optionsChain.source_session, finderPicks)}{optionsChain.current_expiries && !optionsChain.current_expiries.includes(exp) ? ' (expired)' : ''}
                         </button>
                       ))}
                     </div>
@@ -1350,13 +1294,110 @@ export default function StockDetail() {
                       <OptionsChainChart calls={optionsChain.calls ?? []} puts={optionsChain.puts ?? []} />
                     </div>
                     <OptionsChainTable calls={optionsChain.calls ?? []} puts={optionsChain.puts ?? []}
-                      moneynessReference={optionsChain.moneyness_reference} moneynessUnknownReason={optionsChain.moneyness_unknown_reason} fieldCoverage={optionsChain.field_coverage} />
+                      moneynessReference={optionsChain.moneyness_reference} moneynessUnknownReason={optionsChain.moneyness_unknown_reason} fieldCoverage={optionsChain.field_coverage}
+                      picks={Object.fromEntries([[finderPicks.near?.option_symbol, 'Near-term pick'], [finderPicks.leaps?.option_symbol, 'LEAPS pick']]
+                        .filter((e): e is [string, string] => typeof e[0] === 'string'))}
+                      nearStrikesOf={chainAllStrikes ? null : optionsChain.moneyness_reference?.price ?? null}
+                      onShowAll={() => setChainAllStrikes(true)} />
                   </>
                 )}
               </div>
             )}
           </div>
         )}
+
+        {(getSession()?.tier === 'advanced' || getSession()?.role === 'admin') && <OptionsSnapshotControls key={symbol} symbol={symbol} snapshot={activeOptionSnapshot} expiries={glLiveExpiries}
+          onSnapshot={value => {
+            setSnapshotCapture(value);
+            setChainExpiry(previous => value?.expiries.includes(previous ?? '') ? previous : undefined);
+            setGlExpiry(previous => value?.expiries.includes(previous ?? '') ? previous : undefined);
+          }} />}
+        <OptionsDominanceCard flow={optionsFlow} error={optionsFlowError} onRetry={() => void retryOptionsFlow()} />
+        {/* T322-OPTIONS-GAMEPLAN: Advanced-tier only — reuses the SAME nearest-support/
+            analyst-target values PositionSizer above already computes (not a second,
+            possibly-drifting derivation), so the hedge/income legs line up with what's
+            already shown on this page. */}
+        {(() => {
+          if (getSession()?.tier !== 'advanced' && getSession()?.role !== 'admin') return null;
+          const lp4 = allPrices?.find(p => p.symbol === symbol);
+          const curPx = lp4?.price ?? data.prices?.at(-1)?.close ?? undefined;
+          const nearestSupport = data.levels?.support_resistance
+            ?.filter(l => curPx == null || l.price < curPx)
+            .sort((a, b) => b.price - a.price)[0]?.price ?? undefined;
+          const takeProfit = data.fundamentals?.target_price ?? undefined;
+          const contextSignal = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig;
+          const activeSignal = contextSignal?.signal;
+          return (
+            <div id="option-strategies">
+            <div className="option-strategy-inputs"><label style={{ maxWidth: 300 }}>Strategy research horizon<select aria-label="Strategy research horizon" value={selectedHorizon} onChange={e => setSelectedHorizon(e.target.value)}>
+              {['SHORT', 'SWING', 'LONG', 'GROWTH'].map(h => <option key={h} value={h}>{h}</option>)}
+            </select></label></div>
+            <OptionsGamePlanCard snapshotId={activeOptionSnapshot?.id}
+              researchContext={{ symbol: symbol as string, horizon: selectedHorizon, signal: contextSignal }}
+              calendarContext={data.fundamentals ? { symbol: symbol as string, retrievedAt: data.fundamentals.fetched_at,
+                earningsDate: data.fundamentals.next_earnings_date, exDividendDate: data.fundamentals.ex_dividend_date } : undefined}
+              symbol={symbol as string}
+              currentPrice={curPx}
+              stopLoss={nearestSupport}
+              takeProfit={takeProfit}
+              signal={activeSignal}
+            />
+            </div>
+          );
+        })()}
+
+        {/* T411-IVHV: placed ahead of Options Flow deliberately. Flow and dealer positioning
+            describe what other people are doing right now; these two describe what this
+            symbol's own options have been priced at and what they actually paid over the last
+            three weeks — the context a reader needs before reading anyone else's flow. */}
+        <div id="option-volatility" />
+        {ivHv && ivHv.available && (
+          <IvVsHvChart data={ivHv} days={ivHvDays} onDaysChange={setIvHvDays} />
+        )}
+        {optionsPerf && <OptionsPerformanceTable data={optionsPerf} />}
+
+        {(() => {
+          // Seeded from the same source the rest of this tab uses, so the table opens agreeing
+          // with the price shown above it — then the user can override it.
+          const liveSpot = activeOptionSnapshot?.stock_reference ?? allPrices?.find(p => p.symbol === symbol)?.price
+            ?? data.prices?.at(-1)?.close ?? 0;
+          const effectiveSpot = glSpotEdited && glSpot > 0 ? glSpot : liveSpot;
+          if (!effectiveSpot) return null;
+          return (
+            <GainLossTable
+              symbol={symbol as string}
+              spot={effectiveSpot}
+              onSpotChange={n => { setGlSpot(n); setGlSpotEdited(true); }}
+              expiries={glLiveExpiries}
+              expiry={glExpiry ?? glChain?.expiry}
+              onExpiryChange={setGlExpiry}
+              calls={glLiveExpiries.length ? glChain?.calls ?? [] : []}
+              puts={glLiveExpiries.length ? glChain?.puts ?? [] : []}
+              loading={glLoading}
+              unavailableReason={glChainError ? 'Selected chain could not be loaded. Refresh the option chain; no archive fallback was substituted.' : calculatorUnavailableReason(glChain, glLiveExpiries)}
+              action={glAction}
+              right={glRight}
+              onPositionChange={(a, r) => { setGlAction(a); setGlRight(r); }}
+              targetPrice={glTarget || effectiveSpot}
+              onTargetChange={setGlTarget}
+              contracts={glContracts}
+              onContractsChange={setGlContracts}
+              fillStrike={glFillStrike}
+              onFillStrikeChange={setGlFillStrike}
+              fillPremium={glFillPremium}
+              onFillPremiumChange={setGlFillPremium}
+            />
+          );
+        })()}
+
+        {/* Options Flow — Phase A card (request states, composition, coverage, premium vs turnover) */}
+        <div id="option-flow" />
+        <OptionsFlowCard flow={optionsFlow} error={optionsFlowError} onRetry={() => void retryOptionsFlow()} />
+
+        {/* MPE-06/MPE-03: real Unusual Whales GEX + per-expiration OI concentration rollup —
+            self-contained, renders nothing when neither is available. */}
+        <MarketPressurePanel symbol={symbol} />
+
         </div>
       )}
 
@@ -3334,7 +3375,8 @@ export default function StockDetail() {
                         const label = pct >= 20 ? 'High — squeeze risk' : pct >= 10 ? 'Elevated' : 'Low';
                         return card('Short % of Float', `${pct.toFixed(1)}%`, label, color);
                       })()}
-                      {f.shares_short != null && f.shares_short_prior_month != null && (() => {
+                      {/* AUD-SQZ-MOM-ZERO (2026-11-10): a zero prior month rendered "Infinity%". */}
+                      {f.shares_short != null && f.shares_short_prior_month != null && f.shares_short_prior_month > 0 && (() => {
                         const rising = f.shares_short > f.shares_short_prior_month!;
                         const pctChg = ((f.shares_short - f.shares_short_prior_month!) / f.shares_short_prior_month!) * 100;
                         const color = rising ? '#f87171' : '#4ade80';

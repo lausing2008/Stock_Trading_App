@@ -299,3 +299,20 @@ def test_calibration_cache_key_is_distinct_from_short_squeezes_own_key():
 
 def test_squeeze_ignition_has_its_own_band_scheme_entry():
     assert '"squeeze_ignition": _PREBREAKOUT_CAL_BANDS' in _scheduler_source
+
+
+def test_the_win_rate_is_labelled_as_the_ignition_alerts_own():
+    """AUD-SQZ-WATCH-CALLABEL (2026-11-10): the rate comes from squeeze_ignition outcomes, but the
+    email called it the short_squeeze family's."""
+    from unittest.mock import patch
+    from src.services.email_service import send_squeeze_ignition_email
+    calls = []
+    def fake(to, subject, html, text):
+        calls.append({"html": html, "text": text})
+        return True
+    with patch("src.services.email_service.send_email", fake):
+        send_squeeze_ignition_email("u@example.com", [{"symbol": "XYZ", "short_percent_of_float": 22.0,
+            "change_pct": 1.8, "price": 10.0, "calibrated_win_rate": 0.42, "calibrated_win_rate_count": 31}])
+    for body in (calls[0]["html"], calls[0]["text"]):
+        assert "Measured historical win rate (Squeeze Watch / ignition alerts): 42%" in body
+        assert "short_squeeze family" not in body

@@ -1,0 +1,37 @@
+SET
+SET
+BEGIN
+=== per executed day (ET), full days only: legacy vs ledger
+     d      | legacy | ledger | diff  
+------------+--------+--------+-------
+ 2026-10-26 |  19278 |  20047 |  -769
+ 2026-10-27 |  21526 |  22560 | -1034
+ 2026-10-28 |  24098 |  25121 | -1023
+ 2026-10-29 |  25284 |  26285 | -1001
+(4 rows)
+
+=== which payload fields differ between versions of an ambiguous identity
+     key     | identities_where_it_differs 
+-------------+-----------------------------
+ premium     |                        1962
+ size        |                        1676
+ price       |                         864
+ venue       |                           7
+ nbbo_bid    |                           3
+ nbbo_ask    |                           2
+ executed_at |                           1
+(7 rows)
+
+=== versions per ambiguous identity, and same observed_at?
+ ambiguous_ids | all_versions_same_observed_at | max_versions 
+---------------+-------------------------------+--------------
+          1965 |                          1964 |           13
+(1 row)
+
+=== multi-version identities that are NOT ambiguous (true later corrections)
+ count 
+-------
+    61
+(1 row)
+
+ROLLBACK

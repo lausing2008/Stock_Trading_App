@@ -1,0 +1,4 @@
+/usr/local/lib/python3.12/site-packages/pydantic/_internal/_fields.py:161: UserWarning: Field "model_dir" has conflict with protected namespace "model_".
+
+{"source_sha256": {"services/options_strategies.py": "d6147bd34960ef51d336fd08942630fc9d56e31d60b3e0e66a011ce6ac130d82", "services/uw_option_chain.py": "37c7a557fd0788f8a84eac6dc6a3c430162355f9dd18c20db66ac1ec584e5ca4", "services/options_contract.py": "e4abc2a3487bc587cd39444bea64da9cddd904f57af4be3829360463c7062c4c", "api/routes.py": "0c0d69c1d652050e4f401c6ae7c5b0829737f1bd7a39fe00867d12f6c4ea1fae", "study": "a98e8f959660c8726e67f6d6836d92dfee78186b0349805b87a44e6a4e64686b", "research_lead": "725653901231fde05116fc17c70d6c077a0b122d273f8824c15a3e4556175fab"}}
+{"done": true, "trades": 285702}

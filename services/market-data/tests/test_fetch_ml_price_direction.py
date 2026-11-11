@@ -78,14 +78,15 @@ def test_returns_confidence_and_model_version_on_a_normal_200():
     fake_httpx = _FakeHttpx(_FakeResponse(200, body))
     fetch, _ = _build_fetch_ml_price_direction(fake_httpx)
 
-    confidence, model_version = fetch("AAPL")
+    confidence, model_version, read = fetch("AAPL")
 
     assert confidence == 61.5
     assert model_version == "2026-08-01T00:00:00"
+    assert read == {"bullish_probability": 0.62, "direction": "up", "horizon_days": None}
 
 
 def test_calls_the_real_endpoint_with_the_expected_style_and_auth_header():
-    body = {"confidence": 40.0, "trained_at": "x"}
+    body = {"confidence": 40.0, "bullish_probability": 0.7, "trained_at": "x"}
     fake_httpx = _FakeHttpx(_FakeResponse(200, body))
     fetch, wrapped = _build_fetch_ml_price_direction(fake_httpx)
 
@@ -102,10 +103,11 @@ def test_404_no_trained_model_yet_fails_open_to_none_none_without_a_warning():
     fake_httpx = _FakeHttpx(_FakeResponse(404, {"detail": "No trained model"}))
     fetch, _ = _build_fetch_ml_price_direction(fake_httpx)
 
-    confidence, model_version = fetch("NEWSTOCK")
+    confidence, model_version, read = fetch("NEWSTOCK")
 
     assert confidence is None
     assert model_version is None
+    assert read is None
 
 
 def test_oos_suppressed_reports_unavailable_rather_than_the_misleading_neutral_defaults():
@@ -117,30 +119,33 @@ def test_oos_suppressed_reports_unavailable_rather_than_the_misleading_neutral_d
     fake_httpx = _FakeHttpx(_FakeResponse(200, body))
     fetch, _ = _build_fetch_ml_price_direction(fake_httpx)
 
-    confidence, model_version = fetch("STALESTOCK")
+    confidence, model_version, read = fetch("STALESTOCK")
 
     assert confidence is None
     assert model_version is None
+    assert read is None
 
 
 def test_non_200_non_404_fails_open_and_logs_a_warning():
     fake_httpx = _FakeHttpx(_FakeResponse(500, {}))
     fetch, _ = _build_fetch_ml_price_direction(fake_httpx)
 
-    confidence, model_version = fetch("AAPL")
+    confidence, model_version, read = fetch("AAPL")
 
     assert confidence is None
     assert model_version is None
+    assert read is None
 
 
 def test_network_exception_fails_open():
     fake_httpx = _FakeHttpx(RuntimeError("connection refused"))
     fetch, _ = _build_fetch_ml_price_direction(fake_httpx)
 
-    confidence, model_version = fetch("AAPL")
+    confidence, model_version, read = fetch("AAPL")
 
     assert confidence is None
     assert model_version is None
+    assert read is None
 
 
 def test_missing_confidence_field_fails_open_rather_than_crashing():
@@ -149,18 +154,52 @@ def test_missing_confidence_field_fails_open_rather_than_crashing():
     fake_httpx = _FakeHttpx(_FakeResponse(200, {"bullish_probability": 0.5}))
     fetch, _ = _build_fetch_ml_price_direction(fake_httpx)
 
-    confidence, model_version = fetch("THINSYMBOL")
+    confidence, model_version, read = fetch("THINSYMBOL")
 
     assert confidence is None
     assert model_version is None
+    assert read is None
 
 
 def test_missing_trained_at_falls_back_to_unknown_model_version():
-    body = {"confidence": 55.0}
+    body = {"confidence": 55.0, "bullish_probability": 0.775}
     fake_httpx = _FakeHttpx(_FakeResponse(200, body))
     fetch, _ = _build_fetch_ml_price_direction(fake_httpx)
 
-    confidence, model_version = fetch("AAPL")
+    confidence, model_version, read = fetch("AAPL")
 
     assert confidence == 55.0
     assert model_version == "unknown"
+
+
+# ── AUD-SQZ-ML-NODIRECTION (2026-11-10) ─────────────────────────────────────────────────────
+
+def test_a_strongly_bearish_model_is_returned_as_bearish_not_as_high_confidence_alone():
+    """confidence = abs(prob - 0.5) * 200, so a 10%-bullish model reports 80. The read must
+    carry the probability and direction, or the email reads it as bullish."""
+    body = {"bullish_probability": 0.10, "direction": "down", "confidence": 80.0,
+            "horizon_days": 10, "trained_at": "2026-11-01"}
+    fetch, _ = _build_fetch_ml_price_direction(_FakeHttpx(_FakeResponse(200, body)))
+    confidence, _, read = fetch("XYZ")
+    assert confidence == 80.0
+    assert read == {"bullish_probability": 0.10, "direction": "down", "horizon_days": 10}
+
+
+def test_a_confidence_without_a_probability_is_unavailable():
+    fetch, _ = _build_fetch_ml_price_direction(_FakeHttpx(_FakeResponse(200, {"confidence": 55.0, "trained_at": "x"})))
+    assert fetch("XYZ") == (None, None, None)
+
+
+def test_the_no_settled_bars_placeholder_is_unavailable_not_zero_confidence():
+    """/ml/predict returns {bullish_probability: 0.5, confidence: 0} with no model when a
+    symbol has no settled bars. That printed as '0 confidence'."""
+    body = {"symbol": "XYZ", "bullish_probability": 0.5, "confidence": 0}
+    fetch, _ = _build_fetch_ml_price_direction(_FakeHttpx(_FakeResponse(200, body)))
+    assert fetch("XYZ") == (None, None, None)
+
+
+def test_an_unrecognised_direction_is_not_invented():
+    body = {"bullish_probability": 0.5, "direction": "neutral", "confidence": 0.0, "trained_at": "x"}
+    fetch, _ = _build_fetch_ml_price_direction(_FakeHttpx(_FakeResponse(200, body)))
+    _, _, read = fetch("XYZ")
+    assert read["direction"] is None

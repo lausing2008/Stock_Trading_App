@@ -21,3 +21,12 @@ The preset contract is **not** the best option. The research lead is the narrowe
 Full market-data: **5,932 passed / 27 skipped**. Full frontend: **988 passed / 83 files**. Full TypeScript and whitespace checks passed. Focused backend checks and current-snapshot tests: **85 passed**. The new backend test verifies four initial review keys, correct call/put and buy/sell sides, three-candidate caps, original preset preservation and research-only eligibility. The route test verifies all four reviews without extra reads. The UI regression switches between separate shortlists and checks count labels.
 
 This is **validated local code pending deployment**. The separately documented [RZY ingest-observation release](../2026-10-25/rzy-ingest-observations-and-session-evidence.md) was verified deployed while this implementation was in progress. Its **October 26 US-session evidence capture** is waiting for the post-close job. Restarting market-data during this session would cut the capture's source continuity. The option change is therefore held until that capture completes and verifies its artifacts; no production behavior is claimed here.
+
+## Status update — October 29, 2026
+
+**Live.** The release boundary above was written before rollout and is kept as written. Checked October 29:
+
+- **Backend:** the running `stockai-market-data-1` (healthy, started 2026-10-30 04:57 UTC) contains this commit's `single_leg_candidates_preset_v1` change. Every later market-data release (`1be6c90c`, `8dc84150`, `eda934f3`, `15e2abac`) includes `6113ce52`.
+- **Frontend:** the public `/options-dark-pool-tutorial` page's served scripts (build `Al7Iave9XOJuqbD2G4b5q`) contain this change's marker text. Only that one page's marker was checked, not the full three-page `verify_served_build.py` run.
+
+The rollout itself is recorded in the later release reports, not here; this note only replaces "pending deployment" with what was observed.

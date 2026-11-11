@@ -40,11 +40,12 @@ def test_a_consistent_adverse_gap_is_warned_about():
     assert "12 of 15" in html
 
 
-def test_the_warning_says_the_quote_is_not_the_fill():
-    """The actionable part is not the number, it is that the game plan above is priced off a
-    quote the reader cannot get."""
+def test_the_warning_says_the_game_plan_can_read_better_than_it_trades():
+    """The actionable part is that the game plan is priced off the alert-time quote. It no
+    longer claims the reader cannot get that price (AUD-SQZ-ENTRYLABEL): an intraday reader
+    can; the gap measured is to the NEXT session's close."""
     html, _ = _entry_gap_html(_gap(-6.65, 15, 12))
-    assert "not the price you get" in html
+    assert "can read better than it trades" in html
     assert "game plan" in html.lower()
 
 
@@ -99,3 +100,13 @@ def test_a_missing_median_is_not_treated_as_zero():
 
 def test_a_zero_sample_never_divides_by_zero():
     assert _entry_gap_html(_gap(-5.0, 0, 0)) == ("", "")
+
+
+def test_the_gap_is_described_as_alert_price_to_next_close_not_an_execution_gap():
+    """AUD-SQZ-ENTRYLABEL (2026-11-10): the tracked entry is the next session's CLOSE."""
+    from src.services.email_service import _entry_gap_html
+    html, text = _entry_gap_html({"median_pct": -6.65, "n": 15, "negative_of": 12})
+    body = html + text
+    assert body, "the measured CRWV-style gap must render a warning"
+    assert "next session's close" in body
+    assert "not an execution gap" in body

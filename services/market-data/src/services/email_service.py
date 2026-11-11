@@ -1539,10 +1539,10 @@ def send_volume_anomaly_email(to: str, alerts: list[dict]) -> bool:
 
 
 # T270-SQUEEZE-DAYSTOCOVER-ALERT: display-only label matching scheduler.py's own
-# _SQUEEZE_CRITICAL_DAYS_TO_COVER=2.0 constant (this file has no import path to that module,
+# _SQUEEZE_CRITICAL_DAYS_TO_COVER=8.0 constant (this file has no import path to that module,
 # so the value is restated here for the email copy — the actual gating decision is made once,
 # upstream in scheduler.py, before a candidate ever reaches this function).
-_SQUEEZE_CRITICAL_DAYS_TO_COVER_LABEL = "2.0"
+_SQUEEZE_CRITICAL_DAYS_TO_COVER_LABEL = "8.0"
 # T260-SQUEEZE-IGNITION: same display-only-restatement convention, matching scheduler.py's own
 # _SQUEEZE_MIN_INTRADAY_MOVE_PCT=3.0 (the classic short-squeeze alert's own move floor, which
 # this alert's own candidates are, by construction, always below).
@@ -1594,9 +1594,10 @@ def _entry_gap_html(gap: dict | None) -> tuple[str, str]:
         return "", ""
     msg = (
         f"Heads up: across the last {n} of these alerts the price moved a median "
-        f"{med:.1f}% between the alert firing and the next session's entry "
-        f"({neg} of {n} moved against you). The quote above is not the price you get, and any "
-        f"game plan priced off it will read better than it trades."
+        f"{med:.1f}% between the alert price and the next session's close, the entry the "
+        f"performance page measures from ({neg} of {n} moved against you). This is roughly a "
+        f"one-day move, not an execution gap: the quote above is where the stock was when the "
+        f"alert fired, and any game plan priced off it can read better than it trades."
     )
     html = (
         '<div style="font-size:11px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;'
@@ -1642,9 +1643,9 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
     of whatever started the move. Reports the MEASURED setup, never a claim that the squeeze
     will keep going — that depends on the move continuing, which this cannot predict.
 
-    T270-SQUEEZE-DAYSTOCOVER-ALERT: days_to_cover_critical (short_ratio <= 2.0, the ~25th
-    percentile of real candidates that already clear the float-short bar — see the constant's
-    own comment in scheduler.py) is an ESCALATION on top of the existing thesis, not a second,
+    T270-SQUEEZE-DAYSTOCOVER-ALERT: days_to_cover_critical (short_ratio >= 8.0 since
+    AUD-SQZ-DTC-INVERTED, 2026-11-10; it was <= 2.0, which flagged the EASIEST exits — see the
+    constant's own comment in scheduler.py) is an ESCALATION on top of the existing thesis, not a second,
     separate signal — a critical candidate means shorts don't just have a lot of stock
     borrowed, they can't quietly unwind that position over a handful of normal trading days
     even if they wanted to, which is the concrete mechanism behind "shorts may be forced to
@@ -1761,7 +1762,7 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
 
     critical_note = (
         f'<p style="font-size:12px;color:#dc2626;font-weight:600;margin-top:-4px">'
-        f'🚨 {n_critical} of these would take {_SQUEEZE_CRITICAL_DAYS_TO_COVER_LABEL} or fewer days of average volume just to close out their short position — a critically thin exit.'
+        f'🚨 {n_critical} of these would take {_SQUEEZE_CRITICAL_DAYS_TO_COVER_LABEL} or more days of average volume just to close out their short position — a crowded exit.'
         f'</p>' if n_critical else ""
     )
     body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
@@ -1774,7 +1775,7 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
       Thesis: high short interest + a real rally already in progress means shorts may be
       forced to cover, adding buying pressure on top of the move. "Days to cover" (short_ratio
       = shares short ÷ average daily volume) measures how many days of NORMAL trading it would
-      take shorts to fully exit — a low reading means they cannot quietly unwind even if they
+      take shorts to fully exit — a high reading means they cannot quietly unwind even if they
       wanted to, sharpening (not replacing) the same squeeze thesis. This reports a MEASURED
       setup, not a prediction the move continues — a squeeze can reverse just as fast as it
       started. Game plan (where shown) is the same illustrative SWING-style entry/stop/target
@@ -1848,10 +1849,12 @@ def send_squeeze_ignition_email(to: str, candidates: list[dict]) -> bool:
         if cal_win_rate is not None and cal_count is not None:
             cal_html = (
                 f'<div style="font-size:11px;color:#475569;margin-top:4px">'
-                f'Measured historical win rate (short_squeeze family): {cal_win_rate * 100:.0f}% '
+                # AUD-SQZ-WATCH-CALLABEL (2026-11-10): the rate comes from squeeze_ignition's own
+                # resolved outcomes (since 2026-08-25), not the short_squeeze family.
+                f'Measured historical win rate (Squeeze Watch / ignition alerts): {cal_win_rate * 100:.0f}% '
                 f'<span style="color:#94a3b8">(n={cal_count})</span></div>'
             )
-            cal_text = f"    Measured historical win rate (short_squeeze family): {cal_win_rate * 100:.0f}% (n={cal_count})\n"
+            cal_text = f"    Measured historical win rate (Squeeze Watch / ignition alerts): {cal_win_rate * 100:.0f}% (n={cal_count})\n"
         else:
             cal_html = '<div style="font-size:11px;color:#94a3b8;margin-top:4px">Not enough resolved history yet for a measured win rate</div>'
             cal_text = "    Not enough resolved history yet for a measured win rate\n"
@@ -2191,8 +2194,8 @@ def send_dark_pool_alert_email(to: str, candidates: list[dict], omitted_count: i
     "size just moved off-exchange, here's the print."
 
     `candidates` is already capped by the caller (largest premium first) to keep this email
-    readable — `omitted_count` is how many additional, real, genuinely-recorded prints didn't
-    make the cap.
+    readable — `omitted_count` is how many additional SYMBOLS had a qualifying print in this run
+    but didn't make the cap (AUD-DP-EMAIL-WORDING: it was described as prints "today").
     """
     n = len(candidates)
     subject = f"🌊 Dark Pool Activity — {n} large block print{'s' if n != 1 else ''}"
@@ -2265,24 +2268,25 @@ def send_dark_pool_alert_email(to: str, candidates: list[dict], omitted_count: i
         )
 
     omitted_html = (
-        f'<p style="font-size:12px;color:#0369a1;margin-top:8px">+ {omitted_count} more print'
-        f'{"s" if omitted_count != 1 else ""} today (smaller size) — see the stock page\'s '
-        f'Market Pressure panel for the full recent list.</p>'
+        f'<p style="font-size:12px;color:#0369a1;margin-top:8px">+ {omitted_count} more symbol'
+        f'{"s" if omitted_count != 1 else ""} with a qualifying print in this check, not shown '
+        f'(smaller premium) — see each stock page\'s Market Pressure panel.</p>'
     ) if omitted_count > 0 else ""
     omitted_text = (
-        f"\n+ {omitted_count} more print{'s' if omitted_count != 1 else ''} today (smaller "
-        f"size) — see the stock page's Market Pressure panel for the full recent list.\n"
+        f"\n+ {omitted_count} more symbol{'s' if omitted_count != 1 else ''} with a qualifying "
+        f"print in this check, not shown (smaller premium) — see each stock page's Market "
+        f"Pressure panel.\n"
     ) if omitted_count > 0 else ""
 
     body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
   <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
     <h2 style="margin-top:0;color:#0369a1">🌊 Dark Pool Activity</h2>
-    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} real large off-exchange block print{'s' if n != 1 else ''} on your watched symbols.</p>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} large off-exchange block print{'s' if n != 1 else ''} on symbols you follow (your watchlists and open price alerts).</p>
     <div style="margin-top:12px">{rows_html}</div>
     {omitted_html}
     <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
-      This reports a MEASURED fact — a real, large block trade printed off-exchange (FINRA-
-      reported dark pool venue) — not a claim about why it happened or that the stock will move
+      This reports a MEASURED fact — a real, large block trade reported off-exchange (a FINRA
+      reporting-facility code, which does not establish which dark pool or ATS executed it) — not a claim about why it happened or that the stock will move
       as a result. Institutional blocks cross dark pools for many reasons unrelated to a
       directional view. Not financial advice.
       <br><br>
@@ -2300,7 +2304,8 @@ def send_dark_pool_alert_email(to: str, candidates: list[dict], omitted_count: i
   </div>
 </body></html>"""
     body_text = (
-        f"Dark Pool Activity — {n} large block print{'s' if n != 1 else ''}\n\n"
+        f"Dark Pool Activity — {n} large block print{'s' if n != 1 else ''} on symbols you follow\n"
+        f"(your watchlists and open price alerts).\n\n"
         + rows_text
         + omitted_text
         + "\nMeasured fact (a real off-exchange print), not a prediction of direction. Not financial advice.\n"
@@ -2378,16 +2383,24 @@ def send_prebreakout_email(to: str, candidates: list[dict]) -> bool:
             options_str = f'<div style="font-size:11px;color:#475569;margin-top:4px">Options flow: {lean} (cp_ratio {cp_ratio:.2f})</div>'
             options_text = f"    Options flow: {lean} (cp_ratio {cp_ratio:.2f})\n"
 
-        ml_conf = c.get("ml_price_direction_confidence")
+        # AUD-SQZ-ML-NODIRECTION (2026-11-10): the old line printed abs(prob - 0.5) * 200 as
+        # "price-direction read: 80 confidence", which reads bullish under a breakout heading
+        # even when the model is strongly BEARISH. Show the model's own probability of a rise
+        # and its direction; with no probability, show nothing.
+        ml_read = c.get("ml_price_read") or {}
+        ml_prob = ml_read.get("bullish_probability")
         ml_str = ""
         ml_text = ""
-        if ml_conf is not None:
+        if isinstance(ml_prob, (int, float)) and not isinstance(ml_prob, bool):
+            _dir = {"up": "leans UP", "down": "leans DOWN"}.get(ml_read.get("direction"), "no direction call")
+            _h = ml_read.get("horizon_days")
+            _hz = f" over {_h} trading days" if isinstance(_h, int) and not isinstance(_h, bool) else ""
+            _ml_line = f"General ML model {_dir}: {ml_prob * 100:.0f}% chance of a rise{_hz}"
             ml_str = (
-                f'<div style="font-size:11px;color:#475569;margin-top:4px">'
-                f'General ML price-direction read: {ml_conf:.0f} confidence '
+                f'<div style="font-size:11px;color:#475569;margin-top:4px">{_ml_line} '
                 f'<span style="color:#94a3b8">(this app\'s existing model — NOT squeeze-specific)</span></div>'
             )
-            ml_text = f"    General ML price-direction read: {ml_conf:.0f} confidence (existing model, NOT squeeze-specific)\n"
+            ml_text = f"    {_ml_line} (existing model, NOT squeeze-specific)\n"
 
         cal_win_rate = c.get("calibrated_win_rate")
         cal_count = c.get("calibrated_win_rate_count")

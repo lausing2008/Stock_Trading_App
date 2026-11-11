@@ -152,7 +152,7 @@ def test_deferred_and_omitted_work_is_recorded_as_suppression_not_delivery():
 def test_dark_pool_tracks_which_cooldown_keys_were_actually_claimed():
     assert "_claimed_cd_keys: dict[str, str] = {}" in _DARK_POOL_BODY
     set_branch_idx = _DARK_POOL_BODY.index(
-        'if _rc.set(cd_key, "1", nx=True, ex=_DARK_POOL_ALERT_COOLDOWN_MINUTES * 60):'
+        'if _rc.set(cd_key, "1", nx=True, ex=_cd_ttl):'
     )
     claim_idx = _DARK_POOL_BODY.index("_claimed_cd_keys[symbol] = cd_key")
     except_idx = _DARK_POOL_BODY.index("except Exception:\n                        cooldown_ok_symbols.append(symbol)")

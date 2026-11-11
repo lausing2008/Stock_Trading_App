@@ -303,7 +303,14 @@ export const DARK_POOL_FAILURES = ['rate_limited', 'unauthorized', 'timeout', 'u
 /** {tone, text} for a dark-pool answer that is not a plain fresh success, else null.
  *  `error` = the feed failed (with or without a last good sample); `muted` = an honest non-failure. */
 export function darkPoolStatus(dp?: { status?: string; http_status?: number | null; malformed_rows?: number;
-  fetched_at?: string | null; stale?: boolean; stale_fetched_at?: string | null } | null): { tone: 'error' | 'muted'; text: string } | null {
+  fetched_at?: string | null; stale?: boolean; stale_fetched_at?: string | null;
+  reason?: string | null; received_prints?: number | null } | null): { tone: 'error' | 'muted'; text: string } | null {
+  // AUD-DP-EMPTY-STATUS (2026-11-10): prints were received but none is active. Distinct from
+  // "the provider returned none", which this used to be reported as.
+  if (dp?.status === 'ok' && dp.reason === 'no_active_prints') {
+    const n = dp.received_prints;
+    return { tone: 'muted', text: `Off-exchange prints: the provider returned ${n != null ? `${n} print${n === 1 ? '' : 's'}` : 'prints'}, none currently usable (canceled, or held out because one identity carried conflicting values).` };
+  }
   if (!dp || !dp.status || dp.status === 'ok') return null;
   const what: Record<string, string> = {
     rate_limited: 'the provider rate limit was reached',

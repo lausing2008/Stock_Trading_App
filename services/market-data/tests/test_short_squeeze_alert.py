@@ -428,16 +428,18 @@ def test_short_ratio_read_happens_after_the_staleness_gate_reuses_it_not_a_secon
     assert staleness_idx < short_ratio_idx
 
 
-def test_days_to_cover_critical_flag_uses_the_le_2_point_0_threshold():
+def test_days_to_cover_critical_flag_uses_the_ge_8_point_0_threshold():
+    """AUD-SQZ-DTC-INVERTED: critical means a LONG exit (>= 8 days), not a short one."""
     body = _check_short_squeeze_alerts_body()
     assert "_SQUEEZE_CRITICAL_DAYS_TO_COVER" in body
-    assert "_short_ratio <= _SQUEEZE_CRITICAL_DAYS_TO_COVER" in body
+    assert "_short_ratio >= _SQUEEZE_CRITICAL_DAYS_TO_COVER" in body
+    assert "_short_ratio <= _SQUEEZE_CRITICAL_DAYS_TO_COVER" not in body
 
 
-def test_critical_days_to_cover_constant_is_2_point_0():
+def test_critical_days_to_cover_constant_is_8_point_0():
     start = _scheduler_source.index("_SQUEEZE_CRITICAL_DAYS_TO_COVER = ")
     line_end = _scheduler_source.index("\n", start)
-    assert "2.0" in _scheduler_source[start:line_end]
+    assert "8.0" in _scheduler_source[start:line_end]
 
 
 def test_missing_short_ratio_is_none_not_falsely_critical():
@@ -445,7 +447,7 @@ def test_missing_short_ratio_is_none_not_falsely_critical():
     silently treated as critical just because a None comparison happened to be falsy — the
     `is not None` guard is the load-bearing part of this check."""
     body = _check_short_squeeze_alerts_body()
-    assert "_short_ratio is not None and _short_ratio <= _SQUEEZE_CRITICAL_DAYS_TO_COVER" in body
+    assert "_short_ratio is not None and _short_ratio >= _SQUEEZE_CRITICAL_DAYS_TO_COVER" in body
 
 
 def test_short_ratio_and_critical_flag_are_threaded_into_the_candidate_dict():
@@ -461,7 +463,7 @@ def test_critical_days_to_cover_escalates_the_subject_line():
     with patch("src.services.email_service.send_email", fake):
         send_short_squeeze_email("user@example.com", [
             {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10,
-             "short_ratio": 1.2, "days_to_cover_critical": True},
+             "short_ratio": 9.2, "days_to_cover_critical": True},
         ])
     assert "CRITICAL" in calls[0]["subject"]
 
@@ -471,7 +473,7 @@ def test_non_critical_days_to_cover_does_not_escalate_the_subject_line():
     with patch("src.services.email_service.send_email", fake):
         send_short_squeeze_email("user@example.com", [
             {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10,
-             "short_ratio": 5.5, "days_to_cover_critical": False},
+             "short_ratio": 1.5, "days_to_cover_critical": False},
         ])
     assert "CRITICAL" not in calls[0]["subject"]
 
@@ -481,11 +483,11 @@ def test_days_to_cover_value_rendered_in_html_and_text():
     with patch("src.services.email_service.send_email", fake):
         send_short_squeeze_email("user@example.com", [
             {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10,
-             "short_ratio": 1.2, "days_to_cover_critical": True},
+             "short_ratio": 9.2, "days_to_cover_critical": True},
         ])
     html, text = calls[0]["html"], calls[0]["text"]
-    assert "1.2d to cover" in html
-    assert "1.2d to cover" in text
+    assert "9.2d to cover" in html
+    assert "9.2d to cover" in text
 
 
 def test_missing_short_ratio_degrades_gracefully_not_crash_and_omits_dtc_text():
@@ -509,9 +511,9 @@ def test_critical_row_gets_visually_distinguished_border_non_critical_does_not()
     with patch("src.services.email_service.send_email", fake):
         send_short_squeeze_email("user@example.com", [
             {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10,
-             "short_ratio": 1.2, "days_to_cover_critical": True},
+             "short_ratio": 9.2, "days_to_cover_critical": True},
             {"symbol": "AMC", "short_percent_of_float": 18.0, "change_pct": 5.1, "price": 4.50,
-             "short_ratio": 5.5, "days_to_cover_critical": False},
+             "short_ratio": 1.5, "days_to_cover_critical": False},
         ])
     html = calls[0]["html"]
     assert "rgba(220,38,38,0.3)" in html  # the critical row's border color appears at least once
@@ -523,6 +525,19 @@ def test_critical_summary_note_only_appears_when_at_least_one_candidate_is_criti
     with patch("src.services.email_service.send_email", fake):
         send_short_squeeze_email("user@example.com", [
             {"symbol": "AMC", "short_percent_of_float": 18.0, "change_pct": 5.1, "price": 4.50,
-             "short_ratio": 5.5, "days_to_cover_critical": False},
+             "short_ratio": 1.5, "days_to_cover_critical": False},
         ])
-    assert "critically thin exit" not in calls[0]["html"]
+    assert "crowded exit" not in calls[0]["html"]
+
+
+def test_critical_summary_note_says_more_days_not_fewer():
+    """AUD-SQZ-DTC-INVERTED: the note must describe a long exit."""
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_short_squeeze_email("user@example.com", [
+            {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10,
+             "short_ratio": 9.2, "days_to_cover_critical": True},
+        ])
+    html = calls[0]["html"]
+    assert "8.0 or more days" in html and "or fewer days" not in html
+    assert "a high reading means they cannot quietly unwind" in html

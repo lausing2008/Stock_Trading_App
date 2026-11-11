@@ -70,6 +70,7 @@ from __future__ import annotations
 import bisect
 import httpx
 import json
+import math
 import redis as redis_lib
 import time
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -4132,7 +4133,15 @@ _SQUEEZE_RVOL_BASE = 2.2
 # EXISTING alert (Candidate A from the original design), not a new standalone alert type —
 # reuses the same job, staleness check, and game-plan logic entirely; a candidate that also
 # clears this bar gets flagged "critical" in the email, nothing else about the scan changes.
-_SQUEEZE_CRITICAL_DAYS_TO_COVER = 2.0
+_SQUEEZE_CRITICAL_DAYS_TO_COVER = 8.0
+# AUD-SQZ-DTC-INVERTED (2026-11-10): the comment above calibrated the right percentiles on the
+# WRONG side. Days to cover is shares short / average daily volume: a HIGH reading means shorts
+# need many days of normal volume to exit (trapped), a LOW one means they can buy back in a day
+# or two without moving the price. The tier fired on <= 2.0, flagging the easiest exits as
+# "critical", while the screener's own guide ("Under ~1-2 days, shorts can slip out quietly; 5+
+# days means real trapped exposure") and the stock page's score (full points at >= 8) said the
+# opposite. Now >= 8.0, the stock page's own full-points band, so the three surfaces agree.
+# Above the 2026-08-13 p50 of 4.65, so this is a minority of candidates, as an escalation should be.
 
 # AUD-SQUEEZE3-UWSHORTINTERESTCORROBORATION: relative-difference threshold between the free-tier
 # yfinance-derived short_percent_of_float and Unusual Whales' own real reading before flagging a
@@ -4203,7 +4212,9 @@ def _record_squeeze_alert_outcome(
         stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
         if stock is None:
             return
-        today = date.today()
+        # AUD-SQZ-GAMMA-UTCDATE (2026-11-10): ET date. The gamma alert calls this from evening
+        # runs, where the UTC date is already tomorrow and the outcome's entry skipped a session.
+        today = _today_et()
         existing = session.execute(
             select(SqueezeAlertOutcome).where(
                 SqueezeAlertOutcome.alert_type == alert_type,
@@ -4226,6 +4237,60 @@ def _record_squeeze_alert_outcome(
     except Exception as exc:
         session.rollback()
         log.warning("squeeze_alert_outcome.record_failed", alert_type=alert_type, symbol=symbol, error=str(exc))
+
+
+def _live_row_from_earlier_session(row: dict, is_hk: bool) -> bool:
+    """AUD-SQZ-LIVEROW-STALE (2026-11-10): True when a live-price row is provably from an
+    earlier session than today's in its own market.
+
+    The live-price fetch takes the last two daily closes. Before today's bar exists (the open,
+    a halt, the first minutes of HK trading) "price / prev_close / volume" are yesterday's close,
+    the day before's, and yesterday's full volume, so yesterday's move could fire a squeeze
+    alert at the open. A row with no session_date is kept: unknown is not proof of staleness,
+    and dropping it would silence these alerts wherever the field is absent.
+    """
+    session_date = row.get("session_date")
+    if not isinstance(session_date, str) or len(session_date) < 10:
+        return False
+    if is_hk:
+        from zoneinfo import ZoneInfo
+        today = datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
+    else:
+        today = _today_et()
+    return session_date[:10] < today.isoformat()
+
+
+def _sent_today_key(prefix: str, uid) -> str:
+    """AUD-SQZ-SAMEDAY-REPEAT: per-recipient, per-ET-day record of symbols already emailed."""
+    return f"stockai:{prefix}_sent:{uid}:{_today_et().isoformat()}"
+
+
+def _drop_sent_today(rc, prefix: str, uid, symbols: list[str]) -> list[str]:
+    """`symbols` minus those already emailed to this recipient today under this alert.
+
+    AUD-SQZ-SAMEDAY-REPEAT (2026-11-10): the transition check compares only with the previous
+    minute, so a symbol that dropped out for one cycle (a move hovering at the threshold, a
+    missed live-price cycle, a fundamentals-cache lapse) emailed again when it returned. A Redis
+    failure keeps every symbol, the existing fail-open convention for these alerts.
+    """
+    if not symbols:
+        return symbols
+    try:
+        sent = {m.decode() if isinstance(m, bytes) else m for m in (rc.smembers(_sent_today_key(prefix, uid)) or set())}
+    except Exception:
+        return symbols
+    return [s for s in symbols if s not in sent]
+
+
+def _mark_sent_today(rc, prefix: str, uid, symbols: list[str]) -> None:
+    if not symbols:
+        return
+    try:
+        key = _sent_today_key(prefix, uid)
+        rc.sadd(key, *symbols)
+        rc.expire(key, 36 * 3600)   # outlives the ET day; the date in the key does the rest
+    except Exception:
+        pass
 
 
 def check_short_squeeze_alerts() -> None:
@@ -4373,6 +4438,8 @@ def check_short_squeeze_alerts() -> None:
                     continue
                 if not _is_hk_sym and not _us_market_open:
                     continue
+                if _live_row_from_earlier_session(row, _is_hk_sym):
+                    continue  # AUD-SQZ-LIVEROW-STALE: yesterday's move and volume, not today's
                 change_pct = (float(price) - float(prev_close)) / float(prev_close) * 100
                 if change_pct < _SQUEEZE_MIN_INTRADAY_MOVE_PCT:
                     continue
@@ -4407,6 +4474,8 @@ def check_short_squeeze_alerts() -> None:
                     continue
                 if not _is_hk_sym and not _us_market_open:
                     continue
+                if _live_row_from_earlier_session(row, _is_hk_sym):
+                    continue  # AUD-SQZ-LIVEROW-STALE: yesterday's move and volume, not today's
                 change_pct = (float(price) - float(prev_close)) / float(prev_close) * 100
                 if change_pct < _SQUEEZE_MIN_INTRADAY_MOVE_PCT:
                     continue
@@ -4463,7 +4532,7 @@ def check_short_squeeze_alerts() -> None:
                     "price": price,
                     "short_ratio": _short_ratio,
                     "days_to_cover_critical": (
-                        _short_ratio is not None and _short_ratio <= _SQUEEZE_CRITICAL_DAYS_TO_COVER
+                        _short_ratio is not None and _short_ratio >= _SQUEEZE_CRITICAL_DAYS_TO_COVER
                     ),
                     "calibrated_win_rate": _sq_win_rate,
                     "calibrated_win_rate_count": _sq_win_count,
@@ -4547,6 +4616,7 @@ def check_short_squeeze_alerts() -> None:
                     prev_active = set()
                 current_active = set(candidates.keys())
                 newly_qualifying = sorted(current_active - prev_active)
+                newly_qualifying = _drop_sent_today(_rc, "squeeze", uid, newly_qualifying)
                 send_ok = True
                 if newly_qualifying:
                     payload = [candidates[sym] for sym in newly_qualifying]
@@ -4560,6 +4630,7 @@ def check_short_squeeze_alerts() -> None:
                         log.warning("short_squeeze_alert.recipient_send_error", user=uid, error=str(_send_exc))
                     if send_ok:
                         sent += 1
+                        _mark_sent_today(_rc, "squeeze", uid, newly_qualifying)
                 # AUD266-DEDUP-KEY-SET-BEFORE-SEND: a stock that drops out (no longer above
                 # the move threshold) must still be removed from the active set regardless of
                 # send outcome — that part of the resync is a real, independent fact, not
@@ -4746,6 +4817,8 @@ def check_squeeze_ignition_alerts() -> None:
                     continue
                 if not _is_hk_sym and not _us_market_open:
                     continue
+                if _live_row_from_earlier_session(row, _is_hk_sym):
+                    continue  # AUD-SQZ-LIVEROW-STALE: yesterday's move and volume, not today's
                 change_pct = (float(price) - float(prev_close)) / float(prev_close) * 100
                 if not (_SQUEEZE_IGNITION_MIN_MOVE_PCT <= change_pct < _SQUEEZE_IGNITION_MAX_MOVE_PCT):
                     continue
@@ -4776,6 +4849,8 @@ def check_squeeze_ignition_alerts() -> None:
                     continue
                 if not _is_hk_sym and not _us_market_open:
                     continue
+                if _live_row_from_earlier_session(row, _is_hk_sym):
+                    continue  # AUD-SQZ-LIVEROW-STALE: yesterday's move and volume, not today's
                 change_pct = (float(price) - float(prev_close)) / float(prev_close) * 100
                 # AUD-IGNITION-NEVERFIRES: per-reason rejection counters, so "found nothing"
                 # and "silently broken" stop being indistinguishable from outside. Counted in
@@ -4857,6 +4932,7 @@ def check_squeeze_ignition_alerts() -> None:
                     prev_active = set()
                 current_active = set(candidates.keys())
                 newly_qualifying = sorted(current_active - prev_active)
+                newly_qualifying = _drop_sent_today(_rc, "squeeze_ignition", uid, newly_qualifying)
                 send_ok = True
                 if newly_qualifying:
                     payload = [candidates[sym] for sym in newly_qualifying]
@@ -4867,6 +4943,7 @@ def check_squeeze_ignition_alerts() -> None:
                         log.warning("squeeze_ignition_alert.recipient_send_error", user=uid, error=str(_send_exc))
                     if send_ok:
                         sent += 1
+                        _mark_sent_today(_rc, "squeeze_ignition", uid, newly_qualifying)
                 resync_set = current_active if send_ok else (current_active - set(newly_qualifying))
                 try:
                     _rc.delete(state_key)
@@ -4974,8 +5051,11 @@ def _alert_entry_gap_stats(session, alert_type: str) -> dict | None:
 # puts, also 0-100 scale but with a 55% floor — see _GAMMA_UNWIND_MIN_OI_CONCENTRATION). There's
 # no live model score to bucket by for any of these 3 alerts (each rule gate is binary: passed
 # or it didn't fire at all), so this is the one real, repeatable dimension each alert has.
+# AUD-SQZ-SI-OVER100 (2026-11-10): "30+" is open-ended. It stopped at 100.01, so a stock with
+# more shares short than its float (possible: shares can be borrowed and re-lent) fell outside
+# every band and its email said "Not enough resolved history" instead of giving the 30+ rate.
 _PREBREAKOUT_CAL_BANDS: list[tuple[float, float, str]] = [
-    (15.0, 20.0, "15-20"), (20.0, 30.0, "20-30"), (30.0, 100.01, "30+"),
+    (15.0, 20.0, "15-20"), (20.0, 30.0, "20-30"), (30.0, float("inf"), "30+"),
 ]
 _GAMMA_UNWIND_CAL_BANDS: list[tuple[float, float, str]] = [
     (55.0, 65.0, "55-65"), (65.0, 80.0, "65-80"), (80.0, 100.01, "80+"),
@@ -5113,7 +5193,7 @@ def _squeeze_family_calibration_for_alert_type(
     return _squeeze_family_calibration_for_band(buckets, bands, metric)
 
 
-def _fetch_ml_price_direction(symbol: str) -> tuple[float | None, str | None]:
+def _fetch_ml_price_direction(symbol: str) -> tuple[float | None, str | None, dict | None]:
     """T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE: reuses ml-prediction's EXISTING, already-
     trained, already-promoted per-symbol SWING-style direction model (the same one behind
     POST /ml/predict, used live elsewhere in this app) as a genuinely independent second read
@@ -5125,6 +5205,14 @@ def _fetch_ml_price_direction(symbol: str) -> tuple[float | None, str | None]:
     artifact for this symbol/style yet) is treated as routine and fails open to (None, None)
     without logging a warning, any OTHER non-200/exception logs at warning and also fails
     open. Never fabricates a confidence value.
+
+    AUD-SQZ-ML-NODIRECTION (2026-11-10): returns (confidence, model_version, read). The
+    endpoint's `confidence` is abs(prob - 0.5) * 200, which carries NO direction: a model that
+    is 10% bullish (strongly bearish) reports 80. The pre-breakout email printed it as
+    "price-direction read: 80 confidence" under a breakout heading. `read` carries what the
+    reader needs instead: {bullish_probability, direction, horizon_days}. A reply with no
+    bullish_probability is treated as unavailable, as is the endpoint's no-settled-bars fallback
+    (confidence 0 with no trained_at), which is a placeholder, not a reading.
     """
     try:
         with httpx.Client(timeout=10) as c:
@@ -5134,23 +5222,37 @@ def _fetch_ml_price_direction(symbol: str) -> tuple[float | None, str | None]:
                 headers={"Authorization": f"Bearer {_service_token()}"},
             )
             if r.status_code == 404:
-                return None, None
+                return None, None, None
             if r.status_code != 200:
                 log.warning("prebreakout_alert.ml_fetch_unexpected_status", symbol=symbol, status=r.status_code)
-                return None, None
+                return None, None, None
             data = r.json()
             if data.get("oos_suppressed"):
                 # A genuinely-trained-but-suppressed model — report as unavailable rather
                 # than the misleadingly-neutral 0.5/0.0 the endpoint itself substitutes.
-                return None, None
+                return None, None, None
             confidence = data.get("confidence")
-            if confidence is None:
-                return None, None
+            prob = data.get("bullish_probability")
+            if confidence is None or not isinstance(prob, (int, float)) or isinstance(prob, bool):
+                return None, None, None
+            if not data.get("trained_at") and float(confidence) == 0.0:
+                return None, None, None  # the endpoint's no-settled-bars placeholder, not a reading
             model_version = data.get("trained_at") or "unknown"
-            return float(confidence), str(model_version)[:64]
+            direction = data.get("direction") if data.get("direction") in ("up", "down") else None
+            read = {"bullish_probability": float(prob), "direction": direction,
+                    "horizon_days": data.get("horizon_days")}
+            return float(confidence), str(model_version)[:64], read
     except Exception as exc:
         log.warning("prebreakout_alert.ml_fetch_failed", symbol=symbol, error=str(exc))
-        return None, None
+        return None, None, None
+
+
+# AUD-SQZ-PREBREAKOUT-EPISODE (2026-11-10): was 20 hours. The job runs every 4 hours during US
+# hours only, so a day's runs are often more than 20 hours after the previous day's, and every
+# weekend is: the set had expired and a still-coiling stock re-emailed as "new" every trading
+# day. 5 days spans the longest normal market closure (a long weekend plus a holiday); the set
+# is rewritten every run, so a symbol that stops qualifying is still dropped at once.
+_PREBREAKOUT_ACTIVE_TTL_SECONDS = 5 * 24 * 3600
 
 
 def check_prebreakout_alerts() -> None:
@@ -5284,16 +5386,25 @@ def check_prebreakout_alerts() -> None:
                     if _si_date is None or _si_date < _pb_stale_cutoff_str:
                         continue
 
+                    # AUD-SQZ-PREBREAKOUT-FORMINGBAR (2026-11-10): this job runs only in market
+                    # hours, when today's daily bar is still forming. Its small high-low range
+                    # read as "compressed" early in the day. Settled bars only (dated before
+                    # today, ET), and the newest settled bar must be recent, or a symbol whose
+                    # ingest stopped weeks ago was evaluated on old bars.
+                    _pb_today_start = datetime.combine(_today_et(), datetime.min.time())
                     price_rows = session.execute(
-                        select(Price.close, Price.high, Price.low, Price.volume)
-                        .where(Price.stock_id == stock_id, Price.timeframe == TimeFrame.D1)
+                        select(Price.close, Price.high, Price.low, Price.volume, Price.ts)
+                        .where(Price.stock_id == stock_id, Price.timeframe == TimeFrame.D1,
+                               Price.ts < _pb_today_start)
                         .order_by(Price.ts.desc())
                         .limit(_PREBREAKOUT_MIN_DAILY_BARS)
                     ).all()
                     if len(price_rows) < _PREBREAKOUT_MIN_DAILY_BARS:
                         continue
+                    if not _prebreakout_bars_recent(price_rows[0].ts, _today_et()):
+                        continue
                     price_rows = list(reversed(price_rows))  # back to ascending order
-                    bars = _pd.DataFrame(price_rows, columns=["close", "high", "low", "volume"]).astype(float)
+                    bars = _pd.DataFrame([r[:4] for r in price_rows], columns=["close", "high", "low", "volume"]).astype(float)
                     compression = detect_price_compression(bars["close"], bars["high"], bars["low"], bars["volume"])
                     if not compression["is_compressed"]:
                         continue
@@ -5307,7 +5418,7 @@ def check_prebreakout_alerts() -> None:
                     price = live.get("price") if live else float(bars["close"].iloc[-1])
 
                     spf_pct = round(spf * 100, 2)
-                    ml_confidence, ml_model_version = _fetch_ml_price_direction(symbol)
+                    ml_confidence, ml_model_version, ml_read = _fetch_ml_price_direction(symbol)
                     cal_win_rate, cal_count = _prebreakout_calibration_for_band(cal_buckets, spf_pct)
 
                     candidates[symbol] = {
@@ -5323,6 +5434,9 @@ def check_prebreakout_alerts() -> None:
                         "options_cp_ratio": options_by_stock.get(stock_id),
                         "ml_price_direction_confidence": ml_confidence,
                         "ml_price_direction_model_version": ml_model_version,
+                        # AUD-SQZ-ML-NODIRECTION: what the email shows; the stored column keeps
+                        # its original (direction-less) meaning so old rows stay comparable.
+                        "ml_price_read": ml_read,
                         "calibrated_win_rate": cal_win_rate,
                         "calibrated_win_rate_count": cal_count,
                     }
@@ -5372,7 +5486,7 @@ def check_prebreakout_alerts() -> None:
                     _rc.delete(state_key)
                     if resync_set:
                         _rc.sadd(state_key, *resync_set)
-                    _rc.expire(state_key, 20 * 3600)
+                    _rc.expire(state_key, _PREBREAKOUT_ACTIVE_TTL_SECONDS)
                 except Exception:
                     pass
 
@@ -5388,12 +5502,22 @@ def check_prebreakout_alerts() -> None:
             pass
 
 
+_PREBREAKOUT_MAX_BAR_AGE_DAYS = 7  # covers a long weekend plus a holiday
+
+
+def _prebreakout_bars_recent(newest_ts, today: date) -> bool:
+    """AUD-SQZ-PREBREAKOUT-FORMINGBAR: the newest settled daily bar is within 7 calendar days."""
+    newest = newest_ts.date() if hasattr(newest_ts, "date") else newest_ts
+    return isinstance(newest, date) and (today - newest).days <= _PREBREAKOUT_MAX_BAR_AGE_DAYS
+
+
 def _record_prebreakout_alert_outcome(
     session, stock_id: int, symbol: str, price: float, short_percent_of_float: float,
     bb_width_pctile: float | None, atr_pctile: float | None, volume_dried_up: bool | None,
     options_cp_ratio: float | None,
     ml_price_direction_confidence: float | None = None, ml_price_direction_model_version: str | None = None,
     calibrated_win_rate: float | None = None, calibrated_win_rate_count: int | None = None,
+    episode_days: int = 7,
 ) -> None:
     """Mirrors _record_squeeze_alert_outcome()'s own existence-check-before-insert discipline
     exactly (see that function's docstring for the full reasoning) — a re-fire the same day is
@@ -5404,14 +5528,21 @@ def _record_prebreakout_alert_outcome(
     any other caller) are the two T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE signals — see
     check_prebreakout_alerts()'s own docstring for what each measures and why neither is named
     model_confidence/model_version (those stay reserved for a real squeeze-trained classifier,
-    which this app's own data doesn't yet support)."""
+    which this app's own data doesn't yet support).
+
+    AUD-SQZ-PREBREAKOUT-EPISODE (2026-11-10): one row per setup EPISODE, not per day. A coiling
+    stock stays compressed for days to weeks and qualified on every run, so each day added a
+    near-duplicate row with an overlapping outcome window, inflating n toward the calibration's
+    30-sample floor with what is really one observation. A row within the last `episode_days`
+    calendar days (inclusive of today) means this is the same episode, and nothing is added.
+    The date is the ET date (_today_et), not the container's UTC date."""
     try:
-        today = date.today()
+        today = _today_et()
         existing = session.execute(
-            select(PreBreakoutAlertOutcome).where(
+            select(PreBreakoutAlertOutcome.id).where(
                 PreBreakoutAlertOutcome.stock_id == stock_id,
-                PreBreakoutAlertOutcome.fired_date == today,
-            )
+                PreBreakoutAlertOutcome.fired_date > today - timedelta(days=episode_days),
+            ).limit(1)
         ).scalar_one_or_none()
         if existing is not None:
             return
@@ -5472,6 +5603,13 @@ _GAMMA_UNWIND_MIN_NOTIONAL_USD = 5_000_000  # floor so a thin/illiquid OR low-no
 # is "is price actually near a level where real dealer gamma concentrates," independent of
 # which side (calls/puts) is more numerous in this app's own coarser proxy.
 _GEX_CORROBORATE_BAND_PCT = 0.03
+
+
+def _gamma_oi_unmeasured(call_band, put_band) -> bool:
+    """AUD-SQZ-GAMMA-OIFILL: True when either side's near-money open interest is entirely
+    unreported (no rows, or every row NaN). Such a side is unknown, not zero, so no concentration
+    can be computed from it. Partly reported sides are still summed over their known rows."""
+    return int(call_band.notna().sum()) == 0 or int(put_band.notna().sum()) == 0
 
 
 def check_gamma_unwind_alerts() -> None:
@@ -5564,8 +5702,17 @@ def check_gamma_unwind_alerts() -> None:
                 ),
             }
 
-            today = date.today()
+            # AUD-SQZ-GAMMA-UTCDATE (2026-11-10): the ET date. date.today() in this UTC container
+            # reads a day ahead from ~8pm ET, and this job has no market-hours gate, so an
+            # evening run gave Friday's expiry 0 days ("expires TODAY") on Thursday night.
+            today = _today_et()
             candidates: dict[str, dict] = {}
+            # AUD-SQZ-BEARISHWATCH-DTEWINDOW (2026-11-10): every symbol this scan actually
+            # MEASURED, with its near-money put share, whatever its expiry window. The watch
+            # list below keeps only 3-5 DTE puts-dominant rows, so a symbol whose weekly expiry
+            # moved inside 3 days dropped out of it and check_squeeze_watch_reverts() read that
+            # absence as "pressure faded". The revert now asks this map instead.
+            scan_measured: dict[str, dict] = {}
             for _stock_id, symbol in symbols:
                 try:
                     live = _live_raw.get(symbol)
@@ -5587,17 +5734,30 @@ def check_gamma_unwind_alerts() -> None:
                     # dependent on yfinance's own (undocumented) ordering of t.options.
                     exp = near_expiries[0]
                     chain = t.option_chain(exp)
-                    calls = chain.calls.fillna(0)
-                    puts = chain.puts.fillna(0)
+                    calls = chain.calls
+                    puts = chain.puts
 
                     lo, hi = price * (1 - _GAMMA_UNWIND_STRIKE_BAND_PCT), price * (1 + _GAMMA_UNWIND_STRIKE_BAND_PCT)
-                    call_oi = int(calls[(calls["strike"] >= lo) & (calls["strike"] <= hi)]["openInterest"].sum())
-                    put_oi = int(puts[(puts["strike"] >= lo) & (puts["strike"] <= hi)]["openInterest"].sum())
+                    _call_band = calls[(calls["strike"] >= lo) & (calls["strike"] <= hi)]["openInterest"]
+                    _put_band = puts[(puts["strike"] >= lo) & (puts["strike"] <= hi)]["openInterest"]
+                    # AUD-SQZ-GAMMA-OIFILL (2026-11-10): `fillna(0)` turned a side with NO reported
+                    # open interest into a measured zero, so call_share read 1.0 and a
+                    # "100% calls" alert could fire on missing put data. A side whose near-money
+                    # OI is entirely unreported means the concentration is not measured: skip.
+                    if _gamma_oi_unmeasured(_call_band, _put_band):
+                        continue
+                    call_oi = int(_call_band.fillna(0).sum())
+                    put_oi = int(_put_band.fillna(0).sum())
                     total_oi = call_oi + put_oi
                     notional_usd = total_oi * 100 * price
                     if notional_usd < _GAMMA_UNWIND_MIN_NOTIONAL_USD:
                         continue
                     call_share = call_oi / total_oi
+                    scan_measured[symbol] = {
+                        "put_share_pct": round((1 - call_share) * 100, 1),
+                        "expiry": exp,
+                        "days_to_expiry": (date.fromisoformat(exp) - today).days,
+                    }
                     if call_share >= _GAMMA_UNWIND_MIN_CALLS_CONCENTRATION:
                         dominant_side = "calls"
                     elif (1 - call_share) >= _GAMMA_UNWIND_MIN_OI_CONCENTRATION:
@@ -5640,6 +5800,7 @@ def check_gamma_unwind_alerts() -> None:
             try:
                 bearish_watch = _bearish_puts_watch_candidates(session, candidates)
                 _rc.setex("stockai:bearish_puts_watch", 6 * 3600, _json.dumps(bearish_watch))
+                _rc.setex(_BEARISH_PUTS_SCAN_KEY, 6 * 3600, _json.dumps(scan_measured))
             except Exception as exc:
                 log.warning("gamma_unwind.bearish_watch_cache_failed", error=str(exc))
                 bearish_watch = []
@@ -6509,6 +6670,89 @@ _DARK_POOL_ALERT_COOLDOWN_MINUTES = 60  # longer than options-flow's 30 — a sy
 # shorter cooldown would flood a user's inbox with what's often the same accumulating position
 # printing in pieces over the day.
 
+# AUD-DP-REPEAT-SEND (2026-11-10): a print stays a candidate for _DARK_POOL_PRINT_MAX_AGE_MINUTES
+# (90) but its per-print key used to expire after the 60-minute cooldown. A print emailed at
+# 10:05 for a 10:00 execution was claimable again at 11:06, still under 90 minutes old and still
+# the largest, so the same email went out twice. A per-print key now outlives the age window, so
+# it cannot be re-claimed while the print can still be a candidate.
+_DARK_POOL_PRINT_KEY_TTL_SECONDS = (_DARK_POOL_PRINT_MAX_AGE_MINUTES + 30) * 60
+
+
+# AUD-DP-AUDIENCE: at most this many followed symbols are added to the dark-pool scan beyond
+# the shared list. Each is polled about every 15 minutes (~26 Unusual Whales requests per symbol
+# per session), so 40 is at most ~1,000 requests a day against the 120k daily quota.
+_DARK_POOL_OWNED_SCAN_CAP = 40
+
+
+def _dark_pool_scan_symbols(session, base: list, owned: dict) -> tuple[list, int]:
+    """(scan list, number added): the shared list plus the recipients' own US symbols.
+
+    Most-followed first, then alphabetical, so the cap is deterministic. Only active,
+    non-delisted US stocks are added (the dark-pool feed is US-only).
+    """
+    have = {sym for _sid, sym in base}
+    followers: dict = {}
+    for syms in (owned or {}).values():
+        for sym in syms:
+            if sym not in have and not sym.endswith(".HK"):
+                followers[sym] = followers.get(sym, 0) + 1
+    if not followers:
+        return list(base), 0
+    ranked = sorted(followers, key=lambda s: (-followers[s], s))
+    try:
+        rows = session.execute(
+            select(Stock.id, Stock.symbol).where(
+                Stock.symbol.in_(ranked), Stock.active.is_(True), Stock.delisted.is_(False),
+                Stock.market == Market.US,
+            )
+        ).all()
+    except Exception as exc:
+        log.warning("dark_pool_alert.owned_scan_lookup_failed", error=str(exc))
+        return list(base), 0
+    by_symbol = {sym: sid for sid, sym in rows}
+    added = [(by_symbol[s], s) for s in ranked if s in by_symbol][:_DARK_POOL_OWNED_SCAN_CAP]
+    if added:
+        log.info("dark_pool_alert.owned_symbols_scanned", added=len(added),
+                 wanted=len(followers), cap=_DARK_POOL_OWNED_SCAN_CAP)
+    return list(base) + added, len(added)
+
+
+def _dark_pool_alerts_in_session() -> bool:
+    """AUD-DP-SESSIONGATE: True during the regular US session (the shared paper-trading market-
+    hours check, also used by the options-flow alert). A calendar failure fails OPEN, the
+    convention for these alerts, and is logged."""
+    try:
+        from .paper_trading_engine import _is_market_hours
+        return bool(_is_market_hours("US"))
+    except Exception as exc:
+        log.warning("dark_pool_alert.market_hours_check_failed", error=str(exc))
+        return True
+
+
+def _dark_pool_print_priced(row) -> bool:
+    """AUD-DP-NOPRICE: the print carries a real, positive, finite execution price."""
+    price = getattr(row, "price", None)
+    return (isinstance(price, (int, float)) and not isinstance(price, bool)
+            and math.isfinite(price) and price > 0)
+
+
+def _dark_pool_alert_key(uid, symbol: str, cand: dict) -> tuple[str, int]:
+    """(Redis key, TTL seconds) that stops one recipient being sent one print twice.
+
+    Identity, best first: the provider's tracking ID; else execution time plus premium (two
+    different prints in one symbol in the same second used to share an execution-time key, so
+    the second was suppressed); else (user, symbol) with the ordinary cooldown, the original
+    behaviour for a print with neither.
+    """
+    base = f"stockai:dark_pool_alert_cooldown:{uid}:{symbol}"
+    tracking_id = cand.get("tracking_id")
+    if tracking_id:
+        return f"{base}:id:{tracking_id}", _DARK_POOL_PRINT_KEY_TTL_SECONDS
+    executed_at = cand.get("executed_at")
+    if executed_at:
+        return f"{base}:{executed_at}:{cand.get('premium')}", _DARK_POOL_PRINT_KEY_TTL_SECONDS
+    return base, _DARK_POOL_ALERT_COOLDOWN_MINUTES * 60
+
 
 def _dark_pool_baseline(session, symbol: str, before: datetime | None = None) -> dict:
     """AUD-DARKPOOL-ABSTHRESHOLD + options review B5: the median premium of CAPTURED prints for
@@ -6757,6 +7001,13 @@ def check_dark_pool_alerts() -> None:
                 return
 
             symbols = _bounded_options_flow_symbols(session)
+            # AUD-DP-AUDIENCE (2026-11-10): recipients now receive only symbols they follow, so
+            # the scan must cover those symbols, not only the shared alert/top-ranked list. The
+            # recipient set itself is unchanged (open price-alert holders): widening it to every
+            # watchlist owner would enrol accounts by omission (the tier 432 lesson).
+            from .alert_audience import owned_symbols_by_user
+            symbols, _dp_owned_added = _dark_pool_scan_symbols(
+                session, symbols, owned_symbols_by_user(session, list(recipients.keys())))
             if not symbols:
                 _record_job_status("check_dark_pool_alerts", "ok", time.monotonic() - _t0)
                 return
@@ -6775,7 +7026,10 @@ def check_dark_pool_alerts() -> None:
             for stock_id, symbol in symbols:
                 try:
                     live = _live_raw.get(symbol)
-                    price = live.get("price") if live else None
+                    # AUD-DP-LIVEAGE (2026-11-10): a live row from an earlier session is not a
+                    # live price. It was compared with the print as "vs live" (e.g. an evening
+                    # print against the 16:00 close). Unknown is shown as unknown instead.
+                    price = live.get("price") if live and not _live_row_from_earlier_session(live, False) else None
                     rows = _uw.get_dark_pool_prints(symbol)
                     # AUD-DARKPOOL-NOPERSIST: persist EVERY fetched print before filtering —
                     # the baseline below is built from ordinary prints, so filtering first
@@ -6803,6 +7057,20 @@ def check_dark_pool_alerts() -> None:
                     qualifying = []   # (row, its baseline info)
                     for r in rows:
                         if getattr(r, "canceled", None) is True or (r.premium or 0) < _DARK_POOL_ALERT_MIN_PREMIUM or not _dark_pool_print_is_recent(r, _print_cutoff):
+                            continue
+                        # AUD-DP-NOPRICE (2026-11-10): the parser keeps a provider premium even
+                        # when the print has no price. Such a print became alert_price 0.0, or
+                        # carried the LIVE price where the tab and digest show the execution
+                        # price. A print with no execution price cannot be stated honestly, so
+                        # it does not alert.
+                        if not _dark_pool_print_priced(r):
+                            continue
+                        # AUD-DP-UNIDENTIFIED (2026-11-10): the baseline ledger keeps only prints
+                        # with a provider tracking ID and an explicit canceled flag. The alert
+                        # accepted the rest, so it could fire on a print that no baseline could
+                        # contain, no identity could de-duplicate, and no later cancellation could
+                        # match. Same identity rule as the ledger now.
+                        if not getattr(r, "tracking_id", None) or getattr(r, "canceled", None) is not False:
                             continue
                         event_at = _print_time(r.executed_at)[0]
                         info = _dark_pool_baseline(session, symbol, before=event_at)
@@ -6833,6 +7101,7 @@ def check_dark_pool_alerts() -> None:
                         "premium": biggest.premium,
                         "venue": biggest.venue,
                         "executed_at": biggest.executed_at,
+                        "tracking_id": getattr(biggest, "tracking_id", None),
                         # Surfaced so the email can say HOW unusual this print was for this
                         # symbol, not just its raw dollar size — the whole point of the
                         # relative bar. None when no baseline exists yet.
@@ -6842,6 +7111,9 @@ def check_dark_pool_alerts() -> None:
                         ),
                         # B5: why the relative bar did or did not run, kept apart.
                         "baseline_status": _baseline_info["status"],
+                        # AUD-DP-TAB-BASELINE: stored beside the outcome for the Dark Pool tab.
+                        "baseline_prints": _baseline_info.get("prints"),
+                        "baseline_window_days": _baseline_info.get("window_days"),
                     }
                 except Exception as exc:
                     log.warning("dark_pool_alert.symbol_error", symbol=symbol, error=str(exc))
@@ -6851,6 +7123,17 @@ def check_dark_pool_alerts() -> None:
                 _record_job_status("check_dark_pool_alerts", "ok", time.monotonic() - _t0)
                 return
 
+            # AUD-DP-SESSIONGATE (2026-11-10), decided D11: polling and persistence above run at
+            # every hour, so the baseline and identity ledger keep capturing prints reported
+            # after the close. Emails, and the outcome rows that measure them, are limited to the
+            # regular US session: an evening email cannot be acted on until the open, and its
+            # "live" comparison would be against the close.
+            if not _dark_pool_alerts_in_session():
+                log.info("dark_pool_alert.outside_session", candidates=len(candidates))
+                _record_job_status("check_dark_pool_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            from .dark_pool_alert_baseline import record as _record_dp_baseline
             for symbol, cand in candidates.items():
                 _record_dark_pool_alert_outcome(
                     session, id_by_symbol[symbol], symbol, float(cand["price"] or 0.0), cand.get("premium"),
@@ -6858,30 +7141,37 @@ def check_dark_pool_alerts() -> None:
                     live_price=cand.get("live_price"),
                     side=cand.get("side"),
                 )
+                # AUD-DP-TAB-BASELINE: same (stock, ET day) key and first-fire rule as the row above.
+                _record_dp_baseline(session, id_by_symbol[symbol], _today_et(), cand)
 
             from .email_service import send_dark_pool_alert_email
+            from .alert_audience import owned_symbols_by_user
+            # AUD-DP-AUDIENCE (2026-11-10): each recipient gets only prints on symbols they
+            # follow themselves (watchlist or open price alert). Every recipient used to get
+            # every candidate from the shared list, described as "your watched symbols".
+            _owned = owned_symbols_by_user(session, list(recipients.keys()))
             sent = 0
             for uid, user in recipients.items():
+                _mine = _owned.get(uid, set())
                 cooldown_ok_symbols = []
                 # AUD-E09-COOLDOWNRELEASE: symbol -> the cooldown key THIS attempt actually
                 # claimed via a real, successful nx=True SET (never the fail-open except branch
                 # below) — see the release step after the send call.
                 _claimed_cd_keys: dict[str, str] = {}
                 for symbol in candidates.keys():
+                    if symbol.upper() not in _mine:
+                        continue
                     # AUD-DARKPOOL-STALEPRINT: key on the PRINT, not just (user, symbol). The
                     # old key could not tell two prints apart, so it suppressed for 60 minutes
                     # and then let the SAME block through again. Including the execution
                     # timestamp means a genuinely new block alerts immediately (it has its own
                     # key) while an already-sent one can never re-send, whatever the cooldown
                     # does. The TTL still bounds key growth.
-                    _cd_print_id = candidates[symbol].get("executed_at")
-                    cd_key = (
-                        f"stockai:dark_pool_alert_cooldown:{uid}:{symbol}:{_cd_print_id}"
-                        if _cd_print_id else
-                        f"stockai:dark_pool_alert_cooldown:{uid}:{symbol}"
-                    )
+                    # AUD-DP-REPEAT-SEND (2026-11-10): the key's lifetime now exceeds the age
+                    # window, which is what makes "never re-sends" actually true.
+                    cd_key, _cd_ttl = _dark_pool_alert_key(uid, symbol, candidates[symbol])
                     try:
-                        if _rc.set(cd_key, "1", nx=True, ex=_DARK_POOL_ALERT_COOLDOWN_MINUTES * 60):
+                        if _rc.set(cd_key, "1", nx=True, ex=_cd_ttl):
                             cooldown_ok_symbols.append(symbol)
                             _claimed_cd_keys[symbol] = cd_key
                     except Exception:
@@ -6932,6 +7222,33 @@ def check_dark_pool_alerts() -> None:
 _BEARISH_WATCH_MIN_DAYS_TO_EXPIRY = 3  # the puts-heavy scan the user asked for is 3-5 days out,
 _BEARISH_WATCH_MAX_DAYS_TO_EXPIRY = 5  # a NARROWER window than the shared 0-5 gamma-unwind scan
 _BEARISH_WATCH_MIN_AGREEING_SIGNALS = 2  # of 3 real signals below — needed for "high conviction"
+# AUD-SQZ-BEARISHWATCH-DTEWINDOW: {symbol: {put_share_pct, expiry, days_to_expiry}} for every
+# symbol the latest gamma scan measured. Written beside stockai:bearish_puts_watch, same TTL.
+_BEARISH_PUTS_SCAN_KEY = "stockai:bearish_puts_scan"
+
+
+def _bearish_puts_watch_faded(scan_raw, symbol: str) -> tuple[bool, float | None]:
+    """(faded, put_share_pct) for a bearish_puts watch, from the latest scan's measurements.
+
+    Faded ONLY when a fresh scan measured this symbol and its near-money put share is below the
+    puts-concentration bar. Not measured (no near expiry, under the notional floor, a fetch
+    error, scan missing or unparseable) is not evidence of anything: the watch stays, and only
+    the price-recovery leg can revert it. In particular, leaving the 3-5 DTE window as an expiry
+    approaches is not a fade.
+    """
+    if scan_raw is None:
+        return False, None
+    try:
+        measured = json.loads(scan_raw).get(symbol)
+    except Exception:
+        return False, None
+    if not isinstance(measured, dict):
+        return False, None
+    share = measured.get("put_share_pct")
+    if not isinstance(share, (int, float)):
+        return False, None
+    # round(): 0.55 * 100 is 55.00000000000001, which would make exactly 55% read as faded.
+    return float(share) < round(_GAMMA_UNWIND_MIN_OI_CONCENTRATION * 100, 6), float(share)
 
 
 def _bearish_puts_watch_candidates(session, gamma_candidates: dict[str, dict]) -> list[dict]:
@@ -7084,21 +7401,14 @@ def check_squeeze_watch_reverts() -> None:
                 }
             except Exception:
                 _live_by_symbol = {}
-            # AUD265-BEARISHPUTS-MASS-AUTOREVERT-ON-OUTAGE: distinguish "the cache is genuinely
-            # fresh and this symbol really rolled off the scan" from "the cache is missing/
-            # stale/unparseable" — a missing key (gamma job never ran, or ran with 0 candidates
-            # and never refreshed the cache — see check_gamma_unwind_alerts' own early return
-            # above the cache write) must NEVER be treated as proof a bearish_puts setup faded.
-            # _bearish_cache_fresh gates the "rolled off the scan" fade branch below.
-            _bearish_cache_raw = _rc.get("stockai:bearish_puts_watch")
-            _bearish_cache_fresh = _bearish_cache_raw is not None
+            # AUD265-BEARISHPUTS-MASS-AUTOREVERT-ON-OUTAGE, superseded by
+            # AUD-SQZ-BEARISHWATCH-DTEWINDOW: a missing or unparseable scan must never be read
+            # as proof a bearish_puts setup faded. _bearish_puts_watch_faded() treats it as
+            # "not measured", so only the price leg can revert the watch on that cycle.
             try:
-                _bearish_by_symbol = {
-                    row["symbol"]: row for row in _json.loads(_bearish_cache_raw or "[]")
-                }
+                _bearish_scan_raw = _rc.get(_BEARISH_PUTS_SCAN_KEY)
             except Exception:
-                _bearish_by_symbol = {}
-                _bearish_cache_fresh = False
+                _bearish_scan_raw = None
 
             from .email_service import send_squeeze_watch_revert_email
             reverted_count = 0
@@ -7137,22 +7447,12 @@ def check_squeeze_watch_reverts() -> None:
                         except Exception:
                             pass
                     else:  # bearish_puts
-                        bp = _bearish_by_symbol.get(w.symbol)
-                        if bp is not None and bp.get("dominant_side") != "puts":
-                            metric_faded = True  # present in a FRESH scan, no longer puts-dominant
-                        elif bp is None and _bearish_cache_fresh:
-                            metric_faded = True  # genuinely rolled off a FRESH scan — setup is gone
-                        elif bp is None:
-                            # Cache missing/stale/unparseable — cannot distinguish "setup faded"
-                            # from "the gamma job hasn't refreshed this cycle" or "it ran with
-                            # zero candidates and never wrote the cache". Absence of data must
-                            # never be read as proof of fade — only price_recovered (checked
-                            # independently above) can revert this watch on this cycle.
-                            metric_faded = False
-                        else:
-                            current_metric = bp.get("concentration_pct")
-                            if current_metric is not None:
-                                metric_faded = float(current_metric) < (_GAMMA_UNWIND_MIN_OI_CONCENTRATION * 100)
+                        # AUD-SQZ-BEARISHWATCH-DTEWINDOW (2026-11-10): absence from the 3-5 DTE
+                        # puts-dominant list used to count as a fade, so a Monday watch on a
+                        # stock with Friday weeklies reverted by Wednesday as expiry got CLOSER,
+                        # and a daily-expiry symbol reverted on the first scan. Only a measured
+                        # put share below the bar is a fade now; see _bearish_puts_watch_faded.
+                        metric_faded, current_metric = _bearish_puts_watch_faded(_bearish_scan_raw, w.symbol)
 
                     if not (price_recovered or metric_faded):
                         continue

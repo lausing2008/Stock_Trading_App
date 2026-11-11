@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type SqueezeCandidate, type BearishPutsWatchCandidate, type SqueezeWatchItem } from '@/lib/api';
+import { isPrimeCandidate } from '@/lib/squeezeCandidates';
 
 function Code({ children }: { children: React.ReactNode }) {
   return (
@@ -321,7 +322,7 @@ export default function ShortSqueezePage() {
   }
 
   // Squeeze score: high short float + positive momentum = best candidates
-  const topCandidates = rows.filter(r => r.momentum_score != null && r.momentum_score > 50 && r.short_percent_of_float >= 15);
+  const topCandidates = rows.filter(isPrimeCandidate);
 
   return (
     <div>
@@ -501,7 +502,7 @@ export default function ShortSqueezePage() {
               </thead>
               <tbody>
                 {rows.map((r, i) => {
-                  const isPrime = r.momentum_score != null && r.momentum_score > 50 && r.short_percent_of_float >= 15;
+                  const isPrime = isPrimeCandidate(r);
                   return (
                     <tr key={i} style={{ borderBottom: '1px solid rgba(30,41,59,0.5)', background: isPrime ? 'rgba(239,68,68,0.03)' : 'transparent' }}>
                       <td style={{ padding: '10px 14px', whiteSpace: 'nowrap' }}>
@@ -539,13 +540,19 @@ export default function ShortSqueezePage() {
                         <span style={{ fontWeight: 800, fontSize: '13px', color: shortColor(r.short_percent_of_float), background: shortBg(r.short_percent_of_float), padding: '2px 8px', borderRadius: '5px', fontVariantNumeric: 'tabular-nums' }}>
                           {r.short_percent_of_float.toFixed(1)}%
                         </span>
+                        {/* AUD-SQZ-DATAAGE (2026-11-10): the endpoint returns the reading's settlement
+                            date and a stale flag; neither was shown, so a month-old reading looked fresh. */}
+                        <div aria-label="Short interest as of" style={{ fontSize: '9px', color: r.is_stale ? '#f59e0b' : '#475569', marginTop: 2 }}>
+                          {r.short_interest_date ? `as of ${r.short_interest_date.slice(0, 10)}` : 'date unknown'}{r.is_stale ? ' · stale' : ''}
+                        </div>
                       </td>
                       <td style={{ padding: '10px 14px', textAlign: 'right', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>
                         {r.short_ratio != null ? `${r.short_ratio.toFixed(1)}d` : '—'}
                       </td>
                       <td style={{ padding: '10px 14px', textAlign: 'right', color: '#64748b', fontVariantNumeric: 'tabular-nums' }}>
                         <div>{fmtShares(r.shares_short)}</div>
-                        {r.shares_short != null && r.shares_short_prior_month != null && (() => {
+                        {/* AUD-SQZ-MOM-ZERO (2026-11-10): a zero prior month rendered "Infinity% MoM". */}
+                        {r.shares_short != null && r.shares_short_prior_month != null && r.shares_short_prior_month > 0 && (() => {
                           const rising = r.shares_short > r.shares_short_prior_month!;
                           const pctChg = Math.abs((r.shares_short - r.shares_short_prior_month!) / r.shares_short_prior_month! * 100);
                           return (
@@ -582,6 +589,9 @@ export default function ShortSqueezePage() {
                               <div style={{ width: `${Math.min(100, r.momentum_score)}%`, height: '100%', borderRadius: '2px', background: r.momentum_score > 60 ? '#22c55e' : r.momentum_score > 40 ? '#facc15' : '#ef4444' }} />
                             </div>
                             <span style={{ fontSize: '11px', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{fmtScore(r.momentum_score)}</span>
+                            {r.ranking_is_stale && r.ranking_as_of && (
+                              <span aria-label="Ranking as of" style={{ fontSize: '9px', color: '#f59e0b' }}>stale, {r.ranking_as_of.slice(0, 10)}</span>
+                            )}
                           </div>
                         ) : <span style={{ color: '#334155' }}>—</span>}
                       </td>

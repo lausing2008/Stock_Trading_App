@@ -1297,6 +1297,29 @@ def options_flow_alert_performance(
 
 
 @router.get("/squeeze-alert-backtest")
+def _squeeze_backtest_return(bucket, qualifying_day, window: int, today, lookup) -> float | None:
+    """AUD-SQZ-BACKTEST-ENTRY (2026-11-10): one candidate's forward return under the LIVE tracker's
+    rule: enter at the first close after the qualifying day, exit at the first close on or after
+    entry + `window` days.
+
+    The backtest entered at the qualifying day's own close, a price no reader of an intraday alert
+    could have had after the fact, and counted windows from that day, while its docstring claimed
+    the live evaluator's exact scoring. The two win rates were therefore not comparable.
+    """
+    from datetime import timedelta
+    entry = lookup(bucket, qualifying_day + timedelta(days=1))
+    if entry is None:
+        return None
+    entry_date, entry_price = entry
+    target = entry_date + timedelta(days=window)
+    if target > today or not entry_price:
+        return None
+    exit_ = lookup(bucket, target)
+    if exit_ is None:
+        return None
+    return (exit_[1] - entry_price) / entry_price
+
+
 def squeeze_alert_backtest(
     weeks_back: int = Query(52, ge=1, le=260, description="How many weekly fundamentals snapshots to scan back"),
     min_samples: int = Query(15, ge=1, le=200, description="Minimum resolved samples before reporting a real win rate"),
@@ -1447,16 +1470,11 @@ def squeeze_alert_backtest(
 
     def _window_summary(window: int) -> dict | None:
         rets = []
-        for stock_id, _sym, day, entry_close in candidate_days:
-            bucket = price_map.get(stock_id, [])
-            target = day + timedelta(days=window)
-            if target > date.today():
-                continue
-            result = _squeeze_outcome_lookup_price(bucket, target)
-            if result is None:
-                continue
-            _, price = result
-            rets.append((price - entry_close) / entry_close)
+        for stock_id, _sym, day, _alert_day_close in candidate_days:
+            ret = _squeeze_backtest_return(price_map.get(stock_id, []), day, window, date.today(),
+                                           _squeeze_outcome_lookup_price)
+            if ret is not None:
+                rets.append(ret)
         if len(rets) < min_samples:
             return {"n": len(rets), "win_rate": None, "avg_return_pct": None,
                     "note": f"Below the {min_samples}-sample floor — not enough resolved candidates to report a reliable win rate yet."}
@@ -1487,6 +1505,13 @@ def squeeze_alert_backtest(
             "backtestable at all: yfinance has no historical options open-interest API and this app "
             "stores none, so there is no historical data to replay it against."
         ),
+        # AUD-SQZ-BACKTEST-ENTRY (2026-11-10): stated so the figures can be compared with the
+        # live tracker's, which they now match, and so the limits are visible.
+        "entry_rule": "next session's close after the qualifying day; windows counted from the entry date (same as the live tracker)",
+        "limitations": [
+            "The weekly fundamentals snapshot stores no short-interest settlement date, so the live alerts' 30-day age rule cannot be applied here.",
+            "A stock qualifying on consecutive days counts once per day, so windows overlap and samples are not independent.",
+        ],
     }
 
 

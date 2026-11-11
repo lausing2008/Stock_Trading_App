@@ -27,6 +27,7 @@ import type {
   OptionsFlowAlertRecent, DarkPoolAlertRecent, OptionsScreenerRow, OptionTradeRow, MarketTideRow,
 } from '@/lib/api';
 import { getSession } from '@/lib/auth';
+import { darkPoolBaselineText } from '@/lib/darkPoolBaseline';
 
 type Tab = 'flow-alerts' | 'dark-pool' | 'screener' | 'scanner' | 'net-flow';
 
@@ -158,7 +159,9 @@ function DarkPoolTab() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
         <p style={{ fontSize: '12px', color: '#64748b', maxWidth: 700, margin: 0 }}>
           Real large off-exchange block prints ($1M+). A measured fact — real size, price, and
-          venue — never a directional signal. See the <a href="/dark-pool-guide" style={{ color: '#38bdf8' }}>Dark Pool Guide</a>.
+          venue — never a directional signal. One row per symbol per day: the first qualifying print,
+          during the regular US session. <strong>Baseline</strong> shows whether a print also cleared the
+          symbol&apos;s own relative bar or only the $1M floor. See the <a href="/dark-pool-guide" style={{ color: '#38bdf8' }}>Dark Pool Guide</a>.
         </p>
         <button onClick={() => mutate()} style={{ padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer', border: '1px solid #1e293b', background: 'transparent', color: '#94a3b8' }}>↺ Refresh</button>
       </div>
@@ -176,8 +179,8 @@ function DarkPoolTab() {
                       email. Side is derived from where the print landed in the NBBO spread —
                       NOT from exec-vs-live, which measured 66.8% agreement (wrong on one
                       print in three). */}
-                  {['Date', 'Symbol', 'Exec', 'Live', 'Side', 'Shares', 'Premium'].map(h => (
-                    <th key={h} style={{ ...thStyle, textAlign: ['Date', 'Symbol', 'Side'].includes(h) ? 'left' : 'right' }}>{h}</th>
+                  {['Date', 'Symbol', 'Exec', 'Live', 'Side', 'Shares', 'Premium', 'Baseline'].map(h => (
+                    <th key={h} style={{ ...thStyle, textAlign: ['Date', 'Symbol', 'Side', 'Baseline'].includes(h) ? 'left' : 'right' }}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -194,10 +197,19 @@ function DarkPoolTab() {
                     </td>
                     <td style={{ ...tdStyle, textAlign: 'right', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{row.shares != null ? row.shares.toLocaleString() : '—'}</td>
                     <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700, color: '#38bdf8' }}>{fmtMoney(row.premium)}</td>
+                    {(() => {
+                      const b = darkPoolBaselineText(row.baseline);
+                      return (
+                        <td data-testid="dp-baseline" style={{ ...tdStyle, textAlign: 'left', fontSize: '11px', color: b.floorOnly ? '#f59e0b' : '#94a3b8', whiteSpace: 'nowrap' }}
+                            title="Relative bar: the print's premium against the median premium of this symbol's captured prints over the window. When no usable baseline exists, only the $1M floor applied.">
+                          {b.text}
+                        </td>
+                      );
+                    })()}
                   </tr>
                 ))}
                 {data.alerts.length === 0 && (
-                  <tr><td colSpan={7} style={{ padding: 20, textAlign: 'center', color: '#475569' }}>No dark pool alerts recorded yet — either nothing has qualified, or Unusual Whales isn&apos;t configured.</td></tr>
+                  <tr><td colSpan={8} style={{ padding: 20, textAlign: 'center', color: '#475569' }}>No dark pool alerts recorded yet — either nothing has qualified, or Unusual Whales isn&apos;t configured.</td></tr>
                 )}
               </tbody>
             </table>

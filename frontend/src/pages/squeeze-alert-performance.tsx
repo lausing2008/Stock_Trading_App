@@ -197,9 +197,11 @@ export default function SqueezeAlertPerformancePage() {
             Short Squeeze / Options Alert Performance
           </h1>
           <p style={{ fontSize: '12px', color: '#475569', maxWidth: 640 }}>
-            Win rate and forward return if you bought right when each alert type&apos;s email
-            first arrived — entry price is the live price captured at the moment the alert
-            transitioned to &quot;newly qualifying,&quot; not a re-fire of an already-active setup.
+            Win rate and forward return for each alert type, measured from the{' '}
+            <strong>close of the next trading session</strong> after the alert first fired (not the
+            live price at the moment of the email, which is shown separately as the alert price), so
+            the figures do not assume a fill you could not have had. Re-fires of an already-active
+            setup are not counted again.
           </p>
         </div>
         <button

@@ -110,7 +110,7 @@ def test_uses_live_prices_and_bearish_watch_caches_not_a_fresh_fetch():
     inside this 1-minute loop."""
     body = _check_squeeze_watch_reverts_body()
     assert '"stockai:live_prices"' in body
-    assert '"stockai:bearish_puts_watch"' in body
+    assert "_BEARISH_PUTS_SCAN_KEY" in body  # AUD-SQZ-BEARISHWATCH-DTEWINDOW: the measured scan
     assert "import yfinance" not in body
 
 
@@ -126,49 +126,76 @@ def test_short_squeeze_metric_faded_uses_the_same_threshold_that_qualified_it():
     assert "metric_faded = current_metric < _SQUEEZE_MIN_SHORT_FLOAT" in body
 
 
-def test_bearish_puts_metric_faded_uses_the_gamma_unwind_concentration_threshold():
+def _extract_bearish_puts_watch_faded():
+    """The real helper's source plus the one constant it reads. Pure: no DB, no Redis."""
+    import json
+    start = _scheduler_source.index("def _bearish_puts_watch_faded(")
+    end = _scheduler_source.index("\n\n\ndef ", start)
+    c = _scheduler_source.index("_GAMMA_UNWIND_MIN_OI_CONCENTRATION = ")
+    namespace = {"json": json}
+    exec(_scheduler_source[c:_scheduler_source.index("\n", c)], namespace)  # noqa: S102
+    exec(_scheduler_source[start:end], namespace)  # noqa: S102
+    return namespace["_bearish_puts_watch_faded"]
+
+
+_faded = _extract_bearish_puts_watch_faded()
+
+
+# ── AUD-SQZ-BEARISHWATCH-DTEWINDOW (2026-11-10) ─────────────────────────────────────────────
+
+def test_bearish_watch_is_not_faded_when_its_expiry_moves_inside_the_3_day_window():
+    """The defect: a Monday watch on Friday weeklies dropped out of the 3-5 DTE list on
+    Wednesday and reverted as 'pressure faded'. A measured put share still above the bar is
+    still puts pressure, whatever the expiry distance."""
+    import json
+    scan = json.dumps({"XYZ": {"put_share_pct": 72.0, "expiry": "2026-11-13", "days_to_expiry": 2}})
+    assert _faded(scan, "XYZ") == (False, 72.0)
+
+
+def test_bearish_watch_on_a_daily_expiry_symbol_is_not_faded_by_dte():
+    import json
+    scan = json.dumps({"SPY": {"put_share_pct": 60.0, "expiry": "2026-11-10", "days_to_expiry": 0}})
+    assert _faded(scan, "SPY")[0] is False
+
+
+def test_bearish_watch_fades_when_a_fresh_scan_measures_the_put_share_below_the_bar():
+    import json
+    scan = json.dumps({"XYZ": {"put_share_pct": 40.0, "expiry": "2026-11-14", "days_to_expiry": 4}})
+    assert _faded(scan, "XYZ") == (True, 40.0)
+
+
+def test_bearish_watch_threshold_is_the_gamma_puts_concentration_bar_exactly():
+    import json
+    at_bar = json.dumps({"XYZ": {"put_share_pct": 55.0}})
+    just_below = json.dumps({"XYZ": {"put_share_pct": 54.9}})
+    assert _faded(at_bar, "XYZ")[0] is False
+    assert _faded(just_below, "XYZ")[0] is True
+
+
+def test_not_measured_is_not_a_fade():
+    """Missing scan, unparseable scan, symbol not measured (no near expiry, under the notional
+    floor, a fetch error), or a malformed entry: none is evidence the setup faded."""
+    import json
+    assert _faded(None, "XYZ") == (False, None)
+    assert _faded("{not json", "XYZ") == (False, None)
+    assert _faded(json.dumps({}), "XYZ") == (False, None)
+    assert _faded(json.dumps({"XYZ": {"put_share_pct": None}}), "XYZ") == (False, None)
+    assert _faded(json.dumps({"XYZ": "bad"}), "XYZ") == (False, None)
+
+
+def test_revert_job_reads_the_measured_scan_not_the_3_to_5_day_list():
     body = _check_squeeze_watch_reverts_body()
-    assert "_GAMMA_UNWIND_MIN_OI_CONCENTRATION" in body
+    assert "_bearish_puts_watch_faded(_bearish_scan_raw, w.symbol)" in body
+    assert "elif bp is None and _bearish_cache_fresh:" not in body
 
 
-def test_bearish_puts_watch_present_but_not_puts_dominant_counts_as_faded():
-    """If a symbol IS present in a fresh scan but no longer puts-dominant, that counts as the
-    setup having faded — a real, positive signal from a real scan result."""
-    body = _check_squeeze_watch_reverts_body()
-    assert 'if bp is not None and bp.get("dominant_side") != "puts":' in body
-
-
-# ── AUD265-BEARISHPUTS-MASS-AUTOREVERT-ON-OUTAGE ────────────────────────────────────────────
-
-def test_missing_bearish_watch_cache_does_not_count_as_faded():
-    """The core fix: a MISSING/stale/unparseable stockai:bearish_puts_watch cache must NEVER be
-    treated as proof a setup faded — only a symbol genuinely absent from a FRESH scan counts.
-    Before this fix, `bp is None` alone (regardless of cache freshness) set metric_faded = True,
-    so a gamma-job outage (all yfinance calls failing, or a zero-candidate cycle that used to
-    skip the cache write entirely) would silently mass-revert every un-reverted bearish_puts
-    watch and permanently consume the one-shot alert."""
-    body = _check_squeeze_watch_reverts_body()
-    assert "elif bp is None and _bearish_cache_fresh:" in body
-    # The SECOND `elif bp is None:` branch (the stale/missing-cache case, distinct from the
-    # first `elif bp is None and _bearish_cache_fresh:` branch above it) must set
-    # metric_faded = False as the very next non-comment statement — not just "somewhere in
-    # the function", which a sabotage that flips this ONE branch to True would not catch.
-    second_bp_none_idx = body.rindex("elif bp is None:")
-    tail_after_second_branch = body[second_bp_none_idx:second_bp_none_idx + 700]
-    assert "metric_faded = False" in tail_after_second_branch
-    assert "metric_faded = True" not in tail_after_second_branch
-
-
-def test_cache_freshness_is_determined_before_parsing_not_assumed_true():
-    """_bearish_cache_fresh must reflect whether the Redis GET returned real data (key exists),
-    not just default to True — and must be set to False again if the JSON parse itself fails
-    (a corrupted/truncated value is just as untrustworthy as a missing key)."""
-    body = _check_squeeze_watch_reverts_body()
-    assert "_bearish_cache_raw = _rc.get(" in body
-    assert "_bearish_cache_fresh = _bearish_cache_raw is not None" in body
-    except_idx = body.index("except Exception:\n                _bearish_by_symbol = {}")
-    tail = body[except_idx:except_idx + 120]
-    assert "_bearish_cache_fresh = False" in tail
+def test_gamma_scan_publishes_every_measured_symbol():
+    start = _scheduler_source.index("def check_gamma_unwind_alerts(")
+    body = _scheduler_source[start:_scheduler_source.index("\ndef ", start + 1)]
+    measured_idx = body.index("scan_measured[symbol] = {")
+    # Recorded before the dominant-side filter, so a mixed or calls-dominant reading is published too.
+    assert measured_idx < body.index("if call_share >= _GAMMA_UNWIND_MIN_CALLS_CONCENTRATION:")
+    assert "_rc.setex(_BEARISH_PUTS_SCAN_KEY," in body and "_json.dumps(scan_measured)" in body
 
 
 def test_gamma_unwind_writes_the_cache_even_with_zero_candidates():

@@ -213,8 +213,9 @@ def test_the_tab_renders_all_four_new_columns():
 def test_the_header_count_matches_the_empty_state_colspan():
     """An empty-state colSpan that lags the header count breaks the table layout — the kind of
     thing only a null render shows."""
-    assert "colSpan={7}" in PAGE
-    assert "['Date', 'Symbol', 'Exec', 'Live', 'Side', 'Shares', 'Premium']" in PAGE
+    # AUD-DP-TAB-BASELINE (2026-11-10): a Baseline column was added, so 8 and 8.
+    assert "colSpan={8}" in PAGE
+    assert "['Date', 'Symbol', 'Exec', 'Live', 'Side', 'Shares', 'Premium', 'Baseline']" in PAGE
 
 
 def test_the_tab_colours_buy_and_sell_differently():

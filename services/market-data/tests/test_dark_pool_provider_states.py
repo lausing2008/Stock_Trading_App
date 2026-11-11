@@ -138,7 +138,10 @@ def test_provider_identity_and_cancel_flag_survive_parsing_and_cancel_is_not_act
     rows,_=UW._parse_dark_pool_rows('SYNTH',raw)
     assert rows[0].tracking_id=='123' and rows[0].canceled is True and rows[0].observed_at
     out,_=_route(raw)
-    assert out['available'] is False and out['status']=='empty' and out['reason']=='no_active_prints'
+    # AUD-DP-EMPTY-STATUS: the fetch succeeded, so the status stays "ok"; the reason and the
+    # received count say why nothing is shown. It used to be overwritten to "empty".
+    assert out['available'] is False and out['status']=='ok' and out['reason']=='no_active_prints'
+    assert out['received_prints']==1
 
 
 def test_distinct_tracking_ids_are_kept_but_conflicting_same_id_is_quarantined():
@@ -148,3 +151,25 @@ def test_distinct_tracking_ids_are_kept_but_conflicting_same_id_is_quarantined()
     assert len(UW.usable_dark_pool_rows(rows+rows))==2
     changed,_=UW._parse_dark_pool_rows('SYNTH',[{**GOOD[0],"tracking_id":1,"canceled":True}])
     assert [r.tracking_id for r in UW.usable_dark_pool_rows(rows+changed)]==['2']
+
+
+def test_a_failed_fetch_whose_retained_sample_is_all_canceled_still_reports_the_failure():
+    """AUD-DP-EMPTY-STATUS (2026-11-10): the old code turned this into "the provider returned none"."""
+    raw = [{**GOOD[0], "tracking_id": 9, "canceled": True}]
+    _, redis = _route(raw)
+    del redis.store["stockai:uw:darkpool:v3:SYNTH"]
+    out, _ = _route(UW.UnusualWhalesRateLimitError("429"), redis=redis)
+    assert out["status"] == "rate_limited" and out["reason"] == "no_active_prints"
+    assert out["available"] is False and out["prints"] == []
+
+
+def test_prints_are_listed_newest_first_whatever_their_identity():
+    """AUD-DP-PRINT-ORDER (2026-11-10): ID-less prints came first, and the panel shows eight."""
+    raw = [
+        {**GOOD[0], "executed_at": "2026-10-22T14:00:00Z"},                                    # no ID, old
+        {**GOOD[0], "executed_at": "2026-10-22T15:30:00Z", "tracking_id": 5, "canceled": False},
+        {**GOOD[0], "executed_at": "2026-10-22T14:45:00Z", "tracking_id": 6, "canceled": False},
+    ]
+    out, _ = _route(raw)
+    assert [p["executed_at"] for p in out["prints"]] == [
+        "2026-10-22T15:30:00Z", "2026-10-22T14:45:00Z", "2026-10-22T14:00:00Z"]

@@ -37,7 +37,8 @@ def test_calibration_buckets_are_built_once_per_cycle_before_the_candidate_loop(
 
 def test_ml_price_direction_is_fetched_per_candidate_inside_the_loop():
     body = _function_body("check_prebreakout_alerts", "\n\ndef _record_prebreakout_alert_outcome(")
-    assert "ml_confidence, ml_model_version = _fetch_ml_price_direction(symbol)" in body
+    assert "ml_confidence, ml_model_version, ml_read = _fetch_ml_price_direction(symbol)" in body
+    assert '"ml_price_read": ml_read' in body
 
 
 def test_calibration_lookup_is_called_per_candidate_with_that_candidates_own_short_interest():
@@ -91,3 +92,32 @@ def test_record_prebreakout_alert_outcome_passes_the_four_new_params_into_the_or
         "calibrated_win_rate_count=calibrated_win_rate_count",
     ):
         assert assignment in body, f"PreBreakoutAlertOutcome(...) construction is missing {assignment!r}"
+
+
+# ── AUD-SQZ-ML-NODIRECTION (2026-11-10): the email states probability and direction ──────────
+
+def _send(candidate):
+    from unittest.mock import patch
+    from src.services.email_service import send_prebreakout_email
+    calls = []
+    def fake(to, subject, html, text):
+        calls.append({"html": html, "text": text})
+        return True
+    base = {"symbol": "XYZ", "short_percent_of_float": 22.0, "bb_width_pctile": 0.1,
+            "atr_pctile": 0.1, "volume_dried_up": True, "price": 10.0}
+    with patch("src.services.email_service.send_email", fake):
+        send_prebreakout_email("user@example.com", [{**base, **candidate}])
+    return calls[0]
+
+
+def test_a_bearish_model_reads_as_bearish_in_the_email():
+    out = _send({"ml_price_direction_confidence": 80.0,
+                 "ml_price_read": {"bullish_probability": 0.10, "direction": "down", "horizon_days": 10}})
+    for body in (out["html"], out["text"]):
+        assert "leans DOWN: 10% chance of a rise over 10 trading days" in body
+        assert "80 confidence" not in body
+
+
+def test_no_probability_shows_no_ml_line_even_with_a_stored_confidence():
+    out = _send({"ml_price_direction_confidence": 80.0, "ml_price_read": None})
+    assert "General ML" not in out["html"] and "General ML" not in out["text"]

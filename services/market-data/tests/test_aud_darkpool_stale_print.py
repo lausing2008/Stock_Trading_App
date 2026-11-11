@@ -116,22 +116,56 @@ def test_a_datetime_object_is_accepted_too():
 
 # ── The cooldown key must identify the PRINT ────────────────────────────────────────────
 
-def test_the_cooldown_key_includes_the_print_timestamp():
-    """The old key was (user, symbol) only, so it could not tell two prints apart — it
-    suppressed for 60 minutes and then let the SAME block through."""
+def test_the_key_prefers_the_provider_tracking_id():
+    key, ttl = sched._dark_pool_alert_key(7, "TSM", {"tracking_id": "abc", "executed_at": "t", "premium": 5e6})
+    assert key == "stockai:dark_pool_alert_cooldown:7:TSM:id:abc"
+    assert ttl == sched._DARK_POOL_PRINT_KEY_TTL_SECONDS
+
+
+def test_two_prints_in_the_same_second_get_different_keys():
+    """AUD-DP-REPEAT-SEND: an execution-time-only key made the second print collide with the first."""
+    k1, _ = sched._dark_pool_alert_key(7, "TSM", {"executed_at": "2026-11-10T15:00:00Z", "premium": 5e6})
+    k2, _ = sched._dark_pool_alert_key(7, "TSM", {"executed_at": "2026-11-10T15:00:00Z", "premium": 2e6})
+    assert k1 != k2
+
+
+def test_the_key_falls_back_to_user_and_symbol_with_the_ordinary_cooldown():
+    """No identity and no time: the original (user, symbol) key, never one ending in 'None'."""
+    key, ttl = sched._dark_pool_alert_key(7, "TSM", {})
+    assert key == "stockai:dark_pool_alert_cooldown:7:TSM"
+    assert ttl == sched._DARK_POOL_ALERT_COOLDOWN_MINUTES * 60
+
+
+def test_a_print_key_outlives_the_age_window():
+    """AUD-DP-REPEAT-SEND (2026-11-10): the key used to expire at 60 minutes while the print
+    stayed a candidate for 90, so the same print was emailed twice."""
+    assert sched._DARK_POOL_PRINT_KEY_TTL_SECONDS > sched._DARK_POOL_PRINT_MAX_AGE_MINUTES * 60
+
+
+def test_replaying_one_print_across_its_whole_window_sends_it_once():
+    """Executed 10:00, first seen 10:05, then every minute until it ages out at 11:30."""
+    executed = datetime(2026, 11, 10, 15, 0, tzinfo=timezone.utc)
+    cand = {"tracking_id": "p1", "executed_at": executed.isoformat(), "premium": 5e6}
+    store: dict[str, datetime] = {}   # key -> expiry instant: a fake Redis SET NX EX
+    sends = 0
+    for minute in range(5, 92):
+        now = executed + timedelta(minutes=minute)
+        if not sched._dark_pool_print_is_recent(_Row(cand["executed_at"]),
+                                                now - timedelta(minutes=sched._DARK_POOL_PRINT_MAX_AGE_MINUTES)):
+            continue
+        key, ttl = sched._dark_pool_alert_key(1, "TSM", cand)
+        if key in store and store[key] > now:
+            continue
+        store[key] = now + timedelta(seconds=ttl)
+        sends += 1
+    assert sends == 1
+
+
+def test_the_job_uses_the_identity_key_and_its_ttl():
     body = _dark_pool_body()
-    i = body.index("_cd_print_id = candidates[symbol].get")
-    block = body[i:i + 500]
-    assert "{uid}:{symbol}:{_cd_print_id}" in block
-
-
-def test_the_key_falls_back_when_a_print_has_no_timestamp():
-    """Must degrade to the old (user, symbol) key rather than producing a key ending in 'None',
-    which would collide across every undated print for that symbol."""
-    i = SCHED_SRC.index("_cd_print_id = candidates[symbol].get")
-    block = SCHED_SRC[i:i + 500]
-    assert "if _cd_print_id else" in block
-    assert 'f"stockai:dark_pool_alert_cooldown:{uid}:{symbol}"' in block
+    assert "cd_key, _cd_ttl = _dark_pool_alert_key(uid, symbol, candidates[symbol])" in body
+    assert 'if _rc.set(cd_key, "1", nx=True, ex=_cd_ttl):' in body
+    assert '"tracking_id": getattr(biggest, "tracking_id", None),' in body
 
 
 def _dark_pool_body() -> str:
@@ -152,16 +186,16 @@ def test_the_cooldown_still_uses_nx_and_a_ttl():
     """The set must stay atomic (nx=True) so two concurrent runs cannot both send, and keep a
     TTL so per-print keys cannot grow without bound."""
     body = _dark_pool_body()
-    i = body.index("cd_key = (")
+    i = body.index("cd_key, _cd_ttl = _dark_pool_alert_key(")
     block = body[i:i + 700]
     assert "nx=True" in block
-    assert "ex=_DARK_POOL_ALERT_COOLDOWN_MINUTES * 60" in block
+    assert "ex=_cd_ttl" in block
 
 
 def test_redis_failure_still_fails_open_for_delivery():
     """A Redis hiccup must not silently drop a real alert — the pre-existing behaviour, kept."""
     body = _dark_pool_body()
-    i = body.index("cd_key = (")
+    i = body.index("cd_key, _cd_ttl = _dark_pool_alert_key(")
     block = body[i:i + 900]
     assert "cooldown_ok_symbols.append(symbol)" in block.split("except Exception")[1][:200]
 
@@ -190,3 +224,134 @@ def test_prints_are_still_persisted_BEFORE_filtering():
     persist_i = SCHED_SRC.index("_persist_dark_pool_prints(session, stock_id, symbol, rows)")
     filter_i = SCHED_SRC.index("_dark_pool_print_is_recent(r, _print_cutoff)")
     assert persist_i < filter_i
+
+
+# ── AUD-DP-EMAIL-WORDING (2026-11-10) ───────────────────────────────────────────────────────
+
+def _dp_email(omitted=0):
+    from unittest.mock import patch
+    from src.services.email_service import send_dark_pool_alert_email
+    calls = []
+    def fake(to, subject, html, text):
+        calls.append({"html": html, "text": text})
+        return True
+    cand = {"symbol": "TSM", "premium": 5e6, "size": 25000, "price": 200.0, "exec_price": 200.0,
+            "live_price": 201.0, "venue": "D", "executed_at": "2026-11-10T15:00:00Z", "side": None}
+    with patch("src.services.email_service.send_email", fake):
+        send_dark_pool_alert_email("u@example.com", [cand], omitted_count=omitted)
+    return calls[0]
+
+
+def test_the_email_says_the_symbols_are_ones_the_reader_follows():
+    """AUD-DP-AUDIENCE (2026-11-10): each recipient now receives only symbols they follow."""
+    out = _dp_email()
+    for body in (out["html"], out["text"]):
+        assert "your watched symbols" not in body
+        assert "symbols you follow" in body
+
+
+def test_owned_symbols_lookup_on_real_models():
+    """Watchlist (direct and via list owner) plus open price alerts; fails closed."""
+    import subprocess, sys
+    probe = pathlib.Path(__file__).with_name("_owned_symbols_probe.py")
+    r = subprocess.run([sys.executable, str(probe)], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and "OWNED_SYMBOLS_PROBE_OK" in r.stdout, r.stdout + r.stderr
+
+
+def test_each_recipient_is_sent_only_their_own_symbols():
+    body = _dark_pool_body()
+    assert "_owned = owned_symbols_by_user(session, list(recipients.keys()))" in body
+    loop = body[body.index("for uid, user in recipients.items():"):]
+    assert loop.index("if symbol.upper() not in _mine:") < loop.index("_dark_pool_alert_key(uid, symbol")
+
+
+class _ScanSession:
+    """Answers the one Stock lookup with whatever symbols are listed as tradeable US stocks."""
+    def __init__(self, tradeable):
+        self.tradeable = tradeable
+
+    def execute(self, stmt):
+        rows = [(100 + i, sym) for i, sym in enumerate(self.tradeable)]
+        return type("R", (), {"all": lambda self_: rows})()
+
+
+def test_followed_symbols_are_added_to_the_scan_most_followed_first_and_capped():
+    base = [(1, "AAPL")]
+    owned = {1: {"AAPL", "TSM", "MU"}, 2: {"TSM"}, 3: {"0700.HK", "ZZZ"}}
+    scan, added = sched._dark_pool_scan_symbols(_ScanSession(["TSM", "MU", "ZZZ"]), base, owned)
+    assert scan[0] == (1, "AAPL")                     # the shared list stays first
+    assert [s for _id, s in scan[1:]] == ["TSM", "MU", "ZZZ"]   # 2 followers, then alphabetical
+    assert added == 3
+
+
+def test_the_scan_extension_is_capped():
+    owned = {1: {f"S{i:03d}" for i in range(100)}}
+    tradeable = sorted(owned[1])
+    scan, added = sched._dark_pool_scan_symbols(_ScanSession(tradeable), [], owned)
+    assert added == sched._DARK_POOL_OWNED_SCAN_CAP == len(scan)
+
+
+def test_the_omitted_count_is_described_as_symbols_in_this_check():
+    """omitted_count is extra SYMBOLS beyond the per-email cap in one run, not prints or a day."""
+    out = _dp_email(omitted=3)
+    for body in (out["html"], out["text"]):
+        assert "+ 3 more symbols with a qualifying print in this check" in body
+        assert "more prints today" not in body
+
+
+def test_the_venue_is_not_called_a_dark_pool_venue():
+    out = _dp_email()
+    assert "dark pool venue" not in out["html"]
+    assert "does not establish which dark pool or ATS executed it" in out["html"]
+
+
+def test_a_print_with_no_execution_price_does_not_qualify():
+    """AUD-DP-NOPRICE (2026-11-10): a provider premium with no price became alert_price 0.0 or
+    carried the live price as the execution price."""
+    class P:
+        def __init__(self, price):
+            self.price = price
+    for bad in (None, 0, 0.0, -1.0, float("nan"), float("inf"), True, "200"):
+        assert sched._dark_pool_print_priced(P(bad)) is False, bad
+    assert sched._dark_pool_print_priced(P(200.25)) is True
+    body = _dark_pool_body()
+    i = body.index("qualifying = [")
+    block = body[i:i + 2400]
+    assert block.index("if not _dark_pool_print_priced(r):") < block.index("qualifying.append(")
+
+
+def test_an_unidentified_or_unflagged_print_does_not_qualify():
+    """AUD-DP-UNIDENTIFIED (2026-11-10): the alert uses the ledger's identity rule."""
+    body = _dark_pool_body()
+    i = body.index("qualifying = [")
+    block = body[i:i + 2400]
+    assert 'if not getattr(r, "tracking_id", None) or getattr(r, "canceled", None) is not False:' in block
+    assert block.index("is not False:") < block.index("qualifying.append(")
+
+
+# ── AUD-DP-SESSIONGATE / AUD-DP-LIVEAGE (2026-11-10), decision D11 ──────────────────────────
+
+def test_emails_and_outcomes_are_gated_to_the_session_but_polling_is_not():
+    body = _dark_pool_body()
+    gate = body.index("if not _dark_pool_alerts_in_session():")
+    assert body.index("_persist_dark_pool_prints(session, stock_id, symbol, rows)") < gate
+    assert gate < body.index("                _record_dark_pool_alert_outcome(\n")
+    assert gate < body.index("send_ok = send_dark_pool_alert_email(")
+
+
+def test_the_session_check_follows_the_market_calendar_and_fails_open():
+    from unittest.mock import patch
+    import src.services.paper_trading_engine as pte
+    with patch.object(pte, "_is_market_hours", lambda m: False):
+        assert sched._dark_pool_alerts_in_session() is False
+    with patch.object(pte, "_is_market_hours", lambda m: True):
+        assert sched._dark_pool_alerts_in_session() is True
+    def boom(m):
+        raise RuntimeError("calendar down")
+    with patch.object(pte, "_is_market_hours", boom):
+        assert sched._dark_pool_alerts_in_session() is True
+
+
+def test_a_live_price_from_an_earlier_session_is_not_used_as_live():
+    body = _dark_pool_body()
+    assert 'price = live.get("price") if live and not _live_row_from_earlier_session(live, False) else None' in body

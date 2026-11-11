@@ -2,6 +2,12 @@
 
 No legacy tuple-key rows are migrated or inferred to have identities. A provider tracking
 ID is not an exchange-wide ID. Observed response time orders captures, not market revisions.
+
+Repeated IDs within ONE response (measured 2026-10-29: 1,964 of 1,965 quarantined identities)
+are classified in `dark_pool_id_groups_v2`. `multi_row_same_id` means every row is uncanceled
+and shares one execution time; anything else is `conflicting_rows`. Both stay quarantined
+(`ambiguous`) on the events row: whether several rows under one ID are separate fills is not
+established, so they are neither merged nor summed. The classification only names WHY.
 """
 import hashlib
 import json
@@ -18,6 +24,13 @@ events = Table('dark_pool_events_v2', metadata,
     Column('payload_hash', String(64), nullable=False), Column('payload', JSON, nullable=False),
     Column('observed_at', DateTime, nullable=False))
 Index('ix_dark_pool_v2_symbol_executed', events.c.symbol, events.c.executed_at)
+# One row per distinct same-response group; first/last observed bound it without a row per poll.
+id_groups = Table('dark_pool_id_groups_v2', metadata,
+    Column('symbol', String(32), primary_key=True), Column('tracking_id', String(128), primary_key=True),
+    Column('group_hash', String(64), primary_key=True), Column('state', String(24), nullable=False),
+    Column('row_count', BigInteger, nullable=False), Column('distinct_payloads', BigInteger, nullable=False),
+    Column('payload_hashes', JSON, nullable=False),
+    Column('first_observed_at', DateTime, nullable=False), Column('last_observed_at', DateTime, nullable=False))
 versions = Table('dark_pool_event_versions_v2', metadata,
     Column('symbol', String(32), primary_key=True), Column('tracking_id', String(128), primary_key=True),
     Column('payload_hash', String(64), primary_key=True), Column('payload', JSON, nullable=False),
@@ -70,10 +83,30 @@ def event_values(symbol, row):
         return None
 
 
+def classify_groups(valid):
+    """{tracking_id: group} for IDs repeated within one response with differing payloads."""
+    by_id = {}
+    for values in valid:
+        by_id.setdefault(values['tracking_id'], []).append(values)
+    groups = {}
+    for tracking_id, rows in by_id.items():
+        hashes = sorted({r['payload_hash'] for r in rows})
+        if len(hashes) < 2:
+            continue
+        same_fill_shape = (not any(r['canceled'] for r in rows)
+                           and len({r['executed_at'] for r in rows}) == 1)
+        groups[tracking_id] = dict(state='multi_row_same_id' if same_fill_shape else 'conflicting_rows',
+                                   row_count=len(rows), distinct_payloads=len(hashes), payload_hashes=hashes,
+                                   group_hash=hashlib.sha256('|'.join(hashes).encode()).hexdigest(),
+                                   observed_at=max(r['observed_at'] for r in rows))
+    return groups
+
+
 def persist(session, symbol, rows):
     valid = [v for row in rows if (v:=event_values(symbol,row)) is not None]
     if not valid:
         return 0
+    groups = classify_groups(valid)
     if session.get_bind().dialect.name == 'sqlite':
         from sqlalchemy.dialects.sqlite import insert
     else:
@@ -91,6 +124,14 @@ def persist(session, symbol, rows):
                 index_elements=['symbol','tracking_id'], set_=changes,
                 where=or_(events.c.observed_at < values['observed_at'],
                           and_(events.c.observed_at == values['observed_at'],events.c.payload_hash != values['payload_hash']))))
+        for tracking_id, group in groups.items():
+            stmt=insert(id_groups).values(symbol=symbol, tracking_id=tracking_id, group_hash=group['group_hash'],
+                state=group['state'], row_count=group['row_count'], distinct_payloads=group['distinct_payloads'],
+                payload_hashes=group['payload_hashes'], first_observed_at=group['observed_at'],
+                last_observed_at=group['observed_at'])
+            session.execute(stmt.on_conflict_do_update(index_elements=['symbol','tracking_id','group_hash'],
+                set_={'last_observed_at': stmt.excluded.last_observed_at},
+                where=id_groups.c.last_observed_at < stmt.excluded.last_observed_at))
     session.commit()
     return len(valid)
 

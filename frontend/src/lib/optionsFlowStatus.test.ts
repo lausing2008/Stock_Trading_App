@@ -97,3 +97,20 @@ it('renders an after-midnight ET print as 00:xx, never 24:xx', async () => {
   const { printTimeText } = await import('./optionsFlowStatus');
   expect(printTimeText({ executed_at_utc: '2026-10-22T04:05:00Z', time_status: 'ok', age_minutes: 0 }, Date.parse('2026-10-22T04:05:00Z'))).toBe('Oct 22, 00:05 ET · 0 min ago');
 });
+
+import { darkPoolStatus } from './optionsFlowStatus';
+
+it('darkPoolStatus: prints received but none usable does not say the provider returned none (AUD-DP-EMPTY-STATUS)', () => {
+  {
+    const out = darkPoolStatus({ status: 'ok', reason: 'no_active_prints', received_prints: 3 });
+    expect(out?.text).toContain('the provider returned 3 prints, none currently usable');
+    expect(out?.text).not.toContain('returned none');
+  }
+});
+
+it('darkPoolStatus: a feed failure with no usable prints is still a failure', () => {
+  {
+    const out = darkPoolStatus({ status: 'rate_limited', reason: 'no_active_prints', received_prints: 1 });
+    expect(out?.tone).toBe('error');
+  }
+});

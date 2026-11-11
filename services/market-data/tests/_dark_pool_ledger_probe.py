@@ -60,13 +60,23 @@ with engine.connect() as connection:
             assert current('a')['canceled']
             write([row('b',step=10,price=102),row('b',step=10,price=103)])
             assert current('b')['ambiguous']
+            group=lambda identity:session.execute(select(ledger.id_groups).where(ledger.id_groups.c.tracking_id==identity)).mappings().all()
+            # Same response, same ID, same execution time: classified, still quarantined.
+            assert [(g['state'],g['row_count'],g['distinct_payloads']) for g in group('b')]==[('multi_row_same_id',2,2)]
+            write([row('b',step=12,price=102),row('b',step=12,price=103)])
+            assert len(group('b'))==1 and group('b')[0]['last_observed_at']>group('b')[0]['first_observed_at']
+            assert current('b')['ambiguous']
+            write([row('c',step=10),row('c',step=10,price=0,canceled=True)])
+            assert [g['state'] for g in group('c')]==['conflicting_rows'] and current('c')['ambiguous']
+            write([row('d',step=10),row('d',step=10)])
+            assert group('d')==[] and not current('d')['ambiguous']
             write([row('b',step=50,price=104)])
             assert not current('b')['ambiguous'] and current('b')['price']==104
             assert write([row(None)])==0
             assert write([row('unknown',canceled=None)])==0
             active=session.execute(select(func.count()).select_from(ledger.events).where(ledger.events.c.canceled.is_(False),ledger.events.c.ambiguous.is_(False))).scalar()
-            assert active==1
-            results={'distinct_events':count(ledger.events),'retained_versions':count(ledger.versions),
+            assert active==2
+            results={'multi_row_groups':count(ledger.id_groups),'distinct_events':count(ledger.events),'retained_versions':count(ledger.versions),
                      'active_unambiguous':active,'corrections_and_cancellations':True,
                      'stale_capture_cannot_revert':True,'database':'postgresql-temp' if postgres else 'sqlite',
                      'temporary_tables_only':postgres,'outer_rollback':True}

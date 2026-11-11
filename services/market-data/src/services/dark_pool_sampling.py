@@ -9,6 +9,12 @@ from datetime import datetime, timedelta, timezone
 
 RETENTION = 21 * 86400
 CADENCE = 900
+# AUD-DP-COVERAGE-DRIFT (2026-11-10): a poll happens when the 900 s cache has expired AND the
+# next 1-minute job tick arrives, so real polls are 900-960 s apart and drift across the fixed
+# 900 s slot grid. Measured on a full session: steady 930-960 s polling counted 1-2 slots as
+# missing every day, so coverage read "degraded" with nothing wrong. A slot is now covered by a
+# poll up to two job ticks after its end. A real outage (any gap of 2+ cadences) still counts.
+SLOT_TOLERANCE_SECONDS = 120
 
 
 def key(symbol):
@@ -50,7 +56,8 @@ def summarize(rows, *, now=None):
                 slot, close = bounds
                 while slot + timedelta(seconds=CADENCE) <= min(close, now):
                     end = slot + timedelta(seconds=CADENCE)
-                    if slot >= start and (bisect_left(times, slot) == bisect_left(times, end)):
+                    covered_until = end + timedelta(seconds=SLOT_TOLERANCE_SECONDS)
+                    if slot >= start and (bisect_left(times, slot) == bisect_left(times, covered_until)):
                         missing += 1
                     slot = end
             day += timedelta(days=1)
@@ -63,10 +70,13 @@ def summarize(rows, *, now=None):
             "note": "Captured windows only. The identity ledger excludes legacy tuples and unidentified prints; continuous tape coverage is not established."}
 
 
-def coverage(redis, symbol, *, now=None):
+def coverage(redis, symbol, *, now=None, window_seconds=RETENTION):
+    """`window_seconds` should match what the figure is shown beside (AUD-DP-COVERAGE-WINDOW:
+    the route showed 21 days of poll history next to a 14-day baseline)."""
     now = now or datetime.now(timezone.utc)
+    window_seconds = min(window_seconds, RETENTION)
     try:
-        raw = redis.zrangebyscore(key(symbol), now.timestamp() - RETENTION, "+inf")
+        raw = redis.zrangebyscore(key(symbol), now.timestamp() - window_seconds, "+inf")
         return summarize([json.loads(r) for r in raw], now=now)
     except Exception:
         return {"status": "query_failed", "note": "Poll history unavailable; sampling quality is unknown.",
