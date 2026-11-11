@@ -1,6 +1,6 @@
 # Options tab redesign and Call Finder — design (November 10, 2026)
 
-**Status: built and tested locally on November 10, not committed or deployed.** Decisions taken: the proposed defaults (half-move headline with max-at-target as the aggressive alternative, one implied σ default target, advanced tier). See [Build](#build-november-10). Validation steps 1–2 remain open. Companion review: [options, short squeeze and dark pool review](../audits/2026-11-10-options-squeeze-dark-pool-review.md).
+**Status: built November 10, deployed November 11 (`f0d941ab`).** Deployment record: [the review](../audits/2026-11-10-options-squeeze-dark-pool-review.md#deployment-november-11-2026-about-0510-0540-utc). Decisions taken: the proposed defaults (half-move headline with max-at-target as the aggressive alternative, one implied σ default target, advanced tier). See [Build](#build-november-10). Validation steps 1–2 remain open. Companion review: [options, short squeeze and dark pool review](../audits/2026-11-10-options-squeeze-dark-pool-review.md).
 
 ## What was asked
 

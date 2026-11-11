@@ -392,7 +392,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
 - **`docs/audits/2026-11-10-options-squeeze-dark-pool-review.md`** — 31 findings, status table per item: squeeze days-to-cover was scored BACKWARDS; dark-pool print emailed twice; now each user gets only own symbols. Read before touching squeeze/dark-pool alerts [squeeze, dark pool]
-- **`docs/features/2026-11-10-options-tab-call-finder-design.md`** — Call Finder: near-term + LEAPS picks by return at HALF the target move (max-at-target always picks far OTM); expiry by time rule. Research candidates, unvalidated [options]
+- **`docs/features/2026-11-10-options-tab-call-finder-design.md`** — Call Finder DEPLOYED 11-11 (f0d941ab, market-data file-level: prod holds 2 held commits): near-term + LEAPS picks by return at HALF the target move. Unvalidated [options]
 - **`docs/2026-11-06-platform-audit/README.md`** — Trading/system audits, learning wiki, institutional controls, consolidation and UX roadmap; documentation only. Known gaps and unverified production/return claims remain explicit.
 - **`docs/audits/2026-10-26-little-rzy-ai-signals-full-review.md`** — RZY/AI correctness review, reproduced measurement defects, production evidence and staged Intraday/performance plan; documentation only.
 - **`docs/2026-10-28/open-items-status.md`** — 457a/457b accepted (final candle = provider OHLCV; 0 off-grid persisted); chain capture verified; tiered retention + session-only capture deployed eda934f3; yfinance 429s traced to the UW-cooldown fallback [457, opthist]

@@ -1,6 +1,6 @@
 # Options candidate outcome study — design (October 29, 2026)
 
-**Status (October 31): Part A run completed; results in [the results report](../audits/2026-10-31-options-candidate-study-results.md). Part B built and tested, not deployed.** Research only. No live setting, ranking or recommendation changes. See [Part A build](#part-a-build-october-30) and [Part B build](#part-b-build-october-30).
+**Status (October 31): Part A run completed; results in [the results report](../audits/2026-10-31-options-candidate-study-results.md). Part B deployed November 11 (`f0d941ab`); records start from that date.** Research only. No live setting, ranking or recommendation changes. See [Part A build](#part-a-build-october-30) and [Part B build](#part-b-build-october-30).
 
 ## The question
 

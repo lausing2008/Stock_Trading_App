@@ -1,6 +1,6 @@
 # Options, short squeeze and dark pool: implementation review (November 10, 2026)
 
-**Fixes applied locally the same day; not committed or deployed.** See [Fixes applied](#fixes-applied-november-10-not-deployed). Production data and settings were not touched. Companion design: [Options tab redesign and Call Finder](../features/2026-11-10-options-tab-call-finder-design.md).
+**Fixes applied the same day and deployed November 11 (`f0d941ab`, market-data as a file-level deploy).** See [Fixes applied](#fixes-applied-november-10-not-deployed). Production data and settings were not touched. Companion design: [Options tab redesign and Call Finder](../features/2026-11-10-options-tab-call-finder-design.md).
 
 ## Scope and method
 
@@ -255,3 +255,32 @@ Done at your request ("let's fix them"). All changes are local and uncommitted.
 - **S5:** pre-breakout outcome rows drop from one per qualifying day to one per episode. The win rate's sample will grow more slowly.
 - **D5 and D8:** a few dark-pool alerts will no longer fire, for prints that have no identity or no price.
 - **S12:** deactivated accounts stop receiving every batch alert type, not only squeeze emails.
+
+## Deployment (November 11, 2026, about 05:10–05:40 UTC)
+
+**Commit `f0d941ab`** (rebased onto 20 commits from other sessions; the combined tree was re-tested before pushing).
+
+- **market-data: a file-level deploy, not an image rebuild.** `prod` also holds two changes another session keeps deliberately undeployed: `58d77de4` (part of a running RZY A/B read) and `3369e1a5` (price risk). An image rebuild from `prod` would have shipped them. Instead, under the host deploy lock:
+  1. The container's copies of the 10 modified files were checked against release `16fe5a81` (all matched).
+  2. Those copies and the container log were saved to `~/container-logs/prehotfix-f0d941ab-20261111T051059Z/`, with a list of the 7 new files.
+  3. The 17 files were copied in and verified by hash.
+  4. The container was restarted: healthy after about 40 s.
+
+  None of the 17 files is touched by the held commits or by the other session's live hot-patch.
+- **Frontend:** `scripts/deploy_frontend.sh`, built on EC2 from `f0d941ab`, healthy. The served chunks contain the new code (Call Finder, Baseline column, short-interest dates) and no `localhost` URLs.
+- **Live checks (read-only, in the container):**
+  - the three new tables exist;
+  - the dark-pool recent route returns the scope and baseline fields;
+  - `/api/stocks/{symbol}/options-call-finder` answers 401 through the gateway (routed, login required).
+- **The Call Finder on real data** (session 2026-11-09):
+
+| Symbol | Near-term pick | LEAPS pick | Note |
+|---|---|---|---|
+| AAPL | Dec 18 $335 call, delta 0.74 | Jan 2028 $310 call, delta 0.76 | |
+| NVDA | Dec 18 $168 call, delta 0.67 | Jan 2028 $150 call, delta 0.76 | IV rank 96: the rich-IV warning shows |
+
+- **Log lines after restart:** Yahoo Finance "currently down" and `US10Y` 404s also appear before the restart (89 and 2,504 lines in the saved log), so they are not from this deploy.
+- **Caveat:**
+  - A recreation of the market-data container reverts this deploy until the next image build.
+  - The next image build from `prod` ships these changes permanently, and with them the two held commits. That build needs the other session's decision on `58d77de4` and `3369e1a5` first.
+  - Until then the drift check will report these 17 files as differing from the image.
