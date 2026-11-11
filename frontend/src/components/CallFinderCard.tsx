@@ -69,6 +69,13 @@ function PickColumn({ title, p }: { title: string; p?: CallFinderPick }) {
           <p style={{ fontSize: 11, color: '#64748b', margin: '0 0 8px' }}>
             Expiry: {p.expiry_reason}. Strike: {p.rule}. Target {usd(p.target!)} ({p.target_basis}); {p.hold_days}-day hold; {p.eligible_count} contracts passed the checks.
           </p>
+          {p.kind === 'near' && (
+            <p data-testid="call-finder-replay-note" style={{ fontSize: 11, color: '#94a3b8', margin: '0 0 8px' }}>
+              What the replay found (353,000 archived trades, Nov 2026): this pick is lower leverage than the aggressive
+              alternative, so it trailed in months the stock rose and held up better in flat or falling months. Its one
+              consistent edge was a narrower spread on 7-day holds. It does not forecast which contract will earn most.
+            </p>
+          )}
           {p.warnings && p.warnings.length > 0 && (
             <ul aria-label={`${title} warnings`} style={{ margin: '0 0 8px', paddingLeft: 18, fontSize: 11, color: '#f59e0b' }}>
               {p.warnings.map(w => <li key={w}>{w}</li>)}

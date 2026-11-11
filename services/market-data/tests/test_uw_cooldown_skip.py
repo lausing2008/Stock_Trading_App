@@ -196,7 +196,6 @@ def _universe(monkeypatch, outcomes, remaining=12.0):
         return outcomes[sym].pop(0)
 
     monkeypatch.setattr(ING, "ingest_symbol", fake_ingest)
-    monkeypatch.setattr(ING, "_bust_live_price_cache", lambda: None)
     monkeypatch.setattr(ING, "_completion_sleep", slept.append)
     monkeypatch.setattr(UWA, "cooldown_remaining_s", lambda: remaining)
     return calls, slept

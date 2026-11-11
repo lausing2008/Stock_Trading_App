@@ -355,3 +355,13 @@ def test_the_session_check_follows_the_market_calendar_and_fails_open():
 def test_a_live_price_from_an_earlier_session_is_not_used_as_live():
     body = _dark_pool_body()
     assert 'price = live.get("price") if live and not _live_row_from_earlier_session(live, False) else None' in body
+
+
+def test_prints_are_persisted_only_for_a_fresh_provider_answer():
+    """AUD-DP-JOB-OVERRUN (2026-11-11): re-writing a 15-minute cached answer every minute for
+    80 symbols made the job overrun its one-minute slot 76 times in one session."""
+    body = _dark_pool_body()
+    i = body.index("_dp_fetch = _uw.fetch_dark_pool_prints(symbol)")
+    block = body[i:i + 1800]
+    assert "rows = _uw.usable_dark_pool_rows(_dp_fetch.rows)" in block
+    assert "if not _dp_fetch.from_cache:\n                        _persist_dark_pool_prints(session, stock_id, symbol, rows)" in block

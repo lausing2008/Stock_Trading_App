@@ -7045,11 +7045,20 @@ def check_dark_pool_alerts() -> None:
                     # live price. It was compared with the print as "vs live" (e.g. an evening
                     # print against the 16:00 close). Unknown is shown as unknown instead.
                     price = live.get("price") if live and not _live_row_from_earlier_session(live, False) else None
-                    rows = _uw.get_dark_pool_prints(symbol)
+                    _dp_fetch = _uw.fetch_dark_pool_prints(symbol)
+                    rows = _uw.usable_dark_pool_rows(_dp_fetch.rows)
                     # AUD-DARKPOOL-NOPERSIST: persist EVERY fetched print before filtering —
                     # the baseline below is built from ordinary prints, so filtering first
                     # would destroy the very distribution the relative bar measures against.
-                    _persist_dark_pool_prints(session, stock_id, symbol, rows)
+                    # AUD-DP-JOB-OVERRUN (2026-11-11): only for a FRESH provider answer. The
+                    # answer is cached 15 min and this job runs every minute, so the same up-to-50
+                    # prints per symbol were re-written to both tables 14 times in 15. With 80
+                    # symbols scanned that was thousands of no-op upserts a minute: the job's
+                    # median run reached 39 s (p90 87 s) and it overran its slot 76 times on
+                    # Nov 11. A fresh answer was already captured by fetch_dark_pool_prints, and
+                    # its legacy rows are written here once.
+                    if not _dp_fetch.from_cache:
+                        _persist_dark_pool_prints(session, stock_id, symbol, rows)
                     # AUD-DARKPOOL-ABSTHRESHOLD: both bars must clear. The absolute floor keeps
                     # a relatively-large print in an illiquid name from alerting when it isn't
                     # a real institutional block in dollar terms; the relative bar keeps routine

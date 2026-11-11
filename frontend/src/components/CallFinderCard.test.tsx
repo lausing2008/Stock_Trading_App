@@ -83,3 +83,15 @@ it('says why when the finder is unavailable', async () => {
   renderCard();
   expect((await screen.findByText(/Call Finder unavailable/)).textContent).toContain('price_basis_unverified (no daily close stored)');
 });
+
+it('states what the replay found under the near-term pick only', async () => {
+  mocks.getOptionsCallFinder.mockResolvedValue(response({
+    leaps: { ...response().near!, kind: 'leaps' },
+  }));
+  renderCard();
+  await screen.findByTestId('call-finder-near');
+  const notes = screen.getAllByTestId('call-finder-replay-note');
+  expect(notes).toHaveLength(1);
+  expect(notes[0].textContent).toContain('lower leverage than the aggressive alternative');
+  expect(within(screen.getByLabelText('Near-term call')).getByTestId('call-finder-replay-note')).toBeTruthy();
+});

@@ -40,7 +40,6 @@ ING.SessionLocal = Session
 ING._write_parquet = lambda *a, **k: None
 ING._polygon_budget_available = lambda: True
 ING._count_cooldown_skip = lambda *a: None
-ING._bust_live_price_cache = lambda: None
 CAL.is_regular_session = lambda market, now=None: True     # the run is "inside the session"
 ING.primary_provider = lambda market, tf: "unusual_whales"
 

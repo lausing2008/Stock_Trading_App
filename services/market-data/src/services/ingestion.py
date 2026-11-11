@@ -726,15 +726,6 @@ def _write_parquet(df: pd.DataFrame, symbol: str, timeframe: str) -> None:
     df.to_parquet(fname, index=False)
 
 
-def _bust_live_price_cache() -> None:
-    try:
-        from common.redis_client import get_redis as _get_pool_redis
-        r = _get_pool_redis()
-        r.delete("stockai:live_prices")
-    except Exception:
-        pass
-
-
 def ingest_universe(symbols: list[str], timeframe: str = "1d", max_workers: int = 6, force: bool = False) -> list[dict]:
     """Fetch all symbols in parallel (I/O-bound — safe to thread)."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -767,7 +758,12 @@ def ingest_universe(symbols: list[str], timeframe: str = "1d", max_workers: int 
         still = [s for s in pending if results[index[s]].get("completion_pending")]
         log.info("ingest.cooldown_completion_retry", tf=timeframe, pending=len(pending),
                  still_pending=len(still), waited_s=round(waited, 1))
-    _bust_live_price_cache()
+    # AUD-LIVECACHE-BUST (2026-11-11): this used to DELETE stockai:live_prices after every ingest.
+    # The cache is rebuilt by the every-minute refresh and expires after 90 s anyway, so the
+    # delete only opened a gap of up to a minute after each 5-minute ingest in which every reader
+    # found nothing: price alerts, the squeeze scans and the gamma scan quietly skipped about one
+    # cycle in five. On Nov 11 the 4-hourly gamma scan landed in that gap at every run (16 s after
+    # the ingest finished) and measured 0 symbols all day.
     return results
 
 
