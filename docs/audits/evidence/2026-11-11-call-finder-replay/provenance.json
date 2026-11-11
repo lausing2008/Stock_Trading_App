@@ -1,0 +1,11 @@
+{
+ "source_sha256": {
+  "services/options_strategies.py": "725a92c29b33333b6924f58fa9fa07a9fe969cc4872d38a31e4e6b802a4a6343",
+  "services/uw_option_chain.py": "37c7a557fd0788f8a84eac6dc6a3c430162355f9dd18c20db66ac1ec584e5ca4",
+  "services/options_contract.py": "e4abc2a3487bc587cd39444bea64da9cddd904f57af4be3829360463c7062c4c",
+  "api/routes.py": "092eec531b859ca0e3e5c1a62b5de014ab670a0a89c2e5270ef616681755cecd",
+  "study": "6f95d409f8f9b8c25a32f8b890426bc0991a4abc6aeaa978bd646357022b1361",
+  "research_lead": "725653901231fde05116fc17c70d6c077a0b122d273f8824c15a3e4556175fab"
+ },
+ "study_version": "options_candidate_study_v2"
+}

@@ -178,3 +178,11 @@ These numbers match the worked example above.
 Sabotage of the half-move rule, the ask fill and the open-interest gate each fails its tests.
 
 **Not built:** the replay arm and the forward record (validation steps 1–2). Both need the study and desk-record code that is still on the `safety/prod-before-reconcile-20261108` branch.
+
+## Replay result (November 11)
+
+Validation step 1 ran: [Call Finder replay](../audits/2026-11-11-call-finder-replay.md), study v2, 353,336 trades.
+- **Strike rule:** it picks lower leverage, not better contracts. Its edge over the alternatives moves opposite to the stock (correlation about −0.8 by month).
+- **The one consistent edge:** 7-day holds against the preset, explained by a narrower spread.
+- **Label:** the card keeps its "research candidate" label. A wording change is proposed in the report, not made.
+

@@ -1,0 +1,29 @@
+{
+ "finder_aggressive": {
+  "months": 28,
+  "finder_ahead_months": 13,
+  "corr_with_stock_move": -0.86,
+  "mean_diff_when_stocks_rose_1pct_plus": -7.99,
+  "mean_diff_when_stocks_fell": 2.83,
+  "n_up_months": 16,
+  "n_down_months": 5
+ },
+ "finder_atm": {
+  "months": 28,
+  "finder_ahead_months": 14,
+  "corr_with_stock_move": -0.77,
+  "mean_diff_when_stocks_rose_1pct_plus": -1.89,
+  "mean_diff_when_stocks_fell": 1.55,
+  "n_up_months": 16,
+  "n_down_months": 5
+ },
+ "preset": {
+  "months": 28,
+  "finder_ahead_months": 15,
+  "corr_with_stock_move": -0.85,
+  "mean_diff_when_stocks_rose_1pct_plus": -7.86,
+  "mean_diff_when_stocks_fell": 5.6,
+  "n_up_months": 17,
+  "n_down_months": 5
+ }
+}
