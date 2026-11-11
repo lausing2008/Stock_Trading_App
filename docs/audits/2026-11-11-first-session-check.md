@@ -1,6 +1,6 @@
 # First trading session on the options, squeeze and dark-pool release (November 11, 2026)
 
-**Read-only check** of `f0d941ab`/`78485a75` after the November 11 US session, run at about 17:30 ET from the market-data logs and database. Fixes for what it found are committed but **not deployed** (see the end).
+**Read-only check** of `f0d941ab`/`78485a75` after the November 11 US session, run at about 17:30 ET from the market-data logs and database. Fixes for what it found were deployed the same evening (see the end).
 
 ## What worked
 
@@ -46,6 +46,15 @@
 - Short-squeeze alerts: 1 candidate all day, against 8–10. Part of that was the cache gap; the rest is the market or the new stale-row check. Re-read after the fix is live.
 - Whether recipients received only their own symbols. The per-recipient logs record counts, not symbols, so this needs a check of the outbox or the emails themselves.
 
-## Deployment needed
+## Deployment
 
 Three market-data files: `ingestion.py`, `scheduler.py` and `unusual_whales.py`. None of them is touched by the two held commits (`58d77de4`, `3369e1a5`), so the same lock-held file-level deploy applies. Plus the frontend rebuild.
+
+**Deployed November 11, about 22:50–23:15 UTC (`ea82918e`, with `0ed9f2b2`).**
+- **market-data:** the same lock-held file-level method for `ingestion.py`, `scheduler.py` and `unusual_whales.py`. Running copies matched `16fe5a81`, `78485a75` and `f0d941ab` before the copy. Pre-change copies are in `~/container-logs/prehotfix-ea82918e-20261111T225008Z/`. Healthy after about 40 s.
+- **Frontend:** `scripts/deploy_frontend.sh` from `ea82918e`, healthy. The served chunks contain the replay note and no `localhost` URLs.
+- **After the restart:**
+  - `BRK-A` 422s: 0 in the first 4 minutes (about one a minute before).
+  - Dark-pool runs: median **3.2 s** (39 s before), no overruns. The first run after the restart took 51 s because every answer was fetched fresh.
+  - The cache-delete function is gone from the running code.
+- **Still to confirm at the next session:** that the gamma scan measures symbols again, and how many short-squeeze candidates appear.
