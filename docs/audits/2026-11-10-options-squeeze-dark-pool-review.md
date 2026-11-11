@@ -296,3 +296,9 @@ Done at your request ("let's fix them"). All changes are local and uncommitted.
   - market-data: 6,366 passed, 1 failure that also fails on unmodified `HEAD` (`test_prebreakout_dataset`);
   - frontend: 1,059 passed, typecheck clean;
   - sabotage of the per-user filter and of either threshold is caught.
+- **Deployed November 11, about 06:05–06:30 UTC (`78485a75`).**
+  - **market-data:** the same lock-held file-level method, 4 files. Their running copies matched `f0d941ab`/`16fe5a81` before the copy. Pre-change copies are in `~/container-logs/prehotfix-78485a75-20261111T060514Z/`. Healthy after about 40 s.
+  - **Live check:** rich/cheap reads 70/30, and the options-flow cap is 20.
+  - **Frontend:** `scripts/deploy_frontend.sh` from `78485a75`, healthy, no `localhost` URLs in the served chunks.
+  - **Held commits:** `58d77de4` and `3369e1a5` remain undeployed.
+- **Seen during this deploy, not caused by it:** the dark-pool fetch for `BRK-A` fails with HTTP 422 about once a minute. It started before `f0d941ab` (1,284 failures in the earlier log), and no other ticker is affected. Most likely Unusual Whales does not accept the `BRK-A` share-class format. Open; not changed.
