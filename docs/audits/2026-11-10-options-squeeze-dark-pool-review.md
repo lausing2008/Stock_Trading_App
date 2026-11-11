@@ -284,3 +284,15 @@ Done at your request ("let's fix them"). All changes are local and uncommitted.
   - A recreation of the market-data container reverts this deploy until the next image build.
   - The next image build from `prod` ships these changes permanently, and with them the two held commits. That build needs the other session's decision on `58d77de4` and `3369e1a5` first.
   - Until then the drift check will report these 17 files as differing from the image.
+
+## Follow-up (November 11): options-flow audience and one IV-rank definition
+
+- **Options-flow email, same rule as dark pool (AUD-OF-AUDIENCE).** Each recipient now gets only the symbols they follow (watchlists plus open price alerts). A failed lookup sends nothing. The recipient set is unchanged. Up to 20 followed symbols are added to the scan. That is fewer than dark pool's 40, because this job reads the provider every 150 s per symbol (~150 requests per symbol per session, ~3,000/day at the cap). The email header says the symbols are ones the reader follows.
+- **IV rank "rich/cheap" aligned at 70/30 (AUD-OPT-IVRANK-ALIGN).**
+  - "Rich" was 60 in the strategy builder's recommendation and the Call Finder's warning. It was 70 in the alert email's badge, the screener and the desk's own preference rule, so one stock could read "rich" in one panel and "mid-range" in the next.
+  - One constant now applies on each side (`options_strategies.IV_RANK_RICH/CHEAP`, `frontend/src/lib/ivRank.ts`), and a backend test fails if the two differ.
+  - Effect: IV ranks of 60–69 now read "normal", not "rich", in the builder's recommendation and the finder's warning. This is a convention, not a measured edge.
+- **Tests:**
+  - market-data: 6,366 passed, 1 failure that also fails on unmodified `HEAD` (`test_prebreakout_dataset`);
+  - frontend: 1,059 passed, typecheck clean;
+  - sabotage of the per-user filter and of either threshold is caught.

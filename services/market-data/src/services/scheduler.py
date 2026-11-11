@@ -6240,6 +6240,15 @@ def check_options_flow_alerts() -> None:
                 return
 
             symbols = _bounded_options_flow_symbols(session)
+            # AUD-OF-AUDIENCE (2026-11-10): the same own-symbols rule as the dark-pool email.
+            # Every recipient used to get every candidate from the shared list (all users'
+            # price-alert symbols plus the top 20 by K-Score). The recipient set is unchanged;
+            # each recipient is now sent only symbols they follow, and up to
+            # _OPTIONS_FLOW_OWNED_SCAN_CAP of those are added to the scan so they are covered.
+            from .alert_audience import owned_symbols_by_user
+            _of_owned = owned_symbols_by_user(session, list(recipients.keys()))
+            symbols, _of_owned_added = _dark_pool_scan_symbols(
+                session, symbols, _of_owned, cap=_OPTIONS_FLOW_OWNED_SCAN_CAP)
             if not symbols:
                 _record_job_status("check_options_flow_alerts", "ok", time.monotonic() - _t0)
                 return
@@ -6431,7 +6440,10 @@ def check_options_flow_alerts() -> None:
                     prev_seen = set(_rc.smembers(state_key) or set())
                 except Exception:
                     prev_seen = set()
-                current_chains = set(candidates.keys())
+                # AUD-OF-AUDIENCE: only this recipient's own symbols. A failed lookup gives an
+                # empty set, so nothing is sent rather than the whole shared list.
+                _mine = _of_owned.get(uid, set())
+                current_chains = {c for c, cand in candidates.items() if str(cand.get("symbol", "")).upper() in _mine}
                 # AUD-E10-COOLDOWNORDER (2026-09-19): previously sorted() here, i.e. by the
                 # option_chain CONTRACT STRING — an alphabetical accident, not a ranking. The
                 # cooldown-claim loop below only lets the FIRST chain per (symbol, direction)
@@ -6682,9 +6694,12 @@ _DARK_POOL_PRINT_KEY_TTL_SECONDS = (_DARK_POOL_PRINT_MAX_AGE_MINUTES + 30) * 60
 # the shared list. Each is polled about every 15 minutes (~26 Unusual Whales requests per symbol
 # per session), so 40 is at most ~1,000 requests a day against the 120k daily quota.
 _DARK_POOL_OWNED_SCAN_CAP = 40
+# AUD-OF-AUDIENCE: the options-flow job runs every minute and its provider read is cached only
+# 150 s, so each added symbol costs ~150 Unusual Whales requests per session; 20 is ~3,000/day.
+_OPTIONS_FLOW_OWNED_SCAN_CAP = 20
 
 
-def _dark_pool_scan_symbols(session, base: list, owned: dict) -> tuple[list, int]:
+def _dark_pool_scan_symbols(session, base: list, owned: dict, cap: int | None = None) -> tuple[list, int]:
     """(scan list, number added): the shared list plus the recipients' own US symbols.
 
     Most-followed first, then alphabetical, so the cap is deterministic. Only active,
@@ -6710,10 +6725,10 @@ def _dark_pool_scan_symbols(session, base: list, owned: dict) -> tuple[list, int
         log.warning("dark_pool_alert.owned_scan_lookup_failed", error=str(exc))
         return list(base), 0
     by_symbol = {sym: sid for sid, sym in rows}
-    added = [(by_symbol[s], s) for s in ranked if s in by_symbol][:_DARK_POOL_OWNED_SCAN_CAP]
+    cap = _DARK_POOL_OWNED_SCAN_CAP if cap is None else cap
+    added = [(by_symbol[s], s) for s in ranked if s in by_symbol][:cap]
     if added:
-        log.info("dark_pool_alert.owned_symbols_scanned", added=len(added),
-                 wanted=len(followers), cap=_DARK_POOL_OWNED_SCAN_CAP)
+        log.info("alert_scan.owned_symbols_added", added=len(added), wanted=len(followers), cap=cap)
     return list(base) + added, len(added)
 
 

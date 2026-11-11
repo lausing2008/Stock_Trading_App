@@ -1,4 +1,5 @@
 import type { OptionStrategy, OptionStrategyMatrix } from './api';
+import { IV_RANK_RICH, ivRankRead } from './ivRank';
 
 export const COMMON_OPTION_KEYS = ['long_call', 'protective_put', 'covered_call', 'cash_secured_put'] as const;
 export type CommonOptionKey = typeof COMMON_OPTION_KEYS[number];
@@ -85,7 +86,7 @@ export function recommendCommonOption(matrix: OptionStrategyMatrix, context: Opt
     }
   }
   const rank = matrix.iv_rank;
-  const rich = typeof rank === 'number' && Number.isFinite(rank) && rank >= 70 && rank <= 100;
+  const rich = ivRankRead(rank) === 'options relatively expensive';
   const order: CommonOptionKey[] = context.goal === 'upside' ? (rich ? ['cash_secured_put', 'long_call'] : ['long_call', 'cash_secured_put'])
     : context.goal === 'income' ? ['covered_call', 'cash_secured_put'] : context.goal === 'protect' || context.goal === 'bearish' ? ['protective_put'] : [];
   const asOf = chainAsOf?.slice(0, 10);
@@ -97,7 +98,7 @@ export function recommendCommonOption(matrix: OptionStrategyMatrix, context: Opt
     : !primary ? 'Wait: none of these four strategies matches the objective and declared coverage, budget and quote checks. Review the reasons on each card.'
     : primary === 'protective_put' ? 'Protection fits an existing stock holding and preserves its upside. A bearish view without shares has no fit among these four; a protective put is not a standalone bearish bet.'
     : primary === 'covered_call' ? 'Income fits the declared 100-share coverage and willingness to sell at the strike. The trade caps upside and keeps most stock downside.'
-    : primary === 'cash_secured_put' ? `The declared cash reserve and assignment acceptance support getting paid to wait for shares.${rich ? ' IV rank is at least 70, so selling premium is preferred in this research policy.' : ''} This remains bullish exposure, not downside protection.`
+    : primary === 'cash_secured_put' ? `The declared cash reserve and assignment acceptance support getting paid to wait for shares.${rich ? ` IV rank is at least ${IV_RANK_RICH}, so selling premium is preferred in this research policy.` : ''} This remains bullish exposure, not downside protection.`
     : `A long call fits the upside objective and declared premium-loss budget, with loss limited to the debit.${rich ? ' Premium is rich; this is the remaining eligible fit, not evidence of cheap pricing.' : ' It preserves uncapped upside without committing to stock assignment.'}`;
   return { primary, reason, plans, ivNote: typeof rank === 'number' && Number.isFinite(rank) && rank >= 0 && rank <= 100 ? `IV rank ${rank.toFixed(0)}/100; heuristic structure preference, not a measured edge.` : 'IV rank unavailable; no cheap/rich volatility claim is used.' };
 }

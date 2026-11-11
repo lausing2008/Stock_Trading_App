@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import { api, type RankingRow, type SignalSummary, type LatestPrice, type WatchlistItem } from '@/lib/api';
+import { ivRankRead } from '@/lib/ivRank';
 import WatchlistPickerButton from '@/components/WatchlistPickerButton';
 import { getSession } from '@/lib/auth';
 import { getSignalStyle, loadSettings } from '@/lib/settings';
@@ -889,7 +890,7 @@ export default function Screener() {
                                   )}
                                   {gamePlan.expected_move_pct != null && gamePlan.iv_rank_1y != null && <> · </>}
                                   {gamePlan.iv_rank_1y != null && (
-                                    <>IV Rank {gamePlan.iv_rank_1y.toFixed(0)}/100 ({gamePlan.iv_rank_1y >= 70 ? 'options relatively expensive' : gamePlan.iv_rank_1y <= 30 ? 'options relatively cheap' : 'mid-range'})</>
+                                    <>IV Rank {gamePlan.iv_rank_1y.toFixed(0)}/100 ({ivRankRead(gamePlan.iv_rank_1y) ?? 'mid-range'})</>
                                   )}
                                 </div>
                               </div>

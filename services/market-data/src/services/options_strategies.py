@@ -35,8 +35,15 @@ from zoneinfo import ZoneInfo
 # Above this IV percentile, SELLING premium is favoured; below the low mark, BUYING is.
 # Deliberately wide and neutral in the middle — a 50th-percentile IV is not information, and
 # pretending otherwise would manufacture a recommendation out of noise.
-_IV_RANK_RICH = 60.0
+# AUD-OPT-IVRANK-ALIGN (2026-11-10): one definition of rich/cheap. "Rich" was 60 here and in the
+# Call Finder's warning, but 70 in the alert email's badge, the screener and the desk's own
+# preference rule, so one stock could read "rich" in one panel and "mid-range" in the next.
+# 70/30 is what the majority, and every user-facing label, already used; it is a convention,
+# not a measured edge. frontend/src/lib/ivRank.ts must match (tested).
+_IV_RANK_RICH = 70.0
 _IV_RANK_CHEAP = 30.0
+IV_RANK_RICH = _IV_RANK_RICH
+IV_RANK_CHEAP = _IV_RANK_CHEAP
 
 _CONTRACT_MULTIPLIER = 100   # valid only for rows passing _contract_supported (R05)
 

@@ -708,7 +708,8 @@ Key Risk: {risk}
                 _iv_parts_html.append(f"Expected move &plusmn;{_ogp_expected_move:.1f}% ({_ogp_expected_move_dte}d)")
                 _iv_parts_text.append(f"Expected move +/-{_ogp_expected_move:.1f}% ({_ogp_expected_move_dte}d)")
             if _ogp_iv_rank is not None:
-                _iv_read = "options relatively expensive" if _ogp_iv_rank >= 70 else "options relatively cheap" if _ogp_iv_rank <= 30 else "mid-range"
+                from .options_strategies import IV_RANK_RICH as _RICH, IV_RANK_CHEAP as _CHEAP  # AUD-OPT-IVRANK-ALIGN
+                _iv_read = "options relatively expensive" if _ogp_iv_rank >= _RICH else "options relatively cheap" if _ogp_iv_rank <= _CHEAP else "mid-range"
                 _iv_parts_html.append(f"IV Rank {_ogp_iv_rank:.0f}/100 ({_iv_read})")
                 _iv_parts_text.append(f"IV Rank {_ogp_iv_rank:.0f}/100 ({_iv_read})")
             _ogp_rows_html += (
@@ -2159,7 +2160,7 @@ def send_options_flow_alert_email(to: str, candidates: list[dict], omitted_count
     body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
   <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
     <h2 style="margin-top:0;color:#6d28d9">🎯 Unusual Options Activity</h2>
-    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} real Unusual Whales flow alert{'s' if n != 1 else ''} — large, urgent options positioning (see each row's own detection age below).</p>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} real Unusual Whales flow alert{'s' if n != 1 else ''} on symbols you follow (your watchlists and open price alerts) — large, urgent options positioning (see each row's own detection age below).</p>
     <div style="margin-top:12px">{rows_html}</div>
     {omitted_html}
     <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
@@ -2171,7 +2172,8 @@ def send_options_flow_alert_email(to: str, candidates: list[dict], omitted_count
   </div>
 </body></html>"""
     body_text = (
-        f"Unusual Options Activity — {n} alert{'s' if n != 1 else ''} ({n_bullish} bullish, {n_bearish} bearish)\n\n"
+        f"Unusual Options Activity — {n} alert{'s' if n != 1 else ''} ({n_bullish} bullish, {n_bearish} bearish)\n"
+        f"On symbols you follow (your watchlists and open price alerts).\n\n"
         + rows_text
         + omitted_text
         + "\nMeasured fact (real options flow), not a prediction. Not financial advice.\n"

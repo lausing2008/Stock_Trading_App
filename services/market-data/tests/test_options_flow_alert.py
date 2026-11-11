@@ -500,3 +500,39 @@ def test_aud_e03_win_rate_label_states_instrument_horizon_and_hurdle_explicitly(
         assert "0.5% favorable move" in body
         assert "NOT an option P" in body
     assert "Measured historical win rate" not in html
+
+
+# ── AUD-OF-AUDIENCE (2026-11-10): each recipient gets only symbols they follow ───────────────
+
+def _of_body() -> str:
+    start = _scheduler_source.index("def check_options_flow_alerts(")
+    return _scheduler_source[start:_scheduler_source.index("\ndef ", start + 1)]
+
+
+def test_each_recipient_gets_only_their_own_symbols():
+    body = _of_body()
+    assert "_of_owned = owned_symbols_by_user(session, list(recipients.keys()))" in body
+    loop = body[body.index("for uid, user in recipients.items():"):]
+    assert 'current_chains = {c for c, cand in candidates.items() if str(cand.get("symbol", "")).upper() in _mine}' in loop
+    assert loop.index("_mine = _of_owned.get(uid, set())") < loop.index("newly_seen = sorted(")
+
+
+def test_followed_symbols_are_added_to_the_scan_with_the_smaller_cap():
+    body = _of_body()
+    assert "cap=_OPTIONS_FLOW_OWNED_SCAN_CAP)" in body
+    import importlib
+    sched = importlib.import_module("src.services.scheduler")
+    assert sched._OPTIONS_FLOW_OWNED_SCAN_CAP < sched._DARK_POOL_OWNED_SCAN_CAP
+
+
+def test_the_email_says_the_symbols_are_ones_the_reader_follows():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_options_flow_alert_email("user@example.com", [
+            {"symbol": "MSFT", "option_chain": "MSFT231222C00375000", "option_type": "call",
+             "direction": "bullish", "strike": 375.0, "expiry": "2023-12-22",
+             "price": 372.99, "total_premium": 186705.0, "ask_side_dominant": True,
+             "volume_oi_ratio": 0.31, "has_sweep": True, "alert_rule": "RepeatedHits"},
+        ])
+    for body in (calls[0]["html"], calls[0]["text"]):
+        assert "symbols you follow" in body

@@ -260,7 +260,8 @@ def find(kind: str, rows: list[dict], *, spot: float, today: date, hold_days: in
         if d is not None and 0 <= d <= hold:
             warnings.append(f"{label} on {when} falls inside the holding period (date not issuer-confirmed); "
                             "IV usually falls after earnings, which this model does not include")
-    if iv_rank is not None and iv_rank > 60:
+    from .options_strategies import IV_RANK_RICH
+    if iv_rank is not None and iv_rank >= IV_RANK_RICH:
         warnings.append(f"IV rank {iv_rank:.0f}: calls are expensive against this stock's own year; "
                         "a call spread would cut the IV exposure")
     if kind == "leaps" and _num(sma200) and spot < sma200:

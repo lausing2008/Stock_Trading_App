@@ -212,7 +212,9 @@ def test_empty_chain_returns_no_recommendation_rather_than_a_fabricated_one():
 
 
 def test_iv_regime_boundaries():
-    assert _iv_regime(60.0) == "rich" and _iv_regime(59.9) == "normal"
+    # AUD-OPT-IVRANK-ALIGN (2026-11-10): rich is 70, matching every user-facing label.
+    assert _iv_regime(70.0) == "rich" and _iv_regime(69.9) == "normal"
+    assert _iv_regime(60.0) == "normal"
     assert _iv_regime(30.0) == "cheap" and _iv_regime(30.1) == "normal"
     assert _iv_regime(None) == "unknown"
 
