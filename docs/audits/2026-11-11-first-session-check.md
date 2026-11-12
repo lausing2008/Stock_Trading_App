@@ -59,7 +59,7 @@ Three market-data files: `ingestion.py`, `scheduler.py` and `unusual_whales.py`.
   - The cache-delete function is gone from the running code.
 - **Still to confirm at the next session:** that the gamma scan measures symbols again, and how many short-squeeze candidates appear.
 
-## Follow-up: make a silent zero visible, and stop restarts moving the scans (committed, not deployed)
+## Follow-up: make a silent zero visible, and stop restarts moving the scans (deployed)
 
 - **Degraded status (AUD-SCAN-SILENTZERO).** A scan that ran but measured nothing during the session now records `degraded: measured 0 of N (reasons)` instead of `ok`.
   - **Gamma** counts why each symbol dropped out: no live price, no expiries from Yahoo, no expiry within 5 days, open interest unmeasured, below the notional floor, error. It logs the counts every run.
@@ -76,3 +76,12 @@ Three market-data files: `ingestion.py`, `scheduler.py` and `unusual_whales.py`.
   - market-data: 6,384 passed (the prebreakout test fails on unmodified `HEAD` too);
   - frontend: 1,062 passed, typecheck clean;
   - sabotage of the status rule, the data-quality override, the empty-cache status, the run times and the health-page classification is each caught.
+
+**Deployed November 12, about 00:30 UTC (`47027c01`).**
+- **market-data:** `scheduler.py` only, by the same lock-held file-level method. The running copy matched `ea82918e` before the copy. Healthy after about 40 s.
+- **Frontend:** rebuilt from `47027c01`, healthy. The System Health page serves the Degraded badge, with no `localhost` URLs.
+- **Live checks:**
+  - the run times read 10:12/12:42/15:12 and 10:17/12:47/15:17 ET;
+  - the three new data-quality entries are registered;
+  - with markets closed and no live-price cache, both squeeze minute jobs now record `skipped: markets closed`, where they used to say `ok`.
+- **First real test:** the 10:12 ET gamma scan on November 12.
